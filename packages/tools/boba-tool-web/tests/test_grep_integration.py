@@ -1,8 +1,8 @@
-"""web_grep на реальных данных из config (`pytest -m integration`).
+"""web_grep на реальных данных из config (pytest -m integration).
 
-Ходит в whitelist-хосты `[tool.web].profiles` (raw.githubusercontent.com,
+Ходит в whitelist-хосты [tool.web].profiles (raw.githubusercontent.com,
 cwiki.apache.org). URL'ы запинованы по тегу/коммиту, чтобы контент не плавал.
-Default-режим (`-m "not integration"`) эти тесты исключает.
+Default-режим (-m "not integration") эти тесты исключает.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ RAW_README = "https://raw.githubusercontent.com/python/cpython/v3.12.0/README.rs
 
 
 def test_returns_table_with_matches(web_grep_cfg: WebGrepConfig) -> None:
-    """Реальный grep по raw-тексту → `TableResult` с непустыми matches."""
+    """Реальный grep по raw-тексту -> TableResult с непустыми matches."""
     res = web_grep(
         cfg=web_grep_cfg,
         url=RAW_README,
@@ -38,7 +38,7 @@ def test_returns_table_with_matches(web_grep_cfg: WebGrepConfig) -> None:
 
 
 def test_line_numbers_strictly_increasing(web_grep_cfg: WebGrepConfig) -> None:
-    """`line` — 1-based номер исходной строки, монотонно растёт по matches."""
+    """line — 1-based номер исходной строки, монотонно растёт по matches."""
     res = web_grep(
         cfg=web_grep_cfg,
         url=RAW_README,
@@ -58,7 +58,7 @@ def test_line_numbers_strictly_increasing(web_grep_cfg: WebGrepConfig) -> None:
 
 
 def test_case_insensitive_widens_matches(web_grep_cfg: WebGrepConfig) -> None:
-    """`case_insensitive=true` ловит больше (или столько же) строк, чем точный."""
+    """case_insensitive=true ловит больше (или столько же) строк, чем точный."""
     common = {
         "url": RAW_README,
         "pattern": "python",
@@ -74,7 +74,7 @@ def test_case_insensitive_widens_matches(web_grep_cfg: WebGrepConfig) -> None:
 
 
 def test_fixed_string_treats_pattern_literally(web_grep_cfg: WebGrepConfig) -> None:
-    """`fixed_string=true`: точки в '3.12.0' — литералы, не 'любой символ'."""
+    """fixed_string=true: точки в '3.12.0' — литералы, не 'любой символ'."""
     res = web_grep(
         cfg=web_grep_cfg,
         url=RAW_README,
@@ -90,7 +90,7 @@ def test_fixed_string_treats_pattern_literally(web_grep_cfg: WebGrepConfig) -> N
 
 
 def test_context_attaches_before_and_after(web_grep_cfg: WebGrepConfig) -> None:
-    """`context=2` навешивает до 2 строк до/после; не больше запрошенного."""
+    """context=2 навешивает до 2 строк до/после; не больше запрошенного."""
     res = web_grep(
         cfg=web_grep_cfg,
         url=RAW_README,
@@ -108,7 +108,7 @@ def test_context_attaches_before_and_after(web_grep_cfg: WebGrepConfig) -> None:
 
 
 def test_limit_caps_rows_and_marks_overflow(web_grep_cfg: WebGrepConfig) -> None:
-    """`limit=N` обрезает до N строк и пишет про переполнение в `note`."""
+    """limit=N обрезает до N строк и пишет про переполнение в note."""
     res = web_grep(
         cfg=web_grep_cfg,
         url=RAW_README,
@@ -125,7 +125,7 @@ def test_limit_caps_rows_and_marks_overflow(web_grep_cfg: WebGrepConfig) -> None
 
 
 def test_no_match_returns_empty_table(web_grep_cfg: WebGrepConfig) -> None:
-    """Несуществующий pattern → пустые rows и note 'совпадений не найдено'."""
+    """Несуществующий pattern -> пустые rows и note 'совпадений не найдено'."""
     res = web_grep(
         cfg=web_grep_cfg,
         url=RAW_README,
@@ -142,7 +142,7 @@ def test_no_match_returns_empty_table(web_grep_cfg: WebGrepConfig) -> None:
 
 
 def test_markdown_conversion_finds_heading(web_grep_cfg: WebGrepConfig) -> None:
-    """`as_markdown=True`: HTML cwiki → Markdown, grep по сконвертированному."""
+    """as_markdown=True: HTML cwiki -> Markdown, grep по сконвертированному."""
     res = web_grep(
         cfg=web_grep_cfg,
         url="https://cwiki.apache.org/confluence/",
@@ -160,7 +160,7 @@ def test_markdown_conversion_finds_heading(web_grep_cfg: WebGrepConfig) -> None:
 def test_unwhitelisted_host_rejected_before_http(
     web_grep_cfg: WebGrepConfig,
 ) -> None:
-    """Хост вне `[tool.web].profiles` → ValueError ещё до HTTP-запроса."""
+    """Хост вне [tool.web].profiles -> ValueError ещё до HTTP-запроса."""
     with pytest.raises(ValueError, match="whitelist") as exc_info:
         web_grep(
             cfg=web_grep_cfg,

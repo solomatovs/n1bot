@@ -34,7 +34,7 @@ class PermanentPromptError(PromptError):
 
 
 class PromptProviderError(PermanentPromptError):
-    """Провайдер упал на чтении источника (OSError → этот тип)."""
+    """Провайдер упал на чтении источника (OSError -> этот тип)."""
 
 
 @dataclass(frozen=True)

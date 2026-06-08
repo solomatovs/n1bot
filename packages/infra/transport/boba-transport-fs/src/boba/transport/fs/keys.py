@@ -1,6 +1,6 @@
 """FsKeys — typed MetadataKey'и, проставляемые FS-стадиями.
 
-Дополняет `TransportKeys` (`MTIME`/`CONTENT_TYPE`/`ETAG`) FS-специфичными
+Дополняет TransportKeys (MTIME/CONTENT_TYPE/ETAG) FS-специфичными
 полями: размер файла, абсолютный путь, suffix-расширение.
 """
 

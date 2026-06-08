@@ -1,5 +1,5 @@
 """
-Tool `web_fetch`.
+Tool web_fetch.
 
 Скачивает одну web-страницу и возвращает строки [line_offset : line_offset+line_count]
 
@@ -22,19 +22,17 @@ import httpx
 import markdownify
 from pydantic import Field
 
-from boba.indexing import BinaryStream, PipelineContext, PipelineId
+from boba.indexing import BinaryStream
 from boba.tool.web.connection import WebConnection
-from boba.tool.web.request_source import WebUrlsRequestSource
 from boba.tools import FromConfig, tool
-from boba.transport.http import HttpTransport
+from boba.transport.http import HttpRequest, HttpTransport
 
 __all__ = ["web_fetch"]
 
 
 class _WebFetcher:
-    """Скачать → построчно итерировать → вырезать окно; без записи на ФС."""
+    """Скачать -> построчно итерировать -> вырезать окно; без записи на ФС."""
 
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("web.fetch")
     CHUNK_SIZE: ClassVar[int] = 8192
     ENCODING: ClassVar[str] = "utf-8"
 
@@ -49,15 +47,16 @@ class _WebFetcher:
         line_offset: int,
         line_count: int,
     ) -> dict[str, Any]:
-        source = WebUrlsRequestSource(urls=(url,), connection=self._connection)
-        transport = HttpTransport(self._connection.resolve_profile(url))
-        pctx = PipelineContext(pipeline_id=self.PIPELINE_ID)
+        profile = self._connection.resolve_profile(url)
         try:
-            for raw in transport.stream(pctx, source.stream(pctx)):
+            with (
+                HttpTransport(profile) as transport,
+                transport.fetch(HttpRequest(url=url)) as resp,
+            ):
                 lines_iter = (
-                    self._iterate_markdown_lines(raw.handle)
+                    self._iterate_markdown_lines(resp.stream)
                     if as_markdown
-                    else self._iterate_html_lines(raw.handle)
+                    else self._iterate_html_lines(resp.stream)
                 )
                 window, total = self._collect_window(
                     lines_iter,
@@ -74,8 +73,6 @@ class _WebFetcher:
             raise RuntimeError(
                 f"web_fetch failed: {type(e).__name__}: {e}",
             ) from e
-        msg = f"web_fetch: пустой ответ для URL {url!r}"
-        raise RuntimeError(msg)
 
     @staticmethod
     def _iterate_html_lines(handle: BinaryStream) -> Iterator[str]:
@@ -94,7 +91,7 @@ class _WebFetcher:
 
     @staticmethod
     def _iterate_markdown_lines(handle: BinaryStream) -> Iterator[str]:
-        """HTML → markdownify (требует всю страницу) → splitlines."""
+        """HTML -> markdownify (требует всю страницу) -> splitlines."""
         html = handle.read(-1).decode(_WebFetcher.ENCODING, errors="replace")
         md = markdownify.markdownify(html, heading_style="ATX")
         return iter(md.splitlines())
@@ -130,7 +127,7 @@ def web_fetch(
     as_markdown: Annotated[
         bool,
         Field(
-            description=("true — конвертирует HTML→Markdown"),
+            description=("true — конвертирует HTML->Markdown"),
         ),
     ],
     line_offset: Annotated[
@@ -151,9 +148,9 @@ def web_fetch(
     """
     Скачивает URL и возвращает окно строк как dict
 
-    Формат: `{content, path, total_lines, returned_lines}`.
-    `path` — URL источника (canonical id запроса).
-    `total_lines` позволяет выбрать корректный следующий `line_offset`.
+    Формат: {content, path, total_lines, returned_lines}.
+    path — URL источника (canonical id запроса).
+    total_lines позволяет выбрать корректный следующий line_offset.
     """
     fetcher = _WebFetcher(connection=cfg)
     return fetcher.run(

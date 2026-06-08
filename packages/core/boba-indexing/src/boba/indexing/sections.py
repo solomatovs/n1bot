@@ -4,23 +4,23 @@ Section[T] — логический фрагмент документа.
 Доменная иерархия — намеренно тонкая. В домене живёт только то, что
 эмитится **каждым** Reader'ом и имеет cross-format-смысл:
 
-- `Section[T]`        — базовый dataclass.
-- `HeadingSection`    — заголовочная секция (`level` + `text`).
-                         Универсальна: markdown `# ...`, html `<hN>`, и т.п.
-- `ParagraphSection`  — обычный текстовый блок и universal fallback для всего,
+- Section[T]        — базовый dataclass.
+- HeadingSection    — заголовочная секция (level + text).
+                         Универсальна: markdown # ..., html <hN>, и т.п.
+- ParagraphSection  — обычный текстовый блок и universal fallback для всего,
                          что Reader не разобрал в более конкретный тип.
 
 Format-specific типы (markdown-таблицы, markdown-списки, code-fence'ы,
-блок-цитаты, hr) живут в format-package (`boba-markdown`, ...) как
-наследники `Section`. Открытая иерархия — расширяй где угодно через
-наследование `Section[T]` и переопределение `to_chunk_metadata()`.
+блок-цитаты, hr) живут в format-package (boba-markdown, ...) как
+наследники Section. Открытая иерархия — расширяй где угодно через
+наследование Section[T] и переопределение to_chunk_metadata().
 
 Контракт:
 
-- Структурные типизированные поля (`level`, `text`, ...) живут как
-  атрибуты подклассов и переезжают в `chunk.metadata` через
-  `to_chunk_metadata()`.
-- `SECTION_TYPE` — короткий canonical alias, удобный для логов.
+- Структурные типизированные поля (level, text, ...) живут как
+  атрибуты подклассов и переезжают в chunk.metadata через
+  to_chunk_metadata().
+- SECTION_TYPE — короткий canonical alias, удобный для логов.
 """
 
 from __future__ import annotations
@@ -48,17 +48,17 @@ SourceId = NewType("SourceId", str)
 
 
 class SectionKeys:
-    """Стандартные `MetadataKey`-и для атрибутов доменных Section'ов.
+    """Стандартные MetadataKey-и для атрибутов доменных Section'ов.
 
-    `LOCATION_START` / `LOCATION_END` / `ANCHOR` — координаты/идентификаторы;
-    парсеры пишут их в `section.metadata` если умеют, для других форматов
+    LOCATION_START / LOCATION_END / ANCHOR — координаты/идентификаторы;
+    парсеры пишут их в section.metadata если умеют, для других форматов
     отсутствуют.
 
-    `HEADING_LEVEL` / `HEADING_TEXT` — структурные поля `HeadingSection`,
-    эмитятся через `to_chunk_metadata()`.
+    HEADING_LEVEL / HEADING_TEXT — структурные поля HeadingSection,
+    эмитятся через to_chunk_metadata().
 
-    Format-specific подклассы (в `boba-markdown` и т.п.) определяют свои
-    собственные `*Keys`-классы рядом со своими Section-типами.
+    Format-specific подклассы (в boba-markdown и т.п.) определяют свои
+    собственные *Keys-классы рядом со своими Section-типами.
     """
 
     LOCATION_START: ClassVar[MetadataKey[int]] = MetadataKey(
@@ -98,17 +98,17 @@ class Section(Generic[T]):
     """Логический фрагмент документа. Базовый класс открытой иерархии.
 
     Подклассы добавляют типизированные структурные поля и переопределяют
-    `to_chunk_metadata()` для эмиссии этих полей в `chunk.metadata`.
+    to_chunk_metadata() для эмиссии этих полей в chunk.metadata.
 
     Поля:
 
-    - `source_id` — id source-документа.
-    - `content`   — текст/bytes раздела (для текстовых форматов — `T = str`).
-    - `order`     — порядок секции в исходном документе (детерминирует chunk_id).
-    - `metadata`  — пробрасываемая metadata. Сюда же парсер кладёт
-                     координаты/идентификаторы через `SectionKeys.LOCATION_*`
-                     и `SectionKeys.ANCHOR`, если умеет их вычислить.
-    - `tags`      — множество тэгов.
+    - source_id — id source-документа.
+    - content   — текст/bytes раздела (для текстовых форматов — T = str).
+    - order     — порядок секции в исходном документе (детерминирует chunk_id).
+    - metadata  — пробрасываемая metadata. Сюда же парсер кладёт
+                     координаты/идентификаторы через SectionKeys.LOCATION_*
+                     и SectionKeys.ANCHOR, если умеет их вычислить.
+    - tags      — множество тэгов.
     """
 
     SECTION_TYPE: ClassVar[str] = "section"
@@ -120,17 +120,17 @@ class Section(Generic[T]):
     tags: frozenset[str] = field(default_factory=frozenset)
 
     def to_chunk_metadata(self) -> Metadata:
-        """Типизированные структурные поля Section → `chunk.metadata`.
+        """Типизированные структурные поля Section -> chunk.metadata.
 
         Базовый Section не несёт типизированных полей — возвращает
-        `Metadata.empty()`. Подклассы переопределяют.
+        Metadata.empty(). Подклассы переопределяют.
         """
         return Metadata.empty()
 
     def to_format_plan(self) -> FormatPlan:
         """План рендера секции в LLM-формат для format-aware chunker'а.
 
-        Дефолт — один не-atomic блок с `format_content == raw_content == content`.
+        Дефолт — один не-atomic блок с format_content == raw_content == content.
         Format-specific подклассы переопределяют, чтобы отдать markdown-render,
         per-unit raw, replicate-header и breadcrumb-info.
         """
@@ -148,10 +148,10 @@ class Section(Generic[T]):
 
 @dataclass(frozen=True)
 class HeadingSection(Section[str]):
-    """Раздел с heading-маркером (`# `, `<h1>`, ...).
+    """Раздел с heading-маркером (# , <h1>, ...).
 
-    `content` — оригинальный текст раздела с разметкой формата;
-    `level` и `text` — разобранная типизированная информация.
+    content — оригинальный текст раздела с разметкой формата;
+    level и text — разобранная типизированная информация.
     """
 
     SECTION_TYPE: ClassVar[str] = "heading"
@@ -169,9 +169,9 @@ class HeadingSection(Section[str]):
     def to_format_plan(self) -> FormatPlan:
         """Markdown-heading + регистрация breadcrumb для chunker'а.
 
-        Chunker по `breadcrumb_level`/`breadcrumb_text` обновит свой стек
-        активных заголовков и пропишет полный путь в `HEADING_PATH` для
-        последующих чанков того же `source_id`.
+        Chunker по breadcrumb_level/breadcrumb_text обновит свой стек
+        активных заголовков и пропишет полный путь в HEADING_PATH для
+        последующих чанков того же source_id.
         """
         md = "#" * self.level + " " + self.text
         return FormatPlan(
@@ -192,7 +192,7 @@ class HeadingSection(Section[str]):
 class ParagraphSection(Section[str]):
     """Обычный текстовый параграф / fallback для не-типизированного контента.
 
-    Inline-разметка остаётся в `content` (не разворачивается в подсекции).
+    Inline-разметка остаётся в content (не разворачивается в подсекции).
     """
 
     SECTION_TYPE: ClassVar[str] = "paragraph"

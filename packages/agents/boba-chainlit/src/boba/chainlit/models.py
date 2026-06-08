@@ -44,7 +44,7 @@ _WIRE_CONFIG = ConfigDict(
 
 
 class StoredUser(BaseModel):
-    """Persisted user record (`users.json`). Wire — camelCase."""
+    """Persisted user record (users.json). Wire — camelCase."""
 
     model_config = _WIRE_CONFIG
 
@@ -60,7 +60,7 @@ class ThreadMetaCorruptedError(Exception):
 
 
 class ThreadMeta(BaseModel):
-    """Метаданные thread'а. Сообщения живут в `HistoryService`, не здесь."""
+    """Метаданные thread'а. Сообщения живут в HistoryService, не здесь."""
 
     model_config = _WIRE_CONFIG
 
@@ -80,7 +80,7 @@ class ThreadMeta(BaseModel):
 
 
 class ThreadIndexEntry(BaseModel):
-    """Снимок ThreadMeta для глобального индекса (`threads-index.json`)."""
+    """Снимок ThreadMeta для глобального индекса (threads-index.json)."""
 
     model_config = _WIRE_CONFIG
 

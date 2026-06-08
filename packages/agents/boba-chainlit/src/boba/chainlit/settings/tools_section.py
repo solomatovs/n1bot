@@ -15,11 +15,11 @@ __all__ = ["ToolsSection"]
 
 
 class ToolsSection:
-    """Tab per `source_id`; внутри по чекбоксу на каждый tool этого source.
+    """Tab per source_id; внутри по чекбоксу на каждый tool этого source.
 
-    Если catalog ещё не закеширован (первый `on_chat_start` до build'а
-    ChatSession) — секция возвращает `[]` и orchestrator её просто скрывает.
-    Whitelist хранится в `ThreadMeta.enabled_tool_ids`: `None` ⇒ все включены,
+    Если catalog ещё не закеширован (первый on_chat_start до build'а
+    ChatSession) — секция возвращает [] и orchestrator её просто скрывает.
+    Whitelist хранится в ThreadMeta.enabled_tool_ids: None ⇒ все включены,
     список ⇒ ровно эти. Неизвестные id молча отбрасываются при apply.
     """
 
@@ -39,7 +39,7 @@ class ToolsSection:
             by_source[schema.source_id].append(schema)
         tabs: list[Tab] = []
         for source_id in sorted(by_source):
-            # Явный `list[InputWidget]`: chainlit.Tab.inputs инвариантен,
+            # Явный list[InputWidget]: chainlit.Tab.inputs инвариантен,
             # без аннотации pyright не приводит list[Checkbox] к list[InputWidget].
             inputs: list[InputWidget] = [
                 Checkbox(

@@ -17,7 +17,7 @@ from boba.patterns import Specification, StreamSource
 
 
 class IterationCounterConfig(BaseModel):
-    """Конфиг bootstrap-параметров `IterationCounterMiddleware`."""
+    """Конфиг bootstrap-параметров IterationCounterMiddleware."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -74,12 +74,12 @@ class StopIfReasonStop(Specification[tuple[AgentContext, AgentEvent]]):
     """
     Стопает цикл, если модель отдала финальный текстовый ответ.
 
-    Срабатывает на `TotalMessage`, у которого:
-        - `finish_reason == STOP` (модель сама решила, что закончила)
-        - в `message.tool_calls` пусто (модель не зовёт инструменты)
+    Срабатывает на TotalMessage, у которого:
+        - finish_reason == STOP (модель сама решила, что закончила)
+        - в message.tool_calls пусто (модель не зовёт инструменты)
 
-    Если tool_calls есть — `finish_reason=stop` игнорируется (мелкие модели
-    часто отдают `stop` вместо `tool_calls`, нам важен факт вызова tool'а,
+    Если tool_calls есть — finish_reason=stop игнорируется (мелкие модели
+    часто отдают stop вместо tool_calls, нам важен факт вызова tool'а,
     а не подменный finish_reason).
 
     Это «нормальный» путь завершения круга вопрос-ответ.
@@ -107,14 +107,14 @@ class StopIfLengthReached(Specification[tuple[AgentContext, AgentEvent]]):
     """
     Стопает цикл, если генерация упёрлась в лимит токенов.
 
-    Срабатывает на `TotalMessage` с `finish_reason == LENGTH` независимо
+    Срабатывает на TotalMessage с finish_reason == LENGTH независимо
     от tool_calls. Tool-call, обрезанный по длине, выполнять опасно — args
     могут оказаться невалидным JSON или с потерей хвоста; лучше остановить
     цикл и дать вышестоящему коду решить, что делать (поднять max_tokens,
     попросить «continue», вернуть пользователю что есть).
 
     Если в твоём приложении нужна авто-продолжающаяся стратегия — не подключай
-    этот spec в `stop_if`, и пусть цикл крутится дальше (но тогда нужен
+    этот spec в stop_if, и пусть цикл крутится дальше (но тогда нужен
     отдельный механизм, который добавит «continue» в историю).
     """
 
@@ -131,7 +131,7 @@ class StopIfContentFilter(Specification[tuple[AgentContext, AgentEvent]]):
     """
     Стопает цикл, если провайдерский фильтр заблокировал генерацию.
 
-    Срабатывает на `TotalMessage` с `finish_reason == CONTENT_FILTER`.
+    Срабатывает на TotalMessage с finish_reason == CONTENT_FILTER.
     Повторять с тем же промптом смысла нет — фильтр сработает снова.
     Решение об альтернативном промпте или эскалации пользователю — за
     вышестоящим слоем.

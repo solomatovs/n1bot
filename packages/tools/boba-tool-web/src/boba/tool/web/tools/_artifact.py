@@ -1,7 +1,7 @@
 """WebArtifact: helpers для записи скачанной web-страницы на ФС.
 
-Один класс держит весь shared-API между `web_fetch` и `web_download`:
-- путь файла из URL (`{host}/{sanitized_path}.{ext}`),
+Один класс держит весь shared-API между web_fetch и web_download:
+- путь файла из URL ({host}/{sanitized_path}.{ext}),
 - frontmatter с source-метаданными (HTML-комментарий или YAML),
 - streaming-запись raw HTML / буферизованная запись Markdown.
 
@@ -25,7 +25,7 @@ __all__ = ["WebArtifact"]
 
 
 class WebArtifact:
-    """Static-API: путь файла + frontmatter + запись через `WorkspaceShell`."""
+    """Static-API: путь файла + frontmatter + запись через WorkspaceShell."""
 
     FS_FORBIDDEN: ClassVar[re.Pattern[str]] = re.compile(
         r'[<>:"\\|?*\x00-\x1f]',
@@ -34,7 +34,7 @@ class WebArtifact:
     DEFAULT_INDEX_NAME: ClassVar[str] = "index"
 
     class _ConcatBinaryStream:
-        """`BinaryStream`-обёртка: header → body без буферизации body целиком."""
+        """BinaryStream-обёртка: header -> body без буферизации body целиком."""
 
         def __init__(self, *streams: BinaryStream) -> None:
             self._streams = list(streams)
@@ -62,11 +62,11 @@ class WebArtifact:
 
     @staticmethod
     def relative_path(url: str, *, as_markdown: bool) -> str:
-        """URL → workspace-relative путь без base-dir'а.
+        """URL -> workspace-relative путь без base-dir'а.
 
-        `{host}/{sanitized url path components}/{name}.{html|md}`.
+        {host}/{sanitized url path components}/{name}.{html|md}.
         Query/fragment отбрасываются (для имени файла не нужны).
-        Пустой path или path='/' → `index.{ext}`.
+        Пустой path или path='/' -> index.{ext}.
         """
         parsed = urlparse(url)
         host = (parsed.hostname or "_").lower()
@@ -94,7 +94,7 @@ class WebArtifact:
 
     @staticmethod
     def ensure_parent(shell: WorkspaceShell, path: str) -> None:
-        """`mkdir -p` для всех родителей `path` внутри shell."""
+        """mkdir -p для всех родителей path внутри shell."""
         parent = posixpath.dirname(path)
         if not parent or shell.exists(parent):
             return
@@ -133,7 +133,7 @@ class WebArtifact:
         """Полностью читает HTML, конвертирует в Markdown, записывает.
 
         Markdownify не потоковый — для конвертации нужна вся страница в RAM.
-        Это явное исключение из streaming-инварианта `write_raw`.
+        Это явное исключение из streaming-инварианта write_raw.
         """
         WebArtifact.ensure_parent(shell, path)
         html = body.read().decode("utf-8", errors="replace")

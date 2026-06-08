@@ -87,7 +87,7 @@ class ConverterOutputError(ConverterError):
 
 
 class Converter(ABC, Generic[TIn, TOut_co]):
-    """Однонаправленная конвертация 1:1. A → B."""
+    """Однонаправленная конвертация 1:1. A -> B."""
 
     @abstractmethod
     def convert(self, value: TIn) -> TOut_co:
@@ -96,14 +96,14 @@ class Converter(ABC, Generic[TIn, TOut_co]):
 
 
 class StreamConverter(ABC, Generic[TIn, TOut]):
-    """Потоковая конвертация N:M. Iterable[A] → Iterable[B]."""
+    """Потоковая конвертация N:M. Iterable[A] -> Iterable[B]."""
 
     @abstractmethod
     def convert(self, stream: Iterable[TIn]) -> Iterable[TOut]: ...
 
 
 class StreamSource(StateFull, Generic[TCtx, TOut]):
-    """Источник потока событий: ctx → Iterable[TOut]."""
+    """Источник потока событий: ctx -> Iterable[TOut]."""
 
     @abstractmethod
     def stream(self, ctx: TCtx) -> Iterable[TOut]: ...
@@ -119,11 +119,11 @@ class StreamSink(StateFull, Generic[TCtx, TIn]):
 class StreamTransformer(StateFull, Generic[TCtx, TIn, TOut]):
     """Потоковое преобразование с контекстом:
 
-    ```python
+    python
     def stream(self, ctx: TCtx, stream: Iterable[TIn]) -> Iterable[TOut]: ...
-    ```
-    - ```ctx``` — для доступа к внешним ресурсам, параметрам, логированию
-    - ```stream``` — генератор входящих событий которые нужно преобразовать
+    
+    - ctx — для доступа к внешним ресурсам, параметрам, логированию
+    - stream — генератор входящих событий которые нужно преобразовать
 
     Зачем так сложно?
 
@@ -153,7 +153,7 @@ class Resolver(ABC, Generic[TIn, TOut]):
 
 
 class Matcher(ABC, Generic[TQuery, TValue]):
-    """Чистая функция (query, pool) → candidates."""
+    """Чистая функция (query, pool) -> candidates."""
 
     @abstractmethod
     def match(self, query: TQuery, pool: Iterable[TValue]) -> Iterable[TValue]: ...
@@ -174,7 +174,7 @@ class FactoryMethod(ABC, Generic[TOut]):
 
 
 class PrioritySource(ABC, Generic[TId, TState]):
-    """Одна стадия сборки для FoldFactory: state_n → state_{n+1}."""
+    """Одна стадия сборки для FoldFactory: state_n -> state_{n+1}."""
 
     @abstractmethod
     def id(self) -> TId: ...
@@ -236,8 +236,8 @@ class ItemProvider(ABC, Generic[TId, TItem]):
 class CatalogFactory(FactoryMethod[TOut], Generic[TId, TItem, TOut]):
     """FactoryMethod, собирающий каталог из независимых производителей.
 
-    Build вызывает `produce()` у каждого provider'а, складывает в dict[id, item]
-    и оборачивает через `finalize`. Без priority, без общего state — каждый item
+    Build вызывает produce() у каждого provider'а, складывает в dict[id, item]
+    и оборачивает через finalize. Без priority, без общего state — каждый item
     собирается независимо. Под use-case «реестр объектов по id».
     """
 
@@ -504,7 +504,7 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
 
 
 class StreamTransformerChain(StreamTransformer[TCtx, TIn, TIn]):
-    """Chain-композиция StreamTransformer-ов одного типа (TIn → TIn)."""
+    """Chain-композиция StreamTransformer-ов одного типа (TIn -> TIn)."""
 
     def __init__(
         self,
@@ -607,7 +607,7 @@ class FirstMatchDispatcher(Generic[TIn, TOut]):
 
 
 class AllMatchesDispatcher(Generic[TIn, TOut]):
-    """Callable-диспетчер «все совпавшие правила → поток результатов» (lazy)."""
+    """Callable-диспетчер «все совпавшие правила -> поток результатов» (lazy)."""
 
     def __init__(
         self,
@@ -624,7 +624,7 @@ class AllMatchesDispatcher(Generic[TIn, TOut]):
 class FoldingDispatcher(Generic[TValue]):
     """
     Callable-диспетчер «условная цепочка трансформаций» (fold),
-    мономорфный TValue → TValue.
+    мономорфный TValue -> TValue.
     """
 
     def __init__(

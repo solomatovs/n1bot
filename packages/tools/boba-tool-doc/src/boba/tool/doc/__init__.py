@@ -1,17 +1,17 @@
 """boba-tool-doc — плагин: чтение и поиск по загруженным документам (liteparse).
 
-Entry-point модуль для `AgentBuilder.use_plugin(boba.tool.doc)` или
-discovery через `[project.entry-points."boba.plugins"]`.
+Entry-point модуль для AgentBuilder.use_plugin(boba.tool.doc) или
+discovery через [project.entry-points."boba.plugins"].
 
-Tools (`[tool.doc]`, `BOBA_TOOL__DOC__*`):
-- `read_document`        — весь текст документа;
-- `read_document_window` — срез текста по символьному окну (стрим порциями);
-- `read_pages`           — текст выбранных страниц (target_pages);
-- `document_outline`     — постраничная карта (размер/символов/фрагментов);
-- `search_document`      — поиск фразы с координатами и сниппетом.
+Tools ([tool.doc], BOBA_TOOL__DOC__*):
+- read_document        — весь текст документа;
+- read_document_window — срез текста по символьному окну (стрим порциями);
+- read_pages           — текст выбранных страниц (target_pages);
+- document_outline     — постраничная карта (размер/символов/фрагментов);
+- search_document      — поиск фразы с координатами и сниппетом.
 
-Все шарят `DocPluginConfig`. `ProjectWorkspaceShell` инжектится через
-`FromDI(Scope.APP)` — приложение обязано зарегистрировать provider'а.
+Все шарят DocPluginConfig. ProjectWorkspaceShell инжектится через
+FromDI(Scope.APP) — приложение обязано зарегистрировать provider'а.
 """
 
 from __future__ import annotations

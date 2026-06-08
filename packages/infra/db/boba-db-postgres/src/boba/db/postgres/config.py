@@ -11,9 +11,9 @@ __all__ = ["PostgresConfig"]
 class PostgresConfig:
     """DSN libpq + параметры pool'а; read-only-режим декларируется в DSN.
 
-    `dsn` — libpq-строка вида `postgresql://user:pass@host:5432/db?options=...`.
+    dsn — libpq-строка вида postgresql://user:pass@host:5432/db?options=....
     Чтобы pool работал в read-only, задайте параметры прямо в DSN:
-    `?default_transaction_read_only=on&statement_timeout=5000`.
+    ?default_transaction_read_only=on&statement_timeout=5000.
     Pool сам ничего read-only не выставляет — это контракт DSN.
     """
 

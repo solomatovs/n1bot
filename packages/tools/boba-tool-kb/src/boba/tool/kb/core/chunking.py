@@ -1,10 +1,8 @@
-"""`ChunkerParams` — параметры структурного чанкера + factory `StructuralChunker`.
+"""ChunkerParams — чистый DTO с параметрами структурного чанкера.
 
-`BaseModel` (не settings), встраивается как nested-поле в ingest-tool-конфиги
-(`confluence_ingest_*`) и CLI-конфиги. `ChunkerParams.build_chunker()` собирает
-heading-aware `StructuralChunker` с `OverlapCharSplitter` для size-cap;
-`key_encoder=Sha256TextEncoder()` хэширует `format_content` каждого чанка в
-`content_hash` — по нему `IndexSink.reconcile` решает skip vs upsert.
+BaseModel (не settings), встраивается как nested-поле в ingest-tool-конфиги
+(confluence_ingest_*) и CLI-конфиги. Только данные — без фабричных методов;
+сборку StructuralChunker из этих параметров делает StructuralChunkerFactory.
 """
 
 from __future__ import annotations
@@ -22,14 +20,11 @@ from boba.indexing import (
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
 
-__all__ = ["ChunkerParams"]
+__all__ = ["ChunkerParams", "StructuralChunkerFactory"]
 
 
 class ChunkerParams(BaseModel):
-    """Параметры `OverlapCharSplitter` для `StructuralChunker`."""
-
-    _CHUNKER_ID: ClassVar[ChunkerId] = ChunkerId("postgres-kb-structural")
-    _CHUNK_ID_PREFIX_LENGTH: ClassVar[int] = 16
+    """Параметры OverlapCharSplitter для StructuralChunker."""
 
     chunk_size: int = Field(
         default=4000,
@@ -50,7 +45,15 @@ class ChunkerParams(BaseModel):
         ),
     )
 
-    def build_chunker(self) -> StructuralChunker:
+
+class StructuralChunkerFactory:
+    """Собирает StructuralChunker из ChunkerParams."""
+
+    _CHUNKER_ID: ClassVar[ChunkerId] = ChunkerId("postgres-kb-structural")
+    _CHUNK_ID_PREFIX_LENGTH: ClassVar[int] = 16
+
+    @classmethod
+    def build(cls, params: ChunkerParams) -> StructuralChunker:
         """
         Собирает чанкер: режет документ по заголовкам, длинные секции добивает
         разбиением с перекрытием по символам до заданного размера (overlap).
@@ -61,14 +64,14 @@ class ChunkerParams(BaseModel):
         chunk_id уникален в рамках всей таблицы kb.
         """
         return StructuralChunker(
-            chunker_id=self._CHUNKER_ID,
-            splitter_factory=self._make_splitter_factory(
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap,
+            chunker_id=cls._CHUNKER_ID,
+            splitter_factory=cls._make_splitter_factory(
+                chunk_size=params.chunk_size,
+                chunk_overlap=params.chunk_overlap,
             ),
             chunk_id_generator=SourceBasedChunkId(
                 encoder=Sha256TextEncoder(),
-                prefix=FixedDigestPrefix(chars=self._CHUNK_ID_PREFIX_LENGTH),
+                prefix=FixedDigestPrefix(chars=cls._CHUNK_ID_PREFIX_LENGTH),
             ),
             content_hasher=Sha256TextEncoder(),
         )
@@ -80,7 +83,7 @@ class ChunkerParams(BaseModel):
         chunk_overlap: int,
     ) -> SplitterFactory:
         """Замыкаем chunk_size/chunk_overlap; StructuralChunker дёргает на каждой
-        секции с `extra_overhead = len(prefix + repeat_header + repeat_footer)`,
+        секции с extra_overhead = len(prefix + repeat_header + repeat_footer),
         чтобы итоговый чанк влез в budget."""
 
         def factory(extra_overhead: int) -> OverlapCharSplitter:

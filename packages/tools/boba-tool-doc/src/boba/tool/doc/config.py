@@ -1,8 +1,8 @@
 """Конфиг плагина doc.
 
-`[tool.doc]` / `BOBA_TOOL__DOC__*`. Используется в `read_document` через
-FromConfig. Поля `enable` / `tools` читает framework через
-`AgentBuilder.discover_plugins`; `extra="ignore"` позволяет им жить в
+[tool.doc] / BOBA_TOOL__DOC__*. Используется в read_document через
+FromConfig. Поля enable / tools читает framework через
+AgentBuilder.discover_plugins; extra="ignore" позволяет им жить в
 той же TOML-секции без ValidationError.
 """
 
@@ -16,7 +16,7 @@ __all__ = ["DocPluginConfig"]
 class DocPluginConfig(BaseModel):
     """Парсинг документов в текст (liteparse).
 
-    Config-секция: `[tool.doc]`.
+    Config-секция: [tool.doc].
     """
 
     model_config = ConfigDict(extra="ignore")

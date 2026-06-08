@@ -20,13 +20,13 @@ from boba.agent.events import (
 
 
 class ConsoleSink:
-    """AgentEvent → stdout/stderr; use_color=None — авто по TTY/NO_COLOR.
+    """AgentEvent -> stdout/stderr; use_color=None — авто по TTY/NO_COLOR.
 
     Флаги:
-        `verbose`     - печатать `body` PhaseEvent'ов (раньше у
+        verbose     - печатать body PhaseEvent'ов (раньше у
                         ToolExecutionStarted там лежал JSON args; сейчас
                         этим занимается diagnostic-режим).
-        `diagnostic`  - показывать `DiagnosticEvent`-события (телеметрию).
+        diagnostic  - показывать DiagnosticEvent-события (телеметрию).
                         По умолчанию False - «чистый» классический вывод.
     """
 

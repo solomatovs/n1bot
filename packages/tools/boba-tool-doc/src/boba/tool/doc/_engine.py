@@ -1,8 +1,8 @@
 """Внутренний слой пакета doc: чтение байт из workspace + сборка liteparse.
 
-Централизует конструирование `LiteParse` из `DocPluginConfig` и единый
-маппинг ошибок workspace/парсера в `RuntimeError` — чтобы tool'ы
-(`read_document`/`read_pages`/`document_outline`/`search_document`) не
+Централизует конструирование LiteParse из DocPluginConfig и единый
+маппинг ошибок workspace/парсера в RuntimeError — чтобы tool'ы
+(read_document/read_pages/document_outline/search_document) не
 дублировали эту обвязку.
 """
 
@@ -16,10 +16,10 @@ from typing import Any
 
 from liteparse import LiteParse, ParseError, ParseResult
 
-# Приватный нативный модуль liteparse. Нужен только для `parse_native`
-# (см. её docstring и `boba.tool.doc.search._Search`): публичный
-# `liteparse.search_items` в 2.0.x сломан, а нативный `search_items`
-# работает только с нативными `PyTextItem`, которые отдаёт нативный parse.
+# Приватный нативный модуль liteparse. Нужен только для parse_native
+# (см. её docstring и boba.tool.doc.search._Search): публичный
+# liteparse.search_items в 2.0.x сломан, а нативный search_items
+# работает только с нативными PyTextItem, которые отдаёт нативный parse.
 from liteparse._liteparse import LiteParse as _NativeLiteParse
 
 from boba.tool.doc.config import DocPluginConfig
@@ -37,7 +37,7 @@ class DocEngine:
 
     @staticmethod
     def read_bytes(shell: ProjectWorkspaceShell, path: str) -> bytes:
-        """Прочитать байты файла; ошибки workspace → RuntimeError с понятным текстом."""
+        """Прочитать байты файла; ошибки workspace -> RuntimeError с понятным текстом."""
         try:
             with shell.read_binary(path) as fh:
                 return fh.read()
@@ -49,11 +49,11 @@ class DocEngine:
     @staticmethod
     @contextmanager
     def _on_disk(data: bytes, path: str) -> Iterator[str]:
-        """Записать байты во временный файл с расширением из `path`; отдать его путь.
+        """Записать байты во временный файл с расширением из path; отдать его путь.
 
         liteparse определяет office-форматы (docx/xlsx/pptx — это zip) по
         расширению файла, поэтому парсить нужно реальный файл с исходным
-        суффиксом, а не голые байты (иначе docx опознаётся как `.zip`).
+        суффиксом, а не голые байты (иначе docx опознаётся как .zip).
         Файл гарантированно удаляется на выходе.
         """
         suffix = os.path.splitext(path)[1]
@@ -73,7 +73,7 @@ class DocEngine:
         *,
         target_pages: str | None = None,
     ) -> ParseResult:
-        """Распарсить документ публичным API liteparse; ошибки → RuntimeError."""
+        """Распарсить документ публичным API liteparse; ошибки -> RuntimeError."""
         parser = LiteParse(
             ocr_enabled=cfg.ocr_enabled,
             ocr_language=cfg.ocr_language,
@@ -91,15 +91,15 @@ class DocEngine:
     def parse_native(cfg: DocPluginConfig, data: bytes, path: str) -> Any:
         """Распарсить документ нативным API liteparse; вернуть нативный результат.
 
-        Отдаёт нативный `PyParseResult` с нативными `PyTextItem` — это
-        единственный вход, который принимает нативный `search_items`
-        (см. `boba.tool.doc.search._Search`). Используется приватный
-        `liteparse._liteparse`, потому что публичный `liteparse.search_items`
-        в 2.0.x сломан (передаёт dataclass-`TextItem` в нативную функцию,
-        ждущую `PyTextItem`, → `TypeError`), а публичный `parse()` нативные
-        items не отдаёт. КОГДА АПСТРИМ ПОЧИНИТ публичный `search_items` —
-        этот метод и весь private-импорт можно удалить, а `_Search` перевести
-        на `from liteparse import search_items` поверх обычного `parse()`.
+        Отдаёт нативный PyParseResult с нативными PyTextItem — это
+        единственный вход, который принимает нативный search_items
+        (см. boba.tool.doc.search._Search). Используется приватный
+        liteparse._liteparse, потому что публичный liteparse.search_items
+        в 2.0.x сломан (передаёт dataclass-TextItem в нативную функцию,
+        ждущую PyTextItem, -> TypeError), а публичный parse() нативные
+        items не отдаёт. КОГДА АПСТРИМ ПОЧИНИТ публичный search_items —
+        этот метод и весь private-импорт можно удалить, а _Search перевести
+        на from liteparse import search_items поверх обычного parse().
         """
         parser = _NativeLiteParse(
             ocr_enabled=cfg.ocr_enabled,
@@ -122,7 +122,7 @@ class DocEngine:
 
     @staticmethod
     def window(text: str, start: int, length: int) -> tuple[str, int, int, bool]:
-        """Срез `text[start:start+length]`; → (срез, end_char, total, has_more)."""
+        """Срез text[start:start+length]; -> (срез, end_char, total, has_more)."""
         total = len(text)
         chunk = text[start : start + length]
         end = start + len(chunk)

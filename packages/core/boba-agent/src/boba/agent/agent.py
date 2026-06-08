@@ -1,12 +1,12 @@
 """Оркестратор агента: stream — поток событий, invoke — текст итогового ответа.
 
-`Agent` — тонкий wrapper над `StreamSource[AgentContext, AgentEvent]`,
-собранным `AgentBuilder.build(terminal)`. Никакими shared-ресурсами не
+Agent — тонкий wrapper над StreamSource[AgentContext, AgentEvent],
+собранным AgentBuilder.build(terminal). Никакими shared-ресурсами не
 владеет — history, tool registry, llm и turn принадлежат caller'у.
 
-`AgentContext` несёт `request_id` и `query` — этого достаточно, чтобы
+AgentContext несёт request_id и query — этого достаточно, чтобы
 mandatory middleware могли работать. Tool-DI поднимает request-scope
-у себя (`DishkaTool.execute`), `AgentContext` про tool-container ничего
+у себя (DishkaTool.execute), AgentContext про tool-container ничего
 не знает.
 """
 
@@ -22,14 +22,14 @@ from boba.patterns import StreamSource
 
 @dataclass(frozen=True)
 class AgentContext:
-    """Контекст одного прогона: новый `request_id` + текст пользовательского запроса."""
+    """Контекст одного прогона: новый request_id + текст пользовательского запроса."""
 
     request_id: RequestId
     query: str
 
 
 class Agent:
-    """Тонкий оркестратор: `stream` — поток событий, `invoke` — итоговый ответ."""
+    """Тонкий оркестратор: stream — поток событий, invoke — итоговый ответ."""
 
     def __init__(
         self,

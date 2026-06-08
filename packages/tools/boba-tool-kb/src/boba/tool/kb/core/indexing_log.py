@@ -1,10 +1,10 @@
 """Логирование IndexEvent-потока в стандартный logger.
 
-`Pipeline.run()` молча проглатывает поток событий и отдаёт только финальный
-`IndexStats`. `LoggedIndexRun.drain()` — drop-in замена: потребляет тот же
-поток `Pipeline.index(...)`, но пишет каждое событие (per-source
+Pipeline.run() молча проглатывает поток событий и отдаёт только финальный
+IndexStats. LoggedIndexRun.drain() — drop-in замена: потребляет тот же
+поток Pipeline.index(...), но пишет каждое событие (per-source
 indexed/skipped/failed, cleanup, итоговый run) в переданный logger, и так же
-возвращает `IndexStats`.
+возвращает IndexStats.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ __all__ = ["LoggedIndexRun"]
 
 
 class LoggedIndexRun:
-    """Слив `IndexEvent`-потока с per-event логированием; возвращает `IndexStats`."""
+    """Слив IndexEvent-потока с per-event логированием; возвращает IndexStats."""
 
     _LEVELS: ClassVar[dict[Severity, int]] = {
         Severity.INFO: logging.INFO,
@@ -39,7 +39,7 @@ class LoggedIndexRun:
         events: Iterable[IndexEvent],
         logger: logging.Logger,
     ) -> IndexStats:
-        """Потребить поток `Pipeline.index(...)`, пишет каждое событие в logger."""
+        """Потребить поток Pipeline.index(...), пишет каждое событие в logger."""
         stats = IndexStatsBuilder().build()
         for event in events:
             LoggedIndexRun._emit(logger, event)
@@ -49,7 +49,7 @@ class LoggedIndexRun:
 
     @staticmethod
     def _emit(logger: logging.Logger, event: IndexEvent) -> None:
-        """Одна log-строка на событие: `headline()` для item'ов, `label()` для фаз."""
+        """Одна log-строка на событие: headline() для item'ов, label() для фаз."""
         message = (
             event.headline() if isinstance(event, CompletedItem) else event.label()
         )

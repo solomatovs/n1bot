@@ -1,187 +1,135 @@
-"""HttpTransport: HttpRequest → RawDocument через httpx.Client.
+"""HttpTransport: HttpProfile + HttpRequest -> HttpResponse через httpx.Client.
 
-Контракт lifecycle handle: для каждого `HttpRequest` делает `httpx.Client`-
-запрос ВНУТРИ generator'а, открывает stream-response через `with`, yield'ит
-RawDocument с handle. После возврата control'а в generator (Reader прочитал)
-with-блок закрывает response — ровно как и должно быть для streaming.
-
-`auth: AuthApplier` вызывается на kwargs httpx.Client'а — Transport не
-знает про PAT/Basic/OAuth, просто применяет callback.
-
-Пробрасывает `source_id` и `metadata` Request'а в RawDocument, добавляя
-свои метаданные (etag, content_type, last_modified, status) через
-`TransportKeys`/`HttpKeys`.
+Чистый HTTP-исполнитель: не знает про индексацию (RawDocument/Metadata/source_id).
+Создаёт один переиспользуемый httpx.Client из профиля (pool), применяет auth,
+крутит retry на фазе соединения и статуса ответа, отдаёт HttpResponse со
+streaming-телом. Обогащение метаданных и сборку RawDocument делает потребитель.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import httpx
 
-from boba.indexing import (
-    PipelineContext,
-    RawDocument,
-    Transport,
-    TransportKeys,
-)
-from boba.transport.http.connection import HttpConnection
-from boba.transport.http.keys import HttpKeys
+from boba.transport.http.connection import HttpProfile
 from boba.transport.http.request import HttpRequest
+from boba.transport.http.response import HttpResponse
 
 __all__ = ["HttpTransport"]
 
 logger = logging.getLogger(__name__)
 
 
-class HttpTransport(Transport[HttpRequest]):
+class HttpTransport:
+    """Исполняет HttpRequest через переиспользуемый httpx.Client.
+
+    Использование:
+    python
+    with HttpTransport(profile) as transport:
+        with transport.fetch(HttpRequest(url="https://...", method="GET")) as resp:
+            body = resp.stream.read()   # читать тело нужно внутри этого with
+    
+
+    **Retry** (profile.retry_attempts > 1): повтор на 5xx и transport-ошибках
+    (timeout/connect) с линейным backoff'ом; 4xx не ретраятся. Покрывает фазу
+    соединения + заголовков + raise_for_status(). Обрыв при чтении тела (после
+    выхода HttpResponse наружу) не ретраится — плата за streaming-контракт.
+
+    Владеет httpx.Client (pool): создаётся в __init__, закрывается через
+    close() либо выходом из with HttpTransport(...).
     """
-    `Transport[HttpRequest]`: HTTP-запрос → `RawDocument` со streaming-response handle.
 
-    **Схема**:
-    ```python
-    HttpRequest   ──────────────────HttpTransport.stream──→  RawDocument
-        url         : str           ┐
-        method      : str           ├──httpx.stream──→
-        headers     : Mapping       │  (auth применяется к client kwargs)
-        auth        : AuthApplier   ┘
-        source_id   : SourceId   ──pass─────────────→            source_id   (тот же)
-        metadata    : Metadata   ──merge────────────→            metadata    (+ TransportKeys.ETAG / CONTENT_TYPE, HttpKeys.LAST_MODIFIED, HttpKeys.STATUS)
-                                                          →      handle      : _ResponseHandle  (BinaryStream-адаптер; закроется по выходу из stream)
-    ```
-
-    **Lifecycle handle**:
-    ```python
-    with httpx.Client(**kw) as client, client.stream(method, url) as resp:
-        yield RawDocument(handle=_ResponseHandle(resp), ...)
-    # сюда — после next(generator); resp/client закрыты с выходом из with
-    ```
-    `_ResponseHandle` реализует `BinaryStream` поверх `resp.iter_bytes()`,
-    чтобы Reader мог звать `handle.read()` единообразно.
-
-    **Поведение на ошибки**:
-    - 4xx/5xx → `httpx.HTTPStatusError` через `raise_for_status()` (не глушится).
-    - timeout/connection — стандартные `httpx`-исключения.
-
-    **Retry** (`max_attempts > 1`): запрос повторяется на 5xx и transport-
-    ошибках (timeout/connect) с линейным backoff'ом; 4xx (клиентские) не
-    ретраятся. Retry покрывает фазу установки соединения + получения
-    заголовков + `raise_for_status()`. Обрыв ВО ВРЕМЯ чтения тела
-    (`_ResponseHandle.read()` после yield) не ретраится — это плата за
-    streaming-контракт. `max_attempts=1` (дефолт) — поведение без retry.
-
-    `auth: AuthApplier` — callback на client kwargs; Transport не знает,
-    что внутри (PAT, Basic, Bearer, OAuth), просто применяет.
-
-    **Пример**:
-    ```python
-    transport = HttpTransport(timeout_sec=30.0, verify=True)
-    requests = iter([
-        HttpRequest(
-            url="https://api.example.com/doc/1",
-            method="GET",
-            headers={"Accept": "text/html"},
-            source_id=SourceId("https://api.example.com/doc/1"),
-        ),
-    ])
-
-    # 1 HttpRequest → 1 RawDocument; handle потоковый, закроется после next(...).
-    raw = next(iter(transport.stream(ctx, requests)))
-    raw == RawDocument(
-        handle=<_ResponseHandle resp=200 OK>,                          # новое: streaming-адаптер resp.iter_bytes()
-        source_id=SourceId("https://api.example.com/doc/1"),           # pass из HttpRequest
-        metadata=(                                                     # merge: + 4 ключа из HTTP-заголовков
-            Metadata.empty()
-            .set(TransportKeys.ETAG, "abc-123")                        # новое: response ETag (без кавычек)
-            .set(TransportKeys.CONTENT_TYPE, "text/html; charset=utf-8")  # новое: Content-Type
-            .set(HttpKeys.LAST_MODIFIED, "Wed, 21 Oct 2026 07:28:00 GMT")  # новое: Last-Modified
-            .set(HttpKeys.STATUS, 200)                                 # новое: HTTP-код ответа
-        ),
-    )
-    raw.handle.read()  # → b"<html>..."
-    ```
-    """  # noqa: E501
-
-    def __init__(self, profile: HttpConnection) -> None:
+    def __init__(self, profile: HttpProfile) -> None:
         self._profile = profile
+        self._client = httpx.Client(
+            base_url=profile.base_url or "",
+            params=profile.params,
+            timeout=profile.timeout_sec,
+            verify=profile.ssl_verify,
+            auth=profile.auth.httpx_auth(),
+            headers=profile.headers,
+        )
 
-    def name(self) -> str:
-        return "HttpTransport"
+    def __enter__(self) -> HttpTransport:
+        return self
 
-    def stream(
-        self,
-        ctx: PipelineContext,
-        stream: Iterable[HttpRequest],
-    ) -> Iterable[RawDocument]:
-        del ctx
-        for req in stream:
-            yield from self._fetch_one(req)
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
-    def _fetch_one(self, req: HttpRequest) -> Iterable[RawDocument]:
+    def close(self) -> None:
+        self._client.close()
+
+    @contextmanager
+    def fetch(self, request: HttpRequest) -> Iterator[HttpResponse]:
+        """Открыть запрос с retry и отдать HttpResponse; тело закроется на выходе."""
+        resp = self._open_with_retry(request)
+        try:
+            yield HttpResponse(
+                status=resp.status_code,
+                headers=dict(resp.headers),
+                stream=_ResponseHandle(resp),
+            )
+        finally:
+            resp.close()
+
+    def _open_with_retry(self, request: HttpRequest) -> httpx.Response:
+        """Соединение + заголовки + статус; retry на 5xx/transport-ошибках."""
         last_exc: httpx.HTTPError | None = None
         for attempt in range(1, self._profile.retry_attempts + 1):
+            resp: httpx.Response | None = None
             try:
-                yield from self._open_once(req)
-                return
+                resp = self._client.send(
+                    self._client.build_request(request.method, request.url),
+                    stream=True,
+                )
+                resp.raise_for_status()
+                return resp
             except httpx.HTTPStatusError as e:
+                if resp is not None:
+                    resp.close()
+
                 if not e.response.is_server_error:  # 4xx — не ретраим
                     raise
+
                 last_exc = e
             except httpx.TransportError as e:  # timeout / connect — transient
+                if resp is not None:
+                    resp.close()
                 last_exc = e
-            if attempt < self._profile.retry_attempts:
-                delay = self._profile.retry_backoff_sec * attempt
-                logger.warning(
-                    "HTTP %s %s неудачно (%s); retry %d/%d через %.1fs",
-                    req.method,
-                    req.url,
-                    type(last_exc).__name__,
-                    attempt,
-                    self._profile.retry_attempts,
-                    delay,
-                )
-                time.sleep(delay)
+            self._backoff(attempt, request, last_exc)
         if last_exc is None:  # недостижимо: цикл либо вернул, либо выставил last_exc
-            msg = f"HTTP {req.method} {req.url}: неизвестная ошибка"
+            msg = f"HTTP {request.method} {request.url}: неизвестная ошибка"
             raise httpx.HTTPError(msg)
         raise last_exc
 
-    def _open_once(self, req: HttpRequest) -> Iterable[RawDocument]:
-        """Один прогон: open client+stream → raise_for_status → yield RawDocument.
-
-        Тело читается лениво из `_ResponseHandle` уже после yield — обрыв на
-        этой стадии в retry-loop `_fetch_one` не попадает (другой стек-фрейм).
-        """
-        with (
-            self._profile.make_client(headers=req.headers) as client,
-            client.stream(req.method, req.url) as resp,
-        ):
-            resp.raise_for_status()
-            yield RawDocument(
-                handle=_ResponseHandle(resp),
-                source_id=req.source_id,
-                metadata=_enrich_metadata(req.metadata, resp),
-            )
-
-
-def _enrich_metadata(base, resp: httpx.Response):
-    """HTTP-заголовки → metadata для skip-if-unchanged + диагностики."""
-    md = base
-    h = resp.headers
-    if etag := h.get("etag"):
-        md = md.set(TransportKeys.ETAG, etag.strip('"'))
-    if last_mod := h.get("last-modified"):
-        md = md.set(HttpKeys.LAST_MODIFIED, last_mod)
-    if ct := h.get("content-type"):
-        md = md.set(TransportKeys.CONTENT_TYPE, ct)
-    md = md.set(HttpKeys.STATUS, resp.status_code)
-    return md
+    def _backoff(
+        self,
+        attempt: int,
+        request: HttpRequest,
+        exc: httpx.HTTPError | None,
+    ) -> None:
+        """Линейный backoff между попытками; на последней попытке не спит."""
+        if attempt >= self._profile.retry_attempts:
+            return
+        delay = self._profile.retry_backoff_sec * attempt
+        logger.warning(
+            "HTTP %s %s неудачно (%s); retry %d/%d через %.1fs",
+            request.method,
+            request.url,
+            type(exc).__name__,
+            attempt,
+            self._profile.retry_attempts,
+            delay,
+        )
+        time.sleep(delay)
 
 
 class _ResponseHandle:
-    """Адаптер httpx.Response.iter_bytes → BinaryIO (read/readable)."""
+    """Адаптер httpx.Response.iter_bytes -> ByteStream (read)."""
 
     def __init__(self, resp: httpx.Response) -> None:
         self._resp = resp
@@ -217,7 +165,7 @@ class _ResponseHandle:
         return False
 
     def close(self) -> None:
-        # Закрытие — обязанность Transport'а через with-block над response.
+        # Закрытие ответа — обязанность HttpTransport.fetch (finally).
         pass
 
     @property

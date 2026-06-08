@@ -1,21 +1,21 @@
 """Subprocess-обёртка: запуск argv с timeout, size-cap, streaming-сбором.
 
 Принципы:
-- argv приходит уже готовый (см. `_sandbox.build_bwrap_argv` для sandbox-
-  варианта; для regular shell argv = `[/bin/bash, -c, command]`).
-- Все параметры процесса (`stdin_data`, `cwd`, `env`) обязательные и
-  типизированы строго, без `Optional`-инвариантов. Caller отвечает за
-  то, чтобы значения были корректными: пустой stdin = `b""`, для
-  sandbox-вызова в качестве `env` обычно передаётся `os.environ` (bwrap
-  внутри сделает `--clearenv` и поставит свой набор через `--setenv`).
+- argv приходит уже готовый (см. _sandbox.build_bwrap_argv для sandbox-
+  варианта; для regular shell argv = [/bin/bash, -c, command]).
+- Все параметры процесса (stdin_data, cwd, env) обязательные и
+  типизированы строго, без Optional-инвариантов. Caller отвечает за
+  то, чтобы значения были корректными: пустой stdin = b"", для
+  sandbox-вызова в качестве env обычно передаётся os.environ (bwrap
+  внутри сделает --clearenv и поставит свой набор через --setenv).
 - stdout/stderr читаются параллельно через select, обрезаются по байтам
-  на каждый поток отдельно (см. `_pump`).
-- При таймауте: `Popen.kill()`. Для sandbox-варианта
-  `bwrap --die-with-parent` гарантирует, что всё дерево потомков внутри
+  на каждый поток отдельно (см. _pump).
+- При таймауте: Popen.kill(). Для sandbox-варианта
+  bwrap --die-with-parent гарантирует, что всё дерево потомков внутри
   песочницы умирает.
 - Результат — простой dataclass, без зависимости от ToolResult/JsonResult.
-  Обёртывание в `JsonResult` делает caller (`BashSandboxTool.execute` /
-  `BashTool.execute`).
+  Обёртывание в JsonResult делает caller (BashSandboxTool.execute /
+  BashTool.execute).
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ __all__ = ["RunResult", "ShellRunnerInvariantError", "run_subprocess"]
 
 class ShellRunnerInvariantError(Exception):
     """Нарушение внутреннего инварианта shell-runner'а (например, отсутствие
-    stdout/stderr у Popen, который запущен с `stdout=PIPE, stderr=PIPE`).
+    stdout/stderr у Popen, который запущен с stdout=PIPE, stderr=PIPE).
 
-    В отличие от `assert`, переживает запуск с `python -O`.
+    В отличие от assert, переживает запуск с python -O.
     """
 
 
@@ -60,20 +60,20 @@ def run_subprocess(
     cwd: str,
     env: Mapping[str, str],
 ) -> RunResult:
-    """Запустить `argv` дочерним процессом и собрать его stdout/stderr.
+    """Запустить argv дочерним процессом и собрать его stdout/stderr.
 
     Все параметры обязательны и валидируются на входе:
-    - `argv` — non-empty list, первый элемент — абсолютный путь к бинарю;
-    - `stdin_data=b""` означает «нет stdin» (пайп закрывается без записи);
-    - `cwd` — non-empty абсолютный путь к существующей директории;
-    - `env` — финальный dict env для дочернего процесса.
+    - argv — non-empty list, первый элемент — абсолютный путь к бинарю;
+    - stdin_data=b"" означает «нет stdin» (пайп закрывается без записи);
+    - cwd — non-empty абсолютный путь к существующей директории;
+    - env — финальный dict env для дочернего процесса.
 
     Контракт:
-    - возвращает `RunResult` даже на таймаут (`exit_code=-9`,
-      `timed_out=True`);
-    - не бросает `CalledProcessError`: non-zero exit — это валидный
+    - возвращает RunResult даже на таймаут (exit_code=-9,
+      timed_out=True);
+    - не бросает CalledProcessError: non-zero exit — это валидный
       результат;
-    - `stdout`/`stderr` декодируются как utf-8 с `errors='replace'`.
+    - stdout/stderr декодируются как utf-8 с errors='replace'.
     """
     if not argv:
         msg = "run_subprocess: argv не может быть пустым"
@@ -111,9 +111,9 @@ def run_subprocess(
 
 
 def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
-    """Записать `data` в stdin процесса и закрыть пайп.
+    """Записать data в stdin процесса и закрыть пайп.
 
-    `data=b""` — корректный кейс: stdin закрывается без записи, дочерний
+    data=b"" — корректный кейс: stdin закрывается без записи, дочерний
     процесс получает EOF на первом же read.
     """
     if proc.stdin is None:
@@ -136,7 +136,7 @@ def _pump(
 ) -> tuple[bytes, bytes, bool, bool, bool]:
     """Параллельное чтение stdout/stderr с лимитами и общим дедлайном.
 
-    Возвращает `(stdout, stderr, trunc_out, trunc_err, timed_out)`.
+    Возвращает (stdout, stderr, trunc_out, trunc_err, timed_out).
     """
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(

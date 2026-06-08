@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class LogSqlCursor(psycopg.Cursor[Row]):
-    """Курсор, логирующий каждый SQL/COPY через `logger` (psycopg3)."""
+    """Курсор, логирующий каждый SQL/COPY через logger (psycopg3)."""
 
     def execute(
         self,

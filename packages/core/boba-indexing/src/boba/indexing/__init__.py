@@ -39,12 +39,7 @@ from boba.indexing.content_hash import (
     IntContentHash,
     StringContentHash,
 )
-from boba.indexing.context import (
-    CollectionId,
-    NamespaceId,
-    PipelineContext,
-    PipelineId,
-)
+from boba.indexing.context import CollectionId
 from boba.indexing.decoder import Decoder, DecoderId
 from boba.indexing.dispatch_reader import DispatchReader
 from boba.indexing.embedder import Embedder
@@ -184,7 +179,6 @@ __all__ = [
     "Lte",
     "Metadata",
     "MetadataKey",
-    "NamespaceId",
     "Ne",
     "NoneCleanup",
     "Not",
@@ -193,8 +187,6 @@ __all__ = [
     "ParagraphSection",
     "PhaseTransition",
     "Pipeline",
-    "PipelineContext",
-    "PipelineId",
     "RawDocument",
     "Reader",
     "ReaderId",

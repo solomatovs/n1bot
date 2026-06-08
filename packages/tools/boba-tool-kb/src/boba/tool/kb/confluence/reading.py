@@ -1,10 +1,10 @@
-"""Reader'ы Confluence: export-HTML страницы и REST search-hits → `Section[str]`.
+"""Reader'ы Confluence: export-HTML страницы и REST search-hits -> Section[str].
 
-- `ConfluenceReader`           — heading-aware split одной export-страницы:
-  каждая heading-секция (h1..h6) → отдельная Section с anchor'ом из
-  scroll-bookmark или fallback `idx:N`; содержимое ac:*/ri:* макросов
+- ConfluenceReader           — heading-aware split одной export-страницы:
+  каждая heading-секция (h1..h6) -> отдельная Section с anchor'ом из
+  scroll-bookmark или fallback idx:N; содержимое ac:*/ri:* макросов
   исключается.
-- `ConfluenceSearchHitsReader` — `/rest/api/content/search`-JSON → одна
+- ConfluenceSearchHitsReader — /rest/api/content/search-JSON -> одна
   Section на каждый hit (excerpt + viewpage URL + page/space/version meta).
 """
 
@@ -26,10 +26,13 @@ from boba.indexing import (
     SectionKeys,
     SourceId,
 )
-from boba.tool.kb.confluence.models import ConfluenceKeys, ConfluencePayloadError
+from boba.tool.kb.confluence.models import (
+    ConfluenceKeys,
+    ConfluencePayloadError,
+    HttpKeys,
+)
 from boba.tool.kb.confluence.parsing import ConfluenceHtml, Heading
 from boba.tool.kb.confluence.request_sources import ConfluenceRest
-from boba.transport.http import HttpKeys
 
 __all__ = ["ConfluenceReader", "ConfluenceSearchHitsReader"]
 
@@ -42,13 +45,10 @@ class ConfluenceReader(Reader[str]):
     BREADCRUMB_SEPARATOR: ClassVar[str] = " › "
     TITLE_LEVEL: ClassVar[int] = 0
 
-    def name(self) -> str:
-        return "ConfluenceReader"
-
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+    def read(self, value: RawDocument) -> Iterable[Section[str]]:
         payload = value.handle.read()
         if not payload.strip():
             return
@@ -63,7 +63,7 @@ class ConfluenceReader(Reader[str]):
             yield from self._fallback_section(value, body, title)
             return
 
-        # Стек breadcrumbs: title → корень (level=0), затем h1..h6 по document order.
+        # Стек breadcrumbs: title -> корень (level=0), затем h1..h6 по document order.
         stack: list[tuple[int, str]] = []
         if title:
             stack.append((self.TITLE_LEVEL, title))
@@ -126,13 +126,13 @@ class ConfluenceReader(Reader[str]):
 
 
 class ConfluenceSearchHitsReader(Reader[str]):
-    """Search-JSON (`/rest/api/content/search`) → `Section[str]` на каждый hit.
+    """Search-JSON (/rest/api/content/search) -> Section[str] на каждый hit.
 
-    Каждый hit: `content` — excerpt-плейнтекст из `body.view.value` (обрезан
-    до `snippet_chars`); `source_id` — stable viewpage URL; `metadata` —
-    `PAGE_ID`/`PAGE_TITLE`/`SPACE_KEY`/`LAST_MODIFIED`. Shape отдельной
-    страницы (`/rest/api/content/{id}`) обрабатывают `ConfluenceJsonDecoder`
-    + `ConfluenceReader`.
+    Каждый hit: content — excerpt-плейнтекст из body.view.value (обрезан
+    до snippet_chars); source_id — stable viewpage URL; metadata —
+    PAGE_ID/PAGE_TITLE/SPACE_KEY/LAST_MODIFIED. Shape отдельной
+    страницы (/rest/api/content/{id}) обрабатывают ConfluenceJsonDecoder
+    + ConfluenceReader.
     """
 
     DOC_TYPE: ClassVar[str] = "confluence_search_hit"
@@ -142,13 +142,10 @@ class ConfluenceSearchHitsReader(Reader[str]):
         self._base_url = base_url.rstrip("/")
         self._snippet_chars = snippet_chars
 
-    def name(self) -> str:
-        return f"ConfluenceSearchHitsReader(snippet={self._snippet_chars})"
-
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+    def read(self, value: RawDocument) -> Iterable[Section[str]]:
         payload = value.handle.read()
         if not payload:
             return

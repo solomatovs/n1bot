@@ -1,5 +1,5 @@
 """
-`SqlExecutorConfig` + `SqlExecutor`
+SqlExecutorConfig + SqlExecutor
 """
 
 from __future__ import annotations
@@ -28,10 +28,6 @@ __all__ = [
     "SqlResult",
 ]
 
-
-RESULT_BYTES_HARDLIMIT = 1_000_000
-
-
 class SqlExecutorConfig(BaseModel):
     """Конфиг для SqlExecutor."""
 
@@ -51,11 +47,11 @@ class SqlExecutorConfig(BaseModel):
         description="Ограничение по кол-ву строк.",
     )
     max_bytes: int = Field(
-        default=RESULT_BYTES_HARDLIMIT,
+        default=1_000_000,
         ge=1,
         description=(
             "Hardlimit на суммарный размер CSV-результата COPY (байт). "
-            f"Default {RESULT_BYTES_HARDLIMIT}. Превышение → ошибка LLM "
+            f"Default {1_000_000}. Превышение -> ошибка LLM "
             "«добавьте LIMIT»."
         ),
     )
@@ -71,7 +67,7 @@ class SqlExecutorConfig(BaseModel):
         return self
 
     def targets(self) -> list[str]:
-        """Имена доступных профилей (значения tool-arg `target`)."""
+        """Имена доступных профилей (значения tool-arg target)."""
         return sorted(self.profiles)
 
     def resolve(self, target: str) -> PostgresConnection:
@@ -99,9 +95,9 @@ class SqlQueryError(RuntimeError):
 class SqlResult:
     """Результат SqlExecutor.execute: JSON-safe строки-словари + флаг усечения.
 
-    `rows` — это уже `list[dict]` (dict_row курсора), значения приведены к
-    JSON-safe через `pydantic_core.to_jsonable_python` (Decimal/UUID/datetime
-    → строки, jsonb/array остаются вложенной структурой).
+    rows — это уже list[dict] (dict_row курсора), значения приведены к
+    JSON-safe через pydantic_core.to_jsonable_python (Decimal/UUID/datetime
+    -> строки, jsonb/array остаются вложенной структурой).
     """
 
     rows: list[dict[str, Any]]
@@ -137,7 +133,7 @@ class SqlExecutor:
 
     def execute_copy(self, query: str, *, target: str) -> CopyBuffer:
         """
-        Выполнить `COPY (<query>) TO STDOUT (FORMAT TEXT, HEADER)`
+        Выполнить COPY (<query>) TO STDOUT (FORMAT TEXT, HEADER)
         """
         conn = self._cfg.resolve(target)
         pool = PostgresPool.get(
@@ -155,7 +151,6 @@ class SqlExecutor:
                 for block in cp:
                     buf.write(block)
         except (BufferCapacityError, RowLimitExceededError):
-            # гард-сигналы — наружу, трактует вызывающий
             raise
         except Exception as e:
             raise SqlQueryError(
@@ -184,7 +179,7 @@ class SqlExecutor:
         try:
             with pool.dict_cursor() as cur:
                 # params=None (а не пустой кортеж) — это сигнал psycopg3
-                # НЕ парсить query как placeholder-шаблон. Иначе `%` в
+                # НЕ парсить query как placeholder-шаблон. Иначе % в
                 # тексте запроса от LLM (LIKE '%h%', to_char и т.п.) ловит
                 # "only '%s','%b','%t' are allowed as placeholders".
                 cur.execute(query, params)  # type: ignore[arg-type]
@@ -195,6 +190,6 @@ class SqlExecutor:
             ) from e
 
         truncated = len(fetched) > effective_limit
-        # dict_row → list[dict]; значения → JSON-safe (Decimal/UUID/datetime/…)
+        # dict_row -> list[dict]; значения -> JSON-safe (Decimal/UUID/datetime/…)
         rows = to_jsonable_python(fetched[:effective_limit])
         return SqlResult(rows=rows, truncated=truncated)

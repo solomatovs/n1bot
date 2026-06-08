@@ -1,7 +1,7 @@
 """LLM — тонкий оркестратор LLM-цепочки + LLMBuilder для его сборки.
 
-Симметрично `Agent` / `AgentBuilder`: `LLM` — это `StreamSource[LLMContext, LLMEvent]`,
-обёрнутый методом `stream`, а `LLMBuilder` — fluent-фасад, накапливающий
+Симметрично Agent / AgentBuilder: LLM — это StreamSource[LLMContext, LLMEvent],
+обёрнутый методом stream, а LLMBuilder — fluent-фасад, накапливающий
 middleware, observer'ов и provider-terminal.
 """
 
@@ -35,9 +35,9 @@ TerminalFactory = Callable[
 
 
 class LLM:
-    """Тонкий оркестратор LLM-цепочки: один `stream`, никакого loop.
+    """Тонкий оркестратор LLM-цепочки: один stream, никакого loop.
 
-    Симметрично `Agent`: оборачивает `StreamSource[LLMContext, LLMEvent]`
+    Симметрично Agent: оборачивает StreamSource[LLMContext, LLMEvent]
     и сбрасывает его на каждый вызов.
     """
 
@@ -59,16 +59,16 @@ class LLMBuilder(Generic[TRequest, TChunk, TResponse, TApiError, THttpError]):
 
     Цепочка собирается так (сверху вниз; верхний видит события первым):
 
-        user middlewares           ← `.use_middleware(...)`
+        user middlewares           ← .use_middleware(...)
         terminal (OpenAI/Ollama)
 
-    Итоговые события (`*Complete` + `LLMTotalMessage`) формирует сам
+    Итоговые события (*Complete + LLMTotalMessage) формирует сам
     provider-terminal (консьюмер ответа) — отдельного агрегатора в цепочке нет.
 
-    - `.use_middleware(...)`  — middleware над terminal'ом (видит весь поток
+    - .use_middleware(...)  — middleware над terminal'ом (видит весь поток
       событий: delta + итоговые).
-    - `.add_observer(...)`    — наблюдатель wire-уровня.
-    - `.build(factory)`       — собрать LLM, terminal-фабрика обязательна.
+    - .add_observer(...)    — наблюдатель wire-уровня.
+    - .build(factory)       — собрать LLM, terminal-фабрика обязательна.
     """
 
     def __init__(self) -> None:
@@ -94,9 +94,9 @@ class LLMBuilder(Generic[TRequest, TChunk, TResponse, TApiError, THttpError]):
 
     def build(self, factory: TerminalFactory) -> LLM:
         """
-        Собрать LLM. `factory` — terminal-фабрика провайдера,
+        Собрать LLM. factory — terminal-фабрика провайдера,
         получает composite-observer и возвращает provider-terminal
-        (см. `use_openai` и аналоги в provider-пакетах).
+        (см. use_openai и аналоги в provider-пакетах).
         """
         terminal = factory(
             CompositeLLMRequestObserver(self._observers),

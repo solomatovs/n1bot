@@ -13,8 +13,6 @@ from boba.indexing import (
     ChunkLocation,
     HeadingSection,
     Metadata,
-    PipelineContext,
-    PipelineId,
     RawDocument,
     Section,
     SectionKeys,
@@ -45,9 +43,6 @@ def _identity_factory(_extra_overhead: int) -> Splitter[str]:
     return _IdentitySplitter()
 
 
-def _ctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("t"))
-
 
 def _chunker(splitter_factory=_identity_factory) -> StructuralChunker:
     return StructuralChunker(
@@ -62,7 +57,7 @@ def _chunker(splitter_factory=_identity_factory) -> StructuralChunker:
 
 
 def test_breadcrumbs_grow_and_pop_correctly():
-    """H1 → H2 → H1 сбрасывает H2; HEADING_PATH в metadata следующих чанков."""
+    """H1 -> H2 -> H1 сбрасывает H2; HEADING_PATH в metadata следующих чанков."""
     sections = [
         HeadingSection(
             source_id=SourceId("d"), content="<h1>A</h1>", order=0, level=1, text="A"
@@ -77,7 +72,7 @@ def test_breadcrumbs_grow_and_pop_correctly():
         ),
         Section(source_id=SourceId("d"), content="body-under-C", order=4),
     ]
-    chunks = list(_chunker().stream(_ctx(), iter(sections)))
+    chunks = list(_chunker().chunk(iter(sections)))
     by_text = {c.format_content: c for c in chunks}
     # Body после H1>A>H2>B видит "A › B"
     body_b = by_text["A › B\n\nbody-under-B"]
@@ -95,9 +90,9 @@ def test_breadcrumbs_reset_on_source_id_change():
         ),
         Section(source_id=SourceId("doc2"), content="hello", order=0),
     ]
-    chunks = list(_chunker().stream(_ctx(), iter(sections)))
+    chunks = list(_chunker().chunk(iter(sections)))
     [_, body] = chunks
-    # Для doc2 стек пуст → нет HEADING_PATH и нет prefix в format_content.
+    # Для doc2 стек пуст -> нет HEADING_PATH и нет prefix в format_content.
     assert body.format_content == "hello"
     assert body.metadata.get(SectionKeys.HEADING_PATH) is None
 
@@ -114,7 +109,7 @@ def test_heading_chunk_itself_has_no_prefix_but_path_in_metadata():
             source_id=SourceId("d"), content="<h2>B</h2>", order=1, level=2, text="B"
         ),
     ]
-    chunks = list(_chunker().stream(_ctx(), iter(sections)))
+    chunks = list(_chunker().chunk(iter(sections)))
     a, b = chunks
     assert a.format_content == "# A"
     assert a.metadata.get(SectionKeys.HEADING_PATH) == "A"
@@ -133,7 +128,7 @@ def test_to_chunk_metadata_is_merged():
         level=3,
         text="X",
     )
-    [chunk] = list(_chunker().stream(_ctx(), iter([section])))
+    [chunk] = list(_chunker().chunk(iter([section])))
     assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 3
     assert chunk.metadata.get(SectionKeys.HEADING_TEXT) == "X"
 
@@ -155,7 +150,7 @@ def test_table_replicates_header_in_each_row_chunk():
         source_id=SourceId("t"),
         metadata=Metadata.empty(),
     )
-    sections = list(HtmlReader().convert(doc))
+    sections = list(HtmlReader().read(doc))
 
     # Splitter режет body по \n (block_glue таблицы), один row на чанк
     # при chunk_size=15.
@@ -167,7 +162,7 @@ def test_table_replicates_header_in_each_row_chunk():
             extra_overhead=extra_overhead,
         )
 
-    chunks = list(_chunker(factory).stream(_ctx(), iter(sections)))
+    chunks = list(_chunker(factory).chunk(iter(sections)))
     # Каждый row-чанк начинается с реплицированного markdown header'а.
     table_chunks = [c for c in chunks if "| name | type |" in c.format_content]
     assert len(table_chunks) == 2
@@ -188,8 +183,8 @@ def test_code_block_wrapped_with_fence():
         source_id=SourceId("c"),
         metadata=Metadata.empty(),
     )
-    sections = list(HtmlReader().convert(doc))
-    [chunk] = list(_chunker().stream(_ctx(), iter(sections)))
+    sections = list(HtmlReader().read(doc))
+    [chunk] = list(_chunker().chunk(iter(sections)))
     assert chunk.format_content == "```py\nx = 1\n```"
 
 
@@ -203,8 +198,8 @@ def test_hr_section_is_skipped():
         source_id=SourceId("h"),
         metadata=Metadata.empty(),
     )
-    sections = list(HtmlReader().convert(doc))
-    chunks = list(_chunker().stream(_ctx(), iter(sections)))
+    sections = list(HtmlReader().read(doc))
+    chunks = list(_chunker().chunk(iter(sections)))
     assert chunks == []
 
 
@@ -218,5 +213,5 @@ def test_chunk_index_is_continuous_per_source():
         ),
         Section(source_id=SourceId("d"), content="body", order=1),
     ]
-    chunks = list(_chunker().stream(_ctx(), iter(sections)))
+    chunks = list(_chunker().chunk(iter(sections)))
     assert [c.chunk_index for c in chunks] == [0, 1]

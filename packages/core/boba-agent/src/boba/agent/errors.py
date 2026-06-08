@@ -34,13 +34,13 @@ def extract_error_context(
 ) -> tuple[int | None, tuple[str, ...]]:
     """Свести исключение к (status_code, cause_chain) для error-событий.
 
-    `status_code` — первый int-атрибут с этим именем во всей цепочке (сам exc
-    + его `__cause__`/`__context__`).
-    `cause_chain` — список «Type: message» начиная с `exc.__cause__` (или
-    `__context__`) и глубже. Сам `exc` в цепочку не попадает — его текст
-    уже несёт обёртка `RoutableError` (str(self)). Сообщения, дословно
+    status_code — первый int-атрибут с этим именем во всей цепочке (сам exc
+    + его __cause__/__context__).
+    cause_chain — список «Type: message» начиная с exc.__cause__ (или
+    __context__) и глубже. Сам exc в цепочку не попадает — его текст
+    уже несёт обёртка RoutableError (str(self)). Сообщения, дословно
     повторяющие уже виденное, пропускаются — типична ситуация, когда
-    `RoutableError(str(e)) from e` создаёт ровно ту же строку, что у `e`.
+    RoutableError(str(e)) from e создаёт ровно ту же строку, что у e.
     """
     items: list[str] = []
     sc: int | None = _status_code_of(exc)

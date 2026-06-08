@@ -22,9 +22,9 @@ __all__ = ["use_openai"]
 
 
 def use_openai(config: OpenAIConfig) -> TerminalFactory:
-    """OpenAI-terminal factory для `LLMBuilder.build(...)`.
+    """OpenAI-terminal factory для LLMBuilder.build(...).
 
-    Использование: `LLMBuilder().add_observer(...).build(use_openai(cfg))`.
+    Использование: LLMBuilder().add_observer(...).build(use_openai(cfg)).
     """
 
     def terminal_factory(

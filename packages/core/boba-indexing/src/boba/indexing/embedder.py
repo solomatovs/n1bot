@@ -6,8 +6,8 @@ Embedder[T] - интерфейс для векторизации контент�
 например, str для текстов, bytes для изображений
 
 Generic над типом content:
-    TextEmbedder → Embedder[str]
-    ImageEmbedder → Embedder[bytes]
+    TextEmbedder -> Embedder[str]
+    ImageEmbedder -> Embedder[bytes]
 """
 
 from __future__ import annotations

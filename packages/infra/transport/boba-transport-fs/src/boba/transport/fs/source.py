@@ -9,7 +9,6 @@ from pathlib import Path
 
 from boba.indexing import (
     Metadata,
-    PipelineContext,
     RequestSource,
     SourceId,
 )
@@ -23,36 +22,36 @@ _log = logging.getLogger(__name__)
 
 class FsWalkRequestSource(RequestSource[FsRequest]):
     """
-    `RequestSource[FsRequest]`: раскрывает paths (файлы/директории) в `FsRequest`'ы.
+    RequestSource[FsRequest]: раскрывает paths (файлы/директории) в FsRequest'ы.
 
     **Схема**:
-    ```
+    
     paths=[Path("docs/")]
         └── docs/
             ├── intro.md          ─┐
-            ├── api.md            ─┤  rglob("*") → fnmatch(include/exclude)
+            ├── api.md            ─┤  rglob("*") -> fnmatch(include/exclude)
             ├── notes/draft.md    ─┤
             └── .git/HEAD          │  скрытые dir'ы (".git" / ".venv" / …) пропускаются
                                    ▼
-    ──source.stream(ctx)──→
+    ──source.requests()──->
         FsRequest(path="docs/intro.md",       source_id="fs:/abs/docs/intro.md",
                   metadata={FsKeys.PATH, FsKeys.NAME})
         FsRequest(path="docs/api.md",         source_id="fs:/abs/docs/api.md",   …)
         FsRequest(path="docs/notes/draft.md", source_id="fs:/abs/docs/notes/draft.md", …)
-    ```
+    
 
     **Параметры**:
-    - `paths`            — файлы или директории; директории обходятся `rglob`.
-    - `include`/`exclude` — glob-фильтры по имени и пути; работают через
-      `Path.match` ИЛИ `fnmatch(name, pattern)` (любой match считается).
-    - `follow_symlinks`  — `False` по умолчанию (защита от циклов).
+    - paths            — файлы или директории; директории обходятся rglob.
+    - include/exclude — glob-фильтры по имени и пути; работают через
+      Path.match ИЛИ fnmatch(name, pattern) (любой match считается).
+    - follow_symlinks  — False по умолчанию (защита от циклов).
 
-    `source_id` всегда = `fs:{absolute_path}`. RequestSource не знает про
+    source_id всегда = fs:{absolute_path}. RequestSource не знает про
     canonical-format'ы (Confluence-export и т.п.) — для cross-transport
     дедупликации делается отдельный RequestSource поверх этого.
 
     **Пример**:
-    ```python
+    python
     source = FsWalkRequestSource(
         paths=["docs/"],
         include=["*.md"],
@@ -60,7 +59,7 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
     )
 
     # 2 .md-файла отобраны (draft.md отфильтрован exclude'ом).
-    list(source.stream(ctx)) == [
+    list(source.requests()) == [
         FsRequest(
             path="docs/api.md",
             source_id=SourceId("fs:/abs/docs/api.md"),
@@ -80,7 +79,7 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
             ),
         ),
     ]
-    ```
+    
     """  # noqa: E501
 
     def __init__(
@@ -96,11 +95,7 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
         self._exclude = tuple(exclude)
         self._follow_symlinks = follow_symlinks
 
-    def name(self) -> str:
-        return f"FsWalkRequestSource(paths={len(self._paths)})"
-
-    def stream(self, ctx: PipelineContext) -> Iterable[FsRequest]:
-        del ctx
+    def requests(self) -> Iterable[FsRequest]:
         for path in self._iter_files():
             p = Path(path)
             yield FsRequest(

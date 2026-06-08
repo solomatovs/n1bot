@@ -41,7 +41,7 @@ class StaticPromptProvider(PromptProvider):
 
 
 class FilePromptProvider(PromptProvider):
-    """Читает блок промпта из файла workspace; отсутствующий файл → default_prompt."""
+    """Читает блок промпта из файла workspace; отсутствующий файл -> default_prompt."""
 
     def __init__(
         self,
@@ -136,19 +136,19 @@ class GitPromptProvider(PromptProvider):
 
 
 class DirectoryPromptProvider(PromptProvider):
-    """Читает файлы верхнего уровня workspace; каждый файл — отдельный `PromptBlock`.
+    """Читает файлы верхнего уровня workspace; каждый файл — отдельный PromptBlock.
 
-    Корень поиска — корень самого `workspace`. Если нужна другая директория,
-    создай отдельный `WorkspaceShell`, указывающий на неё.
+    Корень поиска — корень самого workspace. Если нужна другая директория,
+    создай отдельный WorkspaceShell, указывающий на неё.
 
-    После 1:1-маппинга `PromptBlock` → `SystemMessage` в SystemPromptReducer
+    После 1:1-маппинга PromptBlock -> SystemMessage в SystemPromptReducer
     несколько файлов разворачиваются в несколько system-сообщений, что
     1-в-1 ложится на Anthropic multi-block system.
 
     Порядок блоков — лексикографический по относительному пути; чтобы
-    задать порядок, именуй файлы префиксом (`01-persona.md`, `02-rules.md`).
+    задать порядок, именуй файлы префиксом (01-persona.md, 02-rules.md).
 
-    Фильтр `extensions` оставляет только файлы с этими расширениями.
+    Фильтр extensions оставляет только файлы с этими расширениями.
     """
 
     def __init__(
@@ -182,10 +182,10 @@ class DirectoryPromptProvider(PromptProvider):
 
 
 class CallablePromptProvider(PromptProvider):
-    """Computed-at-runtime блок: `fn()` вызывается на каждом turn.
+    """Computed-at-runtime блок: fn() вызывается на каждом turn.
 
     Покрывает кейсы «текущая дата», «model capabilities», «runtime-вычисленный
-    кусок текста». Если значение статичное — используй `StaticPromptProvider`.
+    кусок текста». Если значение статичное — используй StaticPromptProvider.
     """
 
     def __init__(
@@ -219,8 +219,8 @@ class WrappingPromptProvider(PromptProvider):
             prefix="<your_role>\\n", suffix="\\n</your_role>",
         )
 
-    Для статичного текста проще писать теги прямо в `StaticPromptProvider`.
-    `id()` и `priority()` берутся у обёртки, а не у inner — это позволяет
+    Для статичного текста проще писать теги прямо в StaticPromptProvider.
+    id() и priority() берутся у обёртки, а не у inner — это позволяет
     регистрировать оба независимо при необходимости.
     """
 

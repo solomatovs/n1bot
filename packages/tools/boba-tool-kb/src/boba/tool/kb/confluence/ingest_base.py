@@ -1,26 +1,26 @@
-"""Общая база Confluence-ingest: `ConfluenceIngestConfig` + `ConfluenceIngest`.
+"""Общая база Confluence-ingest: ConfluenceIngestConfig + ConfluenceIngest.
 
 Сами tool'ы физически разнесены по файлам (по одному на режим discovery) —
-`ingest_spaces.py` / `ingest_pages.py` / `ingest_cql.py`. Здесь — то, что у них
-пока общее: конфиг-секция `[tool.kb.confluence.ingest]` и сборка pipeline'а.
+ingest_spaces.py / ingest_pages.py / ingest_cql.py. Здесь — то, что у них
+пока общее: конфиг-секция [tool.kb.confluence.ingest] и сборка pipeline'а.
 
 Каждый tool-файл — самостоятельная точка дивергенции: когда режим начнёт
-собирать таблицу/коллекцию иначе, он форкает свой кусок (свой `RequestSource`
-уже там; при необходимости — свой `run`/конфиг), не задевая остальные.
+собирать таблицу/коллекцию иначе, он форкает свой кусок (свой RequestSource
+уже там; при необходимости — свой run/конфиг), не задевая остальные.
 
-Pipeline: `RequestSource` → `ConfluenceContentTransport` (HTTP + JSON-decode +
-attachment fan-out) → `DispatchReader` по `CONTENT_TYPE` (HTML →
-`ConfluenceReader`, прочее → skip) → `StructuralChunker` →
-`CollectionScopedView` → `PostgresChunkStore`. Вложения (PDF/docx, прошедшие
-`AttachmentFilter`) индексируются как отдельные чанки с `source_id` = URL
-вложения и теми же `confluence.*` ключами родительской страницы. Набор
-metadata-ключей — `boba.tool.kb.confluence.models`.
+Pipeline: RequestSource -> ConfluenceContentTransport (HTTP + JSON-decode +
+attachment fan-out) -> DispatchReader по CONTENT_TYPE (HTML ->
+ConfluenceReader, прочее -> skip) -> StructuralChunker ->
+CollectionScopedView -> PostgresChunkStore. Вложения (PDF/docx, прошедшие
+AttachmentFilter) индексируются как отдельные чанки с source_id = URL
+вложения и теми же confluence.* ключами родительской страницы. Набор
+metadata-ключей — boba.tool.kb.confluence.models.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import ConfigDict, Field
 
@@ -31,11 +31,10 @@ from boba.indexing import (
     IndexerConfig,
     NoneCleanup,
     Pipeline,
-    PipelineContext,
     RequestSource,
     TransportKeys,
 )
-from boba.indexing.context import CollectionId, PipelineId
+from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
 from boba.indexing.reader import ReaderId
 from boba.settings import (
@@ -46,15 +45,16 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import AttachmentFilter
 from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
 from boba.tool.kb.confluence.reading import ConfluenceReader
-from boba.tool.kb.core.chunking import ChunkerParams
-from boba.tool.kb.core.embedding import EmbeddingModel
+from boba.tool.kb.confluence.request_sources import ConfluenceRequest
+from boba.tool.kb.core.chunking import ChunkerParams, StructuralChunkerFactory
+from boba.tool.kb.core.embedding import EmbeddingModel, LocalFastEmbedEmbedderFactory
 from boba.tool.kb.core.indexing_log import LoggedIndexRun
 from boba.tool.kb.core.postgres import (
     PostgresChunkStore,
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
-from boba.transport.http import HttpRequest
+from boba.transport.http import HttpProfile
 
 __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
 
@@ -62,16 +62,20 @@ logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
 class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams):
-    """Self-contained конфиг семейства tool'ов `confluence_ingest_*`.
+    """Self-contained конфиг семейства tool'ов confluence_ingest_*.
 
-    Наследует `PostgresStoreConfig` (connection/tables — плоско) и `ChunkerParams`
-    (chunk_size/chunk_overlap/build_chunker — плоско). Config-секция: `[tool.kb]`.
+    Наследует PostgresStoreConfig (connection/tables — плоско) и ChunkerParams
+    (chunk_size/chunk_overlap — плоско). Config-секция: [tool.kb].
     """
 
     model_config = ConfigDict(extra="ignore")
 
     embedding: EmbeddingModel
-    confluence: ConfluenceConnection
+    confluence: HttpProfile
+    body_format: Literal["view", "export_view", "storage"] = Field(
+        default="view",
+        description="Confluence body-формат: view/export_view/storage.",
+    )
     collection: str = Field(
         default="kb_confluence",
         min_length=1,
@@ -102,20 +106,16 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams):
 
 
 class ConfluenceIngest:
-    """Сборка Confluence-ingest pipeline — общий хвост для `confluence_ingest_*`."""
+    """Сборка Confluence-ingest pipeline — общий хвост для confluence_ingest_*."""
 
     HTML_CONTENT_TYPES: ClassVar[tuple[str, ...]] = ("text/html",)
-    """CONTENT_TYPE-значения, которые `ConfluenceJsonDecoder` ставит после
-    распаковки JSON→HTML; всё, что попадает под эти ключи, идёт в HTML-Reader."""
-
-    PIPELINE_ID_SPACES: ClassVar[PipelineId] = PipelineId("kb.confluence_ingest_spaces")
-    PIPELINE_ID_PAGES: ClassVar[PipelineId] = PipelineId("kb.confluence_ingest_pages")
-    PIPELINE_ID_CQL: ClassVar[PipelineId] = PipelineId("kb.confluence_ingest_cql")
+    """CONTENT_TYPE-значения, которые ConfluenceJsonDecoder ставит после
+    распаковки JSON->HTML; всё, что попадает под эти ключи, идёт в HTML-Reader."""
 
     @staticmethod
     def run(  # noqa: PLR0913 — keyword-only helper, явный набор deps
         *,
-        request_source: RequestSource[HttpRequest],
+        request_source: RequestSource[ConfluenceRequest],
         conn: ConfluenceConnection,
         chunk_store: PostgresChunkStore,
         collections_store: PostgresCollectionsStore,
@@ -123,24 +123,24 @@ class ConfluenceIngest:
         chunker: StructuralChunker,
         collection: str,
         prune_missing: bool,
-        pipeline_id: PipelineId,
         attachment_filter: AttachmentFilter | None = None,
     ) -> dict[str, Any]:
-        """Полный Confluence → kb_chunks pipeline для уже-собранного `RequestSource`.
+        """Полный Confluence -> kb_chunks pipeline для уже-собранного RequestSource.
 
         Возвращает JSON-stats с полями collection/indexed/skipped_unchanged/
         pruned/failed. Caller добавляет свои поля (space_key/page_ids/...).
 
-        Reader — `DispatchReader` по `TransportKeys.CONTENT_TYPE`: HTML
-        обрабатывается `ConfluenceReader`'ом, всё остальное (attachment'ы PDF/
+        Reader — DispatchReader по TransportKeys.CONTENT_TYPE: HTML
+        обрабатывается ConfluenceReader'ом, всё остальное (attachment'ы PDF/
         image/etc.) молча пропускается. Когда появятся Reader'ы для PDF или
-        картинок, их можно подключить добавив entry в `routes`-mapping.
+        картинок, их можно подключить добавив entry в routes-mapping.
         """
         confluence_reader = ConfluenceReader()
         reader: DispatchReader[str] = DispatchReader(
             by=TransportKeys.CONTENT_TYPE,
             routes=dict.fromkeys(
-                ConfluenceIngest.HTML_CONTENT_TYPES, confluence_reader,
+                ConfluenceIngest.HTML_CONTENT_TYPES,
+                confluence_reader,
             ),
             reader_id=ReaderId("ext.confluence_dispatch"),
             on_unknown="skip",
@@ -154,27 +154,31 @@ class ConfluenceIngest:
             embedder=embedder,
             collection=collection_id,
         )
-        pipeline: Pipeline[HttpRequest, str] = Pipeline(
-            source=request_source,
-            transport=ConfluenceContentTransport.from_connection(
-                conn, attachment_filter=attachment_filter,
-            ),
-            reader=reader,
+        transport = ConfluenceContentTransport.from_connection(
+            conn,
+            attachment_filter=attachment_filter,
         )
         config: IndexerConfig[str] = IndexerConfig(
             cleanup=FullCleanup() if prune_missing else NoneCleanup(),
             force_update=False,
         )
-        stats = LoggedIndexRun.drain(
-            pipeline.index(
-                PipelineContext(pipeline_id=pipeline_id),
-                chunker=chunker,
-                sink=view,
-                query=view,
-                config=config,
-            ),
-            logger,
-        )
+        try:
+            pipeline: Pipeline[ConfluenceRequest, str] = Pipeline(
+                source=request_source,
+                transport=transport,
+                reader=reader,
+            )
+            stats = LoggedIndexRun.drain(
+                pipeline.index(
+                    chunker=chunker,
+                    sink=view,
+                    query=view,
+                    config=config,
+                ),
+                logger,
+            )
+        finally:
+            transport.close()
 
         return {
             "collection": str(collection_id),
@@ -187,28 +191,30 @@ class ConfluenceIngest:
     @staticmethod
     def ingest(
         cfg: ConfluenceIngestConfig,
-        request_source: RequestSource[HttpRequest],
+        request_source: RequestSource[ConfluenceRequest],
         prune_missing: bool,
-        pipeline_id: PipelineId,
     ) -> dict[str, Any]:
-        """Собрать stores/embedder/chunker/filter из cfg и вызвать `run`."""
+        """Собрать stores/embedder/chunker/filter из cfg и вызвать run."""
         chunk_store = PostgresChunkStore(cfg=cfg)
         collections_store = PostgresCollectionsStore(cfg=cfg)
-        embedder = cfg.embedding.build()
-        chunker = cfg.build_chunker()
+        embedder = LocalFastEmbedEmbedderFactory.build(cfg.embedding)
+        chunker = StructuralChunkerFactory.build(cfg)
         att_filter = AttachmentFilter.from_lists(
             media_types=cfg.attachment_media_types,
             titles=cfg.attachment_titles,
         )
+        conn = ConfluenceConnection(
+            profile=cfg.confluence,
+            body_format=cfg.body_format,
+        )
         return ConfluenceIngest.run(
             request_source=request_source,
-            conn=cfg.confluence,
+            conn=conn,
             chunk_store=chunk_store,
             collections_store=collections_store,
             embedder=embedder,
             chunker=chunker,
             collection=cfg.collection,
             prune_missing=prune_missing,
-            pipeline_id=pipeline_id,
             attachment_filter=att_filter,
         )

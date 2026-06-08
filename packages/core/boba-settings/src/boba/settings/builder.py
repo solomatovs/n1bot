@@ -1,9 +1,9 @@
 """ConfigBuilder: явная сборка источников конфига в один инстанс (не глобал).
 
 Приложение на bootstrap само перечисляет провайдеры-слои (YAML-файл, secrets,
-CLI) и получает `DictConfig`-инстанс. Этот инстанс прокидывается в резолвер;
-никакого процесс-глобала. Только стандартные средства OmegaConf: `load`
-(YAML/JSON), `from_cli`, `merge`.
+CLI) и получает DictConfig-инстанс. Этот инстанс прокидывается в резолвер;
+никакого процесс-глобала. Только стандартные средства OmegaConf: load
+(YAML/JSON), from_cli, merge.
 """
 
 from __future__ import annotations
@@ -22,29 +22,29 @@ _SECRETS_PATH_ENV = "BOBA_SECRETS_PATH"
 
 
 class ConfigBuilder:
-    """Слои-источники → один `DictConfig`.
+    """Слои-источники -> один DictConfig.
 
-    Порядок добавления = приоритет: поздний слой перекрывает ранний при `merge`.
+    Порядок добавления = приоритет: поздний слой перекрывает ранний при merge.
     """
 
     def __init__(self) -> None:
         self._layers: list[DictConfig] = []
 
     def add_yaml(self, path: str | Path | None) -> Self:
-        """YAML/JSON-файл (нативный `OmegaConf.load`). None/отсутствие — no-op."""
+        """YAML/JSON-файл (нативный OmegaConf.load). None/отсутствие — no-op."""
         if path and Path(path).is_file():
             self._layers.append(OmegaConf.load(path))  # type: ignore[arg-type]
         return self
 
     def add_toml(self, path: str | Path | None) -> Self:
-        """TOML-файл (`tomllib` → `OmegaConf.create`). None/отсутствие — no-op."""
+        """TOML-файл (tomllib -> OmegaConf.create). None/отсутствие — no-op."""
         if path and Path(path).is_file():
             with Path(path).open("rb") as f:
                 self._layers.append(OmegaConf.create(tomllib.load(f)))  # type: ignore[arg-type]
         return self
 
     def add_cli(self, argv: list[str] | None) -> Self:
-        """CLI-токены `key=value` (`OmegaConf.from_cli`)."""
+        """CLI-токены key=value (OmegaConf.from_cli)."""
         if argv:
             self._layers.append(OmegaConf.from_cli(list(argv)))
         return self
@@ -64,7 +64,7 @@ class ConfigBuilder:
 def build_app_config(argv: list[str] | None = None) -> DictConfig:
     """Стандартная сборка приложения: config.toml + secrets.toml + CLI.
 
-    Пути к файлам — из env (`$BOBA_CONFIG_PATH`, `$BOBA_SECRETS_PATH`); это
+    Пути к файлам — из env ($BOBA_CONFIG_PATH, $BOBA_SECRETS_PATH); это
     только пути к источникам, не данные конфига. Возвращает инстанс — приложение
     держит его у себя и передаёт в резолвер.
     """

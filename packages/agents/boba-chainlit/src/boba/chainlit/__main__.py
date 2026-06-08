@@ -1,4 +1,4 @@
-"""Entrypoint chainlit-приложения. Делегирует в `composition.main()`."""
+"""Entrypoint chainlit-приложения. Делегирует в composition.main()."""
 
 from __future__ import annotations
 

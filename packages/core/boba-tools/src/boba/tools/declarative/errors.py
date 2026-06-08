@@ -1,9 +1,9 @@
 """Ошибки декларативного слоя tools (declaration / DI registration).
 
 Это плагин-объявления и DI-регистрация, не runtime-выполнение tool'ов.
-Ошибки runtime-вызова tool'а живут в `boba.tools.domain.errors`
-(`ToolExecutionError`, `InvalidToolArgumentError`, ...), а коллизии
-имён/источников при сборке — в `boba.tools.framework.errors`.
+Ошибки runtime-вызова tool'а живут в boba.tools.domain.errors
+(ToolExecutionError, InvalidToolArgumentError, ...), а коллизии
+имён/источников при сборке — в boba.tools.framework.errors.
 """
 
 from __future__ import annotations
@@ -25,21 +25,21 @@ class ToolDeclarationError(ToolsFrameworkError):
 
     Примеры:
     - параметр без аннотации;
-    - `*args`/`**kwargs` в подписи tool'а;
-    - return type у `@provides` не указан;
-    - `FromConfig`-параметр на типе, не являющемся Pydantic-settings.
+    - *args/**kwargs в подписи tool'а;
+    - return type у @provides не указан;
+    - FromConfig-параметр на типе, не являющемся Pydantic-settings.
     """
 
 
 class UnresolvedDependencyError(ToolsFrameworkError):
-    """На сборке обнаружен `FromDI`-маркер без зарегистрированного provider'а.
+    """На сборке обнаружен FromDI-маркер без зарегистрированного provider'а.
 
-    Строгая build-time проверка `FromDI`: недостающая служба валит `build()`,
+    Строгая build-time проверка FromDI: недостающая служба валит build(),
     а не всплывает в runtime при инвоке tool'а.
 
-    `FromConfig` сюда **не** относится — конфиг это обычный provider
-    (см. `ToolBuilder.register_config`), и его отсутствие — runtime
-    `NoFactoryError`, как у любой незарегистрированной DI-службы.
+    FromConfig сюда **не** относится — конфиг это обычный provider
+    (см. ToolBuilder.register_config), и его отсутствие — runtime
+    NoFactoryError, как у любой незарегистрированной DI-службы.
     """
 
 

@@ -1,10 +1,10 @@
-"""Парсинг Confluence: HTML (`ac:*/ri:*` макросы) и REST-JSON → `RawDocument`.
+"""Парсинг Confluence: HTML (ac:*/ri:* макросы) и REST-JSON -> RawDocument.
 
-- `Heading`               — DTO заголовка (`level`, `text`, `anchor`).
-- `ConfluenceHtml`        — heading-aware extraction поверх BeautifulSoup+lxml:
-  терпит кастомные namespace'ы Confluence-export'а (`ac:`/`ri:`), вычищает
-  макросы, собирает heading'и и anchor'ы (scroll-bookmark / html-id / `idx:N`).
-- `ConfluenceJsonDecoder` — REST-JSON → HTML-handle + расширенная metadata
+- Heading               — DTO заголовка (level, text, anchor).
+- ConfluenceHtml        — heading-aware extraction поверх BeautifulSoup+lxml:
+  терпит кастомные namespace'ы Confluence-export'а (ac:/ri:), вычищает
+  макросы, собирает heading'и и anchor'ы (scroll-bookmark / html-id / idx:N).
+- ConfluenceJsonDecoder — REST-JSON -> HTML-handle + расширенная metadata
   (title/version/space/ancestors/attachments).
 """
 
@@ -31,16 +31,16 @@ from boba.tool.kb.confluence.models import (
     AttachmentInfo,
     ConfluenceKeys,
     ConfluencePayloadError,
+    HttpKeys,
 )
-from boba.transport.http import HttpKeys
 
 __all__ = ["ConfluenceHtml", "ConfluenceJsonDecoder", "Heading"]
 
 
 @dataclass(frozen=True)
 class Heading:
-    """Заголовок Confluence-страницы. `index` 1-based; `anchor` —
-    scroll-bookmark или html `id`, `None` если ни того, ни другого.
+    """Заголовок Confluence-страницы. index 1-based; anchor —
+    scroll-bookmark или html id, None если ни того, ни другого.
     """
 
     index: int
@@ -53,9 +53,9 @@ class Heading:
 class ConfluenceHtml:
     """Confluence-aware HTML-парсер: heading'и, anchor'ы, текст без макросов.
 
-    Self-contained: BeautifulSoup поверх lxml, без зависимости на `boba.html`
+    Self-contained: BeautifulSoup поверх lxml, без зависимости на boba.html
     (там structural parser, не подходящий для кастомных namespace'ов
-    `ac:`/`ri:` Confluence-export'а).
+    ac:/ri: Confluence-export'а).
     """
 
     _HEADING_TAGS: ClassVar[tuple[str, ...]] = ("h1", "h2", "h3", "h4", "h5", "h6")
@@ -76,7 +76,7 @@ class ConfluenceHtml:
         *,
         max_depth: int | None = None,
     ) -> list[Heading]:
-        """Все `<h1>..<h6>` в document order. Текст и anchor — Confluence-aware."""
+        """Все <h1>..<h6> в document order. Текст и anchor — Confluence-aware."""
         cap = max_depth if max_depth is not None else 6
         tags = soup.find_all(list(ConfluenceHtml._HEADING_TAGS[:cap]))
         headings: list[Heading] = []
@@ -97,14 +97,14 @@ class ConfluenceHtml:
     def anchor_for(h: Heading) -> str:
         """
         Canonical-anchor: html-id/scroll-bookmark
-        или `idx:N` если ни того, ни другого
+        или idx:N если ни того, ни другого
         """
         return h.anchor if h.anchor else f"idx:{h.index}"
 
     @staticmethod
     def resolve_anchor(headings: list[Heading], anchor: str) -> Heading | None:
-        """Найти heading по anchor: html-id/scroll-bookmark или `idx:N`
-        (с/без ведущего `#`).
+        """Найти heading по anchor: html-id/scroll-bookmark или idx:N
+        (с/без ведущего #).
         """
         key = anchor.lstrip("#").strip()
         if key.startswith("idx:"):
@@ -117,9 +117,9 @@ class ConfluenceHtml:
 
     @staticmethod
     def text_between(start_tag: Tag, end_tag: Tag | None) -> str:
-        """Конкатенация всех `NavigableString` между `start_tag` (исключая) и
-        `end_tag`, с пропуском содержимого ac:*/ri:* макросов и текста самих
-        heading-тегов (он живёт в `Heading.text`).
+        """Конкатенация всех NavigableString между start_tag (исключая) и
+        end_tag, с пропуском содержимого ac:*/ri:* макросов и текста самих
+        heading-тегов (он живёт в Heading.text).
         """
         parts: list[str] = []
         for el in start_tag.next_elements:
@@ -194,7 +194,7 @@ class ConfluenceHtml:
 
     @staticmethod
     def _extract_html_id(tag: Tag) -> str | None:
-        """Достать html `id` heading-тега; пустой / list → None."""
+        """Достать html id heading-тега; пустой / list -> None."""
         raw = tag.get("id")
         if isinstance(raw, list):
             return raw[0] if raw else None
@@ -216,31 +216,28 @@ class ConfluenceHtml:
 
 
 class ConfluenceJsonDecoder(Decoder):
-    """Confluence REST JSON → HTML-handle + расширенная metadata.
+    """Confluence REST JSON -> HTML-handle + расширенная metadata.
 
-    Вынимает HTML из `body.<body_format>.value`, обогащает metadata: title
-    (`ReaderKeys.PAGE_TITLE`), version (`ConfluenceKeys.VERSION`), space,
-    ancestors, attachments, last_modified (`HttpKeys.LAST_MODIFIED`, если ещё
+    Вынимает HTML из body.<body_format>.value, обогащает metadata: title
+    (ReaderKeys.PAGE_TITLE), version (ConfluenceKeys.VERSION), space,
+    ancestors, attachments, last_modified (HttpKeys.LAST_MODIFIED, если ещё
     не заполнен HttpTransport'ом).
     """
 
     DECODER_ID: ClassVar[DecoderId] = DecoderId("ext.confluence_json")
 
     _HTML_CONTENT_TYPE: ClassVar[str] = "text/html"
-    """После JSON→HTML распаковки handle содержит HTML; CONTENT_TYPE приводим к
+    """После JSON->HTML распаковки handle содержит HTML; CONTENT_TYPE приводим к
     этому факту, чтобы DispatchReader мог честно роутить страницы через
-    `HTMLReader` (а не через несуществующий JSONReader)."""
+    HTMLReader (а не через несуществующий JSONReader)."""
 
     def __init__(self, *, body_format: str = "export_view") -> None:
         self._body_format = body_format
 
-    def name(self) -> str:
-        return f"ConfluenceJsonDecoder(format={self._body_format})"
-
     def decoder_id(self) -> DecoderId:
         return self.DECODER_ID
 
-    def convert(self, value: RawDocument) -> RawDocument:
+    def decode(self, value: RawDocument) -> RawDocument:
         payload = value.handle.read()
         if not payload:
             return value
@@ -284,15 +281,12 @@ class ConfluenceJsonDecoder(Decoder):
             metadata=meta,
         )
 
-    def reset(self) -> None:
-        pass
-
     @staticmethod
     def _enrich_with_attachments(meta: Metadata, data: dict[str, Any]) -> Metadata:
-        """Put `children.attachment.results[]` into `ConfluenceKeys.ATTACHMENTS`.
+        """Put children.attachment.results[] into ConfluenceKeys.ATTACHMENTS.
 
-        Пустой/отсутствующий список → `meta` без изменений (тот же pattern,
-        что у `ANCESTORS_TITLES`). Структурно непригодный JSON тоже даёт no-op:
+        Пустой/отсутствующий список -> meta без изменений (тот же pattern,
+        что у ANCESTORS_TITLES). Структурно непригодный JSON тоже даёт no-op:
         Decoder не должен взрываться на расхождении схемы — Confluence в
         разных версиях кладёт expand-блоки по-разному.
         """
@@ -316,11 +310,11 @@ class ConfluenceJsonDecoder(Decoder):
 
     @staticmethod
     def _attachment_from_json(a: dict[str, Any]) -> AttachmentInfo:
-        """Один Confluence-attachment JSON-объект → `AttachmentInfo`.
+        """Один Confluence-attachment JSON-объект -> AttachmentInfo.
 
-        Missing/нечисловые `extensions.fileSize` и `version.number` фолбэчатся
-        в `0` и `1` — пользователю download'а размер не критичен, version по
-        умолчанию `1` соответствует Confluence-семантике первой загрузки.
+        Missing/нечисловые extensions.fileSize и version.number фолбэчатся
+        в 0 и 1 — пользователю download'а размер не критичен, version по
+        умолчанию 1 соответствует Confluence-семантике первой загрузки.
         """
         extensions = ConfluenceJsonDecoder._dict_or_empty(a.get("extensions"))
         version = ConfluenceJsonDecoder._dict_or_empty(a.get("version"))

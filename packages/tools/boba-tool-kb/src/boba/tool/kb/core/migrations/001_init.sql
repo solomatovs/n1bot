@@ -21,7 +21,7 @@ CREATE EXTENSION IF NOT EXISTS unaccent;
 
 -- unaccent сам по себе STABLE, а Postgres требует IMMUTABLE-выражение в
 -- GENERATED-колонке. Стандартный workaround — IMMUTABLE-обёртка: словарь
--- зашит в SQL-теле, нельзя поменять снаружи → expression становится
+-- зашит в SQL-теле, нельзя поменять снаружи -> expression становится
 -- детерминированным для оптимизатора. Без этого `ALTER TABLE ... ADD
 -- COLUMN tsv tsvector GENERATED ...` падает с
 -- "generation expression is not immutable".

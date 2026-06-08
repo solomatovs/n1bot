@@ -2,26 +2,26 @@
 
 Tools (каждый — self-contained tool-конфиг в своей TOML-секции):
 
-Ingest (Confluence → kb_chunks) — три отдельных tool'а, одна общая секция
-`[tool.kb.confluence.ingest]`:
-- `confluence_ingest_spaces`  — индексировать все страницы spaces.
-- `confluence_ingest_pages`   — индексировать явный список page_id.
-- `confluence_ingest_cql`     — индексировать страницы по CQL-запросу.
+Ingest (Confluence -> kb_chunks) — три отдельных tool'а, одна общая секция
+[tool.kb.confluence.ingest]:
+- confluence_ingest_spaces  — индексировать все страницы spaces.
+- confluence_ingest_pages   — индексировать явный список page_id.
+- confluence_ingest_cql     — индексировать страницы по CQL-запросу.
 
 Search (online):
-- `confluence_search_cql`     — CQL-search по реальному Confluence.
-                                Секция `[tool.kb.confluence.search.cql]`.
+- confluence_search_cql     — CQL-search по реальному Confluence.
+                                Секция [tool.kb.confluence.search.cql].
 
 List/Discovery:
-- `confluence_list_spaces`    — список доступных spaces (markdown).
-                                Секция `[tool.kb.confluence.list.spaces]`.
+- confluence_list_spaces    — список доступных spaces (markdown).
+                                Секция [tool.kb.confluence.list.spaces].
 
-Download (Confluence → workspace):
-- `confluence_download`       — unified: space_keys / page_ids
+Download (Confluence -> workspace):
+- confluence_download       — unified: space_keys / page_ids
                                 (LLM выбирает режим). Секция
-                                `[tool.kb.confluence.download]`.
+                                [tool.kb.confluence.download].
 
-`ConfluenceConnection` (basemodel из `connection.py`) встраивается как
+ConfluenceConnection (basemodel из connection.py) встраивается как
 nested-поле в каждый tool-конфиг — common-connection-секции нет, каждый
 tool полностью изолирован.
 """

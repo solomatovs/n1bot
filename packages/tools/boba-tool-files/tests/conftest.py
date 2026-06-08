@@ -19,7 +19,7 @@ from boba.workspace.contract import ProjectWorkspaceShell
 
 @pytest.fixture
 def mock_workspace() -> ProjectWorkspaceShell:
-    """Замоканный `ProjectWorkspaceShell` для DI."""
+    """Замоканный ProjectWorkspaceShell для DI."""
     return MagicMock(spec=ProjectWorkspaceShell)
 
 
@@ -27,11 +27,11 @@ def mock_workspace() -> ProjectWorkspaceShell:
 def make_files_tool_names(
     mock_workspace: ProjectWorkspaceShell,
 ) -> Callable[[dict[str, Any]], list[str]]:
-    """Фабрика: meta-секция → имена tool'ов, зарегистрированных плагином.
+    """Фабрика: meta-секция -> имена tool'ов, зарегистрированных плагином.
 
-    На вход — dict для `[tool.files]` (поля `enable`/`tools`). Внутри
-    создаётся `ToolBuilder` с in-memory root поверх этого dict'а
-    и запускается `discover_plugins("boba.plugins")` — entry-points
+    На вход — dict для [tool.files] (поля enable/tools). Внутри
+    создаётся ToolBuilder с in-memory root поверх этого dict'а
+    и запускается discover_plugins("boba.plugins") — entry-points
     discovery с config-gate.
     """
 

@@ -1,4 +1,4 @@
-"""resolver: тип резолвится из секции плагина `tool.<plugin>` явного инстанса."""
+"""resolver: тип резолвится из секции плагина tool.<plugin> явного инстанса."""
 
 from __future__ import annotations
 

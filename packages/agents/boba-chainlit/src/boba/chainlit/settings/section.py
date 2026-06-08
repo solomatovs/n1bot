@@ -1,13 +1,13 @@
-"""`SettingsSection` — модульный раздел шестерёнки.
+"""SettingsSection — модульный раздел шестерёнки.
 
 Каждый раздел сам знает:
-  * какие `Tab`'ы показать (учитывая текущий `ThreadMeta`);
+  * какие Tab'ы показать (учитывая текущий ThreadMeta);
   * как разобрать значения из словаря, который chainlit отдаёт в
-    `on_settings_update`, и применить их через узкие методы
-    `ThreadRepository`.
+    on_settings_update, и применить их через узкие методы
+    ThreadRepository.
 
-Реестр секций задаётся в `composition.main()` и попадает в `AppState`;
-`callbacks.py` итерирует его при отрисовке и при сохранении настроек.
+Реестр секций задаётся в composition.main() и попадает в AppState;
+callbacks.py итерирует его при отрисовке и при сохранении настроек.
 Чтобы добавить раздел (модель, sampling, …), реализуй новый класс и
 включи его в реестр — общий код callback'ов трогать не надо.
 """
@@ -40,5 +40,5 @@ class SettingsSection(Protocol):
         thread_id: ThreadId,
         repo: ThreadRepository,
     ) -> None:
-        """Применить значения из `settings` к мете через узкие методы repo."""
+        """Применить значения из settings к мете через узкие методы repo."""
         ...

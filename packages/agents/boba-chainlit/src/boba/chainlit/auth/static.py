@@ -1,4 +1,4 @@
-"""Статическая (in-memory) реализация `UserRepository`."""
+"""Статическая (in-memory) реализация UserRepository."""
 
 from __future__ import annotations
 

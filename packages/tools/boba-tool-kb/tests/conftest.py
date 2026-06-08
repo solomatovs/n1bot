@@ -1,6 +1,6 @@
 """Pytest fixtures для пакета boba-tool-kb (integration-mode).
 
-`pytest -m integration` для запуска; default-режим (`-m "not integration"`)
+pytest -m integration для запуска; default-режим (-m "not integration")
 их исключает (см. root pyproject.toml).
 """
 

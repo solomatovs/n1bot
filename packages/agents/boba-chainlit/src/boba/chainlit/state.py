@@ -1,7 +1,7 @@
-"""Application-state канал между `composition.main()` и Chainlit-callback'ами.
+"""Application-state канал между composition.main() и Chainlit-callback'ами.
 
 Chainlit владеет жизненным циклом: импортирует callback-модуль уже после
-`main()`, зовёт callback'и сам. Прямого способа прокинуть deps нет —
+main(), зовёт callback'и сам. Прямого способа прокинуть deps нет —
 нужен явный shared-state канал. Этот модуль и есть канал.
 """
 
@@ -22,7 +22,7 @@ __all__ = ["AppState", "app_state", "set_app_state"]
 
 @dataclass(frozen=True)
 class AppState:
-    """Application-wide deps, зафиксированные в `main()`."""
+    """Application-wide deps, зафиксированные в main()."""
 
     authenticate_user: AuthenticateUser
     open_chat_session: OpenChatSession
@@ -35,7 +35,7 @@ class AppState:
 
 @dataclass
 class _Holder:
-    """Контейнер с одним слотом: мутируется через атрибут, без `global`-statement."""
+    """Контейнер с одним слотом: мутируется через атрибут, без global-statement."""
 
     state: AppState | None = None
 
@@ -52,7 +52,7 @@ def set_app_state(
     available_tools: AvailableToolsCache,
     sections: tuple[SettingsSection, ...],
 ) -> None:
-    """Зафиксировать deps до `run_chainlit(...)`."""
+    """Зафиксировать deps до run_chainlit(...)."""
     _holder.state = AppState(
         authenticate_user=authenticate_user,
         open_chat_session=open_chat_session,

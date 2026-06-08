@@ -1,13 +1,13 @@
-"""Chainlit `DataLayer`-adapter: users/threads из репо, steps из HistoryService.
+"""Chainlit DataLayer-adapter: users/threads из репо, steps из HistoryService.
 
-Источник правды для сообщений — `HistoryService` агента: `get_thread`
-рендерит steps через `replay_history_to_steps_sync(...)`. Здесь же
+Источник правды для сообщений — HistoryService агента: get_thread
+рендерит steps через replay_history_to_steps_sync(...). Здесь же
 остаются только меты тредов (id, name, tags, workspace_id, timestamps) +
 пользователи для chainlit-auth.
 
-`create_step/update_step/delete_step/create_element/...` — no-op:
-сообщения пишет агент через `HistoryRecorderMiddleware`, реплей берёт
-из того же HistoryService при следующем `get_thread`.
+create_step/update_step/delete_step/create_element/... — no-op:
+сообщения пишет агент через HistoryRecorderMiddleware, реплей берёт
+из того же HistoryService при следующем get_thread.
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ class BobaDataLayer(BaseDataLayer):
                 "metadata": meta.metadata,
                 "steps": content.steps,
                 # elements восстанавливаются из журнала так же, как steps
-                # (графики: spec → data:-URI). Источник истины — история.
+                # (графики: spec -> data:-URI). Источник истины — история.
                 "elements": content.elements,
             },
         )
@@ -310,7 +310,7 @@ class BobaDataLayer(BaseDataLayer):
         user_identifier: str | None,
         existing: ThreadMeta | None,
     ) -> UserId | None:
-        """Стабильный user_id: переданный → из каталога по identifier → текущий."""
+        """Стабильный user_id: переданный -> из каталога по identifier -> текущий."""
         if user_id is not None:
             return user_id
         if user_identifier is not None:

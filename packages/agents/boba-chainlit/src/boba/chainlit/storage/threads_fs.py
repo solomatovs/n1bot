@@ -1,12 +1,12 @@
-"""Порт `ThreadRepository` + FS-реализация поверх `threads-index.json`.
+"""Порт ThreadRepository + FS-реализация поверх threads-index.json.
 
-Контракт намеренно узкий: общий `create(...)` принимает поля, нужные для
+Контракт намеренно узкий: общий create(...) принимает поля, нужные для
 нового треда; изменения существующей меты идут через именованные операции
-(`rename`, `set_system_prompt`, `set_user`, `set_tags`, `merge_metadata`).
+(rename, set_system_prompt, set_user, set_tags, merge_metadata).
 
-Это устраняет класс багов, когда вызывающий собирает полный `ThreadMeta` и
-случайно теряет поле, о котором не знал (например, `system_prompt`,
-добавленный позже). Поле `updated_at` штампуется самим репозиторием.
+Это устраняет класс багов, когда вызывающий собирает полный ThreadMeta и
+случайно теряет поле, о котором не знал (например, system_prompt,
+добавленный позже). Поле updated_at штампуется самим репозиторием.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class ThreadNotFoundError(Exception):
 
 
 class ThreadAlreadyExistsError(Exception):
-    """`create` вызван для уже существующего thread_id."""
+    """create вызван для уже существующего thread_id."""
 
 
 class ThreadRepository(ABC):
@@ -121,7 +121,7 @@ _Mutator = Callable[[_Index], None]
 
 
 class FsThreadRepository(ThreadRepository):
-    """Меты тредов в `system_shell/threads-index.json`."""
+    """Меты тредов в system_shell/threads-index.json."""
 
     _DEFAULT_INDEX_FILENAME: ClassVar[str] = "threads-index.json"
 

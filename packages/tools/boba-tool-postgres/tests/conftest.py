@@ -1,9 +1,9 @@
 """Pytest fixtures для пакета boba-tool-postgres (integration-mode).
 
 Все тесты — integration: ходят в реальный postgres. Фикстуры грузят
-`SqlExecutorConfig` из секции плагина `[tool.pg]`.
+SqlExecutorConfig из секции плагина [tool.pg].
 
-`pytest -m integration` для запуска; default-режим (`-m "not integration"`)
+pytest -m integration для запуска; default-режим (-m "not integration")
 их исключает (см. root pyproject.toml).
 """
 

@@ -1,10 +1,10 @@
 """AgentProfile — переиспользуемый профиль агента (LLM + workspace + промпт).
 
 Профиль — самостоятельная именованная сущность: набор настроек агента,
-не привязанный к конкретному приложению. Приложения (`cli.agent`/`chainlit`)
-подключают нужный профиль ссылкой `profile = "${agent.<name>}"` — как
-`postgres.<name>` или `openai.<profile>`. Профилей может быть несколько
-(`agent.default`, `agent.local`, ...), приложение выбирает.
+не привязанный к конкретному приложению. Приложения (cli.agent/chainlit)
+подключают нужный профиль ссылкой profile = "${agent.<name>}" — как
+postgres.<name> или openai.<profile>. Профилей может быть несколько
+(agent.default, agent.local, ...), приложение выбирает.
 """
 
 from __future__ import annotations

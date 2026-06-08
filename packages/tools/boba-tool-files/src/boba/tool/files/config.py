@@ -1,11 +1,11 @@
 """Конфиг плагина files.
 
-Секция `[tool.files]`. Используется в каждом `@tool` через FromConfig
-(например `cat_max_lines`, `max_text_chars`).
+Секция [tool.files]. Используется в каждом @tool через FromConfig
+(например cat_max_lines, max_text_chars).
 
-Поля `enable` / `tools` — забота framework'а; они читаются из той же
-TOML-секции, но через `AgentBuilder.discover_plugins`, не через
-плагин-конфиг. `extra="ignore"` позволяет им сосуществовать в одной
+Поля enable / tools — забота framework'а; они читаются из той же
+TOML-секции, но через AgentBuilder.discover_plugins, не через
+плагин-конфиг. extra="ignore" позволяет им сосуществовать в одной
 TOML-секции без ValidationError.
 """
 
@@ -19,7 +19,7 @@ __all__ = ["FilesPluginConfig"]
 class FilesPluginConfig(BaseModel):
     """Builtin file-system tools (cat/ls/grep/edit/write/...).
 
-    Config-секция: `[tool.files]`.
+    Config-секция: [tool.files].
     """
 
     model_config = ConfigDict(extra="ignore")

@@ -1,11 +1,11 @@
 """boba.transport.fs — FS transport для индексации.
 
 Стадии:
-- `FsWalkRequestSource(paths, include, exclude, follow_symlinks)` — обходит
-  файловую систему, эмитит `FsRequest`'ы.
-- `FsTransport()` — открывает файл по `FsRequest.path`, отдаёт `RawDocument`
+- FsWalkRequestSource(paths, include, exclude, follow_symlinks) — обходит
+  файловую систему, эмитит FsRequest'ы.
+- FsTransport() — открывает файл по FsRequest.path, отдаёт RawDocument
   с handle и заполненной metadata (mtime, size, suffix).
-- `FsRequest(path, source_id, metadata)` — DTO между source и transport.
+- FsRequest(path, source_id, metadata) — DTO между source и transport.
 
 Использование:
     src = FsWalkRequestSource(paths=["/data/docs"], include=["*.md", "*.txt"])

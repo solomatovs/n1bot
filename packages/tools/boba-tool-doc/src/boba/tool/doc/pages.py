@@ -36,8 +36,8 @@ def read_pages(
 ) -> TextResult:
     """Распарсить только указанные страницы и вернуть их текст.
 
-    Дешевле `read_document` для больших PDF: парсятся лишь нужные страницы.
-    Фактически разобранные номера страниц и факт обрезки — в `metadata`.
+    Дешевле read_document для больших PDF: парсятся лишь нужные страницы.
+    Фактически разобранные номера страниц и факт обрезки — в metadata.
     """
     data = DocEngine.read_bytes(shell, path)
     result = DocEngine.parse(cfg, data, path, target_pages=pages)

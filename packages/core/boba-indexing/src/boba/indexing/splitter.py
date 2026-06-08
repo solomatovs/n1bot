@@ -1,8 +1,8 @@
 """Splitter[T] — контракт «разбить контент на куски с сохранением offset'ов».
 
 В домене живёт только interface + DTO + LengthFunction-протокол.
-Конкретные реализации (`OverlapCharSplitter` для текста и т.п.) — в
-format/feature-package'ах (например `boba-text`).
+Конкретные реализации (OverlapCharSplitter для текста и т.п.) — в
+format/feature-package'ах (например boba-text).
 """
 
 from __future__ import annotations
@@ -36,25 +36,25 @@ class Splitter(Protocol[T]):
     """Разделяет контент на куски с сохранением оригинального смещения.
 
     **Ответственность**:
-    - разделить `T` на отдельные `SplitPiece[T]` в потоке;
-    - сохранить исходные смещения внутри `T`;
-    - сохранить исходный контент из `T` в диапазоне `location`.
+    - разделить T на отдельные SplitPiece[T] в потоке;
+    - сохранить исходные смещения внутри T;
+    - сохранить исходный контент из T в диапазоне location.
 
     **Схема**:
-    ```python
-    T   ──────splitter.split──→  Iterable[SplitPiece[T]]
-                              →    content  : T
-                              →    location : ChunkLocation
-    ```
+    python
+    T   ──────splitter.split──->  Iterable[SplitPiece[T]]
+                              ->    content  : T
+                              ->    location : ChunkLocation
+    
 
     **Пример минимальной реализации**:
-    ```python
+    python
     class HalfSplitter(Splitter[str]):
         def split(self, value: str) -> Iterable[SplitPiece[str]]:
             mid = len(value) // 2
             yield SplitPiece(value[:mid], ChunkLocation(start=0, end=mid))
             yield SplitPiece(value[mid:], ChunkLocation(start=mid, end=len(value)))
-    ```
+    
     """
 
     def split(self, value: T) -> Iterable[SplitPiece[T]]: ...
@@ -64,10 +64,10 @@ class Splitter(Protocol[T]):
 class LengthFunction(Protocol[T_contra]):
     """Функция длины content в естественных единицах.
 
-    Инжектится в `Splitter`. Реализации:
-    - `len` — char-count для `str`, byte-count для `bytes` (default).
+    Инжектится в Splitter. Реализации:
+    - len — char-count для str, byte-count для bytes (default).
     - tokenizer-aware (tiktoken / hf-tokenizer) — token-count;
-      тогда `chunk_size` у splitter'а становится «не больше N токенов».
+      тогда chunk_size у splitter'а становится «не больше N токенов».
     """
 
     def __call__(self, value: T_contra, /) -> int: ...

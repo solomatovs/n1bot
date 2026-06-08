@@ -18,13 +18,13 @@ def test_iter_rows_unescapes_specials() -> None:
 
 
 def test_iter_rows_null_becomes_none() -> None:
-    """`\\N` (NULL) → None; пустая ячейка → пустая строка."""
+    """\\N (NULL) -> None; пустая ячейка -> пустая строка."""
     res = PgCopyTextResult(text="a\tb\n\\N\t\n")
     assert list(res.iter_rows()) == [["a", "b"], [None, ""]]
 
 
 def test_iter_rows_tab_delimiter_not_confused_with_escaped_tab() -> None:
-    """Реальный таб — делимитер; `\\t` внутри ячейки — часть значения."""
+    """Реальный таб — делимитер; \\t внутри ячейки — часть значения."""
     res = PgCopyTextResult(text="a\tb\nleft\\tinner\tright\n")
     assert list(res.iter_rows()) == [["a", "b"], ["left\tinner", "right"]]
 

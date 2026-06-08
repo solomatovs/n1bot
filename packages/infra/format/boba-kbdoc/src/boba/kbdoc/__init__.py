@@ -2,20 +2,20 @@
 
 Содержимое:
 
-- `reader.py` — `KbDocReader`: строго парсит плоский `key: value` header
-  до `---` (обязательные `source`/`title`/`page_id`/`space`, иначе
-  `KbDocFormatError`) → metadata; body отдаёт одной `ParagraphSection`
+- reader.py — KbDocReader: строго парсит плоский key: value header
+  до --- (обязательные source/title/page_id/space, иначе
+  KbDocFormatError) -> metadata; body отдаёт одной ParagraphSection
   без структурной разбивки (операторская KB-конвенция: каждый документ —
   атомарная единица). Размерный fallback делает splitter в
-  `StructuralChunker`.
-- `keys.py`   — `KbDocKeys`: typed `MetadataKey`-и (`SOURCE_URL` —
-  top-level для citation; `PAGE_ID`/`SPACE` под `reader.kbdoc.*`;
-  `CUSTOM_PREFIX="reader.kbdoc."` для произвольных header-ключей).
+  StructuralChunker.
+- keys.py   — KbDocKeys: typed MetadataKey-и (SOURCE_URL —
+  top-level для citation; PAGE_ID/SPACE под reader.kbdoc.*;
+  CUSTOM_PREFIX="reader.kbdoc." для произвольных header-ключей).
 
 Зависимости:
 
-- `boba-indexing` — `Reader[str]`, `Section`, `ParagraphSection`,
-  `Metadata`, `MetadataKey`.
+- boba-indexing — Reader[str], Section, ParagraphSection,
+  Metadata, MetadataKey.
 """
 
 from __future__ import annotations

@@ -1,12 +1,12 @@
-"""Конфиги bash-tool'ов: `BashLocalConfig` и `BashSandboxConfig`.
+"""Конфиги bash-tool'ов: BashLocalConfig и BashSandboxConfig.
 
-Оба — чистые pydantic-конфиги; резолвятся из секции плагина `[tool.shell]`
-(`bash_local`/`bash_sandbox`-поля в ней), путь даёт сборщик.
+Оба — чистые pydantic-конфиги; резолвятся из секции плагина [tool.shell]
+(bash_local/bash_sandbox-поля в ней), путь даёт сборщик.
 
 Плагин-уровневое включение/allowlist — забота framework'а через
-`[tool.shell] enable=true, tools=["bash_local"]` (см.
-`AgentBuilder.discover_plugins`). Плагин про эти поля не знает,
-`extra="ignore"` позволяет им жить в общей TOML-иерархии.
+[tool.shell] enable=true, tools=["bash_local"] (см.
+AgentBuilder.discover_plugins). Плагин про эти поля не знает,
+extra="ignore" позволяет им жить в общей TOML-иерархии.
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ __all__ = ["BashLocalConfig", "BashSandboxConfig"]
 
 
 class BashLocalConfig(BaseModel):
-    """Конфиг `bash_local`: subprocess без bwrap-изоляции.
+    """Конфиг bash_local: subprocess без bwrap-изоляции.
 
-    Config-секция: `[tool.bash_local]`.
-    Все поля — operator-controlled. LLM выбирает только `command`/`stdin`,
+    Config-секция: [tool.bash_local].
+    Все поля — operator-controlled. LLM выбирает только command/stdin,
     остальное задано здесь.
     """
 
@@ -70,7 +70,7 @@ class BashLocalConfig(BaseModel):
         ge=1024,
         description=(
             "Лимит stdout И stderr по отдельности (мин. 1024). "
-            "Превышение → обрезка и `truncated=True` в результате."
+            "Превышение -> обрезка и `truncated=True` в результате."
         ),
     )
 
@@ -89,10 +89,10 @@ class BashLocalConfig(BaseModel):
 
 
 class BashSandboxConfig(BaseModel):
-    """Конфиг `bash_sandbox`: subprocess внутри bubblewrap.
+    """Конфиг bash_sandbox: subprocess внутри bubblewrap.
 
-    Config-секция: `[tool.bash_sandbox]`.
-    `profiles` — реестр именованных профилей песочницы (FS-маунты,
+    Config-секция: [tool.bash_sandbox].
+    profiles — реестр именованных профилей песочницы (FS-маунты,
     network, env, timeouts). LLM выбирает профиль по имени из этого
     реестра, поля профиля менять не может.
     """
@@ -102,8 +102,7 @@ class BashSandboxConfig(BaseModel):
     workspace_root: Path = Field(
         default=Path(),
         description=(
-            "Host-путь к корню проекта. RW-bind в песочнице + cwd "
-            "для запуска bwrap."
+            "Host-путь к корню проекта. RW-bind в песочнице + cwd для запуска bwrap."
         ),
     )
     profiles: dict[str, SandboxProfile] = Field(
@@ -122,11 +121,11 @@ class BashSandboxConfig(BaseModel):
     def _validate(self) -> Self:
         """Консистентность default_profile↔profiles + резолв workspace_root.
 
-        Пустые `profiles` валидны: если оператор включил `[tool.shell]`,
-        но не настраивал сандбокс, `bash_sandbox` всё равно регистрируется
+        Пустые profiles валидны: если оператор включил [tool.shell],
+        но не настраивал сандбокс, bash_sandbox всё равно регистрируется
         (bwrap присутствует), а при первом вызове tool отдаст
-        `unknown_profile`-payload через `_unknown_profile_payload`. Eager-
-        валидация эту ситуацию ломала и блокировала запуск `bash_local`.
+        unknown_profile-payload через _unknown_profile_payload. Eager-
+        валидация эту ситуацию ломала и блокировала запуск bash_local.
         """
         if self.default_profile and self.default_profile not in self.profiles:
             msg = (

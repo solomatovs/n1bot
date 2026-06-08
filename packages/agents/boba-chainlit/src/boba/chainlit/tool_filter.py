@@ -1,12 +1,12 @@
-"""Per-thread фильтр над `ToolCatalog`.
+"""Per-thread фильтр над ToolCatalog.
 
-`ThreadFilteredToolCatalog` оборачивает обычный catalog и на каждом turn'е
-читает свежий `ThreadMeta.enabled_tool_ids` из репозитория:
-- `None` ⇒ отдаёт всё, что есть в inner (backward-compat для тредов без выбора).
-- `list` ⇒ оставляет только tool_id, попадающие в список; неизвестные молча
+ThreadFilteredToolCatalog оборачивает обычный catalog и на каждом turn'е
+читает свежий ThreadMeta.enabled_tool_ids из репозитория:
+- None ⇒ отдаёт всё, что есть в inner (backward-compat для тредов без выбора).
+- list ⇒ оставляет только tool_id, попадающие в список; неизвестные молча
   игнорируются (валидация — на стороне chainlit при сохранении настроек).
 
-Catalog filtration — единственный механизм; `ToolExecutor` намеренно не
+Catalog filtration — единственный механизм; ToolExecutor намеренно не
 оборачивается: agent выполняет то, что попросила модель, а модель видит
 только отфильтрованный subset (см. обсуждение архитектуры).
 """

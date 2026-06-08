@@ -14,7 +14,7 @@ _ALL_FILE_TOOLS = {
 def test_disabled_by_default(
     make_files_tool_names: Callable[[dict[str, Any]], list[str]],
 ):
-    """Пустая секция → плагин не грузится."""
+    """Пустая секция -> плагин не грузится."""
     assert make_files_tool_names({}) == []
 
 

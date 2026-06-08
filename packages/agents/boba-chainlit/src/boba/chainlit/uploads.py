@@ -1,7 +1,7 @@
-"""Сохранение user-uploaded файлов из Chainlit в project-`WorkspaceShell`.
+"""Сохранение user-uploaded файлов из Chainlit в project-WorkspaceShell.
 
-Файлы складываются в фиксированную поддиректорию `upload/` внутри workspace
-сессии — туда же, куда смотрят tool'ы `cat`/`grep`/`ls` из `boba-tool-files`.
+Файлы складываются в фиксированную поддиректорию upload/ внутри workspace
+сессии — туда же, куда смотрят tool'ы cat/grep/ls из boba-tool-files.
 Конфликт имён разрешается перезаписью (последний загруженный файл — актуальный).
 """
 
@@ -28,10 +28,10 @@ _NAME_MAX = 120
 
 
 def _sanitize_filename(name: str) -> str:
-    """Привести к Unicode-NFC, заменить запрещённые символы на `_`, обрезать длину.
+    """Привести к Unicode-NFC, заменить запрещённые символы на _, обрезать длину.
 
     NFC обязателен: клиенты на macOS/iOS присылают имена в разложенной форме
-    (NFD, например `й` = `и` + комбинирующая бреве), а LLM и остальная система
+    (NFD, например й = и + комбинирующая бреве), а LLM и остальная система
     оперируют NFC. Без канонизации lookup файла по имени (read_binary/cat/...)
     не совпадает с записью на диске.
     """
@@ -46,11 +46,11 @@ async def save_user_uploads(
     elements: Iterable[Any],
     shell: WorkspaceShell,
 ) -> list[str]:
-    """Сохранить attachment'ы `cl.Message.elements` в `upload/` workspace'а.
+    """Сохранить attachment'ы cl.Message.elements в upload/ workspace'а.
 
     Возвращает список workspace-relative путей сохранённых файлов в порядке
     поступления. Конфликт имён — перезапись. Запись стримом через
-    `atomic_write_binary`: содержимое не загружается в память.
+    atomic_write_binary: содержимое не загружается в память.
     """
     saved: list[str] = []
     for el in elements:
@@ -89,7 +89,7 @@ def _save_from_disk(
 def _save_from_memory(
     shell: WorkspaceShell, rel: str, content: Any,
 ) -> None:
-    """Принять `bytes`/`bytearray`/`memoryview`/`str` → atomic_write_binary."""
+    """Принять bytes/bytearray/memoryview/str -> atomic_write_binary."""
     if isinstance(content, (bytes, bytearray, memoryview)):
         payload = bytes(content)
     elif isinstance(content, str):

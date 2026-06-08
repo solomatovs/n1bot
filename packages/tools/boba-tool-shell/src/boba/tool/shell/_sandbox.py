@@ -1,20 +1,20 @@
-"""Pure builder: SandboxProfile + command → argv для запуска bwrap.
+"""Pure builder: SandboxProfile + command -> argv для запуска bwrap.
 
 Без I/O и без subprocess — только формирование списка аргументов.
 Так builder тестируется юнит-тестами в любой среде, без bwrap на машине.
 
 Контракт argv:
-- `bwrap` со стандартными изоляциями (`--die-with-parent`, `--unshare-*`,
-  свой `--proc`, `--dev`, `--new-session`);
+- bwrap со стандартными изоляциями (--die-with-parent, --unshare-*,
+  свой --proc, --dev, --new-session);
 - read-only bind'ы из профиля + RW (включая workspace);
 - tmpfs-mountpoints;
-- env: `--clearenv` плюс жёсткий набор `env` (caller сам резолвил
-  passthrough из `os.environ` и слил с `env_set`);
-- `--chdir <cwd>`;
-- финальный `--`, дальше `bash -c <command>`.
+- env: --clearenv плюс жёсткий набор env (caller сам резолвил
+  passthrough из os.environ и слил с env_set);
+- --chdir <cwd>;
+- финальный --, дальше bash -c <command>.
 
 Существование путей _не_ проверяется здесь — это работа фазы 5
-(self-check) и обёртки в `BashTool.execute`.
+(self-check) и обёртки в BashTool.execute.
 """
 
 from __future__ import annotations
@@ -36,15 +36,15 @@ def build_bwrap_argv(
     workspace_root: str,
     env: Mapping[str, str],
 ) -> list[str]:
-    """Сформировать argv для запуска `command` в песочнице по `profile`.
+    """Сформировать argv для запуска command в песочнице по profile.
 
-    `workspace_root` — абсолютный, уже-каноничный путь к корню проекта;
-    автоматически добавляется в RW-binds и, если `profile.cwd` не
+    workspace_root — абсолютный, уже-каноничный путь к корню проекта;
+    автоматически добавляется в RW-binds и, если profile.cwd не
     задан, становится cwd внутри песочницы.
 
-    `env` — финальный набор переменных, который должен оказаться внутри
-    песочницы. Caller отвечает за резолв `profile.env_passthrough` через
-    `os.environ` и слияние с `profile.env_set`.
+    env — финальный набор переменных, который должен оказаться внутри
+    песочницы. Caller отвечает за резолв profile.env_passthrough через
+    os.environ и слияние с profile.env_set.
     """
     argv: list[str] = [
         _BWRAP_BIN,

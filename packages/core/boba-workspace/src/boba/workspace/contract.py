@@ -1,9 +1,9 @@
 """WorkspaceShell: изолированная shell-сессия над файловым namespace'ом.
 
-`ProjectWorkspaceShell` — единственный тонкий маркер: DI-токен, по которому
+ProjectWorkspaceShell — единственный тонкий маркер: DI-токен, по которому
 file-tools авто-резолвят свой workspace. Остальные потребители (history,
-storage, observers) принимают `WorkspaceShell` напрямую и конструируют
-`FsWorkspaceShell` на месте из пути — без DI и без маркеров.
+storage, observers) принимают WorkspaceShell напрямую и конструируют
+FsWorkspaceShell на месте из пути — без DI и без маркеров.
 """
 
 from __future__ import annotations
@@ -39,20 +39,20 @@ __all__ = [
 
 
 class BinaryReadable(Protocol):
-    """Минимальный read-only handle: только `read(n) -> bytes`.
+    """Минимальный read-only handle: только read(n) -> bytes.
 
-    Структурно совместим с `io.BufferedIOBase`, `io.BytesIO`,
-    `open(path, 'rb')`, streaming-response-обёртками поверх HTTP.
+    Структурно совместим с io.BufferedIOBase, io.BytesIO,
+    open(path, 'rb'), streaming-response-обёртками поверх HTTP.
     """
 
     def read(self, n: int = -1, /) -> bytes: ...
 
 
 class TextReadable(Protocol):
-    """Минимальный read-only handle: только `read(n) -> str`.
+    """Минимальный read-only handle: только read(n) -> str.
 
-    Структурно совместим с `io.TextIOBase`, `io.StringIO`,
-    `open(path, 'r', encoding=...)`.
+    Структурно совместим с io.TextIOBase, io.StringIO,
+    open(path, 'r', encoding=...).
     """
 
     def read(self, n: int = -1, /) -> str: ...
@@ -92,7 +92,7 @@ class EntryMeta:
 
 @dataclass(frozen=True)
 class FileEntry:
-    """Элемент ls/tree — обычный файл. Дискриминатор: `kind == "file"`."""
+    """Элемент ls/tree — обычный файл. Дискриминатор: kind == "file"."""
 
     path: str
     kind: Literal["file"] = "file"
@@ -100,7 +100,7 @@ class FileEntry:
 
 @dataclass(frozen=True)
 class DirectoryEntry:
-    """Элемент ls/tree — директория. Дискриминатор: `kind == "directory"`."""
+    """Элемент ls/tree — директория. Дискриминатор: kind == "directory"."""
 
     path: str
     kind: Literal["directory"] = "directory"
@@ -108,14 +108,14 @@ class DirectoryEntry:
 
 @dataclass(frozen=True)
 class OtherEntry:
-    """Элемент ls/tree — спец-файл (symlink/socket/fifo). `kind == "other"`."""
+    """Элемент ls/tree — спец-файл (symlink/socket/fifo). kind == "other"."""
 
     path: str
     kind: Literal["other"] = "other"
 
 
 LsEntry = FileEntry | DirectoryEntry | OtherEntry
-"""Discriminated union элементов ls/tree по полю `kind`."""
+"""Discriminated union элементов ls/tree по полю kind."""
 
 
 class WorkspaceError(Exception):
@@ -204,7 +204,7 @@ class WorkspaceShell(ABC, Generic[TWsId]):
     ) -> Iterator[LsEntry]:
         """Список элементов в указанном пути (без вложенности).
 
-        Включает файлы и директории; дискриминатор — поле `kind`.
+        Включает файлы и директории; дискриминатор — поле kind.
         """
         ...
 
@@ -214,7 +214,7 @@ class WorkspaceShell(ABC, Generic[TWsId]):
     ) -> Iterator[LsEntry]:
         """Рекурсивный обход всех элементов начиная с пути.
 
-        Включает файлы и директории; дискриминатор — поле `kind`.
+        Включает файлы и директории; дискриминатор — поле kind.
         """
         ...
 
@@ -264,11 +264,11 @@ class WorkspaceShell(ABC, Generic[TWsId]):
     def atomic_write_text(
         self, path: str, source: TextReadable, encoding: str = "utf-8",
     ) -> None:
-        """Атомарная перезапись текста: stream → tmp → fsync → `os.replace`.
+        """Атомарная перезапись текста: stream -> tmp -> fsync -> os.replace.
 
-        `source` — любой объект с `.read(n) -> str` (`io.StringIO`,
-        `open(path, 'r')`). Tmp создаётся в той же директории, что и
-        target — обходит лимиты `/tmp` и гарантирует atomic rename
+        source — любой объект с .read(n) -> str (io.StringIO,
+        open(path, 'r')). Tmp создаётся в той же директории, что и
+        target — обходит лимиты /tmp и гарантирует atomic rename
         в пределах одной FS. Использовать для критичных wire-моделей
         (JSON-индексы, manifest'ы, конфиги).
         """
@@ -276,11 +276,11 @@ class WorkspaceShell(ABC, Generic[TWsId]):
 
     @abstractmethod
     def atomic_write_binary(self, path: str, source: BinaryReadable) -> None:
-        """Атомарная перезапись бинарных: stream → tmp → fsync → `os.replace`.
+        """Атомарная перезапись бинарных: stream -> tmp -> fsync -> os.replace.
 
-        `source` — любой объект с `.read(n) -> bytes` (`io.BytesIO`,
-        `open(path, 'rb')`, streaming-handle). Содержимое не загружается
-        в память целиком — `shutil.copyfileobj` копирует чанками.
+        source — любой объект с .read(n) -> bytes (io.BytesIO,
+        open(path, 'rb'), streaming-handle). Содержимое не загружается
+        в память целиком — shutil.copyfileobj копирует чанками.
         """
         ...
 
@@ -320,5 +320,5 @@ class ProjectWorkspaceShell(WorkspaceShell[WorkspaceId]):
 
     Единственный оставшийся маркер: служит DI-токеном, по которому file-tools
     авто-резолвят свой workspace. Все прочие виды (history, prompt, scratch) —
-    это просто `FsWorkspaceShell`, сконструированный из нужного пути на месте.
+    это просто FsWorkspaceShell, сконструированный из нужного пути на месте.
     """

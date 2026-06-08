@@ -10,11 +10,11 @@ CleanupStrategy — стратегии удаления устаревших з�
       требует full-coverage от RequestSource
 
 Пользователь может добавить кастомную (TimeBasedCleanup, SizeBasedCleanup
-и т.п.) подклассом `CleanupStrategy`.
+и т.п.) подклассом CleanupStrategy.
 
-Каждая стратегия получает `CleanupContext` — снимок состояния прогона
-(run_start, touched_sources) + ссылку на `IndexQuery`. Cleanup делает
-только filter-based операции (`clean(where=...)`), поэтому ему хватает
+Каждая стратегия получает CleanupContext — снимок состояния прогона
+(run_start, touched_sources) + ссылку на IndexQuery. Cleanup делает
+только filter-based операции (clean(where=...)), поэтому ему хватает
 узкого read/delete-контракта без write-возможностей IndexSink.
 """
 
@@ -41,7 +41,7 @@ __all__ = [
 class CleanupContext:
     """Снимок состояния одного прогона Indexer.run, передаваемый в стратегию.
 
-    `query` уже привязан к своему scope'у (namespace/tenant/...) —
+    query уже привязан к своему scope'у (namespace/tenant/...) —
     стратегии не нужно его конфигурировать; всё что нужно — это
     предикат stale (через Filter DSL) и вызов clean.
     """
@@ -77,7 +77,7 @@ class IncrementalCleanup(CleanupStrategy):
 
     Безопасно для не-полных прогонов: cleanup затронет только те source_id,
     которые были обработаны в этом прогоне и не получили refresh
-    (`updated_at < run_start`).
+    (updated_at < run_start).
     """
 
     def execute(self, ctx: CleanupContext) -> int:

@@ -1,6 +1,6 @@
-"""Tool `confluence_ingest_pages`: индексация явного списка страниц по page_id.
+"""Tool confluence_ingest_pages: индексация явного списка страниц по page_id.
 
-Общий конфиг/pipeline — `ingest_base.py` (секция `[tool.kb.confluence.ingest]`).
+Общий конфиг/pipeline — ingest_base.py (секция [tool.kb.confluence.ingest]).
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from typing import Annotated
 from pydantic import Field
 
 from boba.settings import LLMStringList
+from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngest, ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
 from boba.tools import FromConfig, tool
@@ -46,18 +47,16 @@ def confluence_ingest_pages(
 ) -> TableResult:
     """Индексирует явный список страниц Confluence по page_id в KB.
 
-    Возвращает `TableResult` — одну строку-summary с колонками `collection`/
-    `indexed`/`skipped_unchanged`/`pruned`/`failed`; список page_id — в `note`.
+    Возвращает TableResult — одну строку-summary с колонками collection/
+    indexed/skipped_unchanged/pruned/failed; список page_id — в note.
     """
+    conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
     request_source = ConfluencePagesRequestSource(
-        base_url=cfg.confluence.base_url,
-        auth=cfg.confluence.profile.auth.httpx_auth(),
+        base_url=conn.base_url,
         page_ids=page_ids,
-        body_format=cfg.confluence.body_format,
+        body_format=conn.body_format,
     )
-    result = ConfluenceIngest.ingest(
-        cfg, request_source, prune_missing, ConfluenceIngest.PIPELINE_ID_PAGES,
-    )
+    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing)
     return TableResult(
         rows=[result],
         note=f"page_ids ({len(page_ids)}): {', '.join(page_ids)}",

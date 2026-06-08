@@ -1,6 +1,6 @@
 """tool_config: ре-экспорт OmegaConf-резолверов в composition-слой агента.
 
-Детальная логика резолва/фильтрации покрыта в `boba-settings/tests/test_resolver.py`;
+Детальная логика резолва/фильтрации покрыта в boba-settings/tests/test_resolver.py;
 здесь — что composition-слой отдаёт рабочие реализации портов поверх конфиг-инстанса.
 """
 

@@ -145,7 +145,7 @@ def _run_repl(
     profile: AgentProfile,
     history: HistoryService,
 ) -> int:
-    """Интерактивный цикл: читает запрос → прогоняет агента → повторяет."""
+    """Интерактивный цикл: читает запрос -> прогоняет агента -> повторяет."""
     banner = (
         f"boba-cli REPL — model={profile.model}\n"
         f"  /exit, /quit, :q — выход\n"

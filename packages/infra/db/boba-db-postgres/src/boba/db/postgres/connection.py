@@ -1,12 +1,12 @@
-"""`PostgresConnection` — переиспользуемая базовая модель Postgres-подключения.
+"""PostgresConnection — переиспользуемая базовая модель Postgres-подключения.
 
-`BaseModel`, без `config_path` — встраивается как nested-поле в tool-конфиги,
+BaseModel, без config_path — встраивается как nested-поле в tool-конфиги,
 которым нужно соединение с Postgres (ingest, search, sql). Заполняется ссылкой
-`${postgres.<name>}` из секции `[postgres.<name>]` в config.toml.
+${postgres.<name>} из секции [postgres.<name>] в config.toml.
 
 Связанные helpers:
-- `to_dsn(session_options=...)` — libpq DSN через `psycopg.conninfo.make_conninfo`.
-- `to_pool_config()` — `PostgresConfig` для `PostgresPool.get(...)` — drop-in.
+- to_dsn(session_options=...) — libpq DSN через psycopg.conninfo.make_conninfo.
+- to_pool_config() — PostgresConfig для PostgresPool.get(...) — drop-in.
 """
 
 from __future__ import annotations
@@ -106,11 +106,11 @@ class PostgresConnection(BaseModel):
         return self
 
     def to_dsn(self, session_options: dict[str, str] | None = None) -> str:
-        """libpq-DSN через `psycopg.conninfo.make_conninfo`.
+        """libpq-DSN через psycopg.conninfo.make_conninfo.
 
-        `session_options` — словарь GUC, пакуется в libpq-параметр
-        `options='-c k=v ...'`. Используется sql-tool'ом для зашивки
-        `default_transaction_read_only=on` + `statement_timeout=<ms>`
+        session_options — словарь GUC, пакуется в libpq-параметр
+        options='-c k=v ...'. Используется sql-tool'ом для зашивки
+        default_transaction_read_only=on + statement_timeout=<ms>
         прямо в DSN (PG применит при коннекте).
         """
         kwargs: dict[str, Any] = {
@@ -131,7 +131,7 @@ class PostgresConnection(BaseModel):
         self,
         session_options: dict[str, str] | None = None,
     ) -> PostgresConfig:
-        """`PostgresConfig` для `PostgresPool.get(...)` — drop-in."""
+        """PostgresConfig для PostgresPool.get(...) — drop-in."""
         return PostgresConfig(
             dsn=self.to_dsn(session_options=session_options),
             min_size=self.pool_min_size,

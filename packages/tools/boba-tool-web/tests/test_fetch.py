@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from boba.tool.web.connection import WebConnection
-from boba.transport.http import HttpConnection
 from boba.tool.web.tools.fetch import web_fetch
+from boba.transport.http import HttpProfile
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -23,7 +23,7 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
 
 
 def _cfg() -> WebConnection:
-    return WebConnection(profiles={"docs.python.org": HttpConnection()})
+    return WebConnection(profiles={"docs.python.org": HttpProfile()})
 
 
 def test_fetch_returns_dict_with_first_window_of_raw_html(
@@ -93,7 +93,7 @@ def test_fetch_window_past_eof_returns_empty_with_total(
     )
     assert out["content"] == ""
     assert out["returned_lines"] == 0
-    # `body` без trailing-line после \n даёт 1 строку
+    # body без trailing-line после \n даёт 1 строку
     assert out["total_lines"] == 1
 
 
@@ -161,7 +161,7 @@ def test_fetch_markdown_returns_markdown_window(
         line_offset=0,
         line_count=50,
     )
-    # markdownify даёт `# Title\n\nPara` и тп — нет frontmatter'а, чистый MD
+    # markdownify даёт # Title\n\nPara и тп — нет frontmatter'а, чистый MD
     assert "# Title" in out["content"]
     assert "Para" in out["content"]
     assert out["path"] == "https://docs.python.org/x"

@@ -12,11 +12,11 @@ from boba.indexing import Metadata, RawDocument, SourceId
 
 @pytest.fixture
 def make_raw_doc() -> Callable[..., RawDocument]:
-    """Фабрика `RawDocument` поверх in-memory BytesIO.
+    """Фабрика RawDocument поверх in-memory BytesIO.
 
     Сигнатура надмножество того, что нужно reader-тестам и
-    format-plan-тестам: `html` обязателен, `source_id`/`metadata`
-    с дефолтами. Раньше `_doc(...)` дублировался в test_html_reader.py
+    format-plan-тестам: html обязателен, source_id/metadata
+    с дефолтами. Раньше _doc(...) дублировался в test_html_reader.py
     и test_format_plan.py — теперь один источник правды.
     """
 

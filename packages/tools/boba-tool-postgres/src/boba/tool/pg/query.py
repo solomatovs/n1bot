@@ -1,4 +1,4 @@
-"""Tool query: произвольный SQL → CSV (COPY TO STDOUT)."""
+"""Tool query: произвольный SQL -> CSV (COPY TO STDOUT)."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def query(
 
     Перед вызовом стоит позвать list_tables и describe_table.
     Запрос исполняется как есть (COPY-обёртка); ошибки SQL уходят дословно.
-    Слишком много строк / большой объём → ошибка с просьбой добавить LIMIT.
+    Слишком много строк / большой объём -> ошибка с просьбой добавить LIMIT.
     """
     executor = SqlExecutor(cfg=cfg)
     try:

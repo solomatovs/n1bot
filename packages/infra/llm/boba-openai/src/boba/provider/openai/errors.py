@@ -24,12 +24,12 @@ _HTTP_SERVER_ERROR_MAX = 600
 
 
 class OpenAIErrorConverter(Converter[Exception, LLMError]):
-    """Сырые openai/httpx исключения → доменные LLMError.
+    """Сырые openai/httpx исключения -> доменные LLMError.
 
     Порядок case-веток отражает иерархию openai/httpx:
       * subclass-ветка идёт раньше своего parent'а (APITimeoutError до
         APIConnectionError; RateLimitError до APIStatusError);
-      * специфический guard на `status_code` идёт раньше «голого» APIStatusError;
+      * специфический guard на status_code идёт раньше «голого» APIStatusError;
       * httpx.TimeoutException до httpx.RequestError; httpx.RequestError до
         httpx.HTTPError; httpx.HTTPError до fallback.
     """
@@ -37,14 +37,14 @@ class OpenAIErrorConverter(Converter[Exception, LLMError]):
     @staticmethod
     def _describe_openai(exc: openai.APIError) -> str:
         """
-        `str(exc) + ' (METHOD URL)'`. Инвариант: `openai.APIError` всегда несёт `.request`
+        str(exc) + ' (METHOD URL)'. Инвариант: openai.APIError всегда несёт .request
         """
         return f"{exc} ({exc.request.method} {exc.request.url})"
 
     @staticmethod
     def _describe_httpx_request(exc: httpx.RequestError) -> str:
         """
-        `str(exc) + ' (METHOD URL)'`. Инвариант: `httpx.RequestError` всегда несёт .request
+        str(exc) + ' (METHOD URL)'. Инвариант: httpx.RequestError всегда несёт .request
         """
         return f"{exc} ({exc.request.method} {exc.request.url})"
 
@@ -111,12 +111,12 @@ class OpenAIErrorConverter(Converter[Exception, LLMError]):
                     self._describe_openai(e),
                     status_code=e.status_code,
                 )
-            # httpx.TimeoutException ⊂ httpx.RequestError — обе несут `.request`.
+            # httpx.TimeoutException ⊂ httpx.RequestError — обе несут .request.
             case httpx.TimeoutException() as e:
                 return LLMTimeoutError(self._describe_httpx_request(e))
             case httpx.RequestError() as e:
                 return LLMConnectionError(self._describe_httpx_request(e))
-            # httpx.HTTPError без `.request` (InvalidURL, CookieConflict) —
+            # httpx.HTTPError без .request (InvalidURL, CookieConflict) —
             # дотягиваться до URL некуда, оставляем голый текст.
             case httpx.HTTPError() as e:
                 return LLMConnectionError(str(e))

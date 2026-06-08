@@ -1,10 +1,10 @@
-"""Декларативный слой: `@tool`/`@provides` + сборка Dishka-DI в `ToolRegistry`.
+"""Декларативный слой: @tool/@provides + сборка Dishka-DI в ToolRegistry.
 
-Author-API (пишут в плагинах): `tool`, `provides`, `FromDI`, `FromConfig`,
-`Scope`. Composition-API (собирают агента): `ToolBuilder`, `ConfigResolver`,
-`PluginToolFilter` и его реализации. Ошибки декларации/регистрации — здесь же.
+Author-API (пишут в плагинах): tool, provides, FromDI, FromConfig,
+Scope. Composition-API (собирают агента): ToolBuilder, ConfigResolver,
+PluginToolFilter и его реализации. Ошибки декларации/регистрации — здесь же.
 
-Слой зависит от `boba.tools.domain` (контракт) и `boba.tools.framework`
+Слой зависит от boba.tools.domain (контракт) и boba.tools.framework
 (registry), а также от Dishka. Domain/framework на него не ссылаются.
 """
 

@@ -64,5 +64,5 @@ def test_composite_fans_out_on_response_chunk() -> None:
 
 
 def test_on_response_default_noop() -> None:
-    # не переопределён → вызов не падает и ничего не делает
+    # не переопределён -> вызов не падает и ничего не делает
     _MinimalObserver().on_response("ignored")

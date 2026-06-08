@@ -1,18 +1,18 @@
 """HTML Reader'ы.
 
-- `HtmlReader`             — default: structural parser, эмитит весь поток
-                              типизированных `Section`-ов через
-                              `HtmlSectionParser`.
-- `HtmlPlainReader`        — один `ParagraphSection` на весь body + `<title>`.
+- HtmlReader             — default: structural parser, эмитит весь поток
+                              типизированных Section-ов через
+                              HtmlSectionParser.
+- HtmlPlainReader        — один ParagraphSection на весь body + <title>.
                               Для документов где структура не нужна.
-- `HtmlReadabilityReader`  — `trafilatura` отбрасывает boilerplate
-                              (nav/footer/sidebar) → один `ParagraphSection`.
+- HtmlReadabilityReader  — trafilatura отбрасывает boilerplate
+                              (nav/footer/sidebar) -> один ParagraphSection.
 
 Все reader'ы:
-- удаляют `<script>`/`<style>` из выдачи (HtmlSectionParser делает сам;
+- удаляют <script>/<style> из выдачи (HtmlSectionParser делает сам;
   Plain/Readability явно перед сериализацией);
-- кладут `<title>` (если есть) в `ReaderKeys.PAGE_TITLE`;
-- пробрасывают `RawDocument.source_id` и мержат `RawDocument.metadata` в Section.
+- кладут <title> (если есть) в ReaderKeys.PAGE_TITLE;
+- пробрасывают RawDocument.source_id и мержат RawDocument.metadata в Section.
 """
 
 from __future__ import annotations
@@ -61,12 +61,12 @@ def _build_meta(value: RawDocument, title: str) -> Metadata:
 
 
 class HtmlReader(Reader[str]):
-    """Default HTML reader: structural-parsing через `HtmlSectionParser`.
+    """Default HTML reader: structural-parsing через HtmlSectionParser.
 
-    Эмитит весь поток типизированных секций (`HeadingSection`,
-    `ParagraphSection`, `HtmlListSection`, `HtmlTableSection`,
-    `HtmlCodeBlockSection`, `HtmlBlockquoteSection`,
-    `HtmlHorizontalRuleSection`) с line-precision offset-tracking.
+    Эмитит весь поток типизированных секций (HeadingSection,
+    ParagraphSection, HtmlListSection, HtmlTableSection,
+    HtmlCodeBlockSection, HtmlBlockquoteSection,
+    HtmlHorizontalRuleSection) с line-precision offset-tracking.
     """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.html")
@@ -74,13 +74,10 @@ class HtmlReader(Reader[str]):
     def __init__(self) -> None:
         self._parser = HtmlSectionParser()
 
-    def name(self) -> str:
-        return "HtmlReader"
-
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+    def read(self, value: RawDocument) -> Iterable[Section[str]]:
         payload = value.handle.read()
         if not payload.strip():
             return
@@ -98,21 +95,18 @@ class HtmlReader(Reader[str]):
 
 
 class HtmlPlainReader(Reader[str]):
-    """Один `ParagraphSection` на весь body + `<title>`.
+    """Один ParagraphSection на весь body + <title>.
 
-    Не пытается выделять main content (для этого `HtmlReadabilityReader`),
-    не режет по структуре (для этого `HtmlReader`).
+    Не пытается выделять main content (для этого HtmlReadabilityReader),
+    не режет по структуре (для этого HtmlReader).
     """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.html.plain")
 
-    def name(self) -> str:
-        return "HtmlPlainReader"
-
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+    def read(self, value: RawDocument) -> Iterable[Section[str]]:
         payload = value.handle.read()
         if not payload.strip():
             return
@@ -140,7 +134,7 @@ class HtmlPlainReader(Reader[str]):
     @staticmethod
     def _render_block_text(target) -> str:
         """Plain-text body c сохранением структуры: блочные элементы
-        разделяются `\\n\\n`, остальной inline-текст склеен пробелом.
+        разделяются \\n\\n, остальной inline-текст склеен пробелом.
         """
         block_tags = (
             "p", "div", "section", "article", "header", "footer", "main",
@@ -164,23 +158,20 @@ class HtmlPlainReader(Reader[str]):
 
 
 class HtmlReadabilityReader(Reader[str]):
-    """Content-extraction через `trafilatura`: отбрасывает boilerplate
+    """Content-extraction через trafilatura: отбрасывает boilerplate
     (nav/header/footer/sidebar) и возвращает plain-text main content одним
-    `ParagraphSection`.
+    ParagraphSection.
 
-    **Зависимость**: `trafilatura` (опциональная). Установка:
-    `pip install boba-html[readability]`.
+    **Зависимость**: trafilatura (опциональная). Установка:
+    pip install boba-html[readability].
     """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.html.readability")
 
-    def name(self) -> str:
-        return "HtmlReadabilityReader"
-
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+    def read(self, value: RawDocument) -> Iterable[Section[str]]:
         payload = value.handle.read()
         if not payload.strip():
             return

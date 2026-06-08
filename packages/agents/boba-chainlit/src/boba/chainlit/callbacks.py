@@ -1,4 +1,4 @@
-"""Chainlit-callback'и (entry-file для `run_chainlit`)."""
+"""Chainlit-callback'и (entry-file для run_chainlit)."""
 
 from __future__ import annotations
 
@@ -149,7 +149,7 @@ async def _send_chat_settings(meta: ThreadMeta | None) -> None:
     """Собрать табы у всех зарегистрированных секций и отправить шестерёнку.
 
     Секция, у которой сейчас «нечего показать» (например, ToolsSection до
-    того, как catalog закеширован) возвращает пустой `list[Tab]` и просто
+    того, как catalog закеширован) возвращает пустой list[Tab] и просто
     выпадает из общего набора.
     """
     tabs = []
@@ -175,7 +175,7 @@ async def on_chat_start() -> None:
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict) -> None:
     # При клике по thread'у в sidebar Chainlit зовёт нас вместо on_chat_start.
-    # Сообщения уже отрендерены через data_layer.get_thread → HistoryService.
+    # Сообщения уже отрендерены через data_layer.get_thread -> HistoryService.
     metadata = thread.get("metadata") or {}
     raw = metadata.get("workspace_id")
     if not isinstance(raw, str):
@@ -208,7 +208,7 @@ async def on_chat_resume(thread: ThreadDict) -> None:
 async def _bootstrap_meta_if_missing(thread_id: ThreadId) -> bool:
     """Создать пустую мету, если её ещё нет. True = создана или уже была.
 
-    Секции работают узкими методами (`set_*`), которые требуют существующей
+    Секции работают узкими методами (set_*), которые требуют существующей
     меты. Если юзер сохраняет настройки до первого on_message — здесь и
     создаём минимальный скелет (workspace + user); поля секций приедут
     следующими узкими вызовами.
@@ -340,7 +340,7 @@ def _current_run_step_id() -> str | None:
 async def _render_events(queue: asyncio.Queue[AgentEvent | None]) -> None:
     """Потребитель очереди live-событий; маппит через общий диспатчер.
 
-    Toggle `diagnostic_mode` берётся из `cl.user_session` - переключить
+    Toggle diagnostic_mode берётся из cl.user_session - переключить
     можно из UI через ChatSettings или slash-command (вне scope этого
     файла). По умолчанию False -> диагностика не рендерится.
     """

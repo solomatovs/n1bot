@@ -2,47 +2,47 @@
 
 Архитектура:
 
-1. Базовая модель `AgentEventBase`, от которой построены 5 категорий событий.
+1. Базовая модель AgentEventBase, от которой построены 5 категорий событий.
    AgentEventBase несёт поля, общие для всех событий:
 
-    `type`
+    type
         дискриминатор конкретного класса события.
-        Используется `AgentEventAdapter` и `AgentEventRegistry` для
+        Используется AgentEventAdapter и AgentEventRegistry для
         (де)сериализации. Совпадает с именем класса.
 
-    `category`
-        маркер семейства (`EventCategory`)
+    category
+        маркер семейства (EventCategory)
         Sink не должен знать конкретный event,
         но он должен знать все возможные категории event'ов
 
-    `request_id`
+    request_id
         идентификатор пользовательского запроса, к которому
         относится событие.
         Все события одного запроса разделяют это значение.
         на нём строится группировка, счётчики, replay на фронте
 
-    `seq`
+    seq
         монотонный счётчик per-request_id, начинается с 1.
         Стабилен в рамках одной сессии стрима.
         Клиент использует для детекта gap и реконнекта
-        (пропустил seq=5 → запросил replay с 5).
+        (пропустил seq=5 -> запросил replay с 5).
 
-    `emitted_at`
+    emitted_at
         wall-clock UTC момента, когда событие покинуло агентский стрим
-        Не путать с `monotonic_ns` на отдельных событиях LLM-фазы
+        Не путать с monotonic_ns на отдельных событиях LLM-фазы
         те несут провайдерское время для latency-метрик.
 
-    `iteration`
+    iteration
         индекс текущей итерации агентского цикла на момент эмиссии evnet.
-        Стампер обновляет своё внутреннее значение по `IterationStarted.iteration_count`
-        и проставляет на все последующие события того же `request_id`.
+        Стампер обновляет своё внутреннее значение по IterationStarted.iteration_count
+        и проставляет на все последующие события того же request_id.
         Позволяет фронту восстановить дерево turn'а без stateful-обработки
-        `IterationStarted`.
+        IterationStarted.
 
-    Поля `type`, `category`, `request_id` обязан проставить производитель события.
-    Поля `seq`, `emitted_at`, `iteration` заполняются автоматически в
-    `EventStamperMiddleware` в самом конце middleware-цепочки
-    сразу под `HistoryRecorderMiddleware`.
+    Поля type, category, request_id обязан проставить производитель события.
+    Поля seq, emitted_at, iteration заполняются автоматически в
+    EventStamperMiddleware в самом конце middleware-цепочки
+    сразу под HistoryRecorderMiddleware.
     поэтому журнал тоже видит уже стампленные события.
 
 
@@ -50,14 +50,14 @@
    конкретных реализаций и фиксирует **минимальный контракт** полей,
    достаточный для отображения / обработки без знания конкретного типа события.
 
-   Пять «доменных» категорий (`PhaseEvent`, `DeltaEvent`,
-   `MessageEvent`, `AdvisoryEvent`, `TerminalEvent`) несут информацию,
+   Пять «доменных» категорий (PhaseEvent, DeltaEvent,
+   MessageEvent, AdvisoryEvent, TerminalEvent) несут информацию,
    которая является частью диалога / истории и должна быть показана
-   пользователю. Шестая категория `DiagnosticEvent` несёт нефункциональную
+   пользователю. Шестая категория DiagnosticEvent несёт нефункциональную
    телеметрию (метрики, тайминги, трейсы), которая по умолчанию **скрыта**
    и существует исключительно для отладки.
 
-    `PhaseEvent`
+    PhaseEvent
         граница фазы агентского цикла -
             - новая итерация
             - запрос к LLM
@@ -69,55 +69,55 @@
         Не несёт стримящийся контент — только факт перехода + контекст.
 
         Поля:
-            `label`     - короткий заголовок для UI
-            `severity`  - info по умолчанию, warn для retry
-            `details`   - key→value для отображения деталей
-            `body`      - опциональное расширенное описание
+            label     - короткий заголовок для UI
+            severity  - info по умолчанию, warn для retry
+            details   - key->value для отображения деталей
+            body      - опциональное расширенное описание
 
-    `DeltaEvent`
+    DeltaEvent
         инкрементальный кусок контента, который стримится в открытый «слот» UI.
-        Соединяется с `MessageEvent` через общий `stream_id`:
+        Соединяется с MessageEvent через общий stream_id:
         фронт открывает поток на первой delta и закрывает на снапшоте.
 
         Поля:
-            `stream_id`     - идентификатор сущности
-            `request_id`    - для answer/thinking/refusal
-            `tool_call_id`  - для tool-вызова
-            `stream_kind`   - тип потока:
+            stream_id     - идентификатор сущности
+            request_id    - для answer/thinking/refusal
+            tool_call_id  - для tool-вызова
+            stream_kind   - тип потока:
                 ANSWER
                 THINKING
                 REFUSAL
                 TOOL_INVOCATION
                 ...
-            `chunk`         - текстовый кусок, который надо доскролировать в UI
+            chunk         - текстовый кусок, который надо доскролировать в UI
 
-    `MessageEvent`
+    MessageEvent
         завершённое сообщение в диалоге.
         Финальная форма того, что собиралось из delta:
-        - `AnswerMessage` после серии `AnswerDelta`
+        - AnswerMessage после серии AnswerDelta
 
         либо самостоятельное снапшот-событие, у
         которого стриминга не было
-            `ToolCallMessage`      - завершение вызова tool
-            `UserQueryReceived`     - получение запроса от пользователя
-            `FeedbackToLLMAdded`    - добавление feedback для llm
+            ToolCallMessage      - завершение вызова tool
+            UserQueryReceived     - получение запроса от пользователя
+            FeedbackToLLMAdded    - добавление feedback для llm
 
-        Снапшоты пишутся в `HistoryService` через отдельный HistoryRecorderMiddleware
+        Снапшоты пишутся в HistoryService через отдельный HistoryRecorderMiddleware
         Писать delta думаю нет смысла, но тоже возможно если потребуется.
 
         Поля:
-            `stream_id`     - идентификатор сущности
-            `stream_kind`   - тип потока:
+            stream_id     - идентификатор сущности
+            stream_kind   - тип потока:
                 ANSWER
                 THINKING
                 REFUSAL
                 TOOL_INVOCATION  - вызов tool (args)
                 TOOL_RESULT      - результат выполнения tool
                 ...
-            `body`          - агрегированный контент
-            `headline`      - опциональный заголовок — для tool это имя инструмента
+            body          - агрегированный контент
+            headline      - опциональный заголовок — для tool это имя инструмента
 
-    `AdvisoryEvent`
+    AdvisoryEvent
         нефатальное уведомление. что-то пошло не так, но цикл агента продолжает работать
             - Tool упал
             - LLM выдала невалидный JSON в args
@@ -126,25 +126,25 @@
         Sink должен показывать, не прерывая основной поток
 
         Поля:
-            `headline`  - короткое описание для шапки
-            `severity`  - warn по умолчанию
-            `details`   - key→value
-            `body`      - полный текст ошибки
+            headline  - короткое описание для шапки
+            severity  - warn по умолчанию
+            details   - key->value
+            body      - полный текст ошибки
 
-    `TerminalEvent`
+    TerminalEvent
         фатальное уведомление: цикл агента остановлен.
-        `StopOnAnyFailure` в `StreamSourceLoop` ловит такие события
+        StopOnAnyFailure в StreamSourceLoop ловит такие события
         и завершает цикл агента.
         Sink должен паказывать их как финальное сосояние обработки запроса
 
         Поля:
-            `headline`      - короткое описание для шапки
-            `severity`      - error по умолчанию
-            `details`       - key→value
-            `body`          - полный текст ошибки
-            `error_kind`    - имя класса исходной ошибки, для классификации в UI
+            headline      - короткое описание для шапки
+            severity      - error по умолчанию
+            details       - key->value
+            body          - полный текст ошибки
+            error_kind    - имя класса исходной ошибки, для классификации в UI
 
-    `DiagnosticEvent`
+    DiagnosticEvent
         нефункциональное уведомление - метрики, тайминги, трейсы middleware,
         результаты внутренних шагов агента и т.п. Не несёт информации,
         без которой основной поток теряет смысл - sink имеет право
@@ -156,20 +156,20 @@
         - аргументы tool-вызовов в развёрнутом виде
         - трейс прохождения события через middleware
 
-        Sink фильтрует события по `topic` (dot-separated namespace,
+        Sink фильтрует события по topic (dot-separated namespace,
         например "tool.timing", "llm.usage", "retry") - allow/deny-list
         задаётся пользователем через UI-toggle или CLI-флаг.
 
-        События этой категории **не пишутся** в `HistoryService` -
+        События этой категории **не пишутся** в HistoryService -
         они эфемерны и существуют только в стриме.
 
         Поля:
-            `topic`     - dot-separated namespace для фильтрации
-            `headline`  - короткое описание для шапки
-            `severity`  - info по умолчанию
-            `details`   - key→value структурных данных
-            `body`      - расширенный payload (json-dump, stacktrace и т.п.)
-            `related`   - ссылки на доменные события для группировки в UI
+            topic     - dot-separated namespace для фильтрации
+            headline  - короткое описание для шапки
+            severity  - info по умолчанию
+            details   - key->value структурных данных
+            body      - расширенный payload (json-dump, stacktrace и т.п.)
+            related   - ссылки на доменные события для группировки в UI
                           (например {"tool_call_id": "..."} - фронт привязывает
                           диагностику к конкретному tool-step'у)
 
@@ -180,27 +180,27 @@
     Sink (потребитель) может работать реализовав только 5 категорий событий.
     Этого достаточно что бы не потерять ни одно событие.
     Однако для более детальной обработки он может реализовать обработку
-        специализированных событий, например `ToolExecutionStarted` меняет индикацию
+        специализированных событий, например ToolExecutionStarted меняет индикацию
         tool-step на «выполняется…»
 
 3. (De)сериализация — гибрид sealed-union и открытого реестра:
 
-    - `AgentEvent` — sealed union всех core-событий.
+    - AgentEvent — sealed union всех core-событий.
         Используется во внутреннем коде агента (middleware, оркестратор)
         даёт compile-time проверку для match выражений
         Поэтому при добавлении нового AgentEvent тайпчекеры (mypy/pyright)
         покажут ошибку и заставят не забыть обработать это событие программиста
 
-    - `AgentEventAdapter` — TypeAdapter поверх AgentEvent с discriminator='type'.
+    - AgentEventAdapter — TypeAdapter поверх AgentEvent с discriminator='type'.
         Используется для (де)сериализации событий из core-набора
         например в JsonLinesHistoryService
 
-    - `AgentEventRegistry` — открытый реестр для transport-слоя.
+    - AgentEventRegistry — открытый реестр для transport-слоя.
       Core-события регистрируются на импорте;
-      внешний модуль может добавить свой класс события через `register()`.
-      `decode(data)` для неизвестного `type` возвращает `UnknownAgentEvent`
-      у которого сохранена `category` и доменные поля лежат в `payload`.
-      Sink, диспатчащий по `category`, продолжает работать на любых неизвестных
+      внешний модуль может добавить свой класс события через register().
+      decode(data) для неизвестного type возвращает UnknownAgentEvent
+      у которого сохранена category и доменные поля лежат в payload.
+      Sink, диспатчащий по category, продолжает работать на любых неизвестных
       типах — нет «жёстких» падений на validate, ни на бэке, ни на фронте.
 """
 
@@ -264,12 +264,12 @@ class EventCategory(StrEnum):
 class StreamKind(StrEnum):
     """Тип потока контента — канал, по которому идут delta и/или snapshot.
 
-    Делится на два класса (см. `DeltaStreamKind`):
+    Делится на два класса (см. DeltaStreamKind):
 
-    - streamable — инкрементальный вывод LLM, есть и `DeltaEvent`, и
-      `MessageEvent`: ANSWER, THINKING, REFUSAL, TOOL_INVOCATION;
+    - streamable — инкрементальный вывод LLM, есть и DeltaEvent, и
+      MessageEvent: ANSWER, THINKING, REFUSAL, TOOL_INVOCATION;
     - snapshot-only — контент рождается целиком (от пользователя,
-      tool-runner'а, агента), `DeltaEvent` нет: USER_QUERY, TOOL_RESULT,
+      tool-runner'а, агента), DeltaEvent нет: USER_QUERY, TOOL_RESULT,
       FEEDBACK.
     """
 
@@ -287,7 +287,7 @@ class StreamKind(StrEnum):
     TOOL_RESULT = "tool_result"
 
 
-# Подмножество `StreamKind`, допустимое для `DeltaEvent`: только каналы,
+# Подмножество StreamKind, допустимое для DeltaEvent: только каналы,
 # по которым контент стримится инкрементально. Снапшот-онли каналы
 # (USER_QUERY / TOOL_RESULT / FEEDBACK) дельты не имеют — тип это запрещает.
 DeltaStreamKind = Literal[
@@ -309,7 +309,7 @@ _UNSTAMPED_ITERATION: Final = 0
 
 def _epoch_utc() -> datetime:
     """
-    Sentinel-значение (незаполненное) `emitted_at` до стампа
+    Sentinel-значение (незаполненное) emitted_at до стампа
     Заменяется EventStamper
     """
     return datetime.fromtimestamp(0, tz=UTC)
@@ -319,16 +319,16 @@ class AgentEventBase(BaseModel):
     """
     Базовый envelope для всех событий агента.
 
-    `seq`, `emitted_at`, `iteration` имеют дефолты — их проставляет
-    `EventStamperMiddleware` на выходе агентского стрима
-    Производитель события передаёт только доменные поля + `request_id`.
+    seq, emitted_at, iteration имеют дефолты — их проставляет
+    EventStamperMiddleware на выходе агентского стрима
+    Производитель события передаёт только доменные поля + request_id.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    # Имена производных `@property` подкласса — это вычисляемые ВЫХОДЫ, а не
+    # Имена производных @property подкласса — это вычисляемые ВЫХОДЫ, а не
     # входные поля. Старый журнал мог сериализовать их как поля; на входе
-    # выкидываем, чтобы `extra="forbid"` не падал. Настоящие лишние ключи
+    # выкидываем, чтобы extra="forbid" не падал. Настоящие лишние ключи
     # при этом всё равно отлавливаются. Каждая база-категория переопределяет.
     _derived_keys: ClassVar[frozenset[str]] = frozenset()
 
@@ -359,7 +359,7 @@ class PhaseEvent(AgentEventBase):
     severity: Severity = Severity.INFO
     body: str | None = None
     # Наносекунды с момента предыдущего PhaseEvent того же request_id.
-    # Стампится `EventStamperMiddleware` через `time.monotonic_ns()`.
+    # Стампится EventStamperMiddleware через time.monotonic_ns().
     # Для первого PhaseEvent в request — 0.
     duration_ns: int = 0
 
@@ -371,12 +371,12 @@ class PhaseEvent(AgentEventBase):
     @property
     @abstractmethod
     def details(self) -> Mapping[str, str]:
-        """key→value детали фазы для отображения."""
+        """key->value детали фазы для отображения."""
 
 
 class DeltaEvent(AgentEventBase):
     """
-    Инкрементальный кусок в поток — `stream_id` + `stream_kind` + `chunk`
+    Инкрементальный кусок в поток — stream_id + stream_kind + chunk
     """
 
     category: Literal[EventCategory.DELTA] = EventCategory.DELTA
@@ -407,7 +407,7 @@ class DeltaEvent(AgentEventBase):
 
 class MessageEvent(AgentEventBase):
     """
-    Завершённое сообщение — `stream_id` + `stream_kind` + `body`
+    Завершённое сообщение — stream_id + stream_kind + body
     """
 
     category: Literal[EventCategory.MESSAGE] = EventCategory.MESSAGE
@@ -439,8 +439,8 @@ class AdvisoryEvent(AgentEventBase):
     Нефатальное уведомление (но некая ошибка)
     агентский цикл бдет продолжен
 
-    `status_code` и `cause_chain` авто-проставляются `AgentErrorRouter`'ом
-    из исключения; концы цепочки видны в `body` через `compose_error_body`.
+    status_code и cause_chain авто-проставляются AgentErrorRouter'ом
+    из исключения; концы цепочки видны в body через compose_error_body.
     """
 
     category: Literal[EventCategory.ADVISORY] = EventCategory.ADVISORY
@@ -461,7 +461,7 @@ class AdvisoryEvent(AgentEventBase):
     @property
     @abstractmethod
     def details(self) -> Mapping[str, str]:
-        """key→value детали ошибки."""
+        """key->value детали ошибки."""
 
     @property
     @abstractmethod
@@ -474,8 +474,8 @@ class TerminalEvent(AgentEventBase):
     Фатальное уведомление
     агентский цикл будет остановлен
 
-    `status_code` и `cause_chain` авто-проставляются `AgentErrorRouter`'ом
-    из исключения; концы цепочки видны в `body` через `compose_error_body`.
+    status_code и cause_chain авто-проставляются AgentErrorRouter'ом
+    из исключения; концы цепочки видны в body через compose_error_body.
     """
 
     category: Literal[EventCategory.TERMINAL] = EventCategory.TERMINAL
@@ -497,7 +497,7 @@ class TerminalEvent(AgentEventBase):
     @property
     @abstractmethod
     def details(self) -> Mapping[str, str]:
-        """key→value детали ошибки."""
+        """key->value детали ошибки."""
 
     @property
     @abstractmethod
@@ -512,13 +512,13 @@ class DiagnosticEvent(AgentEventBase):
     Существует исключительно для отладки и наблюдаемости. Sink имеет право
     полностью игнорировать категорию: основной диалоговый поток останется
     консистентным и без этих событий. По умолчанию скрыто в UI; включается
-    пользователем через фильтр по `topic`.
+    пользователем через фильтр по topic.
 
-    Не пишется в `HistoryService` - события эфемерны и живут только в стриме.
+    Не пишется в HistoryService - события эфемерны и живут только в стриме.
 
-    Producer'ы (middleware, tool-runner, llm-слой) эмитят `DiagnosticEvent`
+    Producer'ы (middleware, tool-runner, llm-слой) эмитят DiagnosticEvent
     рядом со своими доменными событиями; связь с доменным событием передаётся
-    через `related` (например, `tool_call_id` для привязки к tool-step'у).
+    через related (например, tool_call_id для привязки к tool-step'у).
     """
 
     category: Literal[EventCategory.DIAGNOSTIC] = EventCategory.DIAGNOSTIC
@@ -532,7 +532,7 @@ class DiagnosticEvent(AgentEventBase):
 
 
 def _error_details(error_kind: str, status_code: int | None) -> dict[str, str]:
-    """Стандартный `details` для error-событий: kind + status_code если есть."""
+    """Стандартный details для error-событий: kind + status_code если есть."""
     out: dict[str, str] = {"kind": error_kind}
     if status_code is not None:
         out["status_code"] = str(status_code)
@@ -557,8 +557,8 @@ def compose_error_body(
 ) -> str:
     """Стандартный body для error-событий: основное сообщение + status + цепочка.
 
-    Любое event-конкретное `_derive` собирает свой `primary` (message,
-    args+error, raw+error), а добавление `status` и `Caused by:` —
+    Любое event-конкретное _derive собирает свой primary (message,
+    args+error, raw+error), а добавление status и Caused by: —
     единое для всех ошибок.
     """
     lines: list[str] = [primary] if primary else []
@@ -599,11 +599,11 @@ class IterationStarted(PhaseEvent):
 
 
 class ToolExecutionStarted(PhaseEvent):
-    """Tool готов к исполнению — несёт полный `ToolCall` (id, name, args).
+    """Tool готов к исполнению — несёт полный ToolCall (id, name, args).
 
     UI рендерит жизненный цикл tool-step'а именно с этого события:
-    создаётся UI-блок с args; финализируется по `ToolResultReady`
-    или `ToolExecutionFailed` с тем же `call.id`. `ToolCallMessage`
+    создаётся UI-блок с args; финализируется по ToolResultReady
+    или ToolExecutionFailed с тем же call.id. ToolCallMessage
     (намерение LLM) в UI не отображается.
     """
 
@@ -621,26 +621,26 @@ class ToolExecutionStarted(PhaseEvent):
 
 class TotalMessage(PhaseEvent):
     """
-    Граница «генерация LLM завершена»: исход (`finish_reason`) + канонический
-    `AssistantMessage` для истории.
+    Граница «генерация LLM завершена»: исход (finish_reason) + канонический
+    AssistantMessage для истории.
 
-    Это `PhaseEvent`, а НЕ content-snapshot: контент уже отрисован per-field
-    `*Message` событиями (`AnswerMessage`, `ThinkingMessage`, `ToolCallMessage`),
+    Это PhaseEvent, а НЕ content-snapshot: контент уже отрисован per-field
+    *Message событиями (AnswerMessage, ThinkingMessage, ToolCallMessage),
     а здесь — агрегат + исход. Sink не должен рисовать его как реплику диалога
     (иначе дубль); он маркирует конец round-trip и подсвечивает аномалии исхода.
 
-    Эмитится последним — после всех per-field `*Message`/`ToolCallDecodeFailedMessage`
+    Эмитится последним — после всех per-field *Message/ToolCallDecodeFailedMessage
     событий; источник истины для реконструкции истории. Несёт всё, что пришло от
     провайдера за одну генерацию:
 
-    - `message` — собранный AssistantMessage с плоскими полями
+    - message — собранный AssistantMessage с плоскими полями
       (content / thinking / refusal / tool_calls / tool_call_decode_failures).
       Пустой message — валидное состояние, когда модель завершилась без контента.
-    - `finish_reason` — то, что реально прислал провайдер; без подмен.
+    - finish_reason — то, что реально прислал провайдер; без подмен.
 
     Единственное событие, на котором принимается решение об остановке
-    агентского цикла — см. `StopIfNotToolCall`, `StopIfLengthReached`,
-    `StopIfContentFilter`.
+    агентского цикла — см. StopIfNotToolCall, StopIfLengthReached,
+    StopIfContentFilter.
     """
 
     type: Literal["TotalMessage"] = "TotalMessage"
@@ -872,7 +872,7 @@ class ToolResultReady(MessageEvent):
                 return t
             case ChartResult(title=title):
                 # В историю/LLM уходит сводка, а не сырой Plotly-spec
-                # (симметрично `tool_result_to_message`).
+                # (симметрично tool_result_to_message).
                 return f"[chart rendered: {title}]" if title else "[chart rendered]"
             case ErrorResult(message=m):
                 return m
@@ -897,8 +897,8 @@ class FeedbackToLLMAdded(MessageEvent):
 class ToolCallDecodeFailedMessage(MessageEvent):
     """Tool-call, чьи args не декодировались — часть сообщения ассистента.
 
-    Это контент (лежит в `message.tool_call_decode_failures`), а не advisory:
-    «ошибочность» несёт сам payload (`failure.error`), а не категория.
+    Это контент (лежит в message.tool_call_decode_failures), а не advisory:
+    «ошибочность» несёт сам payload (failure.error), а не категория.
     """
 
     type: Literal["ToolCallDecodeFailedMessage"] = "ToolCallDecodeFailedMessage"
@@ -1046,11 +1046,11 @@ class PersistenceFailed(TerminalEvent):
 
 
 class UnknownAgentEvent(AgentEventBase):
-    """Fallback для события с неизвестным `type`.
+    """Fallback для события с неизвестным type.
 
-    Decoder возвращает этот класс, когда `type` отсутствует в реестре.
-    Sink, диспатчащий по `category`, продолжает работать; конкретный
-    payload доступен через `payload`.
+    Decoder возвращает этот класс, когда type отсутствует в реестре.
+    Sink, диспатчащий по category, продолжает работать; конкретный
+    payload доступен через payload.
     """
 
     type: str
@@ -1125,16 +1125,16 @@ AgentEventAdapter: TypeAdapter[AgentEvent] = TypeAdapter(
     line: str = AgentEventAdapter.dump_json(event).decode("utf-8")
     event: AgentEvent = AgentEventAdapter.validate_json(line)
 
-Для extension-friendly декодинга см. `AgentEventRegistry`.
+Для extension-friendly декодинга см. AgentEventRegistry.
 """
 
 
 class AgentEventDecodeError(Exception):
     """Ошибка десериализации события из транспортного формата.
 
-    Поднимается `AgentEventRegistry.decode` при невалидном payload
-    (нет `type`, не проходит pydantic-валидация и т.п.). Не наследуется
-    от `RoutableError`, т.к. decode выполняется транспортным слоем,
+    Поднимается AgentEventRegistry.decode при невалидном payload
+    (нет type, не проходит pydantic-валидация и т.п.). Не наследуется
+    от RoutableError, т.к. decode выполняется транспортным слоем,
     а не агентским loop'ом — обработка остаётся за вызывающей стороной.
     """
 
@@ -1143,8 +1143,8 @@ class AgentEventRegistry:
     """Расширяемый реестр типов AgentEvent.
 
     Core-события зарегистрированы при импорте модуля. Extension-модуль
-    может вызвать `register()` со своим классом события. `decode()` для
-    неизвестного `type` возвращает `UnknownAgentEvent` с известной
+    может вызвать register() со своим классом события. decode() для
+    неизвестного type возвращает UnknownAgentEvent с известной
     категорией, чтобы sink на категориях продолжал работать.
     """
 
@@ -1152,7 +1152,7 @@ class AgentEventRegistry:
 
     @classmethod
     def register(cls, event_cls: type[AgentEventBase]) -> None:
-        """Зарегистрировать класс события по его `type`-литералу."""
+        """Зарегистрировать класс события по его type-литералу."""
         type_field = event_cls.model_fields.get("type")
         if type_field is None or type_field.default is None:
             msg = (
@@ -1172,9 +1172,9 @@ class AgentEventRegistry:
 
     @classmethod
     def decode(cls, data: Mapping[str, Any]) -> AgentEventBase:
-        """Десериализовать событие по `type` из словаря.
+        """Десериализовать событие по type из словаря.
 
-        Неизвестный `type` → `UnknownAgentEvent` (с сохранённой category).
+        Неизвестный type -> UnknownAgentEvent (с сохранённой category).
         """
         type_value = data.get("type")
         if not isinstance(type_value, str):

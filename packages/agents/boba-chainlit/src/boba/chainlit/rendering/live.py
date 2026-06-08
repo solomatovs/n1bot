@@ -15,11 +15,11 @@ __all__ = ["ChainlitLiveTarget"]
 
 
 class ChainlitLiveTarget(EventRenderTarget):
-    """Реализует `EventRenderTarget` для текущей chainlit-сессии.
+    """Реализует EventRenderTarget для текущей chainlit-сессии.
 
-    Параметр `diagnostic` управляет показом `DiagnosticEvent`-ов:
+    Параметр diagnostic управляет показом DiagnosticEvent-ов:
     False - тихо игнорируем (классический чистый чат);
-    True  - рендерим как сворачиваемый cl.Step `diag: {topic}`.
+    True  - рендерим как сворачиваемый cl.Step diag: {topic}.
     Toggle прокидывается из callbacks.py (берётся из user_session).
     """
 
@@ -36,7 +36,7 @@ class ChainlitLiveTarget(EventRenderTarget):
         # Status — cl.Step(type="run"), не cl.Message: статус не должен
         # занимать слот в основной chat-ленте и влиять на ordering.
         self._status_step: cl.Step | None = None
-        # tool_call_id → Step.
+        # tool_call_id -> Step.
         self._tool_steps_by_id: dict[str, cl.Step] = {}
 
     # --- streaming ---------------------------------------------------
@@ -68,7 +68,7 @@ class ChainlitLiveTarget(EventRenderTarget):
                 await msg.send()
             return
         # Токены уже отрисованы потоково — добиваем закрывающий '\n' и
-        # закрываем сообщение (см. `_close_streamed`).
+        # закрываем сообщение (см. _close_streamed).
         await _close_streamed(self._answer_msg)
         self._answer_msg = None
 
@@ -244,8 +244,8 @@ class ChainlitLiveTarget(EventRenderTarget):
 
         Структура step:
             name   - "diag: {topic}" (краткий заголовок для свёрнутого вида)
-            input  - key=value по `details` (структурные данные)
-            output - `body` если есть, иначе пусто
+            input  - key=value по details (структурные данные)
+            output - body если есть, иначе пусто
         """
         if not self._diagnostic:
             return
@@ -330,7 +330,7 @@ def _close_fence(text: str) -> str:
 
 
 async def _close_streamed(msg: cl.Message) -> None:
-    """Добивает '\\n' в потоково собранное сообщение (см. `_close_fence`)."""
+    """Добивает '\\n' в потоково собранное сообщение (см. _close_fence)."""
     content = msg.content or ""
     if content and not content.endswith("\n"):
         await msg.stream_token("\n")

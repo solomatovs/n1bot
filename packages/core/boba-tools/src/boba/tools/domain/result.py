@@ -1,12 +1,12 @@
 """ToolResult sealed-семейство: TextResult | JsonResult | ErrorResult.
 
-`ToolResult` экспортируется как type alias на discriminated union
-(`Annotated[TextResult | JsonResult | ErrorResult, Field(discriminator="kind")]`).
-Это даёт строгую типизацию Pydantic-полей и нативный JSON-Schema `oneOf`.
+ToolResult экспортируется как type alias на discriminated union
+(Annotated[TextResult | JsonResult | ErrorResult, Field(discriminator="kind")]).
+Это даёт строгую типизацию Pydantic-полей и нативный JSON-Schema oneOf.
 
-Открытость для нового варианта: добавить класс `ToolResultBase`-подкласс,
-прописать `kind: Literal["..."]`, расширить union в `ToolResult`. Все
-существующие потребители используют `match`-выражения с discriminator —
+Открытость для нового варианта: добавить класс ToolResultBase-подкласс,
+прописать kind: Literal["..."], расширить union в ToolResult. Все
+существующие потребители используют match-выражения с discriminator —
 pyright принудит дописать ветку.
 """
 
@@ -33,7 +33,7 @@ __all__ = [
 class ToolResultBase(BaseModel, ABC):
     """Базовый Pydantic-класс для наследования конкретных ToolResult-вариантов.
 
-    Не для использования как тип значения — используй `ToolResult` (alias
+    Не для использования как тип значения — используй ToolResult (alias
     на discriminated union). Этот класс публичен только для наследования
     при добавлении нового варианта в sealed-семейство.
     """
@@ -58,7 +58,7 @@ class JsonResult(ToolResultBase):
 
 
 class TableResult(ToolResultBase):
-    """Табличный payload: список записей-строк (`headers` берутся из ключей).
+    """Табличный payload: список записей-строк (headers берутся из ключей).
 
     Tool декларирует «отрисуй меня таблицей»; UI рендерит markdown-таблицу,
     LLM получает тот же payload как JSON (структура важнее форматирования).
@@ -72,12 +72,12 @@ class TableResult(ToolResultBase):
 
 
 class PgCopyTextResult(ToolResultBase):
-    """Дамп `COPY ... TO STDOUT (FORMAT TEXT, HEADER)` (tab-delimited).
+    """Дамп COPY ... TO STDOUT (FORMAT TEXT, HEADER) (tab-delimited).
 
     Executor копит COPY-поток без парсинга ячеек. LLM получает текст как
-    есть. UI парсит через `iter_rows` (формат фиксирован Postgres: `\\t`-
-    делимитер, `\\n`-разделитель строк, спецсимволы backslash-эскейпнуты,
-    NULL = `\\N`) → markdown-таблица. Первая строка — header.
+    есть. UI парсит через iter_rows (формат фиксирован Postgres: \\t-
+    делимитер, \\n-разделитель строк, спецсимволы backslash-эскейпнуты,
+    NULL = \\N) -> markdown-таблица. Первая строка — header.
     """
 
     kind: Literal["pg_copy_text"] = "pg_copy_text"
@@ -90,7 +90,7 @@ class PgCopyTextResult(ToolResultBase):
     }
 
     def iter_rows(self) -> Iterator[list[str | None]]:
-        """Yield строки (header первой) как list ячеек; NULL (`\\N`) → None."""
+        """Yield строки (header первой) как list ячеек; NULL (\\N) -> None."""
         if not self.text:
             return
         lines = self.text.split("\n")
@@ -101,7 +101,7 @@ class PgCopyTextResult(ToolResultBase):
 
     @classmethod
     def _unescape(cls, field: str) -> str | None:
-        """Развернуть COPY TEXT-эскейпы одной ячейки; `\\N` → None (NULL)."""
+        """Развернуть COPY TEXT-эскейпы одной ячейки; \\N -> None (NULL)."""
         if field == "\\N":
             return None
         if "\\" not in field:
@@ -123,13 +123,13 @@ class ChartResult(ToolResultBase):
     """
     Интерактивный график: Plotly figure spec как чистый dict.
 
-    Tool декларирует «отрисуй меня графиком»; UI строит `plotly.Figure` из
-    `spec` и рендерит интерактивный `cl.Plotly`-элемент.
+    Tool декларирует «отрисуй меня графиком»; UI строит plotly.Figure из
+    spec и рендерит интерактивный cl.Plotly-элемент.
     LLM получает не сырой spec (он громоздкий и бесполезен для рассуждения),
     а краткую сводку — что именно нарисовано
-    (см. `tool_result_to_message` / `ToolResultReady.body`).
+    (см. tool_result_to_message / ToolResultReady.body).
 
-    `spec` — Plotly figure JSON (`{"data": [...], "layout": {...}}`).
+    spec — Plotly figure JSON ({"data": [...], "layout": {...}}).
     Домен не зависит от plotly: хранит и валидирует только структуру dict,
     рендер живёт в presentation-слое.
     """
@@ -145,7 +145,7 @@ class ErrorResult(ToolResultBase):
     """Tool не выполнен: ошибка домена, отклонение guard'а, невалидные args.
 
     Отдельный sealed-вариант, чтобы провайдер мог рендерить ошибки иначе
-    (например, для Anthropic — отдельный `is_error: true` блок).
+    (например, для Anthropic — отдельный is_error: true блок).
     """
 
     kind: Literal["error"] = "error"
@@ -164,8 +164,8 @@ ToolResult: TypeAlias = Annotated[
     Field(discriminator="kind"),
 ]
 """
-Тип значения tool-результата: discriminated union по полю `kind`.
+Тип значения tool-результата: discriminated union по полю kind.
 
 Используй для типизации полей моделей, возвращаемых значений функций и
-параметров. Pydantic генерирует `oneOf` JSON Schema из коробки.
+параметров. Pydantic генерирует oneOf JSON Schema из коробки.
 """

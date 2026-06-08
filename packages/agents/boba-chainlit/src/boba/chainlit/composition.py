@@ -68,13 +68,13 @@ def _bridge_chainlit_env(cfg: ChainlitConfig) -> None:
 
 
 def _make_tool_builder_factory(config: Any) -> Callable[[], ToolBuilder]:
-    """Свежий `ToolBuilder` под per-session ChatSession (свои plugins).
+    """Свежий ToolBuilder под per-session ChatSession (свои plugins).
 
-    Резолвер/фильтр строятся вокруг переданного конфиг-инстанса (`config`
-    собран один раз в `main`), поэтому per-session здесь — только `ToolBuilder`.
+    Резолвер/фильтр строятся вокруг переданного конфиг-инстанса (config
+    собран один раз в main), поэтому per-session здесь — только ToolBuilder.
 
-    `discover_plugins()` подцепляет v2-плагины через entry-points group
-    `boba.plugins`. Пока v2-плагины не созданы — это no-op; будут
+    discover_plugins() подцепляет v2-плагины через entry-points group
+    boba.plugins. Пока v2-плагины не созданы — это no-op; будут
     появляться по мере миграции старых плагинов.
     """
 
@@ -118,8 +118,8 @@ def _warm_tool_cache(
 ) -> None:
     """Сборкой одноразовой ChatSession наполняем AvailableToolsCache.
 
-    `ChatSession.__init__` строит catalog и через `_wrap_catalog`
-    зовёт `set_once`; повторный set_once на реальной сессии — no-op
+    ChatSession.__init__ строит catalog и через _wrap_catalog
+    зовёт set_once; повторный set_once на реальной сессии — no-op
     (контракт set-once). Если сборка падает — лог + продолжаем: tools
     потом подтянутся при первом on_message.
     """
@@ -179,10 +179,10 @@ def main() -> int:
     open_chat_session = OpenChatSession(chat_session_pool)
 
     # Eager-прогрев AvailableToolsCache: до первого on_chat_start cache пуст
-    # → ToolsSection отдаёт пустой список → в шестерёнке нет таба «tools».
+    # -> ToolsSection отдаёт пустой список -> в шестерёнке нет таба «tools».
     # Одноразовая ChatSession через system workspace выполняет
     # ToolBuilder.discover_plugins + сборку catalog'а, что через
-    # `_wrap_catalog` триггерит `set_once`. Сессия и её агент не
+    # _wrap_catalog триггерит set_once. Сессия и её агент не
     # используются и сразу gc'ятся; workspace dir тот же, что под
     # users.json / threads-index.json, новых каталогов на диске не появляется.
     _warm_tool_cache(chat_session_builder)

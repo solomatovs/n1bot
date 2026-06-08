@@ -39,7 +39,7 @@ __all__ = [
 
 @runtime_checkable
 class Closeable(Protocol):
-    """Что угодно с `close()` — DI-контейнер, клиент, пул."""
+    """Что угодно с close() — DI-контейнер, клиент, пул."""
 
     def close(self) -> None: ...
 
@@ -54,8 +54,8 @@ class ToolSource(ABC):
     Например работа для работы с файлами: cat, grep, ls, wc
 
     каждый Tool, обязан иметь:
-        `id()       - идентификатор источника, совпадающий для всех Tool'ов
-        `close()`   — точка освобождения долгоживущих ресурсов;
+        id()       - идентификатор источника, совпадающий для всех Tool'ов
+        close()   — точка освобождения долгоживущих ресурсов;
     """
 
     @abstractmethod
@@ -109,7 +109,7 @@ class StaticToolSource(ToolSource):
 
 class ToolRegistry:
     """
-    Owner коллекции `ToolSource`'ов
+    Owner коллекции ToolSource'ов
     """
 
     def __init__(
@@ -121,7 +121,7 @@ class ToolRegistry:
         self._sources: dict[ToolSourceId, ToolSource] = {}
         self._container = container
 
-        # Плоский индекс wire-имя → tool: по нему идёт маршрутизация LLM-вызова.
+        # Плоский индекс wire-имя -> tool: по нему идёт маршрутизация LLM-вызова.
         # Source в имя не входит, поэтому уникальность имени проверяется
         # глобально, между всеми source'ами.
         self._tools: dict[ToolId, Tool[Any, Any]] = {}
@@ -152,17 +152,17 @@ class ToolRegistry:
         return self._sources
 
     def catalog(self) -> ToolCatalog:
-        """Read-only view для LLM: только `definitions()`."""
+        """Read-only view для LLM: только definitions()."""
         return ToolCatalog(self._tools)
 
     def executor(self) -> ToolExecutor:
-        """Execute-only view для middleware: только `execute(ctx, req)`."""
+        """Execute-only view для middleware: только execute(ctx, req)."""
         return ToolExecutor(self._tools)
 
     def close(self) -> None:
         """Graceful shutdown: закрыть все source'ы и DI-контейнер.
 
-        Ошибки одного не блокируют остальных — собираются в `ExceptionGroup`.
+        Ошибки одного не блокируют остальных — собираются в ExceptionGroup.
         Контейнер закрывается последним: его teardown (APP-scope провайдеры)
         не должен опережать освобождение ресурсов source'ов.
         """
@@ -193,7 +193,7 @@ class ToolCatalog:
     """
     Read-only view над плоским индексом tool'ов: отдаёт definitions для LLM.
 
-    Lifecycle принадлежит `ToolRegistry`. Catalog хранит reference на тот же
+    Lifecycle принадлежит ToolRegistry. Catalog хранит reference на тот же
     словарь tool'ов, без owning-семантики.
     """
 
@@ -201,7 +201,7 @@ class ToolCatalog:
         self._tools = tools
 
     def definitions(self) -> Iterator[ToolSchema]:
-        """Описания tool'ов для LLM: упакованные `ToolSchema` (name + schema)."""
+        """Описания tool'ов для LLM: упакованные ToolSchema (name + schema)."""
         for tool in self._tools.values():
             yield tool.definition()
 
@@ -209,7 +209,7 @@ class ToolCatalog:
 class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
     """
     Execute над плоским индексом tool'ов: маршрутизирует вызов напрямую
-    по wire-имени (`ToolId`), без парсинга источника.
+    по wire-имени (ToolId), без парсинга источника.
     """
 
     def __init__(self, tools: Mapping[ToolId, Tool[Any, Any]]) -> None:

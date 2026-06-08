@@ -24,7 +24,7 @@ TurnReducer: TypeAlias = PrioritySource[str, TurnState]
 
 
 class RequestIdFromReducer(TurnReducer):
-    """Кладёт `request_id` в `TurnState` — берётся из `ctx.request_id`."""
+    """Кладёт request_id в TurnState — берётся из ctx.request_id."""
 
     ID: ClassVar[str] = "request_id"
 
@@ -114,7 +114,7 @@ class SystemPromptReducer(TurnReducer):
 
 class UserQueryReducer(TurnReducer):
     """
-    Добавляет `UserMessage.from_text(ctx.query)` к dialog_messages
+    Добавляет UserMessage.from_text(ctx.query) к dialog_messages
     """
 
     ID: ClassVar[str] = "user_query"
@@ -138,13 +138,13 @@ class UserQueryReducer(TurnReducer):
 
 
 class HistoryReducer(TurnReducer):
-    """Копирует диалог из `HistoryDialogView` в `state.dialog_messages`.
+    """Копирует диалог из HistoryDialogView в state.dialog_messages.
 
-    Источник — журнал `HistoryService`, отфильтрованный view'хой до тех
-    `AgentEvent`, которые относятся к диалогу пользователь ↔ чатбот:
-    `UserMessage`, `AssistantMessage` (склеенный из снапшотов одной
-    генерации) и `ToolResultMessage`. SystemMessage не сохраняется в
-    истории — system-блоки собираются каждый turn `SystemPromptReducer`.
+    Источник — журнал HistoryService, отфильтрованный view'хой до тех
+    AgentEvent, которые относятся к диалогу пользователь ↔ чатбот:
+    UserMessage, AssistantMessage (склеенный из снапшотов одной
+    генерации) и ToolResultMessage. SystemMessage не сохраняется в
+    истории — system-блоки собираются каждый turn SystemPromptReducer.
     """
 
     ID: ClassVar[str] = "history"

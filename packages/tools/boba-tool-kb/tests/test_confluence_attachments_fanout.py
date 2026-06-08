@@ -1,6 +1,6 @@
-"""Fan-out: `make_attachment_request` + `_iter_attachments` без сети.
+"""Fan-out: make_attachment_request + _iter_attachments без сети.
 
-`make_attachment_request` тестируем чисто (unit). `_iter_attachments` —
+make_attachment_request тестируем чисто (unit). _iter_attachments —
 с фейк-транспортом, который записывает, какие requests ему пришли, и
 возвращает заранее заготовленные RawDocument'ы. Так проверяем yield-
 порядок, что transport вызывается ровно по одному разу на attachment,
@@ -14,16 +14,13 @@ from io import BytesIO
 
 from boba.indexing import (
     Metadata,
-    PipelineContext,
-    PipelineId,
     RawDocument,
     SourceId,
     Transport,
 )
 from boba.tool.kb.confluence.models import AttachmentInfo, ConfluenceKeys
 from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
-from boba.tool.kb.confluence.request_sources import ConfluenceRest
-from boba.transport.http import HttpRequest
+from boba.tool.kb.confluence.request_sources import ConfluenceRequest, ConfluenceRest
 
 _ATT1 = AttachmentInfo(
     id="att-1",
@@ -53,32 +50,23 @@ def _parent_meta() -> Metadata:
     )
 
 
-def _pctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("test"))
 
-
-class _FakeTransport(Transport[HttpRequest]):
+class _FakeTransport(Transport[ConfluenceRequest]):
     """Записывает приходящие requests и yield'ит per-request фиктивный RawDocument."""
 
     def __init__(self) -> None:
-        self.seen: list[HttpRequest] = []
+        self.seen: list[ConfluenceRequest] = []
 
-    def name(self) -> str:
-        return "FakeTransport"
-
-    def stream(
+    def fetch(
         self,
-        ctx: PipelineContext,
-        stream: Iterable[HttpRequest],
+        req: ConfluenceRequest,
     ) -> Iterable[RawDocument]:
-        del ctx
-        for req in stream:
-            self.seen.append(req)
-            yield RawDocument(
-                handle=BytesIO(b"binary-payload-for-" + req.source_id.encode()),
-                source_id=req.source_id,
-                metadata=req.metadata,
-            )
+        self.seen.append(req)
+        yield RawDocument(
+            handle=BytesIO(b"binary-payload-for-" + req.source_id.encode()),
+            source_id=req.source_id,
+            metadata=req.metadata,
+        )
 
 
 # -------- make_attachment_request --------
@@ -87,30 +75,27 @@ class _FakeTransport(Transport[HttpRequest]):
 def test_make_attachment_request_url_combines_base_and_download_path() -> None:
     req = ConfluenceRest.make_attachment_request(
         base_url="https://confl.example.com/wiki",
-        auth=None,
         parent_metadata=_parent_meta(),
         attachment=_ATT1,
     )
-    assert req.url == (
+    assert req.http.url == (
         "https://confl.example.com/wiki/download/attachments/42/diagram.png?version=3"
     )
-    assert str(req.source_id) == req.url
+    assert str(req.source_id) == req.http.url
 
 
 def test_make_attachment_request_trims_trailing_slash_in_base_url() -> None:
     req = ConfluenceRest.make_attachment_request(
         base_url="https://confl.example.com/wiki/",
-        auth=None,
         parent_metadata=_parent_meta(),
         attachment=_ATT1,
     )
-    assert "/wiki//download" not in req.url
+    assert "/wiki//download" not in req.http.url
 
 
 def test_make_attachment_request_propagates_parent_metadata() -> None:
     req = ConfluenceRest.make_attachment_request(
         base_url="https://confl.example.com/wiki",
-        auth=None,
         parent_metadata=_parent_meta(),
         attachment=_ATT1,
     )
@@ -126,7 +111,6 @@ def test_make_attachment_request_handles_missing_parent_fields() -> None:
     parent = Metadata.empty().set(ConfluenceKeys.PAGE_ID, "42")
     req = ConfluenceRest.make_attachment_request(
         base_url="https://confl.example.com/wiki",
-        auth=None,
         parent_metadata=parent,
         attachment=_ATT1,
     )
@@ -153,15 +137,13 @@ def _parent_with(attachments: tuple[AttachmentInfo, ...] | None) -> RawDocument:
 
 
 def test_iter_attachments_yields_nothing_when_key_absent() -> None:
-    """Page без `ATTACHMENTS` в метадате — fan-out не делает HTTP-вызовов."""
+    """Page без ATTACHMENTS в метадате — fan-out не делает HTTP-вызовов."""
     transport = _FakeTransport()
     out = list(
         ConfluenceContentTransport._iter_attachments(
             parent=_parent_with(None),
             base_url="https://confl.example.com/wiki",
-            auth=None,
             transport=transport,
-            pctx=_pctx(),
         )
     )
     assert out == []
@@ -174,9 +156,7 @@ def test_iter_attachments_yields_nothing_when_empty_tuple() -> None:
         ConfluenceContentTransport._iter_attachments(
             parent=_parent_with(()),
             base_url="https://confl.example.com/wiki",
-            auth=None,
             transport=transport,
-            pctx=_pctx(),
         )
     )
     assert out == []
@@ -184,21 +164,19 @@ def test_iter_attachments_yields_nothing_when_empty_tuple() -> None:
 
 
 def test_iter_attachments_streams_in_order() -> None:
-    """Yield-порядок совпадает с порядком в `ATTACHMENTS`."""
+    """Yield-порядок совпадает с порядком в ATTACHMENTS."""
     transport = _FakeTransport()
     out = list(
         ConfluenceContentTransport._iter_attachments(
             parent=_parent_with((_ATT1, _ATT2)),
             base_url="https://confl.example.com/wiki",
-            auth=None,
             transport=transport,
-            pctx=_pctx(),
         )
     )
     assert len(out) == 2
     assert out[0].metadata.get(ConfluenceKeys.ATTACHMENT_INFO) == _ATT1
     assert out[1].metadata.get(ConfluenceKeys.ATTACHMENT_INFO) == _ATT2
-    assert [r.url for r in transport.seen] == [
+    assert [r.http.url for r in transport.seen] == [
         "https://confl.example.com/wiki/download/attachments/42/diagram.png?version=3",
         "https://confl.example.com/wiki/download/attachments/42/spec.pdf?version=1",
     ]
@@ -215,9 +193,7 @@ def test_iter_attachments_does_not_materialize_full_list() -> None:
     gen = ConfluenceContentTransport._iter_attachments(
         parent=_parent_with((_ATT1, _ATT2)),
         base_url="https://confl.example.com/wiki",
-        auth=None,
         transport=transport,
-        pctx=_pctx(),
     )
     first = next(gen)
     assert first.metadata.get(ConfluenceKeys.ATTACHMENT_INFO) == _ATT1
@@ -233,9 +209,7 @@ def test_iter_attachments_propagates_parent_keys() -> None:
         ConfluenceContentTransport._iter_attachments(
             parent=_parent_with((_ATT1,)),
             base_url="https://confl.example.com/wiki",
-            auth=None,
             transport=transport,
-            pctx=_pctx(),
         )
     )
     meta = out[0].metadata

@@ -103,7 +103,7 @@ batch_size = 100
 [tool.kb]
 enable = true
 tools = [
-    # ingest (Confluence → kb_chunks)
+    # ingest (Confluence -> kb_chunks)
     "confluence_ingest_spaces",   # все страницы перечисленных spaces
     "confluence_ingest_pages",    # явный список page_id
     "confluence_ingest_cql",      # discovery через CQL-запрос
@@ -114,7 +114,7 @@ tools = [
     "kb_doc_fts_search",      # kb_confluence_doc, лексический
     "confluence_search_cql",
     "confluence_list_spaces",
-    # download / fetch (Confluence → workspace / напрямую LLM)
+    # download / fetch (Confluence -> workspace / напрямую LLM)
     "confluence_download",        # unified: space_keys / page_ids
     "confluence_fetch_page",      # одна страница строкой, без записи на диск
     "confluence_grep_page",       # grep по одной странице, только совпадения
@@ -125,7 +125,7 @@ tools = [
 chunk_size = 4000
 chunk_overlap = 0
 collection = "kb_confluence"
-# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые → все вложения).
+# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые -> все вложения).
 attachment_media_types = []
 attachment_titles = []
 
@@ -183,7 +183,7 @@ only = []
 skip = []
 page_ids = []
 prune = false
-# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые → все вложения).
+# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые -> все вложения).
 # Примеры: ["application/pdf", "image/*"] или ["*.pdf", "report-*.docx"].
 attachment_media_types = ["image/*"]
 attachment_titles = []
@@ -209,7 +209,7 @@ space_type = "global"
 only = []
 skip = []
 page_ids = []
-# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые → все вложения).
+# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые -> все вложения).
 # Отсеянные не запрашиваются по HTTP и не пишутся на диск.
 attachment_media_types = []
 attachment_titles = []

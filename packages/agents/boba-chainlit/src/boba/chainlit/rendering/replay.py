@@ -1,5 +1,5 @@
 """
-Replay `HistoryService` событий в виде chainlit `StepDict`
+Replay HistoryService событий в виде chainlit StepDict
 """
 
 from __future__ import annotations
@@ -57,14 +57,14 @@ def replay_history_to_thread_sync(
 ) -> ThreadContent:
     """Sync-обёртка для вызова из синхронного контекста (data_layer).
 
-    Внутри dispatcher async, но реальных await'ов в `StepDictTarget` нет —
-    `asyncio.run` тут безопасен и быстр.
+    Внутри dispatcher async, но реальных await'ов в StepDictTarget нет —
+    asyncio.run тут безопасен и быстр.
     """
     return asyncio.run(replay_history_to_thread(history, thread_id))
 
 
 class StepDictTarget(EventRenderTarget):
-    """Реализует `EventRenderTarget` через накопление `StepDict`-ов.
+    """Реализует EventRenderTarget через накопление StepDict-ов.
 
     Все *_chunk/started/milestone/status методы — no-op'ы: replay не
     видит delta'ов и не показывает фазовые индикаторы.
@@ -74,7 +74,7 @@ class StepDictTarget(EventRenderTarget):
         self._thread_id = thread_id
         self._out: list[StepDict] = []
         self._elements_out: list[ElementDict] = []
-        # tool_call.id → индекс в _out для дозаписи output'а из tool_result.
+        # tool_call.id -> индекс в _out для дозаписи output'а из tool_result.
         self._tool_index_by_call_id: dict[str, int] = {}
 
     def steps(self) -> list[StepDict]:
@@ -143,7 +143,7 @@ class StepDictTarget(EventRenderTarget):
     ) -> None:
         # Симметрично live: tool-step закрываем текстом, а сам график рисуем
         # видимым сообщением-контейнером с plotly-элементом. Содержимое графика
-        # восстанавливается из журнала (spec) и встраивается в `url` как
+        # восстанавливается из журнала (spec) и встраивается в url как
         # data:-URI — постоянного файлового хранилища у нас нет.
         text = f"график отрисован: {title}" if title else "график отрисован"
         idx = self._tool_index_by_call_id.get(call_id)
@@ -199,7 +199,7 @@ class StepDictTarget(EventRenderTarget):
         args_json: str,
     ) -> None:
         # Открываем tool-step именно здесь: ToolCallMessage в UI не рисуем,
-        # `ToolExecutionStarted` — единственный источник для создания step'а.
+        # ToolExecutionStarted — единственный источник для создания step'а.
         self._tool_index_by_call_id[call_id] = len(self._out)
         self._append(type_="tool", name=name, output="", input_=args_json)
 
@@ -278,7 +278,7 @@ class StepDictTarget(EventRenderTarget):
         input_: str = "",
         is_error: bool = False,
     ) -> str:
-        """Добавить StepDict; вернуть его id (для привязки `ElementDict.forId`)."""
+        """Добавить StepDict; вернуть его id (для привязки ElementDict.forId)."""
         step_id = _sid()
         step: dict[str, object] = {
             "id": step_id,

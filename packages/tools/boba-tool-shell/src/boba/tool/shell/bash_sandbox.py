@@ -1,13 +1,13 @@
-"""`bash_sandbox`: запуск команды в bubblewrap-песочнице.
+"""bash_sandbox: запуск команды в bubblewrap-песочнице.
 
-LLM передаёт `command` (обязательное), `stdin` (опционально, по умолчанию
-пустая строка) и `profile` (опционально, имя из реестра профилей).
+LLM передаёт command (обязательное), stdin (опционально, по умолчанию
+пустая строка) и profile (опционально, имя из реестра профилей).
 Поля профиля менять LLM не может.
 
-Безопасность Python-стороны: `command` передаётся как единичный argv-
-элемент в `bash -c`, без shell-интерполяции на стороне Python. Все
+Безопасность Python-стороны: command передаётся как единичный argv-
+элемент в bash -c, без shell-интерполяции на стороне Python. Все
 остальные argv-элементы (пути для bind/ro-bind, env-вары, cwd) —
-operator-controlled через конфиг. Шелл-интерпретация `command`
+operator-controlled через конфиг. Шелл-интерпретация command
 происходит внутри bwrap-песочницы под изоляцией.
 """
 
@@ -32,11 +32,11 @@ _MAX_STDIN_LEN = 1 * 1024 * 1024  # 1 MiB
 
 
 def _has_bwrap() -> bool:
-    """Platform-check: `bwrap` присутствует в PATH.
+    """Platform-check: bwrap присутствует в PATH.
 
     Если bubblewrap не установлен на хосте — tool не регистрируется на
-    module-load: `bash_sandbox` остаётся обычной функцией без `@tool`-
-    маркера, и `AgentBuilder._scan_module` его пропустит.
+    module-load: bash_sandbox остаётся обычной функцией без @tool-
+    маркера, и AgentBuilder._scan_module его пропустит.
     """
     return shutil.which("bwrap") is not None
 
@@ -69,7 +69,7 @@ def bash_sandbox(
         ),
     ] = "",
 ) -> dict[str, Any]:
-    """Выполнить shell-команду через `bash -c` в bubblewrap-песочнице.
+    """Выполнить shell-команду через bash -c в bubblewrap-песочнице.
 
     Команда выполняется в bwrap: пользователь, PID, IPC, UTS, сеть (если
     выключена в профиле) — всё в отдельных namespace'ах. Доступ к файловой

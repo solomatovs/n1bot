@@ -1,13 +1,13 @@
-"""`AttachmentFilter` + интеграция с `_iter_attachments`/`ConfluenceContentTransport`.
+"""AttachmentFilter + интеграция с _iter_attachments/ConfluenceContentTransport.
 
 Покрываем:
 - passthrough (пустые списки) — пропускает всё.
-- allowlist по `media_type` — только matching.
-- allowlist по `title` — только matching.
+- allowlist по media_type — только matching.
+- allowlist по title — только matching.
 - OR между списками — match либо в media_type, либо в title.
 - case-insensitive.
-- `_iter_attachments` не делает HTTP за отсеянные вложения (lazy + skip).
-- `ConfluenceContentTransport` уважает filter на fan-out стадии.
+- _iter_attachments не делает HTTP за отсеянные вложения (lazy + skip).
+- ConfluenceContentTransport уважает filter на fan-out стадии.
 """
 
 from __future__ import annotations
@@ -18,8 +18,6 @@ from io import BytesIO
 
 from boba.indexing import (
     Metadata,
-    PipelineContext,
-    PipelineId,
     RawDocument,
     SourceId,
     Transport,
@@ -33,6 +31,7 @@ from boba.tool.kb.confluence.models import (
 from boba.tool.kb.confluence.pipeline import (
     ConfluenceContentTransport,
 )
+from boba.tool.kb.confluence.request_sources import ConfluenceRequest
 from boba.transport.http import HttpRequest
 
 _ATT_PNG = AttachmentInfo(
@@ -131,30 +130,21 @@ def _parent_with(attachments: tuple[AttachmentInfo, ...]) -> RawDocument:
     )
 
 
-def _pctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("test"))
 
-
-class _FakeTransport(Transport[HttpRequest]):
+class _FakeTransport(Transport[ConfluenceRequest]):
     def __init__(self) -> None:
-        self.seen: list[HttpRequest] = []
+        self.seen: list[ConfluenceRequest] = []
 
-    def name(self) -> str:
-        return "FakeTransport"
-
-    def stream(
+    def fetch(
         self,
-        ctx: PipelineContext,
-        stream: Iterable[HttpRequest],
+        req: ConfluenceRequest,
     ) -> Iterable[RawDocument]:
-        del ctx
-        for req in stream:
-            self.seen.append(req)
-            yield RawDocument(
-                handle=BytesIO(b"binary"),
-                source_id=req.source_id,
-                metadata=req.metadata,
-            )
+        self.seen.append(req)
+        yield RawDocument(
+            handle=BytesIO(b"binary"),
+            source_id=req.source_id,
+            metadata=req.metadata,
+        )
 
 
 def test_iter_attachments_skips_filtered_without_http() -> None:
@@ -165,9 +155,7 @@ def test_iter_attachments_skips_filtered_without_http() -> None:
         ConfluenceContentTransport._iter_attachments(
             parent=_parent_with((_ATT_PNG, _ATT_PDF, _ATT_DOCX)),
             base_url="https://confl.example.com/wiki",
-            auth=None,
             transport=transport,
-            pctx=_pctx(),
             att_filter=flt,
         )
     )
@@ -175,7 +163,7 @@ def test_iter_attachments_skips_filtered_without_http() -> None:
     assert out[0].metadata.get(ConfluenceKeys.ATTACHMENT_INFO) == _ATT_PDF
     # PNG и DOCX не должны были даже запроситься
     assert len(transport.seen) == 1
-    assert "spec.pdf" in transport.seen[0].url
+    assert "spec.pdf" in transport.seen[0].http.url
 
 
 def test_iter_attachments_passthrough_default_keeps_all() -> None:
@@ -184,9 +172,7 @@ def test_iter_attachments_passthrough_default_keeps_all() -> None:
         ConfluenceContentTransport._iter_attachments(
             parent=_parent_with((_ATT_PNG, _ATT_PDF)),
             base_url="https://confl.example.com/wiki",
-            auth=None,
             transport=transport,
-            pctx=_pctx(),
         )
     )
     assert len(out) == 2
@@ -230,45 +216,41 @@ _PAGE_JSON: dict[str, object] = {
 }
 
 
-class _FakeInner(Transport[HttpRequest]):
+class _FakeInner(Transport[ConfluenceRequest]):
     def __init__(self) -> None:
-        self.calls: list[HttpRequest] = []
+        self.calls: list[ConfluenceRequest] = []
 
-    def name(self) -> str:
-        return "FakeInner"
-
-    def stream(
+    def fetch(
         self,
-        ctx: PipelineContext,
-        stream: Iterable[HttpRequest],
+        req: ConfluenceRequest,
     ) -> Iterable[RawDocument]:
-        del ctx
-        for req in stream:
-            self.calls.append(req)
-            if req.metadata.has(ConfluenceKeys.ATTACHMENT_INFO):
-                att = req.metadata.get(ConfluenceKeys.ATTACHMENT_INFO)
-                assert att is not None
-                yield RawDocument(
-                    handle=BytesIO(b"binary"),
-                    source_id=req.source_id,
-                    metadata=req.metadata.set(
-                        TransportKeys.CONTENT_TYPE, att.media_type,
-                    ),
-                )
-            else:
-                yield RawDocument(
-                    handle=BytesIO(json.dumps(_PAGE_JSON).encode("utf-8")),
-                    source_id=req.source_id,
-                    metadata=req.metadata.set(
-                        TransportKeys.CONTENT_TYPE, "application/json",
-                    ),
-                )
+        self.calls.append(req)
+        if req.metadata.has(ConfluenceKeys.ATTACHMENT_INFO):
+            att = req.metadata.get(ConfluenceKeys.ATTACHMENT_INFO)
+            assert att is not None
+            yield RawDocument(
+                handle=BytesIO(b"binary"),
+                source_id=req.source_id,
+                metadata=req.metadata.set(
+                    TransportKeys.CONTENT_TYPE, att.media_type,
+                ),
+            )
+        else:
+            yield RawDocument(
+                handle=BytesIO(json.dumps(_PAGE_JSON).encode("utf-8")),
+                source_id=req.source_id,
+                metadata=req.metadata.set(
+                    TransportKeys.CONTENT_TYPE, "application/json",
+                ),
+            )
 
 
-def _page_request() -> HttpRequest:
-    return HttpRequest(
-        url="https://confl.example.com/wiki/rest/api/content/42",
-        method="GET",
+def _page_request() -> ConfluenceRequest:
+    return ConfluenceRequest(
+        http=HttpRequest(
+            url="https://confl.example.com/wiki/rest/api/content/42",
+            method="GET",
+        ),
         source_id=SourceId(
             "https://confl.example.com/wiki/pages/viewpage.action?pageId=42"
         ),
@@ -287,10 +269,9 @@ def test_transport_applies_attachment_filter() -> None:
         inner=inner,
         body_format="export_view",
         base_url="https://confl.example.com/wiki",
-        auth=None,
         attachment_filter=AttachmentFilter.from_lists(titles=["*.pdf"]),
     )
-    out = list(transport.stream(_pctx(), [_page_request()]))
+    out = list(transport.fetch(_page_request()))
     assert len(out) == 2  # page + только PDF, без PNG
     assert not out[0].metadata.has(ConfluenceKeys.ATTACHMENT_INFO)
     att = out[1].metadata.get(ConfluenceKeys.ATTACHMENT_INFO)

@@ -1,25 +1,21 @@
-"""boba.transport.http — HTTP transport для индексации.
+"""boba.transport.http — чистый HTTP-транспорт.
 
 Стадии:
-- `HttpRequest(url, source_id, method, headers, auth, metadata)` — DTO
-  одного HTTP-запроса. `source_id` обязательный (caller-supplied
-  canonical id).
-- `HttpTransport(timeout_sec, verify)` — выполняет запросы через
-  `httpx.Client`, отдаёт `RawDocument` со streaming-handle.
-- `auth: httpx.Auth | None` — httpx-native auth, пробрасывается в
-  `httpx.Client(auth=...)`. Для Basic — `httpx.BasicAuth(username, password)`.
-  Любая кастомная схема — `httpx.Auth`-наследник; формат-специфичные
-  реализации (Bearer/PAT/OAuth/...) живут в соответствующих feature-пакетах.
+- HttpProfile(base_url, auth, headers, params, timeout, retry, ssl) — DTO
+  соединения (всё кроме конкретного url/method). На нём конструируется транспорт.
+- HttpRequest(url, method) — план одного запроса; перекрывает профиль.
+- HttpTransport(profile) — исполняет запрос через переиспользуемый
+  httpx.Client, отдаёт HttpResponse со streaming-телом. Индексацию
+  (RawDocument/metadata/source_id) не знает — это дело потребителя.
+- HttpResponse(status, headers, stream) — чистый результат запроса.
+- auth: WebAuth — discriminated union auth-методов (none/basic/bearer/
+  digest), задаётся в профиле; httpx_auth() идёт в httpx.Client(auth=...).
 
 Использование:
-    auth = httpx.BasicAuth("user", "password")
-    requests = [
-        HttpRequest(url="https://...", source_id=SourceId("..."), auth=auth)
-    ]
-    transport = HttpTransport(timeout_sec=60.0)
-    for raw in transport.stream(ctx, requests):
-        body = raw.handle.read()
-        ...
+    profile = HttpProfile(auth=BasicAuth(method="basic", user="u", password="p"))
+    with HttpTransport(profile) as transport:
+        with transport.fetch(HttpRequest(url="https://...")) as resp:
+            body = resp.stream.read()
 """
 
 from __future__ import annotations
@@ -32,18 +28,19 @@ from boba.transport.http.auth import (
     NoneAuth,
     WebAuth,
 )
-from boba.transport.http.connection import HttpConnection
-from boba.transport.http.keys import HttpKeys
+from boba.transport.http.connection import HttpProfile
 from boba.transport.http.request import HttpRequest
+from boba.transport.http.response import ByteStream, HttpResponse
 from boba.transport.http.transport import HttpTransport
 
 __all__ = [
     "BasicAuth",
     "BearerAuth",
+    "ByteStream",
     "DigestAuth",
-    "HttpConnection",
-    "HttpKeys",
+    "HttpProfile",
     "HttpRequest",
+    "HttpResponse",
     "HttpTransport",
     "HttpxBearerAuth",
     "NoneAuth",

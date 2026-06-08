@@ -21,7 +21,7 @@ class CopyBuffer:
     """
 
     _INITIAL_CAPACITY = 4096
-    _NL = 0x0A  # разделитель строк COPY TEXT (однозначный: внутриячеечные → \n-эскейп)
+    _NL = 0x0A  # разделитель строк COPY TEXT (однозначный: внутриячеечные -> \n-эскейп)
 
     def __init__(self, *, max_capacity: int, limit_rows: int | None = None) -> None:
         if max_capacity <= 0:

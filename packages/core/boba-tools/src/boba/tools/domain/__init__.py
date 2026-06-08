@@ -7,9 +7,9 @@
 - доменные ошибки: ToolExecutionError, InvalidToolArgumentError, etc.
 
 Application-фреймворк (registry, ToolRegistry, ToolCatalog, ToolExecutor,
-plugin_loader) — в `boba-tools`. Адаптеры под конкретные LLM-API живут
-в `boba-adapter-*` и работают с `ToolResult` через `match`-разбор по
-discriminator `kind`.
+plugin_loader) — в boba-tools. Адаптеры под конкретные LLM-API живут
+в boba-adapter-* и работают с ToolResult через match-разбор по
+discriminator kind.
 """
 
 from __future__ import annotations

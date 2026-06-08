@@ -1,8 +1,8 @@
 """web_download end-to-end: реальный HttpTransport + httpx.MockTransport.
 
-`tmp_workspace` — реальная FS-реализация `WorkspaceShell`. Mock'аем
-только сетевой слой через `httpx.MockTransport`, остальное идёт по
-настоящему pipeline'у `WebUrlsRequestSource → HttpTransport → WebArtifact`.
+tmp_workspace — реальная FS-реализация WorkspaceShell. Mock'аем
+только сетевой слой через httpx.MockTransport, остальное идёт по
+настоящему пути HttpTransport -> WebArtifact.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ import httpx
 import pytest
 
 from boba.tool.web.connection import WebConnection
-from boba.transport.http import HttpConnection
 from boba.tool.web.tools.download import _WebDownloader, web_download
+from boba.transport.http import HttpProfile
 from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceShell
 
 
@@ -29,7 +29,7 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
 
 
 def _conn() -> WebConnection:
-    return WebConnection(profiles={"docs.python.org": HttpConnection()})
+    return WebConnection(profiles={"docs.python.org": HttpProfile()})
 
 
 def test_download_writes_raw_html_with_header(
@@ -159,10 +159,15 @@ def test_web_download_empty_urls_raises(
     from boba.tool.web.tools.download import WebDownloadConfig
 
     cfg = WebDownloadConfig.model_construct(
-        profiles=_conn().profiles, dest_dir="d", max_returned_files=None,
+        profiles=_conn().profiles,
+        dest_dir="d",
+        max_returned_files=None,
     )
     with pytest.raises(ValueError, match="urls пуст") as exc_info:
         web_download(
-            cfg=cfg, shell=tmp_workspace, urls=[], as_markdown=False,
+            cfg=cfg,
+            shell=tmp_workspace,
+            urls=[],
+            as_markdown=False,
         )
     assert "urls" in str(exc_info.value).lower()

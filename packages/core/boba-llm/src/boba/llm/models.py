@@ -73,7 +73,7 @@ class ToolCall(BaseModel):
 class ToolCallDecodeFailure(BaseModel):
     """Tool-call, чьи args не декодировались; ошибка как значение, а не исключение.
 
-    `raw` — сырой текст args от провайдера, `error` — причина (битый JSON / не
+    raw — сырой текст args от провайдера, error — причина (битый JSON / не
     объект).
     """
 
@@ -132,7 +132,7 @@ class AssistantMessage(Message):
     """Ответ модели одной генерации: текст + reasoning + refusal + tool-call'ы.
 
     Плоские поля вместо упорядоченных блоков: OpenAI Chat всё равно flatten'ит
-    (`content` + `tool_calls`), а thinking/refusal/tool_call_decode_failures живут в
+    (content + tool_calls), а thinking/refusal/tool_call_decode_failures живут в
     домене для replay/audit и провайдеру не отправляются.
     """
 
@@ -161,8 +161,8 @@ class AssistantMessage(Message):
 class ToolResultMessage(Message):
     """Результат выполнения tool-call (plain text).
 
-    Конвертация из доменного `ToolResult` — `tool_result_to_message(...)`
-    (`boba.llm.tool_result_render`), чтобы models.py не знал про варианты
+    Конвертация из доменного ToolResult — tool_result_to_message(...)
+    (boba.llm.tool_result_render), чтобы models.py не знал про варианты
     ToolResult.
     """
 
@@ -175,9 +175,9 @@ class ToolResultMessage(Message):
 DialogMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage
 """Сообщение диалога — всё, что не SystemMessage.
 
-В `LLMRequest.messages` лежат только эти типы; `SystemMessage` живёт
-отдельно в `LLMRequest.system_messages`, чтобы Anthropic-адаптер мог
-прокидывать их в top-level `system` параметр, а OpenAI-адаптер —
+В LLMRequest.messages лежат только эти типы; SystemMessage живёт
+отдельно в LLMRequest.system_messages, чтобы Anthropic-адаптер мог
+прокидывать их в top-level system параметр, а OpenAI-адаптер —
 префиксовать обычный список сообщений.
 """
 
@@ -187,8 +187,8 @@ class AssistantMessageChunk:
     """Аккумулятор AssistantMessage в стриме.
 
     Текстовые поля (text/thinking/refusal) копятся посимвольно в StringIO;
-    tool-call'ы добавляются уже декодированными (`add_tool_call`) — их декод из
-    wire-формата (строка→args, валидность) делает провайдер.
+    tool-call'ы добавляются уже декодированными (add_tool_call) — их декод из
+    wire-формата (строка->args, валидность) делает провайдер.
     """
 
     _text: io.StringIO = field(default_factory=io.StringIO)

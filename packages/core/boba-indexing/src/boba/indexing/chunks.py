@@ -2,19 +2,19 @@
 Chunk[T] — атомарный кусок контента для индексирования в vector store.
 
 Generic над content-типом:
-    TextChunker  → Chunk[str]
-    ImageChunker → Chunk[bytes]
+    TextChunker  -> Chunk[str]
+    ImageChunker -> Chunk[bytes]
 
 Контракт двух content-полей:
 
-- `format_content` — финальная версия для embedder/LLM. Это то, что попадает
-  в `Embedder.embed_documents(...)` и в поле `document` стора. Может включать
+- format_content — финальная версия для embedder/LLM. Это то, что попадает
+  в Embedder.embed_documents(...) и в поле document стора. Может включать
   обогащение (heading-prefix, реплицированный header таблицы, и т.п.).
-- `raw_content`   — оригинальный фрагмент исходника, без обогащения. Для
+- raw_content   — оригинальный фрагмент исходника, без обогащения. Для
   citation/UI (показать пользователю «вот откуда взялся ответ»).
 
-Format-specific атрибуты — `location`, `anchor` — живут в `metadata` через
-типизированные `ChunkKeys.*`. Не каждый формат может их предоставить
+Format-specific атрибуты — location, anchor — живут в metadata через
+типизированные ChunkKeys.*. Не каждый формат может их предоставить
 (HTML, например, без lxml-sourceline-tracking не даёт честных char-offset'ов),
 поэтому в DTO они не required-полями.
 """
@@ -44,17 +44,17 @@ T = TypeVar("T")
 ChunkId = NewType("ChunkId", str)
 """Стабильный составной id чанка для idempotent re-index.
 
-Канонический wire-формат: `{digest_prefix}:{chunk_index}`.
-Конструируется через `chunk_id_from_digest(...)` — единая точка форматирования.
+Канонический wire-формат: {digest_prefix}:{chunk_index}.
+Конструируется через chunk_id_from_digest(...) — единая точка форматирования.
 """
 
 
 class ChunkKeys:
-    """Стандартные `MetadataKey`-и для chunk-level атрибутов.
+    """Стандартные MetadataKey-и для chunk-level атрибутов.
 
     Format-specific Chunker'ы пишут эти ключи **только если** соответствующий
     формат может их корректно вычислить. Consumer (UI, citation, store) читает
-    через `chunk.metadata.get(ChunkKeys.X)` и обрабатывает `None` как «формат
+    через chunk.metadata.get(ChunkKeys.X) и обрабатывает None как «формат
     не предоставил эту информацию».
     """
 
@@ -86,27 +86,27 @@ class Chunk(Generic[T]):
 
     Поля:
 
-    `chunk_id`       — уникальный id чанка в ChunkStore. Application-level
-                       (тот же source/anchor → тот же id из прогона в прогон).
-                       Считается `ChunkIdStrategy`.
-    `source_id`      — id source-документа, из которого вырезан чанк. Несколько
+    chunk_id       — уникальный id чанка в ChunkStore. Application-level
+                       (тот же source/anchor -> тот же id из прогона в прогон).
+                       Считается ChunkIdStrategy.
+    source_id      — id source-документа, из которого вырезан чанк. Несколько
                        чанков одного документа имеют одинаковый source_id.
-    `format_content` — версия для embedder/LLM (с обогащением). Это и кладётся
-                       в Embedder и в `document` поле Store.
-    `raw_content`    — оригинальный фрагмент source'а, без обогащения. Для
+    format_content — версия для embedder/LLM (с обогащением). Это и кладётся
+                       в Embedder и в document поле Store.
+    raw_content    — оригинальный фрагмент source'а, без обогащения. Для
                        UI-citation / deep-link reconstruction.
-    `chunk_index`    — порядковый номер чанка внутри своего `source_id`;
-                       детерминирует chunk_id (`{digest}:{chunk_index}`).
-    `content_hash`   — fingerprint, для idempotency-check'а в
-                       `IndexSink.reconcile`. Не Optional: Chunker[T]
-                       обязан вычислить через свой `KeyEncoder[T]` ещё в
+    chunk_index    — порядковый номер чанка внутри своего source_id;
+                       детерминирует chunk_id ({digest}:{chunk_index}).
+    content_hash   — fingerprint, для idempotency-check'а в
+                       IndexSink.reconcile. Не Optional: Chunker[T]
+                       обязан вычислить через свой KeyEncoder[T] ещё в
                        момент эмиссии чанка. Контракт type-enforced —
                        никаких "не-обогащённых" чанков в pipeline'е нет.
-    `metadata`       — произвольная Metadata: пробрасывается из Section
-                       (`section.metadata + section.to_chunk_metadata()`),
+    metadata       — произвольная Metadata: пробрасывается из Section
+                       (section.metadata + section.to_chunk_metadata()),
                        плюс chunker-добавки. Format-specific атрибуты типа
-                       `ChunkKeys.LOCATION_*` / `ChunkKeys.ANCHOR` — здесь.
-    `tags`           — множество тэгов; пробрасываются от Reader/Section.
+                       ChunkKeys.LOCATION_* / ChunkKeys.ANCHOR — здесь.
+    tags           — множество тэгов; пробрасываются от Reader/Section.
     """
 
     chunk_id: ChunkId
@@ -121,20 +121,20 @@ class Chunk(Generic[T]):
 
 @dataclass(frozen=True)
 class EmbeddedChunk(Generic[T]):
-    """Insert-ready DTO для `ChunkStore.upsert`.
+    """Insert-ready DTO для ChunkStore.upsert.
 
-    Композиция `Chunk[T] + embedding`. Все инварианты payload'а (включая
-    non-null `content_hash`) уже гарантирует сам `Chunk[T]` — здесь
+    Композиция Chunk[T] + embedding. Все инварианты payload'а (включая
+    non-null content_hash) уже гарантирует сам Chunk[T] — здесь
     ничего проверять не нужно. Store доверяет EmbeddedChunk полностью.
 
     Flat-структура (а не вложенный Chunk) — чтобы Store работал с одним
     плоским объектом без двойного dereference в горячем upsert-loop'е.
     Embedding-вектор считает caller выше по pipeline'у (обычно
-    `IndexSink.reconcile`-impl) через `Embedder.embed_documents(...)`;
+    IndexSink.reconcile-impl) через Embedder.embed_documents(...);
     store про Embedder не знает.
 
-    Конструировать через `EmbeddedChunk.of(chunk, embedding)` — переносит
-    поля из Chunk в одном месте. Прямой `EmbeddedChunk(...)` тоже работает.
+    Конструировать через EmbeddedChunk.of(chunk, embedding) — переносит
+    поля из Chunk в одном месте. Прямой EmbeddedChunk(...) тоже работает.
     """
 
     chunk_id: ChunkId
@@ -153,7 +153,7 @@ class EmbeddedChunk(Generic[T]):
         chunk: Chunk[T],
         embedding: tuple[float, ...],
     ) -> EmbeddedChunk[T]:
-        """Собрать `EmbeddedChunk` из `Chunk` + готового embedding."""
+        """Собрать EmbeddedChunk из Chunk + готового embedding."""
         return cls(
             chunk_id=chunk.chunk_id,
             source_id=chunk.source_id,
@@ -169,14 +169,14 @@ class EmbeddedChunk(Generic[T]):
 
 @dataclass(frozen=True)
 class ChunkSummary(Generic[T]):
-    """Лёгкая read-only сводка чанка — то что возвращает `IndexQuery.find`.
+    """Лёгкая read-only сводка чанка — то что возвращает IndexQuery.find.
 
-    То же что `Chunk[T]`, но БЕЗ `format_content` / `raw_content` (вместо
-    них — `snippet`) и БЕЗ `content_hash`. Используется когда полный
+    То же что Chunk[T], но БЕЗ format_content / raw_content (вместо
+    них — snippet) и БЕЗ content_hash. Используется когда полный
     content тяжёлый таскать (большие документы, картинки), а нужны
     metadata + сниппет для UI/citations.
 
-    Backend сам решает, что положить в `snippet`: для T=str — обрезанная
+    Backend сам решает, что положить в snippet: для T=str — обрезанная
     или highlighted-выдержка; для T=bytes — thumbnail.
     """
 

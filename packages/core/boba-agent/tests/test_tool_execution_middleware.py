@@ -1,7 +1,7 @@
 """Контракт ToolExecutionMiddleware: исполнение из итогового TotalMessage.
 
-Источник истины исполнения — `TotalMessage.message.tool_calls`. Потоковые
-`ToolCallMessage` наблюдательные и на исполнение не влияют.
+Источник истины исполнения — TotalMessage.message.tool_calls. Потоковые
+ToolCallMessage наблюдательные и на исполнение не влияют.
 """
 
 from __future__ import annotations

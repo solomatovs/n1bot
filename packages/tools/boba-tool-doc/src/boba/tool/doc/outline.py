@@ -27,7 +27,7 @@ def document_outline(
     """Вернуть карту документа: по строке на страницу (размер, символов, фрагментов).
 
     Дешёвый обзор перед чтением: по нему выбирают нужные страницы для
-    `read_pages`. Сам текст не возвращается.
+    read_pages. Сам текст не возвращается.
     """
     data = DocEngine.read_bytes(shell, path)
     result = DocEngine.parse(cfg, data, path)

@@ -49,9 +49,9 @@ logger = logging.getLogger(__name__)
 
 class ToolCallFromContentFallback:
     """
-    Перемапивает tool-call из `content` в `tool_calls` итогового сообщения.
+    Перемапивает tool-call из content в tool_calls итогового сообщения.
 
-    Чинит проблему когда в поле content приходит JSON по протоколу (`function` + `args`)
+    Чинит проблему когда в поле content приходит JSON по протоколу (function + args)
     """
 
     def decode(self, message: AssistantMessage, *, model: str) -> AssistantMessage:
@@ -100,7 +100,7 @@ class ToolCallFromContentFallback:
 
     @classmethod
     def _to_call(cls, item: object) -> ToolCall | None:
-        """Один элемент {function, args} → ToolCall; None если не по протоколу."""
+        """Один элемент {function, args} -> ToolCall; None если не по протоколу."""
         if not isinstance(item, dict):
             return None
 
@@ -128,13 +128,13 @@ class ChatCompletionChunkConsumer(
 
     Преобразует поток ChatCompletionChunk в доменные LLMEvent: на лету эмитит
     delta-события (thinking/answer/refusal/tool_call) и параллельно копит их в
-    AssistantMessageChunk. Текстовые `*Message`-снапшоты закрываются инлайн, по
-    переходу к следующему виду контента (пришёл content → закрыли thinking и т.д.).
-    Тул-снапшоты и `LLMTotalMessage` (терминатор + источник истины) — на
+    AssistantMessageChunk. Текстовые *Message-снапшоты закрываются инлайн, по
+    переходу к следующему виду контента (пришёл content -> закрыли thinking и т.д.).
+    Тул-снапшоты и LLMTotalMessage (терминатор + источник истины) — на
     finish_reason: в OpenAI args тула стримятся до самого конца.
 
     Последовательность видов — деталь OpenAI-стрима; наружу как гарантия не
-    протекает, каждое `*Message` самодостаточно.
+    протекает, каждое *Message самодостаточно.
     """
 
     def __init__(
@@ -192,7 +192,7 @@ class ChatCompletionChunkConsumer(
                     yield LLMThinkingDelta(request_id=self._request_id, token=thinking)
 
                 if delta.content:
-                    # переход thinking → answer: закрываем thinking-слот
+                    # переход thinking -> answer: закрываем thinking-слот
                     yield from self._flush_thinking()
                     self._message.append_text(delta.content)
                     yield LLMAnswerDelta(
@@ -200,7 +200,7 @@ class ChatCompletionChunkConsumer(
                     )
 
                 if delta.refusal:
-                    # переход → refusal: закрываем thinking/answer
+                    # переход -> refusal: закрываем thinking/answer
                     yield from self._flush_thinking()
                     yield from self._flush_answer()
                     self._message.append_refusal(delta.refusal)
@@ -209,7 +209,7 @@ class ChatCompletionChunkConsumer(
                     )
 
                 if delta.tool_calls:
-                    # переход → tool_calls: закрываем все текстовые слоты
+                    # переход -> tool_calls: закрываем все текстовые слоты
                     yield from self._flush_thinking()
                     yield from self._flush_answer()
                     yield from self._flush_refusal()
@@ -316,7 +316,7 @@ class ChatCompletionChunkConsumer(
     def _try_fallback(self) -> AssistantMessage | None:
         """Исправленное сообщение, если content оказался tool-call'ом; иначе None.
 
-        Только при пустом нативном tool_calls (`self._tool_calls`): иначе
+        Только при пустом нативном tool_calls (self._tool_calls): иначе
         провайдер вызов прислал штатно и content трогать нельзя.
         """
         if self._fallback is None or self._tool_calls:
@@ -408,9 +408,9 @@ class ChatCompletionConsumer:
 class _PartialToolCall:
     """Накопитель одного tool-call из стрим-фрагментов + декод args.
 
-    id+name приходят на первой дельте; фрагменты args — строкой. `decode()`
-    парсит args в dict → `ToolCall`, либо при битом JSON / не-объекте возвращает
-    `ToolCallDecodeFailure` с сырьём и причиной (ошибка как значение, не исключение).
+    id+name приходят на первой дельте; фрагменты args — строкой. decode()
+    парсит args в dict -> ToolCall, либо при битом JSON / не-объекте возвращает
+    ToolCallDecodeFailure с сырьём и причиной (ошибка как значение, не исключение).
     Декод args — провайдерская работа: OpenAI отдаёт args строкой, поэтому парс
     живёт здесь, а домен хранит уже готовое значение.
     """
@@ -496,7 +496,7 @@ class DuplicateToolCallIndexReindexer(StreamTransformer[LLMContext, Choice, Choi
     как будто бы она вызвала этот набор toolcall'ов с этими индексами
 
     Пример. Провайдер шлёт два вызова, оба index=0:
-        {index:0, id:A, name:…} -> слот 0 свободен → A index=0
+        {index:0, id:A, name:…} -> слот 0 свободен -> A index=0
         {index:0, id:B, name:…} -> слот 0 занят A, B проставляется index=1
     """
 

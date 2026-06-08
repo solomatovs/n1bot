@@ -1,5 +1,5 @@
 """
-Единый источник правды для маппинга `AgentEvent` -> UI-операции
+Единый источник правды для маппинга AgentEvent -> UI-операции
 """
 
 from __future__ import annotations
@@ -109,23 +109,23 @@ class EventRenderTarget(Protocol):
 
 
 class AgentEventDispatcher:
-    """Маппит каждый `AgentEvent` на ровно один вызов `EventRenderTarget`.
+    """Маппит каждый AgentEvent на ровно один вызов EventRenderTarget.
 
     Семантика категорий событий:
-        DeltaEvent  — стриминг токенов (`*_chunk`); `ToolCallDelta`
+        DeltaEvent  — стриминг токенов (*_chunk); ToolCallDelta
                                игнорируется (UI рисует tool-step целиком
-                               по `tool_started`, а не по чанкам args)
-        MessageEvent — завершённый блок контента (`*_complete`,
-                               `user_query`, `tool_result`, `feedback`);
-                               `ToolCallMessage` — намерение LLM, в UI
+                               по tool_started, а не по чанкам args)
+        MessageEvent — завершённый блок контента (*_complete,
+                               user_query, tool_result, feedback);
+                               ToolCallMessage — намерение LLM, в UI
                                не рендерится
-        PhaseEvent         — состояния процесса (`iteration_started`,
-                               `tool_started` — точка открытия tool-step'а
-                               в UI, `generation_milestone`, `status`)
-        AdvisoryEvent      — нефатальные ошибки (`tool_call_decode_failed`,
-                               `tool_execution_failed`, `advisory`)
-        TerminalEvent      — фатальное завершение (`terminal`)
-        DiagnosticEvent    — телеметрия (`diagnostic`); решение «показывать
+        PhaseEvent         — состояния процесса (iteration_started,
+                               tool_started — точка открытия tool-step'а
+                               в UI, generation_milestone, status)
+        AdvisoryEvent      — нефатальные ошибки (tool_call_decode_failed,
+                               tool_execution_failed, advisory)
+        TerminalEvent      — фатальное завершение (terminal)
+        DiagnosticEvent    — телеметрия (diagnostic); решение «показывать
                                или нет» принимает target по своему toggle
     """
 
@@ -139,7 +139,7 @@ class AgentEventDispatcher:
     async def handle(self, event: AgentEvent) -> None:  # noqa: C901, PLR0912
         # Порядок case'ов: сначала конкретные delta/snapshot/phase события,
         # потом fall-through на категории. У pydantic-discriminated unions
-        # тип проверяется по полю `type`, поэтому конкретный case
+        # тип проверяется по полю type, поэтому конкретный case
         # сматчится раньше базового.
         match event:
             # ContentDelta
@@ -154,7 +154,7 @@ class AgentEventDispatcher:
                     await self._target.refusal_chunk(event.chunk)
             case ToolCallDelta():
                 # Tool args стримятся, но UI не открывает tool-step на
-                # `ToolCallMessage` — он создаётся на `ToolExecutionStarted`,
+                # ToolCallMessage — он создаётся на ToolExecutionStarted,
                 # где args уже доступны целиком. Делать no-op намеренно.
                 return
 
@@ -170,7 +170,7 @@ class AgentEventDispatcher:
             case ToolCallMessage():
                 # Намерение LLM вызвать tool — в UI не рендерим.
                 # Видимый жизненный цикл step'а:
-                # ToolExecutionStarted → ToolResultReady|ToolExecutionFailed.
+                # ToolExecutionStarted -> ToolResultReady|ToolExecutionFailed.
                 return
             case ToolResultReady(call=call, result=result):
                 await self._present_tool_result(call.id, result.result)
@@ -209,7 +209,7 @@ class AgentEventDispatcher:
             case DiagnosticEvent() as diagnostic_evt:
                 # Target сам решает, показывать ли (по своему toggle).
                 # Дополнительной специализации по type не делаем -
-                # target фильтрует по `topic`.
+                # target фильтрует по topic.
                 await self._target.diagnostic(diagnostic_evt)
 
             # Generic fall-throughs
@@ -240,10 +240,10 @@ class AgentEventDispatcher:
         call_id: str,
         result: ToolResult,
     ) -> None:
-        # Форму представления выбирает `ToolResultView`; здесь — только
-        # диспетчеризация по `ToolResultRendering` (exhaustive, новый вид
+        # Форму представления выбирает ToolResultView; здесь — только
+        # диспетчеризация по ToolResultRendering (exhaustive, новый вид
         # представления потребует ветку). is_error=False: провал tool'а идёт
-        # отдельным каналом (`tool_execution_failed`), не через `ToolResultReady`.
+        # отдельным каналом (tool_execution_failed), не через ToolResultReady.
         match ToolResultView(result).render():
             case MarkdownRendering(markdown=markdown):
                 await self._target.tool_result(call_id, markdown, is_error=False)
@@ -256,7 +256,7 @@ class AgentEventDispatcher:
         """Подсветить «не-нормальный» исход генерации в UI.
 
         Для STOP / TOOL_CALLS — тихий no-op: per-field *Message события
-        уже отрисовали контент, и `TotalMessage` несёт лишь агрегат,
+        уже отрисовали контент, и TotalMessage несёт лишь агрегат,
         который без аномалии не нуждается в отдельной отрисовке.
 
         Для LENGTH — system-advisory: ответ обрезан, пользователь должен
@@ -265,7 +265,7 @@ class AgentEventDispatcher:
         бесполезно.
 
         Тексты — на русском, как и весь UI Chainlit-агента; severity
-        события уже выставлен по finish_reason в `_derive`.
+        события уже выставлен по finish_reason в _derive.
         """
         match event.finish_reason:
             case FinishReason.LENGTH:

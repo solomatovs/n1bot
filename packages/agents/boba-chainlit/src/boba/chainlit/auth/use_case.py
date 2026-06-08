@@ -1,4 +1,4 @@
-"""Порт `UserRepository` + use case `AuthenticateUser`."""
+"""Порт UserRepository + use case AuthenticateUser."""
 
 from __future__ import annotations
 

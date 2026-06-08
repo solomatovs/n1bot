@@ -1,5 +1,5 @@
 """MarkdownKeys — typed MetadataKey'и, проставляемые markdown-Reader'ом и
-markdown-специфичными Section'ами при `to_chunk_metadata()`.
+markdown-специфичными Section'ами при to_chunk_metadata().
 """
 
 from __future__ import annotations

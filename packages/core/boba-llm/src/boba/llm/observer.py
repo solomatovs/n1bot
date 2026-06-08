@@ -24,9 +24,9 @@ class LLMRequestObserver(
     """Наблюдатель сырого LLM-вызова на границе адаптера.
 
     Жизненный цикл:
-        on_request →
-            on_http_request → on_http_response →
-            (stream=True: on_response_chunk* | stream=False: on_response) →
+        on_request ->
+            on_http_request -> on_http_response ->
+            (stream=True: on_response_chunk* | stream=False: on_response) ->
             терминал.
 
     Терминал — ровно один из: on_request_end (OK), on_request_cancel (отмена),

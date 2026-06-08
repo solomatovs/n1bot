@@ -80,7 +80,7 @@ def test_middleware_delegates_spec_construction_to_builder(
 
 
 def test_turn_builder_model_required_at_construction(agent_ctx: AgentContext):
-    """`model` обязателен в конструкторе — `ModelReducer` и `RequestIdReducer` сразу."""
+    """model обязателен в конструкторе — ModelReducer и RequestIdReducer сразу."""
     turn = TurnBuilder("test-model")
     assert set(turn._factories.keys()) == {
         ModelFromRequestReducer.ID,
@@ -92,7 +92,7 @@ def test_turn_builder_model_required_at_construction(agent_ctx: AgentContext):
 
 
 def test_turn_builder_full_set(agent_ctx: AgentContext):
-    """Полный набор `.with_*(...)` регистрирует все стандартные reducer'ы."""
+    """Полный набор .with_*(...) регистрирует все стандартные reducer'ы."""
     registry = _empty_catalog()
     turn = (
         TurnBuilder("test-model")
@@ -124,21 +124,21 @@ def test_turn_builder_minimal_only_registers_called(agent_ctx: AgentContext):
 
 
 def test_turn_builder_with_model_latest_wins(agent_ctx: AgentContext):
-    """`.with_model(...)` обновляет значение, заданное в конструкторе."""
+    """.with_model(...) обновляет значение, заданное в конструкторе."""
     turn = TurnBuilder("first").with_model("second")
     request = turn.build(agent_ctx)
     assert request.model == "second"
 
 
 def test_turn_builder_use_reducer_accepts_ready(agent_ctx: AgentContext):
-    """`use_reducer(ready)` регистрирует фабрику, возвращающую тот же инстанс."""
+    """use_reducer(ready) регистрирует фабрику, возвращающую тот же инстанс."""
     marker = _MarkerReducer()
     turn = TurnBuilder("test-model").use_reducer(marker)
     assert turn._factories[_MarkerReducer.ID](agent_ctx) is marker
 
 
 def test_turn_builder_use_factory_accepts_factory(agent_ctx: AgentContext):
-    """`use_factory(id, fn)` регистрирует фабрику под явный id."""
+    """use_factory(id, fn) регистрирует фабрику под явный id."""
     turn = TurnBuilder("test-model").use_factory(
         _MarkerReducer.ID,
         lambda _ctx: _MarkerReducer(),
@@ -160,7 +160,7 @@ def test_turn_builder_with_plus_use_reducer(agent_ctx: AgentContext):
 
 
 def test_turn_builder_system_prompt_static(agent_ctx: AgentContext):
-    """`.system_prompt(text)` материализуется в один `SystemMessage`."""
+    """.system_prompt(text) материализуется в один SystemMessage."""
     turn = (
         TurnBuilder("test-model")
         .system_prompt("Ты — Claude.")
@@ -175,7 +175,7 @@ def test_turn_builder_system_prompt_file(
     agent_ctx: AgentContext,
     tmp_path,
 ):
-    """`.system_prompt_from_file(file_path)` читает блок из файла."""
+    """.system_prompt_from_file(file_path) читает блок из файла."""
     (tmp_path / "persona.md").write_text("Ты — Claude.", encoding="utf-8")
 
     turn = TurnBuilder("test-model").system_prompt_from_file(tmp_path / "persona.md")
@@ -188,7 +188,7 @@ def test_turn_builder_system_prompt_file_missing_uses_default(
     agent_ctx: AgentContext,
     tmp_path,
 ):
-    """Несуществующий файл → default_prompt."""
+    """Несуществующий файл -> default_prompt."""
     turn = TurnBuilder("test-model").system_prompt_from_file(
         tmp_path / "missing.md",
         default_prompt="(no prompt)",
@@ -202,7 +202,7 @@ def test_turn_builder_system_prompt_dir(
     agent_ctx: AgentContext,
     tmp_path,
 ):
-    """`.system_prompt_from_directory(dir_path)` читает файлы как отдельные блоки."""
+    """.system_prompt_from_directory(dir_path) читает файлы как отдельные блоки."""
     (tmp_path / "01-persona.md").write_text("Ты — Claude.", encoding="utf-8")
     (tmp_path / "02-rules.md").write_text("Отвечай по-русски.", encoding="utf-8")
     (tmp_path / "empty.md").write_text("", encoding="utf-8")
@@ -261,7 +261,7 @@ def test_turn_builder_system_prompt_mix_all_three(
 
 
 def test_turn_builder_extra_overrides_built_in_by_id(agent_ctx: AgentContext):
-    """`use_reducer` с id встроенного reducer'а заменяет его эффект в запросе."""
+    """use_reducer с id встроенного reducer'а заменяет его эффект в запросе."""
 
     class _OverrideModel(PrioritySource[str, TurnState]):
         ID: ClassVar[str] = ModelFromRequestReducer.ID

@@ -27,8 +27,8 @@ from boba.tools.framework import ToolExecutor
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Исполняет tool_calls из итогового TotalMessage после inner-стрима.
 
-    Контракт: источник истины для исполнения — `TotalMessage.message.tool_calls`
-    (итоговые поля завершённой генерации), а не потоковые `ToolCallMessage`.
+    Контракт: источник истины для исполнения — TotalMessage.message.tool_calls
+    (итоговые поля завершённой генерации), а не потоковые ToolCallMessage.
     Последние — наблюдательные (UI/рендер) и на исполнение не влияют.
     """
 

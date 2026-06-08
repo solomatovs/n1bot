@@ -1,12 +1,12 @@
 """Конфиг chainlit-приложения: транспорт (chainlit-сервер) + профиль агента.
 
-`ChainlitConfig` — единый конфиг chainlit-агента:
+ChainlitConfig — единый конфиг chainlit-агента:
 - chainlit-specific поля (host, port, auth_secret, app_root, …);
-- nested `profile: AgentProfile` — профиль агента (логи, workspace, LLM,
-  system prompt, model), подключается ссылкой `profile = "${agent.<name>}"`.
+- nested profile: AgentProfile — профиль агента (логи, workspace, LLM,
+  system prompt, model), подключается ссылкой profile = "${agent.<name>}".
 
-Грузится в bootstrap (`composition.py`): `build_app_config()` → `bind(config,
-"chainlit", ChainlitConfig)`. Секцию задаёт call-site, модель про путь не знает.
+Грузится в bootstrap (composition.py): build_app_config() -> bind(config,
+"chainlit", ChainlitConfig). Секцию задаёт call-site, модель про путь не знает.
 """
 
 from __future__ import annotations

@@ -11,8 +11,6 @@ from boba.indexing import (
     ChunkLocation,
     HeadingSection,
     Metadata,
-    PipelineContext,
-    PipelineId,
     Section,
     SectionKeys,
     Sha256TextEncoder,
@@ -36,9 +34,6 @@ class _StaticIdGenerator(ChunkIdGenerator[str]):
         return ChunkId(f"static:{chunk_index}")
 
 
-def _ctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("test"))
-
 
 def test_to_chunk_metadata_is_merged_into_chunk():
     """HeadingSection кладёт HEADING_LEVEL/TEXT через to_chunk_metadata."""
@@ -55,7 +50,7 @@ def test_to_chunk_metadata_is_merged_into_chunk():
         id_strategy=_StaticIdGenerator(),
         content_hasher=Sha256TextEncoder(),
     )
-    [chunk] = list(chunker.stream(_ctx(), iter([section])))
+    [chunk] = list(chunker.chunk(iter([section])))
     assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 1
     assert chunk.metadata.get(SectionKeys.HEADING_TEXT) == "Intro"
 
@@ -63,7 +58,7 @@ def test_to_chunk_metadata_is_merged_into_chunk():
 def test_section_metadata_overrides_typed_keys_on_collision():
     """Section.metadata.merge(to_chunk_metadata()): другой побеждает.
 
-    Контракт `Metadata.merge`: правый аргумент перекрывает левый. Значит
+    Контракт Metadata.merge: правый аргумент перекрывает левый. Значит
     typed-keys из to_chunk_metadata() побеждают пользовательскую metadata
     при коллизии — это правильно: Section знает свои поля точнее.
     """
@@ -82,5 +77,5 @@ def test_section_metadata_overrides_typed_keys_on_collision():
         id_strategy=_StaticIdGenerator(),
         content_hasher=Sha256TextEncoder(),
     )
-    [chunk] = list(chunker.stream(_ctx(), iter([section])))
+    [chunk] = list(chunker.chunk(iter([section])))
     assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 2

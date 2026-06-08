@@ -26,7 +26,7 @@ gitignored, в репо трекаются только шаблоны (`*.examp
   `BOBA_INDEXER__SOURCES__CONFLUENCE__AUTH_TOKEN`.
 - TOML (`config.toml`): всё остальное.
 
-Имена ключей: `ConfigKey(parts...)` →
+Имена ключей: `ConfigKey(parts...)` ->
 env `BOBA_<P1>_..._<PN>`, TOML `[<P1>...<P_{N-1}>] <PN>`.
 
 ## Onboarding
@@ -79,14 +79,14 @@ CLI argv > env (`BOBA_CLI__AGENT__…`) > TOML `[cli]`. REPL-команды: `/e
 (history.jsonl per chat).
 
 Конкретные пути к окружению (auth secret, app-state, workspaces) идут
-из `local/config.toml` → `[chainlit].app_root` и `[agent].base_dir`.
+из `local/config.toml` -> `[chainlit].app_root` и `[agent].base_dir`.
 
 ## Mapping local-paths
 
 Пути в TOML относительные, резолвятся от cwd:
 
 - launch.json: `${workspaceFolder}/local/...`;
-- docker-compose: bind mount `../boba/local → /app/local`.
+- docker-compose: bind mount `../boba/local -> /app/local`.
 
 
 
@@ -158,7 +158,7 @@ auth_method = "pat"   # или "basic"
 
 | Ключ | Значение |
 |---|---|
-| `--vector_index.pipeline=ext.fs_markdown` | Pipeline-плагин «обход .md → heading-aware Section'ы → heading chunker → Chroma». |
+| `--vector_index.pipeline=ext.fs_markdown` | Pipeline-плагин «обход .md -> heading-aware Section'ы -> heading chunker -> Chroma». |
 | `--indexer.pipelines.fs_markdown.paths=./path/to/dir` | Список путей через запятую (файлы или директории). |
 | `--indexer.pipelines.fs_markdown.include="*.md"` | Glob-фильтры включения (через запятую). Пусто — без фильтра. |
 
@@ -176,7 +176,7 @@ auth_method = "pat"   # или "basic"
 
 | Ключ | Значение |
 |---|---|
-| `--vector_index.pipeline=ext.fs_html` | Pipeline-плагин «обход .html → heading-aware (по `<h1>..<h6>` + `id`) → heading chunker → Chroma». |
+| `--vector_index.pipeline=ext.fs_html` | Pipeline-плагин «обход .html -> heading-aware (по `<h1>..<h6>` + `id`) -> heading chunker -> Chroma». |
 
 ### Индексация .txt/.log из файловой системы
 
@@ -192,7 +192,7 @@ auth_method = "pat"   # или "basic"
 
 | Ключ | Значение |
 |---|---|
-| `--vector_index.pipeline=ext.fs_text` | Pipeline-плагин «UTF-8 plain-text → одна Section на файл → sliding chunker → Chroma». |
+| `--vector_index.pipeline=ext.fs_text` | Pipeline-плагин «UTF-8 plain-text -> одна Section на файл -> sliding chunker -> Chroma». |
 
 ### Индексация явного списка Confluence-страниц
 

@@ -2,13 +2,13 @@
 ContentHash — типизированное hash-значение чанка
 
 Базовый ABC + три встроенные реализации:
-1. `BytesContentHash`  — сырые байты digest (sha256/blake2b raw output).
+1. BytesContentHash  — сырые байты digest (sha256/blake2b raw output).
   В 2 компактнее чем hex, нативно сравнивается
 
-2. `IntContentHash`— 64-bit (или больше) int (xxhash, fnv)
+2. IntContentHash— 64-bit (или больше) int (xxhash, fnv)
   быстрое сравнение через ==
 
-3. `StringContentHash` — строка
+3. StringContentHash — строка
 """
 
 from __future__ import annotations

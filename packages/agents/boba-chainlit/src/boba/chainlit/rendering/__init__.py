@@ -1,4 +1,4 @@
-"""Маппинг `AgentEvent` → UI: общий dispatcher + live/replay таргеты + мост."""
+"""Маппинг AgentEvent -> UI: общий dispatcher + live/replay таргеты + мост."""
 
 from boba.chainlit.rendering.bridge import ChainlitBridgeSink
 from boba.chainlit.rendering.dispatcher import (

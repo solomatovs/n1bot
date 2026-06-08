@@ -6,9 +6,9 @@ Domain владеет только тем, что использует **обя�
 
 Содержимое:
 
-- `ChunkIdStrategy[T]` — interface (`compute(section, idx) -> ChunkId`).
-- `DigestPrefix` / `FixedDigestPrefix` — длина digest-префикса.
-- `SourceBasedChunkId` — id по `source_id` + `chunk_index`. Использует только
+- ChunkIdStrategy[T] — interface (compute(section, idx) -> ChunkId).
+- DigestPrefix / FixedDigestPrefix — длина digest-префикса.
+- SourceBasedChunkId — id по source_id + chunk_index. Использует только
   обязательные поля, потому format-нейтрален.
 """
 
@@ -60,7 +60,7 @@ class ChunkIdGenerator(Generic[T]):
 
 class SourceBasedChunkId(ChunkIdGenerator[T]):
     """
-    Генерирует ChunkId из `source_id` + chunk_index
+    Генерирует ChunkId из source_id + chunk_index
     Грубо говоря есть документ docs/my_doc.md
     вот этот текст и индекс внутри этого документа
     являются ключем chunk_id

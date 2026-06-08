@@ -46,7 +46,7 @@ __all__ = ["ChatSession"]
 class ChatSession:
     """Per-workspace обёртка: один Agent, привязанный к конкретному workspace_id.
 
-    `thread_id` фиксируется при сборке и используется `ThreadSystemPromptProvider`
+    thread_id фиксируется при сборке и используется ThreadSystemPromptProvider
     для чтения per-thread system-prompt на каждом turn'е без пересборки сессии.
     Инвариант workspace 1:1 thread держится chainlit-уровнем (см. ChatSessionPool).
     """

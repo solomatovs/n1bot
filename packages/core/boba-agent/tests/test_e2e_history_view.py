@@ -1,9 +1,9 @@
 """E2E smoke: AgentBuilder с fake-LLM прогоняет миграцию на HistoryService.
 
 Проверяет ключевую инвариантность миграции: после Agent.stream(query)
-журнал `HistoryService` содержит достаточно событий, чтобы
-`AllHistoryDialogView` восстановил полный диалог, а следующий вызов
-`Agent.stream(query2)` увидел эту историю в `LLMContext.request.dialog_messages`.
+журнал HistoryService содержит достаточно событий, чтобы
+AllHistoryDialogView восстановил полный диалог, а следующий вызов
+Agent.stream(query2) увидел эту историю в LLMContext.request.dialog_messages.
 """
 
 from __future__ import annotations

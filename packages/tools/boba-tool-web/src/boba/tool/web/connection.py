@@ -1,4 +1,4 @@
-"""WebConnection: whitelist хостов — dict[hostname → HttpConnection-профиль]."""
+"""WebConnection: whitelist хостов — dict[hostname -> HttpConnection-профиль]."""
 
 from __future__ import annotations
 
@@ -7,23 +7,23 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from boba.transport.http import HttpConnection
+from boba.transport.http import HttpProfile
 
 __all__ = ["WebConnection"]
 
 
 class WebConnection(BaseModel):
-    """Whitelist хостов: hostname → транспортный профиль (`HttpConnection`).
+    """Whitelist хостов: hostname -> транспортный профиль (HttpConnection).
 
     Оператор задаёт ссылками на web-профили:
-    `[tool.web] profiles = { "github.com" = "${web.public}" }`.
-    `resolve(url)` по hostname URL'а находит профиль (timeout/ssl/auth);
+    [tool.web] profiles = { "github.com" = "${web.public}" }.
+    resolve(url) по hostname URL'а находит профиль (timeout/ssl/auth);
     хост не в whitelist'е — запрос запрещён.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    profiles: dict[str, HttpConnection] = Field(
+    profiles: dict[str, HttpProfile] = Field(
         default_factory=dict,
         description=(
             "dict[hostname, web-профиль ссылкой]. Ключ — hostname (по нему "
@@ -48,8 +48,8 @@ class WebConnection(BaseModel):
             raise ValueError(msg)
         return self
 
-    def resolve_profile(self, url: str) -> HttpConnection:
-        """hostname URL → транспортный профиль; ValueError если не в whitelist."""
+    def resolve_profile(self, url: str) -> HttpProfile:
+        """hostname URL -> транспортный профиль; ValueError если не в whitelist."""
         host = (urlparse(url).hostname or "").lower()
         profile = self.profiles.get(host)
         if profile is None:

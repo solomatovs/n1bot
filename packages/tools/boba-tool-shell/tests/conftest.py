@@ -27,11 +27,11 @@ def load_local_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> Callable[[str], BashLocalConfig]:
-    """Фабрика: TOML-блок `[tool.bash_local]` → загруженный конфиг.
+    """Фабрика: TOML-блок [tool.bash_local] -> загруженный конфиг.
 
-    На вход — тело секции _без_ заголовка `[tool.bash_local]` (он
-    добавляется автоматически). Возвращает `BashLocalConfig`, прошедший
-    pydantic-валидацию; падает с `ValidationError` при невалидном вводе.
+    На вход — тело секции _без_ заголовка [tool.bash_local] (он
+    добавляется автоматически). Возвращает BashLocalConfig, прошедший
+    pydantic-валидацию; падает с ValidationError при невалидном вводе.
     """
 
     def _factory(toml_body: str) -> BashLocalConfig:
@@ -51,7 +51,7 @@ def load_sandbox_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> Callable[[str], BashSandboxConfig]:
-    """Фабрика: TOML-блок `[tool.bash_sandbox]` → загруженный конфиг."""
+    """Фабрика: TOML-блок [tool.bash_sandbox] -> загруженный конфиг."""
 
     def _factory(toml_body: str) -> BashSandboxConfig:
         _clear_shell_env(monkeypatch)

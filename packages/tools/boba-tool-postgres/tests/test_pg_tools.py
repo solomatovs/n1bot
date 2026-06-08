@@ -1,4 +1,4 @@
-"""Integration: `query` / `list_tables` / `describe_table`."""
+"""Integration: query / list_tables / describe_table."""
 # pyright: reportCallIssue=false
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _data_rows(result: PgCopyTextResult) -> list[list[str | None]]:
 def test_list_tables_returns_table(
     list_tables_cfg: SqlExecutorConfig,
 ) -> None:
-    """`list_tables` без schema-фильтра → TableResult с колонками schema/…."""
+    """list_tables без schema-фильтра -> TableResult с колонками schema/…."""
     res = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema=None)
     assert isinstance(res, TableResult)
     assert res.rows
@@ -43,7 +43,7 @@ def test_list_tables_returns_table(
 def test_list_tables_kb_chunks_visible(
     list_tables_cfg: SqlExecutorConfig,
 ) -> None:
-    """В KB-БД должна быть `kb_chunks` (созданная bootstrap-миграцией)."""
+    """В KB-БД должна быть kb_chunks (созданная bootstrap-миграцией)."""
     res = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema="public")
     assert isinstance(res, TableResult)
     assert any("kb_chunks" in str(v) for row in res.rows for v in row.values())
@@ -57,7 +57,7 @@ def test_list_tables_kb_chunks_visible(
 def test_describe_table_kb_chunks(
     describe_table_cfg: SqlExecutorConfig,
 ) -> None:
-    """Схема `kb_chunks` — ожидаемые системные колонки."""
+    """Схема kb_chunks — ожидаемые системные колонки."""
     res = describe_table(
         cfg=describe_table_cfg,
         target=TARGET,
@@ -73,7 +73,7 @@ def test_describe_table_kb_chunks(
 def test_describe_unknown_table_empty(
     describe_table_cfg: SqlExecutorConfig,
 ) -> None:
-    """Неизвестная таблица → TableResult без строк."""
+    """Неизвестная таблица -> TableResult без строк."""
     res = describe_table(
         cfg=describe_table_cfg,
         target=TARGET,
@@ -90,7 +90,7 @@ def test_describe_unknown_table_empty(
 
 
 def test_query_simple_select(query_cfg: SqlExecutorConfig) -> None:
-    """Простой `SELECT 1, 'hello'` → PgCopyTextResult с одной data-строкой."""
+    """Простой SELECT 1, 'hello' -> PgCopyTextResult с одной data-строкой."""
     res = query(
         cfg=query_cfg,
         target=TARGET,
@@ -102,7 +102,7 @@ def test_query_simple_select(query_cfg: SqlExecutorConfig) -> None:
 
 
 def test_query_count_kb_chunks(query_cfg: SqlExecutorConfig) -> None:
-    """`SELECT count(*) FROM kb_chunks` — exploratory-запрос."""
+    """SELECT count(*) FROM kb_chunks — exploratory-запрос."""
     res = query(
         cfg=query_cfg,
         target=TARGET,
@@ -114,7 +114,7 @@ def test_query_count_kb_chunks(query_cfg: SqlExecutorConfig) -> None:
 
 
 def test_query_too_many_rows(query_cfg: SqlExecutorConfig) -> None:
-    """Строк больше max_rows → ErrorResult «добавьте LIMIT» (запрос не трогаем)."""
+    """Строк больше max_rows -> ErrorResult «добавьте LIMIT» (запрос не трогаем)."""
     res = query(
         cfg=query_cfg,
         target=TARGET,

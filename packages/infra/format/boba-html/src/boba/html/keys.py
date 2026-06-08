@@ -1,5 +1,5 @@
-"""HtmlKeys — typed `MetadataKey`-и, проставляемые HTML-Reader'ом и
-HTML-специфичными Section'ами через `to_chunk_metadata()`.
+"""HtmlKeys — typed MetadataKey-и, проставляемые HTML-Reader'ом и
+HTML-специфичными Section'ами через to_chunk_metadata().
 """
 
 from __future__ import annotations

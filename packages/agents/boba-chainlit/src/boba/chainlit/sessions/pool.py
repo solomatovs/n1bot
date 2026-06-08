@@ -27,8 +27,8 @@ class ChatSessionPool:
     """LRU-кеш ChatSession по (user, workspace) с локом против двойного build.
 
     Инвариант: workspace_id 1:1 thread_id в текущем chainlit-агенте
-    (workspace создаётся в `on_chat_start` и живёт ровно с одним thread'ом).
-    `thread_id` фиксируется в ChatSession при первом build и далее не меняется.
+    (workspace создаётся в on_chat_start и живёт ровно с одним thread'ом).
+    thread_id фиксируется в ChatSession при первом build и далее не меняется.
     """
 
     def __init__(

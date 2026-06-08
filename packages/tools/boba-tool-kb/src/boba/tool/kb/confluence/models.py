@@ -2,11 +2,11 @@
 
 Один модуль на весь value-object-слой Confluence-инструмента:
 
-- `ConfluencePayloadError`        — ошибка разбора REST-ответа.
-- `ConfluencePageItem`/`...`      — Pydantic-DTO discovery-эндпоинтов.
-- `AttachmentInfo`/`Filter`       — value-object вложения + allowlist-фильтр
-  (+ симметричный JSON-кодек для metadata wire-format на самом `AttachmentInfo`).
-- `ConfluenceKeys`                — Confluence-специфичные `MetadataKey`.
+- ConfluencePayloadError        — ошибка разбора REST-ответа.
+- ConfluencePageItem/...      — Pydantic-DTO discovery-эндпоинтов.
+- AttachmentInfo/Filter       — value-object вложения + allowlist-фильтр
+  (+ симметричный JSON-кодек для metadata wire-format на самом AttachmentInfo).
+- ConfluenceKeys                — Confluence-специфичные MetadataKey.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ __all__ = [
     "ConfluencePayloadError",
     "ConfluencePlainText",
     "ConfluenceSpaceItem",
+    "HttpKeys",
 ]
 
 
@@ -43,8 +44,8 @@ class ConfluencePayloadError(Exception):
 class ConfluencePageItem(BaseModel):
     """Один page-result из Confluence discovery-эндпоинтов.
 
-    Из всех полей discovery нам нужен только `id` — он передаётся в
-    `/rest/api/content/{id}?expand=…` дальше по pipeline'у. `title` оставлен
+    Из всех полей discovery нам нужен только id — он передаётся в
+    /rest/api/content/{id}?expand=… дальше по pipeline'у. title оставлен
     для логов/диагностики (на cwiki/Atlassian всегда присутствует).
     """
 
@@ -55,7 +56,7 @@ class ConfluencePageItem(BaseModel):
 
 
 class ConfluencePlainText(BaseModel):
-    """Inner `description.plain` из `/rest/api/space?expand=description.plain`."""
+    """Inner description.plain из /rest/api/space?expand=description.plain."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -63,7 +64,7 @@ class ConfluencePlainText(BaseModel):
 
 
 class ConfluenceDescription(BaseModel):
-    """`description` вложенный объект space'а с опциональным plain-текстом."""
+    """description вложенный объект space'а с опциональным plain-текстом."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -71,11 +72,11 @@ class ConfluenceDescription(BaseModel):
 
 
 class ConfluenceSpaceItem(BaseModel):
-    """Один space-result из `/rest/api/space?[type=…][&expand=description.plain]`.
+    """Один space-result из /rest/api/space?[type=…][&expand=description.plain].
 
-    `description` — заполняется только при `expand=description.plain`. В
-    остальных случаях None. Используем property `description_plain` для
-    удобного доступа без `.description.plain.value` цепочки.
+    description — заполняется только при expand=description.plain. В
+    остальных случаях None. Используем property description_plain для
+    удобного доступа без .description.plain.value цепочки.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -98,20 +99,20 @@ class AttachmentInfo:
     """Один attachment Confluence-страницы —
     то, что нужно download'у и rewriter'у ссылок.
 
-    - `id`             — attachment id (`att123…`); используется как часть `source_id`
+    - id             — attachment id (att123…); используется как часть source_id
                          при fan-out'е, и в локальном имени файла как fallback.
-    - `title`          — filename как его показывает Confluence (с расширением).
-    - `media_type`     — MIME (`image/png`, `application/pdf`); идёт в
-                         `TransportKeys.CONTENT_TYPE` дочернего request'а,
+    - title          — filename как его показывает Confluence (с расширением).
+    - media_type     — MIME (image/png, application/pdf); идёт в
+                         TransportKeys.CONTENT_TYPE дочернего request'а,
                          по нему DispatchReader выбирает Reader или skip.
-    - `file_size`      — bytes; 0 если Confluence не отдал.
-    - `download_path`  — relative path от base_url (`/download/attachments/…`);
-                         caller склеивает с `base_url` чтобы получить полный URL.
-    - `version`        — version.number; 1 если отсутствует.
+    - file_size      — bytes; 0 если Confluence не отдал.
+    - download_path  — relative path от base_url (/download/attachments/…);
+                         caller склеивает с base_url чтобы получить полный URL.
+    - version        — version.number; 1 если отсутствует.
 
-    JSON-кодек (`encode`/`decode`/`encode_many`/`decode_many`) симметричен и
+    JSON-кодек (encode/decode/encode_many/decode_many) симметричен и
     идемпотентен; схема — объект с теми же именами полей, что у dataclass'а.
-    Используется как `encode`/`decode` для `ConfluenceKeys.ATTACHMENT[S]`.
+    Используется как encode/decode для ConfluenceKeys.ATTACHMENT[S].
     """
 
     id: str
@@ -122,25 +123,25 @@ class AttachmentInfo:
     version: int
 
     def encode(self) -> str:
-        """Один `AttachmentInfo` → JSON-объект (для `ATTACHMENT_INFO`)."""
+        """Один AttachmentInfo -> JSON-объект (для ATTACHMENT_INFO)."""
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @staticmethod
     def decode(s: str) -> AttachmentInfo:
-        """JSON-объект → `AttachmentInfo`. Симметричен `encode`."""
+        """JSON-объект -> AttachmentInfo. Симметричен encode."""
         return AttachmentInfo._from_dict(json.loads(s))
 
     @staticmethod
     def encode_many(value: tuple[AttachmentInfo, ...]) -> str:
-        """`tuple[AttachmentInfo, ...]` → JSON-массив (для `ATTACHMENTS`)."""
+        """tuple[AttachmentInfo, ...] -> JSON-массив (для ATTACHMENTS)."""
         return json.dumps([asdict(a) for a in value], ensure_ascii=False)
 
     @staticmethod
     def decode_many(s: str) -> tuple[AttachmentInfo, ...]:
-        """JSON-массив объектов → `tuple[AttachmentInfo, ...]`.
+        """JSON-массив объектов -> tuple[AttachmentInfo, ...].
 
-        Поля, отсутствующие в JSON, получают defaults (`""` для строк, `0` для int,
-        `1` для version) — нужно, чтобы старые/обрезанные wire-payload'ы не
+        Поля, отсутствующие в JSON, получают defaults ("" для строк, 0 для int,
+        1 для version) — нужно, чтобы старые/обрезанные wire-payload'ы не
         взрывали загрузку. Лишние поля игнорируются.
         """
         items: list[dict[str, Any]] = json.loads(s)
@@ -160,20 +161,20 @@ class AttachmentInfo:
 
 @dataclass(frozen=True, slots=True)
 class AttachmentFilter:
-    """Allowlist-фильтр attachment'ов по `media_type` и/или `title`.
+    """Allowlist-фильтр attachment'ов по media_type и/или title.
 
     Семантика:
-    - Оба списка пустые → `matches` всегда True (бэк-совместимость).
+    - Оба списка пустые -> matches всегда True (бэк-совместимость).
     - Иначе attachment проходит, если совпадает хотя бы с одним паттерном
       из любого непустого списка (OR между списками и внутри списка).
-    - Паттерны — `fnmatch`-globs (`*`, `?`, `[abc]`); case-insensitive,
+    - Паттерны — fnmatch-globs (*, ?, [abc]); case-insensitive,
       сравнение по lower-case с обеих сторон.
 
     Примеры:
-    - `media_type_patterns=("application/pdf",)` — только PDF по MIME.
-    - `title_patterns=("*.pdf", "*.docx")` — PDF и DOCX по расширению.
-    - `media_type_patterns=("image/*",), title_patterns=("*.pdf",)`
-      — любые картинки ИЛИ файлы с расширением `.pdf`.
+    - media_type_patterns=("application/pdf",) — только PDF по MIME.
+    - title_patterns=("*.pdf", "*.docx") — PDF и DOCX по расширению.
+    - media_type_patterns=("image/*",), title_patterns=("*.pdf",)
+      — любые картинки ИЛИ файлы с расширением .pdf.
     """
 
     media_type_patterns: tuple[str, ...] = ()
@@ -206,6 +207,21 @@ class AttachmentFilter:
         return any(fnmatchcase(title, p.lower()) for p in self.title_patterns)
 
 
+class HttpKeys:
+    """HTTP-специфичные ключи metadata, проставляемые при сборке RawDocument."""
+
+    LAST_MODIFIED: ClassVar[MetadataKey[str]] = MetadataKey(
+        name="transport.http.last_modified",
+        decode=str,
+        encode=str,
+    )
+    STATUS: ClassVar[MetadataKey[int]] = MetadataKey(
+        name="transport.http.status",
+        decode=int,
+        encode=str,
+    )
+
+
 class ConfluenceKeys:
     """Confluence-специфичные ключи metadata."""
 
@@ -222,7 +238,7 @@ class ConfluenceKeys:
         decode=str,
         encode=str,
     )
-    """Canonical URL страницы — тот же wire-ключ `source_url`, что и у kbdoc."""
+    """Canonical URL страницы — тот же wire-ключ source_url, что и у kbdoc."""
 
     PAGE_ID: ClassVar[MetadataKey[str]] = MetadataKey(
         name="confluence.page_id",
