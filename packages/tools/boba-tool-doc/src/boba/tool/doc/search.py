@@ -1,16 +1,10 @@
 """Tool: поиск фразы в документе с координатами совпадений (liteparse).
 
 Bbox-merge (фраза может идти через несколько фрагментов) делает нативный
-liteparse._liteparse.search_items — это «готовый модуль» движка. Берём
-именно приватный нативный символ, потому что публичный liteparse.search_items
-в 2.0.x сломан: он передаёт dataclass-TextItem (вывод публичного parse())
-в нативную функцию, ждущую PyTextItem, и падает с TypeError. Поэтому
-парсим нативным DocEngine.parse_native (отдаёт нативные items) и зовём
-нативный search_items напрямую.
-
-КОГДА АПСТРИМ ПОЧИНИТ публичный search_items — заменить импорт на
-from liteparse import search_items, парсить обычным DocEngine.parse
-и удалить parse_native/private-импорт.
+search_items движка — он спрятан за LiteParseEngine.search_items
+(boba.liteparse). Парсим нативным DocEngine.parse_native (отдаёт нативные
+items) и зовём LiteParseEngine.search_items; устройство приватного
+liteparse-API и причина его использования — в boba.liteparse.engine.
 
 Контекст-сниппет нативный модуль не даёт (возвращает только сам матч + bbox),
 поэтому его собираем сами из page.text.
@@ -20,8 +14,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from liteparse._liteparse import search_items as _native_search_items
 from pydantic import Field
+
+from boba.liteparse import LiteParseEngine
 
 from boba.tool.doc._engine import DocEngine
 from boba.tool.doc.config import DocPluginConfig
@@ -47,7 +42,9 @@ class _Search:
         needle = query.casefold()
         rows: list[dict[str, Any]] = []
         for page in native_result.pages:
-            hits = _native_search_items(page.text_items, query, case_sensitive=False)
+            hits = LiteParseEngine.search_items(
+                page.text_items, query, case_sensitive=False,
+            )
             if not hits:
                 continue
             hay = page.text.casefold()

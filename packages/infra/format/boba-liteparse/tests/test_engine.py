@@ -1,0 +1,59 @@
+"""Тесты LiteParseEngine поверх реального liteparse."""
+
+from __future__ import annotations
+
+import pytest
+
+from boba.liteparse import LiteParseEngine, LiteParseError, LiteParseParams
+
+# Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
+_PDF = b"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 4 0 R\
+/Resources<</Font<</F1 5 0 R>>>>>>endobj
+4 0 obj<</Length 50>>stream
+BT /F1 20 Tf 20 200 Td (Alpha page one) Tj ET
+endstream endobj
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 7 0 R\
+/Resources<</Font<</F1 5 0 R>>>>>>endobj
+7 0 obj<</Length 60>>stream
+BT /F1 20 Tf 20 200 Td (Beta page two Alpha again) Tj ET
+endstream endobj
+trailer<</Root 1 0 R/Size 8>>
+%%EOF"""
+
+
+@pytest.fixture
+def params() -> LiteParseParams:
+    return LiteParseParams(ocr_enabled=False)
+
+
+def test_parse_full_text(params: LiteParseParams):
+    result = LiteParseEngine.parse(params, _PDF, "doc.pdf")
+    assert result.num_pages == 2
+    assert "Alpha page one" in result.text
+    assert "Beta page two" in result.text
+
+
+def test_target_pages_selects_subset(params: LiteParseParams):
+    result = LiteParseEngine.parse(params, _PDF, "doc.pdf", target_pages="2")
+    assert [p.page_num for p in result.pages] == [2]
+    assert "Beta page two" in result.text
+    assert "page one" not in result.text
+
+
+def test_parse_invalid_raises_liteparse_error(params: LiteParseParams):
+    with pytest.raises(LiteParseError):
+        LiteParseEngine.parse(params, b"not a real pdf", "broken.pdf")
+
+
+def test_native_search_items_finds_on_both_pages(params: LiteParseParams):
+    native = LiteParseEngine.parse_native(params, _PDF, "doc.pdf")
+    pages_with_hit = [
+        page.page_num
+        for page in native.pages
+        if LiteParseEngine.search_items(page.text_items, "alpha")
+    ]
+    assert pages_with_hit == [1, 2]
