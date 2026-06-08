@@ -10,7 +10,6 @@ from pathlib import Path
 from boba.indexing import (
     Metadata,
     RequestSource,
-    SourceId,
 )
 from boba.transport.fs.keys import FsKeys
 from boba.transport.fs.request import FsRequest
@@ -34,11 +33,10 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
             └── .git/HEAD          │  скрытые dir'ы (".git" / ".venv" / …) пропускаются
                                    ▼
     ──source.requests()──->
-        FsRequest(path="docs/intro.md",       source_id="fs:/abs/docs/intro.md",
-                  metadata={FsKeys.PATH, FsKeys.NAME})
-        FsRequest(path="docs/api.md",         source_id="fs:/abs/docs/api.md",   …)
-        FsRequest(path="docs/notes/draft.md", source_id="fs:/abs/docs/notes/draft.md", …)
-    
+        FsRequest(path="docs/intro.md",       metadata={FsKeys.PATH, FsKeys.NAME})
+        FsRequest(path="docs/api.md",         metadata=…)
+        FsRequest(path="docs/notes/draft.md", metadata=…)
+
 
     **Параметры**:
     - paths            — файлы или директории; директории обходятся rglob.
@@ -46,9 +44,9 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
       Path.match ИЛИ fnmatch(name, pattern) (любой match считается).
     - follow_symlinks  — False по умолчанию (защита от циклов).
 
-    source_id всегда = fs:{absolute_path}. RequestSource не знает про
-    canonical-format'ы (Confluence-export и т.п.) — для cross-transport
-    дедупликации делается отдельный RequestSource поверх этого.
+    source_id (`fs:{path}`) проставляет FsTransport, а не source. RequestSource
+    несёт только path + metadata; canonical-format'ы (Confluence-export и т.п.)
+    тут не знают — для cross-transport дедупа делается отдельный RequestSource.
 
     **Пример**:
     python
@@ -62,7 +60,6 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
     list(source.requests()) == [
         FsRequest(
             path="docs/api.md",
-            source_id=SourceId("fs:/abs/docs/api.md"),
             metadata=(
                 Metadata.empty()
                 .set(FsKeys.PATH, "docs/api.md")
@@ -71,7 +68,6 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
         ),
         FsRequest(
             path="docs/intro.md",
-            source_id=SourceId("fs:/abs/docs/intro.md"),
             metadata=(
                 Metadata.empty()
                 .set(FsKeys.PATH, "docs/intro.md")
@@ -79,7 +75,8 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
             ),
         ),
     ]
-    
+    # source_id (fs:/abs/docs/...) проставит FsTransport.source_id
+
     """  # noqa: E501
 
     def __init__(
@@ -100,7 +97,6 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
             p = Path(path)
             yield FsRequest(
                 path=str(p),
-                source_id=SourceId(f"fs:{path}"),
                 metadata=(
                     Metadata.empty().set(FsKeys.PATH, str(p)).set(FsKeys.NAME, p.name)
                 ),

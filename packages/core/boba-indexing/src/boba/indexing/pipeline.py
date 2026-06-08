@@ -172,6 +172,9 @@ class Pipeline(Generic[ReqT, T]):
         run_start передаётся как время прохода и включает инкрементальное
         обновление.
         """
+        # identity источника выводит транспорт (реальный адрес объекта), а не
+        # request — чистый резолв, доступен и когда fetch упадёт ниже.
+        source_id = self._transport.source_id(request)
         try:
             summary = sink.reconcile(
                 chunks=self._chunks_of(request, chunker),
@@ -182,7 +185,7 @@ class Pipeline(Generic[ReqT, T]):
             yield SourceFailed(
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),
-                source_id=request.source_id,
+                source_id=source_id,
                 reason=str(e),
             )
             return
@@ -191,7 +194,7 @@ class Pipeline(Generic[ReqT, T]):
             yield SourceSkippedUnchanged(
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),
-                source_id=request.source_id,
+                source_id=source_id,
                 chunks_total=summary.total,
             )
             return
@@ -199,7 +202,7 @@ class Pipeline(Generic[ReqT, T]):
         yield SourceIndexed(
             run_id=run_id,
             monotonic_ns=time.monotonic_ns(),
-            source_id=request.source_id,
+            source_id=source_id,
             chunks_total=summary.total,
             chunks_upserted=summary.upserted,
             chunks_skipped=summary.unchanged,

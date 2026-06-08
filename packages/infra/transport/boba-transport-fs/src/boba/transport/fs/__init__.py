@@ -5,7 +5,8 @@
   файловую систему, эмитит FsRequest'ы.
 - FsTransport() — открывает файл по FsRequest.path, отдаёт RawDocument
   с handle и заполненной metadata (mtime, size, suffix).
-- FsRequest(path, source_id, metadata) — DTO между source и transport.
+- FsRequest(path, metadata) — DTO между source и transport (source_id выводит
+  FsTransport из path).
 
 Использование:
     src = FsWalkRequestSource(paths=["/data/docs"], include=["*.md", "*.txt"])

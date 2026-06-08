@@ -5,7 +5,8 @@
   scroll-bookmark или fallback idx:N; содержимое ac:*/ri:* макросов
   исключается.
 - ConfluenceSearchHitsReader — /rest/api/content/search-JSON -> одна
-  Section на каждый hit (excerpt + viewpage URL + page/space/version meta).
+  Section на каждый hit (excerpt + реальный _links.webui URL +
+  page/space/version meta).
 """
 
 from __future__ import annotations
@@ -31,8 +32,7 @@ from boba.tool.kb.confluence.models import (
     ConfluencePayloadError,
     HttpKeys,
 )
-from boba.tool.kb.confluence.parsing import ConfluenceHtml, Heading
-from boba.tool.kb.confluence.request_sources import ConfluenceRest
+from boba.tool.kb.confluence.parsing import ConfluenceHtml, ConfluenceJson, Heading
 
 __all__ = ["ConfluenceReader", "ConfluenceSearchHitsReader"]
 
@@ -92,6 +92,11 @@ class ConfluenceReader(Reader[str]):
         anchor = ConfluenceHtml.anchor_for(h)
         if anchor:
             meta = meta.set(SectionKeys.ANCHOR, anchor)
+            # deep-link собираем здесь, на индексации: дописываем #anchor в
+            # человекочитаемый SOURCE_URL (НЕ в source_id — тот page-level ключ).
+            src = meta.get(ConfluenceKeys.SOURCE_URL)
+            if src and "#" not in src:
+                meta = meta.set(ConfluenceKeys.SOURCE_URL, f"{src}#{anchor}")
         return meta
 
     def _fallback_section(
@@ -129,7 +134,8 @@ class ConfluenceSearchHitsReader(Reader[str]):
     """Search-JSON (/rest/api/content/search) -> Section[str] на каждый hit.
 
     Каждый hit: content — excerpt-плейнтекст из body.view.value (обрезан
-    до snippet_chars); source_id — stable viewpage URL; metadata —
+    до snippet_chars); source_id — реальный _links.webui URL хита (не
+    вычисляем хардкодом); metadata —
     PAGE_ID/PAGE_TITLE/SPACE_KEY/LAST_MODIFIED. Shape отдельной
     страницы (/rest/api/content/{id}) обрабатывают ConfluenceJsonDecoder
     + ConfluenceReader.
@@ -155,39 +161,46 @@ class ConfluenceSearchHitsReader(Reader[str]):
             raise ConfluencePayloadError(
                 f"ConfluenceSearchHitsReader: невалидный JSON от Confluence search: {e}"
             ) from e
-        for order, hit in enumerate(data.get("results") or []):
-            yield self._make_section(value, hit, order)
+        # base для кликабельного URL — из response-level _links (от Confluence),
+        # с фолбэком на конфиг-base_url; сами URL'ы берём из _links.webui хитов.
+        base = ConfluenceJson.response_base(data) or self._base_url
+        for order, hit in enumerate(ConfluenceJson.results(data)):
+            yield self._make_section(value, hit, order, base)
 
     def _make_section(
         self,
         value: RawDocument,
         hit: dict[str, Any],
         order: int,
+        base: str,
     ) -> Section[str]:
         page_id = str(hit["id"])
-        title = str(hit.get("title") or "")
-        space_key = ""
-        space = hit.get("space")
-        if isinstance(space, dict):
-            space_key = str(space.get("key") or "")
-        last_modified = ""
-        version = hit.get("version")
-        if isinstance(version, dict):
-            last_modified = str(version.get("when") or "")
+        title = ConfluenceJson.title(hit)
+        space_key = ConfluenceJson.space_key(hit)
+        last_modified = ConfluenceJson.last_modified(hit)
+        version = ConfluenceJson.version_number(hit)
         excerpt = self._make_excerpt(hit)
-        url = ConfluenceRest.viewpage_url(self._base_url, page_id)
+        # реальный кликабельный URL хита — из его _links.webui (не вычисляем)
+        webui = ConfluenceJson.webui(hit)
+        url = f"{base}{webui}" if webui else base
 
         meta = (
             value.metadata
             .set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
             .set(ConfluenceKeys.PAGE_ID, page_id)
         )
+
         if title:
             meta = meta.set(ReaderKeys.PAGE_TITLE, title)
+
         if space_key:
             meta = meta.set(ConfluenceKeys.SPACE_KEY, space_key)
+
         if last_modified:
             meta = meta.set(HttpKeys.LAST_MODIFIED, last_modified)
+
+        if version is not None:
+            meta = meta.set(ConfluenceKeys.VERSION, version)
 
         return Section(
             source_id=SourceId(url),
@@ -197,11 +210,7 @@ class ConfluenceSearchHitsReader(Reader[str]):
         )
 
     def _make_excerpt(self, hit: dict[str, Any]) -> str:
-        body = hit.get("body") or {}
-        view = body.get("view") if isinstance(body, dict) else None
-        html = ""
-        if isinstance(view, dict):
-            html = str(view.get("value") or "")
+        html = ConfluenceJson.body_html(hit, "view")
         if not html:
             return ""
         text = ConfluenceHtml.plain_text(ConfluenceHtml.parse_html(html)).strip()

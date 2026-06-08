@@ -87,6 +87,7 @@ _ATT = AttachmentInfo(
     media_type="image/png",
     file_size=100,
     download_path="/download/attachments/42/diagram.png?version=1",
+    webui="",
     version=1,
 )
 _ATT_PDF = AttachmentInfo(
@@ -95,6 +96,7 @@ _ATT_PDF = AttachmentInfo(
     media_type="application/pdf",
     file_size=200,
     download_path="/download/attachments/42/spec.pdf?version=1",
+    webui="",
     version=1,
 )
 
@@ -153,6 +155,7 @@ def test_rewrite_uses_sanitized_local_filename() -> None:
         media_type="image/png",
         file_size=10,
         download_path="/download/attachments/42/weird%3A%20name%3F.png",
+        webui="",
         version=1,
     )
     html = '<img src="/download/attachments/42/weird%3A%20name%3F.png"/>'

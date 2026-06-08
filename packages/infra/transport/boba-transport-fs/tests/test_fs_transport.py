@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.indexing import Metadata, SourceId, TransportKeys
+from boba.indexing import Metadata, TransportKeys
 from boba.transport.fs import FsKeys, FsRequest, FsTransport, FsWalkRequestSource
 
 
@@ -15,7 +15,6 @@ def test_fs_transport_opens_file_and_propagates_metadata(tmp_path: Path):
     f.write_text("hello\nworld\n")
     req = FsRequest(
         path=str(f),
-        source_id=SourceId("fs:custom-id"),
         metadata=Metadata.from_wire({"my_field": "v"}),
     )
     seen = []
@@ -29,7 +28,8 @@ def test_fs_transport_opens_file_and_propagates_metadata(tmp_path: Path):
         )
     assert len(seen) == 1
     sid, md, payload = seen[0]
-    assert sid == "fs:custom-id"
+    # source_id выводит транспорт: fs:{path}
+    assert sid == f"fs:{f}"
     assert md.to_wire()["my_field"] == "v"
     assert md.get(TransportKeys.MTIME) is not None
     assert md.get(FsKeys.SIZE) == f.stat().st_size
@@ -40,10 +40,7 @@ def test_fs_transport_skips_missing_file(tmp_path: Path):
     """missing-файл не генерит RawDocument; source_id обязателен (как контракт)."""
     seen = list(
         FsTransport().fetch(
-            FsRequest(
-                path=str(tmp_path / "no-such-file"),
-                source_id=SourceId("fs:/no-such-file"),
-            ),
+            FsRequest(path=str(tmp_path / "no-such-file")),
         )
     )
     assert seen == []

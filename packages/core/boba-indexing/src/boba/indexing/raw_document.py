@@ -4,7 +4,8 @@ RawDocument - открытый handle (файловый дескриптор) + 
 жизненный цикл RawDocument.handle контролируется Transport слоем а не у Reader
 потому что Transport открывает handle и сам же гарантируем его закрытие через with
 
-source_id - пробрасывается из Request.source_id без изменений
+source_id - identity документа; Transport выводит её из реального адреса
+    запрошенного объекта (Transport.source_id) и проставляет здесь
 metadata — пробрасывается с предыдущего уровня и обогощяется данными от Transport
     например, etag для HTTP, mtime для FS
     Reader/Chunker мержат свои ключи поверх
@@ -54,7 +55,7 @@ class RawDocument:
     """
 
     source_id: SourceId
-    """Canonical id, проброшен из Request.source_id."""
+    """Identity документа; выводит и проставляет Transport (Transport.source_id)."""
 
     metadata: Metadata = field(default_factory=Metadata.empty)
     """

@@ -22,6 +22,7 @@ from typing import Generic, TypeVar
 
 from boba.indexing.raw_document import RawDocument
 from boba.indexing.request import Request
+from boba.indexing.sections import SourceId
 
 __all__ = ["Transport"]
 
@@ -39,7 +40,7 @@ class Transport(ABC, Generic[ReqT]):
         source_id   : SourceId   ──pass─────────────->     source_id   (тот же)
         metadata    : Metadata   ──merge────────────->     metadata    (+ TransportKeys.ETAG / MTIME / CONTENT_TYPE …)
                                                     ->     handle      : BinaryStream  (открыт; закроется по выходу из fetch)
-    
+
 
     Один request может развернуться в несколько RawDocument (например
     Confluence-страница -> HTML + вложения), поэтому выход — Iterable.
@@ -60,7 +61,6 @@ class Transport(ABC, Generic[ReqT]):
     # а FsRequest уже содержит логику открытия этого path
     request = FsRequest(
         path="/abs/note.md",
-        source_id=SourceId("fs:/abs/note.md"),
         metadata=Metadata.empty().set(FsKeys.PATH, "/abs/note.md"),
     )
 
@@ -68,7 +68,7 @@ class Transport(ABC, Generic[ReqT]):
     raw = next(iter(transport.fetch(request)))
     raw == RawDocument(
         handle=<BufferedReader name='/abs/note.md'>,    # новое: открытый файловый дескриптор
-        source_id=SourceId("fs:/abs/note.md"),          # pass из FsRequest
+        source_id=SourceId("fs:/abs/note.md"),          # выводит FsTransport.source_id из path
         metadata=(                                      # merge из FsRequest.metadata + транспортные ключи
             Metadata.empty()
             .set(FsKeys.PATH, "/abs/note.md")           # был в FsRequest
@@ -78,8 +78,15 @@ class Transport(ABC, Generic[ReqT]):
         ),
     )
     raw.handle.read()  # -> b"# Note\\n..."  (Reader потребляет до следующей итерации)
-    
+
     """  # noqa: E501
+
+    @abstractmethod
+    def source_id(self, request: ReqT) -> SourceId:
+        """
+        Идентичность документа = реальный адрес запрошенного объекта
+        """
+        ...
 
     @abstractmethod
     def fetch(self, request: ReqT) -> Iterable[RawDocument]: ...

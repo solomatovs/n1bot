@@ -8,6 +8,7 @@
     space: PAAS
     tags: dev, process        # опционально
     anchor: optional-id       # опционально
+    version: 7                # опционально (confluence version.number)
     ---
 
     body content — markdown-текст оператора, индексируется целиком
@@ -26,6 +27,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -67,6 +69,7 @@ _KEY_TITLE: str = "title"
 _KEY_PAGE_ID: str = "page_id"
 _KEY_SPACE: str = "space"
 _KEY_ANCHOR: str = "anchor"
+_KEY_VERSION: str = "version"
 
 _REQUIRED_KEYS: tuple[str, ...] = (
     _KEY_SOURCE,
@@ -101,6 +104,7 @@ class ParsedKbDocHeader:
     space: str | None
     tags: frozenset[str]
     anchor: str | None
+    version: str | None
     custom: dict[str, str]
     body: str
 
@@ -174,6 +178,7 @@ class KbDocReader(Reader[str]):
                 space=None,
                 tags=frozenset(),
                 anchor=None,
+                version=None,
                 custom={},
                 body=text,
             )
@@ -189,6 +194,7 @@ class KbDocReader(Reader[str]):
             space=fields.get(_KEY_SPACE),
             tags=cls._parse_tags(fields.get(_KEY_TAGS)),
             anchor=fields.get(_KEY_ANCHOR),
+            version=fields.get(_KEY_VERSION),
             custom={
                 k: v
                 for k, v in fields.items()
@@ -198,7 +204,10 @@ class KbDocReader(Reader[str]):
         )
 
     _KNOWN_KEYS: ClassVar[frozenset[str]] = frozenset(
-        {_KEY_TAGS, _KEY_SOURCE, _KEY_TITLE, _KEY_PAGE_ID, _KEY_SPACE, _KEY_ANCHOR}
+        {
+            _KEY_TAGS, _KEY_SOURCE, _KEY_TITLE, _KEY_PAGE_ID,
+            _KEY_SPACE, _KEY_ANCHOR, _KEY_VERSION,
+        }
     )
 
     @staticmethod
@@ -231,9 +240,16 @@ class KbDocReader(Reader[str]):
             meta = meta.set(KbDocKeys.PAGE_ID, parsed.page_id)
         if parsed.space:
             meta = meta.set(KbDocKeys.SPACE, parsed.space)
+        if parsed.version:
+            with contextlib.suppress(ValueError):
+                meta = meta.set(KbDocKeys.VERSION, int(parsed.version))
         if parsed.anchor:
             meta = meta.set(SectionKeys.ANCHOR, parsed.anchor)
             meta = meta.set(ChunkKeys.ANCHOR, parsed.anchor)
+            # deep-link на индексации: #anchor в человекочитаемый SOURCE_URL
+            src = meta.get(KbDocKeys.SOURCE_URL)
+            if src and "#" not in src:
+                meta = meta.set(KbDocKeys.SOURCE_URL, f"{src}#{parsed.anchor}")
         if parsed.custom:
             extras = {
                 f"{KbDocKeys.CUSTOM_PREFIX}{k}": v

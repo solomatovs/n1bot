@@ -34,6 +34,7 @@ from boba.indexing import (
     Metadata,
     RawDocument,
     RequestSource,
+    SourceId,
     Transport,
     TransportKeys,
 )
@@ -52,7 +53,8 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
     """ConfluenceRequest -> RawDocument: чистый HTTP + обогащение metadata.
 
     Оборачивает чистый HttpTransport: исполняет request.http, собирает
-    RawDocument (source_id из request, metadata + ключи из заголовков ответа).
+    RawDocument (source_id выводит сам из реально запрашиваемого URL —
+    resolve_url без query; metadata + ключи из заголовков ответа).
     Lifecycle handle — у HttpTransport.fetch: поток открыт пока идёт итерация
     результата, закроется на выходе из этого generator'а.
     """
@@ -63,11 +65,16 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
     def close(self) -> None:
         self._http.close()
 
+    def source_id(self, request: ConfluenceRequest) -> SourceId:
+        """Идентичность = реально запрашиваемый URL (base_url+path) без query."""
+        resolved = self._http.resolve_url(request.http)
+        return SourceId(resolved.split("?", 1)[0])
+
     def fetch(self, request: ConfluenceRequest) -> Iterable[RawDocument]:
         with self._http.fetch(request.http) as resp:
             yield RawDocument(
                 handle=resp.stream,
-                source_id=request.source_id,
+                source_id=self.source_id(request),
                 metadata=self._enrich(request.metadata, resp),
             )
 
@@ -106,6 +113,10 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
 
     def close(self) -> None:
         self._inner.close()
+
+    def source_id(self, request: ConfluenceRequest) -> SourceId:
+        """Делегирует inner-транспорту (резолв реально запрашиваемого URL)."""
+        return self._inner.source_id(request)
 
     def fetch(self, request: ConfluenceRequest) -> Iterable[RawDocument]:
         if request.metadata.has(ConfluenceKeys.ATTACHMENT_INFO):
