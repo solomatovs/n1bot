@@ -73,7 +73,7 @@ def _total(rid: RequestId, *calls: ToolCall) -> TotalMessage:
 
 
 def _call(call_id: str, name: str, **args: object) -> ToolCall:
-    return ToolCall(id=call_id, name=name, args=args)
+    return ToolCall(id=call_id, type="function", name=name, args=args)
 
 
 def _ctx(rid: RequestId) -> AgentContext:

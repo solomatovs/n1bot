@@ -38,7 +38,7 @@ def test_view_routes_others_to_markdown(result: object) -> None:
 
 
 def test_dispatcher_chart_result_reaches_chart_channel() -> None:
-    call = ToolCall(id="c1", name="visualize", args={"spec": "{}"})
+    call = ToolCall(id="c1", type="function", name="visualize", args={"spec": "{}"})
     target = StepDictTarget(ThreadId("thread-1"))
     dispatcher = AgentEventDispatcher(target)
 
@@ -68,7 +68,7 @@ def test_dispatcher_chart_result_reaches_chart_channel() -> None:
 
 
 def test_replay_skips_chart_on_broken_spec() -> None:
-    call = ToolCall(id="c1", name="visualize", args={"spec": "{}"})
+    call = ToolCall(id="c1", type="function", name="visualize", args={"spec": "{}"})
     broken = ChartResult(spec={"data": [{"type": "no_such_trace"}]}, title="X")
     target = StepDictTarget(ThreadId("thread-1"))
     dispatcher = AgentEventDispatcher(target)
