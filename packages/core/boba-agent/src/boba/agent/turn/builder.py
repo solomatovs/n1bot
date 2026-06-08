@@ -23,9 +23,9 @@ view над свежим HistoryReader и catalog'ом из ToolRegistry.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Self, cast
+from typing import Any, Self, cast
 
 from boba.agent.agent import AgentContext
 from boba.agent.prompt import PromptId, PromptProvider
@@ -36,10 +36,10 @@ from boba.agent.prompt_providers import (
 )
 from boba.agent.turn.history_view import HistoryDialogView
 from boba.agent.turn.reducers import (
+    ExtraReducer,
     HistoryReducer,
     ModelFromRequestReducer,
     RequestIdFromReducer,
-    SamplingReducer,
     StreamModeReducer,
     SystemPromptReducer,
     ToolsDefinitionReducer,
@@ -48,7 +48,6 @@ from boba.agent.turn.reducers import (
 )
 from boba.agent.turn.spec import LLMRequest, LLMRequestFactory
 from boba.agent.workspace_fs import FsWorkspaceShell
-from boba.llm.models import SamplingParams
 from boba.tools.framework import ToolCatalog
 from boba.workspace.contract import WorkspaceId
 
@@ -71,10 +70,11 @@ class TurnBuilder:
         self._history_view: HistoryDialogView | None = None
         self._tool_catalog: ToolCatalog | None = None
         self._model: str = model
-        self._sampling: SamplingParams | None = None
+        self._extra: Mapping[str, Any] | None = None
         self._stream: bool = True
         self._factories[RequestIdFromReducer.ID] = self._make_request_id
         self._factories[ModelFromRequestReducer.ID] = self._make_model
+        self._factories[ExtraReducer.ID] = self._make_extra
 
     def with_model(self, model: str) -> Self:
         """Обновить LLM-модель. Перезаписывает значение, заданное в конструкторе."""
@@ -82,10 +82,13 @@ class TurnBuilder:
         self._factories[ModelFromRequestReducer.ID] = self._make_model
         return self
 
-    def with_sampling(self, sampling: SamplingParams) -> Self:
-        """SamplingParams -> SamplingReducer. Повторный вызов обновляет."""
-        self._sampling = sampling
-        self._factories[SamplingReducer.ID] = self._make_sampling
+    def with_extra(self, extra: Mapping[str, Any] | None) -> Self:
+        """Сырые provider-параметры для ExtraReducer (всегда зарегистрирован).
+
+        Принимает None/пустой мапинг — тогда reducer no-op и в запрос
+        ничего не добавляется. Повторный вызов обновляет.
+        """
+        self._extra = extra
         return self
 
     def with_stream(self, stream: bool) -> Self:
@@ -217,8 +220,8 @@ class TurnBuilder:
     def _make_model(self, _ctx: AgentContext) -> ModelFromRequestReducer:
         return ModelFromRequestReducer(self._model)
 
-    def _make_sampling(self, _ctx: AgentContext) -> SamplingReducer:
-        return SamplingReducer(self._sampling)
+    def _make_extra(self, _ctx: AgentContext) -> ExtraReducer:
+        return ExtraReducer(self._extra)
 
     def _make_stream(self, _ctx: AgentContext) -> StreamModeReducer:
         return StreamModeReducer(self._stream)

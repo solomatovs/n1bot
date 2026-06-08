@@ -9,11 +9,11 @@ postgres.<name> или openai.<profile>. Профилей может быть н
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.llm.models import SamplingParams
 from boba.provider.openai import OpenAIConfig
-from boba.settings import StringList
 
 __all__ = ["AgentProfile"]
 
@@ -71,24 +71,14 @@ class AgentProfile(BaseModel):
         ),
     )
 
-    temperature: float | None = Field(
-        default=None, description="Температура (0.0–2.0)."
-    )
-    top_p: float | None = Field(default=None, description="Nucleus sampling (0.0–1.0).")
-    max_tokens: int | None = Field(
-        default=None, description="Максимум токенов в ответе."
-    )
-    seed: int | None = Field(
-        default=None, description="Seed детерминистичного sampling'а."
-    )
-    stop: StringList | None = Field(
-        default=None, description="Stop-последовательности."
-    )
-    frequency_penalty: float | None = Field(
-        default=None, description="Frequency penalty (-2.0–2.0)."
-    )
-    presence_penalty: float | None = Field(
-        default=None, description="Presence penalty (-2.0–2.0)."
+    extra: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Сырые provider-специфичные параметры запроса (temperature, top_p, "
+            "top_k, min_p, repetition_penalty, reasoning, think и т.д.). Уходят "
+            "в тело запроса как есть. Оператор сам отвечает за имена и за то, "
+            "поддерживает ли их провайдер. Пусто — ничего не передаётся."
+        ),
     )
     diagnostic: bool = Field(
         default=False,
@@ -98,17 +88,3 @@ class AgentProfile(BaseModel):
         ),
     )
 
-    def to_sampling_params(self) -> SamplingParams | None:
-        """SamplingParams из опциональных полей; None если все None."""
-        fields = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "max_tokens": self.max_tokens,
-            "seed": self.seed,
-            "stop": tuple(self.stop) if self.stop else None,
-            "frequency_penalty": self.frequency_penalty,
-            "presence_penalty": self.presence_penalty,
-        }
-        if all(v is None for v in fields.values()):
-            return None
-        return SamplingParams(**fields)

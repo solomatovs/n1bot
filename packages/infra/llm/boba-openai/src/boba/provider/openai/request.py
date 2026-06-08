@@ -130,7 +130,7 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         self._apply_stream(kwargs, value.stream)
         self._apply_model(kwargs, value)
         self._apply_messages(kwargs, value)
-        self._apply_sampling(kwargs, value)
+        self._apply_extra(kwargs, value)
         self._apply_tools(kwargs, value)
         self._apply_response_format(kwargs, value)
         return kwargs
@@ -153,20 +153,15 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         for m in messages:
             yield self._to_message.convert(m)
 
-    def _apply_sampling(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
-        s = r.sampling
-        fields: dict[str, Any] = {
-            "temperature": s.temperature,
-            "top_p": s.top_p,
-            "max_tokens": s.max_tokens,
-            "seed": s.seed,
-            "stop": list(s.stop) if s.stop is not None else None,
-            "frequency_penalty": s.frequency_penalty,
-            "presence_penalty": s.presence_penalty,
-        }
-        for key, val in fields.items():
-            if val is not None:
-                kwargs[key] = val
+    def _apply_extra(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
+        """Сырые provider-параметры из конфига уходят в тело запроса как есть.
+
+        Оператор сам отвечает за имена и за поддержку провайдером. Пусто —
+        ничего не добавляется.
+        """
+        if not r.extra:
+            return
+        kwargs["extra_body"] = {**kwargs.get("extra_body", {}), **dict(r.extra)}
 
     def _apply_tools(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
         t = r.tools_definition

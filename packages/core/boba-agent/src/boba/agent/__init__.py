@@ -99,10 +99,10 @@ from boba.agent.turn.history_view import (
     HistoryDialogView,
 )
 from boba.agent.turn.reducers import (
+    ExtraReducer,
     HistoryReducer,
     ModelFromRequestReducer,
     RememberUserQueryReducer,
-    SamplingReducer,
     StreamModeReducer,
     SystemPromptReducer,
     ToolsDefinitionReducer,
@@ -133,6 +133,7 @@ __all__ = [
     "DeltaStreamKind",
     "DiagnosticEvent",
     "EventCategory",
+    "ExtraReducer",
     "FeedbackToLLMAdded",
     "GenerationFailed",
     "HistoryDialogView",
@@ -173,7 +174,6 @@ __all__ = [
     "RefusalDelta",
     "RefusalMessage",
     "RememberUserQueryReducer",
-    "SamplingReducer",
     "Severity",
     "StopIfContentFilter",
     "StopIfLengthReached",

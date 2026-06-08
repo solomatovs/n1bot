@@ -1,43 +1,157 @@
-# boba-cli
-[cli.agent]
-model = "qwen/qwen3.7-max"
+# переиспользуемые блоки конфига
+
+## openai-совместимые провайдеры — только транспорт (base_url/api_key/...).
+## модель задаётся в профиле агента ([agent.*].model) — у каждого провайдера свои имена моделей
+[openai.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key = ""
+ssl_verify = true
+tool_calls_fallback = true
+
+[openai.ollama]
+base_url = "http://172.18.0.4:11434/v1"
+api_key = "none"
+ssl_verify = false
+tool_calls_fallback = true
+
+[openai.litellm]
+base_url = "http://172.18.0.10:4000"
+api_key = ""
+ssl_verify = false
+tool_calls_fallback = true
+
+
+## postgres подключения
+## в данном случае подключение называется main
+[postgres.main]
+host = "172.18.0.9"
+port = 5432
+user = "postgres"
+password = ""
+database = "n1bot_debug"
+sslmode = "disable"
+application_name = "boba"
+pool_min_size = 1
+pool_max_size = 8
+connect_timeout_sec = 10.0
+
+
+## embedding-профили
+## e5 модель хорошо оптимизированная для русского языка
+[embedding.e5]
+model = "intfloat/multilingual-e5-large"
+cache_dir = "./local/cache/fastembed"
+
+[embedding.bge]
+model = "BAAI/bge-m3"
+cache_dir = "./local/cache/fastembed"
+
+
+## web-профили — набор настроек для HTTP-клиента (таймаут/SSL/ретраи/авторизация и т.д.).
+## например public профиль не имеет авторизации и с отключённой проверкой SSL подойдёт для любых публичных web request'ов
+[web.public]
+timeout_sec = 30.0
+ssl_verify = false
+retry_attempts = 3
+retry_backoff_sec = 1.0
+auth = { method = "none" }
+
+## отдельный профиль для confluence
+[web.apache_confluence]
+base_url = "https://cwiki.apache.org/confluence"
+timeout_sec = 30.0
+ssl_verify = true
+retry_attempts = 3
+retry_backoff_sec = 1.0
+auth = { method = "none" }
+
+
+## отдельный профиль для confluence (base_url + транспорт; body_format дублируется у потребителей)
+[web.kb_confluence]
+base_url = "https://confl.loshara.com"
+timeout_sec = 30.0
+ssl_verify = true
+retry_attempts = 3
+retry_backoff_sec = 1.0
+auth = { method = "bearer", token = "" }
+
+
+## таблицы KB (PostgresStoreSchema) — общий блок для store/knowledge_base
+[kb.tables]
+pg_schema = "public"
+chunks_table = "kb_chunks"
+collections_table = "kb_collections"
+
+
+## профили агента — переиспользуемые наборы настроек (LLM/workspace/промпт/логи).
+## Приложения подключают нужный профиль ссылкой profile = "${agent.<name>}".
+[agent.default]
 max_messages = 30
 system_prompt_dir = "./local/prompts"
 log_level = "INFO"
-log_file = "./local/logs/cli.log"
+log_file = "./local/logs/agent.log"
 user_workspace_dir = "./local/workspaces/user"
 system_workspace_dir = "./local/workspaces/system"
-base_url = "https://localhost:4000"
-api_key = ""
-# query = "О чем говориться в контексте?"
-# temperature = 0.7
-# top_p = 0.9
-# max_tokens = 4096
-# seed = 0
-# stop = []
-# frequency_penalty = 0.0
-# presence_penalty = 0.0
-stream=false
-tool_calls_fallback=true
+stream = true
+# имя модели у выбранного провайдера (openrouter)
+model = "qwen/qwen3.6-27b"
+# так можно подключить любой профиль, определенный ранее
+openai = "${openai.openrouter}"
 
 
-# boba-chainlit
+### это extra параметры, которые передаются в провайдер так
+### как они описаны тут
+[agent.default.extra]
+#### для запоминания: логиты -> temperature -> softmax -> вероятности -> фильтры (top_k/top_p/min_p) -> нормализация -> случайный выбор
+# Штрафует токены, которые уже встречались в тексте: их логиты делятся/уменьшаются, чтобы модель меньше зацикливалась.
+repetition_penalty = 1.0
+#### > 1 — сглаживает: хвост поднимается, больше случайности/креатива
+#### T = 1 — без изменений
+#### T < 1 (0.6) — обостряет распределение: разрыв между вероятным и маловероятным растёт, модель почти всегда берёт топовые токены -> ответы стабильнее, детерминированнее.
+#### 0.6 для кода = поменьше фантазии, побольше предсказуемости
+temperature = 0.6
+#### Фильтры-обрезатели (что вообще попадает)
+#### top_k = 20 — оставить только 20 самых вероятных токенов, остальные обнулить. Жёсткое ограничение по количеству кандидатов. Просто и грубо.
+top_p = 0.95
+#### top_p = 0.95 (nucleus) — оставить минимальный набор токенов, чья суммарная вероятность ≥ 0.95. Размер набора плавающий: если модель уверена (один токен на 0.97) — останется 1 кандидат; если «размазано» — больше. Адаптивно к уверенности.
+top_k = 20
+#### min_p = 0.0 — оставить токены с вероятностью ≥ min_p × (вероятность топового). Порог относительно лидера: при min_p=0.1 и топе 0.5 отсекается всё ниже 0.05. 0.0 = выключен (ничего не режет).
+min_p = 0.0
+#### Стоит особняком — не фильтр сэмплинга, а потолок длины:
+#### максимум столько токенов модель сгенерирует за ответ, потом обрыв.
+#### 81920 (80k) — это разреши длинный ответ/длинные размышления, не про выбор токенов.
+#### у thinking-моделей сюда входит и <think>-блок, так что маленький max_tokens может обрезать ответ прямо посреди рассуждения
+max_tokens=81920
+# снижает размышления в openrouter
+reasoning = { max_tokens = 1024 }
+# в ollama позволяет убрать размышления вообще
+# think = false
+# снижает рассуждения на ollama/litellm
+# reasoning_effort = "low"
+
+
+[agent.local]
+max_messages = 30
+system_prompt_dir = "./local/prompts"
+log_level = "INFO"
+log_file = "./local/logs/agent.log"
+user_workspace_dir = "./local/workspaces/user"
+system_workspace_dir = "./local/workspaces/system"
+stream = true
+# имя модели у выбранного провайдера (ollama)
+model = "qwen3:0.6b"
+openai = "${openai.ollama}"
+
+
+# конкретные приложения
+
+## cli приложение - консольный агент
+[cli]
+profile = "${agent.local}"
+
+## chainlit приложение - агент с web UI
 [chainlit]
-model = "qwen/qwen3.7-max"
-# model = "qwen/qwen3-32b"
-# model = "qwen/qwen3-8b"
-# model = "qwen/qwen3-max"
-# model = "qwen/qwen3-max-thinking"
-# model = "qwen/qwen3-next-80b-a3b-thinking"
-# model = "nvidia/nemotron-3-nano-30b-a3b:free"
-max_messages = 30
-system_prompt_dir = "./local/prompts"
-log_level = "INFO"
-log_file = "./local/logs/chainlit.log"
-user_workspace_dir = "./local/workspaces/user"
-system_workspace_dir = "./local/workspaces/system"
-base_url = "https://localhost:4000"
-api_key = ""
+profile = "${agent.default}"
 host = "0.0.0.0"
 port = 8502
 url_prefix = "/boba-debug"
@@ -46,290 +160,186 @@ auth_secret = ""
 headless = true
 app_root = "./local/chainlit"
 chat_session_pool_capacity = 32
-stream=false
-tool_calls_fallback=true
 
 
-# На каждый postgres connection — отдельная секция [postgres.<name>].
-# connection-параметры
-[postgres.main]
-host = "127.0.0.1"
-port = 5432
-user = "postgres"
-password = ""
-database = "postgres"
-sslmode = "disable"
-application_name = "boba"
-pool_min_size = 1
-pool_max_size = 8
-connect_timeout_sec = 10.0
-statement_timeout_ms = 5000
+# tool-плагины
+
+## инструменты для взаимодействия с postgres
+[tool.pg]
+enable = true
+tools = ["list_targets", "query", "list_tables", "describe_table"]
+### хардовое ограничение на количество строк в ответе (для защиты от больших запросов)
+max_rows = 100
+### хардовое ограничение на размер результата в байтах (для защиты от больших запросов)
+max_bytes = 1_000_000
+
+### whitelist профилей, который может использовать llm для взаимодействия с postgres
+profiles = { main = "${postgres.main}" }
 
 
-# Общие параметры подключения в embeding модели
-[embedding]
-# provider = "openai-compat"
-# endpoint = "https://localhost:4000"
-# api_key = ""
-# model = "intfloat/multilingual-e5-large"
-provider = "local"
-model = "intfloat/multilingual-e5-large"
-cache_dir = "./local/cache/fastembed"
+## инструменты для взаимодействия с web (fetch/grep) + confluence (fetch/grep/list/search_cql) + ingest из confluence (ingest_spaces/ingest_pages)
+[tool.web]
+enable = true
+tools = ["web_fetch", "web_grep", "web_download"]
+### папка для скачивания файлов через web_download
+dest_dir = "web/downloads"
+
+### whitelist профилей, которые может использовать llm для взаимодействия с web
+### обрати внимание, что из-за того, что список может быть большой
+### я сделал его через отдельную секцию [tool.web.profiles]
+### а не просто словарём как это сделано в [tool.pg.profiles]
+### по итогу никакой разницы нет, просто демонстрация разных способов задания конфига
+[tool.web.profiles]
+"raw.githubusercontent.com" = "${web.public}"
+"github.com" = "${web.public}"
+"www.google.com" = "${web.public}"
+"cwiki.apache.org" = "${web.kb_confluence}"
 
 
-# Общие параметры подключения к confluence
-[confluence]
-base_url = "https://cwiki.apache.org/confluence"
-# none, pat, basic
-auth_method = "none"
-auth_token = ""
-auth_user = ""
-timeout_sec = 30.0
-ssl_verify = true
-body_format = "view"
-
-
-# Shared параметры для KB:
-[kb.storage]
-profile = "main"
-application_name = "boba-kb"
-pg_schema = "public"
-chunks_table = "kb_chunks"
-collections_table = "kb_collections"
-batch_size = 100
-
-
-# инструмент поиска по базе знаний confluence
+## инструменты для взаимодействия с базой знаний (knolage_base)
 [tool.kb]
 enable = true
 tools = [
-    # ingest (Confluence -> kb_chunks)
-    "confluence_ingest_spaces",   # все страницы перечисленных spaces
-    "confluence_ingest_pages",    # явный список page_id
-    "confluence_ingest_cql",      # discovery через CQL-запрос
-    # search (KB / online)
-    "kb_vector_search",       # kb_confluence, семантический (cosine)
-    "kb_fts_search",          # kb_confluence, лексический (ts_rank_cd)
-    "kb_doc_vector_search",   # kb_confluence_doc, семантический
-    "kb_doc_fts_search",      # kb_confluence_doc, лексический
+    "confluence_ingest_spaces",
+    "confluence_ingest_pages",
+    "kb_vector_search",
+    "kb_fts_search",
     "confluence_search_cql",
     "confluence_list_spaces",
-    # download / fetch (Confluence -> workspace / напрямую LLM)
-    "confluence_download",        # unified: space_keys / page_ids
-    "confluence_fetch_page",      # одна страница строкой, без записи на диск
-    "confluence_grep_page",       # grep по одной странице, только совпадения
+    "confluence_grep_page",
 ]
-
-# Индексирует confluence страницы
-[tool.kb.confluence.ingest]
+### указание профиля postgres, куда сохраняется индекс
+connection = "${postgres.main}"
+### указание таблиц для хранения индекса и коллекций
+tables = "${kb.tables}"
+## какой эмбеддинг использовать для индекса
+embedding = "${embedding.e5}"
+### какой web-профиль использовать для инструментов, взаимодействующих с Confluence
+confluence = "${web.kb_confluence}"
+### какой формат тела страницы Confluence использовать при индексации (storage, view, export_view)
+body_format = "view"
+### настройки chunker'а для разбиения страниц Confluence на куски при индексации
+#### размер одного чанка
 chunk_size = 4000
+#### перекрытие соседних чанков (кол-во символов), 0 - без перекрытия
 chunk_overlap = 0
-collection = "kb_confluence"
-# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые -> все вложения).
-attachment_media_types = []
-attachment_titles = []
+# attachment_media_types = ["application/pdf", "application/vnd.openxmlformats-officedocument.*"]
+attachment_titles = ["*.pdf", "*.docx", "*.xlsx"]
 
 
-# tool для скачивания confluence страниц.
-# dest_dir — workspace-relative (внутри session-workspace, не FS-путь).
-[tool.kb.confluence.download]
-dest_dir = "kb/confluence"
-attachment_media_types = []
-attachment_titles = []
-
-# tool для поиска по confluence
-[tool.kb.confluence.search.cql]
-snippet_chars = 300
-max_limit = 50
-
-# tool для grep'а по одной confluence странице (потоковый fetch + regex-поиск).
-# Возвращает только совпадения с номерами строк, а не весь контент.
-[tool.kb.confluence.grep]
-max_text_chars = 2000   # потолок длины content/before/after на каждый match
-
-
-# KB search: общий конфиг для 4 tool'ов (kb_{vector,fts}_search /
-# kb_doc_{vector,fts}_search). Канал и коллекция зашиты в сам tool;
-# strict-фильтр по collection (kb_confluence / kb_confluence_doc).
-[tool.kb.search]
-snippet_chars = 300
-max_top_k = 20
-# SQL-шаблоны vector/fts встроены в код (KbSearch.VECTOR_SQL / FTS_SQL).
-
-
-# cli для накатырвания миграции в postgres
-# создание kb таблиц 
-[cli.kb.bootstrap]
-
-
-# cli для индексации чанков, подготовленных оператором
-# документы должны быть подготовлены в формате:
-# 1 .md файл = 1 чанк
-[cli.kb.confluence_doc.ingest]
-chunk_size = 4000
-chunk_overlap = 0
-folder = "./local/docs"
-collection = "kb_confluence_doc"
-prune = false
-
-
-# cli для запуска индексации confluence
-[cli.kb.confluence.ingest]
-chunk_size = 4000
-chunk_overlap = 0
-collection = "kb_confluence"
-space_type = "global"
-only = []
-skip = []
-page_ids = []
-prune = false
-# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые -> все вложения).
-# Примеры: ["application/pdf", "image/*"] или ["*.pdf", "report-*.docx"].
-attachment_media_types = ["image/*"]
-attachment_titles = []
-
-
-# cli для рендеринга sql запроса
-# позволяет оператору посмотреть sql запрос
-# который будет отправлен llm в postgres
-# для нахождения чанков
-[cli.kb.search.render]
-# Дефолты для запуска без CLI-флагов; --template/--query/--top-k override'ят.
-template = "fts"
-query = "как оформить возврат?"
-top_k = 5
-
-
-# cli для скачивания confluence страниц на файловую систему.
-# dest_dir — FS-путь относительно CWD.
-[cli.kb.confluence.download]
-dest_dir = "./local/downloads"
-as_markdown = true
-space_type = "global"
-only = []
-skip = []
-page_ids = []
-# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые -> все вложения).
-# Отсеянные не запрашиваются по HTTP и не пишутся на диск.
-attachment_media_types = []
-attachment_titles = []
-
-
-# Выполняет запросы в postgres.
-[tool.pg]
-enable = false
-tools = [
-    "list_targets",
-    "query",
-    "list_tables",
-    "describe_table",
-]
-# доступные для работы профили
-profiles = [
-    "main"
-]
-max_rows = 100
-max_cell_chars = 2000
-
-
-# tools для работы с файлами
+## инструменты для взаимодействия с файлами
 [tool.files]
 enable = true
-tools = [
-    "append",
-    "cat",
-    "read_bytes",
-    "grep",
-    "ls",
-    "stat",
-    "tree",
-    "unzip",
-    # "cd",
-    # "cp",
-    # "edit",
-    # "mkdir",
-    # "mv",
-    # "pwd",
-    # "rm",
-    # "touch",
-    # "write",
-]
-cat_max_chars = 50000
+tools = ["cat", "read_bytes", "grep", "ls", "tree", "unzip"]
+### максимальное кол-во символов, которое может прочитать инструмент из одного файла за раз (для защиты от больших файлов)
+max_text_chars = 50000
 
 
-# Визуализация: интерактивный Plotly-график из figure-spec (рендерится в UI)
+## инструменты для визуализации данных
 [tool.chart]
 enable = true
-tools = [
-    "visualize",
-]
+tools = ["visualize"]
 
 
-# Чтение и поиск по загруженным документам (liteparse)
+## инструменты для взаимодействия с документами (pdf, docx и т.д.)
 [tool.doc]
 enable = true
-tools = [
-    "read_document",
-    "read_pages",
-    "document_outline",
-    "search_document",
-]
-# OCR выключен по умолчанию: для текстовых PDF не нужен, требует tesseract.
-ocr_enabled = false
+tools = ["read_document", "read_document_window", "read_pages", "document_outline", "search_document"]
+ocr_enabled = true
 ocr_language = "rus+eng"
 max_pages = 0
 max_text_chars = 200000
 search_context_chars = 80
 search_max_matches = 50
 
-# tool для запуска bash скриптов
-# опасный tool, используем только для тестов
+## инструменты для взаимодействия с shell
+## bash_local - выполняет команды прямо в shell системы
+## bash_sandbox - выполняет команды внутри изолированного окружения
 [tool.shell]
 enable = false
-tools = [
-    "bash_local",
-    "bash_sandbox",
-]
+tools = ["bash_local", "bash_sandbox"]
 
 
-# web-профили (hostname + auth)
-[web.raw_github]
-hostname = "raw.githubusercontent.com"
-[web.raw_github.auth]
-method = "none"
+# различные вспомогательные cli
 
-[web.github]
-hostname = "github.com"
-[web.github.auth]
-method = "none"
-
-[web.google]
-hostname = "www.google.com"
-[web.google.auth]
-method = "none"
+## cli для раскатывания структуры postgres таблиц которые хранят чанки и коллекции для базы знаний
+[cli.kb.bootstrap]
+connection = "${postgres.main}"
+tables = "${kb.tables}"
+embedding = "${embedding.e5}"
 
 
-# tool для выполнения web request'ов
-[tool.web]
-enable = true
-tools = [
-    "web_fetch",
-    "web_download",
-    "web_grep"
-]
-# профили доступные для работы tool.web
-profiles = [
-    "raw_github",
-    "github",
-    "google"
-]
+## cli для запуска индексации md файлов, которые подготовлены заранее оператором
+## у этого индексатора логика отличается от confluence
+## весь md файл рассматривается как один чанк и заноситься к базу знаний как есть
+## без разбиения на куски и с минимальной обработкой (удаление md синтаксиса)
+[cli.kb.confluence_doc.ingest]
+### в какую коллекцию сохранять индекс
+collection = "kb_confluence_doc"
+folder = "./local/docs"
+prune = false
+chunk_size = 4000
+chunk_overlap = 0
+connection = "${postgres.main}"
+tables = "${kb.tables}"
+embedding = "${embedding.e5}"
 
-timeout_sec = 30.0
-ssl_verify = true
 
-[tool.web.download]
-dest_dir = "web/downloads"                # workspace-relative
-# max_returned_files = 50
+## cli для запуска индексации страниц из Confluence
+[cli.kb.confluence.ingest]
+### в какую коллекцию сохранять индекс
+collection = "kb_confluence"
+space_type = "global"
+### индексировать только указанные space
+only = ["PHDD2"]
+### пропустить индексацию указанных space
+skip = []
+### индексировать только указанные страницы (по id)
+page_ids = []
+### true - Если true, удалить из коллекции чанки, чьих source_id нет среди страниц, попавших в скоуп обновления
+prune = false
+### Если true, переиндексировать страницы space'ов целиком: переэмбеддить все чанки (минуя skip-by-hash)
+### удалить устаревшие чанки этих страниц, включая снятые с них вложения
+force_update = false
+# attachment_media_types = ["application/pdf", "application/vnd.openxmlformats-officedocument.*"]
+attachment_titles = ["*.pdf", "*.docx", "*.xlsx"]
+confluence = "${web.kb_confluence}"
+body_format = "view"
+chunk_size = 4000
+chunk_overlap = 0
+connection = "${postgres.main}"
+tables = "${kb.tables}"
+embedding = "${embedding.e5}"
 
-[tool.web.grep]
-# max_text_chars = 2000                   # потолок длины content/before/after на match
+
+## cli для скачивания страниц из Confluence в виде файлов
+[cli.kb.confluence.download]
+dest_dir = "./local/downloads"
+space_type = "global"
+only = []
+skip = []
+page_ids = []
+# attachment_media_types = ["application/pdf", "application/vnd.openxmlformats-officedocument.*"]
+attachment_titles = ["*.pdf", "*.docx", "*.xlsx"]
+confluence = "${web.kb_confluence}"
+body_format = "view"
+
+
+## cli позволяет отрендерить sql заппрос к базе знаний
+## sql запрос можно посмотреть, самостоятельно выполнить и протестировать результаты поиска без взаимодействия с llm
+[cli.kb.search.render]
+### tfs - full text search
+### vector - поиск по векторному индексу
+template = "fts"
+### итоговый поисковый запрос, который будет отрендерен в sql
+### для tfs будет использован websearch_to_tsquery
+### для vector запрос будет преобразован в массив float через embeding модель
+query = "как оформить возврат?"
+### какое кол-во найденного вернуть
+top_k = 5
+### указание профиля postgres, куда сохраняется индекс
+connection = "${postgres.main}"
+### указание таблиц для хранения индекса и коллекций
+tables = "${kb.tables}"
+## какой эмбеддинг использовать для индекса
+embedding = "${embedding.e5}"
