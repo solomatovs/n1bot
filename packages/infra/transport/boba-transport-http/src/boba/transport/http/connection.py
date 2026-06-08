@@ -33,20 +33,6 @@ class HttpProfile(BaseModel):
             "... }`. По умолчанию anonymous (`method='none'`)."
         ),
     )
-    headers: dict[str, str] = Field(
-        default_factory=dict,
-        description=(
-            "Дополнительные HTTP-заголовки для всех запросов (например, "
-            '`{ "User-Agent" = "MyAgent/1.0" }`).'
-        ),
-    )
-    params: dict[str, str] = Field(
-        default_factory=dict,
-        description=(
-            "Дополнительные query-параметры для всех запросов (например, "
-            '`{ "api_key" = "secret" }`)'
-        ),
-    )
 
     timeout_sec: float = Field(
         default=30.0,

@@ -45,13 +45,13 @@ class HttpTransport:
 
     def __init__(self, profile: HttpProfile) -> None:
         self._profile = profile
+        # headers/params профиля НЕ кладём на клиент: мержим per-request в
+        # _open_with_retry, чтобы request мог детерминированно перекрыть профиль.
         self._client = httpx.Client(
             base_url=profile.base_url or "",
-            params=profile.params,
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
             auth=profile.auth.httpx_auth(),
-            headers=profile.headers,
         )
 
     def __enter__(self) -> HttpTransport:
@@ -83,7 +83,16 @@ class HttpTransport:
             resp: httpx.Response | None = None
             try:
                 resp = self._client.send(
-                    self._client.build_request(request.method, request.url),
+                    self._client.build_request(
+                        request.method,
+                        request.url,
+                        headers=request.headers,
+                        params=request.params,
+                        content=request.content,
+                        data=request.data,
+                        files=request.files,
+                        json=request.json,
+                    ),
                     stream=True,
                 )
                 resp.raise_for_status()

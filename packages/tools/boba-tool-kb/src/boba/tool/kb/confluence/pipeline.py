@@ -86,11 +86,9 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
 
 
 class ConfluenceContentTransport(Transport[ConfluenceRequest]):
-    """Transport[ConfluenceRequest], разворачивающий 1 page-request -> page + N attachments.
-
-    Один экземпляр держит per-conn-конфигурацию (base_url, body_format) плюс
-    внутренний ConfluenceHttpTransport. Reuse между несколькими .fetch()-
-    вызовами безопасен — внутри нет mutable state.
+    """
+    Transport[ConfluenceRequest],
+    разворачивающий 1 page-request -> page + N attachments
     """
 
     def __init__(

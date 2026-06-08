@@ -135,12 +135,11 @@ class ConfluenceIngest:
         image/etc.) молча пропускается. Когда появятся Reader'ы для PDF или
         картинок, их можно подключить добавив entry в routes-mapping.
         """
-        confluence_reader = ConfluenceReader()
         reader: DispatchReader[str] = DispatchReader(
             by=TransportKeys.CONTENT_TYPE,
             routes=dict.fromkeys(
                 ConfluenceIngest.HTML_CONTENT_TYPES,
-                confluence_reader,
+                ConfluenceReader(),
             ),
             reader_id=ReaderId("ext.confluence_dispatch"),
             on_unknown="skip",
@@ -158,8 +157,11 @@ class ConfluenceIngest:
             conn,
             attachment_filter=attachment_filter,
         )
+
+        cleanup = FullCleanup() if prune_missing else NoneCleanup()
+
         config: IndexerConfig[str] = IndexerConfig(
-            cleanup=FullCleanup() if prune_missing else NoneCleanup(),
+            cleanup=cleanup,
             force_update=False,
         )
         try:
