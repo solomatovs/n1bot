@@ -67,20 +67,16 @@ class ToolCallFromContentFallback:
             or not message.content
         ):
             # если поля уже заполнены, или content пустой, то не трогаем сообщение
-
             return message
 
         # если не удалось преобразовать в call, значит content не tool call
-
         calls = self._parse(message.content)
 
         if calls is None:
             return message
 
         # если удалось преобразовать и это tuple, значит там два массива
-
         # корректно сформированные call и некорректно сформированные call
-
         correct_calls = calls[0]
 
         incorrect_calls = calls[1]
@@ -106,9 +102,7 @@ class ToolCallFromContentFallback:
             return None
 
         # иногда модель присылает словарь {"name": "func_1", "args": {}}
-
         # вместо корректного списка [{"name": "func_1", "args": {}}]
-
         items = parsed if isinstance(parsed, list) else [parsed]
 
         if not items:
@@ -124,7 +118,6 @@ class ToolCallFromContentFallback:
             match call:
                 case None:
                     # Хотя бы один элемент не по протоколу — это не tool-call.
-
                     return None
 
                 case call if isinstance(call, ToolCall):
@@ -151,9 +144,7 @@ class ToolCallFromContentFallback:
             return None
 
         # если нет имени функции, то это скорее всего не tool_call
-
         # вероятно присланный контер
-
         function_name = item.get("name")
 
         if not isinstance(function_name, str):
@@ -165,17 +156,14 @@ class ToolCallFromContentFallback:
 
         if not isinstance(tool_call_id, str):
             # если tool_call_id не пришел, значит просто сгенерирую его самостоятельно
-
             tool_call_id = cls._new_call_id()
 
         args = item.get("arguments")
 
         # что только ни приходит, парсим все что угодно
-
         match args:
             case args if isinstance(args, dict):
                 # оставляем как есть, так как похож на словарь
-
                 pass
 
             case args if isinstance(args, str) and args == "null":
@@ -189,13 +177,9 @@ class ToolCallFromContentFallback:
 
             case unknown:
                 # что то непонятное пришло, возвращаем ToolCallDecodeFailure
-
                 # потому что до этого этапа дошли и распарсили как минимум:
-
                 # { "name": "func_name", "arguments" }
-
                 # а значит модель пыталась вызвать функцию с аргументами
-
                 # но передала некорректно аргументы
 
                 return ToolCallDecodeFailure(
