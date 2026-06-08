@@ -62,6 +62,7 @@ class ToolCall(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
+    type: Literal["function"]
     name: str
     args: Mapping[str, Any]
 
@@ -80,6 +81,7 @@ class ToolCallDecodeFailure(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
+    type: Literal["function"]
     name: str
     raw: str
     error: str

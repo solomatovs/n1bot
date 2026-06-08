@@ -90,7 +90,7 @@ def test_old_request_id_keeps_only_user_and_text_answer():
     rid_old = new_request_id()
     rid_new = new_request_id()
 
-    call = ToolCall(id="c1", name="echo", args={"x": 1})
+    call = ToolCall(id="c1", type="function", name="echo", args={"x": 1})
     _TurnRecorder.record(
         history,
         rid_old,
@@ -119,7 +119,7 @@ def test_current_request_id_keeps_full_tool_chain():
 
     _TurnRecorder.record(history, rid_old, query="q-old", answer="a-old")
 
-    call = ToolCall(id="c1", name="echo", args={"x": 1})
+    call = ToolCall(id="c1", type="function", name="echo", args={"x": 1})
     _TurnRecorder.record(
         history,
         rid_new,
@@ -154,7 +154,7 @@ def test_old_request_id_without_answer_keeps_only_user_message():
     rid_old = new_request_id()
     rid_new = new_request_id()
 
-    call = ToolCall(id="c1", name="echo", args={"x": 1})
+    call = ToolCall(id="c1", type="function", name="echo", args={"x": 1})
     # старый turn оборвался: были только тулы, ответа не пришло
     history.record(UserQueryReceived(request_id=rid_old, query="q-old"))
     history.record(
@@ -221,7 +221,7 @@ def test_window_drops_orphan_tool_result_in_current_request():
     rid_new = new_request_id()
     _TurnRecorder.record(history, rid_old, query="q-old", answer="a-old")
 
-    call = ToolCall(id="c1", name="echo", args={"x": 1})
+    call = ToolCall(id="c1", type="function", name="echo", args={"x": 1})
     _TurnRecorder.record(
         history,
         rid_new,

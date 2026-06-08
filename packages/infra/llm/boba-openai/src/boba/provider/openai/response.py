@@ -49,76 +49,175 @@ logger = logging.getLogger(__name__)
 
 class ToolCallFromContentFallback:
     """
-    Перемапивает tool-call из content в tool_calls итогового сообщения.
 
-    Чинит проблему когда в поле content приходит JSON по протоколу (function + args)
+    Перемапивает tool-call из `content` в `tool_calls` итогового сообщения.
+
+
+
+    Чинит проблему когда в поле content приходит JSON по протоколу (`function` + `args`)
+
     """
 
     def decode(self, message: AssistantMessage, *, model: str) -> AssistantMessage:
         """Исправленное сообщение, либо тот же объект если это не tool-call."""
+
         if (
             message.tool_calls
             or message.tool_call_decode_failures
             or not message.content
         ):
             # если поля уже заполнены, или content пустой, то не трогаем сообщение
+
             return message
 
+        # если не удалось преобразовать в call, значит content не tool call
+
         calls = self._parse(message.content)
+
         if calls is None:
             return message
 
-        logger.warning(
-            "provider returned tool call(s) in content; remapped %d call(s) "
-            "[%s] model=%s",
-            len(calls),
-            ", ".join(c.name for c in calls),
-            model,
+        # если удалось преобразовать и это tuple, значит там два массива
+
+        # корректно сформированные call и некорректно сформированные call
+
+        correct_calls = calls[0]
+
+        incorrect_calls = calls[1]
+
+        return message.model_copy(
+            update={
+                "content": "",
+                "tool_calls": tuple(correct_calls),
+                "tool_call_decode_failures": tuple(incorrect_calls),
+            }
         )
-        return message.model_copy(update={"content": "", "tool_calls": tuple(calls)})
 
     @classmethod
-    def _parse(cls, content: str) -> list[ToolCall] | None:
+    def _parse(
+        cls, content: str
+    ) -> tuple[list[ToolCall], list[ToolCallDecodeFailure]] | None:
         """Распарсить content по протоколу; None если это не tool-call."""
+
         try:
             parsed = json.loads(content)
+
         except json.JSONDecodeError:
             return None
 
+        # иногда модель присылает словарь {"name": "func_1", "args": {}}
+
+        # вместо корректного списка [{"name": "func_1", "args": {}}]
+
         items = parsed if isinstance(parsed, list) else [parsed]
+
         if not items:
             return None
 
-        calls: list[ToolCall] = []
+        correct_calls: list[ToolCall] = []
+
+        incorrect_calls: list[ToolCallDecodeFailure] = []
+
         for item in items:
             call = cls._to_call(item)
-            if call is None:
-                # Хотя бы один элемент не по протоколу — это не tool-call.
-                return None
-            calls.append(call)
-        return calls
+
+            match call:
+                case None:
+                    # Хотя бы один элемент не по протоколу — это не tool-call.
+
+                    return None
+
+                case call if isinstance(call, ToolCall):
+                    correct_calls.append(call)
+
+                case call if isinstance(call, ToolCallDecodeFailure):
+                    incorrect_calls.append(call)
+
+        return correct_calls, incorrect_calls
 
     @classmethod
-    def _to_call(cls, item: object) -> ToolCall | None:
-        """Один элемент {function, args} -> ToolCall; None если не по протоколу."""
+    def _to_call(cls, item: object) -> ToolCall | ToolCallDecodeFailure | None:
+        """
+
+        Один элемент {function, args} > ToolCall;
+
+            None если не это вообще не dict
+
+            ToolCallDecodeFailure если это dict но с некорректным форматом аргументов
+
+        """
+
         if not isinstance(item, dict):
             return None
 
-        function = item.get("function")
-        args = item.get("args")
-        if not isinstance(function, str):
+        # если нет имени функции, то это скорее всего не tool_call
+
+        # вероятно присланный контер
+
+        function_name = item.get("name")
+
+        if not isinstance(function_name, str):
             return None
 
-        if not isinstance(args, dict):
-            return None
+        function_type = "function"
 
-        return ToolCall(id=cls._new_call_id(), name=function, args=args)
+        tool_call_id = item.get("id")
+
+        if not isinstance(tool_call_id, str):
+            # если tool_call_id не пришел, значит просто сгенерирую его самостоятельно
+
+            tool_call_id = cls._new_call_id()
+
+        args = item.get("arguments")
+
+        # что только ни приходит, парсим все что угодно
+
+        match args:
+            case args if isinstance(args, dict):
+                # оставляем как есть, так как похож на словарь
+
+                pass
+
+            case args if isinstance(args, str) and args == "null":
+                args = {}
+
+            case args if isinstance(args, str) and args == "":
+                args = {}
+
+            case args if args is None:
+                args = {}
+
+            case unknown:
+                # что то непонятное пришло, возвращаем ToolCallDecodeFailure
+
+                # потому что до этого этапа дошли и распарсили как минимум:
+
+                # { "name": "func_name", "arguments" }
+
+                # а значит модель пыталась вызвать функцию с аргументами
+
+                # но передала некорректно аргументы
+
+                return ToolCallDecodeFailure(
+                    id=tool_call_id,
+                    type=function_type,
+                    name=function_name,
+                    raw=str(unknown),
+                    error=f"error parsing arguments dict: {unknown}",
+                )
+
+        return ToolCall(
+            id=tool_call_id,
+            name=function_name,
+            type=function_type,
+            args=args,
+        )
 
     @staticmethod
     def _new_call_id() -> str:
         """Свежий tool_call_id — провайдер его не прислал."""
-        return f"call_{uuid4().hex}"
 
+        return f"call_{uuid4().hex}"
 
 class ChatCompletionChunkConsumer(
     StreamTransformer[LLMContext, ChatCompletionChunk, LLMEvent]
@@ -430,6 +529,7 @@ class _PartialToolCall:
         except json.JSONDecodeError as e:
             return ToolCallDecodeFailure(
                 id=self.id,
+                type="function",
                 name=self.name,
                 raw=raw,
                 error=f"invalid JSON arguments: {e}",
@@ -437,11 +537,12 @@ class _PartialToolCall:
         if not isinstance(parsed, dict):
             return ToolCallDecodeFailure(
                 id=self.id,
+                type="function",
                 name=self.name,
                 raw=raw,
                 error=f"args must be JSON object, got {type(parsed).__name__}",
             )
-        return ToolCall(id=self.id, name=self.name, args=parsed)
+        return ToolCall(id=self.id, type="function", name=self.name, args=parsed)
 
 
 class FinishReasonDecoder(Converter[str, FinishReason]):

@@ -56,9 +56,10 @@ from boba.llm.models import RequestId, ToolCall, ToolCallDecodeFailure
 from boba.tools.domain import ChartResult, ErrorResult, JsonResult, TextResult
 
 _RID = RequestId(UUID("00000000-0000-0000-0000-000000000001"))
-_TC = ToolCall(id="call_1", name="search", args={"q": "hello"})
+_TC = ToolCall(id="call_1", type="function", name="search", args={"q": "hello"})
 _TCDF = ToolCallDecodeFailure(
     id="call_x",
+    type="function",
     name="search",
     raw="{bad",
     error="invalid JSON",

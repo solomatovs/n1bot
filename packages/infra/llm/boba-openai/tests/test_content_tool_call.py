@@ -77,7 +77,7 @@ def test_partially_valid_array_is_all_or_nothing() -> None:
 def test_native_tool_calls_present_skips_fallback() -> None:
     message = AssistantMessage(
         content=json.dumps({"function": "search", "args": {}}),
-        tool_calls=(ToolCall(id="c1", name="native", args={}),),
+        tool_calls=(ToolCall(id="c1", type="function", name="native", args={}),),
     )
     out = ToolCallFromContentFallback().decode(message, model="m")
 
