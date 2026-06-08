@@ -87,7 +87,11 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
             md = md.set(TransportKeys.ETAG, etag.strip('"'))
         if last_mod := h.get("last-modified"):
             md = md.set(HttpKeys.LAST_MODIFIED, last_mod)
-        if ct := h.get("content-type"):
+        # CONTENT_TYPE из заголовка ставим только если его ещё нет: для
+        # attachment'ов он уже пресечен из authoritative media_type
+        # (make_attachment_request), а Confluence на download иногда отдаёт
+        # octet-stream — перетирать им нельзя.
+        if not md.has(TransportKeys.CONTENT_TYPE) and (ct := h.get("content-type")):
             md = md.set(TransportKeys.CONTENT_TYPE, ct)
         return md.set(HttpKeys.STATUS, resp.status)
 

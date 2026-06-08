@@ -38,6 +38,7 @@ from boba.indexing import (
 from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
 from boba.indexing.reader import ReaderId
+from boba.liteparse import LiteParseParams, LiteParseReader
 from boba.settings import (
     StringList,
 )
@@ -63,11 +64,12 @@ __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
-class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams):
+class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams):
     """Self-contained конфиг семейства tool'ов confluence_ingest_*.
 
-    Наследует PostgresStoreConfig (connection/tables — плоско) и ChunkerParams
-    (chunk_size/chunk_overlap — плоско). Config-секция: [tool.kb].
+    Наследует PostgresStoreConfig (connection/tables — плоско), ChunkerParams
+    (chunk_size/chunk_overlap — плоско) и LiteParseParams (ocr_enabled/
+    ocr_language/max_pages — настройки парсера вложений). Config-секция: [tool.kb].
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -127,6 +129,7 @@ class ConfluenceIngest:
         prune_missing: bool,
         force_update: bool = False,
         attachment_filter: AttachmentFilter | None = None,
+        liteparse_params: LiteParseParams | None = None,
     ) -> dict[str, Any]:
         """Полный Confluence -> kb_chunks pipeline для уже-собранного RequestSource.
 
@@ -137,17 +140,21 @@ class ConfluenceIngest:
         обходит хэш-диф и переэмбеддит все чанки, а page-scope cleanup сносит
         стейл в пределах страницы (ужавшийся текст + удалённые вложения).
 
-        Reader — DispatchReader по TransportKeys.CONTENT_TYPE: HTML
-        обрабатывается ConfluenceReader'ом, всё остальное (attachment'ы PDF/
-        image/etc.) молча пропускается. Когда появятся Reader'ы для PDF или
-        картинок, их можно подключить добавив entry в routes-mapping.
+        Reader — DispatchReader по TransportKeys.CONTENT_TYPE: HTML ->
+        ConfluenceReader, document-вложения (PDF/docx/xlsx/pptx по
+        LiteParseReader.media_types) -> LiteParseReader (постранично), всё
+        остальное (картинки и т.п.) молча пропускается. liteparse_params
+        прокидывает OCR/лимит страниц в парсер вложений.
         """
+        liteparse_reader = LiteParseReader(liteparse_params)
         reader: DispatchReader[str] = DispatchReader(
             by=TransportKeys.CONTENT_TYPE,
-            routes=dict.fromkeys(
-                ConfluenceIngest.HTML_CONTENT_TYPES,
-                ConfluenceReader(),
-            ),
+            routes={
+                **dict.fromkeys(
+                    ConfluenceIngest.HTML_CONTENT_TYPES, ConfluenceReader(),
+                ),
+                **dict.fromkeys(liteparse_reader.media_types, liteparse_reader),
+            },
             reader_id=ReaderId("ext.confluence_dispatch"),
             on_unknown="skip",
         )
@@ -236,4 +243,5 @@ class ConfluenceIngest:
             prune_missing=prune_missing,
             force_update=force_update,
             attachment_filter=att_filter,
+            liteparse_params=cfg,
         )

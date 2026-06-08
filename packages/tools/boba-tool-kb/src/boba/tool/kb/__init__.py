@@ -14,6 +14,10 @@ from boba.tool.kb.confluence.fetch import (
     ConfluenceFetchPageConfig,
     confluence_fetch_page,
 )
+from boba.tool.kb.confluence.fetch_attachment import (
+    ConfluenceFetchAttachmentConfig,
+    confluence_fetch_attachment,
+)
 from boba.tool.kb.confluence.grep_page import (
     ConfluenceGrepPageConfig,
     confluence_grep_page,
@@ -55,6 +59,7 @@ __all__ = [
     "ConfluenceConnection",
     "ConfluenceDocIngestConfig",
     "ConfluenceDownloadConfig",
+    "ConfluenceFetchAttachmentConfig",
     "ConfluenceFetchPageConfig",
     "ConfluenceGrepPageConfig",
     "ConfluenceIngestConfig",
@@ -70,6 +75,7 @@ __all__ = [
     "PostgresStoreSchema",
     "confluence_doc_ingest",
     "confluence_download",
+    "confluence_fetch_attachment",
     "confluence_fetch_page",
     "confluence_grep_page",
     "confluence_ingest_cql",

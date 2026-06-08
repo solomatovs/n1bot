@@ -244,7 +244,7 @@ def test_golden_jsonl_tool_result_ready() -> None:
     golden = (
         '{"type":"ToolResultReady",'
         '"request_id":"00000000-0000-0000-0000-000000000001",'
-        '"call":{"id":"c1","name":"search","args":{"q":"x"}},'
+        '"call":{"id":"c1","type":"function","name":"search","args":{"q":"x"}},'
         '"result":{"result":'
         '{"kind":"text","text":"hello","metadata":{"src":"t"}}}}'
     )

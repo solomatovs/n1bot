@@ -91,6 +91,14 @@ class SectionKeys:
         decode=str,
         encode=str,
     )
+    PAGE_NUMBER: ClassVar[MetadataKey[int]] = MetadataKey(
+        name="section.page_number",
+        decode=int,
+        encode=str,
+    )
+    """Номер страницы/листа источника (1-based) — локус цитирования для
+    постранично читаемых форматов (PDF/docx/xlsx). Для форматов без
+    страниц отсутствует."""
 
 
 @dataclass(frozen=True)

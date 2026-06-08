@@ -15,8 +15,10 @@ from io import BytesIO
 from boba.indexing import (
     Metadata,
     RawDocument,
+    ReaderKeys,
     SourceId,
     Transport,
+    TransportKeys,
 )
 from boba.tool.kb.confluence.models import AttachmentInfo, ConfluenceKeys
 from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
@@ -124,6 +126,22 @@ def test_make_attachment_request_propagates_parent_metadata() -> None:
     assert req.metadata.get(ConfluenceKeys.SPACE_KEY) == "DEMO"
     assert req.metadata.get(ConfluenceKeys.ANCESTORS_TITLES) == ("Root", "Parent")
     assert req.metadata.get(ConfluenceKeys.ATTACHMENT_INFO) == _ATT1
+
+
+def test_make_attachment_request_presets_content_type_and_title() -> None:
+    """CONTENT_TYPE = authoritative media_type, PAGE_TITLE = имя файла.
+
+    По CONTENT_TYPE DispatchReader роутит вложение в LiteParseReader, по
+    PAGE_TITLE поиск показывает имя файла. media_type берём из самого
+    attachment (Confluence JSON), не из заголовка ответа.
+    """
+    req = ConfluenceRest.make_attachment_request(
+        base_url="https://confl.example.com/wiki",
+        parent_metadata=_parent_meta(),
+        attachment=_ATT2,
+    )
+    assert req.metadata.get(TransportKeys.CONTENT_TYPE) == "application/pdf"
+    assert req.metadata.get(ReaderKeys.PAGE_TITLE) == "spec.pdf"
 
 
 def test_make_attachment_request_handles_missing_parent_fields() -> None:

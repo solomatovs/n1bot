@@ -14,13 +14,14 @@ def _decode(content: str = "", **fields: object) -> AssistantMessage:
 
 
 def test_single_object_remapped() -> None:
-    content = json.dumps({"function": "search", "args": {"q": "x"}})
+    content = json.dumps({"name": "search", "arguments": {"q": "x"}})
     out = _decode(content)
 
     assert out.content == ""
     assert len(out.tool_calls) == 1
     call = out.tool_calls[0]
     assert call.name == "search"
+    assert call.type == "function"
     assert call.args == {"q": "x"}
     assert call.id
 
@@ -28,14 +29,24 @@ def test_single_object_remapped() -> None:
 def test_array_remapped_in_order() -> None:
     content = json.dumps(
         [
-            {"function": "a", "args": {"x": 1}},
-            {"function": "b", "args": {}},
+            {"name": "a", "arguments": {"x": 1}},
+            {"name": "b", "arguments": {}},
         ]
     )
     out = _decode(content)
 
     assert [c.name for c in out.tool_calls] == ["a", "b"]
     assert out.content == ""
+
+
+def test_missing_arguments_coerced_to_empty() -> None:
+    """Элемент без arguments — не ошибка: arguments коэрсится в {} (ленивый протокол)."""
+    content = json.dumps({"name": "search"})
+    out = _decode(content)
+
+    assert len(out.tool_calls) == 1
+    assert out.tool_calls[0].name == "search"
+    assert out.tool_calls[0].args == {}
 
 
 def test_invalid_json_is_untouched() -> None:
@@ -52,20 +63,27 @@ def test_object_without_protocol_fields_untouched() -> None:
     assert out is message
 
 
-def test_args_not_object_untouched() -> None:
+def test_args_not_object_becomes_decode_failure() -> None:
+    """arguments не dict/не пусто -> ToolCallDecodeFailure (модель звала функцию,
+    но передала аргументы некорректно). content при этом очищается."""
     message = AssistantMessage(
-        content=json.dumps({"function": "search", "args": "x"}),
+        content=json.dumps({"name": "search", "arguments": "x"}),
     )
     out = ToolCallFromContentFallback().decode(message, model="m")
 
-    assert out is message
+    assert out is not message
+    assert out.content == ""
+    assert out.tool_calls == ()
+    assert len(out.tool_call_decode_failures) == 1
+    assert out.tool_call_decode_failures[0].name == "search"
 
 
-def test_partially_valid_array_is_all_or_nothing() -> None:
+def test_non_protocol_element_rejects_whole_array() -> None:
+    """Элемент без name — это не tool-call: вся пачка отвергается (all-or-nothing)."""
     content = json.dumps(
         [
-            {"function": "a", "args": {}},
-            {"function": "b"},  # без args — ломает всю пачку
+            {"name": "a", "arguments": {}},
+            {"foo": "bar"},  # нет name — не по протоколу, рубит всю пачку
         ]
     )
     message = AssistantMessage(content=content)
@@ -76,7 +94,7 @@ def test_partially_valid_array_is_all_or_nothing() -> None:
 
 def test_native_tool_calls_present_skips_fallback() -> None:
     message = AssistantMessage(
-        content=json.dumps({"function": "search", "args": {}}),
+        content=json.dumps({"name": "search", "arguments": {}}),
         tool_calls=(ToolCall(id="c1", type="function", name="native", args={}),),
     )
     out = ToolCallFromContentFallback().decode(message, model="m")

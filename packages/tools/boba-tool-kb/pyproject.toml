@@ -18,6 +18,7 @@ dependencies = [
     "boba-text",
     "boba-html",
     "boba-kbdoc",
+    "boba-liteparse",
     "boba-openai",
     # CLI confluence.download использует FsWorkspaceShell из boba.agent.workspace_fs
     "boba-agent",

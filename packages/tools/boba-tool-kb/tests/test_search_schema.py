@@ -15,6 +15,8 @@ _META_COLUMNS = {
     "page_title",
     "source_url",
     "parent_url",
+    "doc_type",
+    "page",
     "anchor",
     "page_id",
     "version",
