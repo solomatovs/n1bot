@@ -149,7 +149,7 @@ def test_current_request_id_keeps_full_tool_chain():
 
 
 def test_old_request_id_without_answer_keeps_only_user_message():
-    """Прошлый request_id без AnswerMessage → assistant не добавляется."""
+    """Прошлый request_id без AnswerMessage -> assistant не добавляется."""
     history = InMemoryHistoryService()
     rid_old = new_request_id()
     rid_new = new_request_id()
@@ -206,7 +206,7 @@ def test_window_shifts_to_nearest_user_when_border_breaks_pair():
         _TurnRecorder.record(history, rid, query=f"q{index}", answer=f"a{index}")
 
     # 6 сообщений: u0, a0, u1, a1, u2, a2.
-    # max_messages=3 → срез [a1, u2, a2] → сдвиг до u2 → [u2, a2].
+    # max_messages=3 -> срез [a1, u2, a2] -> сдвиг до u2 -> [u2, a2].
     view = CompactHistoryDialogView(history, max_messages=3)
     assert _summarize(list(view.dialog_message_iter())) == [
         ("user", "q2"),
@@ -232,8 +232,8 @@ def test_window_drops_orphan_tool_result_in_current_request():
     )
 
     # Полный список: u-old, a-old, u-new, a-new(+tool_call), tool_result
-    # max_messages=2 → срез [a-new(+tool_call), tool_result] → нет UserMessage
-    # → пустой результат.
+    # max_messages=2 -> срез [a-new(+tool_call), tool_result] -> нет UserMessage
+    # -> пустой результат.
     view = CompactHistoryDialogView(history, max_messages=2)
     assert _summarize(list(view.dialog_message_iter())) == []
 

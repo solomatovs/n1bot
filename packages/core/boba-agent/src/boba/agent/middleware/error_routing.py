@@ -24,10 +24,10 @@ from boba.patterns import StreamSource
 class AgentErrorRouter:
     """Маршрутизирует RoutableError по маркерам.
 
-    Любое выпущенное `UserFeedbackError` авто-обогащается контекстом из
-    самого исключения: HTTP-статус и цепочка `__cause__`/`__context__`
+    Любое выпущенное UserFeedbackError авто-обогащается контекстом из
+    самого исключения: HTTP-статус и цепочка __cause__/__context__
     подкладываются в событие, чтобы автору ошибки не нужно было
-    плумбить эти подробности вручную через свой `to_user_feedback`.
+    плумбить эти подробности вручную через свой to_user_feedback.
     """
 
     def route(
@@ -52,8 +52,8 @@ def _enrich_with_error_context(
 ) -> AgentEvent:
     """Прокинуть status_code + cause_chain из exc в event (если событие — ошибка).
 
-    Перегоняем через `model_validate`, чтобы переиграть `_derive` подкласса
-    и пересобрать `body` через `compose_error_body` с подмешанными
+    Перегоняем через model_validate, чтобы переиграть _derive подкласса
+    и пересобрать body через compose_error_body с подмешанными
     деталями. На не-error событиях — no-op.
     """
     if not isinstance(event, (TerminalEvent, AdvisoryEvent)):

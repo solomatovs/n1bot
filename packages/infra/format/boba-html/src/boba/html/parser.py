@@ -1,42 +1,42 @@
-"""HTML AST-парсер: HTML-text → типизированные `Section`.
+"""HTML AST-парсер: HTML-text -> типизированные Section.
 
-Использует `lxml` для AST-парсинга; offset-tracking — line-precision через
-`Element.sourceline` плюс предупреждённые line-offsets исходного текста.
+Использует lxml для AST-парсинга; offset-tracking — line-precision через
+Element.sourceline плюс предупреждённые line-offsets исходного текста.
 
 Каждый top-level structural-блок становится конкретным наследником
-`boba.indexing.Section[str]`:
+boba.indexing.Section[str]:
 
-- `<h1>..<h6>`        → `HeadingSection`
-- `<p>`               → `ParagraphSection`
-- `<ul>`/`<ol>`       → `HtmlListSection`
-- `<table>`           → `HtmlTableSection`
-- `<pre><code>`       → `HtmlCodeBlockSection`
-- `<blockquote>`      → `HtmlBlockquoteSection`
-- `<hr>`              → `HtmlHorizontalRuleSection`
+- <h1>..<h6>        -> HeadingSection
+- <p>               -> ParagraphSection
+- <ul>/<ol>       -> HtmlListSection
+- <table>           -> HtmlTableSection
+- <pre><code>       -> HtmlCodeBlockSection
+- <blockquote>      -> HtmlBlockquoteSection
+- <hr>              -> HtmlHorizontalRuleSection
 
-**Wrapper-теги** (`<div>`, `<section>`, `<article>`, `<main>`, `<aside>`,
-`<header>`, `<footer>`, `<nav>`) рассматриваются как прозрачные — парсер
+**Wrapper-теги** (<div>, <section>, <article>, <main>, <aside>,
+<header>, <footer>, <nav>) рассматриваются как прозрачные — парсер
 рекурсивно обходит их детей.
 
-**Noise-теги** (`<script>`, `<style>`) удаляются до обхода.
+**Noise-теги** (<script>, <style>) удаляются до обхода.
 
-**Контракт offset-tracking** (line-precision): для любой Section `s`
-парсер кладёт в её `metadata` `SectionKeys.LOCATION_START/END`,
+**Контракт offset-tracking** (line-precision): для любой Section s
+парсер кладёт в её metadata SectionKeys.LOCATION_START/END,
 указывающие на строки исходника где находится соответствующий блок.
 Точность — границы строк (lxml не даёт column-offset).
 
-**Section.content** — HTML-сериализация элемента (через `etree.tostring`),
-а не прямой срез `text[start:end]`. Причина: при line-precision tracking'е
+**Section.content** — HTML-сериализация элемента (через etree.tostring),
+а не прямой срез text[start:end]. Причина: при line-precision tracking'е
 несколько блоков на одной строке исходника имеют одинаковый range, и
 прямой срез захватил бы sibling'ов. Сериализация AST даёт чистый
 per-element HTML после noise-stripping'а. Slice-инвариант
-`text[loc.start:loc.end] == content` для HTML НЕ выполняется — `LOCATION_*`
-указывает «где это в source», `content` несёт «что это».
+text[loc.start:loc.end] == content для HTML НЕ выполняется — LOCATION_*
+указывает «где это в source», content несёт «что это».
 
-Inline-форматирование (`<strong>`/`<em>`/`<a>`/`<code>`-внутри-параграфа)
-НЕ разворачивается в отдельные секции — остаётся в `content` как HTML-syntax.
+Inline-форматирование (<strong>/<em>/<a>/<code>-внутри-параграфа)
+НЕ разворачивается в отдельные секции — остаётся в content как HTML-syntax.
 
-Зависимость: `lxml` (обязательная — пакет без неё не работает).
+Зависимость: lxml (обязательная — пакет без неё не работает).
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ _ParseResult = Section[str] | None
 
 
 def slugify(text: str) -> str | None:
-    """`Foo Bar! 123` → `foo-bar-123`. Возвращает `None` для пустого результата."""
+    """Foo Bar! 123 -> foo-bar-123. Возвращает None для пустого результата."""
     s = text.strip().lower().replace(" ", "-")
     s = _NONALNUM.sub("", s)
     s = s.strip("-")
@@ -108,7 +108,7 @@ def slugify(text: str) -> str | None:
 
 
 def _compute_line_offsets(text: str) -> list[int]:
-    """Префиксные char-offset'ы каждой строки `text` (включая виртуальную
+    """Префиксные char-offset'ы каждой строки text (включая виртуальную
     строку после последней — для half-open-range).
     """
     offsets = [0]
@@ -136,7 +136,7 @@ def _with_location(
 
 
 def _tag_name(el: _Element) -> str | None:
-    """Lower-case-имя элемента, или `None` если это comment / PI / иное."""
+    """Lower-case-имя элемента, или None если это comment / PI / иное."""
     return el.tag.lower() if isinstance(el.tag, str) else None
 
 
@@ -147,7 +147,7 @@ def _text_content(el: _Element) -> str:
 
 
 def _attr_class(el: _Element) -> str:
-    """`class`-атрибут, нормализованный в строку."""
+    """class-атрибут, нормализованный в строку."""
     cls = el.get("class")
     return cls if isinstance(cls, str) else ""
 
@@ -157,7 +157,7 @@ def _serialize(el: _Element) -> str:
 
     После noise-stripping'а (drop_tree script/style) сериализация даёт
     чистый HTML без вырезанных тегов; в отличие от прямого среза
-    `text[start:end]` который при line-precision tracking может захватить
+    text[start:end] который при line-precision tracking может захватить
     sibling-элементы лежащие на той же строке.
     """
     out = lxml_etree.tostring(el, method="html", encoding="unicode")
@@ -167,9 +167,9 @@ def _serialize(el: _Element) -> str:
 def _inline_markdown(el: _Element) -> str:
     """Markdown-версия inline-контента элемента: bold/italic/links/code.
 
-    Если `markdownify` не установлен (опц. dep `boba-html[markdown]`) —
+    Если markdownify не установлен (опц. dep boba-html[markdown]) —
     fallback на plain-text. inline-контент: содержимое одного блочного тега
-    (`<p>`, `<blockquote>`) без обрамляющего открывающего/закрывающего тега.
+    (<p>, <blockquote>) без обрамляющего открывающего/закрывающего тега.
     """
     if _markdownify is None:
         return _text_content(el)
@@ -179,7 +179,7 @@ def _inline_markdown(el: _Element) -> str:
 
 
 def _serialize_inner(el: _Element) -> str:
-    """Inner HTML элемента (без обрамляющего тега самого `el`)."""
+    """Inner HTML элемента (без обрамляющего тега самого el)."""
     parts: list[str] = []
     if el.text:
         parts.append(el.text)
@@ -200,7 +200,7 @@ class _ParseContext:
     base_metadata: Metadata
 
     def line_to_offset(self, line: int) -> int:
-        """1-based line number → char-offset начала строки."""
+        """1-based line number -> char-offset начала строки."""
         idx = line - 1
         if idx < 0:
             return 0
@@ -213,9 +213,9 @@ class _ParseContext:
         start_line: int,
         end_line: int | None,
     ) -> tuple[int, int]:
-        """1-based `[start_line, end_line)` → `(start_offset, end_offset)`.
+        """1-based [start_line, end_line) -> (start_offset, end_offset).
 
-        Если `end_line` is None — диапазон до конца текста. Trailing
+        Если end_line is None — диапазон до конца текста. Trailing
         whitespace/newline отбрасывается.
         """
         start = self.line_to_offset(start_line)
@@ -230,10 +230,10 @@ class _ParseContext:
 
 
 class HtmlSectionParser:
-    """Парсит HTML в поток `Section[str]` с line-precision offset-tracking.
+    """Парсит HTML в поток Section[str] с line-precision offset-tracking.
 
-    Использует `lxml` для AST. Каждый top-level structural-блок →
-    соответствующий `Section`-наследник; wrapper-теги (`<div>`/`<section>`/...)
+    Использует lxml для AST. Каждый top-level structural-блок ->
+    соответствующий Section-наследник; wrapper-теги (<div>/<section>/...)
     транзитивно обходятся.
     """
 
@@ -244,10 +244,10 @@ class HtmlSectionParser:
         source_id: SourceId,
         base_metadata: Metadata,
     ) -> Iterable[Section[str]]:
-        """Парсит `text` в поток `Section`-ов.
+        """Парсит text в поток Section-ов.
 
-        `source_id` и `base_metadata` копируются в каждую эмитированную секцию.
-        `order` присваивается монотонно по document-order.
+        source_id и base_metadata копируются в каждую эмитированную секцию.
+        order присваивается монотонно по document-order.
         """
         if not text.strip():
             return
@@ -275,7 +275,7 @@ class HtmlSectionParser:
 
     @staticmethod
     def _find_body(root: _Element) -> _Element | None:
-        """Найти `<body>`; fallback — root, если он сам структурный."""
+        """Найти <body>; fallback — root, если он сам структурный."""
         if _tag_name(root) == "body":
             return root
         body = root.find(".//body")

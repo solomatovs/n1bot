@@ -1,4 +1,4 @@
-"""Порт `UserCatalog` + FS-реализация поверх `users.json` в WorkspaceShell."""
+"""Порт UserCatalog + FS-реализация поверх users.json в WorkspaceShell."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class UserCatalog(ABC):
 
 
 class FsUserCatalog(UserCatalog):
-    """JSON-файл `{identifier -> StoredUser}` внутри `WorkspaceShell`."""
+    """JSON-файл {identifier -> StoredUser} внутри WorkspaceShell."""
 
     _DEFAULT_FILENAME: ClassVar[str] = "users.json"
 

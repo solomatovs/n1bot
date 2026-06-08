@@ -2,26 +2,26 @@
 
 Что делает:
 
-1. `apply_bootstrap` — применяет все `migrations/*.sql` в alphabetical
+1. apply_bootstrap — применяет все migrations/*.sql в alphabetical
    order (CREATE EXTENSION/TABLE/INDEX IF NOT EXISTS — идемпотентно).
-2. `ensure_vector_index` — создаёт HNSW-индекс на `embedding::vector(N)`,
-   где `N` = `embedder.dim()` (lazy probe реальной модели через
+2. ensure_vector_index — создаёт HNSW-индекс на embedding::vector(N),
+   где N = embedder.dim() (lazy probe реальной модели через
    embeddings API).
 
 Когда запускать:
 
-- Один раз после первого `docker compose up postgres`.
+- Один раз после первого docker compose up postgres.
 - Повторно после смены embedding-модели, если у новой другая dim'а
   (старый индекс остаётся и используется только при возврате к старой
   модели; новый создаётся под новую dim'у).
-- После `git pull` с новой миграцией.
+- После git pull с новой миграцией.
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
         .venv/bin/python -m boba.tool.kb.cli.kb_bootstrap
 
 CLI-флагов нет — всё берётся из конфига оператора
-(`[cli.kb.bootstrap]`).
+([cli.kb.bootstrap]).
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.db.postgres import PostgresConnection
 from boba.settings import bind, build_app_config
-from boba.tool.kb.core.embedding import EmbeddingModel
+from boba.tool.kb.core.embedding import EmbeddingModel, LocalFastEmbedEmbedderFactory
 from boba.tool.kb.core.migrations import Migrations
 from boba.tool.kb.core.postgres import KbPool, PostgresStoreSchema
 
@@ -64,7 +64,7 @@ def main() -> int:
     cfg = bind(config, "cli.kb.bootstrap", KbBootstrapConfig)
 
     pool = KbPool.open(cfg.connection)
-    embedder = cfg.embedding.build()
+    embedder = LocalFastEmbedEmbedderFactory.build(cfg.embedding)
     logger.info(
         "postgres_store schema=%s chunks=%s collections=%s host=%s db=%s",
         cfg.tables.pg_schema,

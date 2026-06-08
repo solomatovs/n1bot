@@ -2,12 +2,12 @@
 
 Покрывает все варианты скачивания одной командой:
 
-- `page_ids=[]` + `only=[]` + `skip=[]` → bulk discovery (`space_type`),
+- page_ids=[] + only=[] + skip=[] -> bulk discovery (space_type),
   per-space loop с агрегированными метриками.
-- `page_ids=[]` + `only=[A, B]` → скачать только указанные space-ключи
-  (skip discovery); `skip` всё ещё применяется как blacklist.
-- `page_ids=[ID1, ID2]` → скачать явные страницы через
-  `ConfluencePagesRequestSource`. `only`/`skip`/`space_type` игнорируются
+- page_ids=[] + only=[A, B] -> скачать только указанные space-ключи
+  (skip discovery); skip всё ещё применяется как blacklist.
+- page_ids=[ID1, ID2] -> скачать явные страницы через
+  ConfluencePagesRequestSource. only/skip/space_type игнорируются
   (warn в лог если заданы).
 
 Применение:
@@ -17,12 +17,12 @@
         [--attachment-media-types application/pdf,image/*]
         [--attachment-titles *.pdf,report-*]
 
-Allowlist-фильтры вложений (`--attachment-media-types`, `--attachment-titles`)
-работают по fnmatch-globs; OR-семантика между списками; пустые → старое
+Allowlist-фильтры вложений (--attachment-media-types, --attachment-titles)
+работают по fnmatch-globs; OR-семантика между списками; пустые -> старое
 поведение (качаются ВСЕ вложения). Отсеянные не запрашиваются по HTTP.
 
 Все параметры (confluence/dest_dir + runner-флаги) лежат в секции
-`[cli.kb.confluence.download]`.
+[cli.kb.confluence.download].
 """
 
 from __future__ import annotations
@@ -32,13 +32,13 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field
 
 from boba.agent.workspace_fs import FsWorkspaceShell
-from boba.indexing import PipelineId
 from boba.settings import StringList, bind, build_app_config
+from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.download import (
     ConfluenceDownloadConfig,
     ConfluenceDownloader,
@@ -59,11 +59,11 @@ logger = logging.getLogger("boba.tool.kb.cli.confluence.download")
 class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
     """Self-contained CLI-конфиг unified HTTP-download runner'а.
 
-    Наследует поля `ConfluenceDownloadConfig` (`confluence`, `dest_dir`)
-    — runner делает то же тело через `ConfluenceDownloader.run`, переключая
-    `RequestSource` по входным фильтрам.
+    Наследует поля ConfluenceDownloadConfig (confluence, dest_dir)
+    — runner делает то же тело через ConfluenceDownloader.run, переключая
+    RequestSource по входным фильтрам.
 
-    Config-секция: `[cli.kb.confluence.download]`.
+    Config-секция: [cli.kb.confluence.download].
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -76,9 +76,7 @@ class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
     only: Annotated[
         StringList,
         Field(
-            description=(
-                "Список space-keys: качать ТОЛЬКО их (skip discovery)"
-            ),
+            description=("Список space-keys: качать ТОЛЬКО их (skip discovery)"),
         ),
     ] = []  # noqa: RUF012 — pydantic-side default, не shared mutable state
 
@@ -110,16 +108,12 @@ class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
     dest_dir: str = Field(
         default="./local/downloads",
         min_length=1,
-        description=(
-            "FS-путь куда писать (создаётся, если не существует)"
-        ),
+        description=("FS-путь куда писать (создаётся, если не существует)"),
     )
 
 
 class ConfluenceDownloadCli:
-    """Operator-логика discovery + per-space loop поверх `ConfluenceDownloader`."""
-
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("cli.confluence.download")
+    """Operator-логика discovery + per-space loop поверх ConfluenceDownloader."""
 
     @staticmethod
     def build_attachment_filter(cfg: ConfluenceDownloadCliConfig) -> AttachmentFilter:
@@ -137,7 +131,8 @@ class ConfluenceDownloadCli:
 
     @staticmethod
     def run_page_ids_mode(
-        cfg: ConfluenceDownloadCliConfig, shell: WorkspaceShell,
+        cfg: ConfluenceDownloadCliConfig,
+        shell: WorkspaceShell,
     ) -> int:
         if cfg.only or cfg.skip:
             logger.warning(
@@ -147,17 +142,17 @@ class ConfluenceDownloadCli:
                 cfg.space_type,
             )
         logger.info(
-            "downloading %d page(s) → %s (as_markdown=%s)",
+            "downloading %d page(s) -> %s (as_markdown=%s)",
             len(cfg.page_ids),
             cfg.dest_dir,
             cfg.as_markdown,
         )
 
+        conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
         source = ConfluencePagesRequestSource(
-            base_url=cfg.confluence.base_url,
-            auth=cfg.confluence.profile.auth.httpx_auth(),
+            base_url=conn.base_url,
             page_ids=list(cfg.page_ids),
-            body_format=cfg.confluence.body_format,
+            body_format=conn.body_format,
         )
 
         att_filter = ConfluenceDownloadCli.build_attachment_filter(cfg)
@@ -166,10 +161,9 @@ class ConfluenceDownloadCli:
             result = ConfluenceDownloader.run(
                 shell=shell,
                 request_source=source,
-                conn=cfg.confluence,
+                conn=conn,
                 dest_dir=cfg.dest_dir,
                 as_markdown=cfg.as_markdown,
-                pipeline_id=ConfluenceDownloadCli.PIPELINE_ID,
                 attachment_filter=att_filter,
             )
         except Exception:
@@ -178,7 +172,7 @@ class ConfluenceDownloadCli:
         elapsed = time.monotonic() - start
 
         logger.info(
-            "DONE in %.1fs — requested=%d saved=%d → %s",
+            "DONE in %.1fs — requested=%d saved=%d -> %s",
             elapsed,
             len(cfg.page_ids),
             result["total"],
@@ -188,15 +182,17 @@ class ConfluenceDownloadCli:
 
     @staticmethod
     def run_spaces_mode(
-        cfg: ConfluenceDownloadCliConfig, shell: WorkspaceShell,
+        cfg: ConfluenceDownloadCliConfig,
+        shell: WorkspaceShell,
     ) -> int:
+        conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
         if cfg.only:
             logger.info("using only=%d space-keys (skip discovery)", len(cfg.only))
             keys: Iterator[str] = iter(cfg.only)
         else:
             logger.info("discovering spaces (type=%s)…", cfg.space_type)
             keys = iter(
-                ConfluencePaginator.discover_spaces(cfg.confluence, cfg.space_type),
+                ConfluencePaginator.discover_spaces(conn, cfg.space_type),
             )
 
         skip_set = set(cfg.skip)
@@ -216,18 +212,17 @@ class ConfluenceDownloadCli:
             processed = i
             space_start = time.monotonic()
             source = ConfluenceSpaceRequestSource(
-                conn=cfg.confluence,
+                conn=conn,
                 space_key=key,
-                body_format=cfg.confluence.body_format,
+                body_format=conn.body_format,
             )
             try:
                 result: dict[str, Any] = ConfluenceDownloader.run(
                     shell=shell,
                     request_source=source,
-                    conn=cfg.confluence,
+                    conn=conn,
                     dest_dir=cfg.dest_dir,
                     as_markdown=cfg.as_markdown,
-                    pipeline_id=ConfluenceDownloadCli.PIPELINE_ID,
                     attachment_filter=att_filter,
                 )
             except Exception:
@@ -242,7 +237,7 @@ class ConfluenceDownloadCli:
             space_saved = int(result.get("total", 0))
             totals["saved"] += space_saved
             logger.info(
-                "[%d] space=%s saved=%d (%.1fs; cum saved=%d failed=%d) → %s",
+                "[%d] space=%s saved=%d (%.1fs; cum saved=%d failed=%d) -> %s",
                 i,
                 key,
                 space_saved,
@@ -258,7 +253,7 @@ class ConfluenceDownloadCli:
 
         elapsed = time.monotonic() - start
         logger.info(
-            "DONE: %d spaces in %.1fs — total saved=%d failed=%d → %s",
+            "DONE: %d spaces in %.1fs — total saved=%d failed=%d -> %s",
             processed,
             elapsed,
             totals["saved"],
@@ -277,7 +272,7 @@ def main() -> int:
     config = build_app_config(sys.argv[1:])
     cfg = bind(config, "cli.kb.confluence.download", ConfluenceDownloadCliConfig)
 
-    # CWD как корень — `dest_dir` интерпретируется shell'ом как обычный
+    # CWD как корень — dest_dir интерпретируется shell'ом как обычный
     # FS-путь (без обёртки workspace_root).
     shell: WorkspaceShell = FsWorkspaceShell(
         workspace_id=WorkspaceId("cli-confluence-download"),

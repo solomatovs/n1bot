@@ -1,10 +1,11 @@
-"""Embedder KB-плагина: конфиг `EmbeddingModel` + бэкенд.
+"""Embedder KB-плагина: конфиг EmbeddingModel + бэкенд.
 
-- `LocalFastEmbedEmbedder` — in-process `Embedder[str]` поверх fastembed
+- LocalFastEmbedEmbedder — in-process Embedder[str] поверх fastembed
   (ONNX runtime, без сети).
-- `EmbeddingModel`         — `BaseModel`-конфиг (профиль local fastembed),
-  встраивается как nested-поле в tool-конфиги. `EmbeddingModel.build()` —
-  factory `Embedder[str]`.
+- EmbeddingModel         — чистый BaseModel-конфиг (профиль local fastembed),
+  встраивается как nested-поле в tool-конфиги.
+- LocalFastEmbedEmbedderFactory — собирает LocalFastEmbedEmbedder из
+  EmbeddingModel (конфиг отдельно от сборки).
 """
 
 from __future__ import annotations
@@ -17,20 +18,24 @@ from pydantic import BaseModel, Field
 
 from boba.indexing.embedder import Embedder
 
-__all__ = ["EmbeddingModel", "LocalFastEmbedEmbedder"]
+__all__ = [
+    "EmbeddingModel",
+    "LocalFastEmbedEmbedder",
+    "LocalFastEmbedEmbedderFactory",
+]
 
 
 class LocalFastEmbedEmbedder(Embedder[str]):
-    """`Embedder[str]` на fastembed TextEmbedding (in-process, ONNX).
+    """Embedder[str] на fastembed TextEmbedding (in-process, ONNX).
 
     Для асимметричных моделей (e5-family) fastembed сам подставляет нужные
-    префиксы: `passage_embed` → "passage: ", `query_embed` → "query: ".
+    префиксы: passage_embed -> "passage: ", query_embed -> "query: ".
     Для симметричных моделей оба метода работают как обычный embed.
     """
 
     _PROBE_INPUT: ClassVar[str] = "dim-probe"
 
-    def __init__(self, model_name: str, cache_dir: str | None = None) -> None:
+    def __init__(self, model_name: str, cache_dir: str) -> None:
         self._model_name = model_name
         self._model = TextEmbedding(
             model_name=model_name,
@@ -39,7 +44,8 @@ class LocalFastEmbedEmbedder(Embedder[str]):
         self._dim: int | None = None
 
     def embed_documents(
-        self, contents: Iterable[str],
+        self,
+        contents: Iterable[str],
     ) -> Iterable[Sequence[float]]:
         for vec in self._model.passage_embed(contents):
             v = vec.tolist()
@@ -80,15 +86,15 @@ class LocalFastEmbedEmbedder(Embedder[str]):
 class EmbeddingModel(BaseModel):
     """Профиль embedding: in-process fastembed (ONNX, local, без сети).
 
-    `BaseModel`, встраивается как nested-поле в tool-конфиги, которым нужно
+    BaseModel, встраивается как nested-поле в tool-конфиги, которым нужно
     строить embeddings (ingest — write-side; search — query-side). В config
-    задаётся как профиль `[embedding.<name>]` и подключается ссылкой
-    `embedding = "${embedding.<name>}"`.
+    задаётся как профиль [embedding.<name>] и подключается ссылкой
+    embedding = "${embedding.<name>}".
 
-    Семантический инвариант (НЕ enforced конфигом): `model` ДОЛЖНА совпадать
+    Семантический инвариант (НЕ enforced конфигом): model ДОЛЖНА совпадать
     между ingest-tools и search-tools, которые пишут/читают одну и ту же
     KB-коллекцию. Иначе ingest положит N-мерный вектор, search будет искать
-    M-мерным → silent break.
+    M-мерным -> silent break.
     """
 
     model: str = Field(
@@ -101,13 +107,18 @@ class EmbeddingModel(BaseModel):
         default="",
         description=(
             "Каталог для HF/ONNX-весов fastembed. "
-            "Пусто → дефолт fastembed (~/.cache/fastembed)."
+            "Пусто -> дефолт fastembed (~/.cache/fastembed)."
         ),
     )
 
-    def build(self) -> Embedder[str]:
-        """Factory `LocalFastEmbedEmbedder` (fastembed/ONNX, in-process)."""
+
+class LocalFastEmbedEmbedderFactory:
+    """Собирает LocalFastEmbedEmbedder из конфига EmbeddingModel."""
+
+    @staticmethod
+    def build(cfg: EmbeddingModel) -> LocalFastEmbedEmbedder:
+        """Создаёт in-process fastembed-эмбеддер по профилю EmbeddingModel."""
         return LocalFastEmbedEmbedder(
-            model_name=self.model,
-            cache_dir=self.cache_dir or None,
+            model_name=cfg.model,
+            cache_dir=cfg.cache_dir,
         )

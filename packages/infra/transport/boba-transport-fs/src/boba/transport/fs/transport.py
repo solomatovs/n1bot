@@ -1,6 +1,6 @@
 """FsTransport — открывает файл и возвращает RawDocument с заполненной metadata.
 
-Lifecycle handle: `with open(path, "rb") as fp: yield RawDocument(handle=fp, ...)`.
+Lifecycle handle: with open(path, "rb") as fp: yield RawDocument(handle=fp, ...).
 Reader должен прочитать handle ДО следующей итерации generator'а — после
 возврата control'а with-блок закроет file.
 """
@@ -12,7 +12,6 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from boba.indexing import (
-    PipelineContext,
     RawDocument,
     Transport,
     TransportKeys,
@@ -27,44 +26,42 @@ _log = logging.getLogger(__name__)
 
 class FsTransport(Transport[FsRequest]):
     """
-    `Transport[FsRequest]`: `FsRequest` → `RawDocument` через `open(path, "rb")`.
+    Transport[FsRequest]: FsRequest -> RawDocument через open(path, "rb").
 
     **Схема**:
-    ```python
-    FsRequest   ──────────────────────FsTransport.stream──→  RawDocument
-        path        : str        ──open──→
-        source_id   : SourceId   ──pass──→                       source_id   (тот же)
-        metadata    : Metadata   ──merge─→                       metadata    (+ TransportKeys.MTIME, FsKeys.SIZE, FsKeys.SUFFIX)
-                                                           →     handle      : BufferedReader  (open; закроется по выходу из stream)
-    ```
+    python
+    FsRequest   ──────────────────────FsTransport.fetch──->  RawDocument
+        path        : str        ──open──->
+        source_id   : SourceId   ──pass──->                       source_id   (тот же)
+        metadata    : Metadata   ──merge─->                       metadata    (+ TransportKeys.MTIME, FsKeys.SIZE, FsKeys.SUFFIX)
+                                                           ->     handle      : BufferedReader  (open; закроется по выходу из fetch)
+    
 
     **Lifecycle handle**:
-    ```python
+    python
     with p.open("rb") as fp:
         yield RawDocument(handle=fp, ...)        # handle жив
     # сюда возвращаемся после next(generator) — fp закрыт
-    ```
-    Reader должен прочитать `handle` ДО следующей итерации, иначе уже
-    закрытый `fp.read()` бросит `ValueError`.
+    
+    Reader должен прочитать handle ДО следующей итерации, иначе уже
+    закрытый fp.read() бросит ValueError.
 
     **Поведение на ошибки**:
-    - файл исчез между листингом и open (`OSError` на `stat`) — warn'аем
+    - файл исчез между листингом и open (OSError на stat) — warn'аем
       и пропускаем (request «съедается», prowadzення продолжается).
-    - суффикс приводится к `lower()`; пустой → `"bin"`.
+    - суффикс приводится к lower(); пустой -> "bin".
 
     **Пример**:
-    ```python
+    python
     transport = FsTransport()
-    requests = iter([
-        FsRequest(
-            path="/abs/note.md",
-            source_id=SourceId("fs:/abs/note.md"),
-            metadata=Metadata.empty().set(FsKeys.PATH, "/abs/note.md"),
-        ),
-    ])
+    request = FsRequest(
+        path="/abs/note.md",
+        source_id=SourceId("fs:/abs/note.md"),
+        metadata=Metadata.empty().set(FsKeys.PATH, "/abs/note.md"),
+    )
 
-    # 1 FsRequest → 1 открытый RawDocument; handle живёт до перехода к следующему.
-    raw = next(iter(transport.stream(ctx, requests)))
+    # 1 FsRequest -> 1 открытый RawDocument; handle живёт до перехода к следующему.
+    raw = next(iter(transport.fetch(request)))
     raw == RawDocument(
         handle=<BufferedReader name='/abs/note.md'>,   # новое: открытый file descriptor
         source_id=SourceId("fs:/abs/note.md"),         # pass из FsRequest
@@ -76,21 +73,15 @@ class FsTransport(Transport[FsRequest]):
             .set(FsKeys.SUFFIX, "md")                  # новое от Transport (lower-case extension)
         ),
     )
-    raw.handle.read()  # → b"# Note\\n..."
-    ```
+    raw.handle.read()  # -> b"# Note\\n..."
+    
     """  # noqa: E501
 
-    def name(self) -> str:
-        return "FsTransport"
-
-    def stream(
+    def fetch(
         self,
-        ctx: PipelineContext,
-        stream: Iterable[FsRequest],
+        request: FsRequest,
     ) -> Iterable[RawDocument]:
-        del ctx
-        for req in stream:
-            yield from self._open_one(req)
+        yield from self._open_one(request)
 
     @staticmethod
     def _open_one(req: FsRequest) -> Iterable[RawDocument]:

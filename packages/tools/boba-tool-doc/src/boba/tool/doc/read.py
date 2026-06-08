@@ -32,9 +32,9 @@ def read_document(
 ) -> TextResult:
     """Распарсить документ из workspace и вернуть весь извлечённый текст.
 
-    Текст обрезается до `max_text_chars` (default 200_000); число страниц
-    и факт обрезки — в `metadata`. Для выбора конкретных страниц используй
-    `read_pages`, для обзора структуры — `document_outline`.
+    Текст обрезается до max_text_chars (default 200_000); число страниц
+    и факт обрезки — в metadata. Для выбора конкретных страниц используй
+    read_pages, для обзора структуры — document_outline.
     """
     data = DocEngine.read_bytes(shell, path)
     result = DocEngine.parse(cfg, data, path)

@@ -1,22 +1,11 @@
-"""HttpTransport: streaming HTTP → RawDocument c пробросом source_id + metadata."""
+"""HttpTransport: чистый HTTP-исполнитель -> HttpResponse (status/headers/stream)."""
 
 from __future__ import annotations
 
 import httpx
+import pytest
 
-from boba.indexing import Metadata, SourceId, TransportKeys
-from boba.indexing.context import PipelineContext, PipelineId
-from boba.transport.http import (
-    BasicAuth,
-    HttpConnection,
-    HttpKeys,
-    HttpRequest,
-    HttpTransport,
-)
-
-
-def _ctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("t"))
+from boba.transport.http import BasicAuth, HttpProfile, HttpRequest, HttpTransport
 
 
 def _patch(monkeypatch, handler):
@@ -29,32 +18,23 @@ def _patch(monkeypatch, handler):
     monkeypatch.setattr("boba.transport.http.transport.httpx.Client", mock_client)
 
 
-def test_yields_raw_document_propagates_source_id_and_metadata(monkeypatch):
+def test_returns_status_headers_and_body(monkeypatch):
     def handler(_req):
         return httpx.Response(200, content=b"hello body", headers={"etag": '"v1"'})
 
     _patch(monkeypatch, handler)
 
-    requests = [
-        HttpRequest(
-            url="https://x.test/rest/api/content/12345?expand=...",
-            source_id=SourceId("https://x.test/pages/viewpage.action?pageId=12345"),
-            metadata=Metadata.from_wire({"page_id": "12345"}),
-        )
-    ]
-    seen = []
-    for doc in HttpTransport(HttpConnection()).stream(_ctx(), iter(requests)):
-        seen.append((doc.source_id, doc.metadata, doc.handle.read()))
-    sid, md, payload = seen[0]
-    # source_id берётся ИЗ Request'а, не из response.url
-    assert sid == "https://x.test/pages/viewpage.action?pageId=12345"
-    assert md.to_wire()["page_id"] == "12345"
-    assert md.get(TransportKeys.ETAG) == "v1"
-    assert md.get(HttpKeys.STATUS) == 200
-    assert payload == b"hello body"
+    with (
+        HttpTransport(HttpProfile()) as transport,
+        transport.fetch(HttpRequest(url="https://x.test/doc")) as resp,
+    ):
+        # заголовки отдаются сырыми; обогащение/strip — забота потребителя
+        assert resp.status == 200
+        assert resp.headers["etag"] == '"v1"'
+        assert resp.stream.read() == b"hello body"
 
 
-def test_handle_streams_in_chunks(monkeypatch):
+def test_stream_reads_in_chunks(monkeypatch):
     payload = b"a" * 5000
 
     def handler(_req):
@@ -62,22 +42,13 @@ def test_handle_streams_in_chunks(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    chunks = []
-    for doc in HttpTransport(HttpConnection()).stream(
-        _ctx(),
-        iter(
-            [
-                HttpRequest(
-                    url="https://x.test/big",
-                    source_id=SourceId("https://x.test/big"),
-                )
-            ]
-        ),
+    with (
+        HttpTransport(HttpProfile()) as transport,
+        transport.fetch(HttpRequest(url="https://x.test/big")) as resp,
     ):
-        chunks.append(doc.handle.read(100))
-        chunks.append(doc.handle.read(100))
-        chunks.append(doc.handle.read())
-    chunk1, chunk2, rest = chunks
+        chunk1 = resp.stream.read(100)
+        chunk2 = resp.stream.read(100)
+        rest = resp.stream.read()
     assert len(chunk1) == 100
     assert len(chunk2) == 100
     assert len(rest) == 5000 - 200
@@ -96,20 +67,17 @@ def test_retry_recovers_after_5xx(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    seen = list(
-        HttpTransport(
-            HttpConnection(retry_attempts=3, retry_backoff_sec=0),
-        ).stream(
-            _ctx(),
-            iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
-        )
-    )
+    with (
+        HttpTransport(HttpProfile(retry_attempts=3, retry_backoff_sec=0)) as transport,
+        transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
+    ):
+        body = resp.stream.read()
     assert calls["n"] == 3
-    assert seen[0].handle.read() == b"ok"
+    assert body == b"ok"
 
 
 def test_retry_exhausted_raises_last_5xx(monkeypatch):
-    """Все попытки 5xx исчерпаны → пробрасывается HTTPStatusError."""
+    """Все попытки 5xx исчерпаны -> пробрасывается HTTPStatusError."""
     calls = {"n": 0}
 
     def handler(_req):
@@ -118,20 +86,13 @@ def test_retry_exhausted_raises_last_5xx(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    try:
-        list(
-            HttpTransport(
-                HttpConnection(retry_attempts=2, retry_backoff_sec=0),
-            ).stream(
-                _ctx(),
-                iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
-            )
-        )
-    except httpx.HTTPStatusError as e:
-        assert e.response.status_code == 500  # noqa: PT017
-    else:
-        raise AssertionError("ожидался HTTPStatusError")
+    transport = HttpTransport(HttpProfile(retry_attempts=2, retry_backoff_sec=0))
+    with pytest.raises(httpx.HTTPStatusError) as exc:  # noqa: PT012
+        with transport.fetch(HttpRequest(url="https://x.test/y")):
+            pass
+    assert exc.value.response.status_code == 500
     assert calls["n"] == 2
+    transport.close()
 
 
 def test_4xx_not_retried(monkeypatch):
@@ -144,24 +105,17 @@ def test_4xx_not_retried(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    try:
-        list(
-            HttpTransport(
-                HttpConnection(retry_attempts=3, retry_backoff_sec=0),
-            ).stream(
-                _ctx(),
-                iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
-            )
-        )
-    except httpx.HTTPStatusError as e:
-        assert e.response.status_code == 404  # noqa: PT017
-    else:
-        raise AssertionError("ожидался HTTPStatusError")
+    transport = HttpTransport(HttpProfile(retry_attempts=3, retry_backoff_sec=0))
+    with pytest.raises(httpx.HTTPStatusError) as exc:  # noqa: PT012
+        with transport.fetch(HttpRequest(url="https://x.test/y")):
+            pass
+    assert exc.value.response.status_code == 404
     assert calls["n"] == 1
+    transport.close()
 
 
 def test_auth_from_profile_applied_to_client(monkeypatch):
-    """HttpTransport применяет auth из профиля (`make_client`) к httpx.Client."""
+    """HttpTransport применяет auth из профиля к httpx.Client."""
     seen_headers = {}
 
     def handler(req):
@@ -170,20 +124,12 @@ def test_auth_from_profile_applied_to_client(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    profile = HttpConnection(auth=BasicAuth(method="basic", user="u", password="p"))
-    list(
-        HttpTransport(profile).stream(
-            _ctx(),
-            iter(
-                [
-                    HttpRequest(
-                        url="https://x.test/y",
-                        source_id=SourceId("https://x.test/y"),
-                    )
-                ]
-            ),
-        )
-    )
+    profile = HttpProfile(auth=BasicAuth(method="basic", user="u", password="p"))
+    with (
+        HttpTransport(profile) as transport,
+        transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
+    ):
+        resp.stream.read()
     # httpx.BasicAuth добавляет header через auth_flow поверх client'а.
     assert "authorization" in seen_headers
     assert seen_headers["authorization"].lower().startswith("basic ")

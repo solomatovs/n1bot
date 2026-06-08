@@ -1,4 +1,4 @@
-"""KbDocReader: строгий плоский `key: value` header + обязательные поля."""
+"""KbDocReader: строгий плоский key: value header + обязательные поля."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def make_raw_doc() -> Callable[..., RawDocument]:
 def test_valid_header_maps_to_metadata(
     make_raw_doc: Callable[..., RawDocument],
 ) -> None:
-    sections = list(KbDocReader().convert(make_raw_doc(_VALID)))
+    sections = list(KbDocReader().read(make_raw_doc(_VALID)))
 
     assert len(sections) == 1
     sec = sections[0]
@@ -76,14 +76,14 @@ def test_missing_required_field_raises(
         line for line in _VALID.splitlines() if not line.startswith(f"{key}:")
     )
     with pytest.raises(KbDocFormatError) as exc:
-        list(KbDocReader().convert(make_raw_doc(text)))
+        list(KbDocReader().read(make_raw_doc(text)))
     assert key in exc.value.missing
 
 
 def test_no_separator_is_invalid(make_raw_doc: Callable[..., RawDocument]) -> None:
     text = "source: https://x\ntitle: T\npage_id: 1\nspace: S\nbody without separator"
     with pytest.raises(KbDocFormatError):
-        list(KbDocReader().convert(make_raw_doc(text)))
+        list(KbDocReader().read(make_raw_doc(text)))
 
 
 def test_empty_body_is_invalid(make_raw_doc: Callable[..., RawDocument]) -> None:
@@ -91,14 +91,14 @@ def test_empty_body_is_invalid(make_raw_doc: Callable[..., RawDocument]) -> None
         "source: https://x\ntitle: T\npage_id: 1\nspace: S\n---\n"
     )
     with pytest.raises(KbDocFormatError):
-        list(KbDocReader().convert(make_raw_doc(text)))
+        list(KbDocReader().read(make_raw_doc(text)))
 
 
 def test_optional_fields_absent_ok(make_raw_doc: Callable[..., RawDocument]) -> None:
     text = (
         "source: https://x\ntitle: T\npage_id: 1\nspace: S\n---\nbody\n"
     )
-    sections = list(KbDocReader().convert(make_raw_doc(text)))
+    sections = list(KbDocReader().read(make_raw_doc(text)))
     assert len(sections) == 1
     assert sections[0].tags == frozenset()
 

@@ -1,4 +1,4 @@
-"""`@tool` и `@provides` декораторы — навешивают метаданные на объекты.
+"""@tool и @provides декораторы — навешивают метаданные на объекты.
 
 Это **дешёвые** декораторы: просто проставляют sentinel-атрибуты, чтобы
 framework на этапе registration plugin'а мог отличить tool от обычного
@@ -6,7 +6,7 @@ class'а и service factory от обычной функции.
 
 Никаких побочных эффектов на момент декорирования — введение и разбор
 сигнатуры (build of pydantic args model, DI plan) случается **позже**,
-при регистрации в `ToolBuilder`. Это позволяет писать декорации в
+при регистрации в ToolBuilder. Это позволяет писать декорации в
 module-scope без heavy startup overhead.
 """
 
@@ -32,9 +32,9 @@ _TOOL_MARKER = "__tool__"
 """Атрибут-маркер: класс/функция помечена как tool."""
 
 _TOOL_NAME_MARKER = "__tool_name__"
-"""Атрибут-маркер: wire-имя tool'а. Проставляется `@tool` единожды при
-декорировании — либо явное из `@tool(name=...)`, либо производное от
-`__name__`. `tool_name()` потом только читает его."""
+"""Атрибут-маркер: wire-имя tool'а. Проставляется @tool единожды при
+декорировании — либо явное из @tool(name=...), либо производное от
+__name__. tool_name() потом только читает его."""
 
 _PROVIDES_SCOPE_MARKER = "__provides_scope__"
 """Атрибут-маркер: функция помечена как service provider; значение — Scope."""
@@ -63,13 +63,13 @@ def tool(
     """
     Пометить class или function как tool
 
-    Класс должен иметь `__call__(self, ...)`
+    Класс должен иметь __call__(self, ...)
     Функция используется как есть
 
     Wire-имя tool (как его увидит LLM) вычисляется здесь единожды и кладётся
-    в маркер; дальше его читает `tool_name()`:
-    - если задан `@tool(name="...")` — используется он;
-    - иначе — `obj.__name__` для функций и `type(obj).__name__` для классов/инстансов
+    в маркер; дальше его читает tool_name():
+    - если задан @tool(name="...") — используется он;
+    - иначе — obj.__name__ для функций и type(obj).__name__ для классов/инстансов
 
     Описание для LLM — из docstring класса/функции.
     """
@@ -121,25 +121,25 @@ def provides(
 
 
 def is_tool(obj: object) -> bool:
-    """True если объект помечен `@tool`."""
+    """True если объект помечен @tool."""
     return getattr(obj, _TOOL_MARKER, False) is True
 
 
 def is_provider(obj: object) -> bool:
-    """True если объект помечен `@provides`."""
+    """True если объект помечен @provides."""
     return hasattr(obj, _PROVIDES_SCOPE_MARKER)
 
 
 def provider_scope(obj: object) -> Scope:
-    """`Scope` provider'а; падает `AttributeError`, если объект не provider."""
+    """Scope provider'а; падает AttributeError, если объект не provider."""
     return getattr(obj, _PROVIDES_SCOPE_MARKER)
 
 
 def tool_name(obj: object) -> str:
-    """Единственный источник wire-имени tool'а — читает маркер `@tool`.
+    """Единственный источник wire-имени tool'а — читает маркер @tool.
 
-    Маркер проставляется `@tool` единожды при декорировании, поэтому его
-    отсутствие означает, что объект не помечен `@tool` — это ошибка
+    Маркер проставляется @tool единожды при декорировании, поэтому его
+    отсутствие означает, что объект не помечен @tool — это ошибка
     декларации, а не повод деривить имя на лету.
     """
     marked = getattr(obj, _TOOL_NAME_MARKER, None)
@@ -153,8 +153,8 @@ def tool_name(obj: object) -> str:
 
 
 def _derive_name(obj: object) -> str:
-    """Производное имя из `__name__` (функция/класс) или имени типа.
+    """Производное имя из __name__ (функция/класс) или имени типа.
 
-    Используется только `@tool` для вычисления имени при декорировании.
+    Используется только @tool для вычисления имени при декорировании.
     """
     return getattr(obj, "__name__", None) or type(obj).__name__

@@ -30,7 +30,7 @@ from openai.types.chat import (
 
 
 class ToOpenAIToolConverter(Converter[ToolSchema, ChatCompletionToolParam]):
-    """Конвертация ToolSchema → OpenAI tools."""
+    """Конвертация ToolSchema -> OpenAI tools."""
 
     def convert(self, value: ToolSchema) -> ChatCompletionToolParam:
         return {
@@ -46,7 +46,7 @@ class ToOpenAIToolConverter(Converter[ToolSchema, ChatCompletionToolParam]):
 class ToOpenAIToolCallConverter(
     Converter[ToolCall, ChatCompletionMessageFunctionToolCallParam],
 ):
-    """Конвертация ToolCall → OpenAI tool_call dict для assistant-message."""
+    """Конвертация ToolCall -> OpenAI tool_call dict для assistant-message."""
 
     def convert(self, value: ToolCall) -> ChatCompletionMessageFunctionToolCallParam:
         return {
@@ -60,7 +60,7 @@ class ToOpenAIToolCallConverter(
 
 
 class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
-    """Конвертация Message-иерархии → OpenAI message param.
+    """Конвертация Message-иерархии -> OpenAI message param.
 
     Message-модель плоская; конвертер мапит её на wire-формат OpenAI Chat
     Completions (плоский content + параллельное поле tool_calls).
@@ -73,7 +73,7 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
         """
         Message -> ChatCompletionMessageParam
 
-        в OpenAI `content` это одна строка, а tool_calls — поле параллельное
+        в OpenAI content это одна строка, а tool_calls — поле параллельное
         content. Поэтому:
             для system/user — берём content как есть.
             для assistant — текст в content, tool_calls в одно поле;
@@ -119,7 +119,7 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
 
 
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
-    """LLMRequest → kwargs для client.chat.completions.create."""
+    """LLMRequest -> kwargs для client.chat.completions.create."""
 
     def __init__(self) -> None:
         self._to_message = ToOpenAIMessageConverter()
@@ -142,7 +142,7 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         kwargs["model"] = r.model
 
     def _apply_messages(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
-        """Склеивает в OpenAI-порядок: system_messages → messages."""
+        """Склеивает в OpenAI-порядок: system_messages -> messages."""
         kwargs["messages"] = list(
             self._convert_messages(chain(r.system_messages, r.dialog_messages))
         )

@@ -1,14 +1,14 @@
-"""Tool `web_grep` + `WebGrepConfig`.
+"""Tool web_grep + WebGrepConfig.
 
-Скачивает одну web-страницу (как `web_fetch` — `WebUrlsRequestSource →
-http_transport`) и применяет к её контенту grep-поиск с теми же семантиками,
-что и file-tool `grep`: regex/fixed_string, регистр, контекст до/после, limit,
-обрезка длинных строк по `max_text_chars`.
+Скачивает одну web-страницу (как web_fetch — через HttpTransport) и
+применяет к её контенту grep-поиск с теми же семантиками, что и file-tool
+grep: regex/fixed_string, регистр, контекст до/после, limit, обрезка длинных
+строк по max_text_chars.
 
-В отличие от `web_fetch`, возвращает не окно строк, а только совпадения с
+В отличие от web_fetch, возвращает не окно строк, а только совпадения с
 номерами строк — экономит контекст LLM на больших страницах.
 
-Config-секция: `[tool.web.grep]`.
+Config-секция: [tool.web.grep].
 """
 
 from __future__ import annotations
@@ -23,18 +23,17 @@ import httpx
 import markdownify
 from pydantic import Field
 
-from boba.indexing import BinaryStream, PipelineContext, PipelineId
+from boba.indexing import BinaryStream
 from boba.tool.web.connection import WebConnection
-from boba.tool.web.request_source import WebUrlsRequestSource
 from boba.tools import FromConfig, tool
-from boba.transport.http import HttpTransport
 from boba.tools.domain import TableResult
+from boba.transport.http import HttpRequest, HttpTransport
 
 __all__ = ["WebGrepConfig", "web_grep"]
 
 
 class WebGrepConfig(WebConnection):
-    """Config tool'а `web_grep`: web-профили (`WebConnection`) + max_text_chars."""
+    """Config tool'а web_grep: web-профили (WebConnection) + max_text_chars."""
 
     max_text_chars: int = Field(
         default=2000,
@@ -44,9 +43,8 @@ class WebGrepConfig(WebConnection):
 
 
 class _WebGrep:
-    """Скачать страницу → grep поверх in-memory текста (regex + контекст)."""
+    """Скачать страницу -> grep поверх in-memory текста (regex + контекст)."""
 
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("web.grep")
     ENCODING: ClassVar[str] = "utf-8"
 
     def __init__(self, *, connection: WebConnection) -> None:
@@ -54,21 +52,21 @@ class _WebGrep:
 
     def load_text(self, *, url: str, as_markdown: bool) -> str:
         """Скачать URL и вернуть его контент целиком (markdown или HTML)."""
-        source = WebUrlsRequestSource(urls=(url,), connection=self._connection)
-        transport = HttpTransport(self._connection.resolve_profile(url))
-        pctx = PipelineContext(pipeline_id=self.PIPELINE_ID)
+        profile = self._connection.resolve_profile(url)
         try:
-            for raw in transport.stream(pctx, source.stream(pctx)):
-                return self._decode(raw.handle, as_markdown=as_markdown)
+            with (
+                HttpTransport(profile) as transport,
+                transport.fetch(HttpRequest(url=url)) as resp,
+            ):
+                return self._decode(resp.stream, as_markdown=as_markdown)
         except httpx.HTTPError as e:
             raise RuntimeError(
                 f"web_grep failed: {type(e).__name__}: {e}",
             ) from e
-        raise RuntimeError(f"web_grep: пустой ответ для URL {url!r}")
 
     @classmethod
     def _decode(cls, handle: BinaryStream, *, as_markdown: bool) -> str:
-        """Прочитать тело целиком; при as_markdown — HTML → markdownify (ATX)."""
+        """Прочитать тело целиком; при as_markdown — HTML -> markdownify (ATX)."""
         html = handle.read(-1).decode(cls.ENCODING, errors="replace")
         if as_markdown:
             return markdownify.markdownify(html, heading_style="ATX")
@@ -78,7 +76,7 @@ class _WebGrep:
     def compile_pattern(
         pattern: str, *, fixed_string: bool, case_insensitive: bool
     ) -> re.Pattern[str]:
-        """Компилирует pattern; fixed_string → литерал, иначе Python-regex."""
+        """Компилирует pattern; fixed_string -> литерал, иначе Python-regex."""
         raw = re.escape(pattern) if fixed_string else pattern
         flags = re.IGNORECASE if case_insensitive else 0
         try:
@@ -136,14 +134,14 @@ class _WebGrep:
 
     @staticmethod
     def clip(s: str, limit: int) -> tuple[str, bool]:
-        """Обрезает строку до `limit` символов; возвращает (строка, был_ли_обрезан)."""
+        """Обрезает строку до limit символов; возвращает (строка, был_ли_обрезан)."""
         if len(s) <= limit:
             return s, False
         return s[:limit], True
 
     @staticmethod
     def clip_many(lines: list[str], limit: int) -> tuple[list[str], bool]:
-        """Применяет `clip` к каждой строке списка."""
+        """Применяет clip к каждой строке списка."""
         out: list[str] = []
         cut = False
         for line in lines:
@@ -187,9 +185,9 @@ def web_grep(  # noqa: PLR0913 — независимые флаги grep'а
 ) -> TableResult:
     """Скачивает URL и ищет в его контенте совпадения pattern.
 
-    Возвращает `TableResult` — таблицу matches с колонками `line`/`content`/
-    `before`/`after` (+`truncated_lines` на усечённых). Url и переполнение
-    limit — в `note`/`metadata`. Длинные строки режутся по `max_text_chars`.
+    Возвращает TableResult — таблицу matches с колонками line/content/
+    before/after (+truncated_lines на усечённых). Url и переполнение
+    limit — в note/metadata. Длинные строки режутся по max_text_chars.
     """
     engine = _WebGrep(connection=cfg)
     compiled = _WebGrep.compile_pattern(

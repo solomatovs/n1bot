@@ -1,11 +1,11 @@
-"""HTTP-auth: `HttpxBearerAuth` + `WebAuth` (discriminated union по `method`).
+"""HTTP-auth: HttpxBearerAuth + WebAuth (discriminated union по method).
 
-httpx даёт из коробки `BasicAuth`/`DigestAuth`/`NetRCAuth`, но не имеет
-встроенного Bearer/PAT — `HttpxBearerAuth` закрывает это.
+httpx даёт из коробки BasicAuth/DigestAuth/NetRCAuth, но не имеет
+встроенного Bearer/PAT — HttpxBearerAuth закрывает это.
 
-`WebAuth` — конфиг-уровневый discriminated union auth-методов; каждый вариант
-реализует `httpx_auth() -> httpx.Auth | None`, результат идёт прямо в
-`HttpRequest.auth` → `httpx.Client(auth=...)`. Живёт здесь (инфра-слой HTTP),
+WebAuth — конфиг-уровневый discriminated union auth-методов; каждый вариант
+реализует httpx_auth() -> httpx.Auth | None, результат идёт прямо в
+HttpRequest.auth -> httpx.Client(auth=...). Живёт здесь (инфра-слой HTTP),
 чтобы переиспользоваться разными consumer'ами (web, confluence, …).
 """
 
@@ -28,7 +28,7 @@ __all__ = [
 
 
 class HttpxBearerAuth(httpx.Auth):
-    """`Authorization: Bearer <token>` для httpx.
+    """Authorization: Bearer <token> для httpx.
 
     Используется любыми API, требующими Bearer-токен (Atlassian PAT,
     GitHub PAT, generic OAuth2 access token). Pure header-mutation,
@@ -47,7 +47,7 @@ class HttpxBearerAuth(httpx.Auth):
 
 
 class _AuthBase(BaseModel):
-    """Общая база: запрет лишних полей + контракт `httpx_auth()`."""
+    """Общая база: запрет лишних полей + контракт httpx_auth()."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -56,7 +56,7 @@ class _AuthBase(BaseModel):
 
 
 class NoneAuth(_AuthBase):
-    """Anonymous-доступ. `method='none'` обязан быть прописан явно."""
+    """Anonymous-доступ. method='none' обязан быть прописан явно."""
 
     method: Literal["none"]
 
@@ -65,7 +65,7 @@ class NoneAuth(_AuthBase):
 
 
 class BasicAuth(_AuthBase):
-    """HTTP Basic: `httpx.BasicAuth(user, password)`."""
+    """HTTP Basic: httpx.BasicAuth(user, password)."""
 
     method: Literal["basic"]
     user: str = Field(min_length=1)
@@ -76,7 +76,7 @@ class BasicAuth(_AuthBase):
 
 
 class BearerAuth(_AuthBase):
-    """`Authorization: Bearer <token>` через `HttpxBearerAuth`."""
+    """Authorization: Bearer <token> через HttpxBearerAuth."""
 
     method: Literal["bearer"]
     token: str = Field(min_length=1)
@@ -86,7 +86,7 @@ class BearerAuth(_AuthBase):
 
 
 class DigestAuth(_AuthBase):
-    """HTTP Digest: `httpx.DigestAuth(user, password)`."""
+    """HTTP Digest: httpx.DigestAuth(user, password)."""
 
     method: Literal["digest"]
     user: str = Field(min_length=1)
@@ -100,4 +100,4 @@ WebAuth = Annotated[
     NoneAuth | BasicAuth | BearerAuth | DigestAuth,
     Field(discriminator="method"),
 ]
-"""Discriminated union по `method` — точная диагностика ошибок валидации."""
+"""Discriminated union по method — точная диагностика ошибок валидации."""

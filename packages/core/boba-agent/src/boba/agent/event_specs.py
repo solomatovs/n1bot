@@ -9,9 +9,9 @@ __all__ = ["IsContentDelta"]
 
 
 class IsContentDelta(Specification[AgentEventBase]):
-    """Истинно для инкрементальных чанков (`category == delta`).
+    """Истинно для инкрементальных чанков (category == delta).
 
-    Комбинируется через `and_/or_/not_` стандартными средствами Specification.
+    Комбинируется через and_/or_/not_ стандартными средствами Specification.
     Используется журналом истории, чтобы пропускать chunk-события и хранить
     только агрегированные снапшоты/переходы фаз.
     """

@@ -1,13 +1,13 @@
 """
 CollectionScopedView — реализация IndexQuery + IndexSink без metadata-фильтра.
 
-В отличие от NamespacedView, не инжектит metadata-предикат
-(`namespace=...`) в каждый запрос. Полагается на то, что сам Store
-разделяет данные по `collection` нативно (отдельная колонка в таблице,
-отдельный keyspace, и т.п.) — это и есть единственный scope view'а.
+Не инжектит дополнительный metadata-предикат (например namespace=...) в
+запросы: полагается на то, что сам Store разделяет данные по collection
+нативно (отдельная колонка в таблице, отдельный keyspace, и т.п.) — это и
+есть единственный scope view'а. Доп. сужение — через narrow(...).
 
-Соответствует термину `GlobalView(store, collection)` из docstring
-`boba.indexing.index_views` — view без scope-фильтра поверх collection.
+Соответствует термину GlobalView(store, collection) из docstring
+boba.indexing.index_views — view без scope-фильтра поверх collection.
 """
 
 from __future__ import annotations
@@ -36,12 +36,12 @@ _E = TypeVar("_E")
 
 class CollectionScopedView(IndexQuery[T], IndexSink[T]):
     """
-    IndexQuery + IndexSink, scope которого равен ровно одной `collection`
+    IndexQuery + IndexSink, scope которого равен ровно одной collection
     у Store. Никаких metadata-фильтров поверх не добавляется.
 
     Подходит для backend'ов, где collection — first-class поле хранения
-    (например pgvector с колонкой `collection` в kb_chunks), а namespace
-    разделение либо не нужно, либо моделируется через `narrow(...)`.
+    (например pgvector с колонкой collection в kb_chunks), а namespace
+    разделение либо не нужно, либо моделируется через narrow(...).
     """
 
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
@@ -95,15 +95,15 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         Привести Store в соответствие с пришедшими chunk'ами.
 
         Per-batch flow:
-          1. `diff_by_hash` — один SELECT по (chunk_id, content_hash),
+          1. diff_by_hash — один SELECT по (chunk_id, content_hash),
              разделяет батч на to_upsert/unchanged
           2. embedder.embed_documents — только для to_upsert
           3. writer.upsert — пишет dirty с уже посчитанным embedding'ом;
-             `updated_at` в той же INSERT/UPDATE
+             updated_at в той же INSERT/UPDATE
           4. writer.update_metadata — heartbeat для unchanged
              (нужно для IncrementalCleanup/FullCleanup, иначе их сметёт)
 
-        `force=True` обходит diff и трактует весь батч как dirty.
+        force=True обходит diff и трактует весь батч как dirty.
         """
         total = 0
         upserted = 0
@@ -139,7 +139,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
                 ]
                 self._store.upsert(self._collection, embedded)
 
-            # heartbeat только для unchanged — для dirty `updated_at = now()`
+            # heartbeat только для unchanged — для dirty updated_at = now()
             # уже выставил upsert в INSERT ... ON CONFLICT.
             if unchanged_ids:
                 self._store.update_metadata(

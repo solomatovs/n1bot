@@ -1,26 +1,26 @@
 """AgentBuilder — composition root pipeline-слоя агента.
 
 Тонкий fluent-фасад над onion-цепочкой mandatory middleware вокруг
-произвольного `terminal: StreamSource[AgentContext, AgentEvent]`.
-Сам terminal (типично `LLMPort(llm, turn)`), `HistoryService` и
-`ToolExecutor` создаются и принадлежат caller'у — `AgentBuilder` их
+произвольного terminal: StreamSource[AgentContext, AgentEvent].
+Сам terminal (типично LLMPort(llm, turn)), HistoryService и
+ToolExecutor создаются и принадлежат caller'у — AgentBuilder их
 получает уже готовыми и оборачивает в pipeline.
 
-Mandatory-цепочка (outer → inner):
+Mandatory-цепочка (outer -> inner):
 
     HistoryRecorderMiddleware(history)
-        → EventStamperMiddleware
-            → AgentErrorRouterMiddleware(error_router)
-                → [user middleware в порядке регистрации]
-                    → ToolExecutionMiddleware(tool_executor)
-                        → UserQueryRecorderMiddleware
-                            → terminal
+        -> EventStamperMiddleware
+            -> AgentErrorRouterMiddleware(error_router)
+                -> [user middleware в порядке регистрации]
+                    -> ToolExecutionMiddleware(tool_executor)
+                        -> UserQueryRecorderMiddleware
+                            -> terminal
 
-`tool_executor` — обязателен (без него terminal не сможет получать
+tool_executor — обязателен (без него terminal не сможет получать
 исполнение tool_call'ов из middleware). История — по умолчанию
-`InMemoryHistoryService()`. `error_router` — по умолчанию свежий
-`AgentErrorRouter()`. User middleware регистрируется как
-`Callable[[inner], MW]`, caller сам захватывает зависимости.
+InMemoryHistoryService(). error_router — по умолчанию свежий
+AgentErrorRouter(). User middleware регистрируется как
+Callable[[inner], MW], caller сам захватывает зависимости.
 """
 
 from __future__ import annotations
@@ -69,8 +69,8 @@ _DEFAULT_STOPS: tuple[_StopSpec, ...] = (
 class AgentBuilder:
     """Fluent-фасад: shared resources + user middleware + stop conditions.
 
-    `build(terminal)` оборачивает terminal mandatory-цепочкой и возвращает
-    `Agent`. Terminal (типично `LLMPort(llm, turn)`) caller собирает сам.
+    build(terminal) оборачивает terminal mandatory-цепочкой и возвращает
+    Agent. Terminal (типично LLMPort(llm, turn)) caller собирает сам.
     """
 
     def __init__(self) -> None:
@@ -83,24 +83,24 @@ class AgentBuilder:
     # ---- shared resources ------------------------------------------------ #
 
     def use_history(self, service: HistoryService) -> Self:
-        """Подменить `HistoryService`. Default — `InMemoryHistoryService()`."""
+        """Подменить HistoryService. Default — InMemoryHistoryService()."""
         self._history = service
         return self
 
     def use_error_router(self, router: AgentErrorRouter) -> Self:
-        """Подменить `AgentErrorRouter`. Default — свежий `AgentErrorRouter()`."""
+        """Подменить AgentErrorRouter. Default — свежий AgentErrorRouter()."""
         self._error_router = router
         return self
 
     def use_tool_executor(self, executor: ToolExecutor) -> Self:
-        """Передать готовый `ToolExecutor`. Обязателен до `build()`."""
+        """Передать готовый ToolExecutor. Обязателен до build()."""
         self._tool_executor = executor
         return self
 
     # ---- user middleware ------------------------------------------------- #
 
     def use_middleware(self, factory: _MiddlewareFactory) -> Self:
-        """Добавить middleware-фабрику `(inner) -> MW`.
+        """Добавить middleware-фабрику (inner) -> MW.
 
         Фабрика принимает inner-стрим и возвращает обёртку. Все её
         зависимости caller захватывает через closure.
@@ -118,7 +118,7 @@ class AgentBuilder:
     # ---- build ----------------------------------------------------------- #
 
     def build(self, terminal: _PipelineStage) -> Agent:
-        """Собрать pipeline вокруг `terminal` и вернуть `Agent`."""
+        """Собрать pipeline вокруг terminal и вернуть Agent."""
         if self._tool_executor is None:
             msg = (
                 "AgentBuilder.build: ToolExecutor не задан. "

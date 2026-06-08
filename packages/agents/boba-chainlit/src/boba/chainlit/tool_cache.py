@@ -1,4 +1,4 @@
-"""Lazy cache discovered `ToolSchema`'s — заполняется при первом ChatSession build'е."""
+"""Lazy cache discovered ToolSchema's — заполняется при первом ChatSession build'е."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class AvailableToolsCache:
     """Thread-safe set-once кеш списка доступных в проце tool'ов.
 
     Заполняется при первом успешном build'е ChatSession (см.
-    `ChatSession._wrap_catalog`). Discovery плагинов — статика времени
+    ChatSession._wrap_catalog). Discovery плагинов — статика времени
     старта, повторное заполнение игнорируется. Читается UI-слоем для
     отрисовки шестерёнки.
     """

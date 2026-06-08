@@ -1,5 +1,5 @@
-"""SqlExecutorConfig: `profiles`-dict (ключ=target, значение — ссылка
-`${postgres.<name>}` резолвит OmegaConf), модель валидирует. IO из модели удалён.
+"""SqlExecutorConfig: profiles-dict (ключ=target, значение — ссылка
+${postgres.<name>} резолвит OmegaConf), модель валидирует. IO из модели удалён.
 
 Реальный postgres не нужен — модели валидируются без открытия pool'а.
 """

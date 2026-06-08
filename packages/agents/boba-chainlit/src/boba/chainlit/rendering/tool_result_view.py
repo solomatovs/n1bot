@@ -1,11 +1,11 @@
-"""Маппинг `ToolResult` → форма представления в UI (`ToolResultRendering`).
+"""Маппинг ToolResult -> форма представления в UI (ToolResultRendering).
 
-`ToolResult` теперь имеет не одну форму отображения: текстовые варианты
-рендерятся markdown'ом, `ChartResult` — интерактивным графиком. Эта развилка
-выражена sealed-union'ом `ToolResultRendering`, а `ToolResultView.render()` —
-exhaustive `match` по вариантам `ToolResult` (новый вариант → pyright потребует
-решить, как его показывать). Dispatcher диспатчит по `ToolResultRendering`, не
-зная о конкретных `ToolResult`-вариантах.
+ToolResult теперь имеет не одну форму отображения: текстовые варианты
+рендерятся markdown'ом, ChartResult — интерактивным графиком. Эта развилка
+выражена sealed-union'ом ToolResultRendering, а ToolResultView.render() —
+exhaustive match по вариантам ToolResult (новый вариант -> pyright потребует
+решить, как его показывать). Dispatcher диспатчит по ToolResultRendering, не
+зная о конкретных ToolResult-вариантах.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ ToolResultRendering = MarkdownRendering | ChartRendering
 
 
 class ToolResultView:
-    """Выбирает форму представления для одного `ToolResult`."""
+    """Выбирает форму представления для одного ToolResult."""
 
     def __init__(self, result: ToolResult) -> None:
         self._result = result

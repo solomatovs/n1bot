@@ -1,16 +1,16 @@
 """KB search tools: 4 штуки = {vector, fts} × {confluence, kb_doc}.
 
-Канал (`vector`/`fts`) и коллекция зашиты в сам tool — параметра `method` нет:
-- `kb_vector_search` / `kb_fts_search`         — коллекция `kb_confluence`;
-- `kb_doc_vector_search` / `kb_doc_fts_search` — коллекция `kb_confluence_doc`.
+Канал (vector/fts) и коллекция зашиты в сам tool — параметра method нет:
+- kb_vector_search / kb_fts_search         — коллекция kb_confluence;
+- kb_doc_vector_search / kb_doc_fts_search — коллекция kb_confluence_doc.
 
-Коллекция фиксируется дискриминирующим типом (`ConfluenceCollection` /
-`KbDocCollection`): строгий фильтр по `collection` даёт детерминированную
-сборку строки из `kb_chunks` (`CollectionSearch.row`). Каждый тип ссылается
-на те же `MetadataKey`-константы, что пишет ingest этой коллекции — так
+Коллекция фиксируется дискриминирующим типом (ConfluenceCollection /
+KbDocCollection): строгий фильтр по collection даёт детерминированную
+сборку строки из kb_chunks (CollectionSearch.row). Каждый тип ссылается
+на те же MetadataKey-константы, что пишет ingest этой коллекции — так
 search-сторона ↔ ingest-сторона не расходятся. Все 4 tool'а читают
-конфиг-секцию `[tool.kb]` напрямую как `PostgresKnowledgeBaseConfig`
-(connection/tables/embedding). `top_k`/`snippet_chars` — tool-аргументы LLM.
+конфиг-секцию [tool.kb] напрямую как PostgresKnowledgeBaseConfig
+(connection/tables/embedding). top_k/snippet_chars — tool-аргументы LLM.
 """
 
 from __future__ import annotations
@@ -45,17 +45,17 @@ SearchMethod = Literal["vector", "fts"]
 
 @dataclass(frozen=True)
 class MetaField:
-    """Output-колонка ← ключ `kb_chunks.metadata` (та `MetadataKey`, что у ingest)."""
+    """Output-колонка ← ключ kb_chunks.metadata (та MetadataKey, что у ingest)."""
 
     column: str
     key: MetadataKey[str]
 
 
 class CollectionSearch:
-    """База дискриминатора: строгий `COLLECTION` + явная сборка строки из kb_chunks.
+    """База дискриминатора: строгий COLLECTION + явная сборка строки из kb_chunks.
 
-    Подкласс обязан задать `COLLECTION` (scope) и `META_FIELDS` (поля из
-    `metadata`). Прямые колонки `kb_chunks` собираются здесь, в `row()`.
+    Подкласс обязан задать COLLECTION (scope) и META_FIELDS (поля из
+    metadata). Прямые колонки kb_chunks собираются здесь, в row().
     """
 
     COLLECTION: ClassVar[str]
@@ -80,7 +80,7 @@ class CollectionSearch:
 
     @staticmethod
     def _link(row: Mapping[str, str]) -> str:
-        """`source_url[#anchor]` — готовый deep-link из уже собранных колонок."""
+        """source_url[#anchor] — готовый deep-link из уже собранных колонок."""
         url = row.get("source_url", "")
         if not url:
             return ""
@@ -93,10 +93,10 @@ class CollectionSearch:
 class ConfluenceCollection(CollectionSearch):
     """Коллекция Confluence-страниц (прямой HTTP-ingest).
 
-    `META_FIELDS` ссылается на ключи, которые пишет confluence-ingest:
-    request_source (`ConfluenceKeys.SOURCE_URL`/`PAGE_ID`), decoder
-    (`ConfluenceKeys.SPACE_KEY`, `ReaderKeys.PAGE_TITLE`), reader
-    (`SectionKeys.ANCHOR`/`HEADING_PATH`).
+    META_FIELDS ссылается на ключи, которые пишет confluence-ingest:
+    request_source (ConfluenceKeys.SOURCE_URL/PAGE_ID), decoder
+    (ConfluenceKeys.SPACE_KEY, ReaderKeys.PAGE_TITLE), reader
+    (SectionKeys.ANCHOR/HEADING_PATH).
     """
 
     COLLECTION = "kb_confluence"
@@ -114,10 +114,10 @@ class ConfluenceCollection(CollectionSearch):
 class KbDocCollection(CollectionSearch):
     """Коллекция загруженных KbDoc-выгрузок Confluence (workspace upload).
 
-    `META_FIELDS` ссылается на ключи, которые пишет kbdoc-ingest: `KbDocReader`
-    из header'а (`KbDocKeys.SOURCE_URL`/`PAGE_ID`/`SPACE`, `ReaderKeys.
-    PAGE_TITLE`, `SectionKeys.ANCHOR`) + `StructuralChunker`
-    (`SectionKeys.HEADING_PATH`). Wire-имена совпадают с confluence-коллекцией.
+    META_FIELDS ссылается на ключи, которые пишет kbdoc-ingest: KbDocReader
+    из header'а (KbDocKeys.SOURCE_URL/PAGE_ID/SPACE, ReaderKeys.
+    PAGE_TITLE, SectionKeys.ANCHOR) + StructuralChunker
+    (SectionKeys.HEADING_PATH). Wire-имена совпадают с confluence-коллекцией.
     """
 
     COLLECTION = "kb_confluence_doc"
@@ -133,7 +133,7 @@ class KbDocCollection(CollectionSearch):
 
 
 class KbSearch:
-    """Единый прогон KB-поиска: `method` выбирает канал, `collection` — scope."""
+    """Единый прогон KB-поиска: method выбирает канал, collection — scope."""
 
     VECTOR_SQL: ClassVar[str] = """
 select
@@ -155,10 +155,10 @@ order by
 limit
     %(top_k)s
 """
-    """Pure vector retrieval: top-K по cosine-distance (pgvector `<=>`).
+    """Поисковый запрос по векторному индексу
 
-    Identifier-плейсхолдеры (`sql.SQL.format`): `{dim}`, `{chunks_table}`.
-    Bind-параметры (named-style): `collections`/`embedding`/`snippet_chars`/`top_k`.
+    Identifier-плейсхолдеры (sql.SQL.format): {dim}, {chunks_table}.
+    Bind-параметры (named-style): collections/embedding/snippet_chars/top_k.
     """
 
     FTS_SQL: ClassVar[str] = """
@@ -187,16 +187,10 @@ order by
 limit
     %(top_k)s
 """
-    """Pure FTS retrieval: top-K по `ts_rank_cd` без vector-канала.
+    """Поисковый запрос по full-text индексу
 
-    Identifier-плейсхолдеры (`sql.SQL.format`): `{chunks_table}`, `{schema}`.
-    Bind-параметры (named-style): `collections`/`query`/`snippet_chars`/`top_k`.
-
-    Multilang FTS: tsquery строится как `russian || english` — совпадает с
-    хранимым tsv из миграции `002_multilang_tsv.sql` (набор языков должен быть
-    синхронен с DDL tsv-колонки). `websearch_to_tsquery` (не `plainto_`): пробел
-    = AND, но LLM может сама управлять (`OR`, `"фраза"`, `-исключение`); функция
-    тотальна — экранировать ничего не нужно.
+    Identifier-плейсхолдеры (sql.SQL.format): {chunks_table}, {schema}.
+    Bind-параметры (named-style): collections/query/snippet_chars/top_k.
     """
 
     QUERY_DESC_VECTOR: ClassVar[str] = (
@@ -224,7 +218,7 @@ limit
         top_k: int,
         snippet_chars: int,
     ) -> TableResult:
-        """`method` выбирает канал, `collection` — scope и сборку строк."""
+        """method выбирает канал, collection — scope и сборку строк."""
         kb = PostgresKnowledgeBase(cfg=cfg)
         try:
             if method == "vector":
@@ -259,11 +253,11 @@ def kb_vector_search(
         Field(ge=1, description=KbSearch.SNIPPET_DESC),
     ] = KbSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
-    """Семантический (vector) поиск по коллекции Confluence-страниц (`kb_confluence`).
+    """Семантический (vector) поиск по коллекции Confluence-страниц (kb_confluence).
 
-    Возвращает `TableResult` — плоскую таблицу hits с колонками `id`/`distance`/
-    `link`/`snippet` + `page_title`/`source_url`/`anchor`/`page_id`/
-    `heading_path`/`space`/`tags`, по релевантности (меньше `distance` = ближе).
+    Возвращает TableResult — плоскую таблицу hits с колонками id/distance/
+    link/snippet + page_title/source_url/anchor/page_id/
+    heading_path/space/tags, по релевантности (меньше distance = ближе).
     """
     return KbSearch.run(
         cfg,
@@ -285,9 +279,9 @@ def kb_fts_search(
         Field(ge=1, description=KbSearch.SNIPPET_DESC),
     ] = KbSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
-    """Лексический (FTS) поиск по коллекции Confluence-страниц (`kb_confluence`).
+    """Лексический (FTS) поиск по коллекции Confluence-страниц (kb_confluence).
 
-    Тот же формат `TableResult`, что и у `kb_vector_search`.
+    Тот же формат TableResult, что и у kb_vector_search.
     """
     return KbSearch.run(cfg, ConfluenceCollection, query, "fts", top_k, snippet_chars)
 
@@ -302,9 +296,9 @@ def kb_doc_vector_search(
         Field(ge=1, description=KbSearch.SNIPPET_DESC),
     ] = KbSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
-    """Семантический (vector) поиск по KbDoc-выгрузкам Confluence (`kb_confluence_doc`).
+    """Семантический (vector) поиск по KbDoc-выгрузкам Confluence (kb_confluence_doc).
 
-    Тот же формат `TableResult`, что и у `kb_vector_search`.
+    Тот же формат TableResult, что и у kb_vector_search.
     """
     return KbSearch.run(cfg, KbDocCollection, query, "vector", top_k, snippet_chars)
 
@@ -319,8 +313,8 @@ def kb_doc_fts_search(
         Field(ge=1, description=KbSearch.SNIPPET_DESC),
     ] = KbSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
-    """Лексический (FTS) поиск по KbDoc-выгрузкам Confluence (`kb_confluence_doc`).
+    """Лексический (FTS) поиск по KbDoc-выгрузкам Confluence (kb_confluence_doc).
 
-    Тот же формат `TableResult`, что и у `kb_vector_search`.
+    Тот же формат TableResult, что и у kb_vector_search.
     """
     return KbSearch.run(cfg, KbDocCollection, query, "fts", top_k, snippet_chars)

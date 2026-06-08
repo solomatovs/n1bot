@@ -1,5 +1,5 @@
 """
-IndexEvent — события одного прогона `Indexer.stream()`
+IndexEvent — события одного прогона Pipeline.index()
 
 Базовые категории (две — минимально-достаточный набор):
 
@@ -44,7 +44,7 @@ __all__ = [
 
 
 RunId = NewType("RunId", UUID)
-"""Идентификатор одного прогона `Indexer.stream(...)` на 1 вызов."""
+"""Идентификатор одного прогона Pipeline.index(...) на 1 вызов."""
 
 
 def new_run_id() -> RunId:
@@ -132,7 +132,7 @@ IndexEvent = PhaseTransition | CompletedItem
 
 @dataclass(frozen=True)
 class RunStarted(PhaseTransition):
-    """Indexer.stream() начал работу: первый event каждого run'а."""
+    """Pipeline.index() начал работу: первый event каждого run'а."""
 
     @classmethod
     def name(cls) -> str:

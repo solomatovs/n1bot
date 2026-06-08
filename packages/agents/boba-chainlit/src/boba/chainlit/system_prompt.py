@@ -1,12 +1,12 @@
 """System-prompt: дефолт из директории + per-thread провайдер.
 
-`DefaultSystemPromptSource` — единый источник истины для «дефолта»:
-склейка файлов system_prompt_dir тем же способом, что `DirectoryPromptProvider`.
+DefaultSystemPromptSource — единый источник истины для «дефолта»:
+склейка файлов system_prompt_dir тем же способом, что DirectoryPromptProvider.
 Используется UI (initial для шестерёнки), seed для новых ThreadMeta и fallback
-для `ThreadSystemPromptProvider`.
+для ThreadSystemPromptProvider.
 
-`ThreadSystemPromptProvider` — `PromptProvider`, который на каждом turn'е
-читает свежий `ThreadMeta.system_prompt` через sync-метод репозитория.
+ThreadSystemPromptProvider — PromptProvider, который на каждом turn'е
+читает свежий ThreadMeta.system_prompt через sync-метод репозитория.
 Это позволяет менять промпт через шестерёнку без пересборки ChatSession.
 """
 
@@ -53,7 +53,7 @@ class DefaultSystemPromptSource:
 
 class ThreadSystemPromptProvider(PromptProvider):
     """
-    Provider, читающий system-prompt из `ThreadMeta` по `thread_id`
+    Provider, читающий system-prompt из ThreadMeta по thread_id
     """
 
     def __init__(

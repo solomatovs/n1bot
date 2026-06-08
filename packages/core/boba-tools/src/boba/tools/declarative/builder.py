@@ -1,15 +1,15 @@
 """ToolBuilder — composition root tool layer'а.
 
 Аккумулирует две вещи:
-- DI-провайдеры (`@provides`-фабрики + готовые инстансы) → Dishka `Container`
-  для резолва `FromDI`/`FromConfig`-параметров в tool'ах.
-- `@tool`-callables → `ToolRegistry`, в котором они доступны LLM.
+- DI-провайдеры (@provides-фабрики + готовые инстансы) -> Dishka Container
+  для резолва FromDI/FromConfig-параметров в tool'ах.
+- @tool-callables -> ToolRegistry, в котором они доступны LLM.
 
-`build()` отдаёт `ToolRegistry`, владеющий контейнером (закрывает его на
-`close()`). Плагины различаются по `origin` (имя модуля), которое
-становится `ToolSourceId` — это даёт LLM-namespace `<plugin>__<tool>`.
+build() отдаёт ToolRegistry, владеющий контейнером (закрывает его на
+close()). Плагины различаются по origin (имя модуля), которое
+становится ToolSourceId — это даёт LLM-namespace <plugin>__<tool>.
 Container — плоский, без component-разделения: коллизии типов между
-плагинами падают явным `DuplicateProviderError` в `register_*`.
+плагинами падают явным DuplicateProviderError в register_*.
 """
 
 from __future__ import annotations
@@ -114,7 +114,7 @@ class _ModuleScanner:
 
     @property
     def origin(self) -> str:
-        """Имя модуля → origin tool'ов (становится ToolSourceId)."""
+        """Имя модуля -> origin tool'ов (становится ToolSourceId)."""
         return getattr(self._module, "__name__", repr(self._module))
 
     def iter_registrable(
@@ -147,7 +147,7 @@ class _ModuleScanner:
 
 
 class ToolBuilder:
-    """Fluent-фасад tool-слоя: providers + tools + plugins -> `ToolRegistry`."""
+    """Fluent-фасад tool-слоя: providers + tools + plugins -> ToolRegistry."""
 
     def __init__(self) -> None:
         self._providers: list[ProviderEntry] = []
@@ -186,7 +186,7 @@ class ToolBuilder:
         provides: type | None = None,
         scope: Scope = Scope.APP,
     ) -> Self:
-        """Зарегистрировать готовый инстанс под `provides` (или `type(instance)`)."""
+        """Зарегистрировать готовый инстанс под provides (или type(instance))."""
         target = provides if provides is not None else type(instance)
 
         def _factory() -> Any:
@@ -198,7 +198,7 @@ class ToolBuilder:
 
     def use_config_resolver(self, resolver: ConfigResolver) -> Self:
         """
-        Зарегистрировать `ConfigResolver` как обычный APP-scope provider.
+        Зарегистрировать ConfigResolver как обычный APP-scope provider.
         """
         return self.register_instance(resolver, provides=ConfigResolver)
 
@@ -213,7 +213,7 @@ class ToolBuilder:
 
     def use_plugin(self, module: object) -> Self:
         """
-        Подцепить плагин-модуль; все его `@tool`/`@provides` регистрируются
+        Подцепить плагин-модуль; все его @tool/@provides регистрируются
         """
         plugin_name = getattr(module, "__name__", repr(module))
         self._register_module(module, plugin_name, PluginFilterAllowAll())
@@ -225,7 +225,7 @@ class ToolBuilder:
         plugin_tool_filter: PluginToolFilter,
     ) -> Self:
         """
-        Загрузить плагины из entry-points, отфильтровав их через `PluginGate`
+        Загрузить плагины из entry-points, отфильтровав их через PluginGate
         """
         for ep in importlib.metadata.entry_points(group=entry_point):
             if not plugin_tool_filter.check_plugin_name(ep.name):
@@ -259,7 +259,7 @@ class ToolBuilder:
 
     def build(self) -> ToolRegistry:
         """
-        Собрать Dishka container и `ToolRegistry` поверх него.
+        Собрать Dishka container и ToolRegistry поверх него.
         """
         self._validate_from_di()
         self._validate_from_config()
@@ -315,7 +315,7 @@ class ToolBuilder:
 
     def _validate_from_config(self) -> None:
         """
-        Авто-зарегистрировать provider'ы для всех `FromConfig`-типов
+        Авто-зарегистрировать provider'ы для всех FromConfig-типов
         """
         cfg_types = self._collect_config_types()
         if not cfg_types:
@@ -338,7 +338,7 @@ class ToolBuilder:
                 )
 
     def _collect_config_types(self) -> dict[type, str]:
-        """Собрать `FromConfig`-типы с их плагином (секция = `tool.<plugin>`).
+        """Собрать FromConfig-типы с их плагином (секция = tool.<plugin>).
 
         Тип резолвится из секции плагина, в котором объявлен tool/provider.
         Один тип обычно принадлежит одному плагину; при коллизии остаётся первый.
@@ -352,7 +352,7 @@ class ToolBuilder:
 
     def _validate_from_di(self) -> None:
         """
-        Проверить, что каждый `FromDI`-тип имеет provider
+        Проверить, что каждый FromDI-тип имеет provider
         """
         provided = {p.plan.return_type for p in self._providers}
 
@@ -407,12 +407,12 @@ class ToolBuilder:
         cfg_type: type,
         plugin: str,
     ) -> Callable[..., Any]:
-        """Фабрика provider'а конфига: берёт `ConfigResolver` из DI → `resolve`.
+        """Фабрика provider'а конфига: берёт ConfigResolver из DI -> resolve.
 
-        Возвращает `@provides`-совместимый callable с подписью
-        `(resolver: Annotated[ConfigResolver, FromDI(APP)]) -> cfg_type`, чтобы
+        Возвращает @provides-совместимый callable с подписью
+        (resolver: Annotated[ConfigResolver, FromDI(APP)]) -> cfg_type, чтобы
         Dishka инжектил resolver и кешировал конфиг как APP-singleton. Секцию
-        задаёт `plugin` (резолвится из `tool.<plugin>`).
+        задаёт plugin (резолвится из tool.<plugin>).
         """
 
         def _factory(resolver: Any) -> Any:

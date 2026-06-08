@@ -1,7 +1,7 @@
 """Тесты BashLocalTool (без sandbox-изоляции).
 
 В отличие от sandbox-варианта, эти тесты не требуют bwrap — нужен
-только `/bin/bash` на хосте.
+только /bin/bash на хосте.
 """
 
 from __future__ import annotations

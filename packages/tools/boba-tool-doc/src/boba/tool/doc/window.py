@@ -35,9 +35,9 @@ def read_document_window(
     """Вернуть срез текста документа [start_char, start_char+length).
 
     Для последовательного чтения большого документа порциями, независимо от
-    страниц: листай, увеличивая `start_char` на длину прочитанного, пока
-    `metadata.has_more` == 'True'. Окно не шире `max_text_chars`.
-    Фактический `end_char`, `total_chars` и `has_more` — в `metadata`.
+    страниц: листай, увеличивая start_char на длину прочитанного, пока
+    metadata.has_more == 'True'. Окно не шире max_text_chars.
+    Фактический end_char, total_chars и has_more — в metadata.
     """
     max_window = cfg.max_text_chars
     if length > max_window:

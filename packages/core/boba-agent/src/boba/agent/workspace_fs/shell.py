@@ -104,7 +104,7 @@ def _translate_os_errors(resolved: WorkspacePath) -> Iterator[None]:
 
 
 class _WorkspaceTextStream(TextIOBase):
-    """Текстовый stream внутри workspace; OSError → WorkspaceError."""
+    """Текстовый stream внутри workspace; OSError -> WorkspaceError."""
 
     def __init__(self, inner: TextIOBase, resolved: WorkspacePath) -> None:
         super().__init__()
@@ -169,7 +169,7 @@ class _WorkspaceTextStream(TextIOBase):
 
 
 class _WorkspaceBinaryStream(BufferedIOBase):
-    """Бинарный stream внутри workspace — OSError → WorkspaceError."""
+    """Бинарный stream внутри workspace — OSError -> WorkspaceError."""
 
     def __init__(self, inner: BufferedIOBase, resolved: WorkspacePath) -> None:
         super().__init__()
@@ -241,7 +241,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
 
     @classmethod
     def under(cls, base_dir: Path, workspace_id: TWsId) -> FsWorkspaceShell[TWsId]:
-        """Shell с корнем `base_dir/<workspace_id>` — per-id namespace на ФС."""
+        """Shell с корнем base_dir/<workspace_id> — per-id namespace на ФС."""
         return cls(workspace_id, base_dir / str(workspace_id))
 
     @property
@@ -397,11 +397,11 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
         *,
         encoding: str | None = None,
     ) -> Iterator[IO[Any]]:
-        """Yield открытый tmp-fd в той же директории; commit'ит fsync+`os.replace`.
+        """Yield открытый tmp-fd в той же директории; commit'ит fsync+os.replace.
 
-        Tmp создаётся рядом с target (`dir=target.parent`) — обходит лимиты
-        `/tmp` и гарантирует atomic rename в пределах одной FS. При любом
-        исключении внутри `with` — tmp удаляется, target не трогается.
+        Tmp создаётся рядом с target (dir=target.parent) — обходит лимиты
+        /tmp и гарантирует atomic rename в пределах одной FS. При любом
+        исключении внутри with — tmp удаляется, target не трогается.
         """
         resolved = self._resolve(path)
         with self._map_errors(resolved):
@@ -429,12 +429,12 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
         source: TextReadable,
         encoding: str = "utf-8",
     ) -> None:
-        """Атомарная стриминг-перезапись текста: см. `_atomic_open`."""
+        """Атомарная стриминг-перезапись текста: см. _atomic_open."""
         with self._atomic_open(path, "w", encoding=encoding) as fh:
             shutil.copyfileobj(source, fh)
 
     def atomic_write_binary(self, path: str, source: BinaryReadable) -> None:
-        """Атомарная стриминг-перезапись бинарных: см. `_atomic_open`."""
+        """Атомарная стриминг-перезапись бинарных: см. _atomic_open."""
         with self._atomic_open(path, "wb") as fh:
             shutil.copyfileobj(source, fh)
 
@@ -678,7 +678,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
         limit: int,
         encoding: str,
     ) -> None:
-        """Потоковая замена: src → temp → atomic rename."""
+        """Потоковая замена: src -> temp -> atomic rename."""
         old_len = len(old)
         chunk_size = max(65536, old_len * 2)
         keep = old_len - 1
@@ -763,7 +763,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
             if not src_resolved.absolute.exists():
                 raise WorkspaceNotFoundError(src_resolved.relative)
 
-            # cp-семантика: dst-директория → копия внутрь с именем src.
+            # cp-семантика: dst-директория -> копия внутрь с именем src.
             if dst_resolved.absolute.is_dir():
                 final_dst = dst_resolved.absolute / src_resolved.absolute.name
             else:

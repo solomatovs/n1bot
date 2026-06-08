@@ -1,10 +1,10 @@
-"""`ConfluenceContentTransport`: page → JSON-decode + attachment fan-out.
+"""ConfluenceContentTransport: page -> JSON-decode + attachment fan-out.
 
 Тест с фейк-инне́р-транспортом — отдаёт заготовленные JSON-страницы и
-бинарные attachment-ответы по флагу `ConfluenceKeys.ATTACHMENT_INFO` в
+бинарные attachment-ответы по флагу ConfluenceKeys.ATTACHMENT_INFO в
 metadata запроса. Проверяет:
 
-- yield-порядок: сначала page (с `text/html` и `ATTACHMENTS` в meta),
+- yield-порядок: сначала page (с text/html и ATTACHMENTS в meta),
   потом attachments в порядке из JSON;
 - attachment-request (предварительно помеченный) проходит через transport
   без декодирования (бинарь остаётся бинарём);
@@ -20,8 +20,6 @@ from io import BytesIO
 
 from boba.indexing import (
     Metadata,
-    PipelineContext,
-    PipelineId,
     RawDocument,
     SourceId,
     Transport,
@@ -29,11 +27,9 @@ from boba.indexing import (
 )
 from boba.tool.kb.confluence.models import AttachmentInfo, ConfluenceKeys
 from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
+from boba.tool.kb.confluence.request_sources import ConfluenceRequest
 from boba.transport.http import HttpRequest
 
-
-def _pctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("test"))
 
 
 _PAGE_JSON = {
@@ -67,40 +63,34 @@ _PAGE_JSON = {
 }
 
 
-class _FakeInner(Transport[HttpRequest]):
+class _FakeInner(Transport[ConfluenceRequest]):
     """По типу request'а отдаёт либо JSON-page, либо binary-attachment-payload.
 
-    Каждый вызов протоколируется в `self.calls` — для проверки lazy-streaming.
+    Каждый вызов протоколируется в self.calls — для проверки lazy-streaming.
     """
 
     def __init__(self, *, page_json: dict[str, object]) -> None:
         self._page_json = page_json
-        self.calls: list[HttpRequest] = []
+        self.calls: list[ConfluenceRequest] = []
 
-    def name(self) -> str:
-        return "FakeInner"
-
-    def stream(
+    def fetch(
         self,
-        ctx: PipelineContext,
-        stream: Iterable[HttpRequest],
+        req: ConfluenceRequest,
     ) -> Iterable[RawDocument]:
-        del ctx
-        for req in stream:
-            self.calls.append(req)
-            if req.metadata.has(ConfluenceKeys.ATTACHMENT_INFO):
-                yield self._fake_attachment(req)
-            else:
-                yield self._fake_page(req)
+        self.calls.append(req)
+        if req.metadata.has(ConfluenceKeys.ATTACHMENT_INFO):
+            yield self._fake_attachment(req)
+        else:
+            yield self._fake_page(req)
 
-    def _fake_page(self, req: HttpRequest) -> RawDocument:
+    def _fake_page(self, req: ConfluenceRequest) -> RawDocument:
         return RawDocument(
             handle=BytesIO(json.dumps(self._page_json).encode("utf-8")),
             source_id=req.source_id,
             metadata=req.metadata.set(TransportKeys.CONTENT_TYPE, "application/json"),
         )
 
-    def _fake_attachment(self, req: HttpRequest) -> RawDocument:
+    def _fake_attachment(self, req: ConfluenceRequest) -> RawDocument:
         att = req.metadata.get(ConfluenceKeys.ATTACHMENT_INFO)
         assert att is not None
         return RawDocument(
@@ -110,10 +100,12 @@ class _FakeInner(Transport[HttpRequest]):
         )
 
 
-def _page_request() -> HttpRequest:
-    return HttpRequest(
-        url="https://confl.example.com/wiki/rest/api/content/42?expand=...",
-        method="GET",
+def _page_request() -> ConfluenceRequest:
+    return ConfluenceRequest(
+        http=HttpRequest(
+            url="https://confl.example.com/wiki/rest/api/content/42?expand=...",
+            method="GET",
+        ),
         source_id=SourceId(
             "https://confl.example.com/wiki/pages/viewpage.action?pageId=42"
         ),
@@ -130,24 +122,23 @@ def _new_transport(inner: _FakeInner) -> ConfluenceContentTransport:
         inner=inner,
         body_format="export_view",
         base_url="https://confl.example.com/wiki",
-        auth=None,
     )
 
 
 def test_page_yields_with_html_content_type() -> None:
-    """Первый yield — декодированная page с `text/html` (не application/json)."""
+    """Первый yield — декодированная page с text/html (не application/json)."""
     inner = _FakeInner(page_json=_PAGE_JSON)
     transport = _new_transport(inner)
-    out = list(transport.stream(_pctx(), [_page_request()]))
+    out = list(transport.fetch(_page_request()))
     assert out[0].metadata.get(TransportKeys.CONTENT_TYPE) == "text/html"
     assert out[0].handle.read() == b"<p>hi</p>"
 
 
 def test_yield_order_page_then_attachments() -> None:
-    """Yield-порядок: page → att-1 → att-2."""
+    """Yield-порядок: page -> att-1 -> att-2."""
     inner = _FakeInner(page_json=_PAGE_JSON)
     transport = _new_transport(inner)
-    out = list(transport.stream(_pctx(), [_page_request()]))
+    out = list(transport.fetch(_page_request()))
     assert len(out) == 3
     # page — нет ATTACHMENT_INFO
     assert not out[0].metadata.has(ConfluenceKeys.ATTACHMENT_INFO)
@@ -169,16 +160,16 @@ def test_page_without_attachments_yields_only_page() -> None:
     }
     inner = _FakeInner(page_json=page_json)
     transport = _new_transport(inner)
-    out = list(transport.stream(_pctx(), [_page_request()]))
+    out = list(transport.fetch(_page_request()))
     assert len(out) == 1
     assert out[0].metadata.get(TransportKeys.CONTENT_TYPE) == "text/html"
 
 
 def test_attachment_request_is_passthrough_not_decoded() -> None:
-    """Pre-marked attachment request → inner.stream напрямую, без JSON-парсинга.
+    """Pre-marked attachment request -> inner.stream напрямую, без JSON-парсинга.
 
     Сценарий: кто-то снаружи (например, retry-логика) подал HttpRequest
-    уже с `ATTACHMENT_INFO` в meta. Transport не должен пытаться его
+    уже с ATTACHMENT_INFO в meta. Transport не должен пытаться его
     декодировать как JSON-страницу.
     """
     inner = _FakeInner(page_json=_PAGE_JSON)
@@ -191,14 +182,16 @@ def test_attachment_request_is_passthrough_not_decoded() -> None:
         download_path="/download/attachments/42/x.bin",
         version=1,
     )
-    req = HttpRequest(
-        url="https://confl.example.com/wiki/download/attachments/42/x.bin",
+    req = ConfluenceRequest(
+        http=HttpRequest(
+            url="https://confl.example.com/wiki/download/attachments/42/x.bin",
+        ),
         source_id=SourceId(
             "https://confl.example.com/wiki/download/attachments/42/x.bin"
         ),
         metadata=Metadata.empty().set(ConfluenceKeys.ATTACHMENT_INFO, att),
     )
-    out = list(transport.stream(_pctx(), [req]))
+    out = list(transport.fetch(req))
     assert len(out) == 1
     # Inner получил ровно один запрос — переданный, не декодированный
     assert len(inner.calls) == 1
@@ -208,14 +201,14 @@ def test_attachment_request_is_passthrough_not_decoded() -> None:
 
 
 def test_lazy_streaming_does_not_prefetch_all_attachments() -> None:
-    """Pull page → inner вызван 1 раз. Pull att-1 → 2 раза. Pull att-2 → 3 раза.
+    """Pull page -> inner вызван 1 раз. Pull att-1 -> 2 раза. Pull att-2 -> 3 раза.
 
     Страхует streaming-контракт: для 50+ attachment'ов consumer не должен
     видеть 51 HTTP-запрос разом.
     """
     inner = _FakeInner(page_json=_PAGE_JSON)
     transport = _new_transport(inner)
-    gen = iter(transport.stream(_pctx(), [_page_request()]))
+    gen = iter(transport.fetch(_page_request()))
     _page = next(gen)
     assert len(inner.calls) == 1
     _att1 = next(gen)

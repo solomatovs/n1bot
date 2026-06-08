@@ -2,13 +2,13 @@
 
 Имя tool'а живёт в **двух пространствах**:
 
-- `ToolName` — имя tool'а внутри своего `ToolSource`.
-- `ToolId` — wire-формат, по которому tool вызывается LLM-ом. Равен самому
-  `ToolName`: источник в имя не входит, LLM видит ровно `<name>` и по нему же
-  маршрутизируется вызов. Глобальная уникальность `ToolName` гарантируется
-  реестром (`ToolNameCollisionError` при дубле между source'ами).
+- ToolName — имя tool'а внутри своего ToolSource.
+- ToolId — wire-формат, по которому tool вызывается LLM-ом. Равен самому
+  ToolName: источник в имя не входит, LLM видит ровно <name> и по нему же
+  маршрутизируется вызов. Глобальная уникальность ToolName гарантируется
+  реестром (ToolNameCollisionError при дубле между source'ами).
 
-Wire-имя ограничено `^[A-Za-z0-9_-]{1,64}$` — это пересечение OpenAI
+Wire-имя ограничено ^[A-Za-z0-9_-]{1,64}$ — это пересечение OpenAI
 function-name spec и того, что без сюрпризов проходит через
 LiteLLM/Ollama.
 """
@@ -38,15 +38,15 @@ ToolName = NewType("ToolName", str)
 
 
 ToolSourceId = NewType("ToolSourceId", str)
-"""Идентификатор источника инструментов (`plugin_html`, `mcp_github`, ...)."""
+"""Идентификатор источника инструментов (plugin_html, mcp_github, ...)."""
 
 
 ToolId = NewType("ToolId", str)
-"""Wire-формат: совпадает с `ToolName`. То, что видит и зовёт LLM."""
+"""Wire-формат: совпадает с ToolName. То, что видит и зовёт LLM."""
 
 
 def to_tool_id(name: ToolName) -> ToolId:
-    """Привести `ToolName` к wire-формату `ToolId` (валидация charset/длины)."""
+    """Привести ToolName к wire-формату ToolId (валидация charset/длины)."""
     if not name:
         msg = "tool name must be non-empty"
         raise ValueError(msg)
@@ -67,7 +67,7 @@ def to_tool_id(name: ToolName) -> ToolId:
 
 def sanitize_source_id(origin: str) -> ToolSourceId:
     """
-    Привести произвольный `origin` (имя модуля/плагина) к валидному ToolSourceId.
+    Привести произвольный origin (имя модуля/плагина) к валидному ToolSourceId.
     """
     sanitized = _NON_COMPONENT_RE.sub("_", origin)
     while _SEPARATOR in sanitized:

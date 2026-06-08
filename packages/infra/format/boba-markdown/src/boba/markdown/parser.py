@@ -1,32 +1,32 @@
-"""Markdown AST-парсер: markdown-text → типизированные `Section`.
+"""Markdown AST-парсер: markdown-text -> типизированные Section.
 
-Использует `markdown-it-py` для AST-парсинга. Каждый top-level markdown-блок
-становится конкретным наследником `boba.indexing.Section[str]`:
+Использует markdown-it-py для AST-парсинга. Каждый top-level markdown-блок
+становится конкретным наследником boba.indexing.Section[str]:
 
-- `HeadingSection`
-- `ParagraphSection`
-- `MarkdownCodeFenceSection`
-- `MarkdownTableSection`
-- `MarkdownListSection`
-- `MarkdownBlockquoteSection`
-- `MarkdownHorizontalRuleSection`
+- HeadingSection
+- ParagraphSection
+- MarkdownCodeFenceSection
+- MarkdownTableSection
+- MarkdownListSection
+- MarkdownBlockquoteSection
+- MarkdownHorizontalRuleSection
 
-**HTML-блоки внутри markdown** (`<div>...</div>`) представляются как
-`ParagraphSection` — сырой HTML кладётся в content как есть, без отдельного
+**HTML-блоки внутри markdown** (<div>...</div>) представляются как
+ParagraphSection — сырой HTML кладётся в content как есть, без отдельного
 типа (он markdown-специфичен).
 
 **Inline-форматирование** (bold/italic/links/inline-code) НЕ разворачивается
-в отдельные секции — остаётся внутри `content` как markdown-syntax.
+в отдельные секции — остаётся внутри content как markdown-syntax.
 
-Зависимость: `markdown-it-py` (обязательная — пакет без неё не работает).
+Зависимость: markdown-it-py (обязательная — пакет без неё не работает).
 
-**Контракт offset-tracking**: для любой Section `s` парсер кладёт в её
-`metadata` ключи `SectionKeys.LOCATION_START` / `LOCATION_END` так, что
-`original_text[start:end] == s.content`.
+**Контракт offset-tracking**: для любой Section s парсер кладёт в её
+metadata ключи SectionKeys.LOCATION_START / LOCATION_END так, что
+original_text[start:end] == s.content.
 
-Парсер также проставляет `source_id` и `base_metadata` для каждой
-эмитируемой Section, чтобы `Reader.convert(raw)` мог напрямую
-`yield from parser.parse(...)`.
+Парсер также проставляет source_id и base_metadata для каждой
+эмитируемой Section, чтобы Reader.read(raw) мог напрямую
+yield from parser.parse(...).
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ _ParseResult = tuple[Section[str] | None, int]
 
 
 def slugify(text: str) -> str | None:
-    """`Foo Bar! 123` → `foo-bar-123`. Возвращает `None` для пустого результата."""
+    """Foo Bar! 123 -> foo-bar-123. Возвращает None для пустого результата."""
     s = text.strip().lower().replace(" ", "-")
     s = _NONALNUM.sub("", s)
     s = s.strip("-")
@@ -90,8 +90,8 @@ def _with_location(
 
 
 def _compute_line_offsets(text: str) -> list[int]:
-    """Префиксные char-offset'ы каждой строки `text` (включая виртуальную
-    строку после последней — для half-open-range `tok.map`).
+    """Префиксные char-offset'ы каждой строки text (включая виртуальную
+    строку после последней — для half-open-range tok.map).
     """
     offsets = [0]
     pos = 0
@@ -103,10 +103,10 @@ def _compute_line_offsets(text: str) -> list[int]:
 
 @dataclass(frozen=True, slots=True)
 class _ParseContext:
-    """Session-invariant вход парсера. Передаётся в каждый `_parse_*`-helper.
+    """Session-invariant вход парсера. Передаётся в каждый _parse_*-helper.
 
-    `tokens`, `text`, `line_offsets` — общие производные исходного текста;
-    `source_id` / `base_metadata` — то что копируется в каждую эмитируемую
+    tokens, text, line_offsets — общие производные исходного текста;
+    source_id / base_metadata — то что копируется в каждую эмитируемую
     Section.
     """
 
@@ -117,10 +117,10 @@ class _ParseContext:
     base_metadata: Metadata
 
     def slice_for_map(self, map_range: list[int]) -> tuple[int, int, str]:
-        """Half-open `[line_start, line_end)` → `(char_start, char_end, slice)`.
+        """Half-open [line_start, line_end) -> (char_start, char_end, slice).
 
-        Trailing `\\n` отбрасывается, чтобы выполнить slice-инвариант
-        `text[start:end] == content`.
+        Trailing \\n отбрасывается, чтобы выполнить slice-инвариант
+        text[start:end] == content.
         """
         line_start, line_end = map_range[0], map_range[1]
         char_start = self.line_offsets[line_start]
@@ -136,10 +136,10 @@ class _ParseContext:
 
 
 class MarkdownSectionParser:
-    """Парсит markdown в поток `Section[str]` с offset-tracking.
+    """Парсит markdown в поток Section[str] с offset-tracking.
 
-    Использует `markdown-it-py` для block-level AST. Каждый top-level
-    AST-токен → соответствующий `Section`-наследник.
+    Использует markdown-it-py для block-level AST. Каждый top-level
+    AST-токен -> соответствующий Section-наследник.
     """
 
     def __init__(self) -> None:
@@ -152,10 +152,10 @@ class MarkdownSectionParser:
         source_id: SourceId,
         base_metadata: Metadata,
     ) -> Iterable[Section[str]]:
-        """Парсит `text` в поток `Section`-ов.
+        """Парсит text в поток Section-ов.
 
-        `source_id` и `base_metadata` копируются в каждую эмитированную секцию.
-        `order` присваивается монотонно (0, 1, 2, ...) — по порядку появления
+        source_id и base_metadata копируются в каждую эмитированную секцию.
+        order присваивается монотонно (0, 1, 2, ...) — по порядку появления
         секций в документе; нужен для детерминизма chunk_id.
         """
         if not text:
@@ -182,10 +182,10 @@ class MarkdownSectionParser:
         i: int,
         order: int,
     ) -> _ParseResult:
-        """Диспатч одного top-level block начиная с `ctx.tokens[i]`.
+        """Диспатч одного top-level block начиная с ctx.tokens[i].
 
-        Возвращает `(section_or_None, advance)`, где `advance` — на сколько
-        токенов сдвигаться от текущего `i` к следующему top-level block'у.
+        Возвращает (section_or_None, advance), где advance — на сколько
+        токенов сдвигаться от текущего i к следующему top-level block'у.
         """
         tok = ctx.tokens[i]
         if tok.type == "heading_open":
@@ -205,7 +205,7 @@ class MarkdownSectionParser:
         if tok.type == "hr":
             return self._parse_hr(ctx, i, order)
         if tok.type == "html_block":
-            # Raw HTML внутри markdown → ParagraphSection
+            # Raw HTML внутри markdown -> ParagraphSection
             # (HTML-специфика не в доменной иерархии Section).
             return self._parse_html_block(ctx, i, order)
         return None, 1
@@ -412,8 +412,8 @@ class MarkdownSectionParser:
             order=order,
             metadata=_with_location(ctx.base_metadata, start, end),
         )
-        # Сканируем до соответствующего `blockquote_close` с учётом вложенности.
-        # `j` после loop'а уже инкрементирован за close — поэтому advance = j - i
+        # Сканируем до соответствующего blockquote_close с учётом вложенности.
+        # j после loop'а уже инкрементирован за close — поэтому advance = j - i
         # (без +1, в отличие от других _parse_*: цикл сам ушёл на токен past close).
         depth = 1
         j = i + 1
@@ -445,7 +445,7 @@ class MarkdownSectionParser:
     def _parse_html_block(
         cls, ctx: _ParseContext, i: int, order: int,
     ) -> _ParseResult:
-        """Raw HTML → `ParagraphSection` (HTML-фрагмент как plain content)."""
+        """Raw HTML -> ParagraphSection (HTML-фрагмент как plain content)."""
         tok = ctx.tokens[i]
         if not tok.map:
             return None, 1
@@ -460,10 +460,10 @@ class MarkdownSectionParser:
 
     @staticmethod
     def _skip_until(tokens: list[Token], start: int, close_type: str) -> int:
-        """Расстояние от `start` до позиции **за** первым `close_type`-токеном.
+        """Расстояние от start до позиции **за** первым close_type-токеном.
 
-        Если `close_type` не найден до конца `tokens`, возвращает расстояние
-        до `len(tokens) + 1` (и caller просто упрётся в end-of-stream).
+        Если close_type не найден до конца tokens, возвращает расстояние
+        до len(tokens) + 1 (и caller просто упрётся в end-of-stream).
         """
         j = start
         while j < len(tokens) and tokens[j].type != close_type:

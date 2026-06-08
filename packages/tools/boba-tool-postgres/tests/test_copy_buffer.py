@@ -98,7 +98,7 @@ def test_row_count_counts_separators_across_blocks() -> None:
 
 def test_limit_rows_raises_when_exceeded() -> None:
     buf = CopyBuffer(max_capacity=1024, limit_rows=2)
-    buf.write(b"h\n")  # header → row_count 0
+    buf.write(b"h\n")  # header -> row_count 0
     buf.write(b"a\n")  # 1
     buf.write(b"b\n")  # 2
     with pytest.raises(RowLimitExceededError):

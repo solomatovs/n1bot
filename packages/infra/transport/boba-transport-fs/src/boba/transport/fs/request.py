@@ -11,11 +11,11 @@ __all__ = ["FsRequest"]
 
 @dataclass(frozen=True)
 class FsRequest:
-    """План `open(file)`
+    """План open(file)
 
-    `source_id` — caller-supplied canonical id (RequestSource ставит,
+    source_id — caller-supplied canonical id (RequestSource ставит,
     Transport исполняет — Transport не формирует identity).
-    `metadata` — обогащение для Section.metadata (relative_path,
+    metadata — обогащение для Section.metadata (relative_path,
     space_key для FS-export Confluence и т.п.). Transport может
     добавить свои ключи (mtime, size).
     """

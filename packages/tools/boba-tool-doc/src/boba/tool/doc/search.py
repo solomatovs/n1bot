@@ -1,19 +1,19 @@
 """Tool: поиск фразы в документе с координатами совпадений (liteparse).
 
 Bbox-merge (фраза может идти через несколько фрагментов) делает нативный
-`liteparse._liteparse.search_items` — это «готовый модуль» движка. Берём
-именно приватный нативный символ, потому что публичный `liteparse.search_items`
-в 2.0.x сломан: он передаёт dataclass-`TextItem` (вывод публичного `parse()`)
-в нативную функцию, ждущую `PyTextItem`, и падает с `TypeError`. Поэтому
-парсим нативным `DocEngine.parse_native` (отдаёт нативные items) и зовём
-нативный `search_items` напрямую.
+liteparse._liteparse.search_items — это «готовый модуль» движка. Берём
+именно приватный нативный символ, потому что публичный liteparse.search_items
+в 2.0.x сломан: он передаёт dataclass-TextItem (вывод публичного parse())
+в нативную функцию, ждущую PyTextItem, и падает с TypeError. Поэтому
+парсим нативным DocEngine.parse_native (отдаёт нативные items) и зовём
+нативный search_items напрямую.
 
-КОГДА АПСТРИМ ПОЧИНИТ публичный `search_items` — заменить импорт на
-`from liteparse import search_items`, парсить обычным `DocEngine.parse`
-и удалить `parse_native`/private-импорт.
+КОГДА АПСТРИМ ПОЧИНИТ публичный search_items — заменить импорт на
+from liteparse import search_items, парсить обычным DocEngine.parse
+и удалить parse_native/private-импорт.
 
 Контекст-сниппет нативный модуль не даёт (возвращает только сам матч + bbox),
-поэтому его собираем сами из `page.text`.
+поэтому его собираем сами из page.text.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ __all__ = ["search_document"]
 
 
 class _Search:
-    """Поиск через нативный `search_items`; контекст-сниппет — из `page.text`."""
+    """Поиск через нативный search_items; контекст-сниппет — из page.text."""
 
     @staticmethod
     def run(
@@ -77,7 +77,7 @@ class _Search:
 
     @staticmethod
     def _snippet(text: str, lo: int, hi: int, context: int) -> str:
-        """Вырезать совпадение с контекстом по `context` символов с каждой стороны."""
+        """Вырезать совпадение с контекстом по context символов с каждой стороны."""
         begin = max(0, lo - context)
         fin = min(len(text), hi + context)
         prefix = "…" if begin > 0 else ""
@@ -100,9 +100,9 @@ def search_document(
 ) -> TableResult:
     """Найти фразу в документе; вернуть совпадения со страницей, bbox и сниппетом.
 
-    Колонки: `page`, `x`/`y`/`width`/`height` (координаты совпадения на странице),
-    `snippet` (контекст). Поиск регистронезависимый; число совпадений ограничено
-    `search_max_matches`.
+    Колонки: page, x/y/width/height (координаты совпадения на странице),
+    snippet (контекст). Поиск регистронезависимый; число совпадений ограничено
+    search_max_matches.
     """
     data = DocEngine.read_bytes(shell, path)
     native = DocEngine.parse_native(cfg, data, path)

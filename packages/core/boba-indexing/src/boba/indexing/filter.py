@@ -1,12 +1,12 @@
 """Filter — backend-agnostic DSL для запросов по полям чанка
-(`tags`, `source_id`, `updated_at`, scope-key impl'а вроде `namespace`,
+(tags, source_id, updated_at, scope-key impl'а вроде namespace,
 произвольная business-Metadata — что угодно из payload'а чанка).
 
 Sealed union предикатов. Каждый ChunkStore-impl переводит Filter в свой
 нативный язык запросов:
-- ChromaVectorStore  → chroma `where={...}` syntax
-- PostgresChunkStore → SQL WHERE clause
-- QdrantVectorStore  → qdrant Filter struct
+- ChromaVectorStore  -> chroma where={...} syntax
+- PostgresChunkStore -> SQL WHERE clause
+- QdrantVectorStore  -> qdrant Filter struct
 - ...
 
 Использование:
@@ -28,7 +28,7 @@ Sealed union предикатов. Каждый ChunkStore-impl переводи
     f = And([HasTag("public"), Or([Eq("doc_type", "pdf"), Eq("doc_type", "html")])])
 
 DSL покрывает реалистичный набор операций vector-backend'ов; экзотику
-конкретный backend может либо отвергать через `UnsupportedFilterError`,
+конкретный backend может либо отвергать через UnsupportedFilterError,
 либо реализовывать через комбинацию своих примитивов.
 """
 
@@ -68,7 +68,7 @@ class Filter(ABC):
 
 @dataclass(frozen=True)
 class Eq(Filter):
-    """`field == value`"""
+    """field == value"""
 
     field: str
     value: ScalarValue
@@ -76,7 +76,7 @@ class Eq(Filter):
 
 @dataclass(frozen=True)
 class Ne(Filter):
-    """`field != value`"""
+    """field != value"""
 
     field: str
     value: ScalarValue
@@ -84,7 +84,7 @@ class Ne(Filter):
 
 @dataclass(frozen=True)
 class Lt(Filter):
-    """`field < value` (числовое сравнение)."""
+    """field < value (числовое сравнение)."""
 
     field: str
     value: int | float
@@ -92,7 +92,7 @@ class Lt(Filter):
 
 @dataclass(frozen=True)
 class Lte(Filter):
-    """`field <= value` (числовое сравнение)."""
+    """field <= value (числовое сравнение)."""
 
     field: str
     value: int | float
@@ -100,7 +100,7 @@ class Lte(Filter):
 
 @dataclass(frozen=True)
 class Gt(Filter):
-    """`field > value` (числовое сравнение)."""
+    """field > value (числовое сравнение)."""
 
     field: str
     value: int | float
@@ -108,7 +108,7 @@ class Gt(Filter):
 
 @dataclass(frozen=True)
 class Gte(Filter):
-    """`field >= value` (числовое сравнение)."""
+    """field >= value (числовое сравнение)."""
 
     field: str
     value: int | float
@@ -116,7 +116,7 @@ class Gte(Filter):
 
 @dataclass(frozen=True)
 class In(Filter):
-    """`field IN values` — ровный список допустимых значений."""
+    """field IN values — ровный список допустимых значений."""
 
     field: str
     values: Sequence[ScalarValue]
@@ -124,7 +124,7 @@ class In(Filter):
 
 @dataclass(frozen=True)
 class NotIn(Filter):
-    """`field NOT IN values`"""
+    """field NOT IN values"""
 
     field: str
     values: Sequence[ScalarValue]
@@ -132,7 +132,7 @@ class NotIn(Filter):
 
 @dataclass(frozen=True)
 class HasTag(Filter):
-    """Чанк имеет тэг `tag` в множестве своих тэгов."""
+    """Чанк имеет тэг tag в множестве своих тэгов."""
 
     tag: str
 

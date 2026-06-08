@@ -45,13 +45,13 @@ TConfig = TypeVar("TConfig")
 @dataclass(frozen=True)
 class ToolContext:
     """
-    Контекст исполнения инструмента. Содержит все, что нужно для `Tool.execute()`
+    Контекст исполнения инструмента. Содержит все, что нужно для Tool.execute()
     """
 
 
 @dataclass(frozen=True)
 class ToolCall:
-    """Запрос на вызов инструмента (wire-id `<name>`)."""
+    """Запрос на вызов инструмента (wire-id <name>)."""
 
     tool_id: ToolId
     arguments: dict[str, Any]
@@ -62,8 +62,8 @@ class ToolSchema:
     """Декларация tool'а: имя, описание, JSON-schema параметров.
 
     Живёт в tools-домене как контракт, **исходящий** из tools наружу к
-    LLM-слою. Симметрично к `ToolResult`, который тоже доменная сущность
-    tools, используемая LLM-протоколом (`ToolResultMessage.result`).
+    LLM-слою. Симметрично к ToolResult, который тоже доменная сущность
+    tools, используемая LLM-протоколом (ToolResultMessage.result).
     """
 
     name: str
@@ -80,15 +80,15 @@ class Tool(
     """Базовый класс tool; application-singleton.
 
     Соглашения по subclass'ам:
-    - наследуют `Tool[XArgs, XToolConfig]`, где `XArgs` — pydantic
-      `BaseModel`-subclass с описанием аргументов tool'а;
-    - реализуют только `execute(ctx, args: XArgs) -> ToolResult`;
-    - `name()`, `tool_id()`, `definition()` имеют дефолтные реализации
+    - наследуют Tool[XArgs, XToolConfig], где XArgs — pydantic
+      BaseModel-subclass с описанием аргументов tool'а;
+    - реализуют только execute(ctx, args: XArgs) -> ToolResult;
+    - name(), tool_id(), definition() имеют дефолтные реализации
       на базе TArgs/TConfig и могут быть переопределены.
 
-    Identity: tool_id = `name()` (источник в wire-имя не входит). По
-    умолчанию `name()` — snake_case имени класса без суффикса `Tool`
-    (CatTool → "cat").
+    Identity: tool_id = name() (источник в wire-имя не входит). По
+    умолчанию name() — snake_case имени класса без суффикса Tool
+    (CatTool -> "cat").
     """
 
     _cfg: TConfig
@@ -122,13 +122,13 @@ class Tool(
         return self._source_id
 
     def definition(self) -> ToolSchema:
-        """`ToolSchema` инструмента: name + description + parameters_schema.
+        """ToolSchema инструмента: name + description + parameters_schema.
 
-        args_model берётся из `_args_model_class()` (instance-hook; default
-        резолвит TArgs из `Tool[XArgs, XConfig]` через `__orig_bases__`).
-        Схема эмитится `LLMSchemaGenerator`-ом сразу плоской (без `$defs`/
-        `$ref`/`title`). `description` переезжает в одноимённое поле
-        `ToolSchema`, остальное идёт в `parameters_schema`.
+        args_model берётся из _args_model_class() (instance-hook; default
+        резолвит TArgs из Tool[XArgs, XConfig] через __orig_bases__).
+        Схема эмитится LLMSchemaGenerator-ом сразу плоской (без $defs/
+        $ref/title). description переезжает в одноимённое поле
+        ToolSchema, остальное идёт в parameters_schema.
         """
         schema = self._args_model_class().model_json_schema(
             schema_generator=LLMSchemaGenerator,
@@ -144,15 +144,15 @@ class Tool(
     def _args_model_class(self) -> type[BaseModel]:
         """Instance-hook: какая pydantic-модель валидирует аргументы.
 
-        Default — резолв через generic-параметр `Tool[XArgs, XConfig]`.
+        Default — резолв через generic-параметр Tool[XArgs, XConfig].
         Сабклассы, у которых args_model рождается не из generic (например,
-        `DecoratedTool` создаёт модель через `create_model`), переопределяют.
+        DecoratedTool создаёт модель через create_model), переопределяют.
         """
         return self._resolve_args_model()
 
     @classmethod
     def _resolve_args_model(cls) -> type[BaseModel]:
-        """Извлечь TArgs из `Tool[XArgs, XConfig]`; иначе TypeError."""
+        """Извлечь TArgs из Tool[XArgs, XConfig]; иначе TypeError."""
         for klass in cls.__mro__:
             for base in getattr(klass, "__orig_bases__", ()):
                 origin = get_origin(base)
@@ -171,16 +171,16 @@ class Tool(
         raise TypeError(msg)
 
     def invoke(self, ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
-        """Распарсить `raw` через TArgs-модель и делегировать в `execute`."""
+        """Распарсить raw через TArgs-модель и делегировать в execute."""
         args = self._parse_args(raw)
         return self.execute(ctx, args)
 
     def _parse_args(self, raw: dict[str, Any]) -> TArgs:
-        """`raw: dict` → typed TArgs через `model_validate`.
+        """raw: dict -> typed TArgs через model_validate.
 
-        Ошибки pydantic'а заворачиваются в `InvalidToolArgumentError` /
-        `InvalidSchemaInvariantError` с подсказкой `expected: JSON-schema`
-        и preview `received` для LLM.
+        Ошибки pydantic'а заворачиваются в InvalidToolArgumentError /
+        InvalidSchemaInvariantError с подсказкой expected: JSON-schema
+        и preview received для LLM.
         """
         args_model = self._args_model_class()
         try:
@@ -197,12 +197,12 @@ class Tool(
             ) from e
 
     def _validation_context(self) -> dict[str, Any]:
-        """Context для `model_validate(raw, context=...)`.
+        """Context для model_validate(raw, context=...).
 
         Default — пусто. Tool с runtime-параметрами в констрейнтах
-        (например, `KbSearchTool.max_top_k`) переопределяет: возвращает
-        `{"max_top_k": self._cfg.max_top_k}`, который читает
-        `@field_validator(mode="after")` на Args.
+        (например, KbSearchTool.max_top_k) переопределяет: возвращает
+        {"max_top_k": self._cfg.max_top_k}, который читает
+        @field_validator(mode="after") на Args.
         """
         return {}
 
@@ -213,14 +213,14 @@ def _pydantic_error_to_tool_error(
     wire_schema: ToolSchema,
     raw: dict[str, Any],
 ) -> InvalidToolArgumentError | InvalidSchemaInvariantError:
-    """Pydantic `ValidationError` → `InvalidToolArgument` / `InvalidSchemaInvariant`.
+    """Pydantic ValidationError -> InvalidToolArgument / InvalidSchemaInvariant.
 
-    Берётся первая ошибка из `err.errors()` и маппится:
-    - `loc == ()` (root-level validator) → `InvalidSchemaInvariantError`;
-    - `loc == (str_field, ...)` → `InvalidToolArgumentError` с
-      `expected = parameters_schema["properties"][field]` и
-      `received = raw[field]`;
-    - кейсы со странным `loc` (не строка) → `InvalidSchemaInvariantError`.
+    Берётся первая ошибка из err.errors() и маппится:
+    - loc == () (root-level validator) -> InvalidSchemaInvariantError;
+    - loc == (str_field, ...) -> InvalidToolArgumentError с
+      expected = parameters_schema["properties"][field] и
+      received = raw[field];
+    - кейсы со странным loc (не строка) -> InvalidSchemaInvariantError.
     """
     errors = err.errors()
     if not errors:  # pragma: no cover — pydantic всегда возвращает >=1

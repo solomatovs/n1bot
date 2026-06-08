@@ -1,4 +1,4 @@
-"""Тесты tool visualize: spec → ChartResult, валидация, извлечение title."""
+"""Тесты tool visualize: spec -> ChartResult, валидация, извлечение title."""
 
 from __future__ import annotations
 

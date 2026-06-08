@@ -16,7 +16,7 @@ from boba.tools.domain.ids import (
         ("inline", "inline"),
         ("mcp-github", "mcp-github"),
         ("123abc", "123abc"),
-        ("__main__", "main"),  # `__` схлопывается, ведущие/хвостовые `_` режутся
+        ("__main__", "main"),  # __ схлопывается, ведущие/хвостовые _ режутся
         ("a__b", "a_b"),
         ("a_", "a"),
         ("-x-", "x"),

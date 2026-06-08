@@ -71,10 +71,10 @@ def grep(  # noqa: PLR0913
 ) -> TableResult:
     """Найти совпадения pattern в текстовых файлах.
 
-    Возвращает `TableResult` — таблицу matches с колонками `path`/`line`/
-    `content`/`before`/`after` (+`truncated_lines` на усечённых). Бинарные и
+    Возвращает TableResult — таблицу matches с колонками path/line/
+    content/before/after (+truncated_lines на усечённых). Бинарные и
     недекодируемые файлы пропускаются. Переполнение limit и обрезка длинных
-    строк по `max_text_chars` — в `note`.
+    строк по max_text_chars — в note.
     """
     try:
         iterator = shell.grep(
@@ -134,7 +134,7 @@ def grep(  # noqa: PLR0913
 
 
 def _clip(s: str, limit: int) -> tuple[str, bool]:
-    """Обрезает строку до `limit` символов; возвращает (строка, был_ли_обрезан)."""
+    """Обрезает строку до limit символов; возвращает (строка, был_ли_обрезан)."""
     if len(s) <= limit:
         return s, False
     return s[:limit], True
@@ -143,7 +143,7 @@ def _clip(s: str, limit: int) -> tuple[str, bool]:
 def _clip_many(
     lines: list[str] | tuple[str, ...], limit: int
 ) -> tuple[list[str], bool]:
-    """Применяет `_clip` к каждой строке списка."""
+    """Применяет _clip к каждой строке списка."""
     out: list[str] = []
     cut = False
     for line in lines:

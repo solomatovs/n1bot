@@ -86,7 +86,7 @@ def test_meta_fields_reference_ingest_keys() -> None:
 
 
 def test_wire_keys_aligned_across_collections() -> None:
-    # kbdoc выровнен под confluence: одинаковые wire-имена → строки совместимы.
+    # kbdoc выровнен под confluence: одинаковые wire-имена -> строки совместимы.
     conf = {f.column: f.key.name for f in ConfluenceCollection.META_FIELDS}
     doc = {f.column: f.key.name for f in KbDocCollection.META_FIELDS}
     assert conf == doc
@@ -96,5 +96,5 @@ def test_missing_keys_become_empty() -> None:
     row = ConfluenceCollection.row(_hit({"reader.page_title": "T"}))
     assert row["page_title"] == "T"
     assert row["source_url"] == ""
-    assert row["link"] == ""  # нет source_url → пустой link
+    assert row["link"] == ""  # нет source_url -> пустой link
     assert row["tags"] == ""

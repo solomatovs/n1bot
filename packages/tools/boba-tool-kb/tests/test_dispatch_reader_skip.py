@@ -1,9 +1,9 @@
-"""`DispatchReader.on_unknown`: skip-режим для multi-format потоков.
+"""DispatchReader.on_unknown: skip-режим для multi-format потоков.
 
 Проверяет, что в Confluence-ingest-сценарии (HTML страницы + произвольные
-attachment'ы) attachment-документы с непокрытым `CONTENT_TYPE` не валят
+attachment'ы) attachment-документы с непокрытым CONTENT_TYPE не валят
 весь pipeline, а молча пропускаются (yield пустой). Заодно регрессионно
-страхует default-режим `error` — чтобы случайный пропуск ключа не остался
+страхует default-режим error — чтобы случайный пропуск ключа не остался
 незамеченным в других pipeline'ах.
 """
 
@@ -32,16 +32,13 @@ class _MarkerReader(Reader[str]):
     def __init__(self, marker: str) -> None:
         self._marker = marker
 
-    def name(self) -> str:
-        return f"MarkerReader({self._marker!r})"
-
     def reader_id(self) -> ReaderId:
         return ReaderId(f"ext.test.marker.{self._marker}")
 
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+    def read(self, raw: RawDocument) -> Iterable[Section[str]]:
         yield Section(
-            source_id=value.source_id,
-            metadata=value.metadata,
+            source_id=raw.source_id,
+            metadata=raw.metadata,
             content=self._marker,
         )
 
@@ -58,26 +55,26 @@ def _doc_with_content_type(ct: str | None) -> RawDocument:
 
 
 def test_skip_unknown_content_type_yields_nothing() -> None:
-    """`image/png` без route → пустой Iterable, без исключения."""
+    """image/png без route -> пустой Iterable, без исключения."""
     reader = DispatchReader(
         by=TransportKeys.CONTENT_TYPE,
         routes={"text/html": _MarkerReader("html")},
         reader_id=ReaderId("ext.test.dispatch"),
         on_unknown="skip",
     )
-    out = list(reader.convert(_doc_with_content_type("image/png")))
+    out = list(reader.read(_doc_with_content_type("image/png")))
     assert out == []
 
 
 def test_skip_missing_key_yields_nothing() -> None:
-    """Метадата вообще без `CONTENT_TYPE` — тоже skip, не error."""
+    """Метадата вообще без CONTENT_TYPE — тоже skip, не error."""
     reader = DispatchReader(
         by=TransportKeys.CONTENT_TYPE,
         routes={"text/html": _MarkerReader("html")},
         reader_id=ReaderId("ext.test.dispatch"),
         on_unknown="skip",
     )
-    out = list(reader.convert(_doc_with_content_type(None)))
+    out = list(reader.read(_doc_with_content_type(None)))
     assert out == []
 
 
@@ -92,21 +89,21 @@ def test_skip_does_not_break_known_routes() -> None:
         reader_id=ReaderId("ext.test.dispatch"),
         on_unknown="skip",
     )
-    html_out = list(reader.convert(_doc_with_content_type("text/html")))
-    pdf_out = list(reader.convert(_doc_with_content_type("application/pdf")))
+    html_out = list(reader.read(_doc_with_content_type("text/html")))
+    pdf_out = list(reader.read(_doc_with_content_type("application/pdf")))
     assert [s.content for s in html_out] == ["html"]
     assert [s.content for s in pdf_out] == ["pdf"]
 
 
 def test_error_mode_still_raises_on_unknown() -> None:
-    """Default-mode (`error`) должен по-прежнему бросать `IncompatibleContentError`."""
+    """Default-mode (error) должен по-прежнему бросать IncompatibleContentError."""
     reader = DispatchReader(
         by=TransportKeys.CONTENT_TYPE,
         routes={"text/html": _MarkerReader("html")},
         reader_id=ReaderId("ext.test.dispatch"),
     )
     with pytest.raises(IncompatibleContentError):
-        list(reader.convert(_doc_with_content_type("image/png")))
+        list(reader.read(_doc_with_content_type("image/png")))
 
 
 def test_error_mode_raises_on_missing_key() -> None:
@@ -116,4 +113,4 @@ def test_error_mode_raises_on_missing_key() -> None:
         reader_id=ReaderId("ext.test.dispatch"),
     )
     with pytest.raises(IncompatibleContentError):
-        list(reader.convert(_doc_with_content_type(None)))
+        list(reader.read(_doc_with_content_type(None)))

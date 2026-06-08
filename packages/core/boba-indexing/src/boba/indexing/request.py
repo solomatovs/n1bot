@@ -2,18 +2,18 @@
 Request: общий Protocol для всех request-DTO.
 
 Конкретные Request-DTO живут в transport-пакетах:
-- `HttpRequest` в `boba-ext-http-transport` (url + method + headers + auth).
-- `FsRequest` в `boba-ext-fs-transport` (path).
+- HttpRequest в boba-ext-http-transport (url + method + headers + auth).
+- FsRequest в boba-ext-fs-transport (path).
 
-Pipeline и `RequestSource[ReqT]` параметризуются конкретным типом —
-generic-параметр `ReqT` ограничен этим protocol'ом, что даёт type-safety
+Pipeline и RequestSource[ReqT] параметризуются конкретным типом —
+generic-параметр ReqT ограничен этим protocol'ом, что даёт type-safety
 (HttpTransport не примет FsRequest).
 
 
 RequestSource - источник Request-планов для Transport'а.
 
-- `RequestSource[HttpRequest]` для REST-API
-- `RequestSource[FsRequest]` для файловой системы.
+- RequestSource[HttpRequest] для REST-API
+- RequestSource[FsRequest] для файловой системы.
 
 Pipeline и Transport параметризуются тем же типом — type-checker
 не даст совместить несовместимые слои.
@@ -24,12 +24,12 @@ source_id формирует RequestSource
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar, runtime_checkable
+from abc import ABC, abstractmethod
+from collections.abc import Iterable
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
-from boba.indexing.context import PipelineContext
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
-from boba.patterns import StreamSource
 
 __all__ = ["Request", "RequestSource"]
 
@@ -38,16 +38,16 @@ __all__ = ["Request", "RequestSource"]
 class Request(Protocol):
     """
     Контракт Request-DTO:
-        `source_id` - сообщает название источника документа.
+        source_id - сообщает название источника документа.
             Это название прокидывается далее во все чанки сквозным образом
-        `metadata` - сообщает исходные метаданные документа.
+        metadata - сообщает исходные метаданные документа.
             Эти метаданные в процессе выполнения pipeline обогощаются и записываются в чанки
             Здесь можно сообщить о документе базовую исходную информацию, которую хочется
             Донести до каждого чанка
 
     Контракты живут в отдельных transport-пакетах, например:
-    - `HttpRequest`  -> Request  — url, method, headers, auth.
-    - `FsRequest`    -> Request  — path.
+    - HttpRequest  -> Request  — url, method, headers, auth.
+    - FsRequest    -> Request  — path.
     """  # noqa: E501
 
     @property
@@ -60,36 +60,36 @@ class Request(Protocol):
 ReqT = TypeVar("ReqT", bound=Request)
 
 
-class RequestSource(StreamSource[PipelineContext, ReqT]):
+class RequestSource(ABC, Generic[ReqT]):
     """
     Источник Request'ов для Transport'а
 
     Источник нужен что бы генерировать Request'ы на выполнение в Transport
 
     Пример разных source'еров может быть процесс загрузки confluence-страниц, когда необходимо загрузить из confluence страницы в зависимости от стратегии:
-    - `page_id source` - выдает request ровно на 1-у страницу
-    - `space_key source` - последовательно выдает request'ы на зугрузку страниц внутри указанного space
+    - page_id source - выдает request ровно на 1-у страницу
+    - space_key source - последовательно выдает request'ы на зугрузку страниц внутри указанного space
 
     **Схема**:
-    ```python
-    source  ──────────────────────source.stream(ctx)──→  Iterable[ReqT]
-    (config, fs-walk, API …)                          →    source_id : SourceId   (canonical id — формирует source)
-                                                      →    metadata  : Metadata   (hint'ы для transport / reader / chunker)
-                                                      →    <fields>               (url / path / …)
-    ```
+    python
+    source  ──────────────────────source.requests()──->  Iterable[ReqT]
+    (config, fs-walk, API …)                            ->    source_id : SourceId   (canonical id — формирует source)
+                                                        ->    metadata  : Metadata   (hint'ы для transport / reader / chunker)
+                                                        ->    <fields>               (url / path / …)
+    
 
-    `source_id` — каноничен и стабилен: именно RequestSource знает, как
+    source_id — каноничен и стабилен: именно RequestSource знает, как
     сопоставить URL/path с логическим документом. Дальше по pipeline
-    этот id пробрасывается без изменений (Request → RawDocument → Section → Chunk).
+    этот id пробрасывается без изменений (Request -> RawDocument -> Section -> Chunk).
 
     **Пример** (usage):
-    ```python
+    python
     source: RequestSource[FsRequest] = FsWalkRequestSource(
         paths=[Path("docs/")],
         include=["*.md"],
     )
 
-    list(source.stream(ctx)) == [
+    list(source.requests()) == [
         FsRequest(
             path=Path("docs/intro.md"),
             source_id=SourceId("fs:/abs/docs/intro.md")),
@@ -97,5 +97,10 @@ class RequestSource(StreamSource[PipelineContext, ReqT]):
             path=Path("docs/api.md"),
             source_id=SourceId("fs:/abs/docs/api.md")),
     ]
-    ```
+    
     """  # noqa: E501
+
+    @abstractmethod
+    def requests(self) -> Iterable[ReqT]:
+        """Сгенерировать поток ReqT-планов для Transport'а."""
+        ...

@@ -52,7 +52,7 @@ class FinishReason(StrEnum):
 
     - tool_calls - модель решила вызвать tool/function:
         - в стриме до finish_reason прошли tool_calls
-        - в `message.tool_calls` лежит полный набор вызовов с
+        - в message.tool_calls лежит полный набор вызовов с
           собранными args
       Прилетает у строгих провайдеров (OpenAI Chat Completions, Anthropic
       tool_use) когда модель ожидает tool-result'ы и продолжение цикла.
@@ -214,19 +214,19 @@ class LLMTotalMessage(LLMSnapshot):
     """
     Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
 
-    Консьюмер эмитит его последним — после всех per-field `*Message`
+    Консьюмер эмитит его последним — после всех per-field *Message
     событий; терминатор генерации (источник истины). Несёт всё, что пришло
-    от провайдера в режиме streaming, как если бы это был `stream=False` ответ:
+    от провайдера в режиме streaming, как если бы это был stream=False ответ:
 
-    - `message` — собранный AssistantMessage с плоскими полями
+    - message — собранный AssistantMessage с плоскими полями
       (thinking / content / refusal / tool_calls / tool_call_decode_failures).
       Пустой message — валидное состояние, когда модель
-      завершилась без контента (например, `finish_reason=stop` без deltas).
-    - `finish_reason` — то, что реально прислал провайдер; без подмен.
+      завершилась без контента (например, finish_reason=stop без deltas).
+    - finish_reason — то, что реально прислал провайдер; без подмен.
 
     Это единственное событие, на котором агент-слой принимает решение об
-    остановке цикла — через отдельные `StopIf*` спецификации, скомпонованные
-    через `.or_()` в `AgentBuilder`.
+    остановке цикла — через отдельные StopIf* спецификации, скомпонованные
+    через .or_() в AgentBuilder.
     """
 
     message: AssistantMessage

@@ -2,16 +2,16 @@
 Metadata — typed view над Mapping[str, str] для хранения атрибутов документов и чанков.
 
 Каждый слой pipeline (Transport / Reader / Chunker) добавляет свои ключи через
-`MetadataKey[T]` константы:
-    - `TransportKeys` - ключи, проставляемые Transport-слоем:
+MetadataKey[T] константы:
+    - TransportKeys - ключи, проставляемые Transport-слоем:
             etag, mtime, content_type
-     - `ReaderKeys` - ключи, проставляемые Reader-слоем:
+     - ReaderKeys - ключи, проставляемые Reader-слоем:
             парсинг структуры документа, например doc_type, page_title, heading_path
-     - `ChunkerKeys` - ключи, проставляемые Chunker-слоем:
+     - ChunkerKeys - ключи, проставляемые Chunker-слоем:
             нарезка на чанки, например chunk_index, chunk_summary
 
 Типизация — на уровне доступа, к примеру
-    `md.get(TransportKeys.MTIME)` возвращает float | None а не str | None
+    md.get(TransportKeys.MTIME) возвращает float | None а не str | None
     избавляя от необходимости ручного decode/encode.
 
 Использование:
@@ -42,11 +42,11 @@ T = TypeVar("T")
 class MetadataKey(Generic[T]):
     """Типизированный ключ для Metadata: name + encode/decode.
 
-    `name` — wire-key (например 'transport.etag').
+    name — wire-key (например 'transport.etag').
     Namespace-prefix предотвращает коллизии между слоями pipeline и
     позволяет легко понять источник ключа при отладке
-        `decode` — превращает wire-string в типизированное значение.
-        `encode` — превращает типизированное значение в wire-string.
+        decode — превращает wire-string в типизированное значение.
+        encode — превращает типизированное значение в wire-string.
     """
 
 

@@ -1,16 +1,16 @@
 """
-Введение callable'а в `CallPlan`: pydantic args model + DI plan.
+Введение callable'а в CallPlan: pydantic args model + DI plan.
 
-`CallPlan` — кешируемый результат разбора сигнатуры tool'а или provider'а.
+CallPlan — кешируемый результат разбора сигнатуры tool'а или provider'а.
 Делается **один раз** на регистрации plugin'а, дальше runtime invoke
-использует кешированный план без повторного `inspect`'а.
+использует кешированный план без повторного inspect'а.
 
 Разделение параметров:
-- `Annotated[T, FromDI(...)]` → DI-dep
-- `Annotated[T, FromConfig(...)]` → DI-dep (но с особой semantic'ой
+- Annotated[T, FromDI(...)] -> DI-dep
+- Annotated[T, FromConfig(...)] -> DI-dep (но с особой semantic'ой
   «авто-загрузи cfg» на этапе сборки контейнера — это резолвится в
-  `container.py`, тут просто различаем тип маркера)
-- Всё остальное → LLM-arg (попадает в pydantic args model)
+  container.py, тут просто различаем тип маркера)
+- Всё остальное -> LLM-arg (попадает в pydantic args model)
 """
 
 from __future__ import annotations
@@ -35,12 +35,12 @@ __all__ = [
 class DiDep:
     """Одна DI-зависимость tool'а или provider'а.
 
-    `param_name` — имя kwarg'а в callable.
-    `target_type` — тип, который надо резолвить из контейнера.
-    `marker` — `FromDI(scope=...)` или `FromConfig()`.
+    param_name — имя kwarg'а в callable.
+    target_type — тип, который надо резолвить из контейнера.
+    marker — FromDI(scope=...) или FromConfig().
         Различие в семантике регистрации (FromConfig авто-загружается,
         FromDI ищется среди registered providers'ов), резолюция через
-        `container.get(T)` одинаковая.
+        container.get(T) одинаковая.
     """
 
     param_name: str
@@ -63,7 +63,7 @@ class CallPlan:
         """True если return-аннотация отсутствует (empty/None).
 
         Для provider'а return-тип обязателен — это тип, под которым служба
-        регистрируется в DI; `ToolBuilder.register_provider` использует это
+        регистрируется в DI; ToolBuilder.register_provider использует это
         для отказа в регистрации.
         """
         return self.return_type is inspect.Parameter.empty or self.return_type is None
@@ -74,9 +74,9 @@ def build_call_plan(obj: Any) -> CallPlan:
     создать план выполнения объекта (только разбор сигнатуры, без имени)
 
     Поддерживает:
-    - функции: `def my_tool(...) -> T:`
-    - classes: `class MyTool: def __call__(self, ...) -> T:` — обходится `__call__`
-    - callable-инстансы: `MyTool()` — обходится `type(obj).__call__`
+    - функции: def my_tool(...) -> T:
+    - classes: class MyTool: def __call__(self, ...) -> T: — обходится __call__
+    - callable-инстансы: MyTool() — обходится type(obj).__call__
     """
     meta = _resolve_callable_meta(obj)
 
@@ -143,8 +143,8 @@ class CallableMeta:
 def _resolve_callable_meta(obj: Any) -> CallableMeta:
     """Разобрать объект и извлечь метаданные для построения CallPlan."""
     # Поддерживаем функции, классы и callable-инстансы.
-    # Для классов и инстансов используем `__call__`,
-    # но имя и докстринг берём из самого объекта, а не из `__call__`.
+    # Для классов и инстансов используем __call__,
+    # но имя и докстринг берём из самого объекта, а не из __call__.
     if inspect.isfunction(obj) or inspect.ismethod(obj):
         raw_name = obj.__name__
         sig_target = obj
@@ -154,7 +154,7 @@ def _resolve_callable_meta(obj: Any) -> CallableMeta:
     # Если это класс, то предполагаем, что он — инструмент
     elif inspect.isclass(obj):
         raw_name = obj.__name__
-        # `__call__` говорит о том, что класс можно вызвать
+        # __call__ говорит о том, что класс можно вызвать
         if not callable(obj):
             msg = f"{raw_name}: класс должен иметь `__call__`"
             raise ToolDeclarationError(msg)
@@ -195,11 +195,11 @@ def _resolve_callable_meta(obj: Any) -> CallableMeta:
 
 
 def _unwrap_generator_return(rt: Any) -> Any:
-    """`Iterator[T]` / `Generator[T, ...]` → `T`; иначе — без изменений.
+    """Iterator[T] / Generator[T, ...] -> T; иначе — без изменений.
 
-    Generator-providers объявляют return как `Iterator[T]`, чтобы фреймворк
-    (и Dishka) поняли, что нужно сделать `yield` + cleanup. Но «provided
-    тип» — это T, не `Iterator[T]`. Унификация: framework везде работает
+    Generator-providers объявляют return как Iterator[T], чтобы фреймворк
+    (и Dishka) поняли, что нужно сделать yield + cleanup. Но «provided
+    тип» — это T, не Iterator[T]. Унификация: framework везде работает
     с T, а сам generator-факт Dishka детектит по yield в теле функции.
     """
     if rt is inspect.Parameter.empty or rt is None:
@@ -224,7 +224,7 @@ def _unwrap_generator_return(rt: Any) -> Any:
 
 def _extract_inject_marker(annotation: Any) -> FromDI | FromConfig | None:
     """
-    Найти `FromDI`/`FromConfig` в Annotated-метаданных.
+    Найти FromDI/FromConfig в Annotated-метаданных.
 
     Возвращает первый встреченный маркер
 
@@ -253,7 +253,7 @@ def _extract_inject_marker(annotation: Any) -> FromDI | FromConfig | None:
 
 def _strip_annotated(annotation: Any) -> type:
     """
-    `Annotated[T, ...]` -> `T`
+    Annotated[T, ...] -> T
     Для не-Annotated — возвращает как есть
     """
     if get_origin(annotation) is Annotated:
@@ -264,10 +264,10 @@ def _strip_annotated(annotation: Any) -> type:
 
 def _build_pydantic_field(annotation: Any, default: Any) -> tuple[Any, Any]:
     """
-    Пара `(annotation, default|Field)` для `create_model`.
+    Пара (annotation, default|Field) для create_model.
 
-    Если в `Annotated[T, "str", ...]` есть голая строка
-    это shortcut для `Field(description=...)`
+    Если в Annotated[T, "str", ...] есть голая строка
+    это shortcut для Field(description=...)
 
     Иначе аннотация передаётся в pydantic как есть
     """

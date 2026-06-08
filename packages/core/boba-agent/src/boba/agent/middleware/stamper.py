@@ -6,10 +6,10 @@
 (см. AgentBuilder._build_chain).
 
 Реализация passthrough: каждое событие из inner-стрима стампится в новую
-копию и проксируется наружу. `IterationStarted.iteration_count` обновляет
+копию и проксируется наружу. IterationStarted.iteration_count обновляет
 текущее значение iteration-счётчика per-request, которое затем стампится
-на всех последующих событиях этого request_id. Для `PhaseEvent`
-дополнительно стампится `duration_ns` — дельта `time.monotonic_ns()`
+на всех последующих событиях этого request_id. Для PhaseEvent
+дополнительно стампится duration_ns — дельта time.monotonic_ns()
 с момента предыдущего PhaseEvent того же request_id.
 """
 

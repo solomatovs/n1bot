@@ -1,7 +1,7 @@
 """Иерархия ошибок выполнения tool'ов.
 
-Все ошибки выполнения держат `tool_id: ToolId` — qualified wire-id
-(`<source>/<name>`). Tool сам владеет своим `ToolId` через ctor.
+Все ошибки выполнения держат tool_id: ToolId — qualified wire-id
+(<source>/<name>). Tool сам владеет своим ToolId через ctor.
 """
 
 from __future__ import annotations

@@ -1,36 +1,36 @@
 """KB-store слой поверх postgres + pgvector — конфиг и реализации.
 
 В одном модуле:
-- `PostgresStoreConfig`      — composite-конфиг (connection + tables).
-- `PostgresChunkStore`       — `ChunkStore[str]`: chunk-уровневые операции.
-- `PostgresCollectionsStore` — `CollectionsStore`: коллекции (CRUD).
+- PostgresStoreConfig      — composite-конфиг (connection + tables).
+- PostgresChunkStore       — ChunkStore[str]: chunk-уровневые операции.
+- PostgresCollectionsStore — CollectionsStore: коллекции (CRUD).
 
-Оба сервиса принимают `cfg: PostgresStoreConfig` (composite-модель с
-`connection` + `tables`). Pool открывают сами через `KbPool.open(cfg.connection)`
+Оба сервиса принимают cfg: PostgresStoreConfig (composite-модель с
+connection + tables). Pool открывают сами через KbPool.open(cfg.connection)
 (singleton по DSN — store'ы с одним и тем же connection делят один pool).
 Никакого корневого settings-класса — composite-cfg встраивается как
-nested-поле в tool-конфиги (`SearchInKbConfig`, `ConfluenceSpaceIngestConfig`, ...).
+nested-поле в tool-конфиги (SearchInKbConfig, ConfluenceSpaceIngestConfig, ...).
 
 Чисто chunk-уровневые операции (документы внутри коллекции):
 - read:  get_by_ids / peek / find / diff_by_hash
 - write: upsert / delete / update_metadata
 
 Хранение:
-- Все коллекции в одной таблице (по дефолту `kb_chunks`, имя/схема — из
-  `PostgresStoreSchema`). Разделение по колонке `collection`.
+- Все коллекции в одной таблице (по дефолту kb_chunks, имя/схема — из
+  PostgresStoreSchema). Разделение по колонке collection.
 - Системные поля (source_id, chunk_index, content_hash) — отдельные колонки
-  таблицы. Тэги — `text[]`. Остальная metadata — `jsonb`.
-- Embedding — `vector` (без фиксированной dim в столбце); HNSW-индекс
+  таблицы. Тэги — text[]. Остальная metadata — jsonb.
+- Embedding — vector (без фиксированной dim в столбце); HNSW-индекс
   per-dim создаётся оператором заранее через CLI
-  `boba.tool.kb.cli.bootstrap`. Store предполагает, что схема и индекс
+  boba.tool.kb.cli.bootstrap. Store предполагает, что схема и индекс
   уже на месте — runtime DDL не делает.
 
-Embedder в Store не инжектится: store принимает `EmbeddedChunk[str]` на
+Embedder в Store не инжектится: store принимает EmbeddedChunk[str] на
 write. Embedder живёт в pipeline-orchestrator'е выше
-(`CollectionScopedView`, `PostgresKnowledgeBase`).
+(CollectionScopedView, PostgresKnowledgeBase).
 
-Vector-search (cosine `<=>`) и FTS-search (`ts_rank_cd`) живут
-в `PostgresKnowledgeBase` — application-уровень, не часть ABC Store.
+Vector-search (cosine <=>) и FTS-search (ts_rank_cd) живут
+в PostgresKnowledgeBase — application-уровень, не часть ABC Store.
 """
 
 from __future__ import annotations
@@ -90,18 +90,18 @@ _E = TypeVar("_E")
 
 
 class KbPool:
-    """Factory `PostgresPool` для KB-store (с `register_vector`).
+    """Factory PostgresPool для KB-store (с register_vector).
 
-    `PostgresPool.get(...)` — singleton по DSN, поэтому повторные вызовы с
-    тем же `PostgresConnection` возвращают тот же объект pool'а. Configure-
-    hook `register_vector` регистрирует pgvector-типы на каждом fresh-коннекте
-    (без этого `embedding`-колонка приходит как plain str и `INSERT vector`
+    PostgresPool.get(...) — singleton по DSN, поэтому повторные вызовы с
+    тем же PostgresConnection возвращают тот же объект pool'а. Configure-
+    hook register_vector регистрирует pgvector-типы на каждом fresh-коннекте
+    (без этого embedding-колонка приходит как plain str и INSERT vector
     падает на cast).
     """
 
     @staticmethod
     def open(connection: PostgresConnection) -> PostgresPool:
-        """Открыть (или взять из кэша) `PostgresPool` под `connection`."""
+        """Открыть (или взять из кэша) PostgresPool под connection."""
         return PostgresPool.get(
             connection.to_pool_config(),
             configure=register_vector,
@@ -111,11 +111,11 @@ class KbPool:
 class PostgresStoreSchema(BaseModel):
     """Schema + имена таблиц KB-хранилища.
 
-    `BaseModel` (не settings), встраивается как nested-поле в tool-конфиги.
-    Один и тот же `PostgresStoreSchema` идёт и в bootstrap-CLI (создаёт
+    BaseModel (не settings), встраивается как nested-поле в tool-конфиги.
+    Один и тот же PostgresStoreSchema идёт и в bootstrap-CLI (создаёт
     таблицы), и в ingest/search-tools (читают/пишут эти же таблицы). Все
     идентификаторы — валидные postgres-идентификаторы без кавычек/точек/
-    пробелов; `psycopg.sql.Identifier` квотирует их при подстановке.
+    пробелов; psycopg.sql.Identifier квотирует их при подстановке.
     """
 
     batch_size: int = Field(
@@ -185,10 +185,10 @@ class PostgresStoreConfig(BaseModel):
 
 
 class PostgresChunkStore(ChunkStore[str]):
-    """Postgres-реализация `ChunkStore[str]`"""
+    """Postgres-реализация ChunkStore[str]"""
 
     # Колонки-системники: на них завязан admin и schema.sql.
-    # Если меняешь имя — синхронизируй с 001_init.sql и `_columns_select`.
+    # Если меняешь имя — синхронизируй с 001_init.sql и _columns_select.
     _SYSTEM_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"chunk_id", "collection", "source_id", "chunk_index", "content_hash"},
     )
@@ -427,7 +427,7 @@ class PostgresChunkStore(ChunkStore[str]):
         ids = [str(c) for c in chunk_ids]
         if not ids:
             return
-        # Patch-семантика: merge через jsonb `||`. Только ключи из patch
+        # Patch-семантика: merge через jsonb ||. Только ключи из patch
         # перезаписываются, остальные значения metadata остаются. Embedding
         # и content не трогаем (контракт ABC.update_metadata).
         wire_patch = {k: str(v) for k, v in patch.items()}
@@ -562,17 +562,17 @@ class PostgresChunkStore(ChunkStore[str]):
 
     @classmethod
     def _field_expr(cls, field: str) -> sql.Composable:
-        """SQL-выражение для поля: системник → колонка, иначе jsonb-путь.
+        """SQL-выражение для поля: системник -> колонка, иначе jsonb-путь.
 
-        Numeric/bool сравнения для metadata подразумевают cast (`::numeric`,
-        `::boolean`) уже на стороне callee'а — здесь возвращаем строковое
-        значение `metadata->>'key'`.
+        Numeric/bool сравнения для metadata подразумевают cast (::numeric,
+        ::boolean) уже на стороне callee'а — здесь возвращаем строковое
+        значение metadata->>'key'.
         """
         if field in cls._SYSTEM_FIELDS:
             return sql.Identifier(field)
         return sql.SQL("metadata->>{key}").format(key=sql.Literal(field))
 
-    # Whitelist операторов сравнения, чтобы не собирать `sql.SQL(f"...")`
+    # Whitelist операторов сравнения, чтобы не собирать sql.SQL(f"...")
     # из не-literal-параметра (psycopg запрещает: prevents SQL injection).
     _NUMERIC_OPS: ClassVar[dict[str, sql.SQL]] = {
         "<": sql.SQL("<"),
@@ -597,8 +597,8 @@ class PostgresChunkStore(ChunkStore[str]):
         params.append(value)
         # Для numeric сравнений (<, <=, >, >=) кастуем оба операнда в numeric
         # — это поддерживает фильтр над jsonb-числами, хранящимися как
-        # строки в `metadata->>`. Системные колонки уже numeric/text — cast
-        # для них либо no-op, либо корректный («10»::numeric → 10).
+        # строки в metadata->>. Системные колонки уже numeric/text — cast
+        # для них либо no-op, либо корректный («10»::numeric -> 10).
         if op in cls._NUMERIC_OPS:
             return (
                 sql.SQL("((")
@@ -637,7 +637,7 @@ class PostgresChunkStore(ChunkStore[str]):
 
 
 class PostgresCollectionsStore(CollectionsStore):
-    """Postgres-реализация `CollectionsStore` (только collection-уровень)."""
+    """Postgres-реализация CollectionsStore (только collection-уровень)."""
 
     def __init__(
         self,

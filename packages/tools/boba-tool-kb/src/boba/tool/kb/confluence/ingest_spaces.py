@@ -1,7 +1,7 @@
-"""Tool `confluence_ingest_spaces`: индексация всех страниц перечисленных spaces.
+"""Tool confluence_ingest_spaces: индексация всех страниц перечисленных spaces.
 
-Discovery через `/rest/api/space/{key}/content`. Общий конфиг/pipeline —
-`ingest_base.py` (секция `[tool.kb.confluence.ingest]`).
+Discovery через /rest/api/space/{key}/content. Общий конфиг/pipeline —
+ingest_base.py (секция [tool.kb.confluence.ingest]).
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from typing import Annotated
 from pydantic import Field
 
 from boba.settings import LLMStringList
+from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngest, ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources import ConfluenceMultiSpaceRequestSource
 from boba.tools import FromConfig, tool
@@ -47,15 +48,14 @@ def confluence_ingest_spaces(
 ) -> TableResult:
     """Индексирует ВСЕ страницы перечисленных Confluence-spaces в KB.
 
-    Возвращает `TableResult` с одной строкой-stats: колонки `space_keys`/
-    `collection`/`indexed`/`skipped_unchanged`/`pruned`/`failed`.
+    Возвращает TableResult с одной строкой-stats: колонки space_keys/
+    collection/indexed/skipped_unchanged/pruned/failed.
     """
+    conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
     request_source = ConfluenceMultiSpaceRequestSource(
-        conn=cfg.confluence,
+        conn=conn,
         space_keys=space_keys,
-        body_format=cfg.confluence.body_format,
+        body_format=conn.body_format,
     )
-    result = ConfluenceIngest.ingest(
-        cfg, request_source, prune_missing, ConfluenceIngest.PIPELINE_ID_SPACES,
-    )
+    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing)
     return TableResult(rows=[{"space_keys": space_keys, **result}])

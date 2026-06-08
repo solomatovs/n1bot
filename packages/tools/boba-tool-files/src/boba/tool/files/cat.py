@@ -45,10 +45,10 @@ def cat(  # noqa: PLR0913
 ) -> TableResult:
     """Чтение содержимого файла (диапазон строк 1-based, включительно).
 
-    Возвращает `TableResult` — таблицу строк с колонками `line`/`content`.
-    Путь, фактический диапазон и обрезка — в `note`/`metadata`. Запрашивай
-    окнами не шире `cat_max_lines` из конфига (default 2000); контент
-    дополнительно ограничен `max_text_chars` (default 200_000).
+    Возвращает TableResult — таблицу строк с колонками line/content.
+    Путь, фактический диапазон и обрезка — в note/metadata. Запрашивай
+    окнами не шире cat_max_lines из конфига (default 2000); контент
+    дополнительно ограничен max_text_chars (default 200_000).
     """
     if start_line > end_line:
         raise RuntimeError(
@@ -97,7 +97,7 @@ def cat(  # noqa: PLR0913
 def _read_range(
     f: TextIOBase, start: int, end: int, max_chars: int,
 ) -> tuple[list[dict[str, Any]], int, bool]:
-    """Стримит файл, возвращая строки [start, end] (`{line, content}`) с обрезкой."""
+    """Стримит файл, возвращая строки [start, end] ({line, content}) с обрезкой."""
     rows: list[dict[str, Any]] = []
     last = start - 1
     total = 0

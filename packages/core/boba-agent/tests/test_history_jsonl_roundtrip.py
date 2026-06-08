@@ -2,7 +2,7 @@
 
 Гарантирует:
 1. Каждое из 19 финальных событий round-trip'ится через AgentEventAdapter.
-2. Discriminator `type` проставляется и читается корректно.
+2. Discriminator type проставляется и читается корректно.
 3. Backward-compat: старые JSONL-строки (поле type первое или последнее)
    парсятся неизменно.
 4. JsonLinesHistoryService end-to-end через FsWorkspaceShell.

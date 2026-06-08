@@ -18,7 +18,7 @@ from boba.workspace.contract import WorkspaceId
 
 @pytest.fixture
 def agent_ctx() -> AgentContext:
-    """Минимальный `AgentContext` для тестов reducer'ов/middleware."""
+    """Минимальный AgentContext для тестов reducer'ов/middleware."""
     return AgentContext(
         request_id=new_request_id(),
         query="hi",
@@ -27,7 +27,7 @@ def agent_ctx() -> AgentContext:
 
 @pytest.fixture
 def make_turn_state() -> Callable[..., TurnState]:
-    """Фабрика `TurnState` с произвольным набором messages."""
+    """Фабрика TurnState с произвольным набором messages."""
 
     def _factory(*messages: DialogMessage) -> TurnState:
         return TurnState(dialog_messages=tuple(messages))
@@ -37,7 +37,7 @@ def make_turn_state() -> Callable[..., TurnState]:
 
 @pytest.fixture
 def make_tool_result_message() -> Callable[..., ToolResultMessage]:
-    """Фабрика `ToolResultMessage` c `TextResult`-payload по умолчанию."""
+    """Фабрика ToolResultMessage c TextResult-payload по умолчанию."""
 
     def _factory(call_id: str = "c1", text: str = "ok") -> ToolResultMessage:
         return tool_result_to_message(
@@ -50,5 +50,5 @@ def make_tool_result_message() -> Callable[..., ToolResultMessage]:
 
 @pytest.fixture
 def history_workspace(tmp_path: Path) -> FsWorkspaceShell[WorkspaceId]:
-    """`FsWorkspaceShell` с детерминированным `WorkspaceId('test')`."""
+    """FsWorkspaceShell с детерминированным WorkspaceId('test')."""
     return FsWorkspaceShell(WorkspaceId("test"), tmp_path)

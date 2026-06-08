@@ -63,7 +63,7 @@ def test_ro_binds_emitted_with_ro_bind_try():
 
 def test_ro_binds_passed_through_unchanged():
     # build_bwrap_argv не делает path-canonicalize; это работа
-    # `SandboxProfile._canonicalize_paths` (field_validator). Поэтому
+    # SandboxProfile._canonicalize_paths (field_validator). Поэтому
     # путь в argv — это уже резолвенный из профиля, без модификации
     # builder'ом.
     profile = SandboxProfile(ro_binds=("/usr",))

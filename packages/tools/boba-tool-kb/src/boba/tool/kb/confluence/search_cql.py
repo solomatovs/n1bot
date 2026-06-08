@@ -1,8 +1,8 @@
-"""Tool `confluence_search_cql` + `ConfluenceSearchCqlConfig`: online CQL-search.
+"""Tool confluence_search_cql + ConfluenceSearchCqlConfig: online CQL-search.
 
 Полнотекстовый поиск страниц по реальному Confluence (не по KB). LLM
-передаёт строку запроса + список `spaces` + `limit`/`snippet_chars`;
-connection (`confluence`) — из секции `[tool.kb]`.
+передаёт строку запроса + список spaces + limit/snippet_chars;
+connection (confluence) — из секции [tool.kb].
 """
 
 from __future__ import annotations
@@ -14,39 +14,37 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import (
     Pipeline,
-    PipelineContext,
-    PipelineId,
     ReaderKeys,
     Section,
 )
 from boba.settings import LLMStringList
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.models import ConfluenceKeys
+from boba.tool.kb.confluence.models import ConfluenceKeys, HttpKeys
+from boba.tool.kb.confluence.pipeline import ConfluenceHttpTransport
 from boba.tool.kb.confluence.reading import ConfluenceSearchHitsReader
 from boba.tool.kb.confluence.request_sources import ConfluenceCqlSearchRequestSource
 from boba.tools import FromConfig, tool
 from boba.tools.domain import TableResult
-from boba.transport.http import HttpKeys, HttpTransport
+from boba.transport.http import HttpProfile, HttpTransport
 
 __all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]
 
 
 class ConfluenceSearchCqlConfig(BaseModel):
-    """Self-contained конфиг tool'а `confluence_search_cql`.
+    """Self-contained конфиг tool'а confluence_search_cql.
 
-    Config-секция: `[tool.kb]` (читает только `confluence`). `limit`/
-    `snippet_chars` — tool-аргументы LLM.
+    Config-секция: [tool.kb] (читает только confluence). limit/
+    snippet_chars — tool-аргументы LLM.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    confluence: ConfluenceConnection
+    confluence: HttpProfile
 
 
 class CqlSearch:
-    """Сборка CQL и распаковка search-`Section` в плоский hit-dict."""
+    """Сборка CQL и распаковка search-Section в плоский hit-dict."""
 
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.search_cql")
     SNIPPET_DEFAULT: ClassVar[int] = 300
     SNIPPET_DESC: ClassVar[str] = (
         "Максимальная длина сниппета на каждый hit (символов). По умолчанию 300."
@@ -109,27 +107,25 @@ def confluence_search_cql(
 ) -> TableResult:
     """Полнотекстовый поиск страниц Confluence (online CQL).
 
-    Возвращает `TableResult` — таблицу hits с колонками `page_id`/`title`/
-    `space_key`/`url`/`snippet`/`last_modified`.
+    Возвращает TableResult — таблицу hits с колонками page_id/title/
+    space_key/url/snippet/last_modified.
     """
+    conn = ConfluenceConnection(profile=cfg.confluence)
     pipeline = Pipeline(
         source=ConfluenceCqlSearchRequestSource(
-            base_url=cfg.confluence.base_url,
-            auth=cfg.confluence.profile.auth.httpx_auth(),
+            base_url=conn.base_url,
             cql=CqlSearch.build_cql(query=query, spaces=spaces),
             limit=limit,
         ),
-        transport=HttpTransport(cfg.confluence.profile),
+        transport=ConfluenceHttpTransport(HttpTransport(conn.profile)),
         reader=ConfluenceSearchHitsReader(
-            base_url=cfg.confluence.base_url,
+            base_url=conn.base_url,
             snippet_chars=snippet_chars,
         ),
     )
 
     try:
-        sections = list(
-            pipeline.sections(PipelineContext(pipeline_id=CqlSearch.PIPELINE_ID)),
-        )
+        sections = list(pipeline.sections())
     except httpx.HTTPError as e:
         raise RuntimeError(
             f"Confluence search failed: {type(e).__name__}: {e}",

@@ -1,16 +1,16 @@
 """
-KeyEncoder[T] — алгоритм хэширования chunk-content в `ContentHash`.
+KeyEncoder[T] — алгоритм хэширования chunk-content в ContentHash.
 
 Необходимо для идемпотентной индексации: при повторной индексации без изменений
-контента мы должны получать тот же hash, чтобы `IndexSink.reconcile` мог
+контента мы должны получать тот же hash, чтобы IndexSink.reconcile мог
 пропустить уже проиндексированные чанки.
 
-Возвращает `ContentHash` (а не сырую строку) — concrete impl выбирает internal
-storage (bytes / int / str) сам через subclass'ы `ContentHash`. Caller получает
-строковую форму через `ContentHash.to_wire()` для записи в IndexSink.
+Возвращает ContentHash (а не сырую строку) — concrete impl выбирает internal
+storage (bytes / int / str) сам через subclass'ы ContentHash. Caller получает
+строковую форму через ContentHash.to_wire() для записи в IndexSink.
 
 Конкретный алгоритм (SHA-256, xxhash, blake2b, любой кастом) выбирает
-пользовательский код, реализующий `KeyEncoder[T].encode(content: T) → ContentHash`.
+пользовательский код, реализующий KeyEncoder[T].encode(content: T) -> ContentHash.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ T_contra = TypeVar("T_contra", contravariant=True)
 
 @runtime_checkable
 class KeyEncoder(Protocol[T_contra]):
-    """T → ContentHash: стабильный hash chunk-content для idempotent re-index."""
+    """T -> ContentHash: стабильный hash chunk-content для idempotent re-index."""
 
     def encode(self, content: T_contra) -> ContentHash:
         """
@@ -46,7 +46,7 @@ class KeyEncoder(Protocol[T_contra]):
 
 
 class Sha256TextEncoder(KeyEncoder[str]):
-    """SHA-256 поверх str: encode UTF-8 → 32-байтовый BytesContentHash."""
+    """SHA-256 поверх str: encode UTF-8 -> 32-байтовый BytesContentHash."""
 
     _ENCODING: ClassVar[str] = "utf-8"
 

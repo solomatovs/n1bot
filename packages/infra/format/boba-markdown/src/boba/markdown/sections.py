@@ -1,12 +1,12 @@
 """Markdown-специфичные Section-типы.
 
-Это format-specific расширения доменной иерархии `boba.indexing.Section`.
+Это format-specific расширения доменной иерархии boba.indexing.Section.
 Их структура (плоская 2D-таблица, плоский список, code-fence с language hint)
 отражает GFM-разметку и не предназначена быть универсальной — другим
 форматам (HTML, PDF, Jupyter) лучше иметь свои собственные Section-типы
 с честной семантикой формата.
 
-Каждый тип несёт per-unit `*_locations` для locality-aware chunking
+Каждый тип несёт per-unit *_locations для locality-aware chunking
 (table-row split, list-item split, code-line split).
 """
 
@@ -33,11 +33,11 @@ __all__ = [
 
 @dataclass(frozen=True)
 class MarkdownCodeFenceSection(Section[str]):
-    """Markdown code-fence (` ```lang ... ``` `).
+    """Markdown code-fence ( lang ...  ).
 
-    - `language`            — language hint (`None` если не указан).
-    - `code`                — содержимое БЕЗ обрамляющих маркеров.
-    - `code_line_locations` — char-offset каждой строки тела для line-based
+    - language            — language hint (None если не указан).
+    - code                — содержимое БЕЗ обрамляющих маркеров.
+    - code_line_locations — char-offset каждой строки тела для line-based
                               split при overflow большого блока кода.
     """
 
@@ -61,14 +61,14 @@ class MarkdownTableSection(Section[str]):
     Плоская 2D-структура — markdown-специфичная shape (без colspan / nested-cells
     / thead-tbody-tfoot, которые есть в HTML).
 
-    - `header`           — distinct cells header'а (распарсенный inline-text).
-    - `rows`             — distinct cells каждой data-строки.
-    - `header_text`      — raw текст header'а вместе с разметкой-разделителем
-                            (`| col |\\n|---|`). Для chunker'а: реплицируется
-                            в `format_content` row-by-row split'а, чтобы LLM
+    - header           — distinct cells header'а (распарсенный inline-text).
+    - rows             — distinct cells каждой data-строки.
+    - header_text      — raw текст header'а вместе с разметкой-разделителем
+                            (| col |\\n|---|). Для chunker'а: реплицируется
+                            в format_content row-by-row split'а, чтобы LLM
                             видела имена столбцов.
-    - `header_location`  — char-offset header_text в исходнике.
-    - `row_locations`    — char-offset каждой data-строки.
+    - header_location  — char-offset header_text в исходнике.
+    - row_locations    — char-offset каждой data-строки.
     """
 
     SECTION_TYPE: ClassVar[str] = "markdown.table"
@@ -93,8 +93,8 @@ class MarkdownListSection(Section[str]):
     Плоская проекция — top-level items без сохранения вложенности (вложенный
     список инлайнится в текст items'а как есть).
 
-    - `items`           — извлечённый текст каждого top-level item.
-    - `item_locations`  — char-offset каждого item для item-by-item split'а.
+    - items           — извлечённый текст каждого top-level item.
+    - item_locations  — char-offset каждого item для item-by-item split'а.
     """
 
     SECTION_TYPE: ClassVar[str] = "markdown.list"
@@ -109,14 +109,14 @@ class MarkdownListSection(Section[str]):
 
 @dataclass(frozen=True)
 class MarkdownBlockquoteSection(Section[str]):
-    """Markdown цитата (`> ...`)."""
+    """Markdown цитата (> ...)."""
 
     SECTION_TYPE: ClassVar[str] = "markdown.blockquote"
 
 
 @dataclass(frozen=True)
 class MarkdownHorizontalRuleSection(Section[str]):
-    """Markdown горизонтальный разделитель (`---`).
+    """Markdown горизонтальный разделитель (---).
 
     Структурный маркёр, не контентная единица — chunker'у обычно стоит
     пропускать такие секции (не эмитить их в Chunk'и).

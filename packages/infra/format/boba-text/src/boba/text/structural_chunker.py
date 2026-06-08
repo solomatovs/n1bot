@@ -1,19 +1,19 @@
 """StructuralChunker — heading-aware chunker с replication header.
 
-Format-нейтральный (T=str) чанкер, который потребляет `FormatPlan` от
-`Section.to_format_plan()`:
+Format-нейтральный (T=str) чанкер, который потребляет FormatPlan от
+Section.to_format_plan():
 
-- держит стек активных headings per `source_id` и пишет полный путь в
-  `SectionKeys.HEADING_PATH`;
-- prepend-ит `prefix + plan.repeat_header` к каждому чанку секции;
-- append-ит `plan.repeat_footer` (закрытие code-fence);
-- мерджит `Section.metadata` с `Section.to_chunk_metadata()`;
-- делегирует overflow-split инжектируемому `Splitter[str]` (типично —
-  `OverlapCharSplitter`); под `extra_overhead` чанкер пересоздаёт splitter
-  через `splitter_factory`, чтобы итоговый chunk влез в budget.
+- держит стек активных headings per source_id и пишет полный путь в
+  SectionKeys.HEADING_PATH;
+- prepend-ит prefix + plan.repeat_header к каждому чанку секции;
+- append-ит plan.repeat_footer (закрытие code-fence);
+- мерджит Section.metadata с Section.to_chunk_metadata();
+- делегирует overflow-split инжектируемому Splitter[str] (типично —
+  OverlapCharSplitter); под extra_overhead чанкер пересоздаёт splitter
+  через splitter_factory, чтобы итоговый chunk влез в budget.
 
-`raw_content` каждого чанка собирается из `FormatBlock.raw_content`-ов,
-которые покрываются split-piece'ом (по location в склеенном `body`).
+raw_content каждого чанка собирается из FormatBlock.raw_content-ов,
+которые покрываются split-piece'ом (по location в склеенном body).
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from boba.indexing import (
     ChunkIdGenerator,
     FormatPlan,
     KeyEncoder,
-    PipelineContext,
     Section,
     SectionKeys,
     SourceId,
@@ -41,7 +40,7 @@ __all__ = ["SplitterFactory", "StructuralChunker"]
 
 
 SplitterFactory = Callable[[int], Splitter[str]]
-"""`extra_overhead → Splitter[str]`. Создаёт splitter, у которого эффективный
+"""extra_overhead -> Splitter[str]. Создаёт splitter, у которого эффективный
 budget уменьшен на размер prefix + repeat_header + repeat_footer."""
 
 
@@ -74,26 +73,18 @@ class StructuralChunker(Chunker[str]):
         self._content_hasher = content_hasher
         self._breadcrumb_separator = breadcrumb_separator
 
-    def name(self) -> str:
-        return f"StructuralChunker({self._chunker_id})"
-
     def chunker_id(self) -> ChunkerId:
         return self._chunker_id
 
-    def reset(self) -> None:
-        pass
-
-    def stream(
+    def chunk(
         self,
-        ctx: PipelineContext,
-        stream: Iterable[Section[str]],
+        sections: Iterable[Section[str]],
     ) -> Iterable[Chunk[str]]:
-        del ctx
         breadcrumbs: list[tuple[int, str]] = []
         per_source_index: dict[str, int] = {}
         prev_source: SourceId | None = None
 
-        for section in stream:
+        for section in sections:
             if prev_source is None or prev_source != section.source_id:
                 breadcrumbs.clear()
                 prev_source = section.source_id
@@ -171,7 +162,7 @@ class StructuralChunker(Chunker[str]):
 
     @staticmethod
     def _build_body(plan: FormatPlan) -> tuple[str, list[int], list[str]]:
-        """Склеить body через `plan.block_glue`; вернуть body, индекс начал
+        """Склеить body через plan.block_glue; вернуть body, индекс начал
         блоков в body и параллельный список raw_content.
         """
         body_parts: list[str] = []

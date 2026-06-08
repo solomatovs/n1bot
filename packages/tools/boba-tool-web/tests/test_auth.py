@@ -1,11 +1,11 @@
 """Discriminated WebAuth: pydantic-валидация + httpx_auth() контракт.
 
 Покрытие:
-- каждый вариант разбирается из dict с правильным `method`,
+- каждый вариант разбирается из dict с правильным method,
 - обязательные поля (user/password/token) — без них ValidationError
   ссылается именно на нужный вариант (а не "any of");
 - неизвестный method — ValidationError;
-- extra-поля → ValidationError (model_config extra="forbid");
+- extra-поля -> ValidationError (model_config extra="forbid");
 - httpx_auth() возвращает ожидаемый httpx.Auth-инстанс.
 """
 

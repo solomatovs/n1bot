@@ -1,19 +1,19 @@
-"""Bootstrap-миграции схемы KB-БД: `Migrations.apply_bootstrap` + `ensure_vector_index`.
+"""Bootstrap-миграции схемы KB-БД: Migrations.apply_bootstrap + ensure_vector_index.
 
 Обе операции — DDL-only, вызываются **одноразово** оператором через
 bootstrap-CLI. Runtime'у схема считается данностью; bootstrap-CLI —
 отдельный шаг оператора.
 
-`apply_bootstrap` применяет все `migrations/*.sql` в лексикографическом
-порядке. Каждый SQL — `psycopg.sql.SQL(...)` шаблон с плейсхолдерами
-(`{schema}`/`{chunks_table}`/`{collections_table}`/`{*_lit}`/`{chunks_*_idx_name}`),
-значения подставляются из `PostgresStoreSchema` — тот же конфиг, который
-получают `PostgresChunkStore` и `PostgresKnowledgeBase`. Каждый SQL ОБЯЗАН
+apply_bootstrap применяет все migrations/*.sql в лексикографическом
+порядке. Каждый SQL — psycopg.sql.SQL(...) шаблон с плейсхолдерами
+({schema}/{chunks_table}/{collections_table}/{*_lit}/{chunks_*_idx_name}),
+значения подставляются из PostgresStoreSchema — тот же конфиг, который
+получают PostgresChunkStore и PostgresKnowledgeBase. Каждый SQL ОБЯЗАН
 быть идемпотентным.
 
-`ensure_vector_index` создаёт HNSW-индекс на выражение `embedding::vector(N)`
+ensure_vector_index создаёт HNSW-индекс на выражение embedding::vector(N)
 (pgvector не индексирует vector-колонку без фиксированной размерности). Один
-индекс = одна dim; имя индекса включает `chunks_table` и `dim`, чтобы
+индекс = одна dim; имя индекса включает chunks_table и dim, чтобы
 несколько dim'ов (и таблиц) сосуществовали в одной схеме.
 """
 
@@ -33,7 +33,7 @@ __all__ = ["Migrations"]
 
 
 class Migrations:
-    """DDL-bootstrap KB-схемы: применение `migrations/*.sql` + HNSW-индекс."""
+    """DDL-bootstrap KB-схемы: применение migrations/*.sql + HNSW-индекс."""
 
     _MIGRATIONS_DIR: ClassVar[Path] = Path(__file__).parent / "migrations"
 
@@ -43,11 +43,11 @@ class Migrations:
         *,
         schema_cfg: PostgresStoreSchema,
     ) -> sql.Composable:
-        """Подставить идентификаторы / литералы из `schema_cfg` в SQL-шаблон.
+        """Подставить идентификаторы / литералы из schema_cfg в SQL-шаблон.
 
-        `sql.SQL` тайпится `LiteralString`-only (защита от str-конкатенации
+        sql.SQL тайпится LiteralString-only (защита от str-конкатенации
         user-input'а в SQL). Здесь источник — статический файл миграции из
-        собственного пакета (`migrations/*.sql`), а не user-input → cast
+        собственного пакета (migrations/*.sql), а не user-input -> cast
         безопасен. Параметры подстановки — Identifier/Literal из validated
         ChunkStoreSchemaConfig, sql-injection невозможен.
         """
@@ -71,13 +71,13 @@ class Migrations:
         *,
         schema_cfg: PostgresStoreSchema,
     ) -> None:
-        """Применить все миграции из `migrations/*.sql` в alphabetical order.
+        """Применить все миграции из migrations/*.sql в alphabetical order.
 
         Args:
             conn: psycopg-совместимый Connection (sync). Будет вызван
-                `conn.execute(sql)` для каждого файла.
+                conn.execute(sql) для каждого файла.
             schema_cfg: схема + имена таблиц (тот же конфиг, который потом
-                получит `PostgresChunkStore`).
+                получит PostgresChunkStore).
         """
         migrations_dir = Migrations._MIGRATIONS_DIR
         if not migrations_dir.is_dir():
@@ -106,25 +106,25 @@ class Migrations:
         dim: int,
         schema_cfg: PostgresStoreSchema,
     ) -> None:
-        """Создать HNSW-индекс по `(embedding::vector(dim))` если ещё нет.
+        """Создать HNSW-индекс по (embedding::vector(dim)) если ещё нет.
 
-        pgvector не индексирует колонку типа `vector` без фиксированной
-        размерности — индекс ставится на expression `embedding::vector(N)`.
+        pgvector не индексирует колонку типа vector без фиксированной
+        размерности — индекс ставится на expression embedding::vector(N).
         Поэтому один индекс = одна dim. Имя индекса —
-        `<chunks_table>_embedding_hnsw_<dim>`; уникально и при смене dim, и при
+        <chunks_table>_embedding_hnsw_<dim>; уникально и при смене dim, и при
         смене таблицы.
 
         Args:
             conn: psycopg sync Connection.
-            dim: размерность вектора (= `embedder.dim()`).
+            dim: размерность вектора (= embedder.dim()).
             schema_cfg: schema + имена таблиц (для chunks_table и schema).
         """
         if dim <= 0:
             msg = f"ensure_vector_index: dim must be positive, got {dim}"
             raise ValueError(msg)
         index_name = f"{schema_cfg.chunks_table}_embedding_hnsw_{dim}"
-        # opclass `vector_cosine_ops` — cosine distance (`<=>`). Если хочется
-        # L2 (`<->`) — поменять на `vector_l2_ops` и пересоздать индекс.
+        # opclass vector_cosine_ops — cosine distance (<=>). Если хочется
+        # L2 (<->) — поменять на vector_l2_ops и пересоздать индекс.
         stmt = sql.SQL(
             "CREATE INDEX IF NOT EXISTS {index_name} "
             "ON {chunks_table} USING hnsw "

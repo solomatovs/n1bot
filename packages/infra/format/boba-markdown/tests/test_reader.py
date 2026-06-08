@@ -1,4 +1,4 @@
-"""MarkdownReader: markdown → типизированные Section'ы."""
+"""MarkdownReader: markdown -> типизированные Section'ы."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def test_reader_id():
 
 def test_doc_type_in_metadata_of_each_section():
     md = "# A\n\npara"
-    sections = list(MarkdownReader().convert(_doc(md)))
+    sections = list(MarkdownReader().read(_doc(md)))
     for s in sections:
         assert s.metadata.get(ReaderKeys.DOC_TYPE) == "markdown"
 
@@ -61,7 +61,7 @@ print("hi")
 
 ---
 """
-    for s in MarkdownReader().convert(_doc(md)):
+    for s in MarkdownReader().read(_doc(md)):
         start = s.metadata.get(SectionKeys.LOCATION_START)
         end = s.metadata.get(SectionKeys.LOCATION_END)
         assert start is not None and end is not None
@@ -69,12 +69,12 @@ print("hi")
 
 
 def test_empty_payload_yields_nothing():
-    assert list(MarkdownReader().convert(_doc(""))) == []
+    assert list(MarkdownReader().read(_doc(""))) == []
 
 
 def test_heading_section_typed_fields():
     md = "## My Section"
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, HeadingSection)
     assert s.level == 2
     assert s.text == "My Section"
@@ -87,7 +87,7 @@ def test_heading_section_typed_fields():
 def test_multiple_headings_yield_separate_sections_in_order():
     md = "# h1\n\n## h2\n\n### h3"
     sections = [
-        s for s in MarkdownReader().convert(_doc(md))
+        s for s in MarkdownReader().read(_doc(md))
         if isinstance(s, HeadingSection)
     ]
     assert [(s.level, s.text) for s in sections] == [
@@ -96,7 +96,7 @@ def test_multiple_headings_yield_separate_sections_in_order():
 
 def test_paragraph_keeps_inline_markdown():
     md = "This is **bold** and `code` and a [link](url)."
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, ParagraphSection)
     assert s.content == md
 
@@ -104,7 +104,7 @@ def test_paragraph_keeps_inline_markdown():
 
 def test_code_fence_section_with_language():
     md = "```python\ndef f():\n    return 1\n```"
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, MarkdownCodeFenceSection)
     assert s.language == "python"
     assert s.code == "def f():\n    return 1\n"
@@ -114,7 +114,7 @@ def test_code_fence_section_with_language():
 
 def test_code_fence_no_language():
     md = "```\nplain code\n```"
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, MarkdownCodeFenceSection)
     assert s.language is None
 
@@ -122,7 +122,7 @@ def test_code_fence_no_language():
 
 def test_table_section_typed_fields():
     md = "| name | type |\n|------|------|\n| id   | int  |\n| name | str  |"
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, MarkdownTableSection)
     assert s.header == ("name", "type")
     assert s.rows == (("id", "int"), ("name", "str"))
@@ -133,7 +133,7 @@ def test_table_section_typed_fields():
 
 def test_unordered_list_section():
     md = "- alpha\n- beta\n- gamma"
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, MarkdownListSection)
     assert s.ordered is False
     assert s.items == ("alpha", "beta", "gamma")
@@ -142,7 +142,7 @@ def test_unordered_list_section():
 
 def test_ordered_list_section():
     md = "1. one\n2. two\n3. three"
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, MarkdownListSection)
     assert s.ordered is True
 
@@ -150,7 +150,7 @@ def test_ordered_list_section():
 
 def test_blockquote_section():
     md = "> single line quote"
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, MarkdownBlockquoteSection)
     assert s.content == md
 
@@ -158,12 +158,12 @@ def test_blockquote_section():
 
 def test_horizontal_rule_section():
     md = "---"
-    [s] = list(MarkdownReader().convert(_doc(md)))
+    [s] = list(MarkdownReader().read(_doc(md)))
     assert isinstance(s, MarkdownHorizontalRuleSection)
 
 def test_blocks_emitted_in_document_order():
     md = "# A\n\npara\n\n```\ncode\n```\n\n- item"
-    sections = list(MarkdownReader().convert(_doc(md)))
+    sections = list(MarkdownReader().read(_doc(md)))
     types = [type(s).__name__ for s in sections]
     assert types == [
         "HeadingSection",
@@ -179,7 +179,7 @@ def test_metadata_merged_with_upstream():
         source_id=SourceId("doc1"),
         metadata=upstream,
     )
-    sections = list(MarkdownReader().convert(raw))
+    sections = list(MarkdownReader().read(raw))
     for s in sections:
         assert s.metadata.to_wire()["source_url"] == "https://example.com/page"
         assert s.metadata.get(ReaderKeys.DOC_TYPE) == "markdown"

@@ -1,15 +1,15 @@
-"""Tool `confluence_grep_page` + `ConfluenceGrepPageConfig`.
+"""Tool confluence_grep_page + ConfluenceGrepPageConfig.
 
-Скачивает одну Confluence-страницу в потоке (как `confluence_fetch_page` —
-мимо attachment-fan-out'а, напрямую `request_source → http_transport →
-ConfluenceJsonDecoder`) и применяет к её контенту grep-поиск с теми же
-семантиками, что и file-tool `grep`: regex/fixed_string, регистр, контекст
-до/после, limit, обрезка длинных строк по `max_text_chars`.
+Скачивает одну Confluence-страницу в потоке (как confluence_fetch_page —
+мимо attachment-fan-out'а, напрямую request_source -> ConfluenceHttpTransport ->
+ConfluenceJsonDecoder) и применяет к её контенту grep-поиск с теми же
+семантиками, что и file-tool grep: regex/fixed_string, регистр, контекст
+до/после, limit, обрезка длинных строк по max_text_chars.
 
-В отличие от `confluence_fetch_page`, возвращает не весь контент, а только
+В отличие от confluence_fetch_page, возвращает не весь контент, а только
 совпадения с номерами строк — экономит контекст LLM на больших страницах.
 
-Config-секция: `[tool.kb.confluence.grep]`.
+Config-секция: [tool.kb.confluence.grep].
 """
 
 from __future__ import annotations
@@ -18,29 +18,33 @@ import re
 from collections import deque
 from collections.abc import Iterator
 from itertools import islice
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, Literal
 
 import httpx
 import markdownify
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.indexing import PipelineContext, PipelineId
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.parsing import ConfluenceJsonDecoder
+from boba.tool.kb.confluence.pipeline import ConfluenceHttpTransport
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
 from boba.tools import FromConfig, tool
 from boba.tools.domain import TableResult
-from boba.transport.http import HttpTransport
+from boba.transport.http import HttpProfile, HttpTransport
 
 __all__ = ["ConfluenceGrepPageConfig", "confluence_grep_page"]
 
 
 class ConfluenceGrepPageConfig(BaseModel):
-    """Self-contained конфиг tool'а `confluence_grep_page`."""
+    """Self-contained конфиг tool'а confluence_grep_page."""
 
     model_config = ConfigDict(extra="ignore")
 
-    confluence: ConfluenceConnection
+    confluence: HttpProfile
+    body_format: Literal["view", "export_view", "storage"] = Field(
+        default="view",
+        description="Confluence body-формат: view/export_view/storage.",
+    )
     max_text_chars: int = Field(
         default=2000,
         ge=1,
@@ -51,13 +55,11 @@ class ConfluenceGrepPageConfig(BaseModel):
 class PageGrep:
     """Grep-движок поверх in-memory текста страницы (regex + контекст)."""
 
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.grep_page")
-
     @staticmethod
     def compile_pattern(
         pattern: str, *, fixed_string: bool, case_insensitive: bool
     ) -> re.Pattern[str]:
-        """Компилирует pattern; fixed_string → литерал, иначе Python-regex."""
+        """Компилирует pattern; fixed_string -> литерал, иначе Python-regex."""
         raw = re.escape(pattern) if fixed_string else pattern
         flags = re.IGNORECASE if case_insensitive else 0
         try:
@@ -115,14 +117,14 @@ class PageGrep:
 
     @staticmethod
     def clip(s: str, limit: int) -> tuple[str, bool]:
-        """Обрезает строку до `limit` символов; возвращает (строка, был_ли_обрезан)."""
+        """Обрезает строку до limit символов; возвращает (строка, был_ли_обрезан)."""
         if len(s) <= limit:
             return s, False
         return s[:limit], True
 
     @staticmethod
     def clip_many(lines: list[str], limit: int) -> tuple[list[str], bool]:
-        """Применяет `clip` к каждой строке списка."""
+        """Применяет clip к каждой строке списка."""
         out: list[str] = []
         cut = False
         for line in lines:
@@ -177,10 +179,10 @@ def confluence_grep_page(  # noqa: PLR0913 — независимые флаги
 ) -> TableResult:
     """Скачивает Confluence-страницу и ищет в её контенте совпадения pattern.
 
-    Возвращает `TableResult` — таблицу matches с колонками `line`/`content`/
-    `before`/`after` (+`truncated_lines` на усечённых). Контекст усечения,
-    page_id и переполнение limit — в `note`/`metadata`. Длинные строки режутся
-    по `max_text_chars`.
+    Возвращает TableResult — таблицу matches с колонками line/content/
+    before/after (+truncated_lines на усечённых). Контекст усечения,
+    page_id и переполнение limit — в note/metadata. Длинные строки режутся
+    по max_text_chars.
     """
     compiled = PageGrep.compile_pattern(
         pattern,
@@ -188,30 +190,30 @@ def confluence_grep_page(  # noqa: PLR0913 — независимые флаги
         case_insensitive=case_insensitive,
     )
 
+    conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
     request_source = ConfluencePagesRequestSource(
-        base_url=cfg.confluence.base_url,
-        auth=cfg.confluence.profile.auth.httpx_auth(),
+        base_url=conn.base_url,
         page_ids=[page_id],
-        body_format=cfg.confluence.body_format,
+        body_format=conn.body_format,
     )
-    transport = HttpTransport(cfg.confluence.profile)
-    decoder = ConfluenceJsonDecoder(body_format=cfg.confluence.body_format)
-    pctx = PipelineContext(pipeline_id=PageGrep.PIPELINE_ID)
+    decoder = ConfluenceJsonDecoder(body_format=conn.body_format)
 
     text: str | None = None
     try:
-        for http_req in request_source.stream(pctx):
-            for raw in transport.stream(pctx, [http_req]):
-                decoded = decoder.convert(raw)
-                html = decoded.handle.read().decode("utf-8", errors="replace")
-                text = (
-                    markdownify.markdownify(html, heading_style="ATX")
-                    if as_markdown
-                    else html
-                )
-                break
-            if text is not None:
-                break
+        with HttpTransport(conn.profile) as http:
+            transport = ConfluenceHttpTransport(http)
+            for req in request_source.requests():
+                for raw in transport.fetch(req):
+                    decoded = decoder.decode(raw)
+                    html = decoded.handle.read().decode("utf-8", errors="replace")
+                    text = (
+                        markdownify.markdownify(html, heading_style="ATX")
+                        if as_markdown
+                        else html
+                    )
+                    break
+                if text is not None:
+                    break
     except httpx.HTTPError as e:
         raise RuntimeError(
             f"Confluence fetch failed: {type(e).__name__}: {e}",

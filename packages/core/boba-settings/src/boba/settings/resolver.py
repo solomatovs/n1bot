@@ -1,9 +1,9 @@
-"""OmegaConf-backed реализации портов `boba.tools` (резолв + plugin-фильтр).
+"""OmegaConf-backed реализации портов boba.tools (резолв + plugin-фильтр).
 
 Конфиг-инстанс приходит в конструктор (из bootstrap приложения), не из глобала.
-Секция плагина — `tool.<plugin_name>`: одна и та же секция используется и для
-gate (enable/tools), и для резолва всех `FromConfig`-типов этого плагина.
-Модель про свой путь не знает — секцию даёт сборщик (`plugin_name` от builder).
+Секция плагина — tool.<plugin_name>: одна и та же секция используется и для
+gate (enable/tools), и для резолва всех FromConfig-типов этого плагина.
+Модель про свой путь не знает — секцию даёт сборщик (plugin_name от builder).
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def plugin_section(plugin_name: str) -> str:
 
 
 class PluginConfigBase(BaseModel):
-    """Meta-config плагина: что framework читает из `[tool.<plugin_name>]`."""
+    """Meta-config плагина: что framework читает из [tool.<plugin_name>]."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -37,7 +37,7 @@ class PluginConfigBase(BaseModel):
 
 
 class OmegaConfResolver:
-    """`ConfigResolver` поверх конфиг-инстанса: тип резолвится из секции плагина."""
+    """ConfigResolver поверх конфиг-инстанса: тип резолвится из секции плагина."""
 
     def __init__(self, config: DictConfig) -> None:
         self._config = config
@@ -47,11 +47,11 @@ class OmegaConfResolver:
 
 
 class OmegaConfPluginToolFilter:
-    """`PluginToolFilter` поверх конфиг-инстанса: фильтрует по `[tool.<name>]`.
+    """PluginToolFilter поверх конфиг-инстанса: фильтрует по [tool.<name>].
 
-    - `enable=false` (или секции нет) — плагин выключен;
-    - `enable=true` без `tools` — допускаются все tool'ы плагина;
-    - `enable=true` + `tools=[...]` — только перечисленные (по wire-имени).
+    - enable=false (или секции нет) — плагин выключен;
+    - enable=true без tools — допускаются все tool'ы плагина;
+    - enable=true + tools=[...] — только перечисленные (по wire-имени).
     """
 
     def __init__(self, config: DictConfig) -> None:

@@ -1,6 +1,6 @@
-"""Тесты subprocess-обёртки `_runner.run_subprocess`.
+"""Тесты subprocess-обёртки _runner.run_subprocess.
 
-Запускают обычный `/bin/bash` без bwrap — проверяют именно
+Запускают обычный /bin/bash без bwrap — проверяют именно
 плюшки runner'а (timeout, size-cap, stdin, отдельные потоки,
 обязательность параметров).
 """
@@ -86,7 +86,7 @@ def test_timeout_kills_process():
 
 
 def test_stdout_truncation_marks_flag():
-    # 10 KiB вывода, лимит 256 байт → обрезка
+    # 10 KiB вывода, лимит 256 байт -> обрезка
     res = _run("yes x | head -c 10240", max_output_bytes=256)
     assert res.truncated_stdout
     assert len(res.stdout.encode("utf-8")) == 256

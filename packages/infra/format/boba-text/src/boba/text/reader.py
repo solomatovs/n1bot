@@ -1,8 +1,8 @@
-"""PlainTextReader — простейший `Reader[str]`: один Section со всем content'ом.
+"""PlainTextReader — простейший Reader[str]: один Section со всем content'ом.
 
-Декодирует handle целиком указанным encoding'ом и эмитит одну `Section`
+Декодирует handle целиком указанным encoding'ом и эмитит одну Section
 с этим текстом. Никакого парсинга структуры — для этого есть
-format-specific Reader'ы (`MarkdownReader`, `HtmlHeadingReader`, …).
+format-specific Reader'ы (MarkdownReader, HtmlHeadingReader, …).
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ __all__ = ["PlainTextReader"]
 
 
 class PlainTextReader(Reader[str]):
-    """`Reader[str]` который декодирует payload и эмитит один Section.
+    """Reader[str] который декодирует payload и эмитит один Section.
 
-    Бросает `IncompatibleContentError` если bytes не декодируются указанным
+    Бросает IncompatibleContentError если bytes не декодируются указанным
     encoding'ом.
     """
 
@@ -36,13 +36,10 @@ class PlainTextReader(Reader[str]):
     def __init__(self, encoding: str = DEFAULT_ENCODING) -> None:
         self._encoding = encoding
 
-    def name(self) -> str:
-        return "PlainTextReader"
-
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+    def read(self, value: RawDocument) -> Iterable[Section[str]]:
         raw = value.handle.read()
         try:
             text = raw.decode(self._encoding)

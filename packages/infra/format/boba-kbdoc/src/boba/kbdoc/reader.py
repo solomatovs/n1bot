@@ -1,6 +1,6 @@
 """KbDocReader — строгий Reader для формата KB-документа.
 
-Формат (header — плоские `key: value` строки до разделителя `---`):
+Формат (header — плоские key: value строки до разделителя ---):
 
     source: https://wiki.example.com/pages/viewpage.action?pageId=950276
     title: Правила именования-v6-20260318_191938
@@ -13,15 +13,15 @@
     body content — markdown-текст оператора, индексируется целиком
     как одна Section.
 
-Обязательные header-поля: `source`, `title`, `page_id`, `space`. Их
-отсутствие (или отсутствие самого `---`) — ошибка `KbDocFormatError`:
+Обязательные header-поля: source, title, page_id, space. Их
+отсутствие (или отсутствие самого ---) — ошибка KbDocFormatError:
 документ подготовлен не по формату и в KB не попадёт. Распознанные ключи
-маппятся в типизированную metadata, нераспознанные — в `reader.kbdoc.{key}`.
+маппятся в типизированную metadata, нераспознанные — в reader.kbdoc.{key}.
 
-**Body — единая `ParagraphSection`**. Это намеренный выбор: KB-документы
+**Body — единая ParagraphSection**. Это намеренный выбор: KB-документы
 оператора — атомарные карточки знаний, каждый файл = ровно один логический
-документ. Если body превышает chunk_size, splitter (`OverlapCharSplitter`)
-сам уйдёт в paragraph-split в `StructuralChunker`.
+документ. Если body превышает chunk_size, splitter (OverlapCharSplitter)
+сам уйдёт в paragraph-split в StructuralChunker.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ _HEADER_SEPARATOR_RE: re.Pattern[str] = re.compile(
 _KV_RE: re.Pattern[str] = re.compile(
     r"^[ \t]*(?P<key>[\w][\w.\-]*)[ \t]*:[ \t]*(?P<value>.+?)[ \t]*$",
 )
-"""Плоская `key: value` строка header'а. Значение режется по первому `:`,
-так что URL (`https://...`) в value не ломает разбор."""
+"""Плоская key: value строка header'а. Значение режется по первому :,
+так что URL (https://...) в value не ломает разбор."""
 
 _KEY_TAGS: str = "tags"
 _KEY_SOURCE: str = "source"
@@ -78,7 +78,7 @@ _REQUIRED_KEYS: tuple[str, ...] = (
 
 
 class KbDocFormatError(IndexingError):
-    """KB-документ подготовлен не по формату (нет `---` или required-полей)."""
+    """KB-документ подготовлен не по формату (нет --- или required-полей)."""
 
     def __init__(self, source_id: SourceId, missing: Iterable[str]) -> None:
         self.source_id = source_id
@@ -118,11 +118,11 @@ class ParsedKbDocHeader:
 class KbDocReader(Reader[str]):
     """Reader[str] для KB-document формата — один файл = одна Section.
 
-    Строго требует header-поля `source`/`title`/`page_id`/`space`; иначе
-    бросает `KbDocFormatError` (→ `SourceFailed` в индексаторе). Body отдаёт
-    одной `ParagraphSection` без структурной разбивки — операторская
+    Строго требует header-поля source/title/page_id/space; иначе
+    бросает KbDocFormatError (-> SourceFailed в индексаторе). Body отдаёт
+    одной ParagraphSection без структурной разбивки — операторская
     KB-конвенция: каждый документ атомарен. Размерный split делает splitter
-    в `StructuralChunker`.
+    в StructuralChunker.
     """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.kbdoc")
@@ -132,13 +132,10 @@ class KbDocReader(Reader[str]):
     def __init__(self, *, encoding: str = DEFAULT_ENCODING) -> None:
         self._encoding = encoding
 
-    def name(self) -> str:
-        return "KbDocReader"
-
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+    def read(self, value: RawDocument) -> Iterable[Section[str]]:
         text = value.handle.read().decode(self._encoding, errors="replace")
         parsed = self.parse(text)
 
@@ -164,9 +161,9 @@ class KbDocReader(Reader[str]):
 
     @classmethod
     def parse(cls, text: str) -> ParsedKbDocHeader:
-        """Разбить документ на header (плоские `key: value`) и body.
+        """Разбить документ на header (плоские key: value) и body.
 
-        Без `---` весь текст — body, а required-поля пустые → невалидно.
+        Без --- весь текст — body, а required-поля пустые -> невалидно.
         """
         match = _HEADER_SEPARATOR_RE.search(text)
         if match is None:

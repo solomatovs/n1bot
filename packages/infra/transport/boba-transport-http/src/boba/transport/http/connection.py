@@ -2,27 +2,51 @@
 
 Содержит параметры открытия HTTP-соединения и выполнения запроса —
 timeout/ssl/retry + auth — но НЕ url (его даёт consumer: web-tool из
-аргумента LLM, confluence из своего `base_url`). Один и тот же профиль
+аргумента LLM, confluence из своего base_url). Один и тот же профиль
 переиспользуется и web-tool'ом (dict по hostname), и confluence
 (один профиль + base_url) — это «web-профиль».
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.transport.http.auth import NoneAuth, WebAuth
 
-__all__ = ["HttpConnection"]
+__all__ = ["HttpProfile"]
 
 
-class HttpConnection(BaseModel):
+class HttpProfile(BaseModel):
     """Транспортный профиль: timeout/ssl/retry + auth. Без url."""
 
     model_config = ConfigDict(extra="ignore")
+    base_url: str | None = Field(
+        default=None,
+        description=(
+            "Базовый URL для всех запросов с этим профилем (например, `https://api.example.com/v1/`)"
+        ),
+    )
+    auth: WebAuth = Field(
+        default=NoneAuth(method="none"),
+        description=(
+            "Auth-метод inline: `{ method = 'none'|'basic'|'bearer'|'digest', "
+            "... }`. По умолчанию anonymous (`method='none'`)."
+        ),
+    )
+    headers: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Дополнительные HTTP-заголовки для всех запросов (например, "
+            '`{ "User-Agent" = "MyAgent/1.0" }`).'
+        ),
+    )
+    params: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Дополнительные query-параметры для всех запросов (например, "
+            '`{ "api_key" = "secret" }`)'
+        ),
+    )
 
     timeout_sec: float = Field(
         default=30.0,
@@ -46,28 +70,3 @@ class HttpConnection(BaseModel):
         ge=0,
         description="Базовый линейный backoff между попытками (сек) × номер попытки.",
     )
-    auth: WebAuth = Field(
-        default=NoneAuth(method="none"),
-        description=(
-            "Auth-метод inline: `{ method = 'none'|'basic'|'bearer'|'digest', "
-            "... }`. По умолчанию anonymous (`method='none'`)."
-        ),
-    )
-
-    def make_client(
-        self, *, base_url: str = "", headers: Mapping[str, str] | None = None
-    ) -> httpx.Client:
-        """`httpx.Client` из профиля: timeout/ssl/auth — единое место сборки.
-
-        Используется обоими путями: `HttpTransport` (pipeline-streaming, передаёт
-        per-request `headers`) и прямыми потребителями вроде курсорной REST-
-        пагинации (`base_url` — опора для относительных path'ов). Retry — на
-        стороне потребителя, по `retry_attempts`/`retry_backoff_sec` профиля.
-        """
-        return httpx.Client(
-            base_url=base_url,
-            timeout=self.timeout_sec,
-            verify=self.ssl_verify,
-            auth=self.auth.httpx_auth(),
-            headers=headers,
-        )

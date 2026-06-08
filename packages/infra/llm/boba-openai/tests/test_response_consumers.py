@@ -226,7 +226,7 @@ def test_stream_flushes_answer_snapshot_before_tool_call_deltas() -> None:
 
 
 def test_non_stream_fallback_remaps_tool_call_from_content() -> None:
-    """content с JSON-вызовом → tool_calls в итоге; текстового answer нет."""
+    """content с JSON-вызовом -> tool_calls в итоге; текстового answer нет."""
     rid = new_request_id()
     response = _completion(
         {

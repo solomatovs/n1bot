@@ -1,21 +1,21 @@
-"""Unit-тесты `ToolBuilder.discover_plugins` — filter-driven discovery.
+"""Unit-тесты ToolBuilder.discover_plugins — filter-driven discovery.
 
-`PluginToolFilter` решает, какие плагины и их tool'ы попадут в реестр.
-Проверяем на реальных фильтрах (`PluginFilterAllowAll`,
-`PluginToolAllowListFilter`):
-  - allow-all → все `@tool` регистрируются;
-  - allowlist → только указанные `@tool`;
-  - чужой плагин в allowlist → tool'ов нет и `@provides` тоже нет (плагин
+PluginToolFilter решает, какие плагины и их tool'ы попадут в реестр.
+Проверяем на реальных фильтрах (PluginFilterAllowAll,
+PluginToolAllowListFilter):
+  - allow-all -> все @tool регистрируются;
+  - allowlist -> только указанные @tool;
+  - чужой плагин в allowlist -> tool'ов нет и @provides тоже нет (плагин
     выключен целиком);
-  - включённый плагин с пустым allowlist → tool'ов нет, но `@provides`
+  - включённый плагин с пустым allowlist -> tool'ов нет, но @provides
     остаются (фильтр — про tools, не про весь плагин);
   - каждый плагин фильтруется независимо по своему имени.
 
-Конкретный config-driven фильтр (`[tool.<name>]` enable/tools из TOML/env) —
-ответственность agent-слоя, проверяется в `boba-agent`.
+Конкретный config-driven фильтр ([tool.<name>] enable/tools из TOML/env) —
+ответственность agent-слоя, проверяется в boba-agent.
 
-Плагины подаются через реальные `importlib.metadata.EntryPoint`'ы поверх
-in-memory модулей (фикстуры `make_plugin_entry_point` / `install_entry_points`).
+Плагины подаются через реальные importlib.metadata.EntryPoint'ы поверх
+in-memory модулей (фикстуры make_plugin_entry_point / install_entry_points).
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def plugin_str_provider() -> str:
 
 @pytest.fixture
 def plugin_ep(make_plugin_entry_point):
-    """EntryPoint плагина `myplug` с двумя @tool и одним @provides."""
+    """EntryPoint плагина myplug с двумя @tool и одним @provides."""
     return make_plugin_entry_point(
         "myplug",
         {
@@ -148,7 +148,7 @@ def test_multiple_plugins_independent_filters(
 
     tb = ToolBuilder().discover_plugins(
         GROUP,
-        # фильтр знает только plug_a → plug_b выключен целиком
+        # фильтр знает только plug_a -> plug_b выключен целиком
         plugin_tool_filter=PluginToolAllowListFilter("plug_a", ["plugin_foo"]),
     )
 
@@ -158,7 +158,7 @@ def test_multiple_plugins_independent_filters(
 def test_duplicate_tool_name_across_plugins_collides(
     install_entry_points, make_plugin_entry_point
 ):
-    """Один tool-name в двух плагинах → ToolNameCollisionError на build()."""
+    """Один tool-name в двух плагинах -> ToolNameCollisionError на build()."""
     attrs = {"plugin_foo": plugin_foo}
     eps = [
         make_plugin_entry_point("plug_a", attrs),

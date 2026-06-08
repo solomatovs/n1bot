@@ -13,15 +13,14 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 from pydantic import ConfigDict, Field
 
-from boba.indexing.context import PipelineId
 from boba.settings import bind, build_app_config
 from boba.tool.kb.confluence_doc.ingest import ConfluenceDocIngest
-from boba.tool.kb.core.chunking import ChunkerParams
-from boba.tool.kb.core.embedding import EmbeddingModel
+from boba.tool.kb.core.chunking import ChunkerParams, StructuralChunkerFactory
+from boba.tool.kb.core.embedding import EmbeddingModel, LocalFastEmbedEmbedderFactory
 from boba.tool.kb.core.postgres import (
     PostgresChunkStore,
     PostgresCollectionsStore,
@@ -37,9 +36,9 @@ logger = logging.getLogger("boba.tool.kb.cli.confluence_doc")
 class ConfluenceDocIngestCliConfig(PostgresStoreConfig, ChunkerParams):
     """Self-contained CLI-конфиг индексатора папки KbDoc-файлов.
 
-    Наследует `PostgresStoreConfig` (connection/tables — плоско) и `ChunkerParams`
-    (chunk_size/chunk_overlap/build_chunker — плоско). Config-секция:
-    `[cli.kb.confluence_doc.ingest]`.
+    Наследует PostgresStoreConfig (connection/tables — плоско) и ChunkerParams
+    (chunk_size/chunk_overlap — плоско). Config-секция:
+    [cli.kb.confluence_doc.ingest].
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -64,9 +63,7 @@ class ConfluenceDocIngestCliConfig(PostgresStoreConfig, ChunkerParams):
 
 
 class ConfluenceDocIngestCli:
-    """Operator-сборка KbDoc-ingest по абсолютной папке (`FsWalkRequestSource`)."""
-
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("kb.confluence_doc.ingest")
+    """Operator-сборка KbDoc-ingest по абсолютной папке (FsWalkRequestSource)."""
 
     @staticmethod
     def run_ingest(cfg: ConfluenceDocIngestCliConfig) -> dict[str, Any]:
@@ -80,8 +77,8 @@ class ConfluenceDocIngestCli:
 
         chunk_store = PostgresChunkStore(cfg=cfg)
         collections_store = PostgresCollectionsStore(cfg=cfg)
-        embedder = cfg.embedding.build()
-        chunker = cfg.build_chunker()
+        embedder = LocalFastEmbedEmbedderFactory.build(cfg.embedding)
+        chunker = StructuralChunkerFactory.build(cfg)
 
         result = ConfluenceDocIngest.run(
             request_source=FsWalkRequestSource(
@@ -95,7 +92,6 @@ class ConfluenceDocIngestCli:
             chunker=chunker,
             collection=cfg.collection,
             prune_missing=cfg.prune,
-            pipeline_id=ConfluenceDocIngestCli.PIPELINE_ID,
         )
         return {"folder": str(folder), **result}
 
@@ -110,7 +106,7 @@ def main() -> int:
     cfg = bind(config, "cli.kb.confluence_doc.ingest", ConfluenceDocIngestCliConfig)
 
     logger.info(
-        "ingesting folder=%s → collection=%s (prune=%s)",
+        "ingesting folder=%s -> collection=%s (prune=%s)",
         cfg.folder,
         cfg.collection,
         cfg.prune,

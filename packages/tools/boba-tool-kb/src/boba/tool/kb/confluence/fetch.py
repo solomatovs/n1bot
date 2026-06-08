@@ -1,44 +1,46 @@
-"""Tool `confluence_fetch_page` + `ConfluenceFetchPageConfig`.
+"""Tool confluence_fetch_page + ConfluenceFetchPageConfig.
 
 Возвращает контент одной Confluence-страницы прямо вызывающему LLM,
-без записи на диск и без индексации. Вход — `page_id`, выход —
+без записи на диск и без индексации. Вход — page_id, выход —
 строка с контентом страницы (HTML или Markdown, выбор за LLM через
-`as_markdown`).
+as_markdown).
 
-В отличие от `confluence_download`, attachment'ы НЕ скачиваются и НЕ
-запрашиваются по HTTP вообще: pipeline идёт мимо `ConfluenceContentTransport`'а
-с его fan-out'ом — `request_source → http_transport → ConfluenceJsonDecoder`
+В отличие от confluence_download, attachment'ы НЕ скачиваются и НЕ
+запрашиваются по HTTP вообще: pipeline идёт мимо ConfluenceContentTransport'а
+с его fan-out'ом — request_source -> ConfluenceHttpTransport -> ConfluenceJsonDecoder
 напрямую.
 
-Config-секция: `[tool.kb.confluence.fetch]`.
+Config-секция: [tool.kb.confluence.fetch].
 """
 
 from __future__ import annotations
 
-from typing import Annotated, ClassVar
+from typing import Annotated, Literal
 
 import httpx
 import markdownify
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.indexing import PipelineContext, PipelineId
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.parsing import ConfluenceJsonDecoder
+from boba.tool.kb.confluence.pipeline import ConfluenceHttpTransport
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
 from boba.tools import FromConfig, tool
-from boba.transport.http import HttpTransport
+from boba.transport.http import HttpProfile, HttpTransport
 
 __all__ = ["ConfluenceFetchPageConfig", "confluence_fetch_page"]
 
 
 class ConfluenceFetchPageConfig(BaseModel):
-    """Self-contained конфиг tool'а `confluence_fetch_page`."""
-
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.fetch_page")
+    """Self-contained конфиг tool'а confluence_fetch_page."""
 
     model_config = ConfigDict(extra="ignore")
 
-    confluence: ConfluenceConnection
+    confluence: HttpProfile
+    body_format: Literal["view", "export_view", "storage"] = Field(
+        default="view",
+        description="Confluence body-формат: view/export_view/storage.",
+    )
 
 
 @tool
@@ -65,24 +67,24 @@ def confluence_fetch_page(
     ] = True,
 ) -> str:
     """Скачивает одну Confluence-страницу и возвращает её контент строкой."""
+    conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
     request_source = ConfluencePagesRequestSource(
-        base_url=cfg.confluence.base_url,
-        auth=cfg.confluence.profile.auth.httpx_auth(),
+        base_url=conn.base_url,
         page_ids=[page_id],
-        body_format=cfg.confluence.body_format,
+        body_format=conn.body_format,
     )
-    transport = HttpTransport(cfg.confluence.profile)
-    decoder = ConfluenceJsonDecoder(body_format=cfg.confluence.body_format)
-    pctx = PipelineContext(pipeline_id=ConfluenceFetchPageConfig.PIPELINE_ID)
+    decoder = ConfluenceJsonDecoder(body_format=conn.body_format)
 
     try:
-        for http_req in request_source.stream(pctx):
-            for raw in transport.stream(pctx, [http_req]):
-                decoded = decoder.convert(raw)
-                html = decoded.handle.read().decode("utf-8", errors="replace")
-                if as_markdown:
-                    return markdownify.markdownify(html, heading_style="ATX")
-                return html
+        with HttpTransport(conn.profile) as http:
+            transport = ConfluenceHttpTransport(http)
+            for req in request_source.requests():
+                for raw in transport.fetch(req):
+                    decoded = decoder.decode(raw)
+                    html = decoded.handle.read().decode("utf-8", errors="replace")
+                    if as_markdown:
+                        return markdownify.markdownify(html, heading_style="ATX")
+                    return html
     except httpx.HTTPError as e:
         raise RuntimeError(
             f"Confluence fetch failed: {type(e).__name__}: {e}",

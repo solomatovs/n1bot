@@ -1,10 +1,10 @@
 """
-Накапливаемая статистика одного запуска StreamingIndexer
+Накапливаемая статистика одного запуска Pipeline.index
 для логирования, метрик, CLI-отчётов, и т.п.
 
 Поля 1:1 соответствуют CompletedItem-events: каждый бамп счётчика
 происходит ровно при эмите соответствующего event'а через
-`StreamingIndexer._observe`. Builder здесь — это «view над event stream'ом
+Pipeline._observe. Builder здесь — это «view над event stream'ом
 в виде счётчиков», а не отдельный накопитель данных.
 """
 
@@ -19,7 +19,7 @@ __all__ = ["IndexStats", "IndexStatsBuilder"]
 
 @dataclass(frozen=True)
 class IndexStats:
-    """Сводка одного StreamingIndexer.invoke() / .stream()."""
+    """Сводка одного Pipeline.run() / .index()."""
 
     sources_processed: int
     sources_failed: int

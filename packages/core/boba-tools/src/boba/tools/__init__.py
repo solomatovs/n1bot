@@ -1,9 +1,9 @@
 """boba-tools — декларативный framework tools на Dishka DI.
 
 Три слоя:
-- `boba.tools.domain` — контракт (Tool ABC, ToolResult, ToolSchema, identity);
-- `boba.tools.framework` — application (ToolRegistry/Catalog/Executor/Source);
-- `boba.tools.declarative` — `@tool`/`@provides` + сборка DI в `ToolRegistry`.
+- boba.tools.domain — контракт (Tool ABC, ToolResult, ToolSchema, identity);
+- boba.tools.framework — application (ToolRegistry/Catalog/Executor/Source);
+- boba.tools.declarative — @tool/@provides + сборка DI в ToolRegistry.
 
 Этот модуль-фасад поднимает наверх только декларативный слой — то, что
 нужно автору плагина и composition-root'у агента. Контракт и application-слой

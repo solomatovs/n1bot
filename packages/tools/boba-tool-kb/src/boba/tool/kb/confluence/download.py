@@ -1,22 +1,22 @@
-"""Tool `confluence_download` + `ConfluenceDownloadConfig` (unified HTTP-download).
+"""Tool confluence_download + ConfluenceDownloadConfig (unified HTTP-download).
 
 Один tool, два режима — LLM заполняет РОВНО ОДИН из дискриминирующих
 параметров (space_keys / page_ids):
 
-- `space_keys=[A, B]`   → все страницы перечисленных Confluence-spaces
-                          (discovery `/rest/api/space/{key}/content`).
-- `page_ids=[123, 456]` → явный список страниц по ID.
+- space_keys=[A, B]   -> все страницы перечисленных Confluence-spaces
+                          (discovery /rest/api/space/{key}/content).
+- page_ids=[123, 456] -> явный список страниц по ID.
 
-`as_markdown=True` конвертирует HTML в Markdown (`markdownify`, ATX-заголовки)
-и пишет `.md` с YAML-frontmatter; иначе — `.html` с HTML-комментарием-header'ом.
+as_markdown=True конвертирует HTML в Markdown (markdownify, ATX-заголовки)
+и пишет .md с YAML-frontmatter; иначе — .html с HTML-комментарием-header'ом.
 
-Запись на ФС инкапсулирована в `ConfluenceDownloader`: для каждого
-`HttpRequest` из `RequestSource` `ConfluenceContentTransport` сначала отдаёт
+Запись на ФС инкапсулирована в ConfluenceDownloader: для каждого
+HttpRequest из RequestSource ConfluenceContentTransport сначала отдаёт
 декодированную HTML-страницу, а затем все её вложения как бинарные
-`RawDocument`'ы (по очереди). Страница пишется в
-`{dest_dir}/{space}/{ancestors}/{page_id}.{html|md}`, вложения — рядом в
-`{page_id}_files/{filename}`; `<img src>`/`<a href>` переписываются на
-локальные пути. Конфигурация — из секции `[tool.kb.confluence.download]`.
+RawDocument'ы (по очереди). Страница пишется в
+{dest_dir}/{space}/{ancestors}/{page_id}.{html|md}, вложения — рядом в
+{page_id}_files/{filename}; <img src>/<a href> переписываются на
+локальные пути. Конфигурация — из секции [tool.kb.confluence.download].
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import io
 import posixpath
 import re
 from collections.abc import Iterable, Iterator
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -35,8 +35,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import (
     BinaryStream,
-    PipelineContext,
-    PipelineId,
     RawDocument,
     ReaderKeys,
     RequestSource,
@@ -55,16 +53,17 @@ from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
     ConfluencePagesRequestSource,
+    ConfluenceRequest,
 )
 from boba.tools import FromConfig, FromDI, Scope, tool
-from boba.transport.http import HttpRequest
+from boba.transport.http import HttpProfile
 from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceShell
 
 __all__ = ["ConfluenceDownloadConfig", "confluence_download"]
 
 
 class _CountingReader:
-    """`BinaryStream`-обёртка, считающая сумму прочитанных байт."""
+    """BinaryStream-обёртка, считающая сумму прочитанных байт."""
 
     def __init__(self, source: BinaryStream) -> None:
         self._source = source
@@ -77,14 +76,18 @@ class _CountingReader:
 
 
 class ConfluenceDownloadConfig(BaseModel):
-    """Self-contained конфиг tool'а `confluence_download`.
+    """Self-contained конфиг tool'а confluence_download.
 
-    Config-секция: `[tool.kb.confluence.download]`.
+    Config-секция: [tool.kb.confluence.download].
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    confluence: ConfluenceConnection
+    confluence: HttpProfile
+    body_format: Literal["view", "export_view", "storage"] = Field(
+        default="view",
+        description="Confluence body-формат: view/export_view/storage.",
+    )
     dest_dir: str = Field(
         default="kb/confluence",
         min_length=1,
@@ -129,55 +132,50 @@ class ConfluenceDownloadConfig(BaseModel):
 
 
 class ConfluenceDownloader:
-    """Запись Confluence-страниц и их вложений на ФС внутри workspace-`shell`.
+    """Запись Confluence-страниц и их вложений на ФС внутри workspace-shell.
 
-    Поддиректории повторяют структуру Confluence-URL: `{space_key}` сверху,
-    затем дерево предков страницы (root → direct parent). attachment-документы
-    наследуют `SPACE_KEY`/`ANCESTORS_TITLES` родителя через
-    `ConfluenceRest.make_attachment_request`, так что оказываются в той же папке.
+    Поддиректории повторяют структуру Confluence-URL: {space_key} сверху,
+    затем дерево предков страницы (root -> direct parent). attachment-документы
+    наследуют SPACE_KEY/ANCESTORS_TITLES родителя через
+    ConfluenceRest.make_attachment_request, так что оказываются в той же папке.
     """
-
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.download")
 
     _FS_FORBIDDEN: ClassVar[re.Pattern[str]] = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
     _FS_COMPONENT_MAX: ClassVar[int] = 120
     _FILES_DIR_SUFFIX: ClassVar[str] = "_files"
-    """Convention для каталога с вложениями: `{page_id}_files/` рядом со страницей.
+    """Convention для каталога с вложениями: {page_id}_files/ рядом со страницей.
 
-    Совместимо с тем, как `Save As Webpage` в браузерах раскладывает ресурсы
+    Совместимо с тем, как Save As Webpage в браузерах раскладывает ресурсы
     страницы — узнаваемо и для людей, и для downstream-тулов."""
 
     @staticmethod
     def run(  # noqa: PLR0913 — keyword-only helper, явный набор deps
         *,
         shell: WorkspaceShell[Any],
-        request_source: RequestSource[HttpRequest],
+        request_source: RequestSource[ConfluenceRequest],
         conn: ConfluenceConnection,
         dest_dir: str,
         as_markdown: bool,
-        pipeline_id: PipelineId,
         attachment_filter: AttachmentFilter | None = None,
     ) -> dict[str, Any]:
         """
-        Скачивает страницы (HTML/Markdown) и их вложения (бинарь) в `dest_dir`
-        внутри переданного `shell` (workspace-relative путь).
+        Скачивает страницы (HTML/Markdown) и их вложения (бинарь) в dest_dir
+        внутри переданного shell (workspace-relative путь).
 
-        Возвращает `{dest_dir, saved, total}`, где `saved` — список записей вида
-        `{kind, page_id, ..., path, bytes}`. `path` — workspace-relative, тот же
-        формат принимают `cat`/`grep`/`ls` из `boba-tool-files`.
+        Возвращает {dest_dir, saved, total}, где saved — список записей вида
+        {kind, page_id, ..., path, bytes}. path — workspace-relative, тот же
+        формат принимают cat/grep/ls из boba-tool-files.
 
-        `attachment_filter` (если задан) сужает скачиваемые вложения по
-        `media_type`/`title` fnmatch-globs — отсеянные не запрашиваются по HTTP
+        attachment_filter (если задан) сужает скачиваемые вложения по
+        media_type/title fnmatch-globs — отсеянные не запрашиваются по HTTP
         и не пишутся на диск. Сами страницы фильтр не трогает.
         """
         dest_rel = dest_dir.strip("/")
         ConfluenceDownloader._ensure_dir(shell, dest_rel)
 
-        pctx = PipelineContext(pipeline_id=pipeline_id)
         docs = ConfluenceContentTransport.iter_documents(
             request_source=request_source,
             conn=conn,
-            pctx=pctx,
             attachment_filter=attachment_filter,
         )
         try:
@@ -205,10 +203,10 @@ class ConfluenceDownloader:
         *,
         as_markdown: bool,
     ) -> Iterator[dict[str, str]]:
-        """Generator-loop: один документ → один write → один yield записи.
+        """Generator-loop: один документ -> один write -> один yield записи.
 
         Без накопления: запись на диск происходит сразу при получении документа,
-        `saved`-список материализуется только на API-границе. Это даёт два
+        saved-список материализуется только на API-границе. Это даёт два
         преимущества: (1) первый файл пишется как только пришёл первый HTTP,
         а не после всех; (2) очень большие выборки не держат всю историю
         в памяти, кроме итогового списка коротких dict-записей.
@@ -306,13 +304,13 @@ class ConfluenceDownloader:
     @staticmethod
     def _compute_page_dir(dest_rel: str, decoded: RawDocument) -> str:
         """
-        `{dest}/{space?}/{ancestor1}/.../{ancestorN}/`
+        {dest}/{space?}/{ancestor1}/.../{ancestorN}/
         общее место для page и её attachments.
 
         Для attachment-документа эти ключи получены от родителя через
-        `ConfluenceRest.make_attachment_request` (см. `pipeline`), так что
+        ConfluenceRest.make_attachment_request (см. pipeline), так что
         file_path будет совпадать с тем, что вычислится для самой страницы — и
-        attachment ляжет в `{page_id}_files/` рядом со страницей.
+        attachment ляжет в {page_id}_files/ рядом со страницей.
         """
         space_key = decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
         ancestors = decoded.metadata.get(ConfluenceKeys.ANCESTORS_TITLES) or ()
@@ -338,7 +336,7 @@ class ConfluenceDownloader:
     def _atomic_write_stream(
         shell: WorkspaceShell[Any], path: str, source: BinaryStream,
     ) -> None:
-        """Атомарно записать поток в `path`: stream → tmp → fsync → replace."""
+        """Атомарно записать поток в path: stream -> tmp -> fsync -> replace."""
         try:
             shell.atomic_write_binary(path, source)
         except OSError as e:
@@ -348,9 +346,9 @@ class ConfluenceDownloader:
     def _sanitize_component(name: str) -> str:
         """Filesystem-safe имя компонента пути из произвольного title.
 
-        Заменяет запрещённые символы на `_`, схлопывает пробелы, обрезает
+        Заменяет запрещённые символы на _, схлопывает пробелы, обрезает
         точки/пробелы по краям (Windows-совместимость) и длину до 120 символов.
-        Возвращает `"_"` если после очистки строка пустая.
+        Возвращает "_" если после очистки строка пустая.
         """
         cleaned = ConfluenceDownloader._FS_FORBIDDEN.sub("_", name)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
@@ -360,15 +358,15 @@ class ConfluenceDownloader:
 
     @staticmethod
     def _confluence_attachment_filename(url: str) -> str | None:
-        """`/download/attachments/<id>/<filename>?...` → `<filename>` (URL-decoded).
+        """/download/attachments/<id>/<filename>?... -> <filename> (URL-decoded).
 
-        Возвращает `None`, если URL не похож на Confluence-attachment.
-        Принимает и относительные (`/download/...`), и абсолютные
-        (`https://confl.example.com/wiki/download/...`) пути — нас интересует
-        только последний path-сегмент после `/download/attachments/<id>/`.
+        Возвращает None, если URL не похож на Confluence-attachment.
+        Принимает и относительные (/download/...), и абсолютные
+        (https://confl.example.com/wiki/download/...) пути — нас интересует
+        только последний path-сегмент после /download/attachments/<id>/.
 
-        `download/thumbnails/` тоже распознаётся — Confluence иногда подменяет
-        inline `<img src>` на превью; имя файла там то же самое.
+        download/thumbnails/ тоже распознаётся — Confluence иногда подменяет
+        inline <img src> на превью; имя файла там то же самое.
         """
         try:
             parsed = urlparse(url)
@@ -389,12 +387,12 @@ class ConfluenceDownloader:
         attachments: tuple[AttachmentInfo, ...],
         local_dir: str,
     ) -> str:
-        """Replace `<img src>` / `<a href>`-URL'ы вложений на `{local_dir}/{filename}`.
+        """Replace <img src> / <a href>-URL'ы вложений на {local_dir}/{filename}.
 
         Сопоставление — по filename'у (последний path-сегмент после
-        `/download/attachments/<id>/`): Confluence в HTML и в `_links.download`
+        /download/attachments/<id>/): Confluence в HTML и в _links.download
         кладёт одинаковые base-имена, но query-параметры могут отличаться
-        (`version=`/`modificationDate=`), поэтому string-equality по URL
+        (version=/modificationDate=), поэтому string-equality по URL
         ненадёжна. Sanitize filename'а при rewrite'е тот же, что при записи
         на диск — поэтому ссылка точно бьётся в файл.
         """
@@ -477,9 +475,9 @@ def confluence_download(
 ) -> dict[str, Any]:
     """Confluence-download: spaces / page_ids по выбору LLM.
 
-    LLM заполняет ровно один из (`space_keys`, `page_ids`)
+    LLM заполняет ровно один из (space_keys, page_ids)
 
-    Возвращает JSON `{mode, <discriminator>, dest_dir, saved, total}`.
+    Возвращает JSON {mode, <discriminator>, dest_dir, saved, total}.
     """
     modes = [
         ("space_keys", space_keys),
@@ -494,19 +492,19 @@ def confluence_download(
         )
         raise ValueError(msg)
 
+    conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
     mode_name, mode_value = chosen[0]
     if mode_name == "space_keys":
         request_source = ConfluenceMultiSpaceRequestSource(
-            conn=cfg.confluence,
+            conn=conn,
             space_keys=mode_value,
-            body_format=cfg.confluence.body_format,
+            body_format=conn.body_format,
         )
     else:  # page_ids
         request_source = ConfluencePagesRequestSource(
-            base_url=cfg.confluence.base_url,
-            auth=cfg.confluence.profile.auth.httpx_auth(),
+            base_url=conn.base_url,
             page_ids=mode_value,
-            body_format=cfg.confluence.body_format,
+            body_format=conn.body_format,
         )
 
     att_filter = AttachmentFilter.from_lists(
@@ -516,10 +514,9 @@ def confluence_download(
     result = ConfluenceDownloader.run(
         shell=shell,
         request_source=request_source,
-        conn=cfg.confluence,
+        conn=conn,
         dest_dir=cfg.dest_dir,
         as_markdown=as_markdown,
-        pipeline_id=ConfluenceDownloader.PIPELINE_ID,
         attachment_filter=att_filter,
     )
     saved: list[dict[str, str]] = result["saved"]

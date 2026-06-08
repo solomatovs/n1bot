@@ -1,4 +1,4 @@
-"""OpenAI-compat Embedder: Ollama / LiteLLM / vLLM (без `dimensions=`)."""
+"""OpenAI-compat Embedder: Ollama / LiteLLM / vLLM (без dimensions=)."""
 
 from __future__ import annotations
 
@@ -15,18 +15,18 @@ __all__ = ["OpenAICompatEmbedder"]
 
 class OpenAICompatEmbedder(Embedder[str]):
     """
-    `Embedder[str]` поверх OpenAI-compat embeddings API без `dimensions=`.
+    Embedder[str] поверх OpenAI-compat embeddings API без dimensions=.
 
-    В отличие от `OpenAIEmbedder`, **не** передаёт `dimensions=` в API:
+    В отличие от OpenAIEmbedder, **не** передаёт dimensions= в API:
     многие OpenAI-совместимые прокси (Ollama, LiteLLM с локальными
     backend'ами, ряд vLLM-сборок) этот параметр не поддерживают и
     возвращают ошибку.
 
     Размерность вектора **выводится из первого ответа модели** (lazy
-    discovery) и кэшируется. После первого embedding'а `dim()` —
+    discovery) и кэшируется. После первого embedding'а dim() —
     O(1) lookup. Если caller'у dim нужен до первого embedding'а
-    (например, чтобы создать HNSW-индекс ДО upsert'а), `dim()` сам
-    сделает probe-запрос (`input="dim-probe"`) и закэширует результат.
+    (например, чтобы создать HNSW-индекс ДО upsert'а), dim() сам
+    сделает probe-запрос (input="dim-probe") и закэширует результат.
     """
 
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100

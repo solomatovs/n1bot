@@ -43,7 +43,7 @@ from boba.patterns import StreamSource
 
 
 class LLMToAgentConverter:
-    """Stateless конвертер LLM → Agent."""
+    """Stateless конвертер LLM -> Agent."""
 
     def convert(self, event: LLMEvent) -> Iterator[AgentEvent]:  # noqa: C901
         match event:
@@ -124,7 +124,7 @@ class LLMPort(StreamSource[AgentContext, AgentEvent]):
                 yield from LLMToAgentConverter().convert(event)
         except LLMError as e:
             # Подробности (status_code + цепочка причин) автоматически
-            # обогащаются в `AgentErrorRouter` из `__cause__` — здесь
+            # обогащаются в AgentErrorRouter из __cause__ — здесь
             # достаточно бросить ошибку «from e».
             raise LLMGenerationFailedError(
                 str(e),

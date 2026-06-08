@@ -1,11 +1,11 @@
-"""UserQueryRecorderMiddleware: эмитит `UserQueryReceived` один раз на request.
+"""UserQueryRecorderMiddleware: эмитит UserQueryReceived один раз на request.
 
-Журнал `HistoryService` должен содержать запрос пользователя как первое
-доменное событие, чтобы `HistoryDialogView` мог восстановить `UserMessage`
+Журнал HistoryService должен содержать запрос пользователя как первое
+доменное событие, чтобы HistoryDialogView мог восстановить UserMessage
 для прошлых turn'ов. Middleware ставится самым внутренним wrapper'ом —
-сразу над `LLMPort` — и эмитит `UserQueryReceived` до любых LLM-событий
-текущего request_id; дедуп по `request_id` гарантирует ровно один эмит,
-даже если `StreamSourceLoop` зайдёт в цикл повторно.
+сразу над LLMPort — и эмитит UserQueryReceived до любых LLM-событий
+текущего request_id; дедуп по request_id гарантирует ровно один эмит,
+даже если StreamSourceLoop зайдёт в цикл повторно.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from boba.patterns import StreamSource
 
 
 class UserQueryRecorderMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Эмитит `UserQueryReceived` один раз на `request_id` перед inner-стримом."""
+    """Эмитит UserQueryReceived один раз на request_id перед inner-стримом."""
 
     def __init__(
         self,

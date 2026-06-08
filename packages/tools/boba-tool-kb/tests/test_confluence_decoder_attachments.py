@@ -1,9 +1,9 @@
-"""ConfluenceJsonDecoder: парсинг `children.attachment.results[]` в metadata.
+"""ConfluenceJsonDecoder: парсинг children.attachment.results[] в metadata.
 
 Герметичный unit-тест (без сети): подсовываем декодеру вручную собранный
-JSON в форме, которую возвращает `/rest/api/content/{id}?expand=…,
-children.attachment.version,children.attachment.extensions`, и проверяем
-что `ConfluenceKeys.ATTACHMENTS` заполнен ровно тем, что мы туда положили.
+JSON в форме, которую возвращает /rest/api/content/{id}?expand=…,
+children.attachment.version,children.attachment.extensions, и проверяем
+что ConfluenceKeys.ATTACHMENTS заполнен ровно тем, что мы туда положили.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def _raw(payload: dict[str, Any]) -> RawDocument:
 
 
 def _decode(payload: dict[str, Any]) -> RawDocument:
-    return ConfluenceJsonDecoder().convert(_raw(payload))
+    return ConfluenceJsonDecoder().decode(_raw(payload))
 
 
 def test_attachments_parsed_into_metadata() -> None:
@@ -88,7 +88,7 @@ def test_attachments_parsed_into_metadata() -> None:
 
 
 def test_attachments_absent_when_no_children_block() -> None:
-    """Page без `children` в JSON — ключ не выставляется (а не пустой tuple)."""
+    """Page без children в JSON — ключ не выставляется (а не пустой tuple)."""
     decoded = _decode({
         "id": "42",
         "title": "Page",
@@ -98,9 +98,9 @@ def test_attachments_absent_when_no_children_block() -> None:
 
 
 def test_decoded_content_type_is_html_not_json() -> None:
-    """После JSON→HTML распаковки `TransportKeys.CONTENT_TYPE` должен быть `text/html`.
+    """После JSON->HTML распаковки TransportKeys.CONTENT_TYPE должен быть text/html.
 
-    HttpTransport ставит `application/json` (Confluence-ответ), но handle
+    HttpTransport ставит application/json (Confluence-ответ), но handle
     содержит уже HTML — DispatchReader должен роутить через HTML-Reader,
     а не пытаться найти Reader для JSON.
     """
@@ -113,12 +113,12 @@ def test_decoded_content_type_is_html_not_json() -> None:
         source_id=SourceId("https://x/pages/viewpage.action?pageId=42"),
         metadata=Metadata.empty().set(TransportKeys.CONTENT_TYPE, "application/json"),
     )
-    decoded = ConfluenceJsonDecoder().convert(raw)
+    decoded = ConfluenceJsonDecoder().decode(raw)
     assert decoded.metadata.get(TransportKeys.CONTENT_TYPE) == "text/html"
 
 
 def test_attachments_absent_when_empty_results() -> None:
-    """`children.attachment.results = []` — ключ тоже не выставляется."""
+    """children.attachment.results = [] — ключ тоже не выставляется."""
     decoded = _decode({
         "id": "42",
         "title": "Page",
@@ -129,7 +129,7 @@ def test_attachments_absent_when_empty_results() -> None:
 
 
 def test_attachment_missing_extensions_and_version_uses_defaults() -> None:
-    """Отсутствующие `extensions`/`version` — file_size=0, version=1.
+    """Отсутствующие extensions/version — file_size=0, version=1.
 
     Confluence в редких конфигурациях возвращает attachment без extensions
     (например, на старых serv'ах с обрезанным expand'ом); декодер не должен
@@ -166,8 +166,8 @@ def test_attachment_missing_extensions_and_version_uses_defaults() -> None:
 def test_attachments_roundtrip_via_metadata_codec() -> None:
     """Encode-decode цикл через Metadata wire-format остаётся идентичным.
 
-    Это страхует, что `AttachmentInfo` сериализуется в JSON и обратно без
-    потерь — важно когда Metadata уезжает в JSONB Postgres'а (`.to_wire()`).
+    Это страхует, что AttachmentInfo сериализуется в JSON и обратно без
+    потерь — важно когда Metadata уезжает в JSONB Postgres'а (.to_wire()).
     """
     decoded = _decode({
         "id": "42",

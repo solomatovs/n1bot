@@ -1,6 +1,6 @@
-"""Tool `confluence_ingest_cql`: индексация страниц, отобранных CQL-запросом.
+"""Tool confluence_ingest_cql: индексация страниц, отобранных CQL-запросом.
 
-Общий конфиг/pipeline — `ingest_base.py` (секция `[tool.kb.confluence.ingest]`).
+Общий конфиг/pipeline — ingest_base.py (секция [tool.kb.confluence.ingest]).
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngest, ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources import ConfluenceCqlRequestSource
 from boba.tools import FromConfig, tool
@@ -43,14 +44,13 @@ def confluence_ingest_cql(
 ) -> dict[str, Any]:
     """Индексирует страницы Confluence, отобранные CQL-запросом, в KB.
 
-    Возвращает JSON `{collection, indexed, skipped_unchanged, pruned, failed}`.
+    Возвращает JSON {collection, indexed, skipped_unchanged, pruned, failed}.
     """
+    conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
     request_source = ConfluenceCqlRequestSource(
-        conn=cfg.confluence,
+        conn=conn,
         cql=cql,
-        body_format=cfg.confluence.body_format,
+        body_format=conn.body_format,
     )
-    result = ConfluenceIngest.ingest(
-        cfg, request_source, prune_missing, ConfluenceIngest.PIPELINE_ID_CQL,
-    )
+    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing)
     return {"cql": cql, **result}

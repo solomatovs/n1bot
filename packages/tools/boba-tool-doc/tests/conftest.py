@@ -19,7 +19,7 @@ from boba.workspace.contract import ProjectWorkspaceShell
 
 @pytest.fixture
 def mock_workspace() -> ProjectWorkspaceShell:
-    """Замоканный `ProjectWorkspaceShell` для DI."""
+    """Замоканный ProjectWorkspaceShell для DI."""
     return MagicMock(spec=ProjectWorkspaceShell)
 
 
@@ -27,7 +27,7 @@ def mock_workspace() -> ProjectWorkspaceShell:
 def make_doc_tool_names(
     mock_workspace: ProjectWorkspaceShell,
 ) -> Callable[[dict[str, Any]], list[str]]:
-    """Фабрика: meta-секция `[tool.doc]` → имена зарегистрированных tool'ов."""
+    """Фабрика: meta-секция [tool.doc] -> имена зарегистрированных tool'ов."""
 
     def _factory(meta_section: dict[str, Any]) -> list[str]:
         config = ConfigBuilder().add_dict({"tool": {"doc": meta_section}}).build()

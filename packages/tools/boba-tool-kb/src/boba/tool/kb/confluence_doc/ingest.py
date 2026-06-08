@@ -1,11 +1,11 @@
 """
-Tool `confluence_doc_ingest` + `ConfluenceDocIngestConfig`.
+Tool confluence_doc_ingest + ConfluenceDocIngestConfig.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any
 
 from pydantic import ConfigDict, Field
 
@@ -15,11 +15,10 @@ from boba.indexing import (
     IndexerConfig,
     NoneCleanup,
     Pipeline,
-    PipelineContext,
     RequestSource,
     Transport,
 )
-from boba.indexing.context import CollectionId, PipelineId
+from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
 from boba.kbdoc import KbDocReader
 from boba.settings import LLMStringList
@@ -28,8 +27,8 @@ from boba.tool.kb.confluence_doc.workspace_indexing import (
     WorkspaceTransport,
     WorkspaceWalkRequestSource,
 )
-from boba.tool.kb.core.chunking import ChunkerParams
-from boba.tool.kb.core.embedding import EmbeddingModel
+from boba.tool.kb.core.chunking import ChunkerParams, StructuralChunkerFactory
+from boba.tool.kb.core.embedding import EmbeddingModel, LocalFastEmbedEmbedderFactory
 from boba.tool.kb.core.indexing_log import LoggedIndexRun
 from boba.tool.kb.core.postgres import (
     PostgresChunkStore,
@@ -46,12 +45,12 @@ logger = logging.getLogger("boba.tool.kb.confluence_doc.ingest")
 
 
 class ConfluenceDocIngestConfig(PostgresStoreConfig, ChunkerParams):
-    """Self-contained конфиг tool'а `confluence_doc_ingest`.
+    """Self-contained конфиг tool'а confluence_doc_ingest.
 
-    Наследует `PostgresStoreConfig` (connection/tables — плоско) и `ChunkerParams`
-    (chunk_size/chunk_overlap/build_chunker — плоско). Config-секция: `[tool.kb]`.
+    Наследует PostgresStoreConfig (connection/tables — плоско) и ChunkerParams
+    (chunk_size/chunk_overlap — плоско). Config-секция: [tool.kb].
     Operator-controlled поля: connection/tables/embedding/collection. LLM выбирает
-    только `paths` и `prune_missing`.
+    только paths и prune_missing.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -68,12 +67,10 @@ class ConfluenceDocIngestConfig(PostgresStoreConfig, ChunkerParams):
 class ConfluenceDocIngest:
     """Сборка KbDoc-ingest pipeline — общий хвост для CLI и tool'а.
 
-    Источник и транспорт собирает caller: CLI — `FsWalkRequestSource` +
-    `FsTransport` по абсолютному `folder`; tool — `WorkspaceWalkRequestSource`
-    + `WorkspaceTransport` поверх `ProjectWorkspaceShell`.
+    Источник и транспорт собирает caller: CLI — FsWalkRequestSource +
+    FsTransport по абсолютному folder; tool — WorkspaceWalkRequestSource
+    + WorkspaceTransport поверх ProjectWorkspaceShell.
     """
-
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("kb.confluence_doc_ingest")
 
     @staticmethod
     def run(  # noqa: PLR0913 — keyword-only helper, явный набор deps
@@ -86,12 +83,11 @@ class ConfluenceDocIngest:
         chunker: StructuralChunker,
         collection: str,
         prune_missing: bool,
-        pipeline_id: PipelineId,
     ) -> dict[str, Any]:
-        """Полный KbDoc → kb_chunks pipeline для уже-собранных source+transport.
+        """Полный KbDoc -> kb_chunks pipeline для уже-собранных source+transport.
 
-        Возвращает JSON-stats `{collection, indexed, skipped_unchanged, pruned,
-        failed}`. Caller добавляет свои поля (folder/paths/...).
+        Возвращает JSON-stats {collection, indexed, skipped_unchanged, pruned,
+        failed}. Caller добавляет свои поля (folder/paths/...).
         """
         collection_id = CollectionId(collection)
         collections_store.ensure_collection(collection_id, description=None)
@@ -112,7 +108,6 @@ class ConfluenceDocIngest:
         )
         stats = LoggedIndexRun.drain(
             pipeline.index(
-                PipelineContext(pipeline_id=pipeline_id),
                 chunker=chunker,
                 sink=view,
                 query=view,
@@ -158,16 +153,16 @@ def confluence_doc_ingest(
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Индексирует KbDoc `.md`-файлы из workspace'а в KB.
+    """Индексирует KbDoc .md-файлы из workspace'а в KB.
 
-    Возвращает JSON `{collection, indexed, skipped_unchanged, pruned, failed,
-    paths}`. Не-`.md` файлы игнорируются. Несуществующие пути логируются
+    Возвращает JSON {collection, indexed, skipped_unchanged, pruned, failed,
+    paths}. Не-.md файлы игнорируются. Несуществующие пути логируются
     warning'ом и пропускаются.
     """
     chunk_store = PostgresChunkStore(cfg=cfg)
     collections_store = PostgresCollectionsStore(cfg=cfg)
-    embedder = cfg.embedding.build()
-    chunker = cfg.build_chunker()
+    embedder = LocalFastEmbedEmbedderFactory.build(cfg.embedding)
+    chunker = StructuralChunkerFactory.build(cfg)
 
     result = ConfluenceDocIngest.run(
         request_source=WorkspaceWalkRequestSource(
@@ -182,6 +177,5 @@ def confluence_doc_ingest(
         chunker=chunker,
         collection=cfg.collection,
         prune_missing=prune_missing,
-        pipeline_id=ConfluenceDocIngest.PIPELINE_ID,
     )
     return {"paths": list(paths), **result}

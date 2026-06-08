@@ -1,7 +1,7 @@
-"""OverlapCharSplitter — `Splitter[str]` с char-based рекурсивным split'ом
+"""OverlapCharSplitter — Splitter[str] с char-based рекурсивным split'ом
 по разделителям и overlap'ом между чанками.
 
-Text-specific impl доменного `Splitter[T]`-протокола из `boba.indexing`.
+Text-specific impl доменного Splitter[T]-протокола из boba.indexing.
 """
 
 from __future__ import annotations
@@ -25,10 +25,10 @@ class _Piece:
 
 
 class OverlapCharSplitter(Splitter[str]):
-    """Разделяет `value` на чанки внахлест.
+    """Разделяет value на чанки внахлест.
 
     **Схема**:
-    ```python
+    python
     # исходный текст
     index:      0  1  2  3  4  5  6  7  8  9 10 11 12 13
     value:      a  b     c  d     e  f     g  h     i  j
@@ -37,14 +37,14 @@ class OverlapCharSplitter(Splitter[str]):
     chunk 1:    a  b     c  d     e  f                       value[0:8]  = "ab cd ef"
     chunk 2:             c  d     e  f     g  h              value[3:11] = "cd ef gh"
     chunk 3:                      e  f     g  h     i  j     value[6:14] = "ef gh ij"
-    ```
+    
 
     **Пример**:
-    ```python
+    python
     s = OverlapCharSplitter(
         chunk_size=8,         # размер одного чанка
         chunk_overlap=5,      # перекрытие соседних чанков (≈ символов)
-        separators=[" "],     # приоритет: крупные → мелкие; "" — посимвольно
+        separators=[" "],     # приоритет: крупные -> мелкие; "" — посимвольно
         length_function=None, # функция длины; None ≡ len (char-count)
     )
 
@@ -53,7 +53,7 @@ class OverlapCharSplitter(Splitter[str]):
         SplitPiece("cd ef gh", ChunkLocation(start=3, end=11)),
         SplitPiece("ef gh ij", ChunkLocation(start=6, end=14)),
     ]
-    ```
+    
     """
 
     DEFAULT_SEPARATORS: ClassVar[tuple[str, ...]] = ("\n\n", "\n", " ", "")
@@ -66,10 +66,10 @@ class OverlapCharSplitter(Splitter[str]):
         length_function: LengthFunction[str] | None = None,
         extra_overhead: int = 0,
     ) -> None:
-        """`extra_overhead` — резерв в budget для prefix/header/footer, которые
+        """extra_overhead — резерв в budget для prefix/header/footer, которые
         chunker дописывает в каждый чанк после splitter.split(...). Эффективный
-        budget = `max(1, chunk_size - extra_overhead)`. Используется
-        `StructuralChunker`'ом, чтобы heading-breadcrumbs и replicate-header
+        budget = max(1, chunk_size - extra_overhead). Используется
+        StructuralChunker'ом, чтобы heading-breadcrumbs и replicate-header
         умещались в итоговом чанке.
         """
         self._chunk_size = max(1, chunk_size - extra_overhead)

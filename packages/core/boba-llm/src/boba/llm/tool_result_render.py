@@ -1,9 +1,9 @@
-"""Bridge: tools-domain `ToolResult` → llm-domain `ToolResultMessage`.
+"""Bridge: tools-domain ToolResult -> llm-domain ToolResultMessage.
 
-Сознательно живёт **рядом** с `boba.llm.models`, но не **внутри** — чтобы
-`models.py` не зависел от конкретных вариантов `ToolResult`. Все знания
-о вариантах сосредоточены здесь и подкреплены `assert_never` — добавишь
-новый вариант `ToolResult`, pyright потребует дописать ветку в этом
+Сознательно живёт **рядом** с boba.llm.models, но не **внутри** — чтобы
+models.py не зависел от конкретных вариантов ToolResult. Все знания
+о вариантах сосредоточены здесь и подкреплены assert_never — добавишь
+новый вариант ToolResult, pyright потребует дописать ветку в этом
 модуле, а не в models.py.
 """
 
@@ -31,11 +31,11 @@ def tool_result_to_message(
     tool_call_id: str,
     result: ToolResult,
 ) -> ToolResultMessage:
-    """`ToolResult` → `ToolResultMessage` со свежим id.
+    """ToolResult -> ToolResultMessage со свежим id.
 
-    Exhaustive match по дискриминатору `kind` — pyright проверит покрытие
-    через `assert_never`. Для replay/тестов id можно перебить через
-    `.set_id(...)` на результате.
+    Exhaustive match по дискриминатору kind — pyright проверит покрытие
+    через assert_never. Для replay/тестов id можно перебить через
+    .set_id(...) на результате.
     """
     content: str
     is_error: bool

@@ -1,17 +1,17 @@
 """
-`DishkaTool` — bridge между декларативным callable-стилем (`@tool`) и
-существующим `Tool[Args, Cfg]` ABC из `boba.tools.domain`.
+DishkaTool — bridge между декларативным callable-стилем (@tool) и
+существующим Tool[Args, Cfg] ABC из boba.tools.domain.
 
-Снаружи неотличим от обычных tools — `ToolRegistry`/`ToolCatalog`/
-`ToolExecutor` не знают, что внутри Dishka и Annotated-маркеры.
+Снаружи неотличим от обычных tools — ToolRegistry/ToolCatalog/
+ToolExecutor не знают, что внутри Dishka и Annotated-маркеры.
 
 В invoke:
-1. Валидируем LLM-args через `args_model.model_validate(raw)`.
+1. Валидируем LLM-args через args_model.model_validate(raw).
 2. Открываем request-scope от root container'а.
-3. Резолвим DI-deps через `request_container.get(T)`.
+3. Резолвим DI-deps через request_container.get(T).
 4. Зовём callable с (llm_kwargs + di_kwargs).
 5. Закрываем request-scope (gen-providers с teardown отрабатывают).
-6. Coerce результата в `ToolResult` (str/int/dict/BaseModel/dataclass).
+6. Coerce результата в ToolResult (str/int/dict/BaseModel/dataclass).
 """
 
 from __future__ import annotations
@@ -50,16 +50,16 @@ __all__ = ["DishkaTool"]
 
 
 class DishkaTool(Tool[BaseModel, None]):
-    """Bridge: Annotated-callable + Dishka Container → `Tool[BaseModel, None]`.
+    """Bridge: Annotated-callable + Dishka Container -> Tool[BaseModel, None].
 
     Состояние:
-    - `_target` — собственно callable, который надо вызвать.
-    - `_plan` — cached pydantic args model + DI plan (только сигнатура).
-    - `_name` — wire-имя tool'а (identity, приходит снаружи от builder'а).
-    - `_container` — root Dishka Container.
+    - _target — собственно callable, который надо вызвать.
+    - _plan — cached pydantic args model + DI plan (только сигнатура).
+    - _name — wire-имя tool'а (identity, приходит снаружи от builder'а).
+    - _container — root Dishka Container.
 
-    `_cfg` родителя у нас всегда None (cfg-параметры — через FromConfig DI).
-    `_ctx` родителя у нас всегда None (контейнер — единственный resolver).
+    _cfg родителя у нас всегда None (cfg-параметры — через FromConfig DI).
+    _ctx родителя у нас всегда None (контейнер — единственный resolver).
     """
 
     def __init__(
@@ -103,7 +103,7 @@ class DishkaTool(Tool[BaseModel, None]):
         return self._plan.args_model
 
     def invoke(self, ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
-        """Полный invoke: validate → open request → resolve DI → call → close."""
+        """Полный invoke: validate -> open request -> resolve DI -> call -> close."""
         args = self._parse_args(raw)
         return self.execute(ctx, args)
 
@@ -142,7 +142,7 @@ def _coerce_to_tool_result(  # noqa: PLR0911
     tool_id: ToolId,
     value: Any,
 ) -> ToolResult:
-    """Привести возврат callable'а к `ToolResult` или бросить."""
+    """Привести возврат callable'а к ToolResult или бросить."""
     match value:
         case None:
             return TextResult(text="null")

@@ -26,7 +26,7 @@ _MakeDoc = Callable[..., RawDocument]
 
 def _section_by_type(make_raw_doc: _MakeDoc, html, cls):
     return next(
-        s for s in HtmlReader().convert(make_raw_doc(html)) if isinstance(s, cls)
+        s for s in HtmlReader().read(make_raw_doc(html)) if isinstance(s, cls)
     )
 
 
@@ -187,6 +187,6 @@ def test_plain_reader_separates_blocks_with_double_newline(make_raw_doc: _MakeDo
         "<html><head><title>T</title></head>"
         "<body><h1>H</h1><p>first</p><p>second</p></body></html>"
     )
-    [s] = list(HtmlPlainReader().convert(make_raw_doc(html)))
+    [s] = list(HtmlPlainReader().read(make_raw_doc(html)))
     # Оба параграфа в content, разделены пустой строкой (а не пробелом).
     assert "first\n\nsecond" in s.content

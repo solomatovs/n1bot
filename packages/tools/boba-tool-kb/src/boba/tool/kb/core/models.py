@@ -19,9 +19,9 @@ class KnowledgeBaseError(RuntimeError):
 class CollectionNotFoundError(KeyError):
     """Коллекция с таким именем не зарегистрирована.
 
-    В postgres-модели «коллекция» — это значение колонки `collection` в
-    `kb_chunks`. Существование коллекции = факт наличия хотя бы одной
-    строки с таким именем ИЛИ запись в `kb_collections` (table-level
+    В postgres-модели «коллекция» — это значение колонки collection в
+    kb_chunks. Существование коллекции = факт наличия хотя бы одной
+    строки с таким именем ИЛИ запись в kb_collections (table-level
     description).
     """
 
@@ -34,13 +34,13 @@ class CollectionNotFoundError(KeyError):
 class SearchHit:
     """Один результат kb_search_* (vector/fts).
 
-    `distance` — cosine-distance (`vector_search`) либо отрицательный
-    `ts_rank_cd`-скор (`fts_search`); в обоих случаях семантика
+    distance — cosine-distance (vector_search) либо отрицательный
+    ts_rank_cd-скор (fts_search); в обоих случаях семантика
     «меньше = ближе/релевантнее».
 
-    `metadata` — сырой набор ключей чанка (все слои pipeline'а), `tags` —
-    колонка `kb_chunks.tags`. Сборка llm-facing полей из этого делается в
-    `search.schema` (дискриминатор по коллекции собирает строку выдачи).
+    metadata — сырой набор ключей чанка (все слои pipeline'а), tags —
+    колонка kb_chunks.tags. Сборка llm-facing полей из этого делается в
+    search.schema (дискриминатор по коллекции собирает строку выдачи).
     """
 
     id: str

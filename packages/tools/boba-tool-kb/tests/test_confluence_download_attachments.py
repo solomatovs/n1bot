@@ -1,14 +1,14 @@
-"""`download_pages` + helpers: offline-clone страницы со вложениями.
+"""download_pages + helpers: offline-clone страницы со вложениями.
 
 Три блока:
-1. `_confluence_attachment_filename` — извлечение filename'а из URL'ов разных
+1. _confluence_attachment_filename — извлечение filename'а из URL'ов разных
    форматов (относительный/абсолютный, attachments/thumbnails, с query).
-2. `_rewrite_attachment_urls` — переписывание `<img src>` и `<a href>` на
-   локальные `{local_dir}/{filename}`, с пропуском URL'ов не из этого
+2. _rewrite_attachment_urls — переписывание <img src> и <a href> на
+   локальные {local_dir}/{filename}, с пропуском URL'ов не из этого
    списка вложений.
-3. `_stream_records` — full-loop download'а на герметичном iter'е
-   `RawDocument`'ов (page + attachments), проверка layout'а файлов,
-   рерайта HTML и записей в `saved`.
+3. _stream_records — full-loop download'а на герметичном iter'е
+   RawDocument'ов (page + attachments), проверка layout'а файлов,
+   рерайта HTML и записей в saved.
 """
 
 from __future__ import annotations
@@ -29,11 +29,11 @@ _stream_records = ConfluenceDownloader._stream_records
 
 
 def _mk_shell(root: Path) -> WorkspaceShell:
-    """`WorkspaceShell` поверх `root` для теста.
+    """WorkspaceShell поверх root для теста.
 
-    `_stream_records`/`_write_page`/`_write_attachment` ожидают именно
-    `WorkspaceShell`-абстракцию (mkdir / atomic_write_binary), а не
-    голый `pathlib.Path`.
+    _stream_records/_write_page/_write_attachment ожидают именно
+    WorkspaceShell-абстракцию (mkdir / atomic_write_binary), а не
+    голый pathlib.Path.
     """
     return FsWorkspaceShell(workspace_id="test", root=root)  # type: ignore[arg-type]
 
@@ -58,7 +58,7 @@ def test_filename_from_absolute_url() -> None:
 
 
 def test_filename_from_thumbnails_url() -> None:
-    """Confluence иногда рендерит inline-картинки через `/download/thumbnails/`."""
+    """Confluence иногда рендерит inline-картинки через /download/thumbnails/."""
     assert (
         _confluence_attachment_filename("/download/thumbnails/42/diagram.png")
         == "diagram.png"
@@ -133,7 +133,7 @@ def test_rewrite_leaves_unrelated_urls_alone() -> None:
 
 
 def test_rewrite_handles_thumbnails_too() -> None:
-    """`<img src="/download/thumbnails/...">` (preview inline) — тоже переписывается."""
+    """<img src="/download/thumbnails/..."> (preview inline) — тоже переписывается."""
     html = '<img src="/download/thumbnails/42/diagram.png"/>'
     out = _rewrite_attachment_urls(html=html, attachments=(_ATT,), local_dir="42_files")
     assert 'src="42_files/diagram.png"' in out
@@ -142,10 +142,10 @@ def test_rewrite_handles_thumbnails_too() -> None:
 def test_rewrite_uses_sanitized_local_filename() -> None:
     """Filename с запрещёнными символами — sanitize применяется к локальному пути.
 
-    Confluence-side имя в URL приходит URL-encoded (`%3A` для `:`, `%3F` для `?`);
-    `_confluence_attachment_filename` декодирует обратно и сравнивает по
-    оригинальному `att.title`. Локальная ссылка идёт на sanitized-вариант,
-    который точно совпадёт с именем файла, который запишет `_write_attachment`.
+    Confluence-side имя в URL приходит URL-encoded (%3A для :, %3F для ?);
+    _confluence_attachment_filename декодирует обратно и сравнивает по
+    оригинальному att.title. Локальная ссылка идёт на sanitized-вариант,
+    который точно совпадёт с именем файла, который запишет _write_attachment.
     """
     att = AttachmentInfo(
         id="att-x",
@@ -252,7 +252,7 @@ def test_stream_records_writes_page_html_with_rewritten_links(tmp_path: Path) ->
 
 
 def test_stream_records_markdown_keeps_local_paths(tmp_path: Path) -> None:
-    """`as_markdown=True` — markdownify сохраняет local-paths из rewritten HTML."""
+    """as_markdown=True — markdownify сохраняет local-paths из rewritten HTML."""
     page = _page_doc(
         page_id="42",
         space=None,
@@ -271,7 +271,7 @@ def test_stream_records_markdown_keeps_local_paths(tmp_path: Path) -> None:
 def test_stream_records_attachment_without_space_falls_back_to_dest_root(
     tmp_path: Path,
 ) -> None:
-    """Page/attachment без SPACE_KEY/ANCESTORS — пишутся в корень `dest_path`."""
+    """Page/attachment без SPACE_KEY/ANCESTORS — пишутся в корень dest_path."""
     page = _page_doc(
         page_id="99",
         space=None,

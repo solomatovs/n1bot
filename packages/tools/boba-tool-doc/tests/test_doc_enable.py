@@ -9,7 +9,7 @@ from typing import Any
 def test_disabled_by_default(
     make_doc_tool_names: Callable[[dict[str, Any]], list[str]],
 ):
-    """Пустая секция → плагин не грузится."""
+    """Пустая секция -> плагин не грузится."""
     assert make_doc_tool_names({}) == []
 
 

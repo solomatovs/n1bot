@@ -1,33 +1,33 @@
-"""View поверх HistoryService: AgentEvent → DialogMessage.
+"""View поверх HistoryService: AgentEvent -> DialogMessage.
 
-HistoryService хранит сырые `AgentEvent` (phase / snapshot / advisory /
-terminal). `HistoryDialogView` — абстрактный контракт восстановления
+HistoryService хранит сырые AgentEvent (phase / snapshot / advisory /
+terminal). HistoryDialogView — абстрактный контракт восстановления
 сообщений диалога между пользователем и ассистентом, то, что нужно
-`HistoryReducer` для сборки `dialog_messages` в `LLMRequest`.
+HistoryReducer для сборки dialog_messages в LLMRequest.
 
 Реализации:
-    `AllHistoryDialogView`
+    AllHistoryDialogView
         Возвращает диалог целиком, без фильтрации по request_id.
 
-    `CompactHistoryDialogView`
-        Для текущего (последнего) `request_id` — полная цепочка
-        выполнения (как `AllHistoryDialogView`). Для всех предыдущих
-        `request_id` — только `UserMessage` и финальный
-        `AssistantMessage`, очищенный до text-блоков. Промежуточные
+    CompactHistoryDialogView
+        Для текущего (последнего) request_id — полная цепочка
+        выполнения (как AllHistoryDialogView). Для всех предыдущих
+        request_id — только UserMessage и финальный
+        AssistantMessage, очищенный до text-блоков. Промежуточные
         thinking/tool_calls/tool_results прошлых запросов в окно не
         попадают. Дополнительно применяется sliding-window
-        `max_messages`: оставляет только последние сообщения, при этом
-        сдвигает начало вправо до ближайшего `UserMessage`, чтобы
+        max_messages: оставляет только последние сообщения, при этом
+        сдвигает начало вправо до ближайшего UserMessage, чтобы
         контекст оставался валидным для LLM-провайдера.
 
 Маппинг событий (общая логика):
-    UserQueryReceived   → UserMessage
-    TotalMessage    → AssistantMessage (источник истины: собранный message)
-    ToolResultReady     → ToolResultMessage (успех)
-    ToolExecutionFailed → ToolResultMessage (ошибка)
+    UserQueryReceived   -> UserMessage
+    TotalMessage    -> AssistantMessage (источник истины: собранный message)
+    ToolResultReady     -> ToolResultMessage (успех)
+    ToolExecutionFailed -> ToolResultMessage (ошибка)
 
-Per-field `*Complete` для реконструкции НЕ используются — message берётся
-целиком из `TotalMessage` (порядко-независимо). Всё остальное (PhaseEvent /
+Per-field *Complete для реконструкции НЕ используются — message берётся
+целиком из TotalMessage (порядко-независимо). Всё остальное (PhaseEvent /
 FeedbackToLLMAdded / Terminal) игнорируется. FeedbackToLLMAdded пока
 пропускается — событие неоднозначно (может быть UserMessage от LLMCritique или
 ToolResultMessage от ToolCallRejection); семантику нужно расщеплять отдельно.
@@ -65,7 +65,7 @@ __all__ = [
 
 
 class _DialogEventDecoder:
-    """events → DialogMessage. Источник истины ассистента — TotalMessage."""
+    """events -> DialogMessage. Источник истины ассистента — TotalMessage."""
 
     @classmethod
     def decode(cls, events: Iterable[AgentEvent]) -> Iterator[DialogMessage]:
@@ -100,7 +100,7 @@ class _DialogEventDecoder:
 
 
 class HistoryDialogView(ABC):
-    """Контракт восстановления `DialogMessage` из журнала событий."""
+    """Контракт восстановления DialogMessage из журнала событий."""
 
     @abstractmethod
     def dialog_message_iter(self) -> Iterator[DialogMessage]:
@@ -109,7 +109,7 @@ class HistoryDialogView(ABC):
 
 
 class AllHistoryDialogView(HistoryDialogView):
-    """Полный диалог из журнала `HistoryReader` без фильтрации."""
+    """Полный диалог из журнала HistoryReader без фильтрации."""
 
     def __init__(self, history_reader: HistoryReader) -> None:
         self._history_reader = history_reader
@@ -121,19 +121,19 @@ class AllHistoryDialogView(HistoryDialogView):
 class CompactHistoryDialogView(HistoryDialogView):
     """Компактный диалог: полный текущий request_id + сжатые прошлые + окно.
 
-    Для последнего по порядку появления `request_id` отдаёт цепочку
-    выполнения без сокращений. Для каждого предыдущего `request_id`
-    оставляет только `UserMessage` и финальный `AssistantMessage`,
+    Для последнего по порядку появления request_id отдаёт цепочку
+    выполнения без сокращений. Для каждого предыдущего request_id
+    оставляет только UserMessage и финальный AssistantMessage,
     оставив в нём только text-блоки (thinking/refusal/tool_calls
-    выбрасываются). Если у прошлого `request_id` text-блоков не было
+    выбрасываются). Если у прошлого request_id text-блоков не было
     (упал, оборвался на tool_calls) — assistant-ответ опускается,
-    остаётся только `UserMessage`.
+    остаётся только UserMessage.
 
     После сборки применяется sliding-window: оставляется не более
-    `max_messages` сообщений с хвоста. Если граница окна попала в
+    max_messages сообщений с хвоста. Если граница окна попала в
     середину диалога — начало сдвигается вправо до ближайшего
-    `UserMessage`, чтобы не передавать в LLM осиротевший
-    `ToolResultMessage`.
+    UserMessage, чтобы не передавать в LLM осиротевший
+    ToolResultMessage.
     """
 
     _CONTRIBUTING_TYPES: ClassVar[tuple[type[AgentEvent], ...]] = (

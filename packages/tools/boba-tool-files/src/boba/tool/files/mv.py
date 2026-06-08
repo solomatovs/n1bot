@@ -33,4 +33,4 @@ def mv(
         raise RuntimeError(f"Источник не найден: {src}") from e
     except WorkspaceError as e:
         raise RuntimeError(f"Ошибка перемещения: {e}") from e
-    return f"Перемещено: {src} → {dst}"
+    return f"Перемещено: {src} -> {dst}"

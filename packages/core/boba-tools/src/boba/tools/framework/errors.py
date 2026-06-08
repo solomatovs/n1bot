@@ -1,8 +1,8 @@
 """Ошибки регистрации framework-слоя: коллизии имён/источников.
 
-Возникают при сборке `StaticToolSource`/`ToolRegistry`, а не в runtime
-вызова tool'а (те живут в `boba.tools.domain.errors`). Поэтому наследуют
-`Exception` напрямую, а не `ToolExecutionError`.
+Возникают при сборке StaticToolSource/ToolRegistry, а не в runtime
+вызова tool'а (те живут в boba.tools.domain.errors). Поэтому наследуют
+Exception напрямую, а не ToolExecutionError.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ __all__ = [
 
 
 class ToolIdCollisionError(Exception):
-    """Внутри одного source — два tool'а с одинаковым `ToolName`."""
+    """Внутри одного source — два tool'а с одинаковым ToolName."""
 
     def __init__(self, source_id: ToolSourceId, name: ToolName) -> None:
         super().__init__(
@@ -28,7 +28,7 @@ class ToolIdCollisionError(Exception):
 
 
 class ToolNameCollisionError(Exception):
-    """Два source'а объявляют tool с одинаковым wire-именем `ToolName`.
+    """Два source'а объявляют tool с одинаковым wire-именем ToolName.
 
     Wire-имя = идентификатор маршрутизации; глобальный дубль сделал бы вызов
     неоднозначным, поэтому реестр падает на сборке.
@@ -50,7 +50,7 @@ class ToolNameCollisionError(Exception):
 
 
 class ToolSourceCollisionError(Exception):
-    """Два source'а с одинаковым `ToolSourceId` в одном `ToolRegistry`."""
+    """Два source'а с одинаковым ToolSourceId в одном ToolRegistry."""
 
     def __init__(self, source_id: ToolSourceId) -> None:
         super().__init__(f"duplicate tool source {source_id!r}")

@@ -33,4 +33,4 @@ def cp(
         raise RuntimeError(f"Источник не найден: {src}") from e
     except WorkspaceError as e:
         raise RuntimeError(f"Ошибка копирования: {e}") from e
-    return f"Скопировано: {src} → {dst}"
+    return f"Скопировано: {src} -> {dst}"

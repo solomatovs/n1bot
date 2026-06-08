@@ -49,8 +49,8 @@ def read_bytes(  # noqa: PLR0913
     """
     Чтение окна байт файла [start_byte, end_byte) с заданной сериализацией.
 
-    Окно не шире `read_bytes_max_window` (default 200_000).
-    При EOF возвращается фактический `end_byte`
+    Окно не шире read_bytes_max_window (default 200_000).
+    При EOF возвращается фактический end_byte
     (может быть меньше запрошенного)
     """
     if end_byte < start_byte:

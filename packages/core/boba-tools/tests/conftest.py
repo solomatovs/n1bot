@@ -14,13 +14,13 @@ from boba.tools.domain import ToolContext, ToolSourceId
 
 @pytest.fixture
 def tool_ctx() -> ToolContext:
-    """Пустой `ToolContext` для tool.execute(...) вызовов."""
+    """Пустой ToolContext для tool.execute(...) вызовов."""
     return ToolContext()
 
 
 @pytest.fixture
 def tool_source_id() -> ToolSourceId:
-    """Тестовый `ToolSourceId('test')`."""
+    """Тестовый ToolSourceId('test')."""
     return ToolSourceId("test")
 
 
@@ -28,11 +28,11 @@ def tool_source_id() -> ToolSourceId:
 def make_plugin_entry_point(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Callable[[str, dict[str, object]], EntryPoint]:
-    """Фабрика реальных `EntryPoint`'ов поверх in-memory плагин-модулей.
+    """Фабрика реальных EntryPoint'ов поверх in-memory плагин-модулей.
 
-    Модуль кладётся в `sys.modules`, поэтому настоящий `EntryPoint.load()`
-    находит его по имени — stub не нужен. Очистка `sys.modules` — через
-    `monkeypatch.setitem`.
+    Модуль кладётся в sys.modules, поэтому настоящий EntryPoint.load()
+    находит его по имени — stub не нужен. Очистка sys.modules — через
+    monkeypatch.setitem.
     """
 
     def _make(name: str, attrs: dict[str, object]) -> EntryPoint:
@@ -50,9 +50,9 @@ def make_plugin_entry_point(
 def install_entry_points(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Callable[[str, list[EntryPoint]], None]:
-    """Подменяет `importlib.metadata.entry_points` в builder-модуле.
+    """Подменяет importlib.metadata.entry_points в builder-модуле.
 
-    Возвращает фабрику `(group, eps)`: для запрошенной группы отдаёт `eps`,
+    Возвращает фабрику (group, eps): для запрошенной группы отдаёт eps,
     для остальных — пусто.
     """
 

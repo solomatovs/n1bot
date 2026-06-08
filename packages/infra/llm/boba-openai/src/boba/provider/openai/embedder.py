@@ -18,12 +18,12 @@ class OpenAIEmbedder(Embedder[str]):
     Embedder[str] поверх OpenAI Embeddings API (text-embedding-3-*)
 
     Caller передаёт уже сконфигурированный OpenAI client (см.
-    `boba.provider.openai.terminal.build_openai_client`). Параметр
-    `dimensions` передаётся в API при каждом вызове и совпадает с тем,
-    что вернёт `dim()` — поэтому подходит только для моделей,
+    boba.provider.openai.terminal.build_openai_client). Параметр
+    dimensions передаётся в API при каждом вызове и совпадает с тем,
+    что вернёт dim() — поэтому подходит только для моделей,
     поддерживающих кастомный output-размер (text-embedding-3-*)
 
-    `embed_documents` батчит вход через `batch_size`. Для асимметричных
+    embed_documents батчит вход через batch_size. Для асимметричных
     моделей с document/query-префиксами нужен отдельный embedder
     """
 

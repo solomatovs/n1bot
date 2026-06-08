@@ -24,11 +24,11 @@ ConfigureConnection = Callable[[psycopg.Connection[Any]], None]
 
 class PostgresPool:
     """
-    обёртка над `psycopg_pool.ConnectionPool` - singleton
+    обёртка над psycopg_pool.ConnectionPool - singleton
 
     Контракт read-only задаётся параметрами DSN
-        `default_transaction_read_only=on`
-        `statement_timeout=...`
+        default_transaction_read_only=on
+        statement_timeout=...
     """
 
     _CacheKey = tuple[str, int, int, float]
@@ -77,8 +77,8 @@ class PostgresPool:
             with pool.connection() as conn, conn.cursor() as cur:
                 cur.execute(...)
 
-        Если нужна транзакция, явно `with pool.connection() as conn:
-        conn.transaction(); ...` — там pool.cursor() не подходит.
+        Если нужна транзакция, явно with pool.connection() as conn:
+        conn.transaction(); ... — там pool.cursor() не подходит.
         """
         with self._pool.connection() as conn, conn.cursor() as cur:
             yield cur
@@ -87,10 +87,10 @@ class PostgresPool:
     def client_cursor(self) -> Iterator[psycopg.ClientCursor[Any]]:
         """Connection + ClientCursor — psycopg3 client-side parameter binding.
 
-        Используется там, где нужен `cur.mogrify(query, params) → str` без
+        Используется там, где нужен cur.mogrify(query, params) -> str без
         реального исполнения (рендер шаблона в литерально-параметризованный
         SQL для копи-пейста / pgbench / EXPLAIN-сессии). Серверный
-        `psycopg.Cursor` не имеет `mogrify`-а — только `ClientCursor`.
+        psycopg.Cursor не имеет mogrify-а — только ClientCursor.
 
         Короткая запись частого паттерна:
 
@@ -102,7 +102,7 @@ class PostgresPool:
 
     @contextmanager
     def dict_cursor(self) -> Iterator[psycopg.Cursor[DictRow]]:
-        """Connection + dict-cursor (`row_factory=dict_row`) — `cur` рядного словаря.
+        """Connection + dict-cursor (row_factory=dict_row) — cur рядного словаря.
 
         Короткая запись частого паттерна:
 
@@ -131,7 +131,7 @@ class PostgresPool:
         configure: ConfigureConnection | None = None,
     ) -> PostgresPool:
         """
-        Process-singleton по полному состоянию `cfg`
+        Process-singleton по полному состоянию cfg
         пересоздаёт закрытый pool
 
         configure применяется при первом создании pool'а
