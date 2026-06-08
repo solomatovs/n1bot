@@ -72,15 +72,17 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 class StopIfReasonStop(Specification[tuple[AgentContext, AgentEvent]]):
     """
-    Стопает цикл, если модель отдала финальный текстовый ответ.
+    Стопает цикл, если модель отдала финальный ответ без вызова инструментов.
 
-    Срабатывает на TotalMessage, у которого:
-        - finish_reason == STOP (модель сама решила, что закончила)
-        - в message.tool_calls пусто (модель не зовёт инструменты)
+    Срабатывает на TotalMessage, у которого message.tool_calls пусто.
+    finish_reason при этом не смотрим: реальный сигнал продолжения цикла —
+    наличие tool_call'а, а не значение finish_reason (мелкие модели часто
+    отдают stop вместо tool_calls и наоборот).
 
-    Если tool_calls есть — finish_reason=stop игнорируется (мелкие модели
-    часто отдают stop вместо tool_calls, нам важен факт вызова tool'а,
-    а не подменный finish_reason).
+        - есть tool_calls -> продолжаем цикл (return False) — модель хочет вызвать
+          инструмент, его результат уйдёт в следующий круг;
+        - нет tool_calls -> финальный ответ -> стоп (return True), какой бы
+          finish_reason ни прислал провайдер.
 
     Это «нормальный» путь завершения круга вопрос-ответ.
     """
@@ -94,13 +96,9 @@ class StopIfReasonStop(Specification[tuple[AgentContext, AgentEvent]]):
         # тут лайфхак!
         # не все модели шлют finish_reason: tool_calls
         # многие присылают tool_call но в конце все равно отдают finish_reason=stop
-        # именно такую ситуацию я здесь обрабатываю
-        # она означает, что агентский цикл нельзя завершать
-        # так как модель хотела вызвать tool, хоть и сообщила stop
-        if event.message.tool_calls:
-            return False
-
-        return event.finish_reason is FinishReason.STOP
+        # реальный сигнал продолжения цикла — наличие tool_call'а, а не
+        # finish_reason: есть tool_calls -> продолжаем; нет -> финал, стоп.
+        return not event.message.tool_calls
 
 
 class StopIfLengthReached(Specification[tuple[AgentContext, AgentEvent]]):
