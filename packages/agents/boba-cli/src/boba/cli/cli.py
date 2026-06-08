@@ -99,10 +99,8 @@ def _run() -> int:
         )
         .with_tool_catalog(tool_registry.catalog())
         .with_stream(rt.stream)
+        .with_extra(rt.extra)
     )
-    sampling = rt.to_sampling_params()
-    if sampling is not None:
-        turn = turn.with_sampling(sampling)
 
     terminal = LLMPort(llm, turn)
 

@@ -15,7 +15,6 @@ from boba.llm.models import (
     LLMRequest,
     LLMToolDefinition,
     RequestId,
-    SamplingParams,
     SystemMessage,
 )
 from boba.patterns import FoldFactory
@@ -28,7 +27,7 @@ class TurnState:
     system_messages: tuple[SystemMessage, ...] = ()
     dialog_messages: tuple[DialogMessage, ...] = ()
     tools: LLMToolDefinition = field(default_factory=LLMToolDefinition)
-    sampling: SamplingParams = field(default_factory=SamplingParams)
+    extra: Mapping[str, Any] | None = None
     response_format: Mapping[str, Any] | None = None
     stream: bool = True
 
@@ -51,7 +50,7 @@ class LLMRequestFactory(
             system_messages=state.system_messages,
             dialog_messages=state.dialog_messages,
             tools_definition=state.tools,
-            sampling=state.sampling,
+            extra=state.extra,
             response_format=state.response_format,
             stream=state.stream,
         )

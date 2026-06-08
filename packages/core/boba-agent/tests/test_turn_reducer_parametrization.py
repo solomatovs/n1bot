@@ -10,17 +10,16 @@ from boba.agent.middleware.llm import LLMPort
 from boba.agent.turn.builder import TurnBuilder
 from boba.agent.turn.history_view import AllHistoryDialogView, HistoryDialogView
 from boba.agent.turn.reducers import (
+    ExtraReducer,
     HistoryReducer,
     ModelFromRequestReducer,
     RememberUserQueryReducer,
     RequestIdFromReducer,
-    SamplingReducer,
     SystemPromptReducer,
     ToolsDefinitionReducer,
     UserQueryReducer,
 )
 from boba.agent.turn.spec import TurnState
-from boba.llm.models import SamplingParams
 from boba.patterns import PrioritySource
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolRegistry
@@ -80,11 +79,12 @@ def test_middleware_delegates_spec_construction_to_builder(
 
 
 def test_turn_builder_model_required_at_construction(agent_ctx: AgentContext):
-    """model обязателен в конструкторе — ModelReducer и RequestIdReducer сразу."""
+    """model обязателен в конструкторе — Model/RequestId/Extra reducer'ы сразу."""
     turn = TurnBuilder("test-model")
     assert set(turn._factories.keys()) == {
         ModelFromRequestReducer.ID,
         RequestIdFromReducer.ID,
+        ExtraReducer.ID,
     }
     request = turn.build(agent_ctx)
     assert request.model == "test-model"
@@ -98,7 +98,7 @@ def test_turn_builder_full_set(agent_ctx: AgentContext):
         TurnBuilder("test-model")
         .with_history_view(_empty_history_view())
         .with_tool_catalog(registry.catalog())
-        .with_sampling(SamplingParams())
+        .with_extra({})
         .with_user_query()
         .system_prompt("static")
     )
@@ -109,16 +109,17 @@ def test_turn_builder_full_set(agent_ctx: AgentContext):
         HistoryReducer.ID,
         UserQueryReducer.ID,
         ToolsDefinitionReducer.ID,
-        SamplingReducer.ID,
+        ExtraReducer.ID,
     }
 
 
 def test_turn_builder_minimal_only_registers_called(agent_ctx: AgentContext):
-    """Только вызванные методы (+ обязательные request_id/model) — ничего лишнего."""
+    """Только вызванные методы (+ всегда-он request_id/model/extra) — ничего лишнего."""
     turn = TurnBuilder("test-model").with_user_query()
     assert set(turn._factories.keys()) == {
         RequestIdFromReducer.ID,
         ModelFromRequestReducer.ID,
+        ExtraReducer.ID,
         UserQueryReducer.ID,
     }
 

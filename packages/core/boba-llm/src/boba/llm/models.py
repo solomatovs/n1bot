@@ -24,7 +24,6 @@ __all__ = [
     "Message",
     "MessageId",
     "RequestId",
-    "SamplingParams",
     "SystemMessage",
     "ToolCall",
     "ToolCallDecodeFailure",
@@ -258,17 +257,6 @@ class AssistantMessageChunk:
 
 
 @dataclass(frozen=True)
-class SamplingParams:
-    temperature: float | None = None
-    top_p: float | None = None
-    max_tokens: int | None = None
-    seed: int | None = None
-    stop: tuple[str, ...] | None = None
-    frequency_penalty: float | None = None
-    presence_penalty: float | None = None
-
-
-@dataclass(frozen=True)
 class LLMToolDefinition:
     tools: tuple[ToolSchema, ...] = ()
     tool_choice: str | None = None
@@ -282,7 +270,7 @@ class LLMRequest:
     system_messages: tuple[SystemMessage, ...] = ()
     dialog_messages: tuple[DialogMessage, ...] = ()
     tools_definition: LLMToolDefinition = field(default_factory=LLMToolDefinition)
-    sampling: SamplingParams = field(default_factory=SamplingParams)
+    extra: Mapping[str, Any] | None = None
     response_format: Mapping[str, Any] | None = None
     stream: bool = True
 

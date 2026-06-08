@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, TypeAlias
 
 from boba.agent.prompt import PromptFactory, PromptProvider
@@ -11,7 +11,6 @@ from boba.agent.turn.spec import TurnState
 from boba.llm.models import (
     LLMToolDefinition,
     RequestId,
-    SamplingParams,
     SystemMessage,
     ToolResultMessage,
     UserMessage,
@@ -193,17 +192,17 @@ class ToolsDefinitionReducer(TurnReducer):
         return state
 
 
-class SamplingReducer(TurnReducer):
-    """Кладёт SamplingParams в state. Конфигурируется один раз на этапе сборки."""
+class ExtraReducer(TurnReducer):
+    """Кладёт сырые provider-параметры в state. Конфигурируется на этапе сборки."""
 
-    ID: ClassVar[str] = "sampling"
+    ID: ClassVar[str] = "extra"
 
     def __init__(
         self,
-        sampling: SamplingParams | None,
+        extra: Mapping[str, Any] | None,
         priority: int = 50,
     ) -> None:
-        self._sampling = sampling
+        self._extra = extra
         self._priority = priority
 
     def id(self) -> str:
@@ -213,8 +212,8 @@ class SamplingReducer(TurnReducer):
         return self._priority
 
     def apply(self, state: TurnState) -> TurnState:
-        if self._sampling is not None:
-            state.sampling = self._sampling
+        if self._extra is not None:
+            state.extra = self._extra
         return state
 
 
