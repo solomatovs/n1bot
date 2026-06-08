@@ -114,6 +114,26 @@ def test_4xx_not_retried(monkeypatch):
     transport.close()
 
 
+def test_url_query_preserved_with_empty_params(monkeypatch):
+    """Зашитый в url ?query не теряется при пустом params (httpx-gotcha)."""
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        return httpx.Response(200, content=b"ok")
+
+    _patch(monkeypatch, handler)
+
+    req = HttpRequest(url="https://x.test/rest/api/content/1?expand=body.view")
+    with (
+        HttpTransport(HttpProfile()) as transport,
+        transport.fetch(req) as resp,
+    ):
+        resp.stream.read()
+    assert seen["url"] == "https://x.test/rest/api/content/1?expand=body.view"
+    assert transport.resolve_url(req).endswith("?expand=body.view")
+
+
 def test_auth_from_profile_applied_to_client(monkeypatch):
     """HttpTransport применяет auth из профиля к httpx.Client."""
     seen_headers = {}
