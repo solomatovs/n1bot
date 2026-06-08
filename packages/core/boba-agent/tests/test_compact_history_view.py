@@ -214,8 +214,8 @@ def test_window_shifts_to_nearest_user_when_border_breaks_pair():
     ]
 
 
-def test_window_drops_orphan_tool_result_in_current_request():
-    """Если окно начинается с tool_result в текущем request_id — сдвиг до user."""
+def test_current_request_never_trimmed_by_window():
+    """Текущий ход не режется окном даже при max_messages меньше его длины."""
     history = InMemoryHistoryService()
     rid_old = new_request_id()
     rid_new = new_request_id()
@@ -231,11 +231,15 @@ def test_window_drops_orphan_tool_result_in_current_request():
         tool_results=((call, "tool-out"),),
     )
 
-    # Полный список: u-old, a-old, u-new, a-new(+tool_call), tool_result
-    # max_messages=2 -> срез [a-new(+tool_call), tool_result] -> нет UserMessage
-    # -> пустой результат.
+    # Текущий ход (rid_new) = [u-new, a-new(+tool_call), tool_result] — 3 сообщения.
+    # max_messages=2 < 3: бюджет окна прошлого = max(0, 2-3) = 0 -> прошлое
+    # отбрасывается целиком, но текущий ход отдаётся полностью, с UserMessage.
     view = CompactHistoryDialogView(history, max_messages=2)
-    assert _summarize(list(view.dialog_message_iter())) == []
+    assert _summarize(list(view.dialog_message_iter())) == [
+        ("user", "q-new"),
+        ("assistant", "a-new"),
+        ("tool", "c1"),
+    ]
 
 
 def test_empty_history_returns_empty():
