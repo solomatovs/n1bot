@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, TypeAlias, assert_never
 
-from boba.llm.models import AssistantMessage, RequestId, ToolCall, ToolCallDecodeFailure
+from boba.llm.models import (
+    AssistantMessage,
+    RequestId,
+    ToolCall,
+    ToolCallDecodeFailure,
+    Usage,
+)
 
 __all__ = [
     "BaseLLMEvent",
@@ -26,6 +32,7 @@ __all__ = [
     "LLMToolCallDelta",
     "LLMToolCallMessage",
     "LLMTotalMessage",
+    "LLMUsageMessage",
 ]
 
 
@@ -241,6 +248,22 @@ class LLMTotalMessage(LLMSnapshot):
         return "LLMTotalMessage"
 
 
+@dataclass(frozen=True)
+class LLMUsageMessage(BaseLLMEvent):
+    """Расход токенов за генерацию — диагностика, не часть контента.
+
+    Провайдер присылает usage отдельным (часто последним) chunk'ом; консьюмер
+    эмитит это событие перед LLMTotalMessage. Domain потребляет по желанию
+    (учёт токенов/стоимости), на реконструкцию истории не влияет.
+    """
+
+    usage: Usage
+
+    @classmethod
+    def name(cls) -> Literal["LLMUsageMessage"]:
+        return "LLMUsageMessage"
+
+
 LLMEvent = (
     LLMThinkingDelta
     | LLMAnswerDelta
@@ -252,6 +275,7 @@ LLMEvent = (
     | LLMToolCallMessage
     | LLMToolCallDecodeFailedMessage
     | LLMTotalMessage
+    | LLMUsageMessage
 )
 
 
@@ -266,6 +290,7 @@ LLMEventName: TypeAlias = Literal[
     "LLMToolCallMessage",
     "LLMToolCallDecodeFailedMessage",
     "LLMTotalMessage",
+    "LLMUsageMessage",
 ]
 
 

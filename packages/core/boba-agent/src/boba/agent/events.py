@@ -1041,6 +1041,44 @@ class PersistenceFailed(TerminalEvent):
 
 
 # --------------------------------------------------------------------- #
+# DiagnosticEvent — конкретные события
+# --------------------------------------------------------------------- #
+
+
+class LLMUsageReported(DiagnosticEvent):
+    """Расход токенов одной LLM-генерации (topic llm.usage).
+
+    Диагностика: скрыта по умолчанию, в HistoryService не пишется. headline и
+    details выводятся из токенов, чтобы sink мог показать без знания типа.
+    """
+
+    type: Literal["LLMUsageReported"] = "LLMUsageReported"
+    topic: str = "llm.usage"
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float | None = None
+
+    @model_validator(mode="after")
+    def _fill_view(self) -> Self:
+        if not self.headline:
+            self.headline = (
+                f"tokens: {self.total_tokens} "
+                f"(prompt {self.prompt_tokens}, completion {self.completion_tokens})"
+            )
+        if not self.details:
+            details = {
+                "prompt_tokens": str(self.prompt_tokens),
+                "completion_tokens": str(self.completion_tokens),
+                "total_tokens": str(self.total_tokens),
+            }
+            if self.cost is not None:
+                details["cost"] = str(self.cost)
+            self.details = details
+        return self
+
+
+# --------------------------------------------------------------------- #
 # Fallback для неизвестных type'ов (extension-модули)
 # --------------------------------------------------------------------- #
 
@@ -1089,6 +1127,8 @@ AgentEvent = (
     | PromptFailed
     | MaxIterationsReached
     | PersistenceFailed
+    # DiagnosticEvent
+    | LLMUsageReported
 )
 
 
@@ -1113,6 +1153,7 @@ AgentEventName: TypeAlias = Literal[
     "PromptFailed",
     "MaxIterationsReached",
     "PersistenceFailed",
+    "LLMUsageReported",
 ]
 
 
@@ -1243,6 +1284,7 @@ def _register_core_events() -> None:
         PromptFailed,
         MaxIterationsReached,
         PersistenceFailed,
+        LLMUsageReported,
     ):
         AgentEventRegistry.register(cls)
 

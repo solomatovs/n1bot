@@ -28,6 +28,7 @@ __all__ = [
     "ToolCall",
     "ToolCallDecodeFailure",
     "ToolResultMessage",
+    "Usage",
     "UserMessage",
     "new_message_id",
     "new_request_id",
@@ -84,6 +85,25 @@ class ToolCallDecodeFailure(BaseModel):
     name: str
     raw: str
     error: str
+
+
+# --------------------------------------------------------------------- #
+# Usage
+# --------------------------------------------------------------------- #
+
+
+class Usage(BaseModel):
+    """Расход токенов за одну генерацию LLM (+ опц. стоимость от провайдера).
+
+    cost — провайдерское расширение (не у всех есть); None, если не прислали.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float | None = None
 
 
 # --------------------------------------------------------------------- #

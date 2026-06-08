@@ -24,6 +24,7 @@ from boba.llm.events import (
     LLMToolCallDelta,
     LLMToolCallMessage,
     LLMTotalMessage,
+    LLMUsageMessage,
 )
 from boba.llm.models import (
     AssistantMessage,
@@ -32,12 +33,14 @@ from boba.llm.models import (
     RequestId,
     ToolCall,
     ToolCallDecodeFailure,
+    Usage,
 )
 from boba.patterns import Converter, StreamTransformer
 from openai.types.chat import ChatCompletion, ChatCompletionMessageFunctionToolCall
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     Choice,
+    ChoiceDelta,
     ChoiceDeltaToolCall,
 )
 
@@ -235,10 +238,6 @@ class ChatCompletionChunkConsumer(
         self._thinking_flushed = False
         self._answer_flushed = False
         self._refusal_flushed = False
-        # Провайдер может прислать два чанка с finish_reason (второй несёт
-        # usage); без флага _finalize отработает дважды и продублирует
-        # ToolCallMessage + TotalMessage.
-        self._finalized = False
 
     def name(self) -> str:
         return "ChatCompletionChunkConsumer"
@@ -251,50 +250,88 @@ class ChatCompletionChunkConsumer(
         self._thinking_flushed = False
         self._answer_flushed = False
         self._refusal_flushed = False
-        self._finalized = False
 
     def stream(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
     ) -> Iterable[LLMEvent]:
+        finish_reason: str | None = None
+        usage: Usage | None = None
         for chunk in stream:
             self._model = chunk.model
+            # usage обычно приходит отдельным (часто последним) chunk'ом;
+            # копим и эмитим перед TotalMessage.
+            if chunk.usage is not None:
+                usage = self._to_usage(chunk.usage)
             # Reindexer исправляет index у tool call
             # при параллельном вызове нескольких tool.
             for choice in self._reindexer.stream(ctx, chunk.choices):
-                # Порядок: thinking -> answer -> refusal -> tool_calls -> finish.
-                delta = choice.delta
-
-                thinking = self._reasoning.convert(delta)
-                if thinking:
-                    self._message.append_thinking(thinking)
-                    yield LLMThinkingDelta(request_id=self._request_id, token=thinking)
-
-                if delta.content:
-                    # переход thinking -> answer: закрываем thinking-слот
-                    yield from self._flush_thinking()
-                    self._message.append_text(delta.content)
-                    yield LLMAnswerDelta(
-                        request_id=self._request_id, token=delta.content
-                    )
-
-                if delta.refusal:
-                    # переход -> refusal: закрываем thinking/answer
-                    yield from self._flush_thinking()
-                    yield from self._flush_answer()
-                    self._message.append_refusal(delta.refusal)
-                    yield LLMRefusalDelta(
-                        request_id=self._request_id, token=delta.refusal
-                    )
-
-                if delta.tool_calls:
-                    # переход -> tool_calls: закрываем все текстовые слоты
-                    yield from self._flush_thinking()
-                    yield from self._flush_answer()
-                    yield from self._flush_refusal()
-                    yield from self._tool_call_deltas(delta.tool_calls)
+                yield from self._consume_delta(choice.delta)
 
                 if choice.finish_reason:
-                    yield from self._finalize(choice.finish_reason)
+                    # Не финализируем инлайн: провайдер может прислать второй
+                    # finish-chunk (несёт usage). Копим finish_reason и эмитим
+                    # TotalMessage один раз — после исчерпания chunk-стрима
+                    # (на его StopIteration). Так TotalMessage — последнее
+                    # событие, а потребитель (цикл) дочитывает стрим до конца.
+                    finish_reason = choice.finish_reason
+
+        # Стрим исчерпан. finish_reason нет -> синтезируем stop («добавим
+        # если нет»): модель завершилась без явного исхода.
+        if finish_reason is None:
+            logger.debug("stream ended without finish_reason; assuming stop")
+            finish_reason = "stop"
+
+        # usage — перед TotalMessage: терминатор генерации остаётся последним.
+        if usage is not None:
+            yield LLMUsageMessage(request_id=self._request_id, usage=usage)
+
+        yield from self._finalize(finish_reason)
+
+    @staticmethod
+    def _to_usage(raw: object) -> Usage:
+        """OpenAI CompletionUsage -> доменный Usage; cost — провайдерское extra."""
+        prompt = getattr(raw, "prompt_tokens", 0) or 0
+        completion = getattr(raw, "completion_tokens", 0) or 0
+        total = getattr(raw, "total_tokens", 0) or 0
+        extra = getattr(raw, "model_extra", None) or {}
+        cost = extra.get("cost")
+        return Usage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+            cost=cost if isinstance(cost, (int, float)) else None,
+        )
+
+    def _consume_delta(self, delta: ChoiceDelta) -> Iterator[LLMEvent]:
+        """Дельта одного choice -> delta-события; копит контент в снапшот.
+
+        Порядок видов: thinking -> answer -> refusal -> tool_calls. Текстовые
+        слоты закрываются по переходу к следующему виду контента.
+        """
+        thinking = self._reasoning.convert(delta)
+        if thinking:
+            self._message.append_thinking(thinking)
+            yield LLMThinkingDelta(request_id=self._request_id, token=thinking)
+
+        if delta.content:
+            # переход thinking -> answer: закрываем thinking-слот
+            yield from self._flush_thinking()
+            self._message.append_text(delta.content)
+            yield LLMAnswerDelta(request_id=self._request_id, token=delta.content)
+
+        if delta.refusal:
+            # переход -> refusal: закрываем thinking/answer
+            yield from self._flush_thinking()
+            yield from self._flush_answer()
+            self._message.append_refusal(delta.refusal)
+            yield LLMRefusalDelta(request_id=self._request_id, token=delta.refusal)
+
+        if delta.tool_calls:
+            # переход -> tool_calls: закрываем все текстовые слоты
+            yield from self._flush_thinking()
+            yield from self._flush_answer()
+            yield from self._flush_refusal()
+            yield from self._tool_call_deltas(delta.tool_calls)
 
     def _tool_call_deltas(
         self, tool_calls: Iterable[ChoiceDeltaToolCall]
@@ -350,9 +387,6 @@ class ChatCompletionChunkConsumer(
             yield LLMRefusalMessage(request_id=self._request_id, content=content)
 
     def _finalize(self, finish_reason: str) -> Iterator[LLMEvent]:
-        if self._finalized:
-            return
-        self._finalized = True
         reason = self._finish.convert(finish_reason)
 
         # Fallback: провайдер вернул вызов текстом в content, нативный

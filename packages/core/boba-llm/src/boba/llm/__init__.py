@@ -35,6 +35,7 @@ from boba.llm.events import (
     LLMToolCallDelta,
     LLMToolCallMessage,
     LLMTotalMessage,
+    LLMUsageMessage,
 )
 from boba.llm.middleware import (
     RetryMiddleware,
@@ -53,6 +54,7 @@ from boba.llm.models import (
     ToolCall,
     ToolCallDecodeFailure,
     ToolResultMessage,
+    Usage,
     UserMessage,
     new_message_id,
     new_request_id,
@@ -102,6 +104,7 @@ __all__ = [
     "LLMToolDefinition",
     "LLMTotalMessage",
     "LLMUnknownError",
+    "LLMUsageMessage",
     "Message",
     "MessageId",
     "PermanentLLMError",
@@ -112,6 +115,7 @@ __all__ = [
     "ToolCall",
     "ToolCallDecodeFailure",
     "ToolResultMessage",
+    "Usage",
     "UserMessage",
     "new_message_id",
     "new_request_id",

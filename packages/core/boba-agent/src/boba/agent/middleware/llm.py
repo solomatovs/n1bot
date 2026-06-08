@@ -13,6 +13,7 @@ from boba.agent.events import (
     AgentEvent,
     AnswerDelta,
     AnswerMessage,
+    LLMUsageReported,
     RefusalDelta,
     RefusalMessage,
     ThinkingDelta,
@@ -37,6 +38,7 @@ from boba.llm.events import (
     LLMToolCallDelta,
     LLMToolCallMessage,
     LLMTotalMessage,
+    LLMUsageMessage,
 )
 from boba.llm.models import LLMContext
 from boba.patterns import StreamSource
@@ -86,6 +88,14 @@ class LLMToAgentConverter:
                     request_id=rid,
                     message=msg,
                     finish_reason=fr,
+                )
+            case LLMUsageMessage(request_id=rid, usage=usage):
+                yield LLMUsageReported(
+                    request_id=rid,
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    total_tokens=usage.total_tokens,
+                    cost=usage.cost,
                 )
             case _:
                 assert_never(event)

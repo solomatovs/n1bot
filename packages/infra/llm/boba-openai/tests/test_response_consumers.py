@@ -16,6 +16,7 @@ from boba.llm.events import (
     LLMToolCallDelta,
     LLMToolCallMessage,
     LLMTotalMessage,
+    LLMUsageMessage,
 )
 from boba.llm.models import LLMContext, LLMRequest, new_request_id
 from boba.provider.openai.response import (
@@ -327,3 +328,71 @@ def test_stream_fallback_skips_when_native_tool_calls_present() -> None:
     assert isinstance(result, LLMTotalMessage)
     assert [c.name for c in result.message.tool_calls] == ["native"]
     assert result.message.content == "hi"
+
+
+def test_stream_two_finish_chunks_emit_single_total() -> None:
+    """Два chunk'а с finish_reason (второй — usage-носитель) -> один TotalMessage."""
+    rid = new_request_id()
+    ctx = LLMContext(request=LLMRequest(request_id=rid, model="test-model"))
+    chunks = [
+        _chunk({"role": "assistant", "content": "hi"}),
+        _chunk({}, finish_reason="stop"),  # первый finish
+        _chunk({}, finish_reason="stop"),  # второй finish (в реале несёт usage)
+    ]
+
+    events = list(ChatCompletionChunkConsumer(rid).stream(ctx, chunks))
+
+    totals = [e for e in events if isinstance(e, LLMTotalMessage)]
+    assert len(totals) == 1
+    assert totals[0].finish_reason is FinishReason.STOP
+    assert events[-1] is totals[0]
+
+
+def test_stream_without_finish_reason_synthesizes_stop() -> None:
+    """Стрим без finish_reason -> синтезируем stop, TotalMessage всё равно один."""
+    rid = new_request_id()
+    ctx = LLMContext(request=LLMRequest(request_id=rid, model="test-model"))
+    chunks = [
+        _chunk({"role": "assistant", "content": "hi"}),
+        _chunk({"content": " there"}),
+    ]
+
+    events = list(ChatCompletionChunkConsumer(rid).stream(ctx, chunks))
+
+    totals = [e for e in events if isinstance(e, LLMTotalMessage)]
+    assert len(totals) == 1
+    assert totals[0].finish_reason is FinishReason.STOP
+    assert totals[0].message.content == "hi there"
+
+
+def _usage_chunk(**usage: int) -> ChatCompletionChunk:
+    return ChatCompletionChunk.model_validate(
+        {
+            "id": "chunk-1",
+            "created": 0,
+            "model": "test-model",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": usage,
+        }
+    )
+
+
+def test_stream_emits_usage_before_total() -> None:
+    """usage-chunk -> LLMUsageMessage, эмитится перед LLMTotalMessage."""
+    rid = new_request_id()
+    ctx = LLMContext(request=LLMRequest(request_id=rid, model="test-model"))
+    chunks = [
+        _chunk({"role": "assistant", "content": "hi"}),
+        _usage_chunk(prompt_tokens=10, completion_tokens=3, total_tokens=13),
+    ]
+
+    events = list(ChatCompletionChunkConsumer(rid).stream(ctx, chunks))
+
+    usages = [e for e in events if isinstance(e, LLMUsageMessage)]
+    assert len(usages) == 1
+    assert usages[0].usage.total_tokens == 13
+    assert usages[0].usage.prompt_tokens == 10
+
+    types = [type(e) for e in events]
+    assert types.index(LLMUsageMessage) < types.index(LLMTotalMessage)

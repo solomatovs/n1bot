@@ -31,6 +31,7 @@ from typing import Self
 from boba.agent.agent import Agent, AgentContext
 from boba.agent.events import AgentEvent
 from boba.agent.history import HistoryService, InMemoryHistoryService
+from boba.agent.loop import AgentLoop
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
@@ -46,7 +47,6 @@ from boba.agent.middleware import (
 from boba.patterns import (
     Specification,
     StreamSource,
-    StreamSourceLoop,
 )
 from boba.tools.framework import ToolExecutor
 
@@ -136,7 +136,7 @@ class AgentBuilder:
         chain = EventStamperMiddleware(chain)
         chain = HistoryRecorderMiddleware(chain, self._history)
 
-        source = StreamSourceLoop(source=chain, stop_if=self._build_stop_spec())
+        source = AgentLoop(source=chain, stop_if=self._build_stop_spec())
         return Agent(source=source)
 
     # ---- internals ------------------------------------------------------- #
