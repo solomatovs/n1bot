@@ -73,7 +73,10 @@ class HttpTransport:
             self._client.build_request(
                 request.method,
                 request.url,
-                params=request.params,
+                # пустой params-dict httpx трактует как «обнулить query» и
+                # срезает уже зашитый в url ?query (напр. confluence ?expand=…);
+                # None оставляет url-query как есть — отдаём None, если params пуст.
+                params=request.params or None,
             ).url,
         )
 
@@ -101,7 +104,8 @@ class HttpTransport:
                         request.method,
                         request.url,
                         headers=request.headers,
-                        params=request.params,
+                        # см. resolve_url: пустой dict обнуляет url-query в httpx.
+                        params=request.params or None,
                         content=request.content,
                         data=request.data,
                         files=request.files,
