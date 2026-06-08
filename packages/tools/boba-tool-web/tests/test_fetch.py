@@ -46,7 +46,7 @@ def test_fetch_returns_dict_with_first_window_of_raw_html(
     )
     assert out == {
         "content": "line0\nline1\nline2",
-        "path": "https://docs.python.org/x",
+        "source_url": "https://docs.python.org/x",
         "total_lines": 5,
         "returned_lines": 3,
     }
@@ -164,7 +164,7 @@ def test_fetch_markdown_returns_markdown_window(
     # markdownify даёт # Title\n\nPara и тп — нет frontmatter'а, чистый MD
     assert "# Title" in out["content"]
     assert "Para" in out["content"]
-    assert out["path"] == "https://docs.python.org/x"
+    assert out["source_url"] == "https://docs.python.org/x"
     assert out["total_lines"] >= 1
 
 

@@ -22,8 +22,9 @@ def read_document(
         Field(
             min_length=1,
             description=(
-                "Путь к загруженному документу в workspace "
-                "(PDF/docx/pptx/xlsx/изображение)."
+                "Путь к локальному файлу в workspace "
+                "(PDF/docx/pptx/xlsx/изображение). НЕ URL: "
+                "для web-страниц используй web_fetch."
             ),
         ),
     ],
