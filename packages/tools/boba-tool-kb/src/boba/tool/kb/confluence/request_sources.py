@@ -1,7 +1,7 @@
 """Доступ к Confluence Server REST: URL-builder, пагинатор, RequestSource'ы.
 
 - ConfluenceRest        — @staticmethod-фабрики путей и HttpRequest'ов
-  (viewpage URL, content/space/cql пути, page/attachment-запросы).
+  (content/space/cql пути, page/attachment-запросы).
 - ConfluencePaginator   — httpx-клиент для пагинированных discovery-запросов
   (+ discover_spaces/discover_space_pages/discover_pages_by_cql).
 - RequestSource'ы       — CQL / Pages / Space / MultiSpace (discovery для
@@ -22,7 +22,6 @@ from pydantic import BaseModel
 from boba.indexing import (
     Metadata,
     RequestSource,
-    SourceId,
 )
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import (
@@ -31,6 +30,7 @@ from boba.tool.kb.confluence.models import (
     ConfluencePageItem,
     ConfluenceSpaceItem,
 )
+from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.transport.http import HttpRequest, HttpTransport
 
 __all__ = [
@@ -51,15 +51,19 @@ T = TypeVar("T", bound=BaseModel)
 
 @dataclass(frozen=True)
 class ConfluenceRequest:
-    """Индексационный план запроса Confluence: чистый HTTP + identity/metadata.
+    """Индексационный план запроса Confluence: чистый HTTP + metadata.
 
-    Удовлетворяет Request-протокол (source_id/metadata); http — чистый
-    HttpRequest, который исполняет HttpTransport. Обогащение metadata
-    данными ответа делает ConfluenceHttpTransport при сборке RawDocument.
+    Удовлетворяет Request-протокол (только metadata). source_id НЕ часть запроса:
+    его выводит транспорт из реально запрашиваемого URL (base_url профиля +
+    http.url, без волатильного query) — см. ConfluenceHttpTransport.source_id.
+    Поэтому http.url несёт только path; base_url знает профиль/транспорт.
+    Логические/презентационные URL (viewpage и т.п.) живут в metadata.
+
+    http — чистый HttpRequest (path), который исполняет HttpTransport. Обогащение
+    metadata данными ответа делает ConfluenceHttpTransport при сборке RawDocument.
     """
 
     http: HttpRequest
-    source_id: SourceId
     metadata: Metadata = field(default_factory=Metadata.empty)
 
 
@@ -67,16 +71,6 @@ class ConfluenceRest:
     """Фабрики Confluence REST: URL/path-builders и HttpRequest-конструкторы."""
 
     DEFAULT_PAGE_LIMIT: ClassVar[int] = 50
-
-    @staticmethod
-    def viewpage_url(base_url: str, page_id: str) -> str:
-        """Stable canonical URL страницы — {base}/pages/viewpage.action?pageId={id}.
-
-        Используется как Request.source_id (отдельно от URL REST-запроса).
-        Не зависит от body_format или других expand-параметров; стабилен при
-        изменении REST-эндпоинтов; кликабелен в браузере.
-        """
-        return f"{base_url.rstrip('/')}/pages/viewpage.action?pageId={page_id}"
 
     @staticmethod
     def page_fetch_path(page_id: str, *, body_format: str) -> str:
@@ -147,26 +141,25 @@ class ConfluenceRest:
     @staticmethod
     def make_page_request(
         *,
-        base_url: str,
         host: str,
         page_id: str,
         body_format: str,
     ) -> ConfluenceRequest:
         """ConfluenceRequest на выгрузку страницы.
 
-        http.url   — absolute REST endpoint (что Transport исполняет).
-        source_id  — stable viewpage URL (canonical id документа). Отдельный
-                       от REST URL, который меняется с эндпоинтами.
-        metadata   — page_id и host для дальнейших стадий (Decoder/Reader).
+        http.url   — относительный REST path с expand (`/rest/api/content/{id}?…`);
+                       base_url приклеит транспорт из профиля. Из реально
+                       запрошенного URL он же выведет source_id (без query:
+                       `{base}/rest/api/content/{id}`) — стабильный адрес ресурса.
+        metadata   — page_id и host. SOURCE_URL (кликабельный viewpage) здесь НЕ
+                       ставим: его проставит ConfluenceJsonDecoder из `_links`
+                       ответа (base+webui) — авторитетный URL от самого Confluence.
         """
         path = ConfluenceRest.page_fetch_path(page_id, body_format=body_format)
-        view_url = ConfluenceRest.viewpage_url(base_url, page_id)
         return ConfluenceRequest(
-            http=HttpRequest(url=f"{base_url.rstrip('/')}{path}", method="GET"),
-            source_id=SourceId(view_url),
+            http=HttpRequest(url=path, method="GET"),
             metadata=(
                 Metadata.empty()
-                .set(ConfluenceKeys.SOURCE_URL, view_url)
                 .set(ConfluenceKeys.PAGE_ID, page_id)
                 .set(ConfluenceKeys.HOST, host)
             ),
@@ -181,15 +174,14 @@ class ConfluenceRest:
     ) -> ConfluenceRequest:
         """HttpRequest на бинарную выгрузку одного вложения.
 
-        url            — {base_url}{attachment.download_path} (Confluence отдаёт
-                           _links.download с ?version=&modificationDate=).
-        source_id      — тот же абсолютный download-URL: стабильный
-                           per-attachment-version, уникален в pipeline, кликабелен.
-        metadata       — ATTACHMENT_INFO (полный snapshot одного attachment'а —
-                           маркер того, что этот RawDocument — вложение, и носитель
-                           полей для download'а) + PAGE_ID/HOST/SPACE_KEY/
-                           ANCESTORS_TITLES родительской страницы (чтобы download мог
-                           положить файл в ту же папку, что и сам page).
+        http.url       — относительный download-path (base_url приклеит транспорт);
+                           из него транспорт выводит source_id (URL без query).
+        metadata       — ATTACHMENT_INFO (snapshot вложения — маркер, что это
+                           вложение, и носитель полей для download'а) +
+                           PAGE_ID/HOST/SPACE_KEY/ANCESTORS_TITLES родителя.
+                           Для цитаты: SOURCE_URL = UI-link самого вложения
+                           (attachment._links.webui, фолбэк на download), а
+                           PARENT_URL = URL родительской страницы (её webui).
 
         TransportKeys.CONTENT_TYPE не пресетим: его заполнит из ответа
         ConfluenceHttpTransport.
@@ -206,11 +198,18 @@ class ConfluenceRest:
         ancestors = parent_metadata.get(ConfluenceKeys.ANCESTORS_TITLES)
         if ancestors is not None:
             meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, ancestors)
-        url = f"{base_url.rstrip('/')}{attachment.download_path}"
-        meta = meta.set(ConfluenceKeys.SOURCE_URL, url)
+        # URL родительской страницы (её _links.webui, записан декодером в SOURCE_URL)
+        if (parent_url := parent_metadata.get(ConfluenceKeys.SOURCE_URL)) is not None:
+            meta = meta.set(ConfluenceKeys.PARENT_URL, parent_url)
+        # SOURCE_URL вложения = его UI-link (webui); фолбэк — download-URL
+        base = base_url.rstrip("/")
+        att_url = (
+            f"{base}{attachment.webui}" if attachment.webui
+            else f"{base}{attachment.download_path}"
+        )
+        meta = meta.set(ConfluenceKeys.SOURCE_URL, att_url)
         return ConfluenceRequest(
-            http=HttpRequest(url=url, method="GET"),
-            source_id=SourceId(url),
+            http=HttpRequest(url=attachment.download_path, method="GET"),
             metadata=meta,
         )
 
@@ -225,11 +224,11 @@ class ConfluencePaginator:
     исключение пробрасывается наверх (caller решает: fail или degrade).
 
     Исполнение и retry (5xx/transport) — внутри HttpTransport, собранного из
-    conn.profile; пагинатор лишь строит URL и парсит JSON.
+    conn.profile; пагинатор лишь строит path и парсит JSON, а base_url к нему
+    подставляет httpx-клиент из профиля (HttpTransport(base_url=...)).
     """
 
     def __init__(self, conn: ConfluenceConnection):
-        self._base_url = conn.base_url.rstrip("/")
         self._http = HttpTransport(conn.profile)
 
     def __call__(self, path: str, item: type[T]) -> Iterator[T]:
@@ -239,37 +238,19 @@ class ConfluencePaginator:
         next_path: str | None = path
         while next_path:
             data = self._get_json(next_path)
-            for raw in self._extract_results(data):
+            for raw in ConfluenceJson.results(data):
                 yield item.model_validate(raw)
 
-            next_path = self._next_link(data)
+            next_path = ConfluenceJson.next_link(data)
 
     def _get_json(self, path: str) -> dict[str, Any]:
-        """GET path -> JSON; retry (5xx/transport) выполняет HttpTransport."""
-        url = path if path.startswith("http") else f"{self._base_url}{path}"
-        with self._http.fetch(HttpRequest(url=url)) as resp:
+        """GET path -> JSON; retry (5xx/transport) выполняет HttpTransport.
+
+        path — относительный (`/rest/api/...`, в т.ч. next-link) или абсолютный;
+        httpx-клиент сам приклеит base_url из профиля либо возьмёт absolute как есть.
+        """
+        with self._http.fetch(HttpRequest(url=path)) as resp:
             return json.loads(resp.stream.read())
-
-    @staticmethod
-    def _extract_results(data: dict[str, Any]) -> list[dict[str, Any]]:
-        """top-level 'results' или вложенный 'page.results'."""
-        res = data.get("results")
-        if isinstance(res, list):
-            return res
-
-        res = data.get("page", {}).get("results")
-        if isinstance(res, list):
-            return res
-
-        return []
-
-    @staticmethod
-    def _next_link(data: dict[str, Any]) -> str | None:
-        next_path = data.get("_links", {}).get("next")
-        if not next_path:
-            return None
-
-        return str(next_path)
 
     def __enter__(self):
         return self
@@ -338,7 +319,6 @@ class ConfluenceCqlRequestSource(RequestSource[ConfluenceRequest]):
 
         for page_id in ConfluencePaginator.discover_pages_by_cql(self._conn, self._cql):
             yield ConfluenceRest.make_page_request(
-                base_url=self._conn.base_url,
                 host=self._host,
                 page_id=page_id,
                 body_format=self._body_format,
@@ -355,7 +335,6 @@ class ConfluencePagesRequestSource(RequestSource[ConfluenceRequest]):
         page_ids: Sequence[str],
         body_format: str,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
         self._host = ConfluenceRest.extract_host(base_url)
         self._page_ids = list(page_ids)
         self._body_format = body_format
@@ -363,7 +342,6 @@ class ConfluencePagesRequestSource(RequestSource[ConfluenceRequest]):
     def requests(self) -> Iterable[ConfluenceRequest]:
         for page_id in self._page_ids:
             yield ConfluenceRest.make_page_request(
-                base_url=self._base_url,
                 host=self._host,
                 page_id=page_id,
                 body_format=self._body_format,
@@ -391,7 +369,6 @@ class ConfluenceSpaceRequestSource(RequestSource[ConfluenceRequest]):
             self._conn, self._space_key,
         ):
             yield ConfluenceRest.make_page_request(
-                base_url=self._conn.base_url,
                 host=self._host,
                 page_id=page_id,
                 body_format=self._body_format,
@@ -448,7 +425,6 @@ class ConfluenceCqlSearchRequestSource(RequestSource[ConfluenceRequest]):
         cql: str,
         limit: int,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
         self._host = ConfluenceRest.extract_host(base_url)
         self._cql = cql
         self._limit = limit
@@ -460,8 +436,10 @@ class ConfluenceCqlSearchRequestSource(RequestSource[ConfluenceRequest]):
             expand="body.view,version,space",
         )
 
+        # online-tool: не индексируется (per-hit source_id проставляет
+        # ConfluenceSearchHitsReader), source_id запроса (его выведет транспорт
+        # из search-URL) никуда не пишется. http.url — относительный path.
         yield ConfluenceRequest(
-            http=HttpRequest(url=f"{self._base_url}{path}", method="GET"),
-            source_id=SourceId(f"confluence:cql:{self._cql}"),
+            http=HttpRequest(url=path, method="GET"),
             metadata=Metadata.empty().set(ConfluenceKeys.HOST, self._host),
         )

@@ -40,6 +40,7 @@ _ATT_PNG = AttachmentInfo(
     media_type="image/png",
     file_size=10,
     download_path="/download/attachments/42/diagram.png?version=1",
+    webui="",
     version=1,
 )
 _ATT_PDF = AttachmentInfo(
@@ -48,6 +49,7 @@ _ATT_PDF = AttachmentInfo(
     media_type="application/pdf",
     file_size=20,
     download_path="/download/attachments/42/spec.pdf?version=1",
+    webui="",
     version=1,
 )
 _ATT_DOCX = AttachmentInfo(
@@ -58,6 +60,7 @@ _ATT_DOCX = AttachmentInfo(
     ),
     file_size=30,
     download_path="/download/attachments/42/Report-Q1.DOCX?version=1",
+    webui="",
     version=1,
 )
 
@@ -135,6 +138,9 @@ class _FakeTransport(Transport[ConfluenceRequest]):
     def __init__(self) -> None:
         self.seen: list[ConfluenceRequest] = []
 
+    def source_id(self, request: ConfluenceRequest) -> SourceId:
+        return SourceId(request.http.url.split("?", 1)[0])
+
     def fetch(
         self,
         req: ConfluenceRequest,
@@ -142,7 +148,7 @@ class _FakeTransport(Transport[ConfluenceRequest]):
         self.seen.append(req)
         yield RawDocument(
             handle=BytesIO(b"binary"),
-            source_id=req.source_id,
+            source_id=self.source_id(req),
             metadata=req.metadata,
         )
 
@@ -220,6 +226,9 @@ class _FakeInner(Transport[ConfluenceRequest]):
     def __init__(self) -> None:
         self.calls: list[ConfluenceRequest] = []
 
+    def source_id(self, request: ConfluenceRequest) -> SourceId:
+        return SourceId(request.http.url.split("?", 1)[0])
+
     def fetch(
         self,
         req: ConfluenceRequest,
@@ -230,7 +239,7 @@ class _FakeInner(Transport[ConfluenceRequest]):
             assert att is not None
             yield RawDocument(
                 handle=BytesIO(b"binary"),
-                source_id=req.source_id,
+                source_id=self.source_id(req),
                 metadata=req.metadata.set(
                     TransportKeys.CONTENT_TYPE, att.media_type,
                 ),
@@ -238,7 +247,7 @@ class _FakeInner(Transport[ConfluenceRequest]):
         else:
             yield RawDocument(
                 handle=BytesIO(json.dumps(_PAGE_JSON).encode("utf-8")),
-                source_id=req.source_id,
+                source_id=self.source_id(req),
                 metadata=req.metadata.set(
                     TransportKeys.CONTENT_TYPE, "application/json",
                 ),
@@ -250,9 +259,6 @@ def _page_request() -> ConfluenceRequest:
         http=HttpRequest(
             url="https://confl.example.com/wiki/rest/api/content/42",
             method="GET",
-        ),
-        source_id=SourceId(
-            "https://confl.example.com/wiki/pages/viewpage.action?pageId=42"
         ),
         metadata=(
             Metadata.empty()

@@ -73,6 +73,9 @@ class _FakeInner(Transport[ConfluenceRequest]):
         self._page_json = page_json
         self.calls: list[ConfluenceRequest] = []
 
+    def source_id(self, request: ConfluenceRequest) -> SourceId:
+        return SourceId(request.http.url.split("?", 1)[0])
+
     def fetch(
         self,
         req: ConfluenceRequest,
@@ -86,7 +89,7 @@ class _FakeInner(Transport[ConfluenceRequest]):
     def _fake_page(self, req: ConfluenceRequest) -> RawDocument:
         return RawDocument(
             handle=BytesIO(json.dumps(self._page_json).encode("utf-8")),
-            source_id=req.source_id,
+            source_id=self.source_id(req),
             metadata=req.metadata.set(TransportKeys.CONTENT_TYPE, "application/json"),
         )
 
@@ -95,7 +98,7 @@ class _FakeInner(Transport[ConfluenceRequest]):
         assert att is not None
         return RawDocument(
             handle=BytesIO(b"binary:" + att.id.encode()),
-            source_id=req.source_id,
+            source_id=self.source_id(req),
             metadata=req.metadata.set(TransportKeys.CONTENT_TYPE, att.media_type),
         )
 
@@ -105,9 +108,6 @@ def _page_request() -> ConfluenceRequest:
         http=HttpRequest(
             url="https://confl.example.com/wiki/rest/api/content/42?expand=...",
             method="GET",
-        ),
-        source_id=SourceId(
-            "https://confl.example.com/wiki/pages/viewpage.action?pageId=42"
         ),
         metadata=(
             Metadata.empty()
@@ -180,14 +180,12 @@ def test_attachment_request_is_passthrough_not_decoded() -> None:
         media_type="application/octet-stream",
         file_size=10,
         download_path="/download/attachments/42/x.bin",
+        webui="",
         version=1,
     )
     req = ConfluenceRequest(
         http=HttpRequest(
             url="https://confl.example.com/wiki/download/attachments/42/x.bin",
-        ),
-        source_id=SourceId(
-            "https://confl.example.com/wiki/download/attachments/42/x.bin"
         ),
         metadata=Metadata.empty().set(ConfluenceKeys.ATTACHMENT_INFO, att),
     )

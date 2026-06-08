@@ -43,7 +43,7 @@ class WorkspaceWalkRequestSource(RequestSource[FsRequest]):
     Раскрывает workspace-relative paths (файлы и/или директории) в поток
     FsRequest с workspace-relative path. Директории обходятся через
     shell.tree(), файлы фильтруются include/exclude через fnmatch
-    по basename. source_id = ws:{workspace_id}:{rel}.
+    по basename. source_id (`ws:{workspace_id}:{rel}`) выводит WorkspaceTransport.
     """
 
     def __init__(
@@ -58,13 +58,11 @@ class WorkspaceWalkRequestSource(RequestSource[FsRequest]):
         self._paths = list(paths)
         self._include = tuple(include)
         self._exclude = tuple(exclude)
-        self._workspace_id = str(shell.workspace_id)
 
     def requests(self) -> Iterable[FsRequest]:
         for rel in self._iter_files():
             yield FsRequest(
                 path=rel,
-                source_id=SourceId(f"ws:{self._workspace_id}:{rel}"),
                 metadata=(
                     Metadata.empty()
                     .set(FsKeys.PATH, rel)
@@ -118,13 +116,19 @@ class WorkspaceTransport(Transport[FsRequest]):
     def __init__(self, *, shell: WorkspaceShell[Any]) -> None:
         self._shell = shell
 
+    def source_id(self, request: FsRequest) -> SourceId:
+        """Идентичность = `ws:{workspace_id}:{rel}` (стабильна по аплоаду в сессию)."""
+        return SourceId(f"ws:{self._shell.workspace_id}:{request.path}")
+
     def fetch(
         self,
         request: FsRequest,
     ) -> Iterable[RawDocument]:
-        yield from self._open_one(request)
+        yield from self._open_one(request, self.source_id(request))
 
-    def _open_one(self, req: FsRequest) -> Iterable[RawDocument]:
+    def _open_one(
+        self, req: FsRequest, source_id: SourceId,
+    ) -> Iterable[RawDocument]:
         try:
             entry_meta = self._shell.meta(req.path)
         except WorkspaceError:
@@ -141,6 +145,6 @@ class WorkspaceTransport(Transport[FsRequest]):
         with self._shell.read_binary(req.path) as fh:
             yield RawDocument(
                 handle=fh,
-                source_id=req.source_id,
+                source_id=source_id,
                 metadata=meta,
             )

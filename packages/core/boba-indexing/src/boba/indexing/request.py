@@ -18,8 +18,9 @@ RequestSource - источник Request-планов для Transport'а.
 Pipeline и Transport параметризуются тем же типом — type-checker
 не даст совместить несовместимые слои.
 
-source_id формирует RequestSource
-он один знает связь между URL/path'ом и логическим документом
+source_id (идентичность документа) формирует НЕ RequestSource, а Transport —
+он резолвит реальный адрес запрошенного объекта (URL/path) и проставляет id
+(см. Transport.source_id). RequestSource несёт только «что забрать» + metadata.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ from collections.abc import Iterable
 from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from boba.indexing.metadata import Metadata
-from boba.indexing.sections import SourceId
 
 __all__ = ["Request", "RequestSource"]
 
@@ -37,21 +37,20 @@ __all__ = ["Request", "RequestSource"]
 @runtime_checkable
 class Request(Protocol):
     """
-    Контракт Request-DTO:
-        source_id - сообщает название источника документа.
-            Это название прокидывается далее во все чанки сквозным образом
+    Контракт Request-DTO — чистый план «что забрать»:
         metadata - сообщает исходные метаданные документа.
             Эти метаданные в процессе выполнения pipeline обогощаются и записываются в чанки
             Здесь можно сообщить о документе базовую исходную информацию, которую хочется
             Донести до каждого чанка
 
+    source_id (идентичность документа) НЕ часть Request — её вычисляет Transport
+    из реального адреса запрошенного объекта (URL/path), см. Transport.source_id.
+    Так identity всегда совпадает с тем, что физически забирается, и не дрейфует.
+
     Контракты живут в отдельных transport-пакетах, например:
     - HttpRequest  -> Request  — url, method, headers, auth.
     - FsRequest    -> Request  — path.
     """  # noqa: E501
-
-    @property
-    def source_id(self) -> SourceId: ...
 
     @property
     def metadata(self) -> Metadata: ...
@@ -73,14 +72,14 @@ class RequestSource(ABC, Generic[ReqT]):
     **Схема**:
     python
     source  ──────────────────────source.requests()──->  Iterable[ReqT]
-    (config, fs-walk, API …)                            ->    source_id : SourceId   (canonical id — формирует source)
-                                                        ->    metadata  : Metadata   (hint'ы для transport / reader / chunker)
+    (config, fs-walk, API …)                            ->    metadata  : Metadata   (hint'ы для transport / reader / chunker)
                                                         ->    <fields>               (url / path / …)
-    
 
-    source_id — каноничен и стабилен: именно RequestSource знает, как
-    сопоставить URL/path с логическим документом. Дальше по pipeline
-    этот id пробрасывается без изменений (Request -> RawDocument -> Section -> Chunk).
+
+    source_id (идентичность документа) RequestSource НЕ формирует — её выводит
+    Transport из реального адреса запрошенного объекта (см. Transport.source_id).
+    RequestSource несёт только «что забрать» (<fields>) + логические/исходные
+    hint'ы в metadata (canonical URL, page_id и т.п.).
 
     **Пример** (usage):
     python
@@ -90,14 +89,11 @@ class RequestSource(ABC, Generic[ReqT]):
     )
 
     list(source.requests()) == [
-        FsRequest(
-            path=Path("docs/intro.md"),
-            source_id=SourceId("fs:/abs/docs/intro.md")),
-        FsRequest(
-            path=Path("docs/api.md"),
-            source_id=SourceId("fs:/abs/docs/api.md")),
+        FsRequest(path="docs/intro.md", metadata=…),
+        FsRequest(path="docs/api.md",   metadata=…),
     ]
-    
+    # source_id (fs:/abs/…) проставит FsTransport.source_id
+
     """  # noqa: E501
 
     @abstractmethod

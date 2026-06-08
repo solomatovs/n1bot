@@ -47,6 +47,7 @@ def test_attachments_parsed_into_metadata() -> None:
                         "version": {"number": 3},
                         "_links": {
                             "download": "/download/attachments/42/diagram.png?version=3",
+                            "webui": "/pages/viewpageattachments.action?pageId=42&preview=diagram.png",
                         },
                     },
                     {
@@ -74,6 +75,7 @@ def test_attachments_parsed_into_metadata() -> None:
             media_type="image/png",
             file_size=12345,
             download_path="/download/attachments/42/diagram.png?version=3",
+            webui="/pages/viewpageattachments.action?pageId=42&preview=diagram.png",
             version=3,
         ),
         AttachmentInfo(
@@ -82,6 +84,7 @@ def test_attachments_parsed_into_metadata() -> None:
             media_type="application/pdf",
             file_size=98765,
             download_path="/download/attachments/42/spec.pdf?version=1",
+            webui="",
             version=1,
         ),
     )
@@ -161,6 +164,44 @@ def test_attachment_missing_extensions_and_version_uses_defaults() -> None:
     assert a.file_size == 0
     assert a.version == 1
     assert a.download_path == "/download/attachments/42/lone.txt"
+
+
+def test_links_base_and_webui_set_source_url() -> None:
+    """SOURCE_URL = _links.base + _links.webui (каноничный URL от Confluence)."""
+    decoded = _decode({
+        "id": "983136",
+        "title": "Page",
+        "body": {"export_view": {"value": "<p>hi</p>"}},
+        "_links": {
+            "webui": "/pages/viewpage.action?pageId=983136",
+            "base": "https://confl.loshara.com",
+            "self": "https://confl.loshara.com/rest/api/content/983136",
+        },
+    })
+    assert decoded.metadata.get(ConfluenceKeys.SOURCE_URL) == (
+        "https://confl.loshara.com/pages/viewpage.action?pageId=983136"
+    )
+
+
+def test_source_url_absent_without_links() -> None:
+    """Нет _links.webui/base — SOURCE_URL не ставится (без fallback на хардкод)."""
+    decoded = _decode({
+        "id": "42",
+        "title": "Page",
+        "body": {"export_view": {"value": "<p>hi</p>"}},
+    })
+    assert not decoded.metadata.has(ConfluenceKeys.SOURCE_URL)
+
+
+def test_version_number_indexed() -> None:
+    """version.number попадает в metadata (для сверки устаревания индекса)."""
+    decoded = _decode({
+        "id": "42",
+        "title": "Page",
+        "body": {"export_view": {"value": "<p>hi</p>"}},
+        "version": {"number": 7},
+    })
+    assert decoded.metadata.get(ConfluenceKeys.VERSION) == 7
 
 
 def test_attachments_roundtrip_via_metadata_codec() -> None:

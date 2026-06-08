@@ -108,6 +108,8 @@ class AttachmentInfo:
     - file_size      — bytes; 0 если Confluence не отдал.
     - download_path  — relative path от base_url (/download/attachments/…);
                          caller склеивает с base_url чтобы получить полный URL.
+    - webui          — relative UI-link вложения (_links.webui), для цитаты:
+                         caller склеивает с base_url. "" если Confluence не отдал.
     - version        — version.number; 1 если отсутствует.
 
     JSON-кодек (encode/decode/encode_many/decode_many) симметричен и
@@ -120,6 +122,7 @@ class AttachmentInfo:
     media_type: str
     file_size: int
     download_path: str
+    webui: str
     version: int
 
     def encode(self) -> str:
@@ -155,6 +158,7 @@ class AttachmentInfo:
             media_type=str(d.get("media_type", "")),
             file_size=int(d.get("file_size") or 0),
             download_path=str(d.get("download_path", "")),
+            webui=str(d.get("webui", "")),
             version=int(d.get("version") or 1),
         )
 
@@ -239,6 +243,13 @@ class ConfluenceKeys:
         encode=str,
     )
     """Canonical URL страницы — тот же wire-ключ source_url, что и у kbdoc."""
+
+    PARENT_URL: ClassVar[MetadataKey[str]] = MetadataKey(
+        name="confluence.parent_url",
+        decode=str,
+        encode=str,
+    )
+    """URL родительской страницы (её _links.webui) — у вложений: где оно лежит."""
 
     PAGE_ID: ClassVar[MetadataKey[str]] = MetadataKey(
         name="confluence.page_id",

@@ -45,14 +45,15 @@ class ConfluenceSearchCqlConfig(BaseModel):
 class CqlSearch:
     """Сборка CQL и распаковка search-Section в плоский hit-dict."""
 
-    SNIPPET_DEFAULT: ClassVar[int] = 300
+    SNIPPET_DEFAULT: ClassVar[int] = 1000
     SNIPPET_DESC: ClassVar[str] = (
-        "Максимальная длина сниппета на каждый hit (символов). По умолчанию 300."
+        "Максимальная длина сниппета на каждый hit (символов). По умолчанию 1000."
     )
 
     @staticmethod
     def hit(section: Section[str]) -> dict[str, str]:
         m = section.metadata
+        version = m.get(ConfluenceKeys.VERSION)
         return {
             "page_id": m.get(ConfluenceKeys.PAGE_ID) or "",
             "title": m.get(ReaderKeys.PAGE_TITLE) or "",
@@ -60,6 +61,8 @@ class CqlSearch:
             "url": str(section.source_id),
             "snippet": section.content,
             "last_modified": m.get(HttpKeys.LAST_MODIFIED) or "",
+            # online version.number — LLM сверяет с version из индексного поиска
+            "version": str(version) if version is not None else "",
         }
 
     @staticmethod
@@ -108,7 +111,9 @@ def confluence_search_cql(
     """Полнотекстовый поиск страниц Confluence (online CQL).
 
     Возвращает TableResult — таблицу hits с колонками page_id/title/
-    space_key/url/snippet/last_modified.
+    space_key/url/snippet/last_modified/version. version — текущая
+    confluence-версия страницы: сверь её с `version` из kb-поиска по индексу,
+    чтобы понять, что в индексе устарело и страницу нужно переиндексировать.
     """
     conn = ConfluenceConnection(profile=cfg.confluence)
     pipeline = Pipeline(

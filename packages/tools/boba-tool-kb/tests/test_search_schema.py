@@ -14,12 +14,14 @@ from boba.tool.kb.core.search import (
 _META_COLUMNS = {
     "page_title",
     "source_url",
+    "parent_url",
     "anchor",
     "page_id",
+    "version",
     "heading_path",
     "space",
 }
-_COLUMN_FIELDS = {"id", "distance", "snippet", "tags", "link"}
+_COLUMN_FIELDS = {"id", "distance", "snippet", "tags"}
 
 
 def _hit(metadata: dict[str, str], tags: tuple[str, ...] = ()) -> SearchHit:
@@ -35,9 +37,11 @@ def test_row_assembles_columns_and_metadata() -> None:
     hit = _hit(
         {
             "reader.page_title": "Правила именования",
-            "source_url": "https://confl/viewpage?pageId=950276",
+            # source_url уже с #anchor (собран на индексации в ридере)
+            "source_url": "https://confl/viewpage?pageId=950276#backup-pitr",
             "section.anchor": "backup-pitr",
             "confluence.page_id": "950276",
+            "confluence.version": "6",
             "section.heading.path": "Backup › PITR",
             "confluence.space_key": "PAAS",
         },
@@ -49,13 +53,13 @@ def test_row_assembles_columns_and_metadata() -> None:
     assert row["distance"] == 0.1
     assert row["snippet"] == "s"
     assert row["tags"] == "a, b"
-    assert row["link"] == "https://confl/viewpage?pageId=950276#backup-pitr"
-    # поля из metadata
+    # поля из metadata; source_url отдаётся дословно (deep-link уже в нём)
     assert _META_COLUMNS.issubset(row.keys())
     assert row["page_title"] == "Правила именования"
-    assert row["source_url"] == "https://confl/viewpage?pageId=950276"
+    assert row["source_url"] == "https://confl/viewpage?pageId=950276#backup-pitr"
     assert row["anchor"] == "backup-pitr"
     assert row["page_id"] == "950276"
+    assert row["version"] == "6"  # индексная версия — для сверки с online
     assert row["heading_path"] == "Backup › PITR"
     assert row["space"] == "PAAS"
 
@@ -96,5 +100,4 @@ def test_missing_keys_become_empty() -> None:
     row = ConfluenceCollection.row(_hit({"reader.page_title": "T"}))
     assert row["page_title"] == "T"
     assert row["source_url"] == ""
-    assert row["link"] == ""  # нет source_url -> пустой link
     assert row["tags"] == ""

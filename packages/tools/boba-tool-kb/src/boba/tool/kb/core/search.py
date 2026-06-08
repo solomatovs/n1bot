@@ -15,7 +15,6 @@ search-сторона ↔ ingest-сторона не расходятся. Вс�
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -45,10 +44,14 @@ SearchMethod = Literal["vector", "fts"]
 
 @dataclass(frozen=True)
 class MetaField:
-    """Output-колонка ← ключ kb_chunks.metadata (та MetadataKey, что у ingest)."""
+    """Output-колонка ← ключ kb_chunks.metadata (та MetadataKey, что у ingest).
+
+    row() читает значение по wire-имени из jsonb (всегда строка), поэтому
+    тип-параметр ключа не важен — допускаем любой (напр. VERSION: int).
+    """
 
     column: str
-    key: MetadataKey[str]
+    key: MetadataKey[Any]
 
 
 class CollectionSearch:
@@ -72,22 +75,11 @@ class CollectionSearch:
             "tags": ", ".join(sorted(hit.tags)),  # kb_chunks.tags (text[])
         }
         # --- поля из kb_chunks.metadata (jsonb), по META_FIELDS ---
+        # source_url уже содержит #anchor (собран на индексации в ридере) —
+        # отдаём сохранённое значение дословно, без сборки на лету.
         for field in cls.META_FIELDS:
             row[field.column] = hit.metadata.get(field.key.name, "")
-        # --- производное ---
-        row["link"] = cls._link(row)
         return row
-
-    @staticmethod
-    def _link(row: Mapping[str, str]) -> str:
-        """source_url[#anchor] — готовый deep-link из уже собранных колонок."""
-        url = row.get("source_url", "")
-        if not url:
-            return ""
-        anchor = row.get("anchor", "")
-        if anchor and "#" not in url:
-            return f"{url}#{anchor}"
-        return url
 
 
 class ConfluenceCollection(CollectionSearch):
@@ -103,9 +95,11 @@ class ConfluenceCollection(CollectionSearch):
 
     META_FIELDS = (
         MetaField("page_title", ReaderKeys.PAGE_TITLE),  # decoder
-        MetaField("source_url", ConfluenceKeys.SOURCE_URL),  # request_source
+        MetaField("source_url", ConfluenceKeys.SOURCE_URL),  # decoder (_links.webui)
+        MetaField("parent_url", ConfluenceKeys.PARENT_URL),  # attachment -> page webui
         MetaField("anchor", SectionKeys.ANCHOR),  # reader
         MetaField("page_id", ConfluenceKeys.PAGE_ID),  # request_source
+        MetaField("version", ConfluenceKeys.VERSION),  # decoder (version.number)
         MetaField("heading_path", SectionKeys.HEADING_PATH),  # reader
         MetaField("space", ConfluenceKeys.SPACE_KEY),  # decoder
     )
@@ -125,8 +119,10 @@ class KbDocCollection(CollectionSearch):
     META_FIELDS = (
         MetaField("page_title", ReaderKeys.PAGE_TITLE),  # KbDocReader (title:)
         MetaField("source_url", KbDocKeys.SOURCE_URL),  # KbDocReader (source:)
+        MetaField("parent_url", KbDocKeys.PARENT_URL),  # пусто для kb_doc; держит форму
         MetaField("anchor", SectionKeys.ANCHOR),  # KbDocReader (anchor:)
         MetaField("page_id", KbDocKeys.PAGE_ID),  # KbDocReader (page_id:)
+        MetaField("version", KbDocKeys.VERSION),  # KbDocReader (version:), опц.
         MetaField("heading_path", SectionKeys.HEADING_PATH),  # StructuralChunker
         MetaField("space", KbDocKeys.SPACE),  # KbDocReader (space:)
     )

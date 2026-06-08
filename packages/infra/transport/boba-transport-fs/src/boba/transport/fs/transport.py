@@ -13,6 +13,7 @@ from pathlib import Path
 
 from boba.indexing import (
     RawDocument,
+    SourceId,
     Transport,
     TransportKeys,
 )
@@ -31,9 +32,9 @@ class FsTransport(Transport[FsRequest]):
     **Схема**:
     python
     FsRequest   ──────────────────────FsTransport.fetch──->  RawDocument
-        path        : str        ──open──->
-        source_id   : SourceId   ──pass──->                       source_id   (тот же)
-        metadata    : Metadata   ──merge─->                       metadata    (+ TransportKeys.MTIME, FsKeys.SIZE, FsKeys.SUFFIX)
+        path        : str        ──open────────────────->
+                                 ──source_id(req)───────->     source_id   (`fs:{path}` — выводит транспорт)
+        metadata    : Metadata   ──merge───────────────->     metadata    (+ TransportKeys.MTIME, FsKeys.SIZE, FsKeys.SUFFIX)
                                                            ->     handle      : BufferedReader  (open; закроется по выходу из fetch)
     
 
@@ -56,7 +57,6 @@ class FsTransport(Transport[FsRequest]):
     transport = FsTransport()
     request = FsRequest(
         path="/abs/note.md",
-        source_id=SourceId("fs:/abs/note.md"),
         metadata=Metadata.empty().set(FsKeys.PATH, "/abs/note.md"),
     )
 
@@ -64,7 +64,7 @@ class FsTransport(Transport[FsRequest]):
     raw = next(iter(transport.fetch(request)))
     raw == RawDocument(
         handle=<BufferedReader name='/abs/note.md'>,   # новое: открытый file descriptor
-        source_id=SourceId("fs:/abs/note.md"),         # pass из FsRequest
+        source_id=SourceId("fs:/abs/note.md"),         # выводит FsTransport.source_id = fs:{path}
         metadata=(                                     # merge из FsRequest.metadata + 3 ключа от Transport
             Metadata.empty()
             .set(FsKeys.PATH, "/abs/note.md")          # был в FsRequest
@@ -77,14 +77,18 @@ class FsTransport(Transport[FsRequest]):
     
     """  # noqa: E501
 
+    def source_id(self, request: FsRequest) -> SourceId:
+        """Идентичность файла = `fs:{path}` (реальный путь запрошенного объекта)."""
+        return SourceId(f"fs:{request.path}")
+
     def fetch(
         self,
         request: FsRequest,
     ) -> Iterable[RawDocument]:
-        yield from self._open_one(request)
+        yield from self._open_one(request, self.source_id(request))
 
     @staticmethod
-    def _open_one(req: FsRequest) -> Iterable[RawDocument]:
+    def _open_one(req: FsRequest, source_id: SourceId) -> Iterable[RawDocument]:
         p = Path(req.path)
         try:
             stat = p.stat()
@@ -102,6 +106,6 @@ class FsTransport(Transport[FsRequest]):
         with p.open("rb") as fp:
             yield RawDocument(
                 handle=fp,
-                source_id=req.source_id,
+                source_id=source_id,
                 metadata=meta,
             )

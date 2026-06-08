@@ -32,7 +32,6 @@ class HttpTransport:
     with HttpTransport(profile) as transport:
         with transport.fetch(HttpRequest(url="https://...", method="GET")) as resp:
             body = resp.stream.read()   # читать тело нужно внутри этого with
-    
 
     **Retry** (profile.retry_attempts > 1): повтор на 5xx и transport-ошибках
     (timeout/connect) с линейным backoff'ом; 4xx не ретраятся. Покрывает фазу
@@ -62,6 +61,21 @@ class HttpTransport:
 
     def close(self) -> None:
         self._client.close()
+
+    def resolve_url(self, request: HttpRequest) -> str:
+        """Абсолютный URL, который реально уйдёт: base_url профиля + url + params.
+
+        Чистый резолв через httpx-клиент, без сетевого вызова. Нужен потребителям
+        (напр. confluence-транспорту), которые выводят identity документа из
+        реально запрашиваемого адреса, отдавая в HttpRequest только path.
+        """
+        return str(
+            self._client.build_request(
+                request.method,
+                request.url,
+                params=request.params,
+            ).url,
+        )
 
     @contextmanager
     def fetch(self, request: HttpRequest) -> Iterator[HttpResponse]:
