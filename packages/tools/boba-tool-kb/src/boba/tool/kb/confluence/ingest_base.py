@@ -25,6 +25,7 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import ConfigDict, Field
 
 from boba.indexing import (
+    CleanupStrategy,
     CollectionScopedView,
     DispatchReader,
     FullCleanup,
@@ -41,6 +42,7 @@ from boba.settings import (
     StringList,
 )
 from boba.text import StructuralChunker
+from boba.tool.kb.confluence.cleanup import ConfluencePageScopeCleanup
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import AttachmentFilter
 from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
@@ -123,12 +125,17 @@ class ConfluenceIngest:
         chunker: StructuralChunker,
         collection: str,
         prune_missing: bool,
+        force_update: bool = False,
         attachment_filter: AttachmentFilter | None = None,
     ) -> dict[str, Any]:
         """Полный Confluence -> kb_chunks pipeline для уже-собранного RequestSource.
 
         Возвращает JSON-stats с полями collection/indexed/skipped_unchanged/
         pruned/failed. Caller добавляет свои поля (space_key/page_ids/...).
+
+        force_update — переиндексировать затронутые страницы целиком: reconcile
+        обходит хэш-диф и переэмбеддит все чанки, а page-scope cleanup сносит
+        стейл в пределах страницы (ужавшийся текст + удалённые вложения).
 
         Reader — DispatchReader по TransportKeys.CONTENT_TYPE: HTML
         обрабатывается ConfluenceReader'ом, всё остальное (attachment'ы PDF/
@@ -158,11 +165,19 @@ class ConfluenceIngest:
             attachment_filter=attachment_filter,
         )
 
-        cleanup = FullCleanup() if prune_missing else NoneCleanup()
+        # prune_missing (full-coverage feed) сносит весь стейл коллекции и
+        # перекрывает page-scope; force_update без prune — точечный reindex,
+        # чистит стейл только в пределах затронутых страниц (+ их вложений).
+        if prune_missing:
+            cleanup: CleanupStrategy = FullCleanup()
+        elif force_update:
+            cleanup = ConfluencePageScopeCleanup()
+        else:
+            cleanup = NoneCleanup()
 
         config: IndexerConfig[str] = IndexerConfig(
             cleanup=cleanup,
-            force_update=False,
+            force_update=force_update,
         )
         try:
             pipeline: Pipeline[ConfluenceRequest, str] = Pipeline(
@@ -195,6 +210,7 @@ class ConfluenceIngest:
         cfg: ConfluenceIngestConfig,
         request_source: RequestSource[ConfluenceRequest],
         prune_missing: bool,
+        force_update: bool = False,
     ) -> dict[str, Any]:
         """Собрать stores/embedder/chunker/filter из cfg и вызвать run."""
         chunk_store = PostgresChunkStore(cfg=cfg)
@@ -218,5 +234,6 @@ class ConfluenceIngest:
             chunker=chunker,
             collection=cfg.collection,
             prune_missing=prune_missing,
+            force_update=force_update,
             attachment_filter=att_filter,
         )

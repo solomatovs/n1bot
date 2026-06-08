@@ -91,6 +91,17 @@ class ConfluenceIngestCliConfig(ConfluenceIngestConfig):
         Field(description="prune_missing=True для каждого space / page-batch."),
     ] = False
 
+    force_update: Annotated[
+        bool,
+        Field(
+            description=(
+                "force_update=True для каждого space / page-batch: "
+                "переэмбеддить все чанки затронутых страниц (минуя skip-by-hash) "
+                "и снести их стейл, включая снятые вложения."
+            ),
+        ),
+    ] = False
+
 
 class ConfluenceIngestCli:
     """Operator-логика discovery + per-space loop поверх confluence_ingest_*."""
@@ -105,10 +116,11 @@ class ConfluenceIngestCli:
                 cfg.space_type,
             )
         logger.info(
-            "ingesting %d page(s) -> collection=%s (prune=%s)",
+            "ingesting %d page(s) -> collection=%s (prune=%s force_update=%s)",
             len(cfg.page_ids),
             cfg.collection,
             cfg.prune,
+            cfg.force_update,
         )
 
         start = time.monotonic()
@@ -118,6 +130,7 @@ class ConfluenceIngestCli:
                     cfg=cfg,
                     page_ids=list(cfg.page_ids),
                     prune_missing=cfg.prune,
+                    force_update=cfg.force_update,
                 ).rows[0],
             )
         except Exception:
@@ -176,6 +189,7 @@ class ConfluenceIngestCli:
                         cfg=cfg,
                         space_keys=[key],
                         prune_missing=cfg.prune,
+                        force_update=cfg.force_update,
                     ).rows[0],
                 )
             except Exception:
