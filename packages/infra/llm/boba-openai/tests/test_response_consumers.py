@@ -231,7 +231,7 @@ def test_non_stream_fallback_remaps_tool_call_from_content() -> None:
     response = _completion(
         {
             "role": "assistant",
-            "content": '{"function": "search", "args": {"q": "x"}}',
+            "content": '{"name": "search", "arguments": {"q": "x"}}',
         },
     )
 
@@ -257,7 +257,7 @@ def test_non_stream_without_fallback_keeps_content_as_answer() -> None:
     response = _completion(
         {
             "role": "assistant",
-            "content": '{"function": "search", "args": {"q": "x"}}',
+            "content": '{"name": "search", "arguments": {"q": "x"}}',
         },
     )
 
@@ -272,8 +272,8 @@ def test_stream_fallback_remaps_tool_call_from_content() -> None:
     rid = new_request_id()
     ctx = LLMContext(request=LLMRequest(request_id=rid, model="test-model"))
     chunks = [
-        _chunk({"role": "assistant", "content": '{"function": "search", '}),
-        _chunk({"content": '"args": {"q": "x"}}'}),
+        _chunk({"role": "assistant", "content": '{"name": "search", '}),
+        _chunk({"content": '"arguments": {"q": "x"}}'}),
         _chunk({}, finish_reason="stop"),
     ]
 

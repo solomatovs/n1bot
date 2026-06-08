@@ -94,9 +94,11 @@ class ConfluenceCollection(CollectionSearch):
     COLLECTION = "kb_confluence"
 
     META_FIELDS = (
-        MetaField("page_title", ReaderKeys.PAGE_TITLE),  # decoder
+        MetaField("page_title", ReaderKeys.PAGE_TITLE),  # decoder / attachment title
         MetaField("source_url", ConfluenceKeys.SOURCE_URL),  # decoder (_links.webui)
         MetaField("parent_url", ConfluenceKeys.PARENT_URL),  # attachment -> page webui
+        MetaField("doc_type", ReaderKeys.DOC_TYPE),  # reader (html / pdf / docx / xlsx)
+        MetaField("page", SectionKeys.PAGE_NUMBER),  # LiteParseReader (вложения)
         MetaField("anchor", SectionKeys.ANCHOR),  # reader
         MetaField("page_id", ConfluenceKeys.PAGE_ID),  # request_source
         MetaField("version", ConfluenceKeys.VERSION),  # decoder (version.number)
@@ -120,6 +122,8 @@ class KbDocCollection(CollectionSearch):
         MetaField("page_title", ReaderKeys.PAGE_TITLE),  # KbDocReader (title:)
         MetaField("source_url", KbDocKeys.SOURCE_URL),  # KbDocReader (source:)
         MetaField("parent_url", KbDocKeys.PARENT_URL),  # пусто для kb_doc; держит форму
+        MetaField("doc_type", ReaderKeys.DOC_TYPE),  # KbDocReader; держит форму
+        MetaField("page", SectionKeys.PAGE_NUMBER),  # пусто для kb_doc; держит форму
         MetaField("anchor", SectionKeys.ANCHOR),  # KbDocReader (anchor:)
         MetaField("page_id", KbDocKeys.PAGE_ID),  # KbDocReader (page_id:)
         MetaField("version", KbDocKeys.VERSION),  # KbDocReader (version:), опц.

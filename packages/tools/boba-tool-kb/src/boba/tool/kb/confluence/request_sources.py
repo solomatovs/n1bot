@@ -21,7 +21,9 @@ from pydantic import BaseModel
 
 from boba.indexing import (
     Metadata,
+    ReaderKeys,
     RequestSource,
+    TransportKeys,
 )
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import (
@@ -183,12 +185,20 @@ class ConfluenceRest:
                            (attachment._links.webui, фолбэк на download), а
                            PARENT_URL = URL родительской страницы (её webui).
 
-        TransportKeys.CONTENT_TYPE не пресетим: его заполнит из ответа
-        ConfluenceHttpTransport.
-        Если ответ почему-то без Content-Type, downstream'у доступен
-        attachment.media_type из ConfluenceKeys.ATTACHMENT_INFO.
+        TransportKeys.CONTENT_TYPE пресетим из attachment.media_type
+        (авторитетное значение из Confluence JSON) — по нему DispatchReader
+        роутит вложение в нужный Reader, а LiteParseReader выводит суффикс
+        формата. ConfluenceHttpTransport НЕ перетирает уже выставленный
+        CONTENT_TYPE заголовком ответа (Confluence на download иногда отдаёт
+        octet-stream). ReaderKeys.PAGE_TITLE = attachment.title — имя файла
+        для поиска/цитаты.
         """
-        meta = Metadata.empty().set(ConfluenceKeys.ATTACHMENT_INFO, attachment)
+        meta = (
+            Metadata.empty()
+            .set(ConfluenceKeys.ATTACHMENT_INFO, attachment)
+            .set(TransportKeys.CONTENT_TYPE, attachment.media_type)
+            .set(ReaderKeys.PAGE_TITLE, attachment.title)
+        )
         if (page_id := parent_metadata.get(ConfluenceKeys.PAGE_ID)) is not None:
             meta = meta.set(ConfluenceKeys.PAGE_ID, page_id)
         if (host := parent_metadata.get(ConfluenceKeys.HOST)) is not None:

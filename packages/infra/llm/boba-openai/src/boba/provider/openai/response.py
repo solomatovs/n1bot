@@ -48,14 +48,13 @@ logger = logging.getLogger(__name__)
 
 
 class ToolCallFromContentFallback:
-    """
+    """Перемапивает tool-call из `content` в `tool_calls` итогового сообщения.
 
-    Перемапивает tool-call из `content` в `tool_calls` итогового сообщения.
-
-
-
-    Чинит проблему когда в поле content приходит JSON по протоколу (`function` + `args`)
-
+    Чинит случай, когда модель кладёт tool-call JSON'ом прямо в `content` по
+    OpenAI-протоколу `function.{name, arguments}`: объект (или массив объектов)
+    вида {"name": <str>, "arguments": <dict>}. arguments опускаемы (коэрсятся
+    в {}); не-dict arguments -> ToolCallDecodeFailure. Любой элемент без
+    строкового name => это не tool-call, всё сообщение остаётся как есть.
     """
 
     def decode(self, message: AssistantMessage, *, model: str) -> AssistantMessage:
@@ -101,8 +100,8 @@ class ToolCallFromContentFallback:
         except json.JSONDecodeError:
             return None
 
-        # иногда модель присылает словарь {"name": "func_1", "args": {}}
-        # вместо корректного списка [{"name": "func_1", "args": {}}]
+        # иногда модель присылает словарь {"name": "func_1", "arguments": {}}
+        # вместо корректного списка [{"name": "func_1", "arguments": {}}]
         items = parsed if isinstance(parsed, list) else [parsed]
 
         if not items:
@@ -130,14 +129,10 @@ class ToolCallFromContentFallback:
 
     @classmethod
     def _to_call(cls, item: object) -> ToolCall | ToolCallDecodeFailure | None:
-        """
+        """Один элемент {name, arguments} -> ToolCall.
 
-        Один элемент {function, args} > ToolCall;
-
-            None если не это вообще не dict
-
-            ToolCallDecodeFailure если это dict но с некорректным форматом аргументов
-
+        None если это вообще не dict или нет строкового name;
+        ToolCallDecodeFailure если это dict, но с некорректным форматом arguments.
         """
 
         if not isinstance(item, dict):

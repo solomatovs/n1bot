@@ -8,16 +8,17 @@ LiteParseParams (настройки парсера), LiteParseError (едина�
 
 from __future__ import annotations
 
-from liteparse import ParseError, ParseResult
-
 from boba.liteparse.engine import LiteParseEngine
 from boba.liteparse.errors import LiteParseError
 from boba.liteparse.params import LiteParseParams
+from boba.liteparse.reader import LiteParseReader
+from liteparse import ParseError, ParseResult
 
 __all__ = [
     "LiteParseEngine",
     "LiteParseError",
     "LiteParseParams",
+    "LiteParseReader",
     "ParseError",
     "ParseResult",
 ]
