@@ -76,16 +76,18 @@ class _WebGrep:
     def compile_pattern(
         pattern: str, *, fixed_string: bool, case_insensitive: bool
     ) -> re.Pattern[str]:
-        """Компилирует pattern; fixed_string -> литерал, иначе Python-regex."""
-        raw = re.escape(pattern) if fixed_string else pattern
+        """
+        Компилирует pattern; fixed_string -> литерал,
+        иначе Python-regex с literal-fallback при некорректном regex
+        """
         flags = re.IGNORECASE if case_insensitive else 0
+        if fixed_string:
+            return re.compile(re.escape(pattern), flags)
         try:
-            return re.compile(raw, flags)
-        except re.error as e:
-            raise RuntimeError(
-                f"Некорректный regex {pattern!r}: {e.msg} в позиции {e.pos}; "
-                f"экранируй спецсимволы или передай fixed_string=true.",
-            ) from e
+            return re.compile(pattern, flags)
+        except re.error:
+            # Некорректный regex (часто LLM шлёт голый '?', '(', '+') -> ищем литерально
+            return re.compile(re.escape(pattern), flags)
 
     @staticmethod
     def iter_matches(
