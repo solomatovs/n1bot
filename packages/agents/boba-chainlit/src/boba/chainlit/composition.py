@@ -151,7 +151,18 @@ def main() -> int:
             FsWorkspaceShell.under(history_base_dir, workspace_id)
         )
 
-    authenticate_user = AuthenticateUser(StaticUserRepository({"admin": "admin"}))
+    authenticate_user = AuthenticateUser(
+        StaticUserRepository(
+            {
+                "user1": "1974",
+                "user2": "1974",
+                "user3": "1974",
+                "user4": "1974",
+                "user5": "1974",
+                "user6": "1974",
+            }
+        )
+    )
 
     # Свежий shell на каждую службу: общий root, но изолированное состояние.
     user_catalog = FsUserCatalog(
