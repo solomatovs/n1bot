@@ -314,11 +314,10 @@ async def on_message(message: cl.Message) -> None:
         finally:
             bridge.close()
 
+    worker = asyncio.create_task(asyncio.to_thread(_run_agent))
+    await _render_events(queue)
     try:
-        await asyncio.gather(
-            asyncio.to_thread(_run_agent),
-            _render_events(queue),
-        )
+        await worker
     except Exception as exc:
         logger.exception("Agent run failed for workspace=%s", workspace_id)
         await cl.Message(
