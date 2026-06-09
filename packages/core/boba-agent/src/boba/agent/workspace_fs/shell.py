@@ -477,16 +477,14 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
         fixed_string: bool,
         case_insensitive: bool,
     ) -> re.Pattern[str]:
-        raw = re.escape(pattern) if fixed_string else pattern
         flags = re.IGNORECASE if case_insensitive else 0
+        if fixed_string:
+            return re.compile(re.escape(pattern), flags)
         try:
-            return re.compile(raw, flags)
-        except re.error as e:
-            raise WorkspaceError(
-                f"invalid regex {pattern!r}: {e.msg} at position {e.pos}; "
-                f"escape special chars or pass fixed_string=true",
-                path=pattern,
-            ) from e
+            return re.compile(pattern, flags)
+        except re.error:
+            # invalid regex (LLM often sends a bare '?', '(', '+') -> match literally
+            return re.compile(re.escape(pattern), flags)
 
     def _grep_iter(  # noqa: PLR0913
         self,
