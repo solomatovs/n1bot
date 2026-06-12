@@ -13,6 +13,23 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
+            "name": "Chainlit2: agent",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "module": "chainlit",
+            "jinja": true,
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env",
+            "args": [
+                "run",
+                "${workspaceFolder}/packages/agents/boba-chainlit2/src/boba/chainlit2/app.py"
+            ],
+            "autoStartBrowser": false,
+        },
+        {
             "name": "Agent CLI: agent",
             "type": "debugpy",
             "request": "launch",
