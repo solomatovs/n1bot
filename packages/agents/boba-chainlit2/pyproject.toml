@@ -18,12 +18,13 @@ dependencies = [
     "plotly>=5.24,<6",
     "chainlit>=2.11,<3",
     "httpx[http2]>=0.28,<1",
-
+    "fastapi[standard]",
+    "uvicorn[standard]",
     "pydantic>=2.10,<2.11",
 ]
 
-[project.scripts]
-boba-chainlit = "boba.chainlit2.__main__:main"
+[tool.fastapi]
+entrypoint = "main:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]

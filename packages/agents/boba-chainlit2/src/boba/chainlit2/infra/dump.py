@@ -2,7 +2,6 @@ import contextlib
 import contextvars
 import datetime
 import logging
-import logging.config
 import typing
 from collections.abc import Callable
 from pathlib import Path
@@ -23,7 +22,8 @@ class HttpDump:
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._file = open(path, "ab")
+            # файл живёт дольше метода: владелец — объект, закрытие в close()
+            self._file = open(path, "ab")  # noqa: SIM115
         except Exception:
             self._fail("open")
 
@@ -318,83 +318,3 @@ class LoggingBackend(httpcore.AsyncNetworkBackend):
 
     async def sleep(self, seconds: float) -> None:
         await self._inner.sleep(seconds)
-
-
-def logger_bootstrap():
-    """
-    bootstrap logger'а для всего приложения:
-        %(name)s            Name of the logger (logging channel)
-        %(levelno)s         Numeric logging level for the message (DEBUG, INFO,
-                            WARNING, ERROR, CRITICAL)
-        %(levelname)s       Text logging level for the message ("DEBUG", "INFO",
-                            "WARNING", "ERROR", "CRITICAL")
-        %(pathname)s        Full pathname of the source file where the logging
-                            call was issued (if available)
-        %(filename)s        Filename portion of pathname
-        %(module)s          Module (name portion of filename)
-        %(lineno)d          Source line number where the logging call was issued
-                            (if available)
-        %(funcName)s        Function name
-        %(created)f         Time when the LogRecord was created (time.time()
-                            return value)
-        %(asctime)s         Textual time when the LogRecord was created
-        %(msecs)d           Millisecond portion of the creation time
-        %(relativeCreated)d Time in milliseconds when the LogRecord was created,
-                            relative to the time the logging module was loaded
-                            (typically at application startup time)
-        %(thread)d          Thread ID (if available)
-        %(threadName)s      Thread name (if available)
-        %(process)d         Process ID (if available)
-        %(message)s         The result of record.getMessage(), computed just as
-                            the record is emitted
-    """
-
-    logging.config.dictConfig(
-        {
-            "version": 1,
-            "disable_existing_loggers": False,  # не глушить уже созданные логгеры
-            "formatters": {
-                # форматирование для всего приложения
-                "color_app": {
-                    "format": "%(message)s",
-                },
-                "plain_app": {
-                    "format": (
-                        "%(asctime)s.%(msecs)03d %(levelname)-8s %(name)s: %(message)s"
-                    ),
-                },
-                # форматирование только для raw данных
-                "raw": {
-                    "format": "%(asctime)s.%(msecs)03d %(message)s",
-                    "datefmt": "%H:%M:%S",
-                },
-            },
-            "handlers": {
-                # выход в консоль
-                "console_plain": {
-                    "class": "logging.StreamHandler",
-                    "formatter": "plain_app",
-                },
-                "console_color": {
-                    "class": "rich.logging.RichHandler",
-                    "formatter": "color_app",
-                    # цветные трейсбеки с подсветкой кода
-                    "rich_tracebacks": True,
-                    "log_time_format": "[%X.%f]",
-                },
-                # события открытия/закрытия дампов
-                # "time_roteted_http_log": {
-                #     "class": "logging.handlers.TimedRotatingFileHandler",
-                #     "filename": "raw_http.log",
-                #     "formatter": "raw",
-                #     # ротация в полночь; ещё бывают "H", "D", "W0".."W6"
-                #     "when": "midnight",
-                #     "interval": 1,
-                #     # неделя истории, суффиксы — дата: raw_http.log.2026-06-12
-                #     "backupCount": 7,
-                # },
-            },
-            "root": {"level": "INFO", "handlers": ["console_color"]},
-            "loggers": {},
-        }
-    )

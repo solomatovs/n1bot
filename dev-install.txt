@@ -42,3 +42,4 @@
 # entry-point apps
 -e ./packages/agents/boba-cli
 -e ./packages/agents/boba-chainlit
+-e ./packages/agents/boba-chainlit2
