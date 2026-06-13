@@ -62,10 +62,10 @@ def use_di_container(app: FastAPI, c: AppConfig):
     container = Container(level="app")
     # регистрируем конфиг в провайдере зависимостей
     container.provide(providers.config, c)
-    # "прогреваем" 
+    # "прогреваем" зависимости (дергаем создание объектов до запуска приложения)
+    # что бы эти зависимости были созданы как singleton
     container.eager(
-        providers.openai_client,
-        providers.debug_client,
+        providers.httpx_debug_client,
         providers.client_settings,
     )
     app.state.container = container

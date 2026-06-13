@@ -77,7 +77,6 @@ class HttpDump:
         )
         self._emit(line.encode("utf-8", errors="ignore"))
 
-
     def write_bytes(
         self, inner: httpcore.AsyncNetworkStream, direction: int, data: bytes
     ) -> None:
@@ -201,7 +200,6 @@ class DumpStream(httpx.AsyncByteStream):
         await self._inner.aclose()
 
 
-
 class LoggingStream(httpcore.AsyncNetworkStream):
     """Пишет байты, реально прошедшие по сокету, в дамп текущего запроса."""
 
@@ -245,7 +243,7 @@ class LoggingStream(httpcore.AsyncNetworkStream):
         if dump := self._channel.get(self._inner):
             dump.write_bytes(
                 inner=self._inner,
-                direction=1, # от сервера к клиенту
+                direction=1,  # от сервера к клиенту
                 data=data,
             )
 
@@ -256,7 +254,7 @@ class LoggingStream(httpcore.AsyncNetworkStream):
         if dump := self._channel.get(self._inner):
             dump.write_bytes(
                 inner=self._inner,
-                direction=0,    # от клиента к серверу
+                direction=0,  # от клиента к серверу
                 data=buffer,
             )
 

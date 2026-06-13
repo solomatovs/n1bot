@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import Annotated, Any, cast
 
 import chainlit as cl
@@ -7,11 +7,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
 
-from boba.chainlit2.infra.di import Depend
+from boba.chainlit2.infra.di import Depend, inject
 from boba.chainlit2.infra.providers import langchain_graph
 
 
 @cl.on_message
+@inject
 async def on_message(
     msg: cl.Message,
     graph: Annotated[
@@ -26,17 +27,17 @@ async def on_message(
     )
     final_answer = cl.Message(content="")
 
-    # stream(stream_mode="messages") отдаёт (message_chunk, metadata); типизация
+    # astream(stream_mode="messages") отдаёт (message_chunk, metadata); типизация
     # langgraph здесь широкая, фиксируем элемент явно
     stream = cast(
-        "Iterator[tuple[BaseMessage, dict[str, Any]]]",
-        graph.stream(
+        "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
+        graph.astream(
             {"messages": [HumanMessage(content=msg.content)]},
             stream_mode="messages",
             config=run_config,
         ),
     )
-    for chunk, metadata in stream:
+    async for chunk, metadata in stream:
         if (
             isinstance(chunk.content, str)
             and chunk.content

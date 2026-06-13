@@ -5,13 +5,13 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
+from httpx import AsyncClient
 from langgraph.graph.state import CompiledStateGraph
-from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
 from boba.chainlit2.agent import build_graph
-from boba.chainlit2.infra.config import AppConfig, OpenAiConfig, get_app_config
+from boba.chainlit2.agent.dump import DumpingTransport
+from boba.chainlit2.infra.config import AppConfig, get_app_config
 from boba.chainlit2.infra.di import Depend
-from boba.chainlit2.infra.dump import DumpingTransport
 
 
 def config() -> AppConfig:
@@ -19,8 +19,12 @@ def config() -> AppConfig:
     return get_app_config()
 
 
-def openai_transport_options(c: OpenAiConfig) -> dict:
+Cfg = Annotated[AppConfig, Depend(config)]
+
+
+def openai_transport_options(cc: Cfg) -> dict:
     """Общие httpx-параметры транспорта из OpenAiConfig."""
+    c = cc.profile.openai
     limits = httpx.Limits(
         max_connections=c.max_connections,
         max_keepalive_connections=c.max_keepalive_connections,
@@ -64,8 +68,9 @@ def openai_transport_options(c: OpenAiConfig) -> dict:
     }
 
 
-def _get_openai_timeout(c: OpenAiConfig) -> httpx.Timeout:
+def httpx_timeout(cc: Cfg) -> httpx.Timeout:
     """AsyncOpenAI поверх готового транспорта; таймауты из OpenAiConfig."""
+    c = cc.profile.openai
     return httpx.Timeout(
         connect=c.connect_timeout,
         read=c.read_timeout,
@@ -74,30 +79,16 @@ def _get_openai_timeout(c: OpenAiConfig) -> httpx.Timeout:
     )
 
 
-Cfg = Annotated[AppConfig, Depend(config)]
-
-
-async def openai_client(c: Cfg) -> AsyncIterator[AsyncOpenAI]:
-    """OpenAI-клиент на боевом транспорте; закрывается на teardown контейнера."""
-    client = AsyncOpenAI(
-        base_url=c.profile.openai.base_url,
-        api_key=c.profile.openai.api_key,
-        http_client=DefaultAsyncHttpxClient(
-            timeout=_get_openai_timeout(c.profile.openai),
-            transport=httpx.AsyncHTTPTransport(
-                **openai_transport_options(c.profile.openai)
-            ),
-        ),
+def httpx_client(c: Cfg):
+    return AsyncClient(
+        timeout=httpx_timeout(c),
+        transport=httpx.AsyncHTTPTransport(**openai_transport_options(c)),
     )
 
-    try:
-        yield client
-    finally:
-        await client.close()
 
-
-async def debug_client(c: Cfg) -> AsyncIterator[AsyncOpenAI]:
-    """OpenAI-клиент с дампами raw HTTP; закрывается на teardown контейнера."""
+async def httpx_debug_client(
+    c: Cfg,
+) -> AsyncIterator[AsyncClient]:
     from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
 
     def chainlit_filename(request: httpx.Request) -> str:
@@ -126,22 +117,18 @@ async def debug_client(c: Cfg) -> AsyncIterator[AsyncOpenAI]:
     transport = DumpingTransport(
         dump_dir=Path("dumps"),
         dump_file=chainlit_filename,
-        **openai_transport_options(c.profile.openai),
+        **openai_transport_options(c),
     )
 
-    client = AsyncOpenAI(
-        base_url=c.profile.openai.base_url,
-        api_key=c.profile.openai.api_key,
-        http_client=DefaultAsyncHttpxClient(
-            timeout=_get_openai_timeout(c.profile.openai),
-            transport=transport,
-        ),
+    client = AsyncClient(
+        timeout=httpx_timeout(c),
+        transport=transport,
     )
 
     try:
         yield client
     finally:
-        await client.close()
+        pass
 
 
 def client_settings(c: Cfg) -> dict:
@@ -157,6 +144,9 @@ def client_settings(c: Cfg) -> dict:
     }
 
 
-def langchain_graph(c: Cfg) -> CompiledStateGraph:
+def langchain_graph(
+    c: Cfg,
+    client: Annotated[AsyncClient, Depend(httpx_debug_client)],
+) -> CompiledStateGraph:
     """Скомпилированный agent-граф под конфиг; scope задаёт потребитель (Depend)."""
-    return build_graph(c)
+    return build_graph(c, client)
