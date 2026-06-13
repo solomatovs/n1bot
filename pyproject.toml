@@ -61,6 +61,7 @@ extraPaths = [
     "packages/core/boba-agent/src",
     "packages/agents/boba-cli/src",
     "packages/agents/boba-chainlit/src",
+    "packages/agents/boba-chainlit2/src",
     "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-files/src",
