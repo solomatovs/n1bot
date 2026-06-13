@@ -133,11 +133,16 @@ class DumpChannel:
     def activate(self, path: Path) -> typing.Iterator[HttpDump]:
         """Открывает дамп и делает его текущим; на выходе сбрасывает и закрывает."""
         with HttpDump(path) as dump:
-            token = self._current.set(dump)
+            # без token.reset(): enter и exit этого CM выполняются в РАЗНЫХ
+            # контекстах (langgraph и openai оборачивают шаги в asyncio.Task →
+            # копия контекста), а токен сбрасывается только в своём контексте.
+            # set() контекст не проверяет — восстанавливаем прежнее значение
+            prev = self._current.get()
+            self._current.set(dump)
             try:
                 yield dump
             finally:
-                self._current.reset(token)
+                self._current.set(prev)
 
 
 class DumpingTransport(httpx.AsyncHTTPTransport):
