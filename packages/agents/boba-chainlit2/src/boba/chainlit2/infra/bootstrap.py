@@ -59,18 +59,17 @@ def use_chainlit_middleware(app: FastAPI, c: AppConfig):
 
 def use_di_container(app: FastAPI, c: AppConfig):
     "Конфигурирует DI из AppConfig: засев конфига, scope-хуки, список прогрева"
-    root = Container(level="app")
-    # c — единственный источник конфига: засеваем его, чтобы провайдеры
-    # не строили AppConfig повторно через get_app_config()
-    root.provide(providers.config, c)
-    # что прогреть на старте — решает конфигуратор, а не lifespan
-    root.eager(
+    container = Container(level="app")
+    # регистрируем конфиг в провайдере зависимостей
+    container.provide(providers.config, c)
+    # "прогреваем" 
+    container.eager(
         providers.openai_client,
         providers.debug_client,
         providers.client_settings,
     )
-    app.state.container = root
-    Container.set_root(root)
+    app.state.container = container
+    Container.set_root(container)
     Container.set_session_hook(_session_container)
     # session-контейнеры закрываются в on_chat_end (callback'и уже зарегистрированы)
     _install_session_teardown()

@@ -21,6 +21,7 @@ dependencies = [
     "fastapi[standard]",
     "uvicorn[standard]",
     "pydantic>=2.10,<2.11",
+    "langchain[openai,schema]",
 ]
 
 [tool.fastapi]

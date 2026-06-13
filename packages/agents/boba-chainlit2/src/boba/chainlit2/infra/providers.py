@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
+from langgraph.graph.state import CompiledStateGraph
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
+from boba.chainlit2.agent import build_graph
 from boba.chainlit2.infra.config import AppConfig, OpenAiConfig, get_app_config
 from boba.chainlit2.infra.di import Depend
 from boba.chainlit2.infra.dump import DumpingTransport
@@ -153,3 +155,8 @@ def client_settings(c: Cfg) -> dict:
         "presence_penalty": c.presence_penalty,
         "stop": c.stop,
     }
+
+
+def langchain_graph(c: Cfg) -> CompiledStateGraph:
+    """Скомпилированный agent-граф под конфиг; scope задаёт потребитель (Depend)."""
+    return build_graph(c)
