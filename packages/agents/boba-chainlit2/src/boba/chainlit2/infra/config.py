@@ -497,16 +497,9 @@ class KerberosDelegationConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    enabled: bool = Field(
-        default=False,
-        description=(
-            "Захватывать delegated credential из SPNEGO (S4U2Proxy/RBCD) и "
-            "хранить per-session для доступа к бэкендам от имени пользователя."
-        ),
-    )
     ccache_template: str = Field(
-        default="MEMORY:boba-{principal}",
-        description="Шаблон имени ccache на пользователя; {principal} подставляется.",
+        default="MEMORY:agent-{principal}",
+        description="Шаблон имени ccache на пользователя {principal} подставляется",
     )
     renew: bool = Field(
         default=True,
@@ -523,20 +516,21 @@ class KerberosAuthConfig(LdapDirectoryConfig):
 
     type: Literal["kerberos"] = "kerberos"
 
-    service_name: str | None = Field(
-        default=None,
-        description="SPN сервиса (HTTP/host@REALM); None — берётся из keytab.",
+    service_name: str = Field(
+        description="SPN сервиса (HTTP/host@REALM), явно — без автоподбора из keytab.",
     )
     header: str = Field(
         default="X-Remote-User",
         description="Заголовок, куда кладётся принципал для header_auth_callback.",
     )
-    delegation: KerberosDelegationConfig = Field(
-        default_factory=KerberosDelegationConfig,
+    delegation: KerberosDelegationConfig | None = Field(
+        default=None,
         description="Сквозное делегирование Kerberos в бэкенды (от имени юзера).",
     )
 
-
+    @property
+    def delegation_enable(self) -> bool:
+        return self.delegation is not None
 class LdapAuthConfig(LdapDirectoryConfig):
     """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
 
