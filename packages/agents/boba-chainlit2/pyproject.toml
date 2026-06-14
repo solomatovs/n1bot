@@ -26,6 +26,7 @@ dependencies = [
     "psycopg[binary,pool]",
     "fastapi-gssapi",
     "gssapi",
+    "ldap3",
 ]
 
 [tool.fastapi]

@@ -1,7 +1,7 @@
 import functools
 import logging
 from collections.abc import AsyncIterator, Callable
-from typing import Annotated, Any, Optional, Union, cast
+from typing import Annotated, Any, cast
 
 import chainlit as cl
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -62,16 +62,6 @@ async def on_message(
             await final_answer.stream_token(chunk.content)
 
     await final_answer.send()
-
-
-@cl.password_auth_callback
-async def auth_callback(username: str, password: str):
-    if (username, password) == ("admin", "admin"):
-        return cl.User(
-            identifier="admin", metadata={"role": "admin", "provider": "credentials"}
-        )
-
-    return None
 
 
 @cl.on_chat_start

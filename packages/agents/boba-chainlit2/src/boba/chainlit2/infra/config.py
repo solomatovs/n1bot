@@ -1,4 +1,4 @@
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from chainlit.config import ChainlitConfig
 from pydantic import BaseModel, ConfigDict, Field
@@ -275,6 +275,7 @@ class PostgresPoolConfig(BaseModel):
         default=3, description="Число фоновых воркеров пула (reconnect/обслуживание)."
     )
 
+
 class PostgresOptionsConfig(BaseModel):
     """libpq 'options': серверные GUC сессии (-c key=value); сериализуется в строку."""
 
@@ -455,6 +456,99 @@ class PostgresConfig(BaseModel):
         }
 
 
+class CredentialsAuthConfig(BaseModel):
+    """Авторизация по статической таблице логин/пароль из конфига."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    type: Literal["credentials"] = "credentials"
+
+    users: dict[str, str] = Field(
+        default_factory=lambda: {"admin": "admin"},
+        description="Таблица логин→пароль; совпадение выдаёт роль admin.",
+    )
+
+
+class LdapDirectoryConfig(BaseModel):
+    """Общие параметры каталога AD: подключение, поиск пользователя, группы→роль."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    server: str = Field(
+        description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
+    )
+    base_dn: str = Field(
+        description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
+    )
+    bind_dn: str = Field(description="DN сервисной учётки для поиска пользователя.")
+    bind_password: str = Field(description="Пароль сервисной учётки (секрет).")
+    user_filter: str = Field(
+        default="(sAMAccountName={username})",
+        description="LDAP-фильтр поиска пользователя; {username} подставляется.",
+    )
+    group_role_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="DN группы → роль приложения; берётся первая совпавшая по порядку.",
+    )
+
+
+class KerberosDelegationConfig(BaseModel):
+    """Constrained delegation: захват делегированного тикета юзера для бэкендов."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Захватывать delegated credential из SPNEGO (S4U2Proxy/RBCD) и "
+            "хранить per-session для доступа к бэкендам от имени пользователя."
+        ),
+    )
+    ccache_template: str = Field(
+        default="MEMORY:boba-{principal}",
+        description="Шаблон имени ccache на пользователя; {principal} подставляется.",
+    )
+    renew: bool = Field(
+        default=True,
+        description="Фоновое продление renewable-тикета в пределах renew-lifetime.",
+    )
+    renew_margin_sec: int = Field(
+        default=600,
+        description="За сколько секунд до истечения тикета запускать продление.",
+    )
+
+
+class KerberosAuthConfig(LdapDirectoryConfig):
+    """SSO через Kerberos/SPNEGO: тикет валидирует middleware, роль — из групп AD."""
+
+    type: Literal["kerberos"] = "kerberos"
+
+    service_name: str | None = Field(
+        default=None,
+        description="SPN сервиса (HTTP/host@REALM); None — берётся из keytab.",
+    )
+    header: str = Field(
+        default="X-Remote-User",
+        description="Заголовок, куда кладётся принципал для header_auth_callback.",
+    )
+    delegation: KerberosDelegationConfig = Field(
+        default_factory=KerberosDelegationConfig,
+        description="Сквозное делегирование Kerberos в бэкенды (от имени юзера).",
+    )
+
+
+class LdapAuthConfig(LdapDirectoryConfig):
+    """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
+
+    type: Literal["ldap"] = "ldap"
+
+
+AuthConfig = Annotated[
+    CredentialsAuthConfig | KerberosAuthConfig | LdapAuthConfig,
+    Field(discriminator="type"),
+]
+
+
 class AppConfig(BaseModel):
     """Параметры chainlit-приложения: server + профиль агента."""
 
@@ -473,6 +567,14 @@ class AppConfig(BaseModel):
             description=(
                 "Профиль агента; в конфиге подключается ссылкой ${agent.<name>}."
             ),
+        ),
+    ]
+
+    auth: Annotated[
+        AuthConfig,
+        Field(
+            default_factory=CredentialsAuthConfig,
+            description="Способ авторизации: credentials|kerberos (по полю type).",
         ),
     ]
 
