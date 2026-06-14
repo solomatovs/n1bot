@@ -35,10 +35,10 @@ def build_langgraph(c: AppConfig, client: AsyncClient) -> CompiledStateGraph:
     """Собирает agent-граф; модель и эндпоинт берутся из AppConfig (а не из env)."""
     chat = ChatOpenAI(
         http_async_client=client,
-        model=c.profile.model,
-        base_url=c.profile.openai.base_url,
-        api_key=SecretStr(c.profile.openai.api_key),
-        temperature=c.temperature,
+        model=c.agent.model,
+        base_url=c.agent.openai.base_url,
+        api_key=SecretStr(c.agent.openai.api_key),
+        temperature=c.agent.temperature,
     )
 
     tools = [get_weather]
@@ -84,15 +84,13 @@ def build_agent(
 ) -> CompiledStateGraph:
     chat = ChatOpenAI(
         http_async_client=client,
-        model=c.profile.model,
-        base_url=c.profile.openai.base_url,
-        api_key=SecretStr(c.profile.openai.api_key),
-        temperature=c.temperature,
+        model=c.agent.model,
+        base_url=c.agent.openai.base_url,
+        api_key=SecretStr(c.agent.openai.api_key),
+        temperature=c.agent.temperature,
     )
 
-    system_prompt = """
-    Ты тот самый ассистент
-    """
+    system_prompt = c.agent.default_system_prompt
 
     agent = create_agent(
         model=chat,
