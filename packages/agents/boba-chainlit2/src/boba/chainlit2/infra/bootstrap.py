@@ -13,7 +13,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.chainlit2.infra import providers
-from boba.chainlit2.infra.config import AppConfig, ChainlitExtendConfig
+from boba.chainlit2.infra.auth import Auth
+from boba.chainlit2.infra.config import AppConfig, AuthConfig, ChainlitExtendConfig
 from boba.chainlit2.infra.di import Container
 
 
@@ -28,6 +29,9 @@ def run_app():
 
     # конфигурирует chainlit + DI из c (единственная точка конфигурации)
     _use_chainlit_middleware(app, c.chainlit)
+
+    # единственная точка подключения авторизации (стратегия выбирается конфигом)
+    _use_auth(c.auth)
 
     # единственная точка конфигурации DI (сама механика start/stop — в lifespan)
     _use_di_container(app, c)
@@ -107,6 +111,15 @@ def _use_chainlit_middleware(app: FastAPI, c: ChainlitExtendConfig):
     chainlit_app.add_middleware(ChainlitMiddleware)
 
     app.mount(c.run.root_path, chainlit_app)
+
+
+def _use_auth(c: AuthConfig) -> None:
+    "Единая точка подключения авторизации chainlit; стратегия выбирается конфигом"
+    # chainlit_app уже импортирован/смонтирован в _use_chainlit_middleware;
+    # повторный импорт берёт тот же закэшированный инстанс
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    Auth.install(chainlit_app, c)
 
 
 def _use_di_container(app: FastAPI, c: AppConfig):
