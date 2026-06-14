@@ -114,7 +114,7 @@ def main() -> int:
         stream=sys.stderr,
     )
 
-    config = build_app_config(sys.argv[1:])
+    config = build_app_config(argv=sys.argv[1:])
     cfg = bind(config, "cli.kb.search.render", SearchRenderCliConfig)
     kb_cfg = bind(config, "cli.kb.search.render", PostgresKnowledgeBaseConfig)
 

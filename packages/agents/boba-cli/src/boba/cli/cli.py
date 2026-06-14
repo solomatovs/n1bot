@@ -57,7 +57,7 @@ def _run() -> int:
     argv = sys.argv[1:]
     overrides = [a for a in argv if "=" in a]
     query = " ".join(a for a in argv if "=" not in a) or None
-    config = build_app_config(overrides)
+    config = build_app_config(argv=overrides)
     rt = bind(config, "cli.profile", AgentProfile)
     configure_logging(rt.log_level, rt.log_file)
 

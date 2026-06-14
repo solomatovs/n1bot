@@ -22,7 +22,9 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            "envFile": "${workspaceFolder}/local/.env",
+            "env": {
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/local/chainlit2.toml"
+            }
         },
         {
             "name": "Agent CLI: agent",

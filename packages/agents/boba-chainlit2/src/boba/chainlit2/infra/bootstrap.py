@@ -12,15 +12,30 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from boba.chainlit2.chat.auth import (
+    CredentialsAuth,
+    KerberosAuth,
+    KerberosCredentialStore,
+    LdapAuth,
+)
 from boba.chainlit2.infra import providers
-from boba.chainlit2.infra.auth import Auth, KerberosCredentialStore
-from boba.chainlit2.infra.config import AppConfig, AuthConfig, ChainlitExtendConfig
+from boba.chainlit2.infra.config import (
+    AppConfig,
+    AuthConfig,
+    ChainlitExtendConfig,
+    CredentialsAuthConfig,
+    KerberosAuthConfig,
+    LdapAuthConfig,
+)
 from boba.chainlit2.infra.di import Container
 
 
 def run_app():
     # получаем настройки всего приложения
-    c = providers.get_app_config(Path("local/chainlit2.toml"))
+    if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
+        raise ValueError("please pass env BOBA_CONFIG_PATH")
+
+    c = providers.get_app_config(config_path=Path(config_path))
 
     # применяем настройки логирования
     logging.config.dictConfig(c.logger)
@@ -30,11 +45,12 @@ def run_app():
     # конфигурирует chainlit + DI из c (единственная точка конфигурации)
     _use_chainlit_middleware(app, c.chainlit)
 
-    # единственная точка подключения авторизации (стратегия выбирается конфигом)
-    _use_auth(c.auth)
-
     # единственная точка конфигурации DI (сама механика start/stop — в lifespan)
-    _use_di_container(app, c)
+    container = _use_di_container(app, c)
+    app.state.container = container
+
+    # единственная точка подключения авторизации (стратегия выбирается конфигом);
+    _use_auth(c.auth, container)
 
     # Start the server
     async def start():
@@ -68,7 +84,6 @@ async def _run_container(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await KerberosCredentialStore.shutdown()
         Container.set_session_hook(None)
         Container.set_root(None)
         await container.aclose()
@@ -114,24 +129,35 @@ def _use_chainlit_middleware(app: FastAPI, c: ChainlitExtendConfig):
     app.mount(c.run.root_path, chainlit_app)
 
 
-def _use_auth(c: AuthConfig) -> None:
+def _use_auth(c: AuthConfig, container: Container) -> None:
     "Единая точка подключения авторизации chainlit; стратегия выбирается конфигом"
-    # chainlit_app уже импортирован/смонтирован в _use_chainlit_middleware;
-    # повторный импорт берёт тот же закэшированный инстанс
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    Auth.install(chainlit_app, c)
+    if isinstance(c, CredentialsAuthConfig):
+        CredentialsAuth(c).install(chainlit_app)
+
+    elif isinstance(c, KerberosAuthConfig):
+        store = KerberosCredentialStore(
+            renew=c.delegation.renew if c.delegation else False,
+        )
+        container.provide(providers.kerberos_credential_store, store)
+        KerberosAuth(c, store).install(chainlit_app)
+
+    elif isinstance(c, LdapAuthConfig):
+        LdapAuth(c).install(chainlit_app)
+
+    else:
+        raise ValueError(f"unknown authorization type: {type(c).__name__}")
 
 
-def _use_di_container(app: FastAPI, c: AppConfig):
-    "Конфигурирует DI из AppConfig: засев конфига, scope-хуки, список прогрева"
+def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
+    "Конфигурирует DI"
     container = Container(level="app")
-    # добавляю конфиг в DI
     container.provide(providers.get_app_config, c)
     Container.set_root(container)
     Container.set_session_hook(_get_or_create_session_container)
     _close_container_if_session_end()
-    app.state.container = container
+    return container
 
 
 # маркер Container в сессии chainlit

@@ -269,7 +269,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    config = build_app_config(sys.argv[1:])
+    config = build_app_config(argv=sys.argv[1:])
     cfg = bind(config, "cli.kb.confluence.download", ConfluenceDownloadCliConfig)
 
     # CWD как корень — dest_dir интерпретируется shell'ом как обычный

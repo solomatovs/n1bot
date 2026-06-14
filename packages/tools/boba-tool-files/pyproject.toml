@@ -11,7 +11,7 @@ dependencies = [
     "boba-tools",
     "boba-workspace",
     "boba-settings",
-    "pydantic",
+    "pydantic>=2.10,<2.11",
 ]
 
 [project.entry-points."boba.plugins"]

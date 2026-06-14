@@ -22,6 +22,7 @@ class PromptError(TerminalError[RequestId, AgentEvent]):
 
     def to_user_feedback(self, request_id: RequestId) -> PromptFailed:
         return PromptFailed(
+            type="PromptFailed",
             request_id=request_id,
             error_kind=type(self).__name__,
             message=str(self),

@@ -8,7 +8,6 @@ CLI) и получает DictConfig-инстанс. Этот инстанс пр
 
 from __future__ import annotations
 
-import os
 import tomllib
 from pathlib import Path
 from typing import Any, Self
@@ -16,9 +15,6 @@ from typing import Any, Self
 from omegaconf import DictConfig, OmegaConf
 
 __all__ = ["ConfigBuilder", "build_app_config"]
-
-_CONFIG_PATH_ENV = "BOBA_CONFIG_PATH"
-_SECRETS_PATH_ENV = "BOBA_SECRETS_PATH"
 
 
 class ConfigBuilder:
@@ -30,16 +26,16 @@ class ConfigBuilder:
     def __init__(self) -> None:
         self._layers: list[DictConfig] = []
 
-    def add_yaml(self, path: str | Path | None) -> Self:
+    def add_yaml(self, path: Path) -> Self:
         """YAML/JSON-файл (нативный OmegaConf.load). None/отсутствие — no-op."""
-        if path and Path(path).is_file():
+        if path.is_file():
             self._layers.append(OmegaConf.load(path))  # type: ignore[arg-type]
         return self
 
-    def add_toml(self, path: str | Path | None) -> Self:
+    def add_toml(self, path: Path) -> Self:
         """TOML-файл (tomllib -> OmegaConf.create). None/отсутствие — no-op."""
-        if path and Path(path).is_file():
-            with Path(path).open("rb") as f:
+        if path.is_file():
+            with path.open("rb") as f:
                 self._layers.append(OmegaConf.create(tomllib.load(f)))  # type: ignore[arg-type]
         return self
 
@@ -62,22 +58,19 @@ class ConfigBuilder:
 
 
 def build_app_config(
-    config_path: Path | None = None, argv: list[str] | None = None
+    config_path: Path | None = None,
+    secret_config_path: Path | None = None,
+    argv: list[str] | None = None,
 ) -> DictConfig:
-    """Стандартная сборка приложения: config.toml + secrets.toml + CLI.
-
-    Пути к файлам — из env ($BOBA_CONFIG_PATH, $BOBA_SECRETS_PATH); это
-    только пути к источникам, не данные конфига. Возвращает инстанс — приложение
-    держит его у себя и передаёт в резолвер.
+    """
+    Стандартная сборка приложения: config.toml + secrets.toml + CLI.
     """
     res = ConfigBuilder()
 
     if config_path:
         res.add_toml(config_path)
 
-    return (
-        res.add_toml(os.environ.get(_CONFIG_PATH_ENV))
-        .add_toml(os.environ.get(_SECRETS_PATH_ENV))
-        .add_cli(argv)
-        .build()
-    )
+    if secret_config_path:
+        res.add_toml(secret_config_path)
+
+    return res.add_cli(argv).build()

@@ -20,7 +20,7 @@ from boba.agent.tool_config import (
 )
 from boba.chainlit2.agent import build_agent, build_langgraph
 from boba.chainlit2.agent.dump import DumpingTransport
-from boba.chainlit2.infra.auth import KerberosCredentialStore, UserCcache
+from boba.chainlit2.chat.auth import KerberosCredentialStore, UserCcache
 from boba.chainlit2.infra.config import (
     AgentProfile,
     AppConfig,
@@ -33,7 +33,7 @@ from boba.chainlit2.infra.di import Depends
 
 def get_app_config(config_path: Path) -> AppConfig:
     """Конфиг приложения"""
-    return bind(build_app_config(config_path), path="app", model=AppConfig)
+    return bind(build_app_config(config_path=config_path), path="app", model=AppConfig)
 
 
 def get_store_config(
@@ -211,19 +211,29 @@ def langchain_agent(
     return build_agent(c, client, saver)
 
 
+def kerberos_credential_store() -> KerberosCredentialStore:
+    """
+    store делегированных тикетов
+    """
+    raise RuntimeError("kerberos credential store not install in DI")
+
+
 def user_kerberos_ccache(
     c: Annotated[AppConfig, Depends(get_app_config)],
+    store: Annotated[KerberosCredentialStore, Depends(kerberos_credential_store)],
 ) -> UserCcache | None:
-    """Делегированный тикет текущего юзера (KRB5CCNAME) для коннекта к бэкендам.
-
-    Тонкий шов для tools (scope='session'): мост chainlit-сессия → store. Захват
-    и продление тикета живут в KerberosCredentialStore — здесь только lookup.
-    """
     from chainlit.user_session import user_session  # noqa: PLC0415
 
-    user = user_session.get("user")
-    if not isinstance(c.auth, KerberosAuthConfig) or user is None:
+    if (user := user_session.get("user")) is None:
         return None
 
-    ccache = KerberosCredentialStore.ccache_of(user.identifier)
-    return UserCcache(principal=user.identifier, ccache=ccache) if ccache else None
+    if not isinstance(c.auth, KerberosAuthConfig):
+        return None
+
+    if (ccache := store.ccache_of(user.identifier)) is None:
+        return None
+
+    return UserCcache(
+        principal=user.identifier,
+        ccache=ccache
+    )

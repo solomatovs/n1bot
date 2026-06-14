@@ -1,6 +1,13 @@
 # Manifest всех локальных pip-пакетов монорепо. Установка одной
 # командой:
 #     pip install -r dev-install.txt
+#
+# СИСТЕМНЫЕ ПРЕДУСЛОВИЯ (ставить ДО pip): boba-chainlit2 тянет gssapi и krb5 —
+# это C-extensions, которые на Linux собираются из исходников и требуют
+# заголовков MIT Kerberos + компилятор:
+#   Debian/Ubuntu/Astra: apt install build-essential libkrb5-dev
+#   RHEL/Fedora:         dnf install gcc krb5-devel python3-devel
+# (ldap3 — чистый Python; psycopg[binary] тянет libpq в wheel — системного не надо)
 
 # core/foundation
 -e ./packages/core/boba-patterns
