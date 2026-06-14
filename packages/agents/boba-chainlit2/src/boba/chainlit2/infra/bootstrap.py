@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.chainlit2.infra import providers
-from boba.chainlit2.infra.auth import Auth
+from boba.chainlit2.infra.auth import Auth, KerberosCredentialStore
 from boba.chainlit2.infra.config import AppConfig, AuthConfig, ChainlitExtendConfig
 from boba.chainlit2.infra.di import Container
 
@@ -68,6 +68,7 @@ async def _run_container(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await KerberosCredentialStore.shutdown()
         Container.set_session_hook(None)
         Container.set_root(None)
         await container.aclose()
