@@ -1,26 +1,46 @@
-from collections.abc import AsyncIterator
+import functools
+import logging
+from collections.abc import AsyncIterator, Callable
 from typing import Annotated, Any, cast
 
 import chainlit as cl
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
 
-from boba.chainlit2.infra.di import Depend, inject
-from boba.chainlit2.infra.providers import langchain_graph
+from boba.chainlit2.chat.tracer import BobaLangchainTracer
+from boba.chainlit2.infra.di import Depends, inject
+from boba.chainlit2.infra.providers import langchain_agent
+
+logger = logging.getLogger(__name__)
+
+
+def report_errors(fn: Callable) -> Callable:
+    """Ловит ошибку обработки сообщения (вкл. DI-резолв) и сообщает её в чат."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as exc:
+            logger.error(f"on_message failed: {exc}")
+            await cl.ErrorMessage(content=f"Failed to process message: {exc}").send()
+            return None
+
+    return wrapper
 
 
 @cl.on_message
+@report_errors
 @inject
 async def on_message(
     msg: cl.Message,
     graph: Annotated[
-        CompiledStateGraph[MessagesState, None, MessagesState, MessagesState],
-        Depend(langchain_graph, scope="session"),
+        CompiledStateGraph,
+        Depends(langchain_agent, scope="session"),
     ],
 ):
-    cb = cl.LangchainCallbackHandler()
+    cb = BobaLangchainTracer()
     run_config = RunnableConfig(
         callbacks=[cb],
         configurable={"thread_id": cl.context.session.id},
@@ -37,13 +57,8 @@ async def on_message(
             config=run_config,
         ),
     )
-    async for chunk, metadata in stream:
-        if (
-            isinstance(chunk.content, str)
-            and chunk.content
-            and not isinstance(chunk, HumanMessage)
-            and metadata["langgraph_node"] == "final"
-        ):
+    async for chunk, _metadata in stream:
+        if isinstance(chunk.content, str):
             await final_answer.stream_token(chunk.content)
 
     await final_answer.send()

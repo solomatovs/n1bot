@@ -1,9 +1,11 @@
 from typing import Literal
 
 from httpx import AsyncClient
+from langchain.agents import create_agent
+from langchain.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
@@ -13,7 +15,8 @@ from pydantic import SecretStr
 from boba.chainlit2.infra.config import AppConfig
 
 __all__ = [
-    "build_graph",
+    "build_agent",
+    "build_langgraph",
     "get_weather",
 ]
 
@@ -28,7 +31,7 @@ def get_weather(city: Literal["nyc", "sf"]):
     raise AssertionError("Unknown city")
 
 
-def build_graph(c: AppConfig, client: AsyncClient) -> CompiledStateGraph:
+def build_langgraph(c: AppConfig, client: AsyncClient) -> CompiledStateGraph:
     """Собирает agent-граф; модель и эндпоинт берутся из AppConfig (а не из env)."""
     chat = ChatOpenAI(
         http_async_client=client,
@@ -46,10 +49,12 @@ def build_graph(c: AppConfig, client: AsyncClient) -> CompiledStateGraph:
     def should_continue(state: MessagesState) -> Literal["tools", "final"]:
         last_message = state["messages"][-1]
         # tool_calls есть только у AIMessage; есть вызов — в tools, иначе финал
-        return "tools" if getattr(last_message, "tool_calls", None) else "final"
+        res = "tools" if getattr(last_message, "tool_calls", None) else "final"
+        return res
 
     async def call_model(state: MessagesState):
-        return {"messages": [await model.ainvoke(state["messages"])]}
+        res = {"messages": [await model.ainvoke(state["messages"])]}
+        return res
 
     async def call_final_model(state: MessagesState):
         last_ai_message = state["messages"][-1]
@@ -72,3 +77,28 @@ def build_graph(c: AppConfig, client: AsyncClient) -> CompiledStateGraph:
     builder.add_edge("tools", "agent")
     builder.add_edge("final", END)
     return builder.compile()
+
+
+def build_agent(
+    c: AppConfig, client: AsyncClient, saver: BaseCheckpointSaver
+) -> CompiledStateGraph:
+    chat = ChatOpenAI(
+        http_async_client=client,
+        model=c.profile.model,
+        base_url=c.profile.openai.base_url,
+        api_key=SecretStr(c.profile.openai.api_key),
+        temperature=c.temperature,
+    )
+
+    system_prompt = """
+    Ты тот самый ассистент
+    """
+
+    agent = create_agent(
+        model=chat,
+        tools=[get_weather],
+        system_prompt=system_prompt,
+        checkpointer=saver,
+    )
+
+    return agent

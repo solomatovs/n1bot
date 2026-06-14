@@ -6,20 +6,29 @@ from typing import Annotated
 
 import httpx
 from httpx import AsyncClient
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow, dict_row
+from psycopg_pool import AsyncConnectionPool
 
-from boba.chainlit2.agent import build_graph
+from boba.agent.tool_config import (
+    bind,
+    build_app_config,
+)
+from boba.chainlit2.agent import build_agent, build_langgraph
 from boba.chainlit2.agent.dump import DumpingTransport
-from boba.chainlit2.infra.config import AppConfig, get_app_config
-from boba.chainlit2.infra.di import Depend
+from boba.chainlit2.infra.config import AppConfig
+from boba.chainlit2.infra.di import Depends
 
 
-def config() -> AppConfig:
+def get_app_config() -> AppConfig:
     """Конфиг приложения (singleton)."""
-    return get_app_config()
+    return bind(build_app_config(), path="chainlit2", model=AppConfig)
 
 
-Cfg = Annotated[AppConfig, Depend(config)]
+Cfg = Annotated[AppConfig, Depends(get_app_config)]
 
 
 def openai_transport_options(cc: Cfg) -> dict:
@@ -144,9 +153,36 @@ def client_settings(c: Cfg) -> dict:
     }
 
 
+async def langchain_checkpoint_saver(c: Cfg) -> AsyncIterator[BaseCheckpointSaver]:
+    """PG-пул + checkpointer-saver; app-scope, пул закрывается на teardown DI."""
+    async with AsyncConnectionPool(
+        # пустой conninfo ⇒ libpq берёт параметры из env (PGHOST/...)
+        conninfo=c.checkpoint_dsn or "",
+        # saver требует dict-строки; connection_class фиксирует тип пула как
+        # AsyncConnection[DictRow], иначе инвариантность не сходится с Conn
+        connection_class=AsyncConnection[DictRow],
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        # fail-fast: при недоступной БД getconn упадёт за timeout, а не за 30с
+        timeout=c.checkpoint_pool_timeout,
+        open=False,
+    ) as pool:
+        await pool.open()
+        saver = AsyncPostgresSaver(pool)
+        await saver.setup()
+        yield saver
+
+
 def langchain_graph(
     c: Cfg,
-    client: Annotated[AsyncClient, Depend(httpx_debug_client)],
+    client: Annotated[AsyncClient, Depends(httpx_debug_client)],
 ) -> CompiledStateGraph:
     """Скомпилированный agent-граф под конфиг; scope задаёт потребитель (Depend)."""
-    return build_graph(c, client)
+    return build_langgraph(c, client)
+
+
+def langchain_agent(
+    c: Cfg,
+    client: Annotated[AsyncClient, Depends(httpx_debug_client)],
+    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+) -> CompiledStateGraph:
+    return build_agent(c, client, saver)
