@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import functools
 import inspect
@@ -8,7 +9,7 @@ from typing import Any, ClassVar, Literal
 Scope = Literal["app", "session", "transient"]
 
 
-class Depend:
+class Depends:
     """Маркер DI-зависимости в Annotated/дефолте параметра (аналог fastapi.Depends)."""
 
     provider: "Callable[..., Any]"
@@ -43,8 +44,9 @@ class Container:
         self.level = level
         self.parent = parent
         self._cache: dict[Callable, Any] = {}
+        self._locks: dict[Callable, asyncio.Lock] = {}
         self._stack = AsyncExitStack()
-        self._eager: list[Depend] = []
+        self._eager: list[Depends] = []
 
     @classmethod
     def set_root(cls, container: "Container | None") -> None:
@@ -54,29 +56,35 @@ class Container:
     @classmethod
     def set_session_hook(cls, hook: "Callable[[], Container | None] | None") -> None:
         """Ставит способ достать session-контейнер из текущего контекста."""
-        cls._session_hook[:] = [hook] if hook else []
+        if hook is None:
+            cls._session_hook[:] = []
+        else:
+            cls._session_hook[:] = [hook]
 
     @classmethod
     def begin_call(cls) -> "Container":
         """Создаёт call-контейнер поверх session-контейнера (или root'а)."""
         if cls.root is None:
             raise RuntimeError("DI Container не инициализирован (set_root)")
+
         session = cls._session_hook[0]() if cls._session_hook else None
         return cls(level="call", parent=session or cls.root)
 
     @staticmethod
-    def find_depend(param: inspect.Parameter) -> "Depend | None":
+    def find_depend(param: inspect.Parameter) -> "Depends | None":
         """Достаёт Depend из Annotated-метаданных или из дефолта параметра."""
-        if isinstance(param.default, Depend):
+        if isinstance(param.default, Depends):
             return param.default
+
         for meta in getattr(param.annotation, "__metadata__", ()):
-            if isinstance(meta, Depend):
+            if isinstance(meta, Depends):
                 return meta
+
         return None
 
     async def get(self, provider: Callable[..., Any], *, scope: Scope = "app") -> Any:
         """Резолвит провайдера по ссылке (разовый резолв вне callback'а)."""
-        return await self.resolve(Depend(provider, scope=scope))
+        return await self.resolve(Depends(provider, scope=scope))
 
     def provide(
         self, provider: Callable[..., Any], value: Any, *, scope: Scope = "app"
@@ -86,15 +94,15 @@ class Container:
 
     def eager(self, *providers: Callable[..., Any], scope: Scope = "app") -> None:
         """Помечает провайдеров на прогрев при start() (что греть — решает конфиг)."""
-        self._eager.extend(Depend(p, scope=scope) for p in providers)
+        self._eager.extend(Depends(p, scope=scope) for p in providers)
 
     async def start(self) -> None:
         """Прогревает помеченные eager-провайдеры; ошибки конфига всплывают тут."""
         for dep in self._eager:
             await self.resolve(dep)
 
-    async def resolve(self, dep: "Depend", _outer: "Container | None" = None) -> Any:
-        """Резолвит зависимость у владельца её scope'а; с кэшем и под-зависимостями."""
+    async def resolve(self, dep: "Depends", _outer: "Container | None" = None) -> Any:
+        """Резолвит зависимость у владельца scope'а; кэш + лок + под-зависимости."""
         owner = self._owner(dep.scope)
 
         # широкий scope не вправе захватывать более узкий (висячая ссылка)
@@ -104,16 +112,36 @@ class Container:
                 f"{dep.scope} (уровень {owner.level})"
             )
 
-        cached = dep.scope in self._CACHED
-        if cached and dep.provider in owner._cache:
+        # transient не кэшируется: общего состояния нет, лок не нужен — всегда свежий
+        if dep.scope not in self._CACHED:
+            kwargs = await self._resolve_sub_deps(dep.provider, owner)
+            return await owner._produce(dep.provider, kwargs)
+
+        # быстрый путь: уже в кэше (в т.ч. засеяно через provide) — без лока
+        if dep.provider in owner._cache:
             return owner._cache[dep.provider]
 
+        # под-зависимости резолвим ДО лока: у каждой свой лок/кэш, а так мы не
+        # держим лок провайдера сквозь чужие await и не превращаем цикл в дедлок
+        # (цикл по-прежнему упрётся в рекурсию, а не зависнет на локе)
         kwargs = await self._resolve_sub_deps(dep.provider, owner)
-        value = await owner._produce(dep.provider, kwargs)
 
-        if cached:
+        # один производитель на (owner, provider): конкуренты ждут и берут из кэша
+        async with owner._lock(dep.provider):
+            # победитель гонки мог заполнить кэш, пока мы ждали лок — перепроверяем
+            if dep.provider in owner._cache:
+                return owner._cache[dep.provider]
+            value = await owner._produce(dep.provider, kwargs)
             owner._cache[dep.provider] = value
-        return value
+            return value
+
+    def _lock(self, provider: Callable) -> asyncio.Lock:
+        """Лок на (этот контейнер, провайдер); создаётся лениво и атомарно."""
+        lock = self._locks.get(provider)
+        if lock is None:
+            # setdefault атомарен в рамках loop'а: оба конкурента получат один лок
+            lock = self._locks.setdefault(provider, asyncio.Lock())
+        return lock
 
     def _owner(self, scope: Scope) -> "Container":
         """Поднимается по родителям до контейнера, владеющего scope'ом."""
@@ -165,6 +193,7 @@ class Container:
         """Teardown generator-провайдеров этого контейнера (LIFO) и сброс кэша."""
         await self._stack.aclose()
         self._cache.clear()
+        self._locks.clear()
 
 
 def inject(fn: Callable) -> Callable:

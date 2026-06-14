@@ -4,11 +4,6 @@ from typing import Annotated, Any
 from chainlit.config import ChainlitConfig
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.agent.tool_config import (
-    bind,
-    build_app_config,
-)
-
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -273,6 +268,23 @@ class AppConfig(BaseModel):
         Field(default_factory=lambda: ["```"], description=""),
     ]
 
+    checkpoint_dsn: str | None = Field(
+        default=None,
+        description=(
+            "libpq-DSN для checkpointer-пула LangGraph "
+            "(postgresql://user:pass@host:5432/db). None — libpq берёт параметры "
+            "из env (PGHOST/PGUSER/...)."
+        ),
+    )
+
+    checkpoint_pool_timeout: float = Field(
+        default=5,
+        description=(
+            "Fail-fast ожидание коннекта из checkpointer-пула (сек); при "
+            "недоступной БД ошибка всплывёт за это время, а не за дефолтные 30с."
+        ),
+    )
+
     chainlit_config: Annotated[
         ChainlitConfig,
         Field(
@@ -292,5 +304,5 @@ class AppConfig(BaseModel):
     logger_config: Annotated[dict, Field(default=LOGGING_CONFIG, description="")]
 
 
-def get_app_config() -> AppConfig:
-    return bind(build_app_config(), path="chainlit2", model=AppConfig)
+# def get_app_config() -> AppConfig:
+#     return bind(build_app_config(), path="chainlit2", model=AppConfig)

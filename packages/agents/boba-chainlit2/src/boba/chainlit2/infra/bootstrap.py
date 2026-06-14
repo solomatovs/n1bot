@@ -11,18 +11,67 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# side-effect: регистрирует chainlit-callback'и (@cl.on_message и пр.) в
-# глобальном config.code. Цикла нет: chat -> providers/di -> config, не bootstrap
-import boba.chainlit2.chat  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from boba.chainlit2.infra import providers
-from boba.chainlit2.infra.config import AppConfig, get_app_config
+from boba.chainlit2.infra.config import AppConfig
 from boba.chainlit2.infra.di import Container
-from boba.chainlit2.infra.lifespan import Lifespans
-
-SESSION_CONTAINER_KEY = "_di_session_container"
 
 
-def use_chainlit_middleware(app: FastAPI, c: AppConfig):
+def run_app():
+    # получаем настройки всего приложения
+    c = providers.get_app_config()
+
+    # применяем настройки логирования
+    logging.config.dictConfig(c.logger_config)
+
+    app = FastAPI(lifespan=_run_container)
+
+    # конфигурирует chainlit + DI из c (единственная точка конфигурации)
+    _use_chainlit_middleware(app, c)
+
+    # единственная точка конфигурации DI (сама механика start/stop — в lifespan)
+    _use_di_container(app, c)
+
+    # Start the server
+    async def start():
+        uv_config = uvicorn.Config(
+            app,
+            host=c.chainlit_config.run.host,
+            port=c.chainlit_config.run.port,
+            ws=c.ws_protocol,
+            # logger'у передаем None что бы
+            # второй раз настройки логирования не применялись
+            log_config=None,
+            log_level=None,
+            access_log=True,
+            ws_per_message_deflate=c.ws_per_message_deflate,
+            ssl_keyfile=c.chainlit_config.run.ssl_key,
+            ssl_certfile=c.chainlit_config.run.ssl_cert,
+        )
+        server = uvicorn.Server(uv_config)
+        await server.serve()
+
+    # Run the asyncio event loop instead of uvloop to enable re entrance
+    asyncio.run(start())
+
+
+@asynccontextmanager
+async def _run_container(app: FastAPI) -> AsyncIterator[None]:
+    "Механика DI-контейнера: прогрев eager-провайдеров на старте, teardown на стопе"
+    container = app.state.container
+    await container.start()
+
+    try:
+        yield
+    finally:
+        Container.set_session_hook(None)
+        Container.set_root(None)
+        await container.aclose()
+
+
+def _use_chainlit_middleware(app: FastAPI, c: AppConfig):
+    # импортируем chainlit
+    import boba.chainlit2.chat  # type: ignore # noqa: F401, PLC0415
+
     # фронт берёт базовый путь для своих запросов (/user, /auth/config,
     # socket.io) из этого env: serve() подставляет его в index.html. Без
     # него фронт ходит в корень мимо маунта и ловит 404
@@ -53,15 +102,12 @@ def use_chainlit_middleware(app: FastAPI, c: AppConfig):
 
     app.mount(c.chainlit_config.run.root_path, chainlit_app)
 
-    # единственная точка конфигурации DI (сама механика start/stop — в lifespan)
-    use_di_container(app, c)
 
-
-def use_di_container(app: FastAPI, c: AppConfig):
+def _use_di_container(app: FastAPI, c: AppConfig):
     "Конфигурирует DI из AppConfig: засев конфига, scope-хуки, список прогрева"
     container = Container(level="app")
     # регистрируем конфиг в провайдере зависимостей
-    container.provide(providers.config, c)
+    container.provide(providers.get_app_config, c)
     # "прогреваем" зависимости (дергаем создание объектов до запуска приложения)
     # что бы эти зависимости были созданы как singleton
     container.eager(
@@ -70,92 +116,62 @@ def use_di_container(app: FastAPI, c: AppConfig):
     )
     app.state.container = container
     Container.set_root(container)
-    Container.set_session_hook(_session_container)
-    # session-контейнеры закрываются в on_chat_end (callback'и уже зарегистрированы)
-    _install_session_teardown()
+    Container.set_session_hook(_get_or_create_session_container)
+    _close_container_if_session_end()
 
 
-def _session_container():
-    "get-or-create session-контейнер в cl.user_session (None вне chainlit-контекста)"
+# маркер Container в сессии chainlit
+_SESSION_CONTAINER_KEY = "_di_session_container"
+
+
+def _get_or_create_session_container():
+    """
+    Возвращает контейнер для текущей сессии chainlit
+    """
     from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
     from chainlit.user_session import user_session  # noqa: PLC0415
 
     try:
+        # если функция вызвана вне chainlit сессии, то придет None
         get_context()
     except ChainlitContextException:
+        # верну оригинальную ошибку
         return None
 
-    container = user_session.get(SESSION_CONTAINER_KEY)
+    container = user_session.get(_SESSION_CONTAINER_KEY)
     if container is None:
         container = Container(level="session", parent=Container.root)
-        user_session.set(SESSION_CONTAINER_KEY, container)
+        user_session.set(
+            _SESSION_CONTAINER_KEY,
+            container,
+        )
+
+    if not isinstance(container, Container):
+        raise ValueError(
+            f"UserSession used is not valid DI Container type: {type(container)}"
+        )
+
     return container
 
 
-def _install_session_teardown() -> None:
-    "Чейнит chainlit on_chat_end: закрывает session-контейнер, не отнимая хук у юзера"
+def _close_container_if_session_end() -> None:
+    """Закрыть session container когда закончиться сессия"""
     from chainlit.config import config as cl_config  # noqa: PLC0415
     from chainlit.user_session import user_session  # noqa: PLC0415
 
+    # on_chat_end - если сработал, значит происходит завершение сессии пользователя
+    # запоминаем существующий on_chat_end и делаем его prev
     prev = cl_config.code.on_chat_end
 
+    # определяем wrapper над оригинальным on_chat_env
     async def on_chat_end():
+
         try:
             if prev:
                 await prev()
         finally:
-            if container := user_session.get(SESSION_CONTAINER_KEY):
+            if container := user_session.get(_SESSION_CONTAINER_KEY):
                 await container.aclose()
 
+    # заменяем собственным on_chat_env
     cl_config.code.on_chat_end = on_chat_end
-
-
-@asynccontextmanager
-async def run_container(app: FastAPI) -> AsyncIterator[None]:
-    "Механика DI-контейнера: прогрев eager-провайдеров на старте, teardown на стопе"
-    container = app.state.container
-    # прогрев в lifespan: нужен event loop (async-провайдеры), cache-hit делает
-    # резолв конкурентных сообщений atomic
-    await container.start()
-
-    try:
-        yield
-    finally:
-        Container.set_session_hook(None)
-        Container.set_root(None)
-        await container.aclose()
-
-
-def run_app():
-    # получаем настройки всего приложения
-    c = get_app_config()
-
-    # применяем настройки логирования
-    logging.config.dictConfig(c.logger_config)
-
-    app = FastAPI(lifespan=Lifespans([run_container]))
-
-    # конфигурирует chainlit + DI из c (единственная точка конфигурации)
-    use_chainlit_middleware(app, c)
-
-    # Start the server
-    async def start():
-        uv_config = uvicorn.Config(
-            app,
-            host=c.chainlit_config.run.host,
-            port=c.chainlit_config.run.port,
-            ws=c.ws_protocol,
-            # logger'у передаем None что бы
-            # второй раз настройки логирования не применялись
-            log_config=None,
-            log_level=None,
-            access_log=True,
-            ws_per_message_deflate=c.ws_per_message_deflate,
-            ssl_keyfile=c.chainlit_config.run.ssl_key,
-            ssl_certfile=c.chainlit_config.run.ssl_cert,
-        )
-        server = uvicorn.Server(uv_config)
-        await server.serve()
-
-    # Run the asyncio event loop instead of uvloop to enable re entrance
-    asyncio.run(start())

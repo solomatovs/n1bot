@@ -22,6 +22,8 @@ dependencies = [
     "uvicorn[standard]",
     "pydantic>=2.10,<2.11",
     "langchain[openai,schema]",
+    "langgraph-checkpoint-postgres",
+    "psycopg[binary,pool]",
 ]
 
 [tool.fastapi]
