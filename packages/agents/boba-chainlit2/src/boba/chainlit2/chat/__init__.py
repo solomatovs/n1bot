@@ -1,7 +1,7 @@
 import functools
 import logging
 from collections.abc import AsyncIterator, Callable
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Optional, Union, cast
 
 import chainlit as cl
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -12,7 +12,7 @@ from boba.chainlit2.chat.tracer import BobaLangchainTracer
 from boba.chainlit2.infra.di import Depends, inject
 from boba.chainlit2.infra.providers import langchain_agent
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("chat")
 
 
 def report_errors(fn: Callable) -> Callable:
@@ -62,3 +62,19 @@ async def on_message(
             await final_answer.stream_token(chunk.content)
 
     await final_answer.send()
+
+
+@cl.password_auth_callback
+async def auth_callback(username: str, password: str):
+    if (username, password) == ("admin", "admin"):
+        return cl.User(
+            identifier="admin", metadata={"role": "admin", "provider": "credentials"}
+        )
+
+    return None
+
+
+@cl.on_chat_start
+async def on_chat_start():
+    app_user: cl.User | cl.PersistedUser | None = cl.user_session.get("user")
+    await cl.Message(f"Hello {app_user}").send()

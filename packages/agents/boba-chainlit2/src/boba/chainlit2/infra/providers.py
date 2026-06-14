@@ -9,31 +9,50 @@ from httpx import AsyncClient
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, sql
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
-
+from psycopg.errors import InsufficientPrivilege
 from boba.agent.tool_config import (
     bind,
     build_app_config,
 )
 from boba.chainlit2.agent import build_agent, build_langgraph
 from boba.chainlit2.agent.dump import DumpingTransport
-from boba.chainlit2.infra.config import AppConfig
+from boba.chainlit2.infra.config import (
+    AgentProfile,
+    AppConfig,
+    OpenAiConfig,
+    PostgresConfig,
+)
 from boba.chainlit2.infra.di import Depends
 
 
-def get_app_config() -> AppConfig:
-    """Конфиг приложения (singleton)."""
-    return bind(build_app_config(), path="chainlit2", model=AppConfig)
+def get_app_config(config_path: Path) -> AppConfig:
+    """Конфиг приложения"""
+    return bind(build_app_config(config_path), path="app", model=AppConfig)
 
 
-Cfg = Annotated[AppConfig, Depends(get_app_config)]
+def get_store_config(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> PostgresConfig:
+    return app_config.checkpoints
 
 
-def openai_transport_options(cc: Cfg) -> dict:
+def get_agent_profile(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> AgentProfile:
+    return app_config.agent
+
+
+def get_openai_config(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> OpenAiConfig:
+    return app_config.agent.openai
+
+
+def _openai_transport_options(c: OpenAiConfig) -> dict:
     """Общие httpx-параметры транспорта из OpenAiConfig."""
-    c = cc.profile.openai
     limits = httpx.Limits(
         max_connections=c.max_connections,
         max_keepalive_connections=c.max_keepalive_connections,
@@ -77,9 +96,8 @@ def openai_transport_options(cc: Cfg) -> dict:
     }
 
 
-def httpx_timeout(cc: Cfg) -> httpx.Timeout:
+def httpx_timeout(c: OpenAiConfig) -> httpx.Timeout:
     """AsyncOpenAI поверх готового транспорта; таймауты из OpenAiConfig."""
-    c = cc.profile.openai
     return httpx.Timeout(
         connect=c.connect_timeout,
         read=c.read_timeout,
@@ -88,15 +106,15 @@ def httpx_timeout(cc: Cfg) -> httpx.Timeout:
     )
 
 
-def httpx_client(c: Cfg):
+def httpx_client(c: Annotated[AppConfig, Depends(get_app_config)]):
     return AsyncClient(
-        timeout=httpx_timeout(c),
-        transport=httpx.AsyncHTTPTransport(**openai_transport_options(c)),
+        timeout=httpx_timeout(c.agent.openai),
+        transport=httpx.AsyncHTTPTransport(**_openai_transport_options(c.agent.openai)),
     )
 
 
 async def httpx_debug_client(
-    c: Cfg,
+    c: Annotated[AppConfig, Depends(get_app_config)],
 ) -> AsyncIterator[AsyncClient]:
     from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
 
@@ -126,11 +144,11 @@ async def httpx_debug_client(
     transport = DumpingTransport(
         dump_dir=Path("dumps"),
         dump_file=chainlit_filename,
-        **openai_transport_options(c),
+        **_openai_transport_options(c.agent.openai),
     )
 
     client = AsyncClient(
-        timeout=httpx_timeout(c),
+        timeout=httpx_timeout(c.agent.openai),
         transport=transport,
     )
 
@@ -140,40 +158,42 @@ async def httpx_debug_client(
         pass
 
 
-def client_settings(c: Cfg) -> dict:
-    """Параметры запроса к LLM (model/temperature/...) из конфига."""
-    return {
-        "model": c.profile.model,
-        "temperature": c.temperature,
-        "max_tokens": c.max_tokens,
-        "top_p": c.top_p,
-        "frequency_penalty": c.frequency_penalty,
-        "presence_penalty": c.presence_penalty,
-        "stop": c.stop,
-    }
-
-
-async def langchain_checkpoint_saver(c: Cfg) -> AsyncIterator[BaseCheckpointSaver]:
+async def langchain_checkpoint_saver(
+    c: Annotated[PostgresConfig, Depends(get_store_config)],
+) -> AsyncIterator[BaseCheckpointSaver]:
     """PG-пул + checkpointer-saver; app-scope, пул закрывается на teardown DI."""
+    pg_kwargs = c.to_pg_conn()
+    # saver требует dict-строки; options (вкл. search_path) уже собран в to_pg_conn
+    pg_kwargs.update({"row_factory": dict_row})
+
+    pool_kwargs = c.to_pg_pool()
+
     async with AsyncConnectionPool(
-        # пустой conninfo ⇒ libpq берёт параметры из env (PGHOST/...)
-        conninfo=c.checkpoint_dsn or "",
-        # saver требует dict-строки; connection_class фиксирует тип пула как
-        # AsyncConnection[DictRow], иначе инвариантность не сходится с Conn
         connection_class=AsyncConnection[DictRow],
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        kwargs=pg_kwargs,
         # fail-fast: при недоступной БД getconn упадёт за timeout, а не за 30с
-        timeout=c.checkpoint_pool_timeout,
-        open=False,
+        **pool_kwargs,
     ) as pool:
         await pool.open()
+        # saver делает только CREATE TABLE — схему из search_path создаём сами,
+        # иначе setup() упадёт 'no schema has been selected to create in'
+        if schema := c.options.primary_schema:
+            async with pool.connection() as conn:
+                try:
+                    await conn.execute(
+                        sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                            sql.Identifier(schema)
+                        )
+                    )
+                except InsufficientPrivilege as _e:
+                    await conn.commit()
         saver = AsyncPostgresSaver(pool)
         await saver.setup()
         yield saver
 
 
 def langchain_graph(
-    c: Cfg,
+    c: Annotated[AppConfig, Depends(get_app_config)],
     client: Annotated[AsyncClient, Depends(httpx_debug_client)],
 ) -> CompiledStateGraph:
     """Скомпилированный agent-граф под конфиг; scope задаёт потребитель (Depend)."""
@@ -181,7 +201,7 @@ def langchain_graph(
 
 
 def langchain_agent(
-    c: Cfg,
+    c: Annotated[AppConfig, Depends(get_app_config)],
     client: Annotated[AsyncClient, Depends(httpx_debug_client)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
 ) -> CompiledStateGraph:

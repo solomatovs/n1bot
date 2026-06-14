@@ -4,6 +4,7 @@ import logging.config
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from engineio.payload import Payload
@@ -12,21 +13,21 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.chainlit2.infra import providers
-from boba.chainlit2.infra.config import AppConfig
+from boba.chainlit2.infra.config import AppConfig, ChainlitExtendConfig
 from boba.chainlit2.infra.di import Container
 
 
 def run_app():
     # получаем настройки всего приложения
-    c = providers.get_app_config()
+    c = providers.get_app_config(Path("local/chainlit2.toml"))
 
     # применяем настройки логирования
-    logging.config.dictConfig(c.logger_config)
+    logging.config.dictConfig(c.logger)
 
     app = FastAPI(lifespan=_run_container)
 
     # конфигурирует chainlit + DI из c (единственная точка конфигурации)
-    _use_chainlit_middleware(app, c)
+    _use_chainlit_middleware(app, c.chainlit)
 
     # единственная точка конфигурации DI (сама механика start/stop — в lifespan)
     _use_di_container(app, c)
@@ -35,17 +36,17 @@ def run_app():
     async def start():
         uv_config = uvicorn.Config(
             app,
-            host=c.chainlit_config.run.host,
-            port=c.chainlit_config.run.port,
-            ws=c.ws_protocol,
+            host=c.chainlit.run.host,
+            port=c.chainlit.run.port,
+            ws=c.chainlit.ws_protocol,
             # logger'у передаем None что бы
             # второй раз настройки логирования не применялись
             log_config=None,
             log_level=None,
             access_log=True,
-            ws_per_message_deflate=c.ws_per_message_deflate,
-            ssl_keyfile=c.chainlit_config.run.ssl_key,
-            ssl_certfile=c.chainlit_config.run.ssl_cert,
+            ws_per_message_deflate=c.chainlit.ws_per_message_deflate,
+            ssl_keyfile=c.chainlit.run.ssl_key,
+            ssl_certfile=c.chainlit.run.ssl_cert,
         )
         server = uvicorn.Server(uv_config)
         await server.serve()
@@ -68,14 +69,19 @@ async def _run_container(app: FastAPI) -> AsyncIterator[None]:
         await container.aclose()
 
 
-def _use_chainlit_middleware(app: FastAPI, c: AppConfig):
+def _use_chainlit_middleware(app: FastAPI, c: ChainlitExtendConfig):
     # импортируем chainlit
     import boba.chainlit2.chat  # type: ignore # noqa: F401, PLC0415
 
     # фронт берёт базовый путь для своих запросов (/user, /auth/config,
     # socket.io) из этого env: serve() подставляет его в index.html. Без
     # него фронт ходит в корень мимо маунта и ловит 404
-    os.environ["CHAINLIT_ROOT_PATH"] = c.chainlit_config.run.root_path
+    os.environ["CHAINLIT_ROOT_PATH"] = c.run.root_path
+    # устанавливаю переменную окружения если передан auth_secret
+    # это все потому, что chainlit только через переменную окружения
+    # умеет доставать auth_secret
+    if c.auth_secret:
+        os.environ["CHAINLIT_AUTH_SECRET"] = c.auth_secret
 
     from chainlit.markdown import init_markdown  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
@@ -89,35 +95,29 @@ def _use_chainlit_middleware(app: FastAPI, c: AppConfig):
     Payload.max_decode_packets = c.max_decode_packets
 
     # Create the chainlit.md file if it doesn't exist
-    init_markdown(c.chainlit_config.root)
+    init_markdown(c.root)
 
     class ChainlitMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            if not request.url.path.startswith(c.chainlit_config.run.root_path):
+            if not request.url.path.startswith(c.run.root_path):
                 return JSONResponse(status_code=404, content={"detail": "Not found"})
 
             return await call_next(request)
 
     chainlit_app.add_middleware(ChainlitMiddleware)
 
-    app.mount(c.chainlit_config.run.root_path, chainlit_app)
+    app.mount(c.run.root_path, chainlit_app)
 
 
 def _use_di_container(app: FastAPI, c: AppConfig):
     "Конфигурирует DI из AppConfig: засев конфига, scope-хуки, список прогрева"
     container = Container(level="app")
-    # регистрируем конфиг в провайдере зависимостей
+    # добавляю конфиг в DI
     container.provide(providers.get_app_config, c)
-    # "прогреваем" зависимости (дергаем создание объектов до запуска приложения)
-    # что бы эти зависимости были созданы как singleton
-    container.eager(
-        providers.httpx_debug_client,
-        providers.client_settings,
-    )
-    app.state.container = container
     Container.set_root(container)
     Container.set_session_hook(_get_or_create_session_container)
     _close_container_if_session_end()
+    app.state.container = container
 
 
 # маркер Container в сессии chainlit

@@ -61,16 +61,22 @@ class ConfigBuilder:
         return OmegaConf.merge(*self._layers)  # type: ignore[return-value]
 
 
-def build_app_config(argv: list[str] | None = None) -> DictConfig:
+def build_app_config(
+    config_path: Path | None = None, argv: list[str] | None = None
+) -> DictConfig:
     """Стандартная сборка приложения: config.toml + secrets.toml + CLI.
 
     Пути к файлам — из env ($BOBA_CONFIG_PATH, $BOBA_SECRETS_PATH); это
     только пути к источникам, не данные конфига. Возвращает инстанс — приложение
     держит его у себя и передаёт в резолвер.
     """
+    res = ConfigBuilder()
+
+    if config_path:
+        res.add_toml(config_path)
+
     return (
-        ConfigBuilder()
-        .add_toml(os.environ.get(_CONFIG_PATH_ENV))
+        res.add_toml(os.environ.get(_CONFIG_PATH_ENV))
         .add_toml(os.environ.get(_SECRETS_PATH_ENV))
         .add_cli(argv)
         .build()

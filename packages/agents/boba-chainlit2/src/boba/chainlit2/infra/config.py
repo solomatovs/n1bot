@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from typing import Annotated, Any
 
 from chainlit.config import ChainlitConfig
@@ -9,6 +8,11 @@ LOGGING_CONFIG: dict[str, Any] = {
     "disable_existing_loggers": False,
     "formatters": {
         "default": {
+            "()": "uvicorn.logging.DefaultFormatter",
+            "fmt": "%(levelprefix)s (%(name)s): %(message)s",
+            "use_colors": True,
+        },
+        "uvcorn": {
             "()": "uvicorn.logging.DefaultFormatter",
             "fmt": "%(levelprefix)s %(message)s",
             "use_colors": True,
@@ -24,21 +28,26 @@ LOGGING_CONFIG: dict[str, Any] = {
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stderr",
         },
+        "uvcorn": {
+            "formatter": "uvcorn",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+        },
         "access": {
             "formatter": "access",
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stdout",
         },
     },
+    "root": {"handlers": ["default"], "level": "INFO"},
     "loggers": {
-        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn": {"handlers": ["uvcorn"], "level": "INFO", "propagate": False},
         "uvicorn.error": {"level": "INFO"},
         "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
     },
 }
 
 
-@dataclass(frozen=True)
 class OpenAiConfig(BaseModel):
     """Транспорт openai-совместимого провайдера: endpoint + httpx-тюнинг."""
 
@@ -134,16 +143,10 @@ class OpenAiConfig(BaseModel):
     )
 
 
-@dataclass(frozen=True)
-class ProfileConfig(BaseModel):
+class AgentProfile(BaseModel):
     """Профиль агента (копия agent.* из конфига): LLM-провайдер + модель + workspace."""
 
     model_config = ConfigDict(extra="ignore")
-
-    model: Annotated[
-        str,
-        Field(description="Имя LLM-модели у выбранного провайдера."),
-    ]
 
     openai: Annotated[
         OpenAiConfig,
@@ -155,56 +158,54 @@ class ProfileConfig(BaseModel):
         ),
     ]
 
-    system_prompt_dir: Annotated[
+    model: Annotated[
         str,
-        Field(description="Корневая директория .md/.txt-файлов с system-prompt."),
+        Field(description="Имя LLM-модели у выбранного провайдера."),
     ]
 
-    log_level: str = Field(
-        default="INFO",
-        description="Уровень корневого логгера.",
+    default_system_prompt: str = Field(
+        default="",
+        description="Системный промпт по умолчанию",
     )
 
-    log_file: str | None = Field(
-        default=None,
-        description="Путь к log-файлу. Пусто — логи в stderr.",
+    temperature: float = Field(
+        default=0,
+        description="",
     )
 
-    user_workspace_dir: str = Field(
-        default="./workspaces/user",
-        description="Корневая директория user-workspace'а.",
+    max_tokens: int = Field(
+        default=2500,
+        description="",
     )
 
-    system_workspace_dir: str = Field(
-        default="./workspaces/system",
-        description="Корневая директория system-workspace'а.",
+    top_p: float = Field(
+        default=1,
+        description="",
     )
 
-    stream: bool = Field(
-        default=True,
-        description=(
-            "Режим ответа LLM: True — стриминг дельт, False — один итоговый "
-            "ответ без дельт."
-        ),
+    frequency_penalty: float = Field(
+        default=0,
+        description="",
     )
 
-    max_messages: int = Field(
-        default=50,
-        ge=1,
-        description="Размер скользящего окна диалога.",
+    presence_penalty: float = Field(
+        default=0,
+        description="",
     )
 
+    stop: Annotated[
+        list[str],
+        Field(default_factory=lambda: ["```"], description=""),
+    ]
 
-@dataclass(frozen=True)
-class AppConfig(BaseModel):
-    """Параметры chainlit-приложения: server + профиль агента."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    # engine.io heartbeat: даём клиенту пережить долгие паузы на брейкпоинтах
+class ChainlitExtendConfig(ChainlitConfig):
     ping_interval: int = Field(
         default=300,
-        description="",
+        description=(
+            "даём клиенту пережить долгие паузы(engine.io heartbeat)"
+            "удобно для debug при длительных breakpoint'ах"
+        ),
     )
 
     ping_timeout: int = Field(
@@ -238,62 +239,236 @@ class AppConfig(BaseModel):
         description="WebSocket-реализация uvicorn: auto/websockets/wsproto/none.",
     )
 
-    temperature: float = Field(
-        default=0,
-        description="",
+
+class PostgresPoolConfig(BaseModel):
+    """Параметры конструктора psycopg_pool.AsyncConnectionPool (без callable-хуков)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    min_size: int = Field(default=1, description="Минимум соединений в пуле.")
+    max_size: int | None = Field(
+        default=None, description="Максимум соединений; None — равен min_size."
+    )
+    name: str | None = Field(default=None, description="Имя пула (для логов/метрик).")
+    timeout: float = Field(
+        default=2,
+        description=(
+            "Fail-fast ожидание свободного коннекта (сек); при недоступной БД "
+            "getconn упадёт за это время, а не за дефолтные 30с."
+        ),
+    )
+    max_waiting: int = Field(
+        default=0, description="Предел очереди ждущих коннект; 0 — без предела."
+    )
+    max_lifetime: float = Field(
+        default=60, description="Максимальный срок жизни соединения (сек)."
+    )
+    max_idle: float = Field(
+        default=60,
+        description="Простой соединения сверх min_size до закрытия (сек).",
+    )
+    reconnect_timeout: float = Field(
+        default=60,
+        description="Сколько пробовать восстановить коннект до отказа (сек).",
+    )
+    num_workers: int = Field(
+        default=3, description="Число фоновых воркеров пула (reconnect/обслуживание)."
     )
 
-    max_tokens: int = Field(
-        default=500,
-        description="",
+class PostgresOptionsConfig(BaseModel):
+    """libpq 'options': серверные GUC сессии (-c key=value); сериализуется в строку."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    search_path: str | None = Field(
+        default=None, description="search_path сессии: схема или список 'a,b'."
     )
-
-    top_p: float = Field(
-        default=1,
-        description="",
+    statement_timeout: str | None = Field(
+        default=None, description="statement_timeout, напр. '30s'."
     )
-
-    frequency_penalty: float = Field(
-        default=0,
-        description="",
+    lock_timeout: str | None = Field(
+        default=None, description="lock_timeout, напр. '5s'."
     )
-
-    presence_penalty: float = Field(
-        default=0,
-        description="",
+    idle_in_transaction_session_timeout: str | None = Field(
+        default=None, description="Таймаут простоя открытой транзакции."
     )
+    timezone: str | None = Field(default=None, description="TimeZone сессии.")
 
-    stop: Annotated[
-        list[str],
-        Field(default_factory=lambda: ["```"], description=""),
-    ]
+    def to_options(self) -> str | None:
+        """Собирает libpq options: '-c k=v -c k2=v2'; None — если ничего не задано."""
+        parts = [
+            f"-c {name}={value}"
+            for name in type(self).model_fields
+            if (value := getattr(self, name)) is not None
+        ]
+        return " ".join(parts) or None
 
-    checkpoint_dsn: str | None = Field(
+    @property
+    def primary_schema(self) -> str | None:
+        """Первая схема из search_path — её создаёт провайдер (CREATE SCHEMA)."""
+        if not self.search_path:
+            return None
+        return self.search_path.split(",")[0].strip().strip('"')
+
+
+class PostgresConfig(BaseModel):
+    """libpq connection keywords + поведение connect() psycopg; см. PostgreSQL docs."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # libpq connection параметры
+    # https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
+    host: str | None = Field(default=None, description="Хост(ы) или путь к сокету.")
+    hostaddr: str | None = Field(default=None, description="IP хоста (без DNS).")
+    port: int | None = Field(default=None, description="Порт (или сокет-суффикс).")
+    dbname: str | None = Field(default=None, description="Имя БД.")
+    user: str | None = Field(default=None, description="Пользователь.")
+    password: str | None = Field(default=None, description="Пароль (секрет).")
+    passfile: str | None = Field(default=None, description="Путь к файлу паролей.")
+    require_auth: str | None = Field(
+        default=None, description="Требуемые методы аутентификации."
+    )
+    channel_binding: str | None = Field(
+        default=None, description="disable|prefer|require."
+    )
+    connect_timeout: int | None = Field(
+        default=None, description="Таймаут установки соединения (сек)."
+    )
+    client_encoding: str | None = Field(default=None, description="Кодировка клиента.")
+    application_name: str | None = Field(
+        default=None, description="application_name соединения."
+    )
+    fallback_application_name: str | None = Field(
+        default=None, description="application_name по умолчанию."
+    )
+    keepalives: int | None = Field(
+        default=None, description="TCP keepalive вкл/выкл (1/0)."
+    )
+    keepalives_idle: int | None = Field(default=None, description="TCP_KEEPIDLE (сек).")
+    keepalives_interval: int | None = Field(
+        default=None, description="TCP_KEEPINTVL (сек)."
+    )
+    keepalives_count: int | None = Field(
+        default=None, description="TCP_KEEPCNT (число проб)."
+    )
+    tcp_user_timeout: int | None = Field(
+        default=None, description="TCP_USER_TIMEOUT (мс)."
+    )
+    replication: str | None = Field(
+        default=None, description="Режим репликации (true/database/false)."
+    )
+    gssencmode: str | None = Field(
+        default=None, description="disable|prefer|require (GSSAPI шифрование)."
+    )
+    sslmode: str | None = Field(
         default=None,
-        description=(
-            "libpq-DSN для checkpointer-пула LangGraph "
-            "(postgresql://user:pass@host:5432/db). None — libpq берёт параметры "
-            "из env (PGHOST/PGUSER/...)."
-        ),
+        description="disable|allow|prefer|require|verify-ca|verify-full.",
+    )
+    sslnegotiation: str | None = Field(
+        default=None, description="postgres|direct (способ начала TLS)."
+    )
+    sslcompression: int | None = Field(default=None, description="Сжатие TLS (1/0).")
+    sslcert: str | None = Field(default=None, description="Клиентский сертификат.")
+    sslkey: str | None = Field(default=None, description="Клиентский приватный ключ.")
+    sslpassword: str | None = Field(
+        default=None, description="Пароль приватного ключа (секрет)."
+    )
+    sslrootcert: str | None = Field(default=None, description="Корневой CA-сертификат.")
+    sslcrl: str | None = Field(default=None, description="CRL-файл.")
+    sslcrldir: str | None = Field(default=None, description="Каталог CRL.")
+    sslsni: int | None = Field(default=None, description="Слать TLS SNI (1/0).")
+    requirepeer: str | None = Field(
+        default=None, description="Ожидаемый пользователь сервера (сокет)."
+    )
+    ssl_min_protocol_version: str | None = Field(
+        default=None, description="Мин. версия TLS (TLSv1.2/...)."
+    )
+    ssl_max_protocol_version: str | None = Field(
+        default=None, description="Макс. версия TLS."
+    )
+    krbsrvname: str | None = Field(default=None, description="Имя сервиса Kerberos.")
+    gsslib: str | None = Field(default=None, description="Библиотека GSSAPI.")
+    gssdelegation: int | None = Field(
+        default=None, description="Делегирование GSSAPI-креденшелов (1/0)."
+    )
+    service: str | None = Field(
+        default=None, description="Имя сервиса из pg_service.conf."
+    )
+    target_session_attrs: str | None = Field(
+        default=None,
+        description="any|read-write|read-only|primary|standby|prefer-standby.",
+    )
+    load_balance_hosts: str | None = Field(
+        default=None, description="disable|random (балансировка по хостам)."
     )
 
-    checkpoint_pool_timeout: float = Field(
-        default=5,
-        description=(
-            "Fail-fast ожидание коннекта из checkpointer-пула (сек); при "
-            "недоступной БД ошибка всплывёт за это время, а не за дефолтные 30с."
-        ),
+    # поведение psycopg connect() (не libpq)
+    autocommit: bool = Field(
+        default=True,
+        description="autocommit; для AsyncPostgresSaver.setup() обязателен.",
+    )
+    prepare_threshold: int | None = Field(
+        default=0,
+        description="Порог prepared statements; 0 — отключить (нужно для pgbouncer).",
     )
 
-    chainlit_config: Annotated[
-        ChainlitConfig,
+    # серверные опции сессии (libpq 'options'); сериализуются в строку в to_pg_conn,
+    # search_path здесь — единый источник схемы (провайдер по нему создаёт схему)
+    options: Annotated[
+        PostgresOptionsConfig,
         Field(
-            description=("Chainlit config; ${chainlit_config.<name>}."),
+            default_factory=lambda: PostgresOptionsConfig.model_validate({}),
+            description="Серверные GUC сессии (search_path/timeouts) → libpq options.",
         ),
     ]
 
-    profile: Annotated[
-        ProfileConfig,
+    # параметры пула соединений
+    pool: Annotated[
+        PostgresPoolConfig,
+        Field(
+            default_factory=lambda: PostgresPoolConfig.model_validate({}),
+            description="Параметры AsyncConnectionPool.",
+        ),
+    ]
+
+    def to_pg_conn(self) -> dict:
+        """kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts."""
+        # pool/options — не скалярные connect-параметры: pool это конструктор пула,
+        # options сериализуется отдельно в строку '-c k=v'
+        out = {
+            name: getattr(self, name)
+            for name in type(self).model_fields
+            if name not in ("pool", "options")
+        }
+        # незаданные параметры опускаем — libpq возьмёт дефолт/env
+        conn = {k: v for k, v in out.items() if v is not None}
+        if opts := self.options.to_options():
+            conn["options"] = opts
+        return conn
+
+    def to_pg_pool(self) -> dict:
+        """kwargs конструктора AsyncConnectionPool (без None)."""
+        return {
+            name: value
+            for name in type(self.pool).model_fields
+            if (value := getattr(self.pool, name)) is not None
+        }
+
+
+class AppConfig(BaseModel):
+    """Параметры chainlit-приложения: server + профиль агента."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    chainlit: Annotated[
+        ChainlitExtendConfig,
+        Field(
+            description=("Chainlit config; ${chainlit.<name>}."),
+        ),
+    ]
+
+    agent: Annotated[
+        AgentProfile,
         Field(
             description=(
                 "Профиль агента; в конфиге подключается ссылкой ${agent.<name>}."
@@ -301,8 +476,15 @@ class AppConfig(BaseModel):
         ),
     ]
 
-    logger_config: Annotated[dict, Field(default=LOGGING_CONFIG, description="")]
+    logger: Annotated[
+        dict,
+        Field(
+            default=LOGGING_CONFIG,
+            description="Конфигурация логера",
+        ),
+    ]
 
-
-# def get_app_config() -> AppConfig:
-#     return bind(build_app_config(), path="chainlit2", model=AppConfig)
+    checkpoints: Annotated[
+        PostgresConfig,
+        Field(description=("Конфигурация postgres для сохранения данных agent")),
+    ]

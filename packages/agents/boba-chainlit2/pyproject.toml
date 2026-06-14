@@ -24,6 +24,8 @@ dependencies = [
     "langchain[openai,schema]",
     "langgraph-checkpoint-postgres",
     "psycopg[binary,pool]",
+    "fastapi-gssapi",
+    "gssapi",
 ]
 
 [tool.fastapi]
