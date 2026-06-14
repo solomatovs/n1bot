@@ -8,9 +8,8 @@ version = "0.1.0"
 description = "Boba PostgreSQL read-only pool: PostgresConfig + PostgresConnection + PostgresPool + get_pool() process-singleton."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "psycopg[binary]>=3.1",
-    "psycopg-pool>=3.2",
-    "pydantic>=2.0",
+    "psycopg[binary,pool]>=3.2",
+    "pydantic>=2.10,<2.11",
 ]
 
 [tool.setuptools.packages.find]

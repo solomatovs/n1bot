@@ -503,11 +503,7 @@ class KerberosDelegationConfig(BaseModel):
     )
     renew: bool = Field(
         default=True,
-        description="Фоновое продление renewable-тикета в пределах renew-lifetime.",
-    )
-    renew_margin_sec: int = Field(
-        default=600,
-        description="За сколько секунд до истечения тикета запускать продление.",
+        description="Продлевать renewable-тикет по запросу при ошибке истечения.",
     )
 
 
@@ -531,6 +527,8 @@ class KerberosAuthConfig(LdapDirectoryConfig):
     @property
     def delegation_enable(self) -> bool:
         return self.delegation is not None
+
+
 class LdapAuthConfig(LdapDirectoryConfig):
     """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
 

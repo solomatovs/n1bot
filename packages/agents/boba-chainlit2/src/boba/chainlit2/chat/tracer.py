@@ -154,9 +154,11 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
         # Process token to ensure it's a string, as strip() will be called on it.
         processed_token: str
         # Handle case where token is a list (can occur with some model outputs).
-        # Join all elements into a single string to maintain compatibility with downstream processing.
+        # Join all elements into a single string to maintain
+        # compatibility with downstream processing.
         if isinstance(token, list):
-            # If token is a list, join its elements (converted to strings) into a single string.
+            # If token is a list, join its elements (converted to strings)
+            # into a single string.
             processed_token = "".join(map(str, token))
         elif not isinstance(token, str):
             # If token is neither a list nor a string, convert it to a string.

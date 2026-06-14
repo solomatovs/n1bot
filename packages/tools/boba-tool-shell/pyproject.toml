@@ -10,7 +10,7 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-tools",
     "boba-settings",
-    "pydantic",
+    "pydantic>=2.10,<2.11",
 ]
 
 [project.entry-points."boba.plugins"]

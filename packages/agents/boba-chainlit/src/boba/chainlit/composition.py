@@ -134,7 +134,11 @@ def _warm_tool_cache(
 
 
 def main() -> int:
-    config = build_app_config()
+    # получаем настройки всего приложения
+    if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
+        raise ValueError("please pass env BOBA_CONFIG_PATH")
+
+    config = build_app_config(config_path=Path(config_path))
     chainlit_cfg = bind(config, "chainlit", ChainlitConfig)
     rt = chainlit_cfg.profile
 

@@ -23,7 +23,7 @@ dependencies = [
     "pydantic>=2.10,<2.11",
     "langchain[openai,schema]",
     "langgraph-checkpoint-postgres",
-    "psycopg[binary,pool]",
+    "psycopg[binary,pool]>=3.2",
     "gssapi",
     "krb5",
     "ldap3",

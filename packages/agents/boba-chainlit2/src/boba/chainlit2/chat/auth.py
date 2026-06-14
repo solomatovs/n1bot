@@ -2,24 +2,18 @@ import asyncio
 import base64
 import logging
 import re
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import ClassVar
 
 import chainlit as cl
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from boba.chainlit2.infra.config import (
-    AuthConfig,
     CredentialsAuthConfig,
     KerberosAuthConfig,
     KerberosDelegationConfig,
-    LdapAuthConfig,
     LdapDirectoryConfig,
 )
-
-logger = logging.getLogger("auth")
 
 UserCallback = Callable[..., Awaitable[cl.User | None]]
 
@@ -31,31 +25,37 @@ class ADDirectory:
         self._c = c
 
     @staticmethod
-    def _username(principal: str) -> str:
-        """user@REALM | DOMAIN\\user → sAMAccountName."""
+    def _username_from_principal(principal: str) -> str:
+        """user@REALM | DOMAIN\\user -> sAMAccountName."""
         if "@" in principal:
             return principal.split("@", 1)[0]
         if "\\" in principal:
             return principal.split("\\", 1)[1]
         return principal
 
-    def lookup(self, principal: str) -> "tuple[str, list[str]] | None":
-        """Сервисным bind'ом ищет пользователя: (DN, группы memberOf); None — нет."""
+    def lookup(self, principal: str) -> tuple[str, list[str]] | None:
+        """Ищет пользователя: (DN, группы memberOf);"""
         from ldap3 import ALL, Connection, Server  # noqa: PLC0415
+        from ldap3.core.exceptions import LDAPException  # noqa: PLC0415
 
         server = Server(self._c.server, get_info=ALL)
-        with Connection(
-            server, self._c.bind_dn, self._c.bind_password, auto_bind=True
-        ) as conn:
-            conn.search(
-                self._c.base_dn,
-                self._c.user_filter.format(username=self._username(principal)),
-                attributes=["memberOf"],
-            )
-            if not conn.entries:
-                return None
-            entry = conn.entries[0]
-            return str(entry.entry_dn), [str(g) for g in entry.memberOf.values]
+        try:
+            with Connection(
+                server, self._c.bind_dn, self._c.bind_password, auto_bind=True
+            ) as conn:
+                conn.search(
+                    self._c.base_dn,
+                    self._c.user_filter.format(username=self._username_from_principal(principal)),
+                    attributes=["memberOf"],
+                )
+                if not conn.entries:
+                    return None
+
+                entry = conn.entries[0]
+
+                return str(entry.entry_dn), [str(g) for g in entry.memberOf.values]
+        except LDAPException:
+            return None
 
     def verify_password(self, user_dn: str, password: str) -> bool:
         """Проверка пароля bind'ом под DN пользователя; пустой пароль — отказ."""
@@ -66,11 +66,13 @@ class ADDirectory:
             return False
 
         try:
-            conn = Connection(Server(self._c.server), user_dn, password, auto_bind=True)
+            with Connection(
+                Server(self._c.server), user_dn, password, auto_bind=True
+            ) as conn:
+                conn.unbind()
+                return True
         except LDAPException:
             return False
-        conn.unbind()
-        return True
 
     def role_of(self, groups: list[str]) -> str | None:
         """Первая совпавшая роль по порядку group_role_map; None — доступ запрещён."""
@@ -138,83 +140,73 @@ class UserCcache:
 
 
 class KerberosCredentialStore:
-    """Реестр делегированных тикетов (принципал - ccache) и их фоновое продление.
+    """
+    Реестр делегированных тикетов (принципал - ccache) с продлением по запросу.
 
-    Владеет всем жизненным циклом тикета: захват кладёт сюда credential и
-    поднимает один рефрешер на принципала; teardown приложения гасит все.
+    Store сам срок не отслеживает и не угадывает: продление инициирует место
+    использования ccache (tool), когда бэкенд вернул ошибку истечения — оно
+    зовёт renew(). На каждого принципала свой lock, чтобы конкурентные продления
+    не сходили в KDC и не перезаписали ccache дважды.
+
+    Store нужен двум мирам:
+        DI-провайдеру (читает)
+        SpnegoMiddleware (пишет)
     """
 
     class _Entry:
-        __slots__ = ("ccache", "expiry", "task")
+        __slots__ = ("ccache", "lock")
 
-        def __init__(self, ccache: str, expiry: float) -> None:
+        def __init__(self, ccache: str) -> None:
             self.ccache = ccache
-            self.expiry = expiry
-            self.task: asyncio.Task | None = None
+            self.lock = asyncio.Lock()
 
-    _entries: ClassVar[dict[str, "KerberosCredentialStore._Entry"]] = {}
+    def __init__(self, *, renew: bool) -> None:
+        self._entries: dict[str, KerberosCredentialStore._Entry] = {}
+        self._renew_enabled = renew
 
-    @classmethod
-    def register(
-        cls,
-        principal: str,
-        ccache: str,
-        expiry: float,
-        *,
-        renew: bool,
-        margin_sec: int,
-    ) -> None:
-        """Сохраняет/обновляет тикет; при renew держит один рефрешер на принципала."""
-        entry = cls._entries.get(principal)
+    def register(self, principal: str, ccache: str) -> None:
+        """Сохраняет/обновляет делегированный тикет принципала.
+
+        Существующую запись обновляет на месте — lock принципала сохраняется.
+        """
+        entry = self._entries.get(principal)
         if entry is None:
-            entry = cls._entries[principal] = cls._Entry(ccache, expiry)
+            self._entries[principal] = self._Entry(ccache)
         else:
-            entry.ccache, entry.expiry = ccache, expiry
+            entry.ccache = ccache
 
-        if renew and (entry.task is None or entry.task.done()):
-            entry.task = asyncio.create_task(cls._renew_loop(principal, margin_sec))
-
-    @classmethod
-    def ccache_of(cls, principal: str) -> str | None:
-        """ccache пользователя (значение KRB5CCNAME) или None."""
-        entry = cls._entries.get(principal)
+    def ccache_of(self, principal: str) -> str | None:
+        """ccache принципала (значение KRB5CCNAME) или None."""
+        entry = self._entries.get(principal)
         return entry.ccache if entry else None
 
-    @classmethod
-    def drop(cls, principal: str) -> None:
-        """Убирает тикет и гасит его рефрешер."""
-        entry = cls._entries.pop(principal, None)
-        if entry and entry.task is not None:
-            entry.task.cancel()
+    async def renew(self, principal: str) -> bool:
+        """Продлевает тикет принципала; звать при ошибке истечения от бэкенда.
 
-    @classmethod
-    async def shutdown(cls) -> None:
-        """Гасит все рефрешеры; вызывается на teardown приложения."""
-        for entry in cls._entries.values():
-            if entry.task is not None:
-                entry.task.cancel()
-        cls._entries.clear()
+        Сериализовано локом принципала. False — продление недоступно/не удалось
+        (renew выключен, нет записи или KDC отказал); при провале запись снимается.
+        """
+        if not self._renew_enabled:
+            return False
 
-    @classmethod
-    async def _renew_loop(cls, principal: str, margin_sec: int) -> None:
-        """Спит до (expiry-margin), продлевает; провал → снимаем запись и стоп."""
-        while True:
-            entry = cls._entries.get(principal)
-            if entry is None:
-                return
-            # не реже раза в минуту, иначе по таймеру тикета
-            await asyncio.sleep(max(60, entry.expiry - time.time() - margin_sec))
+        entry = self._entries.get(principal)
+        if entry is None:
+            return False
+
+        async with entry.lock:
             # _renew синхронно ходит в KDC — в поток, чтобы не блокировать loop
-            new_expiry = await asyncio.to_thread(cls._renew, principal, entry.ccache)
-            if new_expiry is None:
-                logger.info("kerberos: продление %s прекращено", principal)
-                cls._entries.pop(principal, None)
-                return
-            entry.expiry = new_expiry
+            ok = await asyncio.to_thread(self._renew, principal, entry.ccache)
+            if not ok:
+                self._entries.pop(principal, None)
+            return ok
+
+    def drop(self, principal: str) -> None:
+        """Убирает тикет принципала."""
+        self._entries.pop(principal, None)
 
     @staticmethod
-    def _renew(principal: str, ccache: str) -> float | None:
-        """Продлевает TGT в ccache через krb5; новый expiry (epoch) или None.
+    def _renew(principal: str, ccache: str) -> bool:
+        """Продлевает TGT в ccache через krb5; True — успех, False — нельзя/не вышло.
 
         Ленивый импорт: без krb5 продление недоступно (degradation, не падение).
         Реальный путь проверяется только на живом KDC.
@@ -222,8 +214,7 @@ class KerberosCredentialStore:
         try:
             import krb5  # type: ignore[import-not-found]  # noqa: PLC0415
         except ModuleNotFoundError:
-            logger.warning("krb5 не установлен — продление тикета недоступно")
-            return None
+            return False
 
         try:
             ctx = krb5.init_context()
@@ -232,18 +223,22 @@ class KerberosCredentialStore:
             creds = krb5.get_renewed_creds(ctx, princ, cc)
             krb5.cc_initialize(ctx, cc, princ)
             krb5.cc_store_cred(ctx, cc, creds)
-        except Exception as exc:
-            logger.warning("kerberos: продление %s не удалось: %s", principal, exc)
-            return None
+        except Exception as _exc:
+            return False
 
-        # endtime тикета у krb5.Creds доступен не во всех версиях единообразно;
-        # берём явный, иначе консервативно перепроверим через час
-        endtime = getattr(getattr(creds, "times", None), "endtime", None)
-        return float(endtime) if endtime else time.time() + 3600
+        return True
 
 
-class SpnegoDelegationMiddleware:
-    """SPNEGO-accept на gssapi: principal в scope + захват delegated cred."""
+class SpnegoMiddleware:
+    """SPNEGO-accept на gssapi только на /auth/header: principal + захват delegated.
+
+    chainlit спрашивает header_auth_callback ровно на POST /auth/header, дальше
+    сессия живёт по cookie-JWT. Поэтому SPNEGO-челлендж и захват делегирования
+    делаем только на этом пути — прочие запросы проходят насквозь.
+    """
+
+    # путь логина chainlit (внутри смонтированного chainlit_app, без root_path)
+    AUTH_PATH = "/auth/header"
 
     def __init__(
         self,
@@ -251,13 +246,17 @@ class SpnegoDelegationMiddleware:
         *,
         service_name: str,
         delegation: KerberosDelegationConfig | None,
+        store: KerberosCredentialStore,
     ) -> None:
         self.app = app
         self.service_name = service_name
         self.delegation = delegation
+        self.store = store
+        self.logger = logging.getLogger(SpnegoMiddleware.__name__)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        # SPNEGO нужен только на логине; всё прочее (включая cookie-JWT) — мимо
+        if scope["type"] != "http" or scope["path"] != self.AUTH_PATH:
             await self.app(scope, receive, send)
             return
 
@@ -290,7 +289,7 @@ class SpnegoDelegationMiddleware:
             ctx = gssapi.SecurityContext(creds=creds, usage="accept")
             ctx.step(token)
         except gssapi.exceptions.GSSError as exc:  # type: ignore[attr-defined]
-            logger.warning("spnego accept failed: %s", exc)
+            self.logger.warning("spnego accept failed: %s", exc)
             return None
         return ctx
 
@@ -300,7 +299,7 @@ class SpnegoDelegationMiddleware:
 
         deleg = ctx.delegated_credentials
         if deleg is None:
-            logger.warning(
+            self.logger.warning(
                 "нет delegated_credentials в kerberos для %s "
                 "(делегирование запрещено в AD)",
                 principal,
@@ -315,18 +314,15 @@ class SpnegoDelegationMiddleware:
                 store={b"ccache": ccache.encode()}, usage="initiate", overwrite=True
             )
         except gssapi.exceptions.GSSError as exc:  # type: ignore[attr-defined]
-            logger.error("kerberos: не сохранить delegated cred %s: %s", ccache, exc)
+            self.logger.error(
+                "kerberos: не сохранить delegated cred %s: %s", ccache, exc
+            )
             return
 
-        expiry = time.time() + (deleg.lifetime or 0)
-        KerberosCredentialStore.register(
-            principal,
-            ccache,
-            expiry,
-            renew=self.delegation.renew,
-            margin_sec=self.delegation.renew_margin_sec,
+        self.store.register(principal, ccache)
+        self.logger.info(
+            "kerberos: захвачен delegated тикет %s → %s", principal, ccache
         )
-        logger.info("kerberos: захвачен delegated тикет %s → %s", principal, ccache)
 
     @staticmethod
     async def _challenge(send: Send) -> None:
@@ -349,19 +345,22 @@ class KerberosAuth(GroupRoleAuth):
 
     provider = "kerberos"
 
-    def __init__(self, c: KerberosAuthConfig) -> None:
+    def __init__(self, c: KerberosAuthConfig, store: KerberosCredentialStore) -> None:
         super().__init__(c)
         self._c = c
+        self._store = store
 
     def install(self, chainlit_app: ASGIApp) -> None:
         # порядок add_middleware: последний — внешний, отрабатывает первым.
-        # SPNEGO терминирует Negotiate, кладёт принципала в scope['username'] и
-        # захватывает delegated cred; затем PrincipalToHeader — в заголовок.
+        # SPNEGO (только на /auth/header) терминирует Negotiate, кладёт принципала
+        # в scope['username'] и захватывает delegated cred; затем PrincipalToHeader
+        # переносит его в заголовок, который читает header_auth_callback.
         chainlit_app.add_middleware(self._PrincipalToHeader, header=self._c.header)
         chainlit_app.add_middleware(
-            SpnegoDelegationMiddleware,
+            SpnegoMiddleware,
             service_name=self._c.service_name,
             delegation=self._c.delegation,
+            store=self._store,
         )
         cl.header_auth_callback(self._build_callback())
 
@@ -382,7 +381,7 @@ class KerberosAuth(GroupRoleAuth):
         return header_auth
 
     class _PrincipalToHeader:
-        """scope['username'] от SpnegoDelegationMiddleware → заголовок chainlit."""
+        """scope['username'] от SpnegoMiddleware → заголовок chainlit."""
 
         def __init__(self, app: ASGIApp, header: str) -> None:
             self.app = app
@@ -420,21 +419,3 @@ class LdapAuth(GroupRoleAuth):
             return self._user(username, groups)
 
         return password_auth
-
-
-class Auth:
-    """Единая точка: выбирает и подключает стратегию авторизации по конфигу."""
-
-    @staticmethod
-    def install(chainlit_app: ASGIApp, c: AuthConfig) -> None:
-        if isinstance(c, CredentialsAuthConfig):
-            CredentialsAuth(c).install(chainlit_app)
-
-        elif isinstance(c, KerberosAuthConfig):
-            KerberosAuth(c).install(chainlit_app)
-
-        elif isinstance(c, LdapAuthConfig):
-            LdapAuth(c).install(chainlit_app)
-
-        else:
-            raise ValueError(f"unknown authorization type: {type(c).__name__}")
