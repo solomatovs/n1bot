@@ -1,0 +1,3035 @@
+version = 1
+revision = 3
+requires-python = ">=3.11, <4"
+resolution-markers = [
+    "python_full_version < '3.12' and sys_platform == 'linux'",
+]
+supported-markers = [
+    "python_full_version < '3.12' and sys_platform == 'linux'",
+]
+
+[manifest]
+members = [
+    "boba-agent",
+    "boba-chainlit",
+    "boba-chainlit2",
+    "boba-cli",
+    "boba-db-postgres",
+    "boba-html",
+    "boba-indexing",
+    "boba-kbdoc",
+    "boba-liteparse",
+    "boba-llm",
+    "boba-markdown",
+    "boba-openai",
+    "boba-patterns",
+    "boba-settings",
+    "boba-text",
+    "boba-tool-chart",
+    "boba-tool-doc",
+    "boba-tool-files",
+    "boba-tool-kb",
+    "boba-tool-postgres",
+    "boba-tool-shell",
+    "boba-tool-web",
+    "boba-tools",
+    "boba-transport-fs",
+    "boba-transport-http",
+    "boba-workspace",
+]
+
+[[package]]
+name = "aiofiles"
+version = "25.1.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "aiofiles-25.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "aiohappyeyeballs"
+version = "2.6.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "aiohappyeyeballs-2.6.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "aiohttp"
+version = "3.14.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "aiohappyeyeballs", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "aiosignal", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "attrs", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "frozenlist", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "multidict", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "propcache", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "yarl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "aiohttp-3.14.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "aiosignal"
+version = "1.4.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "frozenlist", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "aiosignal-1.4.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "annotated-doc"
+version = "0.0.4"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "annotated_doc-0.0.4-py3-none-any.whl" },
+]
+
+[[package]]
+name = "annotated-types"
+version = "0.7.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "annotated_types-0.7.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "antlr4-python3-runtime"
+version = "4.9.3"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "antlr4_python3_runtime-4.9.3-py3-none-any.whl" },
+]
+
+[[package]]
+name = "anyio"
+version = "4.14.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "idna", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "anyio-4.14.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "asyncer"
+version = "0.0.17"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "sniffio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "asyncer-0.0.17-py3-none-any.whl" },
+]
+
+[[package]]
+name = "attrs"
+version = "26.1.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "attrs-26.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "babel"
+version = "2.18.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "babel-2.18.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "beautifulsoup4"
+version = "4.15.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "soupsieve", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "beautifulsoup4-4.15.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "bidict"
+version = "0.23.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "bidict-0.23.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "boba-agent"
+version = "0.1.0"
+source = { editable = "packages/core/boba-agent" }
+dependencies = [
+    { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-patterns", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-llm", editable = "packages/core/boba-llm" },
+    { name = "boba-openai", editable = "packages/infra/llm/boba-openai" },
+    { name = "boba-patterns", editable = "packages/core/boba-patterns" },
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-chainlit"
+version = "0.1.0"
+source = { editable = "packages/agents/boba-chainlit" }
+dependencies = [
+    { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "chainlit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "plotly", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tabulate", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-agent", editable = "packages/core/boba-agent" },
+    { name = "boba-llm", editable = "packages/core/boba-llm" },
+    { name = "boba-openai", editable = "packages/infra/llm/boba-openai" },
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "chainlit", specifier = ">=2.11,<3" },
+    { name = "plotly", specifier = ">=5.24,<6" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+    { name = "tabulate", specifier = ">=0.9,<1" },
+]
+
+[[package]]
+name = "boba-chainlit2"
+version = "0.1.0"
+source = { editable = "packages/agents/boba-chainlit2" }
+dependencies = [
+    { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "chainlit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "fastapi", extra = ["standard"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "gssapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", extra = ["http2"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "krb5", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langchain", extra = ["openai"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langgraph-checkpoint-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "ldap3", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "plotly", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tabulate", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", extra = ["standard"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-agent", editable = "packages/core/boba-agent" },
+    { name = "boba-llm", editable = "packages/core/boba-llm" },
+    { name = "boba-openai", editable = "packages/infra/llm/boba-openai" },
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "chainlit", specifier = ">=2.11,<3" },
+    { name = "fastapi", extras = ["standard"] },
+    { name = "gssapi" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.28,<1" },
+    { name = "krb5" },
+    { name = "langchain", extras = ["openai", "schema"] },
+    { name = "langgraph-checkpoint-postgres" },
+    { name = "ldap3" },
+    { name = "plotly", specifier = ">=5.24,<6" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+    { name = "tabulate", specifier = ">=0.9,<1" },
+    { name = "uvicorn", extras = ["standard"] },
+]
+
+[[package]]
+name = "boba-cli"
+version = "0.1.0"
+source = { editable = "packages/agents/boba-cli" }
+dependencies = [
+    { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-patterns", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-agent", editable = "packages/core/boba-agent" },
+    { name = "boba-llm", editable = "packages/core/boba-llm" },
+    { name = "boba-openai", editable = "packages/infra/llm/boba-openai" },
+    { name = "boba-patterns", editable = "packages/core/boba-patterns" },
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-db-postgres"
+version = "0.1.0"
+source = { editable = "packages/infra/db/boba-db-postgres" }
+dependencies = [
+    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-html"
+version = "0.1.0"
+source = { editable = "packages/infra/format/boba-html" }
+dependencies = [
+    { name = "beautifulsoup4", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "markdownify", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "trafilatura", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "boba-indexing", editable = "packages/core/boba-indexing" },
+    { name = "lxml", specifier = ">=5.0" },
+    { name = "markdownify", specifier = ">=0.11,<1.0" },
+    { name = "trafilatura", specifier = ">=1.6" },
+]
+
+[[package]]
+name = "boba-indexing"
+version = "0.1.0"
+source = { editable = "packages/core/boba-indexing" }
+dependencies = [
+    { name = "boba-patterns", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "boba-patterns", editable = "packages/core/boba-patterns" }]
+
+[[package]]
+name = "boba-kbdoc"
+version = "0.1.0"
+source = { editable = "packages/infra/format/boba-kbdoc" }
+dependencies = [
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "boba-indexing", editable = "packages/core/boba-indexing" }]
+
+[[package]]
+name = "boba-liteparse"
+version = "0.1.0"
+source = { editable = "packages/infra/format/boba-liteparse" }
+dependencies = [
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-indexing", editable = "packages/core/boba-indexing" },
+    { name = "liteparse", specifier = ">=2,<3" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-llm"
+version = "0.1.0"
+source = { editable = "packages/core/boba-llm" }
+dependencies = [
+    { name = "boba-patterns", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-patterns", editable = "packages/core/boba-patterns" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-markdown"
+version = "0.1.0"
+source = { editable = "packages/infra/format/boba-markdown" }
+dependencies = [
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "markdown-it-py", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-indexing", editable = "packages/core/boba-indexing" },
+    { name = "markdown-it-py", specifier = ">=3.0" },
+]
+
+[[package]]
+name = "boba-openai"
+version = "0.1.0"
+source = { editable = "packages/infra/llm/boba-openai" }
+dependencies = [
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-patterns", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-indexing", editable = "packages/core/boba-indexing" },
+    { name = "boba-llm", editable = "packages/core/boba-llm" },
+    { name = "boba-patterns", editable = "packages/core/boba-patterns" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "openai", specifier = ">=1.0,<3" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-patterns"
+version = "0.1.0"
+source = { editable = "packages/core/boba-patterns" }
+
+[[package]]
+name = "boba-settings"
+version = "0.1.0"
+source = { editable = "packages/core/boba-settings" }
+dependencies = [
+    { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "omegaconf", specifier = ">=2.3,<3" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-text"
+version = "0.1.0"
+source = { editable = "packages/infra/format/boba-text" }
+dependencies = [
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "boba-indexing", editable = "packages/core/boba-indexing" }]
+
+[[package]]
+name = "boba-tool-chart"
+version = "0.1.0"
+source = { editable = "packages/tools/boba-tool-chart" }
+dependencies = [
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "plotly", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "plotly", specifier = ">=5.24,<6" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-tool-doc"
+version = "0.1.0"
+source = { editable = "packages/tools/boba-tool-doc" }
+dependencies = [
+    { name = "boba-liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-liteparse", editable = "packages/infra/format/boba-liteparse" },
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-tool-files"
+version = "0.1.0"
+source = { editable = "packages/tools/boba-tool-files" }
+dependencies = [
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-tool-kb"
+version = "0.1.0"
+source = { editable = "packages/tools/boba-tool-kb" }
+dependencies = [
+    { name = "beautifulsoup4", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-html", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-kbdoc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-transport-fs", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "fastembed", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "markdownify", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pgvector", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "boba-agent", editable = "packages/core/boba-agent" },
+    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-html", editable = "packages/infra/format/boba-html" },
+    { name = "boba-indexing", editable = "packages/core/boba-indexing" },
+    { name = "boba-kbdoc", editable = "packages/infra/format/boba-kbdoc" },
+    { name = "boba-liteparse", editable = "packages/infra/format/boba-liteparse" },
+    { name = "boba-openai", editable = "packages/infra/llm/boba-openai" },
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-text", editable = "packages/infra/format/boba-text" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-transport-fs", editable = "packages/infra/transport/boba-transport-fs" },
+    { name = "boba-transport-http", editable = "packages/infra/transport/boba-transport-http" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "fastembed", specifier = ">=0.4" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "lxml", specifier = ">=5.0" },
+    { name = "markdownify", specifier = ">=0.11,<1.0" },
+    { name = "openai", specifier = ">=1.0,<3" },
+    { name = "pgvector", specifier = ">=0.3" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-tool-postgres"
+version = "0.1.0"
+source = { editable = "packages/tools/boba-tool-postgres" }
+dependencies = [
+    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-tool-shell"
+version = "0.1.0"
+source = { editable = "packages/tools/boba-tool-shell" }
+dependencies = [
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-tool-web"
+version = "0.1.0"
+source = { editable = "packages/tools/boba-tool-web" }
+dependencies = [
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-tools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-workspace", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "markdownify", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-indexing", editable = "packages/core/boba-indexing" },
+    { name = "boba-settings", editable = "packages/core/boba-settings" },
+    { name = "boba-tools", editable = "packages/core/boba-tools" },
+    { name = "boba-transport-http", editable = "packages/infra/transport/boba-transport-http" },
+    { name = "boba-workspace", editable = "packages/core/boba-workspace" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "markdownify", specifier = ">=0.11,<1.0" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-tools"
+version = "0.1.0"
+source = { editable = "packages/core/boba-tools" }
+dependencies = [
+    { name = "boba-patterns", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "dishka", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-patterns", editable = "packages/core/boba-patterns" },
+    { name = "dishka", specifier = ">=1.9" },
+    { name = "pydantic", specifier = ">=2.10,<2.11" },
+]
+
+[[package]]
+name = "boba-transport-fs"
+version = "0.1.0"
+source = { editable = "packages/infra/transport/boba-transport-fs" }
+dependencies = [
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "boba-indexing", editable = "packages/core/boba-indexing" }]
+
+[[package]]
+name = "boba-transport-http"
+version = "0.1.0"
+source = { editable = "packages/infra/transport/boba-transport-http" }
+dependencies = [
+    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-indexing", editable = "packages/core/boba-indexing" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+]
+
+[[package]]
+name = "boba-workspace"
+version = "0.1.0"
+source = { editable = "packages/core/boba-workspace" }
+dependencies = [
+    { name = "boba-patterns", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "boba-patterns", editable = "packages/core/boba-patterns" }]
+
+[[package]]
+name = "certifi"
+version = "2026.5.20"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "certifi-2026.5.20-py3-none-any.whl" },
+]
+
+[[package]]
+name = "chainlit"
+version = "2.11.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "aiofiles", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "asyncer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "click", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "dataclasses-json", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "fastapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "filetype", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "lazify", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "literalai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "mcp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "nest-asyncio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pyjwt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-dotenv", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-multipart", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-socketio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "syncer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tomli", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "watchfiles", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "chainlit-2.11.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "charset-normalizer"
+version = "3.4.7"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "charset_normalizer-3.4.7-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "chevron"
+version = "0.14.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "chevron-0.14.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "click"
+version = "8.4.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "click-8.4.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "colorama-0.4.6-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "courlan"
+version = "1.4.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "babel", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tld", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "urllib3", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "courlan-1.4.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "cuid"
+version = "0.4"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "cuid-0.4-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "dataclasses-json"
+version = "0.6.7"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "marshmallow", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-inspect", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "dataclasses_json-0.6.7-py3-none-any.whl" },
+]
+
+[[package]]
+name = "dateparser"
+version = "1.4.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "python-dateutil", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pytz", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "regex", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tzlocal", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "dateparser-1.4.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "decorator"
+version = "5.3.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "decorator-5.3.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "deprecated"
+version = "1.3.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "wrapt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "deprecated-1.3.1-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "detect-installer"
+version = "0.1.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "detect_installer-0.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "dishka"
+version = "1.10.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "dishka-1.10.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "distro"
+version = "1.9.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "distro-1.9.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "dnspython"
+version = "2.8.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "dnspython-2.8.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "email-validator"
+version = "2.3.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "dnspython", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "idna", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "email_validator-2.3.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "fastapi"
+version = "0.137.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "annotated-doc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-inspection", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "fastapi-0.137.1-py3-none-any.whl" },
+]
+
+[package.optional-dependencies]
+standard = [
+    { name = "email-validator", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "fastapi-cli", extra = ["standard"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "fastar", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "jinja2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic-extra-types", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-multipart", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", extra = ["standard"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "fastapi-cli"
+version = "0.0.24"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "rich-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", extra = ["standard"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "fastapi_cli-0.0.24-py3-none-any.whl" },
+]
+
+[package.optional-dependencies]
+standard = [
+    { name = "fastapi-cloud-cli", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", extra = ["standard"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "fastapi-cloud-cli"
+version = "0.20.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "detect-installer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "fastar", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", extra = ["email"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "rich-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "rignore", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "sentry-sdk", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", extra = ["standard"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "fastapi_cloud_cli-0.20.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "fastar"
+version = "0.11.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "fastar-0.11.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "fastembed"
+version = "0.8.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "huggingface-hub", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "loguru", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "mmh3", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "numpy", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "onnxruntime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pillow", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "py-rust-stemmers", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "requests", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tokenizers", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tqdm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "fastembed-0.8.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "filelock"
+version = "3.29.4"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "filelock-3.29.4-py3-none-any.whl" },
+]
+
+[[package]]
+name = "filetype"
+version = "1.2.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "filetype-1.2.0-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "flatbuffers"
+version = "25.12.19"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "flatbuffers-25.12.19-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "frozenlist"
+version = "1.8.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "frozenlist-1.8.0-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl" },
+]
+
+[[package]]
+name = "fsspec"
+version = "2026.6.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "fsspec-2026.6.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "googleapis-common-protos"
+version = "1.75.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "protobuf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "googleapis_common_protos-1.75.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "grpcio"
+version = "1.81.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "grpcio-1.81.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
+]
+
+[[package]]
+name = "gssapi"
+version = "1.11.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "decorator", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "gssapi-1.11.1-cp311-abi3-linux_x86_64.whl" },
+]
+
+[[package]]
+name = "h11"
+version = "0.16.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "h11-0.16.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "h2"
+version = "4.3.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "hpack", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "hyperframe", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "h2-4.3.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "hf-xet"
+version = "1.5.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "hf_xet-1.5.1-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
+]
+
+[[package]]
+name = "hpack"
+version = "4.1.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "hpack-4.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "htmldate"
+version = "1.10.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "charset-normalizer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "dateparser", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-dateutil", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "urllib3", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "htmldate-1.10.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "httpcore"
+version = "1.0.9"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "certifi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "h11", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "httpcore-1.0.9-py3-none-any.whl" },
+]
+
+[[package]]
+name = "httptools"
+version = "0.8.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "httptools-0.8.0-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl" },
+]
+
+[[package]]
+name = "httpx"
+version = "0.28.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "certifi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpcore", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "idna", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "httpx-0.28.1-py3-none-any.whl" },
+]
+
+[package.optional-dependencies]
+http2 = [
+    { name = "h2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "httpx-sse"
+version = "0.4.3"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "httpx_sse-0.4.3-py3-none-any.whl" },
+]
+
+[[package]]
+name = "huggingface-hub"
+version = "1.19.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "click", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "filelock", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "fsspec", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "hf-xet", marker = "(python_full_version < '3.12' and platform_machine == 'AMD64' and sys_platform == 'linux') or (python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and platform_machine == 'amd64' and sys_platform == 'linux') or (python_full_version < '3.12' and platform_machine == 'arm64' and sys_platform == 'linux') or (python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tqdm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "huggingface_hub-1.19.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "hyperframe"
+version = "6.1.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "hyperframe-6.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "idna"
+version = "3.18"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "idna-3.18-py3-none-any.whl" },
+]
+
+[[package]]
+name = "inflection"
+version = "0.5.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "inflection-0.5.1-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "jinja2"
+version = "3.1.6"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "markupsafe", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "jinja2-3.1.6-py3-none-any.whl" },
+]
+
+[[package]]
+name = "jiter"
+version = "0.15.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "jiter-0.15.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "jsonpatch"
+version = "1.33"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "jsonpointer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "jsonpatch-1.33-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "jsonpointer"
+version = "3.1.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "jsonpointer-3.1.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "jsonschema"
+version = "4.26.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "attrs", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "jsonschema-specifications", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "referencing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "rpds-py", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "jsonschema-4.26.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "jsonschema-specifications"
+version = "2025.9.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "referencing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "jsonschema_specifications-2025.9.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "justext"
+version = "3.0.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "lxml", extra = ["html-clean"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "justext-3.0.2-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "krb5"
+version = "0.9.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "krb5-0.9.0-cp311-abi3-linux_x86_64.whl" },
+]
+
+[[package]]
+name = "langchain"
+version = "1.3.9"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langgraph", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langchain-1.3.9-py3-none-any.whl" },
+]
+
+[package.optional-dependencies]
+openai = [
+    { name = "langchain-openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "langchain-core"
+version = "1.4.7"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "jsonpatch", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langchain-protocol", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langsmith", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tenacity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uuid-utils", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langchain_core-1.4.7-py3-none-any.whl" },
+]
+
+[[package]]
+name = "langchain-openai"
+version = "1.3.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tiktoken", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langchain_openai-1.3.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "langchain-protocol"
+version = "0.0.17"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langchain_protocol-0.0.17-py3-none-any.whl" },
+]
+
+[[package]]
+name = "langgraph"
+version = "1.2.5"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langgraph-checkpoint", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langgraph-prebuilt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langgraph-sdk", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "xxhash", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langgraph-1.2.5-py3-none-any.whl" },
+]
+
+[[package]]
+name = "langgraph-checkpoint"
+version = "4.1.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "ormsgpack", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langgraph_checkpoint-4.1.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "langgraph-checkpoint-postgres"
+version = "3.1.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "langgraph-checkpoint", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "orjson", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg-pool", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langgraph_checkpoint_postgres-3.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "langgraph-prebuilt"
+version = "1.1.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langgraph-checkpoint", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langgraph_prebuilt-1.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "langgraph-sdk"
+version = "0.4.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langchain-protocol", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "orjson", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "websockets", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langgraph_sdk-0.4.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "langsmith"
+version = "0.8.16"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "orjson", marker = "python_full_version < '3.12' and platform_python_implementation != 'PyPy' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "requests", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "requests-toolbelt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uuid-utils", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "websockets", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "xxhash", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "zstandard", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "langsmith-0.8.16-py3-none-any.whl" },
+]
+
+[[package]]
+name = "lazify"
+version = "0.4.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "Lazify-0.4.0-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "ldap3"
+version = "2.9.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "pyasn1", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "ldap3-2.9.1-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "liteparse"
+version = "2.0.8"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "liteparse-2.0.8-cp311-cp311-manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "literalai"
+version = "0.1.201"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "chevron", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "traceloop-sdk", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "literalai-0.1.201-py3-none-any.whl" },
+]
+
+[[package]]
+name = "loguru"
+version = "0.7.3"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "loguru-0.7.3-py3-none-any.whl" },
+]
+
+[[package]]
+name = "lxml"
+version = "6.1.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "lxml-6.1.1-cp311-cp311-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[package.optional-dependencies]
+html-clean = [
+    { name = "lxml-html-clean", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "lxml-html-clean"
+version = "0.4.5"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "lxml_html_clean-0.4.5-py3-none-any.whl" },
+]
+
+[[package]]
+name = "markdown-it-py"
+version = "4.2.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "mdurl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "markdown_it_py-4.2.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "markdownify"
+version = "0.14.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "beautifulsoup4", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "six", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "markdownify-0.14.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "markupsafe"
+version = "3.0.3"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "markupsafe-3.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "marshmallow"
+version = "3.26.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "marshmallow-3.26.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "mcp"
+version = "1.12.4"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx-sse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "jsonschema", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic-settings", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-multipart", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "sse-starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "mcp-1.12.4-py3-none-any.whl" },
+]
+
+[[package]]
+name = "mdurl"
+version = "0.1.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "mdurl-0.1.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "mmh3"
+version = "5.2.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "mmh3-5.2.1-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl" },
+]
+
+[[package]]
+name = "multidict"
+version = "6.7.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "multidict-6.7.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "mypy-extensions"
+version = "1.1.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "mypy_extensions-1.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "nest-asyncio"
+version = "1.6.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "nest_asyncio-1.6.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "numpy"
+version = "2.4.6"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "numpy-2.4.6-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "omegaconf"
+version = "2.3.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "antlr4-python3-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "omegaconf-2.3.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "onnxruntime"
+version = "1.27.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "flatbuffers", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "numpy", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "protobuf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "onnxruntime-1.27.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "openai"
+version = "2.41.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "distro", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "jiter", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "sniffio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tqdm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "openai-2.41.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-api"
+version = "1.42.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_api-1.42.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-exporter-otlp-proto-common"
+version = "1.42.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-proto", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_exporter_otlp_proto_common-1.42.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-exporter-otlp-proto-grpc"
+version = "1.42.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "googleapis-common-protos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "grpcio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-exporter-otlp-proto-common", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-proto", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-sdk", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_exporter_otlp_proto_grpc-1.42.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-exporter-otlp-proto-http"
+version = "1.42.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "googleapis-common-protos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-exporter-otlp-proto-common", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-proto", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-sdk", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "requests", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_exporter_otlp_proto_http-1.42.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "wrapt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-agno"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_agno-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-alephalpha"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_alephalpha-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-anthropic"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_anthropic-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-bedrock"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_bedrock-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-chromadb"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_chromadb-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-cohere"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_cohere-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-crewai"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_crewai-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-google-generativeai"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_google_generativeai-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-groq"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_groq-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-haystack"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_haystack-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-lancedb"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_lancedb-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-langchain"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_langchain-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-llamaindex"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "inflection", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_llamaindex-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-logging"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_logging-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-marqo"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_marqo-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-mcp"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_mcp-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-milvus"
+version = "0.60.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_milvus-0.60.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-mistralai"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_mistralai-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-ollama"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_ollama-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-openai"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_openai-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-openai-agents"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_openai_agents-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-pinecone"
+version = "0.60.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_pinecone-0.60.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-qdrant"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_qdrant-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-redis"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "wrapt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_redis-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-replicate"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_replicate-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-requests"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-util-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_requests-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-sagemaker"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_sagemaker-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-sqlalchemy"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "wrapt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_sqlalchemy-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-threading"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "wrapt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_threading-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-together"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_together-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-transformers"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_transformers-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-urllib3"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-util-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "wrapt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_urllib3-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-vertexai"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_vertexai-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-voyageai"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_voyageai-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-watsonx"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_watsonx-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-weaviate"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_weaviate-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-writer"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_instrumentation_writer-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "1.42.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "protobuf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_proto-1.42.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-sdk"
+version = "1.42.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_sdk-1.42.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-semantic-conventions"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_semantic_conventions-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-semantic-conventions-ai"
+version = "0.5.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "opentelemetry-sdk", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "opentelemetry_semantic_conventions_ai-0.5.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "opentelemetry-util-http"
+version = "0.63b1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "opentelemetry_util_http-0.63b1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "orjson"
+version = "3.11.9"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "orjson-3.11.9-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "ormsgpack"
+version = "1.12.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "ormsgpack-1.12.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "packaging"
+version = "26.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "packaging-26.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pgvector"
+version = "0.4.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "numpy", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "pgvector-0.4.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pillow"
+version = "12.2.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "pillow-12.2.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "plotly"
+version = "5.24.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "packaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tenacity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "plotly-5.24.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "propcache"
+version = "0.5.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "propcache-0.5.2-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "protobuf"
+version = "6.33.6"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "psycopg"
+version = "3.3.4"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "psycopg-3.3.4-py3-none-any.whl" },
+]
+
+[package.optional-dependencies]
+binary = [
+    { name = "psycopg-binary", marker = "python_full_version < '3.12' and implementation_name != 'pypy' and sys_platform == 'linux'" },
+]
+pool = [
+    { name = "psycopg-pool", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "psycopg-binary"
+version = "3.3.4"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "psycopg_binary-3.3.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
+]
+
+[[package]]
+name = "psycopg-pool"
+version = "3.3.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "psycopg_pool-3.3.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "py-rust-stemmers"
+version = "0.1.8"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "py_rust_stemmers-0.1.8-cp311-cp311-manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "pyasn1"
+version = "0.6.3"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "pyasn1-0.6.3-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pydantic"
+version = "2.10.6"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "annotated-types", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "pydantic-2.10.6-py3-none-any.whl" },
+]
+
+[package.optional-dependencies]
+email = [
+    { name = "email-validator", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "pydantic-core"
+version = "2.27.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "pydantic_core-2.27.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "pydantic-extra-types"
+version = "2.11.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "pydantic_extra_types-2.11.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pydantic-settings"
+version = "2.14.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-dotenv", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-inspection", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "pydantic_settings-2.14.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pygments"
+version = "2.20.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "pygments-2.20.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pyjwt"
+version = "2.13.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "pyjwt-2.13.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "python-dateutil"
+version = "2.9.0.post0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "six", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "python_dateutil-2.9.0.post0-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "python-dotenv"
+version = "1.2.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "python_dotenv-1.2.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "python-engineio"
+version = "4.13.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "simple-websocket", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "python_engineio-4.13.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "python-multipart"
+version = "0.0.32"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "python_multipart-0.0.32-py3-none-any.whl" },
+]
+
+[[package]]
+name = "python-socketio"
+version = "5.16.3"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "bidict", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-engineio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "python_socketio-5.16.3-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pytz"
+version = "2026.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "pytz-2026.2-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "pyyaml"
+version = "6.0.3"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "referencing"
+version = "0.37.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "attrs", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "rpds-py", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "referencing-0.37.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "regex"
+version = "2026.5.9"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "regex-2026.5.9-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "requests"
+version = "2.34.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "certifi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "charset-normalizer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "idna", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "urllib3", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "requests-2.34.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "requests-toolbelt"
+version = "1.0.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "requests", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "requests_toolbelt-1.0.0-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "rich"
+version = "15.0.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "markdown-it-py", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pygments", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "rich-15.0.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "rich-toolkit"
+version = "0.20.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "click", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "rich", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "rich_toolkit-0.20.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "rignore"
+version = "0.7.6"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "rignore-0.7.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "rpds-py"
+version = "2026.5.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "rpds_py-2026.5.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "sentry-sdk"
+version = "2.63.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "certifi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "urllib3", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "sentry_sdk-2.63.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "shellingham"
+version = "1.5.4"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "shellingham-1.5.4-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "simple-websocket"
+version = "1.1.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "wsproto", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "simple_websocket-1.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "six"
+version = "1.17.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "six-1.17.0-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "sniffio"
+version = "1.3.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "sniffio-1.3.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "soupsieve"
+version = "2.8.4"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "soupsieve-2.8.4-py3-none-any.whl" },
+]
+
+[[package]]
+name = "sse-starlette"
+version = "3.4.4"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "sse_starlette-3.4.4-py3-none-any.whl" },
+]
+
+[[package]]
+name = "starlette"
+version = "1.3.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "starlette-1.3.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "syncer"
+version = "2.0.3"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "syncer-2.0.3-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "tabulate"
+version = "0.10.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "tabulate-0.10.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "tenacity"
+version = "9.1.4"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "tenacity-9.1.4-py3-none-any.whl" },
+]
+
+[[package]]
+name = "tiktoken"
+version = "0.13.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "regex", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "requests", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "tiktoken-0.13.0-cp311-cp311-manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "tld"
+version = "0.13.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "tld-0.13.2-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "tokenizers"
+version = "0.23.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "huggingface-hub", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "tokenizers-0.23.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "tomli"
+version = "2.4.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "tomli-2.4.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "tqdm"
+version = "4.68.2"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "tqdm-4.68.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "traceloop-sdk"
+version = "0.61.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "aiohttp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "colorama", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "cuid", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "deprecated", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "jinja2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-api", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-agno", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-alephalpha", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-anthropic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-bedrock", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-chromadb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-cohere", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-crewai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-google-generativeai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-groq", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-haystack", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-lancedb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-langchain", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-llamaindex", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-logging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-marqo", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-mcp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-milvus", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-mistralai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-ollama", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-openai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-openai-agents", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-pinecone", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-qdrant", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-redis", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-replicate", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-requests", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-sagemaker", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-sqlalchemy", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-threading", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-together", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-transformers", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-urllib3", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-vertexai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-voyageai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-watsonx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-weaviate", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-instrumentation-writer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-sdk", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "opentelemetry-semantic-conventions-ai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "tenacity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "traceloop_sdk-0.61.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "trafilatura"
+version = "2.1.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "certifi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "charset-normalizer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "courlan", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "htmldate", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "justext", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "urllib3", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "trafilatura-2.1.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "typer"
+version = "0.25.1"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "annotated-doc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "click", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "rich", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "shellingham", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "typer-0.25.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "typing-extensions"
+version = "4.15.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "typing_extensions-4.15.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "typing-inspect"
+version = "0.9.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "mypy-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "typing_inspect-0.9.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "typing-inspection"
+version = "0.4.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "typing_inspection-0.4.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "tzlocal"
+version = "5.4"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "tzlocal-5.4-py3-none-any.whl" },
+]
+
+[[package]]
+name = "urllib3"
+version = "2.7.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "urllib3-2.7.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "uuid-utils"
+version = "0.16.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "uuid_utils-0.16.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "uvicorn"
+version = "0.49.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "click", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "h11", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "uvicorn-0.49.0-py3-none-any.whl" },
+]
+
+[package.optional-dependencies]
+standard = [
+    { name = "httptools", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-dotenv", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvloop", marker = "python_full_version < '3.12' and platform_python_implementation != 'PyPy' and sys_platform == 'linux'" },
+    { name = "watchfiles", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "websockets", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "uvloop"
+version = "0.22.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "uvloop-0.22.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "watchfiles"
+version = "1.2.0"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "watchfiles-1.2.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "websockets"
+version = "15.0.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "websockets-15.0.1-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "wrapt"
+version = "2.2.1"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "wrapt-2.2.1-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl" },
+]
+
+[[package]]
+name = "wsproto"
+version = "1.3.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "h11", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "wsproto-1.3.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "xxhash"
+version = "3.7.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "xxhash-3.7.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "yarl"
+version = "1.24.2"
+source = { registry = "build/artifacts/wheels" }
+dependencies = [
+    { name = "idna", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "multidict", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "propcache", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+wheels = [
+    { path = "yarl-1.24.2-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "zstandard"
+version = "0.25.0"
+source = { registry = "build/artifacts/wheels" }
+wheels = [
+    { path = "zstandard-0.25.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
+]

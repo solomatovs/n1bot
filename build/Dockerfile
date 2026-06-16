@@ -17,7 +17,7 @@ RUN printf '%s\n' \
         > /etc/apt/apt.conf.d/90noninteractive
 
 # override sources.list
-COPY build/artifacts/local/apt-sources.list* /tmp/aptsrc/
+COPY build/artifacts/apt-sources.list* /tmp/aptsrc/
 RUN if [ -f /tmp/aptsrc/apt-sources.list ] && \
         grep -qvE '^[[:space:]]*(#|$)' /tmp/aptsrc/apt-sources.list; then \
         cp /tmp/aptsrc/apt-sources.list /etc/apt/sources.list; \
@@ -25,7 +25,7 @@ RUN if [ -f /tmp/aptsrc/apt-sources.list ] && \
     && rm -rf /tmp/aptsrc
 
 # корпоративные CA
-COPY build/artifacts/local/ca-chain.crt* /tmp/cacrt/
+COPY build/artifacts/ca-chain.crt* /tmp/cacrt/
 RUN if [ -f /tmp/cacrt/ca-chain.crt ] && grep -qE '^-----BEGIN CERTIFICATE-----' /tmp/cacrt/ca-chain.crt; then \
         cp /tmp/cacrt/ca-chain.crt /usr/local/share/ca-certificates/ca-chain.crt \
         && update-ca-certificates; \
@@ -109,7 +109,6 @@ RUN cd /tmp \
         --with-ensurepip=install \
     && make -j"$(nproc)" \
     && make install DESTDIR=${PYTHON_PATH} \
-    && cd / \
     && rm -rf /tmp/*
 
 
@@ -120,6 +119,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 \
         liblzma5 libreadline7 libncurses5 zlib1g curl \
+        libkrb5-dev krb5-user \
         imagemagick \
         libreoffice-writer libreoffice-calc libreoffice-impress \
         ghostscript \
@@ -129,7 +129,6 @@ RUN apt-get update \
         dnsutils \
         vim \
         telnet \
-        libkrb5-dev krb5-user \
     && rm -rf /var/lib/apt/lists/*
 
 # PDF-coder ImageMagick
@@ -168,18 +167,29 @@ ENV LANG=ru_RU.UTF-8 \
 # gcc 8 и python 3.11
 COPY --from=builder ${GCC_PATH} /
 COPY --from=builder ${PYTHON_PATH} /
+
 RUN set -eux; \
+    printf '%s\n' /usr/local/lib64 /usr/local/lib > /etc/ld.so.conf.d/000-gcc8.conf; \
     ldconfig; \
+    ldconfig -p | grep -q '/usr/local/lib64/libstdc++.so.6' && echo "libstdc++ gcc8: OK"; \
     ldd --version | head -n1; \
     gcc --version | head -n1; \
     python3 --version; \
     pip3 --version
 
+# pip.conf
+COPY build/artifacts/pip.conf* /tmp/pipconf/
+RUN if [ -f /tmp/pipconf/pip.conf ]; then cp /tmp/pipconf/pip.conf /etc/pip.conf; fi && rm -rf /tmp/pipconf
+
+# uv.toml
+COPY build/artifacts/uv.toml* /tmp/uvconf/
+RUN if [ -f /tmp/uvconf/uv.toml ]; then mkdir -p /etc/uv && cp /tmp/uvconf/uv.toml /etc/uv/uv.toml; fi && rm -rf /tmp/uvconf
+
+# uv — offline-пакетный менеджер рядом с pip (статич. бинарь; есть в boba-base и runtime-образе)
+COPY build/artifacts/bin/uv /usr/local/bin/uv
+
 FROM base AS deps
 
-# pip.conf
-COPY build/artifacts/local/pip.conf* /tmp/pipconf/
-RUN if [ -f /tmp/pipconf/pip.conf ]; then cp /tmp/pipconf/pip.conf /etc/pip.conf; fi && rm -rf /tmp/pipconf
 COPY build/artifacts/wheels/ /tmp/wheels/
 
 # copy from sources
@@ -191,14 +201,12 @@ COPY packages/ /tmp/boba/packages/
 RUN set -eu; \
     pkgs=$(find /tmp/boba/packages -mindepth 1 -name pyproject.toml -printf '%h\n' | sort); \
     names=$(for p in $pkgs; do basename "$p"; done); \
-    pip3 install --no-cache-dir --no-index --find-links=/tmp/wheels $pkgs && \
-    pip3 uninstall -y $names
+    uv pip install --system --no-index --find-links=/tmp/wheels $pkgs && \
+    uv pip uninstall --system $names
+
 
 FROM base
 
-# опц. pip.conf (glob *.example всегда матчится — COPY не падает без файла)
-COPY build/artifacts/local/pip.conf* /tmp/pipconf/
-RUN if [ -f /tmp/pipconf/pip.conf ]; then cp /tmp/pipconf/pip.conf /etc/pip.conf; fi && rm -rf /tmp/pipconf
 COPY build/artifacts/wheels/ /tmp/wheels/
 
 COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
@@ -209,7 +217,7 @@ COPY --from=deps /usr/local/bin                          /usr/local/bin
 COPY packages/ /app/packages/
 RUN set -eu; \
     for d in $(find /app/packages -mindepth 1 -name pyproject.toml -printf '%h\n' | sort); do \
-      pip3 install --no-cache-dir --no-deps --no-index --find-links=/tmp/wheels "$d"; \
+      uv pip install --system --no-deps --no-index --find-links=/tmp/wheels "$d"; \
     done
 
 # OCR-модели
@@ -220,6 +228,9 @@ ENV TESSDATA_PREFIX=/opt/tessdata \
 # liteparse 2.0 hotfix, rus+eng link
 RUN ln -sf eng.traineddata /opt/tessdata/rus+eng.traineddata && \
     ln -sf rus.traineddata /opt/tessdata/eng+rus.traineddata
+
+# embedding-веса fastembed
+COPY build/artifacts/fastembed/ /opt/fastembed/
 
 WORKDIR /app
 EXPOSE 8501

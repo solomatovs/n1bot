@@ -1,25 +1,14 @@
-# Контекст сборки образов boba — корень исходников boba/.
-# В сборку нужны только packages/ (исходники) и build/artifacts/ (offline-зависимости).
-# По умолчанию игнорируем всё, ниже включаем нужное и вырезаем тяжёлое.
-#
-# Рассчитано на legacy-builder (старый docker без BuildKit): не используем
-# re-include файлов из исключённого каталога — только исключение подкаталогов
-# у включённого родителя.
-
 *
 
 !packages
 !build
 
-# исходники: чистим мусор
 packages/**/__pycache__
 packages/**/*.egg-info
 
-# build/: нужны Dockerfile'ы и artifacts (wheels/tessdata/local/*-src), без тяжёлого/служебного
 build/.git
 build/artifacts/.git
 build/artifacts/images
-build/artifacts/local/cache
 build/artifacts/local/workspaces
 build/artifacts/local/logs
 build/artifacts/local/chainlit

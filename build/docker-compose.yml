@@ -1,18 +1,15 @@
-# Только запуск. Сборка образа — через `make build` (docker build), см. ./Dockerfile.
-# Тег по умолчанию latest, чтобы compose поднимался без заданного BOBA_TAG.
-# local/ живёт в offline-репо artifacts → пути ./artifacts/local.
-x-boba-base: &boba-base
-  image: boba:${BOBA_TAG:-latest}
-  env_file:
-    - ./artifacts/local/.env
-  volumes:
-    - ./artifacts/local:/app/local
-
 services:
   chainlit:
-    <<: *boba-base
-    hostname: boba-chainlit
+    image: boba:${BOBA_TAG}
+    hostname: chainlit
+    container_name: chainlit
     entrypoint: ["boba-chainlit"]
+    environment:
+      - BOBA_CONFIG_PATH=/app/local/chainlit-${BOBA_TAG}.toml
+      - CHAINLIT_APP_ROOT=/app/local
+      - CHAINLIT_URL_PREFIX=/boba
+    volumes:
+      - ./local:/app/local
     expose:
       - "8501"
     ports:
@@ -26,25 +23,24 @@ services:
     networks:
       default:
         aliases:
-          - boba-chainlit
+          - chainlit
     restart: unless-stopped
 
-  # chainlit2 (langgraph + kerberos SSO/делегирование); запускается модулем
-  # (console-script нет), читает /app/local/chainlit2.toml. profile=chainlit2,
-  # чтобы не поднимался вместе с chainlit v1 по умолчанию.
-  # Для kerberos смонтируйте keytab и krb5.conf (см. ниже) и задайте SPN в конфиге.
   chainlit2:
-    <<: *boba-base
+    image: boba:${BOBA_TAG}
+    hostname: chainlit2
+    container_name: chainlit2
     profiles: ["chainlit2"]
-    hostname: boba-chainlit2
     entrypoint: ["python3", "-m", "boba.chainlit2.main"]
-    # keytab + krb5.conf нужны для SPNEGO-accept и делегирования (положить в artifacts/local/)
-    volumes:
-      - ./artifacts/local:/app/local
-      - ./artifacts/local/krb5.keytab:/etc/krb5.keytab:ro
-      - ./artifacts/local/krb5.conf:/etc/krb5.conf:ro
     environment:
+      - BOBA_CONFIG_PATH=/app/local/chainlit2-${BOBA_TAG}.toml
+      - CHAINLIT_APP_ROOT=/app/local
+      - CHAINLIT_URL_PREFIX=/boba2
       - KRB5_KTNAME=/etc/krb5.keytab
+    volumes:
+      - ./local:/app/local
+      - ./local/krb5.keytab:/etc/krb5.keytab:ro
+      - ./local/krb5.conf:/etc/krb5.conf:ro
     expose:
       - "8502"
     ports:
@@ -52,48 +48,32 @@ services:
     networks:
       default:
         aliases:
-          - boba-chainlit2
+          - chainlit2
     restart: unless-stopped
 
   # cli agent
   cli-agent:
-    <<: *boba-base
-    profiles: ["cli"]
+    image: boba:${BOBA_TAG}
+    hostname: cli-agent
+    container_name: cli-agent
+    profiles: ["cli-agent"]
     entrypoint: ["boba-cli"]
+    environment:
+      - BOBA_CONFIG_PATH=/app/local/config-${BOBA_TAG}.toml
+      - CHAINLIT_APP_ROOT=/app/local
+    volumes:
+      - ./local:/app/local
 
   # [cli.kb.bootstrap] — накатывает миграции (схема таблиц)
   kb-bootstrap:
-    <<: *boba-base
+    image: boba:${BOBA_TAG}
     profiles: ["kb"]
     entrypoint: ["python3", "-m", "boba.tool.kb.cli.kb_bootstrap"]
-
-
-  # [cli.kb.confluence.ingest] — индексация страниц Confluence по HTTP в KB
-  kb-confluence-ingest:
-    <<: *boba-base
-    profiles: ["kb"]
-    entrypoint: ["python3", "-m", "boba.tool.kb.cli.confluence.ingest"]
-
-
-  # [cli.kb.confluence_doc.ingest] — индексация заранее подготовленных md-файлов
-  kb-confluence-doc-ingest:
-    <<: *boba-base
-    profiles: ["kb"]
-    entrypoint: ["python3", "-m", "boba.tool.kb.cli.confluence_doc"]
-
-
-  # [cli.kb.confluence.download] — скачивание страниц Confluence на ФС
-  kb-confluence-download:
-    <<: *boba-base
-    profiles: ["kb"]
-    entrypoint: ["python3", "-m", "boba.tool.kb.cli.confluence.download"]
-
-
-  # [cli.kb.search.render] — рендер SQL поискового запроса к KB (без LLM)
-  kb-search-render:
-    <<: *boba-base
-    profiles: ["kb"]
-    entrypoint: ["python3", "-m", "boba.tool.kb.cli.search"]
+    environment:
+      - BOBA_CONFIG_PATH=/app/local/config-${BOBA_TAG}.toml
+      - CHAINLIT_APP_ROOT=/app/local
+    volumes:
+      - ./local:/app/local
 
 networks:
   default:
