@@ -20,6 +20,7 @@ __pycache__
 # setuptools / python -m build артефакты
 packages/**/build/
 packages/**/dist/
+/build/artifacts/
 chroma_debug_db
 # Chainlit runtime artifacts
 .chainlit/translations/
