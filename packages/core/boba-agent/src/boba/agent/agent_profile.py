@@ -49,6 +49,9 @@ class AgentProfile(BaseModel):
     system_prompt_dir: str = Field(
         description="Корневая директория .md/.txt-файлов с system-prompt.",
     )
+    models: list[str] = Field(
+        description="LLM-модели доступные приложению"
+    )
     model: str = Field(
         description="LLM-модель по умолчанию (напр. qwen3.5-35b). Обязательно.",
     )

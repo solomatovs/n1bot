@@ -469,10 +469,25 @@ class CredentialsAuthConfig(BaseModel):
     )
 
 
-class LdapDirectoryConfig(BaseModel):
-    """Общие параметры каталога AD: подключение, поиск пользователя, группы→роль."""
+class KerberosDelegationConfig(BaseModel):
+    """Constrained delegation: захват делегированного тикета юзера для бэкендов."""
 
     model_config = ConfigDict(extra="ignore")
+
+    ccache_template: str = Field(
+        default="MEMORY:agent-{principal}",
+        description="Шаблон имени ccache на пользователя {principal} подставляется",
+    )
+    renew: bool = Field(
+        default=True,
+        description="Продлевать renewable-тикет по запросу при ошибке истечения.",
+    )
+
+
+class KerberosAuthConfig(BaseModel):
+    """SSO через Kerberos/SPNEGO: тикет валидирует middleware, роль — из групп AD."""
+
+    type: Literal["kerberos"] = "kerberos"
 
     server: str = Field(
         description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
@@ -490,30 +505,11 @@ class LdapDirectoryConfig(BaseModel):
         default_factory=dict,
         description="DN группы → роль приложения; берётся первая совпавшая по порядку.",
     )
-
-
-class KerberosDelegationConfig(BaseModel):
-    """Constrained delegation: захват делегированного тикета юзера для бэкендов."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    ccache_template: str = Field(
-        default="MEMORY:agent-{principal}",
-        description="Шаблон имени ccache на пользователя {principal} подставляется",
-    )
-    renew: bool = Field(
-        default=True,
-        description="Продлевать renewable-тикет по запросу при ошибке истечения.",
-    )
-
-
-class KerberosAuthConfig(LdapDirectoryConfig):
-    """SSO через Kerberos/SPNEGO: тикет валидирует middleware, роль — из групп AD."""
-
-    type: Literal["kerberos"] = "kerberos"
-
     service_name: str = Field(
         description="SPN сервиса (HTTP/host@REALM), явно — без автоподбора из keytab.",
+    )
+    keytab: str  = Field(
+        description="Путь к keytab файлу",
     )
     header: str = Field(
         default="X-Remote-User",
@@ -529,10 +525,29 @@ class KerberosAuthConfig(LdapDirectoryConfig):
         return self.delegation is not None
 
 
-class LdapAuthConfig(LdapDirectoryConfig):
+class LdapAuthConfig(BaseModel):
     """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
 
     type: Literal["ldap"] = "ldap"
+
+    server: str = Field(
+        description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
+    )
+    base_dn: str = Field(
+        description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
+    )
+    user_filter: str = Field(
+        default="(sAMAccountName={username})",
+        description="LDAP-фильтр поиска пользователя; {username} подставляется.",
+    )
+    bind_dn_template: str = Field(
+        description="LDAP bind user; {username} подставляется",
+    )
+    group_role_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="DN группы → роль приложения; берётся первая совпавшая по порядку.",
+    )
+
 
 
 AuthConfig = Annotated[

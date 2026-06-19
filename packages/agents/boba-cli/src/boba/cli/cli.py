@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -57,7 +58,11 @@ def _run() -> int:
     argv = sys.argv[1:]
     overrides = [a for a in argv if "=" in a]
     query = " ".join(a for a in argv if "=" not in a) or None
-    config = build_app_config(argv=overrides)
+    # получаем настройки всего приложения
+    if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
+        raise ValueError("please pass env BOBA_CONFIG_PATH")
+
+    config = build_app_config(config_path=Path(config_path), argv=overrides)
     rt = bind(config, "cli.profile", AgentProfile)
     configure_logging(rt.log_level, rt.log_file)
 

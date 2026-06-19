@@ -9,6 +9,10 @@ pytest -m integration для запуска; default-режим (-m "not integra
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -18,6 +22,15 @@ from boba.tool.pg.executor import SqlExecutorConfig
 
 def _pg_cfg() -> SqlExecutorConfig:
     try:
+        # получаем настройки всего приложения
+        if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
+            raise ValueError("please pass env BOBA_CONFIG_PATH")
+
+        return bind(
+            build_app_config(config_path=Path(config_path), argv=sys.argv[1:]),
+            "tool.pg",
+            SqlExecutorConfig,
+        )
         return bind(build_app_config(), "tool.pg", SqlExecutorConfig)
     except ValidationError as e:
         pytest.skip(f"[tool.pg] не сконфигурирован: {e}")

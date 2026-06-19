@@ -163,7 +163,7 @@ class DumpingTransport(httpx.AsyncHTTPTransport):
         )
         self.log = logging.getLogger(type(self).__qualname__)
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx.Request):
         with contextlib.ExitStack() as stack:
             _dump = stack.enter_context(
                 self._channel.activate(self._dump_dir / self._request_label(request))
@@ -176,10 +176,8 @@ class DumpingTransport(httpx.AsyncHTTPTransport):
                 _dump.emit_message(f"attempt failed: {exc!r}")
                 raise
 
-            # _dump.emit_message(response.status_code)
-
             if not isinstance(response.stream, httpx.AsyncByteStream):
-                raise TypeError(...)
+                raise TypeError(f"response.stream is not valid: {response.stream}")
 
             # успех: владение ресурсами переезжает из функции в DumpStream
             return httpx.Response(

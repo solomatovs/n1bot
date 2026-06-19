@@ -88,6 +88,19 @@ class ThreadRepository(ABC):
     ) -> None: ...
 
     @abstractmethod
+    async def set_model(
+        self,
+        thread_id: ThreadId,
+        model: str,
+    ) -> None: ...
+
+    @abstractmethod
+    def get_model(
+        self,
+        thread_id: ThreadId,
+    ) -> str | None: ...
+
+    @abstractmethod
     async def set_user(
         self,
         thread_id: ThreadId,
@@ -178,6 +191,7 @@ class FsThreadRepository(ThreadRepository):
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         system_prompt: str | None = None,
+        model: str | None = None,
         enabled_tool_ids: list[str] | None = None,
     ) -> None:
         now = self._now()
@@ -190,6 +204,7 @@ class FsThreadRepository(ThreadRepository):
             tags=list(tags) if tags is not None else [],
             metadata=dict(metadata) if metadata is not None else {},
             system_prompt=system_prompt,
+            model=model,
             enabled_tool_ids=(
                 list(enabled_tool_ids) if enabled_tool_ids is not None else None
             ),
@@ -219,6 +234,28 @@ class FsThreadRepository(ThreadRepository):
             thread_id,
             lambda e: e.model_copy(update={"system_prompt": system_prompt}),
         )
+
+    async def set_model(
+        self,
+        thread_id: ThreadId,
+        model: str,
+    ) -> None:
+        await self._patch_entry(
+            thread_id,
+            lambda e: e.model_copy(update={"model": model}),
+        )
+
+    def get_model(
+        self,
+        thread_id: ThreadId,
+    ) -> str | None:
+        with self._sync_lock:
+            index = self._load_index()
+        entry = index.get(thread_id)
+        if entry is None:
+            return None
+
+        return entry.model
 
     async def set_user(
         self,

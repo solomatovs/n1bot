@@ -25,9 +25,11 @@ collection + runner-флаги) лежат в секции [cli.kb.confluence.in
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field
@@ -242,7 +244,11 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    config = build_app_config(argv=sys.argv[1:])
+    # получаем настройки всего приложения
+    if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
+        raise ValueError("please pass env BOBA_CONFIG_PATH")
+
+    config = build_app_config(config_path=Path(config_path), argv=sys.argv[1:])
     cfg = bind(config, "cli.kb.confluence.ingest", ConfluenceIngestCliConfig)
 
     if cfg.page_ids:

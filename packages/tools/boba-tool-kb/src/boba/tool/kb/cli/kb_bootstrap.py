@@ -27,7 +27,9 @@ CLI-флагов нет — всё берётся из конфига опера
 from __future__ import annotations
 
 import logging
+import os
 import time
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
@@ -60,7 +62,11 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    config = build_app_config()
+    # получаем настройки всего приложения
+    if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
+        raise ValueError("please pass env BOBA_CONFIG_PATH")
+
+    config = build_app_config(config_path=Path(config_path))
     cfg = bind(config, "cli.kb.bootstrap", KbBootstrapConfig)
 
     pool = KbPool.open(cfg.connection)

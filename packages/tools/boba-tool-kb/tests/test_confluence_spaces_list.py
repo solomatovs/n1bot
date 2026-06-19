@@ -1,5 +1,4 @@
 """confluence_list_spaces: реальный list spaces от Apache cwiki."""
-# pyright: reportCallIssue=false
 
 from __future__ import annotations
 
