@@ -113,36 +113,40 @@ members = [
 ]
 
 [tool.uv.sources]
-boba-patterns = { workspace = true }
-boba-settings = { workspace = true }
-boba-workspace = { workspace = true }
-boba-indexing = { workspace = true }
-boba-tools = { workspace = true }
-boba-llm = { workspace = true }
-boba-agent = { workspace = true }
-boba-openai = { workspace = true }
-boba-html = { workspace = true }
-boba-kbdoc = { workspace = true }
-boba-liteparse = { workspace = true }
-boba-markdown = { workspace = true }
-boba-text = { workspace = true }
-boba-transport-fs = { workspace = true }
+boba-patterns       = { workspace = true }
+boba-settings       = { workspace = true }
+boba-workspace      = { workspace = true }
+boba-indexing       = { workspace = true }
+boba-tools          = { workspace = true }
+boba-llm            = { workspace = true }
+boba-agent          = { workspace = true }
+boba-openai         = { workspace = true }
+boba-html           = { workspace = true }
+boba-kbdoc          = { workspace = true }
+boba-liteparse      = { workspace = true }
+boba-markdown       = { workspace = true }
+boba-text           = { workspace = true }
+boba-transport-fs   = { workspace = true }
 boba-transport-http = { workspace = true }
-boba-db-postgres = { workspace = true }
-boba-tool-chart = { workspace = true }
-boba-tool-doc = { workspace = true }
-boba-tool-files = { workspace = true }
-boba-tool-kb = { workspace = true }
-boba-tool-postgres = { workspace = true }
-boba-tool-shell = { workspace = true }
-boba-tool-web = { workspace = true }
-boba-cli = { workspace = true }
-boba-chainlit = { workspace = true }
-boba-chainlit2 = { workspace = true }
+boba-db-postgres    = { workspace = true }
+boba-tool-chart     = { workspace = true }
+boba-tool-doc       = { workspace = true }
+boba-tool-files     = { workspace = true }
+boba-tool-kb        = { workspace = true }
+boba-tool-postgres  = { workspace = true }
+boba-tool-shell     = { workspace = true }
+boba-tool-web       = { workspace = true }
+boba-cli            = { workspace = true }
+boba-chainlit       = { workspace = true }
+boba-chainlit2      = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
+]
 
 [tool.uv]
-no-index = true
-find-links = ["build/artifacts/wheels"]
 python-downloads = "never"
 python-preference = "only-system"
 environments = ["python_full_version >= '3.11' and python_full_version < '3.12' and sys_platform == 'linux'"]
