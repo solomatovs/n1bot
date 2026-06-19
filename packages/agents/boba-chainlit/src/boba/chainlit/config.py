@@ -23,7 +23,7 @@ class ChainlitConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    profile: AgentProfile = Field(default_factory=AgentProfile)  # pyright: ignore[reportArgumentType]
+    profile: AgentProfile = Field(description="agent profile")
 
     host: str = Field(
         default="127.0.0.1",
@@ -35,9 +35,7 @@ class ChainlitConfig(BaseModel):
     )
     url_prefix: str = Field(
         default="",
-        description=(
-            "URL-prefix для HTTP-роутинга под reverse-proxy"
-        ),
+        description=("URL-prefix для HTTP-роутинга под reverse-proxy"),
     )
     auth_secret: str = Field(
         description=(

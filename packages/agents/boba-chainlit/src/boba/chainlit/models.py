@@ -72,6 +72,7 @@ class ThreadMeta(BaseModel):
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     system_prompt: str | None = None
+    model: str | None = None
     # Whitelist tool_id'ов: None ⇒ все доступные (backward-compat).
     # Список ⇒ ровно эти; элементы вне текущего каталога молча игнорируются.
     enabled_tool_ids: list[str] | None = None
@@ -91,6 +92,7 @@ class ThreadIndexEntry(BaseModel):
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     system_prompt: str | None = None
+    model: str | None = None
     enabled_tool_ids: list[str] | None = None
     created_at: str
     updated_at: str

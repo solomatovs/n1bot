@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import ClassVar
 
 from boba.agent import (
     AgentBuilder,
     CompactHistoryDialogView,
     LLMPort,
     TurnBuilder,
+    TurnReducer,
+    TurnState,
 )
 from boba.agent.agent import Agent
 from boba.agent.history import HistoryService, JsonLinesHistoryService
@@ -66,7 +70,13 @@ class ChatSession:
         self._thread_id = thread_id
         self._available_tools = available_tools
         self._thread_repository = thread_repository
-        self._chainlit_config = bind(build_app_config(), "chainlit", ChainlitConfig)
+        # это капец, надо все это исправлять
+        if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
+            raise ValueError("please pass env BOBA_CONFIG_PATH")
+
+        self._chainlit_config = bind(
+            build_app_config(config_path=Path(config_path)), "chainlit", ChainlitConfig
+        )
         rt = self._chainlit_config.profile
 
         # Свежий shell на сессию (project) и на каждую history-службу:
@@ -92,8 +102,10 @@ class ChatSession:
 
         history: HistoryService = JsonLinesHistoryService(history_shell())
 
+        model = rt.model
+
         turn = (
-            TurnBuilder(rt.model)
+            TurnBuilder(model)
             .system_prompt_from_providers(
                 [
                     ThreadSystemPromptProvider(
@@ -110,6 +122,13 @@ class ChatSession:
             )
             .with_tool_catalog(catalog)
             .with_stream(rt.stream)
+            .use_reducer(
+                ThreadModelReducer(
+                    thread_repository=thread_repository,
+                    thread_id=thread_id,
+                    default_model=model,
+                )
+            )
         )
 
         terminal = LLMPort(llm, turn)
@@ -144,3 +163,33 @@ class ChatSession:
         with log_context(workspace_id=self._workspace_id):
             for event in self._agent.stream(query):
                 extra_sink.handle(event)
+
+
+class ThreadModelReducer(TurnReducer):
+    """Берёт модель из ctx.agent.agent_request.model."""
+
+    ID: ClassVar[str] = "model"
+
+    def __init__(
+        self, thread_repository: ThreadRepository, thread_id: ThreadId, default_model: str,
+    ) -> None:
+        self._thread_repository = thread_repository
+        self._thread_id = thread_id
+        self._default_model = default_model
+        self._priority = 10
+
+    def id(self) -> str:
+        return self.ID
+
+    def priority(self) -> int:
+        return self._priority
+
+    def apply(self, state: TurnState) -> TurnState:
+        model = self._thread_repository.get_model(self._thread_id)
+        if model:
+            state.model = model
+
+        if not model:
+            state.model = self._default_model
+
+        return state

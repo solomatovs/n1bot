@@ -2,27 +2,66 @@ import asyncio
 import base64
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import chainlit as cl
+from fastapi_gssapi import GSSAPIMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from boba.chainlit2.infra.config import (
     CredentialsAuthConfig,
     KerberosAuthConfig,
-    KerberosDelegationConfig,
-    LdapDirectoryConfig,
+    LdapAuthConfig,
 )
 
 UserCallback = Callable[..., Awaitable[cl.User | None]]
 
 
+class LDAPUserNotFoundErrorError(Exception):
+    pass
+
+
+class LDAPUnknownError(Exception):
+    def __init__(self, e: Exception):
+        self.e = e
+
+
 class ADDirectory:
     """Каталог AD: поиск пользователя, его группы (memberOf), проверка пароля."""
 
-    def __init__(self, c: LdapDirectoryConfig) -> None:
-        self._c = c
+    @staticmethod
+    @contextmanager
+    def _bind_with_password(
+        server: str,
+        bind_dn: str,
+        bind_password: str,
+    ):
+        from ldap3 import (  # noqa: PLC0415
+            Connection,
+            Server,
+        )
+        # from ldap3.core.exceptions import (
+        #     LDAPBindError,
+        #     LDAPException,
+        #     LDAPSocketOpenError,
+        # )
+
+        conn: Connection | None = None
+        try:
+            with Connection(
+                server=Server(host=server, get_info="ALL", connect_timeout=5),
+                user=bind_dn,
+                password=bind_password,
+                auto_bind="DEFAULT",
+            ) as conn:
+                yield conn
+        except Exception as e:
+            raise LDAPUnknownError(e) from e
+        finally:
+            if conn:
+                conn.unbind()
 
     @staticmethod
     def _username_from_principal(principal: str) -> str:
@@ -33,54 +72,44 @@ class ADDirectory:
             return principal.split("\\", 1)[1]
         return principal
 
-    def lookup(self, principal: str) -> tuple[str, list[str]] | None:
+    @staticmethod
+    def fetch_userdn_and_member_of(
+        server: str,
+        bind_dn: str,
+        bind_password: str,
+        search_base: str,
+        search_filter: str,
+    ) -> tuple[str, list[str]]:
         """Ищет пользователя: (DN, группы memberOf);"""
-        from ldap3 import ALL, Connection, Server  # noqa: PLC0415
-        from ldap3.core.exceptions import LDAPException  # noqa: PLC0415
+        with ADDirectory._bind_with_password(
+            server,
+            bind_dn,
+            bind_password,
+        ) as conn:
+            conn.search(
+                search_base=search_base,
+                search_filter=search_filter,
+                attributes=["memberOf"],
+            )
 
-        server = Server(self._c.server, get_info=ALL)
-        try:
-            with Connection(
-                server, self._c.bind_dn, self._c.bind_password, auto_bind=True
-            ) as conn:
-                conn.search(
-                    self._c.base_dn,
-                    self._c.user_filter.format(username=self._username_from_principal(principal)),
-                    attributes=["memberOf"],
-                )
-                if not conn.entries:
-                    return None
+            if not conn.entries:
+                raise LDAPUserNotFoundErrorError()
 
-                entry = conn.entries[0]
+            entry = conn.entries[0]
 
-                return str(entry.entry_dn), [str(g) for g in entry.memberOf.values]
-        except LDAPException:
-            return None
+            dn = str(entry.entry_dn)
+            member_of = [str(x) for x in entry.memberOf.values]
 
-    def verify_password(self, user_dn: str, password: str) -> bool:
-        """Проверка пароля bind'ом под DN пользователя; пустой пароль — отказ."""
-        from ldap3 import Connection, Server  # noqa: PLC0415
-        from ldap3.core.exceptions import LDAPException  # noqa: PLC0415
+            return dn, member_of
 
-        if not password:
-            return False
-
-        try:
-            with Connection(
-                Server(self._c.server), user_dn, password, auto_bind=True
-            ) as conn:
-                conn.unbind()
-                return True
-        except LDAPException:
-            return False
-
-    def role_of(self, groups: list[str]) -> str | None:
-        """Первая совпавшая роль по порядку group_role_map; None — доступ запрещён."""
-        for group_dn, role in self._c.group_role_map.items():
-            if group_dn in groups:
-                return role
-
-        return None
+    @staticmethod
+    def role_of(
+        group_dn_and_roles: Mapping[str, str], member_of: list[str]
+    ) -> Iterable[str]:
+        """Возвращает роли которые подключены пользователю"""
+        for group_dn, role in group_dn_and_roles.items():
+            if group_dn in member_of:
+                yield role
 
 
 class CredentialsAuth:
@@ -105,30 +134,6 @@ class CredentialsAuth:
             return None
 
         return password_auth
-
-
-class GroupRoleAuth:
-    """База kerberos/ldap: cl.User строится из групп AD"""
-
-    # provider кладётся в metadata пользователя; задаётся наследником
-    provider: str = ""
-
-    def __init__(self, c: LdapDirectoryConfig) -> None:
-        self._ad = ADDirectory(c)
-
-    def _user(self, identifier: str, groups: list[str]) -> cl.User | None:
-        """Единая сборка пользователя из групп: роль по карте или отказ."""
-        if (role := self._ad.role_of(groups)) is None:
-            return None
-
-        return cl.User(
-            identifier=identifier,
-            metadata={
-                "role": role,
-                "groups": groups,
-                "provider": self.provider,
-            },
-        )
 
 
 @dataclass(frozen=True)
@@ -229,6 +234,45 @@ class KerberosCredentialStore:
         return True
 
 
+# class GSSAPIMiddleware:
+#     def __init__(self, app: ASGIApp, *, spn: str | Name | None = None) -> None:
+#         if isinstance(spn, str):
+#             spn = Name(spn)
+
+#         self.app = app
+#         self.creds = Credentials(usage="accept", name=spn)
+
+#     async def __call__(self, scope: Scope, receive: Receive, send: Send):
+#         if scope["type"] != "http":
+#             return await self.app(scope, receive, send)
+#         headers = Headers(scope=scope)
+#         auth = headers.get("Authorization", "")
+#         if auth:
+#             ctx = SecurityContext(creds=self.creds)
+#             token = base64.b64decode(auth.split(" ")[1])
+#             gssresp = ctx.step(token)
+#             if ctx.complete:
+#                 username = str(ctx.initiator_name)
+#                 if username:
+#                     scope["username"] = username
+
+#                 async def send_gss(message: Message) -> None:
+#                     if message["type"] == "http.response.start" and gssresp:
+#                         message.setdefault("headers", [])
+#                         headers = MutableHeaders(scope=message)
+#                         headers["WWW-Authenticate"] = base64.b64encode(gssresp).decode(
+#                             "utf-8"
+#                         )
+#                     await send(message)
+
+#                 return await self.app(scope, receive, send_gss)
+
+#         resp = Response(
+#             status_code=401, headers=Headers({"WWW-Authenticate": "Negotiate"})
+#         )
+#         return await resp(scope, receive, send)
+
+
 class SpnegoMiddleware:
     """SPNEGO-accept на gssapi только на /auth/header: principal + захват delegated.
 
@@ -245,38 +289,36 @@ class SpnegoMiddleware:
         app: ASGIApp,
         *,
         service_name: str,
-        delegation: KerberosDelegationConfig | None,
+        config: KerberosAuthConfig,
         store: KerberosCredentialStore,
     ) -> None:
         self.app = app
-        self.service_name = service_name
-        self.delegation = delegation
+        self.config = config
         self.store = store
+        self.service_name = service_name
         self.logger = logging.getLogger(SpnegoMiddleware.__name__)
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        # SPNEGO нужен только на логине; всё прочее (включая cookie-JWT) — мимо
-        if scope["type"] != "http" or scope["path"] != self.AUTH_PATH:
-            await self.app(scope, receive, send)
-            return
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
 
         auth = dict(scope["headers"]).get(b"authorization", b"")
         if not auth.startswith(b"Negotiate "):
             await self._challenge(send)
-            return
+            return None
 
         ctx = self._accept(base64.b64decode(auth.split(b" ", 1)[1]))
         if ctx is None or not ctx.complete:
             await self._challenge(send)
-            return
+            return None
 
         principal = str(ctx.initiator_name)
         scope["username"] = principal
         # делегирование — только если задан конфиг; иначе просто аутентификация
-        if self.delegation is not None:
+        if self.config.delegation is not None:
             self._capture(principal, ctx)
 
-        await self.app(scope, receive, send)
+        return await self.app(scope, receive, send)
 
     def _accept(self, token: bytes):
         """Принимает SPNEGO-token строго под нашим SPN (без автоподбора из keytab)."""
@@ -285,7 +327,13 @@ class SpnegoMiddleware:
         try:
             # SPN указываем явно: берём ровно ту запись keytab, без магии
             name = gssapi.Name(self.service_name, gssapi.NameType.kerberos_principal)
-            creds = gssapi.Credentials(name=name, usage="accept")
+            creds = gssapi.Credentials(
+                name=name,
+                usage="accept",
+                store={
+                    b"keytab": self.config.keytab,
+                },
+            )
             ctx = gssapi.SecurityContext(creds=creds, usage="accept")
             ctx.step(token)
         except gssapi.exceptions.GSSError as exc:  # type: ignore[attr-defined]
@@ -306,9 +354,9 @@ class SpnegoMiddleware:
             )
             return
 
-        assert self.delegation is not None  # noqa: S101
+        assert self.config.delegation is not None  # noqa: S101
         safe = re.sub(r"[^\w.@-]", "_", principal)
-        ccache = self.delegation.ccache_template.format(principal=safe)
+        ccache = self.config.delegation.ccache_template.format(principal=safe)
         try:
             deleg.store(
                 store={b"ccache": ccache.encode()}, usage="initiate", overwrite=True
@@ -340,27 +388,27 @@ class SpnegoMiddleware:
         await send({"type": "http.response.body", "body": b""})
 
 
-class KerberosAuth(GroupRoleAuth):
+class KerberosAuth:
     """SSO через Kerberos/SPNEGO; роль — из групп AD; опц. сквозное делегирование."""
 
-    provider = "kerberos"
-
-    def __init__(self, c: KerberosAuthConfig, store: KerberosCredentialStore) -> None:
-        super().__init__(c)
+    def __init__(self, c: KerberosAuthConfig, store: KerberosCredentialStore):
         self._c = c
         self._store = store
+        self._provider = "kerberos"
+        self._activedirectory = ADDirectory
+        self._logger = logging.getLogger(KerberosAuth.__name__)
 
     def install(self, chainlit_app: ASGIApp) -> None:
-        # порядок add_middleware: последний — внешний, отрабатывает первым.
-        # SPNEGO (только на /auth/header) терминирует Negotiate, кладёт принципала
-        # в scope['username'] и захватывает delegated cred; затем PrincipalToHeader
-        # переносит его в заголовок, который читает header_auth_callback.
         chainlit_app.add_middleware(self._PrincipalToHeader, header=self._c.header)
+        # chainlit_app.add_middleware(
+        #     SpnegoMiddleware,
+        #     service_name=self._c.service_name,
+        #     config=self._c,
+        #     store=self._store,
+        # )
         chainlit_app.add_middleware(
-            SpnegoMiddleware,
-            service_name=self._c.service_name,
-            delegation=self._c.delegation,
-            store=self._store,
+            GSSAPIMiddleware,
+            spn=self._c.service_name,
         )
         cl.header_auth_callback(self._build_callback())
 
@@ -372,11 +420,39 @@ class KerberosAuth(GroupRoleAuth):
             if not principal:
                 return None
 
-            # личность подтверждена тикетом; группы берём из AD по принципалу
-            # (LDAP синхронный — в поток, чтобы не блокировать event loop)
-            found = await asyncio.to_thread(self._ad.lookup, principal)
-            groups = found[1] if found else []
-            return self._user(principal, groups)
+            try:
+                username = self._activedirectory._username_from_principal(principal)
+                search_filter = self._c.user_filter.format(username=username)
+
+                _user_dn, member_of = await asyncio.to_thread(
+                    self._activedirectory.fetch_userdn_and_member_of,
+                    server=self._c.server,
+                    bind_dn=self._c.bind_dn,
+                    bind_password=self._c.bind_password,
+                    search_base=self._c.base_dn,
+                    search_filter=search_filter,
+                )
+
+                roles = list(
+                    await asyncio.to_thread(
+                        self._activedirectory.role_of,
+                        group_dn_and_roles=self._c.group_role_map,
+                        member_of=member_of,
+                    )
+                )
+
+                return cl.User(
+                    identifier=username,
+                    metadata={
+                        "role": roles,
+                        "provider": self._provider,
+                    },
+                )
+            except LDAPUserNotFoundErrorError as _e:
+                return None
+            except Exception:
+                self._logger.exception("Couldn't perform ldap search")
+                return None
 
         return header_auth
 
@@ -396,10 +472,14 @@ class KerberosAuth(GroupRoleAuth):
             await self.app(scope, receive, send)
 
 
-class LdapAuth(GroupRoleAuth):
+class LdapAuth:
     """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
 
-    provider = "ldap"
+    def __init__(self, c: LdapAuthConfig):
+        self._provider = "ldap"
+        self._c = c
+        self._activedirectory = ADDirectory
+        self._logger = logging.getLogger(LdapAuth.__name__)
 
     def install(self, chainlit_app: ASGIApp) -> None:
         cl.password_auth_callback(self._build_callback())
@@ -408,14 +488,37 @@ class LdapAuth(GroupRoleAuth):
         async def password_auth(username: str, password: str) -> cl.User | None:
             # личность подтверждаем bind'ом под пользователем, затем те же группы
             # (LDAP синхронный — в поток, чтобы не блокировать event loop)
-            found = await asyncio.to_thread(self._ad.lookup, username)
-            if found is None:
-                return None
+            try:
+                bind_dn = self._c.bind_dn_template.format(username=username)
+                search_filter = self._c.user_filter.format(username=username)
+                _user_dn, member_of = await asyncio.to_thread(
+                    self._activedirectory.fetch_userdn_and_member_of,
+                    server=self._c.server,
+                    bind_dn=bind_dn,
+                    bind_password=password,
+                    search_base=self._c.base_dn,
+                    search_filter=search_filter,
+                )
 
-            user_dn, groups = found
-            if not await asyncio.to_thread(self._ad.verify_password, user_dn, password):
-                return None
+                roles = list(
+                    await asyncio.to_thread(
+                        self._activedirectory.role_of,
+                        group_dn_and_roles=self._c.group_role_map,
+                        member_of=member_of,
+                    )
+                )
 
-            return self._user(username, groups)
+                return cl.User(
+                    identifier=username,
+                    metadata={
+                        "role": roles,
+                        "provider": self._provider,
+                    },
+                )
+            except LDAPUserNotFoundErrorError as _e:
+                return None
+            except Exception:
+                self._logger.exception("Couldn't perform ldap search")
+                return None
 
         return password_auth

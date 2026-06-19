@@ -1,5 +1,4 @@
 """Integration: query / list_tables / describe_table."""
-# pyright: reportCallIssue=false
 
 from __future__ import annotations
 

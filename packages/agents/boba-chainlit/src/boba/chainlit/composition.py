@@ -32,6 +32,7 @@ from boba.chainlit.settings import (
     SettingsSection,
     ToolsSection,
 )
+from boba.chainlit.settings.model_section import ModelSection
 from boba.chainlit.state import set_app_state
 from boba.chainlit.storage import (
     FsThreadRepository,
@@ -210,6 +211,7 @@ def main() -> int:
 
     # Реестр секций шестерёнки. Порядок = порядок табов слева направо.
     sections: tuple[SettingsSection, ...] = (
+        ModelSection(rt.models),
         PromptSection(default_prompt_source),
         ToolsSection(available_tools),
     )

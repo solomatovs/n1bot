@@ -185,7 +185,9 @@ def _serialize_inner(el: _Element) -> str:
         parts.append(el.text)
     for child in el.iterchildren():
         parts.append(
-            lxml_etree.tostring(child, method="html", encoding="unicode", with_tail=True),
+            lxml_etree.tostring(
+                child, method="html", encoding="unicode", with_tail=True
+            ),
         )
     return "".join(parts)
 
