@@ -508,8 +508,11 @@ class KerberosAuthConfig(BaseModel):
     service_name: str = Field(
         description="SPN сервиса (HTTP/host@REALM), явно — без автоподбора из keytab.",
     )
-    keytab: str  = Field(
-        description="Путь к keytab файлу",
+    keytab: str = Field(
+        description=(
+            "Путь к keytab сервиса (ключ SPN для SPNEGO-accept); "
+            "обычно /etc/krb5.keytab."
+        ),
     )
     header: str = Field(
         default="X-Remote-User",

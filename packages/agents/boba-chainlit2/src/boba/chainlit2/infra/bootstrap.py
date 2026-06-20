@@ -137,9 +137,7 @@ def _use_auth(c: AuthConfig, container: Container) -> None:
         CredentialsAuth(c).install(chainlit_app)
 
     elif isinstance(c, KerberosAuthConfig):
-        store = KerberosCredentialStore(
-            renew=c.delegation.renew if c.delegation else False,
-        )
+        store = KerberosCredentialStore()
         container.provide(providers.kerberos_credential_store, store)
         KerberosAuth(c, store).install(chainlit_app)
 
