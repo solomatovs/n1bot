@@ -118,7 +118,9 @@ class InternalServiceError(BaseError):
         return code
 
     def view_message(self) -> ViewErrorMessage | None:
-        content = f"Internal error, please report this error code to support: {self.code}"
+        content = (
+            f"Internal error, please report this error code to support: {self.code}"
+        )
         if self.user_detail:
             content += f"\n{self.user_detail}"
 
