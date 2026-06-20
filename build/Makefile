@@ -18,7 +18,7 @@ endif
 export BOBA_TAG
 
 .DEFAULT_GOAL := help
-.PHONY: help build print-tag base sources tessdata fastembed wheels uv
+.PHONY: help build print-tag base sources tessdata fastembed wheels uv ad ad-sources
 
 
 GLIBC_VERSION  ?= 2.28
@@ -40,6 +40,23 @@ UV_VERSION  ?= 0.11.21
 UV_PLATFORM ?= x86_64-unknown-linux-musl
 UV_URL      ?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(UV_PLATFORM).tar.gz
 
+# Исходники для сборки СВЕЖЕЙ samba (AD DC) — в репозитории Astra только 4.9.5,
+# которая не умеет constrained delegation (S4U). Собираем 4.21 из исходников.
+# Astra-репо даёт Python 3.5 / GnuTLS 3.5 / nettle 3.3 — слишком старо для samba 4.2x,
+# поэтому из исходников (мимо Astra) тянем тройку: nettle -> GnuTLS -> samba.
+# Python берём из boba-base (там 3.11 из исходников) — AD-образ строится FROM boba-base.
+# Остальное (libgmp/libtasn1/libidn2/p11-kit/jansson/lmdb/icu/...) есть в репо Astra.
+SAMBA_VERSION  ?= 4.21.3
+GNUTLS_VERSION ?= 3.8.4
+GNUTLS_SERIES  ?= 3.8
+NETTLE_VERSION ?= 3.9.1
+# MIT krb5 из исходников: samba собирается --with-system-mitkrb5, чтобы KDC был MIT
+# (а не встроенный Heimdal) — только MIT-KDC даёт рабочий S4U2Proxy с MIT-клиентом.
+# В Astra krb5 1.15 (старый); samba 4.21 + MIT AD DC требует krb5 >= 1.21.
+KRB5_VERSION   ?= 1.21.3
+KRB5_SERIES    ?= 1.21
+
+
 help:
 	@echo "Boba runtime — make-цели (тег образа: $(BOBA_TAG)):"
 	@echo "  make print-tag  показать тег, который будет присвоен образу"
@@ -51,9 +68,13 @@ help:
 	@echo "  make uv         скачать uv (статич. бинарь) в $(ARTIFACTS)/bin/uv (mirror — через UV_URL)"
 	@echo "                  (закрытый контур — через $(ARTIFACTS)/pip.conf + uv.toml + ca-chain.crt, если есть)"
 	@echo "  make build      собрать runtime boba:<тег> (+ boba:latest), offline из wheels"
+	@echo "  make ad         собрать AD DC образ boba-ad:<тег> (+ latest) из Dockerfile.ad (samba из репо astra)"
+	@echo "  make ad-sources скачать исходники свежей samba (nettle/gnutls/samba) в $(ARTIFACTS)/samba-src (нужен инет)"
+	@echo "                  (для сборки samba $(SAMBA_VERSION) из исходников — в репо Astra только 4.9, без S4U)"
 	@echo ""
 	@echo "Параметры: BOBA_TAG=<тег> (запинить)"
 	@echo "Полный цикл с нуля: make sources tessdata base wheels fastembed build"
+	@echo "AD DC (Kerberos+AD):  make ad   затем  docker compose up -d samba-ad"
 
 # Скачать исходники для make base (glibc/gcc/gmp/mpfr/mpc/python)
 sources:
@@ -65,6 +86,22 @@ sources:
 	  "$(ARTIFACTS)/gcc-src/mpfr-$(MPFR_VERSION).tar.xz=https://ftp.gnu.org/gnu/mpfr/mpfr-$(MPFR_VERSION).tar.xz" \
 	  "$(ARTIFACTS)/gcc-src/mpc-$(MPC_VERSION).tar.gz=https://ftp.gnu.org/gnu/mpc/mpc-$(MPC_VERSION).tar.gz" \
 	  "$(ARTIFACTS)/python-src/Python-$(PYTHON_VERSION).tar.xz=https://www.python.org/ftp/python/$(PYTHON_VERSION)/Python-$(PYTHON_VERSION).tar.xz" \
+	; do \
+	  dest="$${spec%%=*}"; url="$${spec#*=}"; \
+	  if [ -f "$$dest" ]; then echo "  ✓ $$dest"; \
+	  else echo ">>> $$url"; curl -fSL -o "$$dest" "$$url"; fi; \
+	done
+
+# Скачать исходники для сборки свежей samba (AD DC) в $(ARTIFACTS)/samba-src.
+# Только то, чего нет в нужной версии в репозитории Astra: nettle, GnuTLS, samba.
+# Идемпотентно (уже скачанное пропускает). Внутренний mirror — через перенос URL.
+ad-sources:
+	@mkdir -p $(ARTIFACTS)/samba-src
+	@set -e; for spec in \
+	  "$(ARTIFACTS)/samba-src/nettle-$(NETTLE_VERSION).tar.gz=https://ftp.gnu.org/gnu/nettle/nettle-$(NETTLE_VERSION).tar.gz" \
+	  "$(ARTIFACTS)/samba-src/gnutls-$(GNUTLS_VERSION).tar.xz=https://www.gnupg.org/ftp/gcrypt/gnutls/v$(GNUTLS_SERIES)/gnutls-$(GNUTLS_VERSION).tar.xz" \
+	  "$(ARTIFACTS)/samba-src/krb5-$(KRB5_VERSION).tar.gz=https://kerberos.org/dist/krb5/$(KRB5_SERIES)/krb5-$(KRB5_VERSION).tar.gz" \
+	  "$(ARTIFACTS)/samba-src/samba-$(SAMBA_VERSION).tar.gz=https://download.samba.org/pub/samba/stable/samba-$(SAMBA_VERSION).tar.gz" \
 	; do \
 	  dest="$${spec%%=*}"; url="$${spec#*=}"; \
 	  if [ -f "$$dest" ]; then echo "  ✓ $$dest"; \
@@ -142,6 +179,13 @@ fastembed:
 	      || echo "!! $$m не скачан — не поддерживается этой версией fastembed (TextEmbedding.list_supported_models())"; \
 	    done; \
 	    chown -R "$$HOST_UID:$$HOST_GID" /artifacts/fastembed'
+
+# Собрать AD DC образ (samba ставится из репозитория astralinux при сборке)
+ad:
+	@echo ">>> building: boba-ad:latest"
+	docker build -f Dockerfile.ad \
+	  -t boba-ad:latest \
+	  $(BUILD_CONTEXT)
 
 print-tag:
 	@echo $(BOBA_TAG)

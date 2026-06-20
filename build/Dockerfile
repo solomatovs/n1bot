@@ -106,7 +106,9 @@ RUN cd /tmp \
     && cd Python-${PYTHON_VERSION} && \
     ./configure \
         --enable-optimizations --with-lto \
+        --enable-shared \
         --with-ensurepip=install \
+        LDFLAGS=-Wl,-rpath,/usr/local/lib \
     && make -j"$(nproc)" \
     && make install DESTDIR=${PYTHON_PATH} \
     && rm -rf /tmp/*

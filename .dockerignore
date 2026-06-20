@@ -6,6 +6,8 @@
 packages/**/__pycache__
 packages/**/*.egg-info
 
+.venv
+
 build/.git
 build/artifacts/.git
 build/artifacts/images

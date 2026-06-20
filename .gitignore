@@ -17,3 +17,4 @@ packages/**/dist/
 !/build/Dockerfile
 !/build/Makefile
 !/build/artifacts
+uv.lock
