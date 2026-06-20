@@ -20,11 +20,9 @@ from boba.agent.tool_config import (
 )
 from boba.chainlit2.agent import build_agent, build_langgraph
 from boba.chainlit2.agent.dump import DumpingTransport
-from boba.chainlit2.chat.auth import KerberosCredentialStore, UserCcache
 from boba.chainlit2.infra.config import (
     AgentProfile,
     AppConfig,
-    KerberosAuthConfig,
     OpenAiConfig,
     PostgresConfig,
 )
@@ -209,31 +207,3 @@ def langchain_agent(
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
 ) -> CompiledStateGraph:
     return build_agent(c, client, saver)
-
-
-def kerberos_credential_store() -> KerberosCredentialStore:
-    """
-    store делегированных тикетов
-    """
-    raise RuntimeError("kerberos credential store not install in DI")
-
-
-def user_kerberos_ccache(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-    store: Annotated[KerberosCredentialStore, Depends(kerberos_credential_store)],
-) -> UserCcache | None:
-    from chainlit.user_session import user_session  # noqa: PLC0415
-
-    if (user := user_session.get("user")) is None:
-        return None
-
-    if not isinstance(c.auth, KerberosAuthConfig):
-        return None
-
-    if (ccache := store.ccache_of(user.identifier)) is None:
-        return None
-
-    return UserCcache(
-        principal=user.identifier,
-        ccache=ccache
-    )

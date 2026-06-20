@@ -12,12 +12,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from boba.chainlit2.chat.auth import (
-    CredentialsAuth,
-    KerberosAuthInstaller,
-    KerberosCredentialStore,
-    LdapAuth,
-)
 from boba.chainlit2.errors import DomainErrorMiddleware
 from boba.chainlit2.infra import providers
 from boba.chainlit2.infra.config import (
@@ -145,14 +139,41 @@ def _use_auth(c: AuthConfig, container: Container) -> None:
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     if isinstance(c, CredentialsAuthConfig):
+        from boba.chainlit2.chat.auth.credential import (  # noqa: PLC0415
+            CredentialsAuth,
+        )
+
         CredentialsAuth(c).install(chainlit_app)
 
     elif isinstance(c, KerberosAuthConfig):
+        from boba.chainlit2.chat.auth.spnego import (  # noqa: PLC0415
+            KerberosAuthInstaller,
+            KerberosCredentialStore,
+            KerberosDelegation,
+            ProtocolTransitionDelegation,
+            UnconstrainedDelegation,
+        )
+
         store = KerberosCredentialStore()
-        container.provide(providers.kerberos_credential_store, store)
-        KerberosAuthInstaller(c, store).install(chainlit_app)
+        delegation = KerberosDelegation(
+            unconstrained=UnconstrainedDelegation(
+                store=store,
+                ccache_template=c.delegation.ccache_template,
+            ),
+            s4u=ProtocolTransitionDelegation(
+                service_name=c.service_name,
+                keytab=c.keytab,
+            ),
+        )
+        # container.provide(providers.kerberos_credential_store, store)
+        # container.provide(providers.kerberos_delegation, delegation)
+        KerberosAuthInstaller(c, delegation).install(chainlit_app)
 
     elif isinstance(c, LdapAuthConfig):
+        from boba.chainlit2.chat.auth.ldap import (  # noqa: PLC0415
+            LdapAuth,
+        )
+
         LdapAuth(c).install(chainlit_app)
 
     else:

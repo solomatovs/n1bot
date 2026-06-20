@@ -6,11 +6,17 @@ from starlette.types import ASGIApp
 
 from boba.chainlit2.chat.auth.ad import (
     ADDirectory,
-    LDAPUnknownError,
-    LDAPUserNotFoundErrorError,
+    LDAPError,
+    LDAPInvalidCredentialsError,
+    LDAPServerUnavailableError,
+    LDAPUserNotFoundError,
 )
 from boba.chainlit2.chat.handler import chainlit_error_handler
-from boba.chainlit2.errors import AuthenticationError, ExternalServiceError
+from boba.chainlit2.errors import (
+    AuthenticationError,
+    ExternalServiceError,
+    InternalServiceError,
+)
 from boba.chainlit2.infra.config import (
     LdapAuthConfig,
 )
@@ -19,7 +25,10 @@ UserCallback = Callable[..., Awaitable[cl.User | None]]
 
 
 class LdapAuth:
-    """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
+    """
+    Логин/пароль с проверкой bind'ом в AD
+    роль забираем из групп AD
+    """
 
     def __init__(self, c: LdapAuthConfig):
         self._provider = "ldap"
@@ -32,8 +41,7 @@ class LdapAuth:
     def _build_callback(self) -> UserCallback:
         @chainlit_error_handler
         async def password_auth(username: str, password: str) -> cl.User | None:
-            # личность подтверждаем bind'ом под пользователем, затем те же группы
-            # (LDAP синхронный — в поток, чтобы не блокировать event loop)
+            # личность подтверждаем bind'ом под пользователем
             try:
                 bind_dn = self._c.bind_dn_template.format(username=username)
                 search_filter = self._c.user_filter.format(username=username)
@@ -61,11 +69,18 @@ class LdapAuth:
                         "provider": self._provider,
                     },
                 )
-            except LDAPUserNotFoundErrorError as e:
-                raise AuthenticationError("") from e
-            except LDAPUnknownError as e:
+            except LDAPUserNotFoundError as e:
+                raise AuthenticationError("User is not registered") from e
+            except LDAPInvalidCredentialsError as e:
+                raise AuthenticationError("Invalid username or password") from e
+            except LDAPServerUnavailableError as e:
                 raise ExternalServiceError(
-                    "ldap", "Couldn't perform ldap search"
+                    "ldap", "LDAP is unavailable, please try again later"
+                ) from e
+            except LDAPError as e:
+                # access denied / кривой конфиг / прочее — наша вина
+                raise InternalServiceError(
+                    internal_detail=f"ldap error: {e}", user_detail=None
                 ) from e
 
         return password_auth

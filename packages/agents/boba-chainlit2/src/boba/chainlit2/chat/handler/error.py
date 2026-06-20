@@ -39,7 +39,10 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
         except BaseError as e:
             await handle(e)
         except Exception as e:
-            exc = InternalServiceError(str(e))
+            exc = InternalServiceError(
+                internal_detail=str(e),
+                user_detail=None,
+            )
             await handle(exc)
 
     return wrapper
@@ -58,7 +61,10 @@ def chainlit_error_handler(fn: Callable) -> Callable:
             # пузырь слать некуда (контекста нет) — только лог
             e.log_message(logger)
         except Exception as e:
-            InternalServiceError(str(e)).log_message(logger)
+            InternalServiceError(
+                internal_detail=str(e),
+                user_detail=None,
+            ).log_message(logger)
 
         # любая ошибка в auth = отказ; chainlit на None отдаёт 401
         return None

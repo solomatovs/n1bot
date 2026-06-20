@@ -470,7 +470,9 @@ class CredentialsAuthConfig(BaseModel):
 
 
 class KerberosDelegationConfig(BaseModel):
-    """Constrained delegation: захват делегированного тикета юзера для бэкендов."""
+    """
+    Куда класть ccache и продлевать ли токен
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -518,14 +520,10 @@ class KerberosAuthConfig(BaseModel):
         default="X-Remote-User",
         description="Заголовок, куда кладётся принципал для header_auth_callback.",
     )
-    delegation: KerberosDelegationConfig | None = Field(
-        default=None,
-        description="Сквозное делегирование Kerberos в бэкенды (от имени юзера).",
+    delegation: KerberosDelegationConfig = Field(
+        default_factory=KerberosDelegationConfig,
+        description="Параметры ccache для unconstrained режима делегирования",
     )
-
-    @property
-    def delegation_enable(self) -> bool:
-        return self.delegation is not None
 
 
 class LdapAuthConfig(BaseModel):

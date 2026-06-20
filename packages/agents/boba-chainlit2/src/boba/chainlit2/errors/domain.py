@@ -13,6 +13,7 @@ def to_domain(e: Exception) -> BaseError:
 
     return InternalServiceError(
         internal_detail=str(e),
+        user_detail=None,
     )
 
 

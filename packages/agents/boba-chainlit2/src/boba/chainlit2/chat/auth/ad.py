@@ -1,14 +1,48 @@
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 
+from ldap3 import (
+    Connection,
+    Server,
+)
+from ldap3.core.exceptions import (
+    LDAPBindError,
+    LDAPCommunicationError,
+    LDAPException,
+    LDAPInsufficientAccessRightsResult,
+    LDAPInvalidCredentialsResult,
+    LDAPInvalidDNSyntaxResult,
+    LDAPInvalidFilterError,
+    LDAPInvalidServerError,
+    LDAPNoSuchObjectResult,
+    LDAPServerPoolError,
+    LDAPStartTLSError,
+    LDAPStrongerAuthRequiredResult,
+)
 
-class LDAPUserNotFoundErrorError(Exception):
-    pass
+
+class LDAPError(Exception):
+    "База ошибок каталога; транспортно-нейтральна, домен мапят вызывающие."
 
 
-class LDAPUnknownError(Exception):
-    def __init__(self, e: Exception):
-        self.e = e
+class LDAPServerUnavailableError(LDAPError):
+    "Каталог недоступен (сокет/сеть/TLS/таймаут) — не наша вина."
+
+
+class LDAPInvalidCredentialsError(LDAPError):
+    "bind отклонён: неверные креды (юзер или сервис-аккаунт — решает вызывающий)."
+
+
+class LDAPAccessDeniedError(LDAPError):
+    "Недостаточно прав на операцию (insufficient access)."
+
+
+class LDAPConfigError(LDAPError):
+    "Кривой конфиг: несуществующий base DN, неверный DN/фильтр/сервер/TLS-политика."
+
+
+class LDAPUserNotFoundError(LDAPError):
+    "Поиск выполнен, но запись пользователя не найдена."
 
 
 class ADDirectory:
@@ -21,11 +55,6 @@ class ADDirectory:
         bind_dn: str,
         bind_password: str,
     ):
-        from ldap3 import (  # noqa: PLC0415
-            Connection,
-            Server,
-        )
-
         conn: Connection | None = None
         try:
             with Connection(
@@ -33,10 +62,34 @@ class ADDirectory:
                 user=bind_dn,
                 password=bind_password,
                 auto_bind="DEFAULT",
+                # без этого ошибки search'а (нет base DN, нет прав) молча дают
+                # пустой результат и выглядят как "пользователь не найден"
+                raise_exceptions=True,
             ) as conn:
                 yield conn
-        except Exception as e:
-            raise LDAPUnknownError(e) from e
+        except LDAPError:
+            # наши доменные LDAP-ошибки (напр. LDAPUserNotFound из тела with) — как есть
+            raise
+        except (
+            LDAPCommunicationError,
+            LDAPInvalidServerError,
+            LDAPServerPoolError,
+            LDAPStartTLSError,
+        ) as e:
+            raise LDAPServerUnavailableError(str(e)) from e
+        except (LDAPBindError, LDAPInvalidCredentialsResult) as e:
+            raise LDAPInvalidCredentialsError(str(e)) from e
+        except LDAPInsufficientAccessRightsResult as e:
+            raise LDAPAccessDeniedError(str(e)) from e
+        except (
+            LDAPNoSuchObjectResult,
+            LDAPInvalidDNSyntaxResult,
+            LDAPInvalidFilterError,
+            LDAPStrongerAuthRequiredResult,
+        ) as e:
+            raise LDAPConfigError(str(e)) from e
+        except LDAPException as e:
+            raise LDAPError(str(e)) from e
         finally:
             if conn:
                 conn.unbind()
@@ -71,7 +124,7 @@ class ADDirectory:
             )
 
             if not conn.entries:
-                raise LDAPUserNotFoundErrorError()
+                raise LDAPUserNotFoundError()
 
             entry = conn.entries[0]
 
