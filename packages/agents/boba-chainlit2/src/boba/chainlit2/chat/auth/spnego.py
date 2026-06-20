@@ -6,15 +6,44 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import chainlit as cl
+from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from boba.chainlit2.chat.auth.ad import (
+    ADDirectory,
+    LDAPUnknownError,
+    LDAPUserNotFoundErrorError,
+)
+from boba.chainlit2.chat.handler import chainlit_error_handler
+from boba.chainlit2.errors import (
+    AuthenticationError,
+    BaseError,
+    ExternalServiceError,
+    HttpErrorMessage,
+    InternalServiceError,
+)
 from boba.chainlit2.infra.config import (
     KerberosAuthConfig,
 )
 
-from .ad import ADDirectory, LDAPUserNotFoundErrorError
-
 UserCallback = Callable[..., Awaitable[cl.User | None]]
+
+
+class SpnegoChallengeError(BaseError):
+    """
+    Запрос SPNEGO-токена, не является ошибкой
+    Рендериться как Http ответ
+    """
+
+    status_code = 401
+
+    def http_message(self) -> HttpErrorMessage:
+        # обязательный заголовок для всех поверхностей, тело пустое
+        return HttpErrorMessage(
+            status_code=self.status_code,
+            headers=[(b"www-authenticate", b"Negotiate")],
+            content="",
+        )
 
 
 @dataclass(frozen=True)
@@ -126,62 +155,86 @@ class SpnegoMiddleware:
         self,
         app: ASGIApp,
         *,
-        service_name: str,
         config: KerberosAuthConfig,
         store: KerberosCredentialStore,
     ) -> None:
         self.app = app
         self.config = config
         self.store = store
-        self.service_name = service_name
         self.logger = logging.getLogger(SpnegoMiddleware.__name__)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        if scope["type"] != "http" or not scope.get("path", "").endswith(
-            self.AUTH_PATH
-        ):
+        from gssapi.raw.misc import GSSError  # noqa: PLC0415
+
+        if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
-        auth = dict(scope["headers"]).get(b"authorization", b"")
-        if not auth.startswith(b"Negotiate "):
-            await self._challenge(send)
-            return None
+        path = scope.get("path")
+        if not path:
+            return await self.app(scope, receive, send)
 
-        ctx = self._accept(base64.b64decode(auth.split(b" ", 1)[1]))
-        if ctx is None or not ctx.complete:
-            await self._challenge(send)
-            return None
+        if not isinstance(path, str):
+            return await self.app(scope, receive, send)
+
+        path = path.removesuffix("/").lower()
+
+        if not path.lower().endswith(self.AUTH_PATH):
+            return await self.app(scope, receive, send)
+
+        auth = Headers(scope=scope).get("authorization")
+        if not auth:
+            raise SpnegoChallengeError()
+
+        scheme, _, value = auth.partition(" ")
+        if scheme.lower() != "negotiate" or not value:
+            raise SpnegoChallengeError()
+
+        try:
+            token = base64.b64decode(value)
+        except Exception as e:
+            raise SpnegoChallengeError() from e
+
+        try:
+            # сбой здесь это проблема сервера
+            ctx = self._get_spnego_context()
+        except GSSError as e:
+            raise InternalServiceError(
+                internal_detail=f"gss error: {e}, file: {__file__}",
+                user_detail="Spnego authentication failed",
+            ) from e
+
+        try:
+            # их токен — сбой здесь это проблема клиента
+            ctx.step(token)
+        except GSSError as e:
+            raise SpnegoChallengeError() from e
+
+        if not ctx.complete:
+            raise SpnegoChallengeError()
 
         principal = str(ctx.initiator_name)
         scope["username"] = principal
-        # делегирование — только если задан конфиг; иначе просто аутентификация
-        if self.config.delegation is not None:
-            self._capture(principal, ctx)
 
         return await self.app(scope, receive, send)
 
-    def _accept(self, token: bytes):
-        """Принимает SPNEGO-token строго под нашим SPN (без автоподбора из keytab)."""
+    def _get_spnego_context(self):
+        """Принимает SPNEGO-token от браузера и"""
         from gssapi import Credentials, Name, NameType, SecurityContext  # noqa: PLC0415
-        from gssapi.raw.misc import GSSError  # noqa: PLC0415
 
-        try:
-            # SPN указываем явно: берём ровно ту запись keytab, без магии
-            name = Name(self.service_name, NameType.kerberos_principal)
-            creds = Credentials(
-                name=name,
-                usage="accept",
-                store={
-                    # Файл с долгосрочными ключами сервиса (ключи SPN)
-                    # Им сервер расшифровывает входящий тикет
-                    b"keytab": self.config.keytab,
-                },
-            )
-            ctx = SecurityContext(creds=creds, usage="accept")
-            ctx.step(token)
-        except GSSError as exc:
-            self.logger.warning("spnego accept failed: %s", exc)
-            return None
+        # SPN указываем явно: берём ровно ту запись keytab, без магии
+        name = Name(self.config.service_name, NameType.kerberos_principal)
+        creds = Credentials(
+            name=name,
+            usage="accept",
+            store={
+                # Файл с долгосрочными ключами сервиса (ключи SPN)
+                # Им сервер расшифровывает входящий тикет
+                b"keytab": self.config.keytab,
+            },
+        )
+
+        ctx = SecurityContext(creds=creds, usage="accept")
+
         return ctx
 
     def _capture(self, principal: str, ctx) -> None:
@@ -217,37 +270,20 @@ class SpnegoMiddleware:
             "kerberos: захвачен delegated тикет %s → %s", principal, ccache
         )
 
-    @staticmethod
-    async def _challenge(send: Send) -> None:
-        """401 с WWW-Authenticate: Negotiate — браузер пришлёт SPNEGO-токен."""
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [
-                    (b"www-authenticate", b"Negotiate"),
-                    (b"content-length", b"0"),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": b""})
 
-
-class KerberosAuth:
+class KerberosAuthInstaller:
     """SSO через Kerberos/SPNEGO; роль — из групп AD; опц. сквозное делегирование."""
 
     def __init__(self, c: KerberosAuthConfig, store: KerberosCredentialStore):
         self._c = c
         self._store = store
         self._provider = "kerberos"
-        self._activedirectory = ADDirectory
-        self._logger = logging.getLogger(KerberosAuth.__name__)
+        self._ad = ADDirectory
 
     def install(self, chainlit_app: ASGIApp) -> None:
         chainlit_app.add_middleware(self._PrincipalToHeader, header=self._c.header)
         chainlit_app.add_middleware(
             SpnegoMiddleware,
-            service_name=self._c.service_name,
             config=self._c,
             store=self._store,
         )
@@ -256,17 +292,18 @@ class KerberosAuth:
     def _build_callback(self) -> UserCallback:
         header = self._c.header
 
+        @chainlit_error_handler
         async def header_auth(headers) -> cl.User | None:
             principal = headers.get(header)
             if not principal:
                 return None
 
             try:
-                username = self._activedirectory._username_from_principal(principal)
+                username = self._ad._username_from_principal(principal)
                 search_filter = self._c.user_filter.format(username=username)
 
                 _user_dn, member_of = await asyncio.to_thread(
-                    self._activedirectory.fetch_userdn_and_member_of,
+                    self._ad.fetch_userdn_and_member_of,
                     server=self._c.server,
                     bind_dn=self._c.bind_dn,
                     bind_password=self._c.bind_password,
@@ -276,7 +313,7 @@ class KerberosAuth:
 
                 roles = list(
                     await asyncio.to_thread(
-                        self._activedirectory.role_of,
+                        self._ad.role_of,
                         group_dn_and_roles=self._c.group_role_map,
                         member_of=member_of,
                     )
@@ -289,11 +326,12 @@ class KerberosAuth:
                         "provider": self._provider,
                     },
                 )
-            except LDAPUserNotFoundErrorError as _e:
-                return None
-            except Exception:
-                self._logger.exception("Couldn't perform ldap search")
-                return None
+            except LDAPUserNotFoundErrorError as e:
+                raise AuthenticationError("AuthenticationError") from e
+            except LDAPUnknownError as e:
+                raise ExternalServiceError(
+                    "ldap", "Couldn't perform ldap search"
+                ) from e
 
         return header_auth
 
