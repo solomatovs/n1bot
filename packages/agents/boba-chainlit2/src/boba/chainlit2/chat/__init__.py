@@ -1,6 +1,4 @@
-import functools
-import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Annotated, Any, cast
 
 import chainlit as cl
@@ -8,31 +6,15 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
+from boba.chainlit2.chat.handler import chainlit_error_ctx_handler
 from boba.chainlit2.chat.tracer import BobaLangchainTracer
-from boba.chainlit2.infra.di import Depends, inject
+from boba.chainlit2.infra.di import Depends, chainlit_inject
 from boba.chainlit2.infra.providers import langchain_agent
-
-logger = logging.getLogger("chat")
-
-
-def report_errors(fn: Callable) -> Callable:
-    """Ловит ошибку обработки сообщения (вкл. DI-резолв) и сообщает её в чат."""
-
-    @functools.wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return await fn(*args, **kwargs)
-        except Exception as exc:
-            logger.error(f"on_message failed: {exc}")
-            await cl.ErrorMessage(content=f"Failed to process message: {exc}").send()
-            return None
-
-    return wrapper
 
 
 @cl.on_message
-@report_errors
-@inject
+@chainlit_error_ctx_handler
+@chainlit_inject
 async def on_message(
     msg: cl.Message,
     graph: Annotated[
@@ -65,6 +47,8 @@ async def on_message(
 
 
 @cl.on_chat_start
+@chainlit_error_ctx_handler
+@chainlit_inject
 async def on_chat_start():
     app_user: cl.User | cl.PersistedUser | None = cl.user_session.get("user")
     await cl.Message(f"Hello {app_user}").send()

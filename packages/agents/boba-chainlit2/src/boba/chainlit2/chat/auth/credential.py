@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 import chainlit as cl
 from starlette.types import ASGIApp
 
+from boba.chainlit2.chat.handler import chainlit_error_handler
 from boba.chainlit2.infra.config import (
     CredentialsAuthConfig,
 )
@@ -22,10 +23,12 @@ class CredentialsAuth:
     def _build_callback(self) -> UserCallback:
         users = self._users
 
+        @chainlit_error_handler
         async def password_auth(username: str, password: str) -> cl.User | None:
             if users.get(username) == password:
                 return cl.User(
                     identifier=username,
+                    display_name=username,
                     metadata={"role": "admin", "provider": "credentials"},
                 )
 

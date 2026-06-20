@@ -1,10 +1,10 @@
 from .credential import CredentialsAuth
 from .ldap import LdapAuth
-from .spnego import KerberosAuth, KerberosCredentialStore, UserCcache
+from .spnego import KerberosAuthInstaller, KerberosCredentialStore, UserCcache
 
 __all__ = [
     "CredentialsAuth",
-    "KerberosAuth",
+    "KerberosAuthInstaller",
     "KerberosCredentialStore",
     "LdapAuth",
     "UserCcache",

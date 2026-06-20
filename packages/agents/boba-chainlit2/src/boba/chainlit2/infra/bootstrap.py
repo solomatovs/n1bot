@@ -14,10 +14,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.chainlit2.chat.auth import (
     CredentialsAuth,
-    KerberosAuth,
+    KerberosAuthInstaller,
     KerberosCredentialStore,
     LdapAuth,
 )
+from boba.chainlit2.errors import DomainErrorMiddleware
 from boba.chainlit2.infra import providers
 from boba.chainlit2.infra.config import (
     AppConfig,
@@ -51,6 +52,9 @@ def run_app():
 
     # единственная точка подключения авторизации (стратегия выбирается конфигом);
     _use_auth(c.auth, container)
+
+    # единная точка обработки ошибок
+    _use_domain_error(app)
 
     # Start the server
     async def start():
@@ -87,6 +91,13 @@ async def _run_container(app: FastAPI) -> AsyncIterator[None]:
         Container.set_session_hook(None)
         Container.set_root(None)
         await container.aclose()
+
+
+def _use_domain_error(app: FastAPI):
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    app.add_middleware(DomainErrorMiddleware)
+    chainlit_app.add_middleware(DomainErrorMiddleware)
 
 
 def _use_chainlit_middleware(app: FastAPI, c: ChainlitExtendConfig):
@@ -139,7 +150,7 @@ def _use_auth(c: AuthConfig, container: Container) -> None:
     elif isinstance(c, KerberosAuthConfig):
         store = KerberosCredentialStore()
         container.provide(providers.kerberos_credential_store, store)
-        KerberosAuth(c, store).install(chainlit_app)
+        KerberosAuthInstaller(c, store).install(chainlit_app)
 
     elif isinstance(c, LdapAuthConfig):
         LdapAuth(c).install(chainlit_app)
