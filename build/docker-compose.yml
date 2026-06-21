@@ -75,50 +75,6 @@ services:
     volumes:
       - ./local:/app/local
 
-  # Active Directory
-  samba-ad:
-    image: boba-ad:latest
-    hostname: dc1
-    container_name: samba-ad
-    env_file:
-      - .env
-    environment:
-      - REALM=LOSHARA.COM
-      - DOMAIN=LOSHARA
-      - DC_HOSTNAME=dc1
-      - DNS_FORWARDER=8.8.8.8
-      - SVC_HOST=chainlit2
-      - KEYTAB_OUT=/out/krb5.keytab
-    # xattr_tdb снимает нужду в CAP_SYS_ADMIN; SYS_NICE — для приоритетов samba
-    cap_add:
-      - SYS_NICE
-    volumes:
-      - samba-ad-data:/var/lib/samba
-      - samba-ad-etc:/etc/samba
-      # сюда пишется keytab
-      - ./local:/out
-    ports:
-      - "127.0.0.1:88:88"
-      - "127.0.0.1:88:88/udp"
-      - "127.0.0.1:464:464"
-      - "127.0.0.1:464:464/udp"
-      - "127.0.0.1:389:389"
-      - "127.0.0.1:636:636"
-      - "127.0.0.1:3268:3268"
-      - "127.0.0.1:3269:3269"
-    healthcheck:
-      test: ["CMD-SHELL", "ss -tlnp | grep -q ':88 ' && ss -tlnp | grep -q ':389 ' || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    networks:
-      default:
-        aliases:
-          - dc1
-          - dc1.loshara.com
-    restart: unless-stopped
-
 volumes:
   samba-ad-data:
   samba-ad-etc:
