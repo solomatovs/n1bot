@@ -5,19 +5,16 @@ from typing import Any
 
 import chainlit as cl
 
-from boba.chainlit2.errors import BaseError, InternalServiceError
+from boba.chainlit2.errors import BaseError, to_domain
 
 
 def chainlit_error_ctx_handler(fn: Callable) -> Callable:
     """Ловит ошибку для chainlit callback которые существуют с контекстом"""
 
-    logger = logging.getLogger("chainlit_error_ctx_handler")
+    logger = logging.getLogger("chainlit_handler")
 
     @staticmethod
     async def handle(e: BaseError):
-        # логируем ошибку
-        e.log_message(logger)
-
         # показываем ошибку пользователю
         if m := e.view_message():
             await cl.ErrorMessage(
@@ -36,14 +33,13 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
-        except BaseError as e:
-            await handle(e)
         except Exception as e:
-            exc = InternalServiceError(
-                internal_detail=str(e),
-                user_detail=None,
-            )
-            await handle(exc)
+            if not isinstance(e, BaseError):
+                logger.exception(str(e))
+            else:
+                logger.error(str(e))
+
+            await handle(to_domain(e))
 
     return wrapper
 
@@ -51,13 +47,10 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
 def chainlit_error_handler(fn: Callable) -> Callable:
     """Ловит ошибку для chainlit callback которые существуют без контекста"""
 
-    logger = logging.getLogger("chainlit_error_handler")
+    logger = logging.getLogger("chainlit_handler")
 
     @staticmethod
     async def handle(e: BaseError):
-        # логируем ошибку
-        e.log_message(logger)
-
         # показываем ошибку пользователю
         if m := e.view_message():
             await cl.ErrorMessage(
@@ -76,14 +69,13 @@ def chainlit_error_handler(fn: Callable) -> Callable:
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
-        except BaseError as e:
-            await handle(e)
         except Exception as e:
-            exc = InternalServiceError(
-                internal_detail=str(e),
-                user_detail=None,
-            )
-            await handle(exc)
+            if not isinstance(e, BaseError):
+                logger.exception(str(e))
+            else:
+                logger.error(str(e))
+
+            await handle(to_domain(e))
 
         # любая ошибка в auth = отказ; chainlit на None отдаёт 401
         return None

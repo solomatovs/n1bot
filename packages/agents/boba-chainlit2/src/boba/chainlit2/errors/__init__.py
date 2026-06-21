@@ -10,6 +10,7 @@ from boba.chainlit2.errors.model import (
     RateLimitError,
     ToolExecutionError,
     UserInputError,
+    to_domain,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "RateLimitError",
     "ToolExecutionError",
     "UserInputError",
+    "to_domain",
 ]

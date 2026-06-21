@@ -1,7 +1,4 @@
-import random
-import string
 from dataclasses import dataclass, field
-from logging import Logger
 
 
 @dataclass
@@ -43,24 +40,15 @@ class BaseError(Exception):
         "Возвращает соощение показываемое пользователю"
         return None
 
-    def log_message(self, logger: Logger):
-        "Возращает сообщение отправляемое в logger"
-
     def history_message(self) -> str | None:
         """
         Возвращает сообщение которое пишется в историю чата
         """
         return None
 
-    def http_message(self) -> HttpErrorMessage:
-        content = ""
-        if m := self.view_message():
-            content = m.content
+    def http_message(self) -> HttpErrorMessage | None:
+        return None
 
-        return HttpErrorMessage(
-            status_code=self.status_code,
-            content=content,
-        )
 
 class ExternalServiceError(BaseError):
     """
@@ -83,8 +71,15 @@ class ExternalServiceError(BaseError):
     def history_message(self) -> str | None:
         return self.message
 
-    def log_message(self, logger: Logger):
-        logger.error("%s: %s", self.service_name, self.message, exc_info=self)
+    def http_message(self) -> HttpErrorMessage | None:
+        content = ""
+        if m := self.view_message():
+            content = m.content
+
+        return HttpErrorMessage(
+            status_code=self.status_code,
+            content=content,
+        )
 
 
 class InternalServiceError(BaseError):
@@ -103,31 +98,40 @@ class InternalServiceError(BaseError):
         # тех.описание только для лога, пользователь не видит
         self.internal_detail = internal_detail
         self.user_detail = user_detail
-        self.code = self.generate_code()
         self.status_code = 500
 
-    @staticmethod
-    def generate_code():
-        "генератор рандомных кодов сообщений"
-        code = "".join(
-            random.choices(  # noqa: S311
-                string.ascii_uppercase + string.digits,
-                k=4,
-            )
-        )
-        return code
-
     def view_message(self) -> ViewErrorMessage | None:
-        content = (
-            f"Internal error, please report this error code to support: {self.code}"
-        )
+        content = "Internal error"
         if self.user_detail:
             content += f"\n{self.user_detail}"
 
         return ViewErrorMessage(content)
 
-    def log_message(self, logger: Logger):
-        logger.error("code [%s]: %s", self.code, str(self.internal_detail))
+    def http_message(self) -> HttpErrorMessage | None:
+        content = ""
+        if m := self.view_message():
+            content = m.content
+
+        return HttpErrorMessage(
+            status_code=self.status_code,
+            content=content,
+        )
+
+
+def to_domain(e: Exception) -> BaseError:
+    "Заворачивает любое НЕ доменное исключение в InternalServiceError"
+    if isinstance(e, BaseError):
+        return e
+
+    wrapped = InternalServiceError(
+        internal_detail=str(e),
+        user_detail=None,
+    )
+    # сохраняем оригинал, чтобы logging распечатал его traceback по цепочке:
+    # у самого wrapped нет __traceback__ (его никто не raise-ил), а у e — есть
+    wrapped.__cause__ = e
+    return wrapped
+
 
 class UserInputError(BaseError):
     """
@@ -144,6 +148,16 @@ class UserInputError(BaseError):
 
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
+
+    def http_message(self) -> HttpErrorMessage | None:
+        content = ""
+        if m := self.view_message():
+            content = m.content
+
+        return HttpErrorMessage(
+            status_code=self.status_code,
+            content=content,
+        )
 
 
 class AuthenticationError(BaseError):
@@ -163,8 +177,15 @@ class AuthenticationError(BaseError):
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
 
-    def log_message(self, logger: Logger):
-        logger.warning("%s: %s", type(self).__name__, self.message)
+    def http_message(self) -> HttpErrorMessage | None:
+        content = ""
+        if m := self.view_message():
+            content = m.content
+
+        return HttpErrorMessage(
+            status_code=self.status_code,
+            content=content,
+        )
 
 
 class AuthorizationError(BaseError):
@@ -186,8 +207,15 @@ class AuthorizationError(BaseError):
     def history_message(self) -> str | None:
         return self.message
 
-    def log_message(self, logger: Logger):
-        logger.warning("%s: %s", type(self).__name__, self.message)
+    def http_message(self) -> HttpErrorMessage | None:
+        content = ""
+        if m := self.view_message():
+            content = m.content
+
+        return HttpErrorMessage(
+            status_code=self.status_code,
+            content=content,
+        )
 
 
 class ToolExecutionError(BaseError):
@@ -207,8 +235,15 @@ class ToolExecutionError(BaseError):
     def history_message(self) -> str | None:
         return self.message
 
-    def log_message(self, logger: Logger):
-        logger.warning("%s: %s", type(self).__name__, self.message, exc_info=self)
+    def http_message(self) -> HttpErrorMessage | None:
+        content = ""
+        if m := self.view_message():
+            content = m.content
+
+        return HttpErrorMessage(
+            status_code=self.status_code,
+            content=content,
+        )
 
 
 class RateLimitError(ExternalServiceError):
@@ -227,4 +262,3 @@ class AgentError(InternalServiceError):
     """
 
     status_code = 500
-

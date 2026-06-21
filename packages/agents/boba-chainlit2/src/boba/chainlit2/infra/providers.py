@@ -12,7 +12,7 @@ from langgraph.graph.state import CompiledStateGraph
 from psycopg import AsyncConnection, sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import DictRow, dict_row
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from boba.agent.tool_config import (
     bind,
@@ -20,6 +20,7 @@ from boba.agent.tool_config import (
 )
 from boba.chainlit2.agent import build_agent, build_langgraph
 from boba.chainlit2.agent.dump import DumpingTransport
+from boba.chainlit2.errors import InternalServiceError
 from boba.chainlit2.infra.config import (
     AgentProfile,
     AppConfig,
@@ -179,15 +180,24 @@ async def langchain_checkpoint_saver(
         # saver делает только CREATE TABLE — схему из search_path создаём сами,
         # иначе setup() упадёт 'no schema has been selected to create in'
         if schema := c.options.primary_schema:
-            async with pool.connection() as conn:
-                try:
-                    await conn.execute(
-                        sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-                            sql.Identifier(schema)
+            try:
+                async with pool.connection() as conn:
+                    try:
+                        await conn.execute(
+                            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                                sql.Identifier(schema)
+                            )
                         )
-                    )
-                except InsufficientPrivilege as _e:
-                    await conn.commit()
+                    except InsufficientPrivilege as _e:
+                        await conn.commit()
+            except PoolTimeout as e:
+                raise InternalServiceError(
+                    internal_detail=(
+                        "Failed to get postgres connection for langchain "
+                        f"checkpoint saver: {e!s}"
+                    ),
+                    user_detail="Failed to connect to the internal postgres",
+                ) from e
         saver = AsyncPostgresSaver(pool)
         await saver.setup()
         yield saver
