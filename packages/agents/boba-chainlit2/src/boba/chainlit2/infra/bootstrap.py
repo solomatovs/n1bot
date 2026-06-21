@@ -148,26 +148,11 @@ def _use_auth(c: AuthConfig, container: Container) -> None:
     elif isinstance(c, KerberosAuthConfig):
         from boba.chainlit2.chat.auth.spnego import (  # noqa: PLC0415
             KerberosAuthInstaller,
-            KerberosCredentialStore,
-            KerberosDelegation,
-            ProtocolTransitionDelegation,
-            UnconstrainedDelegation,
         )
 
-        store = KerberosCredentialStore()
-        delegation = KerberosDelegation(
-            unconstrained=UnconstrainedDelegation(
-                store=store,
-                ccache_template=c.delegation.ccache_template,
-            ),
-            s4u=ProtocolTransitionDelegation(
-                service_name=c.service_name,
-                keytab=c.keytab,
-            ),
-        )
         # container.provide(providers.kerberos_credential_store, store)
         # container.provide(providers.kerberos_delegation, delegation)
-        KerberosAuthInstaller(c, delegation).install(chainlit_app)
+        KerberosAuthInstaller(c).install(chainlit_app)
 
     elif isinstance(c, LdapAuthConfig):
         from boba.chainlit2.chat.auth.ldap import (  # noqa: PLC0415

@@ -53,18 +53,37 @@ def chainlit_error_handler(fn: Callable) -> Callable:
 
     logger = logging.getLogger("chainlit_error_handler")
 
+    @staticmethod
+    async def handle(e: BaseError):
+        # логируем ошибку
+        e.log_message(logger)
+
+        # показываем ошибку пользователю
+        if m := e.view_message():
+            await cl.ErrorMessage(
+                author=m.author,
+                content=m.content,
+                fail_on_persist_error=m.fail_on_persist_error,
+            ).send()
+
+        # записываем сообщение в историю, которая доступна
+        # при сборке следующего turn'а
+        if _history_message := e.history_message():
+            # пока что нет сервиса для ведения истории
+            pass
+
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
         except BaseError as e:
-            # пузырь слать некуда (контекста нет) — только лог
-            e.log_message(logger)
+            await handle(e)
         except Exception as e:
-            InternalServiceError(
+            exc = InternalServiceError(
                 internal_detail=str(e),
                 user_detail=None,
-            ).log_message(logger)
+            )
+            await handle(exc)
 
         # любая ошибка в auth = отказ; chainlit на None отдаёт 401
         return None
