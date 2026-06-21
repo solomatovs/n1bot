@@ -25,10 +25,11 @@
             "cwd": "${workspaceFolder}/.vscode",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            "stopOnEntry": true,
+            "stopOnEntry": false,
             "env": {
                 "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/local/chainlit2-debug.toml",
-                "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/local"
+                "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/local",
+                "KRB5_CONFIG": "${workspaceFolder}/local/krb5.conf",
             }
         },
         {
