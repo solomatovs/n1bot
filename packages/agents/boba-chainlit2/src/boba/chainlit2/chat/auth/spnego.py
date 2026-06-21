@@ -4,7 +4,6 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
 
 import chainlit as cl
 import krb5
@@ -129,20 +128,6 @@ class KerberosCredentialStore:
         return True
 
 
-class Delegation(Protocol):
-    """
-    Стратегия получения credential от имени пользователя
-    """
-
-    def on_success_authenticated(self, principal: str, ctx) -> None:
-        "при успешном SPNEGO-логине вызывается этот хук"
-        ...
-
-    async def credentials_for(self, username: str, target_spn: str) -> bytes:
-        "Получить SPNEGO-токен к target_spn от имени пользователя"
-        ...
-
-
 class SpnegoChallengeError(BaseError):
     """
     Запрос SPNEGO-токена, не является ошибкой
@@ -155,7 +140,10 @@ class SpnegoChallengeError(BaseError):
         # обязательный заголовок для всех поверхностей, тело пустое
         return HttpErrorMessage(
             status_code=self.status_code,
-            headers=[(b"www-authenticate", b"Negotiate")],
+            headers=[
+                (b"www-authenticate", b"Negotiate"),
+                (b"content-type", b"text/plain; charset=utf-8"),
+            ],
             content="",
         )
 
@@ -196,31 +184,58 @@ class GssErrorToDomain:
         )
 
 
-class UnconstrainedDelegation(Delegation):
+class KerberosDelegation:
     """
-    Неограниченное делегирование
-    при логине захватываем форварднутый TGT в ccache,
-    потом когда потребуется мы ходим им в другую систему
+    Выбираем стратегию согласно AD учетки
+    Если в AD установлено delegated_creds, значит выбирается
+    стратегия ограниченного делегирования (перечислены allowlist)
+    иначе выбирается стратегия неограниченного делегирования
     """
 
     def __init__(
         self,
         store: KerberosCredentialStore,
+        keytab: str,
         ccache_template: str,
+        service_name: str,
     ) -> None:
         self._store = store
         self._ccache_template = ccache_template
-        self._logger = logging.getLogger(UnconstrainedDelegation.__name__)
+        self._service_name = service_name
+        self._keytab = keytab
+        self._logger = logging.getLogger(KerberosDelegation.__name__)
 
     @staticmethod
     def sanitize_principal(principal: str):
         return re.sub(r"[^\w.@-]", "_", principal)
 
-    def on_success_authenticated(self, principal: str, ctx) -> None:
+    def captured(self, username: str) -> bool:
+        "Есть ли захваченный при логине ccache пользователя (форварднутый TGT)."
+        return self._store.ccache_of(username) is not None
+
+    @staticmethod
+    def _init_token(ccache: str, target_spn: str) -> bytes:
+        try:
+            creds = Credentials(usage="initiate", store={b"ccache": ccache.encode()})
+            target = Name(target_spn, NameType.kerberos_principal)
+            ctx = SecurityContext(name=target, creds=creds, usage="initiate")
+            token = ctx.step()
+        except GSSError as e:
+            raise GssErrorToDomain.map(e) from e
+
+        # initiate обязан выдать AP-REQ для бэкенда; пустой токен = слать нечего
+        if not token:
+            raise InternalServiceError(
+                internal_detail="gss step returned empty token on initiate side",
+                user_detail=None,
+            )
+
+        return token
+
+    def on_success_authenticated(self, principal: str, ctx: SecurityContext) -> None:
         deleg = ctx.delegated_creds
         if deleg is None:
             # AD не форварднул TGT — делегирование запрещено для пользователя.
-            # Не валим логин: это валидное состояние, а не сбой
             self._logger.warning(
                 "нет delegated_credentials для %s (делегирование запрещено в AD)",
                 principal,
@@ -244,7 +259,6 @@ class UnconstrainedDelegation(Delegation):
             )
         except GSSError as e:
             # не смогли сохранить делегированный тикет — наша сторона.
-            # НЕ глушим: иначе юзер войдёт, а делегирование молча не работает
             raise InternalServiceError(
                 internal_detail=f"failed to store delegated ccache {ccache}: {e}",
                 user_detail=None,
@@ -255,55 +269,17 @@ class UnconstrainedDelegation(Delegation):
             "kerberos: захвачен delegated тикет %s → %s", principal, ccache
         )
 
-    def captured(self, username: str) -> bool:
-        "Есть ли захваченный при логине ccache пользователя (форварднутый TGT)."
-        return self._store.ccache_of(username) is not None
-
     async def credentials_for(self, username: str, target_spn: str) -> bytes:
-        ccache = self._store.ccache_of(username)
-        if ccache is None:
-            raise InternalServiceError(
-                internal_detail=f"no delegated ccache for {username}",
-                user_detail="Делегирование недоступно для пользователя",
-            )
-        return await asyncio.to_thread(self._init_token, ccache, target_spn)
+        if self.captured(username):
+            ccache = self._store.ccache_of(username)
+            if ccache is None:
+                raise InternalServiceError(
+                    internal_detail=f"no delegated ccache for {username}",
+                    user_detail="Делегирование недоступно для пользователя",
+                )
+            return await asyncio.to_thread(self._init_token, ccache, target_spn)
 
-    @staticmethod
-    def _init_token(ccache: str, target_spn: str) -> bytes:
-        try:
-            creds = Credentials(usage="initiate", store={b"ccache": ccache.encode()})
-            target = Name(target_spn, NameType.kerberos_principal)
-            ctx = SecurityContext(name=target, creds=creds, usage="initiate")
-            token = ctx.step()
-        except GSSError as e:
-            raise GssErrorToDomain.map(e) from e
-
-        # initiate обязан выдать AP-REQ для бэкенда; пустой токен = слать нечего
-        if not token:
-            raise InternalServiceError(
-                internal_detail="gss step returned empty token on initiate side",
-                user_detail=None,
-            )
-
-        return token
-
-
-class ProtocolTransitionDelegation(Delegation):
-    """
-    Стратегия ограниченного делегирования - S4U2Self+S4U2Proxy
-    тикет по имени пользователя
-    """
-
-    def __init__(self, service_name: str, keytab: str) -> None:
-        self._service_name = service_name
-        self._keytab = keytab
-        self._logger = logging.getLogger(ProtocolTransitionDelegation.__name__)
-
-    def on_success_authenticated(self, principal: str, ctx) -> None:
-        # ничего не храним: тикет добываем по требованию в credentials_for
-        return None
-
-    async def credentials_for(self, username: str, target_spn: str) -> bytes:
+        # s4u
         return await asyncio.to_thread(
             self._s4u_token, self._service_name, self._keytab, username, target_spn
         )
@@ -338,33 +314,6 @@ class ProtocolTransitionDelegation(Delegation):
         return token
 
 
-class KerberosDelegation(Delegation):
-    """
-    Выбираем стратегию согласно AD учетки
-    Если в AD установлено delegated_creds, значит выбирается
-    стратегия ограниченного делегирования (перечислены allowlist)
-    иначе выбирается стратегия неограниченного делегирования
-    """
-
-    def __init__(
-        self,
-        unconstrained: UnconstrainedDelegation,
-        s4u: ProtocolTransitionDelegation,
-    ) -> None:
-        self._unconstrained = unconstrained
-        self._s4u = s4u
-
-    def on_success_authenticated(self, principal: str, ctx) -> None:
-        if ctx.delegated_creds is not None:
-            self._unconstrained.on_success_authenticated(principal, ctx)
-
-    async def credentials_for(self, username: str, target_spn: str) -> bytes:
-        if self._unconstrained.captured(username):
-            return await self._unconstrained.credentials_for(username, target_spn)
-
-        return await self._s4u.credentials_for(username, target_spn)
-
-
 class SpnegoMiddleware:
     """
     SPNEGO-accept на gssapi только на /auth/header: principal + захват delegated.
@@ -383,28 +332,29 @@ class SpnegoMiddleware:
         app: ASGIApp,
         *,
         config: KerberosAuthConfig,
-        delegation: Delegation,
     ) -> None:
-        self.app = app
-        self.config = config
-        self.delegation = delegation
+        self._app = app
+        self._config = config
+        self._delegation = KerberosDelegation(
+            store=KerberosCredentialStore(),
+            keytab=self._config.keytab,
+            ccache_template=self._config.delegation.ccache_template,
+            service_name=self._config.service_name,
+        )
         self.logger = logging.getLogger(SpnegoMiddleware.__name__)
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):  # noqa: C901
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":
-            return await self.app(scope, receive, send)
+            return await self._app(scope, receive, send)
 
         path = scope.get("path")
-        if not path:
-            return await self.app(scope, receive, send)
-
         if not isinstance(path, str):
-            return await self.app(scope, receive, send)
+            return await self._app(scope, receive, send)
 
         path = path.removesuffix("/").lower()
 
-        if not path.lower().endswith(self.AUTH_PATH):
-            return await self.app(scope, receive, send)
+        if not path.endswith(self.AUTH_PATH):
+            return await self._app(scope, receive, send)
 
         headers = Headers(scope=scope).mutablecopy()
         auth = headers.get("authorization")
@@ -440,22 +390,22 @@ class SpnegoMiddleware:
 
         principal = str(ctx.initiator_name)
 
-        self.delegation.on_success_authenticated(principal, ctx)
+        self._delegation.on_success_authenticated(principal, ctx)
 
-        header = self.config.header.lower()
+        header = self._config.header.lower()
         headers[header] = principal
-        scope["headers"] = headers
+        scope["headers"] = headers.raw
 
-        return await self.app(scope, receive, send)
+        return await self._app(scope, receive, send)
 
     def _get_spnego_context(self):
         """Принимает SPNEGO-token от браузера и"""
-        name = Name(self.config.service_name, NameType.kerberos_principal)
+        name = Name(self._config.service_name, NameType.kerberos_principal)
         creds = Credentials(
             name=name,
             usage="accept",
             store={
-                b"keytab": self.config.keytab,
+                b"keytab": self._config.keytab,
             },
         )
 
@@ -467,17 +417,21 @@ class SpnegoMiddleware:
 class KerberosAuthInstaller:
     """SSO через Kerberos/SPNEGO; роль — из групп AD; опц. сквозное делегирование."""
 
-    def __init__(self, c: KerberosAuthConfig, delegation: Delegation):
+    def __init__(self, c: KerberosAuthConfig):
         self._c = c
-        self._delegation = delegation
         self._provider = "kerberos"
         self._ad = ADDirectory
+        self.delegation = KerberosDelegation(
+            store=KerberosCredentialStore(),
+            keytab=c.keytab,
+            ccache_template=c.delegation.ccache_template,
+            service_name=c.service_name,
+        )
 
     def install(self, chainlit_app: ASGIApp) -> None:
         chainlit_app.add_middleware(
             SpnegoMiddleware,
             config=self._c,
-            delegation=self._delegation,
         )
         cl.header_auth_callback(self._build_callback())
 

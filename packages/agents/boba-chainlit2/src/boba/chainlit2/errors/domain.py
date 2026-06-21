@@ -67,17 +67,10 @@ class DomainErrorMiddleware:
 
         body = http.content.encode(encoding=self._encoding, errors=self._encoding_error)
         body_len = len(body)
-        headers = []
 
         if body_len > 0:
             http.headers.extend(
                 [
-                    (
-                        b"content-type",
-                        f"text/plain; charset={self._encoding}".encode(
-                            encoding=self._encoding, errors=self._encoding_error
-                        ),
-                    ),
                     (
                         b"content-length",
                         str(body_len).encode(
@@ -91,7 +84,7 @@ class DomainErrorMiddleware:
             {
                 "type": "http.response.start",
                 "status": http.status_code,
-                "headers": headers,
+                "headers": http.headers,
             }
         )
         # начинает отправку http response body
