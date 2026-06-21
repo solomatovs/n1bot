@@ -136,7 +136,7 @@ class SpnegoChallengeError(BaseError):
 
     status_code = 401
 
-    def http_message(self) -> HttpErrorMessage:
+    def http_message(self) -> HttpErrorMessage | None:
         # обязательный заголовок для всех поверхностей, тело пустое
         return HttpErrorMessage(
             status_code=self.status_code,

@@ -3,18 +3,7 @@ import logging
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .model import BaseError, HttpErrorMessage, InternalServiceError
-
-
-def to_domain(e: Exception) -> BaseError:
-    "Заворачивает любое НЕ доменное исключение в InternalServiceError"
-    if isinstance(e, BaseError):
-        return e
-
-    return InternalServiceError(
-        internal_detail=str(e),
-        user_detail=None,
-    )
+from boba.chainlit2.errors.model import BaseError, HttpErrorMessage, to_domain
 
 
 def render_http(status_code: int, content: str) -> Response:
@@ -32,7 +21,7 @@ class DomainErrorMiddleware:
         self.app = app
         self._encoding = "utf-8"
         self._encoding_error = "ignore"
-        self.logger = logging.getLogger("domain_error_middleware")
+        self._logger = logging.getLogger(__name__)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -50,10 +39,12 @@ class DomainErrorMiddleware:
         try:
             await self.app(scope, receive, guarded_send)
         except Exception as e:
-            domain = to_domain(e)
+            if not isinstance(e, BaseError):
+                self._logger.exception(str(e))
+            else:
+                self._logger.error(str(e))
 
-            # логируем ошибку
-            domain.log_message(self.logger)
+            domain = to_domain(e)
 
             if started:
                 # ответ уже начат
@@ -88,7 +79,9 @@ class DomainErrorMiddleware:
             }
         )
         # начинает отправку http response body
-        await send({
-            "type": "http.response.body",
-            "body": body,
-        })
+        await send(
+            {
+                "type": "http.response.body",
+                "body": body,
+            }
+        )

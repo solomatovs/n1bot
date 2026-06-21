@@ -9,7 +9,7 @@ LOGGING_CONFIG: dict[str, Any] = {
     "formatters": {
         "default": {
             "()": "uvicorn.logging.DefaultFormatter",
-            "fmt": "%(levelprefix)s (%(name)s): %(message)s",
+            "fmt": "%(levelprefix)s %(message)s",
             "use_colors": True,
         },
         "uvcorn": {

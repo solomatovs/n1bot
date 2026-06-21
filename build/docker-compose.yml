@@ -49,8 +49,6 @@ services:
       default:
         aliases:
           - chainlit2
-          # FQDN под SPN keytab (HTTP/chainlit2.loshara.com)
-          - chainlit2.loshara.com
     restart: unless-stopped
 
   # cli agent
