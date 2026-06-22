@@ -196,7 +196,7 @@ class Container:
         self._locks.clear()
 
 
-def chainlit_inject(fn: Callable) -> Callable:
+def di_inject(fn: Callable) -> Callable:
     """
     Резолвит Depend-параметры из иерархии контейнеров (app/session/transient)
     framework-аргументы проходят насквозь; call-контейнер закрывается по выходу

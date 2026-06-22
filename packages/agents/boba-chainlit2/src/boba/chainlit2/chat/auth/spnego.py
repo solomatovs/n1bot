@@ -332,15 +332,11 @@ class SpnegoMiddleware:
         app: ASGIApp,
         *,
         config: KerberosAuthConfig,
+        delegation: KerberosDelegation,
     ) -> None:
         self._app = app
         self._config = config
-        self._delegation = KerberosDelegation(
-            store=KerberosCredentialStore(),
-            keytab=self._config.keytab,
-            ccache_template=self._config.delegation.ccache_template,
-            service_name=self._config.service_name,
-        )
+        self._delegation = delegation
         self.logger = logging.getLogger(SpnegoMiddleware.__name__)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
@@ -409,7 +405,10 @@ class SpnegoMiddleware:
             },
         )
 
-        ctx = SecurityContext(creds=creds, usage="accept")
+        ctx = SecurityContext(
+            creds=creds,
+            usage="accept",
+        )
 
         return ctx
 
@@ -429,9 +428,12 @@ class KerberosAuthInstaller:
         )
 
     def install(self, chainlit_app: ASGIApp) -> None:
+        # тот же delegation (и его store), что владеет installer — middleware
+        # лишь пишет в него захваченный delegated TGT
         chainlit_app.add_middleware(
             SpnegoMiddleware,
             config=self._c,
+            delegation=self.delegation,
         )
         cl.header_auth_callback(self._build_callback())
 
