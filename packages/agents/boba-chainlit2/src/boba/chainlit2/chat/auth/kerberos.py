@@ -2,8 +2,9 @@ import asyncio
 import base64
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterable, Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any, Literal
 
 import chainlit as cl
 import krb5
@@ -16,15 +17,19 @@ from gssapi.exceptions import (
     UnauthorizedError,
 )
 from gssapi.raw.misc import GSSError
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit2.chat.auth.ad import (
+from boba.chainlit2.chat.auth.fix import FixUserRolesProvider, RolesMappingConfig
+from boba.chainlit2.chat.auth.ldap import (
     ADDirectory,
+    DnUserRolesProvider,
     LDAPError,
     LDAPInvalidCredentialsError,
     LDAPServerUnavailableError,
     LDAPUserNotFoundError,
+    MemberOfUserRolesProvider,
 )
 from boba.chainlit2.chat.handler import chainlit_error_handler
 from boba.chainlit2.errors import (
@@ -33,9 +38,6 @@ from boba.chainlit2.errors import (
     ExternalServiceError,
     HttpErrorMessage,
     InternalServiceError,
-)
-from boba.chainlit2.infra.config import (
-    KerberosAuthConfig,
 )
 
 UserCallback = Callable[..., Awaitable[cl.User | None]]
@@ -47,6 +49,82 @@ class UserCcache:
 
     principal: str
     ccache: str
+
+
+class KerberosDelegationConfig(BaseModel):
+    """
+    Куда класть ccache и продлевать ли токен
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    ccache_template: str = Field(
+        default="MEMORY:agent-{principal}",
+        description="Шаблон имени ccache на пользователя {principal} подставляется",
+    )
+    renew: bool = Field(
+        default=True,
+        description="Продлевать renewable-тикет по запросу при ошибке истечения.",
+    )
+
+
+class KerberosRolesInLdapConfig(BaseModel):
+    server: str = Field(
+        description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
+    )
+    base_dn: str = Field(
+        description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
+    )
+    bind_dn: str = Field(
+        description="",
+    )
+    bind_password: str = Field(
+        description="",
+    )
+    member_of: RolesMappingConfig | None = Field(default=None, description="")
+    dn: RolesMappingConfig | None = Field(default=None, description="")
+
+
+class KerberosRolesConfig(BaseModel):
+    fix: RolesMappingConfig | None = Field(
+        default=None,
+        description="",
+    )
+    ldap: KerberosRolesInLdapConfig | None = Field(
+        default=None,
+        description="",
+    )
+
+
+class KerberosAuthConfig(BaseModel):
+    """SSO через Kerberos/SPNEGO: тикет валидирует middleware, роль — из групп AD."""
+
+    type: Literal["kerberos"] = "kerberos"
+
+    service_name: str = Field(
+        description="SPN сервиса (HTTP/host@REALM)",
+    )
+    keytab: str = Field(
+        description=(
+            "Путь к keytab сервиса (ключ SPN для SPNEGO-accept); "
+            "обычно /etc/krb5.keytab."
+        ),
+    )
+    principal_format: str = Field(
+        description="",
+    )
+    header: str = Field(
+        default="X-Remote-User",
+        description="Заголовок, куда кладётся принципал для header_auth_callback.",
+    )
+    delegation: KerberosDelegationConfig = Field(
+        default_factory=KerberosDelegationConfig,
+        description="Параметры ccache для unconstrained режима делегирования",
+    )
+    roles: KerberosRolesConfig = Field(
+        default=KerberosRolesConfig(),
+        description="Мапперы учеток и ролей",
+    )
 
 
 class KerberosCredentialStore:
@@ -413,32 +491,125 @@ class SpnegoMiddleware:
         return ctx
 
 
-class KerberosAuthInstaller:
+class KerberosRolesInLdapProvider:
+    def __init__(self, config: KerberosRolesInLdapConfig):
+        self._config = config
+        self._ad = ADDirectory
+
+        self._init_mapping()
+
+    def _init_mapping(self):
+        self._member_of_roles: MemberOfUserRolesProvider | None = None
+        self._dn_roles: DnUserRolesProvider | None = None
+
+        if roles := self._config.member_of:
+            self._member_of_roles = MemberOfUserRolesProvider(roles)
+
+        if roles := self._config.dn:
+            self._dn_roles = DnUserRolesProvider(roles)
+
+    async def roles_of(self, username: str) -> AsyncIterable[str]:
+        search_filter = f"(sAMAccountName={username})"
+
+        try:
+            user_dn, member_of = await asyncio.to_thread(
+                self._ad.fetch_userdn_and_member_of,
+                server=self._config.server,
+                bind_dn=self._config.bind_dn,
+                bind_password=self._config.bind_password,
+                search_base=self._config.base_dn,
+                search_filter=search_filter,
+            )
+        except LDAPUserNotFoundError as e:
+            raise AuthenticationError("User is not registered") from e
+        except LDAPServerUnavailableError as e:
+            raise ExternalServiceError(
+                "ldap", "LDAP service is unavailable, please try again later"
+            ) from e
+        except LDAPInvalidCredentialsError as e:
+            raise InternalServiceError(
+                internal_detail=f"ldap service bind rejected: {e}",
+                user_detail=None,
+            ) from e
+        except LDAPError as e:
+            raise InternalServiceError(
+                internal_detail=f"ldap error: {e}", user_detail=None
+            ) from e
+
+        if self._member_of_roles:
+            for x in self._member_of_roles.roles_of(member_of):
+                yield x
+
+        if self._dn_roles:
+            for x in self._dn_roles.roles_of(user_dn):
+                yield x
+
+
+class KerberosAuth:
     """SSO через Kerberos/SPNEGO; роль — из групп AD; опц. сквозное делегирование."""
 
-    def __init__(self, c: KerberosAuthConfig):
-        self._c = c
+    def __init__(self, config: KerberosAuthConfig):
+        self._config = config
         self._provider = "kerberos"
         self._ad = ADDirectory
         self.delegation = KerberosDelegation(
             store=KerberosCredentialStore(),
-            keytab=c.keytab,
-            ccache_template=c.delegation.ccache_template,
-            service_name=c.service_name,
+            keytab=config.keytab,
+            ccache_template=config.delegation.ccache_template,
+            service_name=config.service_name,
         )
 
+        self._init_mapping()
+
+    def _init_mapping(self):
+        self._fixed_roles: FixUserRolesProvider | None = None
+        self._kerberos_roles_in_ldap: KerberosRolesInLdapProvider | None = None
+
+        if roles := self._config.roles.fix:
+            self._fixed_roles = FixUserRolesProvider(roles)
+
+        if ldap := self._config.roles.ldap:
+            self._kerberos_roles_in_ldap = KerberosRolesInLdapProvider(ldap)
+
+    @staticmethod
+    def _username_from_principal(
+        principal_format: str,
+        principal: str,
+    ) -> str:
+        """user@REALM | DOMAIN\\user -> sAMAccountName по шаблону с {username}."""
+        placeholder = "{username}"
+        if placeholder not in principal_format:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"principal_format {principal_format!r} не содержит {placeholder}"
+                ),
+                user_detail=None,
+            )
+
+        head, tail = principal_format.split(placeholder, 1)
+        pattern = re.compile(f"^{re.escape(head)}(?P<username>.+?){re.escape(tail)}$")
+        match = pattern.match(principal)
+        if not match:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"principal {principal!r} не соответствует формату "
+                    f"{principal_format!r}"
+                ),
+                user_detail=None,
+            )
+
+        return match.group("username")
+
     def install(self, chainlit_app: ASGIApp) -> None:
-        # тот же delegation (и его store), что владеет installer — middleware
-        # лишь пишет в него захваченный delegated TGT
         chainlit_app.add_middleware(
             SpnegoMiddleware,
-            config=self._c,
+            config=self._config,
             delegation=self.delegation,
         )
         cl.header_auth_callback(self._build_callback())
 
     def _build_callback(self) -> UserCallback:
-        header = self._c.header
+        header = self._config.header
 
         @chainlit_error_handler
         async def header_auth(headers) -> cl.User | None:
@@ -446,49 +617,29 @@ class KerberosAuthInstaller:
             if not principal:
                 return None
 
-            try:
-                username = self._ad._username_from_principal(principal)
-                search_filter = self._c.user_filter.format(username=username)
+            username = self._username_from_principal(
+                self._config.principal_format,
+                principal,
+            )
 
-                _user_dn, member_of = await asyncio.to_thread(
-                    self._ad.fetch_userdn_and_member_of,
-                    server=self._c.server,
-                    bind_dn=self._c.bind_dn,
-                    bind_password=self._c.bind_password,
-                    search_base=self._c.base_dn,
-                    search_filter=search_filter,
-                )
+            metadata: dict[str, Any] = {"provider": KerberosAuth.__name__}
 
-                roles = list(
-                    await asyncio.to_thread(
-                        self._ad.role_of,
-                        group_dn_and_roles=self._c.group_role_map,
-                        member_of=member_of,
-                    )
-                )
+            roles: list[str] = []
+            if self._fixed_roles:
+                roles.extend(self._fixed_roles.roles_of(username))
 
-                return cl.User(
-                    identifier=username,
-                    metadata={
-                        "role": roles,
-                        "provider": self._provider,
-                    },
-                )
-            except LDAPUserNotFoundError as e:
-                raise AuthenticationError("User is not registered") from e
-            except LDAPServerUnavailableError as e:
-                raise ExternalServiceError(
-                    "ldap", "LDAP service is unavailable, please try again later"
-                ) from e
-            except LDAPInvalidCredentialsError as e:
-                # сервис-аккаунт kerberos: отклонённый bind = наша конфигурация
-                raise InternalServiceError(
-                    internal_detail=f"ldap service bind rejected: {e}",
-                    user_detail=None,
-                ) from e
-            except LDAPError as e:
-                raise InternalServiceError(
-                    internal_detail=f"ldap error: {e}", user_detail=None
-                ) from e
+            if self._kerberos_roles_in_ldap:
+                async for x in self._kerberos_roles_in_ldap.roles_of(username):
+                    roles.append(x)
+
+            roles = list(set(roles))
+
+            if roles:
+                metadata.update(roles=roles)
+
+            return cl.User(
+                identifier=username,
+                metadata=metadata,
+            )
 
         return header_auth

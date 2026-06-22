@@ -1,7 +1,11 @@
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from chainlit.config import ChainlitConfig
 from pydantic import BaseModel, ConfigDict, Field
+
+from boba.chainlit2.chat.auth.fix import FixAuthConfig
+from boba.chainlit2.chat.auth.ldap import LdapAuthConfig
+from boba.chainlit2.chat.auth.kerberos import KerberosAuthConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -456,103 +460,8 @@ class PostgresConfig(BaseModel):
         }
 
 
-class CredentialsAuthConfig(BaseModel):
-    """Авторизация по статической таблице логин/пароль из конфига."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    type: Literal["credentials"] = "credentials"
-
-    users: dict[str, str] = Field(
-        default_factory=lambda: {"admin": "admin"},
-        description="Таблица логин→пароль; совпадение выдаёт роль admin.",
-    )
-
-
-class KerberosDelegationConfig(BaseModel):
-    """
-    Куда класть ccache и продлевать ли токен
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    ccache_template: str = Field(
-        default="MEMORY:agent-{principal}",
-        description="Шаблон имени ccache на пользователя {principal} подставляется",
-    )
-    renew: bool = Field(
-        default=True,
-        description="Продлевать renewable-тикет по запросу при ошибке истечения.",
-    )
-
-
-class KerberosAuthConfig(BaseModel):
-    """SSO через Kerberos/SPNEGO: тикет валидирует middleware, роль — из групп AD."""
-
-    type: Literal["kerberos"] = "kerberos"
-
-    server: str = Field(
-        description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
-    )
-    base_dn: str = Field(
-        description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
-    )
-    bind_dn: str = Field(description="DN сервисной учётки для поиска пользователя.")
-    bind_password: str = Field(description="Пароль сервисной учётки (секрет).")
-    user_filter: str = Field(
-        default="(sAMAccountName={username})",
-        description="LDAP-фильтр поиска пользователя; {username} подставляется.",
-    )
-    group_role_map: dict[str, str] = Field(
-        default_factory=dict,
-        description="DN группы → роль приложения; берётся первая совпавшая по порядку.",
-    )
-    service_name: str = Field(
-        description="SPN сервиса (HTTP/host@REALM), явно — без автоподбора из keytab.",
-    )
-    keytab: str = Field(
-        description=(
-            "Путь к keytab сервиса (ключ SPN для SPNEGO-accept); "
-            "обычно /etc/krb5.keytab."
-        ),
-    )
-    header: str = Field(
-        default="X-Remote-User",
-        description="Заголовок, куда кладётся принципал для header_auth_callback.",
-    )
-    delegation: KerberosDelegationConfig = Field(
-        default_factory=KerberosDelegationConfig,
-        description="Параметры ccache для unconstrained режима делегирования",
-    )
-
-
-class LdapAuthConfig(BaseModel):
-    """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
-
-    type: Literal["ldap"] = "ldap"
-
-    server: str = Field(
-        description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
-    )
-    base_dn: str = Field(
-        description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
-    )
-    user_filter: str = Field(
-        default="(sAMAccountName={username})",
-        description="LDAP-фильтр поиска пользователя; {username} подставляется.",
-    )
-    bind_dn_template: str = Field(
-        description="LDAP bind user; {username} подставляется",
-    )
-    group_role_map: dict[str, str] = Field(
-        default_factory=dict,
-        description="DN группы → роль приложения; берётся первая совпавшая по порядку.",
-    )
-
-
-
 AuthConfig = Annotated[
-    CredentialsAuthConfig | KerberosAuthConfig | LdapAuthConfig,
+    FixAuthConfig | KerberosAuthConfig | LdapAuthConfig,
     Field(discriminator="type"),
 ]
 
@@ -582,7 +491,7 @@ class AppConfig(BaseModel):
         list[AuthConfig],
         Field(
             default_factory=list,
-            description="Способы авторизации",
+            description="Доступные способы авторизации",
         ),
     ]
 

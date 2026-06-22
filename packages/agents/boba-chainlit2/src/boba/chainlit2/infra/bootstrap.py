@@ -18,7 +18,7 @@ from boba.chainlit2.infra.config import (
     AppConfig,
     AuthConfig,
     ChainlitExtendConfig,
-    CredentialsAuthConfig,
+    FixAuthConfig,
     KerberosAuthConfig,
     LdapAuthConfig,
 )
@@ -96,7 +96,7 @@ def _use_domain_error(app: FastAPI):
 
 def _use_chainlit_middleware(app: FastAPI, c: ChainlitExtendConfig):
     # импортируем chainlit
-    import boba.chainlit2.chat  # type: ignore # noqa: F401, PLC0415
+    import boba.chainlit2.chat.callback  # type: ignore # noqa: F401, PLC0415
 
     # фронт берёт базовый путь для своих запросов (/user, /auth/config,
     # socket.io) из этого env: serve() подставляет его в index.html. Без
@@ -134,35 +134,34 @@ def _use_chainlit_middleware(app: FastAPI, c: ChainlitExtendConfig):
     app.mount(c.run.root_path, chainlit_app)
 
 
-def _use_auth(c: AuthConfig, container: Container) -> None:
+def _use_auth(c: list[AuthConfig], container: Container) -> None:
     "Единая точка подключения авторизации chainlit; стратегия выбирается конфигом"
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    if isinstance(c, CredentialsAuthConfig):
-        from boba.chainlit2.chat.auth.credential import (  # noqa: PLC0415
-            CredentialsAuth,
-        )
+    for auth in c:
+        if isinstance(auth, FixAuthConfig):
+            from boba.chainlit2.chat.auth.fix import (  # noqa: PLC0415
+                FixAuth,
+            )
 
-        CredentialsAuth(c).install(chainlit_app)
+            FixAuth(auth).install(chainlit_app)
 
-    elif isinstance(c, KerberosAuthConfig):
-        from boba.chainlit2.chat.auth.spnego import (  # noqa: PLC0415
-            KerberosAuthInstaller,
-        )
+        elif isinstance(auth, KerberosAuthConfig):
+            from boba.chainlit2.chat.auth.kerberos import (  # noqa: PLC0415
+                KerberosAuth,
+            )
 
-        # container.provide(providers.kerberos_credential_store, store)
-        # container.provide(providers.kerberos_delegation, delegation)
-        KerberosAuthInstaller(c).install(chainlit_app)
+            KerberosAuth(auth).install(chainlit_app)
 
-    elif isinstance(c, LdapAuthConfig):
-        from boba.chainlit2.chat.auth.ldap import (  # noqa: PLC0415
-            LdapAuth,
-        )
+        elif isinstance(auth, LdapAuthConfig):
+            from boba.chainlit2.chat.auth.ldap import (  # noqa: PLC0415
+                LdapAuth,
+            )
 
-        LdapAuth(c).install(chainlit_app)
+            LdapAuth(auth).install(chainlit_app)
 
-    else:
-        raise ValueError(f"unknown authorization type: {type(c).__name__}")
+        else:
+            raise ValueError(f"unknown authorization type: {type(c).__name__}")
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
