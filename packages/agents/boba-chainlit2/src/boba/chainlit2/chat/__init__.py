@@ -8,13 +8,13 @@ from langgraph.graph.state import CompiledStateGraph
 
 from boba.chainlit2.chat.handler import chainlit_error_ctx_handler
 from boba.chainlit2.chat.tracer import BobaLangchainTracer
-from boba.chainlit2.infra.di import Depends, chainlit_inject
+from boba.chainlit2.infra.di import Depends, di_inject
 from boba.chainlit2.infra.providers import langchain_agent
 
 
 @cl.on_message
 @chainlit_error_ctx_handler
-@chainlit_inject
+@di_inject
 async def on_message(
     msg: cl.Message,
     graph: Annotated[
@@ -48,7 +48,7 @@ async def on_message(
 
 @cl.on_chat_start
 @chainlit_error_ctx_handler
-@chainlit_inject
+@di_inject
 async def on_chat_start():
     app_user: cl.User | cl.PersistedUser | None = cl.user_session.get("user")
     await cl.Message(f"Hello {app_user}").send()

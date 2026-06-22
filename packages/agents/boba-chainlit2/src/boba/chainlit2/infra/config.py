@@ -579,10 +579,10 @@ class AppConfig(BaseModel):
     ]
 
     auth: Annotated[
-        AuthConfig,
+        list[AuthConfig],
         Field(
-            default_factory=CredentialsAuthConfig,
-            description="Способ авторизации: credentials|kerberos (по полю type).",
+            default_factory=list,
+            description="Способы авторизации",
         ),
     ]
 

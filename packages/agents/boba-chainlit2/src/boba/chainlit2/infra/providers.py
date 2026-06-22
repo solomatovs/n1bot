@@ -6,6 +6,8 @@ from typing import Annotated
 
 import httpx
 from httpx import AsyncClient
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
@@ -13,13 +15,14 @@ from psycopg import AsyncConnection, sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
+from pydantic import SecretStr
 
 from boba.agent.tool_config import (
     bind,
     build_app_config,
 )
-from boba.chainlit2.agent import build_agent, build_langgraph
 from boba.chainlit2.agent.dump import DumpingTransport
+from boba.chainlit2.agent.tools import get_weather
 from boba.chainlit2.errors import InternalServiceError
 from boba.chainlit2.infra.config import (
     AgentProfile,
@@ -203,17 +206,26 @@ async def langchain_checkpoint_saver(
         yield saver
 
 
-def langchain_graph(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-    client: Annotated[AsyncClient, Depends(httpx_debug_client)],
-) -> CompiledStateGraph:
-    """Скомпилированный agent-граф под конфиг; scope задаёт потребитель (Depend)."""
-    return build_langgraph(c, client)
-
-
 def langchain_agent(
     c: Annotated[AppConfig, Depends(get_app_config)],
     client: Annotated[AsyncClient, Depends(httpx_debug_client)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
 ) -> CompiledStateGraph:
-    return build_agent(c, client, saver)
+    chat = ChatOpenAI(
+        http_async_client=client,
+        model=c.agent.model,
+        base_url=c.agent.openai.base_url,
+        api_key=SecretStr(c.agent.openai.api_key),
+        temperature=c.agent.temperature,
+    )
+
+    system_prompt = c.agent.default_system_prompt
+
+    agent = create_agent(
+        model=chat,
+        tools=[get_weather],
+        system_prompt=system_prompt,
+        checkpointer=saver,
+    )
+
+    return agent
