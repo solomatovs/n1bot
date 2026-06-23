@@ -21,10 +21,18 @@ class ChainlitLiveTarget(EventRenderTarget):
     уровне ленты (parent_id=None), а не детьми run-step'а @cl.on_message.
     Иначе с cot="full" frontend разносит их по типу: assistant_message
     всплывают отдельными бабблами, а tool/run-шаги схлопываются в CoT-блок
-    run-step'а (он привязан к началу turn'а). Из-за этого финальный ответ
-    печатается рядом с предыдущим answer, а не после последнего tool_call.
-    Плоская структура повторяет replay (StepDictTarget, parentId=None) —
-    сортировка идёт строго по created_at, события идут хронологически.
+    run-step'а (он привязан к началу turn'а). Плоская структура повторяет
+    replay (StepDictTarget, parentId=None).
+
+    Порядок в ленте задаётся ПОРЯДКОМ ВСТАВКИ (frontend добавляет top-level
+    элемент в конец массива), а не created_at — created_at сортирует только
+    список тредов в sidebar. Поэтому позицию определяет момент send()/первого
+    stream_token, и события идут в том порядке, в каком их кладёт диспетчер.
+
+    Финальный ответ — это контент turn'а БЕЗ tool_calls (см. _commit_answer в
+    диспетчере); он единственный рисуется assistant-баблом. Контент turn'а С
+    tool_calls — преамбула: рисуется свёрнутым step'ом (answer_preamble), иначе
+    встал бы баблом над собственными tool-step'ами и выглядел бы как ответ.
 
     Параметр diagnostic управляет показом DiagnosticEvent-ов:
     False - тихо игнорируем (классический чистый чат);
@@ -79,6 +87,22 @@ class ChainlitLiveTarget(EventRenderTarget):
         # закрываем сообщение (см. _close_streamed).
         await _close_streamed(self._answer_msg)
         self._answer_msg = None
+
+    async def answer_preamble(self, text: str) -> None:
+        """Преамбула — текст turn'а, который ТАКЖЕ вызвал инструмент.
+
+        Рисуем свёрнутым run-step'ом (как thinking), а не assistant-баблом:
+        финальный ответ (turn без tool_calls) — единственный assistant_message.
+        Если в stream-режиме контент уже потёк в provisional answer-бабл, снимаем
+        его и переносим в step — иначе ответ висел бы над своими tool-step'ами.
+        """
+        await self._clear_status()
+        if self._answer_msg is not None:
+            await self._answer_msg.remove()
+            self._answer_msg = None
+        step = cl.Step(name="preamble", type="run", parent_id=None)
+        await step.send()
+        await _finalize_step(step, text)
 
     async def thinking_complete(self, text: str) -> None:
         if self._thinking_step is None and text:

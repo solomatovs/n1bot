@@ -104,6 +104,14 @@ class StepDictTarget(EventRenderTarget):
             return
         self._append(type_="assistant_message", name="assistant", output=text)
 
+    async def answer_preamble(self, text: str) -> None:
+        # Преамбула (контент turn'а с tool_calls) — свёрнутый run-step,
+        # симметрично live: финальным ответом считается только turn без
+        # tool_calls (см. _commit_answer в диспетчере).
+        if not text.strip():
+            return
+        self._append(type_="run", name="preamble", output=text)
+
     async def thinking_complete(self, text: str) -> None:
         self._append(type_="run", name="thinking", output=text)
 
