@@ -10,6 +10,9 @@ services:
       - CHAINLIT_URL_PREFIX=/boba
     volumes:
       - ./local:/app/local
+      # keytab делает samba-ad: local/krb5.keytab
+      - ./local/krb5.keytab:/etc/krb5.keytab:ro
+      - ./local/krb5.conf:/etc/krb5.conf:ro
     expose:
       - "8501"
     ports:
