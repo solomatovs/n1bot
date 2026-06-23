@@ -1,4 +1,4 @@
-"""Chainlit-callback'и (entry-file для run_chainlit)."""
+"""Chainlit-callback'и; модуль импортируется из composition._use_chainlit_app."""
 
 from __future__ import annotations
 
@@ -26,12 +26,6 @@ _NAME_MAX = 60
 """Max длина имени треда, выведенного из первого user-сообщения."""
 
 
-@cl.password_auth_callback
-async def password_auth(username: str, password: str) -> cl.User | None:
-    user = app_state().authenticate_user.execute(username, password)
-    if user is None:
-        return None
-    return cl.User(identifier=user.username)
 
 
 @cl.data_layer
