@@ -2,7 +2,7 @@ from collections.abc import Awaitable, Callable
 
 import chainlit as cl
 
-from boba.chainlit2.chat.handler import chainlit_error_handler
+# from boba.chainlit2.chat.handler import chainlit_error_handler
 
 UserCallback = Callable[..., Awaitable[cl.User | None]]
 
@@ -23,7 +23,7 @@ class PasswordAuthCallbackInstaller:
             cl.password_auth_callback(self._build_callback())
 
     def _build_callback(self) -> UserCallback:
-        @chainlit_error_handler
+        # @chainlit_error_handler
         async def password_auth(username: str, password: str) -> cl.User | None:
             for auth in self._auth:
                 res = await auth.password_auth(username, password)

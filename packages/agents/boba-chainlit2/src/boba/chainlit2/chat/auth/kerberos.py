@@ -31,7 +31,8 @@ from boba.chainlit2.chat.auth.ldap import (
     LDAPUserNotFoundError,
     MemberOfUserRolesProvider,
 )
-from boba.chainlit2.chat.handler import chainlit_error_handler
+
+# from boba.chainlit2.chat.handler import chainlit_error_handler
 from boba.chainlit2.errors import (
     AuthenticationError,
     BaseError,
@@ -611,7 +612,7 @@ class KerberosAuth:
     def _build_callback(self) -> UserCallback:
         header = self._config.header
 
-        @chainlit_error_handler
+        # @chainlit_error_handler
         async def header_auth(headers) -> cl.User | None:
             principal = headers.get(header)
             if not principal:

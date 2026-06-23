@@ -147,7 +147,7 @@ async def httpx_debug_client(
         return res
 
     transport = DumpingTransport(
-        dump_dir=Path("dumps"),
+        dump_dir=Path(Path(c.chainlit.root) / "dump"),
         dump_file=chainlit_filename,
         **_openai_transport_options(c.agent.openai),
     )
