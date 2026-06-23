@@ -1,20 +1,14 @@
 import logging
 
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit2.errors.model import BaseError, HttpErrorMessage, to_domain
-
-
-def render_http(status_code: int, content: str) -> Response:
-    "Делает HTTP-ответ из BaseError"
-    return JSONResponse({"error": content}, status_code=status_code)
+from boba.chainlit2.errors.model import BaseError, to_domain
 
 
 class DomainErrorMiddleware:
     """
-    Ловит любое необработанное исключение в своём app
-    рендерит HTTP ответ с соответствующим исключением
+    Единая точка обработки исключений приложения.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -47,41 +41,15 @@ class DomainErrorMiddleware:
             domain = to_domain(e)
 
             if started:
-                # ответ уже начат
+                # ответ уже начат — подменить его уже нельзя
                 raise
 
-            # если есть пользовательское сообщение, то отправляем его
-            if m := domain.http_message():
-                await self._http_send(send, m)
-
-    async def _http_send(self, send: Send, http: HttpErrorMessage) -> None:
-
-        body = http.content.encode(encoding=self._encoding, errors=self._encoding_error)
-        body_len = len(body)
-
-        if body_len > 0:
-            http.headers.extend(
-                [
-                    (
-                        b"content-length",
-                        str(body_len).encode(
-                            encoding=self._encoding, errors=self._encoding_error
-                        ),
-                    ),
-                ]
-            )
-        # начинает отправку http response status
-        await send(
-            {
-                "type": "http.response.start",
-                "status": http.status_code,
-                "headers": http.headers,
-            }
-        )
-        # начинает отправку http response body
-        await send(
-            {
-                "type": "http.response.body",
-                "body": body,
-            }
-        )
+            if (http := domain.http_message()) is not None:
+                # JSON {"detail": <code>} - для chainlut это важно
+                # он мапит code в auth.login.errors.<code>
+                # поэтому можно использовать локализации для отображения ошибок
+                await JSONResponse(
+                    content={"detail": http.content},
+                    status_code=http.status_code,
+                    headers=http.headers,
+                )(scope, receive, send)

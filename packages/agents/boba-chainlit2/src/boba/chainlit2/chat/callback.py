@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated, Any, cast
 
 import chainlit as cl
+from fastapi import Request, Response
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
@@ -52,3 +53,9 @@ async def on_message(
 async def on_chat_start():
     app_user: cl.User | cl.PersistedUser | None = cl.user_session.get("user")
     await cl.Message(f"Hello {app_user}").send()
+
+
+@cl.on_logout
+def on_logout(request: Request, response: Response):
+    for cookie_name in request.cookies:
+        response.delete_cookie(cookie_name)
