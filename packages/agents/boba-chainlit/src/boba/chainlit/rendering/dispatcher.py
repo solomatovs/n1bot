@@ -57,6 +57,7 @@ class EventRenderTarget(Protocol):
 
     async def user_query(self, text: str) -> None: ...
     async def answer_complete(self, text: str) -> None: ...
+    async def answer_preamble(self, text: str) -> None: ...
     async def thinking_complete(self, text: str) -> None: ...
     async def refusal_complete(self, text: str) -> None: ...
     async def tool_result(
@@ -161,8 +162,16 @@ class AgentEventDispatcher:
             # --- ContentSnapshot --------------------------------------
             case UserQueryReceived(query=q):
                 await self._target.user_query(q)
-            case AnswerMessage(content=c):
-                await self._target.answer_complete(c)
+            case AnswerMessage():
+                # НЕ коммитим ответ здесь: на AnswerMessage ещё не видно,
+                # есть ли в этом turn'е tool_calls. Контент turn'а с
+                # tool_calls — это преамбула (рисуем свёрнутым step'ом), без
+                # tool_calls — финальный ответ (assistant-бабл). Решение
+                # принимаем на TotalMessage (_commit_answer), где tool_calls
+                # уже известны; иначе преамбула встаёт top-level баблом над
+                # своими же tool-step'ами (лента упорядочена порядком вставки,
+                # не created_at).
+                return
             case ThinkingMessage(content=c):
                 await self._target.thinking_complete(c)
             case RefusalMessage(content=c):
@@ -187,8 +196,10 @@ class AgentEventDispatcher:
                     call.args_json(),
                 )
             case TotalMessage():
-                # терминатор генерации: гасим статус + подсвечиваем исход
+                # терминатор генерации: гасим статус, коммитим ответ
+                # (преамбула vs финал — по tool_calls), подсвечиваем исход
                 await self._target.generation_milestone()
+                await self._commit_answer(event)
                 await self._handle_generation_completed(event)
 
             # AdvisoryEvent
@@ -251,6 +262,29 @@ class AgentEventDispatcher:
                 await self._target.tool_chart(call_id, spec, title)
             case _ as never:
                 assert_never(never)
+
+    async def _commit_answer(self, event: TotalMessage) -> None:
+        """Коммит текстового контента генерации на терминаторе turn'а.
+
+        AnswerMessage сам по себе не рисуем: на нём ещё не виден tool_calls
+        этого turn'а. Здесь tool_calls известны, поэтому различаем:
+
+        - turn С tool_calls -> контент это преамбула (модель что-то сказала
+          перед тем как пойти в инструмент) -> свёрнутый step, чтобы он не
+          выглядел финальным ответом над своими же tool-step'ами;
+        - turn БЕЗ tool_calls -> финальный ответ -> обычный assistant-бабл.
+
+        Решение «финал = turn без tool_calls» совпадает с критерием остановки
+        агентского цикла (StopIfReasonStop). refusal идёт отдельным каналом
+        (message.refusal / RefusalMessage), content тут — только answer.
+        """
+        content = event.message.content or ""
+        if not content.strip():
+            return
+        if event.message.tool_calls:
+            await self._target.answer_preamble(content)
+        else:
+            await self._target.answer_complete(content)
 
     async def _handle_generation_completed(self, event: TotalMessage) -> None:
         """Подсветить «не-нормальный» исход генерации в UI.
