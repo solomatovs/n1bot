@@ -4,8 +4,8 @@ from chainlit.config import ChainlitConfig
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit2.chat.auth.fix import FixAuthConfig
-from boba.chainlit2.chat.auth.ldap import LdapAuthConfig
 from boba.chainlit2.chat.auth.kerberos import KerberosAuthConfig
+from boba.chainlit2.chat.auth.ldap import LdapAuthConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
