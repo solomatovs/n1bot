@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.agent.history import HistoryService, JsonLinesHistoryService
 from boba.agent.tool_config import (
@@ -17,8 +23,7 @@ from boba.agent.tool_config import (
     build_app_config,
 )
 from boba.agent.workspace_fs import FsWorkspaceShell
-from boba.chainlit.auth import AuthenticateUser, StaticUserRepository
-from boba.chainlit.config import ChainlitConfig
+from boba.chainlit.config import AuthConfig, ChainlitConfig
 from boba.chainlit.data_layer import BobaDataLayer
 from boba.chainlit.logging import configure_logging
 from boba.chainlit.models import ThreadId
@@ -156,19 +161,6 @@ def main() -> int:
             FsWorkspaceShell.under(history_base_dir, workspace_id)
         )
 
-    authenticate_user = AuthenticateUser(
-        StaticUserRepository(
-            {
-                "user1": "1974",
-                "user2": "1974",
-                "user3": "1974",
-                "user4": "1974",
-                "user5": "1974",
-                "user6": "1974",
-            }
-        )
-    )
-
     # Свежий shell на каждую службу: общий root, но изолированное состояние.
     user_catalog = FsUserCatalog(
         FsWorkspaceShell.under(history_base_dir, _SYSTEM_WORKSPACE_ID)
@@ -217,7 +209,6 @@ def main() -> int:
     )
 
     set_app_state(
-        authenticate_user,
         open_chat_session,
         data_layer,
         thread_repository,
@@ -226,9 +217,94 @@ def main() -> int:
         sections,
     )
 
-    # chainlit импортируется только после bootstrap — он читает env при загрузке.
-    from chainlit.cli import run_chainlit  # noqa: PLC0415
+    # Монтируем chainlit в FastAPI (вместо run_chainlit), чтобы авторизация
+    # из boba-chainlit2 (middleware + password/header callback'и) и доменные
+    # ошибки подключались тем же способом, что и в новом приложении.
+    app = FastAPI()
+    _use_chainlit_app(app, chainlit_cfg)
+    _use_auth(chainlit_cfg.auth)
+    _use_domain_error(app)
 
-    callbacks_path = Path(__file__).with_name("callbacks.py")
-    run_chainlit(str(callbacks_path))
+    asyncio.run(_serve(app, chainlit_cfg))
     return 0
+
+
+def _use_chainlit_app(app: FastAPI, cfg: ChainlitConfig) -> None:
+    """Монтирует chainlit-приложение в FastAPI (замена run_chainlit)."""
+    # импорт callback-модуля регистрирует cl.* хендлеры (как делал load_module
+    # внутри run_chainlit); chainlit уже импортирован выше через data_layer.
+    import boba.chainlit.callbacks  # type: ignore  # noqa: F401, PLC0415
+    from chainlit.config import config as cl_config  # noqa: PLC0415
+    from chainlit.markdown import init_markdown  # noqa: PLC0415
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    # то, что run_chainlit проставлял из env, выставляем явно из конфига
+    cl_config.run.host = cfg.host
+    cl_config.run.port = cfg.port
+    cl_config.run.root_path = cfg.url_prefix
+
+    # chainlit.md, если его ещё нет
+    init_markdown(cl_config.root)
+
+    class ChainlitMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            if not request.url.path.startswith(cfg.url_prefix):
+                return JSONResponse(status_code=404, content={"detail": "Not found"})
+            return await call_next(request)
+
+    if cfg.url_prefix:
+        chainlit_app.add_middleware(ChainlitMiddleware)
+
+    app.mount(cfg.url_prefix, chainlit_app)
+
+
+def _use_auth(auth_configs: list[AuthConfig]) -> None:
+    """Единая точка подключения авторизации; стратегия выбирается конфигом."""
+    from boba.chainlit2.chat.auth import (  # noqa: PLC0415
+        FixAuth,
+        FixAuthConfig,
+        KerberosAuth,
+        KerberosAuthConfig,
+        LdapAuth,
+        LdapAuthConfig,
+        PasswordAuthCallbackInstaller,
+    )
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    password_callback = PasswordAuthCallbackInstaller()
+
+    for auth in auth_configs:
+        if isinstance(auth, KerberosAuthConfig):
+            KerberosAuth(auth).install(chainlit_app)
+        elif isinstance(auth, FixAuthConfig):
+            password_callback.fix_auth_setup(FixAuth(auth))
+        elif isinstance(auth, LdapAuthConfig):
+            password_callback.ldap_auth_setup(LdapAuth(auth))
+        else:
+            raise ValueError(f"unknown authorization type: {type(auth).__name__}")
+
+    # password callback ставим один раз, если есть хотя бы один password-метод
+    password_callback.install_callback_if_any_exists()
+
+
+def _use_domain_error(app: FastAPI) -> None:
+    """Единая точка обработки доменных ошибок (вкл. SPNEGO-челлендж → 401)."""
+    from boba.chainlit2.errors import DomainErrorMiddleware  # noqa: PLC0415
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    app.add_middleware(DomainErrorMiddleware)
+    chainlit_app.add_middleware(DomainErrorMiddleware)
+
+
+async def _serve(app: FastAPI, cfg: ChainlitConfig) -> None:
+    """Запуск uvicorn на внешнем FastAPI (chainlit смонтирован внутрь)."""
+    uv_config = uvicorn.Config(
+        app,
+        host=cfg.host,
+        port=cfg.port,
+        # log_config=None — не перетираем уже применённый configure_logging
+        log_config=None,
+        access_log=True,
+    )
+    server = uvicorn.Server(uv_config)
+    await server.serve()

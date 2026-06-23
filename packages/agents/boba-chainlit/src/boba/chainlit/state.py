@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba.chainlit.auth import AuthenticateUser
 from boba.chainlit.data_layer import BobaDataLayer
 from boba.chainlit.sessions import OpenChatSession
 from boba.chainlit.settings import SettingsSection
@@ -24,7 +23,6 @@ __all__ = ["AppState", "app_state", "set_app_state"]
 class AppState:
     """Application-wide deps, зафиксированные в main()."""
 
-    authenticate_user: AuthenticateUser
     open_chat_session: OpenChatSession
     data_layer: BobaDataLayer
     thread_repository: ThreadRepository
@@ -44,7 +42,6 @@ _holder = _Holder()
 
 
 def set_app_state(
-    authenticate_user: AuthenticateUser,
     open_chat_session: OpenChatSession,
     data_layer: BobaDataLayer,
     thread_repository: ThreadRepository,
@@ -52,9 +49,8 @@ def set_app_state(
     available_tools: AvailableToolsCache,
     sections: tuple[SettingsSection, ...],
 ) -> None:
-    """Зафиксировать deps до run_chainlit(...)."""
+    """Зафиксировать deps до старта chainlit-сервера."""
     _holder.state = AppState(
-        authenticate_user=authenticate_user,
         open_chat_session=open_chat_session,
         data_layer=data_layer,
         thread_repository=thread_repository,

@@ -14,6 +14,8 @@ dependencies = [
     "boba-llm",
     "boba-openai",
     "boba-tools",
+    # переиспользуем код авторизации (Fix/LDAP/Kerberos) и доменные ошибки
+    "boba-chainlit2",
     "tabulate>=0.9,<1",
     "plotly>=5.24,<6",
     "chainlit>=2.11,<3",
