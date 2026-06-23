@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -22,7 +23,7 @@ class HttpErrorMessage:
 
     status_code: int
     content: str
-    headers: list[tuple[bytes, bytes]] = field(default_factory=list)
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 class BaseError(Exception):
@@ -31,10 +32,6 @@ class BaseError(Exception):
     Если хочешь, что бы ошибка корректно отобразилась
     наследуйся от этого класса и определяй базовые методы
     """
-
-    # это http code, по умолчанию он будет 500
-    # в классах наследниках переопределяется
-    status_code: int = 500
 
     def view_message(self) -> ViewErrorMessage | None:
         "Возвращает соощение показываемое пользователю"
@@ -59,7 +56,9 @@ class ExternalServiceError(BaseError):
     - log: записываем в log сообщение как есть
     """
 
-    def __init__(self, service_name: str, message: str):
+    def __init__(
+        self, service_name: str, message: str
+    ):
         super().__init__(message)
         self.message = message
         self.service_name = service_name
@@ -68,19 +67,11 @@ class ExternalServiceError(BaseError):
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
 
-    def history_message(self) -> str | None:
-        return self.message
-
     def http_message(self) -> HttpErrorMessage | None:
-        content = ""
-        if m := self.view_message():
-            content = m.content
-
         return HttpErrorMessage(
             status_code=self.status_code,
-            content=content,
+            content=self.message,
         )
-
 
 class InternalServiceError(BaseError):
     """
@@ -108,15 +99,10 @@ class InternalServiceError(BaseError):
         return ViewErrorMessage(content)
 
     def http_message(self) -> HttpErrorMessage | None:
-        content = ""
-        if m := self.view_message():
-            content = m.content
-
         return HttpErrorMessage(
             status_code=self.status_code,
-            content=content,
+            content=self.internal_detail,
         )
-
 
 def to_domain(e: Exception) -> BaseError:
     "Заворачивает любое НЕ доменное исключение в InternalServiceError"
@@ -144,20 +130,9 @@ class UserInputError(BaseError):
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
-        self.status_code = 400
 
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
-
-    def http_message(self) -> HttpErrorMessage | None:
-        content = ""
-        if m := self.view_message():
-            content = m.content
-
-        return HttpErrorMessage(
-            status_code=self.status_code,
-            content=content,
-        )
 
 
 class AuthenticationError(BaseError):
@@ -178,13 +153,9 @@ class AuthenticationError(BaseError):
         return ViewErrorMessage(content=self.message)
 
     def http_message(self) -> HttpErrorMessage | None:
-        content = ""
-        if m := self.view_message():
-            content = m.content
-
         return HttpErrorMessage(
             status_code=self.status_code,
-            content=content,
+            content=self.message,
         )
 
 
@@ -204,20 +175,6 @@ class AuthorizationError(BaseError):
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
 
-    def history_message(self) -> str | None:
-        return self.message
-
-    def http_message(self) -> HttpErrorMessage | None:
-        content = ""
-        if m := self.view_message():
-            content = m.content
-
-        return HttpErrorMessage(
-            status_code=self.status_code,
-            content=content,
-        )
-
-
 class ToolExecutionError(BaseError):
     """
     Инструмент агента упал во время выполнения
@@ -230,21 +187,6 @@ class ToolExecutionError(BaseError):
         super().__init__(message)
         self.message = message
         self.tool_name = tool_name
-        self.status_code = 503
-
-    def history_message(self) -> str | None:
-        return self.message
-
-    def http_message(self) -> HttpErrorMessage | None:
-        content = ""
-        if m := self.view_message():
-            content = m.content
-
-        return HttpErrorMessage(
-            status_code=self.status_code,
-            content=content,
-        )
-
 
 class RateLimitError(ExternalServiceError):
     """
@@ -252,13 +194,8 @@ class RateLimitError(ExternalServiceError):
     Частный случай ExternalServiceError: каналы те же (view/llm/log как есть)
     """
 
-    status_code = 500
-
-
 class AgentError(InternalServiceError):
     """
     Сломался сам граф/модель (не провайдер) — наша вина
     Частный случай InternalServiceError: пользователю код, llm не видит, детали в лог
     """
-
-    status_code = 500

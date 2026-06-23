@@ -281,14 +281,19 @@ class LdapAuth:
             )
         except LDAPUserNotFoundError as e:
             self._logger.warning("user %s is not registered", username)
-            raise AuthenticationError("User is not registered") from e
+            raise AuthenticationError(
+                "User is not registered"
+            ) from e
         except LDAPInvalidCredentialsError as e:
             self._logger.warning("invalid credentials for %s", username)
-            raise AuthenticationError("Invalid username or password") from e
+            raise AuthenticationError(
+                "Invalid username or password"
+            ) from e
         except LDAPServerUnavailableError as e:
             self._logger.error("LDAP is unavailable", exc_info=e)
             raise ExternalServiceError(
-                "ldap", "LDAP is unavailable, please try again later"
+                "ldap",
+                "LDAP is unavailable, please try again later",
             ) from e
         except LDAPError as e:
             # access denied / кривой конфиг / прочее — наша вина

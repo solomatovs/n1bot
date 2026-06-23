@@ -1,8 +1,9 @@
 from collections.abc import Awaitable, Callable
 
 import chainlit as cl
+from chainlit.config import config as chainlit_config
 
-# from boba.chainlit2.chat.handler import chainlit_error_handler
+from boba.chainlit2.errors import AuthenticationError
 
 UserCallback = Callable[..., Awaitable[cl.User | None]]
 
@@ -20,15 +21,32 @@ class PasswordAuthCallbackInstaller:
     def install_callback_if_any_exists(self) -> None:
         # устанавливаю callback только если есть авторизатор
         if self._auth:
-            cl.password_auth_callback(self._build_callback())
+            # добавляю callback через chainlit_config.code,
+            # а не через cl.password_auth_callback
+            # потому что иначе chaionlit проглатывает любые exception'ы
+            # и пишет что введен некорректный пароль
+            # вместо того, что бы писать реальную проблему
+            chainlit_config.code.password_auth_callback = self._build_callback()
 
     def _build_callback(self) -> UserCallback:
-        # @chainlit_error_handler
         async def password_auth(username: str, password: str) -> cl.User | None:
             for auth in self._auth:
-                res = await auth.password_auth(username, password)
-                if res is not None:
-                    return res
+                try:
+                    res = await auth.password_auth(username, password)
+                    if res is not None:
+                        return res
+
+                # единственный тип ошибки, который отлавливается, накапливается
+                # и если ни один сервис не авторизовал, то выбрасывает
+                # накопленную ошибку
+                except AuthenticationError as e:
+                    last_error = e
+
+            # если была ошибка в процессе авторизации
+            # и после всех проверок не удалось авторизовать пользователя
+            # возвращаю последнюю ошибку
+            if last_error:
+                raise last_error
 
             return None
 

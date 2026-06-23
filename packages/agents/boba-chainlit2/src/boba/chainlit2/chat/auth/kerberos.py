@@ -31,8 +31,6 @@ from boba.chainlit2.chat.auth.ldap import (
     LDAPUserNotFoundError,
     MemberOfUserRolesProvider,
 )
-
-# from boba.chainlit2.chat.handler import chainlit_error_handler
 from boba.chainlit2.errors import (
     AuthenticationError,
     BaseError,
@@ -219,10 +217,10 @@ class SpnegoChallengeError(BaseError):
         # обязательный заголовок для всех поверхностей, тело пустое
         return HttpErrorMessage(
             status_code=self.status_code,
-            headers=[
-                (b"www-authenticate", b"Negotiate"),
-                (b"content-type", b"text/plain; charset=utf-8"),
-            ],
+            headers={
+                "www-authenticate": "Negotiate",
+                "content-type": "text/plain; charset=utf-8",
+            },
             content="",
         )
 
@@ -522,10 +520,13 @@ class KerberosRolesInLdapProvider:
                 search_filter=search_filter,
             )
         except LDAPUserNotFoundError as e:
-            raise AuthenticationError("User is not registered") from e
+            raise AuthenticationError(
+                "User is not registered"
+            ) from e
         except LDAPServerUnavailableError as e:
             raise ExternalServiceError(
-                "ldap", "LDAP service is unavailable, please try again later"
+                "ldap",
+                "LDAP service is unavailable, please try again later",
             ) from e
         except LDAPInvalidCredentialsError as e:
             raise InternalServiceError(
@@ -612,7 +613,6 @@ class KerberosAuth:
     def _build_callback(self) -> UserCallback:
         header = self._config.header
 
-        # @chainlit_error_handler
         async def header_auth(headers) -> cl.User | None:
             principal = headers.get(header)
             if not principal:
