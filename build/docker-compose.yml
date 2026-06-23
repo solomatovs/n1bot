@@ -8,11 +8,12 @@ services:
       - BOBA_CONFIG_PATH=/app/local/chainlit-${BOBA_TAG}.toml
       - CHAINLIT_APP_ROOT=/app/local
       - CHAINLIT_URL_PREFIX=/boba
+      - KRB5_KTNAME=/app/local/keytab/boba.keytab
     volumes:
       - ./local:/app/local
       # keytab делает samba-ad: local/krb5.keytab
-      - ./local/krb5.keytab:/etc/krb5.keytab:ro
-      - ./local/krb5.conf:/etc/krb5.conf:ro
+      - ./local/keytab/boba.keytab:/app/local/keytab/boba.keytab:ro
+      - ./local/keytab/krb5.conf:/etc/krb5.conf:ro
     expose:
       - "8501"
     ports:
