@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from typing import Annotated, Any, cast
 
@@ -12,6 +13,7 @@ from boba.chainlit2.chat.tracer import BobaLangchainTracer
 from boba.chainlit2.infra.di import Depends, di_inject
 from boba.chainlit2.infra.providers import langchain_agent
 
+logger = logging.getLogger(__name__)
 
 @cl.on_message
 @chainlit_error_ctx_handler
@@ -51,11 +53,25 @@ async def on_message(
 @chainlit_error_ctx_handler
 @di_inject
 async def on_chat_start():
-    app_user: cl.User | cl.PersistedUser | None = cl.user_session.get("user")
-    await cl.Message(f"Hello {app_user}").send()
+    user: cl.User = cast(cl.User, cl.user_session.get("user"))
+    await cl.Message(f"Hello {user}").send()
 
 
 @cl.on_logout
 def on_logout(request: Request, response: Response):
+    """вызывается, когда пользователь нажимает «Logout»."""
     for cookie_name in request.cookies:
         response.delete_cookie(cookie_name)
+
+
+@cl.on_stop
+async def on_stop():
+    user = cast(cl.User, cl.user_session.get("user"))
+    logger.info(f"{user.identifier} has stopped the task!")
+    await cl.Message("You have stopped the task!").send()
+
+
+@cl.on_chat_end
+def on_chat_end():
+    user = cast(cl.User, cl.user_session.get("user"))
+    logger.info(f"{user.identifier} has ended the chat")
