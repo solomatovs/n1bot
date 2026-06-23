@@ -1,13 +1,8 @@
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 from typing import Any, Literal
 
 import chainlit as cl
 from pydantic import BaseModel, ConfigDict, Field, RootModel
-from starlette.types import ASGIApp
-
-from boba.chainlit2.chat.handler import chainlit_error_handler
-
-UserCallback = Callable[..., Awaitable[cl.User | None]]
 
 
 class RolesMappingConfig(RootModel[dict[str, list[str]]]):
@@ -57,32 +52,23 @@ class FixAuth:
         if roles := self._config.roles:
             self._fixed_roles = FixUserRolesProvider(roles)
 
-    def install(self, chainlit_app: ASGIApp) -> None:
-        cl.password_auth_callback(self._build_callback())
+    async def password_auth(self, username: str, password: str) -> cl.User | None:
+        if self._config.users.get(username) == password:
+            metadata: dict[str, Any] = {"provider": FixAuth.__name__}
 
-    def _build_callback(self) -> UserCallback:
-        users = self._config.users
+            roles: list[str] = []
+            if self._fixed_roles:
+                roles.extend(self._fixed_roles.roles_of(username))
 
-        @chainlit_error_handler
-        async def password_auth(username: str, password: str) -> cl.User | None:
-            if users.get(username) == password:
-                metadata: dict[str, Any] = {"provider": FixAuth.__name__}
+            roles = list(set(roles))
 
-                roles: list[str] = []
-                if self._fixed_roles:
-                    roles.extend(self._fixed_roles.roles_of(username))
+            if roles:
+                metadata.update(roles=roles)
 
-                roles = list(set(roles))
+            return cl.User(
+                identifier=username,
+                display_name=username,
+                metadata=metadata,
+            )
 
-                if roles:
-                    metadata.update(roles=roles)
-
-                return cl.User(
-                    identifier=username,
-                    display_name=username,
-                    metadata=metadata,
-                )
-
-            return None
-
-        return password_auth
+        return None

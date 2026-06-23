@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from typing import Any, Literal
 
@@ -24,17 +24,13 @@ from ldap3.core.exceptions import (
     LDAPStrongerAuthRequiredResult,
 )
 from pydantic import BaseModel, Field
-from starlette.types import ASGIApp
 
 from boba.chainlit2.chat.auth.fix import FixUserRolesProvider, RolesMappingConfig
-from boba.chainlit2.chat.handler import chainlit_error_handler
 from boba.chainlit2.errors import (
     AuthenticationError,
     ExternalServiceError,
     InternalServiceError,
 )
-
-UserCallback = Callable[..., Awaitable[cl.User | None]]
 
 
 class LDAPError(Exception):
@@ -152,6 +148,7 @@ class ADDirectory:
             if group_dn in member_of:
                 yield role
 
+
 class LdapCredentialConfig(BaseModel):
     bind_dn: str = Field(description="DN сервисной учётки для поиска пользователя.")
     bind_password: str = Field(description="Пароль сервисной учётки (секрет).")
@@ -244,65 +241,58 @@ class LdapAuth:
         if roles := self._config.roles.dn:
             self._dn_roles = DnUserRolesProvider(roles)
 
-    def install(self, chainlit_app: ASGIApp) -> None:
-        cl.password_auth_callback(self._build_callback())
+    async def password_auth(self, username: str, password: str) -> cl.User | None:
+        # личность подтверждаем bind'ом под пользователем
+        try:
+            server = self._config.server
+            bind_dn = self._config.bind_dn_template.format(username=username)
+            search_filter = self._config.user_filter.format(username=username)
+            search_base = self._config.base_dn
+            user_dn, member_of = await asyncio.to_thread(
+                self._ad.fetch_userdn_and_member_of,
+                server=server,
+                bind_dn=bind_dn,
+                bind_password=password,
+                search_base=search_base,
+                search_filter=search_filter,
+            )
 
-    def _build_callback(self) -> UserCallback:
-        @chainlit_error_handler
-        async def password_auth(username: str, password: str) -> cl.User | None:
-            # личность подтверждаем bind'ом под пользователем
-            try:
-                server = self._config.server
-                bind_dn = self._config.bind_dn_template.format(username=username)
-                search_filter = self._config.user_filter.format(username=username)
-                search_base = self._config.base_dn
-                user_dn, member_of = await asyncio.to_thread(
-                    self._ad.fetch_userdn_and_member_of,
-                    server=server,
-                    bind_dn=bind_dn,
-                    bind_password=password,
-                    search_base=search_base,
-                    search_filter=search_filter,
-                )
+            metadata: dict[str, Any] = {"provider": LdapAuth.__name__}
 
-                metadata: dict[str, Any] = {"provider": LdapAuth.__name__}
+            roles: list[str] = []
+            if self._fixed_roles:
+                roles.extend(self._fixed_roles.roles_of(username))
 
-                roles: list[str] = []
-                if self._fixed_roles:
-                    roles.extend(self._fixed_roles.roles_of(username))
+            if self._member_of_roles:
+                roles.extend(self._member_of_roles.roles_of(member_of))
 
-                if self._member_of_roles:
-                    roles.extend(self._member_of_roles.roles_of(member_of))
+            if self._dn_roles:
+                roles.extend(self._dn_roles.roles_of(user_dn))
 
-                if self._dn_roles:
-                    roles.extend(self._dn_roles.roles_of(user_dn))
+            roles = list(set(roles))
 
-                roles = list(set(roles))
+            if roles:
+                metadata.update(roles=roles)
 
-                if roles:
-                    metadata.update(roles=roles)
-
-                return cl.User(
-                    identifier=username,
-                    display_name=username,
-                    metadata=metadata,
-                )
-            except LDAPUserNotFoundError as e:
-                self._logger.warning("user %s is not registered", username)
-                raise AuthenticationError("User is not registered") from e
-            except LDAPInvalidCredentialsError as e:
-                self._logger.warning("invalid credentials for %s", username)
-                raise AuthenticationError("Invalid username or password") from e
-            except LDAPServerUnavailableError as e:
-                self._logger.error("LDAP is unavailable", exc_info=e)
-                raise ExternalServiceError(
-                    "ldap", "LDAP is unavailable, please try again later"
-                ) from e
-            except LDAPError as e:
-                # access denied / кривой конфиг / прочее — наша вина
-                self._logger.error("LDAP error: %s", e, exc_info=e)
-                raise InternalServiceError(
-                    internal_detail=f"ldap error: {e}", user_detail=None
-                ) from e
-
-        return password_auth
+            return cl.User(
+                identifier=username,
+                display_name=username,
+                metadata=metadata,
+            )
+        except LDAPUserNotFoundError as e:
+            self._logger.warning("user %s is not registered", username)
+            raise AuthenticationError("User is not registered") from e
+        except LDAPInvalidCredentialsError as e:
+            self._logger.warning("invalid credentials for %s", username)
+            raise AuthenticationError("Invalid username or password") from e
+        except LDAPServerUnavailableError as e:
+            self._logger.error("LDAP is unavailable", exc_info=e)
+            raise ExternalServiceError(
+                "ldap", "LDAP is unavailable, please try again later"
+            ) from e
+        except LDAPError as e:
+            # access denied / кривой конфиг / прочее — наша вина
+            self._logger.error("LDAP error: %s", e, exc_info=e)
+            raise InternalServiceError(
+                internal_detail=f"ldap error: {e}", user_detail=None
+            ) from e
