@@ -19,11 +19,8 @@ dependencies = [
     "boba-html",
     "boba-kbdoc",
     "boba-liteparse",
-    "boba-openai",
     # CLI confluence.download использует FsWorkspaceShell из boba.agent.workspace_fs
     "boba-agent",
-    # core/embedding.py использует openai-клиент напрямую
-    "openai>=1.0,<3",
     "psycopg[binary,pool]>=3.2",
     "pgvector>=0.3",
     "pydantic>=2.10,<2.11",
