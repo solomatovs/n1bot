@@ -55,8 +55,8 @@ def run_app():
     async def start():
         uv_config = uvicorn.Config(
             app,
-            host=c.chainlit.run.host,
-            port=c.chainlit.run.port,
+            host=c.chainlit.host,
+            port=c.chainlit.port,
             ws=c.chainlit.ws_protocol,
             # logger'у передаем None что бы
             # второй раз настройки логирования не применялись
@@ -64,8 +64,9 @@ def run_app():
             log_level=None,
             access_log=True,
             ws_per_message_deflate=c.chainlit.ws_per_message_deflate,
-            ssl_keyfile=c.chainlit.run.ssl_key,
-            ssl_certfile=c.chainlit.run.ssl_cert,
+            ssl_keyfile=c.chainlit.ssl_key,
+            ssl_certfile=c.chainlit.ssl_cert,
+            ssl_ca_certs=c.chainlit.ssl_ca_certs,
         )
         server = uvicorn.Server(uv_config)
         await server.serve()
@@ -95,44 +96,47 @@ def _use_domain_error(app: FastAPI):
     chainlit_app.add_middleware(DomainErrorMiddleware)
 
 
-def _use_chainlit_middleware(app: FastAPI, c: ChainlitExtendConfig):
+def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
     # импортируем chainlit
     import boba.chainlit2.chat.callback  # type: ignore # noqa: F401, PLC0415
 
+    # устанавливаю директорию относительно которой chainlit размещает свои файлы:
+    # .files, .chainlit, public, public, config.toml, translations
+    os.environ["CHAINLIT_APP_ROOT"] = config.root
     # фронт берёт базовый путь для своих запросов (/user, /auth/config,
     # socket.io) из этого env: serve() подставляет его в index.html. Без
     # него фронт ходит в корень мимо маунта и ловит 404
-    os.environ["CHAINLIT_ROOT_PATH"] = c.run.root_path
+    os.environ["CHAINLIT_ROOT_PATH"] = config.url_prefix
     # устанавливаю переменную окружения если передан auth_secret
     # это все потому, что chainlit только через переменную окружения
     # умеет доставать auth_secret
-    if c.auth_secret:
-        os.environ["CHAINLIT_AUTH_SECRET"] = c.auth_secret
+    if config.auth_secret:
+        os.environ["CHAINLIT_AUTH_SECRET"] = config.auth_secret
 
     from chainlit.markdown import init_markdown  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
     from chainlit.server import sio  # noqa: PLC0415
 
     # engine.io heartbeat: даём клиенту пережить долгие паузы на брейкпоинтах
-    sio.eio.ping_interval = c.ping_interval
-    sio.eio.ping_timeout = c.ping_timeout
+    sio.eio.ping_interval = config.ping_interval
+    sio.eio.ping_timeout = config.ping_timeout
     # за паузу на брейкпоинте клиент копит события и шлёт их одним
     # polling-POST; дефолтных 16 пакетов не хватает
-    Payload.max_decode_packets = c.max_decode_packets
+    Payload.max_decode_packets = config.max_decode_packets
 
     # Create the chainlit.md file if it doesn't exist
-    init_markdown(c.root)
+    init_markdown(config.root)
 
     class ChainlitMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            if not request.url.path.startswith(c.run.root_path):
+            if not request.url.path.startswith(config.url_prefix):
                 return JSONResponse(status_code=404, content={"detail": "Not found"})
 
             return await call_next(request)
 
     chainlit_app.add_middleware(ChainlitMiddleware)
 
-    app.mount(c.run.root_path, chainlit_app)
+    app.mount(config.url_prefix, chainlit_app)
 
 
 def _use_auth(c: list[AuthConfig], container: Container) -> None:

@@ -1,6 +1,5 @@
 from typing import Annotated, Any
 
-from chainlit.config import ChainlitConfig
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit2.chat.auth.fix import FixAuthConfig
@@ -203,7 +202,15 @@ class AgentProfile(BaseModel):
     ]
 
 
-class ChainlitExtendConfig(ChainlitConfig):
+class ChainlitExtendConfig(BaseModel):
+    host: str = Field(default="127.0.0.1")
+    port: int = Field(default=8501)
+    ssl_cert: str | None = Field(default=None)
+    ssl_key: str | None = Field(default=None)
+    ssl_ca_certs: str | None = Field(default=None)
+    url_prefix: str = Field(default="")
+    root: str = Field(default="")
+
     ping_interval: int = Field(
         default=300,
         description=(
