@@ -7,7 +7,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - KRB5_KTNAME=/etc/krb5.keytab
       - FASTEMBED_CACHE_DIR=/app/local
     volumes:
       - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
@@ -30,7 +29,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - KRB5_KTNAME=/etc/krb5.keytab
       - FASTEMBED_CACHE_DIR=/app/local
     volumes:
       - ${HOST_DIR}/local/chainlit-lite/config.toml:/app/local/config.toml:ro
@@ -53,7 +51,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - KRB5_KTNAME=/etc/krb5.keytab
     volumes:
       - ${HOST_DIR}/local/chainlit2/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit2/.chainlit:/app/local/.chainlit:ro
