@@ -13,6 +13,8 @@ services:
       - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
       - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
       - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
       - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
@@ -34,6 +36,8 @@ services:
       - ${HOST_DIR}/local/chainlit-lite/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit-lite/workspaces:/app/local/workspaces:rw
       - ${HOST_DIR}/local/chainlit-lite/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit-lite/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit-lite/public:/app/local/public:ro
       - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
       - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
@@ -52,8 +56,8 @@ services:
       - KRB5_KTNAME=/etc/krb5.keytab
     volumes:
       - ${HOST_DIR}/local/chainlit2/config.toml:/app/local/config.toml:ro
-      - ${HOST_DIR}/local/chainlit2/workspaces:/app/local/workspaces:rw
-      - ${HOST_DIR}/local/chainlit2/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit2/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit2/public:/app/local/public:ro
       - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
       - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
@@ -74,6 +78,8 @@ services:
       - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
       - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
 
   kb-bootstrap:
@@ -89,6 +95,8 @@ services:
       - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
       - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
 
 networks:
