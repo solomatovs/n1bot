@@ -23,7 +23,7 @@ from boba.agent.tool_config import (
     build_app_config,
 )
 from boba.agent.workspace_fs import FsWorkspaceShell
-from boba.chainlit.config import AuthConfig, ChainlitConfig
+from boba.chainlit.config import ChainlitConfig
 from boba.chainlit.data_layer import BobaDataLayer
 from boba.chainlit.logging import configure_logging
 from boba.chainlit.models import ThreadId
@@ -46,6 +46,12 @@ from boba.chainlit.storage import (
 )
 from boba.chainlit.system_prompt import DefaultSystemPromptSource
 from boba.chainlit.tool_cache import AvailableToolsCache
+from boba.chainlit2.chat.auth import PasswordAuthCallbackInstaller
+from boba.chainlit2.infra.config import (
+    FixAuthConfig,
+    KerberosAuthConfig,
+    LdapAuthConfig,
+)
 from boba.tools import ToolBuilder
 from boba.workspace.contract import WorkspaceId
 
@@ -222,7 +228,7 @@ def main() -> int:
     # ошибки подключались тем же способом, что и в новом приложении.
     app = FastAPI()
     _use_chainlit_app(app, chainlit_cfg)
-    _use_auth(chainlit_cfg.auth)
+    _use_auth(chainlit_cfg)
     _use_domain_error(app)
 
     asyncio.run(_serve(app, chainlit_cfg))
@@ -258,32 +264,38 @@ def _use_chainlit_app(app: FastAPI, cfg: ChainlitConfig) -> None:
     app.mount(cfg.url_prefix, chainlit_app)
 
 
-def _use_auth(auth_configs: list[AuthConfig]) -> None:
+def _use_auth(config: ChainlitConfig) -> None:
     """Единая точка подключения авторизации; стратегия выбирается конфигом."""
-    from boba.chainlit2.chat.auth import (  # noqa: PLC0415
-        FixAuth,
-        FixAuthConfig,
-        KerberosAuth,
-        KerberosAuthConfig,
-        LdapAuth,
-        LdapAuthConfig,
-        PasswordAuthCallbackInstaller,
-    )
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     password_callback = PasswordAuthCallbackInstaller()
 
-    for auth in auth_configs:
+    for auth in config.auth:
         if isinstance(auth, KerberosAuthConfig):
-            KerberosAuth(auth).install(chainlit_app)
+            from boba.chainlit2.chat.auth.kerberos import (  # noqa: PLC0415
+                KerberosAuth,
+            )
+
+            KerberosAuth(config.url_prefix, auth).install(chainlit_app)
+
         elif isinstance(auth, FixAuthConfig):
+            from boba.chainlit2.chat.auth.fix import (  # noqa: PLC0415
+                FixAuth,
+            )
+
             password_callback.fix_auth_setup(FixAuth(auth))
+
         elif isinstance(auth, LdapAuthConfig):
+            from boba.chainlit2.chat.auth.ldap import (  # noqa: PLC0415
+                LdapAuth,
+            )
+
             password_callback.ldap_auth_setup(LdapAuth(auth))
+
         else:
             raise ValueError(f"unknown authorization type: {type(auth).__name__}")
 
-    # password callback ставим один раз, если есть хотя бы один password-метод
+    # устанавливаю password callback если есть хотя бы один из вариантов
     password_callback.install_callback_if_any_exists()
 
 

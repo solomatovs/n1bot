@@ -17,7 +17,6 @@ from boba.chainlit2.errors import DomainErrorMiddleware
 from boba.chainlit2.infra import providers
 from boba.chainlit2.infra.config import (
     AppConfig,
-    AuthConfig,
     ChainlitExtendConfig,
     FixAuthConfig,
     KerberosAuthConfig,
@@ -46,7 +45,7 @@ def run_app():
     app.state.container = container
 
     # единственная точка подключения авторизации (стратегия выбирается конфигом);
-    _use_auth(c.auth, container)
+    _use_auth(c, container)
 
     # единная точка обработки ошибок
     _use_domain_error(app)
@@ -139,19 +138,19 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
     app.mount(config.url_prefix, chainlit_app)
 
 
-def _use_auth(c: list[AuthConfig], container: Container) -> None:
-    "Единая точка подключения авторизации chainlit; стратегия выбирается конфигом"
+def _use_auth(config: AppConfig, container: Container) -> None:
+    "Единая точка подключения авторизации chainlit"
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     password_callback = PasswordAuthCallbackInstaller()
 
-    for auth in c:
+    for auth in config.auth:
         if isinstance(auth, KerberosAuthConfig):
             from boba.chainlit2.chat.auth.kerberos import (  # noqa: PLC0415
                 KerberosAuth,
             )
 
-            KerberosAuth(auth).install(chainlit_app)
+            KerberosAuth(config.chainlit.url_prefix, auth).install(chainlit_app)
 
         elif isinstance(auth, FixAuthConfig):
             from boba.chainlit2.chat.auth.fix import (  # noqa: PLC0415
@@ -168,10 +167,10 @@ def _use_auth(c: list[AuthConfig], container: Container) -> None:
             password_callback.ldap_auth_setup(LdapAuth(auth))
 
         else:
-            raise ValueError(f"unknown authorization type: {type(c).__name__}")
+            raise ValueError(f"unknown authorization type: {type(auth).__name__}")
 
-        # устанавливаю password callback если есть хотя бы один из вариантов
-        password_callback.install_callback_if_any_exists()
+    # устанавливаю password callback если есть хотя бы один из вариантов
+    password_callback.install_callback_if_any_exists()
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
