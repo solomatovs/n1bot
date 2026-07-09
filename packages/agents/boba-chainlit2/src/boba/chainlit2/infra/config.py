@@ -288,13 +288,12 @@ class PostgresPoolConfig(BaseModel):
 
 
 class PostgresOptionsConfig(BaseModel):
-    """libpq 'options': серверные GUC сессии (-c key=value); сериализуется в строку."""
+    """
+    libpq 'options': серверные GUC сессии (-c key=value); сериализуется в строку.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    search_path: str | None = Field(
-        default=None, description="search_path сессии: схема или список 'a,b'."
-    )
     statement_timeout: str | None = Field(
         default=None, description="statement_timeout, напр. '30s'."
     )
@@ -306,21 +305,20 @@ class PostgresOptionsConfig(BaseModel):
     )
     timezone: str | None = Field(default=None, description="TimeZone сессии.")
 
-    def to_options(self) -> str | None:
-        """Собирает libpq options: '-c k=v -c k2=v2'; None — если ничего не задано."""
-        parts = [
-            f"-c {name}={value}"
-            for name in type(self).model_fields
-            if (value := getattr(self, name)) is not None
-        ]
-        return " ".join(parts) or None
+    def to_options(self, override_options: dict[str, str] | None = None) -> str | None:
+        """libpq options '-c k=v ...': таймауты + опц. search_path; None если пусто."""
+        parts = []
 
-    @property
-    def primary_schema(self) -> str | None:
-        """Первая схема из search_path — её создаёт провайдер (CREATE SCHEMA)."""
-        if not self.search_path:
-            return None
-        return self.search_path.split(",")[0].strip().strip('"')
+        for name in type(self).model_fields:
+            if (value := getattr(self, name)) is not None:
+                parts.append(f"-c {name}={value}")
+
+        if override_options:
+            for name, value in override_options.items():
+                if value is not None:
+                    parts.append(f"-c {name}={value}")
+
+        return " ".join(parts)
 
 
 class PostgresConfig(BaseModel):
@@ -430,7 +428,7 @@ class PostgresConfig(BaseModel):
         PostgresOptionsConfig,
         Field(
             default_factory=lambda: PostgresOptionsConfig.model_validate({}),
-            description="Серверные GUC сессии (search_path/timeouts) → libpq options.",
+            description="Серверные GUC сессии (timeouts/timezone) -> libpq options.",
         ),
     ]
 
@@ -443,28 +441,75 @@ class PostgresConfig(BaseModel):
         ),
     ]
 
-    def to_pg_conn(self) -> dict:
-        """kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts."""
+    def conn_settings(self, override_options: dict[str, str] | None = None) -> dict:
+        """
+        kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts.
+        """
         # pool/options — не скалярные connect-параметры: pool это конструктор пула,
         # options сериализуется отдельно в строку '-c k=v'
-        out = {
-            name: getattr(self, name)
-            for name in type(self).model_fields
-            if name not in ("pool", "options")
-        }
-        # незаданные параметры опускаем — libpq возьмёт дефолт/env
-        conn = {k: v for k, v in out.items() if v is not None}
-        if opts := self.options.to_options():
+        conn = {}
+
+        for name in type(self).model_fields:
+            if name not in ("pool", "options"):
+                value = getattr(self, name)
+                if value is not None:
+                    conn[name] = value
+
+        if opts := self.options.to_options(override_options):
             conn["options"] = opts
+
         return conn
 
-    def to_pg_pool(self) -> dict:
+    def pool_settings(self) -> dict:
         """kwargs конструктора AsyncConnectionPool (без None)."""
-        return {
-            name: value
-            for name in type(self.pool).model_fields
-            if (value := getattr(self.pool, name)) is not None
-        }
+        res = {}
+        for name in type(self.pool).model_fields:
+            if (value := getattr(self.pool, name)) is not None:
+                res[name] = value
+        return res
+
+
+class CheckpointerConfig(BaseModel):
+    """Конфиг langgraph-checkpointer: схема БД (через search_path)."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    schema: str = Field(
+        default="public",
+        alias="schema",
+        description=(
+            "Схема для таблиц checkpointer. Задаётся в search_path соединения, "
+            "т.к. AsyncPostgresSaver пишет имена таблиц без схемы."
+        ),
+    )
+
+
+class DataLayerConfig(BaseModel):
+    """Конфиг chainlit data layer: схема БД (квалифицируется в SQL явно) + лимиты."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    schema: str = Field(
+        default="public",
+        alias="schema",
+        description="Схема таблиц data layer; PostgresDataLayer квалифицирует ею SQL.",
+    )
+
+
+class LocalStorageConfig(BaseModel):
+    """Локальное файловое хранилище вложений (реализация BaseStorageClient)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    files_dir: str = Field(
+        description=(
+            "Корневая папка на диске для файлов вложений (<files_dir>/<object_key>)."
+        )
+    )
+    public_prefix: str = Field(
+        default="/upload",
+        description="URL-префикс serve-роута; из него собирается url элемента.",
+    )
 
 
 AuthConfig = Annotated[
@@ -510,7 +555,30 @@ class AppConfig(BaseModel):
         ),
     ]
 
-    checkpoints: Annotated[
+    postgres: Annotated[
         PostgresConfig,
-        Field(description=("Конфигурация postgres для сохранения данных agent")),
+        Field(
+            description="Общий postgres: подключение + пул (data layer и checkpointer)."
+        ),
+    ]
+
+    checkpointer: Annotated[
+        CheckpointerConfig,
+        Field(
+            default_factory=lambda: CheckpointerConfig.model_validate({}),
+            description="Схема langgraph-checkpointer.",
+        ),
+    ]
+
+    data_layer: Annotated[
+        DataLayerConfig,
+        Field(
+            default_factory=lambda: DataLayerConfig.model_validate({}),
+            description="Схема и лимиты chainlit data layer.",
+        ),
+    ]
+
+    storage: Annotated[
+        LocalStorageConfig,
+        Field(description="Файловое хранилище вложений."),
     ]

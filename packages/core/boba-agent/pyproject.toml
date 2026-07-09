@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-agent"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Boba agent: orchestrator + builder + middleware + turn-spec + prompt/history контракты + InMemoryHistoryService + JsonLinesHistoryService + HistoryDialogView + filesystem-реализация WorkspaceShell/Registry + file/git/env/workspace PromptProvider'ы и PromptLoader. Дефолтный LLM-провайдер — OpenAI-совместимый (boba-openai); переопределяется через AgentBuilder.use_llm(...)."
 requires-python = ">=3.11,<4"
 dependencies = [
@@ -23,3 +23,8 @@ dependencies = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.setuptools_scm]
+root = "../../.."
+tag_regex = '^release-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$'
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match=release-*", "--match=dev-*"]
