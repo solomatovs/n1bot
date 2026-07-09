@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-markdown"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Boba markdown: всё для индексации markdown — section-parser (ATX), block-parser (markdown-it-py), Reader, Chunker, MetadataKeys."
 requires-python = ">=3.11,<4"
 dependencies = [
@@ -16,3 +16,8 @@ dependencies = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.setuptools_scm]
+root = "../../../.."
+tag_regex = '^release-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$'
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match=release-*", "--match=dev-*"]

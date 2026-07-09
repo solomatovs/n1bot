@@ -92,6 +92,17 @@ class Container:
         """Засевает готовый инстанс как результат провайдера (минуя его вызов)."""
         self._owner(scope)._cache[provider] = value
 
+    def resolved(self, provider: Callable[..., Any], *, scope: Scope = "app") -> Any:
+        """
+        Резолвит зависимость синхронно из кэша
+        только для прогретых eager/provide провайдеров
+        """
+        owner = self._owner(scope)
+        if provider not in owner._cache:
+            name = getattr(provider, "__name__", repr(provider))
+            raise RuntimeError(f"провайдер {name} не прогрет (eager/start/provide)")
+        return owner._cache[provider]
+
     def eager(self, *providers: Callable[..., Any], scope: Scope = "app") -> None:
         """Помечает провайдеров на прогрев при start() (что греть — решает конфиг)."""
         self._eager.extend(Depends(p, scope=scope) for p in providers)
@@ -199,7 +210,11 @@ class Container:
 def di_inject(fn: Callable) -> Callable:
     """
     Резолвит Depend-параметры из иерархии контейнеров (app/session/transient)
-    framework-аргументы проходят насквозь; call-контейнер закрывается по выходу
+    framework-аргументы проходят насквозь; call-контейнер закрывается по выходу.
+
+    Async-функция -> async-шим (полный резолв с call-контейнером). Sync-функция
+    -> sync-шим: синхронно достаёт уже прогретые (eager/provide) зависимости из
+    кэша — для точек, которые нельзя await'ить (напр. chainlit @cl.data_layer).
     """
     sig = inspect.signature(fn)
     deps = {
@@ -210,13 +225,26 @@ def di_inject(fn: Callable) -> Callable:
     framework_params = [p for name, p in sig.parameters.items() if name not in deps]
 
     @functools.wraps(fn)
-    async def shim(*args: Any, **kwargs: Any) -> Any:
+    async def async_shim(*args: Any, **kwargs: Any) -> Any:
         call = Container.begin_call()
         try:
             resolved = {name: await call.resolve(dep) for name, dep in deps.items()}
             return await fn(*args, **kwargs, **resolved)
         finally:
             await call.aclose()
+
+    @functools.wraps(fn)
+    def sync_shim(*args: Any, **kwargs: Any) -> Any:
+        if Container.root is None:
+            raise RuntimeError("DI Container не инициализирован (set_root)")
+        # синхронно нельзя резолвить async-провайдеры — берём прогретое из кэша
+        resolved = {
+            name: Container.root.resolved(dep.provider, scope=dep.scope)
+            for name, dep in deps.items()
+        }
+        return fn(*args, **kwargs, **resolved)
+
+    shim = async_shim if inspect.iscoroutinefunction(fn) else sync_shim
 
     # chainlit зипует свою сигнатуру с переданными аргументами (message/user/...);
     # прячем Depend-параметры, оставляя только framework-аргументы (setattr —

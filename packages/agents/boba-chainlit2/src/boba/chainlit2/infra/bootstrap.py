@@ -17,7 +17,6 @@ from boba.chainlit2.errors import DomainErrorMiddleware
 from boba.chainlit2.infra import providers
 from boba.chainlit2.infra.config import (
     AppConfig,
-    AuthConfig,
     ChainlitExtendConfig,
     FixAuthConfig,
     KerberosAuthConfig,
@@ -41,12 +40,15 @@ def run_app():
     # конфигурирует chainlit + DI из c (единственная точка конфигурации)
     _use_chainlit_middleware(app, c.chainlit)
 
+    # отдача файлов вложений с диска (роут на chainlit_app под его авторизацией)
+    _use_file_serving(c)
+
     # единственная точка конфигурации DI (сама механика start/stop — в lifespan)
     container = _use_di_container(app, c)
     app.state.container = container
 
     # единственная точка подключения авторизации (стратегия выбирается конфигом);
-    _use_auth(c.auth, container)
+    _use_auth(c, container)
 
     # единная точка обработки ошибок
     _use_domain_error(app)
@@ -139,19 +141,66 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
     app.mount(config.url_prefix, chainlit_app)
 
 
-def _use_auth(c: list[AuthConfig], container: Container) -> None:
-    "Единая точка подключения авторизации chainlit; стратегия выбирается конфигом"
+def _use_file_serving(c: AppConfig) -> None:
+    """
+    Отдаёт файлы вложений с диска роутом на chainlit_app
+    """
+    from typing import Annotated  # noqa: PLC0415
+
+    from chainlit.auth import get_current_user  # noqa: PLC0415
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+    from chainlit.user import PersistedUser, User  # noqa: PLC0415
+    from fastapi import Depends, HTTPException  # noqa: PLC0415
+    from fastapi.responses import FileResponse  # noqa: PLC0415
+
+    base_dir = Path(c.storage.files_dir).resolve()
+    route_path = c.storage.public_prefix.removeprefix(c.chainlit.url_prefix)
+
+    async def serve_upload(
+        object_key: str,
+        current_user: Annotated[
+            User | PersistedUser | None, Depends(get_current_user)
+        ],
+    ) -> FileResponse:
+        if not isinstance(current_user, PersistedUser):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        # проверяем владельца файла через путь к этому файлу.
+        # папка с названием current_user.id хранит файлы пользователя
+        if object_key.split("/", maxsplit=1)[0] != current_user.id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        # формируем путь к файлу и проверяем что он внутри base_dir
+        path = base_dir.joinpath(object_key).resolve()
+
+        if not path.is_relative_to(base_dir):
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        return FileResponse(path)
+
+    chainlit_app.add_api_route(
+        f"{route_path}/{{object_key:path}}", serve_upload, methods=["GET"]
+    )
+    # поднимаем роут выше chainlit SPA catch-all "/{full_path:path}"
+    chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+
+
+def _use_auth(config: AppConfig, container: Container) -> None:
+    "Единая точка подключения авторизации chainlit"
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     password_callback = PasswordAuthCallbackInstaller()
 
-    for auth in c:
+    for auth in config.auth:
         if isinstance(auth, KerberosAuthConfig):
             from boba.chainlit2.chat.auth.kerberos import (  # noqa: PLC0415
                 KerberosAuth,
             )
 
-            KerberosAuth(auth).install(chainlit_app)
+            KerberosAuth(config.chainlit.url_prefix, auth).install(chainlit_app)
 
         elif isinstance(auth, FixAuthConfig):
             from boba.chainlit2.chat.auth.fix import (  # noqa: PLC0415
@@ -168,24 +217,22 @@ def _use_auth(c: list[AuthConfig], container: Container) -> None:
             password_callback.ldap_auth_setup(LdapAuth(auth))
 
         else:
-            raise ValueError(f"unknown authorization type: {type(c).__name__}")
+            raise ValueError(f"unknown authorization type: {type(auth).__name__}")
 
-        # устанавливаю password callback если есть хотя бы один из вариантов
-        password_callback.install_callback_if_any_exists()
+    # устанавливаю password callback если есть хотя бы один из вариантов
+    password_callback.install_callback_if_any_exists()
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     "Конфигурирует DI"
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
+    container.eager(providers.chainlit_data_layer)
+    container.eager(providers.langchain_checkpoint_saver)
     Container.set_root(container)
     Container.set_session_hook(_get_or_create_session_container)
     _close_container_if_session_end()
     return container
-
-
-# маркер Container в сессии chainlit
-_SESSION_CONTAINER_KEY = "_di_session_container"
 
 
 def _get_or_create_session_container():
@@ -202,11 +249,11 @@ def _get_or_create_session_container():
         # верну оригинальную ошибку
         return None
 
-    container = user_session.get(_SESSION_CONTAINER_KEY)
+    container = user_session.get("_di_session_container")
     if container is None:
         container = Container(level="session", parent=Container.root)
         user_session.set(
-            _SESSION_CONTAINER_KEY,
+            "_di_session_container",
             container,
         )
 
@@ -234,7 +281,7 @@ def _close_container_if_session_end() -> None:
             if prev:
                 await prev()
         finally:
-            if container := user_session.get(_SESSION_CONTAINER_KEY):
+            if container := user_session.get("_di_session_container"):
                 await container.aclose()
 
     # заменяем собственным on_chat_env

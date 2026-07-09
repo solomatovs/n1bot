@@ -471,7 +471,9 @@ class SpnegoMiddleware:
             # сбой здесь это проблема клиента (битый/просроченный токен)
             ctx.step(token)
         except GSSError as e:
-            return await self._challenge(scope, receive, send, f"gss step failed: {e}")
+            return await self._challenge(
+                scope, receive, send, f"gss step failed: {e}"
+            )
 
         if not ctx.complete:
             return await self._challenge(
