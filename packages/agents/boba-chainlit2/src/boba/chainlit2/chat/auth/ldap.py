@@ -25,7 +25,11 @@ from ldap3.core.exceptions import (
 )
 from pydantic import BaseModel, Field
 
-from boba.chainlit2.chat.auth.fix import FixUserRolesProvider, RolesMappingConfig
+from boba.chainlit2.chat.auth.fix import (
+    FixUserRolesProvider,
+    RoleExcludeConfig,
+    RoleMappingConfig,
+)
 from boba.chainlit2.errors import (
     AuthenticationError,
     ExternalServiceError,
@@ -140,6 +144,37 @@ class ADDirectory:
             return dn, member_of
 
     @staticmethod
+    def fetch_userdn_samaccountname_member_of(
+        server: str,
+        bind_dn: str,
+        bind_password: str,
+        search_base: str,
+        search_filter: str,
+    ) -> tuple[str, str, list[str]]:
+        """Ищет пользователя: (DN, группы memberOf);"""
+        with ADDirectory._bind_with_password(
+            server,
+            bind_dn,
+            bind_password,
+        ) as conn:
+            conn.search(
+                search_base=search_base,
+                search_filter=search_filter,
+                attributes=["sAMAccountName", "memberOf"],
+            )
+
+            if not conn.entries:
+                raise LDAPUserNotFoundError()
+
+            entry = conn.entries[0]
+
+            dn = str(entry.entry_dn)
+            samaccountname = entry.entry_samaccountname
+            member_of = [str(x) for x in entry.memberOf.values]
+
+            return dn, samaccountname, member_of
+
+    @staticmethod
     def role_of(
         group_dn_and_roles: Mapping[str, str], member_of: list[str]
     ) -> Iterable[str]:
@@ -155,15 +190,15 @@ class LdapCredentialConfig(BaseModel):
 
 
 class LdapRolesConfig(BaseModel):
-    fix: RolesMappingConfig | None = Field(
+    samaccountname: RoleMappingConfig | None = Field(
         default=None,
         description="",
     )
-    member_of: RolesMappingConfig | None = Field(
+    member_of: RoleMappingConfig | None = Field(
         default=None,
         description="",
     )
-    dn: RolesMappingConfig | None = Field(
+    dn: RoleMappingConfig | None = Field(
         default=None,
         description="",
     )
@@ -192,10 +227,10 @@ class LdapAuthConfig(BaseModel):
     )
 
 
-class MemberOfUserRolesProvider:
+class SAMAccountNameUserRolesProvider:
     """Фиксированный провайдер пользователь - список ролей"""
 
-    def __init__(self, mapping: RolesMappingConfig):
+    def __init__(self, mapping: RoleMappingConfig):
         self._mapping = mapping
 
     def roles_of(self, member_of: list[str]) -> Iterable[str]:
@@ -203,14 +238,61 @@ class MemberOfUserRolesProvider:
             yield from self._mapping.roles_of(m)
 
 
+class SAMAccountNameExcludeUserProvider:
+    """Фиксированный провайдер пользователь - список ролей"""
+
+    def __init__(self, mapping: RoleExcludeConfig):
+        self._mapping = mapping
+
+    def exclude_of(self, member_of: list[str]) -> Iterable[bool]:
+        for m in member_of:
+            yield from self._mapping.exclude_of(m)
+
+        return True
+
+
+class MemberOfUserRolesProvider:
+    """Фиксированный провайдер пользователь - список ролей"""
+
+    def __init__(self, mapping: RoleMappingConfig):
+        self._mapping = mapping
+
+    def roles_of(self, member_of: list[str]) -> Iterable[str]:
+        for m in member_of:
+            yield from self._mapping.roles_of(m)
+
+
+class MemberOfExcludeUserProvider:
+    """Фиксированный провайдер пользователь - список ролей"""
+
+    def __init__(self, mapping: RoleExcludeConfig):
+        self._mapping = mapping
+
+    def exclude_of(self, member_of: list[str]) -> Iterable[bool]:
+        for m in member_of:
+            yield from self._mapping.exclude_of(m)
+
+        return True
+
+
 class DnUserRolesProvider:
     """Фиксированный провайдер пользователь - список ролей"""
 
-    def __init__(self, mapping: RolesMappingConfig):
+    def __init__(self, mapping: RoleMappingConfig):
         self._mapping = mapping
 
     def roles_of(self, dn: str) -> Iterable[str]:
         return self._mapping.roles_of(dn)
+
+
+class DnExcludeUserProvider:
+    """Фиксированный провайдер пользователь - список ролей"""
+
+    def __init__(self, mapping: RoleExcludeConfig):
+        self._mapping = mapping
+
+    def exclude_of(self, dn: str) -> Iterable[bool]:
+        yield from self._mapping.exclude_of(dn)
 
 
 class LdapAuth:
@@ -232,7 +314,7 @@ class LdapAuth:
         self._member_of_roles: MemberOfUserRolesProvider | None = None
         self._dn_roles: DnUserRolesProvider | None = None
 
-        if roles := self._config.roles.fix:
+        if roles := self._config.roles.samaccountname:
             self._fixed_roles = FixUserRolesProvider(roles)
 
         if roles := self._config.roles.member_of:
@@ -281,14 +363,10 @@ class LdapAuth:
             )
         except LDAPUserNotFoundError as e:
             self._logger.warning("user %s is not registered", username)
-            raise AuthenticationError(
-                "User is not registered"
-            ) from e
+            raise AuthenticationError("User is not registered") from e
         except LDAPInvalidCredentialsError as e:
             self._logger.warning("invalid credentials for %s", username)
-            raise AuthenticationError(
-                "Invalid username or password"
-            ) from e
+            raise AuthenticationError("Invalid username or password") from e
         except LDAPServerUnavailableError as e:
             self._logger.error("LDAP is unavailable", exc_info=e)
             raise ExternalServiceError(
