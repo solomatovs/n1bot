@@ -5,21 +5,39 @@ import chainlit as cl
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
-class RolesMappingConfig(RootModel[dict[str, list[str]]]):
+class RoleMappingConfig(RootModel[dict[str, list[str]]]):
     """Фиксированный мапер пользователь - список ролей"""
 
     def roles_of(self, key: str) -> list[str]:
         return self.root.get(key, [])
 
 
+class RoleExcludeConfig(RootModel[list[str]]):
+    """Фиксированный список исключённых пользователей/ролей"""
+
+    def exclude_of(self, key: str) -> Iterable[bool]:
+        for x in self.root:
+            yield x == key
+
+
 class FixUserRolesProvider:
     """Фиксированный провайдер пользователь - список ролей"""
 
-    def __init__(self, mapping: RolesMappingConfig):
+    def __init__(self, mapping: RoleMappingConfig):
         self._mapping = mapping
 
     def roles_of(self, username: str) -> Iterable[str]:
         yield from self._mapping.roles_of(username)
+
+
+class FixExcludeUserProvider:
+    """Фиксированный провайдер пользователь - список ролей"""
+
+    def __init__(self, mapping: RoleExcludeConfig):
+        self._mapping = mapping
+
+    def exclude_of(self, username: str) -> Iterable[bool]:
+        yield from self._mapping.exclude_of(username)
 
 
 class FixAuthConfig(BaseModel):
@@ -34,7 +52,7 @@ class FixAuthConfig(BaseModel):
         description="Таблица логин→пароль; совпадение выдаёт роль admin.",
     )
 
-    roles: RolesMappingConfig | None = Field(
+    roles: RoleMappingConfig | None = Field(
         default=None,
         description="Источник ролей для пользователей",
     )
