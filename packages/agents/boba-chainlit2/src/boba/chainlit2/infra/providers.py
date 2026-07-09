@@ -7,13 +7,14 @@ from typing import Annotated
 import httpx
 from httpx import AsyncClient
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRequest, wrap_model_call
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 from psycopg import AsyncConnection, sql
 from psycopg.errors import InsufficientPrivilege
-from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from pydantic import SecretStr
 
@@ -23,10 +24,15 @@ from boba.agent.tool_config import (
 )
 from boba.chainlit2.agent.dump import DumpingTransport
 from boba.chainlit2.agent.tools import get_weather
+from boba.chainlit2.chat.data import PostgresDataLayer
+from boba.chainlit2.chat.data.storage import LocalStorageClient
 from boba.chainlit2.errors import InternalServiceError
 from boba.chainlit2.infra.config import (
     AgentProfile,
     AppConfig,
+    CheckpointerConfig,
+    DataLayerConfig,
+    LocalStorageConfig,
     OpenAiConfig,
     PostgresConfig,
 )
@@ -38,10 +44,36 @@ def get_app_config(config_path: Path) -> AppConfig:
     return bind(build_app_config(config_path=config_path), path="app", model=AppConfig)
 
 
-def get_store_config(
+def get_postgres_config(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ) -> PostgresConfig:
-    return app_config.checkpoints
+    """Общий postgres-конфиг (подключение + пул) для data layer и checkpointer."""
+    return app_config.postgres
+
+
+def get_checkpointer_config(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> CheckpointerConfig:
+    return app_config.checkpointer
+
+
+def get_data_layer_config(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> DataLayerConfig:
+    return app_config.data_layer
+
+
+def get_local_storage_config(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> LocalStorageConfig:
+    return app_config.storage
+
+
+def storage_provider(
+    cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
+) -> LocalStorageClient:
+    """Файловое хранилище вложений (локальный диск)."""
+    return LocalStorageClient(cfg)
 
 
 def get_agent_profile(
@@ -163,47 +195,103 @@ async def httpx_debug_client(
         pass
 
 
-async def langchain_checkpoint_saver(
-    c: Annotated[PostgresConfig, Depends(get_store_config)],
-) -> AsyncIterator[BaseCheckpointSaver]:
-    """PG-пул + checkpointer-saver; app-scope, пул закрывается на teardown DI."""
-    pg_kwargs = c.to_pg_conn()
-    # saver требует dict-строки; options (вкл. search_path) уже собран в to_pg_conn
-    pg_kwargs.update({"row_factory": dict_row})
-
-    pool_kwargs = c.to_pg_pool()
-
+async def postgres_pool(
+    c: Annotated[PostgresConfig, Depends(get_postgres_config)],
+    cp: Annotated[CheckpointerConfig, Depends(get_checkpointer_config)],
+) -> AsyncIterator[AsyncConnectionPool]:
+    """
+    Единый PG-пул приложения
+    """
     async with AsyncConnectionPool(
-        connection_class=AsyncConnection[DictRow],
-        kwargs=pg_kwargs,
-        # fail-fast: при недоступной БД getconn упадёт за timeout, а не за 30с
-        **pool_kwargs,
+        connection_class=AsyncConnection,
+        kwargs=c.conn_settings({"search_path": cp.schema}),
+        **c.pool_settings(),
     ) as pool:
         await pool.open()
-        # saver делает только CREATE TABLE — схему из search_path создаём сами,
-        # иначе setup() упадёт 'no schema has been selected to create in'
-        if schema := c.options.primary_schema:
+        yield pool
+
+
+async def chainlit_data_layer(
+    pool: Annotated[AsyncConnectionPool, Depends(postgres_pool)],
+    cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
+    storage: Annotated[LocalStorageClient, Depends(storage_provider)],
+) -> PostgresDataLayer:
+    """PostgresDataLayer на общем пуле; setup() создаёт свою схему и таблицы."""
+    layer = PostgresDataLayer(pool, schema=cfg.schema, storage=storage)
+    await layer.setup()
+    return layer
+
+
+async def langchain_checkpoint_saver(
+    pool: Annotated[AsyncConnectionPool, Depends(postgres_pool)],
+    cp: Annotated[CheckpointerConfig, Depends(get_checkpointer_config)],
+) -> BaseCheckpointSaver:
+    """
+    AsyncPostgresSaver на общем пуле
+    """
+    try:
+        async with pool.connection() as conn:
             try:
-                async with pool.connection() as conn:
-                    try:
-                        await conn.execute(
-                            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-                                sql.Identifier(schema)
-                            )
-                        )
-                    except InsufficientPrivilege as _e:
-                        await conn.commit()
-            except PoolTimeout as e:
-                raise InternalServiceError(
-                    internal_detail=(
-                        "Failed to get postgres connection for langchain "
-                        f"checkpoint saver: {e!s}"
-                    ),
-                    user_detail="Failed to connect to the internal postgres",
-                ) from e
-        saver = AsyncPostgresSaver(pool)
-        await saver.setup()
-        yield saver
+                await conn.execute(
+                    sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                        sql.Identifier(cp.schema)
+                    )
+                )
+            except InsufficientPrivilege:
+                await conn.commit()
+    except PoolTimeout as e:
+        raise InternalServiceError(
+            internal_detail=(
+                f"Failed to get postgres connection for checkpointer: {e!s}"
+            ),
+            user_detail="Failed to connect to the internal postgres",
+        ) from e
+
+    saver = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
+    await saver.setup()
+    return saver
+
+
+@wrap_model_call
+async def history_view(request: ModelRequest, handler):
+    """View-слой: проекция полной истории в то, что видит LLM (state не меняется).
+
+    Async: агент запускается через astream()/ainvoke(), поэтому langchain зовёт
+    awrap_model_call, и handler здесь — awaitable.
+    """
+    # полная история находится в state
+    full = request.state["messages"]
+    # проекция видимости истории llm на каждой итерации
+    view = build_llm_view(full)
+    return await handler(request.override(messages=view))
+
+
+def build_llm_view(msgs: list) -> list:
+    """
+    Представление над историей чата для llm реквеста
+
+    Старые сообщения отдает только как вопросы/ответы без tool_call/tool_result
+    Текущая итерация отдается полностью
+    """
+    start = _index_of_last_user_turn(msgs)
+    head, current = msgs[:start], msgs[start:]
+
+    pruned_head = [
+        m
+        for m in head
+        if not isinstance(m, ToolMessage)
+        and not (isinstance(m, AIMessage) and m.tool_calls)
+    ][-30:]
+    return pruned_head + current
+
+
+def _index_of_last_user_turn(msgs: list) -> int:
+    """Индекс начала последней итерации = позиция последнего HumanMessage."""
+    for i in range(len(msgs) - 1, -1, -1):
+        if isinstance(msgs[i], HumanMessage):
+            return i
+
+    return 0
 
 
 def langchain_agent(
@@ -226,6 +314,7 @@ def langchain_agent(
         tools=[get_weather],
         system_prompt=system_prompt,
         checkpointer=saver,
+        middleware=[history_view],
     )
 
     return agent

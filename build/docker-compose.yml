@@ -5,29 +5,42 @@ services:
     container_name: chainlit
     entrypoint: ["boba-chainlit"]
     environment:
-      - BOBA_CONFIG_PATH=/app/local/chainlit-${BOBA_TAG}.toml
+      - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - CHAINLIT_URL_PREFIX=/boba
-      - KRB5_KTNAME=/app/local/keytab/boba.keytab
+      - FASTEMBED_CACHE_DIR=/app/local
     volumes:
-      - ./local:/app/local
-      # keytab делает samba-ad: local/krb5.keytab
-      - ./local/keytab/boba.keytab:/app/local/keytab/boba.keytab:ro
-      - ./local/keytab/krb5.conf:/etc/krb5.conf:ro
-    expose:
-      - "8501"
+      - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
+      - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
+      - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
+      - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
     ports:
       - 127.0.0.1:8501:8501
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8501${CHAINLIT_URL_PREFIX}/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    networks:
-      default:
-        aliases:
-          - chainlit
+    restart: unless-stopped
+
+  chainlit-lite:
+    image: boba:${BOBA_TAG}
+    hostname: chainlit-lite
+    container_name: chainlit-lite
+    entrypoint: ["boba-chainlit"]
+    environment:
+      - BOBA_CONFIG_PATH=/app/local/config.toml
+      - CHAINLIT_APP_ROOT=/app/local
+      - FASTEMBED_CACHE_DIR=/app/local
+    volumes:
+      - ${HOST_DIR}/local/chainlit-lite/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/local/chainlit-lite/workspaces:/app/local/workspaces:rw
+      - ${HOST_DIR}/local/chainlit-lite/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit-lite/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit-lite/public:/app/local/public:ro
+      - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
+      - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
+    ports:
+      - 127.0.0.1:8502:8501
     restart: unless-stopped
 
   chainlit2:
@@ -36,50 +49,52 @@ services:
     container_name: chainlit2
     entrypoint: ["python3", "-m", "boba.chainlit2.main"]
     environment:
-      - BOBA_CONFIG_PATH=/app/local/chainlit2-${BOBA_TAG}.toml
+      - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - CHAINLIT_URL_PREFIX=/boba2
-      - KRB5_KTNAME=/etc/krb5.keytab
     volumes:
-      - ./local:/app/local
-      # keytab делает samba-ad: local/krb5.keytab
-      - ./local/krb5.keytab:/etc/krb5.keytab:ro
-      - ./local/krb5.conf:/etc/krb5.conf:ro
-    expose:
-      - "8502"
+      - ${HOST_DIR}/local/chainlit2/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/local/chainlit2/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit2/public:/app/local/public:ro
+      - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
+      - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
     ports:
-      - 127.0.0.1:8502:8502
-    networks:
-      default:
-        aliases:
-          - chainlit2
+      - 127.0.0.1:8503:8501
     restart: unless-stopped
 
-  # cli agent
   cli-agent:
     image: boba:${BOBA_TAG}
     hostname: cli-agent
     container_name: cli-agent
     entrypoint: ["boba-cli"]
     environment:
-      - BOBA_CONFIG_PATH=/app/local/config-${BOBA_TAG}.toml
+      - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      - FASTEMBED_CACHE_DIR=/app/local
     volumes:
-      - ./local:/app/local
+      - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
+      - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
+      - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
 
-  # [cli.kb.bootstrap] — накатывает миграции (схема таблиц)
   kb-bootstrap:
     image: boba:${BOBA_TAG}
+    hostname: kb-bootstrap
+    container_name: kb-bootstrap
     entrypoint: ["python3", "-m", "boba.tool.kb.cli.kb_bootstrap"]
     environment:
-      - BOBA_CONFIG_PATH=/app/local/config-${BOBA_TAG}.toml
+      - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      - FASTEMBED_CACHE_DIR=/app/local
     volumes:
-      - ./local:/app/local
-
-volumes:
-  samba-ad-data:
-  samba-ad-etc:
+      - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
+      - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
+      - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
 
 networks:
   default:
