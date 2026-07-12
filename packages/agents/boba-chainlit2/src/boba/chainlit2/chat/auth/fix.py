@@ -64,6 +64,14 @@ class FixAuthConfig(BaseModel):
         description="Список логинов, которым запрещён вход (403).",
     )
 
+    require_roles: bool = Field(
+        default=True,
+        description=(
+            "403 после успешной аутентификации, "
+            "если пользователю не замапилась ни одна роль."
+        ),
+    )
+
 
 class FixAuth:
     """Авторизация по статической таблице логин/пароль из конфига."""
@@ -94,6 +102,9 @@ class FixAuth:
                 roles.extend(self._fixed_roles.roles_of(username))
 
             roles = list(set(roles))
+
+            if self._config.require_roles and not roles:
+                raise AuthorizationError("Access denied")
 
             if roles:
                 metadata.update(roles=roles)

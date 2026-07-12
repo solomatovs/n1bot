@@ -158,6 +158,13 @@ class KerberosAuthConfig(BaseModel):
         default=None,
         description="",
     )
+    require_roles: bool = Field(
+        default=True,
+        description=(
+            "403 после успешной аутентификации, "
+            "если пользователю не замапилась ни одна роль."
+        ),
+    )
 
     @property
     def sids_header(self) -> str:
@@ -960,15 +967,9 @@ class KerberosAuth:
         if self._principal_roles_ex:
             excluded = any(self._principal_roles_ex.exclude_of(principal))
 
-        if self._sid_roles or self._sid_roles_ex:
-            raw_sids = headers.get(self._config.sids_header) or ""
-            sids = [s for s in raw_sids.split(",") if s]
-
-            if self._sid_roles:
-                roles.extend(self._sid_roles.roles_of(sids))
-
-            if self._sid_roles_ex:
-                excluded = excluded or any(self._sid_roles_ex.exclude_of(sids))
+        sid_roles, sid_excluded = self._sid_mapping(headers)
+        roles.extend(sid_roles)
+        excluded = excluded or sid_excluded
 
         if self._kerberos_roles_in_ldap:
             user = await self._kerberos_roles_in_ldap.request(principal)
@@ -983,6 +984,10 @@ class KerberosAuth:
 
         roles = list(set(roles))
 
+        if self._config.require_roles and not roles:
+            self._logger.warning("access denied for %s (no roles mapped)", principal)
+            raise AuthorizationError("Access denied")
+
         if roles:
             metadata.update(roles=roles)
 
@@ -992,6 +997,20 @@ class KerberosAuth:
         )
 
         return cl.User(identifier=username, metadata=metadata)
+
+    def _sid_mapping(self, headers) -> tuple[list[str], bool]:
+        "Роли и исключение по SID группам из PAC; заголовок ставит middleware."
+        if not (self._sid_roles or self._sid_roles_ex):
+            return [], False
+
+        raw_sids = headers.get(self._config.sids_header) or ""
+        sids = [s for s in raw_sids.split(",") if s]
+
+        roles = list(self._sid_roles.roles_of(sids)) if self._sid_roles else []
+        excluded = bool(
+            self._sid_roles_ex and any(self._sid_roles_ex.exclude_of(sids))
+        )
+        return roles, excluded
 
     def _install_routes(self, chainlit_app: FastAPI) -> None:
         """Регистрирует /auth/sso (вход после SPNEGO) и /sso.js (кнопка)."""
