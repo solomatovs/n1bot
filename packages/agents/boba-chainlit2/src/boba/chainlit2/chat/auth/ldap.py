@@ -250,6 +250,13 @@ class LdapAuthConfig(BaseModel):
         default=LdapRolesConfig(),
         description="Мапперы учеток и ролей",
     )
+    require_roles: bool = Field(
+        default=True,
+        description=(
+            "403 после успешной аутентификации, "
+            "если пользователю не замапилась ни одна роль."
+        ),
+    )
 
 
 class SAMAccountNameUserRolesProvider:
@@ -367,6 +374,19 @@ class LdapAuth:
 
         return any(chain.from_iterable(res))
 
+    def _roles_of(self, username: str, user_dn: str, member_of: list[str]) -> list[str]:
+        roles: list[str] = []
+        if self._fixed_roles:
+            roles.extend(self._fixed_roles.roles_of(username))
+
+        if self._member_of_roles:
+            roles.extend(self._member_of_roles.roles_of(member_of))
+
+        if self._dn_roles:
+            roles.extend(self._dn_roles.roles_of(user_dn))
+
+        return list(set(roles))
+
     async def password_auth(self, username: str, password: str) -> cl.User | None:
         # личность подтверждаем bind'ом под пользователем
         try:
@@ -389,17 +409,13 @@ class LdapAuth:
 
             metadata: dict[str, Any] = {"provider": LdapAuth.__name__}
 
-            roles: list[str] = []
-            if self._fixed_roles:
-                roles.extend(self._fixed_roles.roles_of(username))
+            roles = self._roles_of(username, user_dn, member_of)
 
-            if self._member_of_roles:
-                roles.extend(self._member_of_roles.roles_of(member_of))
-
-            if self._dn_roles:
-                roles.extend(self._dn_roles.roles_of(user_dn))
-
-            roles = list(set(roles))
+            if self._config.require_roles and not roles:
+                self._logger.warning(
+                    "access denied for %s (no roles mapped)", username
+                )
+                raise AuthorizationError("Access denied")
 
             if roles:
                 metadata.update(roles=roles)
