@@ -1,6 +1,7 @@
 import re
 import socket
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -42,13 +43,6 @@ from boba.chainlit2.infra.di import Depends
 def get_app_config(config_path: Path) -> AppConfig:
     """Конфиг приложения"""
     return bind(build_app_config(config_path=config_path), path="app", model=AppConfig)
-
-
-def get_postgres_config(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> PostgresConfig:
-    """Общий postgres-конфиг (подключение + пул) для data layer и checkpointer."""
-    return app_config.postgres
 
 
 def get_checkpointer_config(
@@ -195,16 +189,17 @@ async def httpx_debug_client(
         pass
 
 
+@asynccontextmanager
 async def postgres_pool(
-    c: Annotated[PostgresConfig, Depends(get_postgres_config)],
-    cp: Annotated[CheckpointerConfig, Depends(get_checkpointer_config)],
+    c: PostgresConfig,
+    schema: str,
 ) -> AsyncIterator[AsyncConnectionPool]:
     """
-    Единый PG-пул приложения
+    Helper для создания PG-пул
     """
     async with AsyncConnectionPool(
         connection_class=AsyncConnection,
-        kwargs=c.conn_settings({"search_path": cp.schema}),
+        kwargs=c.conn_settings({"search_path": schema}),
         **c.pool_settings(),
     ) as pool:
         await pool.open()
@@ -212,44 +207,44 @@ async def postgres_pool(
 
 
 async def chainlit_data_layer(
-    pool: Annotated[AsyncConnectionPool, Depends(postgres_pool)],
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     storage: Annotated[LocalStorageClient, Depends(storage_provider)],
-) -> PostgresDataLayer:
-    """PostgresDataLayer на общем пуле; setup() создаёт свою схему и таблицы."""
-    layer = PostgresDataLayer(pool, schema=cfg.schema, storage=storage)
-    await layer.setup()
-    return layer
+) -> AsyncIterator[PostgresDataLayer]:
+    """PostgresDataLayer на своём пуле; setup() создаёт схему и таблицы."""
+    async with postgres_pool(cfg.postgres, cfg.db_schema) as pool:
+        layer = PostgresDataLayer(pool, schema=cfg.db_schema, storage=storage)
+        await layer.setup()
+        yield layer
 
 
 async def langchain_checkpoint_saver(
-    pool: Annotated[AsyncConnectionPool, Depends(postgres_pool)],
     cp: Annotated[CheckpointerConfig, Depends(get_checkpointer_config)],
-) -> BaseCheckpointSaver:
+) -> AsyncIterator[BaseCheckpointSaver]:
     """
-    AsyncPostgresSaver на общем пуле
+    AsyncPostgresSaver на своём пуле (search_path=схема)
     """
-    try:
-        async with pool.connection() as conn:
-            try:
-                await conn.execute(
-                    sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-                        sql.Identifier(cp.schema)
+    async with postgres_pool(cp.postgres, cp.db_schema) as pool:
+        try:
+            async with pool.connection() as conn:
+                try:
+                    await conn.execute(
+                        sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                            sql.Identifier(cp.db_schema)
+                        )
                     )
-                )
-            except InsufficientPrivilege:
-                await conn.commit()
-    except PoolTimeout as e:
-        raise InternalServiceError(
-            internal_detail=(
-                f"Failed to get postgres connection for checkpointer: {e!s}"
-            ),
-            user_detail="Failed to connect to the internal postgres",
-        ) from e
+                except InsufficientPrivilege:
+                    await conn.commit()
+        except PoolTimeout as e:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"Failed to get postgres connection for checkpointer: {e!s}"
+                ),
+                user_detail="Failed to connect to the internal postgres",
+            ) from e
 
-    saver = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
-    await saver.setup()
-    return saver
+        saver = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
+        await saver.setup()
+        yield saver
 
 
 @wrap_model_call
