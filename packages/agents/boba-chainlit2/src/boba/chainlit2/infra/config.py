@@ -446,10 +446,12 @@ class PostgresConfig(BaseModel):
         kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts.
         """
         # pool/options — не скалярные connect-параметры: pool это конструктор пула,
-        # options сериализуется отдельно в строку '-c k=v'
+        # options сериализуется отдельно в строку '-c k=v';
+        # поля наследников (schema и т.п.) — не libpq-ключи, поэтому итерируем
+        # строго по PostgresConfig
         conn = {}
 
-        for name in type(self).model_fields:
+        for name in PostgresConfig.model_fields:
             if name not in ("pool", "options"):
                 value = getattr(self, name)
                 if value is not None:
@@ -470,11 +472,20 @@ class PostgresConfig(BaseModel):
 
 
 class CheckpointerConfig(BaseModel):
-    """Конфиг langgraph-checkpointer: схема БД (через search_path)."""
+    """Конфиг langgraph-checkpointer: postgres-подключение + схема БД."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    schema: str = Field(
+    postgres: Annotated[
+        PostgresConfig,
+        Field(
+            description=(
+                "Подключение и пул; в конфиге подключается ссылкой ${postgres}."
+            ),
+        ),
+    ]
+
+    db_schema: str = Field(
         default="public",
         alias="schema",
         description=(
@@ -485,11 +496,20 @@ class CheckpointerConfig(BaseModel):
 
 
 class DataLayerConfig(BaseModel):
-    """Конфиг chainlit data layer: схема БД (квалифицируется в SQL явно) + лимиты."""
+    """Конфиг chainlit data layer: postgres-подключение + схема БД."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    schema: str = Field(
+    postgres: Annotated[
+        PostgresConfig,
+        Field(
+            description=(
+                "Подключение и пул; в конфиге подключается ссылкой ${postgres}."
+            ),
+        ),
+    ]
+
+    db_schema: str = Field(
         default="public",
         alias="schema",
         description="Схема таблиц data layer; PostgresDataLayer квалифицирует ею SQL.",
@@ -555,27 +575,14 @@ class AppConfig(BaseModel):
         ),
     ]
 
-    postgres: Annotated[
-        PostgresConfig,
-        Field(
-            description="Общий postgres: подключение + пул (data layer и checkpointer)."
-        ),
-    ]
-
     checkpointer: Annotated[
         CheckpointerConfig,
-        Field(
-            default_factory=lambda: CheckpointerConfig.model_validate({}),
-            description="Схема langgraph-checkpointer.",
-        ),
+        Field(description="Сервис langgraph-checkpointer: подключение + схема."),
     ]
 
     data_layer: Annotated[
         DataLayerConfig,
-        Field(
-            default_factory=lambda: DataLayerConfig.model_validate({}),
-            description="Схема и лимиты chainlit data layer.",
-        ),
+        Field(description="Сервис chainlit data layer: подключение + схема."),
     ]
 
     storage: Annotated[
