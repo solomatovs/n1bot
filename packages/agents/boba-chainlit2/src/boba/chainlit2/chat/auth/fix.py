@@ -4,6 +4,8 @@ from typing import Any, Literal
 import chainlit as cl
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
+from boba.chainlit2.errors import AuthorizationError
+
 
 class RoleMappingConfig(RootModel[dict[str, list[str]]]):
     """Фиксированный мапер пользователь - список ролей"""
@@ -31,7 +33,7 @@ class FixUserRolesProvider:
 
 
 class FixExcludeUserProvider:
-    """Фиксированный провайдер пользователь - список ролей"""
+    """Фиксированный список пользователей, которым запрещён вход"""
 
     def __init__(self, mapping: RoleExcludeConfig):
         self._mapping = mapping
@@ -57,6 +59,11 @@ class FixAuthConfig(BaseModel):
         description="Источник ролей для пользователей",
     )
 
+    roles_ex: RoleExcludeConfig | None = Field(
+        default=None,
+        description="Список логинов, которым запрещён вход (403).",
+    )
+
 
 class FixAuth:
     """Авторизация по статической таблице логин/пароль из конфига."""
@@ -67,11 +74,19 @@ class FixAuth:
 
     def _init_mapping(self):
         self._fixed_roles: FixUserRolesProvider | None = None
+        self._fixed_roles_ex: FixExcludeUserProvider | None = None
+
         if roles := self._config.roles:
             self._fixed_roles = FixUserRolesProvider(roles)
 
+        if roles_ex := self._config.roles_ex:
+            self._fixed_roles_ex = FixExcludeUserProvider(roles_ex)
+
     async def password_auth(self, username: str, password: str) -> cl.User | None:
         if self._config.users.get(username) == password:
+            if self._fixed_roles_ex and any(self._fixed_roles_ex.exclude_of(username)):
+                raise AuthorizationError("Access denied")
+
             metadata: dict[str, Any] = {"provider": FixAuth.__name__}
 
             roles: list[str] = []

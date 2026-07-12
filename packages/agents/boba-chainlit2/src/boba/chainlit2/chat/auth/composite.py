@@ -30,6 +30,8 @@ class PasswordAuthCallbackInstaller:
 
     def _build_callback(self) -> UserCallback:
         async def password_auth(username: str, password: str) -> cl.User | None:
+            last_error: AuthenticationError | None = None
+
             for auth in self._auth:
                 try:
                     res = await auth.password_auth(username, password)
