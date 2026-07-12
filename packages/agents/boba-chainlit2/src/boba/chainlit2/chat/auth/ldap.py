@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from itertools import chain
 from typing import Any, Literal
 
@@ -62,6 +63,15 @@ class LDAPConfigError(LDAPError):
 
 class LDAPUserNotFoundError(LDAPError):
     "Поиск выполнен, но запись пользователя не найдена."
+
+
+@dataclass(frozen=True)
+class ADUserEntry:
+    """Атрибуты пользователя из AD для маппинга ролей/исключений."""
+
+    dn: str
+    samaccountname: str
+    member_of: list[str]
 
 
 class ADDirectory:
