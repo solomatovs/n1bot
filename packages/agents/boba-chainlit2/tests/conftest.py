@@ -61,8 +61,8 @@ def app_config() -> AppConfig:
 @pytest.fixture(scope="session")
 def pg_kwargs(app_config: AppConfig) -> dict:
     """psycopg-параметры коннекта из конфига с подменённым dbname на тестовый."""
-    kwargs = app_config.postgres.conn_settings(
-        {"search_path": app_config.data_layer.schema}
+    kwargs = app_config.data_layer.postgres.conn_settings(
+        {"search_path": app_config.data_layer.db_schema}
     )
     kwargs["dbname"] = TEST_DB
     return kwargs
@@ -71,7 +71,8 @@ def pg_kwargs(app_config: AppConfig) -> dict:
 @pytest.fixture(scope="session")
 def test_database(app_config: AppConfig) -> str:
     """Создаёт тестовую БД на сервере из конфига, если её ещё нет."""
-    maintenance = app_config.postgres.conn_settings()  # боевой dbname служебный
+    # боевой dbname служебный
+    maintenance = app_config.data_layer.postgres.conn_settings()
     with psycopg.connect(**maintenance, connect_timeout=5) as conn:
         exists = conn.execute(
             "select 1 from pg_database where datname = %s", (TEST_DB,)
@@ -92,7 +93,7 @@ async def pool(
         connection_class=AsyncConnection,
         kwargs=pg_kwargs,
         open=False,
-        **app_config.postgres.pool_settings(),
+        **app_config.data_layer.postgres.pool_settings(),
     )
     await p.open()
     try:
@@ -119,7 +120,7 @@ async def layer(
     app_config: AppConfig, pool: AsyncConnectionPool, storage: LocalStorageClient
 ) -> PostgresDataLayer:
     """Слой со свежей схемой: дропаем схему и заново гоняем setup() на каждый тест."""
-    schema = app_config.data_layer.schema
+    schema = app_config.data_layer.db_schema
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
