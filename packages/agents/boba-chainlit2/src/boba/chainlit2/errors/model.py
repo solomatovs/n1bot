@@ -175,6 +175,12 @@ class AuthorizationError(BaseError):
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
 
+    def http_message(self) -> HttpErrorMessage | None:
+        return HttpErrorMessage(
+            status_code=self.status_code,
+            content=self.message,
+        )
+
 class ToolExecutionError(BaseError):
     """
     Инструмент агента упал во время выполнения

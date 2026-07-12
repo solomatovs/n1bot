@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
+from itertools import chain
 from typing import Any, Literal
 
 import chainlit as cl
@@ -26,12 +27,14 @@ from ldap3.core.exceptions import (
 from pydantic import BaseModel, Field
 
 from boba.chainlit2.chat.auth.fix import (
+    FixExcludeUserProvider,
     FixUserRolesProvider,
     RoleExcludeConfig,
     RoleMappingConfig,
 )
 from boba.chainlit2.errors import (
     AuthenticationError,
+    AuthorizationError,
     ExternalServiceError,
     InternalServiceError,
 )
@@ -169,7 +172,7 @@ class ADDirectory:
             entry = conn.entries[0]
 
             dn = str(entry.entry_dn)
-            samaccountname = entry.entry_samaccountname
+            samaccountname = str(entry.sAMAccountName.value)
             member_of = [str(x) for x in entry.memberOf.values]
 
             return dn, samaccountname, member_of
@@ -194,13 +197,25 @@ class LdapRolesConfig(BaseModel):
         default=None,
         description="",
     )
+    samaccountname_ex: RoleExcludeConfig | None = Field(
+        default=None,
+        description="Логины, которым запрещён вход (403).",
+    )
     member_of: RoleMappingConfig | None = Field(
         default=None,
         description="",
     )
+    member_of_ex: RoleExcludeConfig | None = Field(
+        default=None,
+        description="Группы, членам которых запрещён вход (403).",
+    )
     dn: RoleMappingConfig | None = Field(
         default=None,
         description="",
+    )
+    dn_ex: RoleExcludeConfig | None = Field(
+        default=None,
+        description="DN пользователей, которым запрещён вход (403).",
     )
 
 
@@ -228,31 +243,27 @@ class LdapAuthConfig(BaseModel):
 
 
 class SAMAccountNameUserRolesProvider:
-    """Фиксированный провайдер пользователь - список ролей"""
+    """Мапер sAMAccountName - список ролей"""
 
     def __init__(self, mapping: RoleMappingConfig):
         self._mapping = mapping
 
-    def roles_of(self, member_of: list[str]) -> Iterable[str]:
-        for m in member_of:
-            yield from self._mapping.roles_of(m)
+    def roles_of(self, samaccountname: str) -> Iterable[str]:
+        yield from self._mapping.roles_of(samaccountname)
 
 
 class SAMAccountNameExcludeUserProvider:
-    """Фиксированный провайдер пользователь - список ролей"""
+    """Список sAMAccountName, которым запрещён вход"""
 
     def __init__(self, mapping: RoleExcludeConfig):
         self._mapping = mapping
 
-    def exclude_of(self, member_of: list[str]) -> Iterable[bool]:
-        for m in member_of:
-            yield from self._mapping.exclude_of(m)
-
-        return True
+    def exclude_of(self, samaccountname: str) -> Iterable[bool]:
+        yield from self._mapping.exclude_of(samaccountname)
 
 
 class MemberOfUserRolesProvider:
-    """Фиксированный провайдер пользователь - список ролей"""
+    """Мапер групп memberOf - список ролей"""
 
     def __init__(self, mapping: RoleMappingConfig):
         self._mapping = mapping
@@ -263,7 +274,7 @@ class MemberOfUserRolesProvider:
 
 
 class MemberOfExcludeUserProvider:
-    """Фиксированный провайдер пользователь - список ролей"""
+    """Список групп memberOf, членам которых запрещён вход"""
 
     def __init__(self, mapping: RoleExcludeConfig):
         self._mapping = mapping
@@ -272,11 +283,9 @@ class MemberOfExcludeUserProvider:
         for m in member_of:
             yield from self._mapping.exclude_of(m)
 
-        return True
-
 
 class DnUserRolesProvider:
-    """Фиксированный провайдер пользователь - список ролей"""
+    """Мапер DN пользователя - список ролей"""
 
     def __init__(self, mapping: RoleMappingConfig):
         self._mapping = mapping
@@ -286,7 +295,7 @@ class DnUserRolesProvider:
 
 
 class DnExcludeUserProvider:
-    """Фиксированный провайдер пользователь - список ролей"""
+    """Список DN пользователей, которым запрещён вход"""
 
     def __init__(self, mapping: RoleExcludeConfig):
         self._mapping = mapping
@@ -311,17 +320,42 @@ class LdapAuth:
 
     def _init_mapping(self):
         self._fixed_roles: FixUserRolesProvider | None = None
+        self._fixed_roles_ex: FixExcludeUserProvider | None = None
         self._member_of_roles: MemberOfUserRolesProvider | None = None
+        self._member_of_roles_ex: MemberOfExcludeUserProvider | None = None
         self._dn_roles: DnUserRolesProvider | None = None
+        self._dn_roles_ex: DnExcludeUserProvider | None = None
 
         if roles := self._config.roles.samaccountname:
             self._fixed_roles = FixUserRolesProvider(roles)
 
+        if roles := self._config.roles.samaccountname_ex:
+            self._fixed_roles_ex = FixExcludeUserProvider(roles)
+
         if roles := self._config.roles.member_of:
             self._member_of_roles = MemberOfUserRolesProvider(roles)
 
+        if roles := self._config.roles.member_of_ex:
+            self._member_of_roles_ex = MemberOfExcludeUserProvider(roles)
+
         if roles := self._config.roles.dn:
             self._dn_roles = DnUserRolesProvider(roles)
+
+        if roles := self._config.roles.dn_ex:
+            self._dn_roles_ex = DnExcludeUserProvider(roles)
+
+    def _excluded_of(self, username: str, user_dn: str, member_of: list[str]) -> bool:
+        res = []
+        if self._fixed_roles_ex:
+            res.append(self._fixed_roles_ex.exclude_of(username))
+
+        if self._member_of_roles_ex:
+            res.append(self._member_of_roles_ex.exclude_of(member_of))
+
+        if self._dn_roles_ex:
+            res.append(self._dn_roles_ex.exclude_of(user_dn))
+
+        return any(chain.from_iterable(res))
 
     async def password_auth(self, username: str, password: str) -> cl.User | None:
         # личность подтверждаем bind'ом под пользователем
@@ -338,6 +372,10 @@ class LdapAuth:
                 search_base=search_base,
                 search_filter=search_filter,
             )
+
+            if self._excluded_of(username, user_dn, member_of):
+                self._logger.warning("access denied for %s (excluded)", username)
+                raise AuthorizationError("Access denied")
 
             metadata: dict[str, Any] = {"provider": LdapAuth.__name__}
 

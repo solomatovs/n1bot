@@ -38,6 +38,7 @@ from boba.chainlit2.chat.auth.ldap import (
     DnUserRolesProvider,
     LDAPError,
     LDAPInvalidCredentialsError,
+    LdapRolesConfig,
     LDAPServerUnavailableError,
     LDAPUserNotFoundError,
     MemberOfExcludeUserProvider,
@@ -47,6 +48,7 @@ from boba.chainlit2.chat.auth.ldap import (
 )
 from boba.chainlit2.errors import (
     AuthenticationError,
+    AuthorizationError,
     BaseError,
     ExternalServiceError,
     InternalServiceError,
@@ -78,13 +80,8 @@ class KerberosDelegationConfig(BaseModel):
     )
 
 
-class KerberosRolesInLdapMappingConfig(BaseModel):
-    samaccountname: RoleMappingConfig | None = Field(default=None, description="")
-    samaccountname_ex: RoleExcludeConfig | None = Field(default=None, description="")
-    member_of: RoleMappingConfig | None = Field(default=None, description="")
-    member_of_ex: RoleExcludeConfig | None = Field(default=None, description="")
-    dn: RoleMappingConfig | None = Field(default=None, description="")
-    dn_ex: RoleExcludeConfig | None = Field(default=None, description="")
+class KerberosRolesInLdapMappingConfig(LdapRolesConfig):
+    """Мапинг ролей/исключений по атрибутам AD; поля наследуются от LdapRolesConfig."""
 
 
 class KerberosRolesInLdapConfig(BaseModel):
@@ -732,10 +729,13 @@ class KerberosAuth:
         metadata: dict[str, Any] = {"provider": KerberosAuth.__name__}
 
         roles: list[str] = []
-        exclude = False
+        excluded = False
 
         if self._principal_roles:
             roles.extend(self._principal_roles.roles_of(principal))
+
+        if self._principal_roles_ex:
+            excluded = any(self._principal_roles_ex.exclude_of(principal))
 
         if self._kerberos_roles_in_ldap:
             # делаем request в ldap и получаем user_dn, samaccountname, member_of
@@ -745,18 +745,21 @@ class KerberosAuth:
                 member_of,
             ) = await self._kerberos_roles_in_ldap.request(principal)
             # выполняю мапинг ролей через ldap
-            for x in self._kerberos_roles_in_ldap.roles_of(
-                user_dn, samaccountname, member_of
-            ):
-                roles.append(x)
+            roles.extend(
+                self._kerberos_roles_in_ldap.roles_of(
+                    user_dn, samaccountname, member_of
+                )
+            )
 
-            if res := self._kerberos_roles_in_ldap.excluded_of(user_dn, member_of):
-                exclude = res
+            excluded = excluded or self._kerberos_roles_in_ldap.excluded_of(
+                user_dn, samaccountname, member_of
+            )
+
+        if excluded:
+            self._logger.warning("access denied for %s (excluded)", principal)
+            raise AuthorizationError("Access denied")
 
         roles = list(set(roles))
-
-        if self._principal_roles_ex:
-            self._principal_roles_ex.exclude_of(principal)
 
         if roles:
             metadata.update(roles=roles)
