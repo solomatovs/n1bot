@@ -21,6 +21,7 @@ pythonpath = [
     "packages/agents/boba-cli/src",
     "packages/agents/boba-chainlit/src",
     "packages/agents/boba-chainlit2/src",
+    "packages/agents/boba-hermes/src",
     "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-files/src",
@@ -62,6 +63,7 @@ extraPaths = [
     "packages/agents/boba-cli/src",
     "packages/agents/boba-chainlit/src",
     "packages/agents/boba-chainlit2/src",
+    "packages/agents/boba-hermes/src",
     "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-files/src",
@@ -139,6 +141,7 @@ boba-tool-web       = { workspace = true }
 boba-cli            = { workspace = true }
 boba-chainlit       = { workspace = true }
 boba-chainlit2      = { workspace = true }
+boba-hermes         = { workspace = true }
 
 [dependency-groups]
 dev = [

@@ -62,6 +62,59 @@ services:
       - 127.0.0.1:8503:8501
     restart: unless-stopped
 
+  # бэкенд для hermes-ui: gateway с платформой api_server.
+  # s6-сервис main-hermes в образе — no-op, поэтому команду задаём явно
+  hermes:
+    image: dmp/hermes:${HERMES_TAG:-2026.7.20}
+    hostname: hermes
+    container_name: hermes
+    command: ["gateway", "run"]
+    environment:
+      # под этим uid/gid пишется /opt/data, чтобы файлы оставались
+      # доступными на хосте
+      - HERMES_UID=1000
+      - HERMES_GID=984
+      # профиль на пользователя: обращения идут на /p/<профиль>/v1/...,
+      # у каждого профиля свой HERMES_HOME и свой state.db
+      - GATEWAY_MULTIPLEX_PROFILES=1
+      # API_SERVER_KEY/HOST/PORT сюда не выносим: при multiplex_profiles
+      # gateway перечитывает конфиг под скоупом профиля, где секреты берутся
+      # только из его .env. Ключ лежит в local/hermes-agent/data/.env
+      # админка (модели, MCP, skills, профили) как s6-сервис в этом же контейнере.
+      # держим на loopback: на внешнем адресе дашборд требует auth-провайдера
+      # и иначе уходит в рестарт-цикл. доступ — через docker exec или ssh-туннель
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_HOST=127.0.0.1
+      - HERMES_DASHBOARD_PORT=9119
+    volumes:
+      - ${HOST_DIR}/local/hermes-agent/data:/opt/data:rw
+    ports:
+      - 127.0.0.1:8642:8642
+    restart: unless-stopped
+
+  hermes-ui:
+    image: boba:${BOBA_TAG}
+    hostname: hermes-ui
+    container_name: hermes-ui
+    depends_on:
+      - hermes
+    entrypoint: ["python3", "-m", "boba.hermes.main"]
+    environment:
+      - BOBA_CONFIG_PATH=/app/local/config.toml
+      - CHAINLIT_APP_ROOT=/app/local
+    volumes:
+      - ${HOST_DIR}/local/hermes/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/local/hermes/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/local/hermes/public:/app/local/public:ro
+      # HERMES_HOME агента: профиль пользователя заводится созданием каталога
+      # profiles/<профиль> — см. [hermes].data_dir в config.toml
+      - ${HOST_DIR}/local/hermes-agent/data:/opt/hermes-data:rw
+      - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
+      - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
+    ports:
+      - 127.0.0.1:8504:8501
+    restart: unless-stopped
+
   cli-agent:
     image: boba:${BOBA_TAG}
     hostname: cli-agent
