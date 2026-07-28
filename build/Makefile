@@ -4,6 +4,16 @@ ARTIFACTS     	?= $(BASE_DIR)/artifacts
 BUILD_CONTEXT 	?= $(SRC_DIR)
 TEST_DIR		?= $(BASE_DIR)/test
 
+# конфиг и keytab, с которыми гоняются pytest-тесты пакетов (см. цель pytest)
+PYTEST_CONFIG	?= $(BASE_DIR)/local/hermes/config.toml
+PYTEST_KEYTAB	?= $(BASE_DIR)/local/keytab/boba-svc.keytab
+PYTEST_KRB5CONF	?= $(BASE_DIR)/local/keytab/krb5.conf
+# сеть, в которой резолвится postgres и доступен KDC
+PYTEST_NETWORK	?= docker
+# что гоняем; можно сузить: make pytest PYTEST_TARGET=packages/agents/boba-hermes
+PYTEST_TARGET	?= packages/agents/boba-hermes
+PYTEST_ARGS		?= -q
+
 
 .DEFAULT_GOAL := help
 
@@ -74,6 +84,7 @@ help:
 	@echo "  make fastembed  скачать embedding-веса в artifacts/fastembed (нужны base+wheels+инет; ДО build)"
 	@echo "  make build      собрать runtime $(IMAGE) (+ boba:latest), offline из wheels"
 	@echo "  make test       проверить образ boba:latest: python, uv, пакеты, OCR, инструменты"
+	@echo "  make pytest     прогнать тесты пакетов в сети $(PYTEST_NETWORK) (postgres по kerberos)"
 	@echo "  make dist       собрать wheel'ы всех пакетов на хосте в build/dist (без Docker)"
 	@echo "  make print-tag  показать тег, который будет присвоен образу"
 	@echo ""
@@ -92,6 +103,10 @@ debug:
 	$(info ARTIFACTS      = $(ARTIFACTS))
 	$(info BUILD_CONTEXT  = $(BUILD_CONTEXT))
 	$(info TEST_DIR       = $(TEST_DIR))
+	$(info PYTEST_TARGET  = $(PYTEST_TARGET))
+	$(info PYTEST_NETWORK = $(PYTEST_NETWORK))
+	$(info PYTEST_CONFIG  = $(PYTEST_CONFIG))
+	$(info PYTEST_KEYTAB  = $(PYTEST_KEYTAB))
 	$(info BOBA_TAG       = $(BOBA_TAG))
 	$(info BOBA_SCM_VERSION = $(BOBA_SCM_VERSION_SHOW))
 	$(info IMAGE          = $(IMAGE))
@@ -229,6 +244,26 @@ test:
 
 
 # Удалить скачанные источники (tessdata + бинарь uv). wheels/fastembed НЕ трогаем.
+# Тесты пакетов гоняются внутри сети docker: postgres пускает только оттуда
+# (pg_hba: gss для доменных учёток), а с хоста имя postgres-17 не резолвится.
+# Учётка boba-svc берётся из keytab — kinit не нужен, KRB5_CLIENT_KTNAME
+# заставляет GSSAPI получить и обновлять тикет самому.
+.PHONY: pytest
+pytest:
+	docker run --rm --network $(PYTEST_NETWORK)                                 \
+		-e BOBA_CONFIG_PATH=/app/local/config.toml                              \
+		-e KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab                              \
+		-e KRB5CCNAME=FILE:/tmp/krb5cc                                          \
+		-e PGGSSENCMODE=prefer                                                  \
+		-v $(PYTEST_CONFIG):/app/local/config.toml:ro                           \
+		-v $(PYTEST_KEYTAB):/etc/boba-svc.keytab:ro                             \
+		-v $(PYTEST_KRB5CONF):/etc/krb5.conf:ro                                 \
+		-v $(SRC_DIR):$(SRC_DIR)                                                \
+		-w $(SRC_DIR)                                                           \
+		--entrypoint $(SRC_DIR)/.venv/bin/python                                \
+		boba:latest -m pytest $(PYTEST_TARGET) $(PYTEST_ARGS)
+
+
 .PHONY: clean
 clean:
 	rm -rf $(ARTIFACTS)/tessdata $(ARTIFACTS)/bin/uv

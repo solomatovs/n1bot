@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-import psycopg
 import pytest
 from chainlit.step import StepDict
 from chainlit.user import PersistedUser
@@ -22,8 +21,10 @@ from boba.hermes.chat.data.models import Codec
 from boba.hermes.chat.data.storage import LocalStorageClient
 from boba.hermes.infra.config import AppConfig
 
-# отдельная БД под тесты: реальный сервер из конфига, но не боевая база
-TEST_DB = "boba_chainlit_test"
+# отдельная схема под тесты: та же база, что в конфиге, но не боевая схема.
+# базу не заводим — сервисной учётке для этого нужен CREATEDB, а владельцу
+# базы достаточно прав на CREATE SCHEMA
+TEST_SCHEMA = "chainlit_test"
 # идентификатор аутентифицированного пользователя chainlit-контекста
 AUTH_USER = "test-user"
 
@@ -59,32 +60,20 @@ def app_config() -> AppConfig:
 
 
 @pytest.fixture(scope="session")
-def pg_kwargs(app_config: AppConfig) -> dict:
-    """psycopg-параметры коннекта из конфига с подменённым dbname на тестовый."""
-    kwargs = app_config.data_layer.postgres.conn_settings(
-        {"search_path": app_config.data_layer.db_schema}
-    )
-    kwargs["dbname"] = TEST_DB
-    return kwargs
+def test_schema() -> str:
+    """Схема, в которой живут тестовые данные."""
+    return TEST_SCHEMA
 
 
 @pytest.fixture(scope="session")
-def test_database(app_config: AppConfig) -> str:
-    """Создаёт тестовую БД на сервере из конфига, если её ещё нет."""
-    # боевой dbname служебный
-    maintenance = app_config.data_layer.postgres.conn_settings()
-    with psycopg.connect(**maintenance, connect_timeout=5) as conn:
-        exists = conn.execute(
-            "select 1 from pg_database where datname = %s", (TEST_DB,)
-        ).fetchone()
-        if not exists:
-            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(TEST_DB)))
-    return TEST_DB
+def pg_kwargs(app_config: AppConfig) -> dict:
+    """psycopg-параметры коннекта из конфига с тестовой схемой в search_path."""
+    return app_config.data_layer.postgres.conn_settings({"search_path": TEST_SCHEMA})
 
 
 @pytest.fixture
 async def pool(
-    app_config: AppConfig, pg_kwargs: dict, test_database: str
+    app_config: AppConfig, pg_kwargs: dict
 ) -> AsyncIterator[AsyncConnectionPool]:
     """
     Пул на тестовую БД; конструируется как прод-провайдер (kwargs + pool_settings)
@@ -120,7 +109,7 @@ async def layer(
     app_config: AppConfig, pool: AsyncConnectionPool, storage: LocalStorageClient
 ) -> PostgresDataLayer:
     """Слой со свежей схемой: дропаем схему и заново гоняем setup() на каждый тест."""
-    schema = app_config.data_layer.db_schema
+    schema = TEST_SCHEMA
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))

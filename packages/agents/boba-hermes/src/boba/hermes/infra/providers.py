@@ -7,36 +7,26 @@ from typing import Annotated
 
 import httpx
 from httpx import AsyncClient
-from langchain.agents import create_agent
-from langchain.agents.middleware import ModelRequest, wrap_model_call
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.graph.state import CompiledStateGraph
-from psycopg import AsyncConnection, sql
-from psycopg.errors import InsufficientPrivilege
-from psycopg_pool import AsyncConnectionPool, PoolTimeout
-from pydantic import SecretStr
+from psycopg import AsyncConnection
+from psycopg_pool import AsyncConnectionPool
 
 from boba.agent.tool_config import (
     bind,
     build_app_config,
 )
+from boba.hermes.agent.api import HermesApi
 from boba.hermes.agent.dump import DumpingTransport
-from boba.hermes.agent.profile import HermesProfileProvisioner
-from boba.hermes.agent.tools import get_weather
-from boba.hermes.chat.data import PostgresDataLayer
+from boba.hermes.chat.data import (
+    HermesDataLayer,
+    HermesProfileRepository,
+    PostgresDataLayer,
+)
 from boba.hermes.chat.data.storage import LocalStorageClient
-from boba.hermes.errors import InternalServiceError
 from boba.hermes.infra.config import (
-    AgentProfile,
     AppConfig,
-    CheckpointerConfig,
     DataLayerConfig,
     HermesConfig,
     LocalStorageConfig,
-    OpenAiConfig,
     PostgresConfig,
 )
 from boba.hermes.infra.di import Depends
@@ -45,12 +35,6 @@ from boba.hermes.infra.di import Depends
 def get_app_config(config_path: Path) -> AppConfig:
     """Конфиг приложения"""
     return bind(build_app_config(config_path=config_path), path="app", model=AppConfig)
-
-
-def get_checkpointer_config(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> CheckpointerConfig:
-    return app_config.checkpointer
 
 
 def get_data_layer_config(
@@ -78,27 +62,53 @@ def get_hermes_config(
     return app_config.hermes
 
 
-def hermes_profile_provisioner(
+async def data_layer_pool(
+    cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
+) -> AsyncIterator[AsyncConnectionPool]:
+    """Общий пул postgres: и data layer, и связка профилей ходят в одну базу."""
+    async with postgres_pool(cfg.postgres, cfg.db_schema) as pool:
+        yield pool
+
+
+def hermes_profile_repository(
+    pool: Annotated[AsyncConnectionPool, Depends(data_layer_pool)],
+    cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
+) -> HermesProfileRepository:
+    """Связка пользователя chainlit с профилем hermes."""
+    return HermesProfileRepository(pool, schema=cfg.db_schema)
+
+
+async def hermes_http_client(
+    c: Annotated[AppConfig, Depends(get_app_config)],
+) -> AsyncIterator[AsyncClient]:
+    """Соединение с api_server: один пул на приложение.
+
+    При hermes.dump = true запросы и ответы дополнительно пишутся на диск —
+    так видно, что именно ушло в api_server и что он ответил.
+    """
+    transport = (
+        _dumping_transport(c)
+        if c.hermes.dump
+        else httpx.AsyncHTTPTransport(**_transport_options(c.hermes))
+    )
+    client = AsyncClient(timeout=_httpx_timeout(c.hermes), transport=transport)
+
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+def hermes_api(
+    client: Annotated[AsyncClient, Depends(hermes_http_client)],
     cfg: Annotated[HermesConfig, Depends(get_hermes_config)],
-) -> HermesProfileProvisioner:
-    """Заводит профиль hermes под вошедшего пользователя."""
-    return HermesProfileProvisioner(cfg)
+) -> HermesApi:
+    """Фабрика клиентов api_server по профилям."""
+    return HermesApi(client, cfg)
 
 
-def get_agent_profile(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> AgentProfile:
-    return app_config.agent
-
-
-def get_openai_config(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> OpenAiConfig:
-    return app_config.agent.openai
-
-
-def _openai_transport_options(c: OpenAiConfig) -> dict:
-    """Общие httpx-параметры транспорта из OpenAiConfig."""
+def _transport_options(c: HermesConfig) -> dict:
+    """httpx-параметры транспорта api_server."""
     limits = httpx.Limits(
         max_connections=c.max_connections,
         max_keepalive_connections=c.max_keepalive_connections,
@@ -142,8 +152,8 @@ def _openai_transport_options(c: OpenAiConfig) -> dict:
     }
 
 
-def httpx_timeout(c: OpenAiConfig) -> httpx.Timeout:
-    """AsyncOpenAI поверх готового транспорта; таймауты из OpenAiConfig."""
+def _httpx_timeout(c: HermesConfig) -> httpx.Timeout:
+    """Таймауты api_server; ход агента идёт долгим SSE-стримом."""
     return httpx.Timeout(
         connect=c.connect_timeout,
         read=c.read_timeout,
@@ -152,16 +162,8 @@ def httpx_timeout(c: OpenAiConfig) -> httpx.Timeout:
     )
 
 
-def httpx_client(c: Annotated[AppConfig, Depends(get_app_config)]):
-    return AsyncClient(
-        timeout=httpx_timeout(c.agent.openai),
-        transport=httpx.AsyncHTTPTransport(**_openai_transport_options(c.agent.openai)),
-    )
-
-
-async def httpx_debug_client(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-) -> AsyncIterator[AsyncClient]:
+def _dumping_transport(c: AppConfig) -> DumpingTransport:
+    """Транспорт, пишущий запрос и ответ в файл на пользователя и сообщение."""
     from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
 
     def chainlit_filename(request: httpx.Request) -> str:
@@ -187,21 +189,11 @@ async def httpx_debug_client(
 
         return res
 
-    transport = DumpingTransport(
+    return DumpingTransport(
         dump_dir=Path(Path(c.chainlit.root) / "dump"),
         dump_file=chainlit_filename,
-        **_openai_transport_options(c.agent.openai),
+        **_transport_options(c.hermes),
     )
-
-    client = AsyncClient(
-        timeout=httpx_timeout(c.agent.openai),
-        transport=transport,
-    )
-
-    try:
-        yield client
-    finally:
-        pass
 
 
 @asynccontextmanager
@@ -222,109 +214,22 @@ async def postgres_pool(
 
 
 async def chainlit_data_layer(
+    pool: Annotated[AsyncConnectionPool, Depends(data_layer_pool)],
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     storage: Annotated[LocalStorageClient, Depends(storage_provider)],
-) -> AsyncIterator[PostgresDataLayer]:
-    """PostgresDataLayer на своём пуле; setup() создаёт схему и таблицы."""
-    async with postgres_pool(cfg.postgres, cfg.db_schema) as pool:
-        layer = PostgresDataLayer(pool, schema=cfg.db_schema, storage=storage)
-        await layer.setup()
-        yield layer
+) -> PostgresDataLayer:
+    """PostgresDataLayer на общем пуле; setup() создаёт схему и таблицы."""
+    layer = PostgresDataLayer(pool, schema=cfg.db_schema, storage=storage)
+    await layer.setup()
+
+    return layer
 
 
-async def langchain_checkpoint_saver(
-    cp: Annotated[CheckpointerConfig, Depends(get_checkpointer_config)],
-) -> AsyncIterator[BaseCheckpointSaver]:
-    """
-    AsyncPostgresSaver на своём пуле (search_path=схема)
-    """
-    async with postgres_pool(cp.postgres, cp.db_schema) as pool:
-        try:
-            async with pool.connection() as conn:
-                try:
-                    await conn.execute(
-                        sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-                            sql.Identifier(cp.db_schema)
-                        )
-                    )
-                except InsufficientPrivilege:
-                    await conn.commit()
-        except PoolTimeout as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"Failed to get postgres connection for checkpointer: {e!s}"
-                ),
-                user_detail="Failed to connect to the internal postgres",
-            ) from e
+async def hermes_data_layer(
+    storage: Annotated[PostgresDataLayer, Depends(chainlit_data_layer)],
+    profiles: Annotated[HermesProfileRepository, Depends(hermes_profile_repository)],
+    api: Annotated[HermesApi, Depends(hermes_api)],
+) -> HermesDataLayer:
+    """Data layer chainlit: история из hermes, остальное из postgres."""
+    return HermesDataLayer(storage=storage, profiles=profiles, api=api)
 
-        saver = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
-        await saver.setup()
-        yield saver
-
-
-@wrap_model_call
-async def history_view(request: ModelRequest, handler):
-    """View-слой: проекция полной истории в то, что видит LLM (state не меняется).
-
-    Async: агент запускается через astream()/ainvoke(), поэтому langchain зовёт
-    awrap_model_call, и handler здесь — awaitable.
-    """
-    # полная история находится в state
-    full = request.state["messages"]
-    # проекция видимости истории llm на каждой итерации
-    view = build_llm_view(full)
-    return await handler(request.override(messages=view))
-
-
-def build_llm_view(msgs: list) -> list:
-    """
-    Представление над историей чата для llm реквеста
-
-    Старые сообщения отдает только как вопросы/ответы без tool_call/tool_result
-    Текущая итерация отдается полностью
-    """
-    start = _index_of_last_user_turn(msgs)
-    head, current = msgs[:start], msgs[start:]
-
-    pruned_head = [
-        m
-        for m in head
-        if not isinstance(m, ToolMessage)
-        and not (isinstance(m, AIMessage) and m.tool_calls)
-    ][-30:]
-    return pruned_head + current
-
-
-def _index_of_last_user_turn(msgs: list) -> int:
-    """Индекс начала последней итерации = позиция последнего HumanMessage."""
-    for i in range(len(msgs) - 1, -1, -1):
-        if isinstance(msgs[i], HumanMessage):
-            return i
-
-    return 0
-
-
-def langchain_agent(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-    client: Annotated[AsyncClient, Depends(httpx_debug_client)],
-    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
-) -> CompiledStateGraph:
-    chat = ChatOpenAI(
-        http_async_client=client,
-        model=c.agent.model,
-        base_url=c.agent.openai.base_url,
-        api_key=SecretStr(c.agent.openai.api_key),
-        temperature=c.agent.temperature,
-    )
-
-    system_prompt = c.agent.default_system_prompt
-
-    agent = create_agent(
-        model=chat,
-        tools=[get_weather],
-        system_prompt=system_prompt,
-        checkpointer=saver,
-        middleware=[history_view],
-    )
-
-    return agent

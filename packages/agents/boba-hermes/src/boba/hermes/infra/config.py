@@ -51,157 +51,6 @@ LOGGING_CONFIG: dict[str, Any] = {
 }
 
 
-class OpenAiConfig(BaseModel):
-    """Транспорт openai-совместимого провайдера: endpoint + httpx-тюнинг."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    base_url: Annotated[
-        str,
-        Field(description="Endpoint openai-совместимого API."),
-    ]
-
-    api_key: Annotated[
-        str,
-        Field(description="Ключ API провайдера."),
-    ]
-
-    ssl_verify: bool = Field(
-        default=True,
-        description="Проверять TLS-сертификат сервера.",
-    )
-
-    connect_timeout: float = Field(
-        default=5,
-        description="установка TCP-соединения с хостом (включая TLS handshake)",
-    )
-
-    read_timeout: float = Field(
-        default=100,
-        description=(
-            "ожидание данных от сервера; при stream=True — пауза между чанками"
-        ),
-    )
-
-    write_timeout: float = Field(
-        default=100,
-        description="отправка тела запроса на сервер",
-    )
-
-    pool_timeout: float = Field(
-        default=5,
-        description=("ожидание свободного соединения из пула httpx (когда все заняты)"),
-    )
-
-    max_connections: int = Field(
-        default=50,
-        description="",
-    )
-
-    max_keepalive_connections: int = Field(
-        default=10,
-        description="",
-    )
-
-    keepalive_expiry: float = Field(
-        default=5,
-        description="",
-    )
-
-    retries: int = Field(
-        default=3,
-        description="Число повторов установления соединения в httpx-транспорте.",
-    )
-
-    tcp_keepalive: bool = Field(
-        default=True,
-        description=(
-            "TCP keepalive (SO_KEEPALIVE): защита от молчаливого разрыва "
-            "простаивающего соединения файрволом (обычно режут после 5-10 минут "
-            "тишины)."
-        ),
-    )
-
-    tcp_keepidle: int = Field(
-        default=60,
-        description=(
-            "TCP_KEEPIDLE: секунд простоя, после которых ядро шлёт "
-            "keepalive-пробу. Без явного значения берётся sysctl "
-            "tcp_keepalive_time — обычно 7200 (2 часа простоя!)."
-        ),
-    )
-
-    tcp_keepintvl: int = Field(
-        default=10,
-        description="TCP_KEEPINTVL: интервал между повторными пробами (сек).",
-    )
-
-    tcp_keepcnt: int = Field(
-        default=10,
-        description=(
-            "TCP_KEEPCNT: число безответных проб, после которых соединение "
-            "считается мёртвым; следующая работа с сокетом даст "
-            "ECONNABORTED/ETIMEDOUT."
-        ),
-    )
-
-
-class AgentProfile(BaseModel):
-    """Профиль агента (копия agent.* из конфига): LLM-провайдер + модель + workspace."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    openai: Annotated[
-        OpenAiConfig,
-        Field(
-            description=(
-                "Транспорт openai-провайдера; в конфиге подключается ссылкой "
-                "${openai.<name>}."
-            ),
-        ),
-    ]
-
-    model: Annotated[
-        str,
-        Field(description="Имя LLM-модели у выбранного провайдера."),
-    ]
-
-    default_system_prompt: str = Field(
-        default="",
-        description="Системный промпт по умолчанию",
-    )
-
-    temperature: float = Field(
-        default=0,
-        description="",
-    )
-
-    max_tokens: int = Field(
-        default=2500,
-        description="",
-    )
-
-    top_p: float = Field(
-        default=1,
-        description="",
-    )
-
-    frequency_penalty: float = Field(
-        default=0,
-        description="",
-    )
-
-    presence_penalty: float = Field(
-        default=0,
-        description="",
-    )
-
-    stop: Annotated[
-        list[str],
-        Field(default_factory=lambda: ["```"], description=""),
-    ]
-
-
 class ChainlitExtendConfig(BaseModel):
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8501)
@@ -471,30 +320,6 @@ class PostgresConfig(BaseModel):
         return res
 
 
-class CheckpointerConfig(BaseModel):
-    """Конфиг langgraph-checkpointer: postgres-подключение + схема БД."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    postgres: Annotated[
-        PostgresConfig,
-        Field(
-            description=(
-                "Подключение и пул; в конфиге подключается ссылкой ${postgres}."
-            ),
-        ),
-    ]
-
-    db_schema: str = Field(
-        default="public",
-        alias="schema",
-        description=(
-            "Схема для таблиц checkpointer. Задаётся в search_path соединения, "
-            "т.к. AsyncPostgresSaver пишет имена таблиц без схемы."
-        ),
-    )
-
-
 class DataLayerConfig(BaseModel):
     """Конфиг chainlit data layer: postgres-подключение + схема БД."""
 
@@ -537,23 +362,70 @@ class HermesConfig(BaseModel):
     write_timeout: float = Field(default=10.0)
     pool_timeout: float = Field(default=5.0)
 
-    data_dir: str = Field(
-        description=(
-            "HERMES_HOME агента, смонтированный в этот контейнер. Профиль "
-            "пользователя заводится созданием каталога profiles/<профиль>: "
-            "gateway пересчитывает список обслуживаемых профилей на каждом "
-            "запросе, поэтому рестарт не нужен."
-        ),
-    )
     default_profile: str = Field(
         default="default",
-        description="Профиль-донор: из него копируются config.yaml и .env.",
-    )
-    profile_seed_files: list[str] = Field(
-        default=["config.yaml", ".env"],
         description=(
-            "Что копируется в новый профиль из донора. Без .env у профиля нет "
-            "ключей провайдера и первый же запрос агента падает."
+            "Профиль-донор: из него новый профиль наследует config.yaml и .env."
+        ),
+    )
+
+    dump: bool = Field(
+        default=False,
+        description=(
+            "Писать запросы и ответы api_server в <chainlit.root>/dump "
+            "(файл на пользователя и сообщение)."
+        ),
+    )
+
+    max_connections: int = Field(
+        default=50,
+        description="Предел одновременных соединений с api_server.",
+    )
+
+    max_keepalive_connections: int = Field(
+        default=10,
+        description="Сколько соединений держать открытыми между запросами.",
+    )
+
+    keepalive_expiry: float = Field(
+        default=5,
+        description="Сколько живёт простаивающее соединение (сек).",
+    )
+
+    retries: int = Field(
+        default=3,
+        description="Число повторов установления соединения в httpx-транспорте.",
+    )
+
+    tcp_keepalive: bool = Field(
+        default=True,
+        description=(
+            "TCP keepalive (SO_KEEPALIVE): защита от молчаливого разрыва "
+            "простаивающего соединения файрволом (обычно режут после 5-10 минут "
+            "тишины). Ход агента идёт долгим SSE-стримом, где пауз хватает."
+        ),
+    )
+
+    tcp_keepidle: int = Field(
+        default=60,
+        description=(
+            "TCP_KEEPIDLE: секунд простоя, после которых ядро шлёт "
+            "keepalive-пробу. Без явного значения берётся sysctl "
+            "tcp_keepalive_time — обычно 7200 (2 часа простоя!)."
+        ),
+    )
+
+    tcp_keepintvl: int = Field(
+        default=10,
+        description="TCP_KEEPINTVL: интервал между повторными пробами (сек).",
+    )
+
+    tcp_keepcnt: int = Field(
+        default=10,
+        description=(
+            "TCP_KEEPCNT: число безответных проб, после которых соединение "
+            "считается мёртвым; следующая работа с сокетом даст "
+            "ECONNABORTED/ETIMEDOUT."
         ),
     )
 
@@ -592,15 +464,6 @@ class AppConfig(BaseModel):
         ),
     ]
 
-    agent: Annotated[
-        AgentProfile,
-        Field(
-            description=(
-                "Профиль агента; в конфиге подключается ссылкой ${agent.<name>}."
-            ),
-        ),
-    ]
-
     auth: Annotated[
         list[AuthConfig],
         Field(
@@ -615,11 +478,6 @@ class AppConfig(BaseModel):
             default=LOGGING_CONFIG,
             description="Конфигурация логера",
         ),
-    ]
-
-    checkpointer: Annotated[
-        CheckpointerConfig,
-        Field(description="Сервис langgraph-checkpointer: подключение + схема."),
     ]
 
     data_layer: Annotated[

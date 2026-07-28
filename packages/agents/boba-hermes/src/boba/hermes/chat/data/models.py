@@ -1,6 +1,7 @@
 """
 Dataclass-модели chainlit-данных:
     users
+    hermes_profiles
     threads
     steps
     elements
@@ -36,6 +37,7 @@ __all__ = [
     "Codec",
     "Element",
     "Feedback",
+    "HermesProfile",
     "Row",
     "Step",
     "Thread",
@@ -173,6 +175,39 @@ class User(Row):
                 )
                 """
             ).format(table=cls.get_table_name(schema)),
+        )
+
+
+@dataclass(slots=True)
+class HermesProfile(Row):
+    """Связка пользователя chainlit с профилем hermes.
+
+    Имя профиля не выводится из логина: логин может смениться, содержать
+    кириллицу или не пройти по длине. Здесь оно фиксируется один раз, и
+    обратное направление (профиль -> пользователь) читается тем же join'ом.
+    """
+
+    user_id: UUID
+    profile: str
+    created_at: datetime = field(default_factory=Codec.now)
+
+    @staticmethod
+    def get_table_name(schema: str) -> sql.Identifier:
+        return sql.Identifier(schema, "hermes_profiles")
+
+    @classmethod
+    def ddl(cls, schema: str) -> tuple[sql.Composed, ...]:
+        table = cls.get_table_name(schema)
+        return (
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {table} (
+                    user_id uuid PRIMARY KEY,
+                    profile text NOT NULL UNIQUE,
+                    created_at timestamptz NOT NULL
+                )
+                """
+            ).format(table=table),
         )
 
 
