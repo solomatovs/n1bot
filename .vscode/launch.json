@@ -30,7 +30,13 @@
             "env": {
                 "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/local/chainlit2-debug.toml",
                 "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/local",
-                "KRB5_CONFIG": "${workspaceFolder}/local/krb5.conf",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/local/keytab/krb5.conf",
+                // клиентский keytab сервисной учётки: libkrb5 сам берёт из него TGT
+                // для gssapi-подключения к postgres (kinit не нужен)
+                "KRB5_CLIENT_KTNAME": "FILE:${workspaceFolder}/build/local/keytab/boba-svc.keytab",
+                // отдельный ccache: иначе krb5 возьмёт тикет живого пользователя
+                // из KEYRING и подключится к postgres не под boba-svc
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_boba_chainlit2",
             }
         },
         {
@@ -49,7 +55,9 @@
             "env": {
                 "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/local/chainlit2-debug.toml",
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/local",
-                "KRB5_CONFIG": "${workspaceFolder}/local/krb5.conf"
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/local/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "FILE:${workspaceFolder}/build/local/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_boba_chainlit2"
             }
         },
         {
