@@ -26,7 +26,11 @@ class HermesTurn:
 
     def __init__(self, client: HermesApiClient) -> None:
         self._client = client
-        self._answer = cl.Message(content="")
+        # сообщение ответа заводится не здесь, а на первой его части: время
+        # ему проставляет send(), и по этому времени chainlit раскладывает
+        # содержимое хода. отправленное заранее пустое сообщение встало бы
+        # выше шагов инструментов, хотя инструменты отработали раньше ответа
+        self._answer: cl.Message | None = None
         # вызовов одного инструмента за ход бывает несколько; закрываем их
         # в порядке открытия, других связок tool.started с tool.completed
         # api_server не даёт
@@ -41,18 +45,20 @@ class HermesTurn:
         async for event in self._client.chat_stream(session_id, message):
             await self._apply(event)
 
-        await self._answer.send()
+        if self._answer is not None:
+            await self._answer.update()
 
     async def _apply(self, event: HermesEvent) -> None:
         """Событие потока в изменение того, что видит пользователь."""
         if isinstance(event, HermesAssistantDelta):
-            await self._answer.stream_token(event.delta)
+            answer = await self._reply()
+            await answer.stream_token(event.delta)
 
         elif isinstance(event, HermesToolEvent):
             await self._tool(event)
 
         elif isinstance(event, HermesAssistantCompleted):
-            self._completed(event)
+            await self._completed(event)
 
         elif isinstance(event, HermesErrorEvent):
             raise AgentError(
@@ -84,10 +90,24 @@ class HermesTurn:
         step.is_error = event.name == HermesEventName.TOOL_FAILED
         await step.update()
 
-    def _completed(self, event: HermesAssistantCompleted) -> None:
+    async def _completed(self, event: HermesAssistantCompleted) -> None:
         """Ответ целиком; дельт может не быть, если провайдер их не шлёт."""
-        if not self._answer.content:
-            self._answer.content = event.content
+        answer = await self._reply()
+        if not answer.content:
+            answer.content = event.content
+
+    async def _reply(self) -> cl.Message:
+        """Сообщение ответа, заведённое и отправленное при первой его части.
+
+        Отправить нужно сразу: время сообщению проставляет send(), а
+        stream_token шлёт на фронт то, что есть — с пустым createdAt ответ
+        оказывается выше уже показанных шагов инструментов.
+        """
+        if self._answer is None:
+            self._answer = cl.Message(content="")
+            await self._answer.send()
+
+        return self._answer
 
     @staticmethod
     def _tool_name(event: HermesToolEvent) -> str:

@@ -143,7 +143,7 @@ class HermesProfileRepository:
             cur = await conn.execute(
                 sql.SQL(
                     "insert into {table} ({columns}) values ({values}) "
-                    "ON conflict DO NOTHING RETURNING profile"
+                    "on conflict do nothing returning profile"
                 ).format(
                     table=HermesProfile.get_table_name(self._schema),
                     columns=HermesProfile.all_columns(),

@@ -158,7 +158,6 @@ class HermesRunCompleted(HermesEvent):
 @dataclass(slots=True)
 class HermesErrorEvent(HermesEvent):
     """Ход упал: текст ошибки от api_server."""
-
     message: str = ""
 
 
@@ -213,8 +212,8 @@ class HermesEventStream:
     комментарии протокола, они кадр не открывают и не закрывают.
     """
 
-    def __init__(self, codec: HermesEventCodec | None = None) -> None:
-        self._codec = codec or HermesEventCodec()
+    def __init__(self) -> None:
+        self._codec = HermesEventCodec()
 
     async def of(self, lines: AsyncIterator[str]) -> AsyncIterator[HermesEvent]:
         """События потока в порядке прихода."""
