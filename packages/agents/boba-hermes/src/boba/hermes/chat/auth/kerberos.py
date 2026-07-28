@@ -378,7 +378,7 @@ class KerberosDelegation:
             if ccache is None:
                 raise InternalServiceError(
                     internal_detail=f"no delegated ccache for {username}",
-                    user_detail="Делегирование недоступно для пользователя",
+                    user_detail="Delegation is not available for this user",
                 )
             return await asyncio.to_thread(self._init_token, ccache, target_spn)
 
@@ -921,7 +921,7 @@ class KerberosAuth:
         if placeholder not in principal_format:
             raise InternalServiceError(
                 internal_detail=(
-                    f"principal_format {principal_format!r} не содержит {placeholder}"
+                    f"principal_format {principal_format!r} has no {placeholder}"
                 ),
                 user_detail=None,
             )
@@ -932,7 +932,7 @@ class KerberosAuth:
         if not match:
             raise InternalServiceError(
                 internal_detail=(
-                    f"principal {principal!r} не соответствует формату "
+                    f"principal {principal!r} does not match "
                     f"{principal_format!r}"
                 ),
                 user_detail=None,

@@ -1,6 +1,6 @@
 import logging
-from collections.abc import AsyncIterator
-from typing import Annotated, Any, ClassVar, cast
+from typing import Annotated, ClassVar
+from uuid import UUID
 
 import chainlit as cl
 from chainlit.data.base import BaseDataLayer
@@ -8,18 +8,16 @@ from chainlit.session import HTTPSession, WebsocketSession
 from chainlit.types import ThreadDict
 from chainlit.user_session import UserSession
 from fastapi import Request, Response
-from langchain_core.messages import BaseMessage, HumanMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.graph.state import CompiledStateGraph
 
-from boba.hermes.agent.profile import HermesProfileProvisioner
+from boba.hermes.agent.api import HermesApi
+from boba.hermes.chat.data import HermesProfileRepository
 from boba.hermes.chat.handler import chainlit_error_ctx_handler
-from boba.hermes.chat.tracer import BobaLangchainTracer
+from boba.hermes.chat.turn import HermesTurn
 from boba.hermes.infra.di import Depends, di_inject
 from boba.hermes.infra.providers import (
-    chainlit_data_layer,
-    hermes_profile_provisioner,
-    langchain_agent,
+    hermes_api,
+    hermes_data_layer,
+    hermes_profile_repository,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +35,15 @@ class ChainlitAdapter:
         return session.thread_id
 
     @staticmethod
+    def get_user_id(session: UserSession) -> UUID:
+        "uuid пользователя из data layer; без него профиль не к чему привязать"
+        user = ChainlitAdapter.get_chat_user(session)
+        if not isinstance(user, cl.PersistedUser):
+            raise RuntimeError(f"user in session is not persisted: {type(user)}")
+
+        return UUID(user.id)
+
+    @staticmethod
     def get_chat_user(session: UserSession):
         "возвращает объект описывающий пользователя чата"
         if user := session.get("user"):
@@ -47,45 +54,43 @@ class ChainlitAdapter:
 
         raise RuntimeError("user does't exists in session")
 
+    @staticmethod
+    async def get_profile(
+        session: UserSession, profiles: HermesProfileRepository
+    ) -> str:
+        """профиль hermes текущего пользователя; запросы идут на /p/<профиль>/
+
+        имя закрепляется за пользователем при первом входе и дальше не
+        меняется, поэтому его достаточно взять один раз за сессию
+        """
+        if profile := session.get(ChainlitAdapter.PROFILE_KEY):
+            return str(profile)
+
+        user = ChainlitAdapter.get_chat_user(session)
+        profile = await profiles.ensure(
+            ChainlitAdapter.get_user_id(session), user.identifier
+        )
+        session.set(ChainlitAdapter.PROFILE_KEY, profile)
+
+        return profile
+
 
 @cl.on_message
 @chainlit_error_ctx_handler
 @di_inject
 async def on_message(
     msg: cl.Message,
-    graph: Annotated[
-        CompiledStateGraph,
-        Depends(langchain_agent, scope="session"),
+    api: Annotated[HermesApi, Depends(hermes_api)],
+    profiles: Annotated[
+        HermesProfileRepository,
+        Depends(hermes_profile_repository, scope="session"),
     ],
 ):
-    # id одного диалога
+    # id одного диалога; он же id сессии hermes, в которой идёт ход
     thread_id = ChainlitAdapter.get_chat_id(cl.context.session)
+    profile = await ChainlitAdapter.get_profile(cl.user_session, profiles)
 
-    cb = BobaLangchainTracer()
-    run_config = RunnableConfig(
-        callbacks=[cb],
-        # langchain собирает историю из общего массива сообщений пользователей
-        # через ключ thread_id, поэтому передаем сюда
-        # сессионный ключ chainlit
-        configurable={"thread_id": thread_id},
-    )
-    final_answer = cl.Message(content="")
-
-    # astream(stream_mode="messages") отдаёт (message_chunk, metadata); типизация
-    # langgraph здесь широкая, фиксируем элемент явно
-    stream = cast(
-        "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
-        graph.astream(
-            {"messages": [HumanMessage(content=msg.content)]},
-            stream_mode="messages",
-            config=run_config,
-        ),
-    )
-    async for chunk, _metadata in stream:
-        if isinstance(chunk.content, str):
-            await final_answer.stream_token(chunk.content)
-
-    await final_answer.send()
+    await HermesTurn(api.of(profile)).run(thread_id, msg.content)
 
 
 @cl.on_chat_start
@@ -93,15 +98,12 @@ async def on_message(
 @di_inject
 async def on_chat_start(
     profiles: Annotated[
-        HermesProfileProvisioner,
-        Depends(hermes_profile_provisioner, scope="session"),
+        HermesProfileRepository,
+        Depends(hermes_profile_repository, scope="session"),
     ],
 ):
     user = ChainlitAdapter.get_chat_user(cl.user_session)
-    # профиль заводится при входе: у каждого пользователя свой state.db на
-    # стороне hermes, обращения идут на /p/<профиль>/
-    profile = await profiles.ensure(user.identifier)
-    cl.user_session.set(ChainlitAdapter.PROFILE_KEY, profile)
+    await ChainlitAdapter.get_profile(cl.user_session, profiles)
     await cl.Message(f"Hello {user}").send()
 
 
@@ -128,7 +130,7 @@ def on_chat_end():
 @cl.data_layer
 @di_inject
 def get_data_layer(
-    data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
+    data_layer: Annotated[BaseDataLayer, Depends(hermes_data_layer)],
 ) -> BaseDataLayer:
     return data_layer
 
@@ -138,25 +140,15 @@ def get_data_layer(
 @di_inject
 async def on_chat_resume(
     thread_dict: ThreadDict,
-    graph: Annotated[
-        CompiledStateGraph,
-        Depends(langchain_agent, scope="session"),
+    profiles: Annotated[
+        HermesProfileRepository,
+        Depends(hermes_profile_repository, scope="session"),
     ],
 ):
-    thread_id = ChainlitAdapter.get_chat_id(cl.context.session)
+    """Возобновление треда.
 
-    cb = BobaLangchainTracer()
-    run_config = RunnableConfig(
-        callbacks=[cb],
-        # langchain собирает историю из общего массива сообщений пользователей
-        # через ключ thread_id, поэтому передаем сюда
-        # сессионный ключ chainlit
-        configurable={"thread_id": thread_id},
-    )
-
-    # читаем langgraph состояние с историей сообщений
-    _snapshot = await graph.aget_state(run_config)
-    # print(f"{snapshot}")
-
-    async for _m in graph.aget_state_history(run_config):
-        pass
+    Историю chainlit уже показал: её отдал data layer из hermes. Здесь
+    нужен только профиль в сессии — под ним пойдёт следующий ход. Без
+    самого callback'а chainlit открывает старый тред только на чтение.
+    """
+    await ChainlitAdapter.get_profile(cl.user_session, profiles)

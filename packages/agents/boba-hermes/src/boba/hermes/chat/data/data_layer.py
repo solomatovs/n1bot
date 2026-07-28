@@ -41,6 +41,7 @@ from boba.hermes.chat.data.models import (
     Codec,
     Element,
     Feedback,
+    HermesProfile,
     Step,
     Thread,
     User,
@@ -56,7 +57,14 @@ class PostgresDataLayer(BaseDataLayer):
     """Хранилище chainlit (users/threads/steps/elements/feedbacks) на psycopg-пуле."""
 
     # модели, чьи таблицы создаёт setup() (DDL живёт в самой модели — Row.ddl)
-    _MODELS: ClassVar[tuple[type, ...]] = (User, Thread, Step, Element, Feedback)
+    _MODELS: ClassVar[tuple[type, ...]] = (
+        User,
+        HermesProfile,
+        Thread,
+        Step,
+        Element,
+        Feedback,
+    )
 
     def __init__(
         self,
@@ -820,6 +828,33 @@ class PostgresDataLayer(BaseDataLayer):
         Пул принадлежит DI и закрывается извне — его не трогаем; закрываем storage.
         """
         await self._storage.close()
+
+    async def user_id_by_thread(self, thread_id: str) -> str | None:
+        """Владелец треда; None, если тред ещё не заводили."""
+        return await self._user_id_by_thread(thread_id)
+
+    async def user_identifier(self, user_id: UUID) -> str | None:
+        """Логин пользователя по его id."""
+        query = sql.SQL("select identifier from {table} where id = %s").format(
+            table=User.get_table_name(self._schema)
+        )
+
+        try:
+            async with (
+                self._pool.connection() as conn,
+                conn.cursor(row_factory=tuple_row) as cur,
+            ):
+                await cur.execute(query, (user_id,))
+                row = await cur.fetchone()
+        except Exception as e:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"{type(self).__qualname__}.user_identifier failed with error: {e}"
+                ),
+                user_detail="Not able to get user identifier",
+            ) from e
+
+        return str(row[0]) if row else None
 
     async def _user_id_by_thread(self, thread_id: str) -> str | None:
         query = sql.SQL("select user_id from {table} where id = %s").format(

@@ -29,7 +29,7 @@ class LocalStorageClient(BaseStorageClient):
         path = (base_dir / object_key).resolve()
 
         if not path.is_relative_to(base_dir):
-            raise ValueError(f"object_key вне files_dir: {object_key!r}")
+            raise ValueError(f"object_key outside files_dir: {object_key!r}")
 
         return path
 
@@ -73,7 +73,7 @@ class LocalStorageClient(BaseStorageClient):
         except FileNotFoundError:
             return False
         except OSError as e:
-            logger.warning(f"LocalStorageClient: не удалось удалить {object_key}: {e}")
+            logger.warning(f"LocalStorageClient: failed to delete {object_key}: {e}")
             return False
         return True
 

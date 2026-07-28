@@ -7,6 +7,7 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      - CHAINLIT_COOKIE_SAMESITE=none
       - FASTEMBED_CACHE_DIR=/app/local
     volumes:
       - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
@@ -62,34 +63,63 @@ services:
       - 127.0.0.1:8503:8501
     restart: unless-stopped
 
-  # бэкенд для hermes-ui: gateway с платформой api_server.
-  # s6-сервис main-hermes в образе — no-op, поэтому команду задаём явно
+  # подготовка тома /opt/data: сид конфигов на первом запуске, миграция
+  # схемы при обновлении образа, синк навыков. разовый сервис, тот же
+  # пользователь, что и у остальных: владелец тома совпадает с uid/gid,
+  # с которыми собран образ (HERMES_UID/HERMES_GID в dmp-docker/*/Makefile)
+  hermes-init:
+    image: dmp/hermes:${HERMES_TAG:-2026.7.20}
+    container_name: hermes-init
+    user: hermes
+    entrypoint: ["/usr/local/bin/hermes-bootstrap"]
+    volumes:
+      - ${HOST_DIR}/local/hermes-agent/data:/opt/data:rw
+    restart: "no"
+
+  # бэкенд для hermes-ui: gateway (платформа api_server + cron + агент).
+  # init: true — PID 1 от docker реапит зомби от stdio-подпроцессов MCP,
+  # ради чего в образе раньше стоял s6
   hermes:
     image: dmp/hermes:${HERMES_TAG:-2026.7.20}
     hostname: hermes
     container_name: hermes
+    depends_on:
+      hermes-init:
+        condition: service_completed_successfully
+    user: hermes
+    init: true
     command: ["gateway", "run"]
     environment:
-      # под этим uid/gid пишется /opt/data, чтобы файлы оставались
-      # доступными на хосте
-      - HERMES_UID=1000
-      - HERMES_GID=984
       # профиль на пользователя: обращения идут на /p/<профиль>/v1/...,
       # у каждого профиля свой HERMES_HOME и свой state.db
       - GATEWAY_MULTIPLEX_PROFILES=1
       # API_SERVER_KEY/HOST/PORT сюда не выносим: при multiplex_profiles
       # gateway перечитывает конфиг под скоупом профиля, где секреты берутся
       # только из его .env. Ключ лежит в local/hermes-agent/data/.env
-      # админка (модели, MCP, skills, профили) как s6-сервис в этом же контейнере.
-      # держим на loopback: на внешнем адресе дашборд требует auth-провайдера
-      # и иначе уходит в рестарт-цикл. доступ — через docker exec или ssh-туннель
-      - HERMES_DASHBOARD=1
-      - HERMES_DASHBOARD_HOST=127.0.0.1
-      - HERMES_DASHBOARD_PORT=9119
     volumes:
       - ${HOST_DIR}/local/hermes-agent/data:/opt/data:rw
     ports:
       - 127.0.0.1:8642:8642
+    restart: unless-stopped
+
+  # админка (модели, MCP, skills, профили, сессии). гейтвею не нужна:
+  # chainlit ходит в api_server. держим на loopback — на внешнем адресе
+  # дашборд требует auth-провайдера и иначе падает закрыто.
+  # pid: service:hermes — дашборд управляет гейтвеем как процессом (PID из
+  # gateway_state.json, start/stop/restart), в своём namespace он бы его
+  # не увидел
+  hermes-dashboard:
+    image: dmp/hermes:${HERMES_TAG:-2026.7.20}
+    container_name: hermes-dashboard
+    depends_on:
+      hermes:
+        condition: service_started
+    user: hermes
+    init: true
+    pid: "service:hermes"
+    command: ["dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open"]
+    volumes:
+      - ${HOST_DIR}/local/hermes-agent/data:/opt/data:rw
     restart: unless-stopped
 
   hermes-ui:
@@ -102,14 +132,21 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      # доступ к postgres по kerberos под доменной учёткой boba-svc.
+      # KRB5_CLIENT_KTNAME заставляет GSSAPI самому получить и обновлять тикет,
+      # поэтому kinit в контейнере не нужен
+      - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
+      # krb5.conf в контуре указывает ccache в keyring, которого в контейнере
+      # нет — переводим кеш в файл
+      - KRB5CCNAME=FILE:/tmp/krb5cc
+      - PGGSSENCMODE=prefer
     volumes:
       - ${HOST_DIR}/local/hermes/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/hermes/.chainlit:/app/local/.chainlit:ro
       - ${HOST_DIR}/local/hermes/public:/app/local/public:ro
-      # HERMES_HOME агента: профиль пользователя заводится созданием каталога
-      # profiles/<профиль> — см. [hermes].data_dir в config.toml
-      - ${HOST_DIR}/local/hermes-agent/data:/opt/hermes-data:rw
       - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
+      # keytab доменной учётки boba-svc — только для подключения к postgres
+      - ${HOST_DIR}/local/keytab/boba-svc.keytab:/etc/boba-svc.keytab:ro
       - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
     ports:
       - 127.0.0.1:8504:8501
