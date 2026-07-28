@@ -101,7 +101,6 @@ class HermesApiClient(HermesHttp):
         client: AsyncClient,
         config: HermesConfig,
         profile: str,
-        events: HermesEventStream | None = None,
     ) -> None:
         super().__init__(
             client,
@@ -110,7 +109,7 @@ class HermesApiClient(HermesHttp):
             scope=f"profile {profile}",
         )
         self._profile = profile
-        self._events = events or HermesEventStream()
+        self._events = HermesEventStream()
 
     async def list_sessions(self, limit: int, offset: int) -> HermesSessionPage:
         """Страница сессий профиля."""

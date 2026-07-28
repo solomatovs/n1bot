@@ -16,6 +16,11 @@ PROFILE = "solomatovs"
 SESSION = "6f1c0e3c-0000-4000-8000-000000000001"
 
 
+# порядок создания объектов: chainlit раскладывает содержимое хода по
+# времени создания, поэтому проверяем именно его
+CREATED: list[str] = []
+
+
 class FakeMessage:
     """cl.Message без сокета: копит текст так же, как это делает chainlit."""
 
@@ -24,6 +29,7 @@ class FakeMessage:
     def __init__(self, content: str = "") -> None:
         self.content = content
         self.streamed = 0
+        self.updated = False
         FakeMessage.sent.append(self)
 
     async def stream_token(self, token: str) -> None:
@@ -31,7 +37,12 @@ class FakeMessage:
         self.streamed += 1
 
     async def send(self) -> None:
-        pass
+        # время сообщению проставляет именно send, по нему chainlit и
+        # раскладывает содержимое хода
+        CREATED.append("message")
+
+    async def update(self) -> None:
+        self.updated = True
 
 
 class FakeStep:
@@ -49,7 +60,7 @@ class FakeStep:
         FakeStep.created.append(self)
 
     async def send(self) -> None:
-        pass
+        CREATED.append(f"step:{self.name}")
 
     async def update(self) -> None:
         self.updated = True
@@ -68,6 +79,7 @@ def chainlit_context() -> None:
 def chainlit_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeMessage.sent = []
     FakeStep.created = []
+    CREATED.clear()
     monkeypatch.setattr(turn_module.cl, "Message", FakeMessage)
     monkeypatch.setattr(turn_module.cl, "Step", FakeStep)
 
@@ -133,6 +145,15 @@ async def test_turn_shows_tool_step(config: HermesConfig):
     assert step.input == "echo boba-hermes"
     assert step.updated is True
     assert step.is_error is False
+
+
+async def test_tool_steps_go_above_the_answer(config: HermesConfig):
+    await HermesTurn(client_for(config, TURN)).run(SESSION, "покажи")
+
+    # инструмент отработал до ответа, значит и показан должен быть выше:
+    # порядок на фронте определяет время из send(), поэтому сообщение
+    # ответа отправляется только с первой его частью, а не заранее
+    assert CREATED == ["step:terminal", "message"]
 
 
 async def test_failed_tool_marks_step(config: HermesConfig):

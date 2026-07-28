@@ -102,9 +102,7 @@ async def on_chat_start(
         Depends(hermes_profile_repository, scope="session"),
     ],
 ):
-    user = ChainlitAdapter.get_chat_user(cl.user_session)
     await ChainlitAdapter.get_profile(cl.user_session, profiles)
-    await cl.Message(f"Hello {user}").send()
 
 
 @cl.on_logout

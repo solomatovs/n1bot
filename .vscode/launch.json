@@ -53,6 +53,51 @@
             }
         },
         {
+            // chainlit запускается здесь, а gateway берётся из docker-compose:
+            // конфиг ходит в него на 127.0.0.1:8642 (проброшенный порт)
+            "name": "Hermes: agent",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.hermes.main",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "env": {
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/local/hermes-debug.toml",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/local",
+                // KRB5_CONFIG не задаём: контейнерный krb5.conf указывает на
+                // dc1.loshara.com, который с хоста не резолвится. системный
+                // /etc/krb5.conf ходит в KDC через loshara.com:443
+                // postgres пускает только по kerberos: GSSAPI сам берёт тикет
+                // из keytab доменной учётки, kinit руками не нужен
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/build/local/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_boba_hermes_debug",
+                "PGGSSENCMODE": "prefer"
+            }
+        },
+        {
+            "name": "Hermes: pytest current file",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "${file}",
+                "-v"
+            ],
+            "env": {
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/local/hermes-debug.toml",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/local",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/build/local/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_boba_hermes_debug",
+                "PGGSSENCMODE": "prefer"
+            }
+        },
+        {
             "name": "Agent CLI: agent",
             "type": "debugpy",
             "request": "launch",
