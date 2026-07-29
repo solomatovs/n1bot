@@ -1,19 +1,19 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-agent"
-dynamic = ["version"]
+version = "0.0.6"
 description = "Boba agent: orchestrator + builder + middleware + turn-spec + prompt/history контракты + InMemoryHistoryService + JsonLinesHistoryService + HistoryDialogView + filesystem-реализация WorkspaceShell/Registry + file/git/env/workspace PromptProvider'ы и PromptLoader. Дефолтный LLM-провайдер — OpenAI-совместимый (boba-openai); переопределяется через AgentBuilder.use_llm(...)."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-patterns",
-    "boba-workspace",
-    "boba-settings",
-    "boba-llm",
-    "boba-openai",
-    "boba-tools",
+    "boba-patterns==0.0.6",
+    "boba-workspace==0.0.6",
+    "boba-settings==0.0.6",
+    "boba-llm==0.0.6",
+    "boba-openai==0.0.6",
+    "boba-tools==0.0.6",
     # Синхронизировано с boba-chainlit: chainlit 2.11+ ломает
     # ForwardRef-резолв на pydantic 2.11+
     "pydantic>=2.10,<2.11",
@@ -23,8 +23,3 @@ dependencies = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
-
-[tool.setuptools_scm]
-root = "../../.."
-tag_regex = '^release-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$'
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match=release-*", "--match=dev-*"]

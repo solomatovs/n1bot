@@ -1,16 +1,16 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-postgres"
-dynamic = ["version"]
+version = "0.0.6"
 description = "Boba PG-tools: ad-hoc read-only SQL для LLM (query / list_tables / describe_table / list_targets) поверх boba-db-postgres."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools",
-    "boba-settings",
-    "boba-db-postgres",
+    "boba-tools==0.0.6",
+    "boba-settings==0.0.6",
+    "boba-db-postgres==0.0.6",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
 ]
@@ -22,8 +22,3 @@ pg = "boba.tool.pg"
 where = ["src"]
 include = ["boba*"]
 namespaces = true
-
-[tool.setuptools_scm]
-root = "../../.."
-tag_regex = '^release-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$'
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match=release-*", "--match=dev-*"]

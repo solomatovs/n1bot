@@ -100,11 +100,6 @@ COPY build/artifacts/bin/uv /usr/local/bin/uv
 # остаются только внешние зависимости, которые нужны runtime-стадии.
 FROM base AS deps
 
-# версия для setuptools_scm: пакеты ставятся из исходников без .git, git-версию
-# передаём через SETUPTOOLS_SCM_PRETEND_VERSION (значение считает Makefile из git-тега)
-ARG BOBA_SCM_VERSION=0.0.0
-ENV SETUPTOOLS_SCM_PRETEND_VERSION=${BOBA_SCM_VERSION}
-
 COPY build/artifacts/wheels/ /tmp/wheels/
 COPY packages/ /tmp/boba/packages/
 
@@ -121,9 +116,9 @@ RUN set -eu;                                                                    
 FROM base
 ARG PYTHON_VERSION=3.11
 
-# та же git-версия для setuptools_scm при установке пакетов из исходников
-ARG BOBA_SCM_VERSION=0.0.0
-ENV SETUPTOOLS_SCM_PRETEND_VERSION=${BOBA_SCM_VERSION}
+# lockstep-версия пакетов (из pyproject.toml, передаёт Makefile) — только для метки образа
+ARG BOBA_VERSION=0.0.0
+LABEL org.opencontainers.image.version=${BOBA_VERSION}
 
 COPY build/artifacts/wheels/ /tmp/wheels/
 

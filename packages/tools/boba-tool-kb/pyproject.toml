@@ -1,26 +1,26 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-kb"
-dynamic = ["version"]
+version = "0.0.6"
 description = "Boba KB: knowledge-base tools (Confluence/ConfluenceDoc ingest + kb_{vector,fts}_search / kb_doc_{vector,fts}_search + confluence_search_cql + downloads) поверх postgres+pgvector."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools",
-    "boba-settings",
-    "boba-workspace",
-    "boba-indexing",
-    "boba-db-postgres",
-    "boba-transport-fs",
-    "boba-transport-http",
-    "boba-text",
-    "boba-html",
-    "boba-kbdoc",
-    "boba-liteparse",
+    "boba-tools==0.0.6",
+    "boba-settings==0.0.6",
+    "boba-workspace==0.0.6",
+    "boba-indexing==0.0.6",
+    "boba-db-postgres==0.0.6",
+    "boba-transport-fs==0.0.6",
+    "boba-transport-http==0.0.6",
+    "boba-text==0.0.6",
+    "boba-html==0.0.6",
+    "boba-kbdoc==0.0.6",
+    "boba-liteparse==0.0.6",
     # CLI confluence.download использует FsWorkspaceShell из boba.agent.workspace_fs
-    "boba-agent",
+    "boba-agent==0.0.6",
     "psycopg[binary,pool]>=3.2",
     "pgvector>=0.3",
     "pydantic>=2.10,<2.11",
@@ -41,8 +41,3 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "boba.tool.kb.core" = ["migrations/*.sql"]
-
-[tool.setuptools_scm]
-root = "../../.."
-tag_regex = '^release-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$'
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match=release-*", "--match=dev-*"]

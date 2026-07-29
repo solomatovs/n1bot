@@ -1,17 +1,17 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-doc"
-dynamic = ["version"]
+version = "0.0.6"
 description = "Document parsing tool for the Boba agent: parse an uploaded document into readable text (liteparse)."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools",
-    "boba-workspace",
-    "boba-settings",
-    "boba-liteparse",
+    "boba-tools==0.0.6",
+    "boba-workspace==0.0.6",
+    "boba-settings==0.0.6",
+    "boba-liteparse==0.0.6",
     "pydantic>=2.10,<2.11",
 ]
 
@@ -22,8 +22,3 @@ doc = "boba.tool.doc"
 where = ["src"]
 include = ["boba*"]
 namespaces = true
-
-[tool.setuptools_scm]
-root = "../../.."
-tag_regex = '^release-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$'
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match=release-*", "--match=dev-*"]

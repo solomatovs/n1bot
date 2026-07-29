@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-postgres"
-dynamic = ["version"]
+version = "0.0.6"
 description = "Boba PostgreSQL read-only pool: PostgresConfig + PostgresConnection + PostgresPool + get_pool() process-singleton."
 requires-python = ">=3.11,<4"
 dependencies = [
@@ -16,8 +16,3 @@ dependencies = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
-
-[tool.setuptools_scm]
-root = "../../../.."
-tag_regex = '^release-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$'
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match=release-*", "--match=dev-*"]
