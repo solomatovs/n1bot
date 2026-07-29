@@ -22,16 +22,10 @@ ifeq ($(strip $(BOBA_TAG)),)
 endif
 
 
-# PEP 440-версия пакетов — СТРОГО из git-тега release-X.Y.Z / dev-X.Y.Z
-SCMVERSION := sh $(BASE_DIR)/scmversion.sh $(SRC_DIR)
-ifneq ($(strip $(BOBA_SCM_VERSION)),)
-  BOBA_SCM_VERSION_SHOW := $(BOBA_SCM_VERSION)
-else
-  BOBA_SCM_VERSION_SHOW := $(shell $(SCMVERSION) 2>/dev/null)
-  ifeq ($(strip $(BOBA_SCM_VERSION_SHOW)),)
-    BOBA_SCM_VERSION_SHOW := <нет валидного тега release-X.Y.Z / dev-X.Y.Z>
-  endif
-endif
+# Единая lockstep-версия всех пакетов — статикой в каждом packages/**/pyproject.toml.
+# Читаем из корневого пакета (boba-patterns), меняем через `make version-set VER=X.Y.Z`.
+VERSION_FILE := $(SRC_DIR)/packages/core/boba-patterns/pyproject.toml
+VERSION      := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(VERSION_FILE))
 
 
 # версия python — берётся из образа-дистрибутива dmp/python
@@ -77,12 +71,52 @@ help:
 	@echo "  make dist       собрать wheel'ы всех пакетов на хосте в build/dist (без Docker)"
 	@echo "  make print-tag  показать тег, который будет присвоен образу"
 	@echo ""
+	@echo "  Версия пакетов (lockstep, статикой в pyproject.toml): $(VERSION)"
+	@echo "  make version       показать текущую версию"
+	@echo "  make version-set   VER=X.Y.Z — проставить версию во все пакеты и их внутренние пины"
+	@echo "  make version-check  проверить, что версия едина и пины boba-* ей соответствуют"
+	@echo ""
 	@echo "  Образ базируется на dmp/gcc (glibc+gcc8) с python из dmp/python -dist."
 	@echo "  Зависимости ставятся offline из artifacts/wheels через uv."
-	@echo "  Версия пакетов (wheel) — строго из git-тега release-X.Y.Z / dev-X.Y.Z: $(BOBA_SCM_VERSION_SHOW)"
-	@echo "  Параметры: BOBA_TAG=<тег> (запинить), BOBA_SCM_VERSION=<ver>, NO_CACHE=1, GCC_IMAGE=<ref>, PYTHON_IMAGE=<ref>"
+	@echo "  Параметры: BOBA_TAG=<тег> (запинить), NO_CACHE=1, GCC_IMAGE=<ref>, PYTHON_IMAGE=<ref>"
 	@echo "  Полный цикл с нуля: make all"
 	@echo ""
+
+
+# Все pyproject.toml пакетов; packages/<pkg>/build/ — артефакты сборки, не пакеты.
+PYPROJECTS = $(shell find $(SRC_DIR)/packages -name pyproject.toml -not -path '*/build/*')
+
+
+.PHONY: version
+version:
+	@echo $(VERSION)
+
+
+# Единственный способ поменять версию: правит поле version и пины "boba-*==<old>"
+# во всех пакетах разом. Держать их в рассинхроне нельзя — lockstep.
+.PHONY: version-set
+version-set:
+	@test -n "$(VER)" || { echo "укажи версию: make version-set VER=X.Y.Z" >&2; exit 1; }
+	@echo "$(VER)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.dev[0-9]+)?$$' \
+	  || { echo "версия должна быть X.Y.Z или X.Y.Z.devN, а не '$(VER)'" >&2; exit 1; }
+	@sed -i -e 's/^version = "$(VERSION)"$$/version = "$(VER)"/'                     \
+	        -e 's/"\(boba-[a-z0-9-]*\)==$(VERSION)"/"\1==$(VER)"/g' $(PYPROJECTS)
+	@echo ">>> $(VERSION) -> $(VER) в $(words $(PYPROJECTS)) пакетах"
+	@$(MAKE) --no-print-directory version-check VERSION=$(VER)
+
+
+# Ловит рассинхрон после ручной правки pyproject.toml: разные version у пакетов
+# либо пин boba-* на чужую версию (в т.ч. пропущенный при бампе).
+.PHONY: version-check
+version-check:
+	@bad=$$(grep -h '^version = ' $(PYPROJECTS) | sort -u | grep -v '^version = "$(VERSION)"$$'); \
+	  if [ -n "$$bad" ]; then echo "версии пакетов разошлись с $(VERSION):" >&2;                  \
+	    echo "$$bad" >&2; exit 1; fi
+	@bad=$$(grep -hoE '^[[:space:]]+"boba-[a-z0-9-]+[^"]*"' $(PYPROJECTS) | tr -d '[:blank:]'      \
+	        | grep -v '^"boba-[a-z0-9-]*==$(VERSION)"$$' | sort -u);                              \
+	  if [ -n "$$bad" ]; then echo "внутренние зависимости не запинены на $(VERSION):" >&2;       \
+	    echo "$$bad" >&2; exit 1; fi
+	@echo "version-check: $(VERSION), $(words $(PYPROJECTS)) пакетов — ok"
 
 
 .PHONY: debug
@@ -93,7 +127,7 @@ debug:
 	$(info BUILD_CONTEXT  = $(BUILD_CONTEXT))
 	$(info TEST_DIR       = $(TEST_DIR))
 	$(info BOBA_TAG       = $(BOBA_TAG))
-	$(info BOBA_SCM_VERSION = $(BOBA_SCM_VERSION_SHOW))
+	$(info VERSION        = $(VERSION))
 	$(info IMAGE          = $(IMAGE))
 	$(info GCC_IMAGE      = $(GCC_IMAGE))
 	$(info PYTHON_IMAGE   = $(PYTHON_IMAGE))
@@ -139,24 +173,21 @@ base:
 # Пересобрать offline-wheels в artifacts/wheels по всем pyproject.toml из ../packages.
 # Каждый pyproject.toml внутри packages/ — это отдельный пакет.
 .PHONY: wheels
-wheels:
-	@ver="$${BOBA_SCM_VERSION:-}";                                                                               \
-	  if [ -z "$$ver" ]; then ver="$$($(SCMVERSION))" || exit 1; fi;                                             \
-	  echo ">>> версия пакетов: $$ver";                                                                          \
+wheels: version-check
+	@echo ">>> версия пакетов: $(VERSION)";                                                                      \
 	  docker run --rm                                                                                            \
 	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                                             \
-	  -e SETUPTOOLS_SCM_PRETEND_VERSION="$$ver"                                                                   \
 	  $(if $(CA_CHAIN),-v "$(ARTIFACTS)/ca-chain.crt":/tmp/ca-chain.crt:ro                                        \
 	    -e PIP_CERT=/tmp/ca-chain.crt -e REQUESTS_CA_BUNDLE=/tmp/ca-chain.crt -e SSL_CERT_FILE=/tmp/ca-chain.crt) \
 	  -v "$(ARTIFACTS)":/artifacts                                                                                \
 	  -v "$(SRC_DIR)":/boba:ro                                                                                    \
 	  $(if $(wildcard $(ARTIFACTS)/pip.conf),-v "$(ARTIFACTS)/pip.conf":/etc/pip.conf:ro)                         \
 	  -w /artifacts --entrypoint sh boba-base:latest -c '                                                         \
-	    set -e; rm -rf wheels && mkdir wheels;                                                                    \
+	    set -e; mkdir -p wheels;                                                                                  \
 	    cp -r /boba/packages /tmp/packages;                                                                       \
 	    pip3 wheel --no-cache-dir                                                                                 \
-	      $$(find /tmp/packages -name pyproject.toml -printf "%h ")                                               \
-	      pip setuptools setuptools_scm wheel -w wheels/;                                                         \
+	      $$(find /tmp/packages -name pyproject.toml -not -path "*/build/*" -printf "%h ")                        \
+	      pip setuptools wheel -w wheels/;                                                                        \
 	    chown -R "$$HOST_UID:$$HOST_GID" wheels'
 
 
@@ -188,32 +219,29 @@ fastembed:
 
 # Собрать runtime-образ boba: пакеты ставятся offline из artifacts/wheels через uv.
 .PHONY: build
-build:
-	@ver="$${BOBA_SCM_VERSION:-}";                                 \
-	  if [ -z "$$ver" ]; then ver="$$($(SCMVERSION))" || exit 1; fi; \
-	  echo ">>> source:   $(SRC_DIR) @ $(BOBA_TAG)";                \
-	  echo ">>> version:  $$ver";                                  \
+build: version-check
+	@echo ">>> source:   $(SRC_DIR) @ $(BOBA_TAG)";                \
+	  echo ">>> version:  $(VERSION)";                             \
 	  echo ">>> building: $(IMAGE)  (+ boba:latest)";              \
 	  docker build -f Dockerfile $(NO_CACHE_TEXT)                  \
 	  --build-arg GCC_IMAGE=$(GCC_IMAGE)                           \
 	  --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE)                     \
-	  --build-arg BOBA_SCM_VERSION="$$ver"                         \
+	  --build-arg BOBA_VERSION="$(VERSION)"                        \
 	  -t $(IMAGE) -t boba:latest                                   \
 	  --progress plain $(BUILD_CONTEXT)
 
 
-# Собрать wheel'ы всех пакетов на хосте в build/dist/ (строго из git-тега).
-# Единственный поддерживаемый способ собрать wheel'ы без Docker: версию задаёт
-# scmversion.sh (падает на чужом теге/грязи). Голый `uv build` НЕ строгий — не для релиза.
+# Собрать wheel'ы всех пакетов на хосте в build/dist/ (без Docker).
+# Версия берётся из pyproject.toml; --no-sources проверяет, что сборка не зависит
+# от [tool.uv.sources] (то есть колесо соберётся и вне workspace).
 # Нужен uv в artifacts/bin (make sources) и сеть/mirror для build-зависимостей.
 .PHONY: dist
-dist:
-	@ver="$${BOBA_SCM_VERSION:-}";                                             \
-	  if [ -z "$$ver" ]; then ver="$$($(SCMVERSION))" || exit 1; fi;           \
-	  echo ">>> версия пакетов: $$ver";                                        \
-	  rm -rf "$(BASE_DIR)/dist";                                               \
-	  cd "$(SRC_DIR)" && SETUPTOOLS_SCM_PRETEND_VERSION="$$ver"                \
-	    "$(ARTIFACTS)/bin/uv" build --all-packages --wheel -o "$(BASE_DIR)/dist"; \
+dist: version-check
+	@echo ">>> версия пакетов: $(VERSION)";                                      \
+	  rm -rf "$(BASE_DIR)/dist";                                                 \
+	  cd "$(SRC_DIR)" &&                                                         \
+	    "$(ARTIFACTS)/bin/uv" build --all-packages --wheel --no-sources          \
+	      -o "$(BASE_DIR)/dist";                                                 \
 	  echo ">>> wheels в build/dist:"; ls -1 "$(BASE_DIR)/dist"
 
 

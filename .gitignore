@@ -16,6 +16,5 @@ packages/**/dist/
 !/build/docker-compose.yml
 !/build/Dockerfile
 !/build/Makefile
-!/build/scmversion.sh
 !/build/test/bobacheck.py
 uv.lock

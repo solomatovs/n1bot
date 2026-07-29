@@ -1,18 +1,18 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-openai"
-dynamic = ["version"]
+version = "0.0.6"
 description = "Boba LLM-провайдер OpenAI: терминал, observers, конвертеры request/response, OpenAIChatVisitor."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-patterns",
-    "boba-workspace",
-    "boba-llm",
-    "boba-indexing",
-    "boba-tools",
+    "boba-patterns==0.0.6",
+    "boba-workspace==0.0.6",
+    "boba-llm==0.0.6",
+    "boba-indexing==0.0.6",
+    "boba-tools==0.0.6",
     "openai>=1.0,<3",
     "httpx>=0.28,<1",
     # Синхронизировано с boba-llm/boba-tools: chainlit 2.11+ ломает
@@ -24,8 +24,3 @@ dependencies = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
-
-[tool.setuptools_scm]
-root = "../../../.."
-tag_regex = '^release-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$'
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match=release-*", "--match=dev-*"]
