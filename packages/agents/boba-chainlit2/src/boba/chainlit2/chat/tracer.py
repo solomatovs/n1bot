@@ -1,30 +1,47 @@
 import time
-from typing import Any, Optional, cast
+from typing import Any, ClassVar, Optional, cast
 from uuid import UUID
 
 from chainlit.context import context_var
 from chainlit.langchain.callbacks import (
-    DEFAULT_TO_IGNORE,
-    DEFAULT_TO_KEEP,
     FinalStreamHelper,
     GenerationHelper,
-    process_content,
 )
 from chainlit.message import Message
 from chainlit.step import Step
 from chainlit.utils import utc_now
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk, GenerationChunk
 from langchain_core.tracers.base import AsyncBaseTracer
 from langchain_core.tracers.schemas import Run
 from literalai import ChatGeneration, CompletionGeneration
 from literalai.observability.step import TrueStepType
 
+from boba.chainlit2.agent.model import ReasoningChatOpenAI
+
 
 class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
     steps: dict[str, Step]
+    reasoning_steps: dict[str, Step]
     parent_id_map: dict[str, str]
     ignored_runs: set
+
+    # типы run, которые показываем в UI. всё остальное — служебная обвязка
+    VISIBLE_RUN_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {"llm", "tool", "retriever"}
+    )
+
+    # заголовок шага, в который стримятся рассуждения модели
+    REASONING_STEP_NAME: ClassVar[str] = "Думаю"
+
+    # запасной заголовок llm-шага, если провайдер не сообщил имя модели
+    LLM_STEP_NAME: ClassVar[str] = "Ответ"
+
+    # ключ в metadata тула, которым он объявляет подачу своего результата:
+    # "markdown" — отрендерить разметку, любое другое значение — блок кода
+    # с этой подсветкой ("json", "sql", "python", "text")
+    UI_FORMAT_KEY: ClassVar[str] = "ui_format"
+    MARKDOWN_FORMAT: ClassVar[str] = "markdown"
 
     def __init__(
         self,
@@ -34,10 +51,6 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
         stream_final_answer: bool = False,
         # Should force stream the first response?
         force_stream_final_answer: bool = False,
-        # Runs to ignore to enhance readability
-        to_ignore: list[str] | None = None,
-        # Runs to keep within ignored runs
-        to_keep: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         AsyncBaseTracer.__init__(self, **kwargs)
@@ -50,6 +63,7 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
         )
         self.context = context_var.get()
         self.steps = {}
+        self.reasoning_steps = {}
         self.parent_id_map = {}
         self.ignored_runs = set()
 
@@ -57,16 +71,6 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
             self.root_parent_id = self.context.current_step.id
         else:
             self.root_parent_id = None
-
-        if to_ignore is None:
-            self.to_ignore = DEFAULT_TO_IGNORE
-        else:
-            self.to_ignore = to_ignore
-
-        if to_keep is None:
-            self.to_keep = DEFAULT_TO_KEEP
-        else:
-            self.to_keep = to_keep
 
     async def on_chat_model_start(
         self,
@@ -151,6 +155,8 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
         if start["tt_first_token"] is None:
             start["tt_first_token"] = (time.time() - start["start"]) * 1000
 
+        await self._stream_reasoning(str(run_id), chunk)
+
         # Process token to ensure it's a string, as strip() will be called on it.
         processed_token: str
         # Handle case where token is a list (can occur with some model outputs).
@@ -179,6 +185,43 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
             else:
                 self.answer_reached = self._check_if_answer_reached()
 
+    async def _stream_reasoning(
+        self,
+        run_id: str,
+        chunk: GenerationChunk | ChatGenerationChunk | None,
+    ) -> None:
+        """Льёт reasoning_content провайдера в отдельный шаг рядом с llm-шагом."""
+        if not isinstance(chunk, ChatGenerationChunk):
+            return
+
+        reasoning = chunk.message.additional_kwargs.get(
+            ReasoningChatOpenAI.REASONING_KEY
+        )
+        if not reasoning:
+            return
+
+        context_var.set(self.context)
+
+        step = self.reasoning_steps.get(run_id)
+        if step is None:
+            llm_step = self.steps.get(run_id)
+            step = Step(
+                name=self.REASONING_STEP_NAME,
+                type="llm",
+                parent_id=llm_step.parent_id if llm_step else self.root_parent_id,
+            )
+            step.start = utc_now()
+            await step.send()
+            self.reasoning_steps[run_id] = step
+
+        await step.stream_token(str(reasoning))
+
+    async def _close_reasoning(self, run_id: str) -> None:
+        """Закрывает шаг рассуждений вместе с породившим его llm-run'ом."""
+        if step := self.reasoning_steps.pop(run_id, None):
+            step.end = utc_now()
+            await step.update()
+
     async def _persist_run(self, run: Run) -> None:
         pass
 
@@ -203,7 +246,8 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
 
         return self.root_parent_id
 
-    def _should_ignore_run(self, run: Run):
+    def _should_ignore_run(self, run: Run) -> tuple[bool, str | None]:
+        """Оставляет в UI только run'ы из VISIBLE_RUN_TYPES."""
         parent_id = self._get_run_parent_id(run)
 
         if parent_id:
@@ -211,23 +255,13 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
             # so we can re-attach a kept child to the right parent id
             self.parent_id_map[str(run.id)] = parent_id
 
-        ignore_by_name = False
-        ignore_by_parent = parent_id in self.ignored_runs
-
-        for f in self.to_ignore:
-            if f in run.name:
-                ignore_by_name = True
-                break
-
-        ignore = ignore_by_name or ignore_by_parent
-
-        # If the ignore cause is the parent being ignored, check if we should nonetheless keep the child
-        if ignore_by_parent and not ignore_by_name and run.run_type in self.to_keep:
+        if run.run_type in self.VISIBLE_RUN_TYPES:
+            # родительские ноды скрыты, поэтому шаг переприцепляем
+            # к ближайшему видимому предку
             return False, self._get_non_ignored_parent_id(parent_id)
-        if ignore:
-            # Tag the run as ignored
-            self.ignored_runs.add(str(run.id))
-        return ignore, parent_id
+
+        self.ignored_runs.add(str(run.id))
+        return True, parent_id
 
     async def _start_trace(self, run: Run) -> None:
         await super()._start_trace(run)
@@ -243,29 +277,22 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
         if ignore:
             return
 
-        step_type: TrueStepType = "undefined"
-        if run.run_type == "agent":
-            step_type = "run"
-        elif run.run_type == "chain":
-            if not self.steps:
-                step_type = "run"
-        elif run.run_type == "llm":
-            step_type = "llm"
-        elif run.run_type == "retriever" or run.run_type == "tool":
-            step_type = "tool"
-        elif run.run_type == "embedding":
-            step_type = "embedding"
+        step_type: TrueStepType = "llm" if run.run_type == "llm" else "tool"
 
         step = Step(
             id=str(run.id),
-            name=run.name,
+            name=self._step_name(run),
             type=step_type,
             parent_id=parent_id,
         )
         step.start = utc_now()
-        if step_type != "llm":
-            step.input, language = process_content(run.inputs)
-            step.show_input = language or False
+        if step_type == "tool":
+            step.input = run.inputs
+            step.show_input = "json"
+        else:
+            # у llm-шага содержимое даёт generation, отдельный input дублировал бы
+            # его сериализованным state'ом
+            step.show_input = False
 
         step.tags = run.tags
         self.steps[str(run.id)] = step
@@ -277,6 +304,8 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
         context_var.set(self.context)
 
         ignore, _parent_id = self._should_ignore_run(run)
+
+        await self._close_reasoning(str(run.id))
 
         if ignore:
             return
@@ -366,14 +395,59 @@ class BobaLangchainTracer(AsyncBaseTracer, GenerationHelper, FinalStreamHelper):
 
         if current_step:
             if current_step.type != "llm":
-                current_step.output, current_step.language = process_content(
-                    run.outputs
-                )
+                # Step сам выбирает подачу: строку отдаёт как markdown,
+                # структуру сериализует в json и проставляет language
+                current_step.output = self._unwrap_output(run.outputs)
+                current_step.language = self._output_language(run, current_step)
             current_step.end = utc_now()
             await current_step.update()
 
+    @classmethod
+    def _output_language(cls, run: Run, step: Step) -> str | None:
+        """Подсветка результата: объявленная в туле, иначе выбранная Step."""
+        metadata = (run.extra or {}).get("metadata") or {}
+        declared = metadata.get(cls.UI_FORMAT_KEY)
+        if not declared:
+            return step.language
+
+        # непустой language оборачивает вывод в блок кода, а markdown
+        # нужно именно отрендерить
+        if declared == cls.MARKDOWN_FORMAT:
+            return None
+
+        return str(declared)
+
+    @classmethod
+    def _step_name(cls, run: Run) -> str:
+        """Заголовок шага: для llm — имя модели, для тула — имя тула."""
+        if run.run_type != "llm":
+            return run.name
+
+        # run.name у llm-шага это имя python-класса обёртки (ChatOpenAI и
+        # наследники), пользователю оно ничего не говорит
+        invocation_params = (run.extra or {}).get("invocation_params") or {}
+        model = invocation_params.get("model") or invocation_params.get("model_name")
+
+        return str(model) if model else cls.LLM_STEP_NAME
+
+    @staticmethod
+    def _unwrap_output(outputs: dict[str, Any] | None) -> Any:
+        """Достаёт полезную нагрузку из outputs tool-run'а."""
+        if not outputs:
+            return None
+
+        # langchain кладёт результат тула под ключ output, а langgraph
+        # оборачивает его в ToolMessage
+        value = outputs.get("output", outputs) if "output" in outputs else outputs
+        if isinstance(value, ToolMessage):
+            return value.content
+
+        return value
+
     async def _on_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any):
         context_var.set(self.context)
+
+        await self._close_reasoning(str(run_id))
 
         if current_step := self.steps.get(str(run_id), None):
             current_step.is_error = True

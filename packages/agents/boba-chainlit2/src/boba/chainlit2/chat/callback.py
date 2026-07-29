@@ -56,15 +56,10 @@ async def on_message(
     cb = BobaLangchainTracer()
     run_config = RunnableConfig(
         callbacks=[cb],
-        # langchain собирает историю из общего массива сообщений пользователей
-        # через ключ thread_id, поэтому передаем сюда
-        # сессионный ключ chainlit
         configurable={"thread_id": thread_id},
     )
     final_answer = cl.Message(content="")
 
-    # astream(stream_mode="messages") отдаёт (message_chunk, metadata); типизация
-    # langgraph здесь широкая, фиксируем элемент явно
     stream = cast(
         "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
         graph.astream(
@@ -131,15 +126,11 @@ async def on_chat_resume(
     cb = BobaLangchainTracer()
     run_config = RunnableConfig(
         callbacks=[cb],
-        # langchain собирает историю из общего массива сообщений пользователей
-        # через ключ thread_id, поэтому передаем сюда
-        # сессионный ключ chainlit
         configurable={"thread_id": thread_id},
     )
 
     # читаем langgraph состояние с историей сообщений
     _snapshot = await graph.aget_state(run_config)
-    # print(f"{snapshot}")
 
     async for _m in graph.aget_state_history(run_config):
         pass

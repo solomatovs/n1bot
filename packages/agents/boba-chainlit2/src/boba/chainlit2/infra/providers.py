@@ -10,7 +10,6 @@ from httpx import AsyncClient
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, wrap_model_call
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
@@ -24,6 +23,7 @@ from boba.agent.tool_config import (
     build_app_config,
 )
 from boba.chainlit2.agent.dump import DumpingTransport
+from boba.chainlit2.agent.model import ReasoningChatOpenAI
 from boba.chainlit2.agent.tools import get_weather
 from boba.chainlit2.chat.data import PostgresDataLayer
 from boba.chainlit2.chat.data.storage import LocalStorageClient
@@ -294,7 +294,7 @@ def langchain_agent(
     client: Annotated[AsyncClient, Depends(httpx_debug_client)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
 ) -> CompiledStateGraph:
-    chat = ChatOpenAI(
+    chat = ReasoningChatOpenAI(
         http_async_client=client,
         model=c.agent.model,
         base_url=c.agent.openai.base_url,
