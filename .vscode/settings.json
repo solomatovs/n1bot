@@ -13,5 +13,9 @@
     ],
     "python.analysis.diagnosticMode": "workspace",
     "vectorExplorer.pythonPath": "${workspaceFolder}/.venv/bin/python",
-    "git.ignoreLimitWarning": true
+    "git.ignoreLimitWarning": true,
+    "cSpell.enabled": false,
+    "cSpell.enabledFileTypes": {
+        "*": false
+    }
 }
