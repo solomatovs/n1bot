@@ -23,11 +23,11 @@ from boba.agent.tool_config import (
     bind,
     build_app_config,
 )
+from boba.auth.errors import InternalServiceError
 from boba.chainlit2.agent.dump import DumpingTransport
 from boba.chainlit2.agent.tools import get_weather
 from boba.chainlit2.chat.data import PostgresDataLayer
 from boba.chainlit2.chat.data.storage import LocalStorageClient
-from boba.chainlit2.errors import InternalServiceError
 from boba.chainlit2.infra.config import (
     AgentProfile,
     AppConfig,

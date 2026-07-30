@@ -27,17 +27,17 @@ from ldap3.core.exceptions import (
 )
 from pydantic import BaseModel, Field
 
-from boba.chainlit2.chat.auth.fix import (
-    FixExcludeUserProvider,
-    FixUserRolesProvider,
-    RoleExcludeConfig,
-    RoleMappingConfig,
-)
-from boba.chainlit2.errors import (
+from boba.auth.errors import (
     AuthenticationError,
     AuthorizationError,
     ExternalServiceError,
     InternalServiceError,
+)
+from boba.auth.local import (
+    LocalExcludeUserProvider,
+    LocalUserRolesProvider,
+    RoleExcludeConfig,
+    RoleMappingConfig,
 )
 
 
@@ -336,18 +336,18 @@ class LdapAuth:
         self._init_mapping()
 
     def _init_mapping(self):
-        self._fixed_roles: FixUserRolesProvider | None = None
-        self._fixed_roles_ex: FixExcludeUserProvider | None = None
+        self._samaccountname_roles: LocalUserRolesProvider | None = None
+        self._samaccountname_roles_ex: LocalExcludeUserProvider | None = None
         self._member_of_roles: MemberOfUserRolesProvider | None = None
         self._member_of_roles_ex: MemberOfExcludeUserProvider | None = None
         self._dn_roles: DnUserRolesProvider | None = None
         self._dn_roles_ex: DnExcludeUserProvider | None = None
 
         if roles := self._config.roles.samaccountname:
-            self._fixed_roles = FixUserRolesProvider(roles)
+            self._samaccountname_roles = LocalUserRolesProvider(roles)
 
         if roles := self._config.roles.samaccountname_ex:
-            self._fixed_roles_ex = FixExcludeUserProvider(roles)
+            self._samaccountname_roles_ex = LocalExcludeUserProvider(roles)
 
         if roles := self._config.roles.member_of:
             self._member_of_roles = MemberOfUserRolesProvider(roles)
@@ -363,8 +363,8 @@ class LdapAuth:
 
     def _excluded_of(self, username: str, user_dn: str, member_of: list[str]) -> bool:
         res = []
-        if self._fixed_roles_ex:
-            res.append(self._fixed_roles_ex.exclude_of(username))
+        if self._samaccountname_roles_ex:
+            res.append(self._samaccountname_roles_ex.exclude_of(username))
 
         if self._member_of_roles_ex:
             res.append(self._member_of_roles_ex.exclude_of(member_of))
@@ -376,8 +376,8 @@ class LdapAuth:
 
     def _roles_of(self, username: str, user_dn: str, member_of: list[str]) -> list[str]:
         roles: list[str] = []
-        if self._fixed_roles:
-            roles.extend(self._fixed_roles.roles_of(username))
+        if self._samaccountname_roles:
+            roles.extend(self._samaccountname_roles.roles_of(username))
 
         if self._member_of_roles:
             roles.extend(self._member_of_roles.roles_of(member_of))

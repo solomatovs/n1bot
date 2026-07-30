@@ -23,6 +23,7 @@ from boba.agent.tool_config import (
     build_app_config,
 )
 from boba.agent.workspace_fs import FsWorkspaceShell
+from boba.auth import ChainlitAuthInstaller
 from boba.chainlit.config import ChainlitConfig
 from boba.chainlit.data_layer import BobaDataLayer
 from boba.chainlit.logging import configure_logging
@@ -46,12 +47,6 @@ from boba.chainlit.storage import (
 )
 from boba.chainlit.system_prompt import DefaultSystemPromptSource
 from boba.chainlit.tool_cache import AvailableToolsCache
-from boba.chainlit2.chat.auth import PasswordAuthCallbackInstaller
-from boba.chainlit2.infra.config import (
-    FixAuthConfig,
-    KerberosAuthConfig,
-    LdapAuthConfig,
-)
 from boba.tools import ToolBuilder
 from boba.workspace.contract import WorkspaceId
 
@@ -224,7 +219,7 @@ def main() -> int:
     )
 
     # Монтируем chainlit в FastAPI (вместо run_chainlit), чтобы авторизация
-    # из boba-chainlit2 (middleware + password/header callback'и) и доменные
+    # из boba-auth (middleware + password/header callback'и) и доменные
     # ошибки подключались тем же способом, что и в новом приложении.
     app = FastAPI()
     _use_chainlit_app(app, chainlit_cfg)
@@ -268,40 +263,12 @@ def _use_auth(config: ChainlitConfig) -> None:
     """Единая точка подключения авторизации; стратегия выбирается конфигом."""
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    password_callback = PasswordAuthCallbackInstaller()
-
-    for auth in config.auth:
-        if isinstance(auth, KerberosAuthConfig):
-            from boba.chainlit2.chat.auth.kerberos import (  # noqa: PLC0415
-                KerberosAuth,
-            )
-
-            KerberosAuth(config.url_prefix, auth).install(chainlit_app)
-
-        elif isinstance(auth, FixAuthConfig):
-            from boba.chainlit2.chat.auth.fix import (  # noqa: PLC0415
-                FixAuth,
-            )
-
-            password_callback.fix_auth_setup(FixAuth(auth))
-
-        elif isinstance(auth, LdapAuthConfig):
-            from boba.chainlit2.chat.auth.ldap import (  # noqa: PLC0415
-                LdapAuth,
-            )
-
-            password_callback.ldap_auth_setup(LdapAuth(auth))
-
-        else:
-            raise ValueError(f"unknown authorization type: {type(auth).__name__}")
-
-    # устанавливаю password callback если есть хотя бы один из вариантов
-    password_callback.install_callback_if_any_exists()
+    ChainlitAuthInstaller(config.url_prefix, config.auth).install(chainlit_app)
 
 
 def _use_domain_error(app: FastAPI) -> None:
     """Единая точка обработки доменных ошибок (вкл. SPNEGO-челлендж → 401)."""
-    from boba.chainlit2.errors import DomainErrorMiddleware  # noqa: PLC0415
+    from boba.auth.errors import DomainErrorMiddleware  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     app.add_middleware(DomainErrorMiddleware)
