@@ -6,9 +6,7 @@ ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
 FROM ${PYTHON_IMAGE} AS python-dist
 
 
-# base: рантайм-база — gcc-образ (glibc+gcc8+libstdc++) + python сверху + uv.
-# Без установленных пакетов; используется как boba-base для wheels/fastembed
-# и как основа для runtime-образа.
+# gcc (glibc+libstdc++) + python + uv, без пакетов: и boba-base, и основа runtime
 FROM ${GCC_IMAGE} AS base
 
 # apt-sources.list replace (закрытый контур; по умолчанию .example пуст)
@@ -67,7 +65,7 @@ RUN printf '%s\n'                                                               
         > /usr/local/bin/magick                                                                                       \
     && chmod +x /usr/local/bin/magick
 
-# для разных программ свои переменные окружения CA bundle
+# у каждой программы свой способ узнать CA bundle
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt      \
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     PIP_CERT=/etc/ssl/certs/ca-certificates.crt           \
@@ -82,19 +80,18 @@ RUN if [ -f /tmp/pipconf/pip.conf ]; then cp /tmp/pipconf/pip.conf /etc/pip.conf
 COPY build/artifacts/uv.toml* /tmp/uvconf/
 RUN if [ -f /tmp/uvconf/uv.toml ]; then mkdir -p /etc/uv && cp /tmp/uvconf/uv.toml /etc/uv/uv.toml; fi && rm -rf /tmp/uvconf
 
-# uv — offline-пакетный менеджер рядом с pip (статич. бинарь; есть в boba-base и runtime)
+# статический бинарь, ставится offline из wheelhouse
 COPY build/artifacts/bin/uv /usr/local/bin/uv
 
 
-# deps: собирает site-packages с одними внешними зависимостями.
-# Ставим пакеты boba (чтобы uv притянул их зависимости), затем сносим сами
-# пакеты — остаётся то, что нужно runtime-стадии.
+# site-packages с одними внешними зависимостями: ставим пакеты boba ради их
+# зависимостей, потом сносим сами пакеты
 FROM base AS deps
 
 COPY build/artifacts/wheels/ /tmp/wheels/
 COPY packages/ /tmp/boba/packages/
 
-# список пакетов = все pyproject.toml внутри packages/ (-mindepth 1 отсекает сам packages/)
+# пакеты ищутся по pyproject.toml; -mindepth 1 отсекает сам packages/
 RUN set -eu;                                                                                \
     pkgs=$(find /tmp/boba/packages -mindepth 1 -name pyproject.toml -printf '%h\n' | sort); \
     names=$(for p in $pkgs; do basename "$p"; done);                                        \
@@ -102,37 +99,35 @@ RUN set -eu;                                                                    
     uv pip uninstall --system $names
 
 
-# runtime: base + внешние deps (из stage deps) + сами пакеты boba (из исходников).
+# runtime: base + зависимости из стадии deps + пакеты boba из исходников
 FROM base
 ARG PYTHON_VERSION=3.11
 
-# lockstep-версия пакетов (из pyproject.toml, передаёт Makefile) — только для метки образа
+# только для метки образа
 ARG BOBA_VERSION=0.0.0
 LABEL org.opencontainers.image.version=${BOBA_VERSION}
 
 COPY --from=deps /usr/local/lib/python${PYTHON_VERSION}/site-packages /usr/local/lib/python${PYTHON_VERSION}/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
-# пакеты boba ставим из исходников:
-#   --no-deps            внешние зависимости уже пришли из стадии deps
-#   --no-build-isolation берём setuptools/wheel из образа, а не из сети/wheelhouse
-#                        (поэтому wheelhouse в этот образ копировать не нужно)
+# --no-deps: зависимости уже пришли из стадии deps.
+# --no-build-isolation: setuptools/wheel берём из образа — иначе пришлось бы
+# копировать сюда весь wheelhouse и он остался бы в слоях (+171 МБ)
 COPY packages/ /app/packages/
 RUN set -eu;                                                                                  \
     for d in $(find /app/packages -mindepth 1 -name pyproject.toml -printf '%h\n' | sort); do \
       uv pip install --system --no-deps --no-build-isolation "$d";                             \
     done
 
-# OCR-модели tesseract
 COPY build/artifacts/tessdata/ /opt/tessdata/
 ENV TESSDATA_PREFIX=/opt/tessdata \
     TESSDATA_PATH=/opt/tessdata
 
-# liteparse 2.0 hotfix, rus+eng link
+# liteparse просит модель по имени rus+eng, tesseract такой не знает
 RUN ln -sf eng.traineddata /opt/tessdata/rus+eng.traineddata && \
     ln -sf rus.traineddata /opt/tessdata/eng+rus.traineddata
 
-# embedding-веса fastembed (make fastembed до build)
+# веса fastembed (скачивает make fastembed)
 COPY build/artifacts/fastembed/ /opt/fastembed/
 
 WORKDIR /app
