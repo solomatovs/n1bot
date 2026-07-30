@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-auth"
+version = "0.0.6"
+description = "Boba chainlit authentication: fix/LDAP/Kerberos(SPNEGO) providers, role mapping, domain errors."
+requires-python = ">=3.11,<4"
+dependencies = [
+    # cl.User, chainlit_config.code.password_auth_callback, create_jwt/set_auth_cookie
+    "chainlit>=2.11,<3",
+    # SpnegoMiddleware/DomainErrorMiddleware — ASGI, роуты SSO — FastAPI
+    "fastapi",
+    # chainlit 2.11+ ломает ForwardRef-резолв на pydantic 2.11+
+    # ("CodeSettings is not fully defined"). Держим 2.10.x до апдейта chainlit.
+    "pydantic>=2.10,<2.11",
+    "ldap3",
+    "gssapi",
+    "krb5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -11,26 +11,14 @@ ChainlitConfig — единый конфиг chainlit-агента:
 
 from __future__ import annotations
 
-from typing import Annotated
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.agent import AgentProfile
 
-# переиспользуем конфиги авторизации из boba-chainlit2
-from boba.chainlit2.chat.auth import (
-    FixAuthConfig,
-    KerberosAuthConfig,
-    LdapAuthConfig,
-)
+# конфиги авторизации (fix/ldap/kerberos) — общие для обоих chainlit-приложений
+from boba.auth import AuthConfig
 
 __all__ = ["AuthConfig", "ChainlitConfig"]
-
-
-AuthConfig = Annotated[
-    FixAuthConfig | KerberosAuthConfig | LdapAuthConfig,
-    Field(discriminator="type"),
-]
 
 
 class ChainlitConfig(BaseModel):

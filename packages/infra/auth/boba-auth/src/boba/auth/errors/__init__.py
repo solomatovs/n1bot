@@ -1,5 +1,5 @@
-from boba.chainlit2.errors.domain import DomainErrorMiddleware
-from boba.chainlit2.errors.model import (
+from boba.auth.errors.domain import DomainErrorMiddleware
+from boba.auth.errors.model import (
     AgentError,
     AuthenticationError,
     AuthorizationError,

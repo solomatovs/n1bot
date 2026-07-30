@@ -37,6 +37,7 @@ from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from boba.auth.errors import InternalServiceError
 from boba.chainlit2.chat.data.models import (
     Codec,
     Element,
@@ -45,7 +46,6 @@ from boba.chainlit2.chat.data.models import (
     Thread,
     User,
 )
-from boba.chainlit2.errors import InternalServiceError
 
 __all__ = [
     "PostgresDataLayer",

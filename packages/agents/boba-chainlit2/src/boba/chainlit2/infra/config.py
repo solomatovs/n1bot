@@ -2,9 +2,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit2.chat.auth.fix import FixAuthConfig
-from boba.chainlit2.chat.auth.kerberos import KerberosAuthConfig
-from boba.chainlit2.chat.auth.ldap import LdapAuthConfig
+from boba.auth import AuthConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -530,12 +528,6 @@ class LocalStorageConfig(BaseModel):
         default="/upload",
         description="URL-префикс serve-роута; из него собирается url элемента.",
     )
-
-
-AuthConfig = Annotated[
-    FixAuthConfig | KerberosAuthConfig | LdapAuthConfig,
-    Field(discriminator="type"),
-]
 
 
 class AppConfig(BaseModel):

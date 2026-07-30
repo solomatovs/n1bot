@@ -27,13 +27,14 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit2.chat.auth.fix import (
-    FixExcludeUserProvider,
-    FixUserRolesProvider,
-    RoleExcludeConfig,
-    RoleMappingConfig,
+from boba.auth.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    BaseError,
+    ExternalServiceError,
+    InternalServiceError,
 )
-from boba.chainlit2.chat.auth.ldap import (
+from boba.auth.ldap import (
     ADDirectory,
     ADUserEntry,
     DnExcludeUserProvider,
@@ -48,12 +49,11 @@ from boba.chainlit2.chat.auth.ldap import (
     SAMAccountNameExcludeUserProvider,
     SAMAccountNameUserRolesProvider,
 )
-from boba.chainlit2.errors import (
-    AuthenticationError,
-    AuthorizationError,
-    BaseError,
-    ExternalServiceError,
-    InternalServiceError,
+from boba.auth.local import (
+    LocalExcludeUserProvider,
+    LocalUserRolesProvider,
+    RoleExcludeConfig,
+    RoleMappingConfig,
 )
 
 
@@ -889,18 +889,18 @@ class KerberosAuth:
         self._init_mapping()
 
     def _init_mapping(self):
-        self._principal_roles: FixUserRolesProvider | None = None
-        self._principal_roles_ex: FixExcludeUserProvider | None = None
+        self._principal_roles: LocalUserRolesProvider | None = None
+        self._principal_roles_ex: LocalExcludeUserProvider | None = None
         self._sid_roles: SidUserRolesProvider | None = None
         self._sid_roles_ex: SidExcludeUserProvider | None = None
         self._kerberos_roles_in_ldap: KerberosRolesInLdapProvider | None = None
 
         if roles := self._config.roles:
             if roles.principal:
-                self._principal_roles = FixUserRolesProvider(roles.principal)
+                self._principal_roles = LocalUserRolesProvider(roles.principal)
 
             if roles.principal_ex:
-                self._principal_roles_ex = FixExcludeUserProvider(roles.principal_ex)
+                self._principal_roles_ex = LocalExcludeUserProvider(roles.principal_ex)
 
             if roles.sid:
                 self._sid_roles = SidUserRolesProvider(roles.sid)

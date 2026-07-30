@@ -5,7 +5,7 @@ from typing import Any
 
 import chainlit as cl
 
-from boba.chainlit2.errors import BaseError
+from boba.auth.errors import BaseError
 
 
 def chainlit_error_ctx_handler(fn: Callable) -> Callable:

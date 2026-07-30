@@ -12,15 +12,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from boba.chainlit2.chat.auth import PasswordAuthCallbackInstaller
-from boba.chainlit2.errors import DomainErrorMiddleware
+from boba.auth import ChainlitAuthInstaller
+from boba.auth.errors import DomainErrorMiddleware
 from boba.chainlit2.infra import providers
 from boba.chainlit2.infra.config import (
     AppConfig,
     ChainlitExtendConfig,
-    FixAuthConfig,
-    KerberosAuthConfig,
-    LdapAuthConfig,
 )
 from boba.chainlit2.infra.di import Container
 
@@ -192,35 +189,7 @@ def _use_auth(config: AppConfig, container: Container) -> None:
     "Единая точка подключения авторизации chainlit"
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    password_callback = PasswordAuthCallbackInstaller()
-
-    for auth in config.auth:
-        if isinstance(auth, KerberosAuthConfig):
-            from boba.chainlit2.chat.auth.kerberos import (  # noqa: PLC0415
-                KerberosAuth,
-            )
-
-            KerberosAuth(config.chainlit.url_prefix, auth).install(chainlit_app)
-
-        elif isinstance(auth, FixAuthConfig):
-            from boba.chainlit2.chat.auth.fix import (  # noqa: PLC0415
-                FixAuth,
-            )
-
-            password_callback.fix_auth_setup(FixAuth(auth))
-
-        elif isinstance(auth, LdapAuthConfig):
-            from boba.chainlit2.chat.auth.ldap import (  # noqa: PLC0415
-                LdapAuth,
-            )
-
-            password_callback.ldap_auth_setup(LdapAuth(auth))
-
-        else:
-            raise ValueError(f"unknown authorization type: {type(auth).__name__}")
-
-    # устанавливаю password callback если есть хотя бы один из вариантов
-    password_callback.install_callback_if_any_exists()
+    ChainlitAuthInstaller(config.chainlit.url_prefix, config.auth).install(chainlit_app)
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:

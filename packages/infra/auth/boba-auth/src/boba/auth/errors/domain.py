@@ -3,7 +3,7 @@ import logging
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit2.errors.model import BaseError, to_domain
+from boba.auth.errors.model import BaseError, to_domain
 
 
 class DomainErrorMiddleware:

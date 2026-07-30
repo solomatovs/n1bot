@@ -20,7 +20,7 @@ import logging
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Self, cast
 
 from dishka import Container, Provider, make_container
 
@@ -428,6 +428,6 @@ class ToolBuilder:
     @staticmethod
     def _callable_resolve(obj: Any) -> Callable[..., Any]:
         if inspect.isclass(obj):
-            return obj()
+            return cast("Callable[..., Any]", obj())
 
         return obj

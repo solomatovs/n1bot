@@ -12,6 +12,7 @@ pythonpath = [
     "packages/infra/transport/boba-transport-fs/src",
     "packages/infra/transport/boba-transport-http/src",
     "packages/infra/db/boba-db-postgres/src",
+    "packages/infra/auth/boba-auth/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-llm/src",
     "packages/core/boba-patterns/src",
@@ -41,6 +42,8 @@ exclude = [
     "**/node_modules",
     "**/__pycache__",
     "**/.*",
+    # копии исходников, которые setuptools/uv build оставляет в packages/**/build/lib
+    "**/build",
 ]
 extraPaths = [
     "packages/infra/llm/boba-openai/src",
@@ -52,6 +55,7 @@ extraPaths = [
     "packages/infra/transport/boba-transport-fs/src",
     "packages/infra/transport/boba-transport-http/src",
     "packages/infra/db/boba-db-postgres/src",
+    "packages/infra/auth/boba-auth/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-llm/src",
     "packages/core/boba-patterns/src",
@@ -129,6 +133,7 @@ boba-text           = { workspace = true }
 boba-transport-fs   = { workspace = true }
 boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
+boba-auth           = { workspace = true }
 boba-tool-chart     = { workspace = true }
 boba-tool-doc       = { workspace = true }
 boba-tool-files     = { workspace = true }

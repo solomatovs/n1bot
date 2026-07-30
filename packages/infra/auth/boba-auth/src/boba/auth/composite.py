@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable
 import chainlit as cl
 from chainlit.config import config as chainlit_config
 
-from boba.chainlit2.errors import AuthenticationError
+from boba.auth.errors import AuthenticationError
 
 UserCallback = Callable[..., Awaitable[cl.User | None]]
 
@@ -12,8 +12,8 @@ class PasswordAuthCallbackInstaller:
     def __init__(self):
         self._auth = []
 
-    def fix_auth_setup(self, fix_auth) -> None:
-        self._auth.append(fix_auth)
+    def local_auth_setup(self, local_auth) -> None:
+        self._auth.append(local_auth)
 
     def ldap_auth_setup(self, ldap_auth) -> None:
         self._auth.append(ldap_auth)
