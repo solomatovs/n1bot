@@ -1,0 +1,74 @@
+# Конфиг boba-chainlit для портативного релиза.
+# conf/ — то, что правят руками (этот файл, промпты);
+# local/ — то, что приложение пишет само (workspaces, состояние chainlit).
+#
+# Заполнить помеченное <...>.
+
+## LLM-провайдер (openai-совместимый API)
+[openai.main]
+    base_url            = "<https://llm.example.local/v1>"
+    api_key             = "<ключ>"
+    ssl_verify          = true
+    tool_calls_fallback = true
+
+
+## профиль агента
+[agent.default]
+    model                = "<имя модели у провайдера>"
+    models               = ["<имя модели у провайдера>"]
+    openai               = "${openai.main}"
+    system_prompt_dir    = "__INSTALL_DIR__/conf/prompts"
+    user_workspace_dir   = "__INSTALL_DIR__/local/workspaces/user"
+    system_workspace_dir = "__INSTALL_DIR__/local/workspaces/system"
+    max_messages         = 30
+    stream               = true
+    log_level            = "INFO"
+
+
+## само приложение
+[chainlit]
+    profile     = "${agent.default}"
+    host        = "0.0.0.0"
+    port        = 8501
+    # префикс, если стоит за reverse-proxy; иначе пустая строка
+    url_prefix  = ""
+    # обязателен, сгенерировать: openssl rand -hex 32
+    auth_secret = "<32 байта hex>"
+    headless    = true
+    app_root    = "__INSTALL_DIR__/local/.chainlit"
+    # способы входа по порядку попыток; секции ниже
+    auth        = ["${auth.local}"]
+
+
+## вход по таблице логин/пароль из этого файла
+[auth.local]
+    type          = "local"
+    users         = { "<логин>" = "<пароль>" }
+    roles         = "${role.local}"
+    require_roles = true
+
+[role.local]
+    "<логин>" = ["ADM"]
+
+
+## вход по учётной записи домена (bind в AD)
+# [auth.ldap]
+#     type             = "ldap"
+#     server           = "ldaps://dc.example.local:636"
+#     base_dn          = "DC=example,DC=local"
+#     user_filter      = "(sAMAccountName={username})"
+#     bind_dn_template = "EXAMPLE\\{username}"
+#     require_roles    = true
+#     [auth.ldap.roles]
+#         member_of = { "CN=boba-ADM,CN=Users,DC=example,DC=local" = ["ADM"] }
+
+
+## SSO по kerberos; keytab пробрасывается в unit через BindReadOnlyPaths
+# [auth.kerberos]
+#     type             = "kerberos"
+#     service_name     = "HTTP/boba.example.local@EXAMPLE.LOCAL"
+#     keytab           = "/etc/krb5.keytab"
+#     principal_format = "{username}@EXAMPLE.LOCAL"
+#     require_roles    = true
+#     [auth.kerberos.roles]
+#         principal = { "<логин>@EXAMPLE.LOCAL" = ["ADM"] }
