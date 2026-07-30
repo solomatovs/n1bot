@@ -13,23 +13,13 @@ SHELL       := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 
-# тег образа: git-тег (если HEAD ровно на теге) либо короткий sha, плюс -dirty на грязном дереве
-GIT_TAG := $(shell git -C $(SRC_DIR) describe --tags --exact-match 2>/dev/null)
-GIT_SHA := $(shell git -C $(SRC_DIR) rev-parse --short HEAD 2>/dev/null)
-DIRTY   := $(shell test -n "$$(git -C $(SRC_DIR) status --porcelain 2>/dev/null)" && echo -dirty)
-
-ifeq ($(strip $(BOBA_TAG)),)
-  ifneq ($(strip $(GIT_TAG)),)
-    BOBA_TAG := $(GIT_TAG)$(DIRTY)
-  else
-    BOBA_TAG := $(GIT_SHA)$(DIRTY)
-  endif
-endif
-
+# версия пакетов и тег образа — одно и то же, меняется через make version-set.
+# Переопределить разово: make build BOBA_TAG=<тег>
 
 # версия у всех пакетов одна, лежит в их pyproject.toml (менять: make version-set)
 VERSION_FILE := $(SRC_DIR)/packages/core/boba-patterns/pyproject.toml
 VERSION      := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(VERSION_FILE))
+BOBA_TAG     ?= $(VERSION)
 
 
 PYTHON_VERSION	?= 3.11
@@ -56,7 +46,11 @@ IMAGE			:= boba:$(BOBA_TAG)
 NO_CACHE_TEXT	:= $(if $(filter 1,$(NO_CACHE)),--no-cache,)
 
 # make extract
-RELEASE_NAME 	:= boba-$(VERSION)-$(BOBA_TAG)
+# образ для extract задаётся явно, ничего не выводится из git:
+#   make extract RELEASE_IMAGE=boba:1b0af4a5
+RELEASE_IMAGE	?=
+RELEASE_TAG  	 = $(lastword $(subst :, ,$(RELEASE_IMAGE)))
+RELEASE_NAME 	 = boba-$(RELEASE_TAG)
 OUT          	?= $(BASE_DIR)/extract/$(RELEASE_NAME)
 INSTALL_DIR  	?= /opt/boba/$(RELEASE_NAME)
 DEPLOY_DIR   	:= $(BASE_DIR)/deploy
@@ -79,7 +73,8 @@ help:
 	echo ""
 	echo "Установка на сервер без docker:"
 	echo "  extract    выложить образ в портативную папку с unit и env"
-	echo "             OUT=<куда собрать>, INSTALL_DIR=<куда встанет на сервере>"
+	echo "             RELEASE_IMAGE=<образ> (обязателен), OUT=<куда собрать>,"
+	echo "             INSTALL_DIR=<куда встанет на сервере>"
 	echo ""
 	echo "Версия (одна на все пакеты, лежит в pyproject.toml):"
 	echo "  version        показать"
@@ -91,7 +86,7 @@ help:
 	echo "  clean      удалить скачанное в sources (wheels и fastembed остаются)"
 	echo "  print-tag  показать тег образа"
 	echo ""
-	echo "Переменные: BOBA_TAG=<тег>, NO_CACHE=1, PYTHON_VERSION=$(PYTHON_VERSION),"
+	echo "Переменные: BOBA_TAG=<тег> (по умолчанию версия пакетов), NO_CACHE=1, PYTHON_VERSION=$(PYTHON_VERSION),"
 	echo "            GCC_IMAGE=<ref>, PYTHON_IMAGE=<ref>"
 	echo "Пакетам нужен python >=$(REQUIRES_PY); wheels собираются на $(BASE_IMAGE)"
 	echo ""
@@ -159,6 +154,7 @@ debug:
 	echo "NO_CACHE       = $(NO_CACHE)"
 	echo "UV_URL         = $(UV_URL)"
 	echo "CA_CHAIN       = $(CA_CHAIN)"
+	echo "RELEASE_IMAGE  = $(RELEASE_IMAGE)"
 	echo "OUT            = $(OUT)"
 	echo "INSTALL_DIR    = $(INSTALL_DIR)"
 
@@ -269,7 +265,7 @@ fastembed: check-base
 # внешние зависимости offline из wheelhouse, пакеты boba — из исходников
 .PHONY: build
 build: version-check
-	@echo ">>> source:   $(SRC_DIR) @ $(BOBA_TAG)"
+	@echo ">>> source:   $(SRC_DIR), версия пакетов $(VERSION)"
 	echo ">>> version:  $(VERSION)"
 	echo ">>> building: $(IMAGE)  (+ boba:latest)"
 	docker build -f Dockerfile $(NO_CACHE_TEXT) \
@@ -287,8 +283,12 @@ build: version-check
 #   IMAGE=boba:latest   взять готовый образ, а не по текущему тегу
 .PHONY: extract
 extract:
-	@docker image inspect $(IMAGE) >/dev/null 2>&1 || {
-	    echo "нет образа $(IMAGE) — собери его (make build) или возьми готовый: make extract IMAGE=boba:latest" >&2
+	@[ -n "$(RELEASE_IMAGE)" ] || {
+	    echo "укажи образ: make extract RELEASE_IMAGE=boba:<тег>" >&2
+	    exit 1
+	}
+	@docker image inspect $(RELEASE_IMAGE) >/dev/null 2>&1 || {
+	    echo "нет образа $(RELEASE_IMAGE) — собери его (make build) или укажи другой" >&2
 	    exit 1
 	}
 	rm -rf "$(OUT)"
@@ -296,9 +296,9 @@ extract:
 	mkdir -p "$(OUT)/conf/prompts" "$(OUT)/local/workspaces/user" \
 	         "$(OUT)/local/workspaces/system" "$(OUT)/local/.chainlit"
 
-	echo ">>> собираю артефакты из $(IMAGE)"
+	echo ">>> собираю артефакты из $(RELEASE_IMAGE)"
 	# внутри контейнера образа: он root, поэтому права файлов сохраняются
-	docker run --rm -v "$(OUT)":/out --entrypoint sh $(IMAGE) -c '
+	docker run --rm -v "$(OUT)":/out --entrypoint sh $(RELEASE_IMAGE) -c '
 	    set -eu
 	    mkdir -p /out/python/bin /out/python/lib /out/lib /out/opt
 
@@ -344,7 +344,7 @@ extract:
 	for f in boba.env boba-chainlit.service README.md; do
 	    sed -e 's|__INSTALL_DIR__|$(INSTALL_DIR)|g' \
 	        -e 's|__RELEASE_NAME__|$(RELEASE_NAME)|g' \
-	        -e 's|__IMAGE__|$(IMAGE)|g' \
+	        -e 's|__IMAGE__|$(RELEASE_IMAGE)|g' \
 	        "$(DEPLOY_DIR)/$$f" > "$(OUT)/$$f"
 	done
 	sed 's|__INSTALL_DIR__|$(INSTALL_DIR)|g' \
@@ -352,8 +352,8 @@ extract:
 
 	{
 	    echo "release: $(RELEASE_NAME)"
-	    echo "image:   $(IMAGE)"
-	    echo "digest:  $$(docker image inspect -f '{{.Id}}' $(IMAGE))"
+	    echo "image:   $(RELEASE_IMAGE)"
+	    echo "digest:  $$(docker image inspect -f '{{.Id}}' $(RELEASE_IMAGE))"
 	    echo "python:  $(PYTHON_VERSION)"
 	    echo "packages version: $(VERSION)"
 	} > "$(OUT)/IMAGE.txt"
