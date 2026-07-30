@@ -34,6 +34,11 @@ PYTHON_VERSION	?= 3.11
 GCC_IMAGE    	?= dmp/gcc:8.5.0
 # python-дистрибутив (дерево /opt/python), накатывается поверх gcc
 PYTHON_IMAGE 	?= dmp/python:$(PYTHON_VERSION)-dist
+# базовый образ тегируется версией python: wheels и fastembed берут именно его,
+# иначе легко собрать колёса на boba-base от прошлой сборки с другим python
+BASE_IMAGE   	:= boba-base:$(PYTHON_VERSION)
+# нижняя граница requires-python пакетов (все пакеты держат её одинаковой)
+REQUIRES_PY  	:= $(shell sed -n 's/^requires-python = ">=\([0-9]*\.[0-9]*\).*/\1/p' $(VERSION_FILE))
 # выполнять ли сброс кэша: docker build --no-cache
 NO_CACHE		?= 0
 
@@ -79,7 +84,9 @@ help:
 	@echo "  clean      удалить скачанное в sources (wheels и fastembed остаются)"
 	@echo "  print-tag  показать тег образа"
 	@echo ""
-	@echo "Переменные: BOBA_TAG=<тег>, NO_CACHE=1, GCC_IMAGE=<ref>, PYTHON_IMAGE=<ref>"
+	@echo "Переменные: BOBA_TAG=<тег>, NO_CACHE=1, PYTHON_VERSION=$(PYTHON_VERSION),"
+	@echo "            GCC_IMAGE=<ref>, PYTHON_IMAGE=<ref>"
+	@echo "Пакетам нужен python >=$(REQUIRES_PY); wheels собираются на $(BASE_IMAGE)"
 	@echo ""
 
 
@@ -164,8 +171,23 @@ base:
 	docker build -f Dockerfile --target base $(NO_CACHE_TEXT) \
 		--build-arg GCC_IMAGE=$(GCC_IMAGE)                \
 		--build-arg PYTHON_IMAGE=$(PYTHON_IMAGE)          \
-		--tag boba-base:latest                            \
+		--tag $(BASE_IMAGE) --tag boba-base:latest        \
 		--progress plain $(BUILD_CONTEXT)
+
+
+# Ловит несовпадение python до сборки колёс. Иначе pip падает уже на установке
+# сообщением вида "Package 'boba-xxx' requires a different Python: 3.10.20 not in
+# '<4,>=3.11'" — оно указывает на случайный пакет и уводит от настоящей причины.
+.PHONY: check-base
+check-base:
+	@test "$$(printf '%s\n' "$(REQUIRES_PY)" "$(PYTHON_VERSION)" | sort -V | head -1)" = "$(REQUIRES_PY)" \
+	  || { echo "PYTHON_VERSION=$(PYTHON_VERSION), а пакетам нужен python >=$(REQUIRES_PY)" >&2; exit 1; }
+	@have=$$(docker run --rm --entrypoint python3 $(BASE_IMAGE)                        \
+	           -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)     \
+	  || { echo "нет образа $(BASE_IMAGE) — собери: make base" >&2; exit 1; };         \
+	  test "$$have" = "$(PYTHON_VERSION)"                                              \
+	  || { echo "$(BASE_IMAGE) собран с python $$have вместо $(PYTHON_VERSION) —"      \
+	            "пересобери: make base" >&2; exit 1; }
 
 
 # Наполнить artifacts/wheels: колёса всех пакетов из ../packages и их зависимостей.
@@ -173,8 +195,8 @@ base:
 # Каталог не чистится — старые колёса от удалённых зависимостей остаются,
 # так что после чистки зависимостей полезно пересобрать с нуля: rm -rf artifacts/wheels.
 .PHONY: wheels
-wheels: version-check
-	@echo ">>> версия пакетов: $(VERSION)";                                                                      \
+wheels: version-check check-base
+	@echo ">>> версия пакетов: $(VERSION), python $(PYTHON_VERSION)";                                            \
 	  docker run --rm                                                                                            \
 	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                                             \
 	  $(if $(CA_CHAIN),-v "$(ARTIFACTS)/ca-chain.crt":/tmp/ca-chain.crt:ro                                        \
@@ -182,11 +204,11 @@ wheels: version-check
 	  -v "$(ARTIFACTS)":/artifacts                                                                                \
 	  -v "$(SRC_DIR)":/boba:ro                                                                                    \
 	  $(if $(wildcard $(ARTIFACTS)/pip.conf),-v "$(ARTIFACTS)/pip.conf":/etc/pip.conf:ro)                         \
-	  -w /artifacts --entrypoint sh boba-base:latest -c '                                                         \
+	  -w /artifacts --entrypoint sh $(BASE_IMAGE) -c '                                                            \
 	    set -e; mkdir -p wheels;                                                                                  \
 	    cp -r /boba/packages /tmp/packages;                                                                       \
 	    pip3 wheel --no-cache-dir                                                                                 \
-	      $$(find /tmp/packages -name pyproject.toml -not -path "*/build/*" -printf "%h ")                        \
+	      $$(find /tmp/packages -name pyproject.toml -not -path "*/build/*" -printf "%h\n" | sort | tr "\n" " ")  \
 	      pip setuptools wheel -w wheels/;                                                                        \
 	    chown -R "$$HOST_UID:$$HOST_GID" wheels'
 
@@ -194,7 +216,7 @@ wheels: version-check
 # Скачать веса fastembed (ONNX) в artifacts/fastembed — их запекает в образ make build,
 # поэтому запускать до него. Нужны boba-base, wheels и доступ к HuggingFace.
 .PHONY: fastembed
-fastembed:
+fastembed: check-base
 	@mkdir -p $(ARTIFACTS)/fastembed
 	docker run --rm                                                                                                      \
 	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                                                    \
@@ -203,7 +225,7 @@ fastembed:
 	  $(if $(CA_CHAIN),-v "$(ARTIFACTS)/ca-chain.crt":/tmp/ca-chain.crt:ro                                               \
 	    -e REQUESTS_CA_BUNDLE=/tmp/ca-chain.crt -e CURL_CA_BUNDLE=/tmp/ca-chain.crt)                                     \
 	  -v "$(ARTIFACTS)":/artifacts                                                                                       \
-	  --entrypoint sh boba-base:latest -c '                                                                              \
+	  --entrypoint sh $(BASE_IMAGE) -c '                                                                              \
 	    set -e;                                                                                                          \
 	    pip3 install --no-cache-dir --no-index --find-links=/artifacts/wheels fastembed;                                 \
 	    for m in $$EMBED_MODELS; do echo ">>> fastembed: $$m";                                                           \
