@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-postgres"
-version = "0.0.6"
+version = "0.0.7"
 description = "Boba PG-tools: ad-hoc read-only SQL для LLM (query / list_tables / describe_table / list_targets) поверх boba-db-postgres."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools==0.0.6",
-    "boba-settings==0.0.6",
-    "boba-db-postgres==0.0.6",
+    "boba-tools==0.0.7",
+    "boba-settings==0.0.7",
+    "boba-db-postgres==0.0.7",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
 ]

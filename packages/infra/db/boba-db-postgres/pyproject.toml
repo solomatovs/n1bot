@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-postgres"
-version = "0.0.6"
+version = "0.0.7"
 description = "Boba PostgreSQL read-only pool: PostgresConfig + PostgresConnection + PostgresPool + get_pool() process-singleton."
 requires-python = ">=3.11,<4"
 dependencies = [
