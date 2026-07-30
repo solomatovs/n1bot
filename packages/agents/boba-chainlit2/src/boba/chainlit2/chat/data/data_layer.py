@@ -42,6 +42,7 @@ from boba.chainlit2.chat.data.models import (
     Codec,
     Element,
     Feedback,
+    Row,
     Step,
     Thread,
     User,
@@ -56,7 +57,7 @@ class PostgresDataLayer(BaseDataLayer):
     """Хранилище chainlit (users/threads/steps/elements/feedbacks) на psycopg-пуле."""
 
     # модели, чьи таблицы создаёт setup() (DDL живёт в самой модели — Row.ddl)
-    _MODELS: ClassVar[tuple[type, ...]] = (User, Thread, Step, Element, Feedback)
+    _MODELS: ClassVar[tuple[type[Row], ...]] = (User, Thread, Step, Element, Feedback)
 
     def __init__(
         self,

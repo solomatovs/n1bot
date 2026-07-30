@@ -4,23 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-kb"
-version = "0.0.6"
+version = "0.0.7"
 description = "Boba KB: knowledge-base tools (Confluence/ConfluenceDoc ingest + kb_{vector,fts}_search / kb_doc_{vector,fts}_search + confluence_search_cql + downloads) поверх postgres+pgvector."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools==0.0.6",
-    "boba-settings==0.0.6",
-    "boba-workspace==0.0.6",
-    "boba-indexing==0.0.6",
-    "boba-db-postgres==0.0.6",
-    "boba-transport-fs==0.0.6",
-    "boba-transport-http==0.0.6",
-    "boba-text==0.0.6",
-    "boba-html==0.0.6",
-    "boba-kbdoc==0.0.6",
-    "boba-liteparse==0.0.6",
+    "boba-tools==0.0.7",
+    "boba-settings==0.0.7",
+    "boba-workspace==0.0.7",
+    "boba-indexing==0.0.7",
+    "boba-db-postgres==0.0.7",
+    "boba-transport-fs==0.0.7",
+    "boba-transport-http==0.0.7",
+    "boba-text==0.0.7",
+    "boba-html==0.0.7",
+    "boba-kbdoc==0.0.7",
+    "boba-liteparse==0.0.7",
     # CLI confluence.download использует FsWorkspaceShell из boba.agent.workspace_fs
-    "boba-agent==0.0.6",
+    "boba-agent==0.0.7",
     "psycopg[binary,pool]>=3.2",
     "pgvector>=0.3",
     "pydantic>=2.10,<2.11",

@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-web"
-version = "0.0.6"
+version = "0.0.7"
 description = "Boba web tools: web_fetch / web_download c hostname-whitelist'ом и per-host httpx-auth поверх HttpTransport."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools==0.0.6",
-    "boba-settings==0.0.6",
-    "boba-workspace==0.0.6",
-    "boba-indexing==0.0.6",
-    "boba-transport-http==0.0.6",
+    "boba-tools==0.0.7",
+    "boba-settings==0.0.7",
+    "boba-workspace==0.0.7",
+    "boba-indexing==0.0.7",
+    "boba-transport-http==0.0.7",
     "pydantic>=2.10,<2.11",
     "httpx>=0.28,<1",
     "markdownify>=0.11,<1.0",
