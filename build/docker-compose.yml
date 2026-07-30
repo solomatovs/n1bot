@@ -7,7 +7,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - FASTEMBED_CACHE_DIR=/app/local
     volumes:
       - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
@@ -29,7 +28,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - FASTEMBED_CACHE_DIR=/app/local
     volumes:
       - ${HOST_DIR}/local/chainlit-lite/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit-lite/workspaces:/app/local/workspaces:rw
@@ -47,7 +45,7 @@ services:
     image: boba:${BOBA_TAG}
     hostname: chainlit2
     container_name: chainlit2
-    entrypoint: ["python3", "-m", "boba.chainlit2.main"]
+    entrypoint: ["boba-chainlit2"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
@@ -70,7 +68,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - FASTEMBED_CACHE_DIR=/app/local
     volumes:
       - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
@@ -87,7 +84,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      - FASTEMBED_CACHE_DIR=/app/local
     volumes:
       - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw

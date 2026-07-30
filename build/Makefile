@@ -22,8 +22,8 @@ ifeq ($(strip $(BOBA_TAG)),)
 endif
 
 
-# Единая lockstep-версия всех пакетов — статикой в каждом packages/**/pyproject.toml.
-# Читаем из корневого пакета (boba-patterns), меняем через `make version-set VER=X.Y.Z`.
+# версия у всех пакетов одна и лежит в их pyproject.toml.
+# меням версию через `make version-set VER=X.Y.Z`.
 VERSION_FILE := $(SRC_DIR)/packages/core/boba-patterns/pyproject.toml
 VERSION      := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(VERSION_FILE))
 
@@ -43,8 +43,7 @@ TESSDATA_REPO 	?= https://github.com/tesseract-ocr/tessdata_best/raw/main
 # embedding-веса fastembed (скачиваются в make fastembed)
 EMBED_MODELS  	?= intfloat/multilingual-e5-large
 
-# uv — готовый статический бинарь (НЕ компилируется, в отличие от wheels).
-# Платформа = выбор релиза под arch+libc: musl = статический, без зависимости от glibc.
+# uv качаем готовым бинарём (musl-сборка статическая, glibc не нужен).
 # Для внутреннего mirror достаточно переопределить UV_URL.
 UV_VERSION  	?= 0.11.21
 UV_PLATFORM 	?= x86_64-unknown-linux-musl
@@ -60,26 +59,27 @@ CA_CHAIN := $(wildcard $(ARTIFACTS)/ca-chain.crt)
 
 .PHONY: help
 help:
-	@echo "make (тег образа: $(BOBA_TAG)):"
-	@echo "  make all        собрать всё: sources base wheels fastembed build test"
-	@echo "  make sources    скачать OCR-модели tesseract и бинарь uv (нужен инет)"
-	@echo "  make base       собрать базовый образ boba-base ($(GCC_IMAGE) + $(PYTHON_IMAGE))"
-	@echo "  make wheels     пересобрать offline-wheels внутри boba-base по ../packages"
-	@echo "  make fastembed  скачать embedding-веса в artifacts/fastembed (нужны base+wheels+инет; ДО build)"
-	@echo "  make build      собрать runtime $(IMAGE) (+ boba:latest), offline из wheels"
-	@echo "  make test       проверить образ boba:latest: python, uv, пакеты, OCR, инструменты"
-	@echo "  make dist       собрать wheel'ы всех пакетов на хосте в build/dist (без Docker)"
-	@echo "  make print-tag  показать тег, который будет присвоен образу"
+	@echo "boba build — образ $(IMAGE), версия пакетов $(VERSION)"
 	@echo ""
-	@echo "  Версия пакетов (lockstep, статикой в pyproject.toml): $(VERSION)"
-	@echo "  make version       показать текущую версию"
-	@echo "  make version-set   VER=X.Y.Z — проставить версию во все пакеты и их внутренние пины"
-	@echo "  make version-check  проверить, что версия едина и пины boba-* ей соответствуют"
+	@echo "Сборка (порядок важен, всё сразу: make all):"
+	@echo "  sources    скачать tessdata и бинарь uv в artifacts (нужна сеть)"
+	@echo "  base       собрать boba-base: $(GCC_IMAGE) + $(PYTHON_IMAGE) + uv"
+	@echo "  wheels     собрать offline-wheelhouse в artifacts/wheels (нужен base, сеть)"
+	@echo "  fastembed  скачать embedding-веса в artifacts/fastembed (нужны wheels, сеть)"
+	@echo "  build      собрать $(IMAGE) и boba:latest — offline, из wheelhouse"
+	@echo "  test       проверить boba:latest (python, uv, пакеты, OCR, magick/soffice/gs)"
 	@echo ""
-	@echo "  Образ базируется на dmp/gcc (glibc+gcc8) с python из dmp/python -dist."
-	@echo "  Зависимости ставятся offline из artifacts/wheels через uv."
-	@echo "  Параметры: BOBA_TAG=<тег> (запинить), NO_CACHE=1, GCC_IMAGE=<ref>, PYTHON_IMAGE=<ref>"
-	@echo "  Полный цикл с нуля: make all"
+	@echo "Версия (одна на все пакеты, лежит в pyproject.toml):"
+	@echo "  version        показать"
+	@echo "  version-set    VER=X.Y.Z — проставить во все пакеты и во внутренние пины"
+	@echo "  version-check  проверить, что версия одна и пины boba-* совпадают"
+	@echo ""
+	@echo "Прочее:"
+	@echo "  dist       собрать wheel'ы пакетов на хосте в build/dist (без docker)"
+	@echo "  clean      удалить скачанное в sources (wheels и fastembed остаются)"
+	@echo "  print-tag  показать тег образа"
+	@echo ""
+	@echo "Переменные: BOBA_TAG=<тег>, NO_CACHE=1, GCC_IMAGE=<ref>, PYTHON_IMAGE=<ref>"
 	@echo ""
 
 
@@ -138,9 +138,8 @@ debug:
 	@true
 
 
-# Скачать то, что качается заранее: OCR-модели tesseract + бинарь uv.
-# Идемпотентно (уже скачанное пропускает). Внутренний mirror — через переопределение URL.
-# gcc/python/glibc НЕ качаем и НЕ собираем: они уже в образах dmp/gcc и dmp/python.
+# Единственный шаг, которому нужна сеть заранее: tessdata + бинарь uv.
+# Уже скачанное пропускает. gcc/python не качаем — они в dmp/gcc и dmp/python.
 .PHONY: sources
 sources:
 	@mkdir -p $(ARTIFACTS)/tessdata $(ARTIFACTS)/bin
@@ -159,8 +158,7 @@ sources:
 	  $(ARTIFACTS)/bin/uv --version; fi
 
 
-# Базовый образ boba-base: gcc-тулчейн + python + uv, без установленных пакетов.
-# Нужен для offline-пересборки wheels и скачивания весов fastembed.
+# boba-base: gcc + python + uv, без пакетов. На нём собираются wheels и качается fastembed.
 .PHONY: base
 base:
 	docker build -f Dockerfile --target base $(NO_CACHE_TEXT) \
@@ -170,8 +168,10 @@ base:
 		--progress plain $(BUILD_CONTEXT)
 
 
-# Пересобрать offline-wheels в artifacts/wheels по всем pyproject.toml из ../packages.
-# Каждый pyproject.toml внутри packages/ — это отдельный пакет.
+# Наполнить artifacts/wheels: колёса всех пакетов из ../packages и их зависимостей.
+# Пакеты ищутся по pyproject.toml, список нигде не хардкодится.
+# Каталог не чистится — старые колёса от удалённых зависимостей остаются,
+# так что после чистки зависимостей полезно пересобрать с нуля: rm -rf artifacts/wheels.
 .PHONY: wheels
 wheels: version-check
 	@echo ">>> версия пакетов: $(VERSION)";                                                                      \
@@ -191,10 +191,8 @@ wheels: version-check
 	    chown -R "$$HOST_UID:$$HOST_GID" wheels'
 
 
-# Скачать embedding-веса fastembed (ONNX) в artifacts/fastembed/.
-# Работает на boba-base: fastembed ставится offline из wheelhouse, веса качаются с HF.
-# Нужны boba-base + wheels + сеть/mirror к HuggingFace; make build НЕ требуется
-# (наоборот — fastembed должен быть ДО build, т.к. веса запекаются в образ).
+# Скачать веса fastembed (ONNX) в artifacts/fastembed — их запекает в образ make build,
+# поэтому запускать до него. Нужны boba-base, wheels и доступ к HuggingFace.
 .PHONY: fastembed
 fastembed:
 	@mkdir -p $(ARTIFACTS)/fastembed
@@ -217,7 +215,7 @@ fastembed:
 	    chown -R "$$HOST_UID:$$HOST_GID" /artifacts/fastembed'
 
 
-# Собрать runtime-образ boba: пакеты ставятся offline из artifacts/wheels через uv.
+# Runtime-образ: внешние зависимости offline из artifacts/wheels, пакеты boba из исходников.
 .PHONY: build
 build: version-check
 	@echo ">>> source:   $(SRC_DIR) @ $(BOBA_TAG)";                \
@@ -231,10 +229,9 @@ build: version-check
 	  --progress plain $(BUILD_CONTEXT)
 
 
-# Собрать wheel'ы всех пакетов на хосте в build/dist/ (без Docker).
-# Версия берётся из pyproject.toml; --no-sources проверяет, что сборка не зависит
-# от [tool.uv.sources] (то есть колесо соберётся и вне workspace).
-# Нужен uv в artifacts/bin (make sources) и сеть/mirror для build-зависимостей.
+# Колёса пакетов на хосте, в build/dist — для раздачи наружу, к образу отношения не имеет.
+# --no-sources проверяет, что пакет собирается и без workspace (без [tool.uv.sources]).
+# Нужен uv в artifacts/bin (make sources) и сеть для build-зависимостей.
 .PHONY: dist
 dist: version-check
 	@echo ">>> версия пакетов: $(VERSION)";                                      \

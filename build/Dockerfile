@@ -74,15 +74,6 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt      \
     CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt     \
     GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 
-# # российская локаль ru_RU.UTF-8
-# RUN set -eux;                                   \
-#     mkdir -p /usr/lib/x86_64-linux-gnu/locale;  \
-#     localedef -i ru_RU -c -f UTF-8 ru_RU.UTF-8; \
-#     locale -a | grep -q '^ru_RU\.utf8$'
-# ENV LANG=ru_RU.UTF-8   \
-#     LC_ALL=ru_RU.UTF-8 \
-#     LANGUAGE=ru_RU.UTF-8
-
 # pip.conf (закрытый контур; по умолчанию .example пуст)
 COPY build/artifacts/pip.conf* /tmp/pipconf/
 RUN if [ -f /tmp/pipconf/pip.conf ]; then cp /tmp/pipconf/pip.conf /etc/pip.conf; fi && rm -rf /tmp/pipconf
@@ -95,16 +86,15 @@ RUN if [ -f /tmp/uvconf/uv.toml ]; then mkdir -p /etc/uv && cp /tmp/uvconf/uv.to
 COPY build/artifacts/bin/uv /usr/local/bin/uv
 
 
-# deps: offline-установка внешних зависимостей из wheelhouse.
-# Ставим все пакеты (чтобы утянуть их deps), затем сами пакеты удаляем —
-# остаются только внешние зависимости, которые нужны runtime-стадии.
+# deps: собирает site-packages с одними внешними зависимостями.
+# Ставим пакеты boba (чтобы uv притянул их зависимости), затем сносим сами
+# пакеты — остаётся то, что нужно runtime-стадии.
 FROM base AS deps
 
 COPY build/artifacts/wheels/ /tmp/wheels/
 COPY packages/ /tmp/boba/packages/
 
-# подпроекты вычисляются автоматически: каждый pyproject.toml внутри packages/ — это пакет
-# (сама директория packages/ исключается тем, что ищем со -mindepth 1)
+# список пакетов = все pyproject.toml внутри packages/ (-mindepth 1 отсекает сам packages/)
 RUN set -eu;                                                                                \
     pkgs=$(find /tmp/boba/packages -mindepth 1 -name pyproject.toml -printf '%h\n' | sort); \
     names=$(for p in $pkgs; do basename "$p"; done);                                        \
@@ -120,17 +110,17 @@ ARG PYTHON_VERSION=3.11
 ARG BOBA_VERSION=0.0.0
 LABEL org.opencontainers.image.version=${BOBA_VERSION}
 
-COPY build/artifacts/wheels/ /tmp/wheels/
-
 COPY --from=deps /usr/local/lib/python${PYTHON_VERSION}/site-packages /usr/local/lib/python${PYTHON_VERSION}/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
-# исходники всех пакетов; подпроекты вычисляются автоматически по pyproject.toml.
-# --no-deps: внешние зависимости уже стоят из stage deps, ставим только сами пакеты
+# пакеты boba ставим из исходников:
+#   --no-deps            внешние зависимости уже пришли из стадии deps
+#   --no-build-isolation берём setuptools/wheel из образа, а не из сети/wheelhouse
+#                        (поэтому wheelhouse в этот образ копировать не нужно)
 COPY packages/ /app/packages/
 RUN set -eu;                                                                                  \
     for d in $(find /app/packages -mindepth 1 -name pyproject.toml -printf '%h\n' | sort); do \
-      uv pip install --system --no-deps --no-index --find-links=/tmp/wheels "$d";             \
+      uv pip install --system --no-deps --no-build-isolation "$d";                             \
     done
 
 # OCR-модели tesseract
