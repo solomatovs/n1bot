@@ -341,34 +341,7 @@ extract:
 
 	    chown -R $$(stat -c "%u:%g" /out) /out/python /out/lib /out/opt'
 
-	echo ">>> boba.env (пути релиза)"
-	{
-	    echo "# Окружение релиза $(RELEASE_NAME), собран из образа $(IMAGE)."
-	    echo "# unit подключает файл через EnvironmentFile; руками: set -a; . ./boba.env; set +a"
-	    echo ""
-	    echo "PYTHONHOME=$(INSTALL_DIR)/python"
-	    echo "PATH=$(INSTALL_DIR)/python/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	    echo "LD_LIBRARY_PATH=$(INSTALL_DIR)/lib:$(INSTALL_DIR)/python/lib"
-	    echo "# без этого в namespace-пакеты (opentelemetry и др.) подмешивается"
-	    echo "# ~/.local/lib/pythonX.Y сервера и ломает импорты чужой версией"
-	    echo "PYTHONNOUSERSITE=1"
-	    echo ""
-	    echo "TESSDATA_PREFIX=$(INSTALL_DIR)/opt/tessdata"
-	    echo "TESSDATA_PATH=$(INSTALL_DIR)/opt/tessdata"
-	    echo "FASTEMBED_CACHE_PATH=$(INSTALL_DIR)/opt/fastembed"
-	    echo ""
-	    echo "# конфигурация (правится руками) и рабочий каталог (пишет приложение)"
-	    echo "BOBA_CONFIG_PATH=$(INSTALL_DIR)/conf/config.toml"
-	    echo "CHAINLIT_APP_ROOT=$(INSTALL_DIR)/local"
-	    echo ""
-	    echo "# сертификаты — системные, серверные"
-	    echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-	    echo "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
-	    echo "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
-	    echo "LANG=C.UTF-8"
-	} > "$(OUT)/boba.env"
-
-	for f in boba-chainlit.service README.md; do
+	for f in boba.env boba-chainlit.service README.md; do
 	    sed -e 's|__INSTALL_DIR__|$(INSTALL_DIR)|g' \
 	        -e 's|__RELEASE_NAME__|$(RELEASE_NAME)|g' \
 	        -e 's|__IMAGE__|$(IMAGE)|g' \
