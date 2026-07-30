@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-auth"
 version = "0.0.7"
-description = "Boba chainlit authentication: fix/LDAP/Kerberos(SPNEGO) providers, role mapping, domain errors."
+description = "Boba chainlit authentication: local/LDAP/Kerberos(SPNEGO) providers, role mapping, domain errors."
 requires-python = ">=3.11,<4"
 dependencies = [
     # cl.User, chainlit_config.code.password_auth_callback, create_jwt/set_auth_cookie
