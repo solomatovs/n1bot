@@ -1,4 +1,4 @@
-"""PostgresDataLayer chainlit поверх psycopg AsyncConnectionPool.
+"""PostgresDataLayer chainlit поверх boba AsyncPostgresPool.
 
 Пул соединений приходит извне (владеет им DI), слой его не создаёт и не закрывает.
 Все таблицы квалифицируются схемой из конфига (sql.Identifier(schema, ...)) —
@@ -35,7 +35,6 @@ from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
-from psycopg_pool import AsyncConnectionPool
 
 from boba.auth.errors import InternalServiceError
 from boba.chainlit2.chat.data.models import (
@@ -47,6 +46,7 @@ from boba.chainlit2.chat.data.models import (
     Thread,
     User,
 )
+from boba.db.postgres import AsyncPostgresPool
 
 __all__ = [
     "PostgresDataLayer",
@@ -61,7 +61,7 @@ class PostgresDataLayer(BaseDataLayer):
 
     def __init__(
         self,
-        pool: AsyncConnectionPool,
+        pool: AsyncPostgresPool,
         schema: str,
         storage: BaseStorageClient,
     ) -> None:

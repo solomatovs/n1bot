@@ -45,7 +45,7 @@ from pgvector.psycopg import register_vector
 from psycopg import sql
 from pydantic import BaseModel, Field, model_validator
 
-from boba.db.postgres import PostgresConnection, PostgresPool
+from boba.db.postgres import PostgresConfig, PostgresPool
 from boba.indexing.chunk_store import (
     ChunkStore,
     CollectionInfo,
@@ -92,18 +92,18 @@ _E = TypeVar("_E")
 class KbPool:
     """Factory PostgresPool для KB-store (с register_vector).
 
-    PostgresPool.get(...) — singleton по DSN, поэтому повторные вызовы с
-    тем же PostgresConnection возвращают тот же объект pool'а. Configure-
+    PostgresPool.get(...) — singleton по конфигу, поэтому повторные вызовы с
+    тем же PostgresConfig возвращают тот же объект pool'а. Configure-
     hook register_vector регистрирует pgvector-типы на каждом fresh-коннекте
     (без этого embedding-колонка приходит как plain str и INSERT vector
     падает на cast).
     """
 
     @staticmethod
-    def open(connection: PostgresConnection) -> PostgresPool:
+    def open(connection: PostgresConfig) -> PostgresPool:
         """Открыть (или взять из кэша) PostgresPool под connection."""
         return PostgresPool.get(
-            connection.to_pool_config(),
+            connection,
             configure=register_vector,
         )
 
@@ -180,7 +180,7 @@ class PostgresStoreSchema(BaseModel):
 class PostgresStoreConfig(BaseModel):
     """Composite-конфиг для KB-store-сервисов: connection + tables."""
 
-    connection: PostgresConnection
+    connection: PostgresConfig
     tables: PostgresStoreSchema
 
 

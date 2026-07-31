@@ -23,5 +23,12 @@ packages/**/dist/
 !/build/test/
 /build/test/*
 !/build/test/bobacheck.py
-!/build/deploy/
+!/build/conf/
+/build/conf/*
+!/build/conf/boba.env
+!/build/conf/boba-chainlit.service
+!/build/conf/config.toml.example
+!/build/conf/README.md
+!/build/conf/pip.conf.example
+!/build/conf/uv.toml.example
 uv.lock

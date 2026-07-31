@@ -4,7 +4,7 @@ boba-tool-kb — плагин: KB-tools поверх postgres+pgvector + Conflue
 
 from __future__ import annotations
 
-from boba.db.postgres import PostgresConnection
+from boba.db.postgres import PostgresConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.download import (
     ConfluenceDownloadConfig,
@@ -68,7 +68,7 @@ __all__ = [
     "EmbeddingModel",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
-    "PostgresConnection",
+    "PostgresConfig",
     "PostgresKnowledgeBase",
     "PostgresKnowledgeBaseConfig",
     "PostgresStoreConfig",

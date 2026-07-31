@@ -25,7 +25,7 @@ from typing import Any, LiteralString, cast
 from psycopg import sql
 from pydantic import BaseModel
 
-from boba.db.postgres import PostgresConnection
+from boba.db.postgres import PostgresConfig
 from boba.tool.kb.core.embedding import EmbeddingModel, LocalFastEmbedEmbedderFactory
 from boba.tool.kb.core.models import KnowledgeBaseError, SearchHit
 from boba.tool.kb.core.postgres import KbPool, PostgresStoreSchema
@@ -46,7 +46,7 @@ class PostgresKnowledgeBaseConfig(BaseModel):
     (см. migrations/002_multilang_tsv.sql) — оба места должны быть синхронны.
     """
 
-    connection: PostgresConnection
+    connection: PostgresConfig
     tables: PostgresStoreSchema
     embedding: EmbeddingModel
 

@@ -3,18 +3,23 @@ services:
     image: boba:${BOBA_TAG}
     hostname: chainlit
     container_name: chainlit
-    entrypoint: ["boba-chainlit"]
+    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && export CHAINLIT_APP_ROOT=/app/local && exec boba-chainlit \"$$@\"", "--"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      # postgres-17 по сети принимает только Kerberos: keytab boba-svc и GSS-настройки
+      - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
+      - KRB5CCNAME=FILE:/tmp/krb5cc
+      - PGGSSENCMODE=prefer
     volumes:
-      - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
-      - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
-      - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
-      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
-      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
-      - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
-      - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/data/chainlit/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/data/chainlit/workspaces:/app/local/workspaces:rw
+      - ${HOST_DIR}/data/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/data/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/data/chainlit/public:/app/local/public:ro
+      - ${HOST_DIR}/data/keytab/krb5.keytab:/etc/krb5.keytab:ro
+      - ${HOST_DIR}/data/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba-svc.keytab:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
     ports:
       - 127.0.0.1:8501:8501
@@ -24,18 +29,23 @@ services:
     image: boba:${BOBA_TAG}
     hostname: chainlit-lite
     container_name: chainlit-lite
-    entrypoint: ["boba-chainlit"]
+    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && export CHAINLIT_APP_ROOT=/app/local && exec boba-chainlit \"$$@\"", "--"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      # postgres-17 по сети принимает только Kerberos: keytab boba-svc и GSS-настройки
+      - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
+      - KRB5CCNAME=FILE:/tmp/krb5cc
+      - PGGSSENCMODE=prefer
     volumes:
-      - ${HOST_DIR}/local/chainlit-lite/config.toml:/app/local/config.toml:ro
-      - ${HOST_DIR}/local/chainlit-lite/workspaces:/app/local/workspaces:rw
-      - ${HOST_DIR}/local/chainlit-lite/prompts:/app/local/prompts:ro
-      - ${HOST_DIR}/local/chainlit-lite/.chainlit:/app/local/.chainlit:ro
-      - ${HOST_DIR}/local/chainlit-lite/public:/app/local/public:ro
-      - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
-      - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/data/chainlit-lite/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/data/chainlit-lite/workspaces:/app/local/workspaces:rw
+      - ${HOST_DIR}/data/chainlit-lite/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/data/chainlit-lite/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/data/chainlit-lite/public:/app/local/public:ro
+      - ${HOST_DIR}/data/keytab/krb5.keytab:/etc/krb5.keytab:ro
+      - ${HOST_DIR}/data/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba-svc.keytab:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
     ports:
       - 127.0.0.1:8502:8501
@@ -45,16 +55,21 @@ services:
     image: boba:${BOBA_TAG}
     hostname: chainlit2
     container_name: chainlit2
-    entrypoint: ["boba-chainlit2"]
+    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && export CHAINLIT_APP_ROOT=/app/local && exec boba-chainlit2 \"$$@\"", "--"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      # postgres-17 принимает по сети только Kerberos: keytab boba-svc и GSS-настройки
+      - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
+      - KRB5CCNAME=FILE:/tmp/krb5cc
+      - PGGSSENCMODE=prefer
     volumes:
-      - ${HOST_DIR}/local/chainlit2/config.toml:/app/local/config.toml:ro
-      - ${HOST_DIR}/local/chainlit2/.chainlit:/app/local/.chainlit:ro
-      - ${HOST_DIR}/local/chainlit2/public:/app/local/public:ro
-      - ${HOST_DIR}/local/keytab/krb5.keytab:/etc/krb5.keytab:ro
-      - ${HOST_DIR}/local/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/data/chainlit2/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/data/chainlit2/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/data/chainlit2/public:/app/local/public:ro
+      - ${HOST_DIR}/data/keytab/krb5.keytab:/etc/krb5.keytab:ro
+      - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba-svc.keytab:ro
+      - ${HOST_DIR}/data/keytab/krb5.conf:/etc/krb5.conf:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
     ports:
       - 127.0.0.1:8503:8501
@@ -64,32 +79,42 @@ services:
     image: boba:${BOBA_TAG}
     hostname: cli-agent
     container_name: cli-agent
-    entrypoint: ["boba-cli"]
+    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && export CHAINLIT_APP_ROOT=/app/local && exec boba-cli \"$$@\"", "--"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      # postgres-17 по сети принимает только Kerberos: keytab boba-svc и GSS-настройки
+      - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
+      - KRB5CCNAME=FILE:/tmp/krb5cc
+      - PGGSSENCMODE=prefer
     volumes:
-      - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
-      - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
-      - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
-      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
-      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
+      - ${HOST_DIR}/data/chainlit/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/data/chainlit/workspaces:/app/local/workspaces:rw
+      - ${HOST_DIR}/data/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/data/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/data/chainlit/public:/app/local/public:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
 
   kb-bootstrap:
     image: boba:${BOBA_TAG}
     hostname: kb-bootstrap
     container_name: kb-bootstrap
-    entrypoint: ["python3", "-m", "boba.tool.kb.cli.kb_bootstrap"]
+    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && export CHAINLIT_APP_ROOT=/app/local && exec python3 -m boba.tool.kb.cli.kb_bootstrap \"$$@\"", "--"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
+      # postgres-17 по сети принимает только Kerberos: keytab boba-svc и GSS-настройки
+      - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
+      - KRB5CCNAME=FILE:/tmp/krb5cc
+      - PGGSSENCMODE=prefer
     volumes:
-      - ${HOST_DIR}/local/chainlit/config.toml:/app/local/config.toml:ro
-      - ${HOST_DIR}/local/chainlit/workspaces:/app/local/workspaces:rw
-      - ${HOST_DIR}/local/chainlit/prompts:/app/local/prompts:ro
-      - ${HOST_DIR}/local/chainlit/.chainlit:/app/local/.chainlit:ro
-      - ${HOST_DIR}/local/chainlit/public:/app/local/public:ro
+      - ${HOST_DIR}/data/chainlit/config.toml:/app/local/config.toml:ro
+      - ${HOST_DIR}/data/chainlit/workspaces:/app/local/workspaces:rw
+      - ${HOST_DIR}/data/chainlit/prompts:/app/local/prompts:ro
+      - ${HOST_DIR}/data/chainlit/.chainlit:/app/local/.chainlit:ro
+      - ${HOST_DIR}/data/chainlit/public:/app/local/public:ro
+      - ${HOST_DIR}/data/keytab/krb5.conf:/etc/krb5.conf:ro
+      - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba-svc.keytab:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
 
 networks:

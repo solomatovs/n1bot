@@ -33,7 +33,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.db.postgres import PostgresConnection
+from boba.db.postgres import PostgresConfig
 from boba.settings import bind, build_app_config
 from boba.tool.kb.core.embedding import EmbeddingModel, LocalFastEmbedEmbedderFactory
 from boba.tool.kb.core.migrations import Migrations
@@ -51,7 +51,7 @@ class KbBootstrapConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    connection: PostgresConnection
+    connection: PostgresConfig
     tables: PostgresStoreSchema
     embedding: EmbeddingModel
 
@@ -77,7 +77,7 @@ def main() -> int:
         cfg.tables.chunks_table,
         cfg.tables.collections_table,
         cfg.connection.host,
-        cfg.connection.database,
+        cfg.connection.dbname,
     )
 
     start = time.monotonic()

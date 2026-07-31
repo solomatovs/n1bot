@@ -12,7 +12,7 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import to_jsonable_python
 
-from boba.db.postgres import PostgresConnection, PostgresPool
+from boba.db.postgres import PostgresConfig, PostgresPool
 from boba.tool.pg.copy_buffer import (
     BufferCapacityError,
     CopyBuffer,
@@ -33,7 +33,7 @@ class SqlExecutorConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    profiles: dict[str, PostgresConnection] = Field(
+    profiles: dict[str, PostgresConfig] = Field(
         default_factory=dict,
         description=(
             "dict[target, postgres-профиль ссылкой]: "
@@ -70,8 +70,8 @@ class SqlExecutorConfig(BaseModel):
         """Имена доступных профилей (значения tool-arg target)."""
         return sorted(self.profiles)
 
-    def resolve(self, target: str) -> PostgresConnection:
-        """Вернуть PostgresConnection для target; ValueError если не в whitelist."""
+    def resolve(self, target: str) -> PostgresConfig:
+        """Вернуть PostgresConfig для target; ValueError если не в whitelist."""
         conn = self.profiles.get(target)
         if conn is None:
             msg = f"pg: target {target!r} не в whitelist (allowed={self.targets()})"
@@ -79,12 +79,9 @@ class SqlExecutorConfig(BaseModel):
         return conn
 
     @staticmethod
-    def session_options(conn: PostgresConnection) -> dict[str, str]:
+    def session_options(conn: PostgresConfig) -> dict[str, str]:
         """Session-level GUC, зашиваемые в options DSN."""
-        return {
-            "default_transaction_read_only": "on",
-            "statement_timeout": str(conn.statement_timeout_ms),
-        }
+        return {"default_transaction_read_only": "on"}
 
 
 class SqlQueryError(RuntimeError):
@@ -137,7 +134,8 @@ class SqlExecutor:
         """
         conn = self._cfg.resolve(target)
         pool = PostgresPool.get(
-            conn.to_pool_config(session_options=self._cfg.session_options(conn)),
+            conn,
+            override_options=self._cfg.session_options(conn),
         )
 
         stmt = f"COPY ({query}) TO STDOUT WITH (FORMAT TEXT, HEADER)"
@@ -170,7 +168,8 @@ class SqlExecutor:
         """Выполнить SQL на профиле target; вернуть JSON-safe dict-строки."""
         conn = self._cfg.resolve(target)
         pool = PostgresPool.get(
-            conn.to_pool_config(session_options=self._cfg.session_options(conn)),
+            conn,
+            override_options=self._cfg.session_options(conn),
         )
 
         effective_limit = min(max(row_limit, 1), self._cfg.max_rows)

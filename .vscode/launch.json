@@ -11,9 +11,11 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "env": {
-                "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/local/chainlit-debug.toml",
-                "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/local",
-                "KRB5_CONFIG": "${workspaceFolder}/local/krb5.conf",
+                "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/data/chainlit-debug.toml",
+                "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/data",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
             }
         },
         {
@@ -28,9 +30,9 @@
             "justMyCode": false,
             "stopOnEntry": false,
             "env": {
-                "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/local/chainlit2-debug.toml",
-                "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/local",
-                "KRB5_CONFIG": "${workspaceFolder}/local/krb5.conf",
+                "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/data/chainlit2-debug.toml",
+                "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/data",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf"
             }
         },
         {
@@ -47,9 +49,9 @@
                 "-v"
             ],
             "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/local/chainlit2-debug.toml",
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/local",
-                "KRB5_CONFIG": "${workspaceFolder}/local/krb5.conf"
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit2-debug.toml",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf"
             }
         },
         {
@@ -62,7 +64,10 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "env": {
-                "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/local/chainlit-debug.toml"
+                "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/data/chainlit-debug.toml",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
             }
         },
         {
@@ -75,8 +80,11 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "env": {
-                "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/local/chainlit-debug.toml",
-                "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/local"
+                "BOBA_CONFIG_PATH":"${workspaceFolder}/.vscode/data/chainlit-debug.toml",
+                "CHAINLIT_APP_ROOT":"${workspaceFolder}/.vscode/data",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
             }
         },
         {
@@ -89,5 +97,5 @@
             "justMyCode": false,
             "program": "${file}"
         }
-    ],
+    ]
 }

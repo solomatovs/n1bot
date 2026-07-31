@@ -1,11 +1,11 @@
-"""boba.db.postgres — read-only PG-пул для tool-пакетов.
+"""boba.db.postgres — Postgres-конфиг + sync/async-пулы для tool-пакетов и приложений.
 
 Использование:
     cfg = PostgresConfig(
-        dsn="postgresql://reader:***@db.example/app"
-            "?default_transaction_read_only=on&statement_timeout=5000",
+        host="db.local", user="reader", dbname="app",
+        pool={"timeout": 10.0}, options={"statement_timeout": "5s"},
     )
-    pool = PostgresPool.get(cfg)
+    pool = PostgresPool.get(cfg, override_options={"default_transaction_read_only": "on"})
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT 1")
         cur.fetchone()
@@ -13,14 +13,20 @@
 
 from __future__ import annotations
 
-from boba.db.postgres.config import PostgresConfig
-from boba.db.postgres.connection import PostgresConnection
+from boba.db.postgres.async_pool import AsyncPostgresPool
+from boba.db.postgres.config import (
+    PostgresConfig,
+    PostgresOptionsConfig,
+    PostgresPoolConfig,
+)
 from boba.db.postgres.errors import PostgresError, PostgresPoolClosedError
 from boba.db.postgres.pool import PostgresPool
 
 __all__ = [
+    "AsyncPostgresPool",
     "PostgresConfig",
-    "PostgresConnection",
+    "PostgresOptionsConfig",
+    "PostgresPoolConfig",
     "PostgresError",
     "PostgresPool",
     "PostgresPoolClosedError",
