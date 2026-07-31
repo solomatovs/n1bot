@@ -2,6 +2,7 @@
 
 !packages
 !build
+!pyproject.toml
 
 packages/**/__pycache__
 packages/**/*.egg-info

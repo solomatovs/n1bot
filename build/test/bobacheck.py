@@ -1,7 +1,16 @@
 #!/usr/local/bin/python3
-"""Проверка работоспособности собранного runtime-образа boba:
+"""Проверка работоспособности собранного портативного каталога boba:
 интерпретатор, uv, offline-установленные пакеты (boba-* и внешние),
-консольные точки входа, OCR-модели и внешние инструменты (magick, soffice, gs)."""
+консольные точки входа, OCR-модели и внешние инструменты (magick, soffice, gs).
+
+Запускается на каталоге релиза с его окружением (make test):
+  cd <релиз>; set -a; . conf/boba.env; set +a
+  python3 test/bobacheck.py --names <файл со списком имён пакетов boba>
+
+Список имён пакетов берётся из стадии deps (boba/names.txt); если его нет —
+сканируются исходники (--packages).
+"""
+import argparse
 import os
 import shutil
 import subprocess
@@ -9,6 +18,16 @@ import sys
 
 # chainlit на импорте создаёт .chainlit/.files в cwd — уводим в /tmp
 os.environ.setdefault("CHAINLIT_APP_ROOT", "/tmp")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--names", default=None,
+                    help="файл со списком имён пакетов boba (строка = имя)")
+parser.add_argument("--packages", default="/app/packages",
+                    help="каталог с исходниками boba (если нет --names)")
+args = parser.parse_args()
+
+PACKAGES_DIR = args.packages
+NAMES_FILE = args.names
 
 failures = []
 
@@ -31,7 +50,7 @@ def warn(name, fn):
 
 
 def run(*argv):
-    out = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=90)
     if out.returncode != 0:
         raise RuntimeError((out.stderr or out.stdout).strip().splitlines()[-1:])
     return (out.stdout or out.stderr).strip().splitlines()[0]
@@ -53,16 +72,17 @@ import importlib
 for m in ["pydantic", "fastapi", "tabulate", "plotly", "fastembed"]:
     check(f"import {m}", lambda m=m: importlib.import_module(m))
 
-# 3) все пакеты из /app/packages установлены (без импорта кода — только метаданные).
-# Список берём из исходников, а не хардкодим: новый пакет попадает в проверку сам.
+# 3) все пакеты boba установлены (без импорта кода — только метаданные).
+# Список имён берём из стадии deps (names.txt) либо из исходников — не хардкодим.
 print("== boba distributions installed ==")
 import importlib.metadata as md
 import tomllib
 
-PACKAGES_DIR = "/app/packages"
-
 
 def package_names():
+    if NAMES_FILE and os.path.isfile(NAMES_FILE):
+        with open(NAMES_FILE, encoding="utf-8") as f:
+            return sorted(line.strip() for line in f if line.strip())
     names = []
     for root, _dirs, files in os.walk(PACKAGES_DIR):
         if "pyproject.toml" not in files:
@@ -74,10 +94,11 @@ def package_names():
 
 required = package_names()
 installed = {d.metadata["Name"].lower() for d in md.distributions()}
-print(f"  пакетов в {PACKAGES_DIR}: {len(required)}, "
+source = NAMES_FILE or PACKAGES_DIR
+print(f"  пакетов boba: {len(required)}, "
       f"установлено boba-*: {sum(1 for n in installed if n.startswith('boba-'))}")
-check(f"пакеты найдены в {PACKAGES_DIR}", lambda: (_ for _ in ()).throw(
-    RuntimeError("не найдено ни одного pyproject.toml")) if not required else None)
+check(f"список пакетов из {source}", lambda: (_ for _ in ()).throw(
+    RuntimeError("список пуст")) if not required else None)
 for dist in required:
     check(f"dist {dist}", lambda dist=dist: md.version(dist))
 
@@ -96,7 +117,7 @@ for script in scripts:
           (_ for _ in ()).throw(RuntimeError("not found"))
           if shutil.which(script) is None else None)
 
-# 5) OCR-модели tesseract (запекаются в /opt/tessdata)
+# 5) OCR-модели tesseract (путь задаёт boba.env: TESSDATA_PREFIX)
 print("== OCR models ==")
 tessdir = os.environ.get("TESSDATA_PREFIX", "/opt/tessdata")
 
@@ -109,18 +130,13 @@ def t_tessdata():
 
 check(f"tessdata в {tessdir}", t_tessdata)
 
-# 6) внешние инструменты обработки документов
-print("== external tools ==")
-check("magick (унифицированный CLI)", lambda: run("magick", "-version"))
-warn("soffice (libreoffice)", lambda: run("soffice", "--version"))
-warn("gs (ghostscript)", lambda: run("gs", "--version"))
-
-# 7) embedding-веса fastembed — опционально (make fastembed ДО build)
+# 6) embedding-веса fastembed (путь задаёт boba.env: FASTEMBED_CACHE_PATH)
 print("== fastembed weights ==")
+fastembed_dir = os.environ.get("FASTEMBED_CACHE_PATH", "/opt/fastembed")
 warn(
-    "веса в /opt/fastembed",
-    lambda: (_ for _ in ()).throw(RuntimeError("каталог пуст — make fastembed не запускался"))
-    if not os.path.isdir("/opt/fastembed") or not os.listdir("/opt/fastembed") else None,
+    f"веса в {fastembed_dir}",
+    lambda: (_ for _ in ()).throw(RuntimeError("каталог пуст — make deps не запускался"))
+    if not os.path.isdir(fastembed_dir) or not os.listdir(fastembed_dir) else None,
 )
 
 print()

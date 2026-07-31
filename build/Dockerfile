@@ -1,30 +1,12 @@
-# boba
 ARG PYTHON_VERSION=3.11
+ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
 
 FROM ${PYTHON_IMAGE} AS python-dist
-
-
-# gcc (glibc+libstdc++) + python + uv, без пакетов: и boba-base, и основа runtime
 FROM ${GCC_IMAGE} AS base
 
-# apt-sources.list replace (закрытый контур; по умолчанию .example пуст)
-COPY build/artifacts/apt-sources.list* /tmp/aptsrc/
-RUN if [ -f /tmp/aptsrc/apt-sources.list ] && grep -qvE '^[[:space:]]*(#|$)' /tmp/aptsrc/apt-sources.list; then \
-        cp /tmp/aptsrc/apt-sources.list /etc/apt/sources.list;                                                  \
-    fi                                                                                                          \
-    && rm -rf /tmp/aptsrc
 
-# ca-chain.crt replace (закрытый контур; по умолчанию .example — плейсхолдер)
-COPY build/artifacts/ca-chain.crt* /tmp/cacrt/
-RUN if [ -f /tmp/cacrt/ca-chain.crt ] && grep -qE '^-----BEGIN CERTIFICATE-----' /tmp/cacrt/ca-chain.crt; then \
-        cp /tmp/cacrt/ca-chain.crt /usr/local/share/ca-certificates/ca-chain.crt                               \
-        && update-ca-certificates;                                                                             \
-    fi                                                                                                         \
-    && rm -rf /tmp/cacrt
-
-# рантайм-зависимости: python C-расширения, kerberos, обработка документов (OCR/office/pdf)
 RUN apt-get update                                              \
     && apt-get install -y --no-install-recommends               \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0               \
@@ -33,6 +15,7 @@ RUN apt-get update                                              \
         imagemagick                                             \
         libreoffice-writer libreoffice-calc libreoffice-impress \
         ghostscript                                             \
+        tesseract-ocr                                           \
         fonts-dejavu-core                                       \
         bubblewrap                                              \
         git                                                     \
@@ -41,29 +24,12 @@ RUN apt-get update                                              \
         telnet                                                  \
     && rm -rf /var/lib/apt/lists/*
 
-# python из dmp/python -dist (дерево /opt/python сливается с /usr/local тулчейна gcc)
+# перекрываем системный python своим
 COPY --from=python-dist /opt/python /
 RUN ldconfig                    \
     && gcc --version | head -n1 \
     && python3 --version        \
     && pip3 --version
-
-# ImageMagick: разрешить чтение/запись PDF (по умолчанию политика запрещает)
-RUN for p in /etc/ImageMagick-6/policy.xml /etc/ImageMagick-7/policy.xml; do                \
-        if [ -f "$p" ]; then                                                                \
-            sed -i 's#rights="none" pattern="PDF"#rights="read|write" pattern="PDF"#' "$p"; \
-        fi;                                                                                 \
-    done
-
-# liteparse ждёт унифицированный CLI magick
-RUN printf '%s\n'                                                                                                     \
-        '#!/bin/sh'                                                                                                   \
-        'case "$1" in'                                                                                                \
-        '  convert|identify|mogrify|composite|montage|compare|stream|conjure|import) c="$1"; shift; exec "$c" "$@";;' \
-        '  *) exec convert "$@";;'                                                                                    \
-        'esac'                                                                                                        \
-        > /usr/local/bin/magick                                                                                       \
-    && chmod +x /usr/local/bin/magick
 
 # у каждой программы свой способ узнать CA bundle
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt      \
@@ -72,65 +38,94 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt      \
     CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt     \
     GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 
-# pip.conf (закрытый контур; по умолчанию .example пуст)
-COPY build/artifacts/pip.conf* /tmp/pipconf/
-RUN if [ -f /tmp/pipconf/pip.conf ]; then cp /tmp/pipconf/pip.conf /etc/pip.conf; fi && rm -rf /tmp/pipconf
+# копируем конфигурации для pip, uv
+COPY build/conf/ /tmp/conf/
+RUN set -eu \
+    && if [ -f /tmp/conf/pip.conf ]; then mkdir -p /etc && cp /tmp/conf/pip.conf /etc/pip.conf; fi \
+    && if [ -f /tmp/conf/uv.toml ]; then mkdir -p /etc/uv && cp /tmp/conf/uv.toml /etc/uv/uv.toml; fi \
+    && rm -rf /tmp/conf
+COPY build/artifacts/uv/uv /usr/local/bin/uv
 
-# uv.toml (закрытый контур; по умолчанию не нужен — настройки берутся из pyproject.toml)
-COPY build/artifacts/uv.toml* /tmp/uvconf/
-RUN if [ -f /tmp/uvconf/uv.toml ]; then mkdir -p /etc/uv && cp /tmp/uvconf/uv.toml /etc/uv/uv.toml; fi && rm -rf /tmp/uvconf
-
-# статический бинарь, ставится offline из wheelhouse
-COPY build/artifacts/bin/uv /usr/local/bin/uv
-
-
-# site-packages с одними внешними зависимостями: ставим пакеты boba ради их
-# зависимостей, потом сносим сами пакеты
 FROM base AS deps
 
 COPY build/artifacts/wheels/ /tmp/wheels/
+COPY pyproject.toml /tmp/boba/pyproject.toml
 COPY packages/ /tmp/boba/packages/
 
-# пакеты ищутся по pyproject.toml; -mindepth 1 отсекает сам packages/
-RUN set -eu;                                                                                \
-    pkgs=$(find /tmp/boba/packages -mindepth 1 -name pyproject.toml -printf '%h\n' | sort); \
-    names=$(for p in $pkgs; do basename "$p"; done);                                        \
-    uv pip install --system --no-index --find-links=/tmp/wheels $pkgs &&                    \
-    uv pip uninstall --system $names
+RUN set -eu \
+    && cd /tmp/boba \
+    && uv build --all-packages --wheel --no-sources -o /tmp/wheels \
+    && uv workspace list > /tmp/names.txt
 
+FROM ${GLIBC_IMAGE} AS runtime
 
-# runtime: base + зависимости из стадии deps + пакеты boba из исходников
-FROM base
-ARG PYTHON_VERSION=3.11
+ARG PYTHON_VERSION=3.11 \
+    BOBA_DIR=/app/boba
 
-# только для метки образа
-ARG BOBA_VERSION=0.0.0
-LABEL org.opencontainers.image.version=${BOBA_VERSION}
+RUN apt-get update                                              \
+    && apt-get install -y --no-install-recommends               \
+        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0               \
+        liblzma5 libreadline7 libncurses5 zlib1g curl           \
+        libkrb5-dev krb5-user                                   \
+        imagemagick                                             \
+        libreoffice-writer libreoffice-calc libreoffice-impress \
+        ghostscript                                             \
+        tesseract-ocr                                           \
+        fonts-dejavu-core                                       \
+        bubblewrap                                              \
+        git                                                     \
+        dnsutils                                                \
+        gettext-base                                            \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY --from=deps /usr/local/lib/python${PYTHON_VERSION}/site-packages /usr/local/lib/python${PYTHON_VERSION}/site-packages
-COPY --from=deps /usr/local/bin /usr/local/bin
+COPY --from=python-dist /opt/python/usr/local ${BOBA_DIR}/third/python
+COPY --from=base                            \
+    /usr/local/lib64/libstdc++.so.6         \
+    /usr/local/lib64/libstdc++.so.6.0.25    \
+    ${BOBA_DIR}/third/lib/
+COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
+COPY --from=deps /tmp/wheels/       /tmp/wheels/
+COPY --from=deps /tmp/names.txt     /tmp/names.txt
+COPY build/artifacts/tessdata/      ${BOBA_DIR}/third/tessdata/
+COPY build/artifacts/fastembed/     ${BOBA_DIR}/third/fastembed/
+COPY build/artifacts/uv/uv          ${BOBA_DIR}/third/bin/uv
+COPY build/conf/boba.env            /tmp/boba.env.tmpl
 
-# --no-deps: зависимости уже пришли из стадии deps.
-# --no-build-isolation: setuptools/wheel берём из образа — иначе пришлось бы
-# копировать сюда весь wheelhouse и он остался бы в слоях (+171 МБ)
-COPY packages/ /app/packages/
-RUN set -eu;                                                                                  \
-    for d in $(find /app/packages -mindepth 1 -name pyproject.toml -printf '%h\n' | sort); do \
-      uv pip install --system --no-deps --no-build-isolation "$d";                             \
-    done
-
-COPY build/artifacts/tessdata/ /opt/tessdata/
-ENV TESSDATA_PREFIX=/opt/tessdata \
-    TESSDATA_PATH=/opt/tessdata
-
-# liteparse просит модель по имени rus+eng, tesseract такой не знает
-RUN ln -sf eng.traineddata /opt/tessdata/rus+eng.traineddata && \
-    ln -sf rus.traineddata /opt/tessdata/eng+rus.traineddata
-
-# веса fastembed (скачивает make fastembed)
-COPY build/artifacts/fastembed/ /opt/fastembed/
+RUN set -eu \
+    && PY=${BOBA_DIR}/third/python/bin/python3.11 \
+    && export LD_LIBRARY_PATH="${BOBA_DIR}/third/lib:${BOBA_DIR}/third/python/lib"              \
+    # ImageMagick конфиг (policy.xml)
+    && mkdir -p ${BOBA_DIR}/etc \
+    && cp -a /etc/ImageMagick-6 ${BOBA_DIR}/etc/                                                \
+    && if ! grep -q 'pattern="PDF"' ${BOBA_DIR}/etc/ImageMagick-6/policy.xml; then              \
+           sed -i 's#</policymap>#  <policy domain="coder" rights="read|write" pattern="PDF"/>\n</policymap>#' \
+                   ${BOBA_DIR}/etc/ImageMagick-6/policy.xml;                                     \
+       fi \
+    # liteparse ждёт унифицированный CLI magick — это наш скрипт, он живёт в third/bin
+    && mkdir -p ${BOBA_DIR}/third/bin \
+    && printf '%s\n'                                                                            \
+        '#!/bin/sh'                                                                             \
+        'case "$1" in'                                                                          \
+        '  convert|identify|mogrify|composite|montage|compare|stream|conjure|import) c="$1"; shift; exec "$c" "$@";;' \
+        '  *) exec convert "$@";;'                                                              \
+        'esac'                                                                                  \
+        > ${BOBA_DIR}/third/bin/magick                                                          \
+    && chmod +x ${BOBA_DIR}/third/bin/magick                                                    \
+    && uv pip install --python "$PY" --no-index --find-links=/tmp/wheels pip setuptools wheel   \
+    && uv pip install --python "$PY" --no-index --find-links=/tmp/wheels $(cat /tmp/names.txt)  \
+    && ln -sf eng.traineddata ${BOBA_DIR}/third/tessdata/rus+eng.traineddata                    \
+    && ln -sf rus.traineddata ${BOBA_DIR}/third/tessdata/eng+rus.traineddata                    \
+    && mkdir -p ${BOBA_DIR}/conf/prompts ${BOBA_DIR}/etc                                        \
+             ${BOBA_DIR}/data/workspaces/user ${BOBA_DIR}/data/workspaces/system                \
+             ${BOBA_DIR}/data/.chainlit ${BOBA_DIR}/data/home                                   \
+    && BOBA_DIR="${BOBA_DIR}" PYTHON_VERSION="${PYTHON_VERSION}"                                \
+       envsubst '${BOBA_DIR} ${PYTHON_VERSION}'                                                 \
+       < /tmp/boba.env.tmpl > ${BOBA_DIR}/conf/boba.env                                         \
+    && rm -f /tmp/boba.env.tmpl
 
 WORKDIR /app
 EXPOSE 8501
 
-CMD ["boba-chainlit"]
+ENV BOBA_DIR=${BOBA_DIR}
+ENTRYPOINT ["/bin/sh", "-c", "set -o allexport && . \"$BOBA_DIR/conf/boba.env\" && set +o allexport && exec boba-chainlit \"$@\"", "--"]
+CMD []

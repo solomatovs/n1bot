@@ -44,18 +44,32 @@ def _patch_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     PostgresPool._CACHE.clear()
 
 
-def _cfg(dsn: str = "postgresql://localhost/test") -> PostgresConfig:
-    return PostgresConfig(dsn=dsn)
+def _cfg(
+    host: str = "localhost",
+    dbname: str = "test",
+    **extra: Any,
+) -> PostgresConfig:
+    return PostgresConfig.model_validate({"host": host, "user": "u", "dbname": dbname, **extra})
 
 
 def test_pool_passes_cfg_to_connection_pool():
     PostgresPool(_cfg())
     assert len(_FakeConnectionPool.instances) == 1
     kwargs = _FakeConnectionPool.instances[0].kwargs
-    assert kwargs["conninfo"] == "postgresql://localhost/test"
+    conn = kwargs["kwargs"]
+    assert conn["host"] == "localhost"
+    assert conn["dbname"] == "test"
+    assert conn["user"] == "u"
+    assert conn["autocommit"] is True
+    assert conn["prepare_threshold"] == 0
     assert kwargs["min_size"] == 1
-    assert kwargs["max_size"] == 4
-    assert kwargs["timeout"] == 10.0
+    assert kwargs["timeout"] == 2.0
+
+
+def test_pool_applies_override_options():
+    PostgresPool(_cfg(), override_options={"default_transaction_read_only": "on"})
+    kwargs = _FakeConnectionPool.instances[0].kwargs
+    assert "default_transaction_read_only=on" in kwargs["kwargs"]["options"]
 
 
 def test_get_returns_singleton_for_same_cfg():
@@ -65,9 +79,16 @@ def test_get_returns_singleton_for_same_cfg():
     assert len(_FakeConnectionPool.instances) == 1
 
 
-def test_get_creates_new_pool_for_different_dsn():
-    a = PostgresPool.get(_cfg("postgresql://a/db"))
-    b = PostgresPool.get(_cfg("postgresql://b/db"))
+def test_get_creates_new_pool_for_different_cfg():
+    a = PostgresPool.get(_cfg(dbname="a"))
+    b = PostgresPool.get(_cfg(dbname="b"))
+    assert a is not b
+    assert len(_FakeConnectionPool.instances) == 2
+
+
+def test_get_creates_new_pool_for_different_override_options():
+    a = PostgresPool.get(_cfg(), override_options={"a": "1"})
+    b = PostgresPool.get(_cfg(), override_options={"b": "2"})
     assert a is not b
     assert len(_FakeConnectionPool.instances) == 2
 

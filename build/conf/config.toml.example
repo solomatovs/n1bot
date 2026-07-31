@@ -1,6 +1,7 @@
 # Конфиг boba-chainlit для портативного релиза.
 # conf/ — то, что правят руками (этот файл, промпты);
-# local/ — то, что приложение пишет само (workspaces, состояние chainlit).
+# local/ — то, что приложение пишет само (workspaces, состояние chainlit);
+# third/ — программы и python, etc/ — конфиги «как в /etc» (их не трогаем).
 #
 # Заполнить помеченное <...>.
 
@@ -17,9 +18,9 @@
     model                = "<имя модели у провайдера>"
     models               = ["<имя модели у провайдера>"]
     openai               = "${openai.main}"
-    system_prompt_dir    = "__INSTALL_DIR__/conf/prompts"
-    user_workspace_dir   = "__INSTALL_DIR__/local/workspaces/user"
-    system_workspace_dir = "__INSTALL_DIR__/local/workspaces/system"
+    system_prompt_dir    = "${BOBA_DIR}/conf/prompts"
+    user_workspace_dir   = "${BOBA_DIR}/data/workspaces/user"
+    system_workspace_dir = "${BOBA_DIR}/data/workspaces/system"
     max_messages         = 30
     stream               = true
     log_level            = "INFO"
@@ -35,7 +36,7 @@
     # обязателен, сгенерировать: openssl rand -hex 32
     auth_secret = "<32 байта hex>"
     headless    = true
-    app_root    = "__INSTALL_DIR__/local/.chainlit"
+    app_root    = "${BOBA_DIR}/data/.chainlit"
     # способы входа по порядку попыток; секции ниже
     auth        = ["${auth.local}"]
 

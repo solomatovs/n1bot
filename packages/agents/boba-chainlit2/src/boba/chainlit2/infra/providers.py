@@ -1,7 +1,6 @@
 import re
 import socket
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -14,9 +13,9 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
-from psycopg import AsyncConnection, sql
+from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
-from psycopg_pool import AsyncConnectionPool, PoolTimeout
+from psycopg_pool import PoolTimeout
 from pydantic import SecretStr
 
 from boba.agent.tool_config import (
@@ -38,6 +37,7 @@ from boba.chainlit2.infra.config import (
     PostgresConfig,
 )
 from boba.chainlit2.infra.di import Depends
+from boba.db.postgres import AsyncPostgresPool
 
 
 def get_app_config(config_path: Path) -> AppConfig:
@@ -189,32 +189,22 @@ async def httpx_debug_client(
         pass
 
 
-@asynccontextmanager
-async def postgres_pool(
-    c: PostgresConfig,
-    schema: str,
-) -> AsyncIterator[AsyncConnectionPool]:
-    """
-    Helper для создания PG-пул
-    """
-    async with AsyncConnectionPool(
-        connection_class=AsyncConnection,
-        kwargs=c.conn_settings({"search_path": schema}),
-        **c.pool_settings(),
-    ) as pool:
-        await pool.open()
-        yield pool
-
-
 async def chainlit_data_layer(
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     storage: Annotated[LocalStorageClient, Depends(storage_provider)],
 ) -> AsyncIterator[PostgresDataLayer]:
     """PostgresDataLayer на своём пуле; setup() создаёт схему и таблицы."""
-    async with postgres_pool(cfg.postgres, cfg.db_schema) as pool:
+    pool = AsyncPostgresPool(
+        cfg.postgres,
+        override_options={"search_path": cfg.db_schema},
+    )
+    await pool.open()
+    try:
         layer = PostgresDataLayer(pool, schema=cfg.db_schema, storage=storage)
         await layer.setup()
         yield layer
+    finally:
+        await pool.close()
 
 
 async def langchain_checkpoint_saver(
@@ -223,7 +213,12 @@ async def langchain_checkpoint_saver(
     """
     AsyncPostgresSaver на своём пуле (search_path=схема)
     """
-    async with postgres_pool(cp.postgres, cp.db_schema) as pool:
+    pool = AsyncPostgresPool(
+        cp.postgres,
+        override_options={"search_path": cp.db_schema},
+    )
+    await pool.open()
+    try:
         try:
             async with pool.connection() as conn:
                 try:
@@ -245,6 +240,8 @@ async def langchain_checkpoint_saver(
         saver = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
         await saver.setup()
         yield saver
+    finally:
+        await pool.close()
 
 
 @wrap_model_call

@@ -31,31 +31,32 @@ class PostgresPool:
         statement_timeout=...
     """
 
-    _CacheKey = tuple[str, int, int, float]
+    _CacheKey = tuple[str, tuple[tuple[str, str], ...]]
     _CACHE: ClassVar[dict[_CacheKey, PostgresPool]] = {}
 
     def __init__(
         self,
         cfg: PostgresConfig,
         *,
+        override_options: dict[str, str] | None = None,
         configure: ConfigureConnection | None = None,
     ) -> None:
         from psycopg_pool import ConnectionPool  # noqa: PLC0415
 
         self._cfg = cfg
         self._pool = ConnectionPool(
-            conninfo=cfg.dsn,
-            min_size=cfg.min_size,
-            max_size=cfg.max_size,
-            timeout=cfg.connect_timeout_sec,
+            kwargs=cfg.conn_settings(override_options),
+            **cfg.pool_settings(),
             configure=configure,
             open=True,
         )
         self._closed = False
         logger.info(
-            "PostgresPool opened min_size=%d max_size=%d configure=%s",
-            cfg.min_size,
-            cfg.max_size,
+            "PostgresPool opened db=%s user=%s min_size=%d max_size=%s configure=%s",
+            cfg.dbname,
+            cfg.user,
+            cfg.pool.min_size,
+            cfg.pool.max_size,
             "yes" if configure is not None else "no",
         )
 
@@ -128,25 +129,24 @@ class PostgresPool:
         cls,
         cfg: PostgresConfig,
         *,
+        override_options: dict[str, str] | None = None,
         configure: ConfigureConnection | None = None,
     ) -> PostgresPool:
         """
-        Process-singleton по полному состоянию cfg
+        Process-singleton по полному состоянию cfg + override_options
         пересоздаёт закрытый pool
 
         configure применяется при первом создании pool'а
-        для данного cfg при повторном с тем же DSN значение игнорируется
+        для данного cfg при повторном с тем же cfg значение игнорируется
         """
         key: PostgresPool._CacheKey = (
-            cfg.dsn,
-            cfg.min_size,
-            cfg.max_size,
-            cfg.connect_timeout_sec,
+            cfg.model_dump_json(),
+            tuple(sorted((override_options or {}).items())),
         )
         pool = cls._CACHE.get(key)
 
         if pool is None or pool._closed:
-            pool = cls(cfg, configure=configure)
+            pool = cls(cfg, override_options=override_options, configure=configure)
             cls._CACHE[key] = pool
 
         return pool

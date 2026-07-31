@@ -13,16 +13,16 @@ from boba.tool.pg.executor import SqlExecutorConfig
 
 
 def test_profile_validated_from_dict() -> None:
-    """profiles-dict разворачивается в PostgresConnection с дефолтами."""
+    """profiles-dict разворачивается в PostgresConfig с дефолтами."""
     cfg = SqlExecutorConfig.model_validate(
         {
             "profiles": {
                 "main": {
                     "host": "db.local",
                     "user": "u",
-                    "database": "n1bot",
+                    "dbname": "n1bot",
                     "application_name": "[tool.pg:main]",
-                    "statement_timeout_ms": 5000,
+                    "options": {"statement_timeout": "5s"},
                 },
             },
         },
@@ -30,15 +30,15 @@ def test_profile_validated_from_dict() -> None:
     conn = cfg.resolve("main")
     assert conn.host == "db.local"
     assert conn.application_name == "[tool.pg:main]"
-    assert conn.statement_timeout_ms == 5000
+    assert conn.options.statement_timeout == "5s"
 
 
 def test_multiple_profiles_and_targets() -> None:
     cfg = SqlExecutorConfig.model_validate(
         {
             "profiles": {
-                "main": {"host": "main.host", "user": "u", "database": "db_main"},
-                "audit": {"host": "audit.host", "user": "u", "database": "db_audit"},
+                "main": {"host": "main.host", "user": "u", "dbname": "db_main"},
+                "audit": {"host": "audit.host", "user": "u", "dbname": "db_audit"},
             },
         },
     )
@@ -49,7 +49,7 @@ def test_multiple_profiles_and_targets() -> None:
 
 def test_resolve_unknown_target_raises() -> None:
     cfg = SqlExecutorConfig.model_validate(
-        {"profiles": {"main": {"host": "h", "user": "u", "database": "d"}}},
+        {"profiles": {"main": {"host": "h", "user": "u", "dbname": "d"}}},
     )
     with pytest.raises(ValueError, match="не в whitelist"):
         cfg.resolve("nonexistent")
