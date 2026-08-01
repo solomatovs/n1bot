@@ -8,12 +8,12 @@ from chainlit.session import HTTPSession, WebsocketSession
 from chainlit.types import ThreadDict
 from chainlit.user_session import UserSession
 from fastapi import Request, Response
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
+from boba.chainlit2.chat.agent_tracer import AgentTracer
 from boba.chainlit2.chat.handler import chainlit_error_ctx_handler
-from boba.chainlit2.chat.tracer import BobaLangchainTracer
 from boba.chainlit2.infra.di import Depends, di_inject
 from boba.chainlit2.infra.providers import chainlit_data_layer, langchain_agent
 
@@ -53,7 +53,7 @@ async def on_message(
     # id одного диалога
     thread_id = ChainlitAdapter.get_chat_id(cl.context.session)
 
-    cb = BobaLangchainTracer()
+    cb = AgentTracer()
     run_config = RunnableConfig(
         callbacks=[cb],
         # langchain собирает историю из общего массива сообщений пользователей
@@ -61,7 +61,6 @@ async def on_message(
         # сессионный ключ chainlit
         configurable={"thread_id": thread_id},
     )
-    final_answer = cl.Message(content="")
 
     # astream(stream_mode="messages") отдаёт (message_chunk, metadata); типизация
     # langgraph здесь широкая, фиксируем элемент явно
@@ -73,10 +72,48 @@ async def on_message(
             config=run_config,
         ),
     )
-    async for chunk, _metadata in stream:
-        if isinstance(chunk.content, str):
-            await final_answer.stream_token(chunk.content)
 
+    # Итоговый ответ создаём лениво — на первом content-чанке модели, а не до
+    # запуска цикла. История (и лента) сортируется по created_at: если создать
+    # ответ до вызовов инструментов, он встанет раньше шагов процесса, хотя
+    # должен идти ПОСЛЕ них. Ленивое создание даёт правильный порядок.
+    final_answer: cl.Message | None = None
+
+    async def _final_message() -> cl.Message:
+        nonlocal final_answer
+        if final_answer is None:
+            final_answer = cl.Message(content="")
+            # top-level: chainlit по умолчанию вешает cl.Message ребёнком
+            # run-step'а @cl.on_message, и фронт позиционирует ответ по
+            # родителю (created_at run'а РАНЬШЕ шагов процесса) — ответ
+            # всплывает над контейнером. Обнуляем parent — сообщение живёт
+            # на верхнем уровне и сортируется по своему created_at.
+            final_answer.parent_id = None
+        return final_answer
+
+    async for chunk, _metadata in stream:
+        # Стримим в ответ только контент модели: stream_mode="messages" отдаёт
+        # чанки всех узлов, включая ToolMessage (содержимое результата
+        # инструмента). Если стримить их — сырой контент tool-результата
+        # (JSON/таблица) попадёт в бабл финального ответа.
+        #
+        # Непустота контента обязательна: первый чанк каждого LLM-вызова несёт
+        # content='' (role-чанк), а Message.__post_init__ фиксирует created_at
+        # в момент создания объекта. Создание ответа на пустом чанке ставит
+        # его created_at РАНЬШЕ шагов процесса — и ответ всплывает над
+        # контейнером «процесс ответа» и в ленте, и в истории.
+        if (
+            isinstance(chunk, AIMessageChunk)
+            and isinstance(chunk.content, str)
+            and chunk.content
+        ):
+            answer = await _final_message()
+            await answer.stream_token(chunk.content)
+
+    # если ответ так и не начался (ни одного content-чанка) — отдаём пустой
+    if final_answer is None:
+        final_answer = cl.Message(content="")
+        final_answer.parent_id = None
     await final_answer.send()
 
 
@@ -128,7 +165,7 @@ async def on_chat_resume(
 ):
     thread_id = ChainlitAdapter.get_chat_id(cl.context.session)
 
-    cb = BobaLangchainTracer()
+    cb = AgentTracer()
     run_config = RunnableConfig(
         callbacks=[cb],
         # langchain собирает историю из общего массива сообщений пользователей
