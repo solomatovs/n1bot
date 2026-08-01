@@ -13,14 +13,14 @@ import pytest
 from chainlit.step import StepDict
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from psycopg import AsyncConnection, sql
-from psycopg_pool import AsyncConnectionPool
+from psycopg import sql
 
 from boba.agent.tool_config import bind, build_app_config
 from boba.chainlit2.chat.data.data_layer import PostgresDataLayer
 from boba.chainlit2.chat.data.models import Codec
 from boba.chainlit2.chat.data.storage import LocalStorageClient
 from boba.chainlit2.infra.config import AppConfig
+from boba.db.postgres import AsyncPostgresPool
 
 # отдельная БД под тесты: реальный сервер из конфига, но не боевая база
 TEST_DB = "boba_chainlit_test"
@@ -59,16 +59,6 @@ def app_config() -> AppConfig:
 
 
 @pytest.fixture(scope="session")
-def pg_kwargs(app_config: AppConfig) -> dict:
-    """psycopg-параметры коннекта из конфига с подменённым dbname на тестовый."""
-    kwargs = app_config.data_layer.postgres.conn_settings(
-        {"search_path": app_config.data_layer.db_schema}
-    )
-    kwargs["dbname"] = TEST_DB
-    return kwargs
-
-
-@pytest.fixture(scope="session")
 def test_database(app_config: AppConfig) -> str:
     """Создаёт тестовую БД на сервере из конфига, если её ещё нет."""
     # боевой dbname служебный
@@ -84,16 +74,14 @@ def test_database(app_config: AppConfig) -> str:
 
 @pytest.fixture
 async def pool(
-    app_config: AppConfig, pg_kwargs: dict, test_database: str
-) -> AsyncIterator[AsyncConnectionPool]:
+    app_config: AppConfig, test_database: str
+) -> AsyncIterator[AsyncPostgresPool]:
     """
-    Пул на тестовую БД; конструируется как прод-провайдер (kwargs + pool_settings)
+    Пул на тестовую БД; конструируется как прод-провайдер (cfg + override_options)
     """
-    p = AsyncConnectionPool(
-        connection_class=AsyncConnection,
-        kwargs=pg_kwargs,
-        open=False,
-        **app_config.data_layer.postgres.pool_settings(),
+    p = AsyncPostgresPool(
+        app_config.data_layer.postgres.model_copy(update={"dbname": test_database}),
+        override_options={"search_path": app_config.data_layer.db_schema},
     )
     await p.open()
     try:
@@ -117,7 +105,7 @@ def storage(app_config: AppConfig, files_dir: Path) -> LocalStorageClient:
 
 @pytest.fixture
 async def layer(
-    app_config: AppConfig, pool: AsyncConnectionPool, storage: LocalStorageClient
+    app_config: AppConfig, pool: AsyncPostgresPool, storage: LocalStorageClient
 ) -> PostgresDataLayer:
     """Слой со свежей схемой: дропаем схему и заново гоняем setup() на каждый тест."""
     schema = app_config.data_layer.db_schema

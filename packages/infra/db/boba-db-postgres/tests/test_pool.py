@@ -61,7 +61,8 @@ def test_pool_passes_cfg_to_connection_pool():
     assert conn["dbname"] == "test"
     assert conn["user"] == "u"
     assert conn["autocommit"] is True
-    assert conn["prepare_threshold"] == 0
+    # prepare_threshold=None (отключить prepared) не попадает в kwargs
+    assert "prepare_threshold" not in conn
     assert kwargs["min_size"] == 1
     assert kwargs["timeout"] == 2.0
 
