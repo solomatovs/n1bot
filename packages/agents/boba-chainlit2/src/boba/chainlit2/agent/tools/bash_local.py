@@ -59,9 +59,15 @@ def build_bash_local_tool(cfg: BashLocalConfig) -> BaseTool:
             cwd=cwd,
             env=env,
         )
-        return pack_result(JsonResult(payload=_result_to_payload(result)))
+        return pack_result(
+            JsonResult(ok=_succeeded(result), payload=_result_to_payload(result))
+        )
 
     return bash_local
+
+
+def _succeeded(result: RunResult) -> bool:
+    return result.exit_code == 0 and not result.timed_out
 
 
 def _result_to_payload(result: RunResult) -> dict[str, Any]:

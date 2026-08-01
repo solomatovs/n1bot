@@ -34,6 +34,11 @@ class AgentTracer(AsyncBaseTracer):
         self._reasoning: dict[str, str] = {}
         self._tool_steps: dict[str, Step] = {}
 
+    @property
+    def view(self) -> ChatView:
+        """Лента, в которую трасер пишет шаги."""
+        return self._view
+
     def _set_context(self) -> None:
         context_var.set(self._context)
 
@@ -121,13 +126,23 @@ class AgentTracer(AsyncBaseTracer):
     ) -> None:
         self._set_context()
         if step := self._tool_steps.pop(str(run_id), None):
-            artifact = getattr(output, "artifact", None)
-            await self._view.tool_finished(
-                step,
-                artifact if artifact is not None else output,
-                getattr(output, "tool_call_id", None),
-            )
+            if getattr(output, "status", None) == "error":
+                await self._view.tool_failed(step, getattr(output, "content", output))
+            else:
+                artifact = getattr(output, "artifact", None)
+                await self._view.tool_finished(
+                    step,
+                    artifact if artifact is not None else output,
+                    getattr(output, "tool_call_id", None),
+                )
         return await super().on_tool_end(output, run_id=run_id, **kwargs)
+
+    async def stop_pending(self) -> None:
+        """Закрыть шаги инструментов, оставшиеся в работе после остановки."""
+        self._set_context()
+        while self._tool_steps:
+            _, step = self._tool_steps.popitem()
+            await self._view.tool_stopped(step)
 
     @override
     async def on_tool_error(

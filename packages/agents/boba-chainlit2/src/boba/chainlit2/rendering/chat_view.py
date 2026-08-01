@@ -28,7 +28,6 @@ from boba.chainlit2.rendering.result_view import (
     MarkdownRendering,
     ToolResultView,
 )
-from boba.chainlit2.rendering.tool_result import ErrorResult
 
 __all__ = ["ChatSink", "ChatView", "LiveSink", "RecordingSink"]
 
@@ -80,11 +79,20 @@ class ChatView:
 
     CONTAINER_NAME: ClassVar[str] = "process..."
     RUNNING_TEXT: ClassVar[str] = "выполняется"
+    STOPPED_TEXT: ClassVar[str] = "остановлено пользователем"
     USER_MESSAGE: ClassVar[TrueStepType] = cast("TrueStepType", "user_message")
     ASSISTANT_MESSAGE: ClassVar[TrueStepType] = cast(
         "TrueStepType", "assistant_message"
     )
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
+    IDLE: ClassVar[str] = "\u26aa"
+    DONE: ClassVar[str] = "\U0001f7e2"
+    FAILED: ClassVar[str] = "\U0001f534"
+
+    @classmethod
+    def titled(cls, status: str, name: str) -> str:
+        """Название шага со статусным кружком слева."""
+        return f"{status} {name}"
 
     def __init__(
         self,
@@ -98,6 +106,7 @@ class ChatView:
         self._user_name = user_name or "User"
         self._assistant_name = chainlit_config.ui.name
         self._container: Step | None = None
+        self._tool_names: dict[str, str] = {}
 
     def end_turn(self) -> None:
         self._container = None
@@ -155,7 +164,9 @@ class ChatView:
         return step
 
     async def thinking(self, text: str, key: str | None = None) -> Step:
-        step = await self._child("thinking", "llm", key, "thinking")
+        step = await self._child(
+            self.titled(self.IDLE, "thinking"), "llm", key, "thinking"
+        )
         step.output = text
         step.start = utc_now()
         step.end = utc_now()
@@ -168,7 +179,8 @@ class ChatView:
         args: Mapping[str, Any] | None,
         key: str | None = None,
     ) -> Step:
-        step = await self._child(name, "tool", key, "tool")
+        step = await self._child(self.titled(self.IDLE, name), "tool", key, "tool")
+        self._tool_names[step.id] = name
         if args:
             step.input = self._render_args(args)
         step.output = self.RUNNING_TEXT
@@ -188,9 +200,15 @@ class ChatView:
             content, lang = process_content(artifact)
             step.output = content
             step.language = lang
+            step.name = self.titled(self.DONE, self._tool_names.get(step.id, step.name))
             await self._sink.put(step)
             return
 
+        failed = not result.ok
+        step.name = self.titled(
+            self.FAILED if failed else self.DONE,
+            self._tool_names.get(step.id, step.name),
+        )
         match ToolResultView(result).render():
             case ChartRendering(spec=spec, title=title):
                 step.output = (
@@ -200,11 +218,19 @@ class ChatView:
                 await self._chart(title, spec, tool_call_id)
             case MarkdownRendering(markdown=markdown):
                 step.output = markdown
-                step.is_error = isinstance(result, ErrorResult)
+                step.is_error = failed
                 await self._sink.put(step)
+
+    async def tool_stopped(self, step: Step) -> None:
+        """Инструмент не доработал: генерацию остановил пользователь."""
+        step.name = self.titled(self.FAILED, self._tool_names.get(step.id, step.name))
+        step.output = self.STOPPED_TEXT
+        step.end = utc_now()
+        await self._sink.put(step)
 
     async def tool_failed(self, step: Step, error: object) -> None:
         step.is_error = True
+        step.name = self.titled(self.FAILED, self._tool_names.get(step.id, step.name))
         step.output = f"**tool failed:** {error}"
         step.end = utc_now()
         await self._sink.put(step)
