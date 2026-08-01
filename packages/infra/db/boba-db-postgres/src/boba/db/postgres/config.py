@@ -176,8 +176,10 @@ class PostgresConfig(BaseModel):
         description="autocommit; для AsyncPostgresSaver.setup() обязателен.",
     )
     prepare_threshold: int | None = Field(
-        default=0,
-        description="Порог prepared statements; 0 — отключить (нужно для pgbouncer).",
+        default=None,
+        description=(
+            "Порог prepared statements; None — отключить (нужно для pgbouncer)."
+        ),
     )
 
     # серверные опции сессии (libpq 'options'); сериализуются в строку в conn_settings

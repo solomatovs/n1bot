@@ -34,7 +34,6 @@ from boba.chainlit2.infra.config import (
     DataLayerConfig,
     LocalStorageConfig,
     OpenAiConfig,
-    PostgresConfig,
 )
 from boba.chainlit2.infra.di import Depends
 from boba.db.postgres import AsyncPostgresPool
@@ -237,7 +236,7 @@ async def langchain_checkpoint_saver(
                 user_detail="Failed to connect to the internal postgres",
             ) from e
 
-        saver = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
+        saver = AsyncPostgresSaver(pool.raw)
         await saver.setup()
         yield saver
     finally:

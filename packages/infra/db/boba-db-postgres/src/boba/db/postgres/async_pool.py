@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -56,8 +56,13 @@ class AsyncPostgresPool:
         """Открыть пул (установить фоновые соединения)."""
         await self._pool.open()
 
+    @property
+    def raw(self) -> Any:
+        """Внутренний psycopg_pool.AsyncConnectionPool (для langgraph-саверов)."""
+        return self._pool
+
     @asynccontextmanager
-    async def connection(self) -> AsyncIterator[psycopg.AsyncConnection[Any]]:
+    async def connection(self) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:
         """Взять AsyncConnection из пула."""
         if self._closed:
             raise PostgresPoolClosedError("PostgresPool is closed")
@@ -66,13 +71,15 @@ class AsyncPostgresPool:
             yield conn
 
     @asynccontextmanager
-    async def cursor(self) -> AsyncIterator[psycopg.AsyncCursor[Any]]:
+    async def cursor(self) -> AsyncGenerator[psycopg.AsyncCursor[Any], None]:
         """AsyncConnection + tuple-cursor — одиночные запросы без row_factory."""
         async with self._pool.connection() as conn, conn.cursor() as cur:
             yield cur
 
     @asynccontextmanager
-    async def client_cursor(self) -> AsyncIterator[psycopg.AsyncClientCursor[Any]]:
+    async def client_cursor(
+        self,
+    ) -> AsyncGenerator[psycopg.AsyncClientCursor[Any], None]:
         """AsyncConnection + AsyncClientCursor (client-side parameter binding)."""
         async with (
             self._pool.connection() as conn,
@@ -81,7 +88,7 @@ class AsyncPostgresPool:
             yield cur
 
     @asynccontextmanager
-    async def dict_cursor(self) -> AsyncIterator[psycopg.AsyncCursor[DictRow]]:
+    async def dict_cursor(self) -> AsyncGenerator[psycopg.AsyncCursor[DictRow], None]:
         """AsyncConnection + dict-cursor (row_factory=dict_row)."""
         async with (
             self._pool.connection() as conn,
