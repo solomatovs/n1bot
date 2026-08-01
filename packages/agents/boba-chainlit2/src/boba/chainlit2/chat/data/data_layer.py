@@ -1,11 +1,14 @@
 """PostgresDataLayer chainlit поверх boba AsyncPostgresPool.
 
+Слой хранит только оболочку диалога: пользователей, треды, вложения и оценки.
+Сами сообщения живут в langgraph-checkpointer'е — get_thread собирает из них
+ленту, а create_step/update_step ничего не пишут.
+
 Пул соединений приходит извне (владеет им DI), слой его не создаёт и не закрывает.
 Все таблицы квалифицируются схемой из конфига (sql.Identifier(schema, ...)) —
-на search_path соединения не опираемся. Каждый внешний контракт — один атомарный
-SQL: запись через ON CONFLICT/CTE, чтение тредов целиком собирается в SQL
-(jsonb_agg). Строки одиночных моделей мапятся через class_row, jsonb-поля на
-запись оборачиваются в Jsonb (Row.params()). Контракт совпадает с BaseDataLayer.
+на search_path соединения не опираемся. Запись идёт через ON CONFLICT, строки
+моделей мапятся через class_row, jsonb-поля оборачиваются в Jsonb (Row.params()).
+Контракт совпадает с BaseDataLayer.
 """
 
 import mimetypes
@@ -44,10 +47,11 @@ from boba.chainlit2.chat.data.models import (
     Element,
     Feedback,
     Row,
-    Step,
     Thread,
     User,
 )
+from boba.chainlit2.chat.transcript import ConversationTranscript, ThreadMessages
+from boba.chainlit2.rendering.chat_view import ChatView, RecordingSink
 from boba.db.postgres import AsyncPostgresPool
 
 __all__ = [
@@ -56,27 +60,37 @@ __all__ = [
 
 
 class PostgresDataLayer(BaseDataLayer):
-    """Хранилище chainlit (users/threads/steps/elements/feedbacks) на psycopg-пуле."""
+    """Хранилище chainlit (users/threads/elements/feedbacks) на psycopg-пуле."""
 
-    # модели, чьи таблицы создаёт setup() (DDL живёт в самой модели — Row.ddl)
-    _MODELS: ClassVar[tuple[type[Row], ...]] = (User, Thread, Step, Element, Feedback)
+    _MODELS: ClassVar[tuple[type[Row], ...]] = (User, Thread, Element, Feedback)
 
     def __init__(
         self,
         pool: AsyncPostgresPool,
         schema: str,
         storage: BaseStorageClient,
+        messages: ThreadMessages,
     ) -> None:
         self._pool = pool
         self._schema = schema
         self._storage = storage
+        self._messages = messages
 
-    def _table(self, name: str) -> sql.Identifier:
-        """Квалифицированный идентификатор таблицы: \"schema\".\"name\"."""
-        return sql.Identifier(self._schema, name)
+    async def _transcript_steps(
+        self,
+        thread_id: str,
+        user_identifier: str | None,
+    ) -> list[StepDict]:
+        messages = await self._messages.load(thread_id)
+        if not messages:
+            return []
+
+        sink = RecordingSink()
+        view = ChatView(thread_id, sink, user_name=user_identifier)
+        await ConversationTranscript(messages, view).replay()
+        return sink.steps
 
     async def setup(self) -> None:
-        """Создаёт схему и таблицы/индексы моделей"""
         async with self._pool.connection() as conn:
             try:
                 async with conn.transaction():
@@ -86,7 +100,6 @@ class PostgresDataLayer(BaseDataLayer):
                         )
                     )
             except InsufficientPrivilege:
-                # схему уже создал админ, а прав на CREATE нет — продолжаем
                 logger.info(
                     f"нет прав на CREATE SCHEMA {self._schema!r}, "
                     "считаем что её создал администратор"
@@ -97,9 +110,6 @@ class PostgresDataLayer(BaseDataLayer):
                         await conn.execute(stmt)
 
     async def get_user(self, identifier: str) -> PersistedUser | None:
-        """
-        Найти пользователя по identifier
-        """
         query = sql.SQL(
             """
             select
@@ -134,15 +144,6 @@ class PostgresDataLayer(BaseDataLayer):
         return row.to_persisted() if row else None
 
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
-        """
-        Создать пользователя или обновить его при повторном входе (get-or-create).
-
-        Идемпотентный upsert по уникальному identifier
-        при конфликте меняется только meta, id/created_at сохраняются
-        Зовётся на каждом логине
-        """
-        # ON CONFLICT только meta
-        # RETURNING отдаёт итоговую строку
         model = User.from_chainlit(user)
         query = sql.SQL(
             """
@@ -179,10 +180,6 @@ class PostgresDataLayer(BaseDataLayer):
         return row.to_persisted()
 
     async def upsert_feedback(self, feedback: FeedbackPayload) -> str:
-        """
-        insert/update step feedback
-        вернуть id оценки строкой
-        """
         model = Feedback.from_payload(feedback)
         query = sql.SQL(
             """
@@ -212,10 +209,6 @@ class PostgresDataLayer(BaseDataLayer):
         return Codec.uuid_str(model.id)
 
     async def delete_feedback(self, feedback_id: str) -> bool:
-        """Удалить оценку по id; вернуть True.
-
-        Идемпотентно: отсутствие строки не ошибка. bool — индикатор успеха фронту.
-        """
         query = sql.SQL("""delete from {feedbacks} where id = %(id)s""").format(
             feedbacks=Feedback.get_table_name(self._schema)
         )
@@ -234,7 +227,6 @@ class PostgresDataLayer(BaseDataLayer):
 
     @staticmethod
     async def _read_element_content(element: ChainlitElement) -> bytes | str | None:
-        """Содержимое элемента из content/path (для загрузки в storage)."""
         if element.content is not None:
             return element.content
 
@@ -246,9 +238,6 @@ class PostgresDataLayer(BaseDataLayer):
 
     @queue_until_user_message()
     async def create_element(self, element: ChainlitElement) -> None:
-        """
-        Сохранить вложение: залить контент в storage и записать строку elements
-        """
         if not element.for_id:
             return
 
@@ -258,14 +247,10 @@ class PostgresDataLayer(BaseDataLayer):
 
         user_id = await self._user_id_by_thread(element.thread_id)
         if user_id is None:
-            # в теории не должно быть
             user_id = "unknown"
 
         mime = element.mime or "application/octet-stream"
 
-        # расширение по mime: роут отдачи (FileResponse) определяет
-        # Content-Type по имени файла, а без него фронт получает
-        # application/octet-stream и не парсит, например, plotly-JSON
         name = element.name or ""
         if name and not Path(name).suffix:
             name += mimetypes.guess_extension(mime) or ""
@@ -315,7 +300,6 @@ class PostgresDataLayer(BaseDataLayer):
             ) from e
 
     async def get_element(self, thread_id: str, element_id: str) -> ElementDict | None:
-        """Вернуть элемент треда по (thread_id, element_id) как ElementDict или None."""
         query = sql.SQL(
             """
             select
@@ -354,9 +338,6 @@ class PostgresDataLayer(BaseDataLayer):
     async def delete_element(
         self, element_id: str, thread_id: str | None = None
     ) -> None:
-        """
-        Удалить элемент по id и подчистить его файл в storage
-        """
         query = sql.SQL(
             "delete from {table} where id = %s returning object_key"
         ).format(table=Element.get_table_name(self._schema))
@@ -378,70 +359,25 @@ class PostgresDataLayer(BaseDataLayer):
                 user_detail="Not able to delete element",
             ) from e
 
-    @queue_until_user_message()
     async def create_step(self, step_dict: StepDict) -> None:
-        """
-        Создать/обновить шаг треда (upsert по id)
-        """
-        model = Step.from_chainlit(step_dict)
-        thread_query = sql.SQL(
-            """
-            insert into {table} (id, created_at, meta)
-            values (%(thread_id)s, %(created_at)s, '{{}}'::jsonb)
-            on conflict (id) do nothing
-            """
-        ).format(
-            table=Thread.get_table_name(self._schema),
-        )
-        step_query = sql.SQL(
-            """
-            insert into {steps} ({cols}) values ({ph})
-            on conflict (id) do update set {asg}
-            """
-        ).format(
-            steps=Step.get_table_name(self._schema),
-            cols=Step.all_columns(),
-            ph=Step.all_placeholders(),
-            asg=Step.all_assignments(exclude=("id",)),
-        )
-        params = model.all_params()
-        try:
-            async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(thread_query, params)
-                await conn.execute(step_query, params)
-        except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.create_step failed with error: {e}"
-                ),
-                user_detail="Not able to create step",
-            ) from e
+        pass
 
-    @queue_until_user_message()
     async def update_step(self, step_dict: StepDict) -> None:
-        """Обновить шаг"""
-        await self.create_step(step_dict)
+        pass
 
     @queue_until_user_message()
     async def delete_step(self, step_id: str) -> None:
-        """
-        Удалить шаг и всё связанное: его feedbacks/elements (for_id), затем шаг.
-        """
         feedbacks_query = sql.SQL("delete from {feedbacks} where for_id = %s").format(
             feedbacks=Feedback.get_table_name(self._schema)
         )
         elements_query = sql.SQL("delete from {elements} where for_id = %s").format(
             elements=Element.get_table_name(self._schema)
         )
-        steps_query = sql.SQL("delete from {steps} where id = %s").format(
-            steps=Step.get_table_name(self._schema)
-        )
         params = (UUID(step_id),)
         try:
             async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute(feedbacks_query, params)
                 await conn.execute(elements_query, params)
-                await conn.execute(steps_query, params)
         except Exception as e:
             raise InternalServiceError(
                 internal_detail=(
@@ -451,49 +387,9 @@ class PostgresDataLayer(BaseDataLayer):
             ) from e
 
     async def get_favorite_steps(self, user_id: str) -> list[StepDict]:
-        """Вернуть избранные шаги пользователя (meta.favorite == true), новые первыми"""
-        query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {steps} s
-                inner join {threads} t on s.thread_id = t.id
-            where 1=1
-                and t.user_id = %(user_id)s
-                and s.meta @> '{{\"favorite\": true}}'::jsonb
-            order by
-                s.created_at desc
-            """
-        ).format(
-            cols=Step.all_columns(prefix="s"),
-            steps=Step.get_table_name(self._schema),
-            threads=Thread.get_table_name(self._schema),
-        )
-
-        try:
-            async with (
-                self._pool.connection() as conn,
-                conn.cursor(row_factory=class_row(Step)) as cur,
-            ):
-                await cur.execute(query, {"user_id": UUID(user_id)})
-                rows = await cur.fetchall()
-        except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.get_favorite_steps "
-                    f"failed with error: {e}"
-                ),
-                user_detail="Not able to get favorite steps",
-            ) from e
-
-        res = [s.to_chainlit() for s in rows]
-        return res
+        return []
 
     async def get_thread_author(self, thread_id: str) -> str:
-        """
-        Вернуть identifier владельца треда
-        """
         query = sql.SQL(
             """
             select
@@ -530,10 +426,6 @@ class PostgresDataLayer(BaseDataLayer):
         raise ValueError(f"Author not found for thread_id {thread_id}")
 
     async def get_thread(self, thread_id: str) -> ThreadDict | None:
-        """
-        Вернуть тред целиком отдельными запросами (тред / шаги+feedback /
-        elements) и собрать ThreadDict в Python через Model.to_chainlit().
-        """
         thread_query = sql.SQL(
             """
             select
@@ -547,35 +439,18 @@ class PostgresDataLayer(BaseDataLayer):
             cols=Thread.all_columns(),
             threads=Thread.get_table_name(self._schema),
         )
-        steps_query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {steps}
-            where
-                thread_id = %s
-            order by
-                created_at asc
-            """
-        ).format(
-            cols=Step.all_columns(),
-            steps=Step.get_table_name(self._schema),
-        )
         feedbacks_query = sql.SQL(
             """
             select
                 {cols}
             from
-                {feedbacks} f
-                inner join {steps} s on f.for_id = s.id
+                {feedbacks}
             where
-                s.thread_id = %s
+                thread_id = %s
             """
         ).format(
-            cols=Feedback.all_columns(prefix="f"),
+            cols=Feedback.all_columns(),
             feedbacks=Feedback.get_table_name(self._schema),
-            steps=Step.get_table_name(self._schema),
         )
         elements_query = sql.SQL(
             """
@@ -613,10 +488,6 @@ class PostgresDataLayer(BaseDataLayer):
                         if identifier_row is not None:
                             user_identifier = identifier_row[0]
 
-                async with conn.cursor(row_factory=class_row(Step)) as cur:
-                    await cur.execute(steps_query, (tid,))
-                    step_rows = await cur.fetchall()
-
                 async with conn.cursor(row_factory=class_row(Feedback)) as cur:
                     await cur.execute(feedbacks_query, (tid,))
                     feedback_rows = await cur.fetchall()
@@ -632,12 +503,12 @@ class PostgresDataLayer(BaseDataLayer):
                 user_detail="Not able to get thread",
             ) from e
 
-        feedback_by_step = {f.for_id: f.to_chainlit() for f in feedback_rows}
-        steps: list[StepDict] = []
-        for s in step_rows:
-            step = s.to_chainlit()
-            step["feedback"] = feedback_by_step.get(s.id)
-            steps.append(step)
+        steps = await self._transcript_steps(thread_id, user_identifier)
+        feedback_by_step = {
+            Codec.uuid_str(f.for_id): f.to_chainlit() for f in feedback_rows
+        }
+        for step in steps:
+            step["feedback"] = feedback_by_step.get(step.get("id", ""))
 
         elements: list[ElementDict] = [e.to_chainlit() for e in element_rows]
 
@@ -658,9 +529,6 @@ class PostgresDataLayer(BaseDataLayer):
         metadata: dict | None = None,
         tags: list[str] | None = None,
     ) -> None:
-        """
-        Создать тред или обновить переданные поля (upsert по id).
-        """
         incoming = metadata or {}
         meta_set = {k: v for k, v in incoming.items() if v is not None}
         meta_del = [k for k, v in incoming.items() if v is None]
@@ -714,25 +582,12 @@ class PostgresDataLayer(BaseDataLayer):
             ) from e
 
     async def delete_thread(self, thread_id: str) -> None:
-        """
-        Удалить тред и всё содержимое: feedbacks, steps, elements и сам тред.
-        """
         feedbacks_query = sql.SQL(
-            """
-            delete from {feedbacks}
-            where thread_id = %(tid)s
-               or for_id in (select id from {steps} where thread_id = %(tid)s)
-            """
-        ).format(
-            feedbacks=Feedback.get_table_name(self._schema),
-            steps=Step.get_table_name(self._schema),
-        )
+            "delete from {feedbacks} where thread_id = %(tid)s"
+        ).format(feedbacks=Feedback.get_table_name(self._schema))
         elements_query = sql.SQL(
             "delete from {elements} where thread_id = %(tid)s"
         ).format(elements=Element.get_table_name(self._schema))
-        steps_query = sql.SQL("delete from {steps} where thread_id = %(tid)s").format(
-            steps=Step.get_table_name(self._schema)
-        )
         thread_query = sql.SQL("delete from {threads} where id = %(tid)s").format(
             threads=Thread.get_table_name(self._schema)
         )
@@ -741,7 +596,6 @@ class PostgresDataLayer(BaseDataLayer):
             async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute(feedbacks_query, params)
                 await conn.execute(elements_query, params)
-                await conn.execute(steps_query, params)
                 await conn.execute(thread_query, params)
         except Exception as e:
             raise InternalServiceError(
@@ -756,9 +610,6 @@ class PostgresDataLayer(BaseDataLayer):
         pagination: Pagination,
         filters: ThreadFilter,
     ) -> PaginatedResponse[ThreadDict]:
-        """
-        список тредов пользователя
-        """
         if not filters.userId:
             raise ValueError("userId is required")
 
@@ -820,14 +671,9 @@ class PostgresDataLayer(BaseDataLayer):
         )
 
     async def build_debug_url(self) -> str:
-        """URL треда во внешней debug-системе; здесь не используется — пустая строка."""
         return ""
 
     async def close(self) -> None:
-        """Освободить ресурсы слоя.
-
-        Пул принадлежит DI и закрывается извне — его не трогаем; закрываем storage.
-        """
         await self._storage.close()
 
     async def _user_id_by_thread(self, thread_id: str) -> str | None:
@@ -859,12 +705,6 @@ class PostgresDataLayer(BaseDataLayer):
         return user_id
 
     async def _sign_element_urls(self, thread: ThreadDict) -> None:
-        """Переписывает url элементов на свежий storage read-url."""
         for element in thread.get("elements") or []:
             if object_key := element.get("objectKey"):
-                try:
-                    element["url"] = await self._storage.get_read_url(object_key)
-                except Exception as e:
-                    logger.warning(
-                        f"read-url для object_key '{object_key}' не получен: {e}"
-                    )
+                element["url"] = await self._storage.get_read_url(object_key)

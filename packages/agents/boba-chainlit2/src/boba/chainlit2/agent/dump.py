@@ -1,3 +1,9 @@
+"""Дамп HTTP-обмена с LLM-провайдером в файлы.
+
+Диагностический транспорт httpx: пишет запрос и ответ каждой попытки
+в отдельный файл, чтобы разбирать поведение провайдера по сырым байтам.
+"""
+
 import contextlib
 import contextvars
 import datetime
@@ -22,16 +28,16 @@ class HttpDump:
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # файл живёт дольше метода: владелец — объект, закрытие в close()
             self._file = open(path, "ab")  # noqa: SIM115
         except Exception:
             self._fail("open")
 
     def _fail(self, op: str) -> None:
-        """Однократно жалуется и переводит дамп в режим no-op."""
+        logging.getLogger(type(self).__qualname__).exception(
+            "дамп запроса отключён: не удалось выполнить %s для %s", op, self.path
+        )
         if self._file is not None:
-            with contextlib.suppress(Exception):
-                self._file.close()
+            self._file.close()
         self._file = None
 
     @staticmethod
@@ -71,7 +77,6 @@ class HttpDump:
             self._fail("write")
 
     def emit_message(self, text: str) -> None:
-        """Служебная строка в дампе: статус ответа, ошибка попытки и т.п."""
         line = "\n{now}: {text}\n".format_map(
             {"now": self._get_now_partline(), "text": text},
         )
@@ -83,8 +88,6 @@ class HttpDump:
         client = HttpDump._format_addr(inner.get_extra_info("client_addr"))
         server = HttpDump._format_addr(inner.get_extra_info("server_addr"))
 
-        # если изменился client, server или направление
-        # печатаем header и запоминаем
         if not (
             client == self._client
             and server == self._server
@@ -100,13 +103,11 @@ class HttpDump:
             self._server = server
             self._direction = direction
 
-        # печатем непосредственно сообщение
         self._emit(data)
 
     def close(self) -> None:
         if self._file is not None:
-            with contextlib.suppress(Exception):
-                self._file.close()
+            self._file.close()
         self._file = None
 
     def __enter__(self) -> "HttpDump":
@@ -119,8 +120,6 @@ class HttpDump:
 class DumpChannel:
     """Канал передачи активного дампа от транспорта socket-уровню."""
 
-    # внутри — ContextVar: дамп виден только в async-цепочке того запроса,
-    # который его открыл; создавать канал нужно один раз на старте приложения
     def __init__(self) -> None:
         self._current: contextvars.ContextVar[HttpDump | None] = contextvars.ContextVar(
             "http_dump", default=None
@@ -131,12 +130,7 @@ class DumpChannel:
 
     @contextlib.contextmanager
     def activate(self, path: Path) -> typing.Iterator[HttpDump]:
-        """Открывает дамп и делает его текущим; на выходе сбрасывает и закрывает."""
         with HttpDump(path) as dump:
-            # без token.reset(): enter и exit этого CM выполняются в РАЗНЫХ
-            # контекстах (langgraph и openai оборачивают шаги в asyncio.Task →
-            # копия контекста), а токен сбрасывается только в своём контексте.
-            # set() контекст не проверяет — восстанавливаем прежнее значение
             prev = self._current.get()
             self._current.set(dump)
             try:
@@ -172,14 +166,12 @@ class DumpingTransport(httpx.AsyncHTTPTransport):
             try:
                 response = await super().handle_async_request(request)
             except Exception as exc:
-                # попытка не получила ответа (обрыв, таймаут) — статуса нет
                 _dump.emit_message(f"attempt failed: {exc!r}")
                 raise
 
             if not isinstance(response.stream, httpx.AsyncByteStream):
                 raise TypeError(f"response.stream is not valid: {response.stream}")
 
-            # успех: владение ресурсами переезжает из функции в DumpStream
             return httpx.Response(
                 status_code=response.status_code,
                 headers=response.headers,
@@ -199,7 +191,7 @@ class DumpStream(httpx.AsyncByteStream):
             yield chunk
 
     async def aclose(self) -> None:
-        self._stack.close()  # reset канала + закрытие файла, в обратном порядке
+        self._stack.close()
         await self._inner.aclose()
 
 
@@ -242,22 +234,20 @@ class LoggingStream(httpcore.AsyncNetworkStream):
     async def read(self, max_bytes, timeout=None):
         data = await self._inner.read(max_bytes, timeout)
 
-        # логируем прочитанные байты
         if dump := self._channel.get(self._inner):
             dump.write_bytes(
                 inner=self._inner,
-                direction=1,  # от сервера к клиенту
+                direction=1,
                 data=data,
             )
 
         return data
 
     async def write(self, buffer, timeout=None):
-        # логируем то, что хотим записать
         if dump := self._channel.get(self._inner):
             dump.write_bytes(
                 inner=self._inner,
-                direction=0,  # от клиента к серверу
+                direction=0,
                 data=buffer,
             )
 

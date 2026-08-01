@@ -23,7 +23,7 @@ from boba.chainlit2.rendering.tool_result import (
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
-    """Чистые юнит-тесты рендера не требуют HTTP-контекста chainlit."""
+    pass
 
 
 class TestRenderForLlm:
@@ -90,7 +90,7 @@ class TestToolResultMarkdown:
         md = ToolResultMarkdown(result).render()
         assert "|" in md
         assert "_cut_" in md
-        assert md.startswith("\n")  # ведущий \n для GFM-блока
+        assert md.startswith("\n")
 
     def test_empty_table(self) -> None:
         assert ToolResultMarkdown(TableResult(rows=[])).render() == "\n_(no rows)_"
@@ -120,4 +120,4 @@ class TestToolResultMarkdown:
         result = TableResult(rows=[{"a": "x\ny"}])
         md = ToolResultMarkdown(result).render()
         assert "\n" not in md.split("| a")[1].split("|")[1] or True
-        assert "⏎" in md  # перенос схлопнут в один символ
+        assert "⏎" in md

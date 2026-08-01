@@ -82,7 +82,6 @@ class SandboxProfile(BaseModel):
     @field_validator("ro_binds", "rw_binds", "tmpfs", mode="after")
     @classmethod
     def _canonicalize_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        """Абсолютный нормализованный путь; симлинки разыменовывает builder."""
         return tuple(
             os.path.normpath(os.path.abspath(os.path.expanduser(p))) for p in value
         )

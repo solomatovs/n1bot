@@ -28,7 +28,6 @@ class ToolResultMarkdown:
         self._result = result
 
     def render(self) -> str:  # noqa: PLR0911 — по ветке на каждый ToolResult-вариант
-        """Отрендерить обёрнутый ToolResult в markdown-строку."""
         match self._result:
             case TextResult(text=t):
                 return t
@@ -39,7 +38,6 @@ class ToolResultMarkdown:
             case PgCopyTextResult() as pg_text:
                 return self._copy_text_block(pg_text)
             case ChartResult(title=title):
-                # fallback: график рисуется отдельным каналом (cl.Plotly)
                 return f"_(график: {title})_" if title else "_(график)_"
             case ErrorResult(message=m):
                 if "\n" in m:
@@ -53,14 +51,12 @@ class ToolResultMarkdown:
         pretty = json.dumps(payload, ensure_ascii=False, indent=2)
         if "\n" not in pretty:
             return f"`{pretty}`"
-        # завершающий '\n': иначе react-markdown не закроет fence
         return f"\n```json\n{pretty}\n```\n"
 
     def _table_block(
         self, rows: Sequence[Mapping[str, Any]], note: str | None,
     ) -> str:
         body = self._render_rows(rows)
-        # ведущий '\n': без него GFM-таблица склеится в один абзац
         if note:
             return f"\n{body}\n\n_{note}_"
         return f"\n{body}"
@@ -86,7 +82,6 @@ class ToolResultMarkdown:
 
     @classmethod
     def _cell(cls, value: Any) -> str:
-        """Значение -> одностроковая ячейка: переносы рвут GFM-таблицу."""
         if value is None or isinstance(value, str):
             return cls._flatten_cell(value)
         if isinstance(value, (list, tuple, dict)):
@@ -97,13 +92,7 @@ class ToolResultMarkdown:
         if not rows:
             return "_(no rows)_"
 
-        try:
-            # disable_numparse: не даём tabulate менять значения ("007"->7)
-            flat = [
-                {k: self._cell(v) for k, v in row.items()} for row in rows
-            ]
-            return tabulate(
-                flat, headers="keys", tablefmt="github", disable_numparse=True,
-            )
-        except Exception:
-            return self._json_block(rows)
+        flat = [{k: self._cell(v) for k, v in row.items()} for row in rows]
+        return tabulate(
+            flat, headers="keys", tablefmt="github", disable_numparse=True,
+        )

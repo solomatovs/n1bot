@@ -1,3 +1,9 @@
+"""Обработчик ошибок chainlit-callback'ов.
+
+Chainlit гасит исключения callback'ов молча, поэтому сбой показываем
+пользователю сами: любое исключение уходит в чат сообщением об ошибке.
+"""
+
 import functools
 import logging
 from collections.abc import Callable
@@ -9,27 +15,24 @@ from boba.auth.errors import BaseError
 
 
 def chainlit_error_ctx_handler(fn: Callable) -> Callable:
-    """Ловит ошибку для chainlit callback которые существуют с контекстом"""
 
     logger = logging.getLogger("chainlit_handler")
 
     @staticmethod
     async def handle(e: BaseError):
-        # логируем ошибку наследуемую от BaseError
         logger.exception(str(e))
-        # записываем сообщение в историю, которая доступна
-        # при сборке следующего turn'а
-        if _history_message := e.history_message():
-            # пока что нет сервиса для ведения истории
-            pass
-
-        # показываем ошибку пользователю
         if m := e.view_message():
-            await cl.ErrorMessage(
-                author=m.author,
-                content=m.content,
-                fail_on_persist_error=m.fail_on_persist_error,
-            ).send()
+            await show(m.content, m.author, m.fail_on_persist_error)
+
+    @staticmethod
+    async def show(content: str, author: str, fail_on_persist_error: bool = False):
+        message = cl.ErrorMessage(
+            author=author,
+            content=content,
+            fail_on_persist_error=fail_on_persist_error,
+        )
+        message.parent_id = None
+        await message.send()
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -37,5 +40,8 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
             return await fn(*args, **kwargs)
         except BaseError as e:
             await handle(e)
+        except Exception as e:
+            logger.exception(str(e))
+            await show(str(e) or type(e).__name__, "Error")
 
     return wrapper

@@ -38,11 +38,6 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
     cwd: str,
     env: Mapping[str, str],
 ) -> RunResult:
-    """Запустить argv и собрать stdout/stderr.
-
-    RunResult возвращается и на таймаут (exit_code=-9); non-zero exit —
-    валидный результат, исключения не бросаются.
-    """
     if not argv:
         msg = "run_subprocess: argv не может быть пустым"
         raise ValueError(msg)
@@ -79,7 +74,6 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
 
 
 def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
-    """Записать data в stdin и закрыть пайп; b"" = сразу EOF."""
     if proc.stdin is None:
         raise ShellRunnerInvariantError(
             "_feed_stdin: ожидался proc.stdin (Popen запущен с PIPE)",
@@ -98,7 +92,6 @@ def _pump(
     timeout_sec: int,
     max_output_bytes: int,
 ) -> tuple[bytes, bytes, bool, bool, bool]:
-    """Чтение stdout/stderr с лимитами -> (out, err, trunc_out, trunc_err, timeout)."""
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
             "_pump: ожидались proc.stdout и proc.stderr (Popen запущен с PIPE)"
@@ -150,7 +143,6 @@ def _read_chunk(
     tag: str,
     max_output_bytes: int,
 ) -> bool:
-    """Прочитать порцию из fd, обрезать по лимиту. Возврат: True если fd жив."""
     chunk = os.read(fd, 65536)
     if not chunk:
         return False

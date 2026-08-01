@@ -21,12 +21,11 @@ from boba.chainlit2.rendering.tool_result import JsonResult, ToolResult
 __all__ = ["build_bash_local_tool"]
 
 _MAX_COMMAND_LEN = 16_384
-_MAX_STDIN_LEN = 1 * 1024 * 1024  # 1 MiB
+_MAX_STDIN_LEN = 1 * 1024 * 1024
 _BASH_BIN = "/bin/bash"
 
 
 def build_bash_local_tool(cfg: BashLocalConfig) -> BaseTool:
-    """Собрать langchain-tool bash_local; конфиг захватывается замыканием."""
 
     @tool(response_format="content_and_artifact")
     def bash_local(

@@ -19,7 +19,6 @@ __all__ = ["pack_result", "render_for_llm"]
 
 
 def render_for_llm(result: ToolResult) -> str:
-    """ToolResult -> строка для LLM; chart отдаёт только подтверждение."""
     content: str
     match result:
         case TextResult(text=t):
@@ -41,5 +40,4 @@ def render_for_llm(result: ToolResult) -> str:
 
 
 def pack_result(result: ToolResult) -> tuple[str, ToolResult]:
-    """ToolResult -> (content для LLM, artifact для UI)."""
     return render_for_llm(result), result

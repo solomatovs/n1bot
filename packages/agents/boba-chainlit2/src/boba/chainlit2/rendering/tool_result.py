@@ -69,18 +69,16 @@ class PgCopyTextResult(ToolResultBase):
     }
 
     def iter_rows(self) -> Iterator[list[str | None]]:
-        """Yield строки (header первой) как list ячеек; NULL (\\N) -> None."""
         if not self.text:
             return
         lines = self.text.split("\n")
-        if lines and lines[-1] == "":  # COPY терминирует каждую строку \n
+        if lines and lines[-1] == "":
             lines.pop()
         for line in lines:
             yield [self._unescape(field) for field in line.split("\t")]
 
     @classmethod
     def _unescape(cls, field: str) -> str | None:
-        """Развернуть COPY TEXT-эскейпы одной ячейки; \\N -> None (NULL)."""
         if field == "\\N":
             return None
         if "\\" not in field:

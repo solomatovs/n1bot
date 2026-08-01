@@ -33,7 +33,7 @@ __all__ = ["PluginMeta", "ToolPlugin", "load_tools"]
 
 logger = logging.getLogger(__name__)
 
-ConfigT = Any  # pydantic-модель конфига плагина или None (у плагина нет секции)
+ConfigT = Any
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,6 @@ class PluginMeta(BaseModel):
 
 
 def _build_sandbox_tools(cfg: BashSandboxConfig) -> list[BaseTool]:
-    """bash регистрируется только при наличии bwrap на хосте."""
     if not has_bwrap():
         logger.warning(
             "[tool.sandbox] включён, но bubblewrap (bwrap) не найден в PATH — "
@@ -95,7 +94,6 @@ _PLUGINS: dict[str, ToolPlugin] = {
 
 
 def load_tools(raw_config: DictConfig) -> list[BaseTool]:
-    """Инструменты включённых плагинов, отфильтрованные по allowlist."""
     tools: list[BaseTool] = []
     for name, plugin in _PLUGINS.items():
         meta = bind(raw_config, f"tool.{name}", PluginMeta)

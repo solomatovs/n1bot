@@ -17,7 +17,6 @@ def build_plotly_element(
     *,
     display: ElementDisplay = "inline",
 ) -> cl.Plotly:
-    """ChartResult.spec -> cl.Plotly; невалидный spec бросает."""
     from plotly import graph_objects as go  # noqa: PLC0415 — ленивый импорт plotly
 
     figure = go.Figure(spec)

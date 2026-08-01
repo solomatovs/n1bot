@@ -1,96 +1,255 @@
-"""Тесты рендера ToolResult в tracer (AgentTracer._finalize_tool_result)."""
+"""Тесты единой отрисовки ленты: ChatView + восстановление истории."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, cast
+import asyncio
+from typing import Any
 
 import pytest
-from chainlit.step import Step
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from pydantic import ValidationError
 
-from boba.chainlit2.chat.agent_tracer import AgentTracer
+from boba.chainlit2.chat.transcript import ConversationTranscript
+from boba.chainlit2.rendering.artifact import ToolArtifact
+from boba.chainlit2.rendering.chat_view import ChatView, RecordingSink
 from boba.chainlit2.rendering.tool_result import (
     ChartResult,
     ErrorResult,
+    TableResult,
     TextResult,
 )
+
+THREAD = "11111111-1111-1111-1111-111111111111"
 
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
-    """Юнит-тест рендера — контекст chainlit не нужен (object.__new__)."""
+    pass
 
 
-class FakeStep:
-    """Минимальный двойник chainlit Step: только поля, которые ставит рендер."""
-
-    def __init__(self) -> None:
-        self.output: Any = None
-        self.language: Any = None
-        self.is_error = False
-        self.end: Any = None
-        self.updated = False
-
-    async def update(self) -> None:
-        self.updated = True
+def run(coro: Any) -> Any:
+    return asyncio.run(coro)
 
 
-def _make_tracer(chart_calls: list) -> AgentTracer:
-    """Экземпляр без __init__ (context_var не трогаем), мок-отправка графика."""
-    tracer = cast(AgentTracer, object.__new__(AgentTracer))
-
-    async def _send_chart(title: str | None, spec: Mapping[str, Any]) -> None:
-        chart_calls.append((title, spec))
-
-    tracer._send_chart_message = _send_chart  # type: ignore[attr-defined]
-    return tracer
+def make_view() -> tuple[ChatView, RecordingSink]:
+    sink = RecordingSink()
+    return ChatView(THREAD, sink, user_name="tester"), sink
 
 
-async def _finalize(tracer: AgentTracer, step: FakeStep, artifact: Any) -> None:
-    """Прокинуть двойник step'а в финализацию результата."""
-    await tracer._finalize_tool_result(cast(Step, step), artifact)
+class TestToolArtifact:
+    def test_revives_model_from_dict(self) -> None:
+        revived = ToolArtifact.revive({"kind": "text", "text": "hi"})
+        assert isinstance(revived, TextResult)
+        assert revived.text == "hi"
+
+    def test_keeps_model_as_is(self) -> None:
+        original = TextResult(text="hi")
+        assert ToolArtifact.revive(original) is original
+
+    def test_unknown_payload_is_none(self) -> None:
+        assert ToolArtifact.revive({"kind": "nope"}) is None
+        assert ToolArtifact.revive("plain string") is None
+
+    def test_broken_own_artifact_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            ToolArtifact.revive({"kind": "text"})
 
 
-class TestFinalizeToolResult:
+class TestToolFinished:
+    def _finish(self, artifact: Any) -> tuple[Any, RecordingSink]:
+        view, sink = make_view()
+
+        async def scenario():
+            step = await view.tool_started("demo", {"x": 1}, "k1")
+            await view.tool_finished(step, artifact, "call_1")
+            return step
+
+        return run(scenario()), sink
+
     def test_markdown_text(self) -> None:
-        step = FakeStep()
-        tracer = _make_tracer([])
-        await_result(_finalize(tracer, step, TextResult(text="hi")))
+        step, _ = self._finish(TextResult(text="hi"))
         assert step.output == "hi"
-        # language не ставится: chainlit рендерит output как markdown только
-        # при language=None (иначе — сырой код-блок)
         assert step.language is None
         assert step.is_error is False
-        assert step.updated is True
 
     def test_error_result_marks_step(self) -> None:
-        step = FakeStep()
-        tracer = _make_tracer([])
-        await_result(
-            _finalize(tracer, step, ErrorResult(message="boom", error_kind="e"))
-        )
+        step, _ = self._finish(ErrorResult(message="boom", error_kind="e"))
         assert step.is_error is True
         assert "boom" in step.output
 
-    def test_chart_sends_message(self) -> None:
-        step = FakeStep()
-        chart_calls: list = []
-        tracer = _make_tracer(chart_calls)
-        result = ChartResult(spec={"data": []}, title="T")
-        await_result(_finalize(tracer, step, result))
+    def test_chart_adds_top_level_step(self) -> None:
+        step, sink = self._finish(ChartResult(spec={"data": []}, title="T"))
         assert step.output == "график отрисован: T"
-        assert chart_calls == [("T", {"data": []})]
+        chart = [s for s in sink.steps if s.get("type") == "assistant_message"]
+        assert len(chart) == 1
+        assert chart[0].get("output") == "T"
+        assert chart[0].get("parentId") is None
+
+    def test_chart_step_id_is_derived_from_tool_call(self) -> None:
+        _, sink = self._finish(ChartResult(spec={"data": []}, title="T"))
+        chart = next(s for s in sink.steps if s.get("type") == "assistant_message")
+        assert chart.get("id") == ChatView.derive_id(THREAD, "call_1", "chart")
+
+    def test_artifact_dict_renders_like_model(self) -> None:
+        step, _ = self._finish({"kind": "text", "text": "from checkpoint"})
+        assert step.output == "from checkpoint"
 
     def test_non_tool_result_falls_through(self) -> None:
-        step = FakeStep()
-        tracer = _make_tracer([])
-        # артефакт — не ToolResult (например, сырой dict от стороннего инструмента)
-        await_result(_finalize(tracer, step, {"kind": "x"}))
-        assert step.output is not None  # рендер через process_content
+        step, _ = self._finish({"whatever": 1})
+        assert step.output
 
 
-def await_result(coro):
-    """Запустить корутину без pytest.anyio (тест-модуль не помечен anyio)."""
-    import asyncio
+class TestTranscript:
+    def _replay(self, messages: list) -> RecordingSink:
+        view, sink = make_view()
+        run(ConversationTranscript(messages, view).replay())
+        return sink
 
-    return asyncio.run(coro)
+    def test_full_turn_layout(self) -> None:
+        sink = self._replay(
+            [
+                HumanMessage(content="нарисуй график", id="m1"),
+                AIMessage(
+                    content="",
+                    id="m2",
+                    tool_calls=[
+                        {
+                            "name": "visualize",
+                            "args": {"q": "bar"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    content="[chart rendered: Final]",
+                    id="m3",
+                    name="visualize",
+                    tool_call_id="call_1",
+                    artifact={"kind": "chart", "spec": {"data": []}, "title": "Final"},
+                ),
+                AIMessage(content="готово", id="m4"),
+            ]
+        )
+        by_type: dict[str, list] = {}
+        for step in sink.steps:
+            by_type.setdefault(str(step.get("type")), []).append(step)
+
+        assert [s.get("output") for s in by_type["user_message"]] == ["нарисуй график"]
+        assert by_type["run"][0].get("name") == ChatView.CONTAINER_NAME
+        assert by_type["tool"][0].get("name") == "visualize"
+        assert by_type["tool"][0].get("parentId") == by_type["run"][0].get("id")
+        answers = [s.get("output") for s in by_type["assistant_message"]]
+        assert answers == ["Final", "готово"]
+        assert all(s.get("parentId") is None for s in by_type["assistant_message"])
+
+    def test_table_artifact_from_checkpoint(self) -> None:
+        sink = self._replay(
+            [
+                HumanMessage(content="дай таблицу", id="m1"),
+                ToolMessage(
+                    content="ok",
+                    id="m2",
+                    name="table_tool",
+                    tool_call_id="call_2",
+                    artifact=TableResult(rows=[{"a": 1, "b": 2}]).model_dump(),
+                ),
+            ]
+        )
+        tool = next(s for s in sink.steps if s.get("type") == "tool")
+        output = tool.get("output") or ""
+        assert "a" in output
+        assert "b" in output
+
+    def test_error_tool_message(self) -> None:
+        sink = self._replay(
+            [
+                HumanMessage(content="ломай", id="m1"),
+                ToolMessage(
+                    content="упало",
+                    id="m2",
+                    name="bad",
+                    tool_call_id="call_3",
+                    status="error",
+                ),
+            ]
+        )
+        tool = next(s for s in sink.steps if s.get("type") == "tool")
+        assert tool.get("isError") is True
+
+    def test_reasoning_becomes_thinking_step(self) -> None:
+        sink = self._replay(
+            [
+                HumanMessage(content="?", id="m1"),
+                AIMessage(
+                    content="ответ",
+                    id="m2",
+                    additional_kwargs={"reasoning_content": "размышляю"},
+                ),
+            ]
+        )
+        thinking = [s for s in sink.steps if s.get("type") == "llm"]
+        assert len(thinking) == 1
+        assert thinking[0].get("name") == "thinking"
+        assert thinking[0].get("output") == "размышляю"
+
+    def test_answer_id_matches_live_rendering(self) -> None:
+        sink = self._replay(
+            [
+                HumanMessage(content="привет", id="chainlit-msg-1"),
+                AIMessage(content="и тебе", id="m2"),
+            ]
+        )
+        answer = next(s for s in sink.steps if s.get("type") == "assistant_message")
+        expected = ChatView.derive_id(THREAD, "chainlit-msg-1", "answer")
+        assert answer.get("id") == expected
+
+    def test_question_keeps_chainlit_message_id(self) -> None:
+        sink = self._replay([HumanMessage(content="привет", id="chainlit-msg-1")])
+        question = next(s for s in sink.steps if s.get("type") == "user_message")
+        assert question.get("id") == "chainlit-msg-1"
+
+    def test_failure_from_history_renders_as_error(self) -> None:
+        sink = self._replay(
+            [
+                HumanMessage(content="?", id="m1"),
+                AIMessage(
+                    content="**сбой:** провайдер недоступен",
+                    id="m2",
+                    additional_kwargs={"error": True},
+                ),
+            ]
+        )
+        step = next(s for s in sink.steps if s.get("type") == "assistant_message")
+        assert step.get("isError") is True
+        assert "провайдер недоступен" in (step.get("output") or "")
+
+    def test_replay_is_deterministic(self) -> None:
+        messages = [
+            HumanMessage(content="привет", id="m1"),
+            AIMessage(content="и тебе", id="m2"),
+        ]
+        first = self._replay(messages).steps
+        second = self._replay(messages).steps
+        assert [s.get("id") for s in first] == [s.get("id") for s in second]
+
+    def test_each_question_opens_its_own_container(self) -> None:
+        sink = self._replay(
+            [
+                HumanMessage(content="раз", id="m1"),
+                AIMessage(
+                    content="",
+                    id="m2",
+                    additional_kwargs={"reasoning_content": "a"},
+                ),
+                HumanMessage(content="два", id="m3"),
+                AIMessage(
+                    content="",
+                    id="m4",
+                    additional_kwargs={"reasoning_content": "b"},
+                ),
+            ]
+        )
+        containers = [s for s in sink.steps if s.get("type") == "run"]
+        assert len(containers) == 2
+        assert containers[0].get("id") != containers[1].get("id")

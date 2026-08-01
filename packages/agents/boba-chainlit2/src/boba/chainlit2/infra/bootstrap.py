@@ -1,3 +1,5 @@
+"""Сборка FastAPI-приложения: chainlit, авторизация, DI и отдача файлов."""
+
 import asyncio
 import logging
 import logging.config
@@ -23,42 +25,32 @@ from boba.chainlit2.infra.di import Container
 
 
 def run_app():
-    # получаем настройки всего приложения
     if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
         raise ValueError("please pass env BOBA_CONFIG_PATH")
 
     c = providers.get_app_config(config_path=Path(config_path))
 
-    # применяем настройки логирования
     logging.config.dictConfig(c.logger)
 
     app = FastAPI(lifespan=_run_container)
 
-    # конфигурирует chainlit + DI из c (единственная точка конфигурации)
     _use_chainlit_middleware(app, c.chainlit)
 
-    # отдача файлов вложений с диска (роут на chainlit_app под его авторизацией)
     _use_file_serving(c)
 
-    # единственная точка конфигурации DI (сама механика start/stop — в lifespan)
     container = _use_di_container(app, c)
     app.state.container = container
 
-    # единственная точка подключения авторизации (стратегия выбирается конфигом);
     _use_auth(c, container)
 
-    # единная точка обработки ошибок
     _use_domain_error(app)
 
-    # Start the server
     async def start():
         uv_config = uvicorn.Config(
             app,
             host=c.chainlit.host,
             port=c.chainlit.port,
             ws=c.chainlit.ws_protocol,
-            # logger'у передаем None что бы
-            # второй раз настройки логирования не применялись
             log_config=None,
             log_level=None,
             access_log=True,
@@ -70,13 +62,11 @@ def run_app():
         server = uvicorn.Server(uv_config)
         await server.serve()
 
-    # Run the asyncio event loop instead of uvloop to enable re entrance
     asyncio.run(start())
 
 
 @asynccontextmanager
 async def _run_container(app: FastAPI) -> AsyncIterator[None]:
-    "Механика DI-контейнера: прогрев eager-провайдеров на старте, teardown на стопе"
     container = app.state.container
     await container.start()
 
@@ -96,19 +86,10 @@ def _use_domain_error(app: FastAPI):
 
 
 def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
-    # импортируем chainlit
     import boba.chainlit2.chat.callback  # type: ignore # noqa: F401, PLC0415
 
-    # устанавливаю директорию относительно которой chainlit размещает свои файлы:
-    # .files, .chainlit, public, public, config.toml, translations
     os.environ["CHAINLIT_APP_ROOT"] = config.root
-    # фронт берёт базовый путь для своих запросов (/user, /auth/config,
-    # socket.io) из этого env: serve() подставляет его в index.html. Без
-    # него фронт ходит в корень мимо маунта и ловит 404
     os.environ["CHAINLIT_ROOT_PATH"] = config.url_prefix
-    # устанавливаю переменную окружения если передан auth_secret
-    # это все потому, что chainlit только через переменную окружения
-    # умеет доставать auth_secret
     if config.auth_secret:
         os.environ["CHAINLIT_AUTH_SECRET"] = config.auth_secret
 
@@ -116,14 +97,10 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
     from chainlit.server import sio  # noqa: PLC0415
 
-    # engine.io heartbeat: даём клиенту пережить долгие паузы на брейкпоинтах
     sio.eio.ping_interval = config.ping_interval
     sio.eio.ping_timeout = config.ping_timeout
-    # за паузу на брейкпоинте клиент копит события и шлёт их одним
-    # polling-POST; дефолтных 16 пакетов не хватает
     Payload.max_decode_packets = config.max_decode_packets
 
-    # Create the chainlit.md file if it doesn't exist
     init_markdown(config.root)
 
     class ChainlitMiddleware(BaseHTTPMiddleware):
@@ -139,9 +116,6 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
 
 def _use_file_serving(c: AppConfig) -> None:
-    """
-    Отдаёт файлы вложений с диска роутом на chainlit_app
-    """
     from typing import Annotated  # noqa: PLC0415
 
     from chainlit.auth import get_current_user  # noqa: PLC0415
@@ -162,12 +136,9 @@ def _use_file_serving(c: AppConfig) -> None:
         if not isinstance(current_user, PersistedUser):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-        # проверяем владельца файла через путь к этому файлу.
-        # папка с названием current_user.id хранит файлы пользователя
         if object_key.split("/", maxsplit=1)[0] != current_user.id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
-        # формируем путь к файлу и проверяем что он внутри base_dir
         path = base_dir.joinpath(object_key).resolve()
 
         if not path.is_relative_to(base_dir):
@@ -181,19 +152,16 @@ def _use_file_serving(c: AppConfig) -> None:
     chainlit_app.add_api_route(
         f"{route_path}/{{object_key:path}}", serve_upload, methods=["GET"]
     )
-    # поднимаем роут выше chainlit SPA catch-all "/{full_path:path}"
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 
 
 def _use_auth(config: AppConfig, container: Container) -> None:
-    "Единая точка подключения авторизации chainlit"
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     ChainlitAuthInstaller(config.chainlit.url_prefix, config.auth).install(chainlit_app)
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
-    "Конфигурирует DI"
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
     container.eager(providers.chainlit_data_layer)
@@ -205,17 +173,12 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
 
 
 def _get_or_create_session_container():
-    """
-    Возвращает контейнер для текущей сессии chainlit
-    """
     from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
     from chainlit.user_session import user_session  # noqa: PLC0415
 
     try:
-        # если функция вызвана вне chainlit сессии, то придет None
         get_context()
     except ChainlitContextException:
-        # верну оригинальную ошибку
         return None
 
     container = user_session.get("_di_session_container")
@@ -235,15 +198,11 @@ def _get_or_create_session_container():
 
 
 def _close_container_if_session_end() -> None:
-    """Закрыть session container когда закончиться сессия"""
     from chainlit.config import config as cl_config  # noqa: PLC0415
     from chainlit.user_session import user_session  # noqa: PLC0415
 
-    # on_chat_end - если сработал, значит происходит завершение сессии пользователя
-    # запоминаем существующий on_chat_end и делаем его prev
     prev = cl_config.code.on_chat_end
 
-    # определяем wrapper над оригинальным on_chat_env
     async def on_chat_end():
 
         try:
@@ -253,5 +212,4 @@ def _close_container_if_session_end() -> None:
             if container := user_session.get("_di_session_container"):
                 await container.aclose()
 
-    # заменяем собственным on_chat_env
     cl_config.code.on_chat_end = on_chat_end
