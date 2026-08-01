@@ -15,6 +15,7 @@ from boba.chainlit2.rendering.chat_view import ChatView, RecordingSink
 from boba.chainlit2.rendering.tool_result import (
     ChartResult,
     ErrorResult,
+    JsonResult,
     TableResult,
     TextResult,
 )
@@ -94,6 +95,36 @@ class TestToolFinished:
         step, _ = self._finish({"kind": "text", "text": "from checkpoint"})
         assert step.output == "from checkpoint"
 
+    def test_failed_command_is_marked_red(self) -> None:
+        """Ненулевой код возврата — неуспех, хотя инструмент отработал."""
+        step, _ = self._finish(
+            JsonResult(ok=False, payload={"exit_code": 127, "stderr": "not found"})
+        )
+        assert step.name == ChatView.titled(ChatView.FAILED, "demo")
+        assert step.is_error is True
+
+    def test_successful_command_is_marked_green(self) -> None:
+        step, _ = self._finish(JsonResult(payload={"exit_code": 0, "stdout": "ok"}))
+        assert step.name == ChatView.titled(ChatView.DONE, "demo")
+        assert step.is_error is False
+
+    def test_error_result_is_not_ok_by_default(self) -> None:
+        assert ErrorResult(message="boom", error_kind="e").ok is False
+        assert TextResult(text="hi").ok is True
+
+    def test_stopped_tool_is_marked_red(self) -> None:
+        view, sink = make_view()
+
+        async def scenario():
+            step = await view.tool_started("visualize", {"x": 1}, "k1")
+            await view.tool_stopped(step)
+            return step
+
+        step = run(scenario())
+        assert step.name == ChatView.titled(ChatView.FAILED, "visualize")
+        assert step.output == ChatView.STOPPED_TEXT
+        assert sink.steps
+
     def test_non_tool_result_falls_through(self) -> None:
         step, _ = self._finish({"whatever": 1})
         assert step.output
@@ -137,7 +168,9 @@ class TestTranscript:
 
         assert [s.get("output") for s in by_type["user_message"]] == ["нарисуй график"]
         assert by_type["run"][0].get("name") == ChatView.CONTAINER_NAME
-        assert by_type["tool"][0].get("name") == "visualize"
+        assert by_type["tool"][0].get("name") == ChatView.titled(
+            ChatView.DONE, "visualize"
+        )
         assert by_type["tool"][0].get("parentId") == by_type["run"][0].get("id")
         answers = [s.get("output") for s in by_type["assistant_message"]]
         assert answers == ["Final", "готово"]
@@ -160,6 +193,22 @@ class TestTranscript:
         output = tool.get("output") or ""
         assert "a" in output
         assert "b" in output
+
+    def test_failed_tool_is_marked_red(self) -> None:
+        sink = self._replay(
+            [
+                HumanMessage(content="ломай", id="m1"),
+                ToolMessage(
+                    content="упало",
+                    id="m2",
+                    name="bad",
+                    tool_call_id="call_9",
+                    status="error",
+                ),
+            ]
+        )
+        tool = next(s for s in sink.steps if s.get("type") == "tool")
+        assert tool.get("name") == ChatView.titled(ChatView.FAILED, "bad")
 
     def test_error_tool_message(self) -> None:
         sink = self._replay(
@@ -190,7 +239,9 @@ class TestTranscript:
         )
         thinking = [s for s in sink.steps if s.get("type") == "llm"]
         assert len(thinking) == 1
-        assert thinking[0].get("name") == "thinking"
+        assert thinking[0].get("name") == ChatView.titled(
+            ChatView.IDLE, "thinking"
+        )
         assert thinking[0].get("output") == "размышляю"
 
     def test_answer_id_matches_live_rendering(self) -> None:

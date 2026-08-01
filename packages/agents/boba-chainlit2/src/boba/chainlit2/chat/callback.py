@@ -4,6 +4,7 @@
 треда, data layer). Отрисовку ленты ведёт ChatView, историю — checkpointer.
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Annotated, Any, cast
@@ -19,6 +20,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.chainlit2.chat.agent_tracer import AgentTracer
+from boba.chainlit2.chat.edit import ThreadRewind
 from boba.chainlit2.chat.handler import chainlit_error_ctx_handler
 from boba.chainlit2.infra.di import Depends, di_inject
 from boba.chainlit2.infra.providers import chainlit_data_layer, langchain_agent
@@ -63,6 +65,42 @@ class ChainlitAdapter:
             },
         )
 
+    @staticmethod
+    async def report_stop(
+        graph: CompiledStateGraph,
+        thread_id: str,
+        tracer: AgentTracer,
+        key: str,
+        answer: cl.Message | None,
+    ) -> None:
+        "фиксирует остановку: закрывает шаги и кладёт прерванный ответ в историю"
+        await tracer.stop_pending()
+
+        partial = (answer.content if answer else "") or ""
+        note = f"_{ChatView.STOPPED_TEXT}_"
+        content = f"{partial}\n\n{note}" if partial else note
+
+        if answer is not None:
+            answer.content = content
+            await answer.send()
+        else:
+            await tracer.view.answer(content, key)
+
+        await graph.aupdate_state(
+            RunnableConfig(configurable={"thread_id": thread_id}),
+            {
+                "messages": [
+                    AIMessage(content=content, additional_kwargs={"stopped": True})
+                ]
+            },
+        )
+
+    @staticmethod
+    async def refresh_view(data_layer: BaseDataLayer, thread_id: str) -> None:
+        "перерисовывает ленту треда из истории агента"
+        if thread := await data_layer.get_thread(thread_id):
+            await cl.context.emitter.resume_thread(thread)
+
 
 @cl.on_message
 @chainlit_error_ctx_handler
@@ -73,12 +111,19 @@ async def on_message(
         CompiledStateGraph,
         Depends(langchain_agent, scope="session"),
     ],
+    data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
 ):
     thread_id = ChainlitAdapter.get_chat_id(cl.context.session)
 
+    rewind = ThreadRewind(graph, data_layer, thread_id)
+    if await rewind.is_edit(msg.id):
+        await rewind.apply(msg.id, msg.content)
+        await ChainlitAdapter.refresh_view(data_layer, thread_id)
+
     view = ChatView(thread_id, LiveSink())
+    tracer = AgentTracer(view)
     run_config = RunnableConfig(
-        callbacks=[AgentTracer(view)],
+        callbacks=[tracer],
         configurable={"thread_id": thread_id},
     )
 
@@ -108,6 +153,11 @@ async def on_message(
             ):
                 answer = await _final_message()
                 await answer.stream_token(chunk.content)
+    except asyncio.CancelledError:
+        await ChainlitAdapter.report_stop(
+            graph, thread_id, tracer, msg.id, final_answer
+        )
+        raise
     except Exception as e:
         logger.exception("агент не отработал")
         await ChainlitAdapter.report_failure(graph, thread_id, view, msg.id, e)
@@ -135,7 +185,6 @@ def on_logout(request: Request, response: Response):
 async def on_stop():
     user = ChainlitAdapter.get_chat_user(cl.user_session)
     logger.info(f"{user.identifier} has stopped the task!")
-    await cl.Message("You have stopped the task!").send()
 
 
 @cl.on_chat_end

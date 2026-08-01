@@ -25,9 +25,16 @@ __all__ = [
 
 
 class ToolResultBase(BaseModel, ABC):
-    """База вариантов; как тип значения используй ToolResult."""
+    """База вариантов; как тип значения используй ToolResult.
+
+    Поле ok — единственный признак того, как завершился инструмент. Само
+    возвращение результата успехом не считается: команда с ненулевым кодом
+    выхода или запрос с ошибкой сервера обязаны выставить ok=False.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ok: bool = True
 
 
 class TextResult(ToolResultBase):
@@ -110,6 +117,7 @@ class ErrorResult(ToolResultBase):
     """Tool не выполнен; UI рендерит такой результат как ошибку."""
 
     kind: Literal["error"] = "error"
+    ok: bool = False
     message: str
     error_kind: str
     metadata: Mapping[str, str] = Field(default_factory=dict)

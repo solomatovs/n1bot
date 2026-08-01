@@ -70,9 +70,10 @@ def build_bash_tool(cfg: BashSandboxConfig) -> BaseTool:
         if profile_dto is None:
             return pack_result(
                 JsonResult(
+                    ok=False,
                     payload=_unknown_profile_payload(
                         profile_name, sorted(cfg.profiles)
-                    )
+                    ),
                 )
             )
 
@@ -91,9 +92,18 @@ def build_bash_tool(cfg: BashSandboxConfig) -> BaseTool:
             cwd=workspace_root,
             env=os.environ,
         )
-        return pack_result(JsonResult(payload=_result_to_payload(result, profile_name)))
+        return pack_result(
+            JsonResult(
+                ok=_succeeded(result),
+                payload=_result_to_payload(result, profile_name),
+            )
+        )
 
     return bash
+
+
+def _succeeded(result: RunResult) -> bool:
+    return result.exit_code == 0 and not result.timed_out
 
 
 def _unknown_profile_payload(name: str, available: list[str]) -> dict[str, Any]:
