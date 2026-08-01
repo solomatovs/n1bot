@@ -1,9 +1,4 @@
-"""Построение cl.Plotly-элемента из ChartResult.spec.
-
-Порт boba.chainlit.rendering.chart_figure. Единственное место, знающее
-о plotly: домен (ChartResult) оперирует чистым dict'ом (Plotly figure JSON),
-а сборка go.Figure + cl.Plotly живёт здесь, в presentation-слое.
-"""
+"""cl.Plotly-элемент из ChartResult.spec — единственное место с plotly."""
 
 from __future__ import annotations
 
@@ -22,11 +17,7 @@ def build_plotly_element(
     *,
     display: ElementDisplay = "inline",
 ) -> cl.Plotly:
-    """ChartResult.spec (Plotly figure JSON) -> cl.Plotly.
-
-    go.Figure(spec) валидирует структуру; невалидный spec бросит — вызывающий
-    (tracer) ловит и откатывается на текстовую заглушку.
-    """
+    """ChartResult.spec -> cl.Plotly; невалидный spec бросает."""
     from plotly import graph_objects as go  # noqa: PLC0415 — ленивый импорт plotly
 
     figure = go.Figure(spec)

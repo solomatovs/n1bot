@@ -1,12 +1,6 @@
-"""Tool bash_local: запуск shell-команды без bubblewrap-изоляции.
+"""Tool bash_local: shell БЕЗ изоляции — доступ к ФС и сети как у агента.
 
-Порт boba.tool.shell.bash_local. В отличие от bash_sandbox, запускает процесс
-напрямую через subprocess.Popen — без namespace'ов, с тем же доступом к
-ФС/сети, что и у самого агента. Использовать только если хост-машине вы
-доверяете коду от LLM (например, dev-окружение).
-
-Безопасность Python-стороны: command от LLM передаётся как единичный
-argv-элемент в bash -c, без shell-интерполяции на стороне Python.
+Для недоверенного кода используйте bash (bwrap-песочница).
 """
 
 from __future__ import annotations
@@ -32,11 +26,7 @@ _BASH_BIN = "/bin/bash"
 
 
 def build_bash_local_tool(cfg: BashLocalConfig) -> BaseTool:
-    """Собрать langchain-tool bash_local на заданном конфиге.
-
-    Фабрика-замыкание: конфиг захватывается при сборке (config-секция
-    [tool.shell]), LLM видит только command/stdin.
-    """
+    """Собрать langchain-tool bash_local; конфиг захватывается замыканием."""
 
     @tool(response_format="content_and_artifact")
     def bash_local(
@@ -58,11 +48,7 @@ def build_bash_local_tool(cfg: BashLocalConfig) -> BaseTool:
             ),
         ] = "",
     ) -> tuple[str, ToolResult]:
-        """Выполнить shell-команду через bash -c без изоляции.
-
-        Запускается напрямую под пользователем агента; доступ к ФС и сети —
-        полный, как у самого процесса агента.
-        """
+        """Выполнить shell-команду через bash -c без изоляции."""
         argv = [_BASH_BIN, "-c", command]
         cwd = cfg.cwd or str(cfg.workspace_root)
         env = resolve_local_env(cfg.env_passthrough, cfg.env_set, os.environ)

@@ -25,7 +25,9 @@ class LocalStorageClient(BaseStorageClient):
 
     def _resolve(self, object_key: str) -> Path:
         """Путь файла внутри files_dir"""
-        base_dir = Path(self._config.files_dir)
+        # base_dir тоже резолвим: он бывает относительным (./data/upload),
+        # и тогда сравнение с абсолютным path всегда давало бы False
+        base_dir = Path(self._config.files_dir).resolve()
         path = (base_dir / object_key).resolve()
 
         if not path.is_relative_to(base_dir):
@@ -34,7 +36,9 @@ class LocalStorageClient(BaseStorageClient):
         return path
 
     def _url(self, object_key: str) -> str:
-        return f"{object_key}"
+        # public_prefix обязателен: по этому пути bootstrap вешает роут
+        # отдачи файла, без него фронт запросит относительный путь и словит 404
+        return f"{self._config.public_prefix.rstrip('/')}/{object_key}"
 
     async def upload_file(
         self,

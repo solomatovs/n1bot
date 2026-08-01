@@ -121,8 +121,9 @@ async def on_message(
 @chainlit_error_ctx_handler
 @di_inject
 async def on_chat_start():
-    user = ChainlitAdapter.get_chat_user(cl.user_session)
-    await cl.Message(f"Hello {user}").send()
+    pass
+    #user = ChainlitAdapter.get_chat_user(cl.user_session)
+    # await cl.Message(f"Hello {user}").send()
 
 
 @cl.on_logout

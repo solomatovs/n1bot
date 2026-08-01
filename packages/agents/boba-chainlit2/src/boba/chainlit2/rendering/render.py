@@ -1,9 +1,4 @@
-"""Рендер ToolResult -> контент для LLM; помощник pack_result.
-
-Порт boba.llm.tool_result_render.tool_result_to_message для langchain-стека.
-Инструмент возвращает (content, artifact): content — строка, которую видит
-LLM (ToolMessage.content), artifact — сам ToolResult для UI-рендера.
-"""
+"""ToolResult -> контент для LLM; pack_result отдаёт (content, artifact)."""
 
 from __future__ import annotations
 
@@ -24,11 +19,7 @@ __all__ = ["pack_result", "render_for_llm"]
 
 
 def render_for_llm(result: ToolResult) -> str:
-    """ToolResult -> строка, которую видит LLM.
-
-    Exhaustive match по дискриминатору kind. ChartResult отдаёт только
-    подтверждение — сырой Plotly-spec громоздок и бесполезен для рассуждения.
-    """
+    """ToolResult -> строка для LLM; chart отдаёт только подтверждение."""
     content: str
     match result:
         case TextResult(text=t):
@@ -50,9 +41,5 @@ def render_for_llm(result: ToolResult) -> str:
 
 
 def pack_result(result: ToolResult) -> tuple[str, ToolResult]:
-    """ToolResult -> (content для LLM, artifact для UI).
-
-    Единая точка, которую зовёт каждый инструмент в конце: контент для LLM
-    и структурный результат для рендера в chainlit-интерфейсе.
-    """
+    """ToolResult -> (content для LLM, artifact для UI)."""
     return render_for_llm(result), result
