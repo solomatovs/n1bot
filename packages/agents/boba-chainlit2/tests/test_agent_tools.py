@@ -16,8 +16,9 @@ from boba.chainlit2.agent.tools import (
     build_bash_tool,
     visualize,
 )
-from boba.chainlit2.agent.tools.config import BashLocalConfig, BashSandboxConfig
-from boba.chainlit2.agent.tools.sandbox import build_bwrap_argv
+from boba.chainlit2.agent.tools.sandbox.argv import build_bwrap_argv
+from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
+from boba.chainlit2.agent.tools.shell.config import BashLocalConfig
 from boba.chainlit2.rendering.tool_result import ChartResult, JsonResult
 
 

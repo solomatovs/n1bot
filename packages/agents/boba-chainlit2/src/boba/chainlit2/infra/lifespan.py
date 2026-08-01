@@ -1,7 +1,7 @@
 """Жизненный цикл приложения: инициализация и освобождение ресурсов DI."""
 
 import contextlib
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 
 from fastapi import FastAPI
@@ -11,7 +11,7 @@ from fastapi import FastAPI
 async def _manager(
     app: FastAPI,
     lifespans: Sequence[Callable[[FastAPI], AbstractAsyncContextManager[None]]],
-) -> AsyncIterator[None]:
+) -> AsyncGenerator[None]:
     exit_stack = contextlib.AsyncExitStack()
     async with exit_stack:
         for lifespan in lifespans:

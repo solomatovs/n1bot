@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
+from boba.chainlit2.agent.cancellation import turn_cancellation
 from boba.chainlit2.chat.agent_tracer import AgentTracer
 from boba.chainlit2.chat.edit import ThreadRewind
 from boba.chainlit2.chat.handler import chainlit_error_ctx_handler
@@ -144,24 +145,27 @@ async def on_message(
             final_answer = view.open_answer(msg.id)
         return final_answer
 
-    try:
-        async for chunk, _metadata in stream:
-            if (
-                isinstance(chunk, AIMessageChunk)
-                and isinstance(chunk.content, str)
-                and chunk.content
-            ):
-                answer = await _final_message()
-                await answer.stream_token(chunk.content)
-    except asyncio.CancelledError:
-        await ChainlitAdapter.report_stop(
-            graph, thread_id, tracer, msg.id, final_answer
-        )
-        raise
-    except Exception as e:
-        logger.exception("агент не отработал")
-        await ChainlitAdapter.report_failure(graph, thread_id, view, msg.id, e)
-        return
+    with turn_cancellation() as cancellation:
+        try:
+            async for chunk, _metadata in stream:
+                if (
+                    isinstance(chunk, AIMessageChunk)
+                    and isinstance(chunk.content, str)
+                    and chunk.content
+                ):
+                    answer = await _final_message()
+                    await answer.stream_token(chunk.content)
+        except asyncio.CancelledError:
+            cancellation.cancel()
+            await ChainlitAdapter.report_stop(
+                graph, thread_id, tracer, msg.id, final_answer
+            )
+            raise
+        except Exception as e:
+            logger.exception("агент не отработал")
+            cancellation.cancel()
+            await ChainlitAdapter.report_failure(graph, thread_id, view, msg.id, e)
+            return
 
     if final_answer is None:
         final_answer = view.open_answer(msg.id)

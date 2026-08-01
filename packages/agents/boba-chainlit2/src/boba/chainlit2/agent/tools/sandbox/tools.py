@@ -14,9 +14,9 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.chainlit2.agent.tools.config import BashSandboxConfig
-from boba.chainlit2.agent.tools.runner import RunResult, run_subprocess
-from boba.chainlit2.agent.tools.sandbox import build_bwrap_argv
+from boba.chainlit2.agent.tools.process.runner import RunResult, run_subprocess
+from boba.chainlit2.agent.tools.sandbox.argv import build_bwrap_argv
+from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
 from boba.chainlit2.rendering.render import pack_result
 from boba.chainlit2.rendering.tool_result import JsonResult, ToolResult
 
