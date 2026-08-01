@@ -1,17 +1,9 @@
-from typing import Literal
-
-from langchain.tools import tool
+from boba.chainlit2.agent.tools.bash_local import build_bash_local_tool
+from boba.chainlit2.agent.tools.config import BashLocalConfig
+from boba.chainlit2.agent.tools.visualize import visualize
 
 __all__ = [
-    "get_weather",
+    "BashLocalConfig",
+    "build_bash_local_tool",
+    "visualize",
 ]
-
-
-@tool
-def get_weather(city: Literal["nyc", "sf"]):
-    """Use this to get weather information."""
-    if city == "nyc":
-        return "It might be cloudy in nyc"
-    if city == "sf":
-        return "It's always sunny in sf"
-    raise AssertionError("Unknown city")

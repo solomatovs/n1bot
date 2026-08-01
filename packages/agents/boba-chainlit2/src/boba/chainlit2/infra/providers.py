@@ -9,10 +9,11 @@ from httpx import AsyncClient
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, wrap_model_call
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
+from omegaconf import DictConfig
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg_pool import PoolTimeout
@@ -23,8 +24,8 @@ from boba.agent.tool_config import (
     build_app_config,
 )
 from boba.auth.errors import InternalServiceError
+from boba.chainlit2.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit2.agent.dump import DumpingTransport
-from boba.chainlit2.agent.tools import get_weather
 from boba.chainlit2.chat.data import PostgresDataLayer
 from boba.chainlit2.chat.data.storage import LocalStorageClient
 from boba.chainlit2.infra.config import (
@@ -36,12 +37,32 @@ from boba.chainlit2.infra.config import (
     OpenAiConfig,
 )
 from boba.chainlit2.infra.di import Depends
+from boba.chainlit2.infra.plugins import load_tools
 from boba.db.postgres import AsyncPostgresPool
+
+# Сырой конфиг-инстанс (DictConfig) из build_app_config; AppConfig — его
+# проекция. Нужен для [tool.*] секций, которых нет в AppConfig.
+_RAW_CONFIG: dict[str, DictConfig] = {}
+
+
+def get_raw_config() -> DictConfig:
+    """Сырой конфиг-инстанс (для резолва [tool.*] секций).
+
+    Заполняется первым вызовом get_app_config (bootstrap строит конфиг один
+    раз); вне приложения — RuntimeError.
+    """
+    try:
+        return _RAW_CONFIG["config"]
+    except KeyError:
+        msg = "raw config не инициализирован: сначала вызови get_app_config()"
+        raise RuntimeError(msg) from None
 
 
 def get_app_config(config_path: Path) -> AppConfig:
-    """Конфиг приложения"""
-    return bind(build_app_config(config_path=config_path), path="app", model=AppConfig)
+    """Конфиг приложения; заодно кеширует сырой DictConfig для tool-секций."""
+    raw = build_app_config(config_path=config_path)
+    _RAW_CONFIG["config"] = raw
+    return bind(raw, path="app", model=AppConfig)
 
 
 def get_checkpointer_config(
@@ -73,6 +94,13 @@ def get_agent_profile(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ) -> AgentProfile:
     return app_config.agent
+
+
+def tool_registry(
+    raw: Annotated[DictConfig, Depends(get_raw_config)],
+) -> list[BaseTool]:
+    """Включённые инструменты из [tool.*] секций конфига."""
+    return load_tools(raw)
 
 
 def get_openai_config(
@@ -289,8 +317,11 @@ def langchain_agent(
     c: Annotated[AppConfig, Depends(get_app_config)],
     client: Annotated[AsyncClient, Depends(httpx_debug_client)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+    tools: Annotated[list[BaseTool], Depends(tool_registry)],
 ) -> CompiledStateGraph:
-    chat = ChatOpenAI(
+    # ReasoningChatOpenAI: сохраняет reasoning_content провайдера (thinking) —
+    # штатный ChatOpenAI выбрасывает нестандартные поля сторонних провайдеров
+    chat = ReasoningChatOpenAI(
         http_async_client=client,
         model=c.agent.model,
         base_url=c.agent.openai.base_url,
@@ -302,7 +333,7 @@ def langchain_agent(
 
     agent = create_agent(
         model=chat,
-        tools=[get_weather],
+        tools=tools,
         system_prompt=system_prompt,
         checkpointer=saver,
         middleware=[history_view],
