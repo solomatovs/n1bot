@@ -1,9 +1,4 @@
-"""Markdown-рендер ToolResult-вариантов для Chainlit Step.
-
-Порт boba.chainlit.rendering.result_markdown. Presentation-слой: превращает
-доменные ToolResult (чистые данные + UI-агностичные аксессоры вроде
-PgCopyTextResult.iter_rows) в markdown для chainlit.
-"""
+"""Markdown-рендер ToolResult-вариантов для Chainlit Step."""
 
 from __future__ import annotations
 
@@ -44,10 +39,7 @@ class ToolResultMarkdown:
             case PgCopyTextResult() as pg_text:
                 return self._copy_text_block(pg_text)
             case ChartResult(title=title):
-                # График не рисуется markdown'ом — он уходит отдельным каналом
-                # (tool_chart -> cl.Plotly). Сюда ChartResult попадает лишь
-                # как fallback (например orphan tool_result без chart-канала);
-                # отдаём текстовую заглушку, чтобы не потерять факт графика.
+                # fallback: график рисуется отдельным каналом (cl.Plotly)
                 return f"_(график: {title})_" if title else "_(график)_"
             case ErrorResult(message=m):
                 if "\n" in m:
@@ -61,36 +53,25 @@ class ToolResultMarkdown:
         pretty = json.dumps(payload, ensure_ascii=False, indent=2)
         if "\n" not in pretty:
             return f"`{pretty}`"
-        # Завершающий '\n' обязателен: без него закрывающий  упирается в EOF
-        # строки и react-markdown Chainlit не финализирует fence — три бэктика
-        # протекают в UI как литеральный текст. Парный приём к ведущему '\n'.
+        # завершающий '\n': иначе react-markdown не закроет fence
         return f"\n```json\n{pretty}\n```\n"
 
     def _table_block(
         self, rows: Sequence[Mapping[str, Any]], note: str | None,
     ) -> str:
         body = self._render_rows(rows)
-        # Ведущий '\n' обязателен: без пустой строки перед GFM-таблицей
-        # markdown-рендерер Chainlit склеивает |...|-строки в один абзац
-        # (одиночные переносы -> пробелы) и таблица показывается ОДНОЙ строкой.
-        # Тот же приём, что и у _json_block для code-fence.
+        # ведущий '\n': без него GFM-таблица склеится в один абзац
         if note:
             return f"\n{body}\n\n_{note}_"
         return f"\n{body}"
 
     def _copy_text_block(self, result: PgCopyTextResult) -> str:
-        # PgCopyTextResult: парсинг COPY TEXT-формата инкапсулирован в
-        # iter_rows (split + unescape). Первая строка — header; NULL -> None.
         rows = list(result.iter_rows())
         if not rows:
             return "_(no rows)_"
 
-        # Переносы внутри ячейки рвут markdown-таблицу — схлопываем
-        # (display-only, в LLM уходит исходный COPY TEXT-дамп). NULL -> "".
         header = [self._flatten_cell(cell) for cell in rows[0]]
         data = [[self._flatten_cell(cell) for cell in row] for row in rows[1:]]
-        # Ведущий '\n' — чтобы GFM-таблица отрисовалась блоком, а не одной
-        # строкой (см. _table_block).
         return "\n" + tabulate(
             data, headers=header, tablefmt="github", disable_numparse=True,
         )
@@ -105,12 +86,7 @@ class ToolResultMarkdown:
 
     @classmethod
     def _cell(cls, value: Any) -> str:
-        """Любое значение -> одностроковая ячейка для GFM-таблицы.
-
-        Не-строки (list/dict/число/bool) сериализуем в JSON/str, затем
-        схлопываем переносы — иначе \\n внутри ячейки рвёт GFM-строку
-        таблицы и она показывается «через строку».
-        """
+        """Значение -> одностроковая ячейка: переносы рвут GFM-таблицу."""
         if value is None or isinstance(value, str):
             return cls._flatten_cell(value)
         if isinstance(value, (list, tuple, dict)):
@@ -118,16 +94,11 @@ class ToolResultMarkdown:
         return cls._flatten_cell(str(value))
 
     def _render_rows(self, rows: Sequence[Mapping[str, Any]]) -> str:
-        # TableResult: всегда пытаемся github-markdown через tabulate (колонки
-        # из ключей dict). На любой сбой (не-tabular структура, не-сериализуемое
-        # значение) откатываемся к тому же json-рендеру, что и JsonResult.
         if not rows:
             return "_(no rows)_"
 
         try:
-            # Каждую ячейку схлопываем в одну строку (см. _cell); иначе
-            # перенос внутри ячейки ломает GFM-таблицу. disable_numparse: не
-            # даём tabulate переформатировать значения ("007"->7) — дословно.
+            # disable_numparse: не даём tabulate менять значения ("007"->7)
             flat = [
                 {k: self._cell(v) for k, v in row.items()} for row in rows
             ]
@@ -135,5 +106,4 @@ class ToolResultMarkdown:
                 flat, headers="keys", tablefmt="github", disable_numparse=True,
             )
         except Exception:
-            # Любой сбой -> json-fallback (payload оказался не-tabular).
             return self._json_block(rows)

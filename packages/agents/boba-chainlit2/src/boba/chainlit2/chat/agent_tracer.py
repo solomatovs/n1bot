@@ -1,31 +1,14 @@
-"""Собственный langchain-tracer: рисует процесс ответа одним сворачиваемым шагом.
+"""Langchain-tracer: процесс ответа одним сворачиваемым шагом.
 
-Пишется с нуля (не из community-трасера chainlit): наследуется от
-AsyncBaseTracer только как механизм подписки на события langchain, без
-literalai-генераций, GenerationHelper и FinalStreamHelper.
-
-Целевая структура ленты (chainlit steps):
-- на верхнем уровне — сообщение пользователя и итоговый ответ модели
-  (их рисует callback, не этот tracer);
-- один шаг-«контейнер» процесса ответа (parent=вопрос), внутри него по
-  одному дочернему шагу на каждое событие:
-      thinking     — reasoning-токены (если модель их отдаёт);
-      <имя tool>   — один шаг на инструмент: «выполняется», пока tool
-                     работает, затем — результат (рендер ToolResult).
-  Сам ответ llm в процессе не показываем: вызов инструментов виден по
-  tool-шагам, финальный текст — итоговым сообщением (рисует callback).
-- шаг-«контейнер» свернут (default_open=False), поэтому лента сверху
-  показывает только вопрос и финальный ответ.
-
-Важный факт (подтверждён шпионским прогоном): у пары
-on_chat_model_start/on_llm_end — один и тот же run_id (один run на вызов
-LLM). Экземпляр трасера живёт ровно на один on_message, поэтому контейнер
-всегда один.
+Лента: вопрос и итоговый ответ на верхнем уровне (их рисует callback),
+внутри контейнера «process...» — thinking и шаг на каждый инструмент.
+Экземпляр живёт один on_message, поэтому контейнер всегда один.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from typing import Any, cast
 from uuid import UUID
@@ -54,7 +37,8 @@ from boba.chainlit2.rendering.tool_result import (
 
 __all__ = ["AgentTracer"]
 
-# type шага-«контейнера» процесса ответа (chainlit TrueStepType)
+logger = logging.getLogger(__name__)
+
 _CONTAINER_TYPE = "run"
 
 
@@ -64,16 +48,11 @@ class AgentTracer(AsyncBaseTracer):
     def __init__(self) -> None:
         super().__init__()
         self._context = context_var.get()
-        # Шаг-«контейнер» процесса ответа — один на весь цикл (лениво).
         self._container: Step | None = None
         # run_id вызова llm -> накопленный reasoning-контент
         self._reasoning: dict[str, str] = {}
-        # run_id tool-рани -> один Step «имя tool» (выполняется -> результат)
+        # run_id -> Step инструмента (выполняется -> результат)
         self._tool_steps: dict[str, Step] = {}
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _set_context(self) -> None:
         context_var.set(self._context)
@@ -83,7 +62,7 @@ class AgentTracer(AsyncBaseTracer):
         if self._container is not None:
             return self._container
         step = Step(
-            name="процесс ответа",
+            name="process...",
             type=_CONTAINER_TYPE,
             parent_id=None,
             default_open=False,
@@ -135,9 +114,7 @@ class AgentTracer(AsyncBaseTracer):
                 await step.update()
                 await self._send_chart_message(title, spec)
             case MarkdownRendering(markdown=markdown):
-                # language НЕ ставим: chainlit при заданном language рендерит
-                # output код-блоком с подсветкой (сырой markdown), а при None —
-                # как markdown (GFM-таблицы отрисовываются таблицами).
+                # language не ставим: с ним chainlit рендерит код-блок
                 step.output = markdown
                 step.is_error = isinstance(result, ErrorResult)
                 await step.update()
@@ -150,17 +127,12 @@ class AgentTracer(AsyncBaseTracer):
         """Топ-левел cl.Message с inline-графиком (вне сворачиваемого step'а)."""
         try:
             element = build_plotly_element(title or "chart", dict(spec))
+            message = Message(content=title or "", elements=[element])
+            # без обнуления parent график всплывёт над контейнером
+            message.parent_id = None
+            await message.send()
         except Exception:
-            return
-        message = Message(content=title or "", elements=[element])
-        # top-level: без обнуления parent chainlit повесит сообщение ребёнком
-        # run-step'а @cl.on_message и график всплывёт над контейнером процесса
-        message.parent_id = None
-        await message.send()
-
-    # ------------------------------------------------------------------
-    # LLM events
-    # ------------------------------------------------------------------
+            logger.exception("не удалось отрисовать график")
 
     @override
     async def on_llm_new_token(
@@ -174,10 +146,7 @@ class AgentTracer(AsyncBaseTracer):
     ) -> None:
         self._set_context()
         run_key = str(run_id)
-        # reasoning-токены: ReasoningChatOpenAI кладёт их в
-        # additional_kwargs["reasoning_content"] чанка (штатный ChatOpenAI
-        # это поле выбрасывает); провайдер-специфичные классы могут отдавать
-        # атрибутом reasoning_content — поддерживаем оба места
+        # reasoning: атрибут или additional_kwargs (ReasoningChatOpenAI)
         msg = getattr(chunk, "message", None)
         if msg is not None:
             reasoning = getattr(msg, "reasoning_content", None) or (
@@ -208,13 +177,8 @@ class AgentTracer(AsyncBaseTracer):
         if response.generations and response.generations[0]:
             message = getattr(response.generations[0][0], "message", None)
 
-        # Единственное, что рисуем из llm-события — thinking (рассуждения
-        # модели). Сам ответ в процессе не показываем: решение вызвать
-        # инструменты видно по tool-шагам, а финальный текст пользователь
-        # видит итоговым сообщением (callback стримит его).
-        # Порядок источников: накопленное из чанков -> атрибут (провайдер-
-        # специфичные классы) -> additional_kwargs (ReasoningChatOpenAI;
-        # при стриме langchain мержит kwargs чанков конкатенацией строк).
+        # из llm-события рисуем только thinking: ответ пользователь
+        # видит итоговым сообщением, вызовы инструментов — tool-шагами
         text = (
             reasoning
             or getattr(message, "reasoning_content", None)
@@ -231,10 +195,6 @@ class AgentTracer(AsyncBaseTracer):
         return await super().on_llm_end(
             response, run_id=run_id, parent_run_id=parent_run_id, **kwargs,
         )
-
-    # ------------------------------------------------------------------
-    # Tool events
-    # ------------------------------------------------------------------
 
     @override
     async def on_tool_start(
@@ -314,12 +274,9 @@ class AgentTracer(AsyncBaseTracer):
             error, run_id=run_id, parent_run_id=parent_run_id, tags=tags, **kwargs,
         )
 
-    # ------------------------------------------------------------------
-    # Не используем run-based обработчики AsyncBaseTracer
-    # ------------------------------------------------------------------
-
-    def _persist_run(self, run: Any) -> None:
-        pass
+    @override
+    async def _persist_run(self, run: Any) -> None:
+        """Историю пишет chainlit data layer, трасеру персистить нечего."""
 
 
 def _render_args(args: dict[str, Any] | None) -> str:

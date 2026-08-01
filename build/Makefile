@@ -53,6 +53,14 @@ UV_VERSION  	?= 0.11.21
 UV_PLATFORM 	?= x86_64-unknown-linux-musl
 UV_URL      	?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(UV_PLATFORM).tar.gz
 
+# bubblewrap
+BWRAP_VERSION	?= 0.11.2
+BWRAP_URL     	?= https://github.com/containers/bubblewrap/releases/download/v$(BWRAP_VERSION)/bubblewrap-$(BWRAP_VERSION).tar.xz
+# rootfs каталог, который монтируется как / внутри bwrap
+SANDBOX_PROGS 	?= bash cat ls grep sed awk head tail wc sort uniq cut find \
+                   echo printf date env id whoami pwd mkdir rm cp mv touch \
+                   diff tr xargs du df stat readlink dirname basename
+
 # финальный runtime-образ (из него же достаётся каталог релиза)
 IMAGE			:= boba:$(BOBA_TAG)
 NO_CACHE_TEXT	:= $(if $(filter 1,$(NO_CACHE)),--no-cache,)
@@ -166,13 +174,13 @@ debug:
 # ---------------------------------------------------------------------------
 
 .PHONY: sources
-sources: base tessdata uv
+sources: base tessdata uv bwrap-src
 
 .PHONY: deps
 deps: wheels fastembed
 
 # Все online-скачивания, что есть в make sources, врозь:
-.PHONY: tessdata uv
+.PHONY: tessdata uv bwrap-src
 tessdata:
 	@mkdir -p $(ARTIFACTS)/tessdata
 	echo ">>> OCR-модели tesseract"
@@ -197,6 +205,27 @@ uv:
 	    install -m 0755 /tmp/uv-$(UV_PLATFORM)/uv $(ARTIFACTS)/uv/uv
 	    rm -rf /tmp/uv-$(UV_PLATFORM)
 	    $(ARTIFACTS)/uv/uv --version
+	fi
+
+# rootfs для песочницы: локальная сборка из программ хоста (для dev/debug).
+# В релизном образе тот же скрипт запускается Dockerfile-стадией, чтобы
+# бинарники соответствовали glibc образа, а не хоста.
+.PHONY: sandbox-rootfs
+sandbox-rootfs:
+	echo ">>> rootfs песочницы -> $(ARTIFACTS)/sandbox-rootfs"
+	$(BASE_DIR)/scripts/make-sandbox-rootfs.sh \
+	    "$(ARTIFACTS)/sandbox-rootfs" $(SANDBOX_PROGS)
+
+# исходники bubblewrap: собираются offline в Dockerfile-стадии bwrap-build
+bwrap-src:
+	@mkdir -p $(ARTIFACTS)/bwrap
+	echo ">>> bubblewrap $(BWRAP_VERSION) (исходники)"
+	dest="$(ARTIFACTS)/bwrap/bubblewrap-$(BWRAP_VERSION).tar.xz"
+	if [ -f "$$dest" ]; then
+	    echo "  ✓ $$dest"
+	else
+	    echo ">>> $(BWRAP_URL)"
+	    curl -fSL -o "$$dest" "$(BWRAP_URL)"
 	fi
 
 # среда сборки: gcc + python + uv + внешние программы (apt — нужна сеть).
@@ -293,6 +322,9 @@ check-artifacts:
 	[ -n "$$(ls -A "$(ARTIFACTS)/fastembed" 2>/dev/null)" ] || {
 	    echo "нет весов fastembed — запусти: make deps" >&2; exit 1
 	}
+	[ -f "$(ARTIFACTS)/bwrap/bubblewrap-$(BWRAP_VERSION).tar.xz" ] || {
+	    echo "нет исходников bubblewrap — запусти: make sources" >&2; exit 1
+	}
 
 
 # портативный каталог релиза: third/ (python, инструменты, модели, библиотеки),
@@ -313,6 +345,7 @@ build: version-check check-artifacts
 	  --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) \
 	  --build-arg PYTHON_VERSION=$(PYTHON_VERSION) \
 	  --build-arg BOBA_DIR="$(DEST_DIR)" \
+	  --build-arg BWRAP_VERSION=$(BWRAP_VERSION) \
 	  -t $(IMAGE) -t boba:latest \
 	  --progress plain $(BUILD_CONTEXT)
 

@@ -1,9 +1,4 @@
-"""Pydantic-конфиги инструментов прототипа (порт boba.tool.shell.config).
-
-Резолвятся из секции плагина [tool.shell] через boba.settings.bind.
-Плагин-уровневые поля enable/tools читает plugins.py, здесь extra="ignore"
-позволяет им жить в общей TOML-секции.
-"""
+"""Конфиги shell-инструментов: [tool.shell] и [tool.sandbox]."""
 
 from __future__ import annotations
 
@@ -13,16 +8,13 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.chainlit2.agent.tools.profile_local import DEFAULT_PASSTHROUGH
+from boba.chainlit2.agent.tools.sandbox_profile import SandboxProfile
 
-__all__ = ["BashLocalConfig"]
+__all__ = ["BashLocalConfig", "BashSandboxConfig"]
 
 
 class BashLocalConfig(BaseModel):
-    """Конфиг bash_local: subprocess без bwrap-изоляции.
-
-    Config-секция: [tool.shell]. Все поля — operator-controlled. LLM
-    выбирает только command/stdin, остальное задано здесь.
-    """
+    """Конфиг bash_local ([tool.shell]); LLM задаёт только command/stdin."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -77,6 +69,47 @@ class BashLocalConfig(BaseModel):
             raise ValueError(msg)
         if not resolved.is_dir():
             msg = f"bash_local.workspace_root не директория: {resolved}"
+            raise ValueError(msg)
+        object.__setattr__(self, "workspace_root", resolved)
+        return self
+
+
+class BashSandboxConfig(BaseModel):
+    """Конфиг bash ([tool.sandbox]): реестр профилей песочницы."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    workspace_root: Path = Field(
+        default=Path(),
+        description=(
+            "Host-путь к корню проекта. RW-bind в песочнице + cwd для "
+            "запуска bwrap."
+        ),
+    )
+    profiles: dict[str, SandboxProfile] = Field(
+        default_factory=dict,
+        description="Реестр sandbox-профилей по имени.",
+    )
+    default_profile: str = Field(
+        default="",
+        description=(
+            "Профиль по умолчанию, если LLM не указал `profile` в args. "
+            "Обязан быть среди ключей `profiles`."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        """default_profile должен быть среди profiles; пустой реестр валиден."""
+        if self.default_profile and self.default_profile not in self.profiles:
+            msg = (
+                f"sandbox.default_profile={self.default_profile!r} "
+                f"отсутствует в profiles; доступные: {sorted(self.profiles)}"
+            )
+            raise ValueError(msg)
+        resolved = self.workspace_root.expanduser().resolve(strict=False)
+        if not resolved.is_dir():
+            msg = f"sandbox.workspace_root не директория: {resolved}"
             raise ValueError(msg)
         object.__setattr__(self, "workspace_root", resolved)
         return self

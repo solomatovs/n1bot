@@ -1,14 +1,8 @@
-"""Реестр tool-плагинов и загрузчик инструментов для langchain-агента.
-
-Каждый плагин — секция [tool.<name>] в конфиге: PluginMeta (enable/tools)
-читает framework, остальные поля биндятся в config_model плагина. Загрузчик
-строит langchain-инструменты и фильтрует по allowlist tools.
-
-Формат секций совместим с v1 (boba-chainlit): enable + tools + поля конфига.
-"""
+"""Реестр tool-плагинов: секция [tool.<name>] -> langchain-инструменты."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -18,7 +12,11 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict
 
 from boba.chainlit2.agent.tools import build_bash_local_tool
-from boba.chainlit2.agent.tools.config import BashLocalConfig
+from boba.chainlit2.agent.tools.bash import (
+    build_bash_tool,
+    has_bwrap,
+)
+from boba.chainlit2.agent.tools.config import BashLocalConfig, BashSandboxConfig
 from boba.chainlit2.agent.tools.debug_tools import (
     debug_chart,
     debug_error,
@@ -32,6 +30,8 @@ from boba.settings import bind
 from boba.settings.types import StringList
 
 __all__ = ["PluginMeta", "ToolPlugin", "load_tools"]
+
+logger = logging.getLogger(__name__)
 
 ConfigT = Any  # pydantic-модель конфига плагина или None (у плагина нет секции)
 
@@ -54,11 +54,27 @@ class PluginMeta(BaseModel):
     tools: StringList | None = None
 
 
+def _build_sandbox_tools(cfg: BashSandboxConfig) -> list[BaseTool]:
+    """bash регистрируется только при наличии bwrap на хосте."""
+    if not has_bwrap():
+        logger.warning(
+            "[tool.sandbox] включён, но bubblewrap (bwrap) не найден в PATH — "
+            "bash не зарегистрирован",
+        )
+        return []
+    return [build_bash_tool(cfg)]
+
+
 _PLUGINS: dict[str, ToolPlugin] = {
     "shell": ToolPlugin(
         section="shell",
         config_model=BashLocalConfig,
         build=lambda cfg: [build_bash_local_tool(cfg)],
+    ),
+    "sandbox": ToolPlugin(
+        section="sandbox",
+        config_model=BashSandboxConfig,
+        build=_build_sandbox_tools,
     ),
     "chart": ToolPlugin(
         section="chart",
@@ -79,11 +95,7 @@ _PLUGINS: dict[str, ToolPlugin] = {
 
 
 def load_tools(raw_config: DictConfig) -> list[BaseTool]:
-    """Собрать включённые инструменты из конфига, с allowlist-фильтром.
-
-    Плагин без секции или с enable=false — пропускается. Allowlist tools
-    (если задан) оставляет только перечисленные по wire-имени (t.name).
-    """
+    """Инструменты включённых плагинов, отфильтрованные по allowlist."""
     tools: list[BaseTool] = []
     for name, plugin in _PLUGINS.items():
         meta = bind(raw_config, f"tool.{name}", PluginMeta)

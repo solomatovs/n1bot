@@ -8,6 +8,8 @@ SQL: запись через ON CONFLICT/CTE, чтение тредов цели
 запись оборачиваются в Jsonb (Row.params()). Контракт совпадает с BaseDataLayer.
 """
 
+import mimetypes
+from pathlib import Path
 from typing import ClassVar
 from uuid import UUID
 
@@ -259,12 +261,18 @@ class PostgresDataLayer(BaseDataLayer):
             # в теории не должно быть
             user_id = "unknown"
 
-        if element.name:
-            object_key = f"{user_id}/{element.id}/{element.name}"
-        else:
-            object_key = f"{user_id}/{element.id}"
-
         mime = element.mime or "application/octet-stream"
+
+        # расширение по mime: роут отдачи (FileResponse) определяет
+        # Content-Type по имени файла, а без него фронт получает
+        # application/octet-stream и не парсит, например, plotly-JSON
+        name = element.name or ""
+        if name and not Path(name).suffix:
+            name += mimetypes.guess_extension(mime) or ""
+
+        object_key = f"{user_id}/{element.id}"
+        if name:
+            object_key = f"{object_key}/{name}"
         uploaded = await self._storage.upload_file(
             object_key=object_key,
             data=content,

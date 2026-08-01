@@ -1,9 +1,7 @@
-"""ToolResult sealed-семейство: TextResult | JsonResult | TableResult | ... .
+"""ToolResult sealed-семейство, дискриминатор — поле kind.
 
-Порт boba.tools.domain.result для langchain-стека. Инструмент возвращает
-ToolResult, а pack_result() из render.py превращает его в
-(content для LLM, artifact для UI). UI-рендер (ToolResultView) диспатчит
-по полю kind — новый вариант требует ветку и в render_for_llm, и в рендере.
+Инструмент возвращает ToolResult; pack_result() делает из него
+(content для LLM, artifact для UI).
 """
 
 from __future__ import annotations
@@ -27,11 +25,7 @@ __all__ = [
 
 
 class ToolResultBase(BaseModel, ABC):
-    """Базовый класс для конкретных ToolResult-вариантов.
-
-    Не для использования как тип значения — используй ToolResult (alias
-    на discriminated union). Публичен только для наследования.
-    """
+    """База вариантов; как тип значения используй ToolResult."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -63,12 +57,7 @@ class TableResult(ToolResultBase):
 
 
 class PgCopyTextResult(ToolResultBase):
-    """Дамп COPY ... TO STDOUT (FORMAT TEXT, HEADER) (tab-delimited).
-
-    LLM получает текст как есть. UI парсит через iter_rows (формат
-    фиксирован Postgres: \\t-делимитер, \\n-разделитель, спецсимволы
-    backslash-эскейпнуты, NULL = \\N) -> markdown-таблица.
-    """
+    """Дамп COPY ... TO STDOUT (FORMAT TEXT, HEADER), tab-delimited."""
 
     kind: Literal["pg_copy_text"] = "pg_copy_text"
     text: str
@@ -110,12 +99,7 @@ class PgCopyTextResult(ToolResultBase):
 
 
 class ChartResult(ToolResultBase):
-    """Интерактивный график: Plotly figure spec как чистый dict.
-
-    spec — Plotly figure JSON ({"data": [...], "layout": {...}}). Домен не
-    зависит от plotly: хранит и валидирует только структуру dict, рендер
-    живёт в presentation-слое (chart_figure).
-    """
+    """Интерактивный график: Plotly figure spec как чистый dict."""
 
     kind: Literal["chart"] = "chart"
     spec: Mapping[str, Any]
@@ -125,10 +109,7 @@ class ChartResult(ToolResultBase):
 
 
 class ErrorResult(ToolResultBase):
-    """Tool не выполнен: ошибка домена, отклонение guard'а, невалидные args.
-
-    Отдельный sealed-вариант, чтобы UI рендерил ошибки иначе (step.is_error).
-    """
+    """Tool не выполнен; UI рендерит такой результат как ошибку."""
 
     kind: Literal["error"] = "error"
     message: str

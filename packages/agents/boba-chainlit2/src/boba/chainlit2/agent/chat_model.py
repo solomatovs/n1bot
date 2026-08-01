@@ -1,18 +1,8 @@
-"""ReasoningChatOpenAI: ChatOpenAI + перенос reasoning_content из ответа.
+"""ChatOpenAI + reasoning_content: штатный класс это поле выбрасывает.
 
-langchain-openai намеренно выбрасывает нестандартные поля провайдеров
-(см. docstring пакета: «Non-standard response fields added by third-party
-providers (e.g., reasoning_content) are not extracted or preserved»).
-DeepSeek-совместимые провайдеры (requesty, qwen, deepseek, openrouter)
-отдают рассуждения модели в choices[].delta.reasoning_content (стрим) и
-choices[].message.reasoning_content (не-стрим) — подтверждено дампами
-requesty (DumpingTransport).
-
-Сабкласс достаёт поле из сырого ответа и кладёт в
-additional_kwargs["reasoning_content"]. При стриме langchain мержит
-additional_kwargs чанков конкатенацией строк, поэтому в on_llm_end
-агрегированное message несёт полный текст рассуждений — AgentTracer
-показывает его шагом «llm thinking».
+DeepSeek-совместимые провайдеры (requesty, qwen, openrouter) отдают
+рассуждения в delta/message.reasoning_content — кладём их в
+additional_kwargs, откуда их берёт AgentTracer.
 """
 
 from __future__ import annotations

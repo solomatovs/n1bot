@@ -1,9 +1,4 @@
-"""Маппинг ToolResult -> форма представления в UI (MarkdownRendering/ChartRendering).
-
-Порт boba.chainlit.rendering.tool_result_view. Текстовые варианты рендерятся
-markdown'ом, ChartResult — интерактивным графиком. Dispatcher (tracer)
-диспатчит по ToolResultRendering, не зная о конкретных ToolResult-вариантах.
-"""
+"""ToolResult -> форма представления в UI: markdown или график."""
 
 from __future__ import annotations
 

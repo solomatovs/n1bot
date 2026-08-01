@@ -1,11 +1,4 @@
-"""Subprocess-обёртка: запуск argv с timeout, size-cap, streaming-сбором.
-
-Порт boba.tool.shell._runner (stdlib, без внешних зависимостей).
-
-stdout/stderr читаются параллельно через select, обрезаются по байтам на
-каждый поток отдельно (см. _pump). При таймауте: Popen.kill(). Результат —
-простой dataclass без зависимости от ToolResult: обёртывание делает caller.
-"""
+"""Subprocess-обёртка: argv + timeout + size-cap, потоки читаются через select."""
 
 from __future__ import annotations
 
@@ -20,11 +13,7 @@ __all__ = ["RunResult", "ShellRunnerInvariantError", "run_subprocess"]
 
 
 class ShellRunnerInvariantError(Exception):
-    """Нарушение внутреннего инварианта shell-runner'а (например, отсутствие
-    stdout/stderr у Popen, который запущен с stdout=PIPE, stderr=PIPE).
-
-    В отличие от assert, переживает запуск с python -O.
-    """
+    """Нарушен инвариант runner'а (в отличие от assert переживает -O)."""
 
 
 @dataclass(frozen=True)
@@ -49,12 +38,10 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
     cwd: str,
     env: Mapping[str, str],
 ) -> RunResult:
-    """Запустить argv дочерним процессом и собрать его stdout/stderr.
+    """Запустить argv и собрать stdout/stderr.
 
-    Контракт:
-    - возвращает RunResult даже на таймаут (exit_code=-9, timed_out=True);
-    - не бросает CalledProcessError: non-zero exit — это валидный результат;
-    - stdout/stderr декодируются как utf-8 с errors='replace'.
+    RunResult возвращается и на таймаут (exit_code=-9); non-zero exit —
+    валидный результат, исключения не бросаются.
     """
     if not argv:
         msg = "run_subprocess: argv не может быть пустым"
@@ -92,11 +79,7 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
 
 
 def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
-    """Записать data в stdin процесса и закрыть пайп.
-
-    data=b"" — корректный кейс: stdin закрывается без записи, дочерний
-    процесс получает EOF на первом же read.
-    """
+    """Записать data в stdin и закрыть пайп; b"" = сразу EOF."""
     if proc.stdin is None:
         raise ShellRunnerInvariantError(
             "_feed_stdin: ожидался proc.stdin (Popen запущен с PIPE)",
@@ -115,10 +98,7 @@ def _pump(
     timeout_sec: int,
     max_output_bytes: int,
 ) -> tuple[bytes, bytes, bool, bool, bool]:
-    """Параллельное чтение stdout/stderr с лимитами и общим дедлайном.
-
-    Возвращает (stdout, stderr, trunc_out, trunc_err, timed_out).
-    """
+    """Чтение stdout/stderr с лимитами -> (out, err, trunc_out, trunc_err, timeout)."""
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
             "_pump: ожидались proc.stdout и proc.stderr (Popen запущен с PIPE)"

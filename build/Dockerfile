@@ -46,6 +46,37 @@ RUN set -eu \
     && rm -rf /tmp/conf
 COPY build/artifacts/uv/uv /usr/local/bin/uv
 
+# bubblewrap: apt в Astra 2.12 даёт 0.3.3 (нет --clearenv и части unshare-
+# флагов), поэтому собираем свежий из исходников. libcap влинковывается
+# статически (meson подставляет полный путь к libcap.so — подменяем на .a),
+# так что рантайму не нужен apt-пакет libcap2; glibc остаётся динамической —
+# она и так база runtime-образа.
+FROM base AS bwrap-build
+
+ARG BWRAP_VERSION=0.11.2
+
+RUN apt-get update                                  \
+    && apt-get install -y --no-install-recommends   \
+        libcap-dev meson ninja-build pkg-config     \
+        xz-utils                                    \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY build/artifacts/bwrap/bubblewrap-${BWRAP_VERSION}.tar.xz /tmp/bwrap.tar.xz
+
+RUN set -eu                                                                   \
+    && mkdir -p /tmp/bwrap-src && cd /tmp/bwrap-src                           \
+    && tar -xJf /tmp/bwrap.tar.xz --strip-components=1                        \
+    && meson setup _build                                                     \
+        --buildtype=release --prefix=/usr                                     \
+        -Dselinux=disabled -Dman=disabled                                     \
+    && sed -i 's|/usr/lib/x86_64-linux-gnu/libcap\.so|/usr/lib/x86_64-linux-gnu/libcap.a|g' \
+        _build/build.ninja                                                    \
+    && ninja -C _build bwrap                                                  \
+    && strip _build/bwrap                                                     \
+    && install -D -m 0755 _build/bwrap /out/bwrap                             \
+    && ldd /out/bwrap | grep -q libcap && { echo "libcap не статическая" >&2; exit 1; } || true \
+    && /out/bwrap --version
+
 FROM base AS deps
 
 COPY build/artifacts/wheels/ /tmp/wheels/
@@ -72,7 +103,6 @@ RUN apt-get update                                              \
         ghostscript                                             \
         tesseract-ocr                                           \
         fonts-dejavu-core                                       \
-        bubblewrap                                              \
         git                                                     \
         dnsutils                                                \
         gettext-base                                            \
@@ -89,6 +119,8 @@ COPY --from=deps /tmp/names.txt     /tmp/names.txt
 COPY build/artifacts/tessdata/      ${BOBA_DIR}/third/tessdata/
 COPY build/artifacts/fastembed/     ${BOBA_DIR}/third/fastembed/
 COPY build/artifacts/uv/uv          ${BOBA_DIR}/third/bin/uv
+# песочница для tool `bash`: собранный из исходников bwrap (см. bwrap-build)
+COPY --from=bwrap-build /out/bwrap  ${BOBA_DIR}/third/bin/bwrap
 COPY build/conf/boba.env            /tmp/boba.env.tmpl
 
 RUN set -eu \
