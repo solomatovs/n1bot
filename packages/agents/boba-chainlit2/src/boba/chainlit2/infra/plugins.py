@@ -11,13 +11,17 @@ from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict
 
-from boba.chainlit2.agent.tools import build_bash_local_tool
-from boba.chainlit2.agent.tools.bash import (
-    build_bash_tool,
-    has_bwrap,
+from boba.chainlit2.agent.cancellation import CancellableTools
+from boba.chainlit2.agent.tools.chart import visualize
+from boba.chainlit2.agent.tools.confluence import (
+    ConfluenceToolsConfig,
+    build_confluence_tools,
 )
-from boba.chainlit2.agent.tools.config import BashLocalConfig, BashSandboxConfig
-from boba.chainlit2.agent.tools.debug_tools import (
+from boba.chainlit2.agent.tools.confluence.ingest_base import ConfluenceIngestConfig
+from boba.chainlit2.agent.tools.confluence.ingest_tools import (
+    build_confluence_ingest_tools,
+)
+from boba.chainlit2.agent.tools.debug import (
     debug_chart,
     debug_error,
     debug_json,
@@ -25,7 +29,18 @@ from boba.chainlit2.agent.tools.debug_tools import (
     debug_table,
     debug_text,
 )
-from boba.chainlit2.agent.tools.visualize import visualize
+from boba.chainlit2.agent.tools.kb import (
+    PostgresKnowledgeBaseConfig,
+    build_kb_tools,
+)
+from boba.chainlit2.agent.tools.pg import SqlExecutorConfig, build_pg_tools
+from boba.chainlit2.agent.tools.sandbox import (
+    BashSandboxConfig,
+    build_bash_tool,
+    has_bwrap,
+)
+from boba.chainlit2.agent.tools.shell import BashLocalConfig, build_bash_local_tool
+from boba.chainlit2.agent.tools.web import WebGrepConfig, build_web_tools
 from boba.settings import bind
 from boba.settings.types import StringList
 
@@ -79,6 +94,31 @@ _PLUGINS: dict[str, ToolPlugin] = {
         section="chart",
         build=lambda _cfg: [visualize],
     ),
+    "pg": ToolPlugin(
+        section="pg",
+        config_model=SqlExecutorConfig,
+        build=build_pg_tools,
+    ),
+    "kb": ToolPlugin(
+        section="kb",
+        config_model=PostgresKnowledgeBaseConfig,
+        build=build_kb_tools,
+    ),
+    "confluence": ToolPlugin(
+        section="confluence",
+        config_model=ConfluenceToolsConfig,
+        build=build_confluence_tools,
+    ),
+    "ingest": ToolPlugin(
+        section="ingest",
+        config_model=ConfluenceIngestConfig,
+        build=build_confluence_ingest_tools,
+    ),
+    "web": ToolPlugin(
+        section="web",
+        config_model=WebGrepConfig,
+        build=build_web_tools,
+    ),
     "debug": ToolPlugin(
         section="debug",
         build=lambda _cfg: [
@@ -109,4 +149,4 @@ def load_tools(raw_config: DictConfig) -> list[BaseTool]:
             allow = set(meta.tools)
             built = [t for t in built if t.name in allow]
         tools.extend(built)
-    return tools
+    return CancellableTools.guard_all(tools)

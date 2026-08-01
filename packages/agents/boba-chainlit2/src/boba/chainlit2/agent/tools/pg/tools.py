@@ -1,0 +1,255 @@
+"""SQL-инструменты только на чтение: список профилей, таблиц, схема, запрос.
+
+Ядро (SqlExecutor, CopyBuffer) импортируется из boba-tool-postgres как есть —
+здесь только обёртки langchain и перевод ошибок ядра в ErrorResult.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any, ClassVar
+
+from langchain.tools import tool
+from langchain_core.tools import BaseTool
+from pydantic import Field
+
+from boba.chainlit2.agent.tools.pg.copy_buffer import (
+    BufferCapacityError,
+    RowLimitExceededError,
+)
+from boba.chainlit2.agent.tools.pg.executor import (
+    SqlExecutor,
+    SqlExecutorConfig,
+    SqlQueryError,
+)
+from boba.chainlit2.rendering.render import pack_result
+from boba.chainlit2.rendering.tool_result import (
+    ErrorResult,
+    PgCopyTextResult,
+    TableResult,
+    ToolResult,
+)
+
+__all__ = ["PgTools", "build_pg_tools"]
+
+
+class PgTools:
+    """Собирает langchain-инструменты поверх SqlExecutor."""
+
+    TABLES_SQL: ClassVar[str] = (
+        "SELECT table_schema AS schema, table_name AS table, table_type AS kind "
+        "FROM information_schema.tables "
+    )
+    COLUMNS_SQL: ClassVar[str] = (
+        "SELECT column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s "
+        "ORDER BY ordinal_position"
+    )
+
+    def __init__(self, cfg: SqlExecutorConfig) -> None:
+        self._cfg = cfg
+
+    def build(self) -> list[BaseTool]:
+        return [
+            self._list_targets(),
+            self._list_tables(),
+            self._describe_table(),
+            self._query(),
+        ]
+
+    @property
+    def _executor(self) -> SqlExecutor:
+        return SqlExecutor(cfg=self._cfg)
+
+    @staticmethod
+    def _note(executor: SqlExecutor, truncated: bool) -> str | None:
+        if not truncated:
+            return None
+        return f"список усечён до max_rows ({executor.max_rows_cap})"
+
+    @staticmethod
+    def _failed(error: SqlQueryError) -> ErrorResult:
+        return ErrorResult(message=str(error), error_kind="sql_failed")
+
+    @staticmethod
+    def _unknown_target(error: ValueError) -> ErrorResult:
+        return ErrorResult(message=str(error), error_kind="unknown_target")
+
+    def _list_targets(self) -> BaseTool:
+        cfg = self._cfg
+
+        @tool(response_format="content_and_artifact")
+        def list_targets() -> tuple[str, ToolResult]:
+            """Список доступных значений параметра target для PG-инструментов."""
+            rows = [{"target": target} for target in cfg.targets()]
+            return pack_result(TableResult(rows=rows))
+
+        return list_targets
+
+    def _list_tables(self) -> BaseTool:
+        owner = self
+
+        @tool(response_format="content_and_artifact")
+        def list_tables(
+            target: Annotated[
+                str,
+                Field(min_length=1, description="Имя подключения"),
+            ],
+            pg_schema: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Опциональный фильтр по схеме (например `public`). "
+                        "Пусто = все user-schema'ы "
+                        "(без pg_catalog/information_schema)."
+                    ),
+                ),
+            ] = None,
+        ) -> tuple[str, ToolResult]:
+            """Список таблиц/view на профиле target. Колонки: schema, table, kind."""
+            executor = owner._executor
+            if pg_schema:
+                sql = owner.TABLES_SQL + (
+                    "WHERE table_schema = %s ORDER BY table_schema, table_name"
+                )
+                params: tuple[Any, ...] = (pg_schema,)
+            else:
+                sql = owner.TABLES_SQL + (
+                    "WHERE table_schema NOT IN "
+                    "('pg_catalog', 'information_schema') "
+                    "AND table_schema NOT LIKE %s "
+                    "ORDER BY table_schema, table_name"
+                )
+                params = ("pg_%",)
+
+            try:
+                result = executor.execute(
+                    sql,
+                    target=target,
+                    row_limit=executor.max_rows_cap,
+                    params=params,
+                )
+            except ValueError as e:
+                return pack_result(owner._unknown_target(e))
+            except SqlQueryError as e:
+                return pack_result(owner._failed(e))
+
+            return pack_result(
+                TableResult(
+                    rows=result.rows,
+                    note=owner._note(executor, result.truncated),
+                )
+            )
+
+        return list_tables
+
+    def _describe_table(self) -> BaseTool:
+        owner = self
+
+        @tool(response_format="content_and_artifact")
+        def describe_table(
+            target: Annotated[
+                str,
+                Field(min_length=1, description="Имя профиля БД"),
+            ],
+            table: Annotated[
+                str,
+                Field(min_length=1, description="Имя таблицы (без схемы)"),
+            ],
+            pg_schema: Annotated[
+                str,
+                Field(
+                    min_length=1,
+                    description="PG schema таблицы. По умолчанию public",
+                ),
+            ] = "public",
+        ) -> tuple[str, ToolResult]:
+            """Схема таблицы на профиле target: колонки, типы, nullable, default.
+
+            Если таблицы нет, вернётся таблица с заглушкой (no rows).
+            """
+            executor = owner._executor
+            try:
+                result = executor.execute(
+                    owner.COLUMNS_SQL,
+                    target=target,
+                    row_limit=executor.max_rows_cap,
+                    params=(pg_schema, table),
+                )
+            except ValueError as e:
+                return pack_result(owner._unknown_target(e))
+            except SqlQueryError as e:
+                return pack_result(owner._failed(e))
+
+            return pack_result(
+                TableResult(
+                    rows=result.rows,
+                    note=owner._note(executor, result.truncated),
+                )
+            )
+
+        return describe_table
+
+    def _query(self) -> BaseTool:
+        owner = self
+
+        @tool(response_format="content_and_artifact")
+        def query(
+            sql: Annotated[
+                str,
+                Field(
+                    min_length=1,
+                    description=(
+                        "Произвольный read-only SQL-запрос. Выполняется через "
+                        "COPY (...) TO STDOUT и возвращается как CSV. Если строк "
+                        "больше лимита — добавьте LIMIT в сам запрос."
+                    ),
+                ),
+            ],
+            target: Annotated[
+                str,
+                Field(min_length=1, description="Имя подключения"),
+            ],
+        ) -> tuple[str, ToolResult]:
+            """Выполнить SQL на профиле target и вернуть результат как CSV.
+
+            Перед вызовом стоит позвать list_tables и describe_table.
+            Запрос исполняется как есть (COPY-обёртка); ошибки SQL уходят
+            дословно. Слишком много строк / большой объём -> ошибка с просьбой
+            добавить LIMIT.
+            """
+            executor = owner._executor
+            try:
+                buf = executor.execute_copy(sql, target=target)
+            except BufferCapacityError:
+                return pack_result(
+                    ErrorResult(
+                        message=(
+                            f"результат превысил лимит {executor.max_bytes} "
+                            f"байт; добавьте LIMIT в запрос"
+                        ),
+                        error_kind="result_too_large",
+                    )
+                )
+            except RowLimitExceededError:
+                return pack_result(
+                    ErrorResult(
+                        message=(
+                            f"запрос вернул больше {executor.max_rows_cap} "
+                            f"строк; добавьте LIMIT в запрос"
+                        ),
+                        error_kind="too_many_rows",
+                    )
+                )
+            except ValueError as e:
+                return pack_result(owner._unknown_target(e))
+            except SqlQueryError as e:
+                return pack_result(owner._failed(e))
+
+            return pack_result(PgCopyTextResult(text=buf.decode()))
+
+        return query
+
+
+def build_pg_tools(cfg: SqlExecutorConfig) -> list[BaseTool]:
+    return PgTools(cfg).build()

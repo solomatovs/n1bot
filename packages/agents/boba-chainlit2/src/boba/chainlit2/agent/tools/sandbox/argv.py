@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-from boba.chainlit2.agent.tools.sandbox_profile import SandboxProfile
+from boba.chainlit2.agent.tools.sandbox.profile import SandboxProfile
 
 __all__ = ["build_bwrap_argv"]
 

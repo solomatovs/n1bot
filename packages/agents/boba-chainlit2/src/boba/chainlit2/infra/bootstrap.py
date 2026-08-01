@@ -4,7 +4,7 @@ import asyncio
 import logging
 import logging.config
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -66,7 +66,7 @@ def run_app():
 
 
 @asynccontextmanager
-async def _run_container(app: FastAPI) -> AsyncIterator[None]:
+async def _run_container(app: FastAPI) -> AsyncGenerator[None]:
     container = app.state.container
     await container.start()
 
@@ -166,6 +166,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(providers.get_app_config, c)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
+    container.eager(providers.kb_schema)
     Container.set_root(container)
     Container.set_session_hook(_get_or_create_session_container)
     _close_container_if_session_end()

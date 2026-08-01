@@ -9,6 +9,8 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from boba.chainlit2.agent.cancellation import TurnCancellation, current_cancellation
+
 __all__ = ["RunResult", "ShellRunnerInvariantError", "run_subprocess"]
 
 
@@ -56,10 +58,13 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
         cwd=cwd,
         env=dict(env),
     )
-    _feed_stdin(proc, stdin_data)
-    out_bytes, err_bytes, trunc_out, trunc_err, timed_out = _pump(
-        proc, timeout_sec, max_output_bytes,
-    )
+    cancellation = current_cancellation()
+    with cancellation.abort_with(proc.kill):
+        _feed_stdin(proc, stdin_data)
+        out_bytes, err_bytes, trunc_out, trunc_err, timed_out = _pump(
+            proc, timeout_sec, max_output_bytes, cancellation,
+        )
+    cancellation.raise_if_cancelled()
     duration_ms = int((time.monotonic() - started) * 1000)
     exit_code = proc.returncode if proc.returncode is not None else -9
     return RunResult(
@@ -91,6 +96,7 @@ def _pump(
     proc: subprocess.Popen[bytes],
     timeout_sec: int,
     max_output_bytes: int,
+    cancellation: TurnCancellation,
 ) -> tuple[bytes, bytes, bool, bool, bool]:
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
@@ -105,6 +111,8 @@ def _pump(
     timed_out = False
 
     while open_fds:
+        if cancellation.cancelled:
+            break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             timed_out = True

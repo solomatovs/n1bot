@@ -28,6 +28,8 @@ from boba.agent.tool_config import (
 from boba.auth.errors import InternalServiceError
 from boba.chainlit2.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit2.agent.dump import DumpingTransport
+from boba.chainlit2.agent.tools.kb import PostgresKnowledgeBaseConfig
+from boba.chainlit2.agent.tools.kb.schema import KbSchema
 from boba.chainlit2.chat.data import PostgresDataLayer
 from boba.chainlit2.chat.data.storage import LocalStorageClient
 from boba.chainlit2.chat.transcript import CheckpointMessages
@@ -40,7 +42,7 @@ from boba.chainlit2.infra.config import (
     OpenAiConfig,
 )
 from boba.chainlit2.infra.di import Depends
-from boba.chainlit2.infra.plugins import load_tools
+from boba.chainlit2.infra.plugins import PluginMeta, load_tools
 from boba.db.postgres import AsyncPostgresPool
 
 _RAW_CONFIG: dict[str, DictConfig] = {}
@@ -94,6 +96,16 @@ def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> list[BaseTool]:
     return load_tools(raw)
+
+
+def kb_schema(
+    raw: Annotated[DictConfig, Depends(get_raw_config)],
+) -> None:
+    """Готовит таблицы базы знаний, если секция [tool.kb] включена."""
+    meta = bind(raw, "tool.kb", PluginMeta)
+    if not meta.enable:
+        return
+    KbSchema(bind(raw, "tool.kb", PostgresKnowledgeBaseConfig)).setup()
 
 
 def get_openai_config(
