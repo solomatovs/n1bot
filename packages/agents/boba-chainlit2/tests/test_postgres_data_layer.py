@@ -19,7 +19,6 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_setup_is_idempotent(layer: PostgresDataLayer):
-    """setup() можно звать повторно без ошибок (CREATE ... IF NOT EXISTS)."""
     await layer.setup()
 
 
@@ -43,7 +42,6 @@ async def test_update_thread_and_author(seeded: Seed):
     author = await layer.get_thread_author(seeded.thread_id)
     assert author == seeded.user.identifier
 
-    # повторный update мержит поля, не затирая существующие
     await layer.update_thread(seeded.thread_id, name="renamed")
     thread = await layer.get_thread(seeded.thread_id)
     assert thread is not None
@@ -51,33 +49,28 @@ async def test_update_thread_and_author(seeded: Seed):
     assert thread["userId"] == seeded.user.id
 
 
-async def test_create_update_step_and_favorites(seeded: Seed):
+async def test_steps_are_not_persisted(seeded: Seed):
     layer = seeded.layer
-
-    # обновляем существующий шаг (upsert по id)
-    updated: StepDict = {**seeded.step, "output": "hello-2"}
-    await layer.update_step(updated)
-
-    favorites = await layer.get_favorite_steps(seeded.user.id)
-    ids = {s.get("id") for s in favorites}
-    assert seeded.step_id in ids
-    fav = next(s for s in favorites if s.get("id") == seeded.step_id)
-    assert fav.get("output") == "hello-2"
-
-
-async def test_delete_step(seeded: Seed):
-    layer = seeded.layer
-    await layer.delete_step(seeded.step_id)
+    step: StepDict = {
+        "id": str(uuid4()),
+        "threadId": seeded.thread_id,
+        "type": "assistant_message",
+        "name": "assistant",
+        "output": "should not be stored",
+    }
+    await layer.create_step(step)
+    await layer.update_step(step)
 
     thread = await layer.get_thread(seeded.thread_id)
     assert thread is not None
-    assert all(s.get("id") != seeded.step_id for s in thread["steps"])
+    assert all(s.get("id") != step["id"] for s in thread["steps"])
+    assert await layer.get_favorite_steps(seeded.user.id) == []
 
 
 async def test_upsert_and_delete_feedback(seeded: Seed):
     layer = seeded.layer
     feedback = FeedbackPayload(
-        forId=seeded.step_id,
+        forId=seeded.answer_step_id,
         value=1,
         comment="nice",
         threadId=seeded.thread_id,
@@ -85,10 +78,9 @@ async def test_upsert_and_delete_feedback(seeded: Seed):
     feedback_id = await layer.upsert_feedback(feedback)
     assert feedback_id
 
-    # feedback долетает до шага в собранном треде
     thread = await layer.get_thread(seeded.thread_id)
     assert thread is not None
-    step = next(s for s in thread["steps"] if s.get("id") == seeded.step_id)
+    step = next(s for s in thread["steps"] if s.get("id") == seeded.answer_step_id)
     feedback_dict = step.get("feedback")
     assert feedback_dict is not None
     assert feedback_dict["value"] == 1
@@ -101,7 +93,7 @@ async def test_create_get_delete_element(seeded: Seed, files_dir: Path):
 
     element = Text(
         thread_id=seeded.thread_id,
-        for_id=seeded.step_id,
+        for_id=seeded.answer_step_id,
         name="note.txt",
         content="payload",
     )
@@ -112,7 +104,6 @@ async def test_create_get_delete_element(seeded: Seed, files_dir: Path):
     assert fetched.get("id") == element.id
     object_key = fetched.get("objectKey")
     assert object_key is not None
-    # файл реально лёг на диск под object_key
     assert (files_dir / object_key).read_bytes() == b"payload"
 
     await layer.delete_element(element.id)
@@ -120,19 +111,33 @@ async def test_create_get_delete_element(seeded: Seed, files_dir: Path):
     assert not (files_dir / object_key).exists()
 
 
-async def test_get_thread_assembles_steps_and_elements(seeded: Seed):
+async def test_get_thread_builds_steps_from_history(seeded: Seed):
     layer = seeded.layer
     thread = await layer.get_thread(seeded.thread_id)
     assert thread is not None
     assert thread["id"] == seeded.thread_id
     assert thread["tags"] == ["a"]
-    assert len(thread["steps"]) == 1
-    first_step = thread["steps"][0]
-    assert first_step.get("id") == seeded.step_id
-    assert first_step.get("feedback") is None
+
+    outputs = [(s.get("type"), s.get("output")) for s in thread["steps"]]
+    assert outputs == [("user_message", "hi"), ("assistant_message", "hello")]
+    answer = thread["steps"][1]
+    assert answer.get("id") == seeded.answer_step_id
+    assert answer.get("feedback") is None
     assert thread["elements"] == []
 
     assert await layer.get_thread(str(uuid4())) is None
+
+
+async def test_thread_without_history_has_no_steps(seeded: Seed):
+    layer = seeded.layer
+    await layer.update_thread(str(uuid4()), user_id=seeded.user.id)
+    threads = await layer.list_threads(
+        Pagination(first=10), ThreadFilter(userId=seeded.user.id)
+    )
+    empty = next(t for t in threads.data if t["id"] != seeded.thread_id)
+    thread = await layer.get_thread(empty["id"])
+    assert thread is not None
+    assert thread["steps"] == []
 
 
 async def test_list_threads(seeded: Seed):
@@ -157,5 +162,4 @@ async def test_build_debug_url(layer: PostgresDataLayer):
 
 
 async def test_close_releases_storage(layer: PostgresDataLayer):
-    # close() закрывает только storage (пул принадлежит DI) — не должен падать
     await layer.close()

@@ -62,7 +62,6 @@ class BashLocalConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        """workspace_root резолвится до абсолютного пути и проверяется."""
         resolved = self.workspace_root.expanduser().resolve(strict=False)
         if not resolved.exists():
             msg = f"bash_local.workspace_root не существует: {resolved}"
@@ -100,7 +99,6 @@ class BashSandboxConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        """default_profile должен быть среди profiles; пустой реестр валиден."""
         if self.default_profile and self.default_profile not in self.profiles:
             msg = (
                 f"sandbox.default_profile={self.default_profile!r} "

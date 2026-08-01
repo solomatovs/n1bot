@@ -23,16 +23,14 @@ from boba.chainlit2.rendering.tool_result import JsonResult, ToolResult
 __all__ = ["build_bash_tool", "has_bwrap"]
 
 _MAX_COMMAND_LEN = 16_384
-_MAX_STDIN_LEN = 1 * 1024 * 1024  # 1 MiB
+_MAX_STDIN_LEN = 1 * 1024 * 1024
 
 
 def has_bwrap() -> bool:
-    """bwrap присутствует в PATH."""
     return shutil.which("bwrap") is not None
 
 
 def build_bash_tool(cfg: BashSandboxConfig) -> BaseTool:
-    """Собрать langchain-tool bash; конфиг захватывается замыканием."""
 
     @tool(response_format="content_and_artifact")
     def bash(
@@ -90,7 +88,6 @@ def build_bash_tool(cfg: BashSandboxConfig) -> BaseTool:
             stdin_data=stdin.encode("utf-8"),
             timeout_sec=profile_dto.timeout_sec,
             max_output_bytes=profile_dto.max_output_bytes,
-            # cwd/env — для запуска самого bwrap; внутри он делает свои
             cwd=workspace_root,
             env=os.environ,
         )

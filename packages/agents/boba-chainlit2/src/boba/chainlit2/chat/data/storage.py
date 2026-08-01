@@ -10,7 +10,6 @@ from typing import Any
 import aiofiles
 import aiofiles.os
 from chainlit.data.storage_clients.base import BaseStorageClient
-from chainlit.logger import logger
 
 from boba.chainlit2.infra.config import LocalStorageConfig
 
@@ -24,9 +23,6 @@ class LocalStorageClient(BaseStorageClient):
         self._config = config
 
     def _resolve(self, object_key: str) -> Path:
-        """Путь файла внутри files_dir"""
-        # base_dir тоже резолвим: он бывает относительным (./data/upload),
-        # и тогда сравнение с абсолютным path всегда давало бы False
         base_dir = Path(self._config.files_dir).resolve()
         path = (base_dir / object_key).resolve()
 
@@ -36,8 +32,6 @@ class LocalStorageClient(BaseStorageClient):
         return path
 
     def _url(self, object_key: str) -> str:
-        # public_prefix обязателен: по этому пути bootstrap вешает роут
-        # отдачи файла, без него фронт запросит относительный путь и словит 404
         return f"{self._config.public_prefix.rstrip('/')}/{object_key}"
 
     async def upload_file(
@@ -68,19 +62,12 @@ class LocalStorageClient(BaseStorageClient):
         return self._url(object_key)
 
     async def delete_file(self, object_key: str) -> bool:
-        try:
-            path = self._resolve(object_key)
-        except ValueError:
-            return False
+        path = self._resolve(object_key)
         try:
             await aiofiles.os.remove(path)
         except FileNotFoundError:
             return False
-        except OSError as e:
-            logger.warning(f"LocalStorageClient: не удалось удалить {object_key}: {e}")
-            return False
         return True
 
     async def close(self) -> None:
-        # диск не держит ресурсов — закрывать нечего
         pass

@@ -7,7 +7,6 @@ from collections.abc import Iterable, Mapping
 __all__ = ["DEFAULT_PASSTHROUGH", "resolve_local_env"]
 
 
-# минимум, чтобы работали базовые команды и не ломалась локаль
 DEFAULT_PASSTHROUGH: tuple[str, ...] = (
     "PATH",
     "HOME",
@@ -23,7 +22,6 @@ def resolve_local_env(
     env_set: Mapping[str, str],
     host_env: Mapping[str, str],
 ) -> dict[str, str]:
-    """env для Popen: host_env по allowlist, сверху env_set."""
     result = {
         name: host_env[name]
         for name in env_passthrough

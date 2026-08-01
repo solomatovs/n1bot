@@ -1,3 +1,5 @@
+"""Жизненный цикл приложения: инициализация и освобождение ресурсов DI."""
+
 import contextlib
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager

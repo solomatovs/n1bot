@@ -23,7 +23,7 @@ from boba.chainlit2.rendering.tool_result import ChartResult, JsonResult
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
-    """Чистые юнит-тесты инструментов не требуют HTTP-контекста chainlit."""
+    pass
 
 
 def _tool_call(name: str, args: dict) -> dict:
@@ -141,8 +141,6 @@ class TestBwrapArgv:
         assert argv[argv.index("--chdir") + 1] == self._WS
 
     def test_rootfs_mounted_as_root_before_proc_dev(self) -> None:
-        # rootfs задаёт корень, поэтому монтируется ДО /proc и /dev —
-        # иначе ro-bind перекрыл бы их и /dev/null стал read-only.
         argv = build_bwrap_argv(
             SandboxProfile(rootfs="/srv/rootfs", ro_binds=()),
             "true",
@@ -155,8 +153,6 @@ class TestBwrapArgv:
         assert i < argv.index("--dev")
 
     def test_rootfs_moves_workspace_to_fixed_mount(self) -> None:
-        # на read-only корне bwrap не создаст точку по host-пути,
-        # поэтому workspace монтируется в /workspace и туда же chdir
         argv = build_bwrap_argv(
             SandboxProfile(rootfs="/srv/rootfs", ro_binds=()),
             "true",
@@ -171,7 +167,7 @@ class TestBwrapArgv:
         argv = build_bwrap_argv(
             SandboxProfile(), "true", workspace_root=self._WS, env={},
         )
-        assert "--ro-bind" not in argv  # корень не монтируется
+        assert "--ro-bind" not in argv
         assert argv[argv.index("--chdir") + 1] == self._WS
 
     def test_env_cleared_and_set(self) -> None:
@@ -237,9 +233,6 @@ class TestBashTool:
     def test_outside_workspace_write_does_not_reach_host(
         self, tmp_path: Path
     ) -> None:
-        # /etc внутри песочницы — синтетический tmpfs bwrap (создан под
-        # ro-bind'ы alternatives/resolv.conf): запись туда «удаётся», но
-        # исчезает вместе с песочницей. Проверяем главное — хост не тронут.
         payload = self._invoke(
             self._make_tool(tmp_path),
             command="echo x > /etc/from-sandbox 2>&1; echo rc=$?",
@@ -248,7 +241,6 @@ class TestBashTool:
         assert not Path("/etc/from-sandbox").exists()
 
     def test_ro_bind_write_denied(self, tmp_path: Path) -> None:
-        # /usr замонтирован read-only — запись обязана падать.
         payload = self._invoke(
             self._make_tool(tmp_path),
             command="echo x > /usr/from-sandbox 2>&1",
@@ -282,5 +274,4 @@ class TestBashTool:
             self._make_tool(tmp_path),
             command="ps -e --no-headers | wc -l",
         )
-        # внутри PID-ns хост-процессы не видны; только bash + ps.
         assert int(payload["stdout"].strip()) < 10

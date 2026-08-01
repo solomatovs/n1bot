@@ -1,3 +1,5 @@
+"""Схема конфигурации приложения: pydantic-модели секций toml-конфига."""
+
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field

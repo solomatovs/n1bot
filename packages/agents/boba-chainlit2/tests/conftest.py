@@ -10,44 +10,51 @@ from uuid import uuid4
 
 import psycopg
 import pytest
-from chainlit.step import StepDict
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from psycopg import sql
 
 from boba.agent.tool_config import bind, build_app_config
 from boba.chainlit2.chat.data.data_layer import PostgresDataLayer
-from boba.chainlit2.chat.data.models import Codec
 from boba.chainlit2.chat.data.storage import LocalStorageClient
 from boba.chainlit2.infra.config import AppConfig
+from boba.chainlit2.rendering.chat_view import ChatView
 from boba.db.postgres import AsyncPostgresPool
 
-# отдельная БД под тесты: реальный сервер из конфига, но не боевая база
 TEST_DB = "boba_chainlit_test"
-# идентификатор аутентифицированного пользователя chainlit-контекста
 AUTH_USER = "test-user"
+
+
+class FakeThreadMessages:
+    """Источник истории для тестов: сообщения задаются на тред вручную."""
+
+    def __init__(self) -> None:
+        self.by_thread: dict[str, list[BaseMessage]] = {}
+
+    async def load(self, thread_id: str) -> list[BaseMessage]:
+        return self.by_thread.get(thread_id, [])
 
 
 @dataclass
 class Seed:
-    """Базовые данные под тест: слой + созданные пользователь/тред/шаг."""
+    """Базовые данные под тест: слой, пользователь, тред и его история."""
 
     layer: PostgresDataLayer
     user: PersistedUser
     thread_id: str
-    step_id: str
-    step: StepDict
+    messages: list[BaseMessage]
+    answer_step_id: str
+    """id шага итогового ответа — он же цель для feedback и вложений."""
 
 
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
-    """anyio гоняет async-тесты/фикстуры только на asyncio."""
     return "asyncio"
 
 
 @pytest.fixture(scope="session")
 def app_config() -> AppConfig:
-    """Реальный конфиг приложения из BOBA_CONFIG_PATH (как в проде через DI)."""
     config_path = os.environ.get("BOBA_CONFIG_PATH")
     if not config_path:
         raise RuntimeError(
@@ -60,8 +67,6 @@ def app_config() -> AppConfig:
 
 @pytest.fixture(scope="session")
 def test_database(app_config: AppConfig) -> str:
-    """Создаёт тестовую БД на сервере из конфига, если её ещё нет."""
-    # боевой dbname служебный
     maintenance = app_config.data_layer.postgres.conn_settings()
     with psycopg.connect(**maintenance, connect_timeout=5) as conn:
         exists = conn.execute(
@@ -76,9 +81,6 @@ def test_database(app_config: AppConfig) -> str:
 async def pool(
     app_config: AppConfig, test_database: str
 ) -> AsyncIterator[AsyncPostgresPool]:
-    """
-    Пул на тестовую БД; конструируется как прод-провайдер (cfg + override_options)
-    """
     p = AsyncPostgresPool(
         app_config.data_layer.postgres.model_copy(update={"dbname": test_database}),
         override_options={"search_path": app_config.data_layer.db_schema},
@@ -92,35 +94,44 @@ async def pool(
 
 @pytest.fixture
 def files_dir(tmp_path: Path) -> Path:
-    """Изолированная папка под вложения (в проектную ./upload не пишем)."""
     return tmp_path / "uploads"
 
 
 @pytest.fixture
 def storage(app_config: AppConfig, files_dir: Path) -> LocalStorageClient:
-    """Настоящий дисковый storage-клиент проекта (files_dir — во временную папку)."""
     config = app_config.storage.model_copy(update={"files_dir": str(files_dir)})
     return LocalStorageClient(config)
 
 
 @pytest.fixture
+def thread_messages() -> FakeThreadMessages:
+    return FakeThreadMessages()
+
+
+@pytest.fixture
 async def layer(
-    app_config: AppConfig, pool: AsyncPostgresPool, storage: LocalStorageClient
+    app_config: AppConfig,
+    pool: AsyncPostgresPool,
+    storage: LocalStorageClient,
+    thread_messages: FakeThreadMessages,
 ) -> PostgresDataLayer:
-    """Слой со свежей схемой: дропаем схему и заново гоняем setup() на каждый тест."""
     schema = app_config.data_layer.db_schema
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
-    data_layer = PostgresDataLayer(pool, schema=schema, storage=storage)
+    data_layer = PostgresDataLayer(
+        pool,
+        schema=schema,
+        storage=storage,
+        messages=thread_messages,
+    )
     await data_layer.setup()
     return data_layer
 
 
 @pytest.fixture
 def auth_token(app_config: AppConfig) -> str:
-    """Настоящий chainlit JWT, подписанный auth-секретом из конфига."""
     secret = app_config.chainlit.auth_secret
     if not secret:
         raise RuntimeError("chainlit.auth_secret не задан в конфиге")
@@ -133,19 +144,16 @@ def auth_token(app_config: AppConfig) -> str:
 
 @pytest.fixture(autouse=True)
 async def chainlit_context(auth_token: str) -> None:
-    """Аутентифицированный HTTP-контекст chainlit (JWT из конфига, нужен event loop).
-
-    Методы записи обёрнуты @queue_until_user_message: с HTTP-сессией (не websocket)
-    декоратор выполняет тело сразу, а не кладёт в очередь.
-    """
     from chainlit.context import init_http_context
 
     init_http_context(user=ChainlitUser(identifier=AUTH_USER), auth_token=auth_token)
 
 
 @pytest.fixture
-async def seeded(layer: PostgresDataLayer) -> Seed:
-    """Базовые данные: пользователь + тред + один (избранный) шаг."""
+async def seeded(
+    layer: PostgresDataLayer,
+    thread_messages: FakeThreadMessages,
+) -> Seed:
     user = await layer.create_user(
         ChainlitUser(identifier="user-1", metadata={"role": "tester"})
     )
@@ -160,23 +168,19 @@ async def seeded(layer: PostgresDataLayer) -> Seed:
         tags=["a"],
     )
 
-    step_id = str(uuid4())
-    step: StepDict = {
-        "id": step_id,
-        "threadId": thread_id,
-        "type": "assistant_message",
-        "name": "assistant",
-        "input": "hi",
-        "output": "hello",
-        "createdAt": Codec.iso(Codec.now()),
-        "metadata": {"favorite": True},
-    }
-    await layer.create_step(step)
+    messages: list[BaseMessage] = [
+        HumanMessage(content="hi", id="m1"),
+        AIMessage(content="hello", id="m2"),
+    ]
+    thread_messages.by_thread[thread_id] = messages
+
+    answer_step_id = ChatView.derive_id(thread_id, "m1", "answer")
+    assert answer_step_id is not None
 
     return Seed(
         layer=layer,
         user=user,
         thread_id=thread_id,
-        step_id=step_id,
-        step=step,
+        messages=messages,
+        answer_step_id=answer_step_id,
     )

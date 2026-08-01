@@ -48,15 +48,11 @@ def visualize(
             f"spec должен быть JSON-объектом figure, получен {type(parsed).__name__}",
         )
 
-    # Построением go.Figure валидируем структуру Plotly до отправки в UI —
-    # битый spec вернётся модели как ошибка, а не молча покажет заглушку.
     try:
         go.Figure(parsed)
     except (ValueError, TypeError) as e:
         raise RuntimeError(f"невалидный Plotly figure-spec: {e}") from e
 
-    # Заголовок берём из самого spec (layout.title — строка или {"text": ...}),
-    # не из go.Figure: так не зависим от слабо типизированного plotly-API.
     layout = parsed.get("layout") or {}
     raw_title = layout.get("title") if isinstance(layout, dict) else None
     if isinstance(raw_title, dict):
