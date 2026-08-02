@@ -153,7 +153,7 @@ class PostgresStoreSchema(BaseModel):
         if self.chunks_table == self.collections_table:
             msg = (
                 "PostgresStoreSchema.chunks_table == collections_table "
-                f"({self.chunks_table!r}) — должны различаться"
+                f"({self.chunks_table!r}), they must differ"
             )
             raise ValueError(msg)
         return self
@@ -514,7 +514,7 @@ class PostgresChunkStore(ChunkStore[str]):
                 raise UnsupportedFilterError(
                     f,
                     "postgres",
-                    "пустой список тэгов в HasAnyTag",
+                    "empty tag list in HasAnyTag",
                 )
             params.append(list(f.tags))
             return sql.SQL("(tags && %s)")
@@ -523,7 +523,7 @@ class PostgresChunkStore(ChunkStore[str]):
                 raise UnsupportedFilterError(
                     f,
                     "postgres",
-                    "пустой список тэгов в HasAllTags",
+                    "empty tag list in HasAllTags",
                 )
             params.append(list(f.tags))
             return sql.SQL("(tags @> %s)")

@@ -63,10 +63,10 @@ class BashLocalConfig(BaseModel):
     def _validate(self) -> Self:
         resolved = self.workspace_root.expanduser().resolve(strict=False)
         if not resolved.exists():
-            msg = f"bash_local.workspace_root не существует: {resolved}"
+            msg = f"bash_local.workspace_root does not exist: {resolved}"
             raise ValueError(msg)
         if not resolved.is_dir():
-            msg = f"bash_local.workspace_root не директория: {resolved}"
+            msg = f"bash_local.workspace_root is not a directory: {resolved}"
             raise ValueError(msg)
         object.__setattr__(self, "workspace_root", resolved)
         return self

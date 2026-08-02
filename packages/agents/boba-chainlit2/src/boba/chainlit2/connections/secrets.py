@@ -44,7 +44,7 @@ class SecretCipher:
             try:
                 return self._fernet.decrypt(value[len(self.PREFIX) :]).decode()
             except (InvalidToken, ValueError) as e:
-                msg = "значение не расшифровано"
+                msg = "value is not decrypted"
                 raise SecretCryptoError(msg) from e
         if isinstance(value, dict):
             return {key: self.decrypt(item) for key, item in value.items()}

@@ -48,6 +48,7 @@ from boba.chainlit2.chat.data.models import (
     Thread,
     User,
 )
+from boba.chainlit2.chat.handler.error import show_error
 from boba.chainlit2.chat.transcript import ConversationTranscript, ThreadMessages
 from boba.chainlit2.infra.session import current_user_id
 from boba.chainlit2.rendering.chat_view import ChatView, RecordingSink
@@ -100,8 +101,8 @@ class PostgresDataLayer(BaseDataLayer):
                     )
             except InsufficientPrivilege:
                 logger.info(
-                    f"нет прав на CREATE SCHEMA {self._schema!r}, "
-                    "считаем что её создал администратор"
+                    f"no permission for CREATE SCHEMA {self._schema!r}, "
+                    "assuming an administrator created it"
                 )
             for model in self._MODELS:
                 async with conn.transaction():
@@ -239,8 +240,26 @@ class PostgresDataLayer(BaseDataLayer):
     @queue_until_user_message()
     async def create_element(self, element: ChainlitElement) -> None:
         if not element.for_id:
+            logger.warning(
+                "element %s without for_id is not persisted: "
+                "it is not attached to anything",
+                element.id,
+            )
             return
+        try:
+            await self._create_element(element)
+        except Exception as e:
+            # chainlit зовёт create_element фоновой таской и гасит исключение:
+            # без явного сообщения пользователь увидит «файл загружен»
+            await show_error(f"Failed to save attachment {element.name!r}: {e}")
+            raise InternalServiceError(
+                internal_detail=(
+                    f"{type(self).__qualname__}.create_element failed with error: {e}"
+                ),
+                user_detail="Not able to create element",
+            ) from e
 
+    async def _create_element(self, element: ChainlitElement) -> None:
         content = await self._read_element_content(element)
         if content is None:
             raise ValueError("Content is None, cannot upload file")
@@ -267,27 +286,17 @@ class PostgresDataLayer(BaseDataLayer):
             ph=Element.all_placeholders(),
             asg=Element.all_assignments(exclude=("id",)),
         )
-        try:
-            async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(query, model.all_params())
-                uploaded = await self._storage.upload_file(
-                    object_key=Element.object_key(
-                        user_id, element.thread_id, element.id
-                    ),
-                    data=content,
-                    mime=mime,
-                    overwrite=True,
-                )
-                if not uploaded:
-                    msg = "Failed to upload file to storage"
-                    raise ValueError(msg)
-        except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.create_element failed with error: {e}"
-                ),
-                user_detail="Not able to create element",
-            ) from e
+        async with self._pool.connection() as conn, conn.transaction():
+            await conn.execute(query, model.all_params())
+            uploaded = await self._storage.upload_file(
+                object_key=Element.object_key(user_id, element.thread_id, element.id),
+                data=content,
+                mime=mime,
+                overwrite=True,
+            )
+            if not uploaded:
+                msg = "Failed to upload file to storage"
+                raise ValueError(msg)
 
     async def get_element(self, thread_id: str, element_id: str) -> ElementDict | None:
         query = sql.SQL(
@@ -351,6 +360,8 @@ class PostgresDataLayer(BaseDataLayer):
                         object_key=Element.object_key(user_id, row[0], element_id),
                     )
         except Exception as e:
+            # вызывается фоновой таской chainlit: raise до пользователя не дойдёт
+            await show_error(f"Failed to delete attachment {element_id}: {e}")
             raise InternalServiceError(
                 internal_detail=(
                     f"{type(self).__qualname__}.delete_element failed with error: {e}"
@@ -378,6 +389,8 @@ class PostgresDataLayer(BaseDataLayer):
                 await conn.execute(feedbacks_query, params)
                 await conn.execute(elements_query, params)
         except Exception as e:
+            # вызывается фоновой таской chainlit: raise до пользователя не дойдёт
+            await show_error(f"Failed to delete message {step_id}: {e}")
             raise InternalServiceError(
                 internal_detail=(
                     f"{type(self).__qualname__}.delete_step failed with error: {e}"
@@ -681,8 +694,8 @@ class PostgresDataLayer(BaseDataLayer):
         if user_id is None:
             raise InternalServiceError(
                 internal_detail=(
-                    f"{type(self).__qualname__}: нет сессии chainlit, "
-                    f"путь вложения не построить"
+                    f"{type(self).__qualname__}: no chainlit session, "
+                    f"cannot build the attachment path"
                 ),
                 user_detail="Not able to resolve current user",
             )

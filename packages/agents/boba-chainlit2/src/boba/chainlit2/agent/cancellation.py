@@ -50,7 +50,7 @@ class TurnCancellation:
             try:
                 abort()
             except Exception:
-                logger.exception("прерыватель операции не отработал")
+                logger.exception("operation interrupter failed")
 
     def raise_if_cancelled(self) -> None:
         if self._event.is_set():

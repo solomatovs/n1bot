@@ -173,7 +173,7 @@ async def on_message(
             )
             raise
         except Exception as e:
-            logger.exception("агент не отработал")
+            logger.exception("agent run failed")
             cancellation.cancel()
             await ChainlitAdapter.report_failure(graph, thread_id, view, msg.id, e)
             return

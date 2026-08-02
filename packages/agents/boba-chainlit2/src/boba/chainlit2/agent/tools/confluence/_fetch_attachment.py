@@ -104,8 +104,8 @@ def confluence_fetch_attachment(
             f"Confluence fetch failed: {type(e).__name__}: {e}",
         ) from e
     except LiteParseError as e:
-        raise RuntimeError(f"Не удалось распарсить вложение {filename!r}: {e}") from e
+        raise RuntimeError(f"Failed to parse attachment {filename!r}: {e}") from e
 
     raise RuntimeError(
-        f"Вложение {filename!r} не найдено на странице page_id={page_id!r}",
+        f"Attachment {filename!r} not found on page page_id={page_id!r}",
     )

@@ -43,7 +43,7 @@ class ConfluenceConnection(BaseModel):
     @property
     def base_url(self) -> str:
         if self.profile.base_url is None:
-            msg = "confluence base_url не задан: укажи base_url в web-профиле"
+            msg = "confluence base_url is not set: define base_url in the web profile"
             raise ValueError(msg)
 
         return self.profile.base_url

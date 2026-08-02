@@ -78,11 +78,11 @@ class ToolAccessGuard:
         roles = roles_source()
         if not access.allowed(name, roles):
             logger.warning(
-                "отказано в доступе к инструменту %r (роли пользователя: %s)",
+                "access denied to tool %r (user roles: %s)",
                 name,
                 sorted(roles) or "нет",
             )
-            msg = f"инструмент {name!r} недоступен вашей роли"
+            msg = f"tool {name!r} is not available for your role"
             raise ToolAccessDeniedError(msg)
 
     @staticmethod

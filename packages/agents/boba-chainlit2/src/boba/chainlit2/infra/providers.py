@@ -54,7 +54,7 @@ def get_raw_config() -> DictConfig:
     try:
         return _RAW_CONFIG["config"]
     except KeyError:
-        msg = "raw config не инициализирован: сначала вызови get_app_config()"
+        msg = "raw config is not initialised: call get_app_config() first"
         raise RuntimeError(msg) from None
 
 
@@ -85,7 +85,7 @@ def get_local_storage_config(
 def storage_provider(
     cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
 ) -> LocalStorageClient:
-    return LocalStorageClient(cfg)
+    return LocalStorageClient.from_config(cfg)
 
 
 def get_agent_profile(

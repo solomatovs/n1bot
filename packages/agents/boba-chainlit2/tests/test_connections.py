@@ -197,7 +197,7 @@ class TestConnectionKinds:
         assert ConnectionKinds.model("web") is HttpProfile
 
     def test_unknown_kind_raises(self) -> None:
-        with pytest.raises(ValueError, match="неизвестный kind"):
+        with pytest.raises(ValueError, match="unknown connection kind"):
             ConnectionKinds.model("redis")
 
     def test_kind_of_instance(self) -> None:
@@ -218,18 +218,18 @@ class TestConnectionsConfig:
 
     def test_key_must_be_32_bytes(self) -> None:
         short = SecretStr(base64.b64encode(std_secrets.token_bytes(16)).decode())
-        with pytest.raises(ValueError, match="32 байт"):
+        with pytest.raises(ValueError, match="32-byte key required"):
             ConnectionsConfig(encryption_key=short)
 
     def test_valid_key_decodes(self) -> None:
         assert len(ConnectionsConfig(encryption_key=_key()).key_bytes()) == 32
 
     def test_missing_key_raises_on_use(self) -> None:
-        with pytest.raises(ValueError, match="encryption_key не задан"):
+        with pytest.raises(ValueError, match="encryption_key is not set"):
             ConnectionsConfig().key_bytes()
 
     def test_missing_connection_raises_on_use(self) -> None:
-        with pytest.raises(ValueError, match="connection не задан"):
+        with pytest.raises(ValueError, match="connection is not set"):
             ConnectionsConfig(encryption_key=_key()).require_conn()
 
     def test_defaults(self) -> None:
@@ -248,11 +248,11 @@ class TestGrantKinds:
         assert GrantKinds.validate_tgt("roles") == "roles"
 
     def test_validate_src_rejects_unknown(self) -> None:
-        with pytest.raises(ValueError, match="неизвестный src_kind связи"):
+        with pytest.raises(ValueError, match="unknown grant src_kind"):
             GrantKinds.validate_src("roles")
 
     def test_validate_tgt_rejects_unknown(self) -> None:
-        with pytest.raises(ValueError, match="неизвестный tgt_kind связи"):
+        with pytest.raises(ValueError, match="unknown grant tgt_kind"):
             GrantKinds.validate_tgt("groups")
 
 

@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-chart"
-version = "0.0.7"
+version = "0.0.8"
 description = "Boba chart tool: рисует интерактивный Plotly-график из figure-spec; возвращает ChartResult для рендера в UI."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools==0.0.7",
+    "boba-tools==0.0.8",
     "pydantic>=2.10,<2.11",
     "plotly>=5.24,<6",
 ]

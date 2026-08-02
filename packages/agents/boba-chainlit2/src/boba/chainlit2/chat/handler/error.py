@@ -13,6 +13,33 @@ import chainlit as cl
 
 from boba.auth.errors import BaseError
 
+__all__ = ["chainlit_error_ctx_handler", "show_error"]
+
+
+async def show_error(
+    content: str,
+    author: str = "Error",
+    fail_on_persist_error: bool = False,
+) -> None:
+    """Единственный способ донести сбой до пользователя: сообщение в чат.
+
+    Нужен там, где raise не доходит до UI: chainlit зовёт часть методов
+    (create_element и др.) из фоновой asyncio-таски и молча гасит исключение.
+    """
+    logger = logging.getLogger("chainlit_handler")
+    logger.error(content)
+    message = cl.ErrorMessage(
+        author=author,
+        content=content,
+        fail_on_persist_error=fail_on_persist_error,
+    )
+    message.parent_id = None
+    try:
+        await message.send()
+    except Exception:
+        # сбой доставки не должен подменять собой исходную ошибку у вызвавшего
+        logger.exception("failed to show the error in chat")
+
 
 def chainlit_error_ctx_handler(fn: Callable) -> Callable:
 
@@ -26,13 +53,7 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
 
     @staticmethod
     async def show(content: str, author: str, fail_on_persist_error: bool = False):
-        message = cl.ErrorMessage(
-            author=author,
-            content=content,
-            fail_on_persist_error=fail_on_persist_error,
-        )
-        message.parent_id = None
-        await message.send()
+        await show_error(content, author, fail_on_persist_error)
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:

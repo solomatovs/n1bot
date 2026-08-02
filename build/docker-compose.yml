@@ -7,7 +7,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      # postgres-17 по сети принимает только Kerberos: keytab boba-svc и GSS-настройки
       - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
       - KRB5CCNAME=FILE:/tmp/krb5cc
       - PGGSSENCMODE=prefer
@@ -33,7 +32,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      # postgres-17 по сети принимает только Kerberos: keytab boba-svc и GSS-настройки
       - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
       - KRB5CCNAME=FILE:/tmp/krb5cc
       - PGGSSENCMODE=prefer
@@ -59,7 +57,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      # postgres-17 принимает по сети только Kerberos: keytab boba-svc и GSS-настройки
       - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
       - KRB5CCNAME=FILE:/tmp/krb5cc
       - PGGSSENCMODE=prefer
@@ -71,6 +68,13 @@ services:
       - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba-svc.keytab:ro
       - ${HOST_DIR}/data/keytab/krb5.conf:/etc/krb5.conf:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
+      - ${HOST_DIR}/artifacts/sandbox-rootfs:/app/boba/${BOBA_TAG}/third/sandbox-rootfs:ro
+      - ${HOST_DIR}/data/chainlit2/workspace:/app/local/workspace:rw
+    devices:
+      - /dev/fuse
+    security_opt:
+      - seccomp=unconfined
+      - systempaths=unconfined
     ports:
       - 127.0.0.1:8503:8501
     restart: unless-stopped
@@ -83,7 +87,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      # postgres-17 по сети принимает только Kerberos: keytab boba-svc и GSS-настройки
       - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
       - KRB5CCNAME=FILE:/tmp/krb5cc
       - PGGSSENCMODE=prefer
@@ -103,7 +106,6 @@ services:
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - CHAINLIT_APP_ROOT=/app/local
-      # postgres-17 по сети принимает только Kerberos: keytab boba-svc и GSS-настройки
       - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
       - KRB5CCNAME=FILE:/tmp/krb5cc
       - PGGSSENCMODE=prefer

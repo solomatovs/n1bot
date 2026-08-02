@@ -34,7 +34,7 @@ class HttpDump:
 
     def _fail(self, op: str) -> None:
         logging.getLogger(type(self).__qualname__).exception(
-            "дамп запроса отключён: не удалось выполнить %s для %s", op, self.path
+            "request dump disabled: %s failed for %s", op, self.path
         )
         if self._file is not None:
             self._file.close()

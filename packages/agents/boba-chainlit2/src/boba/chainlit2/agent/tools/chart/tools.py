@@ -42,16 +42,16 @@ def visualize(
     try:
         parsed: Any = json.loads(spec)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"spec не является валидным JSON: {e}") from e
+        raise RuntimeError(f"spec is not valid JSON: {e}") from e
     if not isinstance(parsed, dict):
         raise RuntimeError(
-            f"spec должен быть JSON-объектом figure, получен {type(parsed).__name__}",
+            f"spec must be a JSON figure object, got {type(parsed).__name__}",
         )
 
     try:
         go.Figure(parsed)
     except (ValueError, TypeError) as e:
-        raise RuntimeError(f"невалидный Plotly figure-spec: {e}") from e
+        raise RuntimeError(f"invalid Plotly figure spec: {e}") from e
 
     layout = parsed.get("layout") or {}
     raw_title = layout.get("title") if isinstance(layout, dict) else None

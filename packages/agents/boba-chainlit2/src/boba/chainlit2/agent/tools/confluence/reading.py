@@ -157,7 +157,7 @@ class ConfluenceSearchHitsReader(Reader[str]):
             data: dict[str, Any] = json.loads(payload)
         except json.JSONDecodeError as e:
             raise ConfluencePayloadError(
-                f"ConfluenceSearchHitsReader: невалидный JSON от Confluence search: {e}"
+                f"ConfluenceSearchHitsReader: invalid JSON from Confluence search: {e}"
             ) from e
         base = ConfluenceJson.response_base(data) or self._base_url
         for order, hit in enumerate(ConfluenceJson.results(data)):

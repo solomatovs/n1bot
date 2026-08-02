@@ -62,8 +62,8 @@ class SqlExecutorConfig(BaseModel):
     def _validate(self) -> Self:
         if not self.profiles:
             msg = (
-                "tool.pg: ни одного профиля. Заведите [postgres.<name>] и "
-                'сошлитесь: [tool.pg.profiles] <name> = "${postgres.<name>}".'
+                "tool.pg: no profiles configured. Add [postgres.<name>] and "
+                'reference it: [tool.pg.profiles] <name> = "${postgres.<name>}".'
             )
             raise ValueError(msg)
         return self
@@ -74,7 +74,8 @@ class SqlExecutorConfig(BaseModel):
     def resolve(self, target: str) -> PostgresConfig:
         conn = self.profiles.get(target)
         if conn is None:
-            msg = f"pg: target {target!r} не в whitelist (allowed={self.targets()})"
+            allowed = self.targets()
+            msg = f"pg: target {target!r} is not in the whitelist (allowed={allowed})"
             raise ValueError(msg)
         return conn
 

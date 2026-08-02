@@ -33,7 +33,7 @@ class BashSandboxConfig(BaseModel):
         if self.default_profile and self.default_profile not in self.profiles:
             msg = (
                 f"sandbox.default_profile={self.default_profile!r} "
-                f"отсутствует в profiles; доступные: {sorted(self.profiles)}"
+                f"is missing from profiles; available: {sorted(self.profiles)}"
             )
             raise ValueError(msg)
         return self

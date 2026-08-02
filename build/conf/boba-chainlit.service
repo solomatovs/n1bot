@@ -17,5 +17,10 @@ TimeoutStopSec=30
 User=boba
 Group=boba
 
+## fuse-образы workspace без root: нужен /dev/fuse (модуль fuse:
+## /etc/modules-load.d/fuse.conf) и userns (sysctl user.max_user_namespaces > 0)
+PrivateDevices=no
+RestrictNamespaces=no
+
 [Install]
 WantedBy=multi-user.target

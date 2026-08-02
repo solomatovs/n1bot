@@ -32,7 +32,59 @@ def _tool_call(name: str, args: dict) -> dict:
     return {"args": args, "id": f"call-{name}", "name": name, "type": "tool_call"}
 
 
+_PROFILE_BASE: dict[str, object] = {
+    "rootfs": "",
+    "ro_binds": (),
+    "rw_binds": (),
+    "rw_images": (),
+    "image_template": "",
+    "launcher": {},
+    "tmpfs": (),
+    "network": False,
+    "env_set": {},
+    "timeout_sec": 30,
+    "max_memory_bytes": 512 * 1024 * 1024,
+    "max_cpu_sec": 30,
+    "max_file_size_bytes": 64 * 1024 * 1024,
+    "max_open_files": 256,
+    "max_processes": 256,
+    "max_output_bytes": 256 * 1024,
+    "cwd": "",
+}
+
+
+def _profile(**kw: object) -> SandboxProfile:
+    """Все поля профиля обязательны; база даёт валидный минимум для тестов."""
+    return SandboxProfile.model_validate({**_PROFILE_BASE, **kw})
+
+
 _HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
+
+
+class TestProfileValidation:
+    def test_zero_memory_limit_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_memory_bytes"):
+            _profile(max_memory_bytes=0)
+
+    def test_zero_cpu_limit_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_cpu_sec"):
+            _profile(max_cpu_sec=0)
+
+    def test_zero_file_size_limit_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_file_size_bytes"):
+            _profile(max_file_size_bytes=0)
+
+    def test_zero_open_files_limit_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_open_files"):
+            _profile(max_open_files=0)
+
+    def test_zero_process_limit_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_processes"):
+            _profile(max_processes=0)
+
+    def test_all_fields_required(self) -> None:
+        with pytest.raises(ValueError, match="Field required"):
+            SandboxProfile.model_validate({})
 
 
 class TestBashLocal:
@@ -101,12 +153,12 @@ class TestVisualize:
             visualize.invoke(_tool_call("visualize", {"spec": "{not json"}))
 
     def test_non_object_spec_raises(self) -> None:
-        with pytest.raises(RuntimeError, match="JSON-объектом"):
+        with pytest.raises(RuntimeError, match="JSON figure object"):
             visualize.invoke(_tool_call("visualize", {"spec": "[1,2,3]"}))
 
     def test_invalid_plotly_spec_raises(self) -> None:
         spec = '{"data": 42}'
-        with pytest.raises(RuntimeError, match="невалидный Plotly"):
+        with pytest.raises(RuntimeError, match="invalid Plotly"):
             visualize.invoke(_tool_call("visualize", {"spec": spec}))
 
 
@@ -116,64 +168,70 @@ class TestBwrapArgv:
     _WS = "/srv/workspace"
 
     def test_starts_with_bwrap_and_unshare_flags(self) -> None:
-        argv = build_bwrap_argv(SandboxProfile(), "echo hi", env={})
-        assert argv[0] == "bwrap"
+        argv = build_bwrap_argv(_profile(), "echo hi", env={})
+        assert argv[0].endswith("bwrap")
         assert "--die-with-parent" in argv
         assert "--unshare-user" in argv
         assert "--unshare-pid" in argv
         assert "--new-session" in argv
 
+    def test_userns_creation_disabled(self) -> None:
+        argv = build_bwrap_argv(_profile(), "true", env={})
+        assert "--disable-userns" in argv
+
+    def test_neutral_hostname(self) -> None:
+        argv = build_bwrap_argv(_profile(), "true", env={})
+        assert argv[argv.index("--hostname") + 1] == "sandbox"
+
     def test_network_disabled_adds_unshare_net(self) -> None:
-        argv = build_bwrap_argv(SandboxProfile(network=False), "true", env={})
+        argv = build_bwrap_argv(_profile(network=False), "true", env={})
         assert "--unshare-net" in argv
 
     def test_network_enabled_omits_unshare_net(self) -> None:
-        argv = build_bwrap_argv(SandboxProfile(network=True), "true", env={})
+        argv = build_bwrap_argv(_profile(network=True), "true", env={})
         assert "--unshare-net" not in argv
 
     def test_no_implicit_rw_binds(self) -> None:
-        argv = build_bwrap_argv(SandboxProfile(), "true", env={})
+        argv = build_bwrap_argv(_profile(), "true", env={})
         assert "--bind-try" not in argv
         assert "--bind" not in argv
 
     def test_rw_bind_same_path_and_chdir(self) -> None:
-        profile = SandboxProfile(rw_binds=(self._WS,), cwd=self._WS)
+        profile = _profile(rw_binds=(self._WS,), cwd=self._WS)
         argv = build_bwrap_argv(profile, "true", env={})
         i = argv.index("--bind-try")
         assert argv[i + 1 : i + 3] == [self._WS, self._WS]
         assert argv[argv.index("--chdir") + 1] == self._WS
 
     def test_rw_bind_with_explicit_target(self) -> None:
-        profile = SandboxProfile(
-            rw_binds=(f"{self._WS}:/workspace",), cwd="/workspace",
-        )
+        profile = _profile(rw_binds=(f"{self._WS}:/workspace",), cwd="/workspace")
         argv = build_bwrap_argv(profile, "true", env={})
         i = argv.index("--bind-try")
         assert argv[i + 1 : i + 3] == [self._WS, "/workspace"]
         assert argv[argv.index("--chdir") + 1] == "/workspace"
 
     def test_empty_cwd_means_root(self) -> None:
-        argv = build_bwrap_argv(SandboxProfile(), "true", env={})
+        argv = build_bwrap_argv(_profile(), "true", env={})
         assert argv[argv.index("--chdir") + 1] == "/"
 
     def test_tmpfs_without_size(self) -> None:
-        argv = build_bwrap_argv(SandboxProfile(tmpfs=("/tmp",)), "true", env={})
+        argv = build_bwrap_argv(_profile(tmpfs=("/tmp",)), "true", env={})  # noqa: S108
         assert "--size" not in argv
-        assert argv[argv.index("--tmpfs") + 1] == "/tmp"
+        assert argv[argv.index("--tmpfs") + 1] == "/tmp"  # noqa: S108
 
     def test_tmpfs_size_precedes_mount(self) -> None:
-        argv = build_bwrap_argv(SandboxProfile(tmpfs=("/tmp:64M",)), "true", env={})
+        argv = build_bwrap_argv(_profile(tmpfs=("/tmp:64M",)), "true", env={})  # noqa: S108
         i = argv.index("--size")
         assert argv[i + 1] == str(64 * 1024**2)
-        assert argv[i + 2 : i + 4] == ["--tmpfs", "/tmp"]
+        assert argv[i + 2 : i + 4] == ["--tmpfs", "/tmp"]  # noqa: S108
 
     def test_tmpfs_bad_size_rejected(self) -> None:
-        with pytest.raises(ValueError, match="неверный размер"):
-            SandboxProfile(tmpfs=("/tmp:64X",))
+        with pytest.raises(ValueError, match="invalid size"):
+            _profile(tmpfs=("/tmp:64X",))  # noqa: S108
 
     def test_rootfs_mounted_as_root_before_proc_dev(self) -> None:
         argv = build_bwrap_argv(
-            SandboxProfile(rootfs="/srv/rootfs", ro_binds=()), "true", env={},
+            _profile(rootfs="/srv/rootfs", ro_binds=()), "true", env={},
         )
         i = argv.index("--ro-bind")
         assert argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]
@@ -182,16 +240,21 @@ class TestBwrapArgv:
 
     def test_env_cleared_and_set(self) -> None:
         argv = build_bwrap_argv(
-            SandboxProfile(), "true", env={"PATH": "/usr/bin:/bin"},
+            _profile(), "true", env={"PATH": "/usr/bin:/bin"},
         )
         assert "--clearenv" in argv
         i = argv.index("--setenv")
         assert argv[i + 1 : i + 3] == ["PATH", "/usr/bin:/bin"]
 
     def test_command_goes_after_separator(self) -> None:
-        argv = build_bwrap_argv(SandboxProfile(), "echo hi", env={})
+        argv = build_bwrap_argv(_profile(), "echo hi", env={})
         sep = argv.index("--")
-        assert argv[sep + 1 :] == ["/bin/bash", "-c", "echo hi"]
+        assert argv[sep + 1 : sep + 3] == ["/bin/bash", "-c"]
+        assert argv[sep + 3].endswith("; echo hi")
+
+    def test_process_limit_prefixes_command(self) -> None:
+        argv = build_bwrap_argv(_profile(max_processes=64), "echo hi", env={})
+        assert argv[-1] == "ulimit -u 64 || exit 1; echo hi"
 
 
 @pytest.mark.skipif(
@@ -204,7 +267,7 @@ class TestBashTool:
     @staticmethod
     def _make_tool(workspace_root: Path, profile: SandboxProfile | None = None):
         ws = str(workspace_root)
-        base = profile or SandboxProfile()
+        base = profile or _profile()
         cfg = BashSandboxConfig(
             profiles={
                 "default": base.model_copy(
@@ -271,7 +334,7 @@ class TestBashTool:
 
     def test_timeout_marks_timed_out(self, tmp_path: Path) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path, SandboxProfile(timeout_sec=1)),
+            self._make_tool(tmp_path, _profile(timeout_sec=1)),
             command="sleep 10",
         )
         assert payload["timed_out"]
@@ -290,9 +353,19 @@ class TestBashTool:
         )
         assert int(payload["stdout"].strip()) < 10
 
+    def test_memory_limit_applied_without_image(self, tmp_path: Path) -> None:
+        tool = self._make_tool(tmp_path, _profile(max_memory_bytes=64 * 1024 * 1024))
+        payload = self._invoke(tool, command="ulimit -v")
+        assert payload["stdout"].strip() == str(64 * 1024)
+
+    def test_cpu_limit_applied_without_image(self, tmp_path: Path) -> None:
+        tool = self._make_tool(tmp_path, _profile(max_cpu_sec=5))
+        payload = self._invoke(tool, command="ulimit -t")
+        assert payload["stdout"].strip() == "5"
+
     def test_tmpfs_size_limit_enforced(self, tmp_path: Path) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path, SandboxProfile(tmpfs=("/tmp:1M",))),
+            self._make_tool(tmp_path, _profile(tmpfs=("/tmp:1M",))),  # noqa: S108
             command="dd if=/dev/zero of=/tmp/blob bs=1M count=4 2>&1; echo rc=$?",
         )
         assert "rc=0" not in payload["stdout"]
@@ -301,7 +374,7 @@ class TestBashTool:
         template = f"{tmp_path}/{{user_id}}/{{thread_id}}"
         cfg = BashSandboxConfig(
             profiles={
-                "default": SandboxProfile(
+                "default": _profile(
                     ro_binds=_HOST_RO_BINDS, rw_binds=(template,), cwd=template,
                 ),
             },

@@ -59,7 +59,7 @@ class Container:
     @classmethod
     def begin_call(cls) -> "Container":
         if cls.root is None:
-            raise RuntimeError("DI Container не инициализирован (set_root)")
+            raise RuntimeError("DI Container is not initialised (set_root)")
 
         session = cls._session_hook[0]() if cls._session_hook else None
         return cls(level="call", parent=session or cls.root)
@@ -87,7 +87,8 @@ class Container:
         owner = self._owner(scope)
         if provider not in owner._cache:
             name = getattr(provider, "__name__", repr(provider))
-            raise RuntimeError(f"провайдер {name} не прогрет (eager/start/provide)")
+            msg = f"provider {name} is not warmed up (eager/start/provide)"
+            raise RuntimeError(msg)
         return owner._cache[provider]
 
     def eager(self, *providers: Callable[..., Any], scope: Scope = "app") -> None:
@@ -102,8 +103,8 @@ class Container:
 
         if _outer is not None and self._RANK[owner.level] > self._RANK[_outer.level]:
             raise RuntimeError(
-                f"scope-нарушение: провайдер уровня {_outer.level} зависит от "
-                f"{dep.scope} (уровень {owner.level})"
+                f"scope violation: provider of level {_outer.level} depends on "
+                f"{dep.scope} (level {owner.level})"
             )
 
         if dep.scope not in self._CACHED:
@@ -134,7 +135,7 @@ class Container:
         while c is not None and c.level != target:
             c = c.parent
         if c is None:
-            raise RuntimeError(f"нет контейнера уровня {target} (scope={scope})")
+            raise RuntimeError(f"no container of level {target} (scope={scope})")
         return c
 
     async def _resolve_sub_deps(
@@ -198,7 +199,7 @@ def di_inject(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def sync_shim(*args: Any, **kwargs: Any) -> Any:
         if Container.root is None:
-            raise RuntimeError("DI Container не инициализирован (set_root)")
+            raise RuntimeError("DI Container is not initialised (set_root)")
         resolved = {
             name: Container.root.resolved(dep.provider, scope=dep.scope)
             for name, dep in deps.items()
