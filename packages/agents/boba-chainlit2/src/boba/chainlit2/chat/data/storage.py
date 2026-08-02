@@ -5,7 +5,7 @@ LocalStorageClient
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import aiofiles
 import aiofiles.os
@@ -19,6 +19,8 @@ __all__ = ["LocalStorageClient"]
 class LocalStorageClient(BaseStorageClient):
     """Хранит файлы вложений на локальном диске под files_dir."""
 
+    PREFIX_VAR: ClassVar[str] = "{public_prefix}"
+
     def __init__(self, config: LocalStorageConfig) -> None:
         self._config = config
 
@@ -31,8 +33,11 @@ class LocalStorageClient(BaseStorageClient):
 
         return path
 
-    def _url(self, object_key: str) -> str:
-        return f"{self._config.public_prefix.rstrip('/')}/{object_key}"
+    def _stored_url(self, object_key: str) -> str:
+        return f"{self.PREFIX_VAR}/{object_key}"
+
+    def render_url(self, url: str) -> str:
+        return url.replace(self.PREFIX_VAR, self._config.public_prefix.rstrip("/"))
 
     async def upload_file(
         self,
@@ -46,7 +51,7 @@ class LocalStorageClient(BaseStorageClient):
         if path.exists() and not overwrite:
             return {
                 "object_key": object_key,
-                "url": self._url(object_key),
+                "url": self._stored_url(object_key),
             }
 
         await aiofiles.os.makedirs(path.parent, exist_ok=True)
@@ -56,10 +61,10 @@ class LocalStorageClient(BaseStorageClient):
         async with aiofiles.open(path, "wb") as f:
             await f.write(payload)
 
-        return {"object_key": object_key, "url": self._url(object_key)}
+        return {"object_key": object_key, "url": self._stored_url(object_key)}
 
     async def get_read_url(self, object_key: str) -> str:
-        return self._url(object_key)
+        return self.render_url(self._stored_url(object_key))
 
     async def delete_file(self, object_key: str) -> bool:
         path = self._resolve(object_key)

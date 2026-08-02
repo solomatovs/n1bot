@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-
 import chainlit as cl
-
-logger = logging.getLogger(__name__)
+from chainlit.context import ChainlitContextException
 
 __all__ = ["current_user_roles"]
 
@@ -16,8 +13,7 @@ ROLES_KEY = "roles"
 def current_user_roles() -> frozenset[str]:
     try:
         user = cl.user_session.get("user")
-    except Exception:
-        logger.debug("роли запрошены вне сессии chainlit")
+    except ChainlitContextException:
         return frozenset()
     if user is None:
         return frozenset()

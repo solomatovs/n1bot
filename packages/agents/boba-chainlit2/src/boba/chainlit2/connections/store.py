@@ -24,6 +24,7 @@ __all__ = [
     "ConnectionNotFoundError",
     "ConnectionStore",
     "ConnectionsConfig",
+    "GrantKinds",
 ]
 
 KEY_BYTES = 32
@@ -49,6 +50,14 @@ class ConnectionsConfig(BaseModel):
     table: str = Field(
         default="connections",
         description="Имя таблицы соединений.",
+    )
+    roles_table: str = Field(
+        default="roles",
+        description="Имя таблицы ролей.",
+    )
+    grants_table: str = Field(
+        default="connection_grants",
+        description="Имя связочной таблицы «соединение — роль/пользователь».",
     )
     encryption_key: SecretStr = Field(
         default=SecretStr(""),
@@ -124,6 +133,27 @@ class ConnectionKinds:
         return tuple(sorted(cls._BY_KIND))
 
 
+class GrantKinds:
+    """Виды субъектов в связочной таблице: kind — имя таблицы для kind_id."""
+
+    ROLES: ClassVar[str] = "roles"
+    USERS: ClassVar[str] = "users"
+
+    @classmethod
+    def known(cls) -> tuple[str, ...]:
+        return (cls.ROLES, cls.USERS)
+
+    @classmethod
+    def validate(cls, kind: str) -> str:
+        if kind not in cls.known():
+            msg = (
+                f"неизвестный kind связи {kind!r} "
+                f"(известны: {', '.join(cls.known())})"
+            )
+            raise ValueError(msg)
+        return kind
+
+
 class ConnectionNotFoundError(LookupError):
     """В таблице connections нет строки с таким именем."""
 
@@ -143,6 +173,12 @@ class ConnectionStore:
     def _table(self) -> sql.Identifier:
         return sql.Identifier(self._cfg.db_schema, self._cfg.table)
 
+    def _roles(self) -> sql.Identifier:
+        return sql.Identifier(self._cfg.db_schema, self._cfg.roles_table)
+
+    def _grants(self) -> sql.Identifier:
+        return sql.Identifier(self._cfg.db_schema, self._cfg.grants_table)
+
     def setup(self) -> None:
         with self._pool.connection() as conn:
             try:
@@ -158,7 +194,18 @@ class ConnectionStore:
                     self._cfg.db_schema,
                 )
 
-            query = sql.SQL(
+            for query in self._ddl():
+                conn.execute(query, prepare=False)
+
+        logger.info(
+            "connections ready: %s.%s",
+            self._cfg.db_schema,
+            self._cfg.table,
+        )
+
+    def _ddl(self) -> tuple[sql.Composed, ...]:
+        return (
+            sql.SQL(
                 """
                 create table if not exists {connections} (
                     id   integer generated always as identity primary key,
@@ -169,13 +216,41 @@ class ConnectionStore:
                 """
             ).format(
                 connections=self._table(),
-            )
-            conn.execute(query, prepare=False)
-
-        logger.info(
-            "connections ready: %s.%s",
-            self._cfg.db_schema,
-            self._cfg.table,
+            ),
+            sql.SQL(
+                """
+                create table if not exists {roles} (
+                    id        integer generated always as identity primary key,
+                    role      varchar not null unique,
+                    create_at timestamptz not null default now()
+                )
+                """
+            ).format(
+                roles=self._roles(),
+            ),
+            sql.SQL(
+                """
+                create table if not exists {grants} (
+                    id            integer generated always as identity primary key,
+                    connection_id integer not null
+                                  references {connections} (id) on delete cascade,
+                    kind          varchar not null,
+                    kind_id       integer not null,
+                    unique (connection_id, kind, kind_id)
+                )
+                """
+            ).format(
+                grants=self._grants(),
+                connections=self._table(),
+            ),
+            sql.SQL(
+                """
+                create index if not exists idx_connection_grants_subject
+                    on {grants} (kind, kind_id)
+                """
+            ).format(
+                grants=self._grants(),
+            ),
         )
 
     def save(self, name: str, profile: BaseModel) -> int:
@@ -271,6 +346,128 @@ class ConnectionStore:
         with self._pool.cursor() as cur:
             cur.execute(query, (name,))
             return cur.rowcount > 0
+
+    def roles(self) -> dict[str, int]:
+        query = sql.SQL(
+            """
+            select
+                role, id
+            from
+                {roles}
+            order by
+                id
+            """
+        ).format(
+            roles=self._roles(),
+        )
+
+        with self._pool.cursor() as cur:
+            cur.execute(query)
+            return {row[0]: int(row[1]) for row in cur.fetchall()}
+
+    def grant(self, name: str, kind: str, kind_id: int) -> int:
+        GrantKinds.validate(kind)
+        query = sql.SQL(
+            """
+            insert into {grants}
+                (connection_id, kind, kind_id)
+            select
+                c.id, %(kind)s, %(kind_id)s
+            from
+                {connections} c
+            where
+                c.name = %(name)s
+            on conflict
+                (connection_id, kind, kind_id)
+            do update set
+                kind = excluded.kind
+            returning
+                id
+            """
+        ).format(
+            grants=self._grants(),
+            connections=self._table(),
+        )
+
+        with self._pool.cursor() as cur:
+            cur.execute(query, {"name": name, "kind": kind, "kind_id": kind_id})
+            row = cur.fetchone()
+
+        if row is None:
+            msg = f"connections: соединение {name!r} не найдено"
+            raise ConnectionNotFoundError(msg)
+        return int(row[0])
+
+    def revoke(self, name: str, kind: str, kind_id: int) -> bool:
+        GrantKinds.validate(kind)
+        query = sql.SQL(
+            """
+            delete from
+                {grants} g
+            using
+                {connections} c
+            where
+                g.connection_id = c.id
+                and c.name  = %(name)s
+                and g.kind  = %(kind)s
+                and g.kind_id = %(kind_id)s
+            """
+        ).format(
+            grants=self._grants(),
+            connections=self._table(),
+        )
+
+        with self._pool.cursor() as cur:
+            cur.execute(query, {"name": name, "kind": kind, "kind_id": kind_id})
+            return cur.rowcount > 0
+
+    def grants_of(self, name: str) -> list[tuple[str, int]]:
+        query = sql.SQL(
+            """
+            select
+                g.kind, g.kind_id
+            from
+                {grants} g
+                inner join {connections} c on g.connection_id = c.id
+            where
+                c.name = %s
+            order by
+                g.id
+            """
+        ).format(
+            grants=self._grants(),
+            connections=self._table(),
+        )
+
+        with self._pool.cursor() as cur:
+            cur.execute(query, (name,))
+            return [(row[0], int(row[1])) for row in cur.fetchall()]
+
+    def connections_for(self, kind: str, kind_id: int) -> dict[str, BaseModel]:
+        GrantKinds.validate(kind)
+        query = sql.SQL(
+            """
+            select
+                c.name, c.kind, c.data
+            from
+                {connections} c
+                inner join {grants} g on g.connection_id = c.id
+            where
+                g.kind = %(kind)s
+                and g.kind_id = %(kind_id)s
+            order by
+                c.id
+            """
+        ).format(
+            connections=self._table(),
+            grants=self._grants(),
+        )
+
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(query, {"kind": kind, "kind_id": kind_id})
+            rows = cur.fetchall()
+
+        return {row["name"]: self._to_profile(row["kind"], row["data"]) for row in rows}
 
     def _to_profile(self, kind: str, data: dict[str, Any]) -> BaseModel:
         model = ConnectionKinds.model(kind)

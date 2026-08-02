@@ -10,9 +10,11 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, Field, SecretStr
 
+from boba.chainlit2.chat.data.models import Thread, User
 from boba.chainlit2.connections import (
     ConnectionKinds,
     ConnectionsConfig,
+    GrantKinds,
     SecretCipher,
     SecretCryptoError,
 )
@@ -234,3 +236,41 @@ class TestConnectionsConfig:
         cfg = ConnectionsConfig()
         assert cfg.enable is False
         assert (cfg.db_schema, cfg.table) == ("chainlit", "connections")
+
+
+class TestGrantKinds:
+    def test_known_kinds_are_table_names(self) -> None:
+        assert GrantKinds.known() == ("roles", "users")
+
+    def test_validate_passes_known(self) -> None:
+        assert GrantKinds.validate("roles") == "roles"
+
+    def test_validate_rejects_unknown(self) -> None:
+        with pytest.raises(ValueError, match="неизвестный kind связи"):
+            GrantKinds.validate("groups")
+
+
+class TestUserIntId:
+    """users.id теперь integer от базы, uuid сохранён как user_uuid."""
+
+    def test_id_is_not_sent_on_insert(self) -> None:
+        columns = User.insert_columns().as_string(None)
+        assert "user_uuid" in columns
+        assert '"id"' not in columns
+
+    def test_all_columns_still_include_id(self) -> None:
+        assert '"id"' in User.all_columns().as_string(None)
+
+    def test_persisted_id_is_the_integer(self) -> None:
+        user = User(identifier="boba", id=7)
+        assert user.to_persisted().id == "7"
+
+    def test_user_uuid_is_generated(self) -> None:
+        assert User(identifier="boba").user_uuid is not None
+
+    def test_thread_owner_is_int(self) -> None:
+        thread = Thread(user_id=7)
+        assert thread.to_chainlit(None, [], [])["userId"] == "7"
+
+    def test_thread_without_owner(self) -> None:
+        assert Thread().to_chainlit(None, [], [])["userId"] is None

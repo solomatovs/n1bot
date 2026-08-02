@@ -9,6 +9,7 @@ from boba.chainlit2.connections.store import (
     ConnectionNotFoundError,
     ConnectionsConfig,
     ConnectionStore,
+    GrantKinds,
 )
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "ConnectionNotFoundError",
     "ConnectionStore",
     "ConnectionsConfig",
+    "GrantKinds",
     "SecretCipher",
     "SecretCryptoError",
 ]

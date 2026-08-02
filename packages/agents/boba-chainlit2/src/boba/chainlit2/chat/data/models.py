@@ -97,6 +97,20 @@ class Row:
         return sql.SQL(", ").join(sql.Placeholder(f.name) for f in fields(cls))
 
     @classmethod
+    def insert_columns(cls) -> sql.Composable:
+        return sql.SQL(", ").join(
+            sql.Identifier(f.name) for f in cls._insertable()
+        )
+
+    @classmethod
+    def insert_placeholders(cls) -> sql.Composable:
+        return sql.SQL(", ").join(sql.Placeholder(f.name) for f in cls._insertable())
+
+    @classmethod
+    def _insertable(cls) -> list[Field[Any]]:
+        return [f for f in fields(cls) if not f.metadata.get("db_generated")]
+
+    @classmethod
     def all_assignments(cls, *, exclude: tuple[str, ...] = ()) -> sql.Composable:
         return sql.SQL(", ").join(
             sql.SQL("{0} = EXCLUDED.{0}").format(sql.Identifier(f.name))
@@ -122,9 +136,10 @@ class User(Row):
     """Пользователь chainlit."""
 
     identifier: str
-    id: UUID = field(default_factory=uuid4)
+    user_uuid: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=Codec.now)
     meta: dict[str, Any] = field(default_factory=dict, metadata={"jsonb": True})
+    id: int = field(default=0, metadata={"db_generated": True})
 
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:
@@ -139,7 +154,7 @@ class User(Row):
 
     def to_persisted(self) -> PersistedUser:
         return PersistedUser(
-            id=Codec.uuid_str(self.id),
+            id=str(self.id),
             identifier=self.identifier,
             createdAt=Codec.iso(self.created_at),
             metadata=dict(self.meta),
@@ -150,11 +165,12 @@ class User(Row):
         return (
             sql.SQL(
                 """
-                CREATE TABLE IF NOT EXISTS {table} (
-                    id uuid PRIMARY KEY,
-                    identifier text NOT NULL UNIQUE,
-                    created_at timestamptz NOT NULL,
-                    meta jsonb NOT NULL DEFAULT '{{}}'::jsonb
+                create table if not exists {table} (
+                    id         integer generated always as identity primary key,
+                    user_uuid  uuid not null unique,
+                    identifier text not null unique,
+                    created_at timestamptz not null,
+                    meta       jsonb not null default '{{}}'::jsonb
                 )
                 """
             ).format(table=cls.get_table_name(schema)),
@@ -168,7 +184,7 @@ class Thread(Row):
     id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=Codec.now)
     name: str | None = None
-    user_id: UUID | None = None
+    user_id: int | None = None
     tags: list[str] | None = None
     meta: dict[str, Any] | None = field(default=None, metadata={"jsonb": True})
 
@@ -186,7 +202,7 @@ class Thread(Row):
             id=Codec.uuid_str(self.id),
             createdAt=Codec.iso(self.created_at),
             name=self.name,
-            userId=Codec.uuid_str_opt(self.user_id),
+            userId=str(self.user_id) if self.user_id is not None else None,
             userIdentifier=user_identifier,
             tags=self.tags,
             metadata=self.meta,
@@ -200,18 +216,18 @@ class Thread(Row):
         return (
             sql.SQL(
                 """
-                CREATE TABLE IF NOT EXISTS {table} (
-                    id uuid PRIMARY KEY,
-                    created_at timestamptz NOT NULL,
-                    name text,
-                    user_id uuid,
-                    tags text[],
-                    meta jsonb
+                create table if not exists {table} (
+                    id         uuid primary key,
+                    created_at timestamptz not null,
+                    name       text,
+                    user_id    integer,
+                    tags       text[],
+                    meta       jsonb
                 )
                 """
             ).format(table=table),
             sql.SQL(
-                "CREATE INDEX IF NOT EXISTS idx_threads_user_id ON {table} (user_id)"
+                "create index if not exists idx_threads_user_id on {table} (user_id)"
             ).format(table=table),
         )
 
