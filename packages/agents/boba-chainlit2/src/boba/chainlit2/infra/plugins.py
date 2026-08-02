@@ -34,7 +34,7 @@ from boba.chainlit2.agent.tools.sandbox import (
 )
 from boba.chainlit2.agent.tools.shell import BashLocalConfig, build_bash_local_tool
 from boba.chainlit2.agent.tools.web import WebGrepConfig, build_web_tools
-from boba.chainlit2.infra.roles import current_user_roles
+from boba.chainlit2.infra.session import current_user_roles, current_workspace
 from boba.settings import bind
 from boba.settings.types import StringList
 
@@ -74,7 +74,7 @@ def _build_sandbox_tools(cfg: BashSandboxConfig) -> list[BaseTool]:
             "bash не зарегистрирован",
         )
         return []
-    return [build_bash_tool(cfg)]
+    return [build_bash_tool(cfg, lambda: current_workspace(cfg.workspace_root))]
 
 
 _PLUGINS: dict[str, ToolPlugin] = {

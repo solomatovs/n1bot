@@ -44,7 +44,7 @@ from boba.chainlit2.infra.config import (
 )
 from boba.chainlit2.infra.di import Depends
 from boba.chainlit2.infra.plugins import PluginMeta, ToolRegistry, load_tools
-from boba.chainlit2.infra.roles import current_user_roles
+from boba.chainlit2.infra.session import current_user_roles
 from boba.db.postgres import AsyncPostgresPool
 
 _RAW_CONFIG: dict[str, DictConfig] = {}

@@ -249,8 +249,12 @@ class Element(Row):
     props: dict[str, Any] | None = field(default=None, metadata={"jsonb": True})
     mime: str | None = None
 
-    PATH_TEMPLATE: ClassVar[str] = "{user_id}/{thread_id}/{id}"
-    """Путь файла вычисляется из идентификаторов и в базе не хранится."""
+    PATH_TEMPLATE: ClassVar[str] = "{user_id}/{thread_id}/upload/{id}"
+    """Путь файла вычисляется из идентификаторов и в базе не хранится.
+
+    Лежит внутри рабочей папки чата, которую песочница монтирует на
+    запись, — загруженные файлы доступны инструментам этого же чата.
+    """
 
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:

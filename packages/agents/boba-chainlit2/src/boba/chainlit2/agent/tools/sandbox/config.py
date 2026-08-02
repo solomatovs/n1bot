@@ -20,8 +20,9 @@ class BashSandboxConfig(BaseModel):
     workspace_root: Path = Field(
         default=Path(),
         description=(
-            "Host-путь к корню проекта. RW-bind в песочнице + cwd для "
-            "запуска bwrap."
+            "База рабочих папок. На запись монтируется только "
+            "<workspace_root>/<user_id>/<thread_id> — чат изолирован "
+            "и от других пользователей, и от других чатов."
         ),
     )
     profiles: dict[str, SandboxProfile] = Field(
