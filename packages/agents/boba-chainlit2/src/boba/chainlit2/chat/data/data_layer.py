@@ -11,8 +11,6 @@
 Контракт совпадает с BaseDataLayer.
 """
 
-import mimetypes
-from pathlib import Path
 from typing import ClassVar
 from uuid import UUID
 
@@ -252,26 +250,7 @@ class PostgresDataLayer(BaseDataLayer):
 
         mime = element.mime or "application/octet-stream"
 
-        name = element.name or ""
-        if name and not Path(name).suffix:
-            name += mimetypes.guess_extension(mime) or ""
-
-        object_key = f"{user_id}/{element.id}"
-        if name:
-            object_key = f"{object_key}/{name}"
-        uploaded = await self._storage.upload_file(
-            object_key=object_key,
-            data=content,
-            mime=mime,
-            overwrite=True,
-        )
-
-        if not uploaded:
-            raise ValueError("Failed to upload file to storage")
-
         data = element.to_dict()
-        data["url"] = uploaded.get("url")
-        data["objectKey"] = uploaded.get("object_key")
         data["mime"] = mime
 
         model = Element.from_chainlit(data)
@@ -290,8 +269,19 @@ class PostgresDataLayer(BaseDataLayer):
             asg=Element.all_assignments(exclude=("id",)),
         )
         try:
-            async with self._pool.connection() as conn:
+            async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute(query, model.all_params())
+                uploaded = await self._storage.upload_file(
+                    object_key=Element.object_key(
+                        user_id, element.thread_id, element.id
+                    ),
+                    data=content,
+                    mime=mime,
+                    overwrite=True,
+                )
+                if not uploaded:
+                    msg = "Failed to upload file to storage"
+                    raise ValueError(msg)
         except Exception as e:
             raise InternalServiceError(
                 internal_detail=(
@@ -337,7 +327,7 @@ class PostgresDataLayer(BaseDataLayer):
             return None
 
         element = row.to_chainlit()
-        await self._sign_element_url(element)
+        await self._sign_element_url(element, await self._user_id_by_thread(thread_id))
         return element
 
     @queue_until_user_message()
@@ -345,18 +335,22 @@ class PostgresDataLayer(BaseDataLayer):
         self, element_id: str, thread_id: str | None = None
     ) -> None:
         query = sql.SQL(
-            "delete from {table} where id = %s returning object_key"
+            "delete from {table} where id = %s returning thread_id"
         ).format(table=Element.get_table_name(self._schema))
 
         try:
             async with (
                 self._pool.connection() as conn,
+                conn.transaction(),
                 conn.cursor(row_factory=tuple_row) as cur,
             ):
                 await cur.execute(query, (UUID(element_id),))
                 row = await cur.fetchone()
                 if row and row[0]:
-                    await self._storage.delete_file(object_key=row[0])
+                    user_id = await self._user_id_by_thread(str(row[0]))
+                    await self._storage.delete_file(
+                        object_key=Element.object_key(user_id, row[0], element_id),
+                    )
         except Exception as e:
             raise InternalServiceError(
                 internal_detail=(
@@ -523,7 +517,7 @@ class PostgresDataLayer(BaseDataLayer):
             steps=steps,
             elements=elements,
         )
-        await self._sign_element_urls(thread)
+        await self._sign_element_urls(thread, thread_row.user_id)
 
         return thread
 
@@ -710,15 +704,15 @@ class PostgresDataLayer(BaseDataLayer):
 
         return user_id
 
-    async def _sign_element_urls(self, thread: ThreadDict) -> None:
+    async def _sign_element_urls(self, thread: ThreadDict, user_id: object) -> None:
         for element in thread.get("elements") or []:
-            await self._sign_element_url(element)
+            await self._sign_element_url(element, user_id)
 
-    async def _sign_element_url(self, element: ElementDict) -> None:
-        """Подставляет ссылку на вложение по object_key."""
-        object_key = element.get("objectKey")
-        if not object_key:
-            return
+    async def _sign_element_url(self, element: ElementDict, user_id: object) -> None:
+        """Собирает ссылку на вложение: путь вычисляется, а не хранится."""
+        object_key = Element.object_key(
+            user_id, element.get("threadId"), element.get("id")
+        )
         try:
             element["url"] = await self._storage.get_read_url(object_key)
         except Exception as e:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from boba.tool.web.connection import WebConnection
 from boba.transport.http import BearerAuth, HttpProfile, HttpxBearerAuth
@@ -25,7 +25,7 @@ def test_resolve_auth_from_profile() -> None:
     conn = WebConnection(
         profiles={
             "api.example.com": HttpProfile(
-                auth=BearerAuth(method="bearer", token="tok"),
+                auth=BearerAuth(method="bearer", token=SecretStr("tok")),
             ),
         },
     )
@@ -67,7 +67,7 @@ def test_multiple_hosts_each_keeps_own_profile() -> None:
         profiles={
             "pub.example.com": HttpProfile(),
             "api.example.com": HttpProfile(
-                auth=BearerAuth(method="bearer", token="t"),
+                auth=BearerAuth(method="bearer", token=SecretStr("t")),
             ),
         },
     )

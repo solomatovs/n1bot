@@ -77,7 +77,7 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
     ]
     # source_id (fs:/abs/docs/...) проставит FsTransport.source_id
 
-    """  # noqa: E501
+    """
 
     def __init__(
         self,

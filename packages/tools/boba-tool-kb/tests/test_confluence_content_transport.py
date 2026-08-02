@@ -30,8 +30,6 @@ from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
 from boba.tool.kb.confluence.request_sources import ConfluenceRequest
 from boba.transport.http import HttpRequest
 
-
-
 _PAGE_JSON = {
     "id": "42",
     "title": "Demo Page",

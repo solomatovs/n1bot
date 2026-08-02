@@ -5,7 +5,9 @@
         host="db.local", user="reader", dbname="app",
         pool={"timeout": 10.0}, options={"statement_timeout": "5s"},
     )
-    pool = PostgresPool.get(cfg, override_options={"default_transaction_read_only": "on"})
+    pool = PostgresPool.get(
+        cfg, override_options={"default_transaction_read_only": "on"}
+    )
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT 1")
         cur.fetchone()
@@ -25,9 +27,9 @@ from boba.db.postgres.pool import PostgresPool
 __all__ = [
     "AsyncPostgresPool",
     "PostgresConfig",
-    "PostgresOptionsConfig",
-    "PostgresPoolConfig",
     "PostgresError",
+    "PostgresOptionsConfig",
     "PostgresPool",
     "PostgresPoolClosedError",
+    "PostgresPoolConfig",
 ]

@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Any
 
 from boba.liteparse import LiteParseEngine, LiteParseError, ParseResult
-
 from boba.tool.doc.config import DocPluginConfig
 from boba.workspace.contract import (
     ProjectWorkspaceShell,

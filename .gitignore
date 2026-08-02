@@ -5,6 +5,8 @@ __pycache__
 *.pyo
 *.pyd
 *.egg-info/
+.claude
+
 packages/**/build/
 packages/**/dist/
 .ruff_cache

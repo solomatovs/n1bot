@@ -49,7 +49,9 @@ def _cfg(
     dbname: str = "test",
     **extra: Any,
 ) -> PostgresConfig:
-    return PostgresConfig.model_validate({"host": host, "user": "u", "dbname": dbname, **extra})
+    return PostgresConfig.model_validate(
+        {"host": host, "user": "u", "dbname": dbname, **extra}
+    )
 
 
 def test_pool_passes_cfg_to_connection_pool():

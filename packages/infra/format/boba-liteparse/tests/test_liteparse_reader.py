@@ -15,7 +15,6 @@ from boba.indexing import (
     SourceId,
     TransportKeys,
 )
-
 from boba.liteparse import LiteParseReader
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two".
