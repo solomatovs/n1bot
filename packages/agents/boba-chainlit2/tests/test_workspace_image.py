@@ -8,18 +8,33 @@ import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
-from boba.chainlit2.agent.tools.sandbox.profile import SandboxProfile
 from boba.chainlit2.agent.tools.sandbox.tools import build_bash_tool
 from boba.chainlit2.chat.data.storage import ImageStorageClient, LocalStorageClient
 from boba.chainlit2.infra.config import LocalStorageConfig
+from boba.chainlit2.sandbox import SandboxConfig
+from boba.chainlit2.sandbox.profile import SandboxProfile
 from boba.chainlit2.workspace import FUSE_DEVICE, build_chain_argv, render_image_path
 from boba.chainlit2.workspace.options import LauncherOptions, ResourceLimits
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
+
+def _storage_cfg(**kw: Any) -> LocalStorageConfig:
+    """Тайминги лаунчера обязательны: дефолтов у конфига нет."""
+    fields: dict[str, Any] = {
+        "launcher": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.05,
+            "shutdown_wait_sec": 5.0,
+            "copy_chunk_bytes": 1 << 20,
+        },
+    }
+    fields.update(kw)
+    return LocalStorageConfig.model_validate(fields)
 
 
 needs_fuse = pytest.mark.skipif(
@@ -62,7 +77,12 @@ _PROFILE_BASE: dict[str, object] = {
     "rw_binds": (),
     "rw_images": (),
     "image_template": "",
-    "launcher": {},
+    "launcher": {
+        "mount_wait_sec": 10.0,
+        "mount_poll_sec": 0.05,
+        "shutdown_wait_sec": 5.0,
+        "copy_chunk_bytes": 1 << 20,
+    },
     "tmpfs": (),
     "network": False,
     "env_set": {},
@@ -82,17 +102,16 @@ def _profile(**kw: object) -> SandboxProfile:
 
 
 def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
+    profile_dto = _profile(
+        ro_binds=HOST_RO_BINDS,
+        rw_images=(f"{_image_tpl(tmp_path)}:/workspace",),
+        image_template=str(template),
+        cwd="/workspace",
+        **profile_kw,
+    )
     cfg = BashSandboxConfig(
-        profiles={
-            "default": _profile(
-                ro_binds=HOST_RO_BINDS,
-                rw_images=(f"{_image_tpl(tmp_path)}:/workspace",),
-                image_template=str(template),
-                cwd="/workspace",
-                **profile_kw,
-            )
-        },
-        default_profile="default",
+        sandbox=SandboxConfig(profiles={"default": profile_dto}),
+        profile="default",
     )
     return build_bash_tool(cfg, lambda: {"user_id": "7", "thread_id": thread_id})
 
@@ -100,7 +119,7 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
 def _invoke(tool, command: str, stdin: str = "") -> dict:
     msg = tool.invoke(
         {
-            "args": {"command": command, "stdin": stdin, "profile": ""},
+            "args": {"command": command, "stdin": stdin},
             "id": "call-bash",
             "name": "bash",
             "type": "tool_call",
@@ -110,7 +129,7 @@ def _invoke(tool, command: str, stdin: str = "") -> dict:
 
 
 def _storage(tmp_path: Path, template: Path) -> ImageStorageClient:
-    cfg = LocalStorageConfig(
+    cfg = _storage_cfg(
         kind="image",
         image_path=_image_tpl(tmp_path),
         image_template=str(template),
@@ -120,29 +139,39 @@ def _storage(tmp_path: Path, template: Path) -> ImageStorageClient:
     assert isinstance(client, ImageStorageClient)
     return client
 
+def _launcher_options() -> LauncherOptions:
+    """Тайминги задаются явно: дефолтов у LauncherOptions нет."""
+    return LauncherOptions(
+        mount_wait_sec=10.0,
+        mount_poll_sec=0.05,
+        shutdown_wait_sec=5.0,
+        copy_chunk_bytes=1 << 20,
+    )
+
+
 
 class TestConfig:
     def test_image_kind_requires_paths(self) -> None:
         with pytest.raises(ValueError, match="image_path and image_template"):
-            LocalStorageConfig(kind="image")
+            _storage_cfg(kind="image")
 
     def test_local_kind_requires_files_dir(self) -> None:
         with pytest.raises(ValueError, match="requires files_dir"):
-            LocalStorageConfig(kind="local")
+            _storage_cfg(kind="local")
 
     def test_unknown_kind_rejected(self) -> None:
         with pytest.raises(ValueError, match="'local' or 'image'"):
-            LocalStorageConfig.model_validate({"kind": "s3", "files_dir": "/srv"})
+            _storage_cfg(kind="s3", files_dir="/srv")
 
     def test_factory_picks_image_client(self) -> None:
-        cfg = LocalStorageConfig(
+        cfg = _storage_cfg(
             kind="image", image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
         assert isinstance(LocalStorageClient.from_config(cfg), ImageStorageClient)
 
     def test_factory_picks_local_client(self) -> None:
-        cfg = LocalStorageConfig(files_dir="/srv/files")
+        cfg = _storage_cfg(files_dir="/srv/files")
         assert type(LocalStorageClient.from_config(cfg)) is LocalStorageClient
 
     def test_profile_images_require_template(self) -> None:
@@ -153,7 +182,7 @@ class TestConfig:
 class TestObjectKey:
     @staticmethod
     def _client() -> ImageStorageClient:
-        cfg = LocalStorageConfig(
+        cfg = _storage_cfg(
             kind="image", image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
@@ -185,7 +214,7 @@ class TestRelativePaths:
     """bwrap на read-only корне не создаст точку монтирования по относительному пути."""
 
     def test_config_makes_image_paths_absolute(self) -> None:
-        cfg = LocalStorageConfig(
+        cfg = _storage_cfg(
             kind="image",
             image_path="./data/ws/{user_id}/{thread_id}.ext4",
             image_template="./data/tpl.ext4",
@@ -199,7 +228,7 @@ class TestRelativePaths:
             template="./t.ext4",
             op=["write", "upload/x"],
             python_bin="/usr/bin/python3",
-            options=LauncherOptions(),
+            options=_launcher_options(),
             limits=ResourceLimits(),
             rw_paths=["./shared"],
         )
@@ -221,7 +250,7 @@ class TestChainArgv:
             template="/t.ext4",
             op=["write", "upload/x"],
             python_bin="/usr/bin/python3",
-            options=LauncherOptions(),
+            options=_launcher_options(),
             limits=ResourceLimits(),
             **kw,
         )
@@ -233,7 +262,7 @@ class TestChainArgv:
             template="/t.ext4",
             op=["write", "upload/x"],
             python_bin="/usr/bin/python3",
-            options=LauncherOptions(),
+            options=_launcher_options(),
             limits=limits,
         )
         memory = argv[argv.index("--max-memory-bytes") + 1]

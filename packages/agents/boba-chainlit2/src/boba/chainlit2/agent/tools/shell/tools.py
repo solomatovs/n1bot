@@ -12,9 +12,9 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.chainlit2.agent.tools.process.runner import RunResult, run_subprocess
 from boba.chainlit2.agent.tools.shell.config import BashLocalConfig
 from boba.chainlit2.agent.tools.shell.profile import resolve_local_env
+from boba.chainlit2.process.runner import RunResult, run_subprocess
 from boba.chainlit2.rendering.render import pack_result
 from boba.chainlit2.rendering.tool_result import JsonResult, ToolResult
 

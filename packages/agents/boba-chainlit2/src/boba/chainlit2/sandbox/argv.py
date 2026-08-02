@@ -7,7 +7,7 @@ import shutil
 from collections.abc import Mapping
 from typing import TypeVar
 
-from boba.chainlit2.agent.tools.sandbox.profile import BindSpec, SandboxProfile
+from boba.chainlit2.sandbox.profile import BindSpec, SandboxProfile
 
 __all__ = ["WORKSPACE_MOUNT", "build_bwrap_argv"]
 
@@ -43,9 +43,7 @@ def build_bwrap_argv(
         argv += ["--symlink", target, link_path]
 
     for spec in profile.tmpfs:
-        if spec.size_bytes:
-            argv += ["--size", str(spec.size_bytes)]
-        argv += ["--tmpfs", spec.path]
+        argv += ["--size", str(spec.size_bytes), "--tmpfs", spec.path]
 
     argv += ["--clearenv"]
     for name, value in env.items():

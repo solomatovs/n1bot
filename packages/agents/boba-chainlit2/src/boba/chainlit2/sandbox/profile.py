@@ -85,18 +85,19 @@ class BindSpec(BaseModel):
 
 
 class TmpfsSpec(BaseModel):
-    """Один tmpfs `dest[:size]`; size с суффиксом K/M/G, без суффикса — байты."""
+    """Один tmpfs `dest:size`; размер с суффиксом K/M/G либо в байтах."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     path: str = Field(description="Mountpoint внутри песочницы.")
-    size_bytes: int = Field(default=0, ge=0, description="0 — без лимита.")
+    size_bytes: int = Field(gt=0, description="Размер tmpfs в байтах; обязателен.")
 
     @classmethod
     def parse(cls, raw: str) -> Self:
         path, sep, size = raw.partition(":")
         if not sep:
-            return cls(path=path)
+            msg = f"tmpfs {raw!r}: size is required, use `dest:size` (256M, 1G)"
+            raise ValueError(msg)
         return cls(path=path, size_bytes=cls._parse_size(size))
 
     @field_validator("path", mode="after")
@@ -160,8 +161,8 @@ class SandboxProfile(BaseModel):
     )
     tmpfs: tuple[TmpfsSpec, ...] = Field(
         description=(
-            "Mountpoints под tmpfs (in-memory), формат `dest[:size]`, "
-            "например `/tmp:256M`."
+            "Mountpoints под tmpfs (in-memory), формат `dest:size`, "
+            "например `/tmp:256M`; размер обязателен."
         ),
     )
     network: bool = Field(

@@ -16,11 +16,12 @@ from boba.chainlit2.agent.tools import (
     build_bash_tool,
     visualize,
 )
-from boba.chainlit2.agent.tools.sandbox.argv import build_bwrap_argv
 from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
-from boba.chainlit2.agent.tools.sandbox.profile import BindSpec
 from boba.chainlit2.agent.tools.shell.config import BashLocalConfig
 from boba.chainlit2.rendering.tool_result import ChartResult, JsonResult
+from boba.chainlit2.sandbox import SandboxConfig
+from boba.chainlit2.sandbox.argv import build_bwrap_argv
+from boba.chainlit2.sandbox.profile import BindSpec
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +39,12 @@ _PROFILE_BASE: dict[str, object] = {
     "rw_binds": (),
     "rw_images": (),
     "image_template": "",
-    "launcher": {},
+    "launcher": {
+        "mount_wait_sec": 10.0,
+        "mount_poll_sec": 0.05,
+        "shutdown_wait_sec": 5.0,
+        "copy_chunk_bytes": 1 << 20,
+    },
     "tmpfs": (),
     "network": False,
     "env_set": {},
@@ -214,10 +220,10 @@ class TestBwrapArgv:
         argv = build_bwrap_argv(_profile(), "true", env={})
         assert argv[argv.index("--chdir") + 1] == "/"
 
-    def test_tmpfs_without_size(self) -> None:
-        argv = build_bwrap_argv(_profile(tmpfs=("/tmp",)), "true", env={})  # noqa: S108
-        assert "--size" not in argv
-        assert argv[argv.index("--tmpfs") + 1] == "/tmp"  # noqa: S108
+    def test_tmpfs_without_size_rejected(self) -> None:
+        """Размер обязателен: неявного «без лимита» больше нет."""
+        with pytest.raises(ValueError, match="size is required"):
+            _profile(tmpfs=("/tmp",))  # noqa: S108
 
     def test_tmpfs_size_precedes_mount(self) -> None:
         argv = build_bwrap_argv(_profile(tmpfs=("/tmp:64M",)), "true", env={})  # noqa: S108
@@ -268,24 +274,22 @@ class TestBashTool:
     def _make_tool(workspace_root: Path, profile: SandboxProfile | None = None):
         ws = str(workspace_root)
         base = profile or _profile()
-        cfg = BashSandboxConfig(
-            profiles={
-                "default": base.model_copy(
-                    update={
-                        "ro_binds": tuple(BindSpec.parse(p) for p in _HOST_RO_BINDS),
-                        "rw_binds": (BindSpec.parse(ws),),
-                        "cwd": ws,
-                    },
-                ),
+        profile_dto = base.model_copy(
+            update={
+                "ro_binds": tuple(BindSpec.parse(p) for p in _HOST_RO_BINDS),
+                "rw_binds": (BindSpec.parse(ws),),
+                "cwd": ws,
             },
-            default_profile="default",
+        )
+        cfg = BashSandboxConfig(
+            sandbox=SandboxConfig(profiles={"default": profile_dto}),
+            profile="default",
         )
         return build_bash_tool(cfg, dict)
 
     @staticmethod
     def _invoke(tool, **args) -> dict:
         args.setdefault("stdin", "")
-        args.setdefault("profile", "")
         msg: ToolMessage = tool.invoke(_tool_call("bash", args))
         assert isinstance(msg.artifact, JsonResult)
         return msg.artifact.payload
@@ -339,12 +343,11 @@ class TestBashTool:
         )
         assert payload["timed_out"]
 
-    def test_unknown_profile_returns_error_payload(self, tmp_path: Path) -> None:
-        payload = self._invoke(
-            self._make_tool(tmp_path), command="echo x", profile="no-such",
-        )
-        assert payload["error_kind"] == "unknown_profile"
-        assert payload["exit_code"] == -1
+    def test_llm_does_not_choose_profile(self, tmp_path: Path) -> None:
+        """Профиль задаёт конфиг: у инструмента нет такого аргумента."""
+        tool = self._make_tool(tmp_path)
+        schema = cast(type[BaseModel], tool.args_schema)
+        assert set(schema.model_fields) == {"command", "stdin"}
 
     def test_pid_namespace_isolation(self, tmp_path: Path) -> None:
         payload = self._invoke(
@@ -372,13 +375,12 @@ class TestBashTool:
 
     def test_placeholders_render_and_dirs_created(self, tmp_path: Path) -> None:
         template = f"{tmp_path}/{{user_id}}/{{thread_id}}"
+        profile_dto = _profile(
+            ro_binds=_HOST_RO_BINDS, rw_binds=(template,), cwd=template,
+        )
         cfg = BashSandboxConfig(
-            profiles={
-                "default": _profile(
-                    ro_binds=_HOST_RO_BINDS, rw_binds=(template,), cwd=template,
-                ),
-            },
-            default_profile="default",
+            sandbox=SandboxConfig(profiles={"default": profile_dto}),
+            profile="default",
         )
         tool = build_bash_tool(cfg, lambda: {"user_id": "7", "thread_id": "t1"})
         payload = self._invoke(tool, command="echo data > out.txt")

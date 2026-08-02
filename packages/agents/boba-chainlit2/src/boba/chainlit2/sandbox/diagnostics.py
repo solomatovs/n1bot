@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from boba.chainlit2.agent.tools.process.runner import RunResult
-from boba.chainlit2.agent.tools.sandbox.profile import SandboxProfile
+from boba.chainlit2.process.runner import RunResult
+from boba.chainlit2.sandbox.profile import SandboxProfile
 
 __all__ = ["SandboxDiagnostics"]
 
@@ -57,12 +57,7 @@ class SandboxDiagnostics:
     )
 
     @classmethod
-    def explain(
-        cls,
-        result: RunResult,
-        profile: SandboxProfile,
-        network_profiles: tuple[str, ...],
-    ) -> str:
+    def explain(cls, result: RunResult, profile: SandboxProfile) -> str:
         """Пустая строка — сбоя, объяснимого лимитами песочницы, не найдено."""
         checks = (
             cls._timeout,
@@ -77,7 +72,7 @@ class SandboxDiagnostics:
             message = check(result, profile)
             if message:
                 return message
-        return cls._network(result, profile, network_profiles)
+        return cls._network(result, profile)
 
     @classmethod
     def _timeout(cls, result: RunResult, profile: SandboxProfile) -> str:
@@ -155,28 +150,16 @@ class SandboxDiagnostics:
         )
 
     @classmethod
-    def _network(
-        cls,
-        result: RunResult,
-        profile: SandboxProfile,
-        network_profiles: tuple[str, ...],
-    ) -> str:
+    def _network(cls, result: RunResult, profile: SandboxProfile) -> str:
         if profile.network:
             return ""
         if not cls._matched(result.stderr, cls.NETWORK_MARKERS):
             return ""
-        base = (
+        return (
             "Network is disabled in this sandbox profile (network=false): DNS "
             "and outbound connections are unavailable; the command itself is "
-            "not at fault."
+            "not at fault. Pick a profile whose description allows network."
         )
-        if not network_profiles:
-            return (
-                f"{base} No profile with network access is configured — work "
-                f"with local files in {profile.cwd}."
-            )
-        names = ", ".join(network_profiles)
-        return f"{base} Profiles with network access: {names}."
 
     @staticmethod
     def _matched(text: str, markers: tuple[str, ...]) -> bool:

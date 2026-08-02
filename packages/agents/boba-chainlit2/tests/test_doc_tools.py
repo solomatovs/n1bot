@@ -14,6 +14,20 @@ from boba.chainlit2.agent.tools.doc.tools import DocSearch
 from boba.chainlit2.infra.config import LocalStorageConfig
 
 
+def _storage_cfg(**kw: Any) -> LocalStorageConfig:
+    """Тайминги лаунчера обязательны: дефолтов у конфига нет."""
+    fields: dict[str, Any] = {
+        "launcher": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.05,
+            "shutdown_wait_sec": 5.0,
+            "copy_chunk_bytes": 1 << 20,
+        },
+    }
+    fields.update(kw)
+    return LocalStorageConfig.model_validate(fields)
+
+
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
@@ -25,7 +39,7 @@ def session_user(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _config(**kw: Any) -> DocToolsConfig:
-    storage = LocalStorageConfig(
+    storage = _storage_cfg(
         kind="image",
         image_path="/ws/{user_id}.ext4",
         image_template="/t.ext4",

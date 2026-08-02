@@ -43,6 +43,35 @@ def template(tmp_path: Path) -> Path:
     path.write_bytes(b"TEMPLATE")
     return path
 
+_REQUIRED_FLAGS = (
+    "--mount-wait-sec", "10.0",
+    "--mount-poll-sec", "0.05",
+    "--shutdown-wait-sec", "5.0",
+    "--copy-chunk-bytes", "1048576",
+    "--max-memory-bytes", "0",
+    "--max-cpu-sec", "0",
+    "--max-file-size-bytes", "0",
+    "--max-open-files", "0",
+)
+
+
+def _launcher_options(**kw: float) -> LauncherOptions:
+    """Тайминги задаются явно: дефолтов у LauncherOptions нет."""
+    values: dict[str, float] = {
+        "mount_wait_sec": 10.0,
+        "mount_poll_sec": 0.05,
+        "shutdown_wait_sec": 5.0,
+        "copy_chunk_bytes": 1 << 20,
+    }
+    values.update(kw)
+    return LauncherOptions(
+        mount_wait_sec=values["mount_wait_sec"],
+        mount_poll_sec=values["mount_poll_sec"],
+        shutdown_wait_sec=values["shutdown_wait_sec"],
+        copy_chunk_bytes=int(values["copy_chunk_bytes"]),
+    )
+
+
 
 class TestSparseCopier:
     @staticmethod
@@ -229,7 +258,7 @@ class TestFuseMounter:
         monkeypatch.setattr(
             "boba.chainlit2.workspace.launcher.shutil.which", lambda _: None
         )
-        mounter = FuseMounter(LauncherOptions())
+        mounter = FuseMounter(_launcher_options())
         with pytest.raises(MountError, match="fuse2fs"):
             mounter.mount(str(tmp_path / "img"), str(tmp_path / "mnt"))
 
@@ -239,14 +268,14 @@ class TestFuseMounter:
             shell=False,
         )
         daemon.wait()
-        mounter = FuseMounter(LauncherOptions(mount_wait_sec=1.0))
+        mounter = FuseMounter(_launcher_options(mount_wait_sec=1.0))
         with pytest.raises(MountError, match="code 7"):
             mounter._wait_mounted(str(tmp_path), daemon)
 
     def test_wait_timeout_raises(self, tmp_path: Path) -> None:
         daemon = self._sleeper()
         mounter = FuseMounter(
-            LauncherOptions(mount_wait_sec=0.2, mount_poll_sec=0.01)
+            _launcher_options(mount_wait_sec=0.2, mount_poll_sec=0.01)
         )
         try:
             with pytest.raises(MountError, match="was not mounted"):
@@ -257,7 +286,7 @@ class TestFuseMounter:
 
     def test_shutdown_terminates_daemon(self) -> None:
         daemon = self._sleeper()
-        mounter = FuseMounter(LauncherOptions())
+        mounter = FuseMounter(_launcher_options())
         mounter._daemons.append(daemon)
         mounter.shutdown()
         assert daemon.returncode == -signal.SIGTERM
@@ -274,14 +303,14 @@ class TestFuseMounter:
         )
         assert daemon.stdout is not None
         daemon.stdout.readline()
-        mounter = FuseMounter(LauncherOptions(shutdown_wait_sec=0.2))
+        mounter = FuseMounter(_launcher_options(shutdown_wait_sec=0.2))
         mounter._daemons.append(daemon)
         mounter.shutdown()
         assert daemon.returncode == -signal.SIGKILL
 
     def test_shutdown_is_idempotent(self) -> None:
         daemon = self._sleeper()
-        mounter = FuseMounter(LauncherOptions())
+        mounter = FuseMounter(_launcher_options())
         mounter._daemons.append(daemon)
         mounter.shutdown()
         mounter.shutdown()
@@ -321,6 +350,7 @@ class TestLauncherMain:
                 "--image",
                 str(tmp_path / "img"),
                 str(tmp_path / "mnt"),
+                *_REQUIRED_FLAGS,
                 *op,
             ]
         )
@@ -373,12 +403,18 @@ class TestLauncherMain:
                 "1.5",
                 "--copy-chunk-bytes",
                 "4096",
+                "--mount-poll-sec",
+                "0.05",
+                "--shutdown-wait-sec",
+                "5.0",
                 "--max-memory-bytes",
                 "1048576",
                 "--max-cpu-sec",
                 "7",
                 "--max-file-size-bytes",
                 "2048",
+                "--max-open-files",
+                "64",
                 "read",
                 "x",
             ]
@@ -391,15 +427,12 @@ class TestLauncherMain:
         assert args.mode == "read"
         assert args.args == ["x"]
 
-    def test_cli_defaults_match_options(self) -> None:
-        args = Launcher._parse_args(
-            ["--template", "/t", "--image", "/i", "/m", "read", "x"]
-        )
-        defaults = LauncherOptions()
-        assert args.mount_wait_sec == defaults.mount_wait_sec
-        assert args.mount_poll_sec == defaults.mount_poll_sec
-        assert args.shutdown_wait_sec == defaults.shutdown_wait_sec
-        assert args.copy_chunk_bytes == defaults.copy_chunk_bytes
+    def test_cli_requires_all_options(self) -> None:
+        """Скрытых значений нет: без флагов лаунчер не запускается."""
+        with pytest.raises(SystemExit):
+            Launcher._parse_args(
+                ["--template", "/t", "--image", "/i", "/m", "read", "x"]
+            )
 
 
 class TestChainOptions:
@@ -429,12 +462,26 @@ class TestChainOptions:
 
     def test_run_command_shlex_roundtrip(self) -> None:
         inner = ["/bin/echo", "a b", "it's", "--flag=v"]
-        argv = self._argv(["run", shlex.join(inner)], LauncherOptions())
+        argv = self._argv(["run", shlex.join(inner)], _launcher_options())
         assert shlex.split(argv[-1]) == inner
 
-    def test_config_defaults_match_options(self) -> None:
-        """pydantic-конфиг и dataclass лаунчера не должны разъезжаться."""
-        assert LauncherConfig().to_options() == LauncherOptions()
+    def test_config_requires_all_timings(self) -> None:
+        with pytest.raises(ValueError, match="mount_wait_sec"):
+            LauncherConfig.model_validate({})
+
+    def test_config_maps_to_options(self) -> None:
+        cfg = LauncherConfig(
+            mount_wait_sec=1.0,
+            mount_poll_sec=0.1,
+            shutdown_wait_sec=2.0,
+            copy_chunk_bytes=4096,
+        )
+        assert cfg.to_options() == _launcher_options(
+            mount_wait_sec=1.0,
+            mount_poll_sec=0.1,
+            shutdown_wait_sec=2.0,
+            copy_chunk_bytes=4096,
+        )
 
     def test_limits_rendered_as_flags(self) -> None:
         limits = ResourceLimits(
@@ -447,7 +494,7 @@ class TestChainOptions:
             template="/t.ext4",
             op=["read", "x"],
             python_bin="/usr/bin/python3",
-            options=LauncherOptions(),
+            options=_launcher_options(),
             limits=limits,
         )
         assert argv[argv.index("--max-memory-bytes") + 1] == "1048576"

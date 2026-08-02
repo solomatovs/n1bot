@@ -401,39 +401,19 @@ class Launcher:
 
     @classmethod
     def _parse_args(cls, argv: list[str]) -> argparse.Namespace:
-        defaults = LauncherOptions()
         parser = argparse.ArgumentParser(prog="workspace-launcher")
         parser.add_argument("--template", required=True)
         parser.add_argument(
             "--image", nargs=2, action="append", metavar=("IMG", "MNT"), required=True
         )
-        parser.add_argument(
-            "--mount-wait-sec", type=float, default=defaults.mount_wait_sec
-        )
-        parser.add_argument(
-            "--mount-poll-sec", type=float, default=defaults.mount_poll_sec
-        )
-        parser.add_argument(
-            "--shutdown-wait-sec", type=float, default=defaults.shutdown_wait_sec
-        )
-        parser.add_argument(
-            "--copy-chunk-bytes", type=int, default=defaults.copy_chunk_bytes
-        )
-        limit_defaults = ResourceLimits()
-        parser.add_argument(
-            "--max-memory-bytes", type=int, default=limit_defaults.max_memory_bytes
-        )
-        parser.add_argument(
-            "--max-cpu-sec", type=int, default=limit_defaults.max_cpu_sec
-        )
-        parser.add_argument(
-            "--max-file-size-bytes",
-            type=int,
-            default=limit_defaults.max_file_size_bytes,
-        )
-        parser.add_argument(
-            "--max-open-files", type=int, default=limit_defaults.max_open_files
-        )
+        parser.add_argument("--mount-wait-sec", type=float, required=True)
+        parser.add_argument("--mount-poll-sec", type=float, required=True)
+        parser.add_argument("--shutdown-wait-sec", type=float, required=True)
+        parser.add_argument("--copy-chunk-bytes", type=int, required=True)
+        parser.add_argument("--max-memory-bytes", type=int, required=True)
+        parser.add_argument("--max-cpu-sec", type=int, required=True)
+        parser.add_argument("--max-file-size-bytes", type=int, required=True)
+        parser.add_argument("--max-open-files", type=int, required=True)
         parser.add_argument("mode", choices=cls.MODES)
         parser.add_argument("args", nargs=argparse.REMAINDER)
         return parser.parse_args(argv)

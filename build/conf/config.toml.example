@@ -63,26 +63,21 @@
     image_path     = "${BOBA_DIR}/data/workspace/{user_id}.ext4"
     image_template = "${BOBA_DIR}/third/sandbox-workspace.ext4"
     op_timeout_sec = 60
+    launcher       = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
     public_prefix  = "${chainlit.url_prefix}/workspace"
 
 
 ## bash-песочница (bubblewrap); LLM выбирает профиль по имени.
 ## Все поля профиля обязательны; лимиты строго больше нуля.
-[tool.sandbox]
-    enable          = true
-    roles           = ["ADM"]
-    default_profile = "default"
-
-    ## workspace пользователя — ext4-образ, общий для всех его тредов:
-    ## жёсткий потолок диска = размер образа
-    ## (make: SANDBOX_WS_SIZE), плюс процессные лимиты на каждый вызов
-    [tool.sandbox.profiles.default]
+## профили песочницы: окружение целиком (rootfs, монтирования, сеть, лимиты)
+[sandbox]
+    [sandbox.profiles.default]
         rootfs              = "${BOBA_DIR}/third/sandbox-rootfs"
         ro_binds            = []
         rw_binds            = []
         rw_images           = ["${BOBA_DIR}/data/workspace/{user_id}.ext4:/workspace"]
         image_template      = "${BOBA_DIR}/third/sandbox-workspace.ext4"
-        launcher            = {}
+        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
         tmpfs               = ["/tmp:256M"]
         network             = false
         env_set             = { PATH = "/usr/local/bin:/usr/bin:/bin", HOME = "/tmp", LANG = "C.UTF-8" }
@@ -102,7 +97,7 @@
     #     rw_binds            = []
     #     rw_images           = ["${BOBA_DIR}/data/workspace/{user_id}.ext4:/workspace"]
     #     image_template      = "${BOBA_DIR}/third/sandbox-workspace.ext4"
-    #     launcher            = {}
+    #     launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
     #     tmpfs               = ["/tmp:256M"]
     #     network             = true
     #     env_set             = { PATH = "/usr/local/bin:/usr/bin:/bin", HOME = "/tmp", LANG = "C.UTF-8" }
@@ -116,6 +111,18 @@
     #     cwd                 = "/workspace"
 
     ## доступ к tool по ролям: имя = список ролей (пусто = роли секции)
+
+
+[tool.sandbox]
+    enable          = true
+    roles           = ["ADM"]
+    ## профили берутся из секции [sandbox]; профиль выбирает админ, не LLM
+    sandbox         = "${sandbox}"
+    profile         = "default"
+
+    ## workspace пользователя — ext4-образ, общий для всех его тредов:
+    ## жёсткий потолок диска = размер образа
+    ## (make: SANDBOX_WS_SIZE), плюс процессные лимиты на каждый вызов
     [tool.sandbox.tools]
         bash = []
 

@@ -346,7 +346,6 @@ class LocalStorageConfig(BaseModel):
         description="kind=image: таймаут одной операции с образом, сек.",
     )
     launcher: LauncherConfig = Field(
-        default_factory=LauncherConfig,
         description="kind=image: тайминги и размеры операций лаунчера образов.",
     )
 
