@@ -21,14 +21,6 @@ from boba.chainlit2.agent.tools.confluence.ingest_base import ConfluenceIngestCo
 from boba.chainlit2.agent.tools.confluence.ingest_tools import (
     build_confluence_ingest_tools,
 )
-from boba.chainlit2.agent.tools.debug import (
-    debug_chart,
-    debug_error,
-    debug_json,
-    debug_pg_copy,
-    debug_table,
-    debug_text,
-)
 from boba.chainlit2.agent.tools.kb import (
     PostgresKnowledgeBaseConfig,
     build_kb_tools,
@@ -118,17 +110,6 @@ _PLUGINS: dict[str, ToolPlugin] = {
         section="web",
         config_model=WebGrepConfig,
         build=build_web_tools,
-    ),
-    "debug": ToolPlugin(
-        section="debug",
-        build=lambda _cfg: [
-            debug_text,
-            debug_json,
-            debug_table,
-            debug_pg_copy,
-            debug_error,
-            debug_chart,
-        ],
     ),
 }
 
