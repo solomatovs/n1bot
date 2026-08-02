@@ -147,7 +147,7 @@ class PostgresDataLayer(BaseDataLayer):
         model = User.from_chainlit(user)
         query = sql.SQL(
             """
-            insert into {users} ({cols})
+            insert into {users} ({insert_cols})
             values ({ph})
             on conflict (identifier)
             do update set
@@ -156,8 +156,9 @@ class PostgresDataLayer(BaseDataLayer):
             """
         ).format(
             users=User.get_table_name(self._schema),
+            insert_cols=User.insert_columns(),
+            ph=User.insert_placeholders(),
             cols=User.all_columns(),
-            ph=User.all_placeholders(),
         )
         try:
             async with (
@@ -332,7 +333,12 @@ class PostgresDataLayer(BaseDataLayer):
                 user_detail="Not able to get element",
             ) from e
 
-        return row.to_chainlit() if row else None
+        if row is None:
+            return None
+
+        element = row.to_chainlit()
+        await self._sign_element_url(element)
+        return element
 
     @queue_until_user_message()
     async def delete_element(
@@ -538,7 +544,7 @@ class PostgresDataLayer(BaseDataLayer):
             "id": UUID(thread_id),
             "created_at": Codec.now(),
             "name": name_value,
-            "user_id": Codec.uuid_opt(user_id),
+            "user_id": int(user_id) if user_id else None,
             "tags": tags,
             "meta_set": Jsonb(meta_set),
             "meta_del": meta_del,
@@ -634,7 +640,7 @@ class PostgresDataLayer(BaseDataLayer):
             "select identifier from {users} where id = %(user_id)s"
         ).format(users=User.get_table_name(self._schema))
 
-        user_id = UUID(filters.userId)
+        user_id = int(filters.userId)
         try:
             async with self._pool.connection() as conn:
                 async with conn.cursor(row_factory=tuple_row) as cur:
@@ -706,5 +712,20 @@ class PostgresDataLayer(BaseDataLayer):
 
     async def _sign_element_urls(self, thread: ThreadDict) -> None:
         for element in thread.get("elements") or []:
-            if object_key := element.get("objectKey"):
-                element["url"] = await self._storage.get_read_url(object_key)
+            await self._sign_element_url(element)
+
+    async def _sign_element_url(self, element: ElementDict) -> None:
+        """Подставляет ссылку на вложение по object_key."""
+        object_key = element.get("objectKey")
+        if not object_key:
+            return
+        try:
+            element["url"] = await self._storage.get_read_url(object_key)
+        except Exception as e:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"{type(self).__qualname__}._sign_element_url failed for "
+                    f"object_key={object_key!r} with error: {e}"
+                ),
+                user_detail="Not able to get attachment link",
+            ) from e
