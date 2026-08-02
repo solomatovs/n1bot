@@ -42,7 +42,8 @@ from boba.chainlit2.infra.config import (
     OpenAiConfig,
 )
 from boba.chainlit2.infra.di import Depends
-from boba.chainlit2.infra.plugins import PluginMeta, load_tools
+from boba.chainlit2.infra.plugins import PluginMeta, ToolRegistry, load_tools
+from boba.chainlit2.infra.roles import current_user_roles
 from boba.db.postgres import AsyncPostgresPool
 
 _RAW_CONFIG: dict[str, DictConfig] = {}
@@ -94,8 +95,14 @@ def get_agent_profile(
 
 def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
-) -> list[BaseTool]:
+) -> ToolRegistry:
     return load_tools(raw)
+
+
+def session_tools(
+    registry: Annotated[ToolRegistry, Depends(tool_registry)],
+) -> list[BaseTool]:
+    return registry.for_roles(current_user_roles())
 
 
 def kb_schema(
@@ -256,14 +263,17 @@ async def chainlit_data_layer(
     finally:
         await pool.close()
 
-@wrap_model_call
-async def history_view(request: ModelRequest, handler):
-    full = request.state["messages"]
-    view = build_llm_view(full)
-    return await handler(request.override(messages=view))
+def build_history_view(allowed_tools: frozenset[str]):
+    @wrap_model_call
+    async def history_view(request: ModelRequest, handler):
+        full = request.state["messages"]
+        view = build_llm_view(full, allowed_tools)
+        return await handler(request.override(messages=view))
+
+    return history_view
 
 
-def build_llm_view(msgs: list) -> list:
+def build_llm_view(msgs: list, allowed_tools: frozenset[str] | None = None) -> list:
     start = _index_of_last_user_turn(msgs)
     head, current = msgs[:start], msgs[start:]
 
@@ -273,7 +283,25 @@ def build_llm_view(msgs: list) -> list:
         if not isinstance(m, ToolMessage)
         and not (isinstance(m, AIMessage) and m.tool_calls)
     ][-30:]
-    return pruned_head + current
+    return pruned_head + _drop_foreign_tools(current, allowed_tools)
+
+
+def _drop_foreign_tools(msgs: list, allowed_tools: frozenset[str] | None) -> list:
+    if allowed_tools is None:
+        return msgs
+
+    dropped_ids: set[str] = set()
+    kept: list = []
+    for m in msgs:
+        if isinstance(m, AIMessage) and m.tool_calls:
+            foreign = [c for c in m.tool_calls if c["name"] not in allowed_tools]
+            if foreign:
+                dropped_ids.update(c["id"] for c in m.tool_calls if c["id"])
+                continue
+        if isinstance(m, ToolMessage) and m.tool_call_id in dropped_ids:
+            continue
+        kept.append(m)
+    return kept
 
 
 def _index_of_last_user_turn(msgs: list) -> int:
@@ -288,7 +316,7 @@ def langchain_agent(
     c: Annotated[AppConfig, Depends(get_app_config)],
     client: Annotated[AsyncClient, Depends(httpx_debug_client)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
-    tools: Annotated[list[BaseTool], Depends(tool_registry)],
+    tools: Annotated[list[BaseTool], Depends(session_tools, scope="session")],
 ) -> CompiledStateGraph:
     chat = ReasoningChatOpenAI(
         http_async_client=client,
@@ -298,14 +326,14 @@ def langchain_agent(
         temperature=c.agent.temperature,
     )
 
-    system_prompt = c.agent.default_system_prompt
+    system_prompt = 
 
     agent = create_agent(
         model=chat,
         tools=tools,
         system_prompt=system_prompt,
         checkpointer=saver,
-        middleware=[history_view],
+        middleware=[build_history_view(frozenset(t.name for t in tools))],
     )
 
     return agent
