@@ -34,7 +34,11 @@ from boba.chainlit2.agent.tools.sandbox import (
 )
 from boba.chainlit2.agent.tools.shell import BashLocalConfig, build_bash_local_tool
 from boba.chainlit2.agent.tools.web import WebGrepConfig, build_web_tools
-from boba.chainlit2.infra.session import current_user_roles, current_workspace
+from boba.chainlit2.infra.session import (
+    current_thread_id,
+    current_user_id,
+    current_user_roles,
+)
 from boba.settings import bind
 from boba.settings.types import StringList
 
@@ -74,7 +78,13 @@ def _build_sandbox_tools(cfg: BashSandboxConfig) -> list[BaseTool]:
             "bash не зарегистрирован",
         )
         return []
-    return [build_bash_tool(cfg, lambda: current_workspace(cfg.workspace_root))]
+    return [build_bash_tool(cfg, _sandbox_path_vars)]
+
+
+def _sandbox_path_vars() -> dict[str, str]:
+    """Значения {user_id}/{thread_id} для путей профиля на момент вызова."""
+    values = {"user_id": current_user_id(), "thread_id": current_thread_id()}
+    return {name: str(value) for name, value in values.items() if value}
 
 
 _PLUGINS: dict[str, ToolPlugin] = {

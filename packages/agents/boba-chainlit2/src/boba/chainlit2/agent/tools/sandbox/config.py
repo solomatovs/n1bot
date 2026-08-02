@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,14 +16,6 @@ class BashSandboxConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    workspace_root: Path = Field(
-        default=Path(),
-        description=(
-            "База рабочих папок. На запись монтируется только "
-            "<workspace_root>/<user_id>/<thread_id> — чат изолирован "
-            "и от других пользователей, и от других чатов."
-        ),
-    )
     profiles: dict[str, SandboxProfile] = Field(
         default_factory=dict,
         description="Реестр sandbox-профилей по имени.",
@@ -45,9 +36,4 @@ class BashSandboxConfig(BaseModel):
                 f"отсутствует в profiles; доступные: {sorted(self.profiles)}"
             )
             raise ValueError(msg)
-        resolved = self.workspace_root.expanduser().resolve(strict=False)
-        if not resolved.is_dir():
-            msg = f"sandbox.workspace_root не директория: {resolved}"
-            raise ValueError(msg)
-        object.__setattr__(self, "workspace_root", resolved)
         return self

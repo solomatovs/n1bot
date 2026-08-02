@@ -1,19 +1,15 @@
-"""Песочница получает на запись только папку текущего чата."""
+"""Песочница монтирует на запись только то, что задано в rw_binds."""
 
 from __future__ import annotations
-
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from langchain_core.messages import HumanMessage
 
 from boba.chainlit2.agent.tools.sandbox import WORKSPACE_MOUNT
 from boba.chainlit2.agent.tools.sandbox.argv import build_bwrap_argv
-from boba.chainlit2.agent.tools.sandbox.profile import SandboxProfile
+from boba.chainlit2.agent.tools.sandbox.profile import BindSpec, SandboxProfile
 from boba.chainlit2.chat.data.models import Element
 from boba.chainlit2.infra.providers import build_llm_view
-from boba.chainlit2.infra.session import current_workspace
 
 
 @pytest.fixture(autouse=True)
@@ -25,72 +21,87 @@ def _rw_mounts(argv: list[str]) -> list[str]:
     return [argv[i + 1] for i, a in enumerate(argv) if a in ("--bind", "--bind-try")]
 
 
-class TestSingleWritableMount:
+class TestOnlyConfiguredMounts:
     WS = "/srv/workspace/7/thread-1"
 
-    def _argv(self, profile: SandboxProfile | None = None) -> list[str]:
-        return build_bwrap_argv(
-            profile or SandboxProfile(ro_binds=()),
-            "true",
-            workspace_root=self.WS,
-            env={},
-        )
+    def test_no_rw_mounts_without_rw_binds(self) -> None:
+        argv = build_bwrap_argv(SandboxProfile(ro_binds=()), "true", env={})
+        assert _rw_mounts(argv) == []
 
-    def test_only_one_writable_mount(self) -> None:
-        assert len(_rw_mounts(self._argv())) == 1
-
-    def test_writable_mount_is_the_chat_folder(self) -> None:
-        assert _rw_mounts(self._argv())[0] == self.WS
+    def test_single_rw_mount_from_config(self) -> None:
+        profile = SandboxProfile(ro_binds=(), rw_binds=(self.WS,))
+        assert _rw_mounts(build_bwrap_argv(profile, "true", env={})) == [self.WS]
 
     def test_project_root_is_not_mounted(self) -> None:
-        assert "/app/docker/compose/boba" not in _rw_mounts(self._argv())
+        profile = SandboxProfile(ro_binds=(), rw_binds=(self.WS,))
+        argv = build_bwrap_argv(profile, "true", env={})
+        assert "/app/docker/compose/boba" not in _rw_mounts(argv)
 
     def test_rootfs_stays_read_only(self) -> None:
-        argv = self._argv(SandboxProfile(rootfs="/srv/rootfs", ro_binds=()))
+        argv = build_bwrap_argv(
+            SandboxProfile(rootfs="/srv/rootfs", ro_binds=()), "true", env={},
+        )
         i = argv.index("--ro-bind")
         assert argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]
 
 
-class TestWorkspacePerChat:
-    @staticmethod
-    def _workspace(base: Path, user: str, thread: str) -> Path:
-        with (
-            patch(
-                "boba.chainlit2.infra.session.current_user_id", return_value=user
-            ),
-            patch(
-                "boba.chainlit2.infra.session.current_thread_id", return_value=thread
-            ),
-        ):
-            return current_workspace(base)
+class TestBindSpec:
+    def test_parse_without_target_mounts_same_path(self) -> None:
+        spec = BindSpec.parse("/srv/data")
+        assert (spec.host, spec.target) == ("/srv/data", "/srv/data")
 
-    def test_path_is_user_then_thread(self, tmp_path: Path) -> None:
-        assert self._workspace(tmp_path, "7", "t1") == tmp_path / "7" / "t1"
+    def test_parse_with_target(self) -> None:
+        spec = BindSpec.parse("/srv/ws/{user_id}/{thread_id}:/workspace")
+        assert spec.host == "/srv/ws/{user_id}/{thread_id}"
+        assert spec.target == "/workspace"
 
-    def test_directory_is_created(self, tmp_path: Path) -> None:
-        assert self._workspace(tmp_path, "7", "t1").is_dir()
+    def test_unknown_variable_rejected(self) -> None:
+        with pytest.raises(ValueError, match="неизвестные переменные"):
+            BindSpec.parse("/srv/{whoami}")
 
-    def test_threads_of_one_user_are_isolated(self, tmp_path: Path) -> None:
-        first = self._workspace(tmp_path, "7", "t1")
-        second = self._workspace(tmp_path, "7", "t2")
-        assert first != second
+    def test_relative_target_rejected(self) -> None:
+        with pytest.raises(ValueError, match="абсолютным"):
+            BindSpec.parse("/srv/data:relative/path")
 
-    def test_users_are_isolated(self, tmp_path: Path) -> None:
-        first = self._workspace(tmp_path, "7", "t1")
-        second = self._workspace(tmp_path, "8", "t1")
-        assert first != second
+    def test_render_substitutes_both_sides(self) -> None:
+        spec = BindSpec.parse("/srv/ws/{user_id}/{thread_id}:/workspace")
+        rendered = spec.render({"user_id": "7", "thread_id": "t1"})
+        assert rendered.host == "/srv/ws/7/t1"
+        assert rendered.target == "/workspace"
 
-    def test_uploads_live_inside_the_chat_folder(self, tmp_path: Path) -> None:
-        chat = self._workspace(tmp_path, "7", "t1")
+    def test_missing_variable_fails_loudly(self) -> None:
+        spec = BindSpec.parse("/srv/ws/{thread_id}")
+        with pytest.raises(RuntimeError, match="нет сессии"):
+            spec.render({})
+
+
+class TestProfileRender:
+    TEMPLATE = "/srv/ws/{user_id}/{thread_id}:/workspace"
+
+    def _rendered_host(self, user: str, thread: str) -> str:
+        profile = SandboxProfile(rw_binds=(self.TEMPLATE,), cwd="/workspace")
+        return profile.render({"user_id": user, "thread_id": thread}).rw_binds[0].host
+
+    def test_threads_of_one_user_are_isolated(self) -> None:
+        assert self._rendered_host("7", "t1") != self._rendered_host("7", "t2")
+
+    def test_users_are_isolated(self) -> None:
+        assert self._rendered_host("7", "t1") != self._rendered_host("8", "t1")
+
+    def test_cwd_is_rendered(self) -> None:
+        profile = SandboxProfile(cwd="/srv/ws/{user_id}/{thread_id}")
+        rendered = profile.render({"user_id": "7", "thread_id": "t1"})
+        assert rendered.cwd == "/srv/ws/7/t1"
+
+    def test_static_profile_needs_no_session(self) -> None:
+        profile = SandboxProfile(rw_binds=("/srv/shared",), cwd="/srv/shared")
+        rendered = profile.render({})
+        assert rendered.rw_binds[0].host == "/srv/shared"
+
+    def test_uploads_live_inside_the_chat_folder(self) -> None:
         key = Element.object_key("7", "t1", "el-1")
-        assert (tmp_path / key).parent == chat / "upload"
-
-    def test_without_session_it_fails_loudly(self, tmp_path: Path) -> None:
-        with (
-            patch("boba.chainlit2.infra.session.current_user_id", return_value=None),
-            pytest.raises(RuntimeError, match="нет сессии"),
-        ):
-            current_workspace(tmp_path)
+        host = self._rendered_host("7", "t1")
+        assert f"/srv/ws/{key}".startswith(f"{host}/upload/")
 
 
 class TestAttachmentPaths:

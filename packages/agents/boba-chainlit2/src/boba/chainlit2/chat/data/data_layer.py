@@ -49,6 +49,7 @@ from boba.chainlit2.chat.data.models import (
     User,
 )
 from boba.chainlit2.chat.transcript import ConversationTranscript, ThreadMessages
+from boba.chainlit2.infra.session import current_user_id
 from boba.chainlit2.rendering.chat_view import ChatView, RecordingSink
 from boba.db.postgres import AsyncPostgresPool
 
@@ -244,9 +245,7 @@ class PostgresDataLayer(BaseDataLayer):
         if content is None:
             raise ValueError("Content is None, cannot upload file")
 
-        user_id = await self._user_id_by_thread(element.thread_id)
-        if user_id is None:
-            user_id = "unknown"
+        user_id = self._session_user_id()
 
         mime = element.mime or "application/octet-stream"
 
@@ -327,7 +326,7 @@ class PostgresDataLayer(BaseDataLayer):
             return None
 
         element = row.to_chainlit()
-        await self._sign_element_url(element, await self._user_id_by_thread(thread_id))
+        await self._sign_element_url(element, self._session_user_id())
         return element
 
     @queue_until_user_message()
@@ -347,7 +346,7 @@ class PostgresDataLayer(BaseDataLayer):
                 await cur.execute(query, (UUID(element_id),))
                 row = await cur.fetchone()
                 if row and row[0]:
-                    user_id = await self._user_id_by_thread(str(row[0]))
+                    user_id = self._session_user_id()
                     await self._storage.delete_file(
                         object_key=Element.object_key(user_id, row[0], element_id),
                     )
@@ -676,33 +675,19 @@ class PostgresDataLayer(BaseDataLayer):
     async def close(self) -> None:
         await self._storage.close()
 
-    async def _user_id_by_thread(self, thread_id: str) -> str | None:
-        query = sql.SQL("select user_id from {table} where id = %s").format(
-            table=Thread.get_table_name(self._schema)
-        )
-
-        try:
-            async with (
-                self._pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, (UUID(thread_id),))
-                row = await cur.fetchone()
-        except Exception as e:
+    def _session_user_id(self) -> str:
+        """Владелец файлов вложений — пользователь текущей сессии chainlit."""
+        user_id = current_user_id()
+        if user_id is None:
             raise InternalServiceError(
                 internal_detail=(
-                    f"{type(self).__qualname__}._user_id_by_thread "
-                    f"failed with error: {e}"
+                    f"{type(self).__qualname__}: нет сессии chainlit, "
+                    f"путь вложения не построить"
                 ),
-                user_detail="Not able to get user_id by thread",
-            ) from e
+                user_detail="Not able to resolve current user",
+            )
 
-        if row is None:
-            return None
-
-        user_id = str(row[0])
-
-        return user_id
+        return str(user_id)
 
     async def _sign_element_urls(self, thread: ThreadDict, user_id: object) -> None:
         for element in thread.get("elements") or []:

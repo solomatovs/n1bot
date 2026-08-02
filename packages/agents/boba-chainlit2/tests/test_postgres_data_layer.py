@@ -13,6 +13,7 @@ from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import User as ChainlitUser
 from conftest import Seed
 
+from boba.chainlit2.chat.data import data_layer as data_layer_module
 from boba.chainlit2.chat.data.data_layer import PostgresDataLayer
 
 pytestmark = pytest.mark.anyio
@@ -88,8 +89,11 @@ async def test_upsert_and_delete_feedback(seeded: Seed):
     assert await layer.delete_feedback(feedback_id) is True
 
 
-async def test_create_get_delete_element(seeded: Seed, files_dir: Path):
+async def test_create_get_delete_element(
+    seeded: Seed, files_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
     layer = seeded.layer
+    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
 
     element = Text(
         thread_id=seeded.thread_id,

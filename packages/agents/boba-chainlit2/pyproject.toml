@@ -43,3 +43,7 @@ boba-chainlit2 = "boba.chainlit2.infra.bootstrap:run_app"
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+# sql-миграции базы знаний читаются с диска рядом с кодом
+[tool.setuptools.package-data]
+"boba.chainlit2.agent.tools.kb" = ["migrations/*.sql"]
