@@ -30,7 +30,7 @@ class SandboxProfile(BaseModel):
         description=(
             "Каталог, монтируемый read-only как / песочницы; ro_binds "
             "ложатся поверх. Пустая строка — корень не монтируется. "
-            "Собирается build/scripts/make-sandbox-rootfs.sh."
+            "Собирается целью make sandbox-rootfs."
         ),
     )
     ro_binds: tuple[str, ...] = Field(
