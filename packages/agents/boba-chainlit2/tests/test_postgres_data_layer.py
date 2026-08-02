@@ -15,6 +15,7 @@ from conftest import Seed
 
 from boba.chainlit2.chat.data import data_layer as data_layer_module
 from boba.chainlit2.chat.data.data_layer import PostgresDataLayer
+from boba.chainlit2.chat.data.models import Element
 
 pytestmark = pytest.mark.anyio
 
@@ -106,8 +107,10 @@ async def test_create_get_delete_element(
     fetched = await layer.get_element(seeded.thread_id, element.id)
     assert fetched is not None
     assert fetched.get("id") == element.id
-    object_key = fetched.get("objectKey")
-    assert object_key is not None
+    assert fetched.get("url")
+
+    # путь не хранится, а вычисляется по шаблону от пользователя сессии
+    object_key = Element.object_key(seeded.user.id, seeded.thread_id, element.id)
     assert (files_dir / object_key).read_bytes() == b"payload"
 
     await layer.delete_element(element.id)

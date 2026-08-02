@@ -38,7 +38,7 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt      \
     CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt     \
     GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 
-# копируем конфигурации для pip, uv
+# индексы пакетов (nexus): из них ставятся сторонние зависимости
 COPY build/conf/ /tmp/conf/
 RUN set -eu \
     && if [ -f /tmp/conf/pip.conf ]; then mkdir -p /etc && cp /tmp/conf/pip.conf /etc/pip.conf; fi \
@@ -61,7 +61,7 @@ RUN apt-get update                                  \
         xz-utils                                    \
     && rm -rf /var/lib/apt/lists/*
 
-COPY build/artifacts/bwrap/bubblewrap-${BWRAP_VERSION}.tar.xz /tmp/bwrap.tar.xz
+COPY build/artifacts/src/bubblewrap-${BWRAP_VERSION}.tar.xz /tmp/bwrap.tar.xz
 
 RUN set -eu                                                                   \
     && mkdir -p /tmp/bwrap-src && cd /tmp/bwrap-src                           \
@@ -77,16 +77,20 @@ RUN set -eu                                                                   \
     && ldd /out/bwrap | grep -q libcap && { echo "libcap не статическая" >&2; exit 1; } || true \
     && /out/bwrap --version
 
+# колёса пакетов boba и их зависимостей: сторонние тянутся из индекса
+# (conf/pip.conf, conf/uv.toml), а sdist'ы вроде gssapi собираются здесь —
+# gcc и заголовки есть только на этой стадии
 FROM base AS deps
 
-COPY build/artifacts/wheels/ /tmp/wheels/
 COPY pyproject.toml /tmp/boba/pyproject.toml
 COPY packages/ /tmp/boba/packages/
 
 RUN set -eu \
     && cd /tmp/boba \
     && uv build --all-packages --wheel --no-sources -o /tmp/wheels \
-    && uv workspace list > /tmp/names.txt
+    && uv workspace list > /tmp/names.txt \
+    && pip3 wheel --no-cache-dir -w /tmp/wheels --find-links /tmp/wheels \
+        $(cat /tmp/names.txt) pip setuptools wheel
 
 FROM ${GLIBC_IMAGE} AS runtime
 
