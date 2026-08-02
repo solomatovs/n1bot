@@ -204,7 +204,7 @@ class TestBashTool:
             profiles={"default": profile or SandboxProfile()},
             default_profile="default",
         )
-        return build_bash_tool(cfg)
+        return build_bash_tool(cfg, lambda: workspace_root)
 
     @staticmethod
     def _invoke(tool, **args) -> dict:

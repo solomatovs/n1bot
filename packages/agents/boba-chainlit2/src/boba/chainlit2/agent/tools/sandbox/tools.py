@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable
+from pathlib import Path
 from typing import Annotated, Any
 
 from langchain.tools import tool
@@ -30,7 +32,10 @@ def has_bwrap() -> bool:
     return shutil.which("bwrap") is not None
 
 
-def build_bash_tool(cfg: BashSandboxConfig) -> BaseTool:
+def build_bash_tool(
+    cfg: BashSandboxConfig,
+    workspace_source: Callable[[], Path],
+) -> BaseTool:
 
     @tool(response_format="content_and_artifact")
     def bash(
@@ -77,7 +82,7 @@ def build_bash_tool(cfg: BashSandboxConfig) -> BaseTool:
                 )
             )
 
-        workspace_root = str(cfg.workspace_root)
+        workspace_root = str(workspace_source())
         argv = build_bwrap_argv(
             profile_dto,
             command,
