@@ -15,7 +15,7 @@ from collections.abc import Generator
 from typing import Annotated, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 __all__ = [
     "BasicAuth",
@@ -69,20 +69,20 @@ class BasicAuth(_AuthBase):
 
     method: Literal["basic"]
     user: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    password: SecretStr = Field(min_length=1)
 
     def httpx_auth(self) -> httpx.Auth:
-        return httpx.BasicAuth(self.user, self.password)
+        return httpx.BasicAuth(self.user, self.password.get_secret_value())
 
 
 class BearerAuth(_AuthBase):
     """Authorization: Bearer <token> через HttpxBearerAuth."""
 
     method: Literal["bearer"]
-    token: str = Field(min_length=1)
+    token: SecretStr = Field(min_length=1)
 
     def httpx_auth(self) -> httpx.Auth:
-        return HttpxBearerAuth(self.token)
+        return HttpxBearerAuth(self.token.get_secret_value())
 
 
 class DigestAuth(_AuthBase):
@@ -90,10 +90,10 @@ class DigestAuth(_AuthBase):
 
     method: Literal["digest"]
     user: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    password: SecretStr = Field(min_length=1)
 
     def httpx_auth(self) -> httpx.Auth:
-        return httpx.DigestAuth(self.user, self.password)
+        return httpx.DigestAuth(self.user, self.password.get_secret_value())
 
 
 WebAuth = Annotated[

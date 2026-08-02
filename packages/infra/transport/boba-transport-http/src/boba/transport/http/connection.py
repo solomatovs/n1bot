@@ -9,6 +9,8 @@ timeout/ssl/retry + auth — но НЕ url (его даёт consumer: web-tool �
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.transport.http.auth import NoneAuth, WebAuth
@@ -20,6 +22,11 @@ class HttpProfile(BaseModel):
     """Транспортный профиль: timeout/ssl/retry + auth. Без url."""
 
     model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["web"] = Field(
+        default="web",
+        description="Дискриминатор соединения при хранении в базе.",
+    )
     base_url: str | None = Field(
         default=None,
         description=(

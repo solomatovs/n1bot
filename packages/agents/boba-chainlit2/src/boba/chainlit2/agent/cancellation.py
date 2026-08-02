@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -78,7 +78,7 @@ class TurnCancellation:
         return self._event.wait(timeout)
 
     @contextmanager
-    def abort_with(self, abort: Callable[[], None]) -> Iterator[None]:
+    def abort_with(self, abort: Callable[[], None]) -> Generator[None]:
         "регистрирует прерыватель на время блока и проверяет отмену на входе"
         self.raise_if_cancelled()
         with self._lock:
@@ -106,7 +106,7 @@ def current_cancellation() -> TurnCancellation:
 
 
 @contextmanager
-def turn_cancellation() -> Iterator[TurnCancellation]:
+def turn_cancellation() -> Generator[TurnCancellation]:
     "открывает ход: публикует свежий TurnCancellation в контексте"
     cancellation = TurnCancellation()
     token = _CURRENT.set(cancellation)
