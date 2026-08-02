@@ -120,6 +120,25 @@
         bash = []
 
 
+## чтение документов из workspace (liteparse): PDF/docx/xlsx/изображения
+[tool.doc]
+    enable  = true
+    roles   = ["ADM"]
+    ## файлы берутся оттуда же, куда их кладёт загрузка в чат
+    storage = "${storage}"
+    ocr_enabled          = false
+    max_text_chars       = 200000
+    search_context_chars = 80
+    search_max_matches   = 50
+
+    [tool.doc.tools]
+        read_document        = []
+        read_pages           = []
+        read_document_window = []
+        document_outline     = []
+        search_document      = []
+
+
 ## вход по учётной записи домена (bind в AD)
 # [auth.ldap]
 #     type             = "ldap"

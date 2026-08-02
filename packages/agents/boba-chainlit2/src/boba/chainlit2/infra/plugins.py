@@ -22,6 +22,7 @@ from boba.chainlit2.agent.tools.confluence.ingest_base import ConfluenceIngestCo
 from boba.chainlit2.agent.tools.confluence.ingest_tools import (
     build_confluence_ingest_tools,
 )
+from boba.chainlit2.agent.tools.doc import DocToolsConfig, build_doc_tools
 from boba.chainlit2.agent.tools.kb import (
     PostgresKnowledgeBaseConfig,
     build_kb_tools,
@@ -97,6 +98,11 @@ _PLUGINS: dict[str, ToolPlugin] = {
         section="sandbox",
         config_model=BashSandboxConfig,
         build=_build_sandbox_tools,
+    ),
+    "doc": ToolPlugin(
+        section="doc",
+        config_model=DocToolsConfig,
+        build=build_doc_tools,
     ),
     "chart": ToolPlugin(
         section="chart",
