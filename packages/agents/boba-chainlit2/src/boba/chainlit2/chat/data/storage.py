@@ -153,12 +153,13 @@ class ImageStorageClient(LocalStorageClient):
                 parts.append(part)
         if len(parts) < self.KEY_MIN_PARTS:
             raise ValueError(msg)
-        user_id, thread_id, *rest = parts
+        user_id, thread_id, *_ = parts
         image = render_image_path(
             self._config.image_path,
             {"user_id": user_id, "thread_id": thread_id},
         )
-        return image, "/".join(rest)
+        # образ общий на пользователя: thread_id остаётся частью пути внутри
+        return image, "/".join(parts[1:])
 
     async def _exists(self, image: str, rel: str) -> bool:
         rc, _, err = await self._op(image, ["read", rel])

@@ -15,7 +15,7 @@ LOGGING_CONFIG: dict[str, Any] = {
     "formatters": {
         "default": {
             "()": "uvicorn.logging.DefaultFormatter",
-            "fmt": "%(levelprefix)s %(message)s",
+            "fmt": "%(levelprefix)s [%(user)s] %(message)s",
             "use_colors": True,
         },
         "uvcorn": {
@@ -25,7 +25,7 @@ LOGGING_CONFIG: dict[str, Any] = {
         },
         "access": {
             "()": "uvicorn.logging.AccessFormatter",
-            "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',  # noqa: E501
+            "fmt": '%(levelprefix)s [%(user)s] %(client_addr)s - "%(request_line)s" %(status_code)s',  # noqa: E501
         },
     },
     "handlers": {
@@ -172,6 +172,16 @@ class AgentProfile(BaseModel):
     default_system_prompt: str = Field(
         default="",
         description="Системный промпт по умолчанию",
+    )
+
+    history_messages: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Сколько последних сообщений истории уходит в LLM. Считаются "
+            "только реплики: вызовы инструментов и их результаты из прошлых "
+            "ходов вырезаются, текущий ход передаётся целиком."
+        ),
     )
 
     temperature: float = Field(

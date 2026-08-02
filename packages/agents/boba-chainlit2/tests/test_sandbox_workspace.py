@@ -125,7 +125,7 @@ class TestProfileRender:
         assert rendered.rw_binds[0].host == "/srv/shared"
 
     def test_uploads_live_inside_the_chat_folder(self) -> None:
-        key = Element.object_key("7", "t1", "el-1")
+        key = Element.object_key("7", "t1", "report.pdf", "el-1")
         host = self._rendered_host("7", "t1")
         assert f"/srv/ws/{key}".startswith(f"{host}/upload/")
 
@@ -164,6 +164,14 @@ class TestAttachmentPaths:
         assert "b.csv" in content
 
     def test_path_matches_where_storage_puts_the_file(self) -> None:
-        key = Element.object_key("4", "t-1", "el-1")
-        assert key == "4/t-1/upload/el-1"
-        assert f"{WORKSPACE_MOUNT}/upload/el-1" == "/workspace/upload/el-1"
+        key = Element.object_key("4", "t-1", "report.pdf", "el-1")
+        assert key == "4/t-1/upload/report.pdf"
+        rel = Element.thread_path("t-1", "report.pdf", "el-1")
+        assert f"{WORKSPACE_MOUNT}/{rel}" == "/workspace/t-1/upload/report.pdf"
+
+    def test_unnamed_element_falls_back_to_id(self) -> None:
+        assert Element.object_key("4", "t-1", "", "el-1") == "4/t-1/upload/el-1"
+
+    def test_directories_in_name_are_stripped(self) -> None:
+        key = Element.object_key("4", "t-1", "../../etc/passwd", "el-1")
+        assert key == "4/t-1/upload/passwd"

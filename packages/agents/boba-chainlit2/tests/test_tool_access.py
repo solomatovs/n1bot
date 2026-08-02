@@ -163,6 +163,36 @@ class TestHistoryHidesForeignTools:
     def test_no_filter_keeps_everything(self) -> None:
         assert len(build_llm_view(self._history(), None)) == 3
 
+    @staticmethod
+    def _long_history(turns: int) -> list:
+        messages: list = []
+        for i in range(turns):
+            messages.append(HumanMessage(content=f"вопрос {i}", id=f"u{i}"))
+            messages.append(AIMessage(content=f"ответ {i}", id=f"a{i}"))
+        messages.append(HumanMessage(content="текущий", id="now"))
+        return messages
+
+    def test_history_window_limits_old_messages(self) -> None:
+        view = build_llm_view(self._long_history(20), None, history_messages=5)
+        # 5 старых реплик + текущий ход
+        assert len(view) == 6
+        assert view[-1].content == "текущий"
+
+    def test_history_window_keeps_the_newest(self) -> None:
+        view = build_llm_view(self._long_history(20), None, history_messages=2)
+        assert [m.content for m in view[:-1]] == ["вопрос 19", "ответ 19"]
+
+    def test_history_window_default_matches_config(self) -> None:
+        from boba.chainlit2.infra.config import AgentProfile
+
+        default = AgentProfile.model_fields["history_messages"].default
+        view = build_llm_view(self._long_history(100), None)
+        assert len(view) == default + 1
+
+    def test_short_history_is_not_padded(self) -> None:
+        view = build_llm_view(self._long_history(2), None, history_messages=50)
+        assert len(view) == 5
+
     def test_old_turns_never_carry_tool_calls(self) -> None:
         history = [*self._history(), HumanMessage(content="ещё", id="u2")]
         view = build_llm_view(history, frozenset({"query"}))

@@ -22,6 +22,7 @@ from boba.chainlit2.infra.config import (
     ChainlitExtendConfig,
 )
 from boba.chainlit2.infra.di import Container
+from boba.chainlit2.infra.log_context import UserLogContext
 
 
 def run_app():
@@ -30,6 +31,7 @@ def run_app():
 
     c = providers.get_app_config(config_path=Path(config_path))
 
+    UserLogContext.install()
     logging.config.dictConfig(c.logger)
 
     app = FastAPI(lifespan=_run_container)

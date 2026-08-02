@@ -289,7 +289,9 @@ class PostgresDataLayer(BaseDataLayer):
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute(query, model.all_params())
             uploaded = await self._storage.upload_file(
-                object_key=Element.object_key(user_id, element.thread_id, element.id),
+                object_key=Element.object_key(
+                    user_id, element.thread_id, element.name, element.id
+                ),
                 data=content,
                 mime=mime,
                 overwrite=True,
@@ -343,7 +345,7 @@ class PostgresDataLayer(BaseDataLayer):
         self, element_id: str, thread_id: str | None = None
     ) -> None:
         query = sql.SQL(
-            "delete from {table} where id = %s returning thread_id"
+            "delete from {table} where id = %s returning thread_id, name"
         ).format(table=Element.get_table_name(self._schema))
 
         try:
@@ -357,7 +359,9 @@ class PostgresDataLayer(BaseDataLayer):
                 if row and row[0]:
                     user_id = self._session_user_id()
                     await self._storage.delete_file(
-                        object_key=Element.object_key(user_id, row[0], element_id),
+                        object_key=Element.object_key(
+                            user_id, row[0], row[1], element_id
+                        ),
                     )
         except Exception as e:
             # вызывается фоновой таской chainlit: raise до пользователя не дойдёт
@@ -709,7 +713,10 @@ class PostgresDataLayer(BaseDataLayer):
     async def _sign_element_url(self, element: ElementDict, user_id: object) -> None:
         """Собирает ссылку на вложение: путь вычисляется, а не хранится."""
         object_key = Element.object_key(
-            user_id, element.get("threadId"), element.get("id")
+            user_id,
+            element.get("threadId"),
+            element.get("name"),
+            element.get("id"),
         )
         try:
             element["url"] = await self._storage.get_read_url(object_key)
