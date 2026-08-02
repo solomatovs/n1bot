@@ -22,6 +22,8 @@
     user_workspace_dir   = "${BOBA_DIR}/data/workspaces/user"
     system_workspace_dir = "${BOBA_DIR}/data/workspaces/system"
     max_messages         = 30
+    # сколько последних реплик истории уходит в LLM
+    history_messages     = 30
     stream               = true
     log_level            = "INFO"
 

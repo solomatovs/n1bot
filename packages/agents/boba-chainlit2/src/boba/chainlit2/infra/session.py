@@ -8,6 +8,7 @@ from chainlit.context import ChainlitContextException
 __all__ = [
     "current_thread_id",
     "current_user_id",
+    "current_user_label",
     "current_user_roles",
 ]
 
@@ -36,6 +37,17 @@ def current_user_roles() -> frozenset[str]:
 def current_user_id() -> str | None:
     user = _current_user()
     return getattr(user, "id", None)
+
+
+def current_user_label() -> str:
+    """Логин для логов; пустая строка — запрос идёт вне сессии chainlit."""
+    user = _current_user()
+    if user is None:
+        return ""
+    identifier = getattr(user, "identifier", "")
+    if identifier:
+        return str(identifier)
+    return str(getattr(user, "id", ""))
 
 
 def current_thread_id() -> str | None:

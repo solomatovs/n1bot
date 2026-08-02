@@ -275,27 +275,33 @@ async def chainlit_data_layer(
     finally:
         await pool.close()
 
-def build_history_view(allowed_tools: frozenset[str]):
+def build_history_view(allowed_tools: frozenset[str], history_messages: int):
     @wrap_model_call
     async def history_view(request: ModelRequest, handler):
         full = request.state["messages"]
-        view = build_llm_view(full, allowed_tools)
+        view = build_llm_view(full, allowed_tools, history_messages)
         return await handler(request.override(messages=view))
 
     return history_view
 
 
-def build_llm_view(msgs: list, allowed_tools: frozenset[str] | None = None) -> list:
+def build_llm_view(
+    msgs: list,
+    allowed_tools: frozenset[str] | None = None,
+    history_messages: int = AgentProfile.model_fields["history_messages"].default,
+) -> list:
     start = _index_of_last_user_turn(msgs)
     head, current = msgs[:start], msgs[start:]
 
-    pruned_head = [
-        m
-        for m in head
-        if not isinstance(m, ToolMessage)
-        and not (isinstance(m, AIMessage) and m.tool_calls)
-    ][-30:]
-    view = pruned_head + _drop_foreign_tools(current, allowed_tools)
+    replies: list = []
+    for message in head:
+        if isinstance(message, ToolMessage):
+            continue
+        if isinstance(message, AIMessage) and message.tool_calls:
+            continue
+        replies.append(message)
+
+    view = replies[-history_messages:] + _drop_foreign_tools(current, allowed_tools)
     return [_with_attachments(m) for m in view]
 
 
@@ -365,7 +371,11 @@ def langchain_agent(
         tools=tools,
         system_prompt=system_prompt,
         checkpointer=saver,
-        middleware=[build_history_view(frozenset(t.name for t in tools))],
+        middleware=[
+            build_history_view(
+                frozenset(t.name for t in tools), c.agent.history_messages
+            )
+        ],
     )
 
     return agent

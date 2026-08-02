@@ -110,7 +110,10 @@ async def test_create_get_delete_element(
     assert fetched.get("url")
 
     # путь не хранится, а вычисляется по шаблону от пользователя сессии
-    object_key = Element.object_key(seeded.user.id, seeded.thread_id, element.id)
+    object_key = Element.object_key(
+        seeded.user.id, seeded.thread_id, element.name, element.id
+    )
+    assert object_key.endswith("/upload/note.txt")
     assert (files_dir / object_key).read_bytes() == b"payload"
 
     await layer.delete_element(element.id)

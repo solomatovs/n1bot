@@ -22,6 +22,7 @@ from langgraph.graph.state import CompiledStateGraph
 from boba.chainlit2.agent.cancellation import turn_cancellation
 from boba.chainlit2.agent.tools.sandbox import WORKSPACE_MOUNT
 from boba.chainlit2.chat.agent_tracer import AgentTracer
+from boba.chainlit2.chat.data.models import Element
 from boba.chainlit2.chat.edit import ThreadRewind
 from boba.chainlit2.chat.handler import chainlit_error_ctx_handler
 from boba.chainlit2.infra.di import Depends, di_inject
@@ -41,10 +42,15 @@ class ChainlitAdapter:
     @staticmethod
     def to_human_message(msg: cl.Message) -> HumanMessage:
         """Сообщение пользователя; пути вложений — как их видит песочница."""
-        attachments = [
-            {"name": e.name or e.id, "path": f"{WORKSPACE_MOUNT}/upload/{e.id}"}
-            for e in msg.elements or []
-        ]
+        attachments: list[dict[str, str]] = []
+        for element in msg.elements or []:
+            rel = Element.thread_path(element.thread_id, element.name, element.id)
+            attachments.append(
+                {
+                    "name": element.name or element.id,
+                    "path": f"{WORKSPACE_MOUNT}/{rel}",
+                }
+            )
         extra = {"attachments": attachments} if attachments else {}
         return HumanMessage(content=msg.content, id=msg.id, additional_kwargs=extra)
 

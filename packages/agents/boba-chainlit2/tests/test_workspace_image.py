@@ -136,7 +136,7 @@ class TestConfig:
 
     def test_factory_picks_image_client(self) -> None:
         cfg = LocalStorageConfig(
-            kind="image", image_path="/ws/{user_id}/{thread_id}.ext4",
+            kind="image", image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
         assert isinstance(LocalStorageClient.from_config(cfg), ImageStorageClient)
@@ -154,7 +154,7 @@ class TestObjectKey:
     @staticmethod
     def _client() -> ImageStorageClient:
         cfg = LocalStorageConfig(
-            kind="image", image_path="/ws/{user_id}/{thread_id}.ext4",
+            kind="image", image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
         client = LocalStorageClient.from_config(cfg)
@@ -162,9 +162,10 @@ class TestObjectKey:
         return client
 
     def test_key_splits_into_image_and_rel(self) -> None:
-        assert self._client()._image_and_rel("7/t1/upload/el-1") == (
-            "/ws/7/t1.ext4",
-            "upload/el-1",
+        """Образ на пользователя, thread_id остаётся частью пути внутри."""
+        assert self._client()._image_and_rel("7/t1/upload/report.pdf") == (
+            "/ws/7.ext4",
+            "t1/upload/report.pdf",
         )
 
     def test_short_key_rejected(self) -> None:
@@ -320,15 +321,17 @@ class TestLiveImage:
         self, tmp_path: Path, template: Path
     ) -> None:
         storage = _storage(tmp_path, template)
-        asyncio.run(storage.upload_file("7/t1/upload/el-1", b"attachment"))
-        payload = _invoke(_bash(tmp_path, template), "cat /workspace/upload/el-1")
+        asyncio.run(storage.upload_file("7/t1/upload/отчёт.csv", b"attachment"))
+        payload = _invoke(
+            _bash(tmp_path, template), "cat '/workspace/t1/upload/отчёт.csv'"
+        )
         assert payload["stdout"].strip() == "attachment"
 
     def test_sandbox_write_readable_by_storage(
         self, tmp_path: Path, template: Path
     ) -> None:
         tool = _bash(tmp_path, template)
-        _invoke(tool, "mkdir -p upload && echo from-bash > upload/x")
+        _invoke(tool, "mkdir -p t1/upload && echo from-bash > t1/upload/x")
         storage = _storage(tmp_path, template)
         assert asyncio.run(storage.read_file("7/t1/upload/x")).strip() == b"from-bash"
 
@@ -440,9 +443,10 @@ class TestLiveImage:
         self, tmp_path: Path, template: Path
     ) -> None:
         storage = _storage(tmp_path, template)
-        asyncio.run(storage.upload_file("7/t1/upload/el-9", b"attachment"))
+        asyncio.run(storage.upload_file("7/t1/upload/shared.txt", b"attachment"))
         payload = _invoke(
-            _bash(tmp_path, template, thread_id="t2"), "cat /workspace/upload/el-9"
+            _bash(tmp_path, template, thread_id="t2"),
+            "cat /workspace/t1/upload/shared.txt",
         )
         assert payload["stdout"].strip() == "attachment"
 
