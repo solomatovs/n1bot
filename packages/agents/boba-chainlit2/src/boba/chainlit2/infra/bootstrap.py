@@ -167,6 +167,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
     container.eager(providers.kb_schema)
+    container.eager(providers.connection_store)
     Container.set_root(container)
     Container.set_session_hook(_get_or_create_session_container)
     _close_container_if_session_end()

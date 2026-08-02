@@ -33,6 +33,7 @@ from boba.chainlit2.agent.tools.kb.schema import KbSchema
 from boba.chainlit2.chat.data import PostgresDataLayer
 from boba.chainlit2.chat.data.storage import LocalStorageClient
 from boba.chainlit2.chat.transcript import CheckpointMessages
+from boba.chainlit2.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit2.infra.config import (
     AgentProfile,
     AppConfig,
@@ -113,6 +114,17 @@ def kb_schema(
     if not meta.enable:
         return
     KbSchema(bind(raw, "tool.kb", PostgresKnowledgeBaseConfig)).setup()
+
+
+def connection_store(
+    raw: Annotated[DictConfig, Depends(get_raw_config)],
+) -> ConnectionStore | None:
+    cfg = bind(raw, "connections", ConnectionsConfig)
+    if not cfg.enable:
+        return None
+    store = ConnectionStore(cfg)
+    store.setup()
+    return store
 
 
 def get_openai_config(

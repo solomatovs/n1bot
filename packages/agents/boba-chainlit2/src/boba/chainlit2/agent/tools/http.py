@@ -7,15 +7,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from contextlib import AbstractContextManager
 
 from boba.chainlit2.agent.cancellation import current_cancellation
-from boba.transport.http import HttpTransport
-
-if TYPE_CHECKING:
-    from contextlib import AbstractContextManager
-
-    from boba.transport.http import HttpProfile
+from boba.transport.http import HttpProfile, HttpTransport
 
 __all__ = ["CancellableHttpTransport"]
 

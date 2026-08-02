@@ -19,6 +19,7 @@ dependencies = [
     "boba-kbdoc==0.0.7",
     "boba-transport-http==0.0.7",
     "boba-auth==0.0.7",
+    "cryptography>=42,<51",
     "tabulate>=0.9,<1",
     "markdownify>=0.13,<1",
     "pgvector>=0.3,<1",

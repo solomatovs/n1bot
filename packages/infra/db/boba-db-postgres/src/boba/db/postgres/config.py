@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 
@@ -84,6 +84,11 @@ class PostgresConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    kind: Literal["postgres"] = Field(
+        default="postgres",
+        description="Дискриминатор соединения при хранении в базе.",
+    )
+
     # libpq connection параметры
     # https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
     host: str | None = Field(default=None, description="Хост(ы) или путь к сокету.")
@@ -91,7 +96,10 @@ class PostgresConfig(BaseModel):
     port: int | None = Field(default=None, description="Порт (или сокет-суффикс).")
     dbname: str | None = Field(default=None, description="Имя БД.")
     user: str | None = Field(default=None, description="Пользователь.")
-    password: str | None = Field(default=None, description="Пароль (секрет).")
+    password: SecretStr | None = Field(
+        default=None,
+        description="Пароль (секрет); маскируется в дампах и логах.",
+    )
     passfile: str | None = Field(default=None, description="Путь к файлу паролей.")
     require_auth: str | None = Field(
         default=None, description="Требуемые методы аутентификации."
@@ -228,10 +236,14 @@ class PostgresConfig(BaseModel):
         conn: dict[str, Any] = {}
 
         for name in PostgresConfig.model_fields:
-            if name not in ("pool", "options"):
+            if name not in ("pool", "options", "kind"):
                 value = getattr(self, name)
                 if value is not None:
-                    conn[name] = value
+                    conn[name] = (
+                        value.get_secret_value()
+                        if isinstance(value, SecretStr)
+                        else value
+                    )
 
         if opts := self.options.to_options(override_options):
             conn["options"] = opts

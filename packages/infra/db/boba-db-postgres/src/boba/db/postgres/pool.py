@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -140,7 +141,11 @@ class PostgresPool:
         для данного cfg при повторном с тем же cfg значение игнорируется
         """
         key: PostgresPool._CacheKey = (
-            cfg.model_dump_json(),
+            json.dumps(
+                {**cfg.conn_settings(), **cfg.pool_settings()},
+                sort_keys=True,
+                default=str,
+            ),
             tuple(sorted((override_options or {}).items())),
         )
         pool = cls._CACHE.get(key)
