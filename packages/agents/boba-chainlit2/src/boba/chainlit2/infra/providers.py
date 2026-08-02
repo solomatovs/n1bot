@@ -326,7 +326,7 @@ def langchain_agent(
         temperature=c.agent.temperature,
     )
 
-    system_prompt = 
+    system_prompt = c.agent.default_system_prompt
 
     agent = create_agent(
         model=chat,
