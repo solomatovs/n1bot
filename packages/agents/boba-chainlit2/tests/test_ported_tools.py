@@ -122,8 +122,6 @@ class TestKbTools:
         assert names == [
             "kb_vector_search",
             "kb_fts_search",
-            "kb_doc_vector_search",
-            "kb_doc_fts_search",
         ]
 
     def test_search_arguments(self) -> None:

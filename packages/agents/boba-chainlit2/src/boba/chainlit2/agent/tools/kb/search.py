@@ -1,8 +1,4 @@
-"""KB search tools: 4 штуки = {vector, fts} × {confluence, kb_doc}.
-
-Канал (vector/fts) и коллекция зашиты в сам tool — параметра method нет:
-- kb_vector_search / kb_fts_search         — коллекция kb_confluence;
-- kb_doc_vector_search / kb_doc_fts_search — коллекция kb_confluence_doc.
+"""KB search tools: 2 штуки = {vector, fts}.
 
 Коллекция фиксируется дискриминирующим типом (ConfluenceCollection /
 KbDocCollection): строгий фильтр по collection даёт детерминированную
