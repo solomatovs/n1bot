@@ -18,6 +18,7 @@ from boba.chainlit2.agent.tools import (
 )
 from boba.chainlit2.agent.tools.sandbox.argv import build_bwrap_argv
 from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
+from boba.chainlit2.agent.tools.sandbox.profile import BindSpec
 from boba.chainlit2.agent.tools.shell.config import BashLocalConfig
 from boba.chainlit2.rendering.tool_result import ChartResult, JsonResult
 
@@ -29,6 +30,9 @@ def chainlit_context() -> None:
 
 def _tool_call(name: str, args: dict) -> dict:
     return {"args": args, "id": f"call-{name}", "name": name, "type": "tool_call"}
+
+
+_HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
 
 
 class TestBashLocal:
@@ -112,9 +116,7 @@ class TestBwrapArgv:
     _WS = "/srv/workspace"
 
     def test_starts_with_bwrap_and_unshare_flags(self) -> None:
-        argv = build_bwrap_argv(
-            SandboxProfile(), "echo hi", workspace_root=self._WS, env={},
-        )
+        argv = build_bwrap_argv(SandboxProfile(), "echo hi", env={})
         assert argv[0] == "bwrap"
         assert "--die-with-parent" in argv
         assert "--unshare-user" in argv
@@ -122,70 +124,72 @@ class TestBwrapArgv:
         assert "--new-session" in argv
 
     def test_network_disabled_adds_unshare_net(self) -> None:
-        argv = build_bwrap_argv(
-            SandboxProfile(network=False), "true", workspace_root=self._WS, env={},
-        )
+        argv = build_bwrap_argv(SandboxProfile(network=False), "true", env={})
         assert "--unshare-net" in argv
 
     def test_network_enabled_omits_unshare_net(self) -> None:
-        argv = build_bwrap_argv(
-            SandboxProfile(network=True), "true", workspace_root=self._WS, env={},
-        )
+        argv = build_bwrap_argv(SandboxProfile(network=True), "true", env={})
         assert "--unshare-net" not in argv
 
-    def test_workspace_rw_bind_and_chdir(self) -> None:
-        argv = build_bwrap_argv(
-            SandboxProfile(), "true", workspace_root=self._WS, env={},
-        )
-        idx = argv.index(self._WS)
-        assert argv[idx - 1] == "--bind-try"
+    def test_no_implicit_rw_binds(self) -> None:
+        argv = build_bwrap_argv(SandboxProfile(), "true", env={})
+        assert "--bind-try" not in argv
+        assert "--bind" not in argv
+
+    def test_rw_bind_same_path_and_chdir(self) -> None:
+        profile = SandboxProfile(rw_binds=(self._WS,), cwd=self._WS)
+        argv = build_bwrap_argv(profile, "true", env={})
+        i = argv.index("--bind-try")
+        assert argv[i + 1 : i + 3] == [self._WS, self._WS]
         assert argv[argv.index("--chdir") + 1] == self._WS
+
+    def test_rw_bind_with_explicit_target(self) -> None:
+        profile = SandboxProfile(
+            rw_binds=(f"{self._WS}:/workspace",), cwd="/workspace",
+        )
+        argv = build_bwrap_argv(profile, "true", env={})
+        i = argv.index("--bind-try")
+        assert argv[i + 1 : i + 3] == [self._WS, "/workspace"]
+        assert argv[argv.index("--chdir") + 1] == "/workspace"
+
+    def test_empty_cwd_means_root(self) -> None:
+        argv = build_bwrap_argv(SandboxProfile(), "true", env={})
+        assert argv[argv.index("--chdir") + 1] == "/"
+
+    def test_tmpfs_without_size(self) -> None:
+        argv = build_bwrap_argv(SandboxProfile(tmpfs=("/tmp",)), "true", env={})
+        assert "--size" not in argv
+        assert argv[argv.index("--tmpfs") + 1] == "/tmp"
+
+    def test_tmpfs_size_precedes_mount(self) -> None:
+        argv = build_bwrap_argv(SandboxProfile(tmpfs=("/tmp:64M",)), "true", env={})
+        i = argv.index("--size")
+        assert argv[i + 1] == str(64 * 1024**2)
+        assert argv[i + 2 : i + 4] == ["--tmpfs", "/tmp"]
+
+    def test_tmpfs_bad_size_rejected(self) -> None:
+        with pytest.raises(ValueError, match="неверный размер"):
+            SandboxProfile(tmpfs=("/tmp:64X",))
 
     def test_rootfs_mounted_as_root_before_proc_dev(self) -> None:
         argv = build_bwrap_argv(
-            SandboxProfile(rootfs="/srv/rootfs", ro_binds=()),
-            "true",
-            workspace_root=self._WS,
-            env={},
+            SandboxProfile(rootfs="/srv/rootfs", ro_binds=()), "true", env={},
         )
         i = argv.index("--ro-bind")
         assert argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]
         assert i < argv.index("--proc")
         assert i < argv.index("--dev")
 
-    def test_rootfs_moves_workspace_to_fixed_mount(self) -> None:
-        argv = build_bwrap_argv(
-            SandboxProfile(rootfs="/srv/rootfs", ro_binds=()),
-            "true",
-            workspace_root=self._WS,
-            env={},
-        )
-        i = argv.index("--bind-try")
-        assert argv[i + 1 : i + 3] == [self._WS, "/workspace"]
-        assert argv[argv.index("--chdir") + 1] == "/workspace"
-
-    def test_without_rootfs_workspace_keeps_host_path(self) -> None:
-        argv = build_bwrap_argv(
-            SandboxProfile(), "true", workspace_root=self._WS, env={},
-        )
-        assert "--ro-bind" not in argv
-        assert argv[argv.index("--chdir") + 1] == self._WS
-
     def test_env_cleared_and_set(self) -> None:
         argv = build_bwrap_argv(
-            SandboxProfile(),
-            "true",
-            workspace_root=self._WS,
-            env={"PATH": "/usr/bin:/bin"},
+            SandboxProfile(), "true", env={"PATH": "/usr/bin:/bin"},
         )
         assert "--clearenv" in argv
         i = argv.index("--setenv")
         assert argv[i + 1 : i + 3] == ["PATH", "/usr/bin:/bin"]
 
     def test_command_goes_after_separator(self) -> None:
-        argv = build_bwrap_argv(
-            SandboxProfile(), "echo hi", workspace_root=self._WS, env={},
-        )
+        argv = build_bwrap_argv(SandboxProfile(), "echo hi", env={})
         sep = argv.index("--")
         assert argv[sep + 1 :] == ["/bin/bash", "-c", "echo hi"]
 
@@ -199,12 +203,21 @@ class TestBashTool:
 
     @staticmethod
     def _make_tool(workspace_root: Path, profile: SandboxProfile | None = None):
+        ws = str(workspace_root)
+        base = profile or SandboxProfile()
         cfg = BashSandboxConfig(
-            workspace_root=workspace_root,
-            profiles={"default": profile or SandboxProfile()},
+            profiles={
+                "default": base.model_copy(
+                    update={
+                        "ro_binds": tuple(BindSpec.parse(p) for p in _HOST_RO_BINDS),
+                        "rw_binds": (BindSpec.parse(ws),),
+                        "cwd": ws,
+                    },
+                ),
+            },
             default_profile="default",
         )
-        return build_bash_tool(cfg, lambda: workspace_root)
+        return build_bash_tool(cfg, dict)
 
     @staticmethod
     def _invoke(tool, **args) -> dict:
@@ -276,3 +289,25 @@ class TestBashTool:
             command="ps -e --no-headers | wc -l",
         )
         assert int(payload["stdout"].strip()) < 10
+
+    def test_tmpfs_size_limit_enforced(self, tmp_path: Path) -> None:
+        payload = self._invoke(
+            self._make_tool(tmp_path, SandboxProfile(tmpfs=("/tmp:1M",))),
+            command="dd if=/dev/zero of=/tmp/blob bs=1M count=4 2>&1; echo rc=$?",
+        )
+        assert "rc=0" not in payload["stdout"]
+
+    def test_placeholders_render_and_dirs_created(self, tmp_path: Path) -> None:
+        template = f"{tmp_path}/{{user_id}}/{{thread_id}}"
+        cfg = BashSandboxConfig(
+            profiles={
+                "default": SandboxProfile(
+                    ro_binds=_HOST_RO_BINDS, rw_binds=(template,), cwd=template,
+                ),
+            },
+            default_profile="default",
+        )
+        tool = build_bash_tool(cfg, lambda: {"user_id": "7", "thread_id": "t1"})
+        payload = self._invoke(tool, command="echo data > out.txt")
+        assert payload["exit_code"] == 0
+        assert (tmp_path / "7" / "t1" / "out.txt").read_text() == "data\n"

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -34,7 +34,7 @@ def has_bwrap() -> bool:
 
 def build_bash_tool(
     cfg: BashSandboxConfig,
-    workspace_source: Callable[[], Path],
+    path_vars: Callable[[], Mapping[str, str]],
 ) -> BaseTool:
 
     @tool(response_format="content_and_artifact")
@@ -82,19 +82,16 @@ def build_bash_tool(
                 )
             )
 
-        workspace_root = str(workspace_source())
-        argv = build_bwrap_argv(
-            profile_dto,
-            command,
-            workspace_root=workspace_root,
-            env=profile_dto.env_set,
-        )
+        rendered = profile_dto.render(path_vars())
+        for spec in rendered.rw_binds:
+            Path(spec.host).mkdir(parents=True, exist_ok=True)
+        argv = build_bwrap_argv(rendered, command, env=rendered.env_set)
         result = run_subprocess(
             argv,
             stdin_data=stdin.encode("utf-8"),
-            timeout_sec=profile_dto.timeout_sec,
-            max_output_bytes=profile_dto.max_output_bytes,
-            cwd=workspace_root,
+            timeout_sec=rendered.timeout_sec,
+            max_output_bytes=rendered.max_output_bytes,
+            cwd="/",
             env=os.environ,
         )
         return pack_result(

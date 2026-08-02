@@ -1,8 +1,6 @@
-"""Данные текущей сессии chainlit: пользователь, тред, его рабочая папка."""
+"""Данные текущей сессии chainlit: пользователь, тред."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import chainlit as cl
 from chainlit.context import ChainlitContextException
@@ -11,7 +9,6 @@ __all__ = [
     "current_thread_id",
     "current_user_id",
     "current_user_roles",
-    "current_workspace",
 ]
 
 ROLES_KEY = "roles"
@@ -46,14 +43,3 @@ def current_thread_id() -> str | None:
         return cl.context.session.thread_id
     except ChainlitContextException:
         return None
-
-
-def current_workspace(base: Path) -> Path:
-    """Рабочая папка чата <base>/<user_id>/<thread_id>; создаётся при вызове."""
-    user_id, thread_id = current_user_id(), current_thread_id()
-    if not user_id or not thread_id:
-        msg = "рабочая папка недоступна: нет сессии chainlit"
-        raise RuntimeError(msg)
-    workspace = base / str(user_id) / str(thread_id)
-    workspace.mkdir(parents=True, exist_ok=True)
-    return workspace
