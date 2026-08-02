@@ -20,6 +20,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.chainlit2.agent.cancellation import turn_cancellation
+from boba.chainlit2.agent.tools.sandbox import WORKSPACE_MOUNT
 from boba.chainlit2.chat.agent_tracer import AgentTracer
 from boba.chainlit2.chat.edit import ThreadRewind
 from boba.chainlit2.chat.handler import chainlit_error_ctx_handler
@@ -36,6 +37,16 @@ class ChainlitAdapter:
     @staticmethod
     def get_chat_id(session: HTTPSession | WebsocketSession):
         return session.thread_id
+
+    @staticmethod
+    def to_human_message(msg: cl.Message) -> HumanMessage:
+        """Сообщение пользователя; пути вложений — как их видит песочница."""
+        attachments = [
+            {"name": e.name or e.id, "path": f"{WORKSPACE_MOUNT}/upload/{e.id}"}
+            for e in msg.elements or []
+        ]
+        extra = {"attachments": attachments} if attachments else {}
+        return HumanMessage(content=msg.content, id=msg.id, additional_kwargs=extra)
 
     @staticmethod
     def get_chat_user(session: UserSession):
@@ -131,7 +142,7 @@ async def on_message(
     stream = cast(
         "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
         graph.astream(
-            {"messages": [HumanMessage(content=msg.content, id=msg.id)]},
+            {"messages": [ChainlitAdapter.to_human_message(msg)]},
             stream_mode="messages",
             config=run_config,
         ),

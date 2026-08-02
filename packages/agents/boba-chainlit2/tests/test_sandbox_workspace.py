@@ -6,10 +6,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from langchain_core.messages import HumanMessage
 
+from boba.chainlit2.agent.tools.sandbox import WORKSPACE_MOUNT
 from boba.chainlit2.agent.tools.sandbox.argv import build_bwrap_argv
 from boba.chainlit2.agent.tools.sandbox.profile import SandboxProfile
 from boba.chainlit2.chat.data.models import Element
+from boba.chainlit2.infra.providers import build_llm_view
 from boba.chainlit2.infra.session import current_workspace
 
 
@@ -88,3 +91,42 @@ class TestWorkspacePerChat:
             pytest.raises(RuntimeError, match="нет сессии"),
         ):
             current_workspace(tmp_path)
+
+
+class TestAttachmentPaths:
+    """Пути вложений уходят в LLM, но не в ленту."""
+
+    @staticmethod
+    def _message(*attachments: dict[str, str]) -> HumanMessage:
+        extra = {"attachments": list(attachments)} if attachments else {}
+        return HumanMessage(content="разбери файл", id="u1", additional_kwargs=extra)
+
+    def test_llm_sees_sandbox_path(self) -> None:
+        msg = self._message({"name": "data.csv", "path": "/workspace/upload/el-1"})
+        assert "/workspace/upload/el-1" in build_llm_view([msg])[0].content
+
+    def test_llm_sees_file_name(self) -> None:
+        msg = self._message({"name": "data.csv", "path": "/workspace/upload/el-1"})
+        assert "data.csv" in build_llm_view([msg])[0].content
+
+    def test_original_message_is_not_touched(self) -> None:
+        msg = self._message({"name": "data.csv", "path": "/workspace/upload/el-1"})
+        build_llm_view([msg])
+        assert msg.content == "разбери файл"
+
+    def test_message_without_attachments_unchanged(self) -> None:
+        assert build_llm_view([self._message()])[0].content == "разбери файл"
+
+    def test_several_attachments_listed(self) -> None:
+        msg = self._message(
+            {"name": "a.csv", "path": "/workspace/upload/1"},
+            {"name": "b.csv", "path": "/workspace/upload/2"},
+        )
+        content = build_llm_view([msg])[0].content
+        assert "a.csv" in content
+        assert "b.csv" in content
+
+    def test_path_matches_where_storage_puts_the_file(self) -> None:
+        key = Element.object_key("4", "t-1", "el-1")
+        assert key == "4/t-1/upload/el-1"
+        assert f"{WORKSPACE_MOUNT}/upload/el-1" == "/workspace/upload/el-1"
