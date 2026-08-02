@@ -227,7 +227,10 @@ class PostgresConfig(BaseModel):
             raise ValueError(msg)
         return self
 
-    def conn_settings(self, override_options: dict[str, str] | None = None) -> dict[str, Any]:
+    def conn_settings(
+        self,
+        override_options: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         """
         kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts.
         """

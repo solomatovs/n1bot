@@ -243,17 +243,24 @@ class Element(Row):
     thread_id: UUID | None = None
     for_id: UUID | None = None
     chainlit_key: str | None = None
-    url: str | None = None
-    object_key: str | None = None
     size: ElementSize | None = None
     language: str | None = None
     page: int | None = None
     props: dict[str, Any] | None = field(default=None, metadata={"jsonb": True})
     mime: str | None = None
 
+    PATH_TEMPLATE: ClassVar[str] = "{user_id}/{thread_id}/{id}"
+    """Путь файла вычисляется из идентификаторов и в базе не хранится."""
+
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:
         return sql.Identifier(schema, "elements")
+
+    @classmethod
+    def object_key(cls, user_id: object, thread_id: object, element_id: object) -> str:
+        return cls.PATH_TEMPLATE.format(
+            user_id=user_id, thread_id=thread_id, id=element_id
+        )
 
     @classmethod
     def from_chainlit(cls, data: ElementDict) -> Self:
@@ -263,8 +270,6 @@ class Element(Row):
             for_id=Codec.uuid_opt(data.get("forId")),
             type=Codec.require(data.get("type")),
             chainlit_key=data.get("chainlitKey"),
-            url=data.get("url"),
-            object_key=data.get("objectKey"),
             name=Codec.require(data.get("name")),
             display=Codec.require(data.get("display")),
             size=data.get("size"),
@@ -280,8 +285,6 @@ class Element(Row):
             "threadId": Codec.uuid_str_opt(self.thread_id),
             "type": self.type,
             "chainlitKey": self.chainlit_key,
-            "url": self.url,
-            "objectKey": self.object_key,
             "name": self.name,
             "display": self.display,
             "size": self.size,
@@ -306,8 +309,6 @@ class Element(Row):
                     thread_id uuid,
                     for_id uuid,
                     chainlit_key text,
-                    url text,
-                    object_key text,
                     size text,
                     language text,
                     page integer,

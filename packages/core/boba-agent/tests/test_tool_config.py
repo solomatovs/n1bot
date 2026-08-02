@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pydantic import BaseModel, ConfigDict
+
 from boba.agent.tool_config import (
     OmegaConfPluginToolFilter,
     OmegaConfResolver,
@@ -13,7 +15,6 @@ from boba.agent.tool_config import (
 )
 from boba.settings import ConfigBuilder
 from boba.tools import ConfigResolver, PluginToolFilter
-from pydantic import BaseModel, ConfigDict
 
 
 class _Cfg(BaseModel):

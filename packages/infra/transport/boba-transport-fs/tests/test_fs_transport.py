@@ -8,7 +8,6 @@ from boba.indexing import Metadata, TransportKeys
 from boba.transport.fs import FsKeys, FsRequest, FsTransport, FsWalkRequestSource
 
 
-
 def test_fs_transport_opens_file_and_propagates_metadata(tmp_path: Path):
     """Handle живёт ровно один шаг generator'а; Reader читает в том же цикле."""
     f = tmp_path / "x.txt"

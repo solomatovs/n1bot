@@ -12,7 +12,7 @@ from boba.tool.shell.config import BashLocalConfig, BashSandboxConfig
 
 def _clear_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Снять все env-варсы, влияющие на загрузку shell-конфигов."""
-    import os  # noqa: PLC0415 — локально, не дёргаем на load module
+    import os
 
     for key in list(os.environ):
         if key.startswith("BOBA_TOOL__BASH_LOCAL__"):

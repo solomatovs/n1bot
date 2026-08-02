@@ -1,4 +1,7 @@
-"""HttpRequest — чистый план одного HTTP-запроса (url + method + headers/params + body)."""
+"""HttpRequest — чистый план одного HTTP-запроса.
+
+url + method + headers/params + body.
+"""
 
 from __future__ import annotations
 

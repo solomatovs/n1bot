@@ -17,7 +17,6 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.liteparse import LiteParseEngine
-
 from boba.tool.doc._engine import DocEngine
 from boba.tool.doc.config import DocPluginConfig
 from boba.tools import FromConfig, FromDI, Scope, tool

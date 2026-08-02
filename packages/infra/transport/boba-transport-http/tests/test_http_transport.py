@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from boba.transport.http import BasicAuth, HttpProfile, HttpRequest, HttpTransport
 
@@ -87,9 +88,11 @@ def test_retry_exhausted_raises_last_5xx(monkeypatch):
     _patch(monkeypatch, handler)
 
     transport = HttpTransport(HttpProfile(retry_attempts=2, retry_backoff_sec=0))
-    with pytest.raises(httpx.HTTPStatusError) as exc:  # noqa: PT012
-        with transport.fetch(HttpRequest(url="https://x.test/y")):
-            pass
+    with (
+        pytest.raises(httpx.HTTPStatusError) as exc,
+        transport.fetch(HttpRequest(url="https://x.test/y")),
+    ):
+        pass
     assert exc.value.response.status_code == 500
     assert calls["n"] == 2
     transport.close()
@@ -106,9 +109,11 @@ def test_4xx_not_retried(monkeypatch):
     _patch(monkeypatch, handler)
 
     transport = HttpTransport(HttpProfile(retry_attempts=3, retry_backoff_sec=0))
-    with pytest.raises(httpx.HTTPStatusError) as exc:  # noqa: PT012
-        with transport.fetch(HttpRequest(url="https://x.test/y")):
-            pass
+    with (
+        pytest.raises(httpx.HTTPStatusError) as exc,
+        transport.fetch(HttpRequest(url="https://x.test/y")),
+    ):
+        pass
     assert exc.value.response.status_code == 404
     assert calls["n"] == 1
     transport.close()
@@ -144,7 +149,9 @@ def test_auth_from_profile_applied_to_client(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    profile = HttpProfile(auth=BasicAuth(method="basic", user="u", password="p"))
+    profile = HttpProfile(
+        auth=BasicAuth(method="basic", user="u", password=SecretStr("p"))
+    )
     with (
         HttpTransport(profile) as transport,
         transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
