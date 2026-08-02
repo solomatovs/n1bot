@@ -17,6 +17,7 @@ dependencies = [
     "boba-db-postgres==0.0.8",
     "boba-indexing==0.0.8",
     "boba-kbdoc==0.0.8",
+    "boba-liteparse==0.0.8",
     "boba-transport-http==0.0.8",
     "boba-auth==0.0.8",
     "cryptography>=42,<51",
