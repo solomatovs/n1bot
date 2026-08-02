@@ -14,7 +14,6 @@ from boba.chainlit2.agent.tools.kb.kb import PostgresKnowledgeBaseConfig
 from boba.chainlit2.agent.tools.kb.search import (
     CollectionSearch,
     ConfluenceCollection,
-    KbDocCollection,
     KbSearch,
     SearchMethod,
 )
@@ -43,18 +42,6 @@ class KbTools:
                 ConfluenceCollection,
                 "fts",
                 "Полнотекстовый (fts) поиск по коллекции Confluence-страниц.",
-            ),
-            self._search(
-                "kb_doc_vector_search",
-                KbDocCollection,
-                "vector",
-                "Семантический (vector) поиск по коллекции документов kb_doc.",
-            ),
-            self._search(
-                "kb_doc_fts_search",
-                KbDocCollection,
-                "fts",
-                "Полнотекстовый (fts) поиск по коллекции документов kb_doc.",
             ),
         ]
 
