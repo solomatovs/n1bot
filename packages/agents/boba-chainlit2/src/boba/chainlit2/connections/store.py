@@ -56,8 +56,8 @@ class ConnectionsConfig(BaseModel):
         description="Имя таблицы ролей.",
     )
     grants_table: str = Field(
-        default="connection_grants",
-        description="Имя связочной таблицы «соединение — роль/пользователь».",
+        default="grants",
+        description="Имя связочной таблицы «источник — субъект» (src → tgt).",
     )
     encryption_key: SecretStr = Field(
         default=SecretStr(""),
@@ -134,21 +134,36 @@ class ConnectionKinds:
 
 
 class GrantKinds:
-    """Виды субъектов в связочной таблице: kind — имя таблицы для kind_id."""
+    """Стороны связи в таблице grants: kind — имя таблицы, kind_id — id в ней."""
 
+    CONNECTIONS: ClassVar[str] = "connections"
     ROLES: ClassVar[str] = "roles"
     USERS: ClassVar[str] = "users"
 
     @classmethod
-    def known(cls) -> tuple[str, ...]:
+    def known_src(cls) -> tuple[str, ...]:
+        return (cls.CONNECTIONS,)
+
+    @classmethod
+    def known_tgt(cls) -> tuple[str, ...]:
         return (cls.ROLES, cls.USERS)
 
     @classmethod
-    def validate(cls, kind: str) -> str:
-        if kind not in cls.known():
+    def validate_src(cls, kind: str) -> str:
+        if kind not in cls.known_src():
             msg = (
-                f"неизвестный kind связи {kind!r} "
-                f"(известны: {', '.join(cls.known())})"
+                f"неизвестный src_kind связи {kind!r} "
+                f"(известны: {', '.join(cls.known_src())})"
+            )
+            raise ValueError(msg)
+        return kind
+
+    @classmethod
+    def validate_tgt(cls, kind: str) -> str:
+        if kind not in cls.known_tgt():
+            msg = (
+                f"неизвестный tgt_kind связи {kind!r} "
+                f"(известны: {', '.join(cls.known_tgt())})"
             )
             raise ValueError(msg)
         return kind
@@ -231,22 +246,21 @@ class ConnectionStore:
             sql.SQL(
                 """
                 create table if not exists {grants} (
-                    id            integer generated always as identity primary key,
-                    connection_id integer not null
-                                  references {connections} (id) on delete cascade,
-                    kind          varchar not null,
-                    kind_id       integer not null,
-                    unique (connection_id, kind, kind_id)
+                    id          integer generated always as identity primary key,
+                    src_kind    varchar not null,
+                    src_kind_id integer not null,
+                    tgt_kind    varchar not null,
+                    tgt_kind_id integer not null,
+                    unique (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
                 )
                 """
             ).format(
                 grants=self._grants(),
-                connections=self._table(),
             ),
             sql.SQL(
                 """
-                create index if not exists idx_connection_grants_subject
-                    on {grants} (kind, kind_id)
+                create index if not exists idx_grants_target
+                    on {grants} (tgt_kind, tgt_kind_id)
                 """
             ).format(
                 grants=self._grants(),
@@ -332,19 +346,36 @@ class ConnectionStore:
         return {row["name"]: self._to_profile(row["kind"], row["data"]) for row in rows}
 
     def delete(self, name: str) -> bool:
-        query = sql.SQL(
+        drop_grants = sql.SQL(
+            """
+            delete from
+                {grants} g
+            using
+                {connections} c
+            where
+                c.name = %(name)s
+                and g.src_kind = %(src_kind)s
+                and g.src_kind_id = c.id
+            """
+        ).format(
+            grants=self._grants(),
+            connections=self._table(),
+        )
+        drop_row = sql.SQL(
             """
             delete from
                 {connections}
             where
-                name = %s
+                name = %(name)s
             """
         ).format(
             connections=self._table(),
         )
 
-        with self._pool.cursor() as cur:
-            cur.execute(query, (name,))
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            params = {"name": name, "src_kind": GrantKinds.CONNECTIONS}
+            cur.execute(drop_grants, params)
+            cur.execute(drop_row, params)
             return cur.rowcount > 0
 
     def roles(self) -> dict[str, int]:
@@ -365,96 +396,131 @@ class ConnectionStore:
             cur.execute(query)
             return {row[0]: int(row[1]) for row in cur.fetchall()}
 
-    def grant(self, name: str, kind: str, kind_id: int) -> int:
-        GrantKinds.validate(kind)
+    def grant(
+        self,
+        src_kind: str,
+        src_kind_id: int,
+        tgt_kind: str,
+        tgt_kind_id: int,
+    ) -> int:
+        GrantKinds.validate_src(src_kind)
+        GrantKinds.validate_tgt(tgt_kind)
         query = sql.SQL(
             """
             insert into {grants}
-                (connection_id, kind, kind_id)
-            select
-                c.id, %(kind)s, %(kind_id)s
-            from
-                {connections} c
-            where
-                c.name = %(name)s
+                (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
+            values
+                (%(src_kind)s, %(src_kind_id)s, %(tgt_kind)s, %(tgt_kind_id)s)
             on conflict
-                (connection_id, kind, kind_id)
+                (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
             do update set
-                kind = excluded.kind
+                src_kind = excluded.src_kind
             returning
                 id
             """
         ).format(
             grants=self._grants(),
-            connections=self._table(),
         )
+        params = {
+            "src_kind": src_kind,
+            "src_kind_id": src_kind_id,
+            "tgt_kind": tgt_kind,
+            "tgt_kind_id": tgt_kind_id,
+        }
 
         with self._pool.cursor() as cur:
-            cur.execute(query, {"name": name, "kind": kind, "kind_id": kind_id})
+            cur.execute(query, params)
             row = cur.fetchone()
 
         if row is None:
-            msg = f"connections: соединение {name!r} не найдено"
-            raise ConnectionNotFoundError(msg)
+            msg = (
+                f"grants: связь {src_kind}#{src_kind_id} -> "
+                f"{tgt_kind}#{tgt_kind_id} не сохранена"
+            )
+            raise RuntimeError(msg)
         return int(row[0])
 
-    def revoke(self, name: str, kind: str, kind_id: int) -> bool:
-        GrantKinds.validate(kind)
+    def revoke(
+        self,
+        src_kind: str,
+        src_kind_id: int,
+        tgt_kind: str,
+        tgt_kind_id: int,
+    ) -> bool:
+        GrantKinds.validate_src(src_kind)
+        GrantKinds.validate_tgt(tgt_kind)
         query = sql.SQL(
             """
             delete from
-                {grants} g
-            using
-                {connections} c
+                {grants}
             where
-                g.connection_id = c.id
-                and c.name  = %(name)s
-                and g.kind  = %(kind)s
-                and g.kind_id = %(kind_id)s
+                src_kind = %(src_kind)s
+                and src_kind_id = %(src_kind_id)s
+                and tgt_kind = %(tgt_kind)s
+                and tgt_kind_id = %(tgt_kind_id)s
             """
         ).format(
             grants=self._grants(),
-            connections=self._table(),
         )
+        params = {
+            "src_kind": src_kind,
+            "src_kind_id": src_kind_id,
+            "tgt_kind": tgt_kind,
+            "tgt_kind_id": tgt_kind_id,
+        }
 
         with self._pool.cursor() as cur:
-            cur.execute(query, {"name": name, "kind": kind, "kind_id": kind_id})
+            cur.execute(query, params)
             return cur.rowcount > 0
 
-    def grants_of(self, name: str) -> list[tuple[str, int]]:
+    def grants_of(self, src_kind: str, src_kind_id: int) -> list[tuple[str, int]]:
+        GrantKinds.validate_src(src_kind)
         query = sql.SQL(
             """
             select
-                g.kind, g.kind_id
+                tgt_kind, tgt_kind_id
             from
-                {grants} g
-                inner join {connections} c on g.connection_id = c.id
+                {grants}
             where
-                c.name = %s
+                src_kind = %(src_kind)s
+                and src_kind_id = %(src_kind_id)s
             order by
-                g.id
+                id
             """
         ).format(
             grants=self._grants(),
-            connections=self._table(),
         )
 
         with self._pool.cursor() as cur:
-            cur.execute(query, (name,))
+            cur.execute(query, {"src_kind": src_kind, "src_kind_id": src_kind_id})
             return [(row[0], int(row[1])) for row in cur.fetchall()]
 
-    def connections_for(self, kind: str, kind_id: int) -> dict[str, BaseModel]:
-        GrantKinds.validate(kind)
+    def grant_connection(self, name: str, tgt_kind: str, tgt_kind_id: int) -> int:
+        connection_id = self._connection_id(name)
+        return self.grant(GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id)
+
+    def revoke_connection(self, name: str, tgt_kind: str, tgt_kind_id: int) -> bool:
+        connection_id = self._connection_id(name)
+        return self.revoke(GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id)
+
+    def connection_grants(self, name: str) -> list[tuple[str, int]]:
+        connection_id = self._connection_id(name)
+        return self.grants_of(GrantKinds.CONNECTIONS, connection_id)
+
+    def connections_for(self, tgt_kind: str, tgt_kind_id: int) -> dict[str, BaseModel]:
+        GrantKinds.validate_tgt(tgt_kind)
         query = sql.SQL(
             """
             select
                 c.name, c.kind, c.data
             from
                 {connections} c
-                inner join {grants} g on g.connection_id = c.id
+                inner join {grants} g on
+                    g.src_kind = %(src_kind)s
+                    and g.src_kind_id = c.id
             where
-                g.kind = %(kind)s
-                and g.kind_id = %(kind_id)s
+                g.tgt_kind = %(tgt_kind)s
+                and g.tgt_kind_id = %(tgt_kind_id)s
             order by
                 c.id
             """
@@ -462,12 +528,42 @@ class ConnectionStore:
             connections=self._table(),
             grants=self._grants(),
         )
+        params = {
+            "src_kind": GrantKinds.CONNECTIONS,
+            "tgt_kind": tgt_kind,
+            "tgt_kind_id": tgt_kind_id,
+        }
 
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(query, {"kind": kind, "kind_id": kind_id})
+            cur.execute(query, params)
             rows = cur.fetchall()
 
         return {row["name"]: self._to_profile(row["kind"], row["data"]) for row in rows}
+
+    def _connection_id(self, name: str) -> int:
+        query = sql.SQL(
+            """
+            select
+                id
+            from
+                {connections}
+            where
+                name = %s
+            limit
+                1
+            """
+        ).format(
+            connections=self._table(),
+        )
+
+        with self._pool.cursor() as cur:
+            cur.execute(query, (name,))
+            row = cur.fetchone()
+
+        if row is None:
+            msg = f"connections: соединение {name!r} не найдено"
+            raise ConnectionNotFoundError(msg)
+        return int(row[0])
 
     def _to_profile(self, kind: str, data: dict[str, Any]) -> BaseModel:
         model = ConnectionKinds.model(kind)

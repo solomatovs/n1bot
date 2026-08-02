@@ -240,14 +240,20 @@ class TestConnectionsConfig:
 
 class TestGrantKinds:
     def test_known_kinds_are_table_names(self) -> None:
-        assert GrantKinds.known() == ("roles", "users")
+        assert GrantKinds.known_src() == ("connections",)
+        assert GrantKinds.known_tgt() == ("roles", "users")
 
     def test_validate_passes_known(self) -> None:
-        assert GrantKinds.validate("roles") == "roles"
+        assert GrantKinds.validate_src("connections") == "connections"
+        assert GrantKinds.validate_tgt("roles") == "roles"
 
-    def test_validate_rejects_unknown(self) -> None:
-        with pytest.raises(ValueError, match="неизвестный kind связи"):
-            GrantKinds.validate("groups")
+    def test_validate_src_rejects_unknown(self) -> None:
+        with pytest.raises(ValueError, match="неизвестный src_kind связи"):
+            GrantKinds.validate_src("roles")
+
+    def test_validate_tgt_rejects_unknown(self) -> None:
+        with pytest.raises(ValueError, match="неизвестный tgt_kind связи"):
+            GrantKinds.validate_tgt("groups")
 
 
 class TestUserIntId:
