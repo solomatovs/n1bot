@@ -6,10 +6,10 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from boba.chainlit2.agent.tools.sandbox import WORKSPACE_MOUNT
-from boba.chainlit2.agent.tools.sandbox.argv import build_bwrap_argv
-from boba.chainlit2.agent.tools.sandbox.profile import BindSpec, SandboxProfile
 from boba.chainlit2.chat.data.models import Element
 from boba.chainlit2.infra.providers import build_llm_view
+from boba.chainlit2.sandbox.argv import build_bwrap_argv
+from boba.chainlit2.sandbox.profile import BindSpec, SandboxProfile
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +27,12 @@ _PROFILE_BASE: dict[str, object] = {
     "rw_binds": (),
     "rw_images": (),
     "image_template": "",
-    "launcher": {},
+    "launcher": {
+        "mount_wait_sec": 10.0,
+        "mount_poll_sec": 0.05,
+        "shutdown_wait_sec": 5.0,
+        "copy_chunk_bytes": 1 << 20,
+    },
     "tmpfs": (),
     "network": False,
     "env_set": {},

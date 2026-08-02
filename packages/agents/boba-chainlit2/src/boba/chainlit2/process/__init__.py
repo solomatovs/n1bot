@@ -1,6 +1,6 @@
 """Запуск подпроцессов: общая часть shell- и sandbox-инструментов."""
 
-from boba.chainlit2.agent.tools.process.runner import (
+from boba.chainlit2.process.runner import (
     RunResult,
     ShellRunnerInvariantError,
     run_subprocess,

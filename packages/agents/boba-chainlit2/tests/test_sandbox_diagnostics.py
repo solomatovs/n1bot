@@ -11,11 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from boba.chainlit2.agent.tools.process.runner import RunResult
 from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
-from boba.chainlit2.agent.tools.sandbox.diagnostics import SandboxDiagnostics
-from boba.chainlit2.agent.tools.sandbox.profile import SandboxProfile
 from boba.chainlit2.agent.tools.sandbox.tools import build_bash_tool
+from boba.chainlit2.process.runner import RunResult
+from boba.chainlit2.sandbox import SandboxConfig
+from boba.chainlit2.sandbox.diagnostics import SandboxDiagnostics
+from boba.chainlit2.sandbox.profile import SandboxProfile
 from boba.chainlit2.workspace import FUSE_DEVICE
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
@@ -34,7 +35,12 @@ _PROFILE_BASE: dict[str, object] = {
     "rw_binds": (),
     "rw_images": (),
     "image_template": "",
-    "launcher": {},
+    "launcher": {
+        "mount_wait_sec": 10.0,
+        "mount_poll_sec": 0.05,
+        "shutdown_wait_sec": 5.0,
+        "copy_chunk_bytes": 1 << 20,
+    },
     "tmpfs": ("/tmp:64M",),
     "network": False,
     "env_set": {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp"},
@@ -86,10 +92,8 @@ def _result(**kw: object) -> RunResult:
     return RunResult(**fields)  # type: ignore[arg-type]
 
 
-def _explain(result: RunResult, profile: SandboxProfile, **kw: object) -> str:
-    networks = kw.get("network_profiles", ())
-    assert isinstance(networks, tuple)
-    return SandboxDiagnostics.explain(result, profile, networks)
+def _explain(result: RunResult, profile: SandboxProfile) -> str:
+    return SandboxDiagnostics.explain(result, profile)
 
 
 class TestDiagnosticText:
@@ -135,11 +139,8 @@ class TestDiagnosticText:
         result = _result(
             stderr="socket.gaierror: [Errno -3] Temporary failure in name resolution"
         )
-        text = _explain(
-            result, _profile(network=False), network_profiles=("network",)
-        )
+        text = _explain(result, _profile(network=False))
         assert "network=false" in text
-        assert "network" in text
         assert "not at fault" in text
 
     def test_network_error_ignored_when_network_enabled(self) -> None:
@@ -157,14 +158,14 @@ class TestDiagnosticText:
 def _tool(profile: SandboxProfile, extra: dict[str, SandboxProfile]):
     profiles = {"default": profile}
     profiles.update(extra)
-    cfg = BashSandboxConfig(profiles=profiles, default_profile="default")
+    cfg = BashSandboxConfig(sandbox=SandboxConfig(profiles=profiles), profile="default")
     return build_bash_tool(cfg, lambda: {"user_id": "7", "thread_id": "t1"})
 
 
 def _invoke(tool, command: str, stdin: str = "") -> dict:
     msg = tool.invoke(
         {
-            "args": {"command": command, "stdin": stdin, "profile": ""},
+            "args": {"command": command, "stdin": stdin},
             "id": "call-bash",
             "name": "bash",
             "type": "tool_call",
@@ -215,16 +216,13 @@ class TestDiagnosticAppearsLive:
         assert payload["timed_out"] is True
         assert "timeout_sec=1" in payload["diagnostic"]
 
-    def test_network_disabled_points_to_profile_with_network(self) -> None:
+    def test_network_disabled_explained(self) -> None:
         code = "import socket\nsocket.getaddrinfo('example.com', 443)\n"
-        tool = _tool(
-            _profile(network=False),
-            {"online": _profile(network=True)},
-        )
+        tool = _tool(_profile(network=False), {"online": _profile(network=True)})
         payload = _invoke(tool, "python3 -", stdin=code)
         assert payload["exit_code"] != 0
         assert "network=false" in payload["diagnostic"]
-        assert "online" in payload["diagnostic"]
+        assert "not at fault" in payload["diagnostic"]
 
     def test_successful_command_has_empty_diagnostic(self) -> None:
         payload = _invoke(_tool(_profile(), {}), "echo ok")

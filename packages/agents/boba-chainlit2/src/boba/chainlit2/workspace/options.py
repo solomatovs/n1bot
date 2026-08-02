@@ -10,12 +10,12 @@ __all__ = ["LauncherOptions", "ResourceLimits"]
 
 @dataclass(frozen=True)
 class LauncherOptions:
-    """Тайминги и размеры лаунчера."""
+    """Тайминги и размеры лаунчера; значения приходят из профиля."""
 
-    mount_wait_sec: float = 10.0
-    mount_poll_sec: float = 0.05
-    shutdown_wait_sec: float = 5.0
-    copy_chunk_bytes: int = 1 << 20
+    mount_wait_sec: float
+    mount_poll_sec: float
+    shutdown_wait_sec: float
+    copy_chunk_bytes: int
 
 
 @dataclass(frozen=True)
