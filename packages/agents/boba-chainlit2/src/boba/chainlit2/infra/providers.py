@@ -295,7 +295,27 @@ def build_llm_view(msgs: list, allowed_tools: frozenset[str] | None = None) -> l
         if not isinstance(m, ToolMessage)
         and not (isinstance(m, AIMessage) and m.tool_calls)
     ][-30:]
-    return pruned_head + _drop_foreign_tools(current, allowed_tools)
+    view = pruned_head + _drop_foreign_tools(current, allowed_tools)
+    return [_with_attachments(m) for m in view]
+
+
+def _with_attachments(message: object) -> object:
+    """Дописывает пути вложений в текст: в ленте их быть не должно."""
+    if not isinstance(message, HumanMessage):
+        return message
+    attachments = message.additional_kwargs.get("attachments") or []
+    if not attachments:
+        return message
+    listing = "\n".join(f"- {a['name']}: {a['path']}" for a in attachments)
+    return message.model_copy(
+        update={
+            "content": (
+                f"{message.content}\n\n"
+                f"Прикреплённые файлы, доступны инструменту bash по этим путям:\n"
+                f"{listing}"
+            )
+        }
+    )
 
 
 def _drop_foreign_tools(msgs: list, allowed_tools: frozenset[str] | None) -> list:

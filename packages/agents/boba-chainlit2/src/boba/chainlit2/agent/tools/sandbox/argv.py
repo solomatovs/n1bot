@@ -7,12 +7,13 @@ from collections.abc import Mapping
 
 from boba.chainlit2.agent.tools.sandbox.profile import SandboxProfile
 
-__all__ = ["build_bwrap_argv"]
+__all__ = ["WORKSPACE_MOUNT", "build_bwrap_argv"]
 
 _BWRAP_BIN = "bwrap"
 _BASH_BIN = "/bin/bash"
 
-_WORKSPACE_MOUNT = "/workspace"
+WORKSPACE_MOUNT = "/workspace"
+"""Точка монтирования рабочей папки чата внутри песочницы."""
 
 
 def build_bwrap_argv(
@@ -48,7 +49,7 @@ def build_bwrap_argv(
         if link is not None:
             symlinks.append(link)
 
-    workspace_mount = _WORKSPACE_MOUNT if profile.rootfs else workspace_root
+    workspace_mount = WORKSPACE_MOUNT if profile.rootfs else workspace_root
     argv += ["--bind-try", workspace_root, workspace_mount]
 
     for path in _dedup_preserve_order(profile.rw_binds):
