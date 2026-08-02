@@ -7,21 +7,44 @@
 
 from __future__ import annotations
 
+import functools
 import logging
-from typing import Any
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar
 from uuid import UUID
 
 from chainlit.context import context_var
 from chainlit.step import Step
 from langchain_core.outputs import ChatGenerationChunk, GenerationChunk
 from langchain_core.tracers.base import AsyncBaseTracer
-from typing_extensions import override
+from typing_extensions import ParamSpec, override
 
+from boba.chainlit2.chat.handler.error import show_error
 from boba.chainlit2.rendering.chat_view import ChatView
 
 __all__ = ["AgentTracer"]
 
 logger = logging.getLogger(__name__)
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _visible_failure(
+    fn: Callable[_P, Coroutine[Any, Any, _R]],
+) -> Callable[_P, Coroutine[Any, Any, _R | None]]:
+    """langchain гасит исключения коллбэков в logger.warning: показываем сами."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R | None:
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as e:
+            logger.exception("rendering failed in %s", fn.__name__)
+            await show_error(f"Failed to render step ({fn.__name__}): {e}")
+            return None
+
+    return wrapper
 
 
 class AgentTracer(AsyncBaseTracer):
@@ -52,6 +75,7 @@ class AgentTracer(AsyncBaseTracer):
         return str(value) if value else ""
 
     @override
+    @_visible_failure
     async def on_llm_new_token(
         self,
         token: str,
@@ -72,6 +96,7 @@ class AgentTracer(AsyncBaseTracer):
         )
 
     @override
+    @_visible_failure
     async def on_llm_end(
         self,
         response: Any,
@@ -95,6 +120,7 @@ class AgentTracer(AsyncBaseTracer):
         )
 
     @override
+    @_visible_failure
     async def on_tool_start(
         self,
         serialized: dict[str, Any],
@@ -117,6 +143,7 @@ class AgentTracer(AsyncBaseTracer):
         )
 
     @override
+    @_visible_failure
     async def on_tool_end(
         self,
         output: Any,
@@ -137,6 +164,7 @@ class AgentTracer(AsyncBaseTracer):
                 )
         return await super().on_tool_end(output, run_id=run_id, **kwargs)
 
+    @_visible_failure
     async def stop_pending(self) -> None:
         """Закрыть шаги инструментов, оставшиеся в работе после остановки."""
         self._set_context()
@@ -145,6 +173,7 @@ class AgentTracer(AsyncBaseTracer):
             await self._view.tool_stopped(step)
 
     @override
+    @_visible_failure
     async def on_tool_error(
         self,
         error: BaseException,

@@ -7,7 +7,9 @@ import string
 from collections.abc import Mapping
 from typing import ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from boba.chainlit2.workspace.config import LauncherConfig
 
 __all__ = ["BindSpec", "SandboxProfile", "TmpfsSpec"]
 
@@ -26,7 +28,7 @@ class BindSpec(BaseModel):
     def parse(cls, raw: str) -> Self:
         host, sep, target = raw.partition(":")
         if not host:
-            msg = f"bind {raw!r}: пустой host-путь"
+            msg = f"bind {raw!r}: empty host path"
             raise ValueError(msg)
         host = cls._canonical(host)
         return cls(host=host, target=target if sep else host)
@@ -36,7 +38,7 @@ class BindSpec(BaseModel):
     def _validate_path(cls, value: str) -> str:
         cls.check_vars(value)
         if not value.startswith("/"):
-            msg = f"bind: путь должен быть абсолютным, получено {value!r}"
+            msg = f"bind: path must be absolute, got {value!r}"
             raise ValueError(msg)
         return value
 
@@ -49,19 +51,19 @@ class BindSpec(BaseModel):
     @staticmethod
     def check_vars(template: str) -> str:
         try:
-            fields = [
-                name
-                for _, name, _, _ in string.Formatter().parse(template)
-                if name is not None
-            ]
+            parsed = list(string.Formatter().parse(template))
         except ValueError as e:
-            msg = f"неверный шаблон пути {template!r}: {e}"
+            msg = f"invalid path template {template!r}: {e}"
             raise ValueError(msg) from e
+        fields: list[str] = []
+        for _, name, _, _ in parsed:
+            if name is not None:
+                fields.append(name)
         unknown = sorted(set(fields) - set(BindSpec.VARS))
         if unknown:
             msg = (
-                f"неизвестные переменные {unknown} в пути {template!r} "
-                f"(известны: {', '.join(BindSpec.VARS)})"
+                f"unknown variables {unknown} in path {template!r} "
+                f"(known: {', '.join(BindSpec.VARS)})"
             )
             raise ValueError(msg)
         return template
@@ -72,8 +74,8 @@ class BindSpec(BaseModel):
             return template.format_map(dict(variables))
         except KeyError as e:
             msg = (
-                f"sandbox: переменная {{{e.args[0]}}} в пути {template!r} "
-                f"недоступна — нет сессии chainlit"
+                f"sandbox: variable {{{e.args[0]}}} in path {template!r} "
+                f"is unavailable: no chainlit session"
             )
             raise RuntimeError(msg) from e
 
@@ -101,7 +103,7 @@ class TmpfsSpec(BaseModel):
     @classmethod
     def _validate_path(cls, value: str) -> str:
         if not value.startswith("/"):
-            msg = f"tmpfs: путь должен быть абсолютным, получено {value!r}"
+            msg = f"tmpfs: path must be absolute, got {value!r}"
             raise ValueError(msg)
         return os.path.normpath(value)
 
@@ -112,7 +114,7 @@ class TmpfsSpec(BaseModel):
         factor = factors.get(text[-1:], 0)
         digits = text[:-1] if factor else text
         if not digits.isdigit() or int(digits) == 0:
-            msg = f"tmpfs: неверный размер {raw!r} (пример: 256M, 1G)"
+            msg = f"tmpfs: invalid size {raw!r} (example: 256M, 1G)"
             raise ValueError(msg)
         return int(digits) * (factor or 1)
 
@@ -123,7 +125,6 @@ class SandboxProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     rootfs: str = Field(
-        default="",
         description=(
             "Каталог, монтируемый read-only как / песочницы; ro_binds "
             "ложатся поверх. Пустая строка — корень не монтируется. "
@@ -131,50 +132,84 @@ class SandboxProfile(BaseModel):
         ),
     )
     ro_binds: tuple[BindSpec, ...] = Field(
-        default=(),
         description=(
             "Host-пути read-only, формат `host[:target]`; несуществующие "
             "пропускаются. Рендерятся {user_id}/{thread_id}."
         ),
     )
     rw_binds: tuple[BindSpec, ...] = Field(
-        default=(),
         description=(
             "Host-пути read-write, формат `host[:target]`. Рендерятся "
             "{user_id}/{thread_id}; host-путь создаётся при вызове."
         ),
     )
+    rw_images: tuple[BindSpec, ...] = Field(
+        description=(
+            "Ext4-образы read-write, формат `image[:target]`; монтируются "
+            "через fuse2fs на время вызова. Рендерятся {user_id}/{thread_id}."
+        ),
+    )
+    image_template: str = Field(
+        description=(
+            "Шаблонный ext4-образ; копируется в путь из rw_images при "
+            "первом вызове. Обязателен, если rw_images непуст."
+        ),
+    )
+    launcher: LauncherConfig = Field(
+        description="Тайминги и размеры операций лаунчера образов (rw_images).",
+    )
     tmpfs: tuple[TmpfsSpec, ...] = Field(
-        default=(),
         description=(
             "Mountpoints под tmpfs (in-memory), формат `dest[:size]`, "
             "например `/tmp:256M`."
         ),
     )
     network: bool = Field(
-        default=False,
         description="False — `--unshare-net` (нет сети). True — сеть хоста.",
     )
     env_set: dict[str, str] = Field(
-        default_factory=dict,
         description=(
             "Env внутри песочницы; host-env не наследуется. Для запуска "
             "утилит обычно нужен 'PATH'."
         ),
     )
     timeout_sec: int = Field(
-        default=30,
         ge=1,
         le=3600,
         description="Жёсткий таймаут выполнения процесса (1..3600 сек).",
     )
+    max_memory_bytes: int = Field(
+        gt=0,
+        description="Лимит памяти команды (RLIMIT_AS), байт; обязателен.",
+    )
+    max_cpu_sec: int = Field(
+        gt=0,
+        description="Лимит CPU-времени команды (RLIMIT_CPU), сек; обязателен.",
+    )
+    max_file_size_bytes: int = Field(
+        gt=0,
+        description=(
+            "Лимит размера создаваемого файла (RLIMIT_FSIZE), байт; "
+            "обязателен. Суммарный диск в rw_images ограничен самим образом."
+        ),
+    )
+    max_open_files: int = Field(
+        gt=0,
+        description="Лимит открытых дескрипторов (RLIMIT_NOFILE); обязателен.",
+    )
+    max_processes: int = Field(
+        gt=0,
+        description=(
+            "Лимит процессов на вызов (RLIMIT_NPROC); обязателен. "
+            "Ставится через `ulimit -u` внутри песочницы: выставленный "
+            "снаружи, он не даёт bwrap создать namespace."
+        ),
+    )
     max_output_bytes: int = Field(
-        default=256 * 1024,
         ge=1024,
         description="Лимит stdout И stderr по отдельности; сверх — обрезка.",
     )
     cwd: str = Field(
-        default="",
         description=(
             "Рабочая директория внутри песочницы; поддерживает "
             "{user_id}/{thread_id}. Пустая = '/'."
@@ -188,23 +223,45 @@ class SandboxProfile(BaseModel):
             return value
         return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
 
-    @field_validator("ro_binds", "rw_binds", mode="before")
+    @field_validator("image_template", mode="after")
+    @classmethod
+    def _canonicalize_template(cls, value: str) -> str:
+        if not value:
+            return value
+        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
+    @model_validator(mode="after")
+    def _validate_images(self) -> Self:
+        if self.rw_images and not self.image_template:
+            msg = "sandbox: rw_images is set, but image_template is empty"
+            raise ValueError(msg)
+        return self
+
+    @field_validator("ro_binds", "rw_binds", "rw_images", mode="before")
     @classmethod
     def _parse_binds(cls, value: object) -> object:
         if not isinstance(value, (list, tuple)):
             return value
-        return tuple(
-            BindSpec.parse(item) if isinstance(item, str) else item for item in value
-        )
+        parsed: list[object] = []
+        for item in value:
+            if isinstance(item, str):
+                parsed.append(BindSpec.parse(item))
+            else:
+                parsed.append(item)
+        return tuple(parsed)
 
     @field_validator("tmpfs", mode="before")
     @classmethod
     def _parse_tmpfs(cls, value: object) -> object:
         if not isinstance(value, (list, tuple)):
             return value
-        return tuple(
-            TmpfsSpec.parse(item) if isinstance(item, str) else item for item in value
-        )
+        parsed: list[object] = []
+        for item in value:
+            if isinstance(item, str):
+                parsed.append(TmpfsSpec.parse(item))
+            else:
+                parsed.append(item)
+        return tuple(parsed)
 
     @field_validator("cwd", mode="after")
     @classmethod
@@ -213,11 +270,27 @@ class SandboxProfile(BaseModel):
 
     def render(self, variables: Mapping[str, str]) -> Self:
         """Профиль с подставленными значениями {user_id}/{thread_id}."""
-        cwd = BindSpec.substitute(self.cwd, variables) if self.cwd else ""
+        cwd = ""
+        if self.cwd:
+            cwd = BindSpec.substitute(self.cwd, variables)
+        ro_binds = self._render_binds(self.ro_binds, variables)
+        rw_binds = self._render_binds(self.rw_binds, variables)
+        rw_images = self._render_binds(self.rw_images, variables)
         return self.model_copy(
             update={
-                "ro_binds": tuple(b.render(variables) for b in self.ro_binds),
-                "rw_binds": tuple(b.render(variables) for b in self.rw_binds),
+                "ro_binds": ro_binds,
+                "rw_binds": rw_binds,
+                "rw_images": rw_images,
                 "cwd": cwd,
             }
         )
+
+    @staticmethod
+    def _render_binds(
+        specs: tuple[BindSpec, ...],
+        variables: Mapping[str, str],
+    ) -> tuple[BindSpec, ...]:
+        rendered: list[BindSpec] = []
+        for spec in specs:
+            rendered.append(spec.render(variables))
+        return tuple(rendered)

@@ -77,12 +77,12 @@ class ConnectionsConfig(BaseModel):
         try:
             decoded = base64.b64decode(raw, validate=True)
         except (binascii.Error, ValueError) as e:
-            msg = "connections.encryption_key: ожидается base64"
+            msg = "connections.encryption_key: base64 expected"
             raise ValueError(msg) from e
         if len(decoded) != KEY_BYTES:
             msg = (
-                f"connections.encryption_key: нужен ключ {KEY_BYTES} байт, "
-                f"получено {len(decoded)}"
+                f"connections.encryption_key: {KEY_BYTES}-byte key required, "
+                f"got {len(decoded)}"
             )
             raise ValueError(msg)
         return value
@@ -90,13 +90,13 @@ class ConnectionsConfig(BaseModel):
     def key_bytes(self) -> bytes:
         raw = self.encryption_key.get_secret_value()
         if not raw:
-            msg = "connections.encryption_key не задан"
+            msg = "connections.encryption_key is not set"
             raise ValueError(msg)
         return base64.b64decode(raw, validate=True)
 
     def require_conn(self) -> PostgresConfig:
         if self.connection is None:
-            msg = 'connections.connection не задан: connection = "${postgres}"'
+            msg = 'connections.connection is not set: connection = "${postgres}"'
             raise ValueError(msg)
         return self.connection
 
@@ -115,8 +115,8 @@ class ConnectionKinds:
             return cls._BY_KIND[kind]
         except KeyError:
             msg = (
-                f"неизвестный kind соединения {kind!r} "
-                f"(известны: {', '.join(cls.known())})"
+                f"unknown connection kind {kind!r} "
+                f"(known: {', '.join(cls.known())})"
             )
             raise ValueError(msg) from None
 
@@ -124,7 +124,7 @@ class ConnectionKinds:
     def kind_of(cls, profile: BaseModel) -> str:
         kind = getattr(profile, "kind", None)
         if not isinstance(kind, str):
-            msg = f"{type(profile).__name__}: нет поля kind — это не профиль соединения"
+            msg = f"{type(profile).__name__}: no kind field, not a connection profile"
             raise ValueError(msg)
         return kind
 
@@ -152,8 +152,8 @@ class GrantKinds:
     def validate_src(cls, kind: str) -> str:
         if kind not in cls.known_src():
             msg = (
-                f"неизвестный src_kind связи {kind!r} "
-                f"(известны: {', '.join(cls.known_src())})"
+                f"unknown grant src_kind {kind!r} "
+                f"(known: {', '.join(cls.known_src())})"
             )
             raise ValueError(msg)
         return kind
@@ -162,8 +162,8 @@ class GrantKinds:
     def validate_tgt(cls, kind: str) -> str:
         if kind not in cls.known_tgt():
             msg = (
-                f"неизвестный tgt_kind связи {kind!r} "
-                f"(известны: {', '.join(cls.known_tgt())})"
+                f"unknown grant tgt_kind {kind!r} "
+                f"(known: {', '.join(cls.known_tgt())})"
             )
             raise ValueError(msg)
         return kind
@@ -205,7 +205,8 @@ class ConnectionStore:
                 )
             except InsufficientPrivilege:
                 logger.info(
-                    "нет прав на create schema %r, считаем что её создал администратор",
+                    "no permission for create schema %r, "
+                    "assuming an administrator created it",
                     self._cfg.db_schema,
                 )
 
@@ -293,7 +294,7 @@ class ConnectionStore:
             row = cur.fetchone()
 
         if row is None:
-            msg = f"connections: строка {name!r} не сохранена"
+            msg = f"connections: row {name!r} was not saved"
             raise RuntimeError(msg)
         return int(row[0])
 
@@ -318,7 +319,7 @@ class ConnectionStore:
             row = cur.fetchone()
 
         if row is None:
-            msg = f"connections: соединение {name!r} не найдено"
+            msg = f"connections: connection {name!r} not found"
             raise ConnectionNotFoundError(msg)
         return self._to_profile(row["kind"], row["data"])
 
@@ -434,8 +435,8 @@ class ConnectionStore:
 
         if row is None:
             msg = (
-                f"grants: связь {src_kind}#{src_kind_id} -> "
-                f"{tgt_kind}#{tgt_kind_id} не сохранена"
+                f"grants: link {src_kind}#{src_kind_id} -> "
+                f"{tgt_kind}#{tgt_kind_id} was not saved"
             )
             raise RuntimeError(msg)
         return int(row[0])
@@ -561,7 +562,7 @@ class ConnectionStore:
             row = cur.fetchone()
 
         if row is None:
-            msg = f"connections: соединение {name!r} не найдено"
+            msg = f"connections: connection {name!r} not found"
             raise ConnectionNotFoundError(msg)
         return int(row[0])
 

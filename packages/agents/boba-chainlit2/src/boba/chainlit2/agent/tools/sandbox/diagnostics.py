@@ -1,0 +1,186 @@
+"""Перевод низкоуровневого сбоя песочницы в объяснение для человека и LLM.
+
+Ядро отдаёт «Too many open files» или SIGKILL без указания, чей это лимит,
+поэтому причину и способ обойти её называем явно.
+"""
+
+from __future__ import annotations
+
+from typing import ClassVar
+
+from boba.chainlit2.agent.tools.process.runner import RunResult
+from boba.chainlit2.agent.tools.sandbox.profile import SandboxProfile
+
+__all__ = ["SandboxDiagnostics"]
+
+
+class SandboxDiagnostics:
+    """Сопоставляет код возврата и stderr с лимитом профиля."""
+
+    SIGKILL_CODE: ClassVar[int] = 137
+    SIGXCPU_CODE: ClassVar[int] = 152
+    SIGXFSZ_CODE: ClassVar[int] = 153
+
+    CPU_MARKERS: ClassVar[tuple[str, ...]] = (
+        "CPU time limit exceeded",
+        "cpu limit",
+    )
+    FSIZE_MARKERS: ClassVar[tuple[str, ...]] = (
+        "File size limit exceeded",
+        "File too large",
+    )
+    FD_MARKERS: ClassVar[tuple[str, ...]] = (
+        "Too many open files",
+        "EMFILE",
+    )
+    PROCESS_MARKERS: ClassVar[tuple[str, ...]] = (
+        "fork: retry",
+        "fork: Resource temporarily unavailable",
+        "Resource temporarily unavailable",
+        "can't fork",
+        "BlockingIOError",
+    )
+    MEMORY_MARKERS: ClassVar[tuple[str, ...]] = (
+        "MemoryError",
+        "Cannot allocate memory",
+        "out of memory",
+        "Out of memory",
+        "bad_alloc",
+    )
+    SPACE_MARKERS: ClassVar[tuple[str, ...]] = ("No space left on device",)
+    NETWORK_MARKERS: ClassVar[tuple[str, ...]] = (
+        "Temporary failure in name resolution",
+        "Name or service not known",
+        "Network is unreachable",
+        "nodename nor servname provided",
+        "Could not resolve host",
+    )
+
+    @classmethod
+    def explain(
+        cls,
+        result: RunResult,
+        profile: SandboxProfile,
+        network_profiles: tuple[str, ...],
+    ) -> str:
+        """Пустая строка — сбоя, объяснимого лимитами песочницы, не найдено."""
+        checks = (
+            cls._timeout,
+            cls._cpu,
+            cls._file_size,
+            cls._open_files,
+            cls._processes,
+            cls._memory,
+            cls._space,
+        )
+        for check in checks:
+            message = check(result, profile)
+            if message:
+                return message
+        return cls._network(result, profile, network_profiles)
+
+    @classmethod
+    def _timeout(cls, result: RunResult, profile: SandboxProfile) -> str:
+        if not result.timed_out:
+            return ""
+        return (
+            f"Command aborted by the profile timeout: timeout_sec="
+            f"{profile.timeout_sec}s. Split the work into smaller steps or ask "
+            f"an administrator to raise timeout_sec."
+        )
+
+    @classmethod
+    def _cpu(cls, result: RunResult, profile: SandboxProfile) -> str:
+        by_signal = result.exit_code == cls.SIGXCPU_CODE
+        by_text = cls._matched(result.stderr, cls.CPU_MARKERS)
+        if not by_signal and not by_text:
+            return ""
+        return (
+            f"CPU time limit reached: max_cpu_sec={profile.max_cpu_sec}s, "
+            f"the process was killed by SIGXCPU. Optimise the computation or "
+            f"process the data in chunks."
+        )
+
+    @classmethod
+    def _file_size(cls, result: RunResult, profile: SandboxProfile) -> str:
+        by_signal = result.exit_code == cls.SIGXFSZ_CODE
+        by_text = cls._matched(result.stderr, cls.FSIZE_MARKERS)
+        if not by_signal and not by_text:
+            return ""
+        return (
+            f"File size limit exceeded: max_file_size_bytes="
+            f"{profile.max_file_size_bytes} bytes, the write was aborted by "
+            f"SIGXFSZ. Write a smaller file or split it into parts."
+        )
+
+    @classmethod
+    def _open_files(cls, result: RunResult, profile: SandboxProfile) -> str:
+        if not cls._matched(result.stderr, cls.FD_MARKERS):
+            return ""
+        return (
+            f"Open file limit reached: max_open_files={profile.max_open_files}. "
+            f"Close files right after use; the limit also counts "
+            f"stdin/stdout/stderr."
+        )
+
+    @classmethod
+    def _processes(cls, result: RunResult, profile: SandboxProfile) -> str:
+        if not cls._matched(result.stderr, cls.PROCESS_MARKERS):
+            return ""
+        return (
+            f"Process limit reached: max_processes={profile.max_processes}. "
+            f"Start fewer parallel processes and pipelines."
+        )
+
+    @classmethod
+    def _memory(cls, result: RunResult, profile: SandboxProfile) -> str:
+        by_signal = result.exit_code == cls.SIGKILL_CODE
+        by_text = cls._matched(result.stderr, cls.MEMORY_MARKERS)
+        if not by_signal and not by_text:
+            return ""
+        return (
+            f"Memory limit reached: max_memory_bytes="
+            f"{profile.max_memory_bytes} bytes. Stream the data instead of "
+            f"loading all of it into memory."
+        )
+
+    @classmethod
+    def _space(cls, result: RunResult, profile: SandboxProfile) -> str:
+        if not cls._matched(result.stderr, cls.SPACE_MARKERS):
+            return ""
+        return (
+            f"No space left in the working directory: its size is fixed by the "
+            f"workspace image and does not grow. Delete unused files in "
+            f"{profile.cwd}."
+        )
+
+    @classmethod
+    def _network(
+        cls,
+        result: RunResult,
+        profile: SandboxProfile,
+        network_profiles: tuple[str, ...],
+    ) -> str:
+        if profile.network:
+            return ""
+        if not cls._matched(result.stderr, cls.NETWORK_MARKERS):
+            return ""
+        base = (
+            "Network is disabled in this sandbox profile (network=false): DNS "
+            "and outbound connections are unavailable; the command itself is "
+            "not at fault."
+        )
+        if not network_profiles:
+            return (
+                f"{base} No profile with network access is configured — work "
+                f"with local files in {profile.cwd}."
+            )
+        names = ", ".join(network_profiles)
+        return f"{base} Profiles with network access: {names}."
+
+    @staticmethod
+    def _matched(text: str, markers: tuple[str, ...]) -> bool:
+        for marker in markers:  # noqa: SIM110
+            if marker in text:
+                return True
+        return False

@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-files"
-version = "0.0.7"
+version = "0.0.8"
 description = "Builtin file-system tools for the Boba agent (cat/ls/grep/edit/write/...)."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools==0.0.7",
-    "boba-workspace==0.0.7",
-    "boba-settings==0.0.7",
+    "boba-tools==0.0.8",
+    "boba-workspace==0.0.8",
+    "boba-settings==0.0.8",
     "pydantic>=2.10,<2.11",
 ]
 

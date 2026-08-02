@@ -37,7 +37,8 @@ class KbSchema:
             )
         except InsufficientPrivilege:
             logger.info(
-                "нет прав на CREATE SCHEMA %r, считаем что её создал администратор",
+                "no permission for CREATE SCHEMA %r, "
+                "assuming an administrator created it",
                 name,
             )
 

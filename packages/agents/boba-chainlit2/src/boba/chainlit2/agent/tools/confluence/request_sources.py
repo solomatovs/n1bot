@@ -338,7 +338,7 @@ class ConfluenceMultiSpaceRequestSource(RequestSource[ConfluenceRequest]):
         body_format: str,
     ) -> None:
         if not space_keys:
-            raise ValueError("space_keys пуст")
+            raise ValueError("space_keys is empty")
         self._inner = [
             ConfluenceSpaceRequestSource(
                 conn=conn,

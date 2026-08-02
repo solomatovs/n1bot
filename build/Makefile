@@ -49,6 +49,8 @@ GCC_IMAGE    	?= dmp/gcc:8.5.0
 PYTHON_IMAGE 	?= dmp/python:$(PYTHON_VERSION)-dist
 # образ, чья файловая система становится rootfs песочницы
 SANDBOX_IMAGE	?= dmp/python:$(PYTHON_VERSION)
+# он же плюс утилиты для LLM: собирается стадией sandbox-rootfs
+ROOTFS_IMAGE	:= boba-sandbox-rootfs:$(PYTHON_VERSION)
 # тег с версией python: иначе deps соберутся на boba-base от прошлой сборки
 BASE_IMAGE    := boba-base:$(PYTHON_VERSION)
 
@@ -68,6 +70,18 @@ BWRAP_VERSION	?= 0.11.2
 BWRAP_URL     	?= https://github.com/containers/bubblewrap/releases/download/v$(BWRAP_VERSION)/bubblewrap-$(BWRAP_VERSION).tar.xz
 BWRAP_TARBALL 	:= $(SRC_ARTIFACTS)/bubblewrap-$(BWRAP_VERSION).tar.xz
 
+# fuse2fs + libfuse: собираются стадией fuse2fs-build.
+# 3.12.0 — последний релиз, которому хватает meson 0.49 из apt Astra 2.12
+# (3.13+ требуют >= 0.50); релизы до 3.15 включительно выложены как .tar.xz
+LIBFUSE_VERSION   ?= 3.12.0
+LIBFUSE_URL       ?= https://github.com/libfuse/libfuse/releases/download/fuse-$(LIBFUSE_VERSION)/fuse-$(LIBFUSE_VERSION).tar.xz
+LIBFUSE_TARBALL   := $(SRC_ARTIFACTS)/fuse-$(LIBFUSE_VERSION).tar.xz
+E2FSPROGS_VERSION ?= 1.47.2
+E2FSPROGS_URL     ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$(E2FSPROGS_VERSION)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
+E2FSPROGS_TARBALL := $(SRC_ARTIFACTS)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
+# размер шаблонного workspace-образа: лимит диска на тред
+SANDBOX_WS_SIZE   ?= 1G
+
 # сбросить ли кэш сборки: docker build --no-cache
 NO_CACHE		?= 0
 NO_CACHE_OPT	:= $(if $(filter 1,$(NO_CACHE)),--no-cache,)
@@ -75,15 +89,26 @@ NO_CACHE_OPT	:= $(if $(filter 1,$(NO_CACHE)),--no-cache,)
 # --progress есть только у buildkit; на старом docker флага нет — не подставляем
 PROGRESS      ?= $(shell docker build --help 2>/dev/null | grep -q -- '--progress' && echo '--progress plain')
 
-# закрытый контур: подхватываем ca-chain.crt, если положили в artifacts
-CA_CHAIN := $(wildcard $(ARTIFACTS)/ca-chain.crt)
+# закрытый контур: CA внутреннего TLS (nexus). Кладётся в conf/ рядом с
+# pip.conf и uv.toml; artifacts/ поддержан для совместимости
+CA_CHAIN := $(firstword $(wildcard $(CONF_DIR)/ca-chain.crt) $(wildcard $(ARTIFACTS)/ca-chain.crt))
+# curl на хосте: прокси берёт из env, CA — отсюда
+CURL_OPTS := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
+
+# прокси в docker build: apt/pip/uv внутри стадий ходят в nexus через него
+PROXY_VARS := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
+PROXY_ARGS := $(foreach v,$(PROXY_VARS),$(if $($(v)),--build-arg $(v)="$($(v))"))
 
 # общие build-arg: образы тулчейна и версии
-DOCKER_ARGS = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)         \
-              --build-arg GCC_IMAGE=$(GCC_IMAGE)             \
-              --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE)       \
-              --build-arg PYTHON_VERSION=$(PYTHON_VERSION)   \
-              --build-arg BWRAP_VERSION=$(BWRAP_VERSION)
+DOCKER_ARGS = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)             \
+              --build-arg GCC_IMAGE=$(GCC_IMAGE)                 \
+              --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE)           \
+              --build-arg PYTHON_VERSION=$(PYTHON_VERSION)       \
+              --build-arg BWRAP_VERSION=$(BWRAP_VERSION)         \
+              --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)     \
+              --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) \
+              --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)     \
+              --build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE)
 
 
 .PHONY: help
@@ -91,7 +116,8 @@ help:
 	@echo "Сборка boba $(VERSION) из дерева пакетов $(SRC_DIR) -> $(IMAGE)"
 	echo ""
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(SRC_ARTIFACTS)"
-	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/{uv,tessdata,fastembed,sandbox-rootfs}"
+	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
+	echo "                 {uv,tessdata,fastembed,sandbox-rootfs,sandbox-workspace.ext4}"
 	echo "  make build     собрать образ $(IMAGE)"
 	echo "  make test      проверить релиз внутри образа"
 	echo "  make extract   портативная папка из готового образа:"
@@ -105,8 +131,13 @@ help:
 	echo "    version-set    VER=X.Y.Z — проставить во все пакеты и во внутренние пины"
 	echo "    version-check  проверить, что версия одна и пины boba-* совпадают"
 	echo ""
-	echo "  Nexus для сторонних колёс: положить conf/pip.conf и conf/uv.toml"
-	echo "  (примеры рядом), они копируются в образ как есть."
+	echo "  Закрытый контур (offline + nexus):"
+	echo "    conf/pip.conf, conf/uv.toml  индексы пакетов (примеры рядом)"
+	echo "    conf/ca-chain.crt            CA внутреннего TLS: ставится в bundle"
+	echo "                                 образа и подставляется в curl хоста"
+	echo "    http_proxy/https_proxy/no_proxy из env уходят в docker build"
+	echo "    Зеркала tarball'ов (иначе github/kernel.org):"
+	echo "      UV_URL, BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, TESSDATA_REPO"
 	echo ""
 	echo "  Переменные: DEST_DIR=$(DEST_DIR), BOBA_TAG=<тег>, NO_CACHE=1,"
 	echo "              PYTHON_VERSION=$(PYTHON_VERSION), GLIBC_IMAGE=$(GLIBC_IMAGE),"
@@ -139,10 +170,6 @@ debug:
 	$(info UV_URL         = $(UV_URL))
 	$(info CA_CHAIN       = $(CA_CHAIN))
 
-
-# ---------------------------------------------------------------------------
-# Версия пакетов
-# ---------------------------------------------------------------------------
 
 # Все pyproject.toml пакетов; packages/<pkg>/build/ — артефакты сборки, не пакеты.
 PYPROJECTS = $(shell find $(SRC_DIR)/packages -name pyproject.toml -not -path '*/build/*')
@@ -189,30 +216,24 @@ version-check:
 	echo "version-check: $(VERSION), $(words $(PYPROJECTS)) пакетов — ok"
 
 
-# ---------------------------------------------------------------------------
-# sources: исходники, которые собираются стадиями Dockerfile
-# ---------------------------------------------------------------------------
-
-# bubblewrap: apt в Astra 2.12 даёт 0.3.3 (нет --clearenv и части unshare-флагов),
-# поэтому свежий собирается из исходников стадией bwrap-build
 .PHONY: sources
 sources:
 	@mkdir -p $(SRC_ARTIFACTS)
 	echo "== bubblewrap $(BWRAP_VERSION) =="
-	[ -f "$(BWRAP_TARBALL)" ] || curl -fSL -o "$(BWRAP_TARBALL)" "$(BWRAP_URL)"
+	[ -f "$(BWRAP_TARBALL)" ] || curl -fSL $(CURL_OPTS) -o "$(BWRAP_TARBALL)" "$(BWRAP_URL)"
+	echo "== libfuse $(LIBFUSE_VERSION) =="
+	[ -f "$(LIBFUSE_TARBALL)" ] || curl -fSL $(CURL_OPTS) -o "$(LIBFUSE_TARBALL)" "$(LIBFUSE_URL)"
+	echo "== e2fsprogs $(E2FSPROGS_VERSION) =="
+	[ -f "$(E2FSPROGS_TARBALL)" ] || curl -fSL $(CURL_OPTS) -o "$(E2FSPROGS_TARBALL)" "$(E2FSPROGS_URL)"
 	ls -lh $(SRC_ARTIFACTS)/
 
 
-# ---------------------------------------------------------------------------
-# deps: бинарные зависимости, которые внутри Dockerfile не достать
-# ---------------------------------------------------------------------------
-
 .PHONY: deps
-deps: uv tessdata sandbox-rootfs fastembed
-	@du -sh $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(DEPS_DIR)/fastembed $(DEPS_DIR)/sandbox-rootfs
+deps: uv tessdata sandbox-rootfs sandbox-workspace fastembed
+	@du -sh $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(DEPS_DIR)/fastembed \
+	    $(DEPS_DIR)/sandbox-rootfs $(DEPS_DIR)/sandbox-workspace.ext4
 
 
-# uv нужен раньше остальных: он ставится в образ base
 .PHONY: uv
 uv:
 	@mkdir -p $(DEPS_DIR)/uv
@@ -220,7 +241,7 @@ uv:
 	if [ -f "$(DEPS_DIR)/uv/uv" ]; then
 	    echo "  ✓ $(DEPS_DIR)/uv/uv"
 	else
-	    curl -fSL "$(UV_URL)" | tar -xz -C /tmp
+	    curl -fSL $(CURL_OPTS) "$(UV_URL)" | tar -xz -C /tmp
 	    install -m 0755 /tmp/uv-$(UV_PLATFORM)/uv $(DEPS_DIR)/uv/uv
 	    rm -rf /tmp/uv-$(UV_PLATFORM)
 	    $(DEPS_DIR)/uv/uv --version
@@ -236,32 +257,53 @@ tessdata:
 	    if [ -f "$$dest" ]; then
 	        echo "  ✓ $$dest"
 	    else
-	        curl -fSL -o "$$dest" "$(TESSDATA_REPO)/$$lang.traineddata"
+	        curl -fSL $(CURL_OPTS) -o "$$dest" "$(TESSDATA_REPO)/$$lang.traineddata"
 	    fi
 	done
 
 
-# rootfs для песочницы: read-only корень bwrap — файловая система
-# $(SANDBOX_IMAGE) как есть. Python, bash и coreutils уже внутри образа,
-# поэтому ничего не копируем и не настраиваем: только /workspace, который
-# bwrap не создаст сам на read-only корне.
+# rootfs sandbox
 .PHONY: sandbox-rootfs
 sandbox-rootfs:
 	@dest="$(DEPS_DIR)/sandbox-rootfs"
-	echo "== rootfs песочницы из $(SANDBOX_IMAGE) =="
+	echo "== rootfs песочницы из $(SANDBOX_IMAGE) + утилиты =="
 	if [ -n "$$(ls -A "$$dest" 2>/dev/null)" ]; then
 	    echo "  ✓ $$dest (пересобрать: rm -rf $$dest)"
 	    exit 0
 	fi
+	docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
+	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
+	    --target sandbox-rootfs                            \
+	    --tag $(ROOTFS_IMAGE)                              \
+	    $(PROGRESS) $(BUILD_CONTEXT)
 	mkdir -p "$$dest"
-	cid=$$(docker create $(SANDBOX_IMAGE) /bin/true)
+	cid=$$(docker create $(ROOTFS_IMAGE) /bin/true)
 	docker export "$$cid" | tar -x -C "$$dest"
 	docker rm "$$cid" >/dev/null
 	mkdir -p "$$dest/workspace"
 
 
-# веса запекает в образ make build, поэтому качать до него.
-# fastembed ставится из nexus по conf/pip.conf, зашитому в образ base
+.PHONY: sandbox-workspace
+sandbox-workspace:
+	@dest="$(DEPS_DIR)/sandbox-workspace.ext4"
+	echo "== шаблон workspace $(SANDBOX_WS_SIZE) =="
+	if [ -f "$$dest" ]; then
+	    echo "  ✓ $$dest (пересоздать: rm -f $$dest)"
+	    exit 0
+	fi
+	mkdir -p "$(DEPS_DIR)"
+	docker run --rm -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)" \
+	  -e WS_SIZE="$(SANDBOX_WS_SIZE)" -v "$(DEPS_DIR)":/out \
+	  --entrypoint sh $(SANDBOX_IMAGE) -c '
+	    set -e
+	    truncate -s "$$WS_SIZE" /out/.ws.tmp
+	    mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /out/.ws.tmp
+	    chown "$$HOST_UID:$$HOST_GID" /out/.ws.tmp
+	  '
+	mv "$(DEPS_DIR)/.ws.tmp" "$$dest"
+	ls -lh "$$dest"
+
+
 .PHONY: fastembed
 fastembed: base
 	@mkdir -p $(DEPS_DIR)/fastembed
@@ -286,8 +328,6 @@ fastembed: base
 	    chown -R "$$HOST_UID:$$HOST_GID" /fastembed'
 
 
-# среда сборки: gcc + python + uv + внешние программы (apt).
-# Эта же стадия — основа сборочных стадий Dockerfile и контейнер для fastembed.
 .PHONY: base
 base: uv
 	@if [ "$$(printf '%s\n' "$(REQUIRES_PY)" "$(PYTHON_VERSION)" | sort -V | head -1)" != "$(REQUIRES_PY)" ]; then
@@ -295,21 +335,22 @@ base: uv
 	    exit 1
 	fi
 	docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
-	    $(DOCKER_ARGS)                                     \
+	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
 	    --target base                                      \
 	    --tag $(BASE_IMAGE) --tag boba-base:latest         \
 	    $(PROGRESS) $(BUILD_CONTEXT)
 
 
-# ---------------------------------------------------------------------------
-# build: образ. Колёса пакетов boba собираются стадией deps Dockerfile,
-# сторонние зависимости тянутся из nexus (conf/pip.conf, conf/uv.toml).
-# ---------------------------------------------------------------------------
-
 .PHONY: check-artifacts
 check-artifacts:
 	@[ -f "$(BWRAP_TARBALL)" ] || {
 	    echo "нет исходников bubblewrap — запусти: make sources" >&2; exit 1
+	}
+	[ -f "$(LIBFUSE_TARBALL)" ] || {
+	    echo "нет исходников libfuse — запусти: make sources" >&2; exit 1
+	}
+	[ -f "$(E2FSPROGS_TARBALL)" ] || {
+	    echo "нет исходников e2fsprogs — запусти: make sources" >&2; exit 1
 	}
 	[ -f "$(DEPS_DIR)/uv/uv" ] || {
 	    echo "нет бинаря uv — запусти: make deps" >&2; exit 1
@@ -320,21 +361,22 @@ check-artifacts:
 	[ -n "$$(ls -A "$(DEPS_DIR)/fastembed" 2>/dev/null)" ] || {
 	    echo "нет весов fastembed — запусти: make deps" >&2; exit 1
 	}
+	[ -x "$(DEPS_DIR)/sandbox-rootfs/bin/sh" ] || {
+	    echo "нет rootfs песочницы — запусти: make deps" >&2; exit 1
+	}
 
 
 .PHONY: build
 build: version-check check-artifacts
 	@echo ">>> образ $(IMAGE), релиз внутри него лежит в $(DEST_DIR)"
 	docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
-	    $(DOCKER_ARGS)                                     \
+	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
 	    --target runtime                                   \
 	    --build-arg BOBA_DIR="$(DEST_DIR)"                 \
 	    --tag $(IMAGE) --tag boba:latest                   \
 	    $(PROGRESS) $(BUILD_CONTEXT)
 
 
-# Функциональная проверка релиза внутри образа: там стоят системные библиотеки
-# (как на сервере после apt install), которых на хосте сборки может не быть.
 .PHONY: test
 test: build
 	@echo "== проверка $(RELEASE_NAME) в образе $(IMAGE) =="
@@ -345,15 +387,13 @@ test: build
 	    "$$PYTHONHOME/bin/python3" /test/bobacheck.py --names /tmp/names.txt
 	  '
 
-
-# ---------------------------------------------------------------------------
-# extract: портативная папка из готового образа — её и кладут на сервер
-# ---------------------------------------------------------------------------
-
 .PHONY: extract
 extract:
 	@docker image inspect $(RELEASE_IMAGE) >/dev/null 2>&1 || {
 	    echo "нет образа $(RELEASE_IMAGE) — собери: make build" >&2; exit 1
+	}
+	[ -x "$(DEPS_DIR)/sandbox-rootfs/bin/sh" ] || {
+	    echo "нет rootfs песочницы — запусти: make deps" >&2; exit 1
 	}
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)"
@@ -362,6 +402,16 @@ extract:
 	docker cp "$$cid:$(DEST_DIR)/." "$(OUT)/"
 	docker rm "$$cid" >/dev/null
 	trap - EXIT
+
+	# rootfs песочницы в образ не кладётся (.dockerignore) — он хостовый
+	# артефакт; в релиз копируется здесь, конфиг ждёт его в third/
+	echo ">>> rootfs песочницы -> $(OUT)/third/sandbox-rootfs"
+	# каталог уже есть (точка монтирования из образа): копируем содержимое,
+	# иначе cp вложит sandbox-rootfs внутрь sandbox-rootfs
+	mkdir -p "$(OUT)/third/sandbox-rootfs"
+	cp -a "$(DEPS_DIR)/sandbox-rootfs/." "$(OUT)/third/sandbox-rootfs/"
+	# каталог образов workspace: пишет сюда приложение
+	mkdir -p "$(OUT)/data/workspace"
 
 	# текстовые шаблоны — envsubst с путём релиза ${BOBA_DIR}. В config.toml
 	# остаются TOML-интерполяции (${agent.default}, ...): envsubst с явным
@@ -390,7 +440,8 @@ extract:
 .PHONY: clean
 clean:
 	rm -rf $(SRC_ARTIFACTS) $(ARTIFACTS)/build \
-	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(DEPS_DIR)/sandbox-rootfs
+	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(DEPS_DIR)/sandbox-rootfs \
+	       $(DEPS_DIR)/sandbox-workspace.ext4
 
 
 .PHONY: print-tag

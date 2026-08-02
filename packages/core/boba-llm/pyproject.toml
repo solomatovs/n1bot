@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-llm"
-version = "0.0.7"
+version = "0.0.8"
 description = "Boba LLM contract: модели/события/ошибки/observer/retry-middleware. Pure-домен, без провайдеров."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-patterns==0.0.7",
-    "boba-tools==0.0.7",
+    "boba-patterns==0.0.8",
+    "boba-tools==0.0.8",
     # Синхронизировано с boba-agent/boba-chainlit: chainlit 2.11+
     # ломает ForwardRef-резолв на pydantic 2.11+.
     "pydantic>=2.10,<2.11",

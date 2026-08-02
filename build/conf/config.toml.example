@@ -52,6 +52,72 @@
     "<логин>" = ["ADM"]
 
 
+## хранилище вложений чата: kind = "image" — внутри ext4-образа пользователя;
+## kind = "local" — файлы на диске (тогда обязателен files_dir)
+[storage]
+    kind           = "image"
+    # один образ на пользователя: общий workspace во всех его тредах;
+    # путь обязан совпадать с rw_images sandbox-профиля
+    image_path     = "${BOBA_DIR}/data/workspace/{user_id}.ext4"
+    image_template = "${BOBA_DIR}/third/sandbox-workspace.ext4"
+    op_timeout_sec = 60
+    public_prefix  = "${chainlit.url_prefix}/workspace"
+
+
+## bash-песочница (bubblewrap); LLM выбирает профиль по имени.
+## Все поля профиля обязательны; лимиты строго больше нуля.
+[tool.sandbox]
+    enable          = true
+    roles           = ["ADM"]
+    default_profile = "default"
+
+    ## workspace пользователя — ext4-образ, общий для всех его тредов:
+    ## жёсткий потолок диска = размер образа
+    ## (make: SANDBOX_WS_SIZE), плюс процессные лимиты на каждый вызов
+    [tool.sandbox.profiles.default]
+        rootfs              = "${BOBA_DIR}/third/sandbox-rootfs"
+        ro_binds            = []
+        rw_binds            = []
+        rw_images           = ["${BOBA_DIR}/data/workspace/{user_id}.ext4:/workspace"]
+        image_template      = "${BOBA_DIR}/third/sandbox-workspace.ext4"
+        launcher            = {}
+        tmpfs               = ["/tmp:256M"]
+        network             = false
+        env_set             = { PATH = "/usr/local/bin:/usr/bin:/bin", HOME = "/tmp", LANG = "C.UTF-8" }
+        timeout_sec         = 30
+        max_memory_bytes    = 536870912  # 512M, RLIMIT_AS
+        max_cpu_sec         = 30         # RLIMIT_CPU
+        max_file_size_bytes = 67108864   # 64M, RLIMIT_FSIZE
+        max_open_files      = 1024       # RLIMIT_NOFILE
+        max_processes       = 256        # RLIMIT_NPROC
+        max_output_bytes    = 262144
+        cwd                 = "/workspace"
+
+    ## профиль с сетью; DNS и CA-сертификаты должны лежать в rootfs
+    # [tool.sandbox.profiles.network]
+    #     rootfs              = "${BOBA_DIR}/third/sandbox-rootfs"
+    #     ro_binds            = []
+    #     rw_binds            = []
+    #     rw_images           = ["${BOBA_DIR}/data/workspace/{user_id}.ext4:/workspace"]
+    #     image_template      = "${BOBA_DIR}/third/sandbox-workspace.ext4"
+    #     launcher            = {}
+    #     tmpfs               = ["/tmp:256M"]
+    #     network             = true
+    #     env_set             = { PATH = "/usr/local/bin:/usr/bin:/bin", HOME = "/tmp", LANG = "C.UTF-8" }
+    #     timeout_sec         = 60
+    #     max_memory_bytes    = 536870912
+    #     max_cpu_sec         = 60
+    #     max_file_size_bytes = 67108864
+    #     max_open_files      = 1024
+    #     max_processes       = 256
+    #     max_output_bytes    = 262144
+    #     cwd                 = "/workspace"
+
+    ## доступ к tool по ролям: имя = список ролей (пусто = роли секции)
+    [tool.sandbox.tools]
+        bash = []
+
+
 ## вход по учётной записи домена (bind в AD)
 # [auth.ldap]
 #     type             = "ldap"

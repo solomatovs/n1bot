@@ -74,8 +74,8 @@ class PluginMeta(BaseModel):
 def _build_sandbox_tools(cfg: BashSandboxConfig) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
-            "[tool.sandbox] включён, но bubblewrap (bwrap) не найден в PATH — "
-            "bash не зарегистрирован",
+            "[tool.sandbox] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "bash was not registered",
         )
         return []
     return [build_bash_tool(cfg, _sandbox_path_vars)]
@@ -141,7 +141,7 @@ class ToolRegistry:
         roles = frozenset(user_roles)
         allowed = [t for t in self.tools if self.access.allowed(t.name, roles)]
         logger.info(
-            "инструментов доступно %d из %d (роли: %s)",
+            "tools available: %d of %d (roles: %s)",
             len(allowed),
             len(self.tools),
             sorted(roles) or "нет",

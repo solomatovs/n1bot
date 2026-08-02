@@ -85,6 +85,7 @@ def run_subprocess(
     started = time.monotonic()
     proc = subprocess.Popen(  # noqa: S603 — argv приходит готовый из builder'а
         argv,
+        shell=False,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

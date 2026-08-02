@@ -317,7 +317,7 @@ class ConfluenceJsonDecoder(Decoder):
             data: dict[str, Any] = json.loads(payload)
         except json.JSONDecodeError as e:
             raise ConfluencePayloadError(
-                f"ConfluenceJsonDecoder: невалидный JSON от Confluence: {e}"
+                f"ConfluenceJsonDecoder: invalid JSON from Confluence: {e}"
             ) from e
         html = ConfluenceJson.body_html(data, self._body_format)
 

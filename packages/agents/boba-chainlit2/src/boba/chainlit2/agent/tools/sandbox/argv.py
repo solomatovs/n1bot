@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Mapping
 from typing import TypeVar
 
@@ -10,8 +11,6 @@ from boba.chainlit2.agent.tools.sandbox.profile import BindSpec, SandboxProfile
 
 __all__ = ["WORKSPACE_MOUNT", "build_bwrap_argv"]
 
-_BWRAP_BIN = "bwrap"
-_BASH_BIN = "/bin/bash"
 
 WORKSPACE_MOUNT = "/workspace"
 """Конвенция: target рабочей папки чата в rw_binds; сюда смотрят вложения."""
@@ -22,19 +21,10 @@ def build_bwrap_argv(
     command: str,
     *,
     env: Mapping[str, str],
+    nested: bool = False,
 ) -> list[str]:
-    argv: list[str] = [
-        _BWRAP_BIN,
-        "--die-with-parent",
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--unshare-cgroup-try",
-        "--new-session",
-    ]
-    if not profile.network:
-        argv.append("--unshare-net")
+    """nested — запуск внутри userns лаунчера образов: свой userns недоступен."""
+    argv = _bwrap_preamble(profile, nested)
 
     if profile.rootfs:
         argv += ["--ro-bind", profile.rootfs, "/"]
@@ -63,7 +53,34 @@ def build_bwrap_argv(
 
     argv += ["--chdir", profile.cwd or "/"]
 
-    argv += ["--", _BASH_BIN, "-c", command]
+    guarded = f"ulimit -u {profile.max_processes} || exit 1; {command}"
+    argv += ["--", "/bin/bash", "-c", guarded]
+    return argv
+
+
+def _bwrap_preamble(profile: SandboxProfile, nested: bool) -> list[str]:
+    bwrap_path = shutil.which("bwrap")
+    if not bwrap_path:
+        raise RuntimeError("bwrap not found in PATH")
+
+    argv = [
+        bwrap_path,
+        "--die-with-parent",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--hostname",
+        "sandbox",
+        "--unshare-cgroup-try",
+        "--new-session",
+    ]
+    if nested:
+        argv += ["--cap-drop", "ALL"]
+        return argv
+    argv.insert(2, "--unshare-user")
+    argv.append("--disable-userns")
+    if not profile.network:
+        argv.append("--unshare-net")
     return argv
 
 
@@ -92,8 +109,8 @@ _T = TypeVar("_T")
 
 
 def _dedup_preserve_order(items: tuple[_T, ...] | list[_T]) -> list[_T]:
-    seen: set[T] = set()
-    out: list[T] = []
+    seen: set[_T] = set()
+    out: list[_T] = []
     for x in items:
         if x not in seen:
             seen.add(x)

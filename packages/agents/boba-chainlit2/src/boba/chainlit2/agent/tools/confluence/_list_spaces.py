@@ -143,8 +143,8 @@ def confluence_list_spaces(
         except httpx.HTTPError as e:
             errored = True
             logger.warning(
-                "confluence_list_spaces: пагинация прервана (%s): %s; "
-                "возвращаю %d найденных спейсов",
+                "confluence_list_spaces: pagination interrupted (%s): %s; "
+                "returning %d spaces found so far",
                 type(e).__name__,
                 e,
                 len(rows),

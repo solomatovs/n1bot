@@ -42,7 +42,7 @@ class WebConnection(BaseModel):
     def _validate(self) -> Self:
         if not self.profiles:
             msg = (
-                "tool.web: пустой whitelist — задайте profiles = "
+                "tool.web: empty whitelist, set profiles = "
                 '{ "<hostname>" = "${web.<name>}" }.'
             )
             raise ValueError(msg)
@@ -54,7 +54,8 @@ class WebConnection(BaseModel):
         if profile is None:
             allowed = sorted(self.profiles)
             msg = (
-                f"web: host {host!r} не в whitelist'е (allowed={allowed}). URL={url!r}"
+                f"web: host {host!r} is not in the whitelist "
+                f"(allowed={allowed}). URL={url!r}"
             )
             raise ValueError(msg)
         return profile

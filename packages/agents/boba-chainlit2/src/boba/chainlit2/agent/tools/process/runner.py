@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from boba.chainlit2.agent.cancellation import TurnCancellation, current_cancellation
+from boba.chainlit2.workspace.options import ResourceLimits
 
 __all__ = ["RunResult", "ShellRunnerInvariantError", "run_subprocess"]
 
@@ -39,17 +40,17 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
     max_output_bytes: int,
     cwd: str,
     env: Mapping[str, str],
+    limits: ResourceLimits | None = None,
 ) -> RunResult:
     if not argv:
-        msg = "run_subprocess: argv не может быть пустым"
-        raise ValueError(msg)
+        raise ValueError("run_subprocess: argv must not be empty")
     if not cwd:
-        msg = "run_subprocess: cwd должен быть непустой строкой"
-        raise ValueError(msg)
+        raise ValueError("run_subprocess: cwd must be a non-empty string")
 
     started = time.monotonic()
     proc = subprocess.Popen(  # noqa: S603 — argv приходит готовый из builder'а
         argv,
+        shell=False,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -58,6 +59,8 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
         cwd=cwd,
         env=dict(env),
     )
+    if limits is not None:
+        limits.apply_to_process(proc.pid)
     cancellation = current_cancellation()
     with cancellation.abort_with(proc.kill):
         _feed_stdin(proc, stdin_data)
@@ -81,7 +84,7 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
 def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
     if proc.stdin is None:
         raise ShellRunnerInvariantError(
-            "_feed_stdin: ожидался proc.stdin (Popen запущен с PIPE)",
+            "_feed_stdin: proc.stdin expected (Popen started with PIPE)",
         )
     try:
         if data:
@@ -100,7 +103,7 @@ def _pump(
 ) -> tuple[bytes, bytes, bool, bool, bool]:
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
-            "_pump: ожидались proc.stdout и proc.stderr (Popen запущен с PIPE)"
+            "_pump: proc.stdout and proc.stderr expected (Popen started with PIPE)"
         )
 
     deadline = time.monotonic() + timeout_sec
