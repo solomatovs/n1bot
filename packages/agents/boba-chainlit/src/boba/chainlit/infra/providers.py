@@ -25,6 +25,7 @@ from boba.auth.errors import InternalServiceError
 from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.agent.dump import DumpingTransport
 from boba.chainlit.chat.data import PostgresDataLayer
+from boba.chainlit.chat.data.attachment_url import AttachmentLinks
 from boba.chainlit.chat.data.storage import LocalStorageClient
 from boba.chainlit.chat.transcript import CheckpointMessages
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
@@ -257,6 +258,7 @@ async def langchain_checkpoint_saver(
 
 async def chainlit_data_layer(
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
+    storage_cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
     storage: Annotated[LocalStorageClient, Depends(storage_provider)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
 ) -> AsyncIterator[PostgresDataLayer]:
@@ -271,6 +273,7 @@ async def chainlit_data_layer(
             schema=cfg.db_schema,
             storage=storage,
             messages=CheckpointMessages(saver),
+            links=AttachmentLinks(storage_cfg.public_prefix),
         )
         await layer.setup()
         yield layer

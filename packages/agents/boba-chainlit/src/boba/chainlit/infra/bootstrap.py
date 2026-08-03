@@ -121,53 +121,29 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
 
 def _use_file_serving(c: AppConfig) -> None:
-    from typing import Annotated  # noqa: PLC0415
-
-    from fastapi import Depends, HTTPException  # noqa: PLC0415
-    from fastapi.responses import FileResponse, Response  # noqa: PLC0415
-
+    from boba.auth.errors import InternalServiceError  # noqa: PLC0415
+    from boba.chainlit.chat.data.attachment_url import AttachmentUrl  # noqa: PLC0415
+    from boba.chainlit.chat.data.data_layer import PostgresDataLayer  # noqa: PLC0415
+    from boba.chainlit.chat.data.serving import AttachmentServing  # noqa: PLC0415
     from boba.chainlit.chat.data.storage import LocalStorageClient  # noqa: PLC0415
-    from chainlit.auth import get_current_user  # noqa: PLC0415
+    from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
-    from chainlit.user import PersistedUser, User  # noqa: PLC0415
 
     storage = LocalStorageClient.from_config(c.storage)
-    serve_from_disk = c.storage.kind == "local"
-    base_dir = Path(c.storage.files_dir).resolve() if serve_from_disk else None
     route_path = c.storage.public_prefix.removeprefix(c.chainlit.url_prefix)
 
-    async def serve_upload(
-        object_key: str,
-        current_user: Annotated[
-            User | PersistedUser | None, Depends(get_current_user)
-        ],
-    ) -> Response:
-        if not isinstance(current_user, PersistedUser):
-            raise HTTPException(status_code=401, detail="Unauthorized")
+    def data_layer() -> PostgresDataLayer:
+        layer = get_data_layer()
+        if not isinstance(layer, PostgresDataLayer):
+            raise InternalServiceError(
+                internal_detail=f"data layer is not PostgresDataLayer: {type(layer)}",
+                user_detail="Attachment storage is not available",
+            )
+        return layer
 
-        if object_key.split("/", maxsplit=1)[0] != current_user.id:
-            raise HTTPException(status_code=403, detail="Forbidden")
-
-        if base_dir is not None:
-            path = base_dir.joinpath(object_key).resolve()
-
-            if not path.is_relative_to(base_dir):
-                raise HTTPException(status_code=404, detail="File not found")
-
-            if not path.is_file():
-                raise HTTPException(status_code=404, detail="File not found")
-
-            return FileResponse(path)
-
-        try:
-            content = await storage.read_file(object_key)
-        except (FileNotFoundError, ValueError) as e:
-            raise HTTPException(status_code=404, detail="File not found") from e
-
-        return Response(content=content, media_type="application/octet-stream")
-
+    serving = AttachmentServing(storage, data_layer)
     chainlit_app.add_api_route(
-        f"{route_path}/{{object_key:path}}", serve_upload, methods=["GET"]
+        f"{route_path}{AttachmentUrl.ROUTE}", serving.serve, methods=["GET"]
     )
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 
