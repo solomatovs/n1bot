@@ -1,10 +1,5 @@
-"""Операции базы знаний: эмбеддинг и поиск идут из песочницы.
-
-Модель живёт в самом образе (/opt/fastembed), поэтому монтировать веса не
-нужно. Процесс на каждый вызов свой, значит модель грузится заново — около
-секунды сверх запроса; это плата за то, что ONNX-инференс над недоверенным
-текстом не идёт в процессе приложения.
-"""
+"""Операции базы знаний в песочнице: ONNX-инференс над недоверенным текстом
+не идёт в процессе приложения, ценой перезагрузки модели на каждый вызов."""
 
 from __future__ import annotations
 
@@ -36,7 +31,7 @@ class KbOps:
     @staticmethod
     def embed(request: dict[str, Any]) -> tuple[list[float], int]:
         """Вектор запроса и его размерность — их ждёт SQL-шаблон."""
-        from fastembed import TextEmbedding  # noqa: PLC0415 — модель грузится долго
+        from fastembed import TextEmbedding  # noqa: PLC0415
 
         model = request["embedding"]
         encoder = TextEmbedding(

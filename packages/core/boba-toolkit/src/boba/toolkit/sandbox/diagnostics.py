@@ -1,8 +1,4 @@
-"""Перевод низкоуровневого сбоя песочницы в объяснение для человека и LLM.
-
-Ядро отдаёт «Too many open files» или SIGKILL без указания, чей это лимит,
-поэтому причину и способ обойти её называем явно.
-"""
+"""Перевод сбоя песочницы в объяснение: ядро не говорит, чей это лимит."""
 
 from __future__ import annotations
 
@@ -136,12 +132,8 @@ class SandboxDiagnostics:
 
     @classmethod
     def _memory(cls, result: RunResult, profile: SandboxProfile) -> str:
-        """max_memory_bytes — это RLIMIT_AS, то есть адресное пространство.
-
-        Парсеры документов резервируют его гигабайтами независимо от размера
-        файла (pdfium — около 2.3 ГБ), поэтому здесь важнее поднять лимит, чем
-        уменьшить данные.
-        """
+        """max_memory_bytes — RLIMIT_AS: парсеры документов резервируют гигабайты
+        адресного пространства независимо от размера файла (pdfium ~2.3 ГБ)."""
         by_signal = result.exit_code in (cls.SIGKILL_CODE, cls.SIGABRT_CODE)
         by_text = cls._matched(result.stderr, cls.MEMORY_MARKERS)
         if not by_signal and not by_text:

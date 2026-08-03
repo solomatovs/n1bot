@@ -7,9 +7,7 @@ from boba.auth.errors.model import BaseError, to_domain
 
 
 class DomainErrorMiddleware:
-    """
-    Единая точка обработки исключений приложения.
-    """
+    "Единая точка обработки исключений приложения"
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -45,9 +43,7 @@ class DomainErrorMiddleware:
                 raise
 
             if (http := domain.http_message()) is not None:
-                # JSON {"detail": <code>} - для chainlut это важно
-                # он мапит code в auth.login.errors.<code>
-                # поэтому можно использовать локализации для отображения ошибок
+                # chainlit мапит detail в auth.login.errors.<code> (локализация)
                 await JSONResponse(
                     content={"detail": http.content},
                     status_code=http.status_code,

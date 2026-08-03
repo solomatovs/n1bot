@@ -1,8 +1,5 @@
-"""Имя инструмента, выполняющего текущий вызов песочницы.
-
-Ставится обёрткой tool-вызова; langchain копирует contextvars в executor-поток,
-поэтому значение видно и синхронному коду SandboxRunner.
-"""
+"""Имя инструмента текущего вызова песочницы; langchain копирует contextvars
+в executor-поток, поэтому значение видно и синхронному SandboxRunner."""
 
 from __future__ import annotations
 

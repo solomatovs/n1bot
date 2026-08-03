@@ -1,11 +1,4 @@
-"""Логирование IndexEvent-потока в стандартный logger.
-
-Pipeline.run() молча проглатывает поток событий и отдаёт только финальный
-IndexStats. LoggedIndexRun.drain() — drop-in замена: потребляет тот же
-поток Pipeline.index(...), но пишет каждое событие (per-source
-indexed/skipped/failed, cleanup, итоговый run) в переданный logger, и так же
-возвращает IndexStats.
-"""
+"""Логирование IndexEvent-потока в logger; drop-in замена Pipeline.run()."""
 
 from __future__ import annotations
 

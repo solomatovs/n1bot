@@ -1,7 +1,4 @@
-"""Tool confluence_ingest_pages: индексация явного списка страниц по page_id.
-
-Общий конфиг/pipeline — ingest_base.py (секция [tool.kb.confluence.ingest]).
-"""
+"""Tool confluence_ingest_pages: индексация явного списка страниц по page_id."""
 
 from __future__ import annotations
 
@@ -57,11 +54,7 @@ def confluence_ingest_pages(
         ),
     ] = False,
 ) -> TableResult:
-    """Индексирует явный список страниц Confluence по page_id в KB.
-
-    Возвращает TableResult — одну строку-summary с колонками collection/
-    indexed/skipped_unchanged/pruned/failed; список page_id — в note.
-    """
+    """Индексирует явный список страниц Confluence по page_id в KB."""
     result = caller.ingest(
         cfg=cfg,
         mode="pages",

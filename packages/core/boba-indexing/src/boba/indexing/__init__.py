@@ -1,6 +1,4 @@
-"""
-boba.indexing — абстракции для индексации документов
-"""
+"""boba.indexing — абстракции для индексации документов."""
 
 from __future__ import annotations
 

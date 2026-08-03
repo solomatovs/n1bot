@@ -34,7 +34,7 @@ def test_layer_priority_later_wins(tmp_path: Path) -> None:
         .add_cli(["a.port=3"])
         .build()
     )
-    assert cfg.a.port == 3  # cli > secrets > config
+    assert cfg.a.port == 3
 
 
 def test_secrets_merge_into_referenced_block(tmp_path: Path) -> None:

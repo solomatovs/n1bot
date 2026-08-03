@@ -1,22 +1,4 @@
-"""
-CleanupStrategy — стратегии удаления устаревших записей в конце Indexer.run
-
-три встроенные реализации:
-    - NoneCleanup — ничего не удаляет; безопасно для любых прогонов,
-      включая частичные
-    - IncrementalCleanup — удаляет только записи с touched source_id;
-      безопасно для частичных прогонов
-    - FullCleanup — удаляет все записи, не обновлённые в этом прогоне;
-      требует full-coverage от RequestSource
-
-Пользователь может добавить кастомную (TimeBasedCleanup, SizeBasedCleanup
-и т.п.) подклассом CleanupStrategy.
-
-Каждая стратегия получает CleanupContext — снимок состояния прогона
-(run_start, touched_sources) + ссылку на IndexQuery. Cleanup делает
-только filter-based операции (clean(where=...)), поэтому ему хватает
-узкого read/delete-контракта без write-возможностей IndexSink.
-"""
+"""CleanupStrategy — стратегии удаления устаревших записей в конце Indexer.run (None/Incremental/Full)."""
 
 from __future__ import annotations
 
@@ -39,12 +21,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class CleanupContext:
-    """Снимок состояния одного прогона Indexer.run, передаваемый в стратегию.
-
-    query уже привязан к своему scope'у (namespace/tenant/...) —
-    стратегии не нужно его конфигурировать; всё что нужно — это
-    предикат stale (через Filter DSL) и вызов clean.
-    """
+    """Снимок состояния одного прогона Indexer.run; query уже привязан к scope'у."""
 
     query: IndexQuery[Any]
     run_start: float
@@ -61,11 +38,7 @@ class CleanupStrategy(ABC):
 
 
 class NoneCleanup(CleanupStrategy):
-    """No-op: ничего не удаляет, всегда возвращает 0.
-
-    Дефолт для безопасных частичных прогонов, когда RequestSource не
-    покрывает весь датасет (incremental-фид).
-    """
+    """No-op: ничего не удаляет, всегда возвращает 0."""
 
     def execute(self, ctx: CleanupContext) -> int:
         del ctx
@@ -73,12 +46,7 @@ class NoneCleanup(CleanupStrategy):
 
 
 class IncrementalCleanup(CleanupStrategy):
-    """Удалить stale-записи только для touched source_id.
-
-    Безопасно для не-полных прогонов: cleanup затронет только те source_id,
-    которые были обработаны в этом прогоне и не получили refresh
-    (updated_at < run_start).
-    """
+    """Удалить stale-записи только для touched source_id; безопасно при частичных прогонах."""
 
     def execute(self, ctx: CleanupContext) -> int:
         if not ctx.touched_sources:
@@ -94,11 +62,9 @@ class IncrementalCleanup(CleanupStrategy):
 
 
 class FullCleanup(CleanupStrategy):
-    """Удалить все stale-записи в текущем scope без фильтра по source_id.
+    """Удалить все stale-записи scope'а.
 
-    Требует full-coverage от RequestSource: всё, что не было touched
-    в этом прогоне, считается устаревшим. Опасно при частичных фидах —
-    удалит актуальные записи.
+    Требует full-coverage от RequestSource: при частичном фиде удалит актуальные записи.
     """
 
     def execute(self, ctx: CleanupContext) -> int:

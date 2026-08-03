@@ -1,8 +1,4 @@
-"""Поиск по проиндексированной базе знаний: 4 инструмента.
-
-Канал (vector/fts) и коллекция зашиты в сам инструмент — параметра method нет.
-Проекция результатов живёт в search.py, здесь только обёртки langchain.
-"""
+"""Инструменты поиска по KB; канал (vector/fts) и коллекция зашиты в сам инструмент."""
 
 from collections.abc import Callable, Mapping
 from typing import Annotated

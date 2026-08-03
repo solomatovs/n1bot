@@ -1,25 +1,4 @@
-"""
-DispatchReader — Reader[T], выбирающий sub-Reader по MetadataKey[str].
-
-Полезен когда один RequestSource/Transport отдаёт смешанный поток
-документов разных форматов (например FsWalkRequestSource по папке
-с .md, .html и .txt).
-Каждый формат держит собственный Reader[T], а DispatchReader смотрит
-на metadata-ключ (обычно FsKeys.SUFFIX или TransportKeys.CONTENT_TYPE) и делегирует.
-
-Ключ ищется в RawDocument.metadata. Если ключ отсутствует или его
-значение не покрыто routes — поведение задаётся on_unknown:
-
-- "error" (default) — IncompatibleContentError: ошибка сборки pipeline,
-  не transient. Используется когда unknown-формат в потоке — это баг
-  конфигурации (например, FsWalkRequestSource неожиданно вернул .docx,
-  для которого нет Reader'а).
-- "skip" — yield ничего, документ молча игнорируется. Используется
-  для multi-format потоков, где наличие неподдерживаемых форматов —
-  это норма (например, Confluence-pipeline стримит HTML + произвольные
-  attachment'ы, и мы хотим индексировать только HTML, остальное
-  пропускать без шума).
-"""
+"""DispatchReader — Reader[T], выбирающий sub-Reader по MetadataKey[str]; unknown-формат — error или skip."""
 
 from __future__ import annotations
 
@@ -38,16 +17,7 @@ T = TypeVar("T")
 
 
 class DispatchReader(Reader[T]):
-    """Reader[T], делегирующий sub-Reader'у по значению metadata-ключа.
-
-    by — типизированный ключ, по которому различаем формат
-    (FsKeys.SUFFIX, TransportKeys.CONTENT_TYPE и т.п.).
-    routes — отображение «значение ключа -> Reader[T]».
-    on_unknown — поведение при unknown-формате; см. module docstring.
-
-    Pipeline остаётся честно один: один Indexer, один cleanup-scope,
-    один stats-builder. Format-выбор инкапсулирован в одном узле.
-    """
+    """Reader[T], делегирующий sub-Reader'у из routes по значению metadata-ключа by."""
 
     def __init__(
         self,

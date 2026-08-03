@@ -1,8 +1,4 @@
-"""Callback'и chainlit: мост между интерфейсом чата и агентом langgraph.
-
-Здесь живут точки входа chainlit (сообщение, старт/конец чата, восстановление
-треда, data layer). Отрисовку ленты ведёт ChatView, историю — checkpointer.
-"""
+"""Callback'и chainlit: мост между интерфейсом чата и агентом langgraph."""
 
 import asyncio
 import logging

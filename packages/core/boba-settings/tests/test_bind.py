@@ -40,7 +40,6 @@ def test_bind_required_missing_raises() -> None:
 
 
 def test_bind_reference_assembly() -> None:
-    # databases.main = ${postgres.main} — сборка секции ссылкой
     cfg = ConfigBuilder().add_dict(
         {
             "postgres": {"main": {"host": "172.18.0.9", "port": 5432}},

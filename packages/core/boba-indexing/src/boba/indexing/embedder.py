@@ -1,14 +1,4 @@
-"""
-Embedder[T] - интерфейс для векторизации контента типа T
-    в embedding-векторы (Sequence[float]), которые хранятся в ChunkStore[T]
-    и используются для поиска похожих документов
-
-например, str для текстов, bytes для изображений
-
-Generic над типом content:
-    TextEmbedder -> Embedder[str]
-    ImageEmbedder -> Embedder[bytes]
-"""
+"""Embedder[T] — интерфейс векторизации контента типа T в embedding-векторы."""
 
 from __future__ import annotations
 

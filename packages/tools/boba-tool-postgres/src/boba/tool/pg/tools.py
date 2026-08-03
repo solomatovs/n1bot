@@ -1,8 +1,4 @@
-"""SQL-инструменты только на чтение: список профилей, таблиц, схема, запрос.
-
-Ядро (SqlExecutor, CopyBuffer) импортируется из boba-tool-postgres как есть —
-здесь только обёртки langchain и перевод ошибок ядра в ErrorResult.
-"""
+"""SQL-инструменты только на чтение: список профилей, таблиц, схема, запрос."""
 
 from __future__ import annotations
 
@@ -171,10 +167,7 @@ class PgTools:
                 ),
             ] = "public",
         ) -> tuple[str, ToolResult]:
-            """Схема таблицы на профиле target: колонки, типы, nullable, default.
-
-            Если таблицы нет, вернётся таблица с заглушкой (no rows).
-            """
+            """Схема таблицы на профиле target: колонки, типы, nullable, default."""
             executor = owner._executor
             try:
                 result = executor.execute(
@@ -218,13 +211,7 @@ class PgTools:
                 Field(min_length=1, description="Имя подключения"),
             ],
         ) -> tuple[str, ToolResult]:
-            """Выполнить SQL на профиле target и вернуть результат как CSV.
-
-            Перед вызовом стоит позвать list_tables и describe_table.
-            Запрос исполняется как есть (COPY-обёртка); ошибки SQL уходят
-            дословно. Слишком много строк / большой объём -> ошибка с просьбой
-            добавить LIMIT.
-            """
+            """Выполнить read-only SQL на профиле target, результат — CSV."""
             executor = owner._executor
             try:
                 text = executor.execute_copy(sql, target=target)

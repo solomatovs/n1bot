@@ -1,10 +1,4 @@
-"""ConfigBuilder: явная сборка источников конфига в один инстанс (не глобал).
-
-Приложение на bootstrap само перечисляет провайдеры-слои (YAML-файл, secrets,
-CLI) и получает DictConfig-инстанс. Этот инстанс прокидывается в резолвер;
-никакого процесс-глобала. Только стандартные средства OmegaConf: load
-(YAML/JSON), from_cli, merge.
-"""
+"""ConfigBuilder: явная сборка источников конфига в один DictConfig (не глобал)."""
 
 from __future__ import annotations
 
@@ -18,10 +12,7 @@ __all__ = ["ConfigBuilder", "build_app_config"]
 
 
 class ConfigBuilder:
-    """Слои-источники -> один DictConfig.
-
-    Порядок добавления = приоритет: поздний слой перекрывает ранний при merge.
-    """
+    """Слои-источники -> один DictConfig; поздний слой перекрывает ранний при merge."""
 
     def __init__(self) -> None:
         self._layers: list[DictConfig] = []
@@ -62,9 +53,7 @@ def build_app_config(
     secret_config_path: Path | None = None,
     argv: list[str] | None = None,
 ) -> DictConfig:
-    """
-    Стандартная сборка приложения: config.toml + secrets.toml + CLI.
-    """
+    """Стандартная сборка приложения: config.toml + secrets.toml + CLI."""
     res = ConfigBuilder()
 
     if config_path:

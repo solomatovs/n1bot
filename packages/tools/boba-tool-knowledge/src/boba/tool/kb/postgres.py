@@ -1,37 +1,4 @@
-"""KB-store слой поверх postgres + pgvector — конфиг и реализации.
-
-В одном модуле:
-- PostgresStoreConfig      — composite-конфиг (connection + tables).
-- PostgresChunkStore       — ChunkStore[str]: chunk-уровневые операции.
-- PostgresCollectionsStore — CollectionsStore: коллекции (CRUD).
-
-Оба сервиса принимают cfg: PostgresStoreConfig (composite-модель с
-connection + tables). Pool открывают сами через KbPool.open(cfg.connection)
-(singleton по DSN — store'ы с одним и тем же connection делят один pool).
-Никакого корневого settings-класса — composite-cfg встраивается как
-nested-поле в tool-конфиги (SearchInKbConfig, ConfluenceSpaceIngestConfig, ...).
-
-Чисто chunk-уровневые операции (документы внутри коллекции):
-- read:  get_by_ids / peek / find / diff_by_hash
-- write: upsert / delete / update_metadata
-
-Хранение:
-- Все коллекции в одной таблице (по дефолту kb_chunks, имя/схема — из
-  PostgresStoreSchema). Разделение по колонке collection.
-- Системные поля (source_id, chunk_index, content_hash) — отдельные колонки
-  таблицы. Тэги — text[]. Остальная metadata — jsonb.
-- Embedding — vector (без фиксированной dim в столбце); HNSW-индекс
-  per-dim создаётся оператором заранее через CLI
-  boba.tool.kb.cli.bootstrap. Store предполагает, что схема и индекс
-  уже на месте — runtime DDL не делает.
-
-Embedder в Store не инжектится: store принимает EmbeddedChunk[str] на
-write. Embedder живёт в pipeline-orchestrator'е выше
-(CollectionScopedView, PostgresKnowledgeBase).
-
-Vector-search (cosine <=>) и FTS-search (ts_rank_cd) живут
-в PostgresKnowledgeBase — application-уровень, не часть ABC Store.
-"""
+"""KB-store поверх postgres+pgvector; схему создаёт bootstrap-CLI, runtime DDL не делает."""
 
 from __future__ import annotations
 
@@ -91,14 +58,7 @@ _E = TypeVar("_E")
 
 
 class KbPool:
-    """Factory PostgresPool для KB-store (с register_vector).
-
-    PostgresPool.get(...) — singleton по конфигу, поэтому повторные вызовы с
-    тем же PostgresConfig возвращают тот же объект pool'а. Configure-
-    hook register_vector регистрирует pgvector-типы на каждом fresh-коннекте
-    (без этого embedding-колонка приходит как plain str и INSERT vector
-    падает на cast).
-    """
+    """PostgresPool (singleton по конфигу) с register_vector: без него INSERT vector падает."""
 
     @staticmethod
     def open(connection: PostgresConfig) -> CancellablePool:
@@ -111,14 +71,7 @@ class KbPool:
 
 
 class PostgresStoreSchema(BaseModel):
-    """Schema + имена таблиц KB-хранилища.
-
-    BaseModel (не settings), встраивается как nested-поле в tool-конфиги.
-    Один и тот же PostgresStoreSchema идёт и в bootstrap-CLI (создаёт
-    таблицы), и в ingest/search-tools (читают/пишут эти же таблицы). Все
-    идентификаторы — валидные postgres-идентификаторы без кавычек/точек/
-    пробелов; psycopg.sql.Identifier квотирует их при подстановке.
-    """
+    """Schema и имена таблиц KB; один конфиг для bootstrap-CLI и ingest/search-tools."""
 
     batch_size: int = Field(
         default=100,

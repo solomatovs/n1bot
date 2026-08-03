@@ -1,8 +1,4 @@
-"""Tool bash: запуск shell-команды в песочнице.
-
-Профиль берётся из конфига инструмента: LLM не выбирает окружение и не
-знает, что команда исполняется в контейнере.
-"""
+"""Tool bash: запуск shell-команды в песочнице."""
 
 from __future__ import annotations
 
@@ -53,10 +49,7 @@ def build_bash_tool(
             ),
         ] = "",
     ) -> tuple[str, ToolResult]:
-        """Выполнить shell-команду и вернуть её вывод.
-
-        Доступ к файловой системе и сети ограничен окружением запуска.
-        """
+        """Выполнить shell-команду и вернуть вывод; доступ к ФС и сети ограничен."""
         outcome = caller.call_text(command, stdin=stdin)
         return pack_result(
             JsonResult(ok=outcome.succeeded, payload=_result_to_payload(outcome))

@@ -17,7 +17,7 @@ def build_plotly_element(
     *,
     display: ElementDisplay = "inline",
 ) -> cl.Plotly:
-    from plotly import graph_objects as go  # noqa: PLC0415 — ленивый импорт plotly
+    from plotly import graph_objects as go  # noqa: PLC0415
 
     figure = go.Figure(spec)
     return cl.Plotly(name=name, figure=figure, display=display)

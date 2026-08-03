@@ -1,11 +1,6 @@
-"""Каждый инструмент прогоняется по-настоящему: песочница, Confluence, БД.
+"""Каждый инструмент прогоняется по реальному конфигу (pytest -m integration).
 
-Профиль берётся из конфига приложения, а не сочиняется здесь: ошибка в
-ro_binds, сети или лимитах видна тесту, а не пользователю в чате. Снимаются
-только cgroup-лимиты — pytest живёт вне делегированного cgroup, а саму группу
-проверяет test_sandbox_cgroup.
-
-Запуск: pytest -m integration (по умолчанию исключены).
+Cgroup-лимиты сняты: pytest живёт вне делегированного cgroup (test_sandbox_cgroup).
 """
 
 from __future__ import annotations
@@ -112,11 +107,7 @@ class ToolSetup:
 
     @staticmethod
     def config(raw: Any, section: str, model: type) -> Any:
-        """Секция конфига как есть, вместе с cgroup-лимитами.
-
-        Лимиты — часть контракта инструмента: без них тест не увидит ни OOM
-        на эмбеддинге, ни fork-бомбу, ни потолок CPU.
-        """
+        """Секция конфига как есть, с cgroup-лимитами — они часть контракта."""
         return bind(raw, path=section, model=model)
 
     @staticmethod

@@ -59,7 +59,7 @@ def template(tmp_path: Path) -> Path:
         f.truncate(16 * 1024 * 1024)
     mkfs = shutil.which("mkfs.ext4")
     assert mkfs is not None
-    subprocess.run(  # noqa: S603 — argv фиксирован, путь резолвится which
+    subprocess.run(  # noqa: S603
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
     )

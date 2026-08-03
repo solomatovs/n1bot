@@ -13,9 +13,7 @@ __all__ = ["SandboxParserConfig"]
 class SandboxParserConfig(BaseModel):
     """Настройки парсера плюс песочница, в которой он исполняется.
 
-    Поля парсера объявлены здесь, а не взяты из boba.liteparse: приложение
-    документы не парсит и сам liteparse в его окружении не нужен — он есть
-    только в rootfs песочницы, вместе с payload'ом.
+    Поля не берутся из boba.liteparse: liteparse есть только в rootfs песочницы.
     """
 
     model_config = ConfigDict(extra="ignore")

@@ -1,9 +1,4 @@
-"""ChatOpenAI + reasoning_content: штатный класс это поле выбрасывает.
-
-DeepSeek-совместимые провайдеры (requesty, qwen, openrouter) отдают
-рассуждения в delta/message.reasoning_content — кладём их в
-additional_kwargs, откуда их берёт AgentTracer.
-"""
+"""ChatOpenAI, сохраняющий reasoning_content: штатный класс это поле выбрасывает."""
 
 from __future__ import annotations
 

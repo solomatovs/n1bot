@@ -1,14 +1,4 @@
-"""
-IndexEvent — события одного прогона Pipeline.index()
-
-Базовые категории (две — минимально-достаточный набор):
-
-1. PhaseTransition — границы фаз процесса
-
-2. CompletedItem — атомарный завершённый item
-
-fatal ошибки просто выбрасывают exception и прерывают поток
-"""
+"""IndexEvent — события одного прогона Pipeline.index(): PhaseTransition и CompletedItem."""
 
 from __future__ import annotations
 
@@ -66,8 +56,7 @@ class BaseIndexEvent(ABC):
 
     run_id: RunId
     monotonic_ns: int
-    """
-    Время от monotonic-часов backend для измерения длительности фаз"""
+    """Время от monotonic-часов backend для измерения длительности фаз."""
 
     @classmethod
     @abstractmethod
@@ -78,11 +67,7 @@ class BaseIndexEvent(ABC):
 
 @dataclass(frozen=True)
 class PhaseTransition(BaseIndexEvent, ABC):
-    """
-    Граница фазы run индексации
-
-    Реализации: RunStarted, BatchStarted, CleanupStarted, RunFinished
-    """
+    """Граница фазы run индексации (RunStarted, BatchStarted, CleanupStarted, RunFinished)."""
 
     @abstractmethod
     def label(self) -> str:
@@ -90,9 +75,7 @@ class PhaseTransition(BaseIndexEvent, ABC):
         ...
 
     def details(self) -> Mapping[str, str]:
-        """
-        Опциональные дополнительные поля для log вывода
-        """
+        """Опциональные дополнительные поля для log вывода."""
         return {}
 
     def severity(self) -> Severity:
@@ -101,17 +84,7 @@ class PhaseTransition(BaseIndexEvent, ABC):
 
 @dataclass(frozen=True)
 class CompletedItem(BaseIndexEvent, ABC):
-    """
-    Атомарный завершённый item (success или skip-after-error)
-
-    Реализации: SourceIndexed, SourceFailed, BatchUpserted, ChunksDeleted,
-    SourceSkippedUnchanged
-
-    Severity варьируется для каждой реализации:
-    INFO для успехов
-    WARN для skip после нефатальной ошибки
-    ERROR не используется
-    """
+    """Атомарный завершённый item (success или skip-after-error); severity задаёт реализация."""
 
     @abstractmethod
     def headline(self) -> str:

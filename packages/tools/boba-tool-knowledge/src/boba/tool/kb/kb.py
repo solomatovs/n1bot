@@ -1,20 +1,4 @@
-"""Read-only KB-обёртка над postgres+pgvector — для search-tools'ов.
-
-PostgresKnowledgeBase — тонкий wrapper над connection pool + embedder,
-с двумя операциями tool-уровня:
-
-- vector_search(...)  — **чистый** semantic top-K от pgvector (cosine
-                          via <=>). Канал method=vector search-tool'ов.
-                          Полезен, когда FTS-канал шумит/мешает (короткие
-                          запросы, эмбеддинг лучше ловит синонимы).
-- fts_search(...)     — **чистый** lexical top-K от Postgres FTS
-                          (ts_rank_cd). Канал method=fts search-tool'ов.
-                          Полезен для точных лексических совпадений
-                          (имена, идентификаторы, фразы).
-
-Snippet обрезан по snippet_chars, метадата нормализована под формат
-tool'ов.
-"""
+"""Read-only KB над postgres+pgvector: vector_search и fts_search для search-tools."""
 
 from __future__ import annotations
 
@@ -40,12 +24,8 @@ __all__ = [
 
 
 class PostgresKnowledgeBaseConfig(BaseModel):
-    """Composite-конфиг для read-side KB.
-
-    Поля: connection + tables + embedding. Язык(и) FTS зашиты в SQL-шаблоны
-    (KbSearch.VECTOR_SQL/FTS_SQL в core/search.py) и в DDL tsv-колонки
-    (см. migrations/002_multilang_tsv.sql) — оба места должны быть синхронны.
-    """
+    """Composite-конфиг read-side KB: языки FTS зашиты и в SQL-шаблоны, и в DDL
+    tsv-колонки (migrations/002_multilang_tsv.sql) — оба места должны быть синхронны."""
 
     connection: PostgresConfig
     tables: PostgresStoreSchema
@@ -56,9 +36,7 @@ class PostgresKnowledgeBaseConfig(BaseModel):
 
 
 class PostgresKnowledgeBase:
-    """
-    Доступ к хранилищу kb
-    """
+    """Доступ к хранилищу kb."""
 
     def __init__(
         self,
@@ -74,7 +52,7 @@ class PostgresKnowledgeBase:
             cfg.tables.chunks_table,
         )
 
-    def _search(  # noqa: PLR0913 — параметры поиска независимы
+    def _search(  # noqa: PLR0913
         self,
         *,
         op: str,

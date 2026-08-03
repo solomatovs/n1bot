@@ -1,8 +1,4 @@
-"""Точка входа payload'а: запрос со stdin, ответ маркерной строкой в stdout.
-
-Инструмент запускает свой модуль как `python3 -m boba.tool.<name>.payload`;
-всё остальное в stdout/stderr — свободный лог, его читает диагностика.
-"""
+"""Точка входа payload'а: запрос со stdin, ответ маркерной строкой в stdout."""
 
 from __future__ import annotations
 

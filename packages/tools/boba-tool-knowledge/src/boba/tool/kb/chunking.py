@@ -1,9 +1,4 @@
-"""ChunkerParams — чистый DTO с параметрами структурного чанкера.
-
-BaseModel (не settings), встраивается как nested-поле в ingest-tool-конфиги
-(confluence_ingest_*) и CLI-конфиги. Только данные — без фабричных методов;
-сборку StructuralChunker из этих параметров делает StructuralChunkerFactory.
-"""
+"""ChunkerParams — DTO параметров чанкера; сборку делает StructuralChunkerFactory."""
 
 from __future__ import annotations
 
@@ -54,15 +49,7 @@ class StructuralChunkerFactory:
 
     @classmethod
     def build(cls, params: ChunkerParams) -> StructuralChunker:
-        """
-        Собирает чанкер: режет документ по заголовкам, длинные секции добивает
-        разбиением с перекрытием по символам до заданного размера (overlap).
-
-        content_hasher считает SHA-256 по содержимому чанка — хэш позволяет
-        IndexSink решить, нужно ли повторно индексировать чанк.
-        chunk_id_generator считает SHA-256 по source_id с префиксом —
-        chunk_id уникален в рамках всей таблицы kb.
-        """
+        """Собирает чанкер: режет по заголовкам, длинные секции добивает overlap-сплиттером."""
         return StructuralChunker(
             chunker_id=cls._CHUNKER_ID,
             splitter_factory=cls._make_splitter_factory(
@@ -82,9 +69,7 @@ class StructuralChunkerFactory:
         chunk_size: int,
         chunk_overlap: int,
     ) -> SplitterFactory:
-        """Замыкаем chunk_size/chunk_overlap; StructuralChunker дёргает на каждой
-        секции с extra_overhead = len(prefix + repeat_header + repeat_footer),
-        чтобы итоговый чанк влез в budget."""
+        """Замыкает chunk_size/chunk_overlap; extra_overhead приходит от чанкера."""
 
         def factory(extra_overhead: int) -> OverlapCharSplitter:
             return OverlapCharSplitter(

@@ -1,6 +1,4 @@
-"""
-SqlExecutorConfig + SqlExecutor
-"""
+"""SqlExecutorConfig + SqlExecutor."""
 
 from __future__ import annotations
 
@@ -87,24 +85,14 @@ class SqlQueryError(RuntimeError):
 
 @dataclass(frozen=True)
 class SqlResult:
-    """Результат SqlExecutor.execute: JSON-safe строки-словари + флаг усечения.
-
-    rows — это уже list[dict] (dict_row курсора), значения приведены к
-    JSON-safe через pydantic_core.to_jsonable_python (Decimal/UUID/datetime
-    -> строки, jsonb/array остаются вложенной структурой).
-    """
+    """Результат SqlExecutor.execute: JSON-safe строки-словари + флаг усечения."""
 
     rows: list[dict[str, Any]]
     truncated: bool
 
 
 class SqlExecutor:
-    """Исполняет SQL через payload в песочнице.
-
-    Пула соединений здесь нет и быть не может: каждый вызов — отдельный
-    процесс песочницы, значит своё соединение. Цена — рукопожатие (а с
-    kerberos ещё и получение тикета) на каждый запрос.
-    """
+    """Исполняет SQL в песочнице; каждый вызов — отдельный процесс и соединение."""
 
     def __init__(self, *, cfg: SqlExecutorConfig, caller: PgCaller) -> None:
         self._cfg = cfg

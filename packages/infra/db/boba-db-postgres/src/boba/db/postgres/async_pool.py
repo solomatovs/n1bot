@@ -19,14 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class AsyncPostgresPool:
-    """
-    async-обёртка над psycopg_pool.AsyncConnectionPool
-
-    Жизненный цикл явный: open() — установить фоновые соединения,
-    close() — закрыть пул (идемпотентно). connection()/cursor()/
-    dict_cursor() — async-контекст-менеджеры; на закрытом пуле
-    connection() кидает PostgresPoolClosedError.
-    """
+    "async-обёртка над psycopg_pool.AsyncConnectionPool с явным open()/close()"
 
     def __init__(
         self,

@@ -1,10 +1,4 @@
-"""Операции web: сам запрос в сеть тоже идёт из песочницы.
-
-Приложение решает, разрешён ли хост (whitelist профилей), и передаёт сюда
-уже проверенный URL вместе с транспортным профилем. Дальше всё — скачивание,
-конверсия в markdown, нарезка окна и поиск — происходит здесь: наружу уходит
-только затребованный кусок, а не вся страница.
-"""
+"""Операции web: скачивание, конверсия и поиск идут из песочницы."""
 
 from __future__ import annotations
 
@@ -66,7 +60,7 @@ class WebOps:
         text = response.content.decode(cls.ENCODING, errors="replace")
         if not request["as_markdown"]:
             return text
-        import markdownify  # noqa: PLC0415 — нужен только для конверсии
+        import markdownify  # noqa: PLC0415
 
         return markdownify.markdownify(text, heading_style=cls.HEADING_STYLE)
 

@@ -1,8 +1,4 @@
-"""Контракт web-payload'а: запрос в сеть делает песочница.
-
-Хост оставляет за собой whitelist хостов: до payload'а доходит только URL,
-профиль которого нашёлся в [tool.web] profiles.
-"""
+"""Контракт web-payload'а: запрос в сеть делает песочница."""
 
 from __future__ import annotations
 
@@ -21,11 +17,9 @@ __all__ = [
 
 
 class WebProfile(BaseModel):
-    """Транспортная часть профиля, которая нужна payload'у.
+    """Транспортная часть профиля для payload'а; auth несёт раскрытые креды.
 
-    auth несёт раскрытые креды: httpx.Auth собирается уже внутри песочницы,
-    потому что digest — это challenge-response, а не готовый заголовок.
-    Секреты уходят через stdin, поэтому не видны ни в argv, ни в логах.
+    Секреты едут через stdin (не в argv/логах); httpx.Auth собирается в песочнице.
     """
 
     model_config = ConfigDict(extra="forbid")

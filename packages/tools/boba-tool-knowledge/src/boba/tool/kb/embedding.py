@@ -1,12 +1,4 @@
-"""Embedder KB-плагина: конфиг EmbeddingModel + бэкенд.
-
-- LocalFastEmbedEmbedder — in-process Embedder[str] поверх fastembed
-  (ONNX runtime, без сети).
-- EmbeddingModel         — чистый BaseModel-конфиг (профиль local fastembed),
-  встраивается как nested-поле в tool-конфиги.
-- LocalFastEmbedEmbedderFactory — собирает LocalFastEmbedEmbedder из
-  EmbeddingModel (конфиг отдельно от сборки).
-"""
+"""Embedder KB-плагина: конфиг EmbeddingModel, бэкенд fastembed и его фабрика."""
 
 from __future__ import annotations
 
@@ -24,17 +16,12 @@ __all__ = [
 
 
 class LocalFastEmbedEmbedder(Embedder[str]):
-    """Embedder[str] на fastembed TextEmbedding (in-process, ONNX).
-
-    Для асимметричных моделей (e5-family) fastembed сам подставляет нужные
-    префиксы: passage_embed -> "passage: ", query_embed -> "query: ".
-    Для симметричных моделей оба метода работают как обычный embed.
-    """
+    """Embedder[str] на fastembed (in-process, ONNX); префиксы e5 подставляет fastembed."""
 
     def __init__(
         self, model_name: str, cache_dir: str, dim: int, batch_size: int
     ) -> None:
-        from fastembed import TextEmbedding  # noqa: PLC0415 — тянет onnxruntime
+        from fastembed import TextEmbedding  # noqa: PLC0415
         self._model_name = model_name
         self._model = TextEmbedding(
             model_name=model_name,
@@ -73,18 +60,8 @@ class LocalFastEmbedEmbedder(Embedder[str]):
 
 
 class EmbeddingModel(BaseModel):
-    """Профиль embedding: in-process fastembed (ONNX, local, без сети).
-
-    BaseModel, встраивается как nested-поле в tool-конфиги, которым нужно
-    строить embeddings (ingest — write-side; search — query-side). В config
-    задаётся как профиль [embedding.<name>] и подключается ссылкой
-    embedding = "${embedding.<name>}".
-
-    Семантический инвариант (НЕ enforced конфигом): model ДОЛЖНА совпадать
-    между ingest-tools и search-tools, которые пишут/читают одну и ту же
-    KB-коллекцию. Иначе ingest положит N-мерный вектор, search будет искать
-    M-мерным -> silent break.
-    """
+    """Профиль embedding (in-process fastembed): model ДОЛЖНА совпадать между
+    ingest- и search-tools одной KB-коллекции, иначе silent break размерностей."""
 
     model: str = Field(
         description=(

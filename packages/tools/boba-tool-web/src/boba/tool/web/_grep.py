@@ -1,9 +1,4 @@
-"""Tool web_grep: поиск по содержимому веб-страницы.
-
-Скачивание, конверсию и сам поиск делает payload внутри песочницы: наружу
-уходят только совпадения. Здесь остаётся whitelist хостов, лимит длины строк
-и сборка человекочитаемой сводки.
-"""
+"""Tool web_grep: поиск по содержимому веб-страницы."""
 
 from __future__ import annotations
 
@@ -46,7 +41,7 @@ class WebGrepNote:
         return "; ".join(parts)
 
 
-def web_grep(  # noqa: PLR0913 — независимые флаги grep'а
+def web_grep(  # noqa: PLR0913
     cfg: WebGrepConfig,
     caller: WebCaller,
     url: Annotated[

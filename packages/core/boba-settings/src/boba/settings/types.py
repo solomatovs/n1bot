@@ -11,38 +11,18 @@ __all__ = ["LLMStringList", "StringList"]
 
 
 def _csv_to_list(v: Any) -> Any:
-    """CSV-строка -> list[str]; list/None — без изменений.
-
-    Используется как BeforeValidator для полей типа list[str], чтобы
-    значение из env-переменной или TOML-строки "a,b,c" нормально
-    разворачивалось в ["a", "b", "c"]. Список и None пропускаются
-    как есть — pydantic дальше провалидирует тип.
-    """
+    """CSV-строка -> list[str]; list/None — без изменений."""
     if isinstance(v, str):
         return [item.strip() for item in v.split(",") if item.strip()]
     return v
 
 
 StringList = Annotated[list[str], BeforeValidator(_csv_to_list)]
-"""list[str] с CSV-парсингом строкового входа.
-
-Применение:
-
-    class MyConfig(BaseModel):
-        tags: StringList = []                  # "a,b,c" -> ["a","b","c"]
-        accept: StringList | None = None       # nullable-вариант
-"""
+"""list[str] с CSV-парсингом строкового входа ("a,b,c" -> ["a","b","c"])."""
 
 
 def _to_string_list(v: Any) -> Any:
-    """Привести типовой LLM-вход к list[str].
-
-    - list/None (и прочее не-str) — без изменений.
-    - str, начинающаяся (после strip) с [ — пробуем json.loads;
-      если результат — list, возвращаем [str(x) for x in parsed].
-    - иначе строку разбиваем по , со strip'ом пустых элементов
-      (одиночное "950276" -> ["950276"]).
-    """
+    """Привести LLM-вход (list, JSON-строка, CSV, одиночное значение) к list[str]."""
     if not isinstance(v, str):
         return v
     s = v.strip()
@@ -58,16 +38,4 @@ def _to_string_list(v: Any) -> Any:
 
 
 LLMStringList = Annotated[list[str], BeforeValidator(_to_string_list)]
-"""
-list[str] с LLM нормализацией строкового входа.
-
-Применение в tool-сигнатуре:
-
-    @tool
-    def my_tool(
-        page_ids: Annotated[LLMStringList, Field(description="...")],
-    ) -> ...: ...
-
-Принимает: ["a","b"], '["a","b"]', "a,b", "a".
-Для nullable — LLMStringList | None = None.
-"""
+"""list[str] с LLM-нормализацией входа: ["a","b"], '["a","b"]', "a,b", "a"."""

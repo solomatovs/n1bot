@@ -16,7 +16,7 @@ class AttachmentUrl:
     element_id: str
 
     ROUTE: ClassVar[str] = "/attachment/{thread_id}/{element_id}"
-    """Один шаблон и для регистрации route, и для рендера ссылки."""
+    """Общий шаблон route и ссылки."""
 
     def path(self) -> str:
         return self.ROUTE.format(

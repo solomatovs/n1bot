@@ -1,16 +1,4 @@
-"""ChunkIdStrategy[T] — стратегия вычисления стабильного ChunkId по Section[T].
-
-Domain владеет только тем, что использует **обязательные** поля Section.
-Стратегии, опирающиеся на optional-metadata (anchor, html-id и т.п.), живут
-в format-package'ах рядом с парсером, который эти поля гарантирует.
-
-Содержимое:
-
-- ChunkIdStrategy[T] — interface (compute(section, idx) -> ChunkId).
-- DigestPrefix / FixedDigestPrefix — длина digest-префикса.
-- SourceBasedChunkId — id по source_id + chunk_index. Использует только
-  обязательные поля, потому format-нейтрален.
-"""
+"""Стратегии вычисления стабильного ChunkId по обязательным полям Section[T]."""
 
 from __future__ import annotations
 
@@ -59,12 +47,7 @@ class ChunkIdGenerator(Generic[T]):
 
 
 class SourceBasedChunkId(ChunkIdGenerator[T]):
-    """
-    Генерирует ChunkId из source_id + chunk_index
-    Грубо говоря есть документ docs/my_doc.md
-    вот этот текст и индекс внутри этого документа
-    являются ключем chunk_id
-    """
+    """Генерирует ChunkId из source_id + chunk_index."""
 
     def __init__(
         self,

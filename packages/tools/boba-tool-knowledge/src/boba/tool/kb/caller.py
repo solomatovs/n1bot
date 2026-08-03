@@ -55,7 +55,7 @@ class KbCaller:
     ) -> None:
         self._caller = SandboxCaller(tool, sandbox.effective(), path_vars)
 
-    def search(  # noqa: PLR0913 — параметры поиска независимы
+    def search(  # noqa: PLR0913
         self,
         *,
         op: str,

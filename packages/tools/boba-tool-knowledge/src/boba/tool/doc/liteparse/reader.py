@@ -1,9 +1,4 @@
-"""Reader[str] для indexing-pipeline: документ парсится в песочнице.
-
-Замена boba.liteparse.LiteParseReader: тот же контракт (Section на страницу,
-битый документ -> IncompatibleContentError, чтобы pipeline изолировал его как
-SourceFailed), но liteparse исполняется не в процессе приложения.
-"""
+"""Reader[str] с контрактом LiteParseReader, но liteparse исполняется в песочнице."""
 
 from __future__ import annotations
 
@@ -39,8 +34,7 @@ class SandboxLiteParseReader(Reader[str]):
         "application/vnd.openxmlformats-officedocument."
         "presentationml.presentation": ".pptx",
     }
-    """media_type -> расширение. Ключи задают и набор поддерживаемых типов
-    (media_types для routes DispatchReader'а), и суффикс для liteparse."""
+    """media_type -> расширение; ключи задают и набор поддерживаемых типов, и суффикс."""
 
     def __init__(
         self,

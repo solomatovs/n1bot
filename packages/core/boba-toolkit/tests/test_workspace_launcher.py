@@ -299,7 +299,7 @@ class TestFuseMounter:
             "print('ready', flush=True)\n"
             "time.sleep(30)\n"
         )
-        daemon = subprocess.Popen(  # noqa: S603 — фиксированный argv теста
+        daemon = subprocess.Popen(  # noqa: S603
             [sys.executable, "-c", code], stdout=subprocess.PIPE, shell=False
         )
         assert daemon.stdout is not None
@@ -326,7 +326,7 @@ class TestCapabilityDropper:
             "print(open('/proc/self/status').read())\n"
         )
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
-        out = subprocess.run(  # noqa: S603 — фиксированный argv теста
+        out = subprocess.run(  # noqa: S603
             [sys.executable, "-c", code],
             env=env,
             capture_output=True,

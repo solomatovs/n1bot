@@ -1,8 +1,4 @@
-"""ToolResult sealed-семейство, дискриминатор — поле kind.
-
-Инструмент возвращает ToolResult; pack_result() делает из него
-(content для LLM, artifact для UI).
-"""
+"""Sealed-семейство ToolResult (kind); pack_result -> (content, artifact)."""
 
 from __future__ import annotations
 
@@ -25,12 +21,8 @@ __all__ = [
 
 
 class ToolResultBase(BaseModel, ABC):
-    """База вариантов; как тип значения используй ToolResult.
-
-    Поле ok — единственный признак того, как завершился инструмент. Само
-    возвращение результата успехом не считается: команда с ненулевым кодом
-    выхода или запрос с ошибкой сервера обязаны выставить ok=False.
-    """
+    """База вариантов (тип значения — ToolResult); ok — единственный признак успеха:
+    ненулевой код выхода или ошибка сервера обязаны выставить ok=False."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

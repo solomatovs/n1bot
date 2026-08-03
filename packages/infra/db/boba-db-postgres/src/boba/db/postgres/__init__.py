@@ -1,17 +1,4 @@
-"""boba.db.postgres — Postgres-конфиг + sync/async-пулы для tool-пакетов и приложений.
-
-Использование:
-    cfg = PostgresConfig(
-        host="db.local", user="reader", dbname="app",
-        pool={"timeout": 10.0}, options={"statement_timeout": "5s"},
-    )
-    pool = PostgresPool.get(
-        cfg, override_options={"default_transaction_read_only": "on"}
-    )
-    with pool.connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT 1")
-        cur.fetchone()
-"""
+"boba.db.postgres — Postgres-конфиг + sync/async-пулы для tool-пакетов и приложений"
 
 from __future__ import annotations
 

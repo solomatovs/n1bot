@@ -37,7 +37,7 @@ def require_fuse() -> None:
         raise RuntimeError(msg)
 
 
-def build_chain_argv(  # noqa: PLR0913 — независимые параметры цепочки
+def build_chain_argv(  # noqa: PLR0913
     *,
     images: Sequence[tuple[str, str]],
     template: str,
@@ -50,24 +50,12 @@ def build_chain_argv(  # noqa: PLR0913 — независимые парамет
     bwrap_bin: str = "bwrap",
 ) -> list[str]:
     """images — пары (образ, mountpoint); op — run/write/read/delete + аргумент.
-
-    CAP_SYS_ADMIN действует только внутри создаваемого userns — на хосте
-    процесс остаётся непривилегированным (это не docker --cap-add). Без него
-    ядро не разрешит mount fuse, более узкой capability для mount(2) нет.
-    После монтирования лаунчер сбрасывает caps; run идёт во вложенном bwrap
-    с --cap-drop ALL, который свой userns/сеть создать уже не может — поэтому
-    --unshare-net здесь. Хост отдаётся read-only (на запись — каталоги образов
-    и rw_paths), из устройств виден только /dev/fuse, env чистится до того,
-    что нужно самому лаунчеру (LAUNCHER_ENV).
-    Создание новых userns блокирует сам лаунчер после mount (Launcher.USERNS_SYSCTL):
-    bwrap --disable-userns несовместим с mount fuse изнутри песочницы.
-    """
+    CAP_SYS_ADMIN только в userns; --disable-userns несовместим с mount fuse."""
     bwrap_path = shutil.which(bwrap_bin)
     if not bwrap_path:
         msg = f"workspace: {bwrap_bin!r} not found in PATH"
         raise RuntimeError(msg)
-    # относительные пути bwrap разрешает от корня песочницы, а он read-only:
-    # точку монтирования создать не выйдет, поэтому всё приводим к абсолютным
+    # корень песочницы read-only: относительные пути приводим к абсолютным
     absolute: list[tuple[str, str]] = []
     for image, mnt in images:
         absolute.append((os.path.abspath(image), os.path.abspath(mnt)))

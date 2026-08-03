@@ -84,11 +84,7 @@ class ConfluenceSectionsRequest(BaseModel):
 
 
 class ConfluenceSection(BaseModel):
-    """Кусок страницы: текст и его место в дереве заголовков.
-
-    Пустая строка означает «значения нет» — приложение такие метаданные не
-    проставляет.
-    """
+    """Кусок страницы: текст и место в дереве заголовков; пустая строка = значения нет."""
 
     model_config = ConfigDict(extra="forbid")
 
