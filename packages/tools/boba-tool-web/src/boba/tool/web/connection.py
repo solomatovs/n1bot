@@ -13,13 +13,7 @@ __all__ = ["WebConnection"]
 
 
 class WebConnection(BaseModel):
-    """Whitelist хостов: hostname -> транспортный профиль (HttpConnection).
-
-    Оператор задаёт ссылками на web-профили:
-    [tool.web] profiles = { "github.com" = "${web.public}" }.
-    resolve(url) по hostname URL'а находит профиль (timeout/ssl/auth);
-    хост не в whitelist'е — запрос запрещён.
-    """
+    """Whitelist хостов: hostname -> HttpProfile; хост вне списка — запрос запрещён."""
 
     model_config = ConfigDict(extra="ignore")
 

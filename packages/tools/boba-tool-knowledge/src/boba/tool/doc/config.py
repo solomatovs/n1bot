@@ -10,13 +10,7 @@ __all__ = ["DocToolsConfig"]
 
 
 class DocToolsConfig(SandboxParserConfig):
-    """Чтение документов из workspace пользователя (PDF/docx/xlsx/изображения).
-
-    Файл открывает payload внутри песочницы: приложение документы не парсит
-    и к их содержимому не прикасается. Настройки парсера (ocr_enabled/
-    ocr_language/max_pages/tessdata_path) и песочница payload'а приходят из
-    SandboxParserConfig.
-    """
+    """Чтение документов из workspace пользователя; файлы открывает payload в песочнице."""
 
     model_config = ConfigDict(extra="ignore")
 

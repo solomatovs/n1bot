@@ -46,9 +46,7 @@ class PostgresPoolConfig(BaseModel):
 
 
 class PostgresOptionsConfig(BaseModel):
-    """
-    libpq 'options': серверные GUC сессии (-c key=value); сериализуется в строку.
-    """
+    "libpq 'options': серверные GUC сессии (-c key=value); сериализуется в строку"
 
     model_config = ConfigDict(extra="ignore")
 
@@ -90,7 +88,6 @@ class PostgresConfig(BaseModel):
     )
 
     # libpq connection параметры
-    # https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
     host: str | None = Field(default=None, description="Хост(ы) или путь к сокету.")
     hostaddr: str | None = Field(default=None, description="IP хоста (без DNS).")
     port: int | None = Field(default=None, description="Порт (или сокет-суффикс).")
@@ -231,11 +228,8 @@ class PostgresConfig(BaseModel):
         self,
         override_options: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """
-        kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts.
-        """
-        # pool/options — не скалярные connect-параметры: pool это конструктор пула,
-        # options сериализуется отдельно в строку '-c k=v'
+        "kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts"
+        # pool/options не connect-параметры: конструктор пула и строка '-c k=v'
         conn: dict[str, Any] = {}
 
         for name in PostgresConfig.model_fields:

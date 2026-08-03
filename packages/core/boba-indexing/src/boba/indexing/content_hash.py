@@ -1,15 +1,4 @@
-"""
-ContentHash — типизированное hash-значение чанка
-
-Базовый ABC + три встроенные реализации:
-1. BytesContentHash  — сырые байты digest (sha256/blake2b raw output).
-  В 2 компактнее чем hex, нативно сравнивается
-
-2. IntContentHash— 64-bit (или больше) int (xxhash, fnv)
-  быстрое сравнение через ==
-
-3. StringContentHash — строка
-"""
+"""ContentHash — типизированное hash-значение чанка (Bytes/Int/String-реализации)."""
 
 from __future__ import annotations
 
@@ -25,9 +14,7 @@ __all__ = [
 
 
 class ContentHash(ABC):
-    """
-    Hash-значение чанка
-    """
+    """Hash-значение чанка."""
 
     @abstractmethod
     def to_wire(self) -> str:
@@ -47,9 +34,7 @@ class BytesContentHash(ContentHash):
 
 @dataclass(frozen=True)
 class IntContentHash(ContentHash):
-    """
-    Hash как N-битное целое, сериализуется в hex
-    """
+    """Hash как N-битное целое, сериализуется в hex."""
 
     value: int
     bits: int = 64
@@ -61,10 +46,7 @@ class IntContentHash(ContentHash):
 
 @dataclass(frozen=True)
 class StringContentHash(ContentHash):
-    """
-    Hash уже в строковом виде
-    hex / base32 / base64 — на усмотрение реализации
-    """
+    """Hash уже в строковом виде (hex/base32/base64 — на усмотрение реализации)."""
 
     text: str
 

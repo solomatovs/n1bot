@@ -9,26 +9,13 @@ __all__ = [
 
 
 class IndexingError(Exception):
-    """
-    База ошибок processing-домена.
-
-    Обычно сигнализирует о проблемах конфигурации pipeline
-    или ошибках в реализации индексации
-    любая ошибка на стадии Source/Transport/Reader/Decoder/Chunker/Store
-    """
+    """База ошибок processing-домена (любая стадия Source/Transport/Reader/Decoder/Chunker/Store)."""
 
 
 class IncompatibleContentError(IndexingError):
-    """
-    Reader получил RawDocument, который он не может распарсить.
+    """Reader не может распарсить RawDocument.
 
-    Сигнализирует ошибку сборки pipeline:
-    - transport отдал не тот content
-    - RequestSource генерит неверные URL'ы.
-
-    pipeline должен упасть после первой же такой ошибки,
-    так как это не transient ошибка, а ошибка конфигурации
-    оператор должен исправить конфигурацию
+    Не transient, а ошибка конфигурации pipeline — падать после первой же такой ошибки.
     """
 
     def __init__(self, reader_id: str, canonical_id: str, reason: str) -> None:

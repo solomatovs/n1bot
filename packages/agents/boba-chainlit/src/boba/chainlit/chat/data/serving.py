@@ -18,12 +18,7 @@ __all__ = ["AttachmentServing"]
 
 
 class AttachmentServing:
-    """GET-обработчик вложений треда.
-
-    Mime обязан доехать до ответа: фронт chainlit парсит тело как JSON только
-    при content-type application/json — с octet-stream Plotly-элемент
-    получает строку вместо figure-спеки и график не рисуется.
-    """
+    """GET-обработчик вложений: mime едет из elements, иначе фронт не рисует."""
 
     FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
 
@@ -50,7 +45,7 @@ class AttachmentServing:
         if element is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-        # путь строится от текущего пользователя: чужие образы недостижимы
+        # путь от текущего пользователя: чужие образы недостижимы
         key = ObjectKey.build(
             current_user.id,
             element.get("threadId"),

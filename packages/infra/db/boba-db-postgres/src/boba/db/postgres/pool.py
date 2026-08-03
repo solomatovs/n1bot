@@ -24,13 +24,7 @@ ConfigureConnection = Callable[[psycopg.Connection[Any]], None]
 
 
 class PostgresPool:
-    """
-    обёртка над psycopg_pool.ConnectionPool - singleton
-
-    Контракт read-only задаётся параметрами DSN
-        default_transaction_read_only=on
-        statement_timeout=...
-    """
+    "Обёртка-singleton над psycopg_pool.ConnectionPool; read-only задаётся опциями DSN"
 
     _CacheKey = tuple[str, tuple[tuple[str, str], ...]]
     _CACHE: ClassVar[dict[_CacheKey, PostgresPool]] = {}
@@ -72,45 +66,19 @@ class PostgresPool:
 
     @contextmanager
     def cursor(self) -> Iterator[psycopg.Cursor[Any]]:
-        """Connection + tuple-cursor — для одиночных запросов без row_factory.
-
-        Короткая запись частого паттерна:
-
-            with pool.connection() as conn, conn.cursor() as cur:
-                cur.execute(...)
-
-        Если нужна транзакция, явно with pool.connection() as conn:
-        conn.transaction(); ... — там pool.cursor() не подходит.
-        """
+        "Connection + tuple-cursor — для одиночных запросов без row_factory"
         with self._pool.connection() as conn, conn.cursor() as cur:
             yield cur
 
     @contextmanager
     def client_cursor(self) -> Iterator[psycopg.ClientCursor[Any]]:
-        """Connection + ClientCursor — psycopg3 client-side parameter binding.
-
-        Используется там, где нужен cur.mogrify(query, params) -> str без
-        реального исполнения (рендер шаблона в литерально-параметризованный
-        SQL для копи-пейста / pgbench / EXPLAIN-сессии). Серверный
-        psycopg.Cursor не имеет mogrify-а — только ClientCursor.
-
-        Короткая запись частого паттерна:
-
-            with pool.client_cursor() as cur:
-                rendered = cur.mogrify(query, params)
-        """
+        "Connection + ClientCursor: mogrify есть только у ClientCursor, не у серверного"
         with self._pool.connection() as conn, psycopg.ClientCursor(conn) as cur:
             yield cur
 
     @contextmanager
     def dict_cursor(self) -> Iterator[psycopg.Cursor[DictRow]]:
-        """Connection + dict-cursor (row_factory=dict_row) — cur рядного словаря.
-
-        Короткая запись частого паттерна:
-
-            with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-                cur.execute(...)
-        """
+        "Connection + dict-cursor (row_factory=dict_row)"
         with (
             self._pool.connection() as conn,
             conn.cursor(row_factory=dict_row) as cur,
@@ -133,12 +101,9 @@ class PostgresPool:
         override_options: dict[str, str] | None = None,
         configure: ConfigureConnection | None = None,
     ) -> PostgresPool:
-        """
-        Process-singleton по полному состоянию cfg + override_options
-        пересоздаёт закрытый pool
+        """Process-singleton по cfg + override_options; закрытый pool пересоздаётся.
 
-        configure применяется при первом создании pool'а
-        для данного cfg при повторном с тем же cfg значение игнорируется
+        configure применяется при первом создании, при повторном get игнорируется.
         """
         key: PostgresPool._CacheKey = (
             json.dumps(

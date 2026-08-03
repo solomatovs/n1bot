@@ -1,15 +1,4 @@
-"""PostgresDataLayer chainlit поверх boba AsyncPostgresPool.
-
-Слой хранит только оболочку диалога: пользователей, треды, вложения и оценки.
-Сами сообщения живут в langgraph-checkpointer'е — get_thread собирает из них
-ленту, а create_step/update_step ничего не пишут.
-
-Пул соединений приходит извне (владеет им DI), слой его не создаёт и не закрывает.
-Все таблицы квалифицируются схемой из конфига (sql.Identifier(schema, ...)) —
-на search_path соединения не опираемся. Запись идёт через ON CONFLICT, строки
-моделей мапятся через class_row, jsonb-поля оборачиваются в Jsonb (Row.params()).
-Контракт совпадает с BaseDataLayer.
-"""
+"""PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
 
 from typing import ClassVar
 from uuid import UUID
@@ -253,8 +242,7 @@ class PostgresDataLayer(BaseDataLayer):
         try:
             await self._create_element(element)
         except Exception as e:
-            # chainlit зовёт create_element фоновой таской и гасит исключение:
-            # без явного сообщения пользователь увидит «файл загружен»
+            # chainlit зовёт create_element фоновой таской и молча гасит исключение
             await show_error(f"Failed to save attachment {element.name!r}: {e}")
             raise InternalServiceError(
                 internal_detail=(

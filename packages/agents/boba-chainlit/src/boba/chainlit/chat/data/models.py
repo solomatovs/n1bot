@@ -1,12 +1,4 @@
-"""
-Dataclass-модели chainlit-данных:
-    users
-    threads
-    elements
-    feedbacks
-
-Модели шагов нет: сообщения треда хранит langgraph-checkpointer.
-"""
+"""Dataclass-модели chainlit-данных: users, threads, elements, feedbacks."""
 
 from dataclasses import Field, dataclass, field, fields
 from datetime import UTC, datetime

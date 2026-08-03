@@ -1,8 +1,4 @@
-"""Tool confluence_ingest_spaces: индексация всех страниц перечисленных spaces.
-
-Discovery через /rest/api/space/{key}/content. Общий конфиг/pipeline —
-ingest_base.py (секция [tool.kb.confluence.ingest]).
-"""
+"""Tool confluence_ingest_spaces: индексация всех страниц перечисленных spaces."""
 
 from __future__ import annotations
 
@@ -58,11 +54,7 @@ def confluence_ingest_spaces(
         ),
     ] = False,
 ) -> TableResult:
-    """Индексирует ВСЕ страницы перечисленных Confluence-spaces в KB.
-
-    Возвращает TableResult с одной строкой-stats: колонки space_keys/
-    collection/indexed/skipped_unchanged/pruned/failed.
-    """
+    """Индексирует ВСЕ страницы перечисленных Confluence-spaces в KB."""
     result = caller.ingest(
         cfg=cfg,
         mode="spaces",

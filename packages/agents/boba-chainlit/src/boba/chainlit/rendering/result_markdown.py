@@ -27,7 +27,7 @@ class ToolResultMarkdown:
     def __init__(self, result: ToolResult) -> None:
         self._result = result
 
-    def render(self) -> str:  # noqa: PLR0911 — по ветке на каждый ToolResult-вариант
+    def render(self) -> str:  # noqa: PLR0911
         match self._result:
             case TextResult(text=t):
                 return t

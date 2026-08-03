@@ -1,5 +1,4 @@
-"""Интеграционный тест отдачи вложений: сохранённый график должен пережить
-перезагрузку страницы — mime из таблицы elements обязан доехать до ответа."""
+"""Отдача вложений: mime из таблицы elements обязан доехать до ответа."""
 
 import json
 
@@ -63,7 +62,6 @@ async def test_persisted_plotly_chart_is_served_as_json(
 
     url = AttachmentUrl(thread_id=seeded.thread_id, element_id=element.id)
 
-    # ссылка из get_thread ведёт ровно на этот route
     thread = await layer.get_thread(seeded.thread_id)
     assert thread is not None
     stored = next(e for e in thread["elements"] if e["id"] == element.id)
@@ -76,8 +74,7 @@ async def test_persisted_plotly_chart_is_served_as_json(
         response = await client.get(url.path())
 
     assert response.status_code == 200
-    # фронт chainlit парсит тело как JSON только при таком content-type:
-    # с octet-stream Plotly-компонент получает строку и график не рисуется
+    # только с таким content-type фронт парсит тело как JSON и рисует график
     assert response.headers["content-type"].startswith("application/json")
     figure_spec = json.loads(response.content)
     assert figure_spec["data"][0]["type"] == "candlestick"
@@ -101,5 +98,4 @@ async def test_foreign_user_gets_no_file(
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         response = await client.get(url.path())
 
-    # путь к файлу строится от текущего пользователя: в его образе файла нет
     assert response.status_code == 404

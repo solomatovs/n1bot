@@ -1,8 +1,4 @@
-"""Чтение веб-страниц: скачивание окна строк и поиск по содержимому.
-
-Хосты берутся из whitelist'а профилей; логика в приватных модулях,
-здесь обёртки langchain и перевод ошибок в ErrorResult.
-"""
+"""Чтение веб-страниц: скачивание окна строк и поиск по содержимому."""
 
 from collections.abc import Callable, Mapping
 from typing import Annotated
@@ -57,11 +53,7 @@ class WebTools:
                 Field(ge=1, description="Сколько строк вернуть начиная с line_offset"),
             ],
         ) -> tuple[str, ToolResult]:
-            """Скачивает URL и возвращает окно строк.
-
-            Формат: {content, source_url, total_lines, returned_lines}.
-            total_lines позволяет выбрать корректный следующий line_offset.
-            """
+            """Скачивает URL и возвращает окно строк; total_lines — для пагинации."""
             try:
                 payload = web_fetch(
                     owner._cfg,
@@ -81,7 +73,7 @@ class WebTools:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def web_grep_page(  # noqa: PLR0913 — независимые флаги grep'а
+        def web_grep_page(  # noqa: PLR0913
             url: Annotated[str, Field(min_length=1, description="URL для скачивания.")],
             pattern: Annotated[
                 str,

@@ -218,14 +218,8 @@ class TestDocumentsInSandbox:
 @needs_sandbox
 @needs_userns
 class TestOfficeNonAsciiNames:
-    """LibreOffice-конвертация не должна зависеть от алфавита имени файла.
-
-    Вложения лежат в /workspace под оригинальными именами. Office-документы
-    liteparse конвертирует через soffice, а тот в локали песочницы молча
-    (rc=0) не открывает файлы с не-ASCII именем — PDF не появляется и парс
-    падает с «output PDF not found». Содержимое обоих файлов одинаковое:
-    единственная переменная — имя.
-    """
+    """Конвертация office-документов не должна зависеть от алфавита имени:
+    содержимое обоих файлов одинаковое, единственная переменная — имя."""
 
     ASCII_NAME: ClassVar[str] = "user manual_v9.docx"
     CYRILLIC_NAME: ClassVar[str] = "Инструкция пользователя Магазина данных_v9.docx"

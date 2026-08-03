@@ -1,10 +1,4 @@
-"""Операции над документами: liteparse внутри песочницы.
-
-Документ берётся либо по пути внутри песочницы (doc-инструменты читают
-workspace пользователя), либо байтами в самом запросе — их base64 шлют
-инструменты, скачавшие вложение по сети. Контракт описан в
-boba.tool.doc.liteparse.protocol и ...doc.protocol.
-"""
+"""Операции над документами: liteparse в песочнице, вход по пути или base64-байтами."""
 
 from __future__ import annotations
 
@@ -23,22 +17,13 @@ from boba.toolkit.payload.entry import PayloadEntry
 
 
 class LocaleRetry:
-    """Повторяет парсинг под запасными локалями.
-
-    LibreOffice в локали без UTF-8 (в том числе C.UTF-8) молча — с rc=0 —
-    не открывает файлы с не-ASCII именем, и liteparse сводит это к ошибке
-    «output PDF not found». Локаль сама по себе язык имени не ограничивает:
-    любая UTF-8-локаль открывает имена на любом алфавите, "C" пропускает
-    любые байты и есть в любом glibc. LC_ALL перекрывает LANG и LC_* из
-    профиля песочницы; LibreOffice наследует env процесса при каждом parse.
-    """
+    """Ретрай парсинга под запасными локалями: LibreOffice без UTF-8-локали
+    молча (rc=0) не открывает файлы с не-ASCII именем."""
 
     MARKER: ClassVar[str] = (
         "LibreOffice conversion succeeded but output PDF not found"
     )
     RETRYABLE: ClassVar[tuple[type[Exception], ...]] = (ParseError, RuntimeError)
-    """LiteParse оборачивает ошибку в ParseError, нативный парсер — RuntimeError."""
-
     LOCALES: ClassVar[tuple[str, ...]] = ("ru_RU.UTF-8", "en_US.UTF-8", "C")
 
     @classmethod
@@ -189,11 +174,7 @@ class DocumentOps:
 
     @classmethod
     def parse_bytes(cls, request: dict[str, Any]) -> dict[str, Any]:
-        """Документ приехал в запросе: пишем его на tmpfs и парсим как файл.
-
-        Формат liteparse определяет по расширению, поэтому имя файла с
-        исходным суффиксом обязательно.
-        """
+        """Пишет байты запроса на tmpfs с исходным суффиксом: формат берётся из него."""
         data = base64.b64decode(request["content_b64"])
         return cls.parse_content(data, request["filename"], request["params"])
 
@@ -218,11 +199,7 @@ class DocumentOps:
 
     @staticmethod
     def check_ocr(params: dict[str, Any]) -> None:
-        """OCR без каталога моделей liteparse качает их из интернета.
-
-        В песочнице сети нет, поэтому запрос упёрся бы в таймаут HTTP вместо
-        понятной ошибки. Проверяем заранее.
-        """
+        """Проверяет каталог моделей: без него liteparse лезет в сеть, а её нет."""
         if not params["ocr_enabled"]:
             return
         path = params["tessdata_path"]

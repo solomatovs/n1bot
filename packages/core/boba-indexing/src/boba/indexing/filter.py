@@ -1,36 +1,4 @@
-"""Filter — backend-agnostic DSL для запросов по полям чанка
-(tags, source_id, updated_at, scope-key impl'а вроде namespace,
-произвольная business-Metadata — что угодно из payload'а чанка).
-
-Sealed union предикатов. Каждый ChunkStore-impl переводит Filter в свой
-нативный язык запросов:
-- ChromaVectorStore  -> chroma where={...} syntax
-- PostgresChunkStore -> SQL WHERE clause
-- QdrantVectorStore  -> qdrant Filter struct
-- ...
-
-Использование:
-
-    from boba.indexing.filter import And, Eq, HasTag, Lt
-    from boba.indexing.index_views import TrackingKeys
-
-    # stale-чанки касаемых источников за время до cutoff:
-    f = And([
-        Eq(TrackingKeys.NAMESPACE, "docs"),
-        Lt(TrackingKeys.UPDATED_AT, 1700000000.0),
-        In(TrackingKeys.SOURCE_ID, ["src/page-1", "src/page-2"]),
-    ])
-
-    # чанки с тегом "internal":
-    f = HasTag("internal")
-
-    # композиция:
-    f = And([HasTag("public"), Or([Eq("doc_type", "pdf"), Eq("doc_type", "html")])])
-
-DSL покрывает реалистичный набор операций vector-backend'ов; экзотику
-конкретный backend может либо отвергать через UnsupportedFilterError,
-либо реализовывать через комбинацию своих примитивов.
-"""
+"""Filter — backend-agnostic DSL (sealed union предикатов) для запросов по полям чанка."""
 
 from __future__ import annotations
 

@@ -1,6 +1,4 @@
-"""
-тесты PostgresDataLayer
-"""
+"""Тесты PostgresDataLayer."""
 
 from pathlib import Path
 from uuid import uuid4

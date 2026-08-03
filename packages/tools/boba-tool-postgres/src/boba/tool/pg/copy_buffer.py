@@ -16,9 +16,7 @@ class RowLimitExceededError(Exception):
 
 
 class CopyBuffer:
-    """
-    Байтовый буфер под COPY TEXT: копит блоки и трекает границы строк.
-    """
+    """Байтовый буфер под COPY TEXT: копит блоки и трекает границы строк."""
 
     _INITIAL_CAPACITY = 4096
     _NL = 0x0A

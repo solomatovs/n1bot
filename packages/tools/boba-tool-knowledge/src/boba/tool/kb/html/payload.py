@@ -1,9 +1,4 @@
-"""Операции над HTML-страницами: markdown, plain-text и разбор Confluence.
-
-Недоверенную разметку разбирают markdownify и BeautifulSoup — оба живут
-только здесь, в песочнице. Скачивает страницу приложение: allowlist хостов,
-прокси и отмена хода — его зона; сюда приезжает уже полученный текст.
-"""
+"""Операции над HTML в песочнице: недоверенную разметку разбирают только здесь."""
 
 from __future__ import annotations
 
@@ -18,18 +13,13 @@ from boba.toolkit.payload.entry import PayloadEntry
 
 
 class ConfluenceHtml:
-    """Confluence-aware разбор: heading'и, anchor'ы, текст без макросов.
-
-    BeautifulSoup поверх lxml: structural-парсеры не годятся для кастомных
-    namespace'ов ac:/ri: из Confluence-export'а.
-    """
+    """Confluence-aware разбор через BeautifulSoup: structural-парсеры не берут ac:/ri:."""
 
     HEADING_TAGS: ClassVar[tuple[str, ...]] = ("h1", "h2", "h3", "h4", "h5", "h6")
     HEADING_TAG_NAMES: ClassVar[frozenset[str]] = frozenset(HEADING_TAGS)
 
     GOBACK: ClassVar[str] = "_GoBack"
-    """Служебный браузерный anchor (Confluence ставит его в начало страницы
-    при экспорте; ни на что не ссылается). Игнорируем при extraction'е."""
+    """Служебный anchor Confluence-экспорта, игнорируется при extraction'е."""
 
     @staticmethod
     def parse_html(data: str) -> BeautifulSoup:
@@ -171,11 +161,7 @@ class PageOps:
 
     @classmethod
     def confluence_sections(cls, request: dict[str, Any]) -> dict[str, Any]:
-        """Heading-aware нарезка страницы; без заголовков — одна секция.
-
-        Ответ несёт только текст и позицию в дереве заголовков: метаданные
-        индексации собирает приложение, оно же владеет схемой чанков.
-        """
+        """Heading-aware нарезка страницы; без заголовков — одна секция."""
         html = request["html"]
         title = request["title"]
         if not html.strip():

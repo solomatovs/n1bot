@@ -1,8 +1,4 @@
-"""История треда: сообщения langgraph-checkpointer'а -> лента chainlit.
-
-Источник правды один — состояние агента. Лента собирается тем же ChatView,
-что рисует живой ответ, поэтому восстановленный тред выглядит как исходный.
-"""
+"""История треда: из langgraph-checkpointer'а в ленту chainlit тем же ChatView."""
 
 from __future__ import annotations
 

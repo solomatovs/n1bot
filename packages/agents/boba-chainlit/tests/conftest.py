@@ -1,6 +1,4 @@
-"""
-Общие фикстуры для тестов PostgresDataLayer
-"""
+"""Общие фикстуры для тестов PostgresDataLayer."""
 
 import os
 from collections.abc import AsyncIterator

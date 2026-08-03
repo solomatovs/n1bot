@@ -1,30 +1,4 @@
-"""
-Metadata — typed view над Mapping[str, str] для хранения атрибутов документов и чанков.
-
-Каждый слой pipeline (Transport / Reader / Chunker) добавляет свои ключи через
-MetadataKey[T] константы:
-    - TransportKeys - ключи, проставляемые Transport-слоем:
-            etag, mtime, content_type
-     - ReaderKeys - ключи, проставляемые Reader-слоем:
-            парсинг структуры документа, например doc_type, page_title, heading_path
-     - ChunkerKeys - ключи, проставляемые Chunker-слоем:
-            нарезка на чанки, например chunk_index, chunk_summary
-
-Типизация — на уровне доступа, к примеру
-    md.get(TransportKeys.MTIME) возвращает float | None а не str | None
-    избавляя от необходимости ручного decode/encode.
-
-Использование:
-
-    md = Metadata.empty()
-    md = md.set(TransportKeys.ETAG, "abc-123")
-    md = md.set(TransportKeys.MTIME, 1700000000.0)
-    etag: str | None = md.get(TransportKeys.ETAG)        # "abc-123"
-    ts: float | None = md.get(TransportKeys.MTIME)       # 1700000000.0
-
-    # Merge при пробросе по слоям (other побеждает при коллизии)
-    section_md = raw_doc.metadata.merge(reader_added)
-"""
+"""Metadata — typed view над Mapping[str, str]; слои pipeline добавляют свои MetadataKey[T]-константы."""
 
 from __future__ import annotations
 
@@ -40,15 +14,7 @@ T = TypeVar("T")
 
 @dataclass(frozen=True)
 class MetadataKey(Generic[T]):
-    """Типизированный ключ для Metadata: name + encode/decode.
-
-    name — wire-key (например 'transport.etag').
-    Namespace-prefix предотвращает коллизии между слоями pipeline и
-    позволяет легко понять источник ключа при отладке
-        decode — превращает wire-string в типизированное значение.
-        encode — превращает типизированное значение в wire-string.
-    """
-
+    """Типизированный ключ для Metadata: namespace-prefixed wire-name + encode/decode."""
 
     name: str
     decode: Callable[[str], T]
@@ -136,7 +102,4 @@ class ReaderKeys:
 
 
 class ChunkerKeys:
-    """Ключи, проставляемые Chunker-слоем (нарезка на чанки).
-
-    Пусто на старте — добавятся по мере появления конкретных Chunker-impls.
-    """
+    """Ключи, проставляемые Chunker-слоем; пока пусто."""

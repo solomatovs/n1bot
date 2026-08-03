@@ -1,8 +1,4 @@
-"""Tool confluence_list_spaces: список пространств Confluence.
-
-Запрос к REST делает payload в песочнице; glob-фильтр по key/name остаётся
-здесь — он дешёвый и не требует сети.
-"""
+"""Tool confluence_list_spaces: список пространств; glob-фильтр клиентский."""
 
 from __future__ import annotations
 
@@ -91,12 +87,7 @@ def confluence_list_spaces(
         ),
     ] = 200,
 ) -> TableResult:
-    """Список spaces confluence (с опциональным glob-фильтром).
-
-    Возвращает TableResult со строками {key, name, type}. pattern
-    (glob */?) сужает выдачу клиентски по key/name. Без expand весь
-    список приходит одним запросом (limit=PAGE_SIZE), без глубокой пагинации.
-    """
+    """Список spaces confluence (с опциональным glob-фильтром по key/name)."""
     request = ConfluenceSpacesRequest(
         op=ConfluenceSpacesRequest.OP,
         base_url=cfg.confluence.base_url or "",

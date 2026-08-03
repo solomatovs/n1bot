@@ -1,8 +1,4 @@
-"""Tool web_fetch: окно строк веб-страницы.
-
-Скачивает и режет окно payload внутри песочницы; здесь остаётся проверка
-хоста по whitelist'у и упаковка ответа для LLM.
-"""
+"""Tool web_fetch: окно строк веб-страницы."""
 
 from __future__ import annotations
 
@@ -16,7 +12,7 @@ from boba.tool.web.connection import WebConnection
 __all__ = ["web_fetch"]
 
 
-def web_fetch(  # noqa: PLR0913 — окно строк задаётся явными параметрами
+def web_fetch(  # noqa: PLR0913
     cfg: WebConnection,
     caller: WebCaller,
     url: Annotated[

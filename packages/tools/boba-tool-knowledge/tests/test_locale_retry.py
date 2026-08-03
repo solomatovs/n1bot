@@ -55,7 +55,6 @@ class TestLocaleRetry:
         assert "LC_ALL" not in os.environ
 
     def test_native_runtime_error_retries_too(self) -> None:
-        """Нативный парсер кидает ту же ошибку типом RuntimeError."""
         parser = ParserStub(
             [RuntimeError(f"conversion error: {LocaleRetry.MARKER}"), "parsed"]
         )

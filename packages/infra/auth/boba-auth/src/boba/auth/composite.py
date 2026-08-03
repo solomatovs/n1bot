@@ -19,13 +19,8 @@ class PasswordAuthCallbackInstaller:
         self._auth.append(ldap_auth)
 
     def install_callback_if_any_exists(self) -> None:
-        # устанавливаю callback только если есть авторизатор
         if self._auth:
-            # добавляю callback через chainlit_config.code,
-            # а не через cl.password_auth_callback
-            # потому что иначе chaionlit проглатывает любые exception'ы
-            # и пишет что введен некорректный пароль
-            # вместо того, что бы писать реальную проблему
+            # не cl.password_auth_callback — иначе chainlit глотает исключения
             chainlit_config.code.password_auth_callback = self._build_callback()
 
     def _build_callback(self) -> UserCallback:
@@ -38,15 +33,9 @@ class PasswordAuthCallbackInstaller:
                     if res is not None:
                         return res
 
-                # единственный тип ошибки, который отлавливается, накапливается
-                # и если ни один сервис не авторизовал, то выбрасывает
-                # накопленную ошибку
                 except AuthenticationError as e:
                     last_error = e
 
-            # если была ошибка в процессе авторизации
-            # и после всех проверок не удалось авторизовать пользователя
-            # возвращаю последнюю ошибку
             if last_error:
                 raise last_error
 

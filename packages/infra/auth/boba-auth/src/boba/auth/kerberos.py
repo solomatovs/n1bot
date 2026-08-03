@@ -66,9 +66,7 @@ class UserCcache:
 
 
 class KerberosDelegationConfig(BaseModel):
-    """
-    Куда класть ccache и продлевать ли токен
-    """
+    "Куда класть ccache и продлевать ли токен"
 
     model_config = ConfigDict(extra="ignore")
 
@@ -173,17 +171,9 @@ class KerberosAuthConfig(BaseModel):
 
 
 class KerberosCredentialStore:
-    """
-    Реестр делегированных тикетов (принципал - ccache) с продлением по запросу.
+    """Реестр делегированных тикетов (принципал - ccache) с продлением по запросу.
 
-    Store сам срок не отслеживает и не угадывает: продление инициирует место
-    использования ccache (tool), когда бэкенд вернул ошибку истечения — оно
-    зовёт renew(). На каждого принципала свой lock, чтобы конкурентные продления
-    не сходили в KDC и не перезаписали ccache дважды.
-
-    Store нужен двум мирам:
-        DI-провайдеру (читает)
-        SpnegoMiddleware (пишет)
+    Срок store не отслеживает: renew() зовёт потребитель ccache при ошибке истечения.
     """
 
     class _EntryCcache:
@@ -197,10 +187,7 @@ class KerberosCredentialStore:
         self._entries: dict[str, KerberosCredentialStore._EntryCcache] = {}
 
     def register(self, principal: str, ccache: str) -> None:
-        """Сохраняет/обновляет делегированный тикет принципала.
-
-        Существующую запись обновляет на месте — lock принципала сохраняется.
-        """
+        "Сохраняет/обновляет тикет принципала на месте — lock принципала сохраняется"
         entry = self._entries.get(principal)
         if entry is None:
             self._entries[principal] = self._EntryCcache(ccache)
@@ -213,11 +200,7 @@ class KerberosCredentialStore:
         return entry.ccache if entry else None
 
     async def renew(self, principal: str) -> bool:
-        """Продлевает тикет принципала; звать при ошибке истечения от бэкенда.
-
-        Сериализовано локом принципала. False — продление недоступно/не удалось
-        (renew выключен, нет записи или KDC отказал); при провале запись снимается.
-        """
+        "Продлевает тикет под локом принципала; False — не удалось, запись снимается"
         entry = self._entries.get(principal)
         if entry is None:
             return False
@@ -235,9 +218,7 @@ class KerberosCredentialStore:
 
     @staticmethod
     def _renew(ccache: str) -> bool:
-        """
-        Продлевает TGT в ccache через krb5
-        """
+        "Продлевает TGT в ccache через krb5"
         try:
             ctx = krb5.init_context()
             cc = krb5.cc_resolve(ctx, ccache.encode())
@@ -276,8 +257,7 @@ class GssErrorToDomain:
                 user_detail=None,
             )
 
-        # неизвестный GSSError: чаще S4U-политика / неверный SPN / keytab —
-        # трактуем как нашу конфигурацию, полный maj/min кладём в лог
+        # неизвестный GSSError (чаще S4U-политика / SPN / keytab) — наша конфигурация
         return InternalServiceError(
             internal_detail=(
                 f"gss error maj={getattr(e, 'maj_code', None)} "
@@ -288,12 +268,7 @@ class GssErrorToDomain:
 
 
 class KerberosDelegation:
-    """
-    Выбираем стратегию согласно AD учетки
-    Если в AD установлено delegated_creds, значит выбирается
-    стратегия ограниченного делегирования (перечислены allowlist)
-    иначе выбирается стратегия неограниченного делегирования
-    """
+    "Стратегия по AD-учётке: захваченный при логине TGT либо S4U по keytab сервиса"
 
     def __init__(
         self,
@@ -338,7 +313,6 @@ class KerberosDelegation:
     def on_success_authenticated(self, principal: str, ctx: SecurityContext) -> None:
         deleg = ctx.delegated_creds
         if deleg is None:
-            # AD не форварднул TGT — делегирование запрещено для пользователя.
             self._logger.warning(
                 "no delegated_credentials for %s (delegation not permitted in AD)",
                 principal,
@@ -361,7 +335,6 @@ class KerberosDelegation:
                 overwrite=True,
             )
         except GSSError as e:
-            # не смогли сохранить делегированный тикет — наша сторона.
             raise InternalServiceError(
                 internal_detail=f"failed to store delegated ccache {ccache}: {e}",
                 user_detail=None,
@@ -382,7 +355,6 @@ class KerberosDelegation:
                 )
             return await asyncio.to_thread(self._init_token, ccache, target_spn)
 
-        # s4u
         return await asyncio.to_thread(
             self._s4u_token, self._service_name, self._keytab, username, target_spn
         )
@@ -402,7 +374,6 @@ class KerberosDelegation:
             target = Name(target_spn, NameType.kerberos_principal)
             # initiate этими creds → KDC делает S4U2Proxy и проверяет whitelist
             ctx = SecurityContext(name=target, creds=user_creds, usage="initiate")
-            # произвести токен, который мы пошлём бэкенду
             token = ctx.step()
         except GSSError as e:
             raise GssErrorToDomain.map(e) from e
@@ -596,9 +567,7 @@ class PacGroupSids:
 
 
 class SpnegoMiddleware:
-    """
-    SPNEGO-accept на /auth/sso
-    """
+    "SPNEGO-accept на /auth/sso"
 
     def __init__(
         self,
@@ -852,25 +821,14 @@ class KerberosRolesInLdapProvider:
 
 
 class KerberosAuth:
-    """
-    SSO через Kerberos/SPNEGO
+    """SSO через Kerberos/SPNEGO: кнопка на /login ведёт на /auth/sso (SpnegoMiddleware).
 
-    Собирается полностью на уровне FastAPI, без chainlit header-auth
-    Так как требуется вход по sso через явное нажатие на кнопку,
-    а не автоматический вход через header-auth
-
-    Добавляет в ui кнопку /login, которая ведёт на /auth/sso
-    SpnegoMiddleware перехватывает этот путь и
-    выполняет 401: Authentification: Negotiate
-    Далее браузер подключенный в ActiveDirectory (+Kerberos)
-    отправляет токен пользователя еще раз, по которому SpnegoMiddleware выполняет accept
-    и получает итоговый токен пользователя
+    Собран на FastAPI без chainlit header-auth: вход по явной кнопке, не автоматом.
     """
 
     def __init__(self, url_prefix: str, config: KerberosAuthConfig):
         self._config = config
-        # роуты регистрируются без префикса (роутер учитывает root_path),
-        # а middleware и кнопка работают с полным путём (с префиксом)
+        # роуты без префикса (root_path учтёт роутер), middleware и кнопка — с полным
         self._sso_path = config.sso_path
         self._sso_url = f"{url_prefix}{config.sso_path}"
         self._js_path = f"{self._sso_url}.js"
@@ -973,7 +931,6 @@ class KerberosAuth:
 
         if self._kerberos_roles_in_ldap:
             user = await self._kerberos_roles_in_ldap.request(principal)
-            # выполняю мапинг ролей через ldap
             roles.extend(self._kerberos_roles_in_ldap.roles_of(user))
 
             excluded = excluded or self._kerberos_roles_in_ldap.excluded_of(user)
@@ -1017,10 +974,7 @@ class KerberosAuth:
         js = self._get_static_button()
 
         async def auth_sso(request: Request) -> RedirectResponse:
-            # сюда долетаем только после успешного SPNEGO
-            # middleware положил X-Remote-User поэтому мы считаем
-            # что авторизация прошла успешно
-            # здесь мы собираем юзера и заводим сессию chainlit (JWT-cookie)
+            # сюда долетаем после успешного SPNEGO: заводим сессию chainlit (JWT-cookie)
             from chainlit.auth import create_jwt, set_auth_cookie  # noqa: PLC0415
             from chainlit.data import get_data_layer  # noqa: PLC0415
 

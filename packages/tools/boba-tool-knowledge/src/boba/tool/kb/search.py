@@ -1,13 +1,4 @@
-"""KB search tools: 2 штуки = {vector, fts}.
-
-Коллекция фиксируется дискриминирующим типом (ConfluenceCollection /
-KbDocCollection): строгий фильтр по collection даёт детерминированную
-сборку строки из kb_chunks (CollectionSearch.row). Каждый тип ссылается
-на те же MetadataKey-константы, что пишет ingest этой коллекции — так
-search-сторона ↔ ingest-сторона не расходятся. Все 4 tool'а читают
-конфиг-секцию [tool.kb] напрямую как PostgresKnowledgeBaseConfig
-(connection/tables/embedding). top_k/snippet_chars — tool-аргументы LLM.
-"""
+"""KB search tools (vector/fts): дискриминатор коллекции собирает строку из kb_chunks."""
 
 from __future__ import annotations
 
@@ -42,22 +33,14 @@ SearchMethod = Literal["vector", "fts"]
 
 @dataclass(frozen=True)
 class MetaField:
-    """Output-колонка ← ключ kb_chunks.metadata (та MetadataKey, что у ingest).
-
-    row() читает значение по wire-имени из jsonb (всегда строка), поэтому
-    тип-параметр ключа не важен — допускаем любой (напр. VERSION: int).
-    """
+    """Output-колонка ← ключ kb_chunks.metadata (та же MetadataKey, что у ingest)."""
 
     column: str
     key: MetadataKey[Any]
 
 
 class CollectionSearch:
-    """База дискриминатора: строгий COLLECTION + явная сборка строки из kb_chunks.
-
-    Подкласс обязан задать COLLECTION (scope) и META_FIELDS (поля из
-    metadata). Прямые колонки kb_chunks собираются здесь, в row().
-    """
+    """База дискриминатора: подкласс задаёт COLLECTION и META_FIELDS, строку собирает row()."""
 
     COLLECTION: ClassVar[str]
     META_FIELDS: ClassVar[tuple[MetaField, ...]]
@@ -76,13 +59,7 @@ class CollectionSearch:
 
 
 class ConfluenceCollection(CollectionSearch):
-    """Коллекция Confluence-страниц (прямой HTTP-ingest).
-
-    META_FIELDS ссылается на ключи, которые пишет confluence-ingest:
-    request_source (ConfluenceKeys.SOURCE_URL/PAGE_ID), decoder
-    (ConfluenceKeys.SPACE_KEY, ReaderKeys.PAGE_TITLE), reader
-    (SectionKeys.ANCHOR/HEADING_PATH).
-    """
+    """Коллекция Confluence-страниц: META_FIELDS — ключи, которые пишет confluence-ingest."""
 
     COLLECTION = "kb_confluence"
 
@@ -101,13 +78,7 @@ class ConfluenceCollection(CollectionSearch):
 
 
 class KbDocCollection(CollectionSearch):
-    """Коллекция загруженных KbDoc-выгрузок Confluence (workspace upload).
-
-    META_FIELDS ссылается на ключи, которые пишет kbdoc-ingest: KbDocReader
-    из header'а (KbDocKeys.SOURCE_URL/PAGE_ID/SPACE, ReaderKeys.
-    PAGE_TITLE, SectionKeys.ANCHOR) + StructuralChunker
-    (SectionKeys.HEADING_PATH). Wire-имена совпадают с confluence-коллекцией.
-    """
+    """Коллекция KbDoc-выгрузок из workspace; wire-имена совпадают с confluence-коллекцией."""
 
     COLLECTION = "kb_confluence_doc"
 
@@ -148,11 +119,7 @@ order by
 limit
     %(top_k)s
 """
-    """Поисковый запрос по векторному индексу
-
-    Identifier-плейсхолдеры (sql.SQL.format): {dim}, {chunks_table}.
-    Bind-параметры (named-style): collections/embedding/snippet_chars/top_k.
-    """
+    """Векторный поиск: format-плейсхолдеры {dim}/{chunks_table}, остальное — bind."""
 
     FTS_SQL: ClassVar[str] = """
 with q as (
@@ -180,11 +147,7 @@ order by
 limit
     %(top_k)s
 """
-    """Поисковый запрос по full-text индексу
-
-    Identifier-плейсхолдеры (sql.SQL.format): {chunks_table}, {schema}.
-    Bind-параметры (named-style): collections/query/snippet_chars/top_k.
-    """
+    """FTS-поиск: format-плейсхолдеры {chunks_table}/{schema}, остальное — bind."""
 
     QUERY_DESC_VECTOR: ClassVar[str] = (
         "Поисковый запрос на естественном языке — семантический поиск "
@@ -203,7 +166,7 @@ limit
     )
 
     @staticmethod
-    def run(  # noqa: PLR0913 — явный набор search-параметров
+    def run(  # noqa: PLR0913
         cfg: PostgresKnowledgeBaseConfig,
         caller: KbCaller,
         collection: type[CollectionSearch],

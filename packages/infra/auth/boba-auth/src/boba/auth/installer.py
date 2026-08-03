@@ -15,11 +15,7 @@ class ChainlitAuthInstaller:
         self._configs = configs
 
     def install(self, chainlit_app: FastAPI) -> KerberosAuth | None:
-        """Ставит выбранные способы авторизации; возвращает kerberos, если он есть.
-
-        KerberosAuth нужен вызывающему ради delegation (ccache пользователя
-        для tools), у остальных способов наблюдаемого состояния нет.
-        """
+        "Ставит способы авторизации; KerberosAuth возвращается ради delegation для tools"
         password_callback = PasswordAuthCallbackInstaller()
         kerberos: KerberosAuth | None = None
 
@@ -41,7 +37,6 @@ class ChainlitAuthInstaller:
             else:
                 raise ValueError(f"unknown authorization type: {type(auth).__name__}")
 
-        # устанавливаю password callback если есть хотя бы один из вариантов
         password_callback.install_callback_if_any_exists()
 
         return kerberos

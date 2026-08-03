@@ -1,8 +1,4 @@
-"""Tool confluence_fetch_attachment: текст вложения страницы.
-
-Скачивание и парсинг идут в песочнице: приложение не касается ни файла,
-ни разметки — обратно приходит готовый текст.
-"""
+"""Tool confluence_fetch_attachment: скачивание и парсинг вложения идут в песочнице."""
 
 from __future__ import annotations
 
@@ -56,11 +52,7 @@ def confluence_fetch_attachment(
         ),
     ],
 ) -> str:
-    """Скачивает вложение Confluence по page_id+filename и возвращает его текст.
-
-    Парсит PDF/docx/xlsx/pptx и отдаёт весь извлечённый текст для дословного
-    цитирования. Нужное вложение ищи через kb_search.
-    """
+    """Скачивает вложение Confluence по page_id+filename и возвращает его текст."""
     request = ConfluenceAttachmentRequest(
         op=ConfluenceAttachmentRequest.OP,
         base_url=cfg.confluence.base_url or "",

@@ -32,7 +32,7 @@ class RunResult:
     timed_out: bool
 
 
-def run_subprocess(  # noqa: PLR0913 — параметры процесса, независимы
+def run_subprocess(  # noqa: PLR0913
     argv: list[str],
     *,
     stdin_data: bytes,
@@ -61,7 +61,7 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
         preexec = enter_cgroup
 
     started = time.monotonic()
-    proc = subprocess.Popen(  # noqa: S603 — argv приходит готовый из builder'а
+    proc = subprocess.Popen(  # noqa: S603
         argv,
         shell=False,
         stdin=subprocess.PIPE,
@@ -71,7 +71,7 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
         close_fds=True,
         cwd=cwd,
         env=dict(env),
-        preexec_fn=preexec,  # noqa: PLW1509 — только async-signal-safe вызовы
+        preexec_fn=preexec,  # noqa: PLW1509
     )
     if limits is not None:
         limits.apply_to_process(proc.pid)

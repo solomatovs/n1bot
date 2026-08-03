@@ -1,7 +1,4 @@
-"""Tool confluence_fetch_page: контент одной страницы.
-
-Запрос к REST и конверсию в markdown делает payload в песочнице.
-"""
+"""Tool confluence_fetch_page: контент одной страницы через payload в песочнице."""
 
 from __future__ import annotations
 

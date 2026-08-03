@@ -94,8 +94,7 @@ class ADDirectory:
                 user=bind_dn,
                 password=bind_password,
                 auto_bind="DEFAULT",
-                # без этого ошибки search'а (нет base DN, нет прав) молча дают
-                # пустой результат и выглядят как "пользователь не найден"
+                # без raise_exceptions ошибки search'а молча дают пустой результат
                 raise_exceptions=True,
             ) as conn:
                 yield conn
@@ -322,10 +321,7 @@ class DnExcludeUserProvider:
 
 
 class LdapAuth:
-    """
-    Логин/пароль с проверкой bind'ом в AD
-    роль забираем из групп AD
-    """
+    "Логин/пароль с проверкой bind'ом в AD; роль забираем из групп AD"
 
     def __init__(self, config: LdapAuthConfig):
         self._provider = "ldap"

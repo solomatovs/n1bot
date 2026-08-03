@@ -1,8 +1,4 @@
-"""Tool confluence_search_cql: полнотекстовый поиск страниц.
-
-Запрос к REST и разбор выдачи делает payload в песочнице; здесь остаётся
-сборка CQL и таблица для LLM.
-"""
+"""Tool confluence_search_cql: полнотекстовый поиск страниц (REST — в песочнице)."""
 
 from __future__ import annotations
 
@@ -20,11 +16,7 @@ __all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]
 
 
 class ConfluenceSearchCqlConfig(BaseModel):
-    """Self-contained конфиг tool'а confluence_search_cql.
-
-    Config-секция: [tool.kb] (читает только confluence). limit/
-    snippet_chars — tool-аргументы LLM.
-    """
+    """Self-contained конфиг tool'а confluence_search_cql."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -57,7 +49,7 @@ class CqlSearch:
         return f"({text_block}) and ({space_block})"
 
 
-def confluence_search_cql(  # noqa: PLR0913 — фильтры поиска независимы
+def confluence_search_cql(  # noqa: PLR0913
     cfg: ConfluenceSearchCqlConfig,
     caller: ConfluenceCaller,
     query: Annotated[
@@ -82,13 +74,7 @@ def confluence_search_cql(  # noqa: PLR0913 — фильтры поиска не
         Field(ge=1, description=CqlSearch.SNIPPET_DESC),
     ] = CqlSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
-    """Полнотекстовый поиск страниц Confluence (online CQL).
-
-    Возвращает TableResult — таблицу hits с колонками page_id/title/
-    space_key/url/snippet/last_modified/version. version — текущая
-    confluence-версия страницы: сверь её с `version` из kb-поиска по индексу,
-    чтобы понять, что в индексе устарело и страницу нужно переиндексировать.
-    """
+    """Полнотекстовый поиск страниц Confluence (online CQL)."""
     request = ConfluenceSearchRequest(
         op=ConfluenceSearchRequest.OP,
         base_url=cfg.confluence.base_url or "",

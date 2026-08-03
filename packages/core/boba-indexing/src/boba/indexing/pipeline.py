@@ -1,20 +1,4 @@
-"""
-Pipeline — единая сборка стадий индексации.
-
-Один проход по источнику: ReqT -> RawDocument -> Section[T]. Дальше — два
-терминала, не пересекающихся между собой:
-
-    sections()             -> Iterator[Section[T]]   read-only (поиск, CLI, tool)
-    index(chunker, sink…)  -> Iterator[IndexEvent]   индексация в Store
-
-Read-spine (source -> transport -> reader) общий; chunker/sink/query нужны
-только терминалу index, поэтому они — аргументы метода, а не конструктора.
-Тот, кому нужны только секции, не собирает chunker и sink.
-
-Transport владеет lifecycle handle'а (with в его generator'е); reader
-читает, но не закрывает. Поток ленивый — чанки текут от transport до reconcile
-по одному, промежуточных буферов Pipeline не выделяет.
-"""
+"""Pipeline — сборка стадий source -> transport -> reader с двумя терминалами: sections() и index()."""
 
 from __future__ import annotations
 
@@ -87,17 +71,7 @@ class Pipeline(Generic[ReqT, T]):
         query: IndexQuery[T],
         config: IndexerConfig[T],
     ) -> Iterator[IndexEvent]:
-        """
-        Индексировать все источники; ленивый поток IndexEvent.
-
-        Per-source flow завершается ровно одним CompletedItem-событием
-        (SourceIndexed | SourceSkippedUnchanged | SourceFailed). Per-run cleanup
-        идёт после всех источников через config.cleanup.
-
-        Run-level state (stats, touched_sources) выводится из самого event-потока
-        единственным _observe-callback'ом — к моменту RunFinished стат
-        синхронен с уже выехавшим потоком.
-        """
+        """Индексировать все источники; ленивый поток IndexEvent, cleanup после всех источников."""
         run_id = new_run_id()
         run_start = time.time()
         stats = IndexStatsBuilder()
@@ -154,7 +128,7 @@ class Pipeline(Generic[ReqT, T]):
         for raw in self._transport.fetch(request):
             yield from self._reader.read(raw)
 
-    def _process_source(  # noqa: PLR0913 — этапы конвейера независимы
+    def _process_source(  # noqa: PLR0913
         self,
         *,
         request: ReqT,
@@ -164,16 +138,8 @@ class Pipeline(Generic[ReqT, T]):
         run_id: RunId,
         run_start: float,
     ) -> Iterator[IndexEvent]:
-        """
-        Per-source streaming pipeline; yield ровно одно CompletedItem-событие.
-
-        Все чанки в этом вызове относятся к одному source_id — их идентичность
-        несут поля самих Chunk'ов, поэтому scope-narrow перед reconcile не нужен.
-        run_start передаётся как время прохода и включает инкрементальное
-        обновление.
-        """
-        # identity источника выводит транспорт (реальный адрес объекта), а не
-        # request — чистый резолв, доступен и когда fetch упадёт ниже.
+        """Per-source streaming pipeline; yield ровно одно CompletedItem-событие."""
+        # identity выводит транспорт, а не request — резолв доступен и когда fetch упадёт
         source_id = self._transport.source_id(request)
         try:
             summary = sink.reconcile(
@@ -213,11 +179,7 @@ class Pipeline(Generic[ReqT, T]):
         request: ReqT,
         chunker: Chunker[T],
     ) -> Iterator[Chunk[T]]:
-        """sections одного источника -> chunker -> yield.
-
-        Chunker обязан эмитить чанки с уже заполненным content_hash (через свой
-        injected KeyEncoder[T]); post-enrichment'а на этом уровне нет.
-        """
+        """sections одного источника -> chunker -> yield; чанки приходят с уже заполненным content_hash."""
         yield from chunker.chunk(self._sections_of(request))
 
     def _run_cleanup(

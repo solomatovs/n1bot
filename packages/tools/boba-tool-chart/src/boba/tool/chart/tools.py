@@ -1,8 +1,4 @@
-"""Tool visualize: интерактивный Plotly-график из figure-spec.
-
-Схему спеки проверяет payload в песочнице; UI рисует график по той же спеке,
-поэтому обратно едет только заголовок.
-"""
+"""Tool visualize: интерактивный Plotly-график из figure-spec."""
 
 from __future__ import annotations
 

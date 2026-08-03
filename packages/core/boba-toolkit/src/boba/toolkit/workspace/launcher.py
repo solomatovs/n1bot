@@ -1,8 +1,4 @@
-"""Лаунчер операций с workspace-образом: flock -> fuse2fs -> операция -> уборка.
-
-Исполняется `python -m` внутри outer bwrap (см. chain.py), поэтому только
-stdlib; mount снимается ядром при гибели поддерева процессов.
-"""
+"""Лаунчер операций с workspace-образом; внутри outer bwrap, поэтому только stdlib."""
 
 from __future__ import annotations
 

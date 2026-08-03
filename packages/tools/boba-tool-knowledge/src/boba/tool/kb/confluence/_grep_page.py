@@ -1,8 +1,4 @@
-"""Tool confluence_grep_page: поиск по содержимому одной страницы.
-
-Запрос к REST, конверсию в markdown и сам поиск делает payload в песочнице;
-здесь остаётся конфиг и сборка таблицы для LLM.
-"""
+"""Tool confluence_grep_page: поиск по контенту страницы через payload в песочнице."""
 
 from __future__ import annotations
 
@@ -37,7 +33,7 @@ class ConfluenceGrepPageConfig(BaseModel):
 
 
 
-def confluence_grep_page(  # noqa: PLR0913 — независимые флаги grep'а
+def confluence_grep_page(  # noqa: PLR0913
     cfg: ConfluenceGrepPageConfig,
     caller: ConfluenceCaller,
     page_id: Annotated[
@@ -80,13 +76,7 @@ def confluence_grep_page(  # noqa: PLR0913 — независимые флаги
         Field(description="Литеральный поиск без regex. По умолчанию false."),
     ] = False,
 ) -> TableResult:
-    """Скачивает Confluence-страницу и ищет в её контенте совпадения pattern.
-
-    Возвращает TableResult — таблицу matches с колонками line/content/
-    before/after (+truncated_lines на усечённых). Контекст усечения,
-    page_id и переполнение limit — в note/metadata. Длинные строки режутся
-    по max_text_chars.
-    """
+    """Скачивает Confluence-страницу и ищет в её контенте совпадения pattern."""
     request = ConfluenceGrepRequest(
         op=ConfluenceGrepRequest.OP,
         base_url=cfg.confluence.base_url or "",

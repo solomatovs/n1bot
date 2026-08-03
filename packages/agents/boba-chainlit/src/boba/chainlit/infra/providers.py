@@ -61,8 +61,7 @@ def get_app_config(config_path: Path) -> AppConfig:
     raw = build_app_config(config_path=config_path)
     _RAW_CONFIG["config"] = raw
     config = bind(raw, path="app", model=AppConfig)
-    # групповые лимиты проверяются на старте: отказ виден сразу, с именем
-    # профиля и параметра, а не при первом вызове инструмента
+    # групповые лимиты проверяются на старте: отказ виден сразу, с именем профиля
     CgroupManager.probe_profiles(config.sandbox.profiles)
     return config
 

@@ -1,7 +1,4 @@
-"""Tool confluence_ingest_cql: индексация страниц, отобранных CQL-запросом.
-
-Общий конфиг/pipeline — ingest_base.py (секция [tool.kb.confluence.ingest]).
-"""
+"""Tool confluence_ingest_cql: индексация страниц, отобранных CQL-запросом."""
 
 from __future__ import annotations
 
@@ -44,10 +41,7 @@ def confluence_ingest_cql(
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Индексирует страницы Confluence, отобранные CQL-запросом, в KB.
-
-    Возвращает JSON {collection, indexed, skipped_unchanged, pruned, failed}.
-    """
+    """Индексирует страницы Confluence, отобранные CQL-запросом, в KB."""
     result = caller.ingest(
         cfg=cfg,
         mode="cql",

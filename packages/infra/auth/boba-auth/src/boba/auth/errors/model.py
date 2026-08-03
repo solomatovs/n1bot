@@ -13,13 +13,7 @@ class ViewErrorMessage:
 
 @dataclass
 class HttpErrorMessage:
-    """
-    Http сообщение для браузера.
-    Полезно для spnego, когда нужно отправить ответ в виде:
-        401 + WWW-Authenticate: Negotiate + пустое тело
-        что заставит браузер сформировать spnego token и повторить запрос
-        без участия пользователя в этом процессе
-    """
+    "Http-ответ для браузера (например 401 + WWW-Authenticate: Negotiate для spnego)"
 
     status_code: int
     content: str
@@ -27,20 +21,14 @@ class HttpErrorMessage:
 
 
 class BaseError(Exception):
-    """
-    базовый класс ошибок в приложении
-    Если хочешь, что бы ошибка корректно отобразилась
-    наследуйся от этого класса и определяй базовые методы
-    """
+    "Базовый класс доменных ошибок; наследники задают view/history/http-представления"
 
     def view_message(self) -> ViewErrorMessage | None:
         "Возвращает соощение показываемое пользователю"
         return None
 
     def history_message(self) -> str | None:
-        """
-        Возвращает сообщение которое пишется в историю чата
-        """
+        "Возвращает сообщение которое пишется в историю чата"
         return None
 
     def http_message(self) -> HttpErrorMessage | None:
@@ -48,13 +36,7 @@ class BaseError(Exception):
 
 
 class ExternalServiceError(BaseError):
-    """
-    Ошибка во внешнем сервисе (postgres, clickhouse, ldap, kerberos, etc...)
-    Не наша вина.
-    - view: показываем сообщение пользователю как есть
-    - llm: показываем llm в историю такое же сообщение
-    - log: записываем в log сообщение как есть
-    """
+    "Ошибка внешнего сервиса (postgres, ldap...): view/llm/log видят сообщение как есть"
 
     def __init__(
         self, service_name: str, message: str
@@ -74,19 +56,10 @@ class ExternalServiceError(BaseError):
         )
 
 class InternalServiceError(BaseError):
-    """
-    Внутренняя ошибка (Например некорректная конфигурация)
-    Наша вина, детали сообщения пользователю не показываем
-    - view: показываем пользователю минимальное сообщение и уникальный код ошибки, который он может передать в поддержку
-    - llm: не видит это сообщение
-    - log: этот же код пишется в лог с максимально подробным сообщением, что бы программист смог разобраться в проблеме
-    Сообщаем пользователю код, который он может отправить в поддержку
-    Программист в логах сможет увидеть больше информации
-    """  # noqa: E501
+    "Внутренняя ошибка (наша вина): пользователю код для поддержки, детали в лог"
 
     def __init__(self, internal_detail: str, user_detail: str | None):
         super().__init__(internal_detail)
-        # тех.описание только для лога, пользователь не видит
         self.internal_detail = internal_detail
         self.user_detail = user_detail
         self.status_code = 500
@@ -113,19 +86,13 @@ def to_domain(e: Exception) -> BaseError:
         internal_detail=str(e),
         user_detail=None,
     )
-    # сохраняем оригинал, чтобы logging распечатал его traceback по цепочке:
-    # у самого wrapped нет __traceback__ (его никто не raise-ил), а у e — есть
+    # __cause__ хранит оригинал: у wrapped нет __traceback__, у e — есть
     wrapped.__cause__ = e
     return wrapped
 
 
 class UserInputError(BaseError):
-    """
-    Пришли некорректные данные от пользователя (Например ошибка валидации по json-схеме)
-    - view: показываем сообщение как есть
-    - llm: не видит сообщение, ей это не нужно
-    - log: сообщение не нужно, нет смысла логировать
-    """
+    "Некорректные данные от пользователя: view видит сообщение, llm и лог — нет"
 
     def __init__(self, message: str):
         super().__init__(message)
@@ -136,13 +103,7 @@ class UserInputError(BaseError):
 
 
 class AuthenticationError(BaseError):
-    """
-    Не удалось аутентифицировать пользователя (Kerberos/LDAP/пароль)
-    Возникает в HTTP-слое auth-callback (отдаётся как 401), а не в чате
-    - view: показываем сообщение как есть
-    - llm: не видит, до агента дело не дошло
-    - log: warning без traceback, это ожидаемая ситуация
-    """
+    "Не удалось аутентифицировать (Kerberos/LDAP/пароль): 401 в HTTP-слое, llm не видит"
 
     def __init__(self, message: str):
         super().__init__(message)
@@ -160,12 +121,7 @@ class AuthenticationError(BaseError):
 
 
 class AuthorizationError(BaseError):
-    """
-    Аутентифицирован, но нет прав (нет нужной группы / доступа к инструменту)
-    - view: показываем сообщение как есть
-    - llm: видит — должен узнать, что инструмент/данные недоступны
-    - log: warning без traceback
-    """
+    "Аутентифицирован, но нет прав (403): view и llm видят сообщение как есть"
 
     def __init__(self, message: str):
         super().__init__(message)
@@ -182,12 +138,7 @@ class AuthorizationError(BaseError):
         )
 
 class ToolExecutionError(BaseError):
-    """
-    Инструмент агента упал во время выполнения
-    - view: пользователю не показываем, это внутренняя механика агента
-    - llm: видит — должен переиграть (повторить / выбрать другой инструмент)
-    - log: warning с traceback
-    """
+    "Инструмент агента упал: llm видит и может переиграть, пользователю не показываем"
 
     def __init__(self, tool_name: str, message: str):
         super().__init__(message)
@@ -195,13 +146,7 @@ class ToolExecutionError(BaseError):
         self.tool_name = tool_name
 
 class RateLimitError(ExternalServiceError):
-    """
-    Превышен лимит запросов / квота внешнего провайдера (429)
-    Частный случай ExternalServiceError: каналы те же (view/llm/log как есть)
-    """
+    "Превышен лимит/квота внешнего провайдера (429), частный случай ExternalServiceError"
 
 class AgentError(InternalServiceError):
-    """
-    Сломался сам граф/модель (не провайдер) — наша вина
-    Частный случай InternalServiceError: пользователю код, llm не видит, детали в лог
-    """
+    "Сломался сам граф/модель (не провайдер), частный случай InternalServiceError"

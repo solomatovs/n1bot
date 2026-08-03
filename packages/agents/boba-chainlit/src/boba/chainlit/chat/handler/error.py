@@ -1,8 +1,4 @@
-"""Обработчик ошибок chainlit-callback'ов.
-
-Chainlit гасит исключения callback'ов молча, поэтому сбой показываем
-пользователю сами: любое исключение уходит в чат сообщением об ошибке.
-"""
+"""Ошибки callback'ов уходят в чат сами: chainlit гасит их исключения молча."""
 
 import functools
 import logging
@@ -20,11 +16,7 @@ async def show_error(
     author: str = "Error",
     fail_on_persist_error: bool = False,
 ) -> None:
-    """Единственный способ донести сбой до пользователя: сообщение в чат.
-
-    Нужен там, где raise не доходит до UI: chainlit зовёт часть методов
-    (create_element и др.) из фоновой asyncio-таски и молча гасит исключение.
-    """
+    """Сбой в чат сообщением: raise из фоновых тасок chainlit не доходит до UI."""
     logger = logging.getLogger("chainlit_handler")
     logger.error(content)
     message = cl.ErrorMessage(

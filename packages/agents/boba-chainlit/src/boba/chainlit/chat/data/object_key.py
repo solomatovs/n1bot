@@ -11,12 +11,7 @@ __all__ = ["ObjectKey"]
 
 @dataclass(frozen=True, slots=True)
 class ObjectKey:
-    """Путь вложения в хранилище: {user_id}/{thread_id}/upload/{name}.
-
-    Лежит внутри рабочей папки чата, которую песочница монтирует на запись, —
-    загруженные файлы доступны инструментам этого же чата. Путь вычисляется
-    из идентификаторов и имени, в базе не хранится.
-    """
+    """Путь вложения в хранилище: {user_id}/{thread_id}/upload/{name}."""
 
     user_id: str
     thread_id: str
@@ -59,12 +54,11 @@ class ObjectKey:
         return self.SEPARATOR.join((self.user_id, self.in_thread()))
 
     def in_thread(self) -> str:
-        """Путь вложения так, как его видит песочница внутри /workspace."""
+        """Путь так, как его видит песочница внутри /workspace."""
         return self.SEPARATOR.join((self.thread_id, self.UPLOAD_DIR, self.name))
 
     @classmethod
     def safe_name(cls, name: object, element_id: object) -> str:
-        """Имя от пользователя — один сегмент пути; иначе откат на id."""
         base = os.path.basename(str(name)).strip()
         kept: list[str] = []
         for char in base:

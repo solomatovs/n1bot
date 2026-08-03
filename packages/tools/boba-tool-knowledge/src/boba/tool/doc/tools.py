@@ -1,8 +1,4 @@
-"""Инструменты doc: чтение и поиск по загруженным документам (liteparse).
-
-Документ парсится payload'ом внутри песочницы; здесь остаётся только
-описание инструментов для LLM и упаковка ответа в ToolResult.
-"""
+"""Инструменты doc: чтение и поиск по загруженным документам (liteparse)."""
 
 from __future__ import annotations
 
@@ -54,12 +50,7 @@ def build_doc_tools(
     async def read_document(
         path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     ) -> tuple[str, ToolResult]:
-        """Распарсить документ из workspace и вернуть весь извлечённый текст.
-
-        Текст обрезается до max_text_chars; число страниц и факт обрезки — в
-        metadata. Для отдельных страниц есть read_pages, для обзора —
-        document_outline.
-        """
+        """Распарсить документ из workspace и вернуть весь текст (с обрезкой по лимиту)."""
         answer = await engine.read_document(path)
         text = DocText.mark(answer.text, answer.truncated, cfg.max_text_chars)
         return pack_result(
@@ -87,10 +78,7 @@ def build_doc_tools(
             ),
         ],
     ) -> tuple[str, ToolResult]:
-        """Вернуть текст только указанных страниц документа.
-
-        Дешевле read_document для больших PDF: парсятся лишь нужные страницы.
-        """
+        """Вернуть текст только указанных страниц; дешевле read_document для больших PDF."""
         answer = await engine.read_pages(path, pages)
         text = DocText.mark(answer.text, answer.truncated, cfg.max_text_chars)
         parsed_pages: list[str] = []
@@ -117,11 +105,7 @@ def build_doc_tools(
             int, Field(ge=1, description="Сколько символов вернуть от start_char.")
         ],
     ) -> tuple[str, ToolResult]:
-        """Вернуть срез текста документа [start_char, start_char+length).
-
-        Для последовательного чтения большого документа порциями: увеличивай
-        start_char на длину прочитанного, пока metadata.has_more == 'True'.
-        """
+        """Вернуть срез текста [start_char, start_char+length) для чтения порциями."""
         if length > cfg.max_text_chars:
             msg = (
                 f"length ({length}) exceeds max_text_chars "
@@ -146,10 +130,7 @@ def build_doc_tools(
     async def document_outline(
         path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     ) -> tuple[str, ToolResult]:
-        """Карта документа: по строке на страницу (размер, символы, фрагменты).
-
-        Дешёвый обзор перед чтением: по нему выбирают страницы для read_pages.
-        """
+        """Карта документа по страницам: дешёвый обзор перед read_pages."""
         answer = await engine.outline(path)
         rows: list[dict[str, Any]] = []
         for row in answer.rows:
