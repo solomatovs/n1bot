@@ -44,7 +44,11 @@ def kb_config() -> PostgresKnowledgeBaseConfig:
         {
             "connection": {"host": "h", "dbname": "d", "user": "u"},
             "tables": {"pg_schema": "kb"},
-            "embedding": {"model": "intfloat/multilingual-e5-small", "dim": 384},
+            "embedding": {
+                "model": "intfloat/multilingual-e5-small",
+                "dim": 384,
+                "batch_size": 8,
+            },
             "sandbox": _SANDBOX,
         }
     )

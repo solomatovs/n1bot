@@ -416,6 +416,7 @@
     model     = "intfloat/multilingual-e5-large"
     cache_dir = "/opt/fastembed"
     dim       = 1024
+    batch_size = 8
 
 
 # вход по домену (bind в AD)

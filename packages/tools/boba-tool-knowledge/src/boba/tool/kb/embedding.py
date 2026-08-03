@@ -31,7 +31,9 @@ class LocalFastEmbedEmbedder(Embedder[str]):
     Для симметричных моделей оба метода работают как обычный embed.
     """
 
-    def __init__(self, model_name: str, cache_dir: str, dim: int) -> None:
+    def __init__(
+        self, model_name: str, cache_dir: str, dim: int, batch_size: int
+    ) -> None:
         from fastembed import TextEmbedding  # noqa: PLC0415 — тянет onnxruntime
         self._model_name = model_name
         self._model = TextEmbedding(
@@ -39,18 +41,19 @@ class LocalFastEmbedEmbedder(Embedder[str]):
             cache_dir=cache_dir,
         )
         self._dim = dim
+        self._batch_size = batch_size
 
     def embed_documents(
         self,
         contents: Iterable[str],
     ) -> Iterable[Sequence[float]]:
-        for vec in self._model.passage_embed(contents):
+        for vec in self._model.passage_embed(contents, batch_size=self._batch_size):
             v = vec.tolist()
             self._record_dim(v)
             yield v
 
     def embed_query(self, content: str) -> Sequence[float]:
-        gen = self._model.query_embed([content])
+        gen = self._model.query_embed([content], batch_size=self._batch_size)
         vec = next(iter(gen))
         v = vec.tolist()
         self._record_dim(v)
@@ -96,6 +99,14 @@ class EmbeddingModel(BaseModel):
             "Пусто -> дефолт fastembed (~/.cache/fastembed)."
         ),
     )
+    batch_size: int = Field(
+        gt=0,
+        description=(
+            "Сколько текстов уходит в модель за один прогон; обязателен. "
+            "Активации ONNX растут линейно по батчу: на e5-large батч 100 "
+            "занимал 6.5G и ловил OOM, батч 8 — около 2.3G."
+        ),
+    )
     dim: int = Field(
         gt=0,
         description=(
@@ -116,4 +127,5 @@ class LocalFastEmbedEmbedderFactory:
             model_name=cfg.model,
             cache_dir=cfg.cache_dir,
             dim=cfg.dim,
+            batch_size=cfg.batch_size,
         )

@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 from uuid import uuid4
 
 import psycopg
@@ -54,12 +55,31 @@ from boba.toolkit.sandbox import SandboxPayloadError
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS = _REPO / "build" / "artifacts" / "sandbox" / "rootfs"
 
+_UID = os.getuid()
+_DELEGATED = f"/sys/fs/cgroup/user.slice/user-{_UID}.slice/user@{_UID}.service"
+
+
+def _inside_delegated_scope() -> bool:
+    """Мигрировать в cgroup_base можно только из его же поддерева."""
+    with open("/proc/self/cgroup") as f:
+        current = f.read().strip().split(":")[-1]
+    return current.startswith(f"/user.slice/user-{_UID}.slice/user@{_UID}.service")
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
     pytest.mark.skipif(
         shutil.which("bwrap") is None or not (_ROOTFS / "bin" / "sh").exists(),
         reason="нет bwrap или артефактов песочницы (собрать: make deps)",
+    ),
+    pytest.mark.skipif(
+        not os.path.isdir(_DELEGATED) or not _inside_delegated_scope(),
+        reason=(
+            "pytest вне делегированного scope: cgroup-лимиты профиля не "
+            "применятся. Запуск: systemd-run --user --scope --slice="
+            "boba-sandbox.slice pytest ... (или конфигурация из launch.json)"
+        ),
     ),
 ]
 
@@ -90,24 +110,14 @@ WORKSPACE_PDF = "/workspace/integration.pdf"
 class ToolSetup:
     """Сборка инструмента из конфига приложения для прогона вне chainlit."""
 
-    NO_CGROUP: ClassVar[dict[str, Any]] = {
-        "cgroup_base": "",
-        "cgroup_memory_bytes": None,
-        "cgroup_cpu_percent": None,
-        "cgroup_cpu_weight": None,
-        "cgroup_pids_max": None,
-        "cgroup_swap_max_bytes": None,
-        "cgroup_oom_kill_all": None,
-    }
+    @staticmethod
+    def config(raw: Any, section: str, model: type) -> Any:
+        """Секция конфига как есть, вместе с cgroup-лимитами.
 
-    @classmethod
-    def config(cls, raw: Any, section: str, model: type) -> Any:
-        """Секция конфига как есть, минус cgroup: pytest вне делегации."""
-        cfg = bind(raw, path=section, model=model)
-        override = dict(cfg.sandbox.override)
-        override.update(cls.NO_CGROUP)
-        sandbox = cfg.sandbox.model_copy(update={"override": override})
-        return cfg.model_copy(update={"sandbox": sandbox})
+        Лимиты — часть контракта инструмента: без них тест не увидит ни OOM
+        на эмбеддинге, ни fork-бомбу, ни потолок CPU.
+        """
+        return bind(raw, path=section, model=model)
 
     @staticmethod
     def path_vars() -> dict[str, str]:
