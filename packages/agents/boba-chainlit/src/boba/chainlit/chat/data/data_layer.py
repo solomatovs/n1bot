@@ -21,6 +21,7 @@ from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
 
 from boba.auth.errors import InternalServiceError
+from boba.chainlit.chat.data.attachment_url import AttachmentLinks
 from boba.chainlit.chat.data.models import (
     Codec,
     Element,
@@ -29,6 +30,7 @@ from boba.chainlit.chat.data.models import (
     Thread,
     User,
 )
+from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.chat.handler.error import show_error
 from boba.chainlit.chat.transcript import ConversationTranscript, ThreadMessages
 from boba.chainlit.infra.session import current_user_id
@@ -70,11 +72,13 @@ class PostgresDataLayer(BaseDataLayer):
         schema: str,
         storage: BaseStorageClient,
         messages: ThreadMessages,
+        links: AttachmentLinks,
     ) -> None:
         self._pool = pool
         self._schema = schema
         self._storage = storage
         self._messages = messages
+        self._links = links
 
     async def _transcript_steps(
         self,
@@ -289,9 +293,9 @@ class PostgresDataLayer(BaseDataLayer):
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute(query, model.all_params())
             uploaded = await self._storage.upload_file(
-                object_key=Element.object_key(
+                object_key=ObjectKey.build(
                     user_id, element.thread_id, element.name, element.id
-                ),
+                ).render(),
                 data=content,
                 mime=mime,
                 overwrite=True,
@@ -337,7 +341,7 @@ class PostgresDataLayer(BaseDataLayer):
             return None
 
         element = row.to_chainlit()
-        await self._sign_element_url(element, self._session_user_id())
+        self._sign_element_url(element)
         return element
 
     @queue_until_user_message()
@@ -359,9 +363,9 @@ class PostgresDataLayer(BaseDataLayer):
                 if row and row[0]:
                     user_id = self._session_user_id()
                     await self._storage.delete_file(
-                        object_key=Element.object_key(
+                        object_key=ObjectKey.build(
                             user_id, row[0], row[1], element_id
-                        ),
+                        ).render(),
                     )
         except Exception as e:
             # вызывается фоновой таской chainlit: raise до пользователя не дойдёт
@@ -533,7 +537,7 @@ class PostgresDataLayer(BaseDataLayer):
             steps=steps,
             elements=elements,
         )
-        await self._sign_element_urls(thread, thread_row.user_id)
+        self._sign_element_urls(thread)
 
         return thread
 
@@ -706,25 +710,10 @@ class PostgresDataLayer(BaseDataLayer):
 
         return str(user_id)
 
-    async def _sign_element_urls(self, thread: ThreadDict, user_id: object) -> None:
+    def _sign_element_urls(self, thread: ThreadDict) -> None:
         for element in thread.get("elements") or []:
-            await self._sign_element_url(element, user_id)
+            self._sign_element_url(element)
 
-    async def _sign_element_url(self, element: ElementDict, user_id: object) -> None:
-        """Собирает ссылку на вложение: путь вычисляется, а не хранится."""
-        object_key = Element.object_key(
-            user_id,
-            element.get("threadId"),
-            element.get("name"),
-            element.get("id"),
-        )
-        try:
-            element["url"] = await self._storage.get_read_url(object_key)
-        except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}._sign_element_url failed for "
-                    f"object_key={object_key!r} with error: {e}"
-                ),
-                user_detail="Not able to get attachment link",
-            ) from e
+    def _sign_element_url(self, element: ElementDict) -> None:
+        """Собирает ссылку на вложение: она вычисляется, а не хранится."""
+        element["url"] = self._links.url(element.get("threadId"), element.get("id"))

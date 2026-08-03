@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import HumanMessage
 
-from boba.chainlit.chat.data.models import Element
+from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.infra.providers import build_llm_view
 from boba.tool.shell import WORKSPACE_MOUNT
 from boba.toolkit.sandbox.argv import build_bwrap_argv
@@ -132,7 +132,7 @@ class TestProfileRender:
         assert rendered.rw_binds[0].host == "/srv/shared"
 
     def test_uploads_live_inside_the_chat_folder(self) -> None:
-        key = Element.object_key("7", "t1", "report.pdf", "el-1")
+        key = ObjectKey.build("7", "t1", "report.pdf", "el-1").render()
         host = self._rendered_host("7", "t1")
         assert f"/srv/ws/{key}".startswith(f"{host}/upload/")
 
@@ -171,14 +171,25 @@ class TestAttachmentPaths:
         assert "b.csv" in content
 
     def test_path_matches_where_storage_puts_the_file(self) -> None:
-        key = Element.object_key("4", "t-1", "report.pdf", "el-1")
-        assert key == "4/t-1/upload/report.pdf"
-        rel = Element.thread_path("t-1", "report.pdf", "el-1")
-        assert f"{WORKSPACE_MOUNT}/{rel}" == "/workspace/t-1/upload/report.pdf"
+        key = ObjectKey.build("4", "t-1", "report.pdf", "el-1")
+        assert key.render() == "4/t-1/upload/report.pdf"
+        assert f"{WORKSPACE_MOUNT}/{key.in_thread()}" == (
+            "/workspace/t-1/upload/report.pdf"
+        )
 
     def test_unnamed_element_falls_back_to_id(self) -> None:
-        assert Element.object_key("4", "t-1", "", "el-1") == "4/t-1/upload/el-1"
+        key = ObjectKey.build("4", "t-1", "", "el-1")
+        assert key.render() == "4/t-1/upload/el-1"
 
     def test_directories_in_name_are_stripped(self) -> None:
-        key = Element.object_key("4", "t-1", "../../etc/passwd", "el-1")
-        assert key == "4/t-1/upload/passwd"
+        key = ObjectKey.build("4", "t-1", "../../etc/passwd", "el-1")
+        assert key.render() == "4/t-1/upload/passwd"
+
+    def test_parse_is_inverse_of_render(self) -> None:
+        key = ObjectKey.build("4", "t-1", "report.pdf", "el-1")
+        assert ObjectKey.parse(key.render()) == key
+
+    def test_parse_rejects_traversal_and_alien_layout(self) -> None:
+        for raw in ("4/t-1/upload/..", "4/t-1/other/report.pdf", "4/t-1/report.pdf"):
+            with pytest.raises(ValueError, match="invalid object_key"):
+                ObjectKey.parse(raw)

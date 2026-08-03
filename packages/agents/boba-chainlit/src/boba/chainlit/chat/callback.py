@@ -16,11 +16,12 @@ from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
 from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.data.models import Element
+from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.chat.edit import ThreadRewind
 from boba.chainlit.chat.handler import chainlit_error_ctx_handler
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
+from boba.chainlit.infra.session import current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.tool.shell import WORKSPACE_MOUNT
 from boba.toolkit.cancellation import turn_cancellation
@@ -44,11 +45,13 @@ class ChainlitAdapter:
         """Сообщение пользователя; пути вложений — как их видит песочница."""
         attachments: list[dict[str, str]] = []
         for element in msg.elements or []:
-            rel = Element.thread_path(element.thread_id, element.name, element.id)
+            key = ObjectKey.build(
+                current_user_id(), element.thread_id, element.name, element.id
+            )
             attachments.append(
                 {
                     "name": element.name or element.id,
-                    "path": f"{WORKSPACE_MOUNT}/{rel}",
+                    "path": f"{WORKSPACE_MOUNT}/{key.in_thread()}",
                 }
             )
         extra = {"attachments": attachments} if attachments else {}

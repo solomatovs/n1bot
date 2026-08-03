@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from omegaconf import DictConfig
 from psycopg import sql
 
+from boba.chainlit.chat.data.attachment_url import AttachmentLinks
 from boba.chainlit.chat.data.data_layer import PostgresDataLayer
 from boba.chainlit.chat.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import AppConfig
@@ -138,6 +139,7 @@ async def layer(
         schema=schema,
         storage=storage,
         messages=thread_messages,
+        links=AttachmentLinks(app_config.storage.public_prefix),
     )
     await data_layer.setup()
     return data_layer

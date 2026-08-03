@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 import aiofiles
 import aiofiles.os
 
+from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.toolkit.workspace import build_chain_argv, render_image_path, require_fuse
 from boba.toolkit.workspace.launcher import (
@@ -107,9 +108,6 @@ class LocalStorageClient(BaseStorageClient):
 class ImageStorageClient(LocalStorageClient):
     """Хранит вложения внутри per-thread ext4-образа: fuse2fs на одну операцию."""
 
-    KEY_MIN_PARTS: ClassVar[int] = 3
-    """object_key = {user_id}/{thread_id}/<путь внутри образа>."""
-
     async def upload_file(
         self,
         object_key: str,
@@ -144,22 +142,13 @@ class ImageStorageClient(LocalStorageClient):
         return True
 
     def _image_and_rel(self, object_key: str) -> tuple[str, str]:
-        msg = f"invalid object_key: {object_key!r}"
-        parts: list[str] = []
-        for part in object_key.split("/"):
-            if part in (".", ".."):
-                raise ValueError(msg)
-            if part:
-                parts.append(part)
-        if len(parts) < self.KEY_MIN_PARTS:
-            raise ValueError(msg)
-        user_id, thread_id, *_ = parts
+        key = ObjectKey.parse(object_key)
         image = render_image_path(
             self._config.image_path,
-            {"user_id": user_id, "thread_id": thread_id},
+            {"user_id": key.user_id, "thread_id": key.thread_id},
         )
         # образ общий на пользователя: thread_id остаётся частью пути внутри
-        return image, "/".join(parts[1:])
+        return image, key.in_thread()
 
     async def _exists(self, image: str, rel: str) -> bool:
         rc, _, err = await self._op(image, ["read", rel])

@@ -8,7 +8,6 @@ Dataclass-модели chainlit-данных:
 Модели шагов нет: сообщения треда хранит langgraph-checkpointer.
 """
 
-import os
 from dataclasses import Field, dataclass, field, fields
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal, Self, TypeVar
@@ -251,81 +250,9 @@ class Element(Row):
     props: dict[str, Any] | None = field(default=None, metadata={"jsonb": True})
     mime: str | None = None
 
-    THREAD_PATH_TEMPLATE: ClassVar[str] = "{thread_id}/upload/{name}"
-    """Путь внутри workspace: образ общий на пользователя, треды разделены."""
-
-    PATH_TEMPLATE: ClassVar[str] = "{user_id}/" + THREAD_PATH_TEMPLATE
-    """Путь файла вычисляется из идентификаторов и имени, в базе не хранится.
-
-    Лежит внутри рабочей папки чата, которую песочница монтирует на
-    запись, — загруженные файлы доступны инструментам этого же чата.
-    """
-
-    MAX_NAME_BYTES: ClassVar[int] = 255
-    """Предел ext4 на длину имени файла."""
-
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:
         return sql.Identifier(schema, "elements")
-
-    @classmethod
-    def object_key(
-        cls,
-        user_id: object,
-        thread_id: object,
-        name: object,
-        element_id: object,
-    ) -> str:
-        return cls.PATH_TEMPLATE.format(
-            user_id=user_id,
-            thread_id=thread_id,
-            name=cls.safe_name(name, element_id),
-        )
-
-    @classmethod
-    def thread_path(
-        cls,
-        thread_id: object,
-        name: object,
-        element_id: object,
-    ) -> str:
-        """Путь вложения так, как его видит песочница внутри /workspace."""
-        return cls.THREAD_PATH_TEMPLATE.format(
-            thread_id=thread_id,
-            name=cls.safe_name(name, element_id),
-        )
-
-    @classmethod
-    def safe_name(cls, name: object, element_id: object) -> str:
-        """Имя от пользователя — один сегмент пути; иначе откат на id."""
-        base = os.path.basename(str(name)).strip()
-        kept: list[str] = []
-        for char in base:
-            if char in ("/", "\\"):
-                continue
-            if char.isprintable():
-                kept.append(char)
-        cleaned = "".join(kept).strip()
-        if cleaned in ("", ".", ".."):
-            return str(element_id)
-        return cls._truncate(cleaned)
-
-    @classmethod
-    def _truncate(cls, name: str) -> str:
-        encoded = name.encode("utf-8")
-        if len(encoded) <= cls.MAX_NAME_BYTES:
-            return name
-        stem, dot, suffix = name.rpartition(".")
-        tail = ""
-        if dot:
-            tail = "." + suffix[: cls.MAX_NAME_BYTES // 4]
-        room = cls.MAX_NAME_BYTES - len(tail.encode("utf-8"))
-        head = stem
-        if not dot:
-            head = name
-        while len(head.encode("utf-8")) > room:
-            head = head[:-1]
-        return head + tail
 
     @classmethod
     def from_chainlit(cls, data: ElementDict) -> Self:
