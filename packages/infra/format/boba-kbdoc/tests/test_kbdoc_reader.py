@@ -63,7 +63,7 @@ def test_optional_version_parsed_as_int(
 ) -> None:
     """header `version: 7` -> KbDocKeys.VERSION (int) для сверки устаревания."""
     text = _VALID.replace("space: PAAS\n", "space: PAAS\nversion: 7\n")
-    meta = list(KbDocReader().read(make_raw_doc(text)))[0].metadata
+    meta = next(iter(KbDocReader().read(make_raw_doc(text)))).metadata
     assert meta.get(KbDocKeys.VERSION) == 7
 
 
@@ -71,7 +71,7 @@ def test_version_absent_when_no_header_field(
     make_raw_doc: Callable[..., RawDocument],
 ) -> None:
     """Без `version:` в header'е ключ VERSION не выставляется (пустая колонка)."""
-    meta = list(KbDocReader().read(make_raw_doc(_VALID)))[0].metadata
+    meta = next(iter(KbDocReader().read(make_raw_doc(_VALID)))).metadata
     assert not meta.has(KbDocKeys.VERSION)
 
 

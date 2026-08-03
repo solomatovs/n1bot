@@ -176,22 +176,31 @@ FROM base AS app-site
 COPY --from=boba-wheels /tmp/wheels/    /tmp/wheels/
 COPY --from=boba-wheels /tmp/names.txt  /tmp/names.txt
 
+# приложение ставится по своему графу зависимостей: парсеры и эмбеддер
+# сюда не попадают — они объявлены как extra payload у tool-пакетов
 RUN set -eu                                                                     \
     && uv pip install --python "$(command -v python3)" --target /opt/app-site   \
-           --find-links=/tmp/wheels $(cat /tmp/names.txt)                       \
+           --find-links=/tmp/wheels boba-chainlit                               \
     && rm -rf /tmp/wheels                                                       \
-    && PYTHONPATH=/opt/app-site python3 -c "import boba.chainlit2; print('app-site ok')"
+    && PYTHONPATH=/opt/app-site python3 -c "import boba.chainlit; print('app-site ok')" \
+    && PYTHONPATH=/opt/app-site python3 -c "import importlib.metadata as md; \
+print('\\n'.join(sorted(d.metadata['Name'] for d in md.distributions() \
+if d.metadata['Name'].startswith('boba-'))))" > /opt/app-packages.txt
 
 
-# boba-tools site-packages
+# site-packages песочницы
 FROM base AS sandbox-site
 
 COPY --from=boba-wheels /tmp/wheels/    /tmp/wheels/
 COPY --from=boba-wheels /tmp/names.txt  /tmp/names.txt
 
+# в песочнице живут только инструменты: приложение сюда не ставится,
+# а tool-пакеты берутся с extra payload (парсеры, эмбеддер, plotly)
 RUN set -eu                                                                     \
+    && sed -n 's/^\(boba-tool-[a-z]*\)$/\1[payload]/p' /tmp/names.txt          \
+         > /tmp/names-sandbox.txt                                               \
     && uv pip install --python "$(command -v python3)" --target /opt/site       \
-           --find-links=/tmp/wheels $(cat /tmp/names.txt)                       \
+           --find-links=/tmp/wheels $(cat /tmp/names-sandbox.txt)               \
     && rm -rf /tmp/wheels                                                       \
     && PYTHONPATH=/opt/site python3 -c "import liteparse, markdownify, bs4, lxml, plotly, httpx, psycopg, fastembed; print('site ok')"
 
@@ -201,7 +210,9 @@ RUN set -eu                                                                     
 FROM ${GLIBC_IMAGE} AS runtime
 
 ARG PYTHON_VERSION=3.11 \
-    BOBA_DIR=/app/boba
+    BOBA_DIR=/app/boba \
+    BOBA_UID=1000 \
+    BOBA_GID=1000
 
 
 RUN apt-get update                                              \
@@ -217,7 +228,7 @@ COPY --from=base /usr/local/lib64/libstdc++.so.6      ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/local/lib64/libstdc++.so.6.0.25 ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/local/bin/uv              ${BOBA_DIR}/third/bin/uv
 COPY --from=app-site /opt/app-site              ${BOBA_DIR}/third/python/lib/python${PYTHON_VERSION}/site-packages/
-COPY --from=boba-wheels /tmp/names.txt          ${BOBA_DIR}/conf/packages.txt
+COPY --from=app-site    /opt/app-packages.txt   ${BOBA_DIR}/conf/packages.txt
 COPY --from=bwrap-build /out/bwrap              ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs          ${BOBA_DIR}/third/bin/fuse2fs
 COPY --from=sandbox-rootfs                      / ${BOBA_DIR}/third/sandbox/rootfs/
@@ -227,6 +238,9 @@ COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BO
 COPY build/artifacts/tessdata/                  ${BOBA_DIR}/third/sandbox/data/tessdata/
 COPY build/artifacts/fastembed/                 ${BOBA_DIR}/third/sandbox/data/fastembed/
 COPY build/conf/                                /tmp/conf/
+# оформление и переводы UI: лежат в репозитории, едут вместе с образом
+COPY packages/agents/boba-chainlit/assets/chainlit/ ${BOBA_DIR}/data/.chainlit/
+COPY packages/agents/boba-chainlit/assets/public/   ${BOBA_DIR}/data/public/
 
 RUN set -eu \
     && if [ -f /tmp/conf/ca-chain.crt ]; then                                                   \
@@ -241,10 +255,13 @@ RUN set -eu \
     && rmdir "$SITE"/bin                                                                        \
     && sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/python/bin/python3.11|"                    \
             ${BOBA_DIR}/third/python/bin/boba-*                                                 \
-    && mkdir -p ${BOBA_DIR}/conf/prompts ${BOBA_DIR}/etc                                        \
-             ${BOBA_DIR}/data/workspaces/user ${BOBA_DIR}/data/workspaces/system                \
-             ${BOBA_DIR}/data/.chainlit ${BOBA_DIR}/data/home                                   \
-    && mkdir -p ${BOBA_DIR}/data/workspace                                                      \
+    # conf — boba.env и config.toml; data/.chainlit — app_root chainlit;
+    # data/home — HOME процесса; data/workspace — ext4-образы пользователей
+    && mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/data/.chainlit                                     \
+             ${BOBA_DIR}/data/home ${BOBA_DIR}/data/workspace                                   \
+    # приложение бежит непривилегированным: под root образы пользователей
+    # ложились бы в том с чужим uid, а userns песочницы его не мапит
+    && chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/data                                        \
     && ln -sf eng.traineddata ${BOBA_DIR}/third/sandbox/data/tessdata/rus+eng.traineddata       \
     && ln -sf rus.traineddata ${BOBA_DIR}/third/sandbox/data/tessdata/eng+rus.traineddata       \
     && ${BOBA_DIR}/third/bin/bwrap --version                                                    \
@@ -258,5 +275,6 @@ WORKDIR /app
 EXPOSE 8501
 
 ENV BOBA_DIR=${BOBA_DIR}
-ENTRYPOINT ["/bin/sh", "-c", "set -o allexport && . \"$BOBA_DIR/conf/boba.env\" && set +o allexport && exec boba-chainlit2 \"$@\"", "--"]
+USER ${BOBA_UID}:${BOBA_GID}
+ENTRYPOINT ["/bin/sh", "-c", "set -o allexport && . \"$BOBA_DIR/conf/boba.env\" && set +o allexport && exec boba-chainlit \"$@\"", "--"]
 CMD []

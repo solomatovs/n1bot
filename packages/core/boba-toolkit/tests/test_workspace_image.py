@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from boba.chainlit2.chat.data.storage import ImageStorageClient, LocalStorageClient
-from boba.chainlit2.infra.config import LocalStorageConfig
+from boba.chainlit.chat.data.storage import ImageStorageClient, LocalStorageClient
+from boba.chainlit.infra.config import LocalStorageConfig
 from boba.tool.shell.config import BashSandboxConfig
 from boba.tool.shell.tools import build_bash_tool
 from boba.toolkit.sandbox.config import SandboxToolConfig

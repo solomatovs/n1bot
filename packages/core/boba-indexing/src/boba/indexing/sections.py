@@ -11,7 +11,7 @@ Section[T] — логический фрагмент документа.
                          что Reader не разобрал в более конкретный тип.
 
 Format-specific типы (markdown-таблицы, markdown-списки, code-fence'ы,
-блок-цитаты, hr) живут в format-package (boba-markdown, ...) как
+блок-цитаты, hr) живут в format-package (boba-html, boba-text, ...) как
 наследники Section. Открытая иерархия — расширяй где угодно через
 наследование Section[T] и переопределение to_chunk_metadata().
 
@@ -57,7 +57,7 @@ class SectionKeys:
     HEADING_LEVEL / HEADING_TEXT — структурные поля HeadingSection,
     эмитятся через to_chunk_metadata().
 
-    Format-specific подклассы (в boba-markdown и т.п.) определяют свои
+    Format-specific подклассы (в boba-html и т.п.) определяют свои
     собственные *Keys-классы рядом со своими Section-типами.
     """
 

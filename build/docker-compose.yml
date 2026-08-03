@@ -1,27 +1,26 @@
 services:
-  chainlit2:
+  chainlit:
     image: boba:${BOBA_TAG}
-    hostname: chainlit2
-    container_name: chainlit2
-    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && export CHAINLIT_APP_ROOT=/app/local && exec boba-chainlit2 \"$$@\"", "--"]
+    hostname: chainlit
+    # тот же uid, что у смонтированных данных: под root userns песочницы
+    # не мапит владельца и не может писать в том
+    user: "${BOBA_UID:-1000}:${BOBA_GID:-984}"
+    container_name: chainlit
+    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && export CHAINLIT_APP_ROOT=$$BOBA_DIR/data && exec boba-chainlit \"$$@\"", "--"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
-      - CHAINLIT_APP_ROOT=/app/local
-      - KRB5_CLIENT_KTNAME=/etc/boba-svc.keytab
+      - KRB5_CLIENT_KTNAME=/etc/boba/krb5.keytab
       - KRB5CCNAME=FILE:/tmp/krb5cc
       - PGGSSENCMODE=prefer
+      - CHAINLIT_COOKIE_SAMESITE=none
     volumes:
-      - ${HOST_DIR}/data/chainlit2/config.toml:/app/local/config.toml:ro
-      - ${HOST_DIR}/data/chainlit2/.chainlit:/app/local/.chainlit:ro
-      - ${HOST_DIR}/data/chainlit2/public:/app/local/public:ro
+      - ${HOST_DIR}/data/chainlit/config.toml:/app/local/config.toml:ro
       - ${HOST_DIR}/data/keytab/krb5.keytab:/etc/krb5.keytab:ro
-      - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba-svc.keytab:ro
+      - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba/krb5.keytab:ro
       - ${HOST_DIR}/data/keytab/krb5.conf:/etc/krb5.conf:ro
-      - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
-      # артефакты песочницы одним томом: rootfs, python, site, данные
-      # и шаблон workspace.ext4 — в образе приложения их нет
       - ${HOST_DIR}/artifacts/sandbox:/app/boba/${BOBA_TAG}/third/sandbox:ro
-      - ${HOST_DIR}/data/chainlit2/workspace:/app/local/workspace:rw
+      # образы пользователей переживают пересоздание контейнера
+      - ${HOST_DIR}/data/chainlit/workspace:/app/boba/${BOBA_TAG}/data/workspace:rw
     devices:
       - /dev/fuse
     security_opt:

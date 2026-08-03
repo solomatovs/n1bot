@@ -221,7 +221,7 @@ class _ParseContext:
         whitespace/newline отбрасывается.
         """
         start = self.line_to_offset(start_line)
-        if end_line is None:
+        if end_line is None:  # noqa: SIM108 — тернарник здесь читается хуже
             end = len(self.text)
         else:
             end = self.line_to_offset(end_line)
@@ -381,7 +381,7 @@ class HtmlSectionParser:
         )
 
     @staticmethod
-    def _parse_list(
+    def _parse_list(  # noqa: PLR0913 — границы и порядок независимы
         ctx: _ParseContext,
         el: _Element,
         order: int,

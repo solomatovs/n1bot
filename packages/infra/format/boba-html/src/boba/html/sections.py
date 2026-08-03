@@ -179,7 +179,9 @@ class HtmlListSection(Section[str]):
         blocks = tuple(
             FormatBlock(
                 format_content=self._bullet(i) + item,
-                raw_content=self.item_raw[i] if i < len(self.item_raw) else self.content,
+                raw_content=(
+                    self.item_raw[i] if i < len(self.item_raw) else self.content
+                ),
                 location=(
                     self.item_locations[i]
                     if i < len(self.item_locations)

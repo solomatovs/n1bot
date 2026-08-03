@@ -62,7 +62,7 @@ ScalarValue = str | int | float | bool
 """Допустимые типы значений metadata в Filter (chroma-совместимо)."""
 
 
-class Filter(ABC):
+class Filter(ABC):  # noqa: B024 — sealed-маркер, методы не нужны
     """Sealed: ниже все валидные подклассы. Backend-impl делает pattern-match."""
 
 
@@ -177,7 +177,8 @@ class UnsupportedFilterError(Exception):
 
     def __init__(self, predicate: Filter, backend: str, reason: str) -> None:
         super().__init__(
-            f"backend {backend!r} cannot translate filter {type(predicate).__name__}: {reason}"
+            f"backend {backend!r} cannot translate filter "
+            f"{type(predicate).__name__}: {reason}"
         )
         self.predicate = predicate
         self.backend = backend

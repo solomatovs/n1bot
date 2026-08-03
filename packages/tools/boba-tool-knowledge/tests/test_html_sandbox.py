@@ -276,7 +276,7 @@ class TestParsersStayInSandbox:
     def test_app_does_not_import(self, module: str) -> None:
         code = (
             "import sys\n"
-            "import boba.chainlit2.infra.plugins\n"
+            "import boba.chainlit.infra.plugins\n"
             f"assert {module!r} not in sys.modules, 'приложение тянет {module}'\n"
             "print('ok')\n"
         )

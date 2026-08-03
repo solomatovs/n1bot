@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import HumanMessage
 
-from boba.chainlit2.chat.data.models import Element
-from boba.chainlit2.infra.providers import build_llm_view
+from boba.chainlit.chat.data.models import Element
+from boba.chainlit.infra.providers import build_llm_view
 from boba.tool.shell import WORKSPACE_MOUNT
 from boba.toolkit.sandbox.argv import build_bwrap_argv
 from boba.toolkit.sandbox.profile import BindSpec, SandboxProfile

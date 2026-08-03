@@ -8,7 +8,7 @@ version = "0.0.8"
 description = "OmegaConf-источники + чистые pydantic-модели: load -> bind -> validate."
 requires-python = ">=3.11,<4"
 dependencies = [
-    # 2.11+ ломает ForwardRef-резолв (см. boba-agent/boba-llm/boba-tools).
+    # 2.11+ ломает ForwardRef-резолв (см. boba-chainlit).
     "pydantic>=2.10,<2.11",
     "omegaconf>=2.3,<3",
 ]

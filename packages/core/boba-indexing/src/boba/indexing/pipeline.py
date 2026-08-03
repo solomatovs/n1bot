@@ -154,7 +154,7 @@ class Pipeline(Generic[ReqT, T]):
         for raw in self._transport.fetch(request):
             yield from self._reader.read(raw)
 
-    def _process_source(
+    def _process_source(  # noqa: PLR0913 — этапы конвейера независимы
         self,
         *,
         request: ReqT,
