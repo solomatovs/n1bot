@@ -106,3 +106,14 @@ def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
+
+
+@pytest.fixture(scope="session")
+def raw_config():
+    """Конфиг приложения: проверки идут по нему, а не по выдуманным значениям."""
+    config_path = os.environ.get("BOBA_CONFIG_PATH")
+    if not config_path:
+        pytest.skip("BOBA_CONFIG_PATH не задан")
+    from boba.settings import build_app_config
+
+    return build_app_config(config_path=Path(config_path))
