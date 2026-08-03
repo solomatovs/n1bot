@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Chainlit2: agent",
+            "name": "Chainlit: agent",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/packages/agents/boba-chainlit/src/boba/chainlit/main.py",
@@ -21,7 +21,7 @@
             }
         },
         {
-            "name": "Chainlit2: pytest current file",
+            "name": "pytest: текущий файл",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -36,7 +36,53 @@
             "env": {
                 "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
-                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf"
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
+            }
+        },
+        {
+            "name": "pytest: все тесты",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "justMyCode": false,
+            "args": [
+                "${workspaceFolder}/packages",
+                "-q"
+            ],
+            "env": {
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
+            }
+        },
+        {
+            "name": "pytest: интеграционные (живые сервисы)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "justMyCode": false,
+            "args": [
+                "${workspaceFolder}/packages/agents/boba-chainlit/tests/test_tools_integration.py",
+                "-m",
+                "integration",
+                "-v"
+            ],
+            "env": {
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
             }
         },
         {
