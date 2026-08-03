@@ -16,7 +16,7 @@ from pathlib import Path
 
 from boba.chainlit2.process.runner import RunResult, run_subprocess
 from boba.chainlit2.sandbox.argv import build_bwrap_argv
-from boba.chainlit2.sandbox.config import SandboxConfig
+from boba.chainlit2.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.chainlit2.sandbox.diagnostics import SandboxDiagnostics
 from boba.chainlit2.sandbox.profile import BindSpec, SandboxProfile
 from boba.chainlit2.workspace import build_chain_argv, require_fuse
@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 class SandboxOutcome:
     """Результат запуска: процессные поля плюс объяснение упёршегося лимита."""
 
-    def __init__(self, profile: str, result: RunResult, diagnostic: str) -> None:
-        self.profile = profile
+    def __init__(self, tool: str, result: RunResult, diagnostic: str) -> None:
+        self.tool = tool
         self.result = result
         self.diagnostic = diagnostic
 
@@ -48,35 +48,50 @@ class SandboxOutcome:
 
 
 class SandboxRunner:
-    """Выполняет команду в профиле песочницы; профиль берётся по имени."""
+    """Выполняет команду в уже собранном профиле песочницы."""
 
     def __init__(
         self,
-        config: SandboxConfig,
+        tool: str,
+        profile: SandboxProfile,
         path_vars: Callable[[], Mapping[str, str]],
     ) -> None:
-        self._config = config
+        self._tool = tool
+        self._profile = profile
         self._path_vars = path_vars
 
-    def run(self, command: str, profile_name: str, stdin: str) -> SandboxOutcome:
-        profile = self._config.profile(profile_name)
-        rendered = profile.render(dict(self._path_vars()))
+    def run(self, command: str, stdin: str) -> SandboxOutcome:
+        rendered = self._profile.render(dict(self._path_vars()))
         self._prepare_dirs(rendered)
 
         limits = self.limits_of(rendered)
         argv, runner_limits = self._build_argv(rendered, command, limits)
 
-        name = profile_name
+        name = self._tool
         self._log_start(name, rendered, limits, command)
-        result = run_subprocess(
-            argv,
-            stdin_data=stdin.encode("utf-8"),
-            timeout_sec=rendered.timeout_sec,
-            max_output_bytes=rendered.max_output_bytes,
-            cwd="/",
-            env=os.environ,
-            limits=runner_limits,
-        )
+        group = GroupLimits.of_profile(rendered)
+        cgroup_dir: str | None = None
+        manager: CgroupManager | None = None
+        if group.requested:
+            manager = CgroupManager(rendered.cgroup_base)
+            cgroup_dir = manager.acquire(group)
+            logger.info(
+                "sandbox[%s]: cgroup %s (%s)", name, cgroup_dir, group.describe()
+            )
+        try:
+            result = run_subprocess(
+                argv,
+                stdin_data=stdin.encode("utf-8"),
+                timeout_sec=rendered.timeout_sec,
+                max_output_bytes=rendered.max_output_bytes,
+                cwd="/",
+                env=os.environ,
+                limits=runner_limits,
+                cgroup_dir=cgroup_dir,
+            )
+        finally:
+            if manager is not None and cgroup_dir is not None:
+                manager.release(cgroup_dir)
         result = self._drain_launcher_log(name, result)
         self._log_finish(name, result)
         self._raise_on_mount_error(result)
@@ -93,6 +108,7 @@ class SandboxRunner:
             max_cpu_sec=profile.max_cpu_sec,
             max_file_size_bytes=profile.max_file_size_bytes,
             max_open_files=profile.max_open_files,
+            oom_score_adj=profile.oom_score_adj,
         )
 
     @staticmethod
@@ -162,7 +178,7 @@ class SandboxRunner:
         )
         logger.info(
             "sandbox[%s]: limits memory=%sB cpu=%ss file=%sB open_files=%s "
-            "processes=%s timeout=%ss output=%sB",
+            "processes=%s timeout=%ss output=%sB oom_score_adj=%s group=[%s]",
             profile,
             limits.max_memory_bytes,
             limits.max_cpu_sec,
@@ -171,6 +187,8 @@ class SandboxRunner:
             rendered.max_processes,
             rendered.timeout_sec,
             rendered.max_output_bytes,
+            limits.oom_score_adj,
+            GroupLimits.of_profile(rendered).describe(),
         )
         logger.info("sandbox[%s]: command %r", profile, command)
 

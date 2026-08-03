@@ -13,7 +13,12 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.chainlit2.agent.cancellation import CancellableTools
 from boba.chainlit2.agent.tools.access import ToolAccess, ToolAccessGuard
-from boba.chainlit2.agent.tools.chart import visualize
+from boba.chainlit2.agent.tools.bash import (
+    BashSandboxConfig,
+    build_bash_tool,
+    has_bwrap,
+)
+from boba.chainlit2.agent.tools.chart import ChartToolsConfig, build_chart_tools
 from boba.chainlit2.agent.tools.confluence import (
     ConfluenceToolsConfig,
     build_confluence_tools,
@@ -28,12 +33,6 @@ from boba.chainlit2.agent.tools.kb import (
     build_kb_tools,
 )
 from boba.chainlit2.agent.tools.pg import SqlExecutorConfig, build_pg_tools
-from boba.chainlit2.agent.tools.sandbox import (
-    BashSandboxConfig,
-    build_bash_tool,
-    has_bwrap,
-)
-from boba.chainlit2.agent.tools.shell import BashLocalConfig, build_bash_local_tool
 from boba.chainlit2.agent.tools.web import WebGrepConfig, build_web_tools
 from boba.chainlit2.infra.session import (
     current_thread_id,
@@ -75,11 +74,81 @@ class PluginMeta(BaseModel):
 def _build_sandbox_tools(cfg: BashSandboxConfig) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
-            "[tool.sandbox] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "[tool.bash] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "bash was not registered",
         )
         return []
     return [build_bash_tool(cfg, _sandbox_path_vars)]
+
+
+def _build_doc_tools(cfg: DocToolsConfig) -> list[BaseTool]:
+    if not has_bwrap():
+        logger.warning(
+            "[tool.doc] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "doc tools were not registered",
+        )
+        return []
+    return build_doc_tools(cfg, _sandbox_path_vars)
+
+
+def _build_ingest_tools(cfg: ConfluenceIngestConfig) -> list[BaseTool]:
+    if not has_bwrap():
+        logger.warning(
+            "[tool.ingest] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "confluence ingest tools were not registered",
+        )
+        return []
+    return build_confluence_ingest_tools(cfg, _sandbox_path_vars)
+
+
+def _build_confluence_tools(cfg: ConfluenceToolsConfig) -> list[BaseTool]:
+    if not has_bwrap():
+        logger.warning(
+            "[tool.confluence] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "confluence tools were not registered",
+        )
+        return []
+    return build_confluence_tools(cfg, _sandbox_path_vars)
+
+
+def _build_web_tools(cfg: WebGrepConfig) -> list[BaseTool]:
+    if not has_bwrap():
+        logger.warning(
+            "[tool.web] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "web tools were not registered",
+        )
+        return []
+    return build_web_tools(cfg, _sandbox_path_vars)
+
+
+def _build_chart_tools(cfg: ChartToolsConfig) -> list[BaseTool]:
+    if not has_bwrap():
+        logger.warning(
+            "[tool.chart] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "chart tools were not registered",
+        )
+        return []
+    return build_chart_tools(cfg, _sandbox_path_vars)
+
+
+def _build_pg_tools(cfg: SqlExecutorConfig) -> list[BaseTool]:
+    if not has_bwrap():
+        logger.warning(
+            "[tool.pg] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "pg tools were not registered",
+        )
+        return []
+    return build_pg_tools(cfg, _sandbox_path_vars)
+
+
+def _build_kb_tools(cfg: PostgresKnowledgeBaseConfig) -> list[BaseTool]:
+    if not has_bwrap():
+        logger.warning(
+            "[tool.kb] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "kb tools were not registered",
+        )
+        return []
+    return build_kb_tools(cfg, _sandbox_path_vars)
 
 
 def _sandbox_path_vars() -> dict[str, str]:
@@ -89,49 +158,45 @@ def _sandbox_path_vars() -> dict[str, str]:
 
 
 _PLUGINS: dict[str, ToolPlugin] = {
-    "shell": ToolPlugin(
-        section="shell",
-        config_model=BashLocalConfig,
-        build=lambda cfg: [build_bash_local_tool(cfg)],
-    ),
-    "sandbox": ToolPlugin(
-        section="sandbox",
+    "bash": ToolPlugin(
+        section="bash",
         config_model=BashSandboxConfig,
         build=_build_sandbox_tools,
     ),
     "doc": ToolPlugin(
         section="doc",
         config_model=DocToolsConfig,
-        build=build_doc_tools,
+        build=_build_doc_tools,
     ),
     "chart": ToolPlugin(
         section="chart",
-        build=lambda _cfg: [visualize],
+        config_model=ChartToolsConfig,
+        build=_build_chart_tools,
     ),
     "pg": ToolPlugin(
         section="pg",
         config_model=SqlExecutorConfig,
-        build=build_pg_tools,
+        build=_build_pg_tools,
     ),
     "kb": ToolPlugin(
         section="kb",
         config_model=PostgresKnowledgeBaseConfig,
-        build=build_kb_tools,
+        build=_build_kb_tools,
     ),
     "confluence": ToolPlugin(
         section="confluence",
         config_model=ConfluenceToolsConfig,
-        build=build_confluence_tools,
+        build=_build_confluence_tools,
     ),
     "ingest": ToolPlugin(
         section="ingest",
         config_model=ConfluenceIngestConfig,
-        build=build_confluence_ingest_tools,
+        build=_build_ingest_tools,
     ),
     "web": ToolPlugin(
         section="web",
         config_model=WebGrepConfig,
-        build=build_web_tools,
+        build=_build_web_tools,
     ),
 }
 

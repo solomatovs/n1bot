@@ -13,6 +13,7 @@ import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.agent.tool_config import bind, build_app_config
@@ -51,6 +52,18 @@ class Seed:
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(scope="session")
+def raw_config() -> DictConfig:
+    """Собранный конфиг приложения до привязки к моделям."""
+    config_path = os.environ.get("BOBA_CONFIG_PATH")
+    if not config_path:
+        raise RuntimeError(
+            "BOBA_CONFIG_PATH не задан — укажи конфиг приложения "
+            "(launch.json 'Chainlit2: pytest current file' его прокидывает)"
+        )
+    return build_app_config(config_path=Path(config_path))
 
 
 @pytest.fixture(scope="session")

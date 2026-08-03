@@ -45,6 +45,7 @@ from boba.chainlit2.infra.config import (
 from boba.chainlit2.infra.di import Depends
 from boba.chainlit2.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit2.infra.session import current_user_roles
+from boba.chainlit2.sandbox import CgroupManager
 from boba.db.postgres import AsyncPostgresPool
 
 _RAW_CONFIG: dict[str, DictConfig] = {}
@@ -61,7 +62,11 @@ def get_raw_config() -> DictConfig:
 def get_app_config(config_path: Path) -> AppConfig:
     raw = build_app_config(config_path=config_path)
     _RAW_CONFIG["config"] = raw
-    return bind(raw, path="app", model=AppConfig)
+    config = bind(raw, path="app", model=AppConfig)
+    # групповые лимиты проверяются на старте: отказ виден сразу, с именем
+    # профиля и параметра, а не при первом вызове инструмента
+    CgroupManager.probe_profiles(config.sandbox.profiles)
+    return config
 
 
 def get_checkpointer_config(

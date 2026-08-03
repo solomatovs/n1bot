@@ -20,12 +20,13 @@ class LauncherOptions:
 
 @dataclass(frozen=True)
 class ResourceLimits:
-    """Лимиты команды: RLIMIT_AS/CPU/FSIZE/NOFILE; 0 — не выставлять."""
+    """Лимиты команды: RLIMIT_AS/CPU/FSIZE/NOFILE + oom; 0 — не выставлять."""
 
     max_memory_bytes: int = 0
     max_cpu_sec: int = 0
     max_file_size_bytes: int = 0
     max_open_files: int = 0
+    oom_score_adj: int = 0
 
     def apply_to_current_process(self) -> None:
         if self.max_memory_bytes:
@@ -40,6 +41,8 @@ class ResourceLimits:
         if self.max_open_files:
             nofile = (self.max_open_files, self.max_open_files)
             resource.setrlimit(resource.RLIMIT_NOFILE, nofile)
+        if self.oom_score_adj:
+            self._write_oom_score_adj("self", self.oom_score_adj)
 
     def apply_to_process(self, pid: int) -> None:
         """prlimit из родителя: не требует preexec_fn, безопасен при потоках."""
@@ -55,3 +58,11 @@ class ResourceLimits:
         if self.max_open_files:
             nofile = (self.max_open_files, self.max_open_files)
             resource.prlimit(pid, resource.RLIMIT_NOFILE, nofile)
+        if self.oom_score_adj:
+            self._write_oom_score_adj(str(pid), self.oom_score_adj)
+
+    @staticmethod
+    def _write_oom_score_adj(pid: str, value: int) -> None:
+        """Поднять своему/чужому (тот же uid) процессу можно без привилегий."""
+        with open(f"/proc/{pid}/oom_score_adj", "w") as f:
+            f.write(str(value))

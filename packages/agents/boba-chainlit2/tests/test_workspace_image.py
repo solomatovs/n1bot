@@ -12,11 +12,11 @@ from typing import Any
 
 import pytest
 
-from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
-from boba.chainlit2.agent.tools.sandbox.tools import build_bash_tool
+from boba.chainlit2.agent.tools.bash.config import BashSandboxConfig
+from boba.chainlit2.agent.tools.bash.tools import build_bash_tool
 from boba.chainlit2.chat.data.storage import ImageStorageClient, LocalStorageClient
 from boba.chainlit2.infra.config import LocalStorageConfig
-from boba.chainlit2.sandbox import SandboxConfig
+from boba.chainlit2.sandbox.config import SandboxToolConfig
 from boba.chainlit2.sandbox.profile import SandboxProfile
 from boba.chainlit2.workspace import FUSE_DEVICE, build_chain_argv, render_image_path
 from boba.chainlit2.workspace.options import LauncherOptions, ResourceLimits
@@ -93,6 +93,8 @@ _PROFILE_BASE: dict[str, object] = {
     "max_open_files": 256,
     "max_processes": 256,
     "max_output_bytes": 256 * 1024,
+    "cgroup_base": "",
+    "oom_score_adj": 0,
     "cwd": "",
 }
 
@@ -110,8 +112,7 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
         **profile_kw,
     )
     cfg = BashSandboxConfig(
-        sandbox=SandboxConfig(profiles={"default": profile_dto}),
-        profile="default",
+        sandbox=SandboxToolConfig(profile=profile_dto, override={}),
     )
     return build_bash_tool(cfg, lambda: {"user_id": "7", "thread_id": thread_id})
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import ClassVar
 
-from fastembed import TextEmbedding
 from pydantic import BaseModel, Field
 
 from boba.indexing.embedder import Embedder
@@ -36,6 +35,7 @@ class LocalFastEmbedEmbedder(Embedder[str]):
     _PROBE_INPUT: ClassVar[str] = "dim-probe"
 
     def __init__(self, model_name: str, cache_dir: str) -> None:
+        from fastembed import TextEmbedding  # noqa: PLC0415 — тянет onnxruntime
         self._model_name = model_name
         self._model = TextEmbedding(
             model_name=model_name,

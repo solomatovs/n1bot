@@ -2,7 +2,6 @@ ARG PYTHON_VERSION=3.11
 ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
-ARG SANDBOX_IMAGE=dmp/python:${PYTHON_VERSION}
 
 FROM ${PYTHON_IMAGE} AS python-dist
 FROM ${GCC_IMAGE} AS base
@@ -11,18 +10,8 @@ FROM ${GCC_IMAGE} AS base
 RUN apt-get update                                              \
     && apt-get install -y --no-install-recommends               \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0               \
-        liblzma5 libreadline7 libncurses5 zlib1g curl           \
-        libkrb5-dev krb5-user                                   \
-        imagemagick                                             \
-        libreoffice-writer libreoffice-calc libreoffice-impress \
-        ghostscript                                             \
-        tesseract-ocr                                           \
-        fonts-dejavu-core                                       \
-        bubblewrap                                              \
-        git                                                     \
-        dnsutils                                                \
-        vim                                                     \
-        telnet                                                  \
+        liblzma5 libreadline7 libncurses5 zlib1g                \
+        libkrb5-dev                                             \
     && rm -rf /var/lib/apt/lists/*
 
 # перекрываем системный python своим
@@ -39,8 +28,7 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt      \
     CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt     \
     GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 
-# закрытый контур: индексы пакетов (nexus) и CA его внутреннего TLS.
-# Без CA в системном bundle apt/pip/uv/curl не установят соединение
+# proxy
 COPY build/conf/ /tmp/conf/
 RUN set -eu \
     && if [ -f /tmp/conf/pip.conf ]; then mkdir -p /etc && cp /tmp/conf/pip.conf /etc/pip.conf; fi \
@@ -53,11 +41,8 @@ RUN set -eu \
     && rm -rf /tmp/conf
 COPY build/artifacts/uv/uv /usr/local/bin/uv
 
-# bubblewrap: apt в Astra 2.12 даёт 0.3.3 (нет --clearenv и части unshare-
-# флагов), поэтому собираем свежий из исходников. libcap влинковывается
-# статически (meson подставляет полный путь к libcap.so — подменяем на .a),
-# так что рантайму не нужен apt-пакет libcap2; glibc остаётся динамической —
-# она и так база runtime-образа.
+
+# bubblewrap building
 FROM base AS bwrap-build
 
 ARG BWRAP_VERSION=0.11.2
@@ -84,10 +69,8 @@ RUN set -eu                                                                   \
     && ldd /out/bwrap | grep -q libcap && { echo "libcap не статическая" >&2; exit 1; } || true \
     && /out/bwrap --version
 
-# fuse2fs: монтирование ext4-образов workspace без root (fuse в user
-# namespace). libfuse влинковывается статически, рантайму нужен только
-# /dev/fuse; glibc остаётся динамической. Здесь же готовится шаблонный
-# workspace-образ: sparse-файл SANDBOX_WS_SIZE с чистой ext4
+
+# fuse2fs and workspace.ext4 building
 FROM base AS fuse2fs-build
 
 ARG LIBFUSE_VERSION=3.12.0
@@ -99,8 +82,8 @@ RUN apt-get update                                  \
         meson ninja-build pkg-config xz-utils       \
     && rm -rf /var/lib/apt/lists/*
 
-COPY build/artifacts/src/fuse-${LIBFUSE_VERSION}.tar.xz /tmp/fuse.tar.xz
-COPY build/artifacts/src/e2fsprogs-${E2FSPROGS_VERSION}.tar.xz /tmp/e2fsprogs.tar.xz
+COPY build/artifacts/src/fuse-${LIBFUSE_VERSION}.tar.xz         /tmp/fuse.tar.xz
+COPY build/artifacts/src/e2fsprogs-${E2FSPROGS_VERSION}.tar.xz  /tmp/e2fsprogs.tar.xz
 
 RUN set -eu                                                                   \
     && mkdir -p /tmp/fuse-src && cd /tmp/fuse-src                             \
@@ -125,29 +108,58 @@ RUN set -eu                                                                   \
        ./misc/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace          \
        /out/sandbox-workspace.ext4
 
-# rootfs песочницы: база + утилиты, которых ждёт LLM (head уже в coreutils).
-# На хост его достаёт make sandbox-rootfs; в релизный образ он не кладётся
-FROM ${SANDBOX_IMAGE} AS sandbox-rootfs
+
+# sandbox-rootfs prepare
+FROM ${GLIBC_IMAGE} AS sandbox-rootfs
+
+ARG LITEPARSE_PACKAGES="imagemagick libreoffice-writer libreoffice-calc libreoffice-impress ghostscript fonts-dejavu-core"
 
 COPY build/conf/ /tmp/conf/
-RUN set -eu                                                       \
-    && if [ -f /tmp/conf/ca-chain.crt ]; then                     \
-           mkdir -p /usr/local/share/ca-certificates              \
-           && cp /tmp/conf/ca-chain.crt /usr/local/share/ca-certificates/ \
-           && update-ca-certificates;                             \
-       fi                                                         \
-    && apt-get update                                             \
-    && apt-get install -y --no-install-recommends                 \
-        unzip p7zip-full file curl jq                             \
-    && rm -rf /var/lib/apt/lists/* /tmp/conf                      \
-    && mkdir -p /workspace                                        \
-    && for tool in unzip 7z file head curl jq; do command -v "$tool" >/dev/null; done
+COPY --from=base /usr/local/lib64/libstdc++.so.6      \
+                 /usr/local/lib64/libstdc++.so.6.0.25 \
+                 /usr/local/lib64/
+
+RUN set -eu                                                                     \
+    && if [ -f /tmp/conf/ca-chain.crt ]; then                                   \
+           mkdir -p /usr/local/share/ca-certificates                            \
+           && cp /tmp/conf/ca-chain.crt /usr/local/share/ca-certificates/       \
+           && update-ca-certificates;                                           \
+       fi                                                                       \
+    && apt-get update                                                           \
+    && apt-get install -y --no-install-recommends                               \
+        unzip p7zip-full file curl jq                                           \
+        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 liblzma5 libreadline7         \
+        libncurses5 zlib1g                                                      \
+        libkrb5-3 libgssapi-krb5-2 krb5-user                                    \
+        ${LITEPARSE_PACKAGES}                                                   \
+    && rm -rf /var/lib/apt/lists/* /tmp/conf                                    \
+    && echo /usr/local/lib64 > /etc/ld.so.conf.d/sandbox.conf                   \
+    && ldconfig                                                                 \
+    # liteparse ждёт унифицированный CLI magick, apt даёт только convert
+    && printf '%s\n'                                                            \
+        '#!/bin/sh'                                                             \
+        'case "$1" in'                                                          \
+        '  convert|identify|mogrify|composite|montage|compare|stream|conjure|import) c="$1"; shift; exec "$c" "$@";;' \
+        '  *) exec convert "$@";;'                                              \
+        'esac'                                                                  \
+        > /usr/local/bin/magick                                                 \
+    && chmod +x /usr/local/bin/magick                                           \
+    # ImageMagick по умолчанию запрещает читать PDF
+    && if ! grep -q 'pattern="PDF"' /etc/ImageMagick-6/policy.xml; then         \
+           sed -i 's#</policymap>#  <policy domain="coder" rights="read|write" pattern="PDF"/>\n</policymap>#' \
+                   /etc/ImageMagick-6/policy.xml;                               \
+       fi                                                                       \
+    # точки монтирования: bwrap не создаёт их в read-only корне
+    && mkdir -p /opt/python /opt/site /opt/payload /opt/fastembed               \
+                /usr/share/tessdata /workspace /etc/boba /mnt/pgsock            \
+    && touch /etc/boba/krb5.keytab /etc/krb5.conf                               \
+    && for tool in unzip 7z file head curl jq convert magick soffice gs; do     \
+           command -v "$tool" >/dev/null;                                       \
+       done
 
 
-# колёса пакетов boba и их зависимостей: сторонние тянутся из индекса
-# (conf/pip.conf, conf/uv.toml), а sdist'ы вроде gssapi собираются здесь —
-# gcc и заголовки есть только на этой стадии
-FROM base AS deps
+# boba wheels
+FROM base AS boba-wheels
 
 COPY pyproject.toml /tmp/boba/pyproject.toml
 COPY packages/ /tmp/boba/packages/
@@ -155,82 +167,85 @@ COPY packages/ /tmp/boba/packages/
 RUN set -eu \
     && cd /tmp/boba \
     && uv build --all-packages --wheel --no-sources -o /tmp/wheels \
-    && uv workspace list > /tmp/names.txt \
-    && pip3 wheel --no-cache-dir -w /tmp/wheels --find-links /tmp/wheels \
-        $(cat /tmp/names.txt) pip setuptools wheel
+    && uv workspace list > /tmp/names.txt
 
+
+# boba site-packages
+FROM base AS app-site
+
+COPY --from=boba-wheels /tmp/wheels/    /tmp/wheels/
+COPY --from=boba-wheels /tmp/names.txt  /tmp/names.txt
+
+RUN set -eu                                                                     \
+    && uv pip install --python "$(command -v python3)" --target /opt/app-site   \
+           --find-links=/tmp/wheels $(cat /tmp/names.txt)                       \
+    && rm -rf /tmp/wheels                                                       \
+    && PYTHONPATH=/opt/app-site python3 -c "import boba.chainlit2; print('app-site ok')"
+
+
+# boba-tools site-packages
+FROM base AS sandbox-site
+
+COPY --from=boba-wheels /tmp/wheels/    /tmp/wheels/
+COPY --from=boba-wheels /tmp/names.txt  /tmp/names.txt
+
+RUN set -eu                                                                     \
+    && uv pip install --python "$(command -v python3)" --target /opt/site       \
+           --find-links=/tmp/wheels $(cat /tmp/names.txt)                       \
+    && rm -rf /tmp/wheels                                                       \
+    && PYTHONPATH=/opt/site python3 -c "import liteparse, markdownify, bs4, lxml, plotly, httpx, psycopg, fastembed; print('site ok')"
+
+
+# runtime image for docker-compose
+# and make extract copy to server host
 FROM ${GLIBC_IMAGE} AS runtime
 
 ARG PYTHON_VERSION=3.11 \
     BOBA_DIR=/app/boba
 
+
 RUN apt-get update                                              \
     && apt-get install -y --no-install-recommends               \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0               \
-        liblzma5 libreadline7 libncurses5 zlib1g curl           \
-        libkrb5-dev krb5-user                                   \
-        imagemagick                                             \
-        libreoffice-writer libreoffice-calc libreoffice-impress \
-        ghostscript                                             \
-        tesseract-ocr                                           \
-        fonts-dejavu-core                                       \
-        git                                                     \
-        dnsutils                                                \
+        liblzma5 libreadline7 libncurses5 zlib1g                \
+        libkrb5-3 libgssapi-krb5-2 krb5-user                    \
         gettext-base                                            \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=python-dist /opt/python/usr/local ${BOBA_DIR}/third/python
-COPY --from=base                            \
-    /usr/local/lib64/libstdc++.so.6         \
-    /usr/local/lib64/libstdc++.so.6.0.25    \
-    ${BOBA_DIR}/third/lib/
-COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
-COPY --from=deps /tmp/wheels/       /tmp/wheels/
-COPY --from=deps /tmp/names.txt     /tmp/names.txt
-COPY build/artifacts/tessdata/      ${BOBA_DIR}/third/tessdata/
-COPY build/artifacts/fastembed/     ${BOBA_DIR}/third/fastembed/
-COPY build/artifacts/uv/uv          ${BOBA_DIR}/third/bin/uv
-# песочница для tool `bash`: собранный из исходников bwrap (см. bwrap-build)
-COPY --from=bwrap-build /out/bwrap  ${BOBA_DIR}/third/bin/bwrap
-COPY --from=fuse2fs-build /out/fuse2fs ${BOBA_DIR}/third/bin/fuse2fs
-COPY --from=fuse2fs-build /out/sandbox-workspace.ext4 ${BOBA_DIR}/third/sandbox-workspace.ext4
-COPY build/conf/                    /tmp/conf/
+COPY --from=python-dist                         /opt/python/usr/local   ${BOBA_DIR}/third/python
+COPY --from=base /usr/local/bin/uv              ${BOBA_DIR}/third/bin/uv
+COPY --from=app-site /opt/app-site              ${BOBA_DIR}/third/python/lib/python${PYTHON_VERSION}/site-packages/
+COPY --from=boba-wheels /tmp/names.txt          ${BOBA_DIR}/conf/packages.txt
+COPY --from=bwrap-build /out/bwrap              ${BOBA_DIR}/third/bin/bwrap
+COPY --from=fuse2fs-build /out/fuse2fs          ${BOBA_DIR}/third/bin/fuse2fs
+COPY --from=sandbox-rootfs                      / ${BOBA_DIR}/third/sandbox/rootfs/
+COPY --from=sandbox-site                        /opt/site ${BOBA_DIR}/third/sandbox/site/
+COPY --from=python-dist                         /opt/python/usr/local ${BOBA_DIR}/third/sandbox/python/
+COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BOBA_DIR}/third/sandbox/workspace.ext4
+COPY build/artifacts/tessdata/                  ${BOBA_DIR}/third/sandbox/data/tessdata/
+COPY build/artifacts/fastembed/                 ${BOBA_DIR}/third/sandbox/data/fastembed/
+COPY build/conf/                                /tmp/conf/
+COPY packages/agents/boba-chainlit2/payloads/   ${BOBA_DIR}/payloads/
 
 RUN set -eu \
-    # closed-loop: тем же CA приложение ходит в nexus и к LLM по внутреннему TLS
     && if [ -f /tmp/conf/ca-chain.crt ]; then                                                   \
            mkdir -p /usr/local/share/ca-certificates                                            \
            && cp /tmp/conf/ca-chain.crt /usr/local/share/ca-certificates/                       \
            && update-ca-certificates;                                                           \
        fi \
     && cp /tmp/conf/boba.env /tmp/boba.env.tmpl \
-    && PY=${BOBA_DIR}/third/python/bin/python3.11 \
-    && export LD_LIBRARY_PATH="${BOBA_DIR}/third/lib:${BOBA_DIR}/third/python/lib"              \
-    # ImageMagick конфиг (policy.xml)
-    && mkdir -p ${BOBA_DIR}/etc \
-    && cp -a /etc/ImageMagick-6 ${BOBA_DIR}/etc/                                                \
-    && if ! grep -q 'pattern="PDF"' ${BOBA_DIR}/etc/ImageMagick-6/policy.xml; then              \
-           sed -i 's#</policymap>#  <policy domain="coder" rights="read|write" pattern="PDF"/>\n</policymap>#' \
-                   ${BOBA_DIR}/etc/ImageMagick-6/policy.xml;                                     \
-       fi \
-    # liteparse ждёт унифицированный CLI magick — это наш скрипт, он живёт в third/bin
-    && mkdir -p ${BOBA_DIR}/third/bin \
-    && printf '%s\n'                                                                            \
-        '#!/bin/sh'                                                                             \
-        'case "$1" in'                                                                          \
-        '  convert|identify|mogrify|composite|montage|compare|stream|conjure|import) c="$1"; shift; exec "$c" "$@";;' \
-        '  *) exec convert "$@";;'                                                              \
-        'esac'                                                                                  \
-        > ${BOBA_DIR}/third/bin/magick                                                          \
-    && chmod +x ${BOBA_DIR}/third/bin/magick                                                    \
-    && uv pip install --python "$PY" --no-index --find-links=/tmp/wheels pip setuptools wheel   \
-    && uv pip install --python "$PY" --no-index --find-links=/tmp/wheels $(cat /tmp/names.txt)  \
-    && ln -sf eng.traineddata ${BOBA_DIR}/third/tessdata/rus+eng.traineddata                    \
-    && ln -sf rus.traineddata ${BOBA_DIR}/third/tessdata/eng+rus.traineddata                    \
+    && export LD_LIBRARY_PATH="${BOBA_DIR}/third/python/lib"                                    \
+    && SITE=${BOBA_DIR}/third/python/lib/python${PYTHON_VERSION}/site-packages                  \
+    && mv "$SITE"/bin/* ${BOBA_DIR}/third/python/bin/                                           \
+    && rmdir "$SITE"/bin                                                                        \
+    && sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/python/bin/python3.11|"                    \
+            ${BOBA_DIR}/third/python/bin/boba-*                                                 \
     && mkdir -p ${BOBA_DIR}/conf/prompts ${BOBA_DIR}/etc                                        \
              ${BOBA_DIR}/data/workspaces/user ${BOBA_DIR}/data/workspaces/system                \
              ${BOBA_DIR}/data/.chainlit ${BOBA_DIR}/data/home                                   \
-    && mkdir -p ${BOBA_DIR}/third/sandbox-rootfs ${BOBA_DIR}/data/workspace                     \
+    && mkdir -p ${BOBA_DIR}/data/workspace                                                      \
+    && ln -sf eng.traineddata ${BOBA_DIR}/third/sandbox/data/tessdata/rus+eng.traineddata       \
+    && ln -sf rus.traineddata ${BOBA_DIR}/third/sandbox/data/tessdata/eng+rus.traineddata       \
     && ${BOBA_DIR}/third/bin/bwrap --version                                                    \
     && ${BOBA_DIR}/third/bin/fuse2fs -V                                                         \
     && BOBA_DIR="${BOBA_DIR}" PYTHON_VERSION="${PYTHON_VERSION}"                                \

@@ -20,6 +20,7 @@ metadata-ключей — boba.chainlit2.agent.tools.confluence.models.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import ConfigDict, Field
@@ -28,7 +29,6 @@ from boba.chainlit2.agent.tools.confluence.cleanup import ConfluencePageScopeCle
 from boba.chainlit2.agent.tools.confluence.connection import ConfluenceConnection
 from boba.chainlit2.agent.tools.confluence.models import AttachmentFilter
 from boba.chainlit2.agent.tools.confluence.pipeline import ConfluenceContentTransport
-from boba.chainlit2.agent.tools.confluence.reading import ConfluenceReader
 from boba.chainlit2.agent.tools.confluence.request_sources import ConfluenceRequest
 from boba.chainlit2.agent.tools.kb.chunking import (
     ChunkerParams,
@@ -44,6 +44,7 @@ from boba.chainlit2.agent.tools.kb.postgres import (
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
+from boba.chainlit2.agent.tools.liteparse import SandboxParserConfig
 from boba.indexing import (
     CleanupStrategy,
     CollectionScopedView,
@@ -52,13 +53,13 @@ from boba.indexing import (
     IndexerConfig,
     NoneCleanup,
     Pipeline,
+    Reader,
     RequestSource,
     TransportKeys,
 )
 from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
 from boba.indexing.reader import ReaderId
-from boba.liteparse import LiteParseParams, LiteParseReader
 from boba.settings import (
     StringList,
 )
@@ -70,12 +71,12 @@ __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
 logger = logging.getLogger("boba.chainlit2.agent.tools.confluence.ingest")
 
 
-class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams):
+class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, SandboxParserConfig):
     """Self-contained конфиг семейства tool'ов confluence_ingest_*.
 
     Наследует PostgresStoreConfig (connection/tables — плоско), ChunkerParams
-    (chunk_size/chunk_overlap — плоско) и LiteParseParams (ocr_enabled/
-    ocr_language/max_pages — настройки парсера вложений). Config-секция: [tool.kb].
+    (chunk_size/chunk_overlap — плоско) и SandboxParserConfig (настройки
+    парсера вложений и песочница payload'а). Config-секция: [tool.ingest].
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -135,7 +136,7 @@ class ConfluenceIngest:
         prune_missing: bool,
         force_update: bool = False,
         attachment_filter: AttachmentFilter | None = None,
-        liteparse_params: LiteParseParams | None = None,
+        routes: Mapping[str, Reader[str]],
     ) -> dict[str, Any]:
         """Полный Confluence -> kb_chunks pipeline для уже-собранного RequestSource.
 
@@ -148,19 +149,13 @@ class ConfluenceIngest:
 
         Reader — DispatchReader по TransportKeys.CONTENT_TYPE: HTML ->
         ConfluenceReader, document-вложения (PDF/docx/xlsx/pptx по
-        LiteParseReader.media_types) -> LiteParseReader (постранично), всё
-        остальное (картинки и т.п.) молча пропускается. liteparse_params
-        прокидывает OCR/лимит страниц в парсер вложений.
+        SandboxLiteParseReader.media_types) -> тот же ридер (постранично),
+        всё остальное (картинки и т.п.) молча пропускается. Сами вложения
+        парсит payload liteparse в песочнице — liteparse_caller.
         """
-        liteparse_reader = LiteParseReader(liteparse_params)
         reader: DispatchReader[str] = DispatchReader(
             by=TransportKeys.CONTENT_TYPE,
-            routes={
-                **dict.fromkeys(
-                    ConfluenceIngest.HTML_CONTENT_TYPES, ConfluenceReader(),
-                ),
-                **dict.fromkeys(liteparse_reader.media_types, liteparse_reader),
-            },
+            routes=dict(routes),
             reader_id=ReaderId("ext.confluence_dispatch"),
             on_unknown="skip",
         )
@@ -224,6 +219,8 @@ class ConfluenceIngest:
         request_source: RequestSource[ConfluenceRequest],
         prune_missing: bool,
         force_update: bool = False,
+        *,
+        routes: Mapping[str, Reader[str]],
     ) -> dict[str, Any]:
         """Собрать stores/embedder/chunker/filter из cfg и вызвать run."""
         chunk_store = PostgresChunkStore(cfg=cfg)
@@ -249,5 +246,5 @@ class ConfluenceIngest:
             prune_missing=prune_missing,
             force_update=force_update,
             attachment_filter=att_filter,
-            liteparse_params=cfg,
+            routes=routes,
         )

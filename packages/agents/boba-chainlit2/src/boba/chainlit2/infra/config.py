@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from boba.auth import AuthConfig
+from boba.chainlit2.sandbox.config import SandboxConfig
 from boba.chainlit2.workspace.config import LauncherConfig
 from boba.db.postgres import PostgresConfig
 
@@ -418,4 +419,9 @@ class AppConfig(BaseModel):
     storage: Annotated[
         LocalStorageConfig,
         Field(description="Файловое хранилище вложений."),
+    ]
+
+    sandbox: Annotated[
+        SandboxConfig,
+        Field(description="Реестр профилей песочницы; ${sandbox}."),
     ]

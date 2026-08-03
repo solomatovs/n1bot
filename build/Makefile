@@ -1,7 +1,3 @@
-# сборщик boba: портативный релиз из локального дерева пакетов.
-# Онлайн шаги: sources + deps + build (зависимости приезжают из nexus).
-# extract — портативная папка из готового образа.
-
 BASE_DIR      	?= $(abspath .)
 SRC_DIR       	?= $(abspath ..)
 ARTIFACTS     	?= $(BASE_DIR)/artifacts
@@ -29,9 +25,7 @@ VERSION      := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(VERSION_FILE))
 BOBA_TAG     ?= $(VERSION)
 REQUIRES_PY  := $(shell sed -n 's/^requires-python = ">=\([0-9]*\.[0-9]*\).*/\1/p' $(VERSION_FILE))
 
-# портативный релиз: на сервере лежит в DEST_DIR, этот путь зашивается в образ
-# (build-arg BOBA_DIR) и в conf/*.  Перенести релиз в другое место —
-# пересобрать: make build DEST_DIR=<путь>
+# релиз для make extract
 RELEASE_NAME  := boba-$(VERSION)
 DEST_DIR      ?= /app/boba/$(VERSION)
 
@@ -47,10 +41,17 @@ GLIBC_IMAGE  	?= dmp/glibc:2.28
 # среда сборки: glibc 2.28 + gcc + python-дистрибутив
 GCC_IMAGE    	?= dmp/gcc:8.5.0
 PYTHON_IMAGE 	?= dmp/python:$(PYTHON_VERSION)-dist
-# образ, чья файловая система становится rootfs песочницы
-SANDBOX_IMAGE	?= dmp/python:$(PYTHON_VERSION)
-# он же плюс утилиты для LLM: собирается стадией sandbox-rootfs
+# базовый rootfs песочницы: стадия sandbox-rootfs (glibc + office + точки)
 ROOTFS_IMAGE	:= boba-sandbox-rootfs:$(PYTHON_VERSION)
+# site-packages песочницы одним каталогом: стадия sandbox-site
+SITE_IMAGE		:= boba-sandbox-site:$(PYTHON_VERSION)
+# шаблон workspace и fuse2fs: стадия fuse2fs-build
+FUSE_IMAGE		:= boba-fuse2fs:$(PYTHON_VERSION)
+# артефакты песочницы: rootfs, python, site и данные подключаются профилями
+SANDBOX_DIR		:= $(DEPS_DIR)/sandbox
+# нативное окружение liteparse: office/растр/pdf он конвертирует этими
+# программами. Убрать libreoffice — doc перестанет читать docx/xlsx/pptx
+LITEPARSE_PACKAGES	?= imagemagick libreoffice-writer libreoffice-calc libreoffice-impress ghostscript fonts-dejavu-core
 # тег с версией python: иначе deps соберутся на boba-base от прошлой сборки
 BASE_IMAGE    := boba-base:$(PYTHON_VERSION)
 
@@ -108,7 +109,7 @@ DOCKER_ARGS = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)             \
               --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)     \
               --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) \
               --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)     \
-              --build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE)
+              --build-arg LITEPARSE_PACKAGES="$(LITEPARSE_PACKAGES)"
 
 
 .PHONY: help
@@ -117,7 +118,8 @@ help:
 	echo ""
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(SRC_ARTIFACTS)"
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
-	echo "                 {uv,tessdata,fastembed,sandbox-rootfs,sandbox-workspace.ext4}"
+	echo "                 {uv,tessdata,fastembed,"
+	echo "                  sandbox/{rootfs,python,site,data,workspace.ext4}}"
 	echo "  make build     собрать образ $(IMAGE)"
 	echo "  make test      проверить релиз внутри образа"
 	echo "  make extract   портативная папка из готового образа:"
@@ -164,7 +166,6 @@ debug:
 	$(info GLIBC_IMAGE    = $(GLIBC_IMAGE))
 	$(info GCC_IMAGE      = $(GCC_IMAGE))
 	$(info PYTHON_IMAGE   = $(PYTHON_IMAGE))
-	$(info SANDBOX_IMAGE  = $(SANDBOX_IMAGE))
 	$(info REQUIRES_PY    = $(REQUIRES_PY))
 	$(info NO_CACHE       = $(NO_CACHE))
 	$(info UV_URL         = $(UV_URL))
@@ -229,9 +230,9 @@ sources:
 
 
 .PHONY: deps
-deps: uv tessdata sandbox-rootfs sandbox-workspace fastembed
-	@du -sh $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(DEPS_DIR)/fastembed \
-	    $(DEPS_DIR)/sandbox-rootfs $(DEPS_DIR)/sandbox-workspace.ext4
+deps: uv tessdata fastembed sandbox-rootfs sandbox-site sandbox-python \
+      sandbox-data sandbox-workspace
+	@du -sh $(DEPS_DIR)/uv $(SANDBOX_DIR)/*
 
 
 .PHONY: uv
@@ -262,10 +263,10 @@ tessdata:
 	done
 
 
-# rootfs sandbox
+# базовый rootfs песочницы: glibc + office-конвертеры + точки монтирования
 .PHONY: sandbox-rootfs
 sandbox-rootfs:
-	@dest="$(DEPS_DIR)/sandbox-rootfs"
+	@dest="$(SANDBOX_DIR)/rootfs"
 	echo "== rootfs песочницы из $(SANDBOX_IMAGE) + утилиты =="
 	if [ -n "$$(ls -A "$$dest" 2>/dev/null)" ]; then
 	    echo "  ✓ $$dest (пересобрать: rm -rf $$dest)"
@@ -283,24 +284,72 @@ sandbox-rootfs:
 	mkdir -p "$$dest/workspace"
 
 
+# site-packages песочницы одним каталогом: его монтируют профили в /opt/site
+.PHONY: sandbox-site
+sandbox-site:
+	@dest="$(SANDBOX_DIR)/site"
+	echo "== site-packages песочницы =="
+	if [ -n "$$(ls -A "$$dest" 2>/dev/null)" ]; then
+	    echo "  ✓ $$dest (пересобрать: rm -rf $$dest)"
+	    exit 0
+	fi
+	docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
+	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
+	    --target sandbox-site                              \
+	    --tag $(SITE_IMAGE)                                \
+	    $(PROGRESS) $(BUILD_CONTEXT)
+	mkdir -p "$$dest"
+	cid=$$(docker create $(SITE_IMAGE) /bin/true)
+	docker cp "$$cid:/opt/site/." "$$dest/"
+	docker rm "$$cid" >/dev/null
+
+
+# python-дистрибутив песочницы: тот же, что у приложения (стадия python-dist)
+.PHONY: sandbox-python
+sandbox-python:
+	@dest="$(SANDBOX_DIR)/python"
+	echo "== python-дистрибутив песочницы =="
+	if [ -x "$$dest/bin/python3" ]; then
+	    echo "  ✓ $$dest (пересобрать: rm -rf $$dest)"
+	    exit 0
+	fi
+	mkdir -p "$$dest"
+	cid=$$(docker create $(PYTHON_IMAGE) /bin/true)
+	docker cp "$$cid:/opt/python/usr/local/." "$$dest/"
+	docker rm "$$cid" >/dev/null
+
+
+# данные песочницы: веса эмбеддера и модели OCR лежат отдельными каталогами
+.PHONY: sandbox-data
+sandbox-data: tessdata fastembed
+	@mkdir -p "$(SANDBOX_DIR)/data"
+	echo "== данные песочницы: tessdata + fastembed =="
+	rm -rf "$(SANDBOX_DIR)/data/tessdata" "$(SANDBOX_DIR)/data/fastembed"
+	cp -a "$(DEPS_DIR)/tessdata" "$(SANDBOX_DIR)/data/tessdata"
+	cp -a "$(DEPS_DIR)/fastembed" "$(SANDBOX_DIR)/data/fastembed"
+	ln -sf eng.traineddata "$(SANDBOX_DIR)/data/tessdata/rus+eng.traineddata"
+	ln -sf rus.traineddata "$(SANDBOX_DIR)/data/tessdata/eng+rus.traineddata"
+
+
 .PHONY: sandbox-workspace
 sandbox-workspace:
-	@dest="$(DEPS_DIR)/sandbox-workspace.ext4"
+	@dest="$(SANDBOX_DIR)/workspace.ext4"
 	echo "== шаблон workspace $(SANDBOX_WS_SIZE) =="
 	if [ -f "$$dest" ]; then
 	    echo "  ✓ $$dest (пересоздать: rm -f $$dest)"
 	    exit 0
 	fi
-	mkdir -p "$(DEPS_DIR)"
-	docker run --rm -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)" \
-	  -e WS_SIZE="$(SANDBOX_WS_SIZE)" -v "$(DEPS_DIR)":/out \
-	  --entrypoint sh $(SANDBOX_IMAGE) -c '
-	    set -e
-	    truncate -s "$$WS_SIZE" /out/.ws.tmp
-	    mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /out/.ws.tmp
-	    chown "$$HOST_UID:$$HOST_GID" /out/.ws.tmp
-	  '
-	mv "$(DEPS_DIR)/.ws.tmp" "$$dest"
+	# шаблон делает стадия fuse2fs-build тем же mke2fs, что уедет в релиз:
+	# второй способ создания означал бы два разных образа под одним именем
+	docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
+	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
+	    --target fuse2fs-build                             \
+	    --tag $(FUSE_IMAGE)                                \
+	    $(PROGRESS) $(BUILD_CONTEXT)
+	mkdir -p "$(SANDBOX_DIR)"
+	cid=$$(docker create $(FUSE_IMAGE) /bin/true)
+	docker cp "$$cid:/out/sandbox-workspace.ext4" "$$dest"
+	docker rm "$$cid" >/dev/null
 	ls -lh "$$dest"
 
 
@@ -361,9 +410,6 @@ check-artifacts:
 	[ -n "$$(ls -A "$(DEPS_DIR)/fastembed" 2>/dev/null)" ] || {
 	    echo "нет весов fastembed — запусти: make deps" >&2; exit 1
 	}
-	[ -x "$(DEPS_DIR)/sandbox-rootfs/bin/sh" ] || {
-	    echo "нет rootfs песочницы — запусти: make deps" >&2; exit 1
-	}
 
 
 .PHONY: build
@@ -384,16 +430,13 @@ test: build
 	  -v "$(TEST_DIR)":/test:ro \
 	  --entrypoint sh $(IMAGE) -c '
 	    set -a && . "$(DEST_DIR)/conf/boba.env" && set +a
-	    "$$PYTHONHOME/bin/python3" /test/bobacheck.py --names /tmp/names.txt
+	    "$$PYTHONHOME/bin/python3" /test/bobacheck.py --names "$(DEST_DIR)/conf/packages.txt"
 	  '
 
 .PHONY: extract
 extract:
 	@docker image inspect $(RELEASE_IMAGE) >/dev/null 2>&1 || {
 	    echo "нет образа $(RELEASE_IMAGE) — собери: make build" >&2; exit 1
-	}
-	[ -x "$(DEPS_DIR)/sandbox-rootfs/bin/sh" ] || {
-	    echo "нет rootfs песочницы — запусти: make deps" >&2; exit 1
 	}
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)"
@@ -403,13 +446,6 @@ extract:
 	docker rm "$$cid" >/dev/null
 	trap - EXIT
 
-	# rootfs песочницы в образ не кладётся (.dockerignore) — он хостовый
-	# артефакт; в релиз копируется здесь, конфиг ждёт его в third/
-	echo ">>> rootfs песочницы -> $(OUT)/third/sandbox-rootfs"
-	# каталог уже есть (точка монтирования из образа): копируем содержимое,
-	# иначе cp вложит sandbox-rootfs внутрь sandbox-rootfs
-	mkdir -p "$(OUT)/third/sandbox-rootfs"
-	cp -a "$(DEPS_DIR)/sandbox-rootfs/." "$(OUT)/third/sandbox-rootfs/"
 	# каталог образов workspace: пишет сюда приложение
 	mkdir -p "$(OUT)/data/workspace"
 
@@ -423,6 +459,16 @@ extract:
 	    < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
 	envsubst '$${BOBA_DIR}' \
 	    < "$(CONF_DIR)/config.toml.example" > "$(OUT)/conf/config.toml"
+
+	# артефакты песочницы: без них профили [tool.*.sandbox] не поднимутся
+	for art in rootfs/bin/sh python/bin/python3 site/liteparse \
+	           data/fastembed data/tessdata/eng.traineddata workspace.ext4; do
+	    [ -e "$(OUT)/third/sandbox/$$art" ] || {
+	        echo "в релизе нет third/sandbox/$$art — запусти: make deps" >&2
+	        exit 1
+	    }
+	done
+	echo ">>> артефакты песочницы на месте"
 
 	{
 	    echo "release: $(RELEASE_NAME)"
@@ -440,8 +486,7 @@ extract:
 .PHONY: clean
 clean:
 	rm -rf $(SRC_ARTIFACTS) $(ARTIFACTS)/build \
-	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(DEPS_DIR)/sandbox-rootfs \
-	       $(DEPS_DIR)/sandbox-workspace.ext4
+	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(SANDBOX_DIR)
 
 
 .PHONY: print-tag

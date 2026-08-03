@@ -13,7 +13,7 @@ build/.git
 build/artifacts/.git
 build/artifacts/images
 # в образ не копируются: rootfs песочницы — хостовый артефакт, wheelhouse отменён
-build/artifacts/sandbox-rootfs
+build/artifacts/sandbox
 build/artifacts/wheels
 build/artifacts/build
 build/artifacts/local/workspaces

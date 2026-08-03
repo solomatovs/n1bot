@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -22,16 +21,56 @@ from boba.chainlit2.agent.cancellation import (
     current_cancellation,
     turn_cancellation,
 )
-from boba.chainlit2.agent.tools import build_bash_local_tool
+from boba.chainlit2.agent.tools import build_bash_tool
+from boba.chainlit2.agent.tools.bash.config import BashSandboxConfig
 from boba.chainlit2.agent.tools.http import CancellableHttpTransport
-from boba.chainlit2.agent.tools.shell.config import BashLocalConfig
 from boba.chainlit2.rendering.tool_result import ErrorResult
+from boba.chainlit2.sandbox import SandboxProfile, SandboxToolConfig
 from boba.transport.http import HttpProfile, HttpRequest
 
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     "механизм остановки не зависит от сессии chainlit"
+
+
+_HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
+
+
+def _sandbox_config() -> BashSandboxConfig:
+    """Минимальный профиль без образа: нужен лишь долгоживущий процесс."""
+    profile = SandboxProfile.model_validate(
+        {
+            "rootfs": "",
+            "ro_binds": _HOST_RO_BINDS,
+            "rw_binds": (),
+            "rw_images": (),
+            "image_template": "",
+            "launcher": {
+                "mount_wait_sec": 10.0,
+                "mount_poll_sec": 0.05,
+                "shutdown_wait_sec": 5.0,
+                "copy_chunk_bytes": 1 << 20,
+            },
+            "tmpfs": ("/tmp:16M",),  # noqa: S108
+            "network": False,
+            "env_set": {"PATH": "/usr/bin:/bin"},
+            "timeout_sec": 300,
+            "max_memory_bytes": 512 * 1024 * 1024,
+            "max_cpu_sec": 300,
+            "max_file_size_bytes": 64 * 1024 * 1024,
+            "max_open_files": 256,
+            "max_processes": 64,
+            "max_output_bytes": 256 * 1024,
+            "cgroup_base": "",
+            "oom_score_adj": 0,
+            "cwd": "/tmp",  # noqa: S108
+        }
+    )
+    return BashSandboxConfig(
+        sandbox=SandboxToolConfig(profile=profile, override={}),
+    )
+
 
 
 class TestTurnCancellation:
@@ -225,9 +264,7 @@ class TestSubprocessAbort:
         return alive
 
     def test_cancel_kills_running_process(self) -> None:
-        tool_ = build_bash_local_tool(
-            BashLocalConfig(workspace_root=Path(tempfile.mkdtemp()), timeout_sec=300),
-        )
+        tool_ = build_bash_tool(_sandbox_config(), dict)
         with turn_cancellation() as c:
             ctx = copy_context()
             with ThreadPoolExecutor(1) as pool:

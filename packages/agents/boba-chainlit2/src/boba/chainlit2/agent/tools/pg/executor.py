@@ -10,16 +10,10 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_core import to_jsonable_python
 
-from boba.chainlit2.agent.cancellation import current_cancellation
-from boba.chainlit2.agent.tools.pg.copy_buffer import (
-    BufferCapacityError,
-    CopyBuffer,
-    RowLimitExceededError,
-)
-from boba.chainlit2.agent.tools.pool import CancellablePool
-from boba.db.postgres import PostgresConfig, PostgresPool
+from boba.chainlit2.agent.tools.pg.caller import PgCaller
+from boba.chainlit2.sandbox import SandboxEntryConfig, SandboxPayloadError
+from boba.db.postgres import PostgresConfig
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +36,9 @@ class SqlExecutorConfig(BaseModel):
             '`[tool.pg.profiles] main = "${postgres.main}"`. '
             "Ключ — значение tool-arg `target` (LLM выбирает БД по нему)."
         ),
+    )
+    sandbox: SandboxEntryConfig = Field(
+        description="Окружение и точка входа payload'а: [tool.pg.sandbox].",
     )
     max_rows: int = Field(
         default=100,
@@ -102,14 +99,16 @@ class SqlResult:
 
 
 class SqlExecutor:
-    """Pool кешируется в PostgresPool.get по DSN, поэтому повторные вызовы дешёвые."""
+    """Исполняет SQL через payload в песочнице.
 
-    def __init__(
-        self,
-        *,
-        cfg: SqlExecutorConfig,
-    ) -> None:
+    Пула соединений здесь нет и быть не может: каждый вызов — отдельный
+    процесс песочницы, значит своё соединение. Цена — рукопожатие (а с
+    kerberos ещё и получение тикета) на каждый запрос.
+    """
+
+    def __init__(self, *, cfg: SqlExecutorConfig, caller: PgCaller) -> None:
         self._cfg = cfg
+        self._caller = caller
         logger.info(
             "SqlExecutor opened: targets=%s max_rows=%d max_bytes=%d",
             cfg.targets(),
@@ -128,35 +127,25 @@ class SqlExecutor:
     def allowed_targets(self) -> list[str]:
         return self._cfg.targets()
 
-    def execute_copy(self, query: str, *, target: str) -> CopyBuffer:
+    def connection_of(self, target: str) -> dict[str, Any]:
+        """libpq-параметры цели: их payload передаёт в connect() как есть."""
         conn = self._cfg.resolve(target)
-        pool = CancellablePool(
-            PostgresPool.get(
-                conn,
-                override_options=self._cfg.session_options(conn),
-            ),
+        return conn.conn_settings(
+            override_options=self._cfg.session_options(conn),
         )
 
-        stmt = f"COPY ({query}) TO STDOUT WITH (FORMAT TEXT, HEADER)"
-
-        buf = CopyBuffer(
-            max_capacity=self._cfg.max_bytes,
-            limit_rows=self._cfg.max_rows,
-        )
-        cancellation = current_cancellation()
+    def execute_copy(self, query: str, *, target: str) -> str:
         try:
-            with pool.cursor() as cur, cur.copy(stmt) as cp:  # type: ignore[arg-type]
-                for block in cp:
-                    buf.write(block)
-        except (BufferCapacityError, RowLimitExceededError):
-            raise
-        except Exception as e:
-            cancellation.raise_if_cancelled()
+            answer = self._caller.copy(
+                connection=self.connection_of(target),
+                sql=query,
+                max_bytes=self._cfg.max_bytes,
+            )
+        except SandboxPayloadError as e:
             raise SqlQueryError(
-                f"SQL copy failed (target={target!r}): {type(e).__name__}: {e}",
+                f"SQL copy failed (target={target!r}): {e}",
             ) from e
-
-        return buf
+        return answer.text
 
     def execute(
         self,
@@ -166,28 +155,19 @@ class SqlExecutor:
         row_limit: int,
         params: Sequence[Any] | None = None,
     ) -> SqlResult:
-        conn = self._cfg.resolve(target)
-        pool = CancellablePool(
-            PostgresPool.get(
-                conn,
-                override_options=self._cfg.session_options(conn),
-            ),
-        )
-
         effective_limit = min(max(row_limit, 1), self._cfg.max_rows)
-        fetch_limit = effective_limit + 1
-
-        cancellation = current_cancellation()
         try:
-            with pool.dict_cursor() as cur:
-                cur.execute(query, params)  # type: ignore[arg-type]
-                fetched = cur.fetchmany(fetch_limit)
-        except Exception as e:
-            cancellation.raise_if_cancelled()
+            answer = self._caller.query(
+                connection=self.connection_of(target),
+                sql=query,
+                params=params or (),
+                row_limit=effective_limit,
+            )
+        except SandboxPayloadError as e:
             raise SqlQueryError(
-                f"SQL execute failed (target={target!r}): {type(e).__name__}: {e}",
+                f"SQL execute failed (target={target!r}): {e}",
             ) from e
-
-        truncated = len(fetched) > effective_limit
-        rows = to_jsonable_python(fetched[:effective_limit])
-        return SqlResult(rows=rows, truncated=truncated)
+        rows: list[dict[str, Any]] = []
+        for row in answer.rows:
+            rows.append(dict(row))
+        return SqlResult(rows=rows, truncated=answer.truncated)

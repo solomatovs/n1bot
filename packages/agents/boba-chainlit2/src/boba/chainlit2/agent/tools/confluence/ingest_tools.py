@@ -4,6 +4,7 @@
 спейсам целиком. Логика в приватных модулях, здесь обёртки langchain.
 """
 
+from collections.abc import Callable, Mapping
 from typing import Annotated
 
 from langchain.tools import tool
@@ -21,7 +22,11 @@ from boba.chainlit2.agent.tools.confluence._ingest_pages import (
 from boba.chainlit2.agent.tools.confluence._ingest_spaces import (
     confluence_ingest_spaces,
 )
+from boba.chainlit2.agent.tools.confluence.caller import ConfluenceCaller
 from boba.chainlit2.agent.tools.confluence.ingest_base import ConfluenceIngestConfig
+from boba.chainlit2.agent.tools.confluence.ingest_caller import (
+    ConfluenceIngestCaller,
+)
 from boba.chainlit2.rendering.render import pack_result
 from boba.chainlit2.rendering.tool_result import (
     ErrorResult,
@@ -37,8 +42,14 @@ __all__ = ["ConfluenceIngestTools", "build_confluence_ingest_tools"]
 class ConfluenceIngestTools:
     """Собирает langchain-инструменты индексации Confluence."""
 
-    def __init__(self, cfg: ConfluenceIngestConfig) -> None:
+    def __init__(
+        self,
+        cfg: ConfluenceIngestConfig,
+        path_vars: Callable[[], Mapping[str, str]],
+    ) -> None:
         self._cfg = cfg
+        self._ingest = ConfluenceIngestCaller("ingest", cfg.sandbox, path_vars)
+        self._caller = ConfluenceCaller("confluence", cfg.sandbox, path_vars)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -91,6 +102,7 @@ class ConfluenceIngestTools:
             try:
                 result = confluence_ingest_pages(
                     owner._cfg,
+                    owner._ingest,
                     page_ids=page_ids,
                     prune_missing=prune_missing,
                     force_update=force_update,
@@ -124,7 +136,8 @@ class ConfluenceIngestTools:
             """Индексирует страницы Confluence, найденные CQL-запросом."""
             try:
                 summary = confluence_ingest_cql(
-                    owner._cfg, cql=cql, prune_missing=prune_missing
+                    owner._cfg,
+                    owner._ingest, cql=cql, prune_missing=prune_missing
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
@@ -157,6 +170,7 @@ class ConfluenceIngestTools:
             try:
                 result = confluence_ingest_spaces(
                     owner._cfg,
+                    owner._ingest,
                     space_keys=space_keys,
                     prune_missing=prune_missing,
                     force_update=force_update,
@@ -189,7 +203,7 @@ class ConfluenceIngestTools:
             """Читает вложение страницы Confluence и возвращает его текст."""
             try:
                 text = confluence_fetch_attachment(
-                    cfg, page_id=page_id, filename=filename
+                    cfg, owner._caller, page_id=page_id, filename=filename
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
@@ -198,6 +212,9 @@ class ConfluenceIngestTools:
         return confluence_attachment
 
 
-def build_confluence_ingest_tools(cfg: ConfluenceIngestConfig) -> list[BaseTool]:
+def build_confluence_ingest_tools(
+    cfg: ConfluenceIngestConfig,
+    path_vars: Callable[[], Mapping[str, str]],
+) -> list[BaseTool]:
     """Собрать инструменты индексации Confluence."""
-    return ConfluenceIngestTools(cfg).build()
+    return ConfluenceIngestTools(cfg, path_vars).build()

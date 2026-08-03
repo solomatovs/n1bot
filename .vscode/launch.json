@@ -26,7 +26,7 @@
             "console": "integratedTerminal",
             "jinja": true,
             "cwd": "${workspaceFolder}/.vscode",
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
             "justMyCode": false,
             "stopOnEntry": false,
             "env": {
@@ -44,7 +44,7 @@
             "module": "pytest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/.vscode",
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
             "justMyCode": false,
             "args": [
                 "${file}",

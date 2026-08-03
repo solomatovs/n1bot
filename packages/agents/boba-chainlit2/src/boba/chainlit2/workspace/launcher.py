@@ -327,6 +327,7 @@ class Launcher:
             max_cpu_sec=args.max_cpu_sec,
             max_file_size_bytes=args.max_file_size_bytes,
             max_open_files=args.max_open_files,
+            oom_score_adj=args.oom_score_adj,
         )
         launcher = cls(args.template, images, options, limits)
         try:
@@ -385,7 +386,8 @@ class Launcher:
         trace(
             f"command limits: memory={self._limits.max_memory_bytes}B "
             f"cpu={self._limits.max_cpu_sec}s file={self._limits.max_file_size_bytes}B "
-            f"open_files={self._limits.max_open_files}"
+            f"open_files={self._limits.max_open_files} "
+            f"oom_score_adj={self._limits.oom_score_adj}"
         )
 
         def prepare_child() -> None:
@@ -414,6 +416,7 @@ class Launcher:
         parser.add_argument("--max-cpu-sec", type=int, required=True)
         parser.add_argument("--max-file-size-bytes", type=int, required=True)
         parser.add_argument("--max-open-files", type=int, required=True)
+        parser.add_argument("--oom-score-adj", type=int, required=True)
         parser.add_argument("mode", choices=cls.MODES)
         parser.add_argument("args", nargs=argparse.REMAINDER)
         return parser.parse_args(argv)

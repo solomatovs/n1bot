@@ -1,64 +1,54 @@
 """Tool visualize: интерактивный Plotly-график из figure-spec.
 
-Порт boba.tool.chart.visualize. Возвращает ChartResult — UI рендерит
-интерактивный график, LLM получает только подтверждение отрисовки.
+Схему спеки проверяет payload в песочнице; UI рисует график по той же спеке,
+поэтому обратно едет только заголовок.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any
 
 from langchain.tools import tool
+from langchain_core.tools import BaseTool
 from pydantic import Field
 
+from boba.chainlit2.agent.tools.chart.caller import ChartCaller
+from boba.chainlit2.agent.tools.chart.config import ChartToolsConfig
 from boba.chainlit2.rendering.render import pack_result
 from boba.chainlit2.rendering.tool_result import ChartResult, ToolResult
 
-__all__ = ["visualize"]
+__all__ = ["build_chart_tools"]
 
 
-@tool(response_format="content_and_artifact")
-def visualize(
-    spec: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Plotly figure как JSON-объект: "
-                '{"data": [...], "layout": {...}}.'
-                "Бери данные из уже полученных результатов (SQL/файлы);"
-                "крупные выборки агрегируй заранее."
-                "Тип графика, оси, подписи и легенду "
-                "выбираешь сам через trace-объекты и layout. Заголовок "
-                "указывай в layout.title — он попадёт в подпись и в сводку."
+def build_chart_tools(
+    cfg: ChartToolsConfig,
+    path_vars: Callable[[], Mapping[str, str]],
+) -> list[BaseTool]:
+    caller = ChartCaller("chart", cfg, path_vars)
+
+    @tool(response_format="content_and_artifact")
+    def visualize(
+        spec: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description=(
+                    "Plotly figure как JSON-объект: "
+                    '{"data": [...], "layout": {...}}.'
+                    "Бери данные из уже полученных результатов (SQL/файлы);"
+                    "крупные выборки агрегируй заранее."
+                    "Тип графика, оси, подписи и легенду "
+                    "выбираешь сам через trace-объекты и layout. Заголовок "
+                    "указывай в layout.title — он попадёт в подпись и в сводку."
+                ),
             ),
-        ),
-    ],
-) -> tuple[str, ToolResult]:
-    """Отрисовать интерактивный график по Plotly figure-спецификации."""
-    from plotly import graph_objects as go  # noqa: PLC0415
-
-    try:
+        ],
+    ) -> tuple[str, ToolResult]:
+        """Отрисовать интерактивный график по Plotly figure-спецификации."""
+        title = caller.validate(spec)
         parsed: Any = json.loads(spec)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"spec is not valid JSON: {e}") from e
-    if not isinstance(parsed, dict):
-        raise RuntimeError(
-            f"spec must be a JSON figure object, got {type(parsed).__name__}",
-        )
+        return pack_result(ChartResult(spec=parsed, title=title or None))
 
-    try:
-        go.Figure(parsed)
-    except (ValueError, TypeError) as e:
-        raise RuntimeError(f"invalid Plotly figure spec: {e}") from e
-
-    layout = parsed.get("layout") or {}
-    raw_title = layout.get("title") if isinstance(layout, dict) else None
-    if isinstance(raw_title, dict):
-        raw_title = raw_title.get("text")
-    result = ChartResult(
-        spec=parsed,
-        title=str(raw_title) if raw_title else None,
-    )
-    return pack_result(result)
+    return [visualize]

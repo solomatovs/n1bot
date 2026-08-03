@@ -9,13 +9,11 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.chainlit2.agent.tools.confluence.connection import ConfluenceConnection
 from boba.chainlit2.agent.tools.confluence.ingest_base import (
-    ConfluenceIngest,
     ConfluenceIngestConfig,
 )
-from boba.chainlit2.agent.tools.confluence.request_sources import (
-    ConfluenceCqlRequestSource,
+from boba.chainlit2.agent.tools.confluence.ingest_caller import (
+    ConfluenceIngestCaller,
 )
 
 __all__ = ["confluence_ingest_cql"]
@@ -23,6 +21,7 @@ __all__ = ["confluence_ingest_cql"]
 
 def confluence_ingest_cql(
     cfg: ConfluenceIngestConfig,
+    caller: ConfluenceIngestCaller,
     cql: Annotated[
         str,
         Field(
@@ -49,11 +48,11 @@ def confluence_ingest_cql(
 
     Возвращает JSON {collection, indexed, skipped_unchanged, pruned, failed}.
     """
-    conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
-    request_source = ConfluenceCqlRequestSource(
-        conn=conn,
+    result = caller.ingest(
+        config=cfg.model_dump(mode="json"),
+        mode="cql",
         cql=cql,
-        body_format=conn.body_format,
+        prune_missing=prune_missing,
+        force_update=False,
     )
-    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing)
     return {"cql": cql, **result}

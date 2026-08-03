@@ -68,7 +68,9 @@ services:
       - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba-svc.keytab:ro
       - ${HOST_DIR}/data/keytab/krb5.conf:/etc/krb5.conf:ro
       - ${HOST_DIR}/artifacts/fastembed:/app/local/fastembed:ro
-      - ${HOST_DIR}/artifacts/sandbox-rootfs:/app/boba/${BOBA_TAG}/third/sandbox-rootfs:ro
+      # артефакты песочницы одним томом: rootfs, python, site, данные
+      # и шаблон workspace.ext4 — в образе приложения их нет
+      - ${HOST_DIR}/artifacts/sandbox:/app/boba/${BOBA_TAG}/third/sandbox:ro
       - ${HOST_DIR}/data/chainlit2/workspace:/app/local/workspace:rw
     devices:
       - /dev/fuse

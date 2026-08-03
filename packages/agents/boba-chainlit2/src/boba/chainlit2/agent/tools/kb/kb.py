@@ -20,17 +20,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import Any, LiteralString, cast
+from typing import Any
 
-from psycopg import sql
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from boba.chainlit2.agent.tools.kb.embedding import (
-    EmbeddingModel,
-    LocalFastEmbedEmbedderFactory,
-)
+from boba.chainlit2.agent.tools.kb.caller import KbCaller
+from boba.chainlit2.agent.tools.kb.embedding import EmbeddingModel
 from boba.chainlit2.agent.tools.kb.models import KnowledgeBaseError, SearchHit
-from boba.chainlit2.agent.tools.kb.postgres import KbPool, PostgresStoreSchema
+from boba.chainlit2.agent.tools.kb.postgres import PostgresStoreSchema
+from boba.chainlit2.sandbox import SandboxEntryConfig, SandboxPayloadError
 from boba.db.postgres import PostgresConfig
 
 logger = logging.getLogger(__name__)
@@ -52,6 +50,9 @@ class PostgresKnowledgeBaseConfig(BaseModel):
     connection: PostgresConfig
     tables: PostgresStoreSchema
     embedding: EmbeddingModel
+    sandbox: SandboxEntryConfig = Field(
+        description="Окружение и точка входа payload'а: [tool.kb.sandbox].",
+    )
 
 
 class PostgresKnowledgeBase:
@@ -63,15 +64,62 @@ class PostgresKnowledgeBase:
         self,
         *,
         cfg: PostgresKnowledgeBaseConfig,
+        caller: KbCaller,
     ) -> None:
         self._cfg = cfg
-        self._pool = KbPool.open(cfg.connection)
-        self._embedder = LocalFastEmbedEmbedderFactory.build(cfg.embedding)
+        self._caller = caller
         logger.info(
-            "PostgresKnowledgeBase opened dim=%d chunks=%s.%s",
-            self._embedder.dim(),
+            "PostgresKnowledgeBase opened chunks=%s.%s",
             cfg.tables.pg_schema,
             cfg.tables.chunks_table,
+        )
+
+    def _search(  # noqa: PLR0913 — параметры поиска независимы
+        self,
+        *,
+        op: str,
+        collections: list[str],
+        query: str,
+        top_k: int,
+        snippet_chars: int,
+        sql_template: str,
+    ) -> Iterable[SearchHit]:
+        """Эмбеддинг и SQL исполняет payload; здесь только разбор строк."""
+        try:
+            answer = self._caller.search(
+                op=op,
+                connection=self._cfg.connection.conn_settings(),
+                sql_template=sql_template,
+                schema=self._cfg.tables.pg_schema,
+                chunks_table=self._cfg.tables.chunks_table,
+                collections=collections,
+                query=query,
+                top_k=top_k,
+                snippet_chars=snippet_chars,
+                embedding={
+                    "model": self._cfg.embedding.model,
+                    "cache_dir": self._cfg.embedding.cache_dir,
+                },
+            )
+        except SandboxPayloadError as e:
+            raise KnowledgeBaseError(
+                f"kb search failed for collections {collections!r}: {e}",
+            ) from e
+        for row in answer.rows:
+            yield self._hit(row, op=op)
+
+    @classmethod
+    def _hit(cls, row: dict[str, Any], *, op: str) -> SearchHit:
+        if op == KbCaller.VECTOR_OP:
+            distance = float(row["distance"])
+        else:
+            distance = -float(row["rank"])
+        return SearchHit(
+            id=row["chunk_id"],
+            distance=distance,
+            metadata=cls._row_metadata(row),
+            snippet=row["snippet"] or "",
+            tags=tuple(row.get("tags") or ()),
         )
 
     def vector_search(
@@ -83,36 +131,14 @@ class PostgresKnowledgeBase:
         snippet_chars: int,
         sql_template: str,
     ) -> Iterable[SearchHit]:
-        embedding = list(self._embedder.embed_query(query))
-        query_sql = sql.SQL(cast(LiteralString, sql_template)).format(
-            dim=sql.Literal(self._embedder.dim()),
-            chunks_table=self._cfg.tables.chunks_ident(),
+        return self._search(
+            op=KbCaller.VECTOR_OP,
+            collections=collections,
+            query=query,
+            top_k=top_k,
+            snippet_chars=snippet_chars,
+            sql_template=sql_template,
         )
-        try:
-            with self._pool.dict_cursor() as cur:
-                cur.execute(
-                    query_sql,
-                    {
-                        "collections": list(collections),
-                        "embedding": embedding,
-                        "snippet_chars": snippet_chars,
-                        "top_k": top_k,
-                    },
-                )
-
-                for row in cur:
-                    yield SearchHit(
-                        id=row["chunk_id"],
-                        distance=float(row["distance"]),
-                        metadata=self._row_metadata(row),
-                        snippet=row["snippet"] or "",
-                        tags=tuple(row.get("tags") or ()),
-                    )
-        except Exception as e:
-            raise KnowledgeBaseError(
-                f"postgres vector search failed for collections "
-                f"{list(collections)!r}: {type(e).__name__}: {e}",
-            ) from e
 
     def fts_search(
         self,
@@ -123,35 +149,14 @@ class PostgresKnowledgeBase:
         snippet_chars: int,
         sql_template: str,
     ) -> Iterable[SearchHit]:
-        query_sql = sql.SQL(cast(LiteralString, sql_template)).format(
-            chunks_table=self._cfg.tables.chunks_ident(),
-            schema=self._cfg.tables.schema_ident(),
+        return self._search(
+            op=KbCaller.FTS_OP,
+            collections=collections,
+            query=query,
+            top_k=top_k,
+            snippet_chars=snippet_chars,
+            sql_template=sql_template,
         )
-        try:
-            with self._pool.dict_cursor() as cur:
-                cur.execute(
-                    query_sql,
-                    {
-                        "collections": list(collections),
-                        "query": query,
-                        "snippet_chars": snippet_chars,
-                        "top_k": top_k,
-                    },
-                )
-
-                for row in cur:
-                    yield SearchHit(
-                        id=row["chunk_id"],
-                        distance=-float(row["rank"]),
-                        metadata=self._row_metadata(row),
-                        snippet=row["snippet"] or "",
-                        tags=tuple(row.get("tags") or ()),
-                    )
-        except Exception as e:
-            raise KnowledgeBaseError(
-                f"postgres fts search failed for collections "
-                f"{list(collections)!r}: {type(e).__name__}: {e}",
-            ) from e
 
     @staticmethod
     def _row_metadata(row: dict[str, Any]) -> dict[str, str]:
