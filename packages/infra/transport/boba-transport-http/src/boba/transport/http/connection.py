@@ -1,11 +1,4 @@
-"""HttpConnection: переиспользуемый транспортный профиль (всё кроме URL).
-
-Содержит параметры открытия HTTP-соединения и выполнения запроса —
-timeout/ssl/retry + auth — но НЕ url (его даёт consumer: web-tool из
-аргумента LLM, confluence из своего base_url). Один и тот же профиль
-переиспользуется и web-tool'ом (dict по hostname), и confluence
-(один профиль + base_url) — это «web-профиль».
-"""
+"Переиспользуемый транспортный профиль: timeout/ssl/retry/auth, url даёт consumer"
 
 from __future__ import annotations
 

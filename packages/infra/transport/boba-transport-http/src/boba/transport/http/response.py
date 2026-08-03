@@ -17,12 +17,7 @@ class ByteStream(Protocol):
 
 @dataclass(frozen=True)
 class HttpResponse:
-    """Статус, заголовки и ленивый поток тела одного HTTP-ответа.
-
-    Lifecycle stream — у HttpTransport: поток открыт внутри
-    with transport.fetch(...) as resp и закрывается на выходе из этого with.
-    Чтение stream после выхода — ошибка.
-    """
+    "Статус, заголовки и поток тела; stream живёт только внутри with fetch(...)"
 
     status: int
     headers: Mapping[str, str]

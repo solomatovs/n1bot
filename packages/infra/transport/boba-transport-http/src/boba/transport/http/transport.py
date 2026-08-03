@@ -1,10 +1,4 @@
-"""HttpTransport: HttpProfile + HttpRequest -> HttpResponse через httpx.Client.
-
-Чистый HTTP-исполнитель: не знает про индексацию (RawDocument/Metadata/source_id).
-Создаёт один переиспользуемый httpx.Client из профиля (pool), применяет auth,
-крутит retry на фазе соединения и статуса ответа, отдаёт HttpResponse со
-streaming-телом. Обогащение метаданных и сборку RawDocument делает потребитель.
-"""
+"HttpTransport: HttpProfile + HttpRequest -> HttpResponse через httpx.Client"
 
 from __future__ import annotations
 
@@ -25,27 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 class HttpTransport:
-    """Исполняет HttpRequest через переиспользуемый httpx.Client.
+    """Исполняет HttpRequest через httpx.Client, которым владеет (close/with).
 
-    Использование:
-    python
-    with HttpTransport(profile) as transport:
-        with transport.fetch(HttpRequest(url="https://...", method="GET")) as resp:
-            body = resp.stream.read()   # читать тело нужно внутри этого with
-
-    **Retry** (profile.retry_attempts > 1): повтор на 5xx и transport-ошибках
-    (timeout/connect) с линейным backoff'ом; 4xx не ретраятся. Покрывает фазу
-    соединения + заголовков + raise_for_status(). Обрыв при чтении тела (после
-    выхода HttpResponse наружу) не ретраится — плата за streaming-контракт.
-
-    Владеет httpx.Client (pool): создаётся в __init__, закрывается через
-    close() либо выходом из with HttpTransport(...).
+    Retry покрывает соединение/заголовки/статус; обрыв чтения тела не ретраится.
     """
 
     def __init__(self, profile: HttpProfile) -> None:
         self._profile = profile
-        # headers/params профиля НЕ кладём на клиент: мержим per-request в
-        # _open_with_retry, чтобы request мог детерминированно перекрыть профиль.
+        # headers/params на клиент не кладём: они целиком per-request
         self._client = httpx.Client(
             base_url=profile.base_url or "",
             timeout=profile.timeout_sec,
@@ -63,19 +44,12 @@ class HttpTransport:
         self._client.close()
 
     def resolve_url(self, request: HttpRequest) -> str:
-        """Абсолютный URL, который реально уйдёт: base_url профиля + url + params.
-
-        Чистый резолв через httpx-клиент, без сетевого вызова. Нужен потребителям
-        (напр. confluence-транспорту), которые выводят identity документа из
-        реально запрашиваемого адреса, отдавая в HttpRequest только path.
-        """
+        "Абсолютный URL (base_url + url + params) без сетевого вызова"
         return str(
             self._client.build_request(
                 request.method,
                 request.url,
-                # пустой params-dict httpx трактует как «обнулить query» и
-                # срезает уже зашитый в url ?query (напр. confluence ?expand=…);
-                # None оставляет url-query как есть — отдаём None, если params пуст.
+                # пустой params-dict в httpx срезает ?query из url — отдаём None
                 params=request.params or None,
             ).url,
         )
