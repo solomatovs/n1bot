@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit2.agent.tools.confluence import ConfluenceToolsConfig
-from boba.chainlit2.agent.tools.confluence.ingest_base import ConfluenceIngestConfig
-from boba.chainlit2.agent.tools.doc import DocToolsConfig
-from boba.chainlit2.agent.tools.kb import PostgresKnowledgeBaseConfig
-from boba.chainlit2.agent.tools.pg import SqlExecutorConfig
-from boba.chainlit2.agent.tools.web import WebGrepConfig
-from boba.chainlit2.sandbox import SandboxProfile
 from boba.settings import bind
+from boba.tool.doc import DocToolsConfig
+from boba.tool.kb import PostgresKnowledgeBaseConfig
+from boba.tool.kb.confluence import ConfluenceToolsConfig
+from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
+from boba.tool.pg import SqlExecutorConfig
+from boba.tool.web import WebGrepConfig
+from boba.toolkit.sandbox import SandboxProfile
 
 MIN_ADDRESS_SPACE = 3 * 1024 * 1024 * 1024
 MIN_OPEN_FILES = 64

@@ -114,7 +114,7 @@
     ## чтение документов: python и парсеры плюс образ пользователя
     [sandbox.profiles.docs]
         rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload", "${BOBA_DIR}/third/sandbox/data/tessdata:/usr/share/tessdata"]
+        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/third/sandbox/data/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = ["${BOBA_DIR}/data/workspace/{user_id}.ext4:/workspace"]
         image_template      = "${BOBA_DIR}/third/sandbox/workspace.ext4"
@@ -142,7 +142,7 @@
     ## разбор данных, пришедших в запросе: файловая система не нужна
     [sandbox.profiles.parser]
         rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload", "${BOBA_DIR}/third/sandbox/data/tessdata:/usr/share/tessdata"]
+        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/third/sandbox/data/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -170,7 +170,7 @@
     ## инструменты, которые сами ходят в сеть: web и confluence
     [sandbox.profiles.network]
         rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -198,7 +198,7 @@
     ## SQL к БД: сеть до постгреса, keytab и krb5.conf только на чтение
     [sandbox.profiles.pg]
         rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -226,7 +226,7 @@
     ## поиск по базе знаний: тот же профиль плюс веса эмбеддера
     [sandbox.profiles.kb]
         rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload", "${BOBA_DIR}/third/sandbox/data/fastembed:/opt/fastembed", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/third/sandbox/data/fastembed:/opt/fastembed", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -275,7 +275,6 @@
     [tool.doc.sandbox]
         profile  = "${sandbox.profiles.docs}"
         override = {}
-        entry    = ["python3", "/opt/payload/main.py"]
 
     [tool.doc.tools]
         read_document        = []
@@ -292,7 +291,6 @@
     [tool.chart.sandbox]
         profile  = "${sandbox.profiles.parser}"
         override = {}
-        entry    = ["python3", "/opt/payload/main.py"]
 
     [tool.chart.tools]
         visualize = []
@@ -308,7 +306,6 @@
     [tool.web.sandbox]
         profile  = "${sandbox.profiles.network}"
         override = {}
-        entry    = ["python3", "/opt/payload/main.py"]
 
     [tool.web.tools]
         web_fetch_page = []
@@ -342,7 +339,6 @@
     [tool.confluence.sandbox]
         profile  = "${sandbox.profiles.network}"
         override = {}
-        entry    = ["python3", "/opt/payload/main.py"]
 
     [tool.confluence.tools]
         confluence_fetch  = []
@@ -368,7 +364,6 @@
     [tool.ingest.sandbox]
         profile  = "${sandbox.profiles.kb}"
         override = { timeout_sec = 3600, max_cpu_sec = 3600 }
-        entry    = ["python3", "/opt/payload/main.py"]
 
     [tool.ingest.tools]
         confluence_index_pages  = []
@@ -387,7 +382,6 @@
     [tool.pg.sandbox]
         profile  = "${sandbox.profiles.pg}"
         override = {}
-        entry    = ["python3", "/opt/payload/main.py"]
 
     [tool.pg.tools]
         list_targets   = []
@@ -406,7 +400,6 @@
     [tool.kb.sandbox]
         profile  = "${sandbox.profiles.kb}"
         override = {}
-        entry    = ["python3", "/opt/payload/main.py"]
 
     [tool.kb.tools]
         kb_vector_search = []
@@ -422,6 +415,7 @@
 [embedding.e5]
     model     = "intfloat/multilingual-e5-large"
     cache_dir = "/opt/fastembed"
+    dim       = 1024
 
 
 # вход по домену (bind в AD)

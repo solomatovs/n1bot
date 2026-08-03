@@ -1,7 +1,7 @@
-"""Согласованность хоста и payload'а: имена операций, полей и секреты.
+"""Согласованность хоста и payload'а: точки входа, имена полей и секреты.
 
-Все три проверки написаны по реальным поломкам прогона инструментов:
-- операция payload'а не была включена в таблицу маршрутов main.py;
+Проверки написаны по реальным поломкам прогона инструментов:
+- операция payload'а оказалась недоступна снаружи (не было точки входа);
 - поле уезжало под именем модели, а payload читал его alias;
 - конфиг дампился как json, а SecretStr в этом режиме превращается в маску,
   и Confluence отвечал 404 на анонимный запрос.
@@ -10,28 +10,46 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, SecretStr
 
-from boba.chainlit2.agent.tools.confluence.ingest_caller import (
+from boba.tool.chart.caller import ChartCaller
+from boba.tool.doc.engine import DocEngine
+from boba.tool.doc.liteparse.caller import LiteParseCaller
+from boba.tool.kb.caller import KbCaller, KbSearchRequest
+from boba.tool.kb.confluence.caller import ConfluenceCaller
+from boba.tool.kb.confluence.ingest_caller import (
     ConfluenceIngestCaller,
     IngestRequest,
 )
-from boba.chainlit2.agent.tools.confluence.protocol import (
+from boba.tool.kb.confluence.protocol import (
     ConfluenceAttachmentRequest,
     ConfluenceGrepRequest,
     ConfluencePageRequest,
     ConfluenceSearchRequest,
     ConfluenceSpacesRequest,
 )
-from boba.chainlit2.agent.tools.kb.caller import KbSearchRequest
-from boba.chainlit2.agent.tools.pg.protocol import PgQueryRequest
-from boba.chainlit2.agent.tools.web.protocol import WebFetchRequest, WebGrepRequest
+from boba.tool.kb.html.caller import HtmlCaller
+from boba.tool.pg.caller import PgCaller
+from boba.tool.pg.protocol import PgQueryRequest
+from boba.tool.web.caller import WebCaller
+from boba.tool.web.protocol import WebFetchRequest, WebGrepRequest
 
-_PAYLOAD = Path(__file__).resolve().parents[1] / "payloads" / "parse"
+CALLERS = [
+    ChartCaller,
+    DocEngine,
+    LiteParseCaller,
+    HtmlCaller,
+    KbCaller,
+    ConfluenceCaller,
+    ConfluenceIngestCaller,
+    PgCaller,
+    WebCaller,
+]
 
 REQUEST_MODELS = [
     IngestRequest,
@@ -52,44 +70,38 @@ def chainlit_context() -> None:
     pass
 
 
-@pytest.fixture(scope="module")
-def payload_main():
-    sys.path.insert(0, str(_PAYLOAD))
-    try:
-        yield importlib.import_module("main").ParsePayload
-    finally:
-        sys.path.remove(str(_PAYLOAD))
+class TestEntryPoints:
+    """Точка входа — свойство кода инструмента, а не конфига."""
 
+    @pytest.mark.parametrize("caller", CALLERS)
+    def test_entry_is_an_importable_module(self, caller: type) -> None:
+        entry = caller.ENTRY
+        assert entry[:2] == ("python3", "-m"), (
+            f"{caller.__name__}.ENTRY={entry} — payload запускается как модуль"
+        )
+        importlib.import_module(entry[2])
 
-class TestRoutes:
-    """Операция без маршрута падает в рантайме как 'unknown op'."""
+    @pytest.mark.parametrize("caller", CALLERS)
+    def test_entry_module_is_runnable(self, caller: type) -> None:
+        """У модуля должен быть __main__: иначе `python3 -m` ничего не сделает."""
+        module = importlib.import_module(caller.ENTRY[2])
+        assert module.__file__ is not None
+        source = Path(module.__file__).read_text()
+        assert '__name__ == "__main__"' in source, (
+            f"{caller.ENTRY[2]} не запускается как `python3 -m`"
+        )
 
-    def test_every_module_op_is_routed(self, payload_main) -> None:
-        sys.path.insert(0, str(_PAYLOAD))
-        try:
-            for ops, module_name, class_name in payload_main.ROUTES:
-                module = importlib.import_module(module_name)
-                declared = set(getattr(module, class_name).OPS)
-                assert declared == set(ops), (
-                    f"{module_name}.{class_name}.OPS={sorted(declared)} "
-                    f"не совпадает с маршрутом {sorted(ops)}"
-                )
-        finally:
-            sys.path.remove(str(_PAYLOAD))
-
-    def test_every_payload_module_is_reachable(self, payload_main) -> None:
-        routed = set()
-        for _, module_name, _ in payload_main.ROUTES:
-            routed.add(module_name)
-        for path in _PAYLOAD.glob("*.py"):
-            name = path.stem
-            if name == "main":
-                continue
-            if "OPS: ClassVar" not in path.read_text():
-                continue
-            assert name in routed, (
-                f"{name}.py объявляет OPS, но его нет в ParsePayload.ROUTES"
-            )
+    def test_unknown_op_is_reported(self) -> None:
+        """Незнакомая операция обязана падать, а не молчать."""
+        result = subprocess.run(
+            [sys.executable, "-m", "boba.tool.chart.payload"],
+            input='{"op": "нет-такой-op"}',
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "unknown chart op" in result.stderr
 
 
 class TestFieldNames:

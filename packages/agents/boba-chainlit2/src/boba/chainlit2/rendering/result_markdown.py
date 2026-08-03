@@ -8,7 +8,7 @@ from typing import Any, assert_never
 
 from tabulate import tabulate
 
-from boba.chainlit2.rendering.tool_result import (
+from boba.toolkit.result import (
     ChartResult,
     ErrorResult,
     JsonResult,

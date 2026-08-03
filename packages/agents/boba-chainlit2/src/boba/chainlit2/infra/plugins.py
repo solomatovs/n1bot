@@ -11,30 +11,8 @@ from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict
 
-from boba.chainlit2.agent.cancellation import CancellableTools
 from boba.chainlit2.agent.tools.access import ToolAccess, ToolAccessGuard
-from boba.chainlit2.agent.tools.bash import (
-    BashSandboxConfig,
-    build_bash_tool,
-    has_bwrap,
-)
-from boba.chainlit2.agent.tools.chart import ChartToolsConfig, build_chart_tools
-from boba.chainlit2.agent.tools.confluence import (
-    ConfluenceToolsConfig,
-    build_confluence_tools,
-)
-from boba.chainlit2.agent.tools.confluence.ingest_base import ConfluenceIngestConfig
-from boba.chainlit2.agent.tools.confluence.ingest_tools import (
-    build_confluence_ingest_tools,
-)
-from boba.chainlit2.agent.tools.doc import DocToolsConfig, build_doc_tools
-from boba.chainlit2.agent.tools.kb import (
-    PostgresKnowledgeBaseConfig,
-    build_kb_tools,
-)
-from boba.chainlit2.agent.tools.pg import SqlExecutorConfig, build_pg_tools
 from boba.chainlit2.agent.tools.run_log import ToolRunLogger
-from boba.chainlit2.agent.tools.web import WebGrepConfig, build_web_tools
 from boba.chainlit2.infra.session import (
     current_thread_id,
     current_user_id,
@@ -42,6 +20,28 @@ from boba.chainlit2.infra.session import (
 )
 from boba.settings import bind
 from boba.settings.types import StringList
+from boba.tool.chart import ChartToolsConfig, build_chart_tools
+from boba.tool.doc import DocToolsConfig, build_doc_tools
+from boba.tool.kb import (
+    PostgresKnowledgeBaseConfig,
+    build_kb_tools,
+)
+from boba.tool.kb.confluence import (
+    ConfluenceToolsConfig,
+    build_confluence_tools,
+)
+from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
+from boba.tool.kb.confluence.ingest_tools import (
+    build_confluence_ingest_tools,
+)
+from boba.tool.pg import SqlExecutorConfig, build_pg_tools
+from boba.tool.shell import (
+    BashSandboxConfig,
+    build_bash_tool,
+    has_bwrap,
+)
+from boba.tool.web import WebGrepConfig, build_web_tools
+from boba.toolkit.cancellation import CancellableTools
 
 __all__ = ["PluginMeta", "ToolPlugin", "ToolRegistry", "load_tools"]
 

@@ -19,8 +19,6 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
-from boba.chainlit2.agent.cancellation import turn_cancellation
-from boba.chainlit2.agent.tools.bash import WORKSPACE_MOUNT
 from boba.chainlit2.chat.agent_tracer import AgentTracer
 from boba.chainlit2.chat.data.models import Element
 from boba.chainlit2.chat.edit import ThreadRewind
@@ -28,6 +26,8 @@ from boba.chainlit2.chat.handler import chainlit_error_ctx_handler
 from boba.chainlit2.infra.di import Depends, di_inject
 from boba.chainlit2.infra.providers import chainlit_data_layer, langchain_agent
 from boba.chainlit2.rendering.chat_view import ChatView, LiveSink
+from boba.tool.shell import WORKSPACE_MOUNT
+from boba.toolkit.cancellation import turn_cancellation
 
 logger = logging.getLogger(__name__)
 

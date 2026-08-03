@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit2.rendering.render import pack_result, render_for_llm
 from boba.chainlit2.rendering.result_markdown import ToolResultMarkdown
 from boba.chainlit2.rendering.result_view import (
     ChartRendering,
     MarkdownRendering,
     ToolResultView,
 )
-from boba.chainlit2.rendering.tool_result import (
+from boba.toolkit.pack import pack_result, render_for_llm
+from boba.toolkit.result import (
     ChartResult,
     ErrorResult,
     JsonResult,

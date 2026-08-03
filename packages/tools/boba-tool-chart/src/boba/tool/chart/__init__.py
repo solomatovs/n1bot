@@ -1,7 +1,6 @@
-"""boba-tool-chart: tool visualize — интерактивный Plotly-график."""
+"""Инструмент визуализации: Plotly-график по спеке от LLM."""
 
-from __future__ import annotations
+from boba.tool.chart.config import ChartToolsConfig
+from boba.tool.chart.tools import build_chart_tools
 
-from boba.tool.chart.visualize import visualize
-
-__all__ = ["visualize"]
+__all__ = ["ChartToolsConfig", "build_chart_tools"]

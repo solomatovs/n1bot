@@ -28,8 +28,6 @@ from boba.agent.tool_config import (
 from boba.auth.errors import InternalServiceError
 from boba.chainlit2.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit2.agent.dump import DumpingTransport
-from boba.chainlit2.agent.tools.kb import PostgresKnowledgeBaseConfig
-from boba.chainlit2.agent.tools.kb.schema import KbSchema
 from boba.chainlit2.chat.data import PostgresDataLayer
 from boba.chainlit2.chat.data.storage import LocalStorageClient
 from boba.chainlit2.chat.transcript import CheckpointMessages
@@ -45,8 +43,10 @@ from boba.chainlit2.infra.config import (
 from boba.chainlit2.infra.di import Depends
 from boba.chainlit2.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit2.infra.session import current_user_roles
-from boba.chainlit2.sandbox import CgroupManager
 from boba.db.postgres import AsyncPostgresPool
+from boba.tool.kb import PostgresKnowledgeBaseConfig
+from boba.tool.kb.schema import KbSchema
+from boba.toolkit.sandbox import CgroupManager
 
 _RAW_CONFIG: dict[str, DictConfig] = {}
 
