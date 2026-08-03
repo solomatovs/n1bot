@@ -17,8 +17,60 @@ from typing import Any, ClassVar
 from liteparse import LiteParse
 from liteparse._liteparse import LiteParse as NativeLiteParse
 from liteparse._liteparse import search_items as native_search_items
+from liteparse.types import ParseError
 
 from boba.toolkit.payload.entry import PayloadEntry
+
+
+class LocaleRetry:
+    """Повторяет парсинг под запасными локалями.
+
+    LibreOffice в локали без UTF-8 (в том числе C.UTF-8) молча — с rc=0 —
+    не открывает файлы с не-ASCII именем, и liteparse сводит это к ошибке
+    «output PDF not found». Локаль сама по себе язык имени не ограничивает:
+    любая UTF-8-локаль открывает имена на любом алфавите, "C" пропускает
+    любые байты и есть в любом glibc. LC_ALL перекрывает LANG и LC_* из
+    профиля песочницы; LibreOffice наследует env процесса при каждом parse.
+    """
+
+    MARKER: ClassVar[str] = (
+        "LibreOffice conversion succeeded but output PDF not found"
+    )
+    RETRYABLE: ClassVar[tuple[type[Exception], ...]] = (ParseError, RuntimeError)
+    """LiteParse оборачивает ошибку в ParseError, нативный парсер — RuntimeError."""
+
+    LOCALES: ClassVar[tuple[str, ...]] = ("ru_RU.UTF-8", "en_US.UTF-8", "C")
+
+    @classmethod
+    def parse(cls, parser: Any, path: str) -> Any:
+        try:
+            return parser.parse(path)
+        except cls.RETRYABLE as e:
+            if cls.MARKER not in str(e):
+                raise
+            first = e
+
+        errors: list[Exception] = [first]
+        for locale_name in cls.LOCALES:
+            try:
+                return cls.parse_with_locale(parser, path, locale_name)
+            except cls.RETRYABLE as e:
+                if cls.MARKER not in str(e):
+                    raise
+                errors.append(e)
+        raise first
+
+    @classmethod
+    def parse_with_locale(cls, parser: Any, path: str, locale_name: str) -> Any:
+        saved = os.environ.get("LC_ALL")
+        os.environ["LC_ALL"] = locale_name
+        try:
+            return parser.parse(path)
+        finally:
+            if saved is None:
+                os.environ.pop("LC_ALL", None)
+            else:
+                os.environ["LC_ALL"] = saved
 
 
 class DocumentOps:
@@ -197,7 +249,7 @@ class DocumentOps:
             target_pages=target_pages,
             quiet=True,
         )
-        return parser.parse(request["path"])
+        return LocaleRetry.parse(parser, request["path"])
 
     @staticmethod
     def parse_native(request: dict[str, Any]) -> Any:
@@ -213,7 +265,7 @@ class DocumentOps:
         if params["max_pages"]:
             options["max_pages"] = params["max_pages"]
         parser = NativeLiteParse(**options)
-        return parser.parse(request["path"])
+        return LocaleRetry.parse(parser, request["path"])
 
     @staticmethod
     def clip(text: str, limit: int) -> tuple[str, bool]:
