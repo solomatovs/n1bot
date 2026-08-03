@@ -19,7 +19,6 @@ from boba.tool.doc.protocol import (
     DocOutlineAnswer,
     DocPagesAnswer,
     DocSearchAnswer,
-    DocTextAnswer,
     DocWindowAnswer,
 )
 from boba.toolkit.sandbox import SandboxPayload
@@ -196,20 +195,14 @@ class TestPayloadContract:
         request.update(kw)
         return request
 
-    def test_read_document(self, pdf: Path) -> None:
-        answer = DocTextAnswer.model_validate(
-            self._run(self._request(pdf, "read_document"))
+    def test_read_pages_returns_all_pages(self, pdf: Path) -> None:
+        answer = DocPagesAnswer.model_validate(
+            self._run(self._request(pdf, "read_pages", pages="1-2"))
         )
-        assert answer.num_pages == 2
+        assert answer.pages == (1, 2)
         assert "Alpha page one" in answer.text
+        assert "Beta page two" in answer.text
         assert answer.truncated is False
-
-    def test_read_document_clips_text(self, pdf: Path) -> None:
-        request = self._request(pdf, "read_document")
-        request["params"]["max_text_chars"] = 5
-        answer = DocTextAnswer.model_validate(self._run(request))
-        assert answer.truncated is True
-        assert len(answer.text) == 5
 
     def test_read_pages_selects_subset(self, pdf: Path) -> None:
         answer = DocPagesAnswer.model_validate(
@@ -218,6 +211,13 @@ class TestPayloadContract:
         assert answer.pages == (2,)
         assert "Beta page two" in answer.text
         assert "page one" not in answer.text
+
+    def test_read_pages_clips_text(self, pdf: Path) -> None:
+        request = self._request(pdf, "read_pages", pages="1-2")
+        request["params"]["max_text_chars"] = 5
+        answer = DocPagesAnswer.model_validate(self._run(request))
+        assert answer.truncated is True
+        assert len(answer.text) == 5
 
     def test_window_reports_cursor(self, pdf: Path) -> None:
         answer = DocWindowAnswer.model_validate(
@@ -270,7 +270,7 @@ class TestPayloadContract:
         result = subprocess.run(  # noqa: S603
             [sys.executable, "-m", PAYLOAD_MODULE],
             input=json.dumps(
-                self._request(tmp_path / "нет.pdf", "read_document")
+                self._request(tmp_path / "нет.pdf", "read_pages", pages="1")
             ),
             capture_output=True,
             text=True,
@@ -287,17 +287,25 @@ class TestEngineRequests:
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
         engine = DocEngine(_config(ocr_enabled=True, ocr_language="rus"), dict)
-        asyncio.run(engine.read_document("/workspace/t1/upload/doc.pdf"))
+        asyncio.run(
+            engine.read_document("/workspace/t1/upload/doc.pdf", pages="1-2")
+        )
         params = payload_calls[0]["params"]
         assert params["ocr_enabled"] is True
         assert params["ocr_language"] == "rus"
+
+    def test_pages_travel_in_request(self, payload_calls: list[dict[str, Any]]) -> None:
+        engine = DocEngine(_config(), dict)
+        asyncio.run(engine.read_document("/workspace/t1/upload/doc.pdf", pages="2-3"))
+        assert payload_calls[0]["op"] == "read_pages"
+        assert payload_calls[0]["pages"] == "2-3"
 
     def test_path_from_llm_goes_as_is(
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
         """Приложение путь не переписывает: его разрешает песочница."""
         engine = DocEngine(_config(), dict)
-        asyncio.run(engine.read_document("/workspace/t1/upload/doc.pdf"))
+        asyncio.run(engine.read_document("/workspace/t1/upload/doc.pdf", pages="1"))
         assert payload_calls[0]["path"] == "/workspace/t1/upload/doc.pdf"
 
     def test_search_limits_come_from_config(
@@ -321,11 +329,18 @@ class TestTools:
         names = [t.name for t in build_doc_tools(_config(), dict)]
         assert names == [
             "read_document",
-            "read_pages",
             "read_document_window",
             "document_outline",
             "search_document",
         ]
+
+    def test_read_document_exposes_pages_to_llm(self) -> None:
+        tools = {t.name: t for t in build_doc_tools(_config(), dict)}
+        schema = tools["read_document"].get_input_schema().model_json_schema()
+        props = schema["properties"]
+        assert "pages" in props
+        assert "pages" in schema["required"]
+        assert "path" in schema["required"]
 
     def test_window_wider_than_limit_rejected(self) -> None:
         tools = {
@@ -345,7 +360,7 @@ class TestTools:
         return asyncio.run(
             tools["read_document"].ainvoke(
                 {
-                    "args": {"path": "/workspace/doc.pdf"},
+                    "args": {"path": "/workspace/doc.pdf", "pages": "1-2"},
                     "id": "call-doc",
                     "name": "read_document",
                     "type": "tool_call",
@@ -358,7 +373,7 @@ class TestTools:
     ) -> None:
         message = self._read(_config())
         assert "Alpha page one" in message.content
-        assert message.artifact.metadata["pages"] == "2"
+        assert message.artifact.metadata["pages"] == "1,2"
 
     def test_truncation_is_marked_for_llm(
         self, payload_runs: list[dict[str, Any]]

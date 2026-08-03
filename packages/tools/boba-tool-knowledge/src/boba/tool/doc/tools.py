@@ -49,37 +49,20 @@ def build_doc_tools(
     @tool(response_format="content_and_artifact")
     async def read_document(
         path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
-    ) -> tuple[str, ToolResult]:
-        """Распарсить документ из workspace и вернуть весь текст (с обрезкой по лимиту)."""
-        answer = await engine.read_document(path)
-        text = DocText.mark(answer.text, answer.truncated, cfg.max_text_chars)
-        return pack_result(
-            TextResult(
-                text=text,
-                metadata={
-                    "path": path,
-                    "pages": str(answer.num_pages),
-                    "truncated": str(answer.truncated),
-                },
-            )
-        )
-
-    @tool(response_format="content_and_artifact")
-    async def read_pages(
-        path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
         pages: Annotated[
             str,
             Field(
                 min_length=1,
                 description=(
                     "Страницы, 1-based: диапазоны и перечисление через "
-                    "запятую, например '1-5,10,15-20'."
+                    "запятую, например '1-5,10,15-20'. Число страниц в "
+                    "документе узнаётся из document_outline."
                 ),
             ),
         ],
     ) -> tuple[str, ToolResult]:
-        """Вернуть текст только указанных страниц; дешевле read_document для больших PDF."""
-        answer = await engine.read_pages(path, pages)
+        """Прочитать текст страниц документа из workspace; основной способ чтения."""
+        answer = await engine.read_document(path, pages)
         text = DocText.mark(answer.text, answer.truncated, cfg.max_text_chars)
         parsed_pages: list[str] = []
         for page in answer.pages:
@@ -130,7 +113,7 @@ def build_doc_tools(
     async def document_outline(
         path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     ) -> tuple[str, ToolResult]:
-        """Карта документа по страницам: дешёвый обзор перед read_pages."""
+        """Карта документа по страницам: дешёвый обзор перед read_document."""
         answer = await engine.outline(path)
         rows: list[dict[str, Any]] = []
         for row in answer.rows:
@@ -166,7 +149,6 @@ def build_doc_tools(
 
     return [
         read_document,
-        read_pages,
         read_document_window,
         document_outline,
         search_document,

@@ -12,6 +12,7 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict
 
 from boba.chainlit.agent.tools.access import ToolAccess, ToolAccessGuard
+from boba.chainlit.agent.tools.errors import ToolErrorGuard
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
 from boba.chainlit.infra.session import (
     current_thread_id,
@@ -242,4 +243,5 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
     ToolRunLogger.guard_all(tools)
     CancellableTools.guard_all(tools)
     ToolAccessGuard.guard_all(tools, access, current_user_roles)
+    ToolErrorGuard.guard_all(tools)
     return ToolRegistry(tools=tools, access=access)
