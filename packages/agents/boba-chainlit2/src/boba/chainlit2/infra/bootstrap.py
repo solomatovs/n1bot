@@ -22,7 +22,7 @@ from boba.chainlit2.infra.config import (
     ChainlitExtendConfig,
 )
 from boba.chainlit2.infra.di import Container
-from boba.chainlit2.infra.log_context import UserLogContext
+from boba.chainlit2.infra.log_context import RequestUserMiddleware, UserLogContext
 
 
 def run_app():
@@ -46,6 +46,9 @@ def run_app():
     _use_auth(c, container)
 
     _use_domain_error(app)
+
+    # добавлен последним — выполняется первым, покрывает access-лог всех запросов
+    app.add_middleware(RequestUserMiddleware)
 
     async def start():
         uv_config = uvicorn.Config(

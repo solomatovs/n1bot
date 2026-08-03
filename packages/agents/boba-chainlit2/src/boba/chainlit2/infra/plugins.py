@@ -33,6 +33,7 @@ from boba.chainlit2.agent.tools.kb import (
     build_kb_tools,
 )
 from boba.chainlit2.agent.tools.pg import SqlExecutorConfig, build_pg_tools
+from boba.chainlit2.agent.tools.run_log import ToolRunLogger
 from boba.chainlit2.agent.tools.web import WebGrepConfig, build_web_tools
 from boba.chainlit2.infra.session import (
     current_thread_id,
@@ -238,6 +239,7 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
         tools.extend(built)
 
     access = ToolAccess(roles_by_tool)
+    ToolRunLogger.guard_all(tools)
     CancellableTools.guard_all(tools)
     ToolAccessGuard.guard_all(tools, access, current_user_roles)
     return ToolRegistry(tools=tools, access=access)

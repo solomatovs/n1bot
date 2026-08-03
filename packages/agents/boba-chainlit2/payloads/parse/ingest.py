@@ -93,7 +93,7 @@ class IngestOps:
             source,
             request["prune_missing"],
             request["force_update"],
-            reader=cls.reader(cfg),
+            routes=cls.routes(cfg),
         )
         return {"stats": stats}
 
@@ -107,16 +107,20 @@ class IngestOps:
                 body_format=conn.body_format,
             )
         if mode == "cql":
-            return ConfluenceCqlRequestSource(conn=conn, cql=request["cql"])
+            return ConfluenceCqlRequestSource(
+                conn=conn, cql=request["cql"], body_format=conn.body_format
+            )
         if mode == "spaces":
             return ConfluenceMultiSpaceRequestSource(
-                conn=conn, space_keys=list(request["space_keys"])
+                conn=conn,
+                space_keys=list(request["space_keys"]),
+                body_format=conn.body_format,
             )
         msg = f"unknown discovery mode: {mode!r}"
         raise ValueError(msg)
 
     @staticmethod
-    def reader(cfg: Any) -> dict[str, Reader[str]]:
+    def routes(cfg: Any) -> dict[str, Reader[str]]:
         """HTML читает bs4-ридер, вложения — liteparse; оба локальные."""
         documents = LiteParseReader(cfg)
         routes: dict[str, Reader[str]] = {}

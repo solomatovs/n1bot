@@ -1,6 +1,7 @@
 """Компонент песочницы: профили, сборка argv и запуск команд."""
 
 from boba.chainlit2.sandbox.argv import WORKSPACE_MOUNT, build_bwrap_argv
+from boba.chainlit2.sandbox.call_context import ToolCallContext
 from boba.chainlit2.sandbox.caller import SandboxCaller
 from boba.chainlit2.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.chainlit2.sandbox.config import (
@@ -30,5 +31,6 @@ __all__ = [
     "SandboxRunner",
     "SandboxToolConfig",
     "TmpfsSpec",
+    "ToolCallContext",
     "build_bwrap_argv",
 ]

@@ -15,12 +15,12 @@ __all__ = ["KbCaller", "KbSearchAnswer", "KbSearchRequest"]
 class KbSearchRequest(BaseModel):
     """Поиск по чанкам: SQL-шаблон приходит с хоста, данные — из БД."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
 
     op: str = Field(min_length=1)
     connection: dict[str, Any]
     sql_template: str = Field(min_length=1)
-    schema_name: str = Field(min_length=1, alias="schema")
+    schema_name: str = Field(min_length=1)
     chunks_table: str = Field(min_length=1)
     collections: tuple[str, ...]
     query: str = Field(min_length=1)
@@ -60,7 +60,7 @@ class KbCaller:
         op: str,
         connection: Mapping[str, Any],
         sql_template: str,
-        schema: str,
+        schema_name: str,
         chunks_table: str,
         collections: Sequence[str],
         query: str,
@@ -72,7 +72,7 @@ class KbCaller:
             op=op,
             connection=dict(connection),
             sql_template=sql_template,
-            schema=schema,
+            schema_name=schema_name,
             chunks_table=chunks_table,
             collections=tuple(collections),
             query=query,

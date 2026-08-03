@@ -64,7 +64,7 @@ class KbOps:
     def fts_search(cls, request: dict[str, Any]) -> dict[str, Any]:
         statement = sql.SQL(request["sql_template"]).format(
             chunks_table=cls.table(request),
-            schema=sql.Identifier(request["schema"]),
+            schema=sql.Identifier(request["schema_name"]),
         )
         params = {
             "collections": list(request["collections"]),
@@ -76,7 +76,7 @@ class KbOps:
 
     @staticmethod
     def table(request: dict[str, Any]) -> sql.Identifier:
-        return sql.Identifier(request["schema"], request["chunks_table"])
+        return sql.Identifier(request["schema_name"], request["chunks_table"])
 
     @classmethod
     def select(
