@@ -40,46 +40,62 @@ class DocEngine:
         self._cfg = cfg
         self._caller = SandboxCaller("doc", cfg.sandbox.effective(), path_vars)
 
-    async def read_document(self, path: str, pages: str) -> DocPagesAnswer:
+    async def read_document(
+        self, path: str, pages: str, ocr_enabled: bool, num_workers: int
+    ) -> DocPagesAnswer:
         request = DocPagesRequest(
-            op=DocPagesRequest.OP, path=path, pages=pages, params=self._params()
+            op=DocPagesRequest.OP,
+            path=path,
+            pages=pages,
+            params=self._params(ocr_enabled, num_workers),
         )
         return await self._call(request, DocPagesAnswer)
 
     async def read_window(
-        self, path: str, start_char: int, length: int
+        self,
+        path: str,
+        start_char: int,
+        length: int,
+        ocr_enabled: bool,
+        num_workers: int,
     ) -> DocWindowAnswer:
         request = DocWindowRequest(
             op=DocWindowRequest.OP,
             path=path,
             start_char=start_char,
             length=length,
-            params=self._params(),
+            params=self._params(ocr_enabled, num_workers),
         )
         return await self._call(request, DocWindowAnswer)
 
-    async def outline(self, path: str) -> DocOutlineAnswer:
+    async def outline(
+        self, path: str, ocr_enabled: bool, num_workers: int
+    ) -> DocOutlineAnswer:
         request = DocPathRequest(
-            op=DocPathRequest.OUTLINE, path=path, params=self._params()
+            op=DocPathRequest.OUTLINE,
+            path=path,
+            params=self._params(ocr_enabled, num_workers),
         )
         return await self._call(request, DocOutlineAnswer)
 
-    async def search(self, path: str, query: str) -> DocSearchAnswer:
+    async def search(
+        self, path: str, query: str, ocr_enabled: bool, num_workers: int
+    ) -> DocSearchAnswer:
         request = DocSearchRequest(
             op=DocSearchRequest.OP,
             path=path,
             query=query,
             context_chars=self._cfg.search_context_chars,
             max_matches=self._cfg.search_max_matches,
-            params=self._params(),
+            params=self._params(ocr_enabled, num_workers),
         )
         return await self._call(request, DocSearchAnswer)
 
-    def _params(self) -> DocParams:
-        base = self._cfg.parse_params()
-        return DocParams(
-            **base.model_dump(), max_text_chars=self._cfg.max_text_chars
-        )
+    def _params(self, ocr_enabled: bool, num_workers: int) -> DocParams:
+        base = self._cfg.parse_params().model_dump()
+        base["ocr_enabled"] = ocr_enabled
+        base["num_workers"] = num_workers
+        return DocParams(**base, max_text_chars=self._cfg.max_text_chars)
 
     async def _call(self, request: BaseModel, schema: type[M]) -> M:
         """Парсинг долгий и синхронный — уходит в отдельный поток."""

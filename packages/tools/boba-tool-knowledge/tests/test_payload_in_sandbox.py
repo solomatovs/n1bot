@@ -95,6 +95,7 @@ def _params() -> ParseParams:
         ocr_language="eng",
         max_pages=0,
         tessdata_path=_TESSDATA,
+        num_workers=1,
     )
 
 

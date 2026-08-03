@@ -224,6 +224,7 @@ class DocumentOps:
             tessdata_path=params["tessdata_path"],
             max_pages=max_pages,
             target_pages=target_pages,
+            num_workers=params["num_workers"],
             quiet=True,
         )
         return LocaleRetry.parse(parser, request["path"])
@@ -237,6 +238,7 @@ class DocumentOps:
             "ocr_enabled": params["ocr_enabled"],
             "ocr_language": params["ocr_language"],
             "tessdata_path": params["tessdata_path"],
+            "num_workers": params["num_workers"],
             "quiet": True,
         }
         if params["max_pages"]:

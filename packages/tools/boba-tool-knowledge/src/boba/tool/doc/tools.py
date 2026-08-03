@@ -21,6 +21,14 @@ _PATH_DESCRIPTION = (
     "'/workspace/<thread_id>/upload/report.pdf'. Не URL: для веб-страниц "
     "есть web_fetch."
 )
+_OCR_DESCRIPTION = (
+    "OCR для сканов и изображений: true распознаёт текст по картинкам, "
+    "false — только текстовый слой. Сканам/фото — true, обычным "
+    "pdf/docx — false (OCR дорог: минуты и гигабайты памяти)."
+)
+_WORKERS_DESCRIPTION = (
+    "Параллелизм OCR, 1..4; ~50-100 MiB на воркер"
+)
 
 
 class DocText:
@@ -60,9 +68,15 @@ def build_doc_tools(
                 ),
             ),
         ],
+        ocr_enabled: Annotated[
+            bool, Field(description=_OCR_DESCRIPTION)
+        ] = False,
+        num_workers: Annotated[
+            int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
+        ] = 1,
     ) -> tuple[str, ToolResult]:
         """Прочитать текст страниц документа из workspace; основной способ чтения."""
-        answer = await engine.read_document(path, pages)
+        answer = await engine.read_document(path, pages, ocr_enabled, num_workers)
         text = DocText.mark(answer.text, answer.truncated, cfg.max_text_chars)
         parsed_pages: list[str] = []
         for page in answer.pages:
@@ -87,6 +101,12 @@ def build_doc_tools(
         length: Annotated[
             int, Field(ge=1, description="Сколько символов вернуть от start_char.")
         ],
+        ocr_enabled: Annotated[
+            bool, Field(description=_OCR_DESCRIPTION)
+        ] = False,
+        num_workers: Annotated[
+            int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
+        ] = 1,
     ) -> tuple[str, ToolResult]:
         """Вернуть срез текста [start_char, start_char+length) для чтения порциями."""
         if length > cfg.max_text_chars:
@@ -95,7 +115,9 @@ def build_doc_tools(
                 f"({cfg.max_text_chars}): read in smaller windows"
             )
             raise RuntimeError(msg)
-        answer = await engine.read_window(path, start_char, length)
+        answer = await engine.read_window(
+            path, start_char, length, ocr_enabled, num_workers
+        )
         return pack_result(
             TextResult(
                 text=answer.text,
@@ -112,9 +134,15 @@ def build_doc_tools(
     @tool(response_format="content_and_artifact")
     async def document_outline(
         path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
+        ocr_enabled: Annotated[
+            bool, Field(description=_OCR_DESCRIPTION)
+        ] = False,
+        num_workers: Annotated[
+            int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
+        ] = 1,
     ) -> tuple[str, ToolResult]:
         """Карта документа по страницам: дешёвый обзор перед read_document."""
-        answer = await engine.outline(path)
+        answer = await engine.outline(path, ocr_enabled, num_workers)
         rows: list[dict[str, Any]] = []
         for row in answer.rows:
             rows.append(row.model_dump())
@@ -132,9 +160,15 @@ def build_doc_tools(
         query: Annotated[
             str, Field(min_length=1, description="Искомая фраза (регистронезависимо).")
         ],
+        ocr_enabled: Annotated[
+            bool, Field(description=_OCR_DESCRIPTION)
+        ] = False,
+        num_workers: Annotated[
+            int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
+        ] = 1,
     ) -> tuple[str, ToolResult]:
         """Найти фразу в документе: страница, координаты совпадения и сниппет."""
-        answer = await engine.search(path, query)
+        answer = await engine.search(path, query, ocr_enabled, num_workers)
         rows: list[dict[str, Any]] = []
         for row in answer.rows:
             rows.append(row.model_dump())
