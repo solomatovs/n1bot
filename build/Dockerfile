@@ -150,9 +150,9 @@ RUN set -eu                                                                     
                    /etc/ImageMagick-6/policy.xml;                               \
        fi                                                                       \
     # точки монтирования: bwrap не создаёт их в read-only корне
-    && mkdir -p /opt/python /opt/site /opt/payload /opt/fastembed               \
+    && mkdir -p /opt/python /opt/site /opt/src /opt/fastembed                   \
                 /usr/share/tessdata /workspace /etc/boba /mnt/pgsock            \
-    && touch /etc/boba/krb5.keytab /etc/krb5.conf /etc/resolv.conf /etc/hosts   \
+    && touch /etc/boba/krb5.keytab /etc/krb5.conf                               \
     && for tool in unzip 7z file head curl jq convert magick soffice gs; do     \
            command -v "$tool" >/dev/null;                                       \
        done
@@ -227,7 +227,6 @@ COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BO
 COPY build/artifacts/tessdata/                  ${BOBA_DIR}/third/sandbox/data/tessdata/
 COPY build/artifacts/fastembed/                 ${BOBA_DIR}/third/sandbox/data/fastembed/
 COPY build/conf/                                /tmp/conf/
-COPY packages/agents/boba-chainlit2/payloads/   ${BOBA_DIR}/payloads/
 
 RUN set -eu \
     && if [ -f /tmp/conf/ca-chain.crt ]; then                                                   \
@@ -259,5 +258,5 @@ WORKDIR /app
 EXPOSE 8501
 
 ENV BOBA_DIR=${BOBA_DIR}
-ENTRYPOINT ["/bin/sh", "-c", "set -o allexport && . \"$BOBA_DIR/conf/boba.env\" && set +o allexport && exec boba-chainlit \"$@\"", "--"]
+ENTRYPOINT ["/bin/sh", "-c", "set -o allexport && . \"$BOBA_DIR/conf/boba.env\" && set +o allexport && exec boba-chainlit2 \"$@\"", "--"]
 CMD []

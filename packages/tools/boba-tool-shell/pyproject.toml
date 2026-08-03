@@ -5,16 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tool-shell"
 version = "0.0.8"
-description = "Bash tools for the Boba agent: sandboxed (bubblewrap) and local."
+description = "Инструмент bash: команда пользователя в песочнице поверх workspace-образа."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools==0.0.8",
-    "boba-settings==0.0.8",
+    "boba-toolkit==0.0.8",
+    "langchain",
     "pydantic>=2.10,<2.11",
 ]
-
-[project.entry-points."boba.plugins"]
-shell = "boba.tool.shell"
 
 [tool.setuptools.packages.find]
 where = ["src"]

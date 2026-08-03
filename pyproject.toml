@@ -18,17 +18,14 @@ pythonpath = [
     "packages/core/boba-patterns/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-tools/src",
+    "packages/core/boba-toolkit/src",
     "packages/core/boba-workspace/src",
-    "packages/agents/boba-cli/src",
-    "packages/agents/boba-chainlit/src",
     "packages/agents/boba-chainlit2/src",
-    "packages/tools/boba-tool-chart/src",
-    "packages/tools/boba-tool-doc/src",
-    "packages/tools/boba-tool-files/src",
-    "packages/tools/boba-tool-kb/src",
-    "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-shell/src",
+    "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
+    "packages/tools/boba-tool-postgres/src",
+    "packages/tools/boba-tool-knowledge/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration"]
 markers = [
@@ -61,18 +58,15 @@ extraPaths = [
     "packages/core/boba-patterns/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-tools/src",
+    "packages/core/boba-toolkit/src",
     "packages/core/boba-workspace/src",
     "packages/core/boba-agent/src",
-    "packages/agents/boba-cli/src",
-    "packages/agents/boba-chainlit/src",
     "packages/agents/boba-chainlit2/src",
-    "packages/tools/boba-tool-chart/src",
-    "packages/tools/boba-tool-doc/src",
-    "packages/tools/boba-tool-files/src",
-    "packages/tools/boba-tool-kb/src",
-    "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-shell/src",
+    "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
+    "packages/tools/boba-tool-postgres/src",
+    "packages/tools/boba-tool-knowledge/src",
 ]
 venvPath = "."
 venv = ".venv"
@@ -106,7 +100,6 @@ known-first-party = ["boba"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415"]
-"packages/agents/boba-cli-*/**" = ["T201", "BLE001"]
 
 [tool.uv.workspace]
 members = [
@@ -122,6 +115,12 @@ boba-settings       = { workspace = true }
 boba-workspace      = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-tools          = { workspace = true }
+boba-toolkit        = { workspace = true }
+boba-tool-shell       = { workspace = true }
+boba-tool-chart       = { workspace = true }
+boba-tool-web         = { workspace = true }
+boba-tool-postgres    = { workspace = true }
+boba-tool-knowledge   = { workspace = true }
 boba-llm            = { workspace = true }
 boba-agent          = { workspace = true }
 boba-openai         = { workspace = true }
@@ -134,15 +133,6 @@ boba-transport-fs   = { workspace = true }
 boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-auth           = { workspace = true }
-boba-tool-chart     = { workspace = true }
-boba-tool-doc       = { workspace = true }
-boba-tool-files     = { workspace = true }
-boba-tool-kb        = { workspace = true }
-boba-tool-postgres  = { workspace = true }
-boba-tool-shell     = { workspace = true }
-boba-tool-web       = { workspace = true }
-boba-cli            = { workspace = true }
-boba-chainlit       = { workspace = true }
 boba-chainlit2      = { workspace = true }
 
 [dependency-groups]

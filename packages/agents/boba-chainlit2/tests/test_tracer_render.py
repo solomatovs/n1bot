@@ -10,9 +10,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
 from boba.chainlit2.chat.transcript import ConversationTranscript
-from boba.chainlit2.rendering.artifact import ToolArtifact
 from boba.chainlit2.rendering.chat_view import ChatView, RecordingSink
-from boba.chainlit2.rendering.tool_result import (
+from boba.toolkit.artifact import ToolArtifact
+from boba.toolkit.result import (
     ChartResult,
     ErrorResult,
     JsonResult,

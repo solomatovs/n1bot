@@ -1,12 +1,12 @@
 """Инструменты агента: по пакету на секцию конфига [tool.<name>]."""
 
-from boba.chainlit2.agent.tools.bash import (
+from boba.tool.chart import ChartToolsConfig, build_chart_tools
+from boba.tool.shell import (
     BashSandboxConfig,
     SandboxProfile,
     build_bash_tool,
     has_bwrap,
 )
-from boba.chainlit2.agent.tools.chart import ChartToolsConfig, build_chart_tools
 
 __all__ = [
     "BashSandboxConfig",

@@ -21,13 +21,13 @@ from chainlit.step import Step, StepDict
 from chainlit.utils import utc_now
 from literalai.observability.step import TrueStepType
 
-from boba.chainlit2.rendering.artifact import ToolArtifact
 from boba.chainlit2.rendering.chart_figure import build_plotly_element
 from boba.chainlit2.rendering.result_view import (
     ChartRendering,
     MarkdownRendering,
     ToolResultView,
 )
+from boba.toolkit.artifact import ToolArtifact
 
 __all__ = ["ChatSink", "ChatView", "LiveSink", "RecordingSink"]
 

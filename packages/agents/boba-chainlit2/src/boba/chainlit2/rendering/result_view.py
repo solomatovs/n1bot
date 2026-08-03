@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, assert_never
 
 from boba.chainlit2.rendering.result_markdown import ToolResultMarkdown
-from boba.chainlit2.rendering.tool_result import (
+from boba.toolkit.result import (
     ChartResult,
     ErrorResult,
     JsonResult,

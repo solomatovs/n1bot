@@ -14,11 +14,11 @@ from boba.chainlit2.agent.tools import (
     SandboxProfile,
     build_bash_tool,
 )
-from boba.chainlit2.agent.tools.bash.config import BashSandboxConfig
-from boba.chainlit2.rendering.tool_result import JsonResult
-from boba.chainlit2.sandbox.argv import build_bwrap_argv
-from boba.chainlit2.sandbox.config import SandboxToolConfig
-from boba.chainlit2.sandbox.profile import BindSpec
+from boba.tool.shell.config import BashSandboxConfig
+from boba.toolkit.result import JsonResult
+from boba.toolkit.sandbox.argv import build_bwrap_argv
+from boba.toolkit.sandbox.config import SandboxToolConfig
+from boba.toolkit.sandbox.profile import BindSpec
 
 
 @pytest.fixture(autouse=True)

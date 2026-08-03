@@ -6,9 +6,9 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from boba.auth import AuthConfig
-from boba.chainlit2.sandbox.config import SandboxConfig
-from boba.chainlit2.workspace.config import LauncherConfig
 from boba.db.postgres import PostgresConfig
+from boba.toolkit.sandbox.config import SandboxConfig
+from boba.toolkit.workspace.config import LauncherConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,

@@ -444,7 +444,7 @@ extract:
 	# списком переменных их не трогает.
 	export BOBA_DIR="$(DEST_DIR)" PYTHON_VERSION="$(PYTHON_VERSION)"
 	envsubst '$${BOBA_DIR}' \
-	    < "$(CONF_DIR)/boba-chainlit.service" > "$(OUT)/conf/boba-chainlit.service"
+	    < "$(CONF_DIR)/boba-chainlit2.service" > "$(OUT)/conf/boba-chainlit2.service"
 	envsubst '$${BOBA_DIR} $${PYTHON_VERSION}' \
 	    < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
 	envsubst '$${BOBA_DIR}' \

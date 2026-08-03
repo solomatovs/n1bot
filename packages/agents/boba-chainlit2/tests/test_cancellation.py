@@ -14,18 +14,18 @@ import httpx
 import pytest
 from langchain_core.tools import tool
 
-from boba.chainlit2.agent.cancellation import (
+from boba.chainlit2.agent.tools import build_bash_tool
+from boba.tool.shell.config import BashSandboxConfig
+from boba.toolkit.cancellation import (
     CancellableTools,
     ToolStopped,
     TurnCancellation,
     current_cancellation,
     turn_cancellation,
 )
-from boba.chainlit2.agent.tools import build_bash_tool
-from boba.chainlit2.agent.tools.bash.config import BashSandboxConfig
-from boba.chainlit2.agent.tools.http import CancellableHttpTransport
-from boba.chainlit2.rendering.tool_result import ErrorResult
-from boba.chainlit2.sandbox import SandboxProfile, SandboxToolConfig
+from boba.toolkit.http import CancellableHttpTransport
+from boba.toolkit.result import ErrorResult
+from boba.toolkit.sandbox import SandboxProfile, SandboxToolConfig
 from boba.transport.http import HttpProfile, HttpRequest
 
 

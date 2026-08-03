@@ -10,14 +10,10 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_core import to_jsonable_python
 
-from boba.db.postgres import PostgresConfig, PostgresPool
-from boba.tool.pg.copy_buffer import (
-    BufferCapacityError,
-    CopyBuffer,
-    RowLimitExceededError,
-)
+from boba.db.postgres import PostgresConfig
+from boba.tool.pg.caller import PgCaller
+from boba.toolkit.sandbox import SandboxPayloadError, SandboxToolConfig
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +37,9 @@ class SqlExecutorConfig(BaseModel):
             "Ключ — значение tool-arg `target` (LLM выбирает БД по нему)."
         ),
     )
+    sandbox: SandboxToolConfig = Field(
+        description="Окружение и точка входа payload'а: [tool.pg.sandbox].",
+    )
     max_rows: int = Field(
         default=100,
         ge=1,
@@ -60,27 +59,25 @@ class SqlExecutorConfig(BaseModel):
     def _validate(self) -> Self:
         if not self.profiles:
             msg = (
-                "tool.pg: ни одного профиля. Заведите [postgres.<name>] и "
-                'сошлитесь: [tool.pg.profiles] <name> = "${postgres.<name>}".'
+                "tool.pg: no profiles configured. Add [postgres.<name>] and "
+                'reference it: [tool.pg.profiles] <name> = "${postgres.<name>}".'
             )
             raise ValueError(msg)
         return self
 
     def targets(self) -> list[str]:
-        """Имена доступных профилей (значения tool-arg target)."""
         return sorted(self.profiles)
 
     def resolve(self, target: str) -> PostgresConfig:
-        """Вернуть PostgresConfig для target; ValueError если не в whitelist."""
         conn = self.profiles.get(target)
         if conn is None:
-            msg = f"pg: target {target!r} не в whitelist (allowed={self.targets()})"
+            allowed = self.targets()
+            msg = f"pg: target {target!r} is not in the whitelist (allowed={allowed})"
             raise ValueError(msg)
         return conn
 
     @staticmethod
     def session_options(conn: PostgresConfig) -> dict[str, str]:
-        """Session-level GUC, зашиваемые в options DSN."""
         return {"default_transaction_read_only": "on"}
 
 
@@ -102,14 +99,16 @@ class SqlResult:
 
 
 class SqlExecutor:
-    """Pool кешируется в PostgresPool.get по DSN, поэтому повторные вызовы дешёвые."""
+    """Исполняет SQL через payload в песочнице.
 
-    def __init__(
-        self,
-        *,
-        cfg: SqlExecutorConfig,
-    ) -> None:
+    Пула соединений здесь нет и быть не может: каждый вызов — отдельный
+    процесс песочницы, значит своё соединение. Цена — рукопожатие (а с
+    kerberos ещё и получение тикета) на каждый запрос.
+    """
+
+    def __init__(self, *, cfg: SqlExecutorConfig, caller: PgCaller) -> None:
         self._cfg = cfg
+        self._caller = caller
         logger.info(
             "SqlExecutor opened: targets=%s max_rows=%d max_bytes=%d",
             cfg.targets(),
@@ -128,34 +127,25 @@ class SqlExecutor:
     def allowed_targets(self) -> list[str]:
         return self._cfg.targets()
 
-    def execute_copy(self, query: str, *, target: str) -> CopyBuffer:
-        """
-        Выполнить COPY (<query>) TO STDOUT (FORMAT TEXT, HEADER)
-        """
+    def connection_of(self, target: str) -> dict[str, Any]:
+        """libpq-параметры цели: их payload передаёт в connect() как есть."""
         conn = self._cfg.resolve(target)
-        pool = PostgresPool.get(
-            conn,
+        return conn.conn_settings(
             override_options=self._cfg.session_options(conn),
         )
 
-        stmt = f"COPY ({query}) TO STDOUT WITH (FORMAT TEXT, HEADER)"
-
-        buf = CopyBuffer(
-            max_capacity=self._cfg.max_bytes,
-            limit_rows=self._cfg.max_rows,
-        )
+    def execute_copy(self, query: str, *, target: str) -> str:
         try:
-            with pool.cursor() as cur, cur.copy(stmt) as cp:  # type: ignore[arg-type]
-                for block in cp:
-                    buf.write(block)
-        except (BufferCapacityError, RowLimitExceededError):
-            raise
-        except Exception as e:
+            answer = self._caller.copy(
+                connection=self.connection_of(target),
+                sql=query,
+                max_bytes=self._cfg.max_bytes,
+            )
+        except SandboxPayloadError as e:
             raise SqlQueryError(
-                f"SQL copy failed (target={target!r}): {type(e).__name__}: {e}",
+                f"SQL copy failed (target={target!r}): {e}",
             ) from e
-
-        return buf
+        return answer.text
 
     def execute(
         self,
@@ -165,30 +155,19 @@ class SqlExecutor:
         row_limit: int,
         params: Sequence[Any] | None = None,
     ) -> SqlResult:
-        """Выполнить SQL на профиле target; вернуть JSON-safe dict-строки."""
-        conn = self._cfg.resolve(target)
-        pool = PostgresPool.get(
-            conn,
-            override_options=self._cfg.session_options(conn),
-        )
-
         effective_limit = min(max(row_limit, 1), self._cfg.max_rows)
-        fetch_limit = effective_limit + 1
-
         try:
-            with pool.dict_cursor() as cur:
-                # params=None (а не пустой кортеж) — это сигнал psycopg3
-                # НЕ парсить query как placeholder-шаблон. Иначе % в
-                # тексте запроса от LLM (LIKE '%h%', to_char и т.п.) ловит
-                # "only '%s','%b','%t' are allowed as placeholders".
-                cur.execute(query, params)  # type: ignore[arg-type]
-                fetched = cur.fetchmany(fetch_limit)
-        except Exception as e:
+            answer = self._caller.query(
+                connection=self.connection_of(target),
+                sql=query,
+                params=params or (),
+                row_limit=effective_limit,
+            )
+        except SandboxPayloadError as e:
             raise SqlQueryError(
-                f"SQL execute failed (target={target!r}): {type(e).__name__}: {e}",
+                f"SQL execute failed (target={target!r}): {e}",
             ) from e
-
-        truncated = len(fetched) > effective_limit
-        # dict_row -> list[dict]; значения -> JSON-safe (Decimal/UUID/datetime/…)
-        rows = to_jsonable_python(fetched[:effective_limit])
-        return SqlResult(rows=rows, truncated=truncated)
+        rows: list[dict[str, Any]] = []
+        for row in answer.rows:
+            rows.append(dict(row))
+        return SqlResult(rows=rows, truncated=answer.truncated)
