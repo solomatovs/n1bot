@@ -340,6 +340,7 @@ class TestDocTools:
             pages="1-2",
             ocr_enabled=False,
             num_workers=1,
+            ocr_language="rus+eng",
         )
         assert isinstance(result, TextResult)
         assert "Alpha page one" in result.text
@@ -352,6 +353,7 @@ class TestDocTools:
             path=workspace_pdf,
             ocr_enabled=False,
             num_workers=1,
+            ocr_language="rus+eng",
         )
         assert isinstance(result, TableResult)
         pages = []
@@ -366,6 +368,7 @@ class TestDocTools:
             pages="2",
             ocr_enabled=False,
             num_workers=1,
+            ocr_language="rus+eng",
         )
         assert "Beta page two" in result.text
         assert "Alpha page one" not in result.text
@@ -378,6 +381,7 @@ class TestDocTools:
             length=5,
             ocr_enabled=False,
             num_workers=1,
+            ocr_language="rus+eng",
         )
         assert len(result.text) == 5
         assert result.metadata["has_more"] == "True"
@@ -389,6 +393,7 @@ class TestDocTools:
             query="Alpha",
             ocr_enabled=False,
             num_workers=1,
+            ocr_language="rus+eng",
         )
         assert isinstance(result, TableResult)
         assert len(result.rows) == 2
@@ -402,6 +407,7 @@ class TestDocTools:
                 pages="1",
                 ocr_enabled=False,
                 num_workers=1,
+                ocr_language="rus+eng",
             )
 
 

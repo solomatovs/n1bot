@@ -26,9 +26,9 @@ class SandboxParserConfig(BaseModel):
         ),
     )
     ocr_language: str = Field(
-        default="eng",
+        default="rus+eng",
         min_length=1,
-        description="Язык OCR в формате Tesseract: 'eng', 'rus', 'rus+eng'.",
+        description="Язык OCR в формате Tesseract: 'rus+eng', 'eng', 'rus'.",
     )
     max_pages: int = Field(
         default=0,

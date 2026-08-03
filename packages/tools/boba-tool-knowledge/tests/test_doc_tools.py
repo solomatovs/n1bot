@@ -289,11 +289,11 @@ class TestEngineRequests:
     def test_parser_params_travel_in_request(
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
-        engine = DocEngine(_config(ocr_enabled=True, ocr_language="rus"), dict)
+        engine = DocEngine(_config(ocr_enabled=True), dict)
         asyncio.run(
             engine.read_document(
                 "/workspace/t1/upload/doc.pdf", pages="1-2", ocr_enabled=False,
-                num_workers=3
+                num_workers=3, ocr_language="rus"
             )
         )
         params = payload_calls[0]["params"]
@@ -308,17 +308,31 @@ class TestEngineRequests:
         engine = DocEngine(_config(num_workers=2), dict)
         asyncio.run(
             engine.read_document(
-                "/workspace/doc.pdf", pages="1", ocr_enabled=False, num_workers=2
+                "/workspace/doc.pdf", pages="1", ocr_enabled=False, num_workers=2,
+                ocr_language="rus+eng"
             )
         )
         assert payload_calls[0]["params"]["num_workers"] == 2
+
+    def test_ocr_language_from_llm_beats_config(
+        self, payload_calls: list[dict[str, Any]]
+    ) -> None:
+        """Язык OCR передаётся вызовом и перекрывает конфиг-значение."""
+        engine = DocEngine(_config(ocr_language="eng"), dict)
+        asyncio.run(
+            engine.read_document(
+                "/workspace/doc.pdf", pages="1", ocr_enabled=True,
+                num_workers=1, ocr_language="rus"
+            )
+        )
+        assert payload_calls[0]["params"]["ocr_language"] == "rus"
 
     def test_pages_travel_in_request(self, payload_calls: list[dict[str, Any]]) -> None:
         engine = DocEngine(_config(), dict)
         asyncio.run(
             engine.read_document(
                 "/workspace/t1/upload/doc.pdf", pages="2-3", ocr_enabled=False,
-                num_workers=1
+                num_workers=1, ocr_language="rus+eng"
             )
         )
         assert payload_calls[0]["op"] == "read_pages"
@@ -332,7 +346,7 @@ class TestEngineRequests:
         asyncio.run(
             engine.read_document(
                 "/workspace/t1/upload/doc.pdf", pages="1", ocr_enabled=False,
-                num_workers=1
+                num_workers=1, ocr_language="rus+eng"
             )
         )
         assert payload_calls[0]["path"] == "/workspace/t1/upload/doc.pdf"
@@ -344,16 +358,20 @@ class TestEngineRequests:
             _config(search_context_chars=7, search_max_matches=3), dict
         )
         asyncio.run(
-            engine.search("/workspace/doc.pdf", "Alpha", ocr_enabled=False,
-                          num_workers=1)
+            engine.search(
+                "/workspace/doc.pdf", "Alpha", ocr_enabled=False,
+                num_workers=1, ocr_language="rus+eng"
+            )
         )
         assert payload_calls[0]["context_chars"] == 7
         assert payload_calls[0]["max_matches"] == 3
 
     def test_op_matches_method(self, payload_calls: list[dict[str, Any]]) -> None:
         engine = DocEngine(_config(), dict)
-        asyncio.run(engine.outline("/workspace/doc.pdf", ocr_enabled=False,
-                                   num_workers=1))
+        asyncio.run(engine.outline(
+            "/workspace/doc.pdf", ocr_enabled=False,
+            num_workers=1, ocr_language="rus+eng"
+        ))
         assert payload_calls[0]["op"] == "document_outline"
 
 
@@ -391,7 +409,9 @@ class TestTools:
         assert "num_workers" in props
         assert props["num_workers"]["maximum"] == 4
         assert props["num_workers"]["default"] == 1
-        for control in ("ocr_enabled", "num_workers"):
+        assert "ocr_language" in props
+        assert props["ocr_language"]["default"] == "rus+eng"
+        for control in ("ocr_enabled", "num_workers", "ocr_language"):
             assert control not in schema["required"]
 
     def test_window_wider_than_limit_rejected(self) -> None:
@@ -423,6 +443,7 @@ class TestTools:
                         "pages": "1-2",
                         "ocr_enabled": False,
                         "num_workers": 1,
+                        "ocr_language": "rus+eng",
                     },
                     "id": "call-doc",
                     "name": "read_document",
@@ -456,6 +477,7 @@ class TestTools:
                         "pages": "1-2",
                         "ocr_enabled": True,
                         "num_workers": 2,
+                        "ocr_language": "rus",
                     },
                     "id": "call-doc",
                     "name": "read_document",
@@ -466,6 +488,7 @@ class TestTools:
         params = payload_runs[0]["params"]
         assert params["ocr_enabled"] is True
         assert params["num_workers"] == 2
+        assert params["ocr_language"] == "rus"
 
     def test_facade_defaults_reach_payload(
         self, payload_runs: list[dict[str, Any]]
@@ -485,3 +508,4 @@ class TestTools:
         params = payload_runs[0]["params"]
         assert params["ocr_enabled"] is False
         assert params["num_workers"] == 1
+        assert params["ocr_language"] == "rus+eng"
