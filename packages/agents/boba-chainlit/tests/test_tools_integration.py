@@ -333,11 +333,14 @@ class TestBashTool:
 class TestDocTools:
     """doc: liteparse читает документ из образа пользователя."""
 
-    async def test_read_document(self, doc_tools, workspace_pdf) -> None:
-        result = await Call.ok(doc_tools["read_document"], path=workspace_pdf)
+    async def test_read_document_all_pages(self, doc_tools, workspace_pdf) -> None:
+        result = await Call.ok(
+            doc_tools["read_document"], path=workspace_pdf, pages="1-2"
+        )
         assert isinstance(result, TextResult)
         assert "Alpha page one" in result.text
-        assert result.metadata["pages"] == "2"
+        assert "Beta page two" in result.text
+        assert result.metadata["pages"] == "1,2"
 
     async def test_document_outline(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(doc_tools["document_outline"], path=workspace_pdf)
@@ -347,8 +350,10 @@ class TestDocTools:
             pages.append(row["page"])
         assert pages == [1, 2]
 
-    async def test_read_pages(self, doc_tools, workspace_pdf) -> None:
-        result = await Call.ok(doc_tools["read_pages"], path=workspace_pdf, pages="2")
+    async def test_read_document_pages_subset(self, doc_tools, workspace_pdf) -> None:
+        result = await Call.ok(
+            doc_tools["read_document"], path=workspace_pdf, pages="2"
+        )
         assert "Beta page two" in result.text
         assert "Alpha page one" not in result.text
 
@@ -372,7 +377,11 @@ class TestDocTools:
 
     async def test_missing_document_fails_loudly(self, doc_tools) -> None:
         with pytest.raises(SandboxPayloadError):
-            await Call.result(doc_tools["read_document"], path="/workspace/no.pdf")
+            await Call.result(
+                doc_tools["read_document"],
+                path="/workspace/no.pdf",
+                pages="1",
+            )
 
 
 class TestChartTool:

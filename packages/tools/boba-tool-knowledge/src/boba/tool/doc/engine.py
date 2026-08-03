@@ -17,7 +17,6 @@ from boba.tool.doc.protocol import (
     DocPathRequest,
     DocSearchAnswer,
     DocSearchRequest,
-    DocTextAnswer,
     DocWindowAnswer,
     DocWindowRequest,
 )
@@ -29,7 +28,7 @@ M = TypeVar("M", bound=BaseModel)
 
 
 class DocEngine:
-    """Пять операций doc-инструментов, каждая — один запуск payload'а."""
+    """Четыре операции doc-инструментов, каждая — один запуск payload'а."""
 
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.doc.payload")
 
@@ -41,13 +40,7 @@ class DocEngine:
         self._cfg = cfg
         self._caller = SandboxCaller("doc", cfg.sandbox.effective(), path_vars)
 
-    async def read_document(self, path: str) -> DocTextAnswer:
-        request = DocPathRequest(
-            op=DocPathRequest.READ, path=path, params=self._params()
-        )
-        return await self._call(request, DocTextAnswer)
-
-    async def read_pages(self, path: str, pages: str) -> DocPagesAnswer:
+    async def read_document(self, path: str, pages: str) -> DocPagesAnswer:
         request = DocPagesRequest(
             op=DocPagesRequest.OP, path=path, pages=pages, params=self._params()
         )
