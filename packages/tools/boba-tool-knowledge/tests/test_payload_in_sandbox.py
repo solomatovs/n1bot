@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
+import zipfile
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from conftest import (
@@ -211,6 +213,88 @@ class TestDocumentsInSandbox:
         )
         with pytest.raises(SandboxPayloadError, match="exited with code"):
             _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocTextAnswer)
+
+
+@needs_sandbox
+@needs_userns
+class TestOfficeNonAsciiNames:
+    """LibreOffice-конвертация не должна зависеть от алфавита имени файла.
+
+    Вложения лежат в /workspace под оригинальными именами. Office-документы
+    liteparse конвертирует через soffice, а тот в локали песочницы молча
+    (rc=0) не открывает файлы с не-ASCII именем — PDF не появляется и парс
+    падает с «output PDF not found». Содержимое обоих файлов одинаковое:
+    единственная переменная — имя.
+    """
+
+    ASCII_NAME: ClassVar[str] = "user manual_v9.docx"
+    CYRILLIC_NAME: ClassVar[str] = "Инструкция пользователя Магазина данных_v9.docx"
+
+    CONTENT_TYPES: ClassVar[str] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType='
+        '"application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType='
+        '"application/vnd.openxmlformats-officedocument'
+        '.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    RELS: ClassVar[str] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns='
+        '"http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org'
+        '/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    DOCUMENT: ClassVar[str] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w='
+        '"http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t>Alpha section one</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+
+    @classmethod
+    def _docx(cls) -> bytes:
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("[Content_Types].xml", cls.CONTENT_TYPES)
+            archive.writestr("_rels/.rels", cls.RELS)
+            archive.writestr("word/document.xml", cls.DOCUMENT)
+        return buffer.getvalue()
+
+    @pytest.fixture
+    def office_docs(self, tmp_path: Path) -> Path:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        payload = self._docx()
+        (workspace / self.ASCII_NAME).write_bytes(payload)
+        (workspace / self.CYRILLIC_NAME).write_bytes(payload)
+        return workspace
+
+    def _read(self, workspace: Path, name: str) -> DocTextAnswer:
+        request = DocPathRequest(
+            op=DocPathRequest.READ,
+            path=f"/workspace/{name}",
+            params=_doc_params(),
+        )
+        return _caller(workspace).call_json(
+            LiteParseCaller.ENTRY, request, DocTextAnswer
+        )
+
+    def test_ascii_named_docx_is_readable(self, office_docs: Path) -> None:
+        answer = self._read(office_docs, self.ASCII_NAME)
+        assert answer.num_pages >= 1
+        assert "Alpha section one" in answer.text
+
+    def test_cyrillic_named_docx_is_readable(self, office_docs: Path) -> None:
+        answer = self._read(office_docs, self.CYRILLIC_NAME)
+        assert answer.num_pages >= 1
+        assert "Alpha section one" in answer.text
 
 
 @needs_sandbox
