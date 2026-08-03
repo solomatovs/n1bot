@@ -1,19 +1,4 @@
-"""Reader[T] — порт для получения логических фрагментов документа.
-
-Generic над типом content:
-    TextReader  -> Reader[str]   для текстовых документов
-    ImageReader -> Reader[bytes] для изображений
-
-Reader открывает handle, парсит, yield'ит Section[T]. Ставит
-Section.source_id, пробрасывает upstream-metadata в Section.metadata.
-
-Reader явно указан в pipeline'е — без autodetect и dispatcher'а.
-Если ему пришёл несовместимый payload — IncompatibleContentError.
-
-В домене живёт только interface. Конкретные impl'ы — в format/feature-
-package'ах (boba-text.PlainTextReader, boba-html.HtmlReader,
-boba-html.HtmlHeadingReader, …).
-"""
+"""Reader[T] — порт парсинга RawDocument в логические фрагменты Section[T]."""
 
 from __future__ import annotations
 
@@ -34,22 +19,9 @@ ReaderId = NewType("ReaderId", str)
 
 
 class Reader(ABC, Generic[T]):
-    """Разбирает RawDocument на логические разделы (Section[T]).
+    """Разбирает RawDocument на Section[T].
 
-    **Схема**:
-    python
-    RawDocument  ──reader.read──->  Iterable[Section[T]]
-        handle    : BinaryStream
-        source_id : SourceId   ──pass──->  source_id
-        metadata  : Metadata   ──merge─->  metadata  (+ ReaderKeys.DOC_TYPE …)
-                                       ->  content : T  (распарсенный фрагмент)
-                                       ->  order   : int (для детерминизма chunk_id)
-
-
-    **Контракты**:
-    - читает handle (целиком или потоково), закрытие — обязанность Transport.
-    - на несовместимый payload бросает IncompatibleContentError.
-    - явно указывается в pipeline, никакого autodetect / dispatch.
+    Handle не закрывает (это Transport), на несовместимый payload бросает IncompatibleContentError, autodetect'а нет.
     """
 
     @abstractmethod

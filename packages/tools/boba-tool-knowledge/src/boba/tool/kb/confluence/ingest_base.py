@@ -1,21 +1,4 @@
-"""Общая база Confluence-ingest: ConfluenceIngestConfig + ConfluenceIngest.
-
-Сами tool'ы физически разнесены по файлам (по одному на режим discovery) —
-ingest_spaces.py / ingest_pages.py / ingest_cql.py. Здесь — то, что у них
-пока общее: конфиг-секция [tool.kb.confluence.ingest] и сборка pipeline'а.
-
-Каждый tool-файл — самостоятельная точка дивергенции: когда режим начнёт
-собирать таблицу/коллекцию иначе, он форкает свой кусок (свой RequestSource
-уже там; при необходимости — свой run/конфиг), не задевая остальные.
-
-Pipeline: RequestSource -> ConfluenceContentTransport (HTTP + JSON-decode +
-attachment fan-out) -> DispatchReader по CONTENT_TYPE (HTML ->
-ConfluenceReader, прочее -> skip) -> StructuralChunker ->
-CollectionScopedView -> PostgresChunkStore. Вложения (PDF/docx, прошедшие
-AttachmentFilter) индексируются как отдельные чанки с source_id = URL
-вложения и теми же confluence.* ключами родительской страницы. Набор
-metadata-ключей — boba.tool.kb.confluence.models.
-"""
+"""Общая база Confluence-ingest: конфиг и сборка pipeline'а для confluence_ingest_*."""
 
 from __future__ import annotations
 
@@ -72,12 +55,7 @@ logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
 class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, SandboxParserConfig):
-    """Self-contained конфиг семейства tool'ов confluence_ingest_*.
-
-    Наследует PostgresStoreConfig (connection/tables — плоско), ChunkerParams
-    (chunk_size/chunk_overlap — плоско) и SandboxParserConfig (настройки
-    парсера вложений и песочница payload'а). Config-секция: [tool.ingest].
-    """
+    """Self-contained конфиг семейства tool'ов confluence_ingest_*."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -120,11 +98,10 @@ class ConfluenceIngest:
     """Сборка Confluence-ingest pipeline — общий хвост для confluence_ingest_*."""
 
     HTML_CONTENT_TYPES: ClassVar[tuple[str, ...]] = ("text/html",)
-    """CONTENT_TYPE-значения, которые ConfluenceJsonDecoder ставит после
-    распаковки JSON->HTML; всё, что попадает под эти ключи, идёт в HTML-Reader."""
+    """CONTENT_TYPE-значения от ConfluenceJsonDecoder, уходящие в HTML-Reader."""
 
     @staticmethod
-    def run(  # noqa: PLR0913 — keyword-only helper, явный набор deps
+    def run(  # noqa: PLR0913
         *,
         request_source: RequestSource[ConfluenceRequest],
         conn: ConfluenceConnection,
@@ -138,21 +115,7 @@ class ConfluenceIngest:
         attachment_filter: AttachmentFilter | None = None,
         routes: Mapping[str, Reader[str]],
     ) -> dict[str, Any]:
-        """Полный Confluence -> kb_chunks pipeline для уже-собранного RequestSource.
-
-        Возвращает JSON-stats с полями collection/indexed/skipped_unchanged/
-        pruned/failed. Caller добавляет свои поля (space_key/page_ids/...).
-
-        force_update — переиндексировать затронутые страницы целиком: reconcile
-        обходит хэш-диф и переэмбеддит все чанки, а page-scope cleanup сносит
-        стейл в пределах страницы (ужавшийся текст + удалённые вложения).
-
-        Reader — DispatchReader по TransportKeys.CONTENT_TYPE: HTML ->
-        ConfluenceReader, document-вложения (PDF/docx/xlsx/pptx по
-        SandboxLiteParseReader.media_types) -> тот же ридер (постранично),
-        всё остальное (картинки и т.п.) молча пропускается. Сами вложения
-        парсит payload liteparse в песочнице — liteparse_caller.
-        """
+        """Полный Confluence -> kb_chunks pipeline для уже собранного RequestSource."""
         reader: DispatchReader[str] = DispatchReader(
             by=TransportKeys.CONTENT_TYPE,
             routes=dict(routes),
@@ -173,9 +136,7 @@ class ConfluenceIngest:
             attachment_filter=attachment_filter,
         )
 
-        # prune_missing (full-coverage feed) сносит весь стейл коллекции и
-        # перекрывает page-scope; force_update без prune — точечный reindex,
-        # чистит стейл только в пределах затронутых страниц (+ их вложений).
+        # prune_missing сносит весь стейл коллекции; force_update без prune — только страниц
         if prune_missing:
             cleanup: CleanupStrategy = FullCleanup()
         elif force_update:

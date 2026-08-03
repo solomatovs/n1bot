@@ -1,13 +1,4 @@
-"""HTTP-auth: HttpxBearerAuth + WebAuth (discriminated union по method).
-
-httpx даёт из коробки BasicAuth/DigestAuth/NetRCAuth, но не имеет
-встроенного Bearer/PAT — HttpxBearerAuth закрывает это.
-
-WebAuth — конфиг-уровневый discriminated union auth-методов; каждый вариант
-реализует httpx_auth() -> httpx.Auth | None, результат идёт прямо в
-HttpRequest.auth -> httpx.Client(auth=...). Живёт здесь (инфра-слой HTTP),
-чтобы переиспользоваться разными consumer'ами (web, confluence, …).
-"""
+"HTTP-auth: HttpxBearerAuth (Bearer, которого нет в httpx) + WebAuth (union по method)"
 
 from __future__ import annotations
 
@@ -28,12 +19,7 @@ __all__ = [
 
 
 class HttpxBearerAuth(httpx.Auth):
-    """Authorization: Bearer <token> для httpx.
-
-    Используется любыми API, требующими Bearer-токен (Atlassian PAT,
-    GitHub PAT, generic OAuth2 access token). Pure header-mutation,
-    без refresh-flow.
-    """
+    "Authorization: Bearer <token> для httpx; header-mutation без refresh-flow"
 
     def __init__(self, token: str) -> None:
         self._token = token

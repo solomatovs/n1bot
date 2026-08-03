@@ -1,15 +1,4 @@
-"""ConfluenceConnection — endpoint Confluence поверх web-профиля.
-
-Composition: body_format (Confluence-специфика) + profile (HttpProfile —
-общий транспортный профиль с base_url/timeout/ssl/auth, тот же, что у
-web-tool'ов). base_url теперь живёт внутри профиля (web.<name>.base_url) —
-отдельной [confluence]-секции нет; конфиги ссылаются на профиль напрямую
-`profile = "${web.<name>}"` и дублируют body_format у себя.
-
-Чистая модель данных: Confluence-код берёт profile напрямую —
-HttpTransport(conn.profile) единая точка исполнения HTTP (auth/timeout/ssl
-берутся из профиля), base_url — из conn.base_url (свойство над profile).
-"""
+"""ConfluenceConnection — endpoint Confluence поверх web-профиля (base_url в профиле)."""
 
 from __future__ import annotations
 
