@@ -11,7 +11,7 @@ Reader явно указан в pipeline'е — без autodetect и dispatcher'
 Если ему пришёл несовместимый payload — IncompatibleContentError.
 
 В домене живёт только interface. Конкретные impl'ы — в format/feature-
-package'ах (boba-text.PlainTextReader, boba-markdown.MarkdownReader,
+package'ах (boba-text.PlainTextReader, boba-html.HtmlReader,
 boba-html.HtmlHeadingReader, …).
 """
 
@@ -44,7 +44,7 @@ class Reader(ABC, Generic[T]):
         metadata  : Metadata   ──merge─->  metadata  (+ ReaderKeys.DOC_TYPE …)
                                        ->  content : T  (распарсенный фрагмент)
                                        ->  order   : int (для детерминизма chunk_id)
-    
+
 
     **Контракты**:
     - читает handle (целиком или потоково), закрытие — обязанность Transport.

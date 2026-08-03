@@ -45,7 +45,7 @@ class Splitter(Protocol[T]):
     T   ──────splitter.split──->  Iterable[SplitPiece[T]]
                               ->    content  : T
                               ->    location : ChunkLocation
-    
+
 
     **Пример минимальной реализации**:
     python
@@ -54,7 +54,7 @@ class Splitter(Protocol[T]):
             mid = len(value) // 2
             yield SplitPiece(value[:mid], ChunkLocation(start=0, end=mid))
             yield SplitPiece(value[mid:], ChunkLocation(start=mid, end=len(value)))
-    
+
     """
 
     def split(self, value: T) -> Iterable[SplitPiece[T]]: ...

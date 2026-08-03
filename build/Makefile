@@ -20,7 +20,7 @@ SHELL       := /bin/bash
 
 
 # версия у всех пакетов одна, лежит в их pyproject.toml (менять: make version-set)
-VERSION_FILE := $(SRC_DIR)/packages/core/boba-patterns/pyproject.toml
+VERSION_FILE := $(SRC_DIR)/packages/core/boba-toolkit/pyproject.toml
 VERSION      := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(VERSION_FILE))
 BOBA_TAG     ?= $(VERSION)
 REQUIRES_PY  := $(shell sed -n 's/^requires-python = ">=\([0-9]*\.[0-9]*\).*/\1/p' $(VERSION_FILE))
@@ -444,7 +444,7 @@ extract:
 	# списком переменных их не трогает.
 	export BOBA_DIR="$(DEST_DIR)" PYTHON_VERSION="$(PYTHON_VERSION)"
 	envsubst '$${BOBA_DIR}' \
-	    < "$(CONF_DIR)/boba-chainlit2.service" > "$(OUT)/conf/boba-chainlit2.service"
+	    < "$(CONF_DIR)/boba-chainlit.service" > "$(OUT)/conf/boba-chainlit.service"
 	envsubst '$${BOBA_DIR} $${PYTHON_VERSION}' \
 	    < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
 	envsubst '$${BOBA_DIR}' \

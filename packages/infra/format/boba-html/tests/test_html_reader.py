@@ -202,7 +202,8 @@ def test_location_invariant_holds_per_section(make_raw_doc: _MakeDoc):
     for s in HtmlReader().read(make_raw_doc(html)):
         start = s.metadata.get(SectionKeys.LOCATION_START)
         end = s.metadata.get(SectionKeys.LOCATION_END)
-        assert start is not None and end is not None
+        assert start is not None
+        assert end is not None
         # line-precision: start ≤ end ≤ len(text); содержание строки попадает в slice
         assert 0 <= start <= end <= len(text)
 

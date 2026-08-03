@@ -12,20 +12,27 @@ dependencies = [
     "boba-tool-web==0.0.8",
     "boba-db-postgres==0.0.8",
     "boba-indexing==0.0.8",
-    "boba-html==0.0.8",
     "boba-kbdoc==0.0.8",
-    "boba-liteparse==0.0.8",
     "boba-text==0.0.8",
     "boba-settings==0.0.8",
     "boba-transport-http==0.0.8",
     "langchain",
     "httpx[http2]>=0.28,<1",
-    "fastembed>=0.4,<1",
     "pgvector>=0.3,<1",
     "psycopg[binary,pool]>=3.2",
+    "pydantic>=2.10,<2.11",
+]
+
+# зависимости payload'а: нужны только внутри песочницы,
+# в окружении приложения их быть не должно
+[project.optional-dependencies]
+payload = [
+    "boba-html==0.0.8",
+    "boba-liteparse==0.0.8",
+    "fastembed>=0.4,<1",
+    "liteparse>=2,<3",
     "beautifulsoup4>=4.12",
     "markdownify>=0.11,<1.0",
-    "pydantic>=2.10,<2.11",
 ]
 
 [tool.setuptools.package-data]

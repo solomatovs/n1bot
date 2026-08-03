@@ -1,0 +1,27 @@
+[Unit]
+Description=boba-chainlit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+EnvironmentFile=${BOBA_DIR}/conf/boba.env
+WorkingDirectory=${BOBA_DIR}
+ExecStart=${BOBA_DIR}/third/python/bin/boba-chainlit
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+User=boba
+Group=boba
+
+## нужен /dev/fuse что бы монтировать образы .ext4 для пользователей
+## модуль должен быть загрузен в ядро:/etc/modules-load.d/fuse.conf
+## и включена поддержка userns в sysctl (sysctl user.max_user_namespaces > 0)
+PrivateDevices=no
+RestrictNamespaces=no
+
+[Install]
+WantedBy=multi-user.target

@@ -8,11 +8,20 @@ from collections.abc import Mapping, Sequence
 
 from boba.toolkit.workspace.options import LauncherOptions, ResourceLimits
 
-__all__ = ["FUSE_DEVICE", "build_chain_argv", "render_image_path", "require_fuse"]
+__all__ = [
+    "FUSE_DEVICE",
+    "LAUNCHER_ENV",
+    "build_chain_argv",
+    "render_image_path",
+    "require_fuse",
+]
 
 _LAUNCHER_MODULE = "boba.toolkit.workspace.launcher"
 
 FUSE_DEVICE = "/dev/fuse"
+
+LAUNCHER_ENV = ("LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH")
+"""Портативный python лаунчера без них не стартует: свои библиотеки и site."""
 
 
 def require_fuse() -> None:
@@ -48,7 +57,8 @@ def build_chain_argv(  # noqa: PLR0913 — независимые парамет
     После монтирования лаунчер сбрасывает caps; run идёт во вложенном bwrap
     с --cap-drop ALL, который свой userns/сеть создать уже не может — поэтому
     --unshare-net здесь. Хост отдаётся read-only (на запись — каталоги образов
-    и rw_paths), из устройств виден только /dev/fuse, env чистится до PATH.
+    и rw_paths), из устройств виден только /dev/fuse, env чистится до того,
+    что нужно самому лаунчеру (LAUNCHER_ENV).
     Создание новых userns блокирует сам лаунчер после mount (Launcher.USERNS_SYSCTL):
     bwrap --disable-userns несовместим с mount fuse изнутри песочницы.
     """
@@ -107,6 +117,11 @@ def build_chain_argv(  # noqa: PLR0913 — независимые парамет
         "PATH",
         os.environ.get("PATH", "/usr/bin:/bin"),
     ]
+    for name in LAUNCHER_ENV:
+        value = os.environ.get(name)
+        if not value:
+            continue
+        argv += ["--setenv", name, value]
     if not network:
         argv.append("--unshare-net")
     argv += [

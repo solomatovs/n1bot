@@ -262,7 +262,7 @@ class TestParserStaysInSandbox:
     def test_app_does_not_import_liteparse(self) -> None:
         code = (
             "import sys\n"
-            "import boba.chainlit2.infra.plugins\n"
+            "import boba.chainlit.infra.plugins\n"
             "assert 'liteparse' not in sys.modules, 'приложение тянет liteparse'\n"
             "print('ok')\n"
         )

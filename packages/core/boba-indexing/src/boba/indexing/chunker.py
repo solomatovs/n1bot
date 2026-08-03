@@ -35,7 +35,7 @@ class Chunker(ABC, Generic[T]):
                                                         ->     location      (offset в Section.content)
                                                         ->     chunk_index   (0..N-1, сквозной по source_id)
                                                         ->     chunk_id      (digest:{chunk_index}, stable)
-    
+
 
     **Контракты для реализации**:
     - chunk_id не должен меняться для одной и той-же секции Section[T], он должен быть детерменирован что бы можно было выполнить re-index
@@ -108,7 +108,7 @@ class Chunker(ABC, Generic[T]):
             tags=frozenset(),
         ),
     ]
-    
+
     """  # noqa: E501
 
     @abstractmethod

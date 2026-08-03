@@ -2,25 +2,17 @@
 testpaths = ["packages"]
 python_files = ["test_*.py"]
 pythonpath = [
-    "packages/core/boba-agent/src",
-    "packages/infra/llm/boba-openai/src",
     "packages/infra/format/boba-html/src",
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-liteparse/src",
-    "packages/infra/format/boba-markdown/src",
     "packages/infra/format/boba-text/src",
-    "packages/infra/transport/boba-transport-fs/src",
     "packages/infra/transport/boba-transport-http/src",
     "packages/infra/db/boba-db-postgres/src",
     "packages/infra/auth/boba-auth/src",
     "packages/core/boba-indexing/src",
-    "packages/core/boba-llm/src",
-    "packages/core/boba-patterns/src",
     "packages/core/boba-settings/src",
-    "packages/core/boba-tools/src",
     "packages/core/boba-toolkit/src",
-    "packages/core/boba-workspace/src",
-    "packages/agents/boba-chainlit2/src",
+    "packages/agents/boba-chainlit/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
@@ -43,25 +35,17 @@ exclude = [
     "**/build",
 ]
 extraPaths = [
-    "packages/infra/llm/boba-openai/src",
     "packages/infra/format/boba-html/src",
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-liteparse/src",
-    "packages/infra/format/boba-markdown/src",
     "packages/infra/format/boba-text/src",
-    "packages/infra/transport/boba-transport-fs/src",
     "packages/infra/transport/boba-transport-http/src",
     "packages/infra/db/boba-db-postgres/src",
     "packages/infra/auth/boba-auth/src",
     "packages/core/boba-indexing/src",
-    "packages/core/boba-llm/src",
-    "packages/core/boba-patterns/src",
     "packages/core/boba-settings/src",
-    "packages/core/boba-tools/src",
     "packages/core/boba-toolkit/src",
-    "packages/core/boba-workspace/src",
-    "packages/core/boba-agent/src",
-    "packages/agents/boba-chainlit2/src",
+    "packages/agents/boba-chainlit/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
@@ -110,30 +94,22 @@ members = [
 ]
 
 [tool.uv.sources]
-boba-patterns       = { workspace = true }
 boba-settings       = { workspace = true }
-boba-workspace      = { workspace = true }
 boba-indexing       = { workspace = true }
-boba-tools          = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell       = { workspace = true }
 boba-tool-chart       = { workspace = true }
 boba-tool-web         = { workspace = true }
 boba-tool-postgres    = { workspace = true }
 boba-tool-knowledge   = { workspace = true }
-boba-llm            = { workspace = true }
-boba-agent          = { workspace = true }
-boba-openai         = { workspace = true }
 boba-html           = { workspace = true }
 boba-kbdoc          = { workspace = true }
 boba-liteparse      = { workspace = true }
-boba-markdown       = { workspace = true }
 boba-text           = { workspace = true }
-boba-transport-fs   = { workspace = true }
 boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-auth           = { workspace = true }
-boba-chainlit2      = { workspace = true }
+boba-chainlit      = { workspace = true }
 
 [dependency-groups]
 dev = [

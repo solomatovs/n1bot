@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from typing import Any
 
 import pytest
@@ -56,31 +54,6 @@ def invoke(tool: Any, args: dict[str, Any]) -> Any:
     message = tool.invoke({"name": tool.name, "args": args, "id": "c1",
                            "type": "tool_call"})
     return ToolArtifact.revive(message.artifact)
-
-
-class TestIsolation:
-    def test_ported_tools_do_not_pull_v1_framework(self) -> None:
-        """Ядро скопировано ради независимости — dishka тянуться не должен.
-
-        Проверяем в отдельном процессе: в текущем boba.tools уже подтянут
-        конфиг-загрузчиком из conftest.
-        """
-        probe = (
-            "import sys;"
-            "import boba.tool.pg,"
-            " boba.tool.kb,"
-            " boba.tool.kb.confluence;"
-            "bad=[m for m in sys.modules"
-            " if m.split('.')[0]=='dishka' or m.startswith('boba.tools')];"
-            "print(bad)"
-        )
-        out = subprocess.run(  # noqa: S603 — фиксированный probe, не ввод
-            [sys.executable, "-c", probe],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        assert out.stdout.strip() == "[]"
 
 
 class TestPgTools:

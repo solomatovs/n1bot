@@ -5,7 +5,7 @@
             "name": "Chainlit2: agent",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/packages/agents/boba-chainlit2/src/boba/chainlit2/main.py",
+            "program": "${workspaceFolder}/packages/agents/boba-chainlit/src/boba/chainlit/main.py",
             "console": "integratedTerminal",
             "jinja": true,
             "cwd": "${workspaceFolder}/.vscode",
@@ -13,7 +13,7 @@
             "justMyCode": false,
             "stopOnEntry": false,
             "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit2-debug.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
                 "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
                 "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
@@ -34,7 +34,7 @@
                 "-v"
             ],
             "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit2-debug.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
                 "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf"
             }

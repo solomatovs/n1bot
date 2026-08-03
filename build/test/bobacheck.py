@@ -118,16 +118,16 @@ for script in scripts:
           (_ for _ in ()).throw(RuntimeError("not found"))
           if shutil.which(script) is None else None)
 
-# 5) парсеры в окружении приложения: сам boba-chainlit2 их не тянет —
-# документы и HTML разбирает песочница. Но v1-пакеты (boba-tool-doc,
-# boba-tool-kb) зависят от них по-прежнему, поэтому это предупреждение,
-# а не отказ: пока они в сборке, парсеры лежат и в venv приложения
+# 5) парсеры в окружении приложения: разбор идёт в песочнице, приложению
+# они не нужны. Пока app-site и sandbox-site ставят один список пакетов,
+# payload-зависимости tool-пакетов лежат и в venv приложения — поэтому
+# предупреждение, а не отказ
 print("== parsers stay in sandbox ==")
 
 
 def t_absent(module):
     if importlib.util.find_spec(module) is not None:
-        raise RuntimeError(f"{module} в окружении приложения (его тянут v1-пакеты)")
+        raise RuntimeError(f"{module} в окружении приложения (его тянут tool-пакеты)")
 
 
 for module in ["liteparse", "markdownify", "bs4", "fastembed", "onnxruntime"]:

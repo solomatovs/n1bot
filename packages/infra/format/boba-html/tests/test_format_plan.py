@@ -59,7 +59,8 @@ def test_paragraph_format_plan_uses_text_for_embedder(make_raw_doc: _MakeDoc):
     [block] = s.to_format_plan().blocks
     assert "<p>" not in block.format_content
     assert "<strong>" not in block.format_content
-    assert "hello" in block.format_content and "world" in block.format_content
+    assert "hello" in block.format_content
+    assert "world" in block.format_content
     assert "<strong>" in block.raw_content
 
 

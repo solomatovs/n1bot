@@ -1,0 +1,23 @@
+{
+  "custom_fonts": [],
+  "variables": {
+    "light": {
+      "--primary": "221 83% 53%",
+      "--primary-foreground": "0 0% 100%",
+      "--ring": "221 83% 53%",
+      "--sidebar-primary": "221 83% 53%",
+      "--sidebar-primary-foreground": "0 0% 100%",
+      "--sidebar-ring": "221 83% 53%",
+      "--chart-1": "221 83% 53%"
+    },
+    "dark": {
+      "--primary": "217 91% 60%",
+      "--primary-foreground": "0 0% 100%",
+      "--ring": "217 91% 60%",
+      "--sidebar-primary": "217 91% 60%",
+      "--sidebar-primary-foreground": "0 0% 100%",
+      "--sidebar-ring": "217 91% 60%",
+      "--chart-1": "217 91% 60%"
+    }
+  }
+}

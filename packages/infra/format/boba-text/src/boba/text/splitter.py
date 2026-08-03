@@ -37,7 +37,7 @@ class OverlapCharSplitter(Splitter[str]):
     chunk 1:    a  b     c  d     e  f                       value[0:8]  = "ab cd ef"
     chunk 2:             c  d     e  f     g  h              value[3:11] = "cd ef gh"
     chunk 3:                      e  f     g  h     i  j     value[6:14] = "ef gh ij"
-    
+
 
     **Пример**:
     python
@@ -53,7 +53,7 @@ class OverlapCharSplitter(Splitter[str]):
         SplitPiece("cd ef gh", ChunkLocation(start=3, end=11)),
         SplitPiece("ef gh ij", ChunkLocation(start=6, end=14)),
     ]
-    
+
     """
 
     DEFAULT_SEPARATORS: ClassVar[tuple[str, ...]] = ("\n\n", "\n", " ", "")
