@@ -79,7 +79,9 @@ def chainlit_context() -> None:
 
 def _config(**kw: Any) -> DocToolsConfig:
     fields: dict[str, Any] = {
-        "tessdata_path": "/usr/share/tessdata",
+        "tessdata_path": (
+            "/app/docker/compose/boba/build/artifacts/sandbox/data/tessdata"
+        ),
         "sandbox": {
             "profile": _PROFILE,
             "override": {},
@@ -189,6 +191,7 @@ class TestPayloadContract:
                 "ocr_language": "eng",
                 "max_pages": 0,
                 "tessdata_path": "/usr/share/tessdata",
+                "num_workers": 1,
                 "max_text_chars": 200_000,
             },
         }
@@ -281,22 +284,43 @@ class TestPayloadContract:
 
 
 class TestEngineRequests:
-    """Инструмент шлёт payload'у ровно то, что задано конфигом."""
+    """Инструмент шлёт payload'у ровно то, что задано конфигом и LLM."""
 
     def test_parser_params_travel_in_request(
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
         engine = DocEngine(_config(ocr_enabled=True, ocr_language="rus"), dict)
         asyncio.run(
-            engine.read_document("/workspace/t1/upload/doc.pdf", pages="1-2")
+            engine.read_document(
+                "/workspace/t1/upload/doc.pdf", pages="1-2", ocr_enabled=False,
+                num_workers=3
+            )
         )
         params = payload_calls[0]["params"]
-        assert params["ocr_enabled"] is True
+        assert params["ocr_enabled"] is False
+        assert params["num_workers"] == 3
         assert params["ocr_language"] == "rus"
+
+    def test_num_workers_defaults_to_config(
+        self, payload_calls: list[dict[str, Any]]
+    ) -> None:
+        """Настройка, не заданная вызовом, падает на значение из конфига."""
+        engine = DocEngine(_config(num_workers=2), dict)
+        asyncio.run(
+            engine.read_document(
+                "/workspace/doc.pdf", pages="1", ocr_enabled=False, num_workers=2
+            )
+        )
+        assert payload_calls[0]["params"]["num_workers"] == 2
 
     def test_pages_travel_in_request(self, payload_calls: list[dict[str, Any]]) -> None:
         engine = DocEngine(_config(), dict)
-        asyncio.run(engine.read_document("/workspace/t1/upload/doc.pdf", pages="2-3"))
+        asyncio.run(
+            engine.read_document(
+                "/workspace/t1/upload/doc.pdf", pages="2-3", ocr_enabled=False,
+                num_workers=1
+            )
+        )
         assert payload_calls[0]["op"] == "read_pages"
         assert payload_calls[0]["pages"] == "2-3"
 
@@ -305,7 +329,12 @@ class TestEngineRequests:
     ) -> None:
         """Приложение путь не переписывает: его разрешает песочница."""
         engine = DocEngine(_config(), dict)
-        asyncio.run(engine.read_document("/workspace/t1/upload/doc.pdf", pages="1"))
+        asyncio.run(
+            engine.read_document(
+                "/workspace/t1/upload/doc.pdf", pages="1", ocr_enabled=False,
+                num_workers=1
+            )
+        )
         assert payload_calls[0]["path"] == "/workspace/t1/upload/doc.pdf"
 
     def test_search_limits_come_from_config(
@@ -314,13 +343,17 @@ class TestEngineRequests:
         engine = DocEngine(
             _config(search_context_chars=7, search_max_matches=3), dict
         )
-        asyncio.run(engine.search("/workspace/doc.pdf", "Alpha"))
+        asyncio.run(
+            engine.search("/workspace/doc.pdf", "Alpha", ocr_enabled=False,
+                          num_workers=1)
+        )
         assert payload_calls[0]["context_chars"] == 7
         assert payload_calls[0]["max_matches"] == 3
 
     def test_op_matches_method(self, payload_calls: list[dict[str, Any]]) -> None:
         engine = DocEngine(_config(), dict)
-        asyncio.run(engine.outline("/workspace/doc.pdf"))
+        asyncio.run(engine.outline("/workspace/doc.pdf", ocr_enabled=False,
+                                   num_workers=1))
         assert payload_calls[0]["op"] == "document_outline"
 
 
@@ -342,6 +375,25 @@ class TestTools:
         assert "pages" in schema["required"]
         assert "path" in schema["required"]
 
+    @pytest.mark.parametrize("name", [
+        "read_document",
+        "read_document_window",
+        "document_outline",
+        "search_document",
+    ])
+    def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:
+        tools = {t.name: t for t in build_doc_tools(_config(), dict)}
+        schema = tools[name].get_input_schema().model_json_schema()
+        props = schema["properties"]
+        assert "ocr_enabled" in props
+        assert props["ocr_enabled"]["type"] == "boolean"
+        assert props["ocr_enabled"]["default"] is False
+        assert "num_workers" in props
+        assert props["num_workers"]["maximum"] == 4
+        assert props["num_workers"]["default"] == 1
+        for control in ("ocr_enabled", "num_workers"):
+            assert control not in schema["required"]
+
     def test_window_wider_than_limit_rejected(self) -> None:
         tools = {
             t.name: t for t in build_doc_tools(_config(max_text_chars=100), dict)
@@ -350,7 +402,13 @@ class TestTools:
         with pytest.raises(RuntimeError, match="exceeds max_text_chars"):
             asyncio.run(
                 window.ainvoke(
-                    {"path": "/workspace/a.pdf", "start_char": 0, "length": 500}
+                    {
+                        "path": "/workspace/a.pdf",
+                        "start_char": 0,
+                        "length": 500,
+                        "ocr_enabled": False,
+                        "num_workers": 1,
+                    }
                 )
             )
 
@@ -360,7 +418,12 @@ class TestTools:
         return asyncio.run(
             tools["read_document"].ainvoke(
                 {
-                    "args": {"path": "/workspace/doc.pdf", "pages": "1-2"},
+                    "args": {
+                        "path": "/workspace/doc.pdf",
+                        "pages": "1-2",
+                        "ocr_enabled": False,
+                        "num_workers": 1,
+                    },
                     "id": "call-doc",
                     "name": "read_document",
                     "type": "tool_call",
@@ -380,3 +443,45 @@ class TestTools:
     ) -> None:
         message = self._read(_config(max_text_chars=5))
         assert "[обрезано до 5 символов]" in message.content
+
+    def test_llm_ocr_controls_reach_payload(
+        self, payload_runs: list[dict[str, Any]]
+    ) -> None:
+        tools = {t.name: t for t in build_doc_tools(_config(ocr_enabled=True), dict)}
+        asyncio.run(
+            tools["read_document"].ainvoke(
+                {
+                    "args": {
+                        "path": "/workspace/doc.pdf",
+                        "pages": "1-2",
+                        "ocr_enabled": True,
+                        "num_workers": 2,
+                    },
+                    "id": "call-doc",
+                    "name": "read_document",
+                    "type": "tool_call",
+                }
+            )
+        )
+        params = payload_runs[0]["params"]
+        assert params["ocr_enabled"] is True
+        assert params["num_workers"] == 2
+
+    def test_facade_defaults_reach_payload(
+        self, payload_runs: list[dict[str, Any]]
+    ) -> None:
+        """Пропущенные фасадом настройки падают на дефолты, а не теряются."""
+        tools = {t.name: t for t in build_doc_tools(_config(), dict)}
+        asyncio.run(
+            tools["read_document"].ainvoke(
+                {
+                    "args": {"path": "/workspace/doc.pdf", "pages": "1-2"},
+                    "id": "call-doc",
+                    "name": "read_document",
+                    "type": "tool_call",
+                }
+            )
+        )
+        params = payload_runs[0]["params"]
+        assert params["ocr_enabled"] is False
+        assert params["num_workers"] == 1

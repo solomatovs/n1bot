@@ -335,7 +335,11 @@ class TestDocTools:
 
     async def test_read_document_all_pages(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(
-            doc_tools["read_document"], path=workspace_pdf, pages="1-2"
+            doc_tools["read_document"],
+            path=workspace_pdf,
+            pages="1-2",
+            ocr_enabled=False,
+            num_workers=1,
         )
         assert isinstance(result, TextResult)
         assert "Alpha page one" in result.text
@@ -343,7 +347,12 @@ class TestDocTools:
         assert result.metadata["pages"] == "1,2"
 
     async def test_document_outline(self, doc_tools, workspace_pdf) -> None:
-        result = await Call.ok(doc_tools["document_outline"], path=workspace_pdf)
+        result = await Call.ok(
+            doc_tools["document_outline"],
+            path=workspace_pdf,
+            ocr_enabled=False,
+            num_workers=1,
+        )
         assert isinstance(result, TableResult)
         pages = []
         for row in result.rows:
@@ -352,7 +361,11 @@ class TestDocTools:
 
     async def test_read_document_pages_subset(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(
-            doc_tools["read_document"], path=workspace_pdf, pages="2"
+            doc_tools["read_document"],
+            path=workspace_pdf,
+            pages="2",
+            ocr_enabled=False,
+            num_workers=1,
         )
         assert "Beta page two" in result.text
         assert "Alpha page one" not in result.text
@@ -363,13 +376,19 @@ class TestDocTools:
             path=workspace_pdf,
             start_char=0,
             length=5,
+            ocr_enabled=False,
+            num_workers=1,
         )
         assert len(result.text) == 5
         assert result.metadata["has_more"] == "True"
 
     async def test_search_document(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(
-            doc_tools["search_document"], path=workspace_pdf, query="Alpha"
+            doc_tools["search_document"],
+            path=workspace_pdf,
+            query="Alpha",
+            ocr_enabled=False,
+            num_workers=1,
         )
         assert isinstance(result, TableResult)
         assert len(result.rows) == 2
@@ -381,6 +400,8 @@ class TestDocTools:
                 doc_tools["read_document"],
                 path="/workspace/no.pdf",
                 pages="1",
+                ocr_enabled=False,
+                num_workers=1,
             )
 
 

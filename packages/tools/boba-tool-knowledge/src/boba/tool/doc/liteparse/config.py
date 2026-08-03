@@ -42,6 +42,11 @@ class SandboxParserConfig(BaseModel):
             "их из интернета, а у профиля парсера сети нет."
         ),
     )
+    num_workers: int = Field(
+        default=1,
+        ge=1,
+        description="Параллелизм OCR по умолчанию; LLM переопределяет явно.",
+    )
     sandbox: SandboxToolConfig = Field(
         description="Окружение и точка входа payload'а: [tool.<name>.sandbox].",
     )
@@ -52,4 +57,5 @@ class SandboxParserConfig(BaseModel):
             ocr_language=self.ocr_language,
             max_pages=self.max_pages,
             tessdata_path=self.tessdata_path,
+            num_workers=self.num_workers,
         )

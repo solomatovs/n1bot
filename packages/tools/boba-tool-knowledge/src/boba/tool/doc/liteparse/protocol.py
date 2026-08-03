@@ -24,6 +24,9 @@ class ParseParams(BaseModel):
     ocr_language: str = Field(min_length=1, description="Язык OCR: 'rus+eng'.")
     max_pages: int = Field(ge=0, description="Лимит страниц парсера; 0 = без лимита.")
     tessdata_path: str = Field(min_length=1, description="Каталог моделей OCR.")
+    num_workers: int = Field(
+        ge=1, description="Параллелизм OCR; ~50-100 MiB на воркер."
+    )
 
 
 class ParseBytesRequest(BaseModel):

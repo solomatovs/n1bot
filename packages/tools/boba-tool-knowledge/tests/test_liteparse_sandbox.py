@@ -10,6 +10,7 @@ from io import BytesIO
 from typing import Any
 
 import pytest
+import pydantic
 from pydantic import BaseModel
 
 from boba.indexing import (
@@ -178,6 +179,7 @@ class TestParseBytesContract:
             ocr_language="eng",
             max_pages=0,
             tessdata_path="/usr/share/tessdata",
+            num_workers=1,
         )
         return ParseBytesRequest.of(data, filename, params)
 
@@ -195,6 +197,15 @@ class TestParseBytesContract:
     def test_request_carries_base64(self) -> None:
         request = self._request(_PDF, "report.pdf")
         assert base64.b64decode(request.content_b64) == _PDF
+
+    def test_params_are_required(self) -> None:
+        with pytest.raises(pydantic.ValidationError):
+            ParseParams(
+                ocr_enabled=False,
+                ocr_language="eng",
+                max_pages=0,
+                tessdata_path="/usr/share/tessdata",
+            )
 
     def test_broken_document_fails(self) -> None:
         result = subprocess.run(  # noqa: S603
