@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from boba.chainlit2.sandbox import SandboxCaller, SandboxEntryConfig
 
@@ -49,10 +49,31 @@ class ConfluenceIngestCaller:
         self._entry = sandbox.entry
         self._caller = SandboxCaller(tool, sandbox.effective(), path_vars)
 
+    @classmethod
+    def config_of(cls, cfg: BaseModel) -> dict[str, Any]:
+        """Секреты раскрываются здесь: SecretStr не сериализуется сам собой."""
+        return cls._reveal(cfg.model_dump(mode="json"), cfg.model_dump())
+
+    @classmethod
+    def _reveal(cls, jsonable: Any, native: Any) -> Any:
+        if isinstance(native, SecretStr):
+            return native.get_secret_value()
+        if isinstance(native, dict):
+            revealed: dict[str, Any] = {}
+            for key, value in native.items():
+                revealed[key] = cls._reveal(jsonable[key], value)
+            return revealed
+        if isinstance(native, (list, tuple)):
+            items: list[Any] = []
+            for index, value in enumerate(native):
+                items.append(cls._reveal(jsonable[index], value))
+            return items
+        return jsonable
+
     def ingest(  # noqa: PLR0913 — режимы обхода независимы
         self,
         *,
-        config: Mapping[str, Any],
+        cfg: BaseModel,
         mode: str,
         prune_missing: bool,
         force_update: bool,
@@ -62,7 +83,7 @@ class ConfluenceIngestCaller:
     ) -> dict[str, Any]:
         request = IngestRequest(
             op=IngestRequest.OP,
-            config=dict(config),
+            config=self.config_of(cfg),
             mode=mode,
             page_ids=tuple(page_ids),
             cql=cql,

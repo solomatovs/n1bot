@@ -90,7 +90,7 @@ class PostgresKnowledgeBase:
                 op=op,
                 connection=self._cfg.connection.conn_settings(),
                 sql_template=sql_template,
-                schema=self._cfg.tables.pg_schema,
+                schema_name=self._cfg.tables.pg_schema,
                 chunks_table=self._cfg.tables.chunks_table,
                 collections=collections,
                 query=query,

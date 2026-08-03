@@ -62,6 +62,7 @@ class ParsePayload:
             "confluence_attachment",
         }
     )
+    INGEST_OPS: ClassVar[frozenset[str]] = frozenset({"confluence_ingest"})
 
     ROUTES: ClassVar[tuple[tuple[frozenset[str], str, str], ...]] = (
         (DOCUMENT_OPS, "documents", "DocumentOps"),
@@ -71,6 +72,7 @@ class ParsePayload:
         (POSTGRES_OPS, "postgres", "PostgresOps"),
         (KB_OPS, "knowledge", "KbOps"),
         (CONFLUENCE_OPS, "confluence", "ConfluenceOps"),
+        (INGEST_OPS, "ingest", "IngestOps"),
     )
     """Операция -> модуль, который её умеет. Модуль импортируется по факту
     вызова: инструменту нужен свой парсер, а не все сразу."""

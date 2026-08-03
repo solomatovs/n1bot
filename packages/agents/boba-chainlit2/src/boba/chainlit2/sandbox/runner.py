@@ -13,9 +13,11 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import ClassVar
 
 from boba.chainlit2.process.runner import RunResult, run_subprocess
 from boba.chainlit2.sandbox.argv import build_bwrap_argv
+from boba.chainlit2.sandbox.call_context import ToolCallContext
 from boba.chainlit2.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.chainlit2.sandbox.diagnostics import SandboxDiagnostics
 from boba.chainlit2.sandbox.profile import BindSpec, SandboxProfile
@@ -50,6 +52,8 @@ class SandboxOutcome:
 class SandboxRunner:
     """Выполняет команду в уже собранном профиле песочницы."""
 
+    FAIL_TAIL_CHARS: ClassVar[int] = 2000
+
     def __init__(
         self,
         tool: str,
@@ -67,7 +71,7 @@ class SandboxRunner:
         limits = self.limits_of(rendered)
         argv, runner_limits = self._build_argv(rendered, command, limits)
 
-        name = self._tool
+        name = self._label()
         self._log_start(name, rendered, limits, command)
         group = GroupLimits.of_profile(rendered)
         cgroup_dir: str | None = None
@@ -94,12 +98,21 @@ class SandboxRunner:
                 manager.release(cgroup_dir)
         result = self._drain_launcher_log(name, result)
         self._log_finish(name, result)
+        if result.timed_out or result.exit_code != 0:
+            self._log_failure(name, result)
         self._raise_on_mount_error(result)
 
         diagnostic = SandboxDiagnostics.explain(result, rendered)
         if diagnostic:
             logger.warning("sandbox[%s]: %s", name, diagnostic)
         return SandboxOutcome(name, result, diagnostic)
+
+    def _label(self) -> str:
+        """Профиль плюс имя инструмента: sandbox[confluence:confluence_search]."""
+        call = ToolCallContext.get()
+        if call and call != self._tool:
+            return f"{self._tool}:{call}"
+        return self._tool
 
     @staticmethod
     def limits_of(profile: SandboxProfile) -> ResourceLimits:
@@ -204,6 +217,29 @@ class SandboxRunner:
             result.truncated_stdout,
             result.truncated_stderr,
         )
+
+    @classmethod
+    def _log_failure(cls, profile: str, result: RunResult) -> None:
+        """Причина падения в лог: без неё rc=1 не говорит ничего."""
+        if result.timed_out:
+            reason = f"timed out after {result.duration_ms}ms"
+        else:
+            reason = f"rc={result.exit_code}"
+        tail = cls._tail(result.stderr)
+        if not tail:
+            tail = cls._tail(result.stdout)
+        if not tail:
+            tail = "<no output>"
+        logger.warning(
+            "sandbox[%s]: failed (%s); output tail: %s", profile, reason, tail
+        )
+
+    @classmethod
+    def _tail(cls, text: str) -> str:
+        stripped = text.strip()
+        if len(stripped) <= cls.FAIL_TAIL_CHARS:
+            return stripped
+        return "…" + stripped[-cls.FAIL_TAIL_CHARS :]
 
     @staticmethod
     def _drain_launcher_log(profile: str, result: RunResult) -> RunResult:

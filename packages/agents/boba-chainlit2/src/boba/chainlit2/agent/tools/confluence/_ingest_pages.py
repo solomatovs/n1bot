@@ -63,7 +63,7 @@ def confluence_ingest_pages(
     indexed/skipped_unchanged/pruned/failed; список page_id — в note.
     """
     result = caller.ingest(
-        config=cfg.model_dump(mode="json"),
+        cfg=cfg,
         mode="pages",
         page_ids=page_ids,
         prune_missing=prune_missing,

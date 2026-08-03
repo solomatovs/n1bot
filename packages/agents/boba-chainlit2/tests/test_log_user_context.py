@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Any
 
 import pytest
 
 from boba.chainlit2.infra import log_context
-from boba.chainlit2.infra.log_context import UserLogContext
+from boba.chainlit2.infra.log_context import (
+    RequestUserContext,
+    RequestUserMiddleware,
+    UserLogContext,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -61,3 +67,75 @@ class TestUserInEveryRecord:
         monkeypatch.setattr(log_context, "current_user_label", lambda: "petrov")
         formatter = logging.Formatter("[%(user)s] %(message)s")
         assert formatter.format(self._record()) == "[petrov] сообщение"
+
+    def test_request_context_used_without_session(self) -> None:
+        token = RequestUserContext.set("sidorov")
+        try:
+            assert getattr(self._record(), UserLogContext.ATTRIBUTE) == "sidorov"
+        finally:
+            RequestUserContext.reset(token)
+
+    def test_session_wins_over_request_context(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(log_context, "current_user_label", lambda: "ivanov")
+        token = RequestUserContext.set("sidorov")
+        try:
+            assert getattr(self._record(), UserLogContext.ATTRIBUTE) == "ivanov"
+        finally:
+            RequestUserContext.reset(token)
+
+
+class TestRequestUserMiddleware:
+    class _JwtUser:
+        identifier = "sidorov"
+    @staticmethod
+    def _scope(headers: list[tuple[bytes, bytes]]) -> dict[str, Any]:
+        return {"type": "http", "headers": headers, "path": "/", "query_string": b""}
+
+    @staticmethod
+    def _run(middleware: RequestUserMiddleware, scope: dict[str, Any]) -> None:
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request"}
+
+        async def send(message: Any) -> None:
+            pass
+
+        asyncio.run(middleware(scope, receive, send))
+
+    def test_label_visible_inside_request_and_reset_after(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import chainlit.auth.jwt
+
+        monkeypatch.setattr(
+            chainlit.auth.jwt, "decode_jwt", lambda _t: self._JwtUser()
+        )
+        seen: list[str] = []
+
+        async def app(scope: Any, receive: Any, send: Any) -> None:
+            seen.append(RequestUserContext.get())
+
+        scope = self._scope([(b"authorization", b"Bearer whatever")])
+        self._run(RequestUserMiddleware(app), scope)
+        assert seen == ["sidorov"]
+        assert RequestUserContext.get() == ""
+
+    def test_broken_token_gives_empty_label(self) -> None:
+        seen: list[str] = []
+
+        async def app(scope: Any, receive: Any, send: Any) -> None:
+            seen.append(RequestUserContext.get())
+
+        scope = self._scope([(b"cookie", b"access_token=garbage")])
+        self._run(RequestUserMiddleware(app), scope)
+        assert seen == [""]
+
+    def test_non_http_scope_passthrough(self) -> None:
+        called: list[bool] = []
+
+        async def app(scope: Any, receive: Any, send: Any) -> None:
+            called.append(True)
+
+        self._run(RequestUserMiddleware(app), {"type": "lifespan"})
+        assert called == [True]

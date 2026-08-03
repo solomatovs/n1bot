@@ -152,7 +152,7 @@ RUN set -eu                                                                     
     # точки монтирования: bwrap не создаёт их в read-only корне
     && mkdir -p /opt/python /opt/site /opt/payload /opt/fastembed               \
                 /usr/share/tessdata /workspace /etc/boba /mnt/pgsock            \
-    && touch /etc/boba/krb5.keytab /etc/krb5.conf                               \
+    && touch /etc/boba/krb5.keytab /etc/krb5.conf /etc/resolv.conf /etc/hosts   \
     && for tool in unzip 7z file head curl jq convert magick soffice gs; do     \
            command -v "$tool" >/dev/null;                                       \
        done
@@ -213,6 +213,8 @@ RUN apt-get update                                              \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-dist                         /opt/python/usr/local   ${BOBA_DIR}/third/python
+COPY --from=base /usr/local/lib64/libstdc++.so.6      ${BOBA_DIR}/third/lib/
+COPY --from=base /usr/local/lib64/libstdc++.so.6.0.25 ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/local/bin/uv              ${BOBA_DIR}/third/bin/uv
 COPY --from=app-site /opt/app-site              ${BOBA_DIR}/third/python/lib/python${PYTHON_VERSION}/site-packages/
 COPY --from=boba-wheels /tmp/names.txt          ${BOBA_DIR}/conf/packages.txt
@@ -234,7 +236,7 @@ RUN set -eu \
            && update-ca-certificates;                                                           \
        fi \
     && cp /tmp/conf/boba.env /tmp/boba.env.tmpl \
-    && export LD_LIBRARY_PATH="${BOBA_DIR}/third/python/lib"                                    \
+    && export LD_LIBRARY_PATH="${BOBA_DIR}/third/lib:${BOBA_DIR}/third/python/lib"                                    \
     && SITE=${BOBA_DIR}/third/python/lib/python${PYTHON_VERSION}/site-packages                  \
     && mv "$SITE"/bin/* ${BOBA_DIR}/third/python/bin/                                           \
     && rmdir "$SITE"/bin                                                                        \

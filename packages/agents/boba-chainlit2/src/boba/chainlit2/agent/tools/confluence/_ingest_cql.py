@@ -49,7 +49,7 @@ def confluence_ingest_cql(
     Возвращает JSON {collection, indexed, skipped_unchanged, pruned, failed}.
     """
     result = caller.ingest(
-        config=cfg.model_dump(mode="json"),
+        cfg=cfg,
         mode="cql",
         cql=cql,
         prune_missing=prune_missing,

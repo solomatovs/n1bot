@@ -64,7 +64,7 @@ def confluence_ingest_spaces(
     collection/indexed/skipped_unchanged/pruned/failed.
     """
     result = caller.ingest(
-        config=cfg.model_dump(mode="json"),
+        cfg=cfg,
         mode="spaces",
         space_keys=space_keys,
         prune_missing=prune_missing,
