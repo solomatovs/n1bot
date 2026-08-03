@@ -120,6 +120,9 @@ help:
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
 	echo "                 {uv,tessdata,fastembed,"
 	echo "                  sandbox/{rootfs,python,site,data,workspace.ext4}}"
+	echo "                 цели по отдельности: uv, tessdata, fastembed,"
+	echo "                 sandbox-rootfs, sandbox-site, sandbox-python,"
+	echo "                 sandbox-data, sandbox-workspace"
 	echo "  make build     собрать образ $(IMAGE)"
 	echo "  make test      проверить релиз внутри образа"
 	echo "  make extract   портативная папка из готового образа:"
@@ -268,15 +271,12 @@ tessdata:
 sandbox-rootfs:
 	@dest="$(SANDBOX_DIR)/rootfs"
 	echo "== rootfs песочницы из $(SANDBOX_IMAGE) + утилиты =="
-	if [ -n "$$(ls -A "$$dest" 2>/dev/null)" ]; then
-	    echo "  ✓ $$dest (пересобрать: rm -rf $$dest)"
-	    exit 0
-	fi
-	docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
+		docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
 	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
 	    --target sandbox-rootfs                            \
 	    --tag $(ROOTFS_IMAGE)                              \
 	    $(PROGRESS) $(BUILD_CONTEXT)
+	rm -rf "$$dest"
 	mkdir -p "$$dest"
 	cid=$$(docker create $(ROOTFS_IMAGE) /bin/true)
 	docker export "$$cid" | tar -x -C "$$dest"
@@ -289,15 +289,12 @@ sandbox-rootfs:
 sandbox-site:
 	@dest="$(SANDBOX_DIR)/site"
 	echo "== site-packages песочницы =="
-	if [ -n "$$(ls -A "$$dest" 2>/dev/null)" ]; then
-	    echo "  ✓ $$dest (пересобрать: rm -rf $$dest)"
-	    exit 0
-	fi
-	docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
+		docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
 	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
 	    --target sandbox-site                              \
 	    --tag $(SITE_IMAGE)                                \
 	    $(PROGRESS) $(BUILD_CONTEXT)
+	rm -rf "$$dest"
 	mkdir -p "$$dest"
 	cid=$$(docker create $(SITE_IMAGE) /bin/true)
 	docker cp "$$cid:/opt/site/." "$$dest/"
@@ -309,10 +306,7 @@ sandbox-site:
 sandbox-python:
 	@dest="$(SANDBOX_DIR)/python"
 	echo "== python-дистрибутив песочницы =="
-	if [ -x "$$dest/bin/python3" ]; then
-	    echo "  ✓ $$dest (пересобрать: rm -rf $$dest)"
-	    exit 0
-	fi
+		rm -rf "$$dest"
 	mkdir -p "$$dest"
 	cid=$$(docker create $(PYTHON_IMAGE) /bin/true)
 	docker cp "$$cid:/opt/python/usr/local/." "$$dest/"
@@ -335,11 +329,7 @@ sandbox-data: tessdata fastembed
 sandbox-workspace:
 	@dest="$(SANDBOX_DIR)/workspace.ext4"
 	echo "== шаблон workspace $(SANDBOX_WS_SIZE) =="
-	if [ -f "$$dest" ]; then
-	    echo "  ✓ $$dest (пересоздать: rm -f $$dest)"
-	    exit 0
-	fi
-	# шаблон делает стадия fuse2fs-build тем же mke2fs, что уедет в релиз:
+		# шаблон делает стадия fuse2fs-build тем же mke2fs, что уедет в релиз:
 	# второй способ создания означал бы два разных образа под одним именем
 	docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
 	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \

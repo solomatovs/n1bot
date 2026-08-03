@@ -1,11 +1,17 @@
-# Конфиг boba-chainlit для портативного релиза.
-# conf/ — то, что правят руками (этот файл, промпты);
-# local/ — то, что приложение пишет само (workspaces, состояние chainlit);
-# third/ — программы и python, etc/ — конфиги «как в /etc» (их не трогаем).
-#
+# Конфиг boba-chainlit2 для портативного релиза.
+# conf/ — правится руками, local/ — пишет приложение, third/ — артефакты.
 # Заполнить помеченное <...>.
 
-## LLM-провайдер (openai-совместимый API)
+[app]
+    chainlit     = "${chainlit}"
+    agent        = "${agent}"
+    checkpointer = "${checkpointer}"
+    data_layer   = "${data_layer}"
+    storage      = "${storage}"
+    sandbox      = "${sandbox}"
+    auth         = ["${auth.local}"]
+
+
 [openai.main]
     base_url            = "<https://llm.example.local/v1>"
     api_key             = "<ключ>"
@@ -13,37 +19,26 @@
     tool_calls_fallback = true
 
 
-## профиль агента
-[agent.default]
-    model                = "<имя модели у провайдера>"
-    models               = ["<имя модели у провайдера>"]
-    openai               = "${openai.main}"
-    system_prompt_dir    = "${BOBA_DIR}/conf/prompts"
-    user_workspace_dir   = "${BOBA_DIR}/data/workspaces/user"
-    system_workspace_dir = "${BOBA_DIR}/data/workspaces/system"
-    max_messages         = 30
-    # сколько последних реплик истории уходит в LLM
-    history_messages     = 30
-    stream               = true
-    log_level            = "INFO"
+[agent]
+    openai                = "${openai.main}"
+    model                 = "<имя модели у провайдера>"
+    models                = ["<имя модели у провайдера>"]
+    default_system_prompt = "Ты ассистент. Отвечай по найденному контексту."
+    history_messages      = 30
 
 
-## само приложение
 [chainlit]
-    profile     = "${agent.default}"
+    profile     = "${agent}"
     host        = "0.0.0.0"
     port        = 8501
-    # префикс, если стоит за reverse-proxy; иначе пустая строка
     url_prefix  = ""
-    # обязателен, сгенерировать: openssl rand -hex 32
-    auth_secret = "<32 байта hex>"
+    auth_secret = "<32 байта hex: openssl rand -hex 32>"
     headless    = true
+    root        = "${BOBA_DIR}/data"
     app_root    = "${BOBA_DIR}/data/.chainlit"
-    # способы входа по порядку попыток; секции ниже
     auth        = ["${auth.local}"]
 
 
-## вход по таблице логин/пароль из этого файла
 [auth.local]
     type          = "local"
     users         = { "<логин>" = "<пароль>" }
@@ -54,12 +49,32 @@
     "<логин>" = ["ADM"]
 
 
-## хранилище вложений чата: kind = "image" — внутри ext4-образа пользователя;
-## kind = "local" — файлы на диске (тогда обязателен files_dir)
+# libpq-параметры: https://www.postgresql.org/docs/current/libpq-connect.html
+[postgres]
+    host             = "<хост postgres>"
+    port             = 5432
+    user             = "<пользователь>"
+    dbname           = "<база>"
+    gssencmode       = "prefer"
+    sslmode          = "disable"
+    application_name = "boba"
+    autocommit       = true
+    pool             = { timeout = 5.0, min_size = 2, max_size = 4 }
+    options          = { statement_timeout = "30s" }
+
+[checkpointer]
+    postgres = "${postgres}"
+    schema   = "checkpoints"
+
+[data_layer]
+    postgres = "${postgres}"
+    schema   = "chainlit"
+
+
+# kind = "image" — вложения внутри ext4-образа пользователя (пути обязаны
+# совпадать с rw_images профиля), kind = "local" — файлы на диске
 [storage]
     kind           = "image"
-    # один образ на пользователя: общий workspace во всех его тредах;
-    # путь обязан совпадать с rw_images sandbox-профиля
     image_path     = "${BOBA_DIR}/data/workspace/{user_id}.ext4"
     image_template = "${BOBA_DIR}/third/sandbox/workspace.ext4"
     op_timeout_sec = 60
@@ -67,9 +82,6 @@
     public_prefix  = "${chainlit.url_prefix}/workspace"
 
 
-## профили песочницы (bubblewrap): окружение целиком — rootfs, монтирования,
-## сеть, лимиты. Все поля обязательны, лимиты строго больше нуля.
-## Профиль выбирает администратор в секции инструмента, LLM о нём не знает.
 [sandbox]
     ## shell пользователя: workspace-образ, python не нужен
     [sandbox.profiles.default]
@@ -90,7 +102,13 @@
         max_processes       = 256
         max_output_bytes    = 262144
         cwd                 = "/workspace"
-        cgroup_base         = ""
+        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
+        cgroup_memory_bytes   = 1073741824
+        cgroup_cpu_percent    = 100
+        cgroup_cpu_weight     = 100
+        cgroup_pids_max       = 64
+        cgroup_swap_max_bytes = 0
+        cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
     ## чтение документов: python и парсеры плюс образ пользователя
@@ -112,7 +130,13 @@
         max_processes       = 256
         max_output_bytes    = 4194304
         cwd                 = "/workspace"
-        cgroup_base         = ""
+        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
+        cgroup_memory_bytes   = 4294967296
+        cgroup_cpu_percent    = 200
+        cgroup_cpu_weight     = 100
+        cgroup_pids_max       = 256
+        cgroup_swap_max_bytes = 0
+        cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
     ## разбор данных, пришедших в запросе: файловая система не нужна
@@ -134,7 +158,13 @@
         max_processes       = 256
         max_output_bytes    = 16777216
         cwd                 = "/tmp"
-        cgroup_base         = ""
+        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
+        cgroup_memory_bytes   = 4294967296
+        cgroup_cpu_percent    = 200
+        cgroup_cpu_weight     = 100
+        cgroup_pids_max       = 256
+        cgroup_swap_max_bytes = 0
+        cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
     ## инструменты, которые сами ходят в сеть: web и confluence
@@ -156,7 +186,13 @@
         max_processes       = 256
         max_output_bytes    = 4194304
         cwd                 = "/tmp"
-        cgroup_base         = ""
+        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
+        cgroup_memory_bytes   = 2147483648
+        cgroup_cpu_percent    = 100
+        cgroup_cpu_weight     = 100
+        cgroup_pids_max       = 64
+        cgroup_swap_max_bytes = 0
+        cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
     ## SQL к БД: сеть до постгреса, keytab и krb5.conf только на чтение
@@ -178,7 +214,13 @@
         max_processes       = 32
         max_output_bytes    = 4194304
         cwd                 = "/tmp"
-        cgroup_base         = ""
+        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
+        cgroup_memory_bytes   = 1073741824
+        cgroup_cpu_percent    = 100
+        cgroup_cpu_weight     = 100
+        cgroup_pids_max       = 32
+        cgroup_swap_max_bytes = 0
+        cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
     ## поиск по базе знаний: тот же профиль плюс веса эмбеддера
@@ -200,36 +242,36 @@
         max_processes       = 256
         max_output_bytes    = 16777216
         cwd                 = "/tmp"
-        cgroup_base         = ""
+        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
+        cgroup_memory_bytes   = 6442450944
+        cgroup_cpu_percent    = 200
+        cgroup_cpu_weight     = 100
+        cgroup_pids_max       = 256
+        cgroup_swap_max_bytes = 0
+        cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
-
 [tool.bash]
-    enable          = true
-    roles           = ["ADM"]
+    enable = true
+    roles  = ["ADM"]
 
-    ## окружение запуска: профиль из [sandbox.profiles] и его переопределения
     [tool.bash.sandbox]
         profile  = "${sandbox.profiles.default}"
         override = {}
 
-    ## доступ к tool по ролям: имя = список ролей (пусто = роли секции)
     [tool.bash.tools]
         bash = []
 
 
-## чтение документов из workspace (liteparse): PDF/docx/xlsx/изображения
 [tool.doc]
-    enable  = true
-    roles   = ["ADM"]
+    enable               = true
+    roles                = ["ADM"]
     ocr_enabled          = false
-    ## модели OCR внутри песочницы: иначе liteparse качает их из интернета
     tessdata_path        = "/usr/share/tessdata"
     max_text_chars       = 200000
     search_context_chars = 80
     search_max_matches   = 50
 
-    ## документы парсит payload внутри песочницы: rootfs с python и liteparse
     [tool.doc.sandbox]
         profile  = "${sandbox.profiles.docs}"
         override = {}
@@ -243,7 +285,146 @@
         search_document      = []
 
 
-## вход по учётной записи домена (bind в AD)
+[tool.chart]
+    enable = true
+    roles  = ["*"]
+
+    [tool.chart.sandbox]
+        profile  = "${sandbox.profiles.parser}"
+        override = {}
+        entry    = ["python3", "/opt/payload/main.py"]
+
+    [tool.chart.tools]
+        visualize = []
+
+
+# whitelist хостов: URL с хостом не из profiles до песочницы не доходит
+[tool.web]
+    enable         = true
+    roles          = ["ADM"]
+    max_text_chars = 2000
+    profiles       = { "<hostname>" = "${web.public}" }
+
+    [tool.web.sandbox]
+        profile  = "${sandbox.profiles.network}"
+        override = {}
+        entry    = ["python3", "/opt/payload/main.py"]
+
+    [tool.web.tools]
+        web_fetch_page = []
+        web_grep_page  = []
+
+[web.public]
+    kind              = "web"
+    timeout_sec       = 30.0
+    ssl_verify        = true
+    retry_attempts    = 3
+    retry_backoff_sec = 1.0
+    auth              = { method = "none" }
+
+[web.confluence]
+    kind              = "web"
+    base_url          = "<https://confluence.example.local>"
+    timeout_sec       = 30.0
+    ssl_verify        = true
+    retry_attempts    = 3
+    retry_backoff_sec = 1.0
+    auth              = { method = "bearer", token = "<токен>" }
+
+
+[tool.confluence]
+    enable         = true
+    roles          = ["ADM"]
+    confluence     = "${web.confluence}"
+    body_format    = "view"
+    max_text_chars = 2000
+
+    [tool.confluence.sandbox]
+        profile  = "${sandbox.profiles.network}"
+        override = {}
+        entry    = ["python3", "/opt/payload/main.py"]
+
+    [tool.confluence.tools]
+        confluence_fetch  = []
+        confluence_grep   = []
+        confluence_search = []
+        confluence_spaces = []
+
+
+[tool.ingest]
+    enable            = true
+    roles             = ["ADM"]
+    connection        = "${postgres}"
+    tables            = "${kb.tables}"
+    embedding         = "${embedding.e5}"
+    confluence        = "${web.confluence}"
+    body_format       = "view"
+    collection        = "kb_confluence"
+    chunk_size        = 4000
+    chunk_overlap     = 0
+    attachment_titles = ["*.pdf", "*.docx", "*.xlsx"]
+    tessdata_path     = "/usr/share/tessdata"
+
+    [tool.ingest.sandbox]
+        profile  = "${sandbox.profiles.kb}"
+        override = { timeout_sec = 3600, max_cpu_sec = 3600 }
+        entry    = ["python3", "/opt/payload/main.py"]
+
+    [tool.ingest.tools]
+        confluence_index_pages  = []
+        confluence_index_cql    = []
+        confluence_index_spaces = []
+        confluence_attachment   = []
+
+
+[tool.pg]
+    enable    = true
+    roles     = ["ADM"]
+    max_rows  = 100
+    max_bytes = 1000000
+    profiles  = { main = "${postgres}" }
+
+    [tool.pg.sandbox]
+        profile  = "${sandbox.profiles.pg}"
+        override = {}
+        entry    = ["python3", "/opt/payload/main.py"]
+
+    [tool.pg.tools]
+        list_targets   = []
+        list_tables    = []
+        describe_table = []
+        query          = ["ADM"]
+
+
+[tool.kb]
+    enable     = true
+    roles      = ["ADM"]
+    connection = "${postgres}"
+    tables     = "${kb.tables}"
+    embedding  = "${embedding.e5}"
+
+    [tool.kb.sandbox]
+        profile  = "${sandbox.profiles.kb}"
+        override = {}
+        entry    = ["python3", "/opt/payload/main.py"]
+
+    [tool.kb.tools]
+        kb_vector_search = []
+        kb_fts_search    = []
+
+
+[kb.tables]
+    pg_schema         = "kb"
+    chunks_table      = "kb_chunks"
+    collections_table = "kb_collections"
+
+# веса лежат внутри песочницы, монтировать их не нужно
+[embedding.e5]
+    model     = "intfloat/multilingual-e5-large"
+    cache_dir = "/opt/fastembed"
+
+
+# вход по домену (bind в AD)
 # [auth.ldap]
 #     type             = "ldap"
 #     server           = "ldaps://dc.example.local:636"
@@ -254,8 +435,7 @@
 #     [auth.ldap.roles]
 #         member_of = { "CN=boba-ADM,CN=Users,DC=example,DC=local" = ["ADM"] }
 
-
-## SSO по kerberos; keytab пробрасывается в unit через BindReadOnlyPaths
+# SSO по kerberos; keytab пробрасывается в unit через BindReadOnlyPaths
 # [auth.kerberos]
 #     type             = "kerberos"
 #     service_name     = "HTTP/boba.example.local@EXAMPLE.LOCAL"
