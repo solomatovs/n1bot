@@ -17,6 +17,7 @@ __all__ = ["SandboxDiagnostics"]
 class SandboxDiagnostics:
     """Сопоставляет код возврата и stderr с лимитом профиля."""
 
+    SIGABRT_CODE: ClassVar[int] = 134
     SIGKILL_CODE: ClassVar[int] = 137
     SIGXCPU_CODE: ClassVar[int] = 152
     SIGXFSZ_CODE: ClassVar[int] = 153
@@ -46,6 +47,9 @@ class SandboxDiagnostics:
         "out of memory",
         "Out of memory",
         "bad_alloc",
+        # rust-аллокатор (pdfium/liteparse) при исчерпании RLIMIT_AS
+        "memory allocation of",
+        "failed to map segment from shared object",
     )
     SPACE_MARKERS: ClassVar[tuple[str, ...]] = ("No space left on device",)
     NETWORK_MARKERS: ClassVar[tuple[str, ...]] = (
@@ -122,21 +126,40 @@ class SandboxDiagnostics:
     def _processes(cls, result: RunResult, profile: SandboxProfile) -> str:
         if not cls._matched(result.stderr, cls.PROCESS_MARKERS):
             return ""
+        limit = f"max_processes={profile.max_processes}"
+        if profile.cgroup_pids_max is not None:
+            limit += f" or cgroup_pids_max={profile.cgroup_pids_max} for the whole run"
         return (
-            f"Process limit reached: max_processes={profile.max_processes}. "
+            f"Process limit reached: {limit}. "
             f"Start fewer parallel processes and pipelines."
         )
 
     @classmethod
     def _memory(cls, result: RunResult, profile: SandboxProfile) -> str:
-        by_signal = result.exit_code == cls.SIGKILL_CODE
+        """max_memory_bytes — это RLIMIT_AS, то есть адресное пространство.
+
+        Парсеры документов резервируют его гигабайтами независимо от размера
+        файла (pdfium — около 2.3 ГБ), поэтому здесь важнее поднять лимит, чем
+        уменьшить данные.
+        """
+        by_signal = result.exit_code in (cls.SIGKILL_CODE, cls.SIGABRT_CODE)
         by_text = cls._matched(result.stderr, cls.MEMORY_MARKERS)
         if not by_signal and not by_text:
             return ""
+        limit = (
+            f"max_memory_bytes={profile.max_memory_bytes} bytes "
+            f"(RLIMIT_AS, per process)"
+        )
+        if profile.cgroup_memory_bytes is not None:
+            limit += (
+                f" or cgroup_memory_bytes={profile.cgroup_memory_bytes} bytes "
+                f"(cgroup memory.max, the whole run)"
+            )
         return (
-            f"Memory limit reached: max_memory_bytes="
-            f"{profile.max_memory_bytes} bytes. Stream the data instead of "
-            f"loading all of it into memory."
+            f"Memory limit reached: {limit}. Stream the data "
+            f"instead of loading all of it into memory, or ask an "
+            f"administrator to raise the limit: document parsers reserve "
+            f"gigabytes of address space regardless of file size."
         )
 
     @classmethod

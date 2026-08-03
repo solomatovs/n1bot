@@ -1,31 +1,77 @@
-"""Порт boba.tool.doc: чтение документов из workspace-образа пользователя."""
+"""Doc-инструменты: payload в песочнице и разбор его ответа по контракту."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from boba.chainlit2.agent.tools.doc import DocToolsConfig, build_doc_tools
 from boba.chainlit2.agent.tools.doc import engine as engine_module
 from boba.chainlit2.agent.tools.doc.engine import DocEngine
-from boba.chainlit2.agent.tools.doc.tools import DocSearch
-from boba.chainlit2.infra.config import LocalStorageConfig
+from boba.chainlit2.agent.tools.doc.protocol import (
+    DocOutlineAnswer,
+    DocPagesAnswer,
+    DocSearchAnswer,
+    DocTextAnswer,
+    DocWindowAnswer,
+)
+from boba.chainlit2.sandbox import SandboxPayload
 
+_PAYLOAD_MAIN = (
+    Path(__file__).resolve().parents[1] / "payloads" / "parse" / "main.py"
+)
 
-def _storage_cfg(**kw: Any) -> LocalStorageConfig:
-    """Тайминги лаунчера обязательны: дефолтов у конфига нет."""
-    fields: dict[str, Any] = {
-        "launcher": {
-            "mount_wait_sec": 10.0,
-            "mount_poll_sec": 0.05,
-            "shutdown_wait_sec": 5.0,
-            "copy_chunk_bytes": 1 << 20,
-        },
-    }
-    fields.update(kw)
-    return LocalStorageConfig.model_validate(fields)
+# Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
+_PDF = b"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 4 0 R\
+/Resources<</Font<</F1 5 0 R>>>>>>endobj
+4 0 obj<</Length 50>>stream
+BT /F1 20 Tf 20 200 Td (Alpha page one) Tj ET
+endstream endobj
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 7 0 R\
+/Resources<</Font<</F1 5 0 R>>>>>>endobj
+7 0 obj<</Length 60>>stream
+BT /F1 20 Tf 20 200 Td (Beta page two Alpha again) Tj ET
+endstream endobj
+trailer<</Root 1 0 R/Size 8>>
+%%EOF"""
+
+_PROFILE: dict[str, Any] = {
+    "rootfs": "",
+    "ro_binds": ("/usr", "/bin", "/sbin", "/lib", "/lib64"),
+    "rw_binds": (),
+    "rw_images": (),
+    "image_template": "",
+    "launcher": {
+        "mount_wait_sec": 10.0,
+        "mount_poll_sec": 0.05,
+        "shutdown_wait_sec": 5.0,
+        "copy_chunk_bytes": 1 << 20,
+    },
+    "tmpfs": ("/tmp:64M",),  # noqa: S108
+    "network": False,
+    "env_set": {"PATH": "/usr/bin:/bin"},
+    "timeout_sec": 30,
+    "max_memory_bytes": 512 * 1024 * 1024,
+    "max_cpu_sec": 30,
+    "max_file_size_bytes": 64 * 1024 * 1024,
+    "max_open_files": 1024,
+    "max_processes": 256,
+    "max_output_bytes": 256 * 1024,
+    "cgroup_base": "",
+    "oom_score_adj": 0,
+    "cwd": "/tmp",  # noqa: S108
+}
 
 
 @pytest.fixture(autouse=True)
@@ -33,52 +79,248 @@ def chainlit_context() -> None:
     pass
 
 
-@pytest.fixture(autouse=True)
-def session_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(engine_module, "current_user_id", lambda: "7")
-
-
 def _config(**kw: Any) -> DocToolsConfig:
-    storage = _storage_cfg(
-        kind="image",
-        image_path="/ws/{user_id}.ext4",
-        image_template="/t.ext4",
-    )
-    return DocToolsConfig(storage=storage, **kw)
+    fields: dict[str, Any] = {
+        "tessdata_path": "/usr/share/tessdata",
+        "sandbox": {
+            "profile": _PROFILE,
+            "override": {},
+            "entry": ["python3", "/opt/payload/main.py"],
+        },
+    }
+    fields.update(kw)
+    return DocToolsConfig.model_validate(fields)
 
 
-class TestObjectKey:
-    """Путь песочницы отображается в ключ хранилища вложений."""
+class _Caller:
+    """Подменяет песочницу: тот же контракт, но payload запускается локально."""
 
-    def test_sandbox_path_maps_to_storage_key(self) -> None:
-        key = DocEngine.object_key("/workspace/t1/upload/report.pdf")
-        assert key == "7/t1/upload/report.pdf"
+    def __init__(self, pdf: Path) -> None:
+        self.pdf = pdf
+        self.requests: list[dict[str, Any]] = []
 
-    def test_relative_path_is_accepted(self) -> None:
-        assert DocEngine.object_key("t1/upload/a.pdf") == "7/t1/upload/a.pdf"
+    def call_json(
+        self,
+        entry: tuple[str, ...],
+        request: BaseModel,
+        schema: type[BaseModel],
+    ) -> Any:
+        body = json.loads(request.model_dump_json())
+        self.requests.append(json.loads(request.model_dump_json()))
+        body["path"] = str(self.pdf)
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, str(_PAYLOAD_MAIN)],
+            input=json.dumps(body),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr)
+        for line in result.stdout.splitlines():
+            if line.startswith(SandboxPayload.MARKER):
+                return schema.model_validate(
+                    json.loads(line[len(SandboxPayload.MARKER) :])
+                )
+        msg = f"payload не напечатал результат: {result.stdout!r}"
+        raise RuntimeError(msg)
 
-    def test_name_with_spaces_and_cyrillic(self) -> None:
-        key = DocEngine.object_key("/workspace/t1/upload/отчёт за май.pdf")
-        assert key == "7/t1/upload/отчёт за май.pdf"
 
-    @pytest.mark.parametrize(
-        "path", ["/workspace/../../etc/passwd", "../secret", "/workspace", ""]
-    )
-    def test_escape_rejected(self, path: str) -> None:
-        with pytest.raises(RuntimeError, match="invalid document path"):
-            DocEngine.object_key(path)
+@pytest.fixture
+def pdf(tmp_path: Path) -> Path:
+    path = tmp_path / "doc.pdf"
+    path.write_bytes(_PDF)
+    return path
 
-    def test_without_session_fails_loudly(
-        self, monkeypatch: pytest.MonkeyPatch
+
+class _Recorder:
+    """Записывает запрос и не исполняет payload: важно что послали, а не ответ."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+
+    def call_json(
+        self,
+        entry: tuple[str, ...],
+        request: BaseModel,
+        schema: type[BaseModel],
+    ) -> Any:
+        self.requests.append(json.loads(request.model_dump_json()))
+        return schema.model_construct()
+
+
+@pytest.fixture
+def payload_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Песочница подменена: запросы инструмента складываются сюда."""
+    recorder = _Recorder()
+    monkeypatch.setattr(engine_module, "SandboxCaller", lambda *_a, **_kw: recorder)
+    return recorder.requests
+
+
+@pytest.fixture
+def payload_runs(pdf: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Песочница подменена локальным запуском payload'а: ответ настоящий."""
+    caller = _Caller(pdf)
+    monkeypatch.setattr(engine_module, "SandboxCaller", lambda *_a, **_kw: caller)
+    return caller.requests
+
+
+class TestPayloadContract:
+    """Payload реально парсит документ и отвечает по контракту."""
+
+    @staticmethod
+    def _run(request: dict[str, Any]) -> dict[str, Any]:
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, str(_PAYLOAD_MAIN)],
+            input=json.dumps(request),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        line = result.stdout.splitlines()[-1]
+        assert line.startswith(SandboxPayload.MARKER)
+        return json.loads(line[len(SandboxPayload.MARKER) :])
+
+    @staticmethod
+    def _request(pdf: Path, op: str, **kw: Any) -> dict[str, Any]:
+        request: dict[str, Any] = {
+            "op": op,
+            "path": str(pdf),
+            "params": {
+                "ocr_enabled": False,
+                "ocr_language": "eng",
+                "max_pages": 0,
+                "tessdata_path": "/usr/share/tessdata",
+                "max_text_chars": 200_000,
+            },
+        }
+        request.update(kw)
+        return request
+
+    def test_read_document(self, pdf: Path) -> None:
+        answer = DocTextAnswer.model_validate(
+            self._run(self._request(pdf, "read_document"))
+        )
+        assert answer.num_pages == 2
+        assert "Alpha page one" in answer.text
+        assert answer.truncated is False
+
+    def test_read_document_clips_text(self, pdf: Path) -> None:
+        request = self._request(pdf, "read_document")
+        request["params"]["max_text_chars"] = 5
+        answer = DocTextAnswer.model_validate(self._run(request))
+        assert answer.truncated is True
+        assert len(answer.text) == 5
+
+    def test_read_pages_selects_subset(self, pdf: Path) -> None:
+        answer = DocPagesAnswer.model_validate(
+            self._run(self._request(pdf, "read_pages", pages="2"))
+        )
+        assert answer.pages == (2,)
+        assert "Beta page two" in answer.text
+        assert "page one" not in answer.text
+
+    def test_window_reports_cursor(self, pdf: Path) -> None:
+        answer = DocWindowAnswer.model_validate(
+            self._run(
+                self._request(pdf, "read_document_window", start_char=0, length=5)
+            )
+        )
+        assert (answer.start_char, answer.end_char) == (0, 5)
+        assert answer.has_more is True
+        assert answer.total_chars > 5
+
+    def test_outline_has_row_per_page(self, pdf: Path) -> None:
+        answer = DocOutlineAnswer.model_validate(
+            self._run(self._request(pdf, "document_outline"))
+        )
+        assert answer.num_pages == 2
+        assert [row.page for row in answer.rows] == [1, 2]
+        assert answer.rows[0].chars > 0
+
+    def test_search_returns_coordinates_and_snippet(self, pdf: Path) -> None:
+        answer = DocSearchAnswer.model_validate(
+            self._run(self._request(pdf, "search_document", query="Alpha",
+                                    context_chars=5, max_matches=50))
+        )
+        assert [row.page for row in answer.rows] == [1, 2]
+        assert "Alpha" in answer.rows[0].snippet
+        assert answer.rows[0].height > 0
+        assert answer.limit_reached is False
+
+    def test_search_reports_limit(self, pdf: Path) -> None:
+        answer = DocSearchAnswer.model_validate(
+            self._run(self._request(pdf, "search_document", query="Alpha",
+                                    context_chars=5, max_matches=1))
+        )
+        assert len(answer.rows) == 1
+        assert answer.limit_reached is True
+
+    def test_unknown_op_fails(self, pdf: Path) -> None:
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, str(_PAYLOAD_MAIN)],
+            input=json.dumps(self._request(pdf, "нет-такой-op")),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "unknown op" in result.stderr
+
+    def test_missing_file_fails(self, tmp_path: Path) -> None:
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, str(_PAYLOAD_MAIN)],
+            input=json.dumps(
+                self._request(tmp_path / "нет.pdf", "read_document")
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip()
+
+
+class TestEngineRequests:
+    """Инструмент шлёт payload'у ровно то, что задано конфигом."""
+
+    def test_parser_params_travel_in_request(
+        self, payload_calls: list[dict[str, Any]]
     ) -> None:
-        monkeypatch.setattr(engine_module, "current_user_id", lambda: None)
-        with pytest.raises(RuntimeError, match="no chainlit session"):
-            DocEngine.object_key("/workspace/t1/upload/a.pdf")
+        engine = DocEngine(_config(ocr_enabled=True, ocr_language="rus"), dict)
+        asyncio.run(engine.read_document("/workspace/t1/upload/doc.pdf"))
+        params = payload_calls[0]["params"]
+        assert params["ocr_enabled"] is True
+        assert params["ocr_language"] == "rus"
+
+    def test_path_from_llm_goes_as_is(
+        self, payload_calls: list[dict[str, Any]]
+    ) -> None:
+        """Приложение путь не переписывает: его разрешает песочница."""
+        engine = DocEngine(_config(), dict)
+        asyncio.run(engine.read_document("/workspace/t1/upload/doc.pdf"))
+        assert payload_calls[0]["path"] == "/workspace/t1/upload/doc.pdf"
+
+    def test_search_limits_come_from_config(
+        self, payload_calls: list[dict[str, Any]]
+    ) -> None:
+        engine = DocEngine(
+            _config(search_context_chars=7, search_max_matches=3), dict
+        )
+        asyncio.run(engine.search("/workspace/doc.pdf", "Alpha"))
+        assert payload_calls[0]["context_chars"] == 7
+        assert payload_calls[0]["max_matches"] == 3
+
+    def test_op_matches_method(self, payload_calls: list[dict[str, Any]]) -> None:
+        engine = DocEngine(_config(), dict)
+        asyncio.run(engine.outline("/workspace/doc.pdf"))
+        assert payload_calls[0]["op"] == "document_outline"
 
 
-class TestBuild:
+class TestTools:
     def test_all_tools_registered(self) -> None:
-        names = [t.name for t in build_doc_tools(_config())]
+        names = [t.name for t in build_doc_tools(_config(), dict)]
         assert names == [
             "read_document",
             "read_pages",
@@ -87,92 +329,41 @@ class TestBuild:
             "search_document",
         ]
 
-    def test_missing_file_reports_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        engine = DocEngine(_config())
-
-        async def missing(key: str) -> bytes:
-            raise FileNotFoundError(key)
-
-        monkeypatch.setattr(engine._storage, "read_file", missing)
-        with pytest.raises(RuntimeError, match="file not found"):
-            asyncio.run(engine.read_bytes("/workspace/t1/upload/nope.pdf"))
-
     def test_window_wider_than_limit_rejected(self) -> None:
-        tools = {t.name: t for t in build_doc_tools(_config(max_text_chars=100))}
+        tools = {
+            t.name: t for t in build_doc_tools(_config(max_text_chars=100), dict)
+        }
         window = tools["read_document_window"]
         with pytest.raises(RuntimeError, match="exceeds max_text_chars"):
             asyncio.run(
                 window.ainvoke(
-                    {"path": "/workspace/t1/upload/a.pdf", "start_char": 0,
-                     "length": 500}
+                    {"path": "/workspace/a.pdf", "start_char": 0, "length": 500}
                 )
             )
 
-
-class TestTextHelpers:
-    def test_clip_marks_truncation(self) -> None:
-        text, truncated = DocEngine.clip("a" * 50, 10)
-        assert truncated is True
-        assert len(text) == 10
-
-    def test_clip_keeps_short_text(self) -> None:
-        text, truncated = DocEngine.clip("short", 10)
-        assert (text, truncated) == ("short", False)
-
-    def test_window_reports_more(self) -> None:
-        chunk, end, total, has_more = DocEngine.window("abcdef", 2, 2)
-        assert (chunk, end, total, has_more) == ("cd", 4, 6, True)
-
-    def test_window_at_the_end(self) -> None:
-        chunk, end, total, has_more = DocEngine.window("abcdef", 4, 10)
-        assert (chunk, end, total, has_more) == ("ef", 6, 6, False)
-
-
-class _Hit:
-    def __init__(self, text: str) -> None:
-        self.text = text
-        self.x = 1.0
-        self.y = 2.0
-        self.width = 3.0
-        self.height = 4.0
-
-
-class _Page:
-    def __init__(self, text: str) -> None:
-        self.page_num = 1
-        self.text = text
-        self.text_items: list[str] = []
-
-
-class _Native:
-    def __init__(self, text: str) -> None:
-        self.pages = [_Page(text)]
-
-
-class TestSearchRows:
-    """Сниппет собирается из текста страницы: нативный поиск его не даёт."""
-
     @staticmethod
-    def _rows(text: str, query: str, monkeypatch: pytest.MonkeyPatch, **kw: Any):
-        from boba.chainlit2.agent.tools.doc import tools as tools_module
-
-        monkeypatch.setattr(
-            tools_module.LiteParseEngine,
-            "search_items",
-            staticmethod(lambda items, q, case_sensitive=False: [_Hit(q)]),
+    def _read(cfg: DocToolsConfig) -> Any:
+        tools = {t.name: t for t in build_doc_tools(cfg, dict)}
+        return asyncio.run(
+            tools["read_document"].ainvoke(
+                {
+                    "args": {"path": "/workspace/doc.pdf"},
+                    "id": "call-doc",
+                    "name": "read_document",
+                    "type": "tool_call",
+                }
+            )
         )
-        return DocSearch.run(_Native(text), query, kw.get("context", 5), 50)
 
-    def test_snippet_has_context_and_ellipsis(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_text_carries_metadata(
+        self, payload_runs: list[dict[str, Any]]
     ) -> None:
-        rows = self._rows("х" * 20 + "цель" + "у" * 20, "цель", monkeypatch)
-        assert rows[0]["snippet"].startswith("…")
-        assert "цель" in rows[0]["snippet"]
-        assert rows[0]["snippet"].endswith("…")
+        message = self._read(_config())
+        assert "Alpha page one" in message.content
+        assert message.artifact.metadata["pages"] == "2"
 
-    def test_row_carries_coordinates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        rows = self._rows("цель", "цель", monkeypatch)
-        assert rows[0]["page"] == 1
-        assert rows[0]["x"] == 1.0
-        assert rows[0]["height"] == 4.0
+    def test_truncation_is_marked_for_llm(
+        self, payload_runs: list[dict[str, Any]]
+    ) -> None:
+        message = self._read(_config(max_text_chars=5))
+        assert "[обрезано до 5 символов]" in message.content

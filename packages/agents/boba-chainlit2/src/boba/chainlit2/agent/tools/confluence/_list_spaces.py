@@ -1,79 +1,58 @@
-"""Tool confluence_list_spaces + ConfluenceListSpacesConfig.
+"""Tool confluence_list_spaces: список пространств Confluence.
 
-LLM-callable read-only tool: возвращает markdown-таблицу спейсов,
-доступных текущей роли. Используется перед confluence_ingest_spaces/
-confluence_download, чтобы LLM мог увидеть существующие space-ключи
-и выбрать релевантные.
-
-Endpoint: GET /rest/api/space?limit=N&start=0[&type=global|personal].
-БЕЗ expand=description.plain: с ним cwiki клампит limit до 100 и 500-тит
-на глубоких offset'ах; без него limit=500 отдаёт все спейсы одним запросом
-(эмпирически проверено на cwiki.apache.org: 394 спейса, next=no). Фильтр
-по key/name — клиентский (REST не умеет name/text-фильтр).
+Запрос к REST делает payload в песочнице; glob-фильтр по key/name остаётся
+здесь — он дешёвый и не требует сети.
 """
 
 from __future__ import annotations
 
-import logging
 from fnmatch import fnmatchcase
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Any, Literal
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit2.agent.tools.confluence.connection import ConfluenceConnection
-from boba.chainlit2.agent.tools.confluence.models import ConfluenceSpaceItem
-from boba.chainlit2.agent.tools.confluence.request_sources import (
-    ConfluencePaginator,
-    ConfluenceRest,
+from boba.chainlit2.agent.tools.confluence.caller import ConfluenceCaller
+from boba.chainlit2.agent.tools.confluence.protocol import (
+    ConfluenceSpace,
+    ConfluenceSpacesRequest,
 )
 from boba.chainlit2.rendering.tool_result import TableResult
 from boba.transport.http import HttpProfile
 
 __all__ = ["ConfluenceListSpacesConfig", "confluence_list_spaces"]
 
-logger = logging.getLogger("boba.chainlit2.agent.tools.confluence.list_spaces")
-
 
 class ConfluenceListSpacesConfig(BaseModel):
-    """Self-contained конфиг tool'а confluence_list_spaces.
-
-    Config-секция: [tool.kb.confluence.list.spaces].
-    """
-
-    PAGE_SIZE: ClassVar[int] = 500
-    """Размер страницы REST-пагинации /rest/api/space. Сильно крупнее дефолтных
-    50 — в идеале все спейсы приходят одним запросом (start=0), и мы вообще не
-    доходим до глубоких offset'ов, на которых сервер падает. Если сервер
-    зажимает limit своим максимумом — всё равно сильно меньше прыжков."""
+    """Self-contained конфиг tool'а confluence_list_spaces."""
 
     model_config = ConfigDict(extra="ignore")
 
     confluence: HttpProfile
+    page_size: int = Field(
+        default=500,
+        ge=1,
+        le=1000,
+        description="Сколько спейсов запрашивать у REST за раз.",
+    )
+
+
+class SpaceFilter:
+    """Клиентский glob по key/name: REST не умеет фильтровать по имени."""
 
     @staticmethod
-    def _matches(item: ConfluenceSpaceItem, pattern: str) -> bool:
-        """True, если glob-pattern (*/?/[]) матчит key или name спейса.
-
-        Пустой pattern -> True (фильтр выключен). Матч регистронезависимый и
-        per-field — fnmatch требует совпадения шаблона со ВСЕМ полем, поэтому
-        для поиска по подстроке нужны звёздочки: airflow* (начинается с
-        airflow), *data* (содержит data), ?-prod и т.п. REST
-        /rest/api/space не умеет name/text-фильтр — фильтруем клиентски.
-        Описание не используется: expand=description.plain ломает выдачу
-        больших Confluence (клампит limit и 500-тит на глубоких offset'ах).
-        """
+    def matches(space: ConfluenceSpace, pattern: str | None) -> bool:
         if not pattern:
             return True
-        p = pattern.lower()
-        return any(
-            fnmatchcase(field.lower(), p)
-            for field in (item.key, item.name)
-        )
+        needle = pattern.lower()
+        for field in (space.key, space.name):
+            if fnmatchcase(field.lower(), needle):
+                return True
+        return False
 
 
 def confluence_list_spaces(
     cfg: ConfluenceListSpacesConfig,
+    caller: ConfluenceCaller,
     pattern: Annotated[
         str | None,
         Field(
@@ -118,51 +97,24 @@ def confluence_list_spaces(
     (glob */?) сужает выдачу клиентски по key/name. Без expand весь
     список приходит одним запросом (limit=PAGE_SIZE), без глубокой пагинации.
     """
-    glob = pattern.strip() if pattern else ""
-    rows: list[dict[str, str]] = []
-    truncated = False
-    errored = False
-
-    path = ConfluenceRest.space_list_path(
-        space_type,
-        limit=ConfluenceListSpacesConfig.PAGE_SIZE,
+    request = ConfluenceSpacesRequest(
+        op=ConfluenceSpacesRequest.OP,
+        base_url=cfg.confluence.base_url or "",
+        profile=ConfluenceCaller.transport_of(cfg.confluence),
+        space_type=space_type,
+        limit=cfg.page_size,
     )
-    with ConfluencePaginator(ConfluenceConnection(profile=cfg.confluence)) as x:
-        try:
-            for item in x(path, item=ConfluenceSpaceItem):
-                if not ConfluenceListSpacesConfig._matches(item, glob):
-                    continue
-                if len(rows) >= limit:
-                    truncated = True
-                    break
-                rows.append({
-                    "key": item.key.strip(),
-                    "name": item.name.strip(),
-                    "type": item.type.strip(),
-                })
-        except httpx.HTTPError as e:
-            errored = True
-            logger.warning(
-                "confluence_list_spaces: pagination interrupted (%s): %s; "
-                "returning %d spaces found so far",
-                type(e).__name__,
-                e,
-                len(rows),
-            )
-
-    filter_note = f" по шаблону {glob!r}" if glob else ""
-    if errored:
-        note = (
-            f"СПИСОК НЕПОЛНЫЙ{filter_note}: Confluence вернул ошибку при "
-            f"глубокой пагинации /rest/api/space — просмотрены не все спейсы "
-            f"(собрано {len(rows)}). Сузь поиск шаблоном или повтори позже."
-        )
-    elif truncated:
-        note = (
-            f"показаны первые {limit}{filter_note}; увеличьте `limit` для остальных"
-        )
-    elif not rows:
+    rows: list[dict[str, Any]] = []
+    for space in caller.spaces(request).spaces:
+        if not SpaceFilter.matches(space, pattern):
+            continue
+        rows.append(space.model_dump())
+        if len(rows) >= limit:
+            break
+    filter_note = ""
+    if pattern:
+        filter_note = f" по шаблону {pattern!r}"
+    note = f"спейсов: {len(rows)}{filter_note}"
+    if not rows:
         note = f"ничего не найдено{filter_note}"
-    else:
-        note = None
     return TableResult(rows=rows, note=note)

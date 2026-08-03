@@ -4,12 +4,14 @@
 Проекция результатов живёт в search.py, здесь только обёртки langchain.
 """
 
+from collections.abc import Callable, Mapping
 from typing import Annotated
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
+from boba.chainlit2.agent.tools.kb.caller import KbCaller
 from boba.chainlit2.agent.tools.kb.kb import PostgresKnowledgeBaseConfig
 from boba.chainlit2.agent.tools.kb.search import (
     CollectionSearch,
@@ -26,8 +28,13 @@ __all__ = ["KbTools", "build_kb_tools"]
 class KbTools:
     """Собирает langchain-инструменты поиска поверх KbSearch."""
 
-    def __init__(self, cfg: PostgresKnowledgeBaseConfig) -> None:
+    def __init__(
+        self,
+        cfg: PostgresKnowledgeBaseConfig,
+        path_vars: Callable[[], Mapping[str, str]],
+    ) -> None:
         self._cfg = cfg
+        self._caller = KbCaller("kb", cfg.sandbox, path_vars)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -53,6 +60,7 @@ class KbTools:
         summary: str,
     ) -> BaseTool:
         cfg = self._cfg
+        caller = self._caller
         query_desc = (
             KbSearch.QUERY_DESC_VECTOR
             if method == "vector"
@@ -74,11 +82,16 @@ class KbTools:
             ] = KbSearch.SNIPPET_DEFAULT,
         ) -> tuple[str, ToolResult]:
             return pack_result(
-                KbSearch.run(cfg, collection, query, method, top_k, snippet_chars)
+                KbSearch.run(
+                    cfg, caller, collection, query, method, top_k, snippet_chars
+                )
             )
 
         return search
 
 
-def build_kb_tools(cfg: PostgresKnowledgeBaseConfig) -> list[BaseTool]:
-    return KbTools(cfg).build()
+def build_kb_tools(
+    cfg: PostgresKnowledgeBaseConfig,
+    path_vars: Callable[[], Mapping[str, str]],
+) -> list[BaseTool]:
+    return KbTools(cfg, path_vars).build()

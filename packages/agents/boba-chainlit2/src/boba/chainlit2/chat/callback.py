@@ -20,7 +20,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.chainlit2.agent.cancellation import turn_cancellation
-from boba.chainlit2.agent.tools.sandbox import WORKSPACE_MOUNT
+from boba.chainlit2.agent.tools.bash import WORKSPACE_MOUNT
 from boba.chainlit2.chat.agent_tracer import AgentTracer
 from boba.chainlit2.chat.data.models import Element
 from boba.chainlit2.chat.edit import ThreadRewind

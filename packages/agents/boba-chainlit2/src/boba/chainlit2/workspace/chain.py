@@ -132,6 +132,8 @@ def build_chain_argv(  # noqa: PLR0913 — независимые парамет
         str(limits.max_file_size_bytes),
         "--max-open-files",
         str(limits.max_open_files),
+        "--oom-score-adj",
+        str(limits.oom_score_adj),
     ]
     for image, mnt in images:
         argv += ["--image", image, mnt]

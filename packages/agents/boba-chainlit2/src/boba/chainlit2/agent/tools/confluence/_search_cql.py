@@ -1,31 +1,18 @@
-"""Tool confluence_search_cql + ConfluenceSearchCqlConfig: online CQL-search.
+"""Tool confluence_search_cql: полнотекстовый поиск страниц.
 
-Полнотекстовый поиск страниц по реальному Confluence (не по KB). LLM
-передаёт строку запроса + список spaces + limit/snippet_chars;
-connection (confluence) — из секции [tool.kb].
+Запрос к REST и разбор выдачи делает payload в песочнице; здесь остаётся
+сборка CQL и таблица для LLM.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, ClassVar
+from typing import Annotated, Any, ClassVar
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit2.agent.tools.confluence.connection import ConfluenceConnection
-from boba.chainlit2.agent.tools.confluence.models import ConfluenceKeys, HttpKeys
-from boba.chainlit2.agent.tools.confluence.pipeline import ConfluenceHttpTransport
-from boba.chainlit2.agent.tools.confluence.reading import ConfluenceSearchHitsReader
-from boba.chainlit2.agent.tools.confluence.request_sources import (
-    ConfluenceCqlSearchRequestSource,
-)
-from boba.chainlit2.agent.tools.http import CancellableHttpTransport
+from boba.chainlit2.agent.tools.confluence.caller import ConfluenceCaller
+from boba.chainlit2.agent.tools.confluence.protocol import ConfluenceSearchRequest
 from boba.chainlit2.rendering.tool_result import TableResult
-from boba.indexing import (
-    Pipeline,
-    ReaderKeys,
-    Section,
-)
 from boba.settings import LLMStringList
 from boba.transport.http import HttpProfile
 
@@ -45,27 +32,12 @@ class ConfluenceSearchCqlConfig(BaseModel):
 
 
 class CqlSearch:
-    """Сборка CQL и распаковка search-Section в плоский hit-dict."""
+    """Сборка CQL-запроса; разбор выдачи делает payload."""
 
     SNIPPET_DEFAULT: ClassVar[int] = 1000
     SNIPPET_DESC: ClassVar[str] = (
         "Максимальная длина сниппета на каждый hit (символов). По умолчанию 1000."
     )
-
-    @staticmethod
-    def hit(section: Section[str]) -> dict[str, str]:
-        m = section.metadata
-        version = m.get(ConfluenceKeys.VERSION)
-        return {
-            "page_id": m.get(ConfluenceKeys.PAGE_ID) or "",
-            "title": m.get(ReaderKeys.PAGE_TITLE) or "",
-            "space_key": m.get(ConfluenceKeys.SPACE_KEY) or "",
-            "url": str(section.source_id),
-            "snippet": section.content,
-            "last_modified": m.get(HttpKeys.LAST_MODIFIED) or "",
-            # online version.number — LLM сверяет с version из индексного поиска
-            "version": str(version) if version is not None else "",
-        }
 
     @staticmethod
     def cql_literal(value: str) -> str:
@@ -85,8 +57,9 @@ class CqlSearch:
         return f"({text_block}) and ({space_block})"
 
 
-def confluence_search_cql(
+def confluence_search_cql(  # noqa: PLR0913 — фильтры поиска независимы
     cfg: ConfluenceSearchCqlConfig,
+    caller: ConfluenceCaller,
     query: Annotated[
         str,
         Field(min_length=1, description="Строка полнотекстового поиска в Confluence."),
@@ -116,26 +89,18 @@ def confluence_search_cql(
     confluence-версия страницы: сверь её с `version` из kb-поиска по индексу,
     чтобы понять, что в индексе устарело и страницу нужно переиндексировать.
     """
-    conn = ConfluenceConnection(profile=cfg.confluence)
-    pipeline = Pipeline(
-        source=ConfluenceCqlSearchRequestSource(
-            base_url=conn.base_url,
-            cql=CqlSearch.build_cql(query=query, spaces=spaces),
-            limit=limit,
-        ),
-        transport=ConfluenceHttpTransport(CancellableHttpTransport(conn.profile)),
-        reader=ConfluenceSearchHitsReader(
-            base_url=conn.base_url,
-            snippet_chars=snippet_chars,
-        ),
+    request = ConfluenceSearchRequest(
+        op=ConfluenceSearchRequest.OP,
+        base_url=cfg.confluence.base_url or "",
+        profile=ConfluenceCaller.transport_of(cfg.confluence),
+        cql=CqlSearch.build_cql(query=query, spaces=spaces),
+        limit=limit,
+        snippet_chars=snippet_chars,
     )
-
-    try:
-        sections = list(pipeline.sections())
-    except httpx.HTTPError as e:
-        raise RuntimeError(
-            f"Confluence search failed: {type(e).__name__}: {e}",
-        ) from e
-
-    rows = [CqlSearch.hit(s) for s in sections]
-    return TableResult(rows=rows, note=None if rows else "ничего не найдено")
+    rows: list[dict[str, Any]] = []
+    for hit in caller.search(request).hits:
+        rows.append(hit.model_dump())
+    note = "ничего не найдено"
+    if rows:
+        note = f"найдено: {len(rows)}"
+    return TableResult(rows=rows, note=note)

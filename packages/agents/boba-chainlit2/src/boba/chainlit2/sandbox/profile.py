@@ -210,6 +210,76 @@ class SandboxProfile(BaseModel):
         ge=1024,
         description="Лимит stdout И stderr по отдельности; сверх — обрезка.",
     )
+    cgroup_base: str = Field(
+        description=(
+            "Делегированный cgroup v2 каталог; в нём создаётся leaf на "
+            "каждый запуск. Обязателен, если задан любой cgroup_*-лимит."
+        ),
+    )
+    cgroup_memory_bytes: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Лимит памяти всего запуска суммарно (cgroup memory.max), байт: "
+            "в отличие от max_memory_bytes не множится на число процессов. "
+            "Каждый cgroup_*-параметр независим: отсутствие в конфиге — "
+            "не контролируется; заданный обязан примениться, иначе "
+            "ошибка старта."
+        ),
+    )
+    cgroup_cpu_percent: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Потолок скорости CPU всего запуска (cgroup cpu.max) в процентах "
+            "одного ядра: 100 — ядро, 150 — полтора. Отсутствие — "
+            "не контролируется."
+        ),
+    )
+    cgroup_cpu_weight: int | None = Field(
+        default=None,
+        ge=1,
+        le=10000,
+        description=(
+            "Вес CPU при конкуренции (cgroup cpu.weight), 1..10000; на "
+            "простаивающей машине не ограничивает. Отсутствие — "
+            "не контролируется."
+        ),
+    )
+    cgroup_pids_max: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Потолок числа процессов в группе (cgroup pids.max): в отличие "
+            "от max_processes (RLIMIT_NPROC, общий на uid) считает только "
+            "процессы этого запуска. Отсутствие — не контролируется."
+        ),
+    )
+    cgroup_swap_max_bytes: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Лимит свопа группы (cgroup memory.swap.max), байт; 0 — своп "
+            "запрещён, без него cgroup_memory_bytes дыряв: группа вытекает "
+            "в swap. Отсутствие — не контролируется."
+        ),
+    )
+    cgroup_oom_kill_all: bool | None = Field(
+        default=None,
+        description=(
+            "cgroup memory.oom.group: при OOM убивать всю группу разом, "
+            "а не один процесс — полуживой запуск бесполезен. "
+            "Отсутствие — поведение ядра по умолчанию (один процесс)."
+        ),
+    )
+    oom_score_adj: int = Field(
+        ge=0,
+        le=1000,
+        description=(
+            "oom_score_adj команды (0..1000): чем выше, тем охотнее OOM "
+            "killer убьёт её, а не сервер. 0 — не менять."
+        ),
+    )
     cwd: str = Field(
         description=(
             "Рабочая директория внутри песочницы; поддерживает "
@@ -235,6 +305,25 @@ class SandboxProfile(BaseModel):
     def _validate_images(self) -> Self:
         if self.rw_images and not self.image_template:
             msg = "sandbox: rw_images is set, but image_template is empty"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_cgroup(self) -> Self:
+        group_fields = (
+            self.cgroup_memory_bytes,
+            self.cgroup_cpu_percent,
+            self.cgroup_cpu_weight,
+            self.cgroup_pids_max,
+            self.cgroup_swap_max_bytes,
+            self.cgroup_oom_kill_all,
+        )
+        requested = any(value is not None for value in group_fields)
+        if requested and not self.cgroup_base:
+            msg = "sandbox: group limits are set, but cgroup_base is empty"
+            raise ValueError(msg)
+        if self.cgroup_base and not self.cgroup_base.startswith("/"):
+            msg = f"sandbox: cgroup_base must be absolute, got {self.cgroup_base!r}"
             raise ValueError(msg)
         return self
 

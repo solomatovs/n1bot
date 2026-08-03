@@ -14,10 +14,10 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
+from boba.chainlit2.agent.tools.bash.config import BashSandboxConfig
 from boba.chainlit2.rendering.render import pack_result
 from boba.chainlit2.rendering.tool_result import JsonResult, ToolResult
-from boba.chainlit2.sandbox import SandboxOutcome, SandboxRunner
+from boba.chainlit2.sandbox import SandboxCaller, SandboxOutcome
 
 __all__ = ["build_bash_tool", "has_bwrap"]
 
@@ -33,7 +33,7 @@ def build_bash_tool(
     cfg: BashSandboxConfig,
     path_vars: Callable[[], Mapping[str, str]],
 ) -> BaseTool:
-    runner = SandboxRunner(cfg.sandbox, path_vars)
+    caller = SandboxCaller("bash", cfg.sandbox.effective(), path_vars)
 
     @tool(response_format="content_and_artifact")
     def bash(
@@ -57,7 +57,7 @@ def build_bash_tool(
 
         Доступ к файловой системе и сети ограничен окружением запуска.
         """
-        outcome = runner.run(command, profile_name=cfg.profile, stdin=stdin)
+        outcome = caller.call_text(command, stdin=stdin)
         return pack_result(
             JsonResult(ok=outcome.succeeded, payload=_result_to_payload(outcome))
         )

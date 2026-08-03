@@ -11,6 +11,7 @@
 сканируются исходники (--packages).
 """
 import argparse
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -69,7 +70,7 @@ check("pip module", lambda: run(sys.executable, "-m", "pip", "--version"))
 print("== third-party imports ==")
 import importlib
 
-for m in ["pydantic", "fastapi", "tabulate", "plotly", "fastembed"]:
+for m in ["pydantic", "fastapi", "tabulate"]:
     check(f"import {m}", lambda m=m: importlib.import_module(m))
 
 # 3) все пакеты boba установлены (без импорта кода — только метаданные).
@@ -117,27 +118,20 @@ for script in scripts:
           (_ for _ in ()).throw(RuntimeError("not found"))
           if shutil.which(script) is None else None)
 
-# 5) OCR-модели tesseract (путь задаёт boba.env: TESSDATA_PREFIX)
-print("== OCR models ==")
-tessdir = os.environ.get("TESSDATA_PREFIX", "/opt/tessdata")
+# 5) парсеры в окружении приложения: сам boba-chainlit2 их не тянет —
+# документы и HTML разбирает песочница. Но v1-пакеты (boba-tool-doc,
+# boba-tool-kb) зависят от них по-прежнему, поэтому это предупреждение,
+# а не отказ: пока они в сборке, парсеры лежат и в venv приложения
+print("== parsers stay in sandbox ==")
 
 
-def t_tessdata():
-    need = ["eng.traineddata", "rus.traineddata", "osd.traineddata"]
-    missing = [n for n in need if not os.path.isfile(os.path.join(tessdir, n))]
-    assert not missing, f"нет моделей: {missing} в {tessdir}"
+def t_absent(module):
+    if importlib.util.find_spec(module) is not None:
+        raise RuntimeError(f"{module} в окружении приложения (его тянут v1-пакеты)")
 
 
-check(f"tessdata в {tessdir}", t_tessdata)
-
-# 6) embedding-веса fastembed (путь задаёт boba.env: FASTEMBED_CACHE_PATH)
-print("== fastembed weights ==")
-fastembed_dir = os.environ.get("FASTEMBED_CACHE_PATH", "/opt/fastembed")
-warn(
-    f"веса в {fastembed_dir}",
-    lambda: (_ for _ in ()).throw(RuntimeError("каталог пуст — make deps не запускался"))
-    if not os.path.isdir(fastembed_dir) or not os.listdir(fastembed_dir) else None,
-)
+for module in ["liteparse", "markdownify", "bs4", "fastembed", "onnxruntime"]:
+    warn(f"нет {module} в приложении", lambda m=module: t_absent(m))
 
 print()
 if failures:

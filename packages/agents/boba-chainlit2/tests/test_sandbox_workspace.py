@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import HumanMessage
 
-from boba.chainlit2.agent.tools.sandbox import WORKSPACE_MOUNT
+from boba.chainlit2.agent.tools.bash import WORKSPACE_MOUNT
 from boba.chainlit2.chat.data.models import Element
 from boba.chainlit2.infra.providers import build_llm_view
 from boba.chainlit2.sandbox.argv import build_bwrap_argv
@@ -43,6 +43,8 @@ _PROFILE_BASE: dict[str, object] = {
     "max_open_files": 256,
     "max_processes": 256,
     "max_output_bytes": 256 * 1024,
+    "cgroup_base": "",
+    "oom_score_adj": 0,
     "cwd": "",
 }
 

@@ -15,19 +15,14 @@ import json
 from collections.abc import Iterable
 from typing import Any, ClassVar
 
-from bs4.element import Tag
-
 from boba.chainlit2.agent.tools.confluence.models import (
     ConfluenceKeys,
     ConfluencePayloadError,
     HttpKeys,
 )
-from boba.chainlit2.agent.tools.confluence.parsing import (
-    ConfluenceHtml,
-    ConfluenceJson,
-    Heading,
-)
-from boba.html import HtmlKeys
+from boba.chainlit2.agent.tools.confluence.parsing import ConfluenceJson
+from boba.chainlit2.agent.tools.html import ConfluenceSection, HtmlCaller
+from boba.html.keys import HtmlKeys
 from boba.indexing import (
     RawDocument,
     Reader,
@@ -42,12 +37,18 @@ __all__ = ["ConfluenceReader", "ConfluenceSearchHitsReader"]
 
 
 class ConfluenceReader(Reader[str]):
-    """Heading-aware Reader для Confluence-export HTML."""
+    """Heading-aware Reader для Confluence-export HTML.
+
+    Саму разметку разбирает payload в песочнице: сюда возвращаются готовые
+    куски текста с их местом в дереве заголовков, а метаданные индексации
+    (doc_type, breadcrumb, anchor в URL) проставляет уже приложение.
+    """
 
     DOC_TYPE: ClassVar[str] = "confluence_html"
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.confluence")
-    BREADCRUMB_SEPARATOR: ClassVar[str] = " › "
-    TITLE_LEVEL: ClassVar[int] = 0
+
+    def __init__(self, html_caller: HtmlCaller) -> None:
+        self._html = html_caller
 
     def reader_id(self) -> ReaderId:
         return self.READER_ID
@@ -56,76 +57,32 @@ class ConfluenceReader(Reader[str]):
         payload = value.handle.read()
         if not payload.strip():
             return
-        soup = ConfluenceHtml.parse_html(payload)
-        body = soup.body or soup
-        headings = [h for h in ConfluenceHtml.collect_headings(soup) if h.text.strip()]
-
+        html = payload.decode("utf-8", errors="replace")
         title = value.metadata.get(ReaderKeys.PAGE_TITLE) or ""
-
-        if not headings:
-            yield from self._fallback_section(value, body, title)
-            return
-
-        stack: list[tuple[int, str]] = []
-        if title:
-            stack.append((self.TITLE_LEVEL, title))
-
-        for i, h in enumerate(headings):
-            self._push_heading(stack, h.level, h.text)
-            path = self._render_path(stack)
-            next_tag = headings[i + 1].tag if i + 1 < len(headings) else None
-            between = ConfluenceHtml.text_between(h.tag, next_tag)
-            text = h.text + (("\n\n" + between) if between else "")
+        answer = self._html.confluence_sections(html, title)
+        for section in answer.sections:
             yield Section(
                 source_id=value.source_id,
-                content=text.strip(),
-                order=h.index,
-                metadata=self._section_meta(value, h, path),
+                content=section.content,
+                order=section.order,
+                metadata=self._section_meta(value, section),
             )
 
-    def _section_meta(self, value: RawDocument, h: Heading, path: str):
-        meta = (
-            value.metadata
-            .set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
-            .set(HtmlKeys.HEADING_LEVEL, h.level)
-            .set(HtmlKeys.HEADING_TEXT, h.text)
-            .set(SectionKeys.HEADING_PATH, path)
-        )
-        anchor = ConfluenceHtml.anchor_for(h)
-        if anchor:
-            meta = meta.set(SectionKeys.ANCHOR, anchor)
-            src = meta.get(ConfluenceKeys.SOURCE_URL)
-            if src and "#" not in src:
-                meta = meta.set(ConfluenceKeys.SOURCE_URL, f"{src}#{anchor}")
-        return meta
-
-    def _fallback_section(
-        self, value: RawDocument, body: Tag, title: str
-    ) -> Iterable[Section[str]]:
-        text = ConfluenceHtml.plain_text(body)
-        if not text and not title:
-            return
-        composed = f"{title}\n\n{text}".strip() if title else text
+    def _section_meta(self, value: RawDocument, section: ConfluenceSection):
         meta = value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
-        if title:
-            meta = meta.set(HtmlKeys.HEADING_TEXT, title)
-            meta = meta.set(SectionKeys.HEADING_PATH, title)
-        yield Section(
-            source_id=value.source_id,
-            content=composed,
-            order=0,
-            metadata=meta,
-        )
-
-    @staticmethod
-    def _push_heading(stack: list[tuple[int, str]], level: int, text: str) -> None:
-        while stack and stack[-1][0] >= level:
-            stack.pop()
-        stack.append((level, text))
-
-    @classmethod
-    def _render_path(cls, stack: list[tuple[int, str]]) -> str:
-        return cls.BREADCRUMB_SEPARATOR.join(text for _, text in stack)
+        if section.heading_level:
+            meta = meta.set(HtmlKeys.HEADING_LEVEL, section.heading_level)
+        if section.heading_text:
+            meta = meta.set(HtmlKeys.HEADING_TEXT, section.heading_text)
+        if section.heading_path:
+            meta = meta.set(SectionKeys.HEADING_PATH, section.heading_path)
+        if not section.anchor:
+            return meta
+        meta = meta.set(SectionKeys.ANCHOR, section.anchor)
+        src = meta.get(ConfluenceKeys.SOURCE_URL)
+        if src and "#" not in src:
+            meta = meta.set(ConfluenceKeys.SOURCE_URL, f"{src}#{section.anchor}")
+        return meta
 
 
 class ConfluenceSearchHitsReader(Reader[str]):
@@ -142,9 +99,12 @@ class ConfluenceSearchHitsReader(Reader[str]):
     DOC_TYPE: ClassVar[str] = "confluence_search_hit"
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.confluence_search_hits")
 
-    def __init__(self, *, base_url: str, snippet_chars: int) -> None:
+    def __init__(
+        self, *, base_url: str, snippet_chars: int, html_caller: HtmlCaller
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._snippet_chars = snippet_chars
+        self._html = html_caller
 
     def reader_id(self) -> ReaderId:
         return self.READER_ID
@@ -208,7 +168,7 @@ class ConfluenceSearchHitsReader(Reader[str]):
         html = ConfluenceJson.body_html(hit, "view")
         if not html:
             return ""
-        text = ConfluenceHtml.plain_text(ConfluenceHtml.parse_html(html)).strip()
+        text = self._html.plain_text(html).strip()
         if len(text) <= self._snippet_chars:
             return text
         return text[: self._snippet_chars - 1].rstrip() + "…"

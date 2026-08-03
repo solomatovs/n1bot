@@ -1,4 +1,4 @@
-"""Компонент sandbox: реестр профилей и независимость от agent.tools."""
+"""Компонент sandbox: профиль запуска инструмента и независимость от tools."""
 
 from __future__ import annotations
 
@@ -7,8 +7,12 @@ import sys
 from typing import Any
 
 import pytest
+from omegaconf import DictConfig, OmegaConf
+from omegaconf.errors import InterpolationKeyError
 
-from boba.chainlit2.sandbox import SandboxConfig, SandboxProfile
+from boba.chainlit2.agent.tools.bash.config import BashSandboxConfig
+from boba.chainlit2.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
+from boba.settings import bind
 
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
@@ -32,6 +36,8 @@ _PROFILE_BASE: dict[str, Any] = {
     "max_open_files": 256,
     "max_processes": 256,
     "max_output_bytes": 256 * 1024,
+    "cgroup_base": "",
+    "oom_score_adj": 0,
     "cwd": "",
 }
 
@@ -45,62 +51,118 @@ def _profile(**kw: Any) -> SandboxProfile:
     return SandboxProfile.model_validate({**_PROFILE_BASE, **kw})
 
 
-def _config(**kw: Any) -> SandboxConfig:
-    profiles = {
-        "default": _profile(cwd="/workspace"),
-        "online": _profile(network=True),
-    }
-    fields: dict[str, Any] = {"profiles": profiles}
-    fields.update(kw)
-    return SandboxConfig.model_validate(fields)
+def _tool_config(override: dict[str, Any], **profile_kw: Any) -> SandboxToolConfig:
+    profile = _profile(cwd="/workspace", **profile_kw)
+    return SandboxToolConfig.model_validate(
+        {"profile": profile, "override": override}
+    )
 
 
 class TestProfileRegistry:
-    """Инструмент ссылается на профиль по имени, а не собирает окружение сам."""
+    """Секция [sandbox] валидируется на старте целиком, а не при первом вызове."""
 
-    def test_profile_by_name(self) -> None:
-        assert _config().profile("online").network is True
-
-    def test_empty_name_is_rejected(self) -> None:
-        """Профиля по умолчанию нет: имя обязано быть названо явно."""
-        with pytest.raises(KeyError, match="profile name is required"):
-            _config().profile("")
-
-    def test_unknown_profile_lists_available(self) -> None:
-        with pytest.raises(KeyError, match="available"):
-            _config().profile("нет-такого")
+    def test_profiles_are_parsed(self) -> None:
+        cfg = SandboxConfig.model_validate(
+            {
+                "profiles": {
+                    "default": _profile(rootfs="/srv/rootfs-a"),
+                    "online": _profile(rootfs="/srv/rootfs-b", network=True),
+                },
+            }
+        )
+        assert cfg.profiles["default"].rootfs == "/srv/rootfs-a"
+        assert cfg.profiles["online"].network is True
 
     def test_empty_registry_rejected(self) -> None:
         with pytest.raises(ValueError, match="profiles"):
             SandboxConfig.model_validate({"profiles": {}})
 
-    def test_profiles_may_differ_in_rootfs(self) -> None:
-        cfg = SandboxConfig.model_validate(
+    def test_broken_profile_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_processes"):
+            SandboxConfig.model_validate(
+                {"profiles": {"bad": {**_PROFILE_BASE, "max_processes": 0}}}
+            )
+
+
+class TestToolProfile:
+    """Инструмент получает профиль ссылкой; переопределения пишет админ."""
+
+    def test_profile_comes_from_reference(self) -> None:
+        assert _tool_config({}).effective().cwd == "/workspace"
+
+    def test_reference_may_be_a_plain_mapping(self) -> None:
+        """OmegaConf подставляет узел профиля как словарь."""
+        cfg = SandboxToolConfig.model_validate(
+            {"profile": dict(_PROFILE_BASE), "override": {}}
+        )
+        assert cfg.effective().max_processes == 256
+
+    def test_field_replaces_base(self) -> None:
+        assert _tool_config({"cwd": "/other"}).effective().cwd == "/other"
+
+    def test_untouched_fields_come_from_base(self) -> None:
+        assert _tool_config({"cwd": "/other"}).effective().max_processes == 256
+
+    def test_mounts_are_parsed_from_strings(self) -> None:
+        eff = _tool_config({"ro_binds": ["/srv/payload:/opt/payload"]}).effective()
+        assert (eff.ro_binds[0].host, eff.ro_binds[0].target) == (
+            "/srv/payload",
+            "/opt/payload",
+        )
+
+    def test_list_is_replaced_not_appended(self) -> None:
+        cfg = _tool_config({"ro_binds": ["/srv/b"]}, ro_binds=("/srv/a",))
+        assert [b.host for b in cfg.effective().ro_binds] == ["/srv/b"]
+
+    def test_any_field_may_be_overridden(self) -> None:
+        """Ограничений нет: решает администратор."""
+        eff = _tool_config({"network": True, "rootfs": "/srv/other"}).effective()
+        assert eff.network is True
+        assert eff.rootfs == "/srv/other"
+
+    def test_base_profile_is_not_mutated(self) -> None:
+        cfg = _tool_config({"network": True})
+        cfg.effective()
+        assert cfg.profile.network is False
+
+    def test_empty_override_returns_base(self) -> None:
+        cfg = _tool_config({})
+        assert cfg.effective() is cfg.profile
+
+    def test_unknown_field_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Extra inputs"):
+            _tool_config({"нет-такого-поля": 1}).effective()
+
+    def test_invalid_value_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_processes"):
+            _tool_config({"max_processes": 0}).effective()
+
+    def test_missing_profile_rejected(self) -> None:
+        with pytest.raises(ValueError, match="profile"):
+            SandboxToolConfig.model_validate({"override": {}})
+
+
+class TestProfileReference:
+    """Ссылка на профиль резолвится при загрузке конфига, а не при вызове."""
+
+    @staticmethod
+    def _raw(reference: str) -> DictConfig:
+        return OmegaConf.create(
             {
-                "profiles": {
-                    "a": _profile(rootfs="/srv/rootfs-a"),
-                    "b": _profile(rootfs="/srv/rootfs-b", network=True),
-                },
+                "sandbox": {"profiles": {"default": dict(_PROFILE_BASE)}},
+                "tool": {"bash": {"sandbox": {"profile": reference, "override": {}}}},
             }
         )
-        assert cfg.profile("a").rootfs == "/srv/rootfs-a"
-        assert cfg.profile("b").rootfs == "/srv/rootfs-b"
 
+    def test_reference_is_resolved(self) -> None:
+        raw = self._raw("${sandbox.profiles.default}")
+        cfg = bind(raw, path="tool.bash", model=BashSandboxConfig)
+        assert cfg.sandbox.effective().max_processes == 256
 
-class TestToolProfileBinding:
-    """Профиль инструмента проверяется на старте, а не при первом вызове."""
-
-    def test_unknown_profile_fails_at_startup(self) -> None:
-        from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
-
-        with pytest.raises(ValueError, match="is not defined"):
-            BashSandboxConfig(sandbox=_config(), profile="нет-такого")
-
-    def test_known_profile_accepted(self) -> None:
-        from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
-
-        cfg = BashSandboxConfig(sandbox=_config(), profile="online")
-        assert cfg.profile == "online"
+    def test_unknown_profile_fails_at_load(self) -> None:
+        raw = self._raw("${sandbox.profiles.нет-такого}")
+        with pytest.raises(InterpolationKeyError, match=r"sandbox\.profiles"):
+            bind(raw, path="tool.bash", model=BashSandboxConfig)
 
 
 class TestComponentIsolation:
@@ -108,7 +170,7 @@ class TestComponentIsolation:
         """Порядок импорта не должен ломать пакет: цикла быть не может."""
         code = (
             "import boba.chainlit2.sandbox as s\n"
-            "assert s.SandboxRunner and s.SandboxConfig\n"
+            "assert s.SandboxRunner and s.SandboxToolConfig\n"
             "print('ok')\n"
         )
         result = subprocess.run(  # noqa: S603

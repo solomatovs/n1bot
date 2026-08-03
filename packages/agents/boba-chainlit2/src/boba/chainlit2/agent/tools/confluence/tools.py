@@ -5,6 +5,7 @@
 в ErrorResult.
 """
 
+from collections.abc import Callable, Mapping
 from typing import Annotated, Literal
 
 from langchain.tools import tool
@@ -27,8 +28,10 @@ from boba.chainlit2.agent.tools.confluence._search_cql import (
     ConfluenceSearchCqlConfig,
     confluence_search_cql,
 )
+from boba.chainlit2.agent.tools.confluence.caller import ConfluenceCaller
 from boba.chainlit2.rendering.render import pack_result
 from boba.chainlit2.rendering.tool_result import ErrorResult, TextResult, ToolResult
+from boba.chainlit2.sandbox import SandboxEntryConfig
 from boba.settings import LLMStringList
 from boba.transport.http import HttpProfile
 
@@ -39,6 +42,10 @@ class ConfluenceToolsConfig(BaseModel):
     """Общий конфиг секции [tool.confluence] для всех инструментов чтения."""
 
     model_config = ConfigDict(extra="ignore")
+
+    sandbox: SandboxEntryConfig = Field(
+        description="Окружение и точка входа payload'а: [tool.confluence.sandbox].",
+    )
 
     confluence: HttpProfile = Field(
         description='Web-профиль Confluence ссылкой `confluence = "${web.<name>}"`.',
@@ -57,8 +64,13 @@ class ConfluenceToolsConfig(BaseModel):
 class ConfluenceTools:
     """Собирает langchain-инструменты чтения Confluence."""
 
-    def __init__(self, cfg: ConfluenceToolsConfig) -> None:
+    def __init__(
+        self,
+        cfg: ConfluenceToolsConfig,
+        path_vars: Callable[[], Mapping[str, str]],
+    ) -> None:
         self._cfg = cfg
+        self._caller = ConfluenceCaller("confluence", cfg.sandbox, path_vars)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -105,7 +117,7 @@ class ConfluenceTools:
             """Скачивает одну Confluence-страницу и возвращает её контент."""
             try:
                 text = confluence_fetch_page(
-                    cfg, page_id=page_id, as_markdown=as_markdown
+                    cfg, owner._caller, page_id=page_id, as_markdown=as_markdown
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
@@ -173,6 +185,7 @@ class ConfluenceTools:
             try:
                 result = confluence_grep_page(
                     cfg,
+                    owner._caller,
                     page_id=page_id,
                     pattern=pattern,
                     as_markdown=as_markdown,
@@ -219,6 +232,7 @@ class ConfluenceTools:
             try:
                 result = confluence_search_cql(
                     cfg,
+                    owner._caller,
                     query=query,
                     spaces=spaces,
                     limit=limit,
@@ -257,7 +271,8 @@ class ConfluenceTools:
             """Список spaces Confluence с опциональным glob-фильтром."""
             try:
                 result = confluence_list_spaces(
-                    cfg, pattern=pattern, space_type=space_type, limit=limit
+                    cfg,
+                    owner._caller, pattern=pattern, space_type=space_type, limit=limit
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
@@ -266,6 +281,9 @@ class ConfluenceTools:
         return confluence_spaces
 
 
-def build_confluence_tools(cfg: ConfluenceToolsConfig) -> list[BaseTool]:
+def build_confluence_tools(
+    cfg: ConfluenceToolsConfig,
+    path_vars: Callable[[], Mapping[str, str]],
+) -> list[BaseTool]:
     """Собрать инструменты чтения Confluence."""
-    return ConfluenceTools(cfg).build()
+    return ConfluenceTools(cfg, path_vars).build()

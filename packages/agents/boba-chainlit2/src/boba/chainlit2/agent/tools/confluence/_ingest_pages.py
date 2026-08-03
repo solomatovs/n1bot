@@ -9,13 +9,11 @@ from typing import Annotated
 
 from pydantic import Field
 
-from boba.chainlit2.agent.tools.confluence.connection import ConfluenceConnection
 from boba.chainlit2.agent.tools.confluence.ingest_base import (
-    ConfluenceIngest,
     ConfluenceIngestConfig,
 )
-from boba.chainlit2.agent.tools.confluence.request_sources import (
-    ConfluencePagesRequestSource,
+from boba.chainlit2.agent.tools.confluence.ingest_caller import (
+    ConfluenceIngestCaller,
 )
 from boba.chainlit2.rendering.tool_result import TableResult
 from boba.settings import LLMStringList
@@ -25,6 +23,7 @@ __all__ = ["confluence_ingest_pages"]
 
 def confluence_ingest_pages(
     cfg: ConfluenceIngestConfig,
+    caller: ConfluenceIngestCaller,
     page_ids: Annotated[
         LLMStringList,
         Field(
@@ -63,13 +62,13 @@ def confluence_ingest_pages(
     Возвращает TableResult — одну строку-summary с колонками collection/
     indexed/skipped_unchanged/pruned/failed; список page_id — в note.
     """
-    conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
-    request_source = ConfluencePagesRequestSource(
-        base_url=conn.base_url,
+    result = caller.ingest(
+        config=cfg.model_dump(mode="json"),
+        mode="pages",
         page_ids=page_ids,
-        body_format=conn.body_format,
+        prune_missing=prune_missing,
+        force_update=force_update,
     )
-    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing, force_update)
     return TableResult(
         rows=[result],
         note=f"page_ids ({len(page_ids)}): {', '.join(page_ids)}",

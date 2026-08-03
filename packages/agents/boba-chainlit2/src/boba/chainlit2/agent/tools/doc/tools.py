@@ -1,11 +1,12 @@
 """Инструменты doc: чтение и поиск по загруженным документам (liteparse).
 
-Порт boba.tool.doc: тот же набор tool'ов, но файл берётся из workspace-образа
-пользователя, а результат упаковывается в ToolResult chainlit2.
+Документ парсится payload'ом внутри песочницы; здесь остаётся только
+описание инструментов для LLM и упаковка ответа в ToolResult.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any
 
 from langchain.tools import tool
@@ -16,7 +17,6 @@ from boba.chainlit2.agent.tools.doc.config import DocToolsConfig
 from boba.chainlit2.agent.tools.doc.engine import DocEngine
 from boba.chainlit2.rendering.render import pack_result
 from boba.chainlit2.rendering.tool_result import TableResult, TextResult, ToolResult
-from boba.liteparse import LiteParseEngine
 
 __all__ = ["build_doc_tools"]
 
@@ -27,78 +27,28 @@ _PATH_DESCRIPTION = (
 )
 
 
-class DocSearch:
-    """Совпадения через нативный search_items; сниппет — из текста страницы."""
-
-    ELLIPSIS = "…"
-
-    @classmethod
-    def run(
-        cls,
-        native_result: Any,
-        query: str,
-        context: int,
-        max_matches: int,
-    ) -> list[dict[str, Any]]:
-        needle = query.casefold()
-        rows: list[dict[str, Any]] = []
-        for page in native_result.pages:
-            hits = LiteParseEngine.search_items(
-                page.text_items, query, case_sensitive=False
-            )
-            if not hits:
-                continue
-            hay = page.text.casefold()
-            cursor = 0
-            for hit in hits:
-                index = hay.find(needle, cursor)
-                if index == -1:
-                    snippet = hit.text
-                else:
-                    snippet = cls._snippet(
-                        page.text, index, index + len(query), context
-                    )
-                    cursor = index + len(query)
-                rows.append(
-                    {
-                        "page": page.page_num,
-                        "x": round(hit.x, 1),
-                        "y": round(hit.y, 1),
-                        "width": round(hit.width, 1),
-                        "height": round(hit.height, 1),
-                        "snippet": snippet,
-                    }
-                )
-                if len(rows) >= max_matches:
-                    return rows
-        return rows
-
-    @classmethod
-    def _snippet(cls, text: str, lo: int, hi: int, context: int) -> str:
-        begin = max(0, lo - context)
-        end = min(len(text), hi + context)
-        prefix = ""
-        if begin > 0:
-            prefix = cls.ELLIPSIS
-        suffix = ""
-        if end < len(text):
-            suffix = cls.ELLIPSIS
-        return f"{prefix}{text[begin:end]}{suffix}"
-
-
 class DocText:
-    """Обрезка текста до лимита с явной пометкой для LLM."""
+    """Пометка об обрезке: LLM должна видеть, что текст неполный."""
 
     @staticmethod
-    def clip(text: str, limit: int) -> tuple[str, bool]:
-        clipped, truncated = DocEngine.clip(text, limit)
-        if truncated:
-            clipped += f"\n\n[обрезано до {limit} символов]"
-        return clipped, truncated
+    def mark(text: str, truncated: bool, limit: int) -> str:
+        if not truncated:
+            return text
+        return f"{text}\n\n[обрезано до {limit} символов]"
+
+    @staticmethod
+    def search_note(path: str, matches: int, limit_reached: bool) -> str:
+        note = f"{path}: совпадений {matches}"
+        if limit_reached:
+            note += " (достигнут лимит search_max_matches)"
+        return note
 
 
-def build_doc_tools(cfg: DocToolsConfig) -> list[BaseTool]:
-    engine = DocEngine(cfg)
+def build_doc_tools(
+    cfg: DocToolsConfig,
+    path_vars: Callable[[], Mapping[str, str]],
+) -> list[BaseTool]:
+    engine = DocEngine(cfg, path_vars)
 
     @tool(response_format="content_and_artifact")
     async def read_document(
@@ -110,15 +60,15 @@ def build_doc_tools(cfg: DocToolsConfig) -> list[BaseTool]:
         metadata. Для отдельных страниц есть read_pages, для обзора —
         document_outline.
         """
-        result = await engine.parse(path)
-        text, truncated = DocText.clip(result.text, cfg.max_text_chars)
+        answer = await engine.read_document(path)
+        text = DocText.mark(answer.text, answer.truncated, cfg.max_text_chars)
         return pack_result(
             TextResult(
                 text=text,
                 metadata={
                     "path": path,
-                    "pages": str(result.num_pages),
-                    "truncated": str(truncated),
+                    "pages": str(answer.num_pages),
+                    "truncated": str(answer.truncated),
                 },
             )
         )
@@ -141,18 +91,18 @@ def build_doc_tools(cfg: DocToolsConfig) -> list[BaseTool]:
 
         Дешевле read_document для больших PDF: парсятся лишь нужные страницы.
         """
-        result = await engine.parse(path, target_pages=pages)
-        text, truncated = DocText.clip(result.text, cfg.max_text_chars)
+        answer = await engine.read_pages(path, pages)
+        text = DocText.mark(answer.text, answer.truncated, cfg.max_text_chars)
         parsed_pages: list[str] = []
-        for page in result.pages:
-            parsed_pages.append(str(page.page_num))
+        for page in answer.pages:
+            parsed_pages.append(str(page))
         return pack_result(
             TextResult(
                 text=text,
                 metadata={
                     "path": path,
                     "pages": ",".join(parsed_pages),
-                    "truncated": str(truncated),
+                    "truncated": str(answer.truncated),
                 },
             )
         )
@@ -178,19 +128,16 @@ def build_doc_tools(cfg: DocToolsConfig) -> list[BaseTool]:
                 f"({cfg.max_text_chars}): read in smaller windows"
             )
             raise RuntimeError(msg)
-        result = await engine.parse(path)
-        chunk, end_char, total, has_more = DocEngine.window(
-            result.text, start_char, length
-        )
+        answer = await engine.read_window(path, start_char, length)
         return pack_result(
             TextResult(
-                text=chunk,
+                text=answer.text,
                 metadata={
                     "path": path,
-                    "start_char": str(start_char),
-                    "end_char": str(end_char),
-                    "total_chars": str(total),
-                    "has_more": str(has_more),
+                    "start_char": str(answer.start_char),
+                    "end_char": str(answer.end_char),
+                    "total_chars": str(answer.total_chars),
+                    "has_more": str(answer.has_more),
                 },
             )
         )
@@ -203,22 +150,14 @@ def build_doc_tools(cfg: DocToolsConfig) -> list[BaseTool]:
 
         Дешёвый обзор перед чтением: по нему выбирают страницы для read_pages.
         """
-        result = await engine.parse(path)
+        answer = await engine.outline(path)
         rows: list[dict[str, Any]] = []
-        for page in result.pages:
-            rows.append(
-                {
-                    "page": page.page_num,
-                    "width": round(page.width, 1),
-                    "height": round(page.height, 1),
-                    "chars": len(page.text),
-                    "items": len(page.text_items),
-                }
-            )
+        for row in answer.rows:
+            rows.append(row.model_dump())
         return pack_result(
             TableResult(
                 rows=rows,
-                note=f"{path}: страниц {result.num_pages}",
+                note=f"{path}: страниц {answer.num_pages}",
                 metadata={"path": path},
             )
         )
@@ -231,16 +170,11 @@ def build_doc_tools(cfg: DocToolsConfig) -> list[BaseTool]:
         ],
     ) -> tuple[str, ToolResult]:
         """Найти фразу в документе: страница, координаты совпадения и сниппет."""
-        native = await engine.parse_native(path)
-        rows = DocSearch.run(
-            native,
-            query,
-            cfg.search_context_chars,
-            cfg.search_max_matches,
-        )
-        note = f"{path}: совпадений {len(rows)}"
-        if len(rows) >= cfg.search_max_matches:
-            note += " (достигнут лимит search_max_matches)"
+        answer = await engine.search(path, query)
+        rows: list[dict[str, Any]] = []
+        for row in answer.rows:
+            rows.append(row.model_dump())
+        note = DocText.search_note(path, len(rows), answer.limit_reached)
         return pack_result(
             TableResult(
                 rows=rows,

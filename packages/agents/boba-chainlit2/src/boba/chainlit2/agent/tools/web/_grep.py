@@ -1,149 +1,54 @@
-"""Tool web_grep + WebGrepConfig.
+"""Tool web_grep: поиск по содержимому веб-страницы.
 
-Скачивает одну web-страницу (как web_fetch — через HttpTransport) и
-применяет к её контенту grep-поиск с теми же семантиками, что и file-tool
-grep: regex/fixed_string, регистр, контекст до/после, limit, обрезка длинных
-строк по max_text_chars.
-
-В отличие от web_fetch, возвращает не окно строк, а только совпадения с
-номерами строк — экономит контекст LLM на больших страницах.
-
-Config-секция: [tool.web.grep].
+Скачивание, конверсию и сам поиск делает payload внутри песочницы: наружу
+уходят только совпадения. Здесь остаётся whitelist хостов, лимит длины строк
+и сборка человекочитаемой сводки.
 """
 
 from __future__ import annotations
 
-import re
-from collections import deque
-from collections.abc import Iterator
-from itertools import islice
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any
 
-import httpx
-import markdownify
 from pydantic import Field
 
-from boba.chainlit2.agent.tools.http import CancellableHttpTransport
+from boba.chainlit2.agent.tools.web.caller import WebCaller
 from boba.chainlit2.agent.tools.web.connection import WebConnection
+from boba.chainlit2.agent.tools.web.protocol import WebGrepRequest
 from boba.chainlit2.rendering.tool_result import TableResult
-from boba.indexing import BinaryStream
-from boba.transport.http import HttpRequest
+from boba.chainlit2.sandbox import SandboxEntryConfig
 
 __all__ = ["WebGrepConfig", "web_grep"]
 
 
 class WebGrepConfig(WebConnection):
-    """Config tool'а web_grep: web-профили (WebConnection) + max_text_chars."""
+    """Config web-инструментов: профили, лимит выдачи и песочница запроса."""
 
     max_text_chars: int = Field(
         default=2000,
         ge=1,
         description="Потолок длины content/before/after на match.",
     )
+    sandbox: SandboxEntryConfig = Field(
+        description="Окружение и точка входа payload'а: [tool.web.sandbox].",
+    )
 
 
-class _WebGrep:
-    """Скачать страницу -> grep поверх in-memory текста (regex + контекст)."""
-
-    ENCODING: ClassVar[str] = "utf-8"
-
-    def __init__(self, *, connection: WebConnection) -> None:
-        self._connection = connection
-
-    def load_text(self, *, url: str, as_markdown: bool) -> str:
-        profile = self._connection.resolve_profile(url)
-        try:
-            with (
-                CancellableHttpTransport(profile) as transport,
-                transport.fetch(HttpRequest(url=url)) as resp,
-            ):
-                return self._decode(resp.stream, as_markdown=as_markdown)
-        except httpx.HTTPError as e:
-            raise RuntimeError(
-                f"web_grep failed: {type(e).__name__}: {e}",
-            ) from e
-
-    @classmethod
-    def _decode(cls, handle: BinaryStream, *, as_markdown: bool) -> str:
-        html = handle.read(-1).decode(cls.ENCODING, errors="replace")
-        if as_markdown:
-            return markdownify.markdownify(html, heading_style="ATX")
-        return html
+class WebGrepNote:
+    """Человекочитаемая сводка поиска для LLM."""
 
     @staticmethod
-    def compile_pattern(
-        pattern: str, *, fixed_string: bool, case_insensitive: bool
-    ) -> re.Pattern[str]:
-        flags = re.IGNORECASE if case_insensitive else 0
-        if fixed_string:
-            return re.compile(re.escape(pattern), flags)
-        try:
-            return re.compile(pattern, flags)
-        except re.error:
-            return re.compile(re.escape(pattern), flags)
-
-    @staticmethod
-    def iter_matches(
-        text: str, compiled: re.Pattern[str], *, context: int
-    ) -> Iterator[dict[str, Any]]:
-        before: deque[str] = deque(maxlen=context if context > 0 else 0)
-        pending: list[dict[str, Any]] = []
-        for i, line in enumerate(text.splitlines(), start=1):
-            still_pending: list[dict[str, Any]] = []
-            for p in pending:
-                p["after"].append(line)
-                if len(p["after"]) >= context:
-                    yield p
-                else:
-                    still_pending.append(p)
-            pending = still_pending
-            if compiled.search(line):
-                if context == 0:
-                    yield {"line": i, "content": line, "before": [], "after": []}
-                else:
-                    pending.append(
-                        {
-                            "line": i,
-                            "content": line,
-                            "before": list(before),
-                            "after": [],
-                        }
-                    )
-            before.append(line)
-        yield from pending
-
-    @staticmethod
-    def note(
-        url: str, items: list[dict[str, Any]], *, truncated: bool, max_chars: int
-    ) -> str:
-        if not items:
+    def build(url: str, rows: list[dict[str, Any]], *, limit: int) -> str:
+        if not rows:
             return f"url={url}: совпадений не найдено"
-        parts = [f"url={url}", f"совпадений: {len(items)}"]
-        if truncated:
-            parts.append(f"показаны первые {len(items)} (найдено больше)")
-        if any(it.get("truncated_lines") for it in items):
-            parts.append(f"строки усечены до {max_chars} символов")
+        parts = [f"url={url}", f"совпадений: {len(rows)}"]
+        if len(rows) >= limit:
+            parts.append(f"показаны первые {len(rows)} (найдено больше)")
         return "; ".join(parts)
-
-    @staticmethod
-    def clip(s: str, limit: int) -> tuple[str, bool]:
-        if len(s) <= limit:
-            return s, False
-        return s[:limit], True
-
-    @staticmethod
-    def clip_many(lines: list[str], limit: int) -> tuple[list[str], bool]:
-        out: list[str] = []
-        cut = False
-        for line in lines:
-            clipped, c = _WebGrep.clip(line, limit)
-            out.append(clipped)
-            cut = cut or c
-        return out, cut
 
 
 def web_grep(  # noqa: PLR0913 — независимые флаги grep'а
     cfg: WebGrepConfig,
+    caller: WebCaller,
     url: Annotated[
         str,
         Field(min_length=1, description="URL для скачивания."),
@@ -173,35 +78,23 @@ def web_grep(  # noqa: PLR0913 — независимые флаги grep'а
         Field(description="Литеральный поиск без regex. По умолчанию false."),
     ] = False,
 ) -> TableResult:
-    engine = _WebGrep(connection=cfg)
-    compiled = _WebGrep.compile_pattern(
-        pattern,
-        fixed_string=fixed_string,
+    """Найти совпадения pattern в содержимом страницы."""
+    profile = cfg.resolve_profile(url)
+    request = WebGrepRequest(
+        op=WebGrepRequest.OP,
+        url=url,
+        profile=WebCaller.transport_of(profile),
+        as_markdown=as_markdown,
+        pattern=pattern,
         case_insensitive=case_insensitive,
+        context=context,
+        limit=limit,
+        fixed_string=fixed_string,
+        max_text_chars=cfg.max_text_chars,
     )
-    text = engine.load_text(url=url, as_markdown=as_markdown)
-
-    found = _WebGrep.iter_matches(text, compiled, context=context)
-    matches = list(islice(found, limit + 1))
-    truncated = len(matches) > limit
-    if truncated:
-        matches = matches[:limit]
-
-    max_chars = cfg.max_text_chars
-    items: list[dict[str, Any]] = []
-    for m in matches:
-        content, cut_c = _WebGrep.clip(m["content"], max_chars)
-        before, cut_b = _WebGrep.clip_many(m["before"], max_chars)
-        after, cut_a = _WebGrep.clip_many(m["after"], max_chars)
-        item: dict[str, Any] = {
-            "line": m["line"],
-            "content": content,
-            "before": before,
-            "after": after,
-        }
-        if cut_c or cut_b or cut_a:
-            item["truncated_lines"] = True
-        items.append(item)
-
-    note = _WebGrep.note(url, items, truncated=truncated, max_chars=max_chars)
-    return TableResult(rows=items, note=note, metadata={"url": url})
+    answer = caller.grep(request)
+    rows: list[dict[str, Any]] = []
+    for row in answer.rows:
+        rows.append(row.model_dump())
+    note = WebGrepNote.build(url, rows, limit=limit)
+    return TableResult(rows=rows, note=note, metadata={"url": url})

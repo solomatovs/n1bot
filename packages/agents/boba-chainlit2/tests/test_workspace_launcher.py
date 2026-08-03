@@ -52,6 +52,7 @@ _REQUIRED_FLAGS = (
     "--max-cpu-sec", "0",
     "--max-file-size-bytes", "0",
     "--max-open-files", "0",
+    "--oom-score-adj", "0",
 )
 
 
@@ -415,6 +416,8 @@ class TestLauncherMain:
                 "2048",
                 "--max-open-files",
                 "64",
+                "--oom-score-adj",
+                "800",
                 "read",
                 "x",
             ]
@@ -424,6 +427,7 @@ class TestLauncherMain:
         assert args.max_memory_bytes == 1048576
         assert args.max_cpu_sec == 7
         assert args.max_file_size_bytes == 2048
+        assert args.oom_score_adj == 800
         assert args.mode == "read"
         assert args.args == ["x"]
 

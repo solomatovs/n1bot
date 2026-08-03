@@ -61,69 +61,160 @@
     # один образ на пользователя: общий workspace во всех его тредах;
     # путь обязан совпадать с rw_images sandbox-профиля
     image_path     = "${BOBA_DIR}/data/workspace/{user_id}.ext4"
-    image_template = "${BOBA_DIR}/third/sandbox-workspace.ext4"
+    image_template = "${BOBA_DIR}/third/sandbox/workspace.ext4"
     op_timeout_sec = 60
     launcher       = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
     public_prefix  = "${chainlit.url_prefix}/workspace"
 
 
-## bash-песочница (bubblewrap); LLM выбирает профиль по имени.
-## Все поля профиля обязательны; лимиты строго больше нуля.
-## профили песочницы: окружение целиком (rootfs, монтирования, сеть, лимиты)
+## профили песочницы (bubblewrap): окружение целиком — rootfs, монтирования,
+## сеть, лимиты. Все поля обязательны, лимиты строго больше нуля.
+## Профиль выбирает администратор в секции инструмента, LLM о нём не знает.
 [sandbox]
+    ## shell пользователя: workspace-образ, python не нужен
     [sandbox.profiles.default]
-        rootfs              = "${BOBA_DIR}/third/sandbox-rootfs"
-        ro_binds            = []
+        rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
+        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site"]
         rw_binds            = []
         rw_images           = ["${BOBA_DIR}/data/workspace/{user_id}.ext4:/workspace"]
-        image_template      = "${BOBA_DIR}/third/sandbox-workspace.ext4"
+        image_template      = "${BOBA_DIR}/third/sandbox/workspace.ext4"
         launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
-        tmpfs               = ["/tmp:256M"]
+        tmpfs               = ["/tmp:512M"]
         network             = false
-        env_set             = { PATH = "/usr/local/bin:/usr/bin:/bin", HOME = "/tmp", LANG = "C.UTF-8" }
+        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
         timeout_sec         = 30
-        max_memory_bytes    = 536870912  # 512M, RLIMIT_AS
-        max_cpu_sec         = 30         # RLIMIT_CPU
-        max_file_size_bytes = 67108864   # 64M, RLIMIT_FSIZE
-        max_open_files      = 1024       # RLIMIT_NOFILE
-        max_processes       = 256        # RLIMIT_NPROC
+        max_memory_bytes    = 536870912
+        max_cpu_sec         = 30
+        max_file_size_bytes = 67108864
+        max_open_files      = 1024
+        max_processes       = 256
         max_output_bytes    = 262144
         cwd                 = "/workspace"
+        cgroup_base         = ""
+        oom_score_adj       = 500
 
-    ## профиль с сетью; DNS и CA-сертификаты должны лежать в rootfs
-    # [tool.sandbox.profiles.network]
-    #     rootfs              = "${BOBA_DIR}/third/sandbox-rootfs"
-    #     ro_binds            = []
-    #     rw_binds            = []
-    #     rw_images           = ["${BOBA_DIR}/data/workspace/{user_id}.ext4:/workspace"]
-    #     image_template      = "${BOBA_DIR}/third/sandbox-workspace.ext4"
-    #     launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
-    #     tmpfs               = ["/tmp:256M"]
-    #     network             = true
-    #     env_set             = { PATH = "/usr/local/bin:/usr/bin:/bin", HOME = "/tmp", LANG = "C.UTF-8" }
-    #     timeout_sec         = 60
-    #     max_memory_bytes    = 536870912
-    #     max_cpu_sec         = 60
-    #     max_file_size_bytes = 67108864
-    #     max_open_files      = 1024
-    #     max_processes       = 256
-    #     max_output_bytes    = 262144
-    #     cwd                 = "/workspace"
+    ## чтение документов: python и парсеры плюс образ пользователя
+    [sandbox.profiles.docs]
+        rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
+        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload", "${BOBA_DIR}/third/sandbox/data/tessdata:/usr/share/tessdata"]
+        rw_binds            = []
+        rw_images           = ["${BOBA_DIR}/data/workspace/{user_id}.ext4:/workspace"]
+        image_template      = "${BOBA_DIR}/third/sandbox/workspace.ext4"
+        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
+        tmpfs               = ["/tmp:512M"]
+        network             = false
+        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
+        timeout_sec         = 120
+        max_memory_bytes    = 17179869184
+        max_cpu_sec         = 120
+        max_file_size_bytes = 67108864
+        max_open_files      = 1024
+        max_processes       = 256
+        max_output_bytes    = 4194304
+        cwd                 = "/workspace"
+        cgroup_base         = ""
+        oom_score_adj       = 500
 
-    ## доступ к tool по ролям: имя = список ролей (пусто = роли секции)
+    ## разбор данных, пришедших в запросе: файловая система не нужна
+    [sandbox.profiles.parser]
+        rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
+        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload", "${BOBA_DIR}/third/sandbox/data/tessdata:/usr/share/tessdata"]
+        rw_binds            = []
+        rw_images           = []
+        image_template      = ""
+        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
+        tmpfs               = ["/tmp:512M"]
+        network             = false
+        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
+        timeout_sec         = 120
+        max_memory_bytes    = 17179869184
+        max_cpu_sec         = 120
+        max_file_size_bytes = 67108864
+        max_open_files      = 1024
+        max_processes       = 256
+        max_output_bytes    = 16777216
+        cwd                 = "/tmp"
+        cgroup_base         = ""
+        oom_score_adj       = 500
+
+    ## инструменты, которые сами ходят в сеть: web и confluence
+    [sandbox.profiles.network]
+        rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
+        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload"]
+        rw_binds            = []
+        rw_images           = []
+        image_template      = ""
+        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
+        tmpfs               = ["/tmp:512M"]
+        network             = true
+        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
+        timeout_sec         = 120
+        max_memory_bytes    = 4294967296
+        max_cpu_sec         = 120
+        max_file_size_bytes = 67108864
+        max_open_files      = 1024
+        max_processes       = 256
+        max_output_bytes    = 4194304
+        cwd                 = "/tmp"
+        cgroup_base         = ""
+        oom_score_adj       = 500
+
+    ## SQL к БД: сеть до постгреса, keytab и krb5.conf только на чтение
+    [sandbox.profiles.pg]
+        rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
+        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        rw_binds            = []
+        rw_images           = []
+        image_template      = ""
+        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
+        tmpfs               = ["/tmp:512M"]
+        network             = true
+        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8", KRB5_CLIENT_KTNAME = "/etc/boba/krb5.keytab", KRB5_CONFIG = "/etc/krb5.conf", KRB5CCNAME = "FILE:/tmp/krb5cc" }
+        timeout_sec         = 60
+        max_memory_bytes    = 1073741824
+        max_cpu_sec         = 60
+        max_file_size_bytes = 67108864
+        max_open_files      = 256
+        max_processes       = 32
+        max_output_bytes    = 4194304
+        cwd                 = "/tmp"
+        cgroup_base         = ""
+        oom_score_adj       = 500
+
+    ## поиск по базе знаний: тот же профиль плюс веса эмбеддера
+    [sandbox.profiles.kb]
+        rootfs              = "${BOBA_DIR}/third/sandbox/rootfs"
+        ro_binds            = ["${BOBA_DIR}/third/sandbox/python:/opt/python", "${BOBA_DIR}/third/sandbox/site:/opt/site", "${BOBA_DIR}/payloads/parse:/opt/payload", "${BOBA_DIR}/third/sandbox/data/fastembed:/opt/fastembed", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        rw_binds            = []
+        rw_images           = []
+        image_template      = ""
+        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
+        tmpfs               = ["/tmp:512M"]
+        network             = true
+        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8", KRB5_CLIENT_KTNAME = "/etc/boba/krb5.keytab", KRB5_CONFIG = "/etc/krb5.conf", KRB5CCNAME = "FILE:/tmp/krb5cc" }
+        timeout_sec         = 300
+        max_memory_bytes    = 17179869184
+        max_cpu_sec         = 300
+        max_file_size_bytes = 67108864
+        max_open_files      = 1024
+        max_processes       = 256
+        max_output_bytes    = 16777216
+        cwd                 = "/tmp"
+        cgroup_base         = ""
+        oom_score_adj       = 500
 
 
-[tool.sandbox]
+[tool.bash]
     enable          = true
     roles           = ["ADM"]
-    ## профили берутся из секции [sandbox]; профиль выбирает админ, не LLM
-    sandbox         = "${sandbox}"
-    profile         = "default"
 
-    ## workspace пользователя — ext4-образ, общий для всех его тредов:
-    ## жёсткий потолок диска = размер образа
-    ## (make: SANDBOX_WS_SIZE), плюс процессные лимиты на каждый вызов
-    [tool.sandbox.tools]
+    ## окружение запуска: профиль из [sandbox.profiles] и его переопределения
+    [tool.bash.sandbox]
+        profile  = "${sandbox.profiles.default}"
+        override = {}
+
+    ## доступ к tool по ролям: имя = список ролей (пусто = роли секции)
+    [tool.bash.tools]
         bash = []
 
 
@@ -131,12 +222,18 @@
 [tool.doc]
     enable  = true
     roles   = ["ADM"]
-    ## файлы берутся оттуда же, куда их кладёт загрузка в чат
-    storage = "${storage}"
     ocr_enabled          = false
+    ## модели OCR внутри песочницы: иначе liteparse качает их из интернета
+    tessdata_path        = "/usr/share/tessdata"
     max_text_chars       = 200000
     search_context_chars = 80
     search_max_matches   = 50
+
+    ## документы парсит payload внутри песочницы: rootfs с python и liteparse
+    [tool.doc.sandbox]
+        profile  = "${sandbox.profiles.docs}"
+        override = {}
+        entry    = ["python3", "/opt/payload/main.py"]
 
     [tool.doc.tools]
         read_document        = []

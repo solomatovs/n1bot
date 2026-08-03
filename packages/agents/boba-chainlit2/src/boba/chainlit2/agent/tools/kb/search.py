@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 from boba.chainlit2.agent.tools.confluence.models import ConfluenceKeys
+from boba.chainlit2.agent.tools.kb.caller import KbCaller
 from boba.chainlit2.agent.tools.kb.kb import (
     PostgresKnowledgeBase,
     PostgresKnowledgeBaseConfig,
@@ -204,13 +205,14 @@ limit
     @staticmethod
     def run(  # noqa: PLR0913 — явный набор search-параметров
         cfg: PostgresKnowledgeBaseConfig,
+        caller: KbCaller,
         collection: type[CollectionSearch],
         query: str,
         method: SearchMethod,
         top_k: int,
         snippet_chars: int,
     ) -> ToolResult:
-        kb = PostgresKnowledgeBase(cfg=cfg)
+        kb = PostgresKnowledgeBase(cfg=cfg, caller=caller)
         try:
             if method == "vector":
                 hits = kb.vector_search(

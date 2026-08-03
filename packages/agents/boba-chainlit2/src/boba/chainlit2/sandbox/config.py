@@ -1,41 +1,59 @@
-"""Реестр профилей песочницы: секция [sandbox] верхнего уровня.
-
-Профиль описывает окружение целиком (rootfs, монтирования, сеть, лимиты),
-поэтому инструмент ссылается на готовый профиль, а не собирает его сам.
-"""
+"""Конфиги песочницы: реестр профилей и профиль запуска инструмента."""
 
 from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit2.sandbox.profile import SandboxProfile
 
-__all__ = ["SandboxConfig"]
+__all__ = ["SandboxConfig", "SandboxEntryConfig", "SandboxToolConfig"]
 
 
 class SandboxConfig(BaseModel):
-    """Профили песочницы, общие для всех инструментов."""
+    """Секция [sandbox]: профили, на которые ссылаются инструменты."""
 
     model_config = ConfigDict(extra="ignore")
 
     profiles: dict[str, SandboxProfile] = Field(
         min_length=1,
-        description="Реестр профилей по имени; инструмент называет имя явно.",
+        description="Профили по имени; инструмент берёт нужный ссылкой.",
     )
 
-    def names(self) -> tuple[str, ...]:
-        return tuple(sorted(self.profiles))
 
-    def profile(self, name: str) -> SandboxProfile:
-        """Имя обязательно: профиля по умолчанию нет."""
-        if not name:
-            msg = f"sandbox profile name is required; available: {self.names()}"
-            raise KeyError(msg)
-        found = self.profiles.get(name)
-        if found is None:
-            msg = (
-                f"sandbox profile {name!r} is not defined; "
-                f"available: {self.names()}"
-            )
-            raise KeyError(msg)
-        return found
+class SandboxToolConfig(BaseModel):
+    """Секция [tool.<name>.sandbox]: в каком окружении запускать инструмент."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    profile: SandboxProfile = Field(
+        description='Профиль ссылкой: profile = "${sandbox.profiles.<name>}".',
+    )
+    override: Mapping[str, Any] = Field(
+        description=(
+            "Поля профиля, заменяемые для этого инструмента; пустая таблица "
+            "означает «без изменений». Названное поле заменяет базовое целиком."
+        ),
+    )
+
+    def effective(self) -> SandboxProfile:
+        """Профиль запуска: база плюс то, что переопределил администратор."""
+        if not self.override:
+            return self.profile
+        merged = self.profile.model_dump()
+        merged.update(self.override)
+        return SandboxProfile.model_validate(merged)
+
+
+class SandboxEntryConfig(SandboxToolConfig):
+    """То же плюс точка входа: чем запускается payload инструмента."""
+
+    entry: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "argv payload'а внутри песочницы, например "
+            '["python3", "/opt/payload/main.py"].'
+        ),
+    )

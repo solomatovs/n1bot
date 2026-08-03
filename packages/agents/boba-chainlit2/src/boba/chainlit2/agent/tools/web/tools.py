@@ -4,6 +4,7 @@
 здесь обёртки langchain и перевод ошибок в ErrorResult.
 """
 
+from collections.abc import Callable, Mapping
 from typing import Annotated
 
 from langchain.tools import tool
@@ -12,6 +13,7 @@ from pydantic import Field
 
 from boba.chainlit2.agent.tools.web._fetch import web_fetch
 from boba.chainlit2.agent.tools.web._grep import WebGrepConfig, web_grep
+from boba.chainlit2.agent.tools.web.caller import WebCaller
 from boba.chainlit2.rendering.render import pack_result
 from boba.chainlit2.rendering.tool_result import ErrorResult, JsonResult, ToolResult
 
@@ -21,8 +23,13 @@ __all__ = ["WebTools", "build_web_tools"]
 class WebTools:
     """Собирает langchain-инструменты работы с вебом."""
 
-    def __init__(self, cfg: WebGrepConfig) -> None:
+    def __init__(
+        self,
+        cfg: WebGrepConfig,
+        path_vars: Callable[[], Mapping[str, str]],
+    ) -> None:
         self._cfg = cfg
+        self._web = WebCaller("web", cfg.sandbox, path_vars)
 
     def build(self) -> list[BaseTool]:
         return [self._fetch(), self._grep()]
@@ -58,6 +65,7 @@ class WebTools:
             try:
                 payload = web_fetch(
                     owner._cfg,
+                    owner._web,
                     url=url,
                     as_markdown=as_markdown,
                     line_offset=line_offset,
@@ -107,6 +115,7 @@ class WebTools:
             try:
                 result = web_grep(
                     owner._cfg,
+                    owner._web,
                     url=url,
                     pattern=pattern,
                     as_markdown=as_markdown,
@@ -122,5 +131,8 @@ class WebTools:
         return web_grep_page
 
 
-def build_web_tools(cfg: WebGrepConfig) -> list[BaseTool]:
-    return WebTools(cfg).build()
+def build_web_tools(
+    cfg: WebGrepConfig,
+    path_vars: Callable[[], Mapping[str, str]],
+) -> list[BaseTool]:
+    return WebTools(cfg, path_vars).build()

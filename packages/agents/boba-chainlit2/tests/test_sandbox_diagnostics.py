@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from boba.chainlit2.agent.tools.sandbox.config import BashSandboxConfig
-from boba.chainlit2.agent.tools.sandbox.tools import build_bash_tool
+from boba.chainlit2.agent.tools.bash.config import BashSandboxConfig
+from boba.chainlit2.agent.tools.bash.tools import build_bash_tool
 from boba.chainlit2.process.runner import RunResult
-from boba.chainlit2.sandbox import SandboxConfig
+from boba.chainlit2.sandbox.config import SandboxToolConfig
 from boba.chainlit2.sandbox.diagnostics import SandboxDiagnostics
 from boba.chainlit2.sandbox.profile import SandboxProfile
 from boba.chainlit2.workspace import FUSE_DEVICE
@@ -51,6 +51,8 @@ _PROFILE_BASE: dict[str, object] = {
     "max_open_files": 1024,
     "max_processes": 256,
     "max_output_bytes": 262144,
+    "cgroup_base": "",
+    "oom_score_adj": 0,
     "cwd": "/tmp",
 }
 
@@ -155,10 +157,10 @@ class TestDiagnosticText:
         assert _explain(_result(exit_code=0), _profile()) == ""
 
 
-def _tool(profile: SandboxProfile, extra: dict[str, SandboxProfile]):
-    profiles = {"default": profile}
-    profiles.update(extra)
-    cfg = BashSandboxConfig(sandbox=SandboxConfig(profiles=profiles), profile="default")
+def _tool(profile: SandboxProfile):
+    cfg = BashSandboxConfig(
+        sandbox=SandboxToolConfig(profile=profile, override={}),
+    )
     return build_bash_tool(cfg, lambda: {"user_id": "7", "thread_id": "t1"})
 
 
@@ -184,20 +186,20 @@ class TestDiagnosticAppearsLive:
             "for i in range(200):\n"
             "    held.append(open('/tmp/probe-%d' % i, 'w'))\n"
         )
-        tool = _tool(_profile(max_open_files=10), {})
+        tool = _tool(_profile(max_open_files=10))
         payload = _invoke(tool, "python3 -", stdin=code)
         assert payload["exit_code"] != 0
         assert "max_open_files=10" in payload["diagnostic"]
 
     def test_processes(self) -> None:
         command = "for i in $(seq 1 50); do sleep 5 & done; wait"
-        tool = _tool(_profile(max_processes=10, timeout_sec=20), {})
+        tool = _tool(_profile(max_processes=10, timeout_sec=20))
         payload = _invoke(tool, command)
         assert "max_processes=10" in payload["diagnostic"]
 
     def test_file_size(self) -> None:
         tool = _tool(
-            _profile(max_file_size_bytes=1024 * 1024, tmpfs=("/tmp:64M",)), {}
+            _profile(max_file_size_bytes=1024 * 1024, tmpfs=("/tmp:64M",))
         )
         payload = _invoke(tool, "dd if=/dev/zero of=/tmp/big bs=64k count=64")
         assert payload["exit_code"] != 0
@@ -205,26 +207,26 @@ class TestDiagnosticAppearsLive:
 
     def test_memory(self) -> None:
         code = "x = bytearray(400 * 1024 * 1024)\n"
-        tool = _tool(_profile(max_memory_bytes=64 * 1024 * 1024), {})
+        tool = _tool(_profile(max_memory_bytes=64 * 1024 * 1024))
         payload = _invoke(tool, "python3 -", stdin=code)
         assert payload["exit_code"] != 0
         assert "max_memory_bytes=67108864" in payload["diagnostic"]
 
     def test_timeout(self) -> None:
-        tool = _tool(_profile(timeout_sec=1), {})
+        tool = _tool(_profile(timeout_sec=1))
         payload = _invoke(tool, "sleep 10")
         assert payload["timed_out"] is True
         assert "timeout_sec=1" in payload["diagnostic"]
 
     def test_network_disabled_explained(self) -> None:
         code = "import socket\nsocket.getaddrinfo('example.com', 443)\n"
-        tool = _tool(_profile(network=False), {"online": _profile(network=True)})
+        tool = _tool(_profile(network=False))
         payload = _invoke(tool, "python3 -", stdin=code)
         assert payload["exit_code"] != 0
         assert "network=false" in payload["diagnostic"]
         assert "not at fault" in payload["diagnostic"]
 
     def test_successful_command_has_empty_diagnostic(self) -> None:
-        payload = _invoke(_tool(_profile(), {}), "echo ok")
+        payload = _invoke(_tool(_profile()), "echo ok")
         assert payload["exit_code"] == 0
         assert payload["diagnostic"] == ""

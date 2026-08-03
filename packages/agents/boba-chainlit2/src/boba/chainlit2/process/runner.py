@@ -6,7 +6,7 @@ import os
 import select
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from boba.chainlit2.agent.cancellation import TurnCancellation, current_cancellation
@@ -41,11 +41,24 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
     cwd: str,
     env: Mapping[str, str],
     limits: ResourceLimits | None = None,
+    cgroup_dir: str | None = None,
 ) -> RunResult:
     if not argv:
         raise ValueError("run_subprocess: argv must not be empty")
     if not cwd:
         raise ValueError("run_subprocess: cwd must be a non-empty string")
+
+    preexec: Callable[[], None] | None = None
+    if cgroup_dir is not None:
+        procs_path = os.path.join(cgroup_dir, "cgroup.procs")
+
+        def enter_cgroup() -> None:
+            """Вход в cgroup до exec: всё дерево рождается уже внутри leaf'а."""
+            fd = os.open(procs_path, os.O_WRONLY)
+            os.write(fd, b"0")
+            os.close(fd)
+
+        preexec = enter_cgroup
 
     started = time.monotonic()
     proc = subprocess.Popen(  # noqa: S603 — argv приходит готовый из builder'а
@@ -58,6 +71,7 @@ def run_subprocess(  # noqa: PLR0913 — параметры процесса, н
         close_fds=True,
         cwd=cwd,
         env=dict(env),
+        preexec_fn=preexec,  # noqa: PLW1509 — только async-signal-safe вызовы
     )
     if limits is not None:
         limits.apply_to_process(proc.pid)

@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any, ClassVar
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
+from boba.chainlit2.agent.tools.pg.caller import PgCaller
 from boba.chainlit2.agent.tools.pg.copy_buffer import (
     BufferCapacityError,
     RowLimitExceededError,
@@ -46,7 +48,12 @@ class PgTools:
         "ORDER BY ordinal_position"
     )
 
-    def __init__(self, cfg: SqlExecutorConfig) -> None:
+    def __init__(
+        self,
+        cfg: SqlExecutorConfig,
+        path_vars: Callable[[], Mapping[str, str]],
+    ) -> None:
+        self._caller = PgCaller("pg", cfg.sandbox, path_vars)
         self._cfg = cfg
 
     def build(self) -> list[BaseTool]:
@@ -59,7 +66,7 @@ class PgTools:
 
     @property
     def _executor(self) -> SqlExecutor:
-        return SqlExecutor(cfg=self._cfg)
+        return SqlExecutor(cfg=self._cfg, caller=self._caller)
 
     @staticmethod
     def _note(executor: SqlExecutor, truncated: bool) -> str | None:
@@ -220,7 +227,7 @@ class PgTools:
             """
             executor = owner._executor
             try:
-                buf = executor.execute_copy(sql, target=target)
+                text = executor.execute_copy(sql, target=target)
             except BufferCapacityError:
                 return pack_result(
                     ErrorResult(
@@ -246,10 +253,13 @@ class PgTools:
             except SqlQueryError as e:
                 return pack_result(owner._failed(e))
 
-            return pack_result(PgCopyTextResult(text=buf.decode()))
+            return pack_result(PgCopyTextResult(text=text))
 
         return query
 
 
-def build_pg_tools(cfg: SqlExecutorConfig) -> list[BaseTool]:
-    return PgTools(cfg).build()
+def build_pg_tools(
+    cfg: SqlExecutorConfig,
+    path_vars: Callable[[], Mapping[str, str]],
+) -> list[BaseTool]:
+    return PgTools(cfg, path_vars).build()

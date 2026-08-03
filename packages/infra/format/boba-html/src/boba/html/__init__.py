@@ -33,9 +33,9 @@ SectionKeys.HEADING_PATH.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from boba.html.keys import HtmlKeys
-from boba.html.parser import HtmlSectionParser, slugify
-from boba.html.reader import HtmlPlainReader, HtmlReadabilityReader, HtmlReader
 from boba.html.sections import (
     HtmlBlockquoteSection,
     HtmlCodeBlockSection,
@@ -44,6 +44,38 @@ from boba.html.sections import (
     HtmlParagraphSection,
     HtmlTableSection,
 )
+
+if TYPE_CHECKING:  # статически символы видны, в рантайме приезжают лениво
+    from boba.html.parser import HtmlSectionParser, slugify
+    from boba.html.reader import (
+        HtmlPlainReader,
+        HtmlReadabilityReader,
+        HtmlReader,
+    )
+
+_LAZY: dict[str, str] = {
+    "HtmlSectionParser": "boba.html.parser",
+    "slugify": "boba.html.parser",
+    "HtmlReader": "boba.html.reader",
+    "HtmlPlainReader": "boba.html.reader",
+    "HtmlReadabilityReader": "boba.html.reader",
+}
+"""Символы, тянущие lxml: импортируются при первом обращении.
+
+Потребителю, которому нужны только ключи метаданных или типы секций, парсер
+в процесс не приезжает — это важно там, где разбор HTML вынесен в песочницу.
+"""
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _LAZY.get(name)
+    if module_name is None:
+        msg = f"module {__name__!r} has no attribute {name!r}"
+        raise AttributeError(msg)
+    import importlib  # noqa: PLC0415 — ленивый импорт по обращению
+
+    return getattr(importlib.import_module(module_name), name)
+
 
 __all__ = [
     "HtmlBlockquoteSection",
