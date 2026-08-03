@@ -17,8 +17,9 @@ TimeoutStopSec=30
 User=boba
 Group=boba
 
-## fuse-образы workspace без root: нужен /dev/fuse (модуль fuse:
-## /etc/modules-load.d/fuse.conf) и userns (sysctl user.max_user_namespaces > 0)
+## нужен /dev/fuse что бы монтировать образы .ext4 для пользователей
+## модуль должен быть загрузен в ядро:/etc/modules-load.d/fuse.conf
+## и включена поддержка userns в sysctl (sysctl user.max_user_namespaces > 0)
 PrivateDevices=no
 RestrictNamespaces=no
 
