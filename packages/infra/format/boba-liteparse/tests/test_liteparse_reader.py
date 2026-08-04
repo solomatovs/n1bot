@@ -15,7 +15,9 @@ from boba.indexing import (
     SourceId,
     TransportKeys,
 )
-from boba.liteparse import LiteParseReader
+from boba.liteparse import LiteParseParams
+from boba.liteparse.engine import LiteParseReader
+from boba.liteparse.sections import DocumentMedia
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two".
 _PDF = b"""%PDF-1.4
@@ -37,6 +39,8 @@ trailer<</Root 1 0 R/Size 8>>
 
 _SOURCE = "https://confl/download/attachments/42/report.pdf"
 
+_PARAMS = LiteParseParams(ocr_enabled=False, tessdata_path="/usr/share/tessdata")
+
 
 def _raw(data: bytes, content_type: str | None) -> RawDocument:
     # пробрасываемая upstream-метадата вложения (как ставит make_attachment_request)
@@ -47,7 +51,7 @@ def _raw(data: bytes, content_type: str | None) -> RawDocument:
 
 
 def test_pdf_one_section_per_page_with_locus() -> None:
-    secs = list(LiteParseReader().read(_raw(_PDF, "application/pdf")))
+    secs = list(LiteParseReader(_PARAMS).read(_raw(_PDF, "application/pdf")))
     assert [s.order for s in secs] == [1, 2]
     assert [s.metadata.get(SectionKeys.PAGE_NUMBER) for s in secs] == [1, 2]
     assert all(s.metadata.get(ReaderKeys.DOC_TYPE) == "pdf" for s in secs)
@@ -56,37 +60,38 @@ def test_pdf_one_section_per_page_with_locus() -> None:
 
 
 def test_passes_through_source_metadata() -> None:
-    [first, *_] = list(LiteParseReader().read(_raw(_PDF, "application/pdf")))
+    [first, *_] = list(LiteParseReader(_PARAMS).read(_raw(_PDF, "application/pdf")))
     assert first.source_id == SourceId(_SOURCE)
     # имя файла (page_title), выставленное upstream, доезжает до Section
     assert first.metadata.get(ReaderKeys.PAGE_TITLE) == "report.pdf"
 
 
 def test_content_type_with_params_is_normalized() -> None:
-    secs = list(LiteParseReader().read(_raw(_PDF, "Application/PDF; charset=binary")))
+    raw = _raw(_PDF, "Application/PDF; charset=binary")
+    secs = list(LiteParseReader(_PARAMS).read(raw))
     assert [s.order for s in secs] == [1, 2]
 
 
 def test_unsupported_content_type_raises_incompatible() -> None:
     with pytest.raises(IncompatibleContentError):
-        list(LiteParseReader().read(_raw(_PDF, "image/png")))
+        list(LiteParseReader(_PARAMS).read(_raw(_PDF, "image/png")))
 
 
 def test_missing_content_type_raises_incompatible() -> None:
     with pytest.raises(IncompatibleContentError):
-        list(LiteParseReader().read(_raw(_PDF, None)))
+        list(LiteParseReader(_PARAMS).read(_raw(_PDF, None)))
 
 
 def test_corrupt_document_raises_incompatible() -> None:
     with pytest.raises(IncompatibleContentError):
-        list(LiteParseReader().read(_raw(b"not a real pdf", "application/pdf")))
+        list(LiteParseReader(_PARAMS).read(_raw(b"not a real pdf", "application/pdf")))
 
 
 def test_empty_payload_yields_nothing() -> None:
-    assert list(LiteParseReader().read(_raw(b"", "application/pdf"))) == []
+    assert list(LiteParseReader(_PARAMS).read(_raw(b"", "application/pdf"))) == []
 
 
 def test_media_types_match_default_suffix_map() -> None:
-    reader = LiteParseReader()
+    reader = LiteParseReader(_PARAMS)
     assert "application/pdf" in reader.media_types
-    assert set(reader.media_types) == set(LiteParseReader.SUFFIX_BY_MEDIA_TYPE)
+    assert set(reader.media_types) == set(DocumentMedia.SUFFIX_BY_MEDIA_TYPE)

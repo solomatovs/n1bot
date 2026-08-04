@@ -64,9 +64,12 @@ async def test_persisted_plotly_chart_is_served_as_json(
 
     thread = await layer.get_thread(seeded.thread_id)
     assert thread is not None
-    stored = next(e for e in thread["elements"] if e["id"] == element.id)
-    assert stored["url"] is not None
-    assert stored["url"].endswith(url.path())
+    elements = thread["elements"]
+    assert elements is not None
+    stored = next(e for e in elements if e.get("id") == element.id)
+    stored_url = stored.get("url")
+    assert stored_url is not None
+    assert stored_url.endswith(url.path())
 
     app = build_serving_app(AttachmentServing(storage, lambda: layer), seeded.user)
     transport = ASGITransport(app=app)

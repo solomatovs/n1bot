@@ -12,7 +12,7 @@ from pydantic import BaseModel, SecretStr
 
 from boba.tool.chart.caller import ChartCaller
 from boba.tool.doc.engine import DocEngine
-from boba.tool.doc.liteparse.caller import LiteParseCaller
+from boba.tool.doc.liteparse import LiteParseCaller
 from boba.tool.kb.caller import KbCaller, KbSearchRequest
 from boba.tool.kb.confluence.caller import ConfluenceCaller
 from boba.tool.kb.confluence.ingest_caller import (

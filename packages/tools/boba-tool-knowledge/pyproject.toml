@@ -13,6 +13,7 @@ dependencies = [
     "boba-db-postgres==0.0.8",
     "boba-indexing==0.0.8",
     "boba-kbdoc==0.0.8",
+    "boba-liteparse==0.0.9",
     "boba-text==0.0.8",
     "boba-settings==0.0.8",
     "boba-transport-http==0.0.8",
@@ -28,7 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 payload = [
     "boba-html==0.0.8",
-    "boba-liteparse==0.0.8",
+    "boba-liteparse[engine]==0.0.9",
     "fastembed>=0.4,<1",
     "liteparse>=2,<3",
     "beautifulsoup4>=4.12",

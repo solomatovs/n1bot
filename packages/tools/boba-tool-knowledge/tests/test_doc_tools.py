@@ -376,6 +376,11 @@ class TestEngineRequests:
 
 
 class TestTools:
+    @staticmethod
+    def _schema(tool: Any) -> dict[str, Any]:
+        """model_json_schema через Any: langchain типизирует схему как v1-модель."""
+        return tool.get_input_schema().model_json_schema()
+
     def test_all_tools_registered(self) -> None:
         names = [t.name for t in build_doc_tools(_config(), dict)]
         assert names == [
@@ -387,7 +392,7 @@ class TestTools:
 
     def test_read_document_exposes_pages_to_llm(self) -> None:
         tools = {t.name: t for t in build_doc_tools(_config(), dict)}
-        schema = tools["read_document"].get_input_schema().model_json_schema()
+        schema = self._schema(tools["read_document"])
         props = schema["properties"]
         assert "pages" in props
         assert "pages" in schema["required"]
@@ -401,7 +406,7 @@ class TestTools:
     ])
     def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:
         tools = {t.name: t for t in build_doc_tools(_config(), dict)}
-        schema = tools[name].get_input_schema().model_json_schema()
+        schema = self._schema(tools[name])
         props = schema["properties"]
         assert "ocr_enabled" in props
         assert props["ocr_enabled"]["type"] == "boolean"

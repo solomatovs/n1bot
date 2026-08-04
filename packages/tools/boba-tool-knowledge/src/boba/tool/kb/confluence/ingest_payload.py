@@ -20,7 +20,7 @@ from boba.indexing import (
     Section,
     SectionKeys,
 )
-from boba.liteparse import LiteParseReader
+from boba.liteparse.engine import LiteParseReader
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import (
     ConfluenceIngest,

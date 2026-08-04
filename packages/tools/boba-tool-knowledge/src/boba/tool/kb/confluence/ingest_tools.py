@@ -5,7 +5,7 @@
 """
 
 from collections.abc import Callable, Mapping
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
@@ -42,6 +42,20 @@ __all__ = ["ConfluenceIngestTools", "build_confluence_ingest_tools"]
 class ConfluenceIngestTools:
     """Собирает langchain-инструменты индексации Confluence."""
 
+    OCR_DESCRIPTION: ClassVar[str] = (
+        "OCR вложений: true распознаёт текст по картинкам (сканы, картинковые "
+        "PDF), false — только текстовый слой. OCR дорог: минуты и гигабайты "
+        "памяти на документ."
+    )
+    WORKERS_DESCRIPTION: ClassVar[str] = (
+        "Параллелизм OCR, 1..4; ~50-100 MiB памяти на воркер. "
+        "При ocr_enabled=false не влияет."
+    )
+    LANGUAGE_DESCRIPTION: ClassVar[str] = (
+        "Язык OCR в формате Tesseract: 'rus+eng' для русских документов, "
+        "'eng' для английских."
+    )
+
     def __init__(
         self,
         cfg: ConfluenceIngestConfig,
@@ -59,6 +73,18 @@ class ConfluenceIngestTools:
             self._fetch_attachment(),
         ]
 
+    def _parser_cfg(
+        self, ocr_enabled: bool, num_workers: int, ocr_language: str
+    ) -> ConfluenceIngestConfig:
+        """Конфиг прогона: настройки парсера из вызова поверх [tool.ingest]."""
+        return self._cfg.model_copy(
+            update={
+                "ocr_enabled": ocr_enabled,
+                "num_workers": num_workers,
+                "ocr_language": ocr_language,
+            }
+        )
+
     @staticmethod
     def _failed(error: Exception) -> ErrorResult:
         return ErrorResult(message=str(error), error_kind="confluence_ingest_failed")
@@ -67,7 +93,7 @@ class ConfluenceIngestTools:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def confluence_index_pages(
+        def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, параметры независимы
             page_ids: Annotated[
                 LLMStringList,
                 Field(
@@ -97,11 +123,20 @@ class ConfluenceIngestTools:
                     ),
                 ),
             ] = False,
+            ocr_enabled: Annotated[
+                bool, Field(description=owner.OCR_DESCRIPTION)
+            ] = False,
+            num_workers: Annotated[
+                int, Field(ge=1, le=4, description=owner.WORKERS_DESCRIPTION)
+            ] = 1,
+            ocr_language: Annotated[
+                str, Field(min_length=1, description=owner.LANGUAGE_DESCRIPTION)
+            ] = "rus+eng",
         ) -> tuple[str, ToolResult]:
             """Индексирует явный список страниц Confluence по page_id."""
             try:
                 result = confluence_ingest_pages(
-                    owner._cfg,
+                    owner._parser_cfg(ocr_enabled, num_workers, ocr_language),
                     owner._ingest,
                     page_ids=page_ids,
                     prune_missing=prune_missing,
@@ -132,11 +167,20 @@ class ConfluenceIngestTools:
                 bool,
                 Field(description="Удалить чанки, не попавшие в выборку."),
             ] = False,
+            ocr_enabled: Annotated[
+                bool, Field(description=owner.OCR_DESCRIPTION)
+            ] = False,
+            num_workers: Annotated[
+                int, Field(ge=1, le=4, description=owner.WORKERS_DESCRIPTION)
+            ] = 1,
+            ocr_language: Annotated[
+                str, Field(min_length=1, description=owner.LANGUAGE_DESCRIPTION)
+            ] = "rus+eng",
         ) -> tuple[str, ToolResult]:
             """Индексирует страницы Confluence, найденные CQL-запросом."""
             try:
                 summary = confluence_ingest_cql(
-                    owner._cfg,
+                    owner._parser_cfg(ocr_enabled, num_workers, ocr_language),
                     owner._ingest, cql=cql, prune_missing=prune_missing
                 )
             except Exception as e:
@@ -149,7 +193,7 @@ class ConfluenceIngestTools:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def confluence_index_spaces(
+        def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, параметры независимы
             space_keys: Annotated[
                 LLMStringList,
                 Field(
@@ -165,11 +209,20 @@ class ConfluenceIngestTools:
                 bool,
                 Field(description="Переиндексировать страницы целиком."),
             ] = False,
+            ocr_enabled: Annotated[
+                bool, Field(description=owner.OCR_DESCRIPTION)
+            ] = False,
+            num_workers: Annotated[
+                int, Field(ge=1, le=4, description=owner.WORKERS_DESCRIPTION)
+            ] = 1,
+            ocr_language: Annotated[
+                str, Field(min_length=1, description=owner.LANGUAGE_DESCRIPTION)
+            ] = "rus+eng",
         ) -> tuple[str, ToolResult]:
             """Индексирует спейсы Confluence целиком."""
             try:
                 result = confluence_ingest_spaces(
-                    owner._cfg,
+                    owner._parser_cfg(ocr_enabled, num_workers, ocr_language),
                     owner._ingest,
                     space_keys=space_keys,
                     prune_missing=prune_missing,
@@ -199,11 +252,27 @@ class ConfluenceIngestTools:
                 str,
                 Field(min_length=1, description="Имя вложения на странице."),
             ],
+            ocr_enabled: Annotated[
+                bool, Field(description=owner.OCR_DESCRIPTION)
+            ] = False,
+            num_workers: Annotated[
+                int, Field(ge=1, le=4, description=owner.WORKERS_DESCRIPTION)
+            ] = 1,
+            ocr_language: Annotated[
+                str, Field(min_length=1, description=owner.LANGUAGE_DESCRIPTION)
+            ] = "rus+eng",
         ) -> tuple[str, ToolResult]:
             """Читает вложение страницы Confluence и возвращает его текст."""
+            call_cfg = cfg.model_copy(
+                update={
+                    "ocr_enabled": ocr_enabled,
+                    "num_workers": num_workers,
+                    "ocr_language": ocr_language,
+                }
+            )
             try:
                 text = confluence_fetch_attachment(
-                    cfg, owner._caller, page_id=page_id, filename=filename
+                    call_cfg, owner._caller, page_id=page_id, filename=filename
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))

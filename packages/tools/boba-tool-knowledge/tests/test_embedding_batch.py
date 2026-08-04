@@ -49,7 +49,7 @@ class _Vector(list):
 def fake_fastembed(monkeypatch: pytest.MonkeyPatch):
     FakeTextEmbedding.calls = []
     module = types.ModuleType("fastembed")
-    module.TextEmbedding = FakeTextEmbedding
+    module.TextEmbedding = FakeTextEmbedding  # pyright: ignore[reportAttributeAccessIssue]
     monkeypatch.setitem(sys.modules, "fastembed", module)
     return FakeTextEmbedding
 

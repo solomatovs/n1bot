@@ -31,7 +31,9 @@ class KbOps:
     @staticmethod
     def embed(request: dict[str, Any]) -> tuple[list[float], int]:
         """Вектор запроса и его размерность — их ждёт SQL-шаблон."""
-        from fastembed import TextEmbedding  # noqa: PLC0415
+        from fastembed import (  # noqa: PLC0415 # pyright: ignore[reportMissingImports]
+            TextEmbedding,
+        )
 
         model = request["embedding"]
         encoder = TextEmbedding(
