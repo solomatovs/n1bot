@@ -108,24 +108,24 @@ def session_tools(
     return registry.for_roles(current_user_roles())
 
 
-def kb_schema(
+async def kb_schema(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> None:
     """Готовит таблицы базы знаний, если секция [tool.kb] включена."""
     meta = bind(raw, "tool.kb", PluginMeta)
     if not meta.enable:
         return
-    KbSchema(bind(raw, "tool.kb", PostgresKnowledgeBaseConfig)).setup()
+    await KbSchema(bind(raw, "tool.kb", PostgresKnowledgeBaseConfig)).setup()
 
 
-def connection_store(
+async def connection_store(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> ConnectionStore | None:
     cfg = bind(raw, "connections", ConnectionsConfig)
     if not cfg.enable:
         return None
     store = ConnectionStore(cfg)
-    store.setup()
+    await store.setup()
     return store
 
 

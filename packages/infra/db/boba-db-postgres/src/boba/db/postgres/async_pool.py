@@ -6,8 +6,10 @@ KeytabError/KerberosError — соединению не выдан TGT из keyt
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 
@@ -51,13 +53,23 @@ class KerberosConnection(psycopg.AsyncConnection[Any]):
 
 
 class AsyncPostgresPool:
-    "async-обёртка над psycopg_pool.AsyncConnectionPool с явным open()/close()"
+    """
+    Единственная точка работы с postgres: async-пул поверх AsyncConnectionPool
+    """
+
+    Configure = Callable[[psycopg.AsyncConnection[Any]], Awaitable[None]]
+    """Hook на каждое новое соединение пула (регистрация типов pgvector/hstore)."""
+
+    _CacheKey = tuple[str, tuple[tuple[str, str], ...]]
+    _CACHE: ClassVar[dict[_CacheKey, AsyncPostgresPool]] = {}
+    _CACHE_LOCK: ClassVar[asyncio.Lock] = asyncio.Lock()
 
     def __init__(
         self,
         cfg: PostgresConfig,
         *,
         override_options: dict[str, str] | None = None,
+        configure: Configure | None = None,
     ) -> None:
         from psycopg_pool import AsyncConnectionPool  # noqa: PLC0415
 
@@ -66,6 +78,7 @@ class AsyncPostgresPool:
             connection_class=self._connection_class(cfg),
             kwargs=cfg.conn_settings(override_options),
             **cfg.pool_settings(),
+            configure=configure,
             open=False,
         )
         self._closed = False
@@ -89,6 +102,52 @@ class AsyncPostgresPool:
     async def open(self) -> None:
         """Открыть пул (установить фоновые соединения)."""
         await self._pool.open()
+
+    @classmethod
+    async def get(
+        cls,
+        cfg: PostgresConfig,
+        *,
+        override_options: dict[str, str] | None = None,
+        configure: Configure | None = None,
+    ) -> AsyncPostgresPool:
+        """Открытый пул-singleton по cfg + override_options; закрытый пересоздаётся.
+
+        configure применяется при создании, при повторном get игнорируется.
+        """
+        key = cls._cache_key(cfg, override_options)
+
+        async with cls._CACHE_LOCK:
+            pool = cls._CACHE.get(key)
+            if pool is not None and not pool._closed:
+                return pool
+
+            pool = cls(cfg, override_options=override_options, configure=configure)
+            await pool.open()
+            cls._CACHE[key] = pool
+            return pool
+
+    @classmethod
+    async def close_all(cls) -> None:
+        """Закрывает и забывает все singleton-пулы процесса."""
+        async with cls._CACHE_LOCK:
+            pools = list(cls._CACHE.values())
+            cls._CACHE.clear()
+
+        for pool in pools:
+            await pool.close()
+
+    @staticmethod
+    def _cache_key(
+        cfg: PostgresConfig,
+        override_options: dict[str, str] | None,
+    ) -> _CacheKey:
+        settings = json.dumps(
+            {**cfg.conn_settings(), **cfg.pool_settings()},
+            sort_keys=True,
+            default=str,
+        )
+        return settings, tuple(sorted((override_options or {}).items()))
 
     @property
     def raw(self) -> Any:

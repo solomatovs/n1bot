@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-db-postgres"
 version = "0.0.8"
-description = "Boba PostgreSQL read-only pool: PostgresConfig + PostgresConnection + PostgresPool + get_pool() process-singleton."
+description = "Boba PostgreSQL: PostgresConfig + AsyncPostgresPool — единственный async-пул системы, с kerberos-кредами на подключение."
 requires-python = ">=3.11,<4"
 dependencies = [
     # 3.3+: AsyncConnection сам возвращается в пул, обёртка AsyncPoolConnection не нужна

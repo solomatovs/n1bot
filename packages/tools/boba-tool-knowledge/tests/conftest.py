@@ -18,7 +18,10 @@ SANDBOX = REPO / "build" / "artifacts" / "sandbox"
 ROOTFS = SANDBOX / "rootfs"
 
 SRC_PACKAGES = (
+    "core/boba-indexing",
     "core/boba-toolkit",
+    "infra/db/boba-db-postgres",
+    "infra/krb/boba-krb",
     "infra/format/boba-liteparse",
     "tools/boba-tool-shell",
     "tools/boba-tool-chart",

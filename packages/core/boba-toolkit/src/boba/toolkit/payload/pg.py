@@ -17,25 +17,25 @@ class PayloadPostgres:
     """Подключение по libpq-параметрам запроса и JSON-совместимые строки."""
 
     @staticmethod
-    def connect(request: dict[str, Any]) -> psycopg.Connection[Any]:
+    async def connect(request: dict[str, Any]) -> psycopg.AsyncConnection[Any]:
         connection = PostgresConfig.model_validate(request["connection"])
 
         if connection.kerberos is None:
-            return PayloadPostgres._connect(connection)
+            return await PayloadPostgres._connect(connection)
 
         credentials = KeytabCredentials(connection.kerberos)
 
         try:
-            with credentials.applied():
-                return PayloadPostgres._connect(connection)
+            async with credentials.applied_async():
+                return await PayloadPostgres._connect(connection)
         except KerberosError as e:
             msg = f"kerberos failed: {type(e).__name__}: {e}"
             raise RuntimeError(msg) from e
 
     @staticmethod
-    def _connect(connection: PostgresConfig) -> psycopg.Connection[Any]:
+    async def _connect(connection: PostgresConfig) -> psycopg.AsyncConnection[Any]:
         try:
-            return psycopg.connect(**connection.conn_settings())
+            return await psycopg.AsyncConnection.connect(**connection.conn_settings())
         except psycopg.Error as e:
             msg = f"connect failed: {type(e).__name__}: {e}"
             raise RuntimeError(msg) from e

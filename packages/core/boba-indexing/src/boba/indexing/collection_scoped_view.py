@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from itertools import islice
 from typing import ClassVar, TypeVar
 
@@ -48,26 +48,26 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
     def collection(self) -> CollectionId:
         return self._collection
 
-    def find(
+    async def find(
         self,
         *,
         where: Filter | None = None,
         limit: int | None = None,
-    ) -> Iterable[ChunkSummary[T]]:
+    ) -> Sequence[ChunkSummary[T]]:
         composed = self._compose_filter(where)
-        return self._store.find(self._collection, where=composed, limit=limit)
+        return await self._store.find(self._collection, where=composed, limit=limit)
 
-    def clean(self, where: Filter) -> int:
+    async def clean(self, where: Filter) -> int:
         full = self._compose_filter(where)
         deleted = 0
-        summaries = self._store.find(self._collection, where=full, limit=None)
+        summaries = await self._store.find(self._collection, where=full, limit=None)
         for batch in self._batched(summaries, self._batch_size):
             ids = [s.chunk_id for s in batch]
-            self._store.delete(self._collection, ids)
+            await self._store.delete(self._collection, ids)
             deleted += len(ids)
         return deleted
 
-    def reconcile(
+    async def reconcile(
         self,
         chunks: Iterable[Chunk[T]],
         *,
@@ -88,7 +88,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
                 changed_ids = [c.chunk_id for c in batch]
                 unchanged_ids: list[ChunkId] = []
             else:
-                diff = self._store.diff_by_hash(
+                diff = await self._store.diff_by_hash(
                     self._collection,
                     [(c.chunk_id, c.content_hash) for c in batch],
                 )
@@ -105,11 +105,11 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
                     EmbeddedChunk.of(c, tuple(e))
                     for c, e in zip(dirty, embeddings, strict=True)
                 ]
-                self._store.upsert(self._collection, embedded)
+                await self._store.upsert(self._collection, embedded)
 
             # heartbeat только для unchanged — dirty уже получил updated_at в upsert
             if unchanged_ids:
-                self._store.update_metadata(
+                await self._store.update_metadata(
                     self._collection,
                     unchanged_ids,
                     refresh_patch,

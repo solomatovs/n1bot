@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
@@ -43,17 +43,17 @@ class IndexQuery(ABC, Generic[T]):
     """Filter-based view: реализация инжектит scope-фильтр в каждый запрос, чужой scope недостижим."""
 
     @abstractmethod
-    def find(
+    async def find(
         self,
         *,
         where: Filter | None = None,
         limit: int | None = None,
-    ) -> Iterable[ChunkSummary[T]]:
+    ) -> Sequence[ChunkSummary[T]]:
         """Scope-aware поиск по фильтру; where=None — только scope-фильтр, limit=None — без лимита."""
         ...
 
     @abstractmethod
-    def clean(self, where: Filter) -> int:
+    async def clean(self, where: Filter) -> int:
         """Удалить чанки scope'а по фильтру, вернуть количество удалённых.
 
         where обязательный — предохранитель от случайной полной зачистки scope.
@@ -70,7 +70,7 @@ class IndexSink(ABC, Generic[T]):
     """Запись chunk'ов через reconcile с идемпотентной проверкой по content_hash."""
 
     @abstractmethod
-    def reconcile(
+    async def reconcile(
         self,
         chunks: Iterable[Chunk[T]],
         *,

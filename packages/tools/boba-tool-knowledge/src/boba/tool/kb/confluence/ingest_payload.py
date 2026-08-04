@@ -75,21 +75,21 @@ class IngestOps:
     OPS: ClassVar[tuple[str, ...]] = ("confluence_ingest",)
 
     @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
         op = request["op"]
         if op == "confluence_ingest":
-            return cls.ingest(request)
+            return await cls.ingest(request)
         msg = f"unknown ingest op: {op!r}"
         raise ValueError(msg)
 
     @classmethod
-    def ingest(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def ingest(cls, request: dict[str, Any]) -> dict[str, Any]:
         cfg = ConfluenceIngestConfig.model_validate(request["config"])
         conn = ConfluenceConnection(
             profile=cfg.confluence, body_format=cfg.body_format
         )
         source = cls.source(request, conn, cfg)
-        stats = ConfluenceIngest.ingest(
+        stats = await ConfluenceIngest.ingest(
             cfg,
             source,
             request["prune_missing"],
@@ -133,4 +133,4 @@ class IngestOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(IngestOps.dispatch))
+    sys.exit(PayloadEntry.main_async(IngestOps.dispatch))

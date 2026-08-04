@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
@@ -47,38 +47,38 @@ class ChunkStore(ABC, Generic[T]):
     """Порт хранения чанков внутри коллекции (read + write)."""
 
     @abstractmethod
-    def get_by_ids(
+    async def get_by_ids(
         self,
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
-    ) -> Iterable[Chunk[T]]:
+    ) -> Sequence[Chunk[T]]:
         """Получить чанки по id из коллекции; пропускает несуществующие."""
         ...
 
     @abstractmethod
-    def peek(
+    async def peek(
         self,
         collection: CollectionId,
         *,
         source_id: SourceId | None,
         limit: int,
-    ) -> Iterable[ChunkSummary[T]]:
+    ) -> Sequence[ChunkSummary[T]]:
         """Admin-просмотр: до limit ChunkSummary; source_id=None — без фильтра."""
         ...
 
     @abstractmethod
-    def find(
+    async def find(
         self,
         collection: CollectionId,
         *,
         where: Filter | None,
         limit: int | None = None,
-    ) -> Iterable[ChunkSummary[T]]:
+    ) -> Sequence[ChunkSummary[T]]:
         """Поиск по Filter DSL; where=None — вся коллекция, непереводимый предикат — UnsupportedFilterError."""
         ...
 
     @abstractmethod
-    def diff_by_hash(
+    async def diff_by_hash(
         self,
         collection: CollectionId,
         candidates: Iterable[tuple[ChunkId, ContentHash]],
@@ -87,7 +87,7 @@ class ChunkStore(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    def upsert(
+    async def upsert(
         self,
         collection: CollectionId,
         chunks: Iterable[EmbeddedChunk[T]],
@@ -96,7 +96,7 @@ class ChunkStore(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    def update_metadata(
+    async def update_metadata(
         self,
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
@@ -106,7 +106,7 @@ class ChunkStore(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    def delete(
+    async def delete(
         self,
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
@@ -119,17 +119,17 @@ class CollectionsStore(ABC):
     """Read-side admin: перечисление и инспекция коллекций."""
 
     @abstractmethod
-    def list_collections(self) -> Iterable[CollectionInfo]:
+    async def list_collections(self) -> Sequence[CollectionInfo]:
         """Все коллекции в backend'е."""
         ...
 
     @abstractmethod
-    def collection_info(self, name: CollectionId) -> CollectionInfo:
+    async def collection_info(self, name: CollectionId) -> CollectionInfo:
         """Сводка одной коллекции по имени."""
         ...
 
     @abstractmethod
-    def ensure_collection(
+    async def ensure_collection(
         self,
         name: CollectionId,
         *,
@@ -139,6 +139,6 @@ class CollectionsStore(ABC):
         ...
 
     @abstractmethod
-    def delete_collection(self, name: CollectionId) -> None:
+    async def delete_collection(self, name: CollectionId) -> None:
         """Удалить коллекцию целиком."""
         ...

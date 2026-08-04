@@ -19,12 +19,12 @@ class KbOps:
     OPS: ClassVar[tuple[str, ...]] = ("kb_vector_search", "kb_fts_search")
 
     @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
         op = request["op"]
         if op == "kb_vector_search":
-            return cls.vector_search(request)
+            return await cls.vector_search(request)
         if op == "kb_fts_search":
-            return cls.fts_search(request)
+            return await cls.fts_search(request)
         msg = f"unknown kb op: {op!r}"
         raise ValueError(msg)
 
@@ -46,7 +46,7 @@ class KbOps:
         return values, len(values)
 
     @classmethod
-    def vector_search(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def vector_search(cls, request: dict[str, Any]) -> dict[str, Any]:
         vector, dim = cls.embed(request)
         statement = sql.SQL(request["sql_template"]).format(
             dim=sql.Literal(dim),
@@ -58,10 +58,10 @@ class KbOps:
             "snippet_chars": request["snippet_chars"],
             "top_k": request["top_k"],
         }
-        return {"rows": cls.select(request, statement, params)}
+        return {"rows": await cls.select(request, statement, params)}
 
     @classmethod
-    def fts_search(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def fts_search(cls, request: dict[str, Any]) -> dict[str, Any]:
         statement = sql.SQL(request["sql_template"]).format(
             chunks_table=cls.table(request),
             schema=sql.Identifier(request["schema_name"]),
@@ -72,21 +72,20 @@ class KbOps:
             "snippet_chars": request["snippet_chars"],
             "top_k": request["top_k"],
         }
-        return {"rows": cls.select(request, statement, params)}
+        return {"rows": await cls.select(request, statement, params)}
 
     @staticmethod
     def table(request: dict[str, Any]) -> sql.Identifier:
         return sql.Identifier(request["schema_name"], request["chunks_table"])
 
     @classmethod
-    def select(
+    async def select(
         cls, request: dict[str, Any], statement: sql.Composed, params: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        with PayloadPostgres.connect(request) as conn, conn.cursor(
-            row_factory=dict_row
-        ) as cur:
-            cur.execute(statement, params)
-            fetched = cur.fetchall()
+        conn = await PayloadPostgres.connect(request)
+        async with conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(statement, params)
+            fetched = await cur.fetchall()
         rows: list[dict[str, Any]] = []
         for row in fetched:
             rows.append(PayloadPostgres.jsonable(row))
@@ -94,4 +93,4 @@ class KbOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(KbOps.dispatch))
+    sys.exit(PayloadEntry.main_async(KbOps.dispatch))

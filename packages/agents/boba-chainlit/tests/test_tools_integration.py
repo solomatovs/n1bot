@@ -192,7 +192,7 @@ def pg_tools(raw_config):
 
 
 @pytest.fixture(scope="module")
-def kb_collection(raw_config):
+async def kb_collection(raw_config):
     """Своя коллекция на прогон: рабочая kb_confluence остаётся нетронутой."""
     cfg = bind(raw_config, path="tool.ingest", model=ConfluenceIngestConfig)
     name = f"kb_it_{uuid4().hex[:8]}"
@@ -202,14 +202,14 @@ def kb_collection(raw_config):
         yield name
     finally:
         ConfluenceCollection.COLLECTION = previous
-        KbCleanup.drop(cfg, name)
+        await KbCleanup.drop(cfg, name)
 
 
 class KbCleanup:
     """Уборка тестовой коллекции: чанки и запись в реестре коллекций."""
 
     @staticmethod
-    def drop(cfg: ConfluenceIngestConfig, collection: str) -> None:
+    async def drop(cfg: ConfluenceIngestConfig, collection: str) -> None:
         statements = (
             sql.SQL("delete from {} where collection = %s").format(
                 sql.Identifier(cfg.tables.pg_schema, cfg.tables.chunks_table)
@@ -218,10 +218,11 @@ class KbCleanup:
                 sql.Identifier(cfg.tables.pg_schema, cfg.tables.collections_table)
             ),
         )
-        with psycopg.connect(**cfg.connection.conn_settings()) as conn:
+        conn = await psycopg.AsyncConnection.connect(**cfg.connection.conn_settings())
+        async with conn:
             for statement in statements:
-                conn.execute(statement, (collection,))
-            conn.commit()
+                await conn.execute(statement, (collection,))
+            await conn.commit()
 
 
 @pytest.fixture(scope="module")
@@ -526,16 +527,16 @@ class TestPgTools:
         assert targets
 
     async def test_list_tables(self, pg_tools) -> None:
-        result = await Call.ok(pg_tools["list_tables"], target="main")
+        result = await Call.ok(pg_tools["list_tables"], connection_name="main")
         assert result.rows
         assert set(result.rows[0]) >= {"schema", "table", "kind"}
 
     async def test_describe_table(self, pg_tools) -> None:
-        tables = await Call.ok(pg_tools["list_tables"], target="main")
+        tables = await Call.ok(pg_tools["list_tables"], connection_name="main")
         first = tables.rows[0]
         result = await Call.ok(
             pg_tools["describe_table"],
-            target="main",
+            connection_name="main",
             table=first["table"],
             pg_schema=first["schema"],
         )
