@@ -36,7 +36,7 @@ from boba.tool.doc.protocol import (
     DocWindowAnswer,
     DocWindowRequest,
 )
-from boba.toolkit.payload.entry import PayloadEntry
+from boba.toolkit.payload import PayloadEntry
 
 
 class TextClip:

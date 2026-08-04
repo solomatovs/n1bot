@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
-from boba.db.postgres.async_pool import AsyncPostgresPool, KerberosConnection
+from boba.db.postgres.async_pool import (
+    AsyncPostgresPool,
+    CancellablePool,
+    KerberosConnection,
+    PostgresError,
+    PostgresPoolClosedError,
+)
 from boba.db.postgres.config import (
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,
 )
-from boba.db.postgres.errors import PostgresError, PostgresPoolClosedError
+from boba.db.postgres.payload import PayloadPostgres
 
 __all__ = [
     "AsyncPostgresPool",
+    "CancellablePool",
     "KerberosConnection",
+    "PayloadPostgres",
     "PostgresConfig",
     "PostgresError",
     "PostgresOptionsConfig",

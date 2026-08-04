@@ -33,8 +33,7 @@ from boba.tool.kb.confluence.models import (
     ConfluenceSpaceItem,
 )
 from boba.tool.kb.confluence.parsing import ConfluenceJson
-from boba.toolkit.http import CancellableHttpTransport
-from boba.transport.http import HttpRequest
+from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 __all__ = [
     "ConfluenceCqlRequestSource",

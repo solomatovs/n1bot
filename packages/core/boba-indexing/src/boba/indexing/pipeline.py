@@ -10,14 +10,14 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
-from boba.indexing.chunker import Chunker
 from boba.indexing.chunks import Chunk
-from boba.indexing.cleanup import CleanupContext, CleanupStrategy, NoneCleanup
 from boba.indexing.errors import IndexingError
 from boba.indexing.events import (
     ChunksDeleted,
     CleanupStarted,
     IndexEvent,
+    IndexStats,
+    IndexStatsBuilder,
     RunFinished,
     RunId,
     RunStarted,
@@ -26,12 +26,15 @@ from boba.indexing.events import (
     SourceSkippedUnchanged,
     new_run_id,
 )
-from boba.indexing.index_views import IndexQuery, IndexSink
-from boba.indexing.reader import Reader
-from boba.indexing.request import Request, RequestSource
+from boba.indexing.ports import Chunker, Reader, Request, RequestSource, Transport
 from boba.indexing.sections import Section, SourceId
-from boba.indexing.stats import IndexStats, IndexStatsBuilder
-from boba.indexing.transport import Transport
+from boba.indexing.store import (
+    CleanupContext,
+    CleanupStrategy,
+    IndexQuery,
+    IndexSink,
+    NoneCleanup,
+)
 
 __all__ = ["IndexerConfig", "Pipeline"]
 

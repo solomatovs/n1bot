@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
 from typing import Annotated, Any
 
 from langchain.tools import tool
@@ -11,18 +10,14 @@ from langchain_core.tools import BaseTool
 from pydantic import Field
 
 from boba.tool.chart.caller import ChartCaller
-from boba.tool.chart.config import ChartToolsConfig
-from boba.toolkit.pack import pack_result
-from boba.toolkit.result import ChartResult, ToolResult
+from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.result import ChartResult, ToolResult, pack_result
 
 __all__ = ["build_chart_tools"]
 
 
-def build_chart_tools(
-    cfg: ChartToolsConfig,
-    path_vars: Callable[[], Mapping[str, str]],
-) -> list[BaseTool]:
-    caller = ChartCaller("chart", cfg, path_vars)
+def build_chart_tools(launchers: LauncherFactory) -> list[BaseTool]:
+    caller = ChartCaller("chart", launchers)
 
     @tool(response_format="content_and_artifact")
     def visualize(

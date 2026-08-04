@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from boba.liteparse import LiteParseError, LiteParseParams
 from boba.liteparse.engine import LiteParseEngine
+from boba.text.document import LiteParseError, LiteParseParams
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4

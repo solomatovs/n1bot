@@ -6,6 +6,7 @@ import base64
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from io import BytesIO
 from typing import Any
 
@@ -22,7 +23,8 @@ from boba.indexing import (
     SourceId,
     TransportKeys,
 )
-from boba.liteparse.sections import DocumentMedia
+from boba.sandbox import SandboxPayload, SandboxPayloadError
+from boba.text.document import DocumentMedia
 from boba.tool.doc.liteparse import (
     LiteParseCaller,
     ParseBytesAnswer,
@@ -31,7 +33,6 @@ from boba.tool.doc.liteparse import (
     SandboxLiteParseReader,
     SandboxParserConfig,
 )
-from boba.toolkit.sandbox import SandboxPayload, SandboxPayloadError
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -107,9 +108,12 @@ class _LocalCaller:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
 
+    def call_text(self, command: str, stdin: str) -> Any:
+        raise NotImplementedError("этим инструментам нужен только call_json")
+
     def call_json(
         self,
-        entry: tuple[str, ...],
+        entry: Sequence[str],
         request: BaseModel,
         schema: type[BaseModel],
     ) -> Any:
@@ -135,12 +139,7 @@ class _LocalCaller:
 
 @pytest.fixture
 def caller(monkeypatch: pytest.MonkeyPatch) -> LiteParseCaller:
-    from boba.tool.doc.liteparse import sandbox as sandbox_module
-
-    monkeypatch.setattr(
-        sandbox_module, "SandboxCaller", lambda *_a, **_kw: _LocalCaller()
-    )
-    return LiteParseCaller("confluence", _config(), dict)
+    return LiteParseCaller("confluence", _config(), lambda _tool: _LocalCaller())
 
 
 def _raw(data: bytes, content_type: str | None) -> RawDocument:

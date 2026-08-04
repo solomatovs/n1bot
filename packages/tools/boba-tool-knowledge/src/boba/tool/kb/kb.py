@@ -6,14 +6,14 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from boba.db.postgres import PostgresConfig
 from boba.tool.kb.caller import KbCaller
 from boba.tool.kb.embedding import EmbeddingModel
 from boba.tool.kb.models import KnowledgeBaseError, SearchHit
 from boba.tool.kb.postgres import PostgresStoreSchema
-from boba.toolkit.sandbox import SandboxPayloadError, SandboxToolConfig
+from boba.toolkit.launcher import LauncherError
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,6 @@ class PostgresKnowledgeBaseConfig(BaseModel):
     connection: PostgresConfig
     tables: PostgresStoreSchema
     embedding: EmbeddingModel
-    sandbox: SandboxToolConfig = Field(
-        description="Окружение и точка входа payload'а: [tool.kb.sandbox].",
-    )
 
 
 class PostgresKnowledgeBase:
@@ -79,7 +76,7 @@ class PostgresKnowledgeBase:
                     "cache_dir": self._cfg.embedding.cache_dir,
                 },
             )
-        except SandboxPayloadError as e:
+        except LauncherError as e:
             raise KnowledgeBaseError(
                 f"kb search failed for collections {collections!r}: {e}",
             ) from e

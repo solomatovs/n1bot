@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 from typing import Annotated, Any, ClassVar
 
 from langchain.tools import tool
@@ -19,12 +18,13 @@ from boba.tool.pg.executor import (
     SqlExecutorConfig,
     SqlQueryError,
 )
-from boba.toolkit.pack import pack_result
+from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import (
     ErrorResult,
     PgCopyTextResult,
     TableResult,
     ToolResult,
+    pack_result,
 )
 
 __all__ = ["PgTools", "build_pg_tools"]
@@ -47,9 +47,9 @@ class PgTools:
     def __init__(
         self,
         cfg: SqlExecutorConfig,
-        path_vars: Callable[[], Mapping[str, str]],
+        launchers: LauncherFactory,
     ) -> None:
-        self._caller = PgCaller("pg", cfg.sandbox, path_vars)
+        self._caller = PgCaller("pg", launchers)
         self._cfg = cfg
 
     def build(self) -> list[BaseTool]:
@@ -244,6 +244,6 @@ class PgTools:
 
 def build_pg_tools(
     cfg: SqlExecutorConfig,
-    path_vars: Callable[[], Mapping[str, str]],
+    launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return PgTools(cfg, path_vars).build()
+    return PgTools(cfg, launchers).build()

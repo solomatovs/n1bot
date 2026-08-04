@@ -10,7 +10,6 @@ from boba.chainlit.rendering.result_view import (
     MarkdownRendering,
     ToolResultView,
 )
-from boba.toolkit.pack import pack_result, render_for_llm
 from boba.toolkit.result import (
     ChartResult,
     ErrorResult,
@@ -18,6 +17,8 @@ from boba.toolkit.result import (
     PgCopyTextResult,
     TableResult,
     TextResult,
+    pack_result,
+    render_for_llm,
 )
 
 

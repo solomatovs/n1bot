@@ -10,7 +10,7 @@ from typing import ClassVar, cast
 
 from langchain_core.tools import BaseTool
 
-from boba.toolkit.sandbox.call_context import ToolCallContext
+from boba.sandbox.runner import ToolCallContext
 
 __all__ = ["ToolRunLogger"]
 

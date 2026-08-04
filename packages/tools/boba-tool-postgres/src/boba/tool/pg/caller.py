@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from boba.db.postgres import PostgresConfig
@@ -12,7 +12,7 @@ from boba.tool.pg.protocol import (
     PgQueryAnswer,
     PgQueryRequest,
 )
-from boba.toolkit.sandbox import SandboxCaller, SandboxToolConfig
+from boba.toolkit.launcher import LauncherFactory
 
 __all__ = ["PgCaller"]
 
@@ -22,13 +22,8 @@ class PgCaller:
 
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.pg.payload")
 
-    def __init__(
-        self,
-        tool: str,
-        sandbox: SandboxToolConfig,
-        path_vars: Callable[[], Mapping[str, str]],
-    ) -> None:
-        self._caller = SandboxCaller(tool, sandbox.effective(), path_vars)
+    def __init__(self, tool: str, launchers: LauncherFactory) -> None:
+        self._caller = launchers(tool)
 
     def query(
         self,

@@ -4,7 +4,6 @@
 спейсам целиком. Логика в приватных модулях, здесь обёртки langchain.
 """
 
-from collections.abc import Callable, Mapping
 from typing import Annotated, ClassVar
 
 from langchain.tools import tool
@@ -28,12 +27,13 @@ from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.confluence.ingest_caller import (
     ConfluenceIngestCaller,
 )
-from boba.toolkit.pack import pack_result
+from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import (
     ErrorResult,
     TableResult,
     TextResult,
     ToolResult,
+    pack_result,
 )
 
 __all__ = ["ConfluenceIngestTools", "build_confluence_ingest_tools"]
@@ -59,11 +59,11 @@ class ConfluenceIngestTools:
     def __init__(
         self,
         cfg: ConfluenceIngestConfig,
-        path_vars: Callable[[], Mapping[str, str]],
+        launchers: LauncherFactory,
     ) -> None:
         self._cfg = cfg
-        self._ingest = ConfluenceIngestCaller("ingest", cfg.sandbox, path_vars)
-        self._caller = ConfluenceCaller("confluence", cfg.sandbox, path_vars)
+        self._ingest = ConfluenceIngestCaller("ingest", launchers)
+        self._caller = ConfluenceCaller("confluence", launchers)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -283,7 +283,7 @@ class ConfluenceIngestTools:
 
 def build_confluence_ingest_tools(
     cfg: ConfluenceIngestConfig,
-    path_vars: Callable[[], Mapping[str, str]],
+    launchers: LauncherFactory,
 ) -> list[BaseTool]:
     """Собрать инструменты индексации Confluence."""
-    return ConfluenceIngestTools(cfg, path_vars).build()
+    return ConfluenceIngestTools(cfg, launchers).build()

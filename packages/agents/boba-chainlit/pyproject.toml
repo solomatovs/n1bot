@@ -16,6 +16,7 @@ dependencies = [
     "boba-tool-postgres==0.0.8.dev1",
     "boba-tool-knowledge==0.0.8.dev1",
     "boba-db-postgres==0.0.8.dev1",
+    "boba-sandbox==0.0.8.dev1",
     "boba-transport-http==0.0.8.dev1",
     "boba-auth==0.0.8.dev1",
     "cryptography>=42,<51",

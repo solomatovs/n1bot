@@ -9,7 +9,7 @@ import markdownify
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
 
-from boba.toolkit.payload.entry import PayloadEntry
+from boba.toolkit.payload import PayloadEntry
 
 
 class ConfluenceHtml:

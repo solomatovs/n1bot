@@ -14,8 +14,7 @@ from typing import ClassVar, cast
 
 from langchain_core.tools import BaseTool
 
-from boba.toolkit.pack import pack_result
-from boba.toolkit.result import ErrorResult, ToolResult
+from boba.toolkit.result import ErrorResult, ToolResult, pack_result
 
 __all__ = ["ToolErrorGuard"]
 

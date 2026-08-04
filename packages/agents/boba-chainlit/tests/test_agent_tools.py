@@ -10,15 +10,11 @@ import pytest
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import (
-    SandboxProfile,
-    build_bash_tool,
-)
-from boba.tool.shell.config import BashSandboxConfig
+from boba.chainlit.agent.tools import build_bash_tool
+from boba.sandbox import SandboxCaller
+from boba.sandbox.argv import build_bwrap_argv
+from boba.sandbox.profile import BindSpec, SandboxProfile, SandboxToolConfig
 from boba.toolkit.result import JsonResult
-from boba.toolkit.sandbox.argv import build_bwrap_argv
-from boba.toolkit.sandbox.config import SandboxToolConfig
-from boba.toolkit.sandbox.profile import BindSpec
 
 
 @pytest.fixture(autouse=True)
@@ -205,10 +201,9 @@ class TestBashTool:
                 "cwd": ws,
             },
         )
-        cfg = BashSandboxConfig(
-            sandbox=SandboxToolConfig(profile=profile_dto, override={}),
-        )
-        return build_bash_tool(cfg, dict)
+        sandbox = SandboxToolConfig(profile=profile_dto, override={})
+        profile = sandbox.effective()
+        return build_bash_tool(lambda tool: SandboxCaller(tool, profile, dict))
 
     @staticmethod
     def _invoke(tool, **args) -> dict:
@@ -301,10 +296,12 @@ class TestBashTool:
         profile_dto = _profile(
             ro_binds=_HOST_RO_BINDS, rw_binds=(template,), cwd=template,
         )
-        cfg = BashSandboxConfig(
-            sandbox=SandboxToolConfig(profile=profile_dto, override={}),
+        profile = SandboxToolConfig(profile=profile_dto, override={}).effective()
+        tool = build_bash_tool(
+            lambda tool: SandboxCaller(
+                tool, profile, lambda: {"user_id": "7", "thread_id": "t1"}
+            )
         )
-        tool = build_bash_tool(cfg, lambda: {"user_id": "7", "thread_id": "t1"})
         payload = self._invoke(tool, command="echo data > out.txt")
         assert payload["exit_code"] == 0
         assert (tmp_path / "7" / "t1" / "out.txt").read_text() == "data\n"

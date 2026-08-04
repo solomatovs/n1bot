@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from boba.auth import AuthConfig
 from boba.db.postgres import PostgresConfig
-from boba.toolkit.sandbox.config import SandboxConfig
-from boba.toolkit.workspace.config import LauncherConfig
+from boba.sandbox.profile import SandboxConfig
+from boba.workspace.launcher import LauncherConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,

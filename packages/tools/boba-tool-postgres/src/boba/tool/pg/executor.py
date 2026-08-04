@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.db.postgres import PostgresConfig
 from boba.tool.pg.caller import PgCaller
-from boba.toolkit.sandbox import SandboxPayloadError, SandboxToolConfig
+from boba.toolkit.launcher import LauncherError
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,6 @@ class SqlExecutorConfig(BaseModel):
             '`[tool.pg.profiles] main = "${postgres.main}"`. '
             "Ключ — значение tool-arg `target` (LLM выбирает БД по нему)."
         ),
-    )
-    sandbox: SandboxToolConfig = Field(
-        description="Окружение и точка входа payload'а: [tool.pg.sandbox].",
     )
     max_rows: int = Field(
         default=100,
@@ -123,7 +120,7 @@ class SqlExecutor:
                 sql=query,
                 max_bytes=self._cfg.max_bytes,
             )
-        except SandboxPayloadError as e:
+        except LauncherError as e:
             raise SqlQueryError(
                 f"SQL copy failed (connection_name={connection_name!r}): {e}",
             ) from e
@@ -145,7 +142,7 @@ class SqlExecutor:
                 params=params or (),
                 row_limit=effective_limit,
             )
-        except SandboxPayloadError as e:
+        except LauncherError as e:
             raise SqlQueryError(
                 f"SQL execute failed (connection_name={connection_name!r}): {e}",
             ) from e

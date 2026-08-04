@@ -19,7 +19,7 @@ from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
 from boba.chainlit.infra.session import current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
-from boba.tool.shell import WORKSPACE_MOUNT
+from boba.sandbox import WORKSPACE_MOUNT
 from boba.toolkit.cancellation import turn_cancellation
 from chainlit.data.base import BaseDataLayer
 from chainlit.session import HTTPSession, WebsocketSession

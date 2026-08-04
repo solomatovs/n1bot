@@ -20,9 +20,11 @@ ROOTFS = SANDBOX / "rootfs"
 SRC_PACKAGES = (
     "core/boba-indexing",
     "core/boba-toolkit",
+    "infra/boba-sandbox",
     "infra/db/boba-db-postgres",
-    "infra/krb/boba-krb",
+    "infra/auth/boba-krb",
     "infra/format/boba-liteparse",
+    "infra/format/boba-text",
     "tools/boba-tool-shell",
     "tools/boba-tool-chart",
     "tools/boba-tool-web",

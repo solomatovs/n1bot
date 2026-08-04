@@ -32,7 +32,7 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluencePagesRequestSource,
 )
 from boba.tool.kb.html.payload import PageOps
-from boba.toolkit.payload.entry import PayloadEntry
+from boba.toolkit.payload import PayloadEntry
 
 
 class LocalConfluenceReader(Reader[str]):

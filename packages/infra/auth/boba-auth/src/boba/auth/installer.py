@@ -15,7 +15,7 @@ class ChainlitAuthInstaller:
         self._configs = configs
 
     def install(self, chainlit_app: FastAPI) -> KerberosAuth | None:
-        "Ставит способы авторизации; KerberosAuth возвращается ради delegation для tools"
+        "Ставит способы авторизации; KerberosAuth нужен ради delegation в tools"
         password_callback = PasswordAuthCallbackInstaller()
         kerberos: KerberosAuth | None = None
 

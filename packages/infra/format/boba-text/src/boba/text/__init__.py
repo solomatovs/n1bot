@@ -22,12 +22,26 @@
 from __future__ import annotations
 
 from boba.text.chunker import SectionChunker
+from boba.text.document import (
+    DocumentMedia,
+    LiteParseError,
+    LiteParseParams,
+    PagedDocumentReader,
+    PageSectionBuilder,
+    ParsedPage,
+)
 from boba.text.reader import PlainTextReader
 from boba.text.splitter import OverlapCharSplitter
 from boba.text.structural_chunker import SplitterFactory, StructuralChunker
 
 __all__ = [
+    "DocumentMedia",
+    "LiteParseError",
+    "LiteParseParams",
     "OverlapCharSplitter",
+    "PageSectionBuilder",
+    "PagedDocumentReader",
+    "ParsedPage",
     "PlainTextReader",
     "SectionChunker",
     "SplitterFactory",

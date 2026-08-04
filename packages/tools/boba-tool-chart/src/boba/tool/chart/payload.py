@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 
 from plotly import graph_objects as go
 
-from boba.toolkit.payload.entry import PayloadEntry
+from boba.toolkit.payload import PayloadEntry
 
 
 class ChartOps:

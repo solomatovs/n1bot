@@ -11,14 +11,19 @@ from boba.transport.http.auth import (
     WebAuth,
 )
 from boba.transport.http.connection import HttpProfile
-from boba.transport.http.request import HttpRequest
-from boba.transport.http.response import ByteStream, HttpResponse
-from boba.transport.http.transport import HttpTransport
+from boba.transport.http.transport import (
+    ByteStream,
+    CancellableHttpTransport,
+    HttpRequest,
+    HttpResponse,
+    HttpTransport,
+)
 
 __all__ = [
     "BasicAuth",
     "BearerAuth",
     "ByteStream",
+    "CancellableHttpTransport",
     "DigestAuth",
     "HttpProfile",
     "HttpRequest",

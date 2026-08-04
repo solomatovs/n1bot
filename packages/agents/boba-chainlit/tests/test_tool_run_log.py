@@ -9,12 +9,11 @@ import pytest
 from langchain_core.tools import StructuredTool
 
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
-from boba.toolkit.process.runner import RunResult
-from boba.toolkit.sandbox.call_context import ToolCallContext
-from boba.toolkit.sandbox.runner import SandboxRunner
+from boba.sandbox.process_runner import RunResult
+from boba.sandbox.runner import SandboxRunner, ToolCallContext
 
 LOGGER_NAME = "boba.chainlit.agent.tools.run_log"
-RUNNER_LOGGER_NAME = "boba.toolkit.sandbox.runner"
+RUNNER_LOGGER_NAME = "boba.sandbox.runner"
 
 
 @pytest.fixture(autouse=True)

@@ -7,14 +7,8 @@ from __future__ import annotations
 
 import pytest
 
+from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.settings import bind
-from boba.tool.doc import DocToolsConfig
-from boba.tool.kb import PostgresKnowledgeBaseConfig
-from boba.tool.kb.confluence import ConfluenceToolsConfig
-from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
-from boba.tool.pg import SqlExecutorConfig
-from boba.tool.web import WebGrepConfig
-from boba.toolkit.sandbox import SandboxProfile
 
 MIN_ADDRESS_SPACE = 3 * 1024 * 1024 * 1024
 MIN_OPEN_FILES = 64
@@ -23,16 +17,16 @@ MIN_PROCESSES = 16
 RESOLVER_FILES = ("/etc/resolv.conf", "/etc/hosts")
 
 _SECTIONS = [
-    ("tool.doc", DocToolsConfig),
-    ("tool.ingest", ConfluenceIngestConfig),
-    ("tool.web", WebGrepConfig),
-    ("tool.confluence", ConfluenceToolsConfig),
+    "tool.doc",
+    "tool.ingest",
+    "tool.web",
+    "tool.confluence",
 ]
 
 _NETWORK_SECTIONS = [
     *_SECTIONS,
-    ("tool.pg", SqlExecutorConfig),
-    ("tool.kb", PostgresKnowledgeBaseConfig),
+    "tool.pg",
+    "tool.kb",
 ]
 
 
@@ -42,10 +36,11 @@ def chainlit_context() -> None:
 
 
 def _bound(raw, sections) -> list[tuple[str, SandboxProfile]]:
+    """Профиль запуска инструмента: он объявлен секцией [tool.<name>.sandbox]."""
     found: list[tuple[str, SandboxProfile]] = []
-    for section, model in sections:
-        cfg = bind(raw, path=section, model=model)
-        found.append((section, cfg.sandbox.effective()))
+    for section in sections:
+        sandbox = bind(raw, path=f"{section}.sandbox", model=SandboxToolConfig)
+        found.append((section, sandbox.effective()))
     return found
 
 
@@ -87,8 +82,7 @@ class TestParserProfileLimits:
         }
         for section, profile in _profiles(raw_config):
             assert profile.network is expected[section], (
-                f"[{section}]: network={profile.network}, "
-                f"ожидалось {expected[section]}"
+                f"[{section}]: network={profile.network}, ожидалось {expected[section]}"
             )
 
     def test_network_profiles_mount_resolver(self, raw_config) -> None:

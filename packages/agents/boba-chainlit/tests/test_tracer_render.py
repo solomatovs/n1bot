@@ -11,13 +11,13 @@ from pydantic import ValidationError
 
 from boba.chainlit.chat.transcript import ConversationTranscript
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
-from boba.toolkit.artifact import ToolArtifact
 from boba.toolkit.result import (
     ChartResult,
     ErrorResult,
     JsonResult,
     TableResult,
     TextResult,
+    ToolArtifact,
 )
 
 THREAD = "11111111-1111-1111-1111-111111111111"

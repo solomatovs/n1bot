@@ -12,16 +12,8 @@ from pgvector.psycopg import register_vector_async
 from psycopg import sql
 from pydantic import BaseModel, Field, model_validator
 
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig
-from boba.indexing.chunk_store import (
-    ChunkStore,
-    CollectionInfo,
-    CollectionsStore,
-    HashDiff,
-)
+from boba.db.postgres import AsyncPostgresPool, CancellablePool, PostgresConfig
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
-from boba.indexing.content_hash import ContentHash, StringContentHash
-from boba.indexing.context import CollectionId
 from boba.indexing.filter import (
     And,
     Eq,
@@ -40,9 +32,14 @@ from boba.indexing.filter import (
     Or,
     UnsupportedFilterError,
 )
-from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
-from boba.toolkit.pool import CancellablePool
+from boba.indexing.store import (
+    ChunkStore,
+    CollectionInfo,
+    CollectionsStore,
+    HashDiff,
+)
+from boba.indexing.values import CollectionId, ContentHash, Metadata, StringContentHash
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,6 @@ from boba.tool.web.caller import WebCaller
 from boba.tool.web.connection import WebConnection
 from boba.tool.web.protocol import WebGrepRequest
 from boba.toolkit.result import TableResult
-from boba.toolkit.sandbox import SandboxToolConfig
 
 __all__ = ["WebGrepConfig", "web_grep"]
 
@@ -22,9 +21,6 @@ class WebGrepConfig(WebConnection):
         default=2000,
         ge=1,
         description="Потолок длины content/before/after на match.",
-    )
-    sandbox: SandboxToolConfig = Field(
-        description="Окружение и точка входа payload'а: [tool.web.sandbox].",
     )
 
 

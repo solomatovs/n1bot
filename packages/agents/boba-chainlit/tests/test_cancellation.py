@@ -15,18 +15,16 @@ import pytest
 from langchain_core.tools import tool
 
 from boba.chainlit.agent.tools import build_bash_tool
-from boba.tool.shell.config import BashSandboxConfig
+from boba.chainlit.agent.tools.cancellation import CancellableTools
+from boba.sandbox import SandboxCaller, SandboxProfile, SandboxToolConfig
 from boba.toolkit.cancellation import (
-    CancellableTools,
     ToolStopped,
     TurnCancellation,
     current_cancellation,
     turn_cancellation,
 )
-from boba.toolkit.http import CancellableHttpTransport
 from boba.toolkit.result import ErrorResult
-from boba.toolkit.sandbox import SandboxProfile, SandboxToolConfig
-from boba.transport.http import HttpProfile, HttpRequest
+from boba.transport.http import CancellableHttpTransport, HttpProfile, HttpRequest
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +35,7 @@ def chainlit_context() -> None:
 _HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
 
 
-def _sandbox_config() -> BashSandboxConfig:
+def _sandbox_config() -> SandboxToolConfig:
     """Минимальный профиль без образа: нужен лишь долгоживущий процесс."""
     profile = SandboxProfile.model_validate(
         {
@@ -67,9 +65,7 @@ def _sandbox_config() -> BashSandboxConfig:
             "cwd": "/tmp",  # noqa: S108
         }
     )
-    return BashSandboxConfig(
-        sandbox=SandboxToolConfig(profile=profile, override={}),
-    )
+    return SandboxToolConfig(profile=profile, override={})
 
 
 
@@ -264,7 +260,8 @@ class TestSubprocessAbort:
         return alive
 
     def test_cancel_kills_running_process(self) -> None:
-        tool_ = build_bash_tool(_sandbox_config(), dict)
+        profile = _sandbox_config().effective()
+        tool_ = build_bash_tool(lambda tool: SandboxCaller(tool, profile, dict))
         with turn_cancellation() as c:
             ctx = copy_context()
             with ThreadPoolExecutor(1) as pool:

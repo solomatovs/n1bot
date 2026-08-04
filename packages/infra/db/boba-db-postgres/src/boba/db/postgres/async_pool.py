@@ -9,18 +9,32 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, ClassVar
 
 import psycopg
 from psycopg.rows import DictRow, dict_row
 
 from boba.db.postgres.config import PostgresConfig
-from boba.db.postgres.errors import PostgresPoolClosedError
 from boba.krb import KerberosCredentials, KeytabCredentials
+from boba.toolkit.cancellation import current_cancellation
 
-__all__ = ["AsyncPostgresPool", "KerberosConnection"]
+__all__ = [
+    "AsyncPostgresPool",
+    "CancellablePool",
+    "KerberosConnection",
+    "PostgresError",
+    "PostgresPoolClosedError",
+]
+
+class PostgresError(Exception):
+    """Базовая ошибка PG-инфры (pool/connection/timeout)."""
+
+
+class PostgresPoolClosedError(PostgresError):
+    """Попытка взять connection из уже закрытого pool'а."""
+
 
 logger = logging.getLogger(__name__)
 
@@ -196,3 +210,41 @@ class AsyncPostgresPool:
         self._closed = True
         await self._pool.close()
         logger.info("AsyncPostgresPool closed")
+
+
+class CancellablePool:
+    """Делегат AsyncPostgresPool: регистрирует conn.cancel как прерыватель.
+
+    cancel() у AsyncConnection синхронный и зовётся из чужого потока — это и нужно
+    остановке хода: отмена asyncio сама по себе не прерывает запрос, идущий в базе.
+    """
+
+    def __init__(self, inner: AsyncPostgresPool) -> None:
+        self._inner = inner
+
+    @asynccontextmanager
+    async def connection(self) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:
+        async with self._inner.connection() as conn:
+            with self._abort(conn):
+                yield conn
+
+    @asynccontextmanager
+    async def cursor(self) -> AsyncGenerator[psycopg.AsyncCursor[Any], None]:
+        async with self._inner.cursor() as cur:
+            with self._abort(cur.connection):
+                yield cur
+
+    @asynccontextmanager
+    async def dict_cursor(self) -> AsyncGenerator[psycopg.AsyncCursor[DictRow], None]:
+        async with self._inner.dict_cursor() as cur:
+            with self._abort(cur.connection):
+                yield cur
+
+    async def close(self) -> None:
+        await self._inner.close()
+
+    @staticmethod
+    @contextmanager
+    def _abort(conn: psycopg.AsyncConnection[Any]) -> Generator[None]:
+        with current_cancellation().abort_with(conn.cancel):
+            yield

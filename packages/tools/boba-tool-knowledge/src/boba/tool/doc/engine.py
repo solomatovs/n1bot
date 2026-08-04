@@ -7,7 +7,6 @@ pydantic.ValidationError — ответ payload'а не по контракту.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
 from typing import ClassVar, TypeVar
 
 from pydantic import BaseModel
@@ -24,7 +23,7 @@ from boba.tool.doc.protocol import (
     DocWindowAnswer,
     DocWindowRequest,
 )
-from boba.toolkit.sandbox import SandboxCaller
+from boba.toolkit.launcher import LauncherFactory
 
 __all__ = ["DocEngine"]
 
@@ -39,10 +38,10 @@ class DocEngine:
     def __init__(
         self,
         cfg: DocToolsConfig,
-        path_vars: Callable[[], Mapping[str, str]],
+        launchers: LauncherFactory,
     ) -> None:
         self._cfg = cfg
-        self._caller = SandboxCaller("doc", cfg.sandbox.effective(), path_vars)
+        self._caller = launchers("doc")
 
     async def read_document(
         self,

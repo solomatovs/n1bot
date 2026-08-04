@@ -9,8 +9,8 @@ from typing import Any, ClassVar
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from boba.toolkit.payload.entry import PayloadEntry
-from boba.toolkit.payload.pg import PayloadPostgres
+from boba.db.postgres import PayloadPostgres
+from boba.toolkit.payload import PayloadEntry
 
 
 class KbOps:

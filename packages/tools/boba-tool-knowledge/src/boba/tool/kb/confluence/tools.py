@@ -5,7 +5,6 @@
 в ErrorResult.
 """
 
-from collections.abc import Callable, Mapping
 from typing import Annotated, Literal
 
 from langchain.tools import tool
@@ -30,9 +29,8 @@ from boba.tool.kb.confluence._search_cql import (
     confluence_search_cql,
 )
 from boba.tool.kb.confluence.caller import ConfluenceCaller
-from boba.toolkit.pack import pack_result
-from boba.toolkit.result import ErrorResult, TextResult, ToolResult
-from boba.toolkit.sandbox import SandboxToolConfig
+from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 from boba.transport.http import HttpProfile
 
 __all__ = ["ConfluenceTools", "ConfluenceToolsConfig", "build_confluence_tools"]
@@ -43,9 +41,6 @@ class ConfluenceToolsConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    sandbox: SandboxToolConfig = Field(
-        description="Окружение и точка входа payload'а: [tool.confluence.sandbox].",
-    )
 
     confluence: HttpProfile = Field(
         description='Web-профиль Confluence ссылкой `confluence = "${web.<name>}"`.',
@@ -67,10 +62,10 @@ class ConfluenceTools:
     def __init__(
         self,
         cfg: ConfluenceToolsConfig,
-        path_vars: Callable[[], Mapping[str, str]],
+        launchers: LauncherFactory,
     ) -> None:
         self._cfg = cfg
-        self._caller = ConfluenceCaller("confluence", cfg.sandbox, path_vars)
+        self._caller = ConfluenceCaller("confluence", launchers)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -283,7 +278,7 @@ class ConfluenceTools:
 
 def build_confluence_tools(
     cfg: ConfluenceToolsConfig,
-    path_vars: Callable[[], Mapping[str, str]],
+    launchers: LauncherFactory,
 ) -> list[BaseTool]:
     """Собрать инструменты чтения Confluence."""
-    return ConfluenceTools(cfg, path_vars).build()
+    return ConfluenceTools(cfg, launchers).build()

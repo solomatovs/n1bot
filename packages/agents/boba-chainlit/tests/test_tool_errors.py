@@ -10,8 +10,8 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 
 from boba.chainlit.agent.tools.errors import ToolErrorGuard
+from boba.sandbox.caller import SandboxPayloadError
 from boba.toolkit.result import ErrorResult, TextResult
-from boba.toolkit.sandbox.payload import SandboxPayloadError
 
 __all__: list[str] = []
 

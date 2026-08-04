@@ -20,9 +20,8 @@ from boba.indexing import (
     RequestSource,
     TransportKeys,
 )
-from boba.indexing.context import CollectionId
-from boba.indexing.embedder import Embedder
-from boba.indexing.reader import ReaderId
+from boba.indexing.ports import Embedder, ReaderId
+from boba.indexing.values import CollectionId
 from boba.settings import (
     StringList,
 )

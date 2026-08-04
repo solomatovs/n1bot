@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from boba.tool.doc.liteparse import LiteParseCaller, SandboxParserConfig
 from boba.tool.kb.html import HtmlCaller
+from boba.toolkit.launcher import LauncherFactory
 
 __all__ = ["ConfluenceParsers"]
 
@@ -23,10 +23,10 @@ class ConfluenceParsers:
         cls,
         tool: str,
         cfg: SandboxParserConfig,
-        path_vars: Callable[[], Mapping[str, str]],
+        launchers: LauncherFactory,
     ) -> ConfluenceParsers:
         """Оба разборщика идут в одну песочницу — точка входа у них общая."""
         return cls(
-            documents=LiteParseCaller(tool, cfg, path_vars),
-            pages=HtmlCaller(tool, cfg.sandbox, path_vars),
+            documents=LiteParseCaller(tool, cfg, launchers),
+            pages=HtmlCaller(tool, launchers),
         )

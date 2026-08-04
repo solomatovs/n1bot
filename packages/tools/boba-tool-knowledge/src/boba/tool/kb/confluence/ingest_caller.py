@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from boba.toolkit.sandbox import SandboxCaller, SandboxToolConfig
+from boba.toolkit.launcher import LauncherFactory
 
 __all__ = ["ConfluenceIngestCaller", "IngestAnswer", "IngestRequest"]
 
@@ -46,13 +46,8 @@ class ConfluenceIngestCaller:
         "boba.tool.kb.confluence.ingest_payload",
     )
 
-    def __init__(
-        self,
-        tool: str,
-        sandbox: SandboxToolConfig,
-        path_vars: Callable[[], Mapping[str, str]],
-    ) -> None:
-        self._caller = SandboxCaller(tool, sandbox.effective(), path_vars)
+    def __init__(self, tool: str, launchers: LauncherFactory) -> None:
+        self._caller = launchers(tool)
 
     @classmethod
     def config_of(cls, cfg: BaseModel) -> dict[str, Any]:
