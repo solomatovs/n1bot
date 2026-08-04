@@ -189,13 +189,12 @@ class ConfluenceOps:
             msg = f"attachment {filename!r} not found on page {request['page_id']!r}"
             raise RuntimeError(msg)
         content = cls.get(request, link).content
-        from boba.tool.doc.payload import DocumentOps  # noqa: PLC0415
+        from boba.liteparse import LiteParseParams  # noqa: PLC0415
+        from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
 
-        result = DocumentOps.parse_content(content, filename, request["params"])
-        texts: list[str] = []
-        for page in result["pages"]:
-            texts.append(page["text"])
-        return {"text": "\n".join(texts)}
+        params = LiteParseParams.model_validate(request["params"])
+        result = LiteParseEngine.parse_bytes(params, content, filename)
+        return {"text": result.text}
 
     @staticmethod
     def attachment_link(data: dict[str, Any], filename: str) -> str:

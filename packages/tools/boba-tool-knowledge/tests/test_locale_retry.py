@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from liteparse.types import ParseError
 
-from boba.tool.doc.payload import LocaleRetry
+from boba.liteparse.engine import LocaleRetry
 
 
 class ParserStub:

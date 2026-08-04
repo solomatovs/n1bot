@@ -21,7 +21,9 @@ class LocalFastEmbedEmbedder(Embedder[str]):
     def __init__(
         self, model_name: str, cache_dir: str, dim: int, batch_size: int
     ) -> None:
-        from fastembed import TextEmbedding  # noqa: PLC0415
+        from fastembed import (  # noqa: PLC0415 # pyright: ignore[reportMissingImports]
+            TextEmbedding,
+        )
         self._model_name = model_name
         self._model = TextEmbedding(
             model_name=model_name,

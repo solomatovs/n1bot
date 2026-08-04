@@ -19,6 +19,7 @@ ROOTFS = SANDBOX / "rootfs"
 
 SRC_PACKAGES = (
     "core/boba-toolkit",
+    "infra/format/boba-liteparse",
     "tools/boba-tool-shell",
     "tools/boba-tool-chart",
     "tools/boba-tool-web",

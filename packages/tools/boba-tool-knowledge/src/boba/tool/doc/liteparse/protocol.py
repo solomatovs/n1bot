@@ -1,11 +1,18 @@
-"""Контракт liteparse-payload'а: настройки парсера и разбор байт из запроса (base64)."""
+"""Контракт liteparse-payload'а: настройки парсера и разбор байт из запроса (base64).
+
+Ошибки: pydantic.ValidationError — при разборе моделей контракта;
+binascii.Error — из ParseBytesRequest.content при битом base64.
+"""
 
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from boba.liteparse import LiteParseParams, ParsedPage
 
 __all__ = [
     "ParseBytesAnswer",
@@ -15,18 +22,21 @@ __all__ = [
 ]
 
 
-class ParseParams(BaseModel):
-    """Настройки парсера; одинаковы у всех операций payload'а."""
+class ParseParams(LiteParseParams):
+    """Настройки парсера в запросе payload'а; поля — из LiteParseParams."""
 
     model_config = ConfigDict(extra="forbid")
 
-    ocr_enabled: bool = Field(description="Включать OCR для сканов и изображений.")
-    ocr_language: str = Field(min_length=1, description="Язык OCR: 'rus+eng'.")
-    max_pages: int = Field(ge=0, description="Лимит страниц парсера; 0 = без лимита.")
-    tessdata_path: str = Field(min_length=1, description="Каталог моделей OCR.")
-    num_workers: int = Field(
-        ge=1, description="Параллелизм OCR; ~50-100 MiB на воркер."
-    )
+    @classmethod
+    def of(cls, base: LiteParseParams) -> ParseParams:
+        """Единственное место копирования настроек конфига в запрос."""
+        return cls(
+            ocr_enabled=base.ocr_enabled,
+            ocr_language=base.ocr_language,
+            max_pages=base.max_pages,
+            tessdata_path=base.tessdata_path,
+            num_workers=base.num_workers,
+        )
 
 
 class ParseBytesRequest(BaseModel):
@@ -52,14 +62,9 @@ class ParseBytesRequest(BaseModel):
         content = base64.b64encode(data).decode("ascii")
         return cls(op=cls.OP, filename=filename, content_b64=content, params=params)
 
-
-class ParsedPage(BaseModel):
-    """Одна страница (или лист) документа."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    page_num: int
-    text: str
+    def content(self) -> bytes:
+        """Байты документа из base64-поля запроса."""
+        return base64.b64decode(self.content_b64)
 
 
 class ParseBytesAnswer(BaseModel):
@@ -73,7 +78,8 @@ class ParseBytesAnswer(BaseModel):
     @property
     def text(self) -> str:
         """Весь текст документа: страницы через перевод строки."""
-        parts: list[str] = []
+        return "\n".join(self._page_texts())
+
+    def _page_texts(self) -> Iterator[str]:
         for page in self.pages:
-            parts.append(page.text)
-        return "\n".join(parts)
+            yield page.text

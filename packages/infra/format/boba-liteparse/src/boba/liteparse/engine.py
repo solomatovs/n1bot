@@ -1,102 +1,137 @@
-"""Единый движок поверх liteparse: parse / parse_native / search_items.
+"""Всё, что требует нативного liteparse: движок, ретраи локалей, ридер.
 
-Центральная (и единственная) точка, где импортируется liteparse —
-публичный API и приватный нативный модуль. Потребители (doc-tool,
-будущий indexer-reader) ходят только сюда и не знают про устройство
-liteparse, временные файлы и приватные символы.
+Модуль импортируется только там, где liteparse установлен — в rootfs
+песочницы. App-safe часть пакета живёт в `boba.liteparse` и
+`boba.liteparse.sections`.
 
-Почему нужен parse_native + приватный liteparse._liteparse:
-публичный liteparse.search_items в 2.0.x сломан — он передаёт
-dataclass-TextItem (вывод публичного parse()) в нативную функцию,
-ждущую PyTextItem, и падает с TypeError. Поэтому для поиска по bbox
-парсим нативным parse_native (отдаёт нативные PyTextItem) и зовём
-нативный search_items. КОГДА АПСТРИМ ПОЧИНИТ публичный search_items —
-parse_native и весь private-импорт можно удалить, а search_items
-перевести на публичный поверх обычного parse().
+Ошибки: LiteParseError — парсинг не удался или нет каталога tessdata;
+RuntimeError — сырой сбой нативного парсера вне ParseError (LiteParseError
+наследует RuntimeError, так что `except RuntimeError` ловит оба);
+IncompatibleContentError — из LiteParseReader через базу PagedDocumentReader.
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, ClassVar, Protocol
 
-from boba.liteparse.errors import LiteParseError
-from boba.liteparse.params import LiteParseParams
+from boba.liteparse import LiteParseError, LiteParseParams, ParsedPage
+from boba.liteparse.sections import PagedDocumentReader
 from liteparse import LiteParse, ParseError, ParseResult
-
-# Приватный нативный модуль liteparse — нужен только для parse_native +
-# search_items (см. docstring модуля). Держим импорт строго здесь.
 from liteparse._liteparse import LiteParse as _NativeLiteParse
 from liteparse._liteparse import search_items as _native_search_items
 
-__all__ = ["LiteParseEngine"]
+__all__ = ["LiteParseEngine", "LiteParseReader", "LocaleRetry"]
+
+
+class DocumentParser(Protocol):
+    """Общий утиный контракт публичного и нативного парсеров liteparse."""
+
+    def parse(self, path: str, /) -> Any: ...
+
+
+class LocaleRetry:
+    """Ретрай под запасными локалями: LibreOffice без UTF-8-локали молча
+    (rc=0) не открывает файлы с не-ASCII именем."""
+
+    MARKER: ClassVar[str] = (
+        "LibreOffice conversion succeeded but output PDF not found"
+    )
+    RETRYABLE: ClassVar[tuple[type[Exception], ...]] = (ParseError, RuntimeError)
+    LOCALES: ClassVar[tuple[str, ...]] = ("ru_RU.UTF-8", "en_US.UTF-8", "C")
+
+    @classmethod
+    def parse(cls, parser: DocumentParser, path: str) -> Any:
+        try:
+            return parser.parse(path)
+        except cls.RETRYABLE as e:
+            if cls.MARKER not in str(e):
+                raise
+            first = e
+
+        for locale_name in cls.LOCALES:
+            try:
+                return cls.parse_with_locale(parser, path, locale_name)
+            except cls.RETRYABLE as e:
+                if cls.MARKER not in str(e):
+                    raise
+
+        raise first
+
+    @classmethod
+    def parse_with_locale(
+        cls, parser: DocumentParser, path: str, locale_name: str
+    ) -> Any:
+        saved = os.environ.get("LC_ALL")
+        os.environ["LC_ALL"] = locale_name
+        try:
+            return parser.parse(path)
+        finally:
+            if saved is None:
+                os.environ.pop("LC_ALL", None)
+            else:
+                os.environ["LC_ALL"] = saved
 
 
 class LiteParseEngine:
-    """Парсинг байт документа через liteparse; ошибки -> LiteParseError."""
+    """Парсинг документов по LiteParseParams; ошибки -> LiteParseError."""
 
     @staticmethod
-    @contextmanager
-    def _on_disk(data: bytes, filename: str) -> Iterator[str]:
-        """Записать байты во временный файл с расширением из filename; отдать путь.
+    def check_ocr(params: LiteParseParams) -> None:
+        """Проверяет каталог моделей: без него liteparse лезет в сеть."""
+        if not params.ocr_enabled:
+            return
+        if os.path.isdir(params.tessdata_path):
+            return
 
-        liteparse определяет office-форматы (docx/xlsx/pptx — это zip) по
-        расширению файла, поэтому парсить нужно реальный файл с исходным
-        суффиксом, а не голые байты (иначе docx опознаётся как .zip).
-        Файл гарантированно удаляется на выходе.
-        """
-        suffix = os.path.splitext(filename)[1]
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        try:
-            yield tmp_path
-        finally:
-            os.unlink(tmp_path)
+        msg = (
+            f"ocr_enabled=true, но каталога моделей {params.tessdata_path!r} "
+            "нет в rootfs песочницы: положи туда tessdata или выключи "
+            "ocr_enabled"
+        )
+        raise LiteParseError(msg)
 
-    @staticmethod
-    def parse(
-        params: LiteParseParams,
-        data: bytes,
-        filename: str,
-        *,
-        target_pages: str | None = None,
+    @classmethod
+    def parse(cls, params: LiteParseParams, path: str) -> ParseResult:
+        """Распарсить документ целиком публичным API liteparse."""
+        return cls._parse_public(params, path, target_pages=None)
+
+    @classmethod
+    def parse_pages(
+        cls, params: LiteParseParams, path: str, pages: str
     ) -> ParseResult:
-        """Распарсить документ публичным API liteparse; ошибки -> LiteParseError."""
-        parser = LiteParse(
-            ocr_enabled=params.ocr_enabled,
-            ocr_language=params.ocr_language,
-            max_pages=params.max_pages or None,
-            target_pages=target_pages,
-            quiet=True,
-        )
-        with LiteParseEngine._on_disk(data, filename) as tmp_path:
-            try:
-                return parser.parse(tmp_path)
-            except ParseError as e:
-                raise LiteParseError(str(e)) from e
+        """Распарсить только выбранные страницы, 1-based: '1-5,10'."""
+        return cls._parse_public(params, path, target_pages=pages)
 
-    @staticmethod
-    def parse_native(params: LiteParseParams, data: bytes, filename: str) -> Any:
-        """Распарсить документ нативным API liteparse; вернуть нативный результат.
+    @classmethod
+    def parse_bytes(
+        cls, params: LiteParseParams, data: bytes, filename: str
+    ) -> ParseResult:
+        """Распарсить байты: office-формат liteparse узнаёт по расширению."""
+        with cls._on_disk(data, filename) as tmp_path:
+            return cls.parse(params, tmp_path)
 
-        Отдаёт нативный PyParseResult с нативными PyTextItem — единственный
-        вход, который принимает нативный search_items. См. docstring модуля.
-        """
-        parser = _NativeLiteParse(
-            ocr_enabled=params.ocr_enabled,
-            ocr_language=params.ocr_language,
-            quiet=True,
-            **({"max_pages": params.max_pages} if params.max_pages else {}),
-        )
-        with LiteParseEngine._on_disk(data, filename) as tmp_path:
-            try:
-                return parser.parse(tmp_path)
-            except Exception as e:
-                raise LiteParseError(str(e)) from e
+    @classmethod
+    def parse_native(cls, params: LiteParseParams, path: str) -> Any:
+        """Нативный парсер: только он отдаёт PyTextItem для search_items."""
+        cls.check_ocr(params)
+
+        options: dict[str, Any] = {
+            "ocr_enabled": params.ocr_enabled,
+            "ocr_language": params.ocr_language,
+            "tessdata_path": params.tessdata_path,
+            "num_workers": params.num_workers,
+            "quiet": True,
+        }
+        limit = cls._page_limit(params)
+        if limit is not None:
+            options["max_pages"] = limit
+
+        parser = _NativeLiteParse(**options)
+        return cls._run(parser, path)
 
     @staticmethod
     def search_items(
@@ -105,10 +140,73 @@ class LiteParseEngine:
         *,
         case_sensitive: bool = False,
     ) -> Any:
-        """Найти query среди нативных text_items (bbox-merge через нативный модуль).
-
-        text_items — нативные PyTextItem страницы из parse_native; возвращает
-        нативные hit'ы с координатами. Контекст-сниппет модуль не даёт —
-        собирается потребителем из page.text.
-        """
+        """Найти query среди нативных text_items; отдаёт hit'ы с bbox."""
         return _native_search_items(text_items, query, case_sensitive=case_sensitive)
+
+    @classmethod
+    def _parse_public(
+        cls,
+        params: LiteParseParams,
+        path: str,
+        *,
+        target_pages: str | None,
+    ) -> ParseResult:
+        cls.check_ocr(params)
+
+        parser = LiteParse(
+            ocr_enabled=params.ocr_enabled,
+            ocr_language=params.ocr_language,
+            tessdata_path=params.tessdata_path,
+            max_pages=cls._page_limit(params),
+            target_pages=target_pages,
+            num_workers=params.num_workers,
+            quiet=True,
+        )
+        return cls._run(parser, path)
+
+    @staticmethod
+    def _page_limit(params: LiteParseParams) -> int | None:
+        """Контрактный «0 = без лимита» -> None, которого ждёт API liteparse."""
+        if params.max_pages == 0:
+            return None
+        return params.max_pages
+
+    @staticmethod
+    def _run(parser: DocumentParser, path: str) -> Any:
+        try:
+            return LocaleRetry.parse(parser, path)
+        except ParseError as e:
+            raise LiteParseError(str(e)) from e
+
+    @staticmethod
+    @contextmanager
+    def _on_disk(data: bytes, filename: str) -> Generator[str]:
+        """Байты во временный файл с суффиксом исходного имени; файл удаляется."""
+        # office-форматы (docx/xlsx/pptx — это zip) liteparse узнаёт по расширению
+        suffix = os.path.splitext(filename)[1]
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
+        try:
+            yield tmp_path
+        finally:
+            os.unlink(tmp_path)
+
+
+class LiteParseReader(PagedDocumentReader):
+    """Reader[str] прямо на движке — для окружений, где liteparse под рукой."""
+
+    PARSE_ERRORS: ClassVar[tuple[type[Exception], ...]] = (LiteParseError,)
+
+    def __init__(self, params: LiteParseParams) -> None:
+        self._params = params
+
+    def parse_pages(self, data: bytes, filename: str) -> Sequence[ParsedPage]:
+        result = LiteParseEngine.parse_bytes(self._params, data, filename)
+        return tuple(self._pages(result))
+
+    @staticmethod
+    def _pages(result: ParseResult) -> Iterator[ParsedPage]:
+        for page in result.pages:
+            yield ParsedPage(page_num=page.page_num, text=page.text)

@@ -1,4 +1,8 @@
-"""Вызов doc-payload'а в песочнице: сборка запроса и разбор ответа."""
+"""Вызов doc-payload'а в песочнице: сборка запроса и разбор ответа.
+
+Ошибки: SandboxPayloadError — сбой запуска или исполнения payload'а;
+pydantic.ValidationError — ответ payload'а не по контракту.
+"""
 
 from __future__ import annotations
 
@@ -109,11 +113,15 @@ class DocEngine:
     def _params(
         self, ocr_enabled: bool, num_workers: int, ocr_language: str
     ) -> DocParams:
-        base = self._cfg.parse_params().model_dump()
-        base["ocr_enabled"] = ocr_enabled
-        base["num_workers"] = num_workers
-        base["ocr_language"] = ocr_language
-        return DocParams(**base, max_text_chars=self._cfg.max_text_chars)
+        """Настройки конфига плюс переопределения из вызова LLM — явно по полям."""
+        return DocParams(
+            ocr_enabled=ocr_enabled,
+            ocr_language=ocr_language,
+            max_pages=self._cfg.max_pages,
+            tessdata_path=self._cfg.tessdata_path,
+            num_workers=num_workers,
+            max_text_chars=self._cfg.max_text_chars,
+        )
 
     async def _call(self, request: BaseModel, schema: type[M]) -> M:
         """Парсинг долгий и синхронный — уходит в отдельный поток."""

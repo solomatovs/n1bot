@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from boba.liteparse import LiteParseEngine, LiteParseError, LiteParseParams
+from boba.liteparse import LiteParseError, LiteParseParams
+from boba.liteparse.engine import LiteParseEngine
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -24,33 +25,58 @@ endstream endobj
 trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
+_TESSDATA = "/usr/share/tessdata"
+
 
 @pytest.fixture
 def params() -> LiteParseParams:
-    return LiteParseParams(ocr_enabled=False)
+    return LiteParseParams(ocr_enabled=False, tessdata_path=_TESSDATA)
 
 
-def test_parse_full_text(params: LiteParseParams):
-    result = LiteParseEngine.parse(params, _PDF, "doc.pdf")
+@pytest.fixture
+def pdf_path(tmp_path) -> str:
+    path = tmp_path / "doc.pdf"
+    path.write_bytes(_PDF)
+    return str(path)
+
+
+def test_parse_full_text(params: LiteParseParams, pdf_path: str):
+    result = LiteParseEngine.parse(params, pdf_path)
     assert result.num_pages == 2
     assert "Alpha page one" in result.text
     assert "Beta page two" in result.text
 
 
-def test_target_pages_selects_subset(params: LiteParseParams):
-    result = LiteParseEngine.parse(params, _PDF, "doc.pdf", target_pages="2")
+def test_parse_pages_selects_subset(params: LiteParseParams, pdf_path: str):
+    result = LiteParseEngine.parse_pages(params, pdf_path, "2")
     assert [p.page_num for p in result.pages] == [2]
     assert "Beta page two" in result.text
     assert "page one" not in result.text
 
 
+def test_parse_bytes_matches_parse(params: LiteParseParams):
+    result = LiteParseEngine.parse_bytes(params, _PDF, "doc.pdf")
+    assert result.num_pages == 2
+    assert "Alpha page one" in result.text
+
+
 def test_parse_invalid_raises_liteparse_error(params: LiteParseParams):
     with pytest.raises(LiteParseError):
-        LiteParseEngine.parse(params, b"not a real pdf", "broken.pdf")
+        LiteParseEngine.parse_bytes(params, b"not a real pdf", "broken.pdf")
 
 
-def test_native_search_items_finds_on_both_pages(params: LiteParseParams):
-    native = LiteParseEngine.parse_native(params, _PDF, "doc.pdf")
+def test_ocr_without_tessdata_raises(pdf_path: str):
+    params = LiteParseParams(
+        ocr_enabled=True, tessdata_path="/нет-такого-каталога"
+    )
+    with pytest.raises(LiteParseError, match="каталога моделей"):
+        LiteParseEngine.parse(params, pdf_path)
+
+
+def test_native_search_items_finds_on_both_pages(
+    params: LiteParseParams, pdf_path: str
+):
+    native = LiteParseEngine.parse_native(params, pdf_path)
     pages_with_hit = [
         page.page_num
         for page in native.pages

@@ -9,8 +9,8 @@ import sys
 from io import BytesIO
 from typing import Any
 
-import pytest
 import pydantic
+import pytest
 from pydantic import BaseModel
 
 from boba.indexing import (
@@ -22,6 +22,7 @@ from boba.indexing import (
     SourceId,
     TransportKeys,
 )
+from boba.liteparse.sections import DocumentMedia
 from boba.tool.doc.liteparse import (
     LiteParseCaller,
     ParseBytesAnswer,
@@ -134,10 +135,10 @@ class _LocalCaller:
 
 @pytest.fixture
 def caller(monkeypatch: pytest.MonkeyPatch) -> LiteParseCaller:
-    from boba.tool.doc.liteparse import caller as caller_module
+    from boba.tool.doc.liteparse import sandbox as sandbox_module
 
     monkeypatch.setattr(
-        caller_module, "SandboxCaller", lambda *_a, **_kw: _LocalCaller()
+        sandbox_module, "SandboxCaller", lambda *_a, **_kw: _LocalCaller()
     )
     return LiteParseCaller("confluence", _config(), dict)
 
@@ -198,14 +199,10 @@ class TestParseBytesContract:
         request = self._request(_PDF, "report.pdf")
         assert base64.b64decode(request.content_b64) == _PDF
 
-    def test_params_are_required(self) -> None:
+    def test_tessdata_path_is_required(self) -> None:
+        """Единственное поле без дефолта: без каталога моделей запроса нет."""
         with pytest.raises(pydantic.ValidationError):
-            ParseParams(
-                ocr_enabled=False,
-                ocr_language="eng",
-                max_pages=0,
-                tessdata_path="/usr/share/tessdata",
-            )
+            ParseParams.model_validate({"ocr_enabled": False})
 
     def test_broken_document_fails(self) -> None:
         result = subprocess.run(  # noqa: S603
@@ -256,7 +253,7 @@ class TestSandboxLiteParseReader:
 
     def test_media_types_match_suffixes(self, caller: LiteParseCaller) -> None:
         reader = SandboxLiteParseReader(caller)
-        assert set(reader.media_types) == set(reader.SUFFIX_BY_MEDIA_TYPE)
+        assert set(reader.media_types) == set(DocumentMedia.SUFFIX_BY_MEDIA_TYPE)
 
     def test_filename_suffix_matches_media_type(
         self, caller: LiteParseCaller

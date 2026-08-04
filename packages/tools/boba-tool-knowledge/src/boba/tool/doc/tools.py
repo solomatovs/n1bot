@@ -102,7 +102,7 @@ def build_doc_tools(
         )
 
     @tool(response_format="content_and_artifact")
-    async def read_document_window(
+    async def read_document_window(  # noqa: PLR0913
         path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
         start_char: Annotated[
             int, Field(ge=0, description="Смещение начала окна в символах, 0-based.")

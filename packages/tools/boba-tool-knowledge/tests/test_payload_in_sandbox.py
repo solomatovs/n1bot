@@ -25,7 +25,7 @@ from boba.tool.doc.liteparse import (
     ParseBytesAnswer,
     ParseBytesRequest,
 )
-from boba.tool.doc.liteparse.caller import LiteParseCaller
+from boba.tool.doc.liteparse import LiteParseCaller
 from boba.tool.doc.liteparse.protocol import ParsedPage, ParseParams
 from boba.tool.doc.protocol import (
     DocOutlineAnswer,

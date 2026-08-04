@@ -1,250 +1,46 @@
-"""Операции над документами: liteparse в песочнице, вход по пути или base64-байтами."""
+"""Операции над документами: единый движок boba.liteparse в песочнице.
+
+Запросы и ответы проходят через те же pydantic-модели, которыми пользуется
+caller-сторона (boba.tool.doc.protocol и doc.liteparse.protocol): контракт
+границы — физически один код с обеих сторон.
+
+Ошибки: ValueError — неизвестный op; pydantic.ValidationError — запрос не
+по контракту; LiteParseError/RuntimeError — сбой парсинга. Все они роняют
+payload, и PayloadEntry отдаёт их наружу через stderr песочницы.
+"""
 
 from __future__ import annotations
 
-import base64
-import os
 import sys
-import tempfile
+from collections.abc import Callable, Iterator
 from typing import Any, ClassVar
 
-from liteparse import LiteParse
-from liteparse._liteparse import LiteParse as NativeLiteParse
-from liteparse._liteparse import search_items as native_search_items
-from liteparse.types import ParseError
+from pydantic import BaseModel
 
+from boba.liteparse.engine import LiteParseEngine
+from boba.tool.doc.liteparse.protocol import (
+    ParseBytesAnswer,
+    ParseBytesRequest,
+    ParsedPage,
+)
+from boba.tool.doc.protocol import (
+    DocOutlineAnswer,
+    DocOutlineRow,
+    DocPagesAnswer,
+    DocPagesRequest,
+    DocPathRequest,
+    DocSearchAnswer,
+    DocSearchRequest,
+    DocSearchRow,
+    DocTextAnswer,
+    DocWindowAnswer,
+    DocWindowRequest,
+)
 from boba.toolkit.payload.entry import PayloadEntry
 
 
-class LocaleRetry:
-    """Ретрай парсинга под запасными локалями: LibreOffice без UTF-8-локали
-    молча (rc=0) не открывает файлы с не-ASCII именем."""
-
-    MARKER: ClassVar[str] = (
-        "LibreOffice conversion succeeded but output PDF not found"
-    )
-    RETRYABLE: ClassVar[tuple[type[Exception], ...]] = (ParseError, RuntimeError)
-    LOCALES: ClassVar[tuple[str, ...]] = ("ru_RU.UTF-8", "en_US.UTF-8", "C")
-
-    @classmethod
-    def parse(cls, parser: Any, path: str) -> Any:
-        try:
-            return parser.parse(path)
-        except cls.RETRYABLE as e:
-            if cls.MARKER not in str(e):
-                raise
-            first = e
-
-        errors: list[Exception] = [first]
-        for locale_name in cls.LOCALES:
-            try:
-                return cls.parse_with_locale(parser, path, locale_name)
-            except cls.RETRYABLE as e:
-                if cls.MARKER not in str(e):
-                    raise
-                errors.append(e)
-        raise first
-
-    @classmethod
-    def parse_with_locale(cls, parser: Any, path: str, locale_name: str) -> Any:
-        saved = os.environ.get("LC_ALL")
-        os.environ["LC_ALL"] = locale_name
-        try:
-            return parser.parse(path)
-        finally:
-            if saved is None:
-                os.environ.pop("LC_ALL", None)
-            else:
-                os.environ["LC_ALL"] = saved
-
-
-class DocumentOps:
-    """Операции liteparse; вызываются диспетчером payload'а по имени op."""
-
-    ELLIPSIS: ClassVar[str] = "…"
-
-    OPS: ClassVar[tuple[str, ...]] = (
-        "read_document",
-        "read_pages",
-        "read_document_window",
-        "document_outline",
-        "search_document",
-        "parse_bytes",
-    )
-
-    @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
-        op = request["op"]
-        if op == "read_document":
-            return cls.read_document(request)
-        if op == "read_pages":
-            return cls.read_pages(request)
-        if op == "read_document_window":
-            return cls.read_document_window(request)
-        if op == "document_outline":
-            return cls.document_outline(request)
-        if op == "search_document":
-            return cls.search_document(request)
-        if op == "parse_bytes":
-            return cls.parse_bytes(request)
-        msg = f"unknown document op: {op!r}"
-        raise ValueError(msg)
-
-    @classmethod
-    def read_document(cls, request: dict[str, Any]) -> dict[str, Any]:
-        result = cls.parse(request, target_pages=None)
-        text, truncated = cls.clip(result.text, request["params"]["max_text_chars"])
-        return {"text": text, "truncated": truncated, "num_pages": result.num_pages}
-
-    @classmethod
-    def read_pages(cls, request: dict[str, Any]) -> dict[str, Any]:
-        result = cls.parse(request, target_pages=request["pages"])
-        text, truncated = cls.clip(result.text, request["params"]["max_text_chars"])
-        pages: list[int] = []
-        for page in result.pages:
-            pages.append(page.page_num)
-        return {"text": text, "truncated": truncated, "pages": pages}
-
-    @classmethod
-    def read_document_window(cls, request: dict[str, Any]) -> dict[str, Any]:
-        result = cls.parse(request, target_pages=None)
-        start = request["start_char"]
-        chunk = result.text[start : start + request["length"]]
-        end = start + len(chunk)
-        return {
-            "text": chunk,
-            "start_char": start,
-            "end_char": end,
-            "total_chars": len(result.text),
-            "has_more": end < len(result.text),
-        }
-
-    @classmethod
-    def document_outline(cls, request: dict[str, Any]) -> dict[str, Any]:
-        result = cls.parse(request, target_pages=None)
-        rows: list[dict[str, Any]] = []
-        for page in result.pages:
-            rows.append(
-                {
-                    "page": page.page_num,
-                    "width": round(page.width, 1),
-                    "height": round(page.height, 1),
-                    "chars": len(page.text),
-                    "items": len(page.text_items),
-                }
-            )
-        return {"num_pages": result.num_pages, "rows": rows}
-
-    @classmethod
-    def search_document(cls, request: dict[str, Any]) -> dict[str, Any]:
-        native = cls.parse_native(request)
-        query = request["query"]
-        context = request["context_chars"]
-        max_matches = request["max_matches"]
-        needle = query.casefold()
-        rows: list[dict[str, Any]] = []
-        for page in native.pages:
-            hits = native_search_items(page.text_items, query, case_sensitive=False)
-            if not hits:
-                continue
-            hay = page.text.casefold()
-            cursor = 0
-            for hit in hits:
-                index = hay.find(needle, cursor)
-                if index == -1:
-                    snippet = hit.text
-                else:
-                    snippet = cls.snippet(
-                        page.text, index, index + len(query), context
-                    )
-                    cursor = index + len(query)
-                rows.append(
-                    {
-                        "page": page.page_num,
-                        "x": round(hit.x, 1),
-                        "y": round(hit.y, 1),
-                        "width": round(hit.width, 1),
-                        "height": round(hit.height, 1),
-                        "snippet": snippet,
-                    }
-                )
-                if len(rows) >= max_matches:
-                    return {"rows": rows, "limit_reached": True}
-        return {"rows": rows, "limit_reached": False}
-
-    @classmethod
-    def parse_bytes(cls, request: dict[str, Any]) -> dict[str, Any]:
-        """Пишет байты запроса на tmpfs с исходным суффиксом: формат берётся из него."""
-        data = base64.b64decode(request["content_b64"])
-        return cls.parse_content(data, request["filename"], request["params"])
-
-    @classmethod
-    def parse_content(
-        cls, data: bytes, filename: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Разобрать документ, уже лежащий в памяти песочницы."""
-        suffix = os.path.splitext(filename)[1]
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        try:
-            local: dict[str, Any] = {"path": tmp_path, "params": params}
-            result = cls.parse(local, target_pages=None)
-        finally:
-            os.unlink(tmp_path)
-        pages: list[dict[str, Any]] = []
-        for page in result.pages:
-            pages.append({"page_num": page.page_num, "text": page.text})
-        return {"num_pages": result.num_pages, "pages": pages}
-
-    @staticmethod
-    def check_ocr(params: dict[str, Any]) -> None:
-        """Проверяет каталог моделей: без него liteparse лезет в сеть, а её нет."""
-        if not params["ocr_enabled"]:
-            return
-        path = params["tessdata_path"]
-        if os.path.isdir(path):
-            return
-        msg = (
-            f"ocr_enabled=true, но каталога моделей {path!r} нет в rootfs "
-            "песочницы: положи туда tessdata или выключи ocr_enabled"
-        )
-        raise RuntimeError(msg)
-
-    @staticmethod
-    def parse(request: dict[str, Any], target_pages: str | None) -> Any:
-        params = request["params"]
-        DocumentOps.check_ocr(params)
-        max_pages = params["max_pages"]
-        if max_pages == 0:
-            max_pages = None
-        parser = LiteParse(
-            ocr_enabled=params["ocr_enabled"],
-            ocr_language=params["ocr_language"],
-            tessdata_path=params["tessdata_path"],
-            max_pages=max_pages,
-            target_pages=target_pages,
-            num_workers=params["num_workers"],
-            quiet=True,
-        )
-        return LocaleRetry.parse(parser, request["path"])
-
-    @staticmethod
-    def parse_native(request: dict[str, Any]) -> Any:
-        """Нативный парсер: только он отдаёт PyTextItem для search_items."""
-        params = request["params"]
-        DocumentOps.check_ocr(params)
-        options: dict[str, Any] = {
-            "ocr_enabled": params["ocr_enabled"],
-            "ocr_language": params["ocr_language"],
-            "tessdata_path": params["tessdata_path"],
-            "num_workers": params["num_workers"],
-            "quiet": True,
-        }
-        if params["max_pages"]:
-            options["max_pages"] = params["max_pages"]
-        parser = NativeLiteParse(**options)
-        return LocaleRetry.parse(parser, request["path"])
+class TextClip:
+    """Обрезка текста по лимиту с признаком усечения."""
 
     @staticmethod
     def clip(text: str, limit: int) -> tuple[str, bool]:
@@ -252,17 +48,197 @@ class DocumentOps:
             return text, False
         return text[:limit], True
 
+
+class Snippet:
+    """Вырез [lo, hi) с контекстом вокруг и многоточиями по краям."""
+
+    ELLIPSIS: ClassVar[str] = "…"
+
     @classmethod
-    def snippet(cls, text: str, lo: int, hi: int, context: int) -> str:
+    def around(cls, text: str, lo: int, hi: int, context: int) -> str:
         begin = max(0, lo - context)
         end = min(len(text), hi + context)
+
         prefix = ""
         if begin > 0:
             prefix = cls.ELLIPSIS
+
         suffix = ""
         if end < len(text):
             suffix = cls.ELLIPSIS
+
         return f"{prefix}{text[begin:end]}{suffix}"
+
+
+class PageMatchRows:
+    """Строки совпадений одной страницы: hit'ы liteparse плюс сниппеты."""
+
+    def __init__(self, page: Any, query: str, context_chars: int) -> None:
+        self._page = page
+        self._query = query
+        self._context = context_chars
+        self._haystack = page.text.casefold()
+        self._needle = query.casefold()
+        # курсор по casefold-тексту: i-й hit получает i-е вхождение запроса
+        self._cursor = 0
+
+    def rows(self, hits: Any) -> Iterator[DocSearchRow]:
+        for hit in hits:
+            yield self._row(hit)
+
+    def _row(self, hit: Any) -> DocSearchRow:
+        return DocSearchRow(
+            page=self._page.page_num,
+            x=round(hit.x, 1),
+            y=round(hit.y, 1),
+            width=round(hit.width, 1),
+            height=round(hit.height, 1),
+            snippet=self._snippet(hit),
+        )
+
+    def _snippet(self, hit: Any) -> str:
+        index = self._haystack.find(self._needle, self._cursor)
+        if index == -1:
+            return hit.text
+
+        self._cursor = index + len(self._query)
+        return Snippet.around(
+            self._page.text, index, index + len(self._query), self._context
+        )
+
+
+class DocumentOps:
+    """Операции liteparse; вызываются диспетчером payload'а по имени op."""
+
+    OPS: ClassVar[tuple[str, ...]] = (
+        # read_document production-кодом не зовётся (DocEngine шлёт read_pages),
+        # но остаётся в контракте: его гоняет test_payload_in_sandbox
+        DocPathRequest.READ,
+        DocPagesRequest.OP,
+        DocWindowRequest.OP,
+        DocPathRequest.OUTLINE,
+        DocSearchRequest.OP,
+        ParseBytesRequest.OP,
+    )
+
+    @classmethod
+    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+        handlers: dict[str, Callable[[dict[str, Any]], BaseModel]] = {
+            DocPathRequest.READ: cls.read_document,
+            DocPagesRequest.OP: cls.read_pages,
+            DocWindowRequest.OP: cls.read_document_window,
+            DocPathRequest.OUTLINE: cls.document_outline,
+            DocSearchRequest.OP: cls.search_document,
+            ParseBytesRequest.OP: cls.parse_bytes,
+        }
+
+        op = request["op"]
+        if op not in handlers:
+            msg = f"unknown document op: {op!r}"
+            raise ValueError(msg)
+
+        answer = handlers[op](request)
+        return answer.model_dump()
+
+    @classmethod
+    def read_document(cls, request: dict[str, Any]) -> DocTextAnswer:
+        req = DocPathRequest.model_validate(request)
+        result = LiteParseEngine.parse(req.params, req.path)
+
+        text, truncated = TextClip.clip(result.text, req.params.max_text_chars)
+        return DocTextAnswer(
+            text=text,
+            truncated=truncated,
+            num_pages=result.num_pages,
+        )
+
+    @classmethod
+    def read_pages(cls, request: dict[str, Any]) -> DocPagesAnswer:
+        req = DocPagesRequest.model_validate(request)
+        result = LiteParseEngine.parse_pages(req.params, req.path, req.pages)
+
+        text, truncated = TextClip.clip(result.text, req.params.max_text_chars)
+        pages = tuple(cls._page_numbers(result))
+        return DocPagesAnswer(text=text, truncated=truncated, pages=pages)
+
+    @classmethod
+    def read_document_window(cls, request: dict[str, Any]) -> DocWindowAnswer:
+        req = DocWindowRequest.model_validate(request)
+        result = LiteParseEngine.parse(req.params, req.path)
+
+        full = result.text
+        chunk = full[req.start_char : req.start_char + req.length]
+        end = req.start_char + len(chunk)
+        return DocWindowAnswer(
+            text=chunk,
+            start_char=req.start_char,
+            end_char=end,
+            total_chars=len(full),
+            has_more=end < len(full),
+        )
+
+    @classmethod
+    def document_outline(cls, request: dict[str, Any]) -> DocOutlineAnswer:
+        req = DocPathRequest.model_validate(request)
+        result = LiteParseEngine.parse(req.params, req.path)
+
+        rows = tuple(cls._outline_rows(result))
+        return DocOutlineAnswer(num_pages=result.num_pages, rows=rows)
+
+    @classmethod
+    def search_document(cls, request: dict[str, Any]) -> DocSearchAnswer:
+        req = DocSearchRequest.model_validate(request)
+        native = LiteParseEngine.parse_native(req.params, req.path)
+
+        rows: list[DocSearchRow] = []
+        for page in native.pages:
+            rows.extend(cls.search_page(page, req))
+            if len(rows) >= req.max_matches:
+                del rows[req.max_matches :]
+                return DocSearchAnswer(rows=tuple(rows), limit_reached=True)
+
+        return DocSearchAnswer(rows=tuple(rows), limit_reached=False)
+
+    @classmethod
+    def search_page(cls, page: Any, req: DocSearchRequest) -> list[DocSearchRow]:
+        hits = LiteParseEngine.search_items(
+            page.text_items, req.query, case_sensitive=False
+        )
+        if not hits:
+            return []
+
+        matcher = PageMatchRows(page, req.query, req.context_chars)
+        return list(matcher.rows(hits))
+
+    @classmethod
+    def parse_bytes(cls, request: dict[str, Any]) -> ParseBytesAnswer:
+        """Разобрать документ, приехавший содержимым в запросе (base64)."""
+        req = ParseBytesRequest.model_validate(request)
+        result = LiteParseEngine.parse_bytes(req.params, req.content(), req.filename)
+
+        pages = tuple(cls._parsed_pages(result))
+        return ParseBytesAnswer(num_pages=result.num_pages, pages=pages)
+
+    @staticmethod
+    def _page_numbers(result: Any) -> Iterator[int]:
+        for page in result.pages:
+            yield page.page_num
+
+    @staticmethod
+    def _outline_rows(result: Any) -> Iterator[DocOutlineRow]:
+        for page in result.pages:
+            yield DocOutlineRow(
+                page=page.page_num,
+                width=round(page.width, 1),
+                height=round(page.height, 1),
+                chars=len(page.text),
+                items=len(page.text_items),
+            )
+
+    @staticmethod
+    def _parsed_pages(result: Any) -> Iterator[ParsedPage]:
+        for page in result.pages:
+            yield ParsedPage(page_num=page.page_num, text=page.text)
 
 
 if __name__ == "__main__":
