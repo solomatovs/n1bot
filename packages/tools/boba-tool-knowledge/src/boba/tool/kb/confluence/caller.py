@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 from typing import ClassVar
 
 from boba.tool.kb.confluence.protocol import (
@@ -18,7 +17,7 @@ from boba.tool.kb.confluence.protocol import (
     ConfluenceSpacesRequest,
 )
 from boba.tool.web.caller import WebCaller
-from boba.toolkit.sandbox import SandboxCaller, SandboxToolConfig
+from boba.toolkit.launcher import LauncherFactory
 from boba.transport.http import HttpProfile
 
 __all__ = ["ConfluenceCaller"]
@@ -33,13 +32,8 @@ class ConfluenceCaller:
         "boba.tool.kb.confluence.payload",
     )
 
-    def __init__(
-        self,
-        tool: str,
-        sandbox: SandboxToolConfig,
-        path_vars: Callable[[], Mapping[str, str]],
-    ) -> None:
-        self._caller = SandboxCaller(tool, sandbox.effective(), path_vars)
+    def __init__(self, tool: str, launchers: LauncherFactory) -> None:
+        self._caller = launchers(tool)
 
     @staticmethod
     def transport_of(profile: HttpProfile):

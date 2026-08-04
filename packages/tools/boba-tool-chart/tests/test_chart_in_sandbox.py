@@ -5,11 +5,14 @@ from __future__ import annotations
 import pytest
 from conftest import needs_sandbox, needs_userns, sandbox_profile
 
-from boba.tool.chart import ChartToolsConfig, build_chart_tools
-from boba.tool.chart.caller import ChartCaller
-from boba.tool.chart.protocol import ValidateFigureAnswer, ValidateFigureRequest
+from boba.sandbox import SandboxCaller, SandboxPayloadError, SandboxToolConfig
+from boba.tool.chart import build_chart_tools
+from boba.tool.chart.caller import (
+    ChartCaller,
+    ValidateFigureAnswer,
+    ValidateFigureRequest,
+)
 from boba.toolkit.result import ChartResult
-from boba.toolkit.sandbox import SandboxCaller, SandboxPayloadError, SandboxToolConfig
 
 
 def _caller() -> SandboxCaller:
@@ -80,15 +83,15 @@ class TestChartTool:
 
     @staticmethod
     def _tool():
-        cfg = ChartToolsConfig.model_validate(
-            {
-                "sandbox": {
-                    "profile": sandbox_profile(),
-                    "override": {},
-                }
-            }
+        sandbox = SandboxToolConfig.model_validate(
+            {"profile": sandbox_profile(), "override": {}}
         )
-        return build_chart_tools(cfg, dict)[0]
+        profile = sandbox.effective()
+
+        def launchers(tool: str) -> SandboxCaller:
+            return SandboxCaller(tool, profile, dict)
+
+        return build_chart_tools(launchers)[0]
 
     def test_chart_result_carries_spec_and_title(self) -> None:
         spec = (

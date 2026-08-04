@@ -21,11 +21,17 @@ from conftest import (
     sandbox_profile,
 )
 
+from boba.sandbox import (
+    SandboxCaller,
+    SandboxPayloadError,
+    SandboxRunner,
+    SandboxToolConfig,
+)
 from boba.tool.doc.liteparse import (
+    LiteParseCaller,
     ParseBytesAnswer,
     ParseBytesRequest,
 )
-from boba.tool.doc.liteparse import LiteParseCaller
 from boba.tool.doc.liteparse.protocol import ParsedPage, ParseParams
 from boba.tool.doc.protocol import (
     DocOutlineAnswer,
@@ -46,12 +52,6 @@ from boba.tool.kb.html import (
     PlainTextRequest,
 )
 from boba.tool.kb.html.caller import HtmlCaller
-from boba.toolkit.sandbox import (
-    SandboxCaller,
-    SandboxPayloadError,
-    SandboxRunner,
-    SandboxToolConfig,
-)
 
 _TESSDATA = "/usr/share/tessdata"
 

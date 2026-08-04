@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
 from pydantic import BaseModel
 
+from boba.sandbox import (
+    SandboxPayload,
+    SandboxPayloadError,
+    SandboxToolConfig,
+)
 from boba.tool.kb.html import (
     ConfluenceSectionsAnswer,
     ConfluenceSectionsRequest,
@@ -18,11 +24,6 @@ from boba.tool.kb.html import (
     HtmlToMarkdownRequest,
     PlainTextAnswer,
     PlainTextRequest,
-)
-from boba.toolkit.sandbox import (
-    SandboxPayload,
-    SandboxPayloadError,
-    SandboxToolConfig,
 )
 
 _HTML = (
@@ -81,9 +82,12 @@ class _LocalCaller:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
 
+    def call_text(self, command: str, stdin: str) -> Any:
+        raise NotImplementedError("этим инструментам нужен только call_json")
+
     def call_json(
         self,
-        entry: tuple[str, ...],
+        entry: Sequence[str],
         request: BaseModel,
         schema: type[BaseModel],
     ) -> Any:
@@ -109,12 +113,7 @@ class _LocalCaller:
 
 @pytest.fixture
 def caller(monkeypatch: pytest.MonkeyPatch) -> HtmlCaller:
-    from boba.tool.kb.html import caller as caller_module
-
-    monkeypatch.setattr(
-        caller_module, "SandboxCaller", lambda *_a, **_kw: _LocalCaller()
-    )
-    return HtmlCaller("web", _config(), dict)
+    return HtmlCaller("web", lambda _tool: _LocalCaller())
 
 
 class TestPayloadContract:
@@ -166,7 +165,7 @@ _CONFLUENCE_HTML = (
     "<html><body>"
     '<h1 id="intro">Введение</h1><p>Первый абзац.</p>'
     "<h2>Детали</h2><p>Второй абзац.</p>"
-    "<ac:structured-macro ac:name=\"info\">служебное</ac:structured-macro>"
+    '<ac:structured-macro ac:name="info">служебное</ac:structured-macro>'
     "</body></html>"
 )
 
@@ -250,8 +249,7 @@ class TestPlainText:
 
     def test_macros_are_dropped(self) -> None:
         html = (
-            "<p>Видно</p>"
-            '<ac:structured-macro ac:name="x">скрыто</ac:structured-macro>'
+            '<p>Видно</p><ac:structured-macro ac:name="x">скрыто</ac:structured-macro>'
         )
         assert self._run(html).text == "Видно"
 

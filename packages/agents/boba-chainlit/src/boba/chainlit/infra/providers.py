@@ -41,10 +41,10 @@ from boba.chainlit.infra.di import Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit.infra.session import current_user_roles
 from boba.db.postgres import AsyncPostgresPool
+from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
 from boba.tool.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.schema import KbSchema
-from boba.toolkit.sandbox import CgroupManager
 
 _RAW_CONFIG: dict[str, DictConfig] = {}
 

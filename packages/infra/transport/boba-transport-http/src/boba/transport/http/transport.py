@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 import httpx
 
+from boba.toolkit.cancellation import current_cancellation
 from boba.transport.http.connection import HttpProfile
-from boba.transport.http.request import HttpRequest
-from boba.transport.http.response import HttpResponse
 
-__all__ = ["HttpTransport"]
+__all__ = [
+    "ByteStream",
+    "CancellableHttpTransport",
+    "HttpRequest",
+    "HttpResponse",
+    "HttpTransport",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -172,3 +179,52 @@ class _ResponseHandle:
     @property
     def closed(self) -> bool:
         return self._eof and not self._buffer
+
+
+@dataclass(frozen=True)
+class HttpRequest:
+    """План одного HTTP-запроса; body-поля уходят в httpx build_request как есть.
+
+    Retry реплеит in-memory body и seekable-files; генератор content одноразов.
+    """
+
+    url: str
+    method: str = "GET"
+    headers: dict[str, str] = field(default_factory=dict)
+    params: dict[str, str] = field(default_factory=dict)
+    content: bytes | str | Iterable[bytes] | None = None
+    data: Mapping[str, Any] | None = None
+    files: Any | None = None
+    json: Any | None = None
+
+
+class ByteStream(Protocol):
+    """Минимальный read-only поток байт: только read()."""
+
+    def read(self, n: int = -1, /) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class HttpResponse:
+    "Статус, заголовки и поток тела; stream живёт только внутри with fetch(...)"
+
+    status: int
+    headers: Mapping[str, str]
+    stream: ByteStream
+
+
+class CancellableHttpTransport(HttpTransport):
+    """HttpTransport, обрываемый остановкой хода."""
+
+    def __init__(self, profile: HttpProfile) -> None:
+        super().__init__(profile)
+        cancellation = current_cancellation()
+        cancellation.raise_if_cancelled()
+        self._abort: AbstractContextManager[None] = cancellation.abort_with(self.close)
+        self._abort.__enter__()
+
+    def close(self) -> None:
+        abort = self.__dict__.pop("_abort", None)
+        if abort is not None:
+            abort.__exit__(None, None, None)
+        super().close()

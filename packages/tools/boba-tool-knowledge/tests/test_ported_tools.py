@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 
 import pytest
 
+from boba.sandbox import SandboxToolConfig
 from boba.tool.kb import (
     PostgresKnowledgeBaseConfig,
     build_kb_tools,
@@ -19,15 +20,27 @@ from boba.tool.pg import (
     build_pg_tools,
 )
 from boba.tool.pg import executor as pg_executor
-from boba.toolkit.artifact import ToolArtifact
-from boba.toolkit.result import ErrorResult, TableResult
-from boba.toolkit.sandbox import SandboxToolConfig
+from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.transport.http import HttpProfile
 
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
+
+
+class _NoLauncher:
+    """Исполнитель-заглушка: тесты проверяют обвязку, песочница им не нужна."""
+
+    def call_text(self, command: str, stdin: str) -> Any:
+        raise AssertionError("песочница не должна вызываться")
+
+    def call_json(self, entry: Any, request: Any, schema: Any) -> Any:
+        raise AssertionError("песочница не должна вызываться")
+
+
+def _no_launcher(tool: str) -> Any:
+    return _NoLauncher()
 
 
 def pg_config() -> SqlExecutorConfig:
@@ -62,11 +75,11 @@ def invoke(tool: Any, args: dict[str, Any]) -> Any:
 
 class TestPgTools:
     def test_all_four_are_built(self) -> None:
-        names = [t.name for t in build_pg_tools(pg_config(), dict)]
+        names = [t.name for t in build_pg_tools(pg_config(), _no_launcher)]
         assert names == ["list_targets", "list_tables", "describe_table", "query"]
 
     def test_list_targets_returns_whitelist(self) -> None:
-        tool = build_pg_tools(pg_config(), dict)[0]
+        tool = build_pg_tools(pg_config(), _no_launcher)[0]
         result = invoke(tool, {})
         assert isinstance(result, TableResult)
         assert list(result.rows) == [{"target": "main"}]
@@ -82,7 +95,8 @@ class TestPgTools:
     def test_unknown_target_becomes_error_result(self) -> None:
         """Профиль не в whitelist — ошибка инструмента, а не падение хода."""
         for name in ("list_tables", "describe_table", "query"):
-            tool = next(t for t in build_pg_tools(pg_config(), dict) if t.name == name)
+            built = build_pg_tools(pg_config(), _no_launcher)
+            tool = next(t for t in built if t.name == name)
             args = {self._TARGET_ARG[name]: "нет-такого"}
             if name == "describe_table":
                 args["table"] = "t"
@@ -98,7 +112,7 @@ class TestPgTools:
             raise pg_executor.SqlQueryError("relation does not exist")
 
         monkeypatch.setattr(pg_executor.SqlExecutor, "execute", boom)
-        built = build_pg_tools(pg_config(), dict)
+        built = build_pg_tools(pg_config(), _no_launcher)
         tool = next(t for t in built if t.name == "list_tables")
         result = invoke(tool, {"connection_name": "main"})
         assert isinstance(result, ErrorResult)
@@ -108,14 +122,14 @@ class TestPgTools:
 
 class TestKbTools:
     def test_all_four_are_built(self) -> None:
-        names = [t.name for t in build_kb_tools(kb_config(), dict)]
+        names = [t.name for t in build_kb_tools(kb_config(), _no_launcher)]
         assert names == [
             "kb_vector_search",
             "kb_fts_search",
         ]
 
     def test_search_arguments(self) -> None:
-        tool = build_kb_tools(kb_config(), dict)[0]
+        tool = build_kb_tools(kb_config(), _no_launcher)[0]
         assert set(tool.args) == {"query", "top_k", "snippet_chars"}
 
 
@@ -154,9 +168,8 @@ class TestConfluenceTools:
     def test_all_four_are_built(self) -> None:
         cfg = ConfluenceToolsConfig(
             confluence=HttpProfile(base_url="https://confluence.example"),
-            sandbox=_SANDBOX,
         )
-        names = [t.name for t in build_confluence_tools(cfg, dict)]
+        names = [t.name for t in build_confluence_tools(cfg, _no_launcher)]
         assert names == [
             "confluence_fetch",
             "confluence_grep",
@@ -167,10 +180,11 @@ class TestConfluenceTools:
     def test_network_error_becomes_error_result(self) -> None:
         cfg = ConfluenceToolsConfig(
             confluence=HttpProfile(base_url="http://127.0.0.1:1"),
-            sandbox=_SANDBOX,
         )
         tool = next(
-            t for t in build_confluence_tools(cfg, dict) if t.name == "confluence_fetch"
+            t
+            for t in build_confluence_tools(cfg, _no_launcher)
+            if t.name == "confluence_fetch"
         )
         result = invoke(tool, {"page_id": "1"})
         assert isinstance(result, ErrorResult)

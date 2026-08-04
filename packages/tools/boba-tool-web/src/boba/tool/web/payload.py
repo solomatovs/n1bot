@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 
 import httpx
 
-from boba.toolkit.payload.entry import PayloadEntry
+from boba.toolkit.payload import PayloadEntry
 
 
 class BearerAuth(httpx.Auth):

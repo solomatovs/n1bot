@@ -12,7 +12,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.liteparse import LiteParseParams, ParsedPage
+from boba.text.document import LiteParseParams, ParsedPage
 
 __all__ = [
     "ParseBytesAnswer",

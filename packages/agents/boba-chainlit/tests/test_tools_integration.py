@@ -18,8 +18,13 @@ import psycopg
 import pytest
 from psycopg import sql
 
+from boba.sandbox import (
+    SandboxCaller,
+    SandboxPayloadError,
+    SandboxToolConfig,
+)
 from boba.settings import bind
-from boba.tool.chart import ChartToolsConfig, build_chart_tools
+from boba.tool.chart import build_chart_tools
 from boba.tool.doc import DocToolsConfig, build_doc_tools
 from boba.tool.kb import (
     PostgresKnowledgeBaseConfig,
@@ -35,17 +40,17 @@ from boba.tool.kb.confluence.ingest_tools import (
 )
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg import SqlExecutorConfig, build_pg_tools
-from boba.tool.shell import BashSandboxConfig, build_bash_tool
+from boba.tool.shell import build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
-from boba.toolkit.artifact import ToolArtifact
+from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.result import (
     ChartResult,
     ErrorResult,
     JsonResult,
     TableResult,
     TextResult,
+    ToolArtifact,
 )
-from boba.toolkit.sandbox import SandboxPayloadError
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS = _REPO / "build" / "artifacts" / "sandbox" / "rootfs"
@@ -115,6 +120,17 @@ class ToolSetup:
         return {"user_id": USER_ID, "thread_id": THREAD_ID}
 
     @staticmethod
+    def launchers(raw: Any, section: str) -> LauncherFactory:
+        """Исполнитель на профиле секции: окружение выбирает вызывающий."""
+        sandbox = bind(raw, path=f"{section}.sandbox", model=SandboxToolConfig)
+        profile = sandbox.effective()
+
+        def launcher(tool: str) -> ToolLauncher:
+            return SandboxCaller(tool, profile, ToolSetup.path_vars)
+
+        return launcher
+
+    @staticmethod
     def by_name(built: list[Any]) -> dict[str, Any]:
         tools: dict[str, Any] = {}
         for tool in built:
@@ -148,26 +164,27 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def bash_tool(raw_config):
-    cfg = ToolSetup.config(raw_config, "tool.bash", BashSandboxConfig)
-    return build_bash_tool(cfg, ToolSetup.path_vars)
+    return build_bash_tool(ToolSetup.launchers(raw_config, "tool.bash"))
 
 
 @pytest.fixture(scope="module")
 def doc_tools(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.doc", DocToolsConfig)
-    return ToolSetup.by_name(build_doc_tools(cfg, ToolSetup.path_vars))
+    launchers = ToolSetup.launchers(raw_config, "tool.doc")
+    return ToolSetup.by_name(build_doc_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
 def chart_tool(raw_config):
-    cfg = ToolSetup.config(raw_config, "tool.chart", ChartToolsConfig)
-    return ToolSetup.by_name(build_chart_tools(cfg, ToolSetup.path_vars))["visualize"]
+    launchers = ToolSetup.launchers(raw_config, "tool.chart")
+    return ToolSetup.by_name(build_chart_tools(launchers))["visualize"]
 
 
 @pytest.fixture(scope="module")
 def web_tools(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.web", WebGrepConfig)
-    return ToolSetup.by_name(build_web_tools(cfg, ToolSetup.path_vars))
+    launchers = ToolSetup.launchers(raw_config, "tool.web")
+    return ToolSetup.by_name(build_web_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
@@ -182,13 +199,15 @@ def whitelisted_url(raw_config) -> str:
 @pytest.fixture(scope="module")
 def confluence_tools(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.confluence", ConfluenceToolsConfig)
-    return ToolSetup.by_name(build_confluence_tools(cfg, ToolSetup.path_vars))
+    launchers = ToolSetup.launchers(raw_config, "tool.confluence")
+    return ToolSetup.by_name(build_confluence_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
 def pg_tools(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.pg", SqlExecutorConfig)
-    return ToolSetup.by_name(build_pg_tools(cfg, ToolSetup.path_vars))
+    launchers = ToolSetup.launchers(raw_config, "tool.pg")
+    return ToolSetup.by_name(build_pg_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
@@ -229,20 +248,22 @@ class KbCleanup:
 def ingest_tools(raw_config, kb_collection: str):
     cfg = ToolSetup.config(raw_config, "tool.ingest", ConfluenceIngestConfig)
     cfg = cfg.model_copy(update={"collection": kb_collection})
-    return ToolSetup.by_name(build_confluence_ingest_tools(cfg, ToolSetup.path_vars))
+    launchers = ToolSetup.launchers(raw_config, "tool.ingest")
+    return ToolSetup.by_name(build_confluence_ingest_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
 def kb_tools(raw_config, kb_collection: str):
     cfg = ToolSetup.config(raw_config, "tool.kb", PostgresKnowledgeBaseConfig)
-    return ToolSetup.by_name(build_kb_tools(cfg, ToolSetup.path_vars))
+    launchers = ToolSetup.launchers(raw_config, "tool.kb")
+    return ToolSetup.by_name(build_kb_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
 def workspace_image(raw_config):
     """Образ тестового пользователя: создаётся из шаблона и сносится после."""
-    cfg = ToolSetup.config(raw_config, "tool.bash", BashSandboxConfig)
-    profile = cfg.sandbox.effective().render(ToolSetup.path_vars())
+    sandbox = ToolSetup.config(raw_config, "tool.bash.sandbox", SandboxToolConfig)
+    profile = sandbox.effective().render(ToolSetup.path_vars())
     image = Path(profile.rw_images[0].host)
     yield image
     for path in (image, Path(f"{image}.lock")):

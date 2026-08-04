@@ -5,15 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-liteparse"
 version = "0.0.8.dev1"
-description = "Boba liteparse toolchain: движок поверх liteparse (parse / parse_native / search_items) + контрактные модели + PagedDocumentReader/LiteParseReader (Reader[str] постранично)."
+description = "Boba liteparse: движок парсинга документов поверх нативного liteparse; исполняется только в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-indexing==0.0.8.dev1",
+    "boba-text==0.0.8.dev1",
     "pydantic>=2.10,<2.11",
-]
-
-[project.optional-dependencies]
-engine = [
     "liteparse>=2,<3",
 ]
 

@@ -15,7 +15,7 @@ from urllib.parse import quote
 import httpx
 
 from boba.tool.web.payload import WebOps
-from boba.toolkit.payload.entry import PayloadEntry
+from boba.toolkit.payload import PayloadEntry
 
 
 class ConfluenceRest:
@@ -189,8 +189,8 @@ class ConfluenceOps:
             msg = f"attachment {filename!r} not found on page {request['page_id']!r}"
             raise RuntimeError(msg)
         content = cls.get(request, link).content
-        from boba.liteparse import LiteParseParams  # noqa: PLC0415
         from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
+        from boba.text.document import LiteParseParams  # noqa: PLC0415
 
         params = LiteParseParams.model_validate(request["params"])
         result = LiteParseEngine.parse_bytes(params, content, filename)

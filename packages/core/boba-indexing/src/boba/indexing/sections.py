@@ -1,40 +1,26 @@
-"""
-Section[T] — логический фрагмент документа.
-
-Доменная иерархия — намеренно тонкая. В домене живёт только то, что
-эмитится **каждым** Reader'ом и имеет cross-format-смысл:
-
-- Section[T]        — базовый dataclass.
-- HeadingSection    — заголовочная секция (level + text).
-                         Универсальна: markdown # ..., html <hN>, и т.п.
-- ParagraphSection  — обычный текстовый блок и universal fallback для всего,
-                         что Reader не разобрал в более конкретный тип.
-
-Format-specific типы (markdown-таблицы, markdown-списки, code-fence'ы,
-блок-цитаты, hr) живут в format-package (boba-html, boba-text, ...) как
-наследники Section. Открытая иерархия — расширяй где угодно через
-наследование Section[T] и переопределение to_chunk_metadata().
-
-Контракт:
-
-- Структурные типизированные поля (level, text, ...) живут как
-  атрибуты подклассов и переезжают в chunk.metadata через
-  to_chunk_metadata().
-- SECTION_TYPE — короткий canonical alias, удобный для логов.
-"""
+"""Разбор источника: секции документа, сырой документ и его декодер."""
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import ClassVar, Generic, NewType, TypeVar
+from typing import ClassVar, Generic, NewType, Protocol, TypeVar
 
-from boba.indexing.format_plan import FormatBlock, FormatPlan
-from boba.indexing.location import ChunkLocation
-from boba.indexing.metadata import Metadata, MetadataKey
+from boba.indexing.values import (
+    ChunkLocation,
+    FormatBlock,
+    FormatPlan,
+    Metadata,
+    MetadataKey,
+)
 
 __all__ = [
+    "BinaryStream",
+    "Decoder",
+    "DecoderId",
     "HeadingSection",
     "ParagraphSection",
+    "RawDocument",
     "Section",
     "SectionKeys",
     "SourceId",
@@ -204,3 +190,38 @@ class ParagraphSection(Section[str]):
     """
 
     SECTION_TYPE: ClassVar[str] = "paragraph"
+
+class BinaryStream(Protocol):
+    """Минимальный read-only handle: всё, что имеет read() -> bytes (BufferedReader, BytesIO, streaming-адаптер)."""
+
+    def read(self, n: int = -1, /) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class RawDocument:
+    """Открытый handle + metadata; lifecycle handle'а — у Transport."""
+
+    handle: BinaryStream
+    """Уже открытый handle; Reader читает, закрытие — обязанность Transport'а."""
+
+    source_id: SourceId
+    """Identity документа; выводит и проставляет Transport (Transport.source_id)."""
+
+    metadata: Metadata = field(default_factory=Metadata.empty)
+    """Request.metadata + transport-specific keys; Reader/Chunker мержат свои ключи поверх."""
+
+DecoderId = NewType("DecoderId", str)
+"""Идентификатор Decoder-реализации."""
+
+
+class Decoder(ABC):
+    """RawDocument -> RawDocument: преобразование payload и/или metadata."""
+
+    @abstractmethod
+    def decoder_id(self) -> DecoderId: ...
+
+    @abstractmethod
+    def decode(
+        self,
+        raw: RawDocument,
+    ) -> RawDocument: ...

@@ -1,29 +1,24 @@
 """Исполнение liteparse в песочнице: конфиг, вызов payload'а, ридер индексации.
 
-Ошибки: SandboxPayloadError — из LiteParseCaller при сбое payload'а;
+Ошибки: LauncherError — из LiteParseCaller при сбое payload'а;
 IncompatibleContentError — из SandboxLiteParseReader (база PagedDocumentReader);
 pydantic.ValidationError — при разборе конфига и ответа payload'а.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 from typing import ClassVar
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict
 
-from boba.liteparse import LiteParseParams, ParsedPage
-from boba.liteparse.sections import PagedDocumentReader
+from boba.text.document import LiteParseParams, PagedDocumentReader, ParsedPage
 from boba.tool.doc.liteparse.protocol import (
     ParseBytesAnswer,
     ParseBytesRequest,
     ParseParams,
 )
-from boba.toolkit.sandbox import (
-    SandboxCaller,
-    SandboxPayloadError,
-    SandboxToolConfig,
-)
+from boba.toolkit.launcher import LauncherError, LauncherFactory
 
 __all__ = ["LiteParseCaller", "SandboxLiteParseReader", "SandboxParserConfig"]
 
@@ -33,9 +28,6 @@ class SandboxParserConfig(LiteParseParams):
 
     model_config = ConfigDict(extra="ignore")
 
-    sandbox: SandboxToolConfig = Field(
-        description="Окружение и точка входа payload'а: [tool.<name>.sandbox].",
-    )
 
     def parse_params(self) -> ParseParams:
         return ParseParams.of(self)
@@ -50,10 +42,10 @@ class LiteParseCaller:
         self,
         tool: str,
         cfg: SandboxParserConfig,
-        path_vars: Callable[[], Mapping[str, str]],
+        launchers: LauncherFactory,
     ) -> None:
         self._params = cfg.parse_params()
-        self._caller = SandboxCaller(tool, cfg.sandbox.effective(), path_vars)
+        self._caller = launchers(tool)
 
     def parse_bytes(self, data: bytes, filename: str) -> ParseBytesAnswer:
         request = ParseBytesRequest.of(data, filename, self._params)
@@ -63,7 +55,7 @@ class LiteParseCaller:
 class SandboxLiteParseReader(PagedDocumentReader):
     """Документ вложения -> Section[str] на страницу; парсит песочница."""
 
-    PARSE_ERRORS: ClassVar[tuple[type[Exception], ...]] = (SandboxPayloadError,)
+    PARSE_ERRORS: ClassVar[tuple[type[Exception], ...]] = (LauncherError,)
 
     def __init__(self, caller: LiteParseCaller) -> None:
         self._caller = caller

@@ -2,45 +2,21 @@
 
 from __future__ import annotations
 
-from boba.indexing.chunk_id import (
-    ChunkIdGenerator,
-    DigestPrefix,
-    FixedDigestPrefix,
-    SourceBasedChunkId,
-)
-from boba.indexing.chunk_store import (
-    ChunkStore,
-    CollectionInfo,
-    CollectionsStore,
-    HashDiff,
-)
-from boba.indexing.chunker import Chunker, ChunkerId
 from boba.indexing.chunks import (
     Chunk,
     ChunkId,
+    ChunkIdGenerator,
     ChunkKeys,
     ChunkLocation,
     ChunkSummary,
+    DigestPrefix,
     EmbeddedChunk,
+    FixedDigestPrefix,
+    LengthFunction,
+    SourceBasedChunkId,
+    SplitPiece,
+    Splitter,
 )
-from boba.indexing.cleanup import (
-    CleanupContext,
-    CleanupStrategy,
-    FullCleanup,
-    IncrementalCleanup,
-    NoneCleanup,
-)
-from boba.indexing.collection_scoped_view import CollectionScopedView
-from boba.indexing.content_hash import (
-    BytesContentHash,
-    ContentHash,
-    IntContentHash,
-    StringContentHash,
-)
-from boba.indexing.context import CollectionId
-from boba.indexing.decoder import Decoder, DecoderId
-from boba.indexing.dispatch_reader import DispatchReader
-from boba.indexing.embedder import Embedder
 from boba.indexing.errors import (
     IncompatibleContentError,
     IndexingError,
@@ -53,6 +29,8 @@ from boba.indexing.events import (
     CleanupStarted,
     CompletedItem,
     IndexEvent,
+    IndexStats,
+    IndexStatsBuilder,
     PhaseTransition,
     RunFinished,
     RunId,
@@ -80,39 +58,61 @@ from boba.indexing.filter import (
     Or,
     UnsupportedFilterError,
 )
-from boba.indexing.format_plan import FormatBlock, FormatPlan
-from boba.indexing.index_views import (
-    IndexQuery,
-    IndexSink,
-    ReconcileSummary,
-    TrackingKeys,
-)
-from boba.indexing.key_encoder import KeyEncoder, Sha256TextEncoder
-from boba.indexing.metadata import (
-    ChunkerKeys,
-    Metadata,
-    MetadataKey,
-    ReaderKeys,
-    TransportKeys,
-)
 from boba.indexing.pipeline import IndexerConfig, Pipeline
-from boba.indexing.raw_document import BinaryStream, RawDocument
-from boba.indexing.reader import Reader, ReaderId
-from boba.indexing.request import Request, RequestSource
+from boba.indexing.ports import (
+    Chunker,
+    ChunkerId,
+    DispatchReader,
+    Embedder,
+    Reader,
+    ReaderId,
+    Request,
+    RequestSource,
+    Transport,
+)
 from boba.indexing.sections import (
+    BinaryStream,
+    Decoder,
+    DecoderId,
     HeadingSection,
     ParagraphSection,
+    RawDocument,
     Section,
     SectionKeys,
     SourceId,
 )
-from boba.indexing.splitter import (
-    LengthFunction,
-    SplitPiece,
-    Splitter,
+from boba.indexing.store import (
+    ChunkStore,
+    CleanupContext,
+    CleanupStrategy,
+    CollectionInfo,
+    CollectionScopedView,
+    CollectionsStore,
+    FullCleanup,
+    HashDiff,
+    IncrementalCleanup,
+    IndexQuery,
+    IndexSink,
+    NoneCleanup,
+    ReconcileSummary,
+    TrackingKeys,
 )
-from boba.indexing.stats import IndexStats, IndexStatsBuilder
-from boba.indexing.transport import Transport
+from boba.indexing.values import (
+    BytesContentHash,
+    ChunkerKeys,
+    CollectionId,
+    ContentHash,
+    FormatBlock,
+    FormatPlan,
+    IntContentHash,
+    KeyEncoder,
+    Metadata,
+    MetadataKey,
+    ReaderKeys,
+    Sha256TextEncoder,
+    StringContentHash,
+    TransportKeys,
+)
 
 __all__ = [
     "And",

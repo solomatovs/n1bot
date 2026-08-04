@@ -15,9 +15,8 @@ from boba.indexing import (
     SourceId,
     TransportKeys,
 )
-from boba.liteparse import LiteParseParams
 from boba.liteparse.engine import LiteParseReader
-from boba.liteparse.sections import DocumentMedia
+from boba.text.document import DocumentMedia, LiteParseParams
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two".
 _PDF = b"""%PDF-1.4

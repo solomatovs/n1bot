@@ -8,6 +8,8 @@ version = "0.0.8.dev1"
 description = "Boba HTTP transport: HttpRequest + HttpTransport + auth callables (PatAuth/BasicAuth) на httpx."
 requires-python = ">=3.11,<4"
 dependencies = [
+    # остановка хода: прерыватель регистрируется в TurnCancellation
+    "boba-toolkit==0.0.8.dev1",
     "httpx>=0.28,<1",
     # auth.py / connection.py: профили на pydantic BaseModel
     "pydantic>=2.10,<2.11",

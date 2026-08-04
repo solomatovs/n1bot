@@ -17,7 +17,7 @@ from boba.chainlit.rendering.result_view import (
     MarkdownRendering,
     ToolResultView,
 )
-from boba.toolkit.artifact import ToolArtifact
+from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
 from chainlit.langchain.callbacks import process_content
 from chainlit.message import Message

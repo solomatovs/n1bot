@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 from typing import ClassVar
 
 from boba.tool.kb.html.protocol import (
@@ -13,7 +12,7 @@ from boba.tool.kb.html.protocol import (
     PlainTextAnswer,
     PlainTextRequest,
 )
-from boba.toolkit.sandbox import SandboxCaller, SandboxToolConfig
+from boba.toolkit.launcher import LauncherFactory
 
 __all__ = ["HtmlCaller"]
 
@@ -25,13 +24,8 @@ class HtmlCaller:
 
     HEADING_STYLE: ClassVar[str] = "ATX"
 
-    def __init__(
-        self,
-        tool: str,
-        sandbox: SandboxToolConfig,
-        path_vars: Callable[[], Mapping[str, str]],
-    ) -> None:
-        self._caller = SandboxCaller(tool, sandbox.effective(), path_vars)
+    def __init__(self, tool: str, launchers: LauncherFactory) -> None:
+        self._caller = launchers(tool)
 
     def to_markdown(self, html: str) -> str:
         request = HtmlToMarkdownRequest.of(html, self.HEADING_STYLE)

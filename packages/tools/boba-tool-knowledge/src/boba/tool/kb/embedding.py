@@ -6,7 +6,7 @@ from collections.abc import Iterable, Sequence
 
 from pydantic import BaseModel, Field
 
-from boba.indexing.embedder import Embedder
+from boba.indexing.ports import Embedder
 
 __all__ = [
     "EmbeddingModel",

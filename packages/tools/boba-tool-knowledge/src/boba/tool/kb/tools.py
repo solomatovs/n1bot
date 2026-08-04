@@ -1,6 +1,5 @@
 """Инструменты поиска по KB; канал (vector/fts) и коллекция зашиты в сам инструмент."""
 
-from collections.abc import Callable, Mapping
 from typing import Annotated
 
 from langchain.tools import tool
@@ -15,8 +14,8 @@ from boba.tool.kb.search import (
     KbSearch,
     SearchMethod,
 )
-from boba.toolkit.pack import pack_result
-from boba.toolkit.result import ToolResult
+from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.result import ToolResult, pack_result
 
 __all__ = ["KbTools", "build_kb_tools"]
 
@@ -27,10 +26,10 @@ class KbTools:
     def __init__(
         self,
         cfg: PostgresKnowledgeBaseConfig,
-        path_vars: Callable[[], Mapping[str, str]],
+        launchers: LauncherFactory,
     ) -> None:
         self._cfg = cfg
-        self._caller = KbCaller("kb", cfg.sandbox, path_vars)
+        self._caller = KbCaller("kb", launchers)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -88,6 +87,6 @@ class KbTools:
 
 def build_kb_tools(
     cfg: PostgresKnowledgeBaseConfig,
-    path_vars: Callable[[], Mapping[str, str]],
+    launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return KbTools(cfg, path_vars).build()
+    return KbTools(cfg, launchers).build()

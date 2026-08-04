@@ -15,14 +15,14 @@ import aiofiles.os
 
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.toolkit.workspace import build_chain_argv, render_image_path, require_fuse
-from boba.toolkit.workspace.launcher import (
+from boba.workspace import build_chain_argv, render_image_path, require_fuse
+from boba.workspace.launcher import (
     EXIT_MOUNT_ERROR,
     EXIT_NOT_FOUND,
     LAUNCHER_ERROR_PREFIX,
     LAUNCHER_LOG_PREFIX,
+    ResourceLimits,
 )
-from boba.toolkit.workspace.options import ResourceLimits
 from chainlit.data.storage_clients.base import BaseStorageClient
 
 __all__ = ["ImageStorageClient", "LocalStorageClient"]

@@ -2,34 +2,23 @@
 
 from __future__ import annotations
 
-import shutil
-from collections.abc import Callable, Mapping
 from typing import Annotated, Any
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.tool.shell.config import BashSandboxConfig
-from boba.toolkit.pack import pack_result
-from boba.toolkit.result import JsonResult, ToolResult
-from boba.toolkit.sandbox import SandboxCaller, SandboxOutcome
+from boba.toolkit.launcher import LauncherFactory, LaunchOutcome
+from boba.toolkit.result import JsonResult, ToolResult, pack_result
 
-__all__ = ["build_bash_tool", "has_bwrap"]
+__all__ = ["build_bash_tool"]
 
 _MAX_COMMAND_LEN = 16_384
 _MAX_STDIN_LEN = 1 * 1024 * 1024
 
 
-def has_bwrap() -> bool:
-    return shutil.which("bwrap") is not None
-
-
-def build_bash_tool(
-    cfg: BashSandboxConfig,
-    path_vars: Callable[[], Mapping[str, str]],
-) -> BaseTool:
-    caller = SandboxCaller("bash", cfg.sandbox.effective(), path_vars)
+def build_bash_tool(launchers: LauncherFactory) -> BaseTool:
+    caller = launchers("bash")
 
     @tool(response_format="content_and_artifact")
     def bash(
@@ -58,7 +47,7 @@ def build_bash_tool(
     return bash
 
 
-def _result_to_payload(outcome: SandboxOutcome) -> dict[str, Any]:
+def _result_to_payload(outcome: LaunchOutcome) -> dict[str, Any]:
     result = outcome.result
     return {
         "exit_code": result.exit_code,

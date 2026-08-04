@@ -1,6 +1,5 @@
 """Чтение веб-страниц: скачивание окна строк и поиск по содержимому."""
 
-from collections.abc import Callable, Mapping
 from typing import Annotated
 
 from langchain.tools import tool
@@ -10,8 +9,8 @@ from pydantic import Field
 from boba.tool.web._fetch import web_fetch
 from boba.tool.web._grep import WebGrepConfig, web_grep
 from boba.tool.web.caller import WebCaller
-from boba.toolkit.pack import pack_result
-from boba.toolkit.result import ErrorResult, JsonResult, ToolResult
+from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.result import ErrorResult, JsonResult, ToolResult, pack_result
 
 __all__ = ["WebTools", "build_web_tools"]
 
@@ -22,10 +21,10 @@ class WebTools:
     def __init__(
         self,
         cfg: WebGrepConfig,
-        path_vars: Callable[[], Mapping[str, str]],
+        launchers: LauncherFactory,
     ) -> None:
         self._cfg = cfg
-        self._web = WebCaller("web", cfg.sandbox, path_vars)
+        self._web = WebCaller("web", launchers)
 
     def build(self) -> list[BaseTool]:
         return [self._fetch(), self._grep()]
@@ -125,6 +124,6 @@ class WebTools:
 
 def build_web_tools(
     cfg: WebGrepConfig,
-    path_vars: Callable[[], Mapping[str, str]],
+    launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return WebTools(cfg, path_vars).build()
+    return WebTools(cfg, launchers).build()

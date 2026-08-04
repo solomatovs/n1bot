@@ -86,8 +86,22 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return seen
 
 
+class _NoLauncher:
+    """Исполнитель-заглушка: тесты проверяют обвязку, песочница им не нужна."""
+
+    def call_text(self, command: str, stdin: str) -> Any:
+        raise AssertionError("песочница не должна вызываться")
+
+    def call_json(self, entry: Any, request: Any, schema: Any) -> Any:
+        raise AssertionError("песочница не должна вызываться")
+
+
+def _no_launcher(tool: str) -> Any:
+    return _NoLauncher()
+
+
 def _tools() -> dict[str, Any]:
-    built = ConfluenceIngestTools(_config(), dict).build()
+    built = ConfluenceIngestTools(_config(), _no_launcher).build()
     return {tool.name: tool for tool in built}
 
 

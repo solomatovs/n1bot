@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 from typing import Annotated, Any
 
 from langchain.tools import tool
@@ -11,8 +10,8 @@ from pydantic import Field
 
 from boba.tool.doc.config import DocToolsConfig
 from boba.tool.doc.engine import DocEngine
-from boba.toolkit.pack import pack_result
-from boba.toolkit.result import TableResult, TextResult, ToolResult
+from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 
 __all__ = ["build_doc_tools"]
 
@@ -54,9 +53,9 @@ class DocText:
 
 def build_doc_tools(
     cfg: DocToolsConfig,
-    path_vars: Callable[[], Mapping[str, str]],
+    launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    engine = DocEngine(cfg, path_vars)
+    engine = DocEngine(cfg, launchers)
 
     @tool(response_format="content_and_artifact")
     async def read_document(

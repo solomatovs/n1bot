@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from abc import ABC
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Annotated, Any, ClassVar, Literal, TypeAlias
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    TypeAlias,
+    assert_never,
+    cast,
+    get_args,
+)
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 __all__ = [
     "ChartResult",
@@ -15,8 +25,10 @@ __all__ = [
     "PgCopyTextResult",
     "TableResult",
     "TextResult",
+    "ToolArtifact",
     "ToolResult",
     "ToolResultBase",
+    "pack_result", "render_for_llm",
 ]
 
 
@@ -124,3 +136,46 @@ ToolResult: TypeAlias = Annotated[
     | ErrorResult,
     Field(discriminator="kind"),
 ]
+
+
+def render_for_llm(result: ToolResult) -> str:
+    content: str
+    match result:
+        case TextResult(text=t):
+            content = t
+        case JsonResult(payload=p):
+            content = json.dumps(p, ensure_ascii=False)
+        case TableResult(rows=r, note=n):
+            body = json.dumps(r, ensure_ascii=False)
+            content = body if n is None else f"{body}\n\n{n}"
+        case PgCopyTextResult(text=t):
+            content = t
+        case ChartResult(title=title):
+            content = f"[chart rendered: {title}]" if title else "[chart rendered]"
+        case ErrorResult(message=m):
+            content = m
+        case _ as never:
+            assert_never(never)
+    return content
+
+
+def pack_result(result: ToolResult) -> tuple[str, ToolResult]:
+    return render_for_llm(result), result
+
+
+class ToolArtifact:
+    """Поднимает artifact в модель: langgraph сериализует его в обычный dict."""
+
+    _ADAPTER: ClassVar[TypeAdapter[ToolResult]] = TypeAdapter(ToolResult)
+    _KINDS: ClassVar[frozenset[str]] = frozenset(
+        get_args(variant.model_fields["kind"].annotation)[0]
+        for variant in get_args(get_args(ToolResult)[0])
+    )
+
+    @classmethod
+    def revive(cls, artifact: Any) -> ToolResult | None:
+        if isinstance(artifact, ToolResultBase):
+            return cast(ToolResult, artifact)
+        if isinstance(artifact, Mapping) and artifact.get("kind") in cls._KINDS:
+            return cls._ADAPTER.validate_python(dict(artifact))
+        return None

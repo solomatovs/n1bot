@@ -6,14 +6,15 @@ import asyncio
 import json
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import BaseModel
 
+from boba.sandbox import SandboxPayload
 from boba.tool.doc import DocToolsConfig, build_doc_tools
-from boba.tool.doc import engine as engine_module
 from boba.tool.doc.engine import DocEngine
 from boba.tool.doc.protocol import (
     DocOutlineAnswer,
@@ -21,7 +22,6 @@ from boba.tool.doc.protocol import (
     DocSearchAnswer,
     DocWindowAnswer,
 )
-from boba.toolkit.sandbox import SandboxPayload
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -148,20 +148,40 @@ class _Recorder:
         return schema.model_construct()
 
 
+_LAUNCHER: dict[str, Any] = {}
+
+
+class _Proxy:
+    """Исполнитель разрешается в момент вызова: фикстура ставит его позже."""
+
+    def call_text(self, command: str, stdin: str) -> Any:
+        return _LAUNCHER["current"].call_text(command, stdin)
+
+    def call_json(self, entry: Any, request: Any, schema: Any) -> Any:
+        return _LAUNCHER["current"].call_json(entry, request, schema)
+
+
+def launchers(_tool: str) -> Any:
+    """Фабрика-заглушка: исполнитель берётся из фикстуры при вызове."""
+    return _Proxy()
+
+
 @pytest.fixture
-def payload_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Песочница подменена: запросы инструмента складываются сюда."""
+def payload_calls() -> Iterator[list[dict[str, Any]]]:
+    """Исполнитель подменён: запросы инструмента складываются сюда."""
     recorder = _Recorder()
-    monkeypatch.setattr(engine_module, "SandboxCaller", lambda *_a, **_kw: recorder)
-    return recorder.requests
+    _LAUNCHER["current"] = recorder
+    yield recorder.requests
+    _LAUNCHER.clear()
 
 
 @pytest.fixture
-def payload_runs(pdf: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Песочница подменена локальным запуском payload'а: ответ настоящий."""
+def payload_runs(pdf: Path) -> Iterator[list[dict[str, Any]]]:
+    """Исполнитель запускает payload локально: ответ настоящий."""
     caller = _Caller(pdf)
-    monkeypatch.setattr(engine_module, "SandboxCaller", lambda *_a, **_kw: caller)
-    return caller.requests
+    _LAUNCHER["current"] = caller
+    yield caller.requests
+    _LAUNCHER.clear()
 
 
 class TestPayloadContract:
@@ -289,7 +309,7 @@ class TestEngineRequests:
     def test_parser_params_travel_in_request(
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
-        engine = DocEngine(_config(ocr_enabled=True), dict)
+        engine = DocEngine(_config(ocr_enabled=True), launchers)
         asyncio.run(
             engine.read_document(
                 "/workspace/t1/upload/doc.pdf", pages="1-2", ocr_enabled=False,
@@ -305,7 +325,7 @@ class TestEngineRequests:
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
         """Настройка, не заданная вызовом, падает на значение из конфига."""
-        engine = DocEngine(_config(num_workers=2), dict)
+        engine = DocEngine(_config(num_workers=2), launchers)
         asyncio.run(
             engine.read_document(
                 "/workspace/doc.pdf", pages="1", ocr_enabled=False, num_workers=2,
@@ -318,7 +338,7 @@ class TestEngineRequests:
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
         """Язык OCR передаётся вызовом и перекрывает конфиг-значение."""
-        engine = DocEngine(_config(ocr_language="eng"), dict)
+        engine = DocEngine(_config(ocr_language="eng"), launchers)
         asyncio.run(
             engine.read_document(
                 "/workspace/doc.pdf", pages="1", ocr_enabled=True,
@@ -328,7 +348,7 @@ class TestEngineRequests:
         assert payload_calls[0]["params"]["ocr_language"] == "rus"
 
     def test_pages_travel_in_request(self, payload_calls: list[dict[str, Any]]) -> None:
-        engine = DocEngine(_config(), dict)
+        engine = DocEngine(_config(), launchers)
         asyncio.run(
             engine.read_document(
                 "/workspace/t1/upload/doc.pdf", pages="2-3", ocr_enabled=False,
@@ -342,7 +362,7 @@ class TestEngineRequests:
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
         """Приложение путь не переписывает: его разрешает песочница."""
-        engine = DocEngine(_config(), dict)
+        engine = DocEngine(_config(), launchers)
         asyncio.run(
             engine.read_document(
                 "/workspace/t1/upload/doc.pdf", pages="1", ocr_enabled=False,
@@ -355,7 +375,7 @@ class TestEngineRequests:
         self, payload_calls: list[dict[str, Any]]
     ) -> None:
         engine = DocEngine(
-            _config(search_context_chars=7, search_max_matches=3), dict
+            _config(search_context_chars=7, search_max_matches=3), launchers
         )
         asyncio.run(
             engine.search(
@@ -367,7 +387,7 @@ class TestEngineRequests:
         assert payload_calls[0]["max_matches"] == 3
 
     def test_op_matches_method(self, payload_calls: list[dict[str, Any]]) -> None:
-        engine = DocEngine(_config(), dict)
+        engine = DocEngine(_config(), launchers)
         asyncio.run(engine.outline(
             "/workspace/doc.pdf", ocr_enabled=False,
             num_workers=1, ocr_language="rus+eng"
@@ -382,7 +402,7 @@ class TestTools:
         return tool.get_input_schema().model_json_schema()
 
     def test_all_tools_registered(self) -> None:
-        names = [t.name for t in build_doc_tools(_config(), dict)]
+        names = [t.name for t in build_doc_tools(_config(), launchers)]
         assert names == [
             "read_document",
             "read_document_window",
@@ -391,7 +411,7 @@ class TestTools:
         ]
 
     def test_read_document_exposes_pages_to_llm(self) -> None:
-        tools = {t.name: t for t in build_doc_tools(_config(), dict)}
+        tools = {t.name: t for t in build_doc_tools(_config(), launchers)}
         schema = self._schema(tools["read_document"])
         props = schema["properties"]
         assert "pages" in props
@@ -405,7 +425,7 @@ class TestTools:
         "search_document",
     ])
     def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:
-        tools = {t.name: t for t in build_doc_tools(_config(), dict)}
+        tools = {t.name: t for t in build_doc_tools(_config(), launchers)}
         schema = self._schema(tools[name])
         props = schema["properties"]
         assert "ocr_enabled" in props
@@ -421,7 +441,7 @@ class TestTools:
 
     def test_window_wider_than_limit_rejected(self) -> None:
         tools = {
-            t.name: t for t in build_doc_tools(_config(max_text_chars=100), dict)
+            t.name: t for t in build_doc_tools(_config(max_text_chars=100), launchers)
         }
         window = tools["read_document_window"]
         with pytest.raises(RuntimeError, match="exceeds max_text_chars"):
@@ -439,7 +459,7 @@ class TestTools:
 
     @staticmethod
     def _read(cfg: DocToolsConfig) -> Any:
-        tools = {t.name: t for t in build_doc_tools(cfg, dict)}
+        tools = {t.name: t for t in build_doc_tools(cfg, launchers)}
         return asyncio.run(
             tools["read_document"].ainvoke(
                 {
@@ -473,7 +493,8 @@ class TestTools:
     def test_llm_ocr_controls_reach_payload(
         self, payload_runs: list[dict[str, Any]]
     ) -> None:
-        tools = {t.name: t for t in build_doc_tools(_config(ocr_enabled=True), dict)}
+        built = build_doc_tools(_config(ocr_enabled=True), launchers)
+        tools = {t.name: t for t in built}
         asyncio.run(
             tools["read_document"].ainvoke(
                 {
@@ -499,7 +520,7 @@ class TestTools:
         self, payload_runs: list[dict[str, Any]]
     ) -> None:
         """Пропущенные фасадом настройки падают на дефолты, а не теряются."""
-        tools = {t.name: t for t in build_doc_tools(_config(), dict)}
+        tools = {t.name: t for t in build_doc_tools(_config(), launchers)}
         asyncio.run(
             tools["read_document"].ainvoke(
                 {

@@ -49,8 +49,7 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceRequest,
     ConfluenceRest,
 )
-from boba.toolkit.http import CancellableHttpTransport
-from boba.transport.http import HttpResponse, HttpTransport
+from boba.transport.http import CancellableHttpTransport, HttpResponse, HttpTransport
 
 logger = logging.getLogger(__name__)
 

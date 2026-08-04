@@ -18,8 +18,12 @@ from collections.abc import Generator, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any, ClassVar, Protocol
 
-from boba.liteparse import LiteParseError, LiteParseParams, ParsedPage
-from boba.liteparse.sections import PagedDocumentReader
+from boba.text.document import (
+    LiteParseError,
+    LiteParseParams,
+    PagedDocumentReader,
+    ParsedPage,
+)
 from liteparse import LiteParse, ParseError, ParseResult
 from liteparse._liteparse import LiteParse as _NativeLiteParse
 from liteparse._liteparse import search_items as _native_search_items
