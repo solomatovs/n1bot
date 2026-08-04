@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-import psycopg
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
@@ -78,14 +77,23 @@ def app_config() -> AppConfig:
 
 
 @pytest.fixture(scope="session")
-def test_database(app_config: AppConfig) -> str:
-    maintenance = app_config.data_layer.postgres.conn_settings()
-    with psycopg.connect(**maintenance, connect_timeout=5) as conn:
-        exists = conn.execute(
-            "select 1 from pg_database where datname = %s", (TEST_DB,)
-        ).fetchone()
-        if not exists:
-            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(TEST_DB)))
+async def test_database(app_config: AppConfig) -> str:
+    """Создаёт тестовую БД через общий пул: свой keytab, а не чужой krb5-кэш."""
+    maintenance = AsyncPostgresPool(app_config.data_layer.postgres)
+    await maintenance.open()
+    try:
+        async with maintenance.cursor() as cur:
+            await cur.execute(
+                "select 1 from pg_database where datname = %s", (TEST_DB,)
+            )
+            exists = await cur.fetchone()
+            if not exists:
+                await cur.execute(
+                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(TEST_DB))
+                )
+    finally:
+        await maintenance.close()
+
     return TEST_DB
 
 

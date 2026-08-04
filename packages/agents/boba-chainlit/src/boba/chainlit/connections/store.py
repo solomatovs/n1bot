@@ -9,12 +9,11 @@ from typing import Any, ClassVar
 
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
-from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from boba.chainlit.connections.secrets import SecretCipher
-from boba.db.postgres import PostgresConfig, PostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresConfig
 from boba.transport.http import HttpProfile
 
 logger = logging.getLogger(__name__)
@@ -179,11 +178,17 @@ class ConnectionStore:
     def __init__(
         self,
         cfg: ConnectionsConfig,
-        pool: PostgresPool | None = None,
+        pool: AsyncPostgresPool | None = None,
     ) -> None:
         self._cfg = cfg
-        self._pool = pool if pool is not None else PostgresPool.get(cfg.require_conn())
+        self._pool_ref = pool
         self._cipher = SecretCipher(cfg.key_bytes())
+
+    async def _pool(self) -> AsyncPostgresPool:
+        """Пул берётся при первом обращении: __init__ не может await."""
+        if self._pool_ref is None:
+            self._pool_ref = await AsyncPostgresPool.get(self._cfg.require_conn())
+        return self._pool_ref
 
     def _table(self) -> sql.Identifier:
         return sql.Identifier(self._cfg.db_schema, self._cfg.table)
@@ -194,10 +199,11 @@ class ConnectionStore:
     def _grants(self) -> sql.Identifier:
         return sql.Identifier(self._cfg.db_schema, self._cfg.grants_table)
 
-    def setup(self) -> None:
-        with self._pool.connection() as conn:
+    async def setup(self) -> None:
+        pool = await self._pool()
+        async with pool.connection() as conn:
             try:
-                conn.execute(
+                await conn.execute(
                     sql.SQL("create schema if not exists {schema}").format(
                         schema=sql.Identifier(self._cfg.db_schema),
                     ),
@@ -211,7 +217,7 @@ class ConnectionStore:
                 )
 
             for query in self._ddl():
-                conn.execute(query, prepare=False)
+                await conn.execute(query, prepare=False)
 
         logger.info(
             "connections ready: %s.%s",
@@ -268,7 +274,7 @@ class ConnectionStore:
             ),
         )
 
-    def save(self, name: str, profile: BaseModel) -> int:
+    async def save(self, name: str, profile: BaseModel) -> int:
         kind = ConnectionKinds.kind_of(profile)
         payload = self._cipher.encrypt(profile)
         query = sql.SQL(
@@ -289,16 +295,19 @@ class ConnectionStore:
             connections=self._table(),
         )
 
-        with self._pool.cursor() as cur:
-            cur.execute(query, {"name": name, "kind": kind, "data": Jsonb(payload)})
-            row = cur.fetchone()
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(
+                query, {"name": name, "kind": kind, "data": Jsonb(payload)}
+            )
+            row = await cur.fetchone()
 
         if row is None:
             msg = f"connections: row {name!r} was not saved"
             raise RuntimeError(msg)
         return int(row[0])
 
-    def load(self, name: str) -> BaseModel:
+    async def load(self, name: str) -> BaseModel:
         query = sql.SQL(
             """
             select
@@ -314,16 +323,17 @@ class ConnectionStore:
             connections=self._table(),
         )
 
-        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(query, (name,))
-            row = cur.fetchone()
+        pool = await self._pool()
+        async with pool.dict_cursor() as cur:
+            await cur.execute(query, (name,))
+            row = await cur.fetchone()
 
         if row is None:
             msg = f"connections: connection {name!r} not found"
             raise ConnectionNotFoundError(msg)
         return self._to_profile(row["kind"], row["data"])
 
-    def load_all(self, kind: str | None = None) -> dict[str, BaseModel]:
+    async def load_all(self, kind: str | None = None) -> dict[str, BaseModel]:
         where = sql.SQL("where kind = %(kind)s") if kind else sql.SQL("")
         query = sql.SQL(
             """
@@ -340,13 +350,14 @@ class ConnectionStore:
             where=where,
         )
 
-        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(query, {"kind": kind})
-            rows = cur.fetchall()
+        pool = await self._pool()
+        async with pool.dict_cursor() as cur:
+            await cur.execute(query, {"kind": kind})
+            rows = await cur.fetchall()
 
         return {row["name"]: self._to_profile(row["kind"], row["data"]) for row in rows}
 
-    def delete(self, name: str) -> bool:
+    async def delete(self, name: str) -> bool:
         drop_grants = sql.SQL(
             """
             delete from
@@ -373,13 +384,14 @@ class ConnectionStore:
             connections=self._table(),
         )
 
-        with self._pool.connection() as conn, conn.cursor() as cur:
+        pool = await self._pool()
+        async with pool.cursor() as cur:
             params = {"name": name, "src_kind": GrantKinds.CONNECTIONS}
-            cur.execute(drop_grants, params)
-            cur.execute(drop_row, params)
+            await cur.execute(drop_grants, params)
+            await cur.execute(drop_row, params)
             return cur.rowcount > 0
 
-    def roles(self) -> dict[str, int]:
+    async def roles(self) -> dict[str, int]:
         query = sql.SQL(
             """
             select
@@ -393,11 +405,14 @@ class ConnectionStore:
             roles=self._roles(),
         )
 
-        with self._pool.cursor() as cur:
-            cur.execute(query)
-            return {row[0]: int(row[1]) for row in cur.fetchall()}
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query)
+            fetched = await cur.fetchall()
 
-    def grant(
+        return {row[0]: int(row[1]) for row in fetched}
+
+    async def grant(
         self,
         src_kind: str,
         src_kind_id: int,
@@ -429,9 +444,10 @@ class ConnectionStore:
             "tgt_kind_id": tgt_kind_id,
         }
 
-        with self._pool.cursor() as cur:
-            cur.execute(query, params)
-            row = cur.fetchone()
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, params)
+            row = await cur.fetchone()
 
         if row is None:
             msg = (
@@ -441,7 +457,7 @@ class ConnectionStore:
             raise RuntimeError(msg)
         return int(row[0])
 
-    def revoke(
+    async def revoke(
         self,
         src_kind: str,
         src_kind_id: int,
@@ -470,11 +486,14 @@ class ConnectionStore:
             "tgt_kind_id": tgt_kind_id,
         }
 
-        with self._pool.cursor() as cur:
-            cur.execute(query, params)
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, params)
             return cur.rowcount > 0
 
-    def grants_of(self, src_kind: str, src_kind_id: int) -> list[tuple[str, int]]:
+    async def grants_of(
+        self, src_kind: str, src_kind_id: int
+    ) -> list[tuple[str, int]]:
         GrantKinds.validate_src(src_kind)
         query = sql.SQL(
             """
@@ -492,23 +511,36 @@ class ConnectionStore:
             grants=self._grants(),
         )
 
-        with self._pool.cursor() as cur:
-            cur.execute(query, {"src_kind": src_kind, "src_kind_id": src_kind_id})
-            return [(row[0], int(row[1])) for row in cur.fetchall()]
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, {"src_kind": src_kind, "src_kind_id": src_kind_id})
+            fetched = await cur.fetchall()
 
-    def grant_connection(self, name: str, tgt_kind: str, tgt_kind_id: int) -> int:
-        connection_id = self._connection_id(name)
-        return self.grant(GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id)
+        return [(row[0], int(row[1])) for row in fetched]
 
-    def revoke_connection(self, name: str, tgt_kind: str, tgt_kind_id: int) -> bool:
-        connection_id = self._connection_id(name)
-        return self.revoke(GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id)
+    async def grant_connection(
+        self, name: str, tgt_kind: str, tgt_kind_id: int
+    ) -> int:
+        connection_id = await self._connection_id(name)
+        return await self.grant(
+            GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id
+        )
 
-    def connection_grants(self, name: str) -> list[tuple[str, int]]:
-        connection_id = self._connection_id(name)
-        return self.grants_of(GrantKinds.CONNECTIONS, connection_id)
+    async def revoke_connection(
+        self, name: str, tgt_kind: str, tgt_kind_id: int
+    ) -> bool:
+        connection_id = await self._connection_id(name)
+        return await self.revoke(
+            GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id
+        )
 
-    def connections_for(self, tgt_kind: str, tgt_kind_id: int) -> dict[str, BaseModel]:
+    async def connection_grants(self, name: str) -> list[tuple[str, int]]:
+        connection_id = await self._connection_id(name)
+        return await self.grants_of(GrantKinds.CONNECTIONS, connection_id)
+
+    async def connections_for(
+        self, tgt_kind: str, tgt_kind_id: int
+    ) -> dict[str, BaseModel]:
         GrantKinds.validate_tgt(tgt_kind)
         query = sql.SQL(
             """
@@ -535,13 +567,14 @@ class ConnectionStore:
             "tgt_kind_id": tgt_kind_id,
         }
 
-        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
+        pool = await self._pool()
+        async with pool.dict_cursor() as cur:
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
 
         return {row["name"]: self._to_profile(row["kind"], row["data"]) for row in rows}
 
-    def _connection_id(self, name: str) -> int:
+    async def _connection_id(self, name: str) -> int:
         query = sql.SQL(
             """
             select
@@ -557,9 +590,10 @@ class ConnectionStore:
             connections=self._table(),
         )
 
-        with self._pool.cursor() as cur:
-            cur.execute(query, (name,))
-            row = cur.fetchone()
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, (name,))
+            row = await cur.fetchone()
 
         if row is None:
             msg = f"connections: connection {name!r} not found"

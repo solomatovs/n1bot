@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from psycopg import Connection, sql
+from psycopg import AsyncConnection, sql
 from psycopg.errors import InsufficientPrivilege
 
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
@@ -22,11 +22,11 @@ class KbSchema:
     def __init__(self, cfg: PostgresKnowledgeBaseConfig) -> None:
         self._cfg = cfg
 
-    def _ensure_schema(self, conn: Connection) -> None:
+    async def _ensure_schema(self, conn: AsyncConnection) -> None:
         """Схема под таблицы KB; без прав на CREATE считаем, что её завёл админ."""
         name = self._cfg.tables.pg_schema
         try:
-            conn.execute(
+            await conn.execute(
                 sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(name)),
                 prepare=False,
             )
@@ -37,15 +37,15 @@ class KbSchema:
                 name,
             )
 
-    def setup(self) -> None:
+    async def setup(self) -> None:
         """Создать схему, применить миграции и векторный индекс под модель."""
-        pool = KbPool.open(self._cfg.connection)
-        with pool.connection() as conn:
-            self._ensure_schema(conn)
-            Migrations.apply_bootstrap(conn, schema_cfg=self._cfg.tables)
+        pool = await KbPool.open(self._cfg.connection)
+        async with pool.connection() as conn:
+            await self._ensure_schema(conn)
+            await Migrations.apply_bootstrap(conn, schema_cfg=self._cfg.tables)
 
-        with pool.connection() as conn:
-            Migrations.ensure_vector_index(
+        async with pool.connection() as conn:
+            await Migrations.ensure_vector_index(
                 conn, dim=self._cfg.embedding.dim, schema_cfg=self._cfg.tables
             )
 

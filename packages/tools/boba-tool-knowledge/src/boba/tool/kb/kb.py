@@ -66,7 +66,7 @@ class PostgresKnowledgeBase:
         try:
             answer = self._caller.search(
                 op=op,
-                connection=self._cfg.connection.conn_settings(),
+                connection=self._cfg.connection,
                 sql_template=sql_template,
                 schema_name=self._cfg.tables.pg_schema,
                 chunks_table=self._cfg.tables.chunks_table,

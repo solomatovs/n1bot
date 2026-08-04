@@ -101,7 +101,7 @@ class ConfluenceIngest:
     """CONTENT_TYPE-значения от ConfluenceJsonDecoder, уходящие в HTML-Reader."""
 
     @staticmethod
-    def run(  # noqa: PLR0913
+    async def run(  # noqa: PLR0913
         *,
         request_source: RequestSource[ConfluenceRequest],
         conn: ConfluenceConnection,
@@ -124,7 +124,7 @@ class ConfluenceIngest:
         )
 
         collection_id = CollectionId(collection)
-        collections_store.ensure_collection(collection_id, description=None)
+        await collections_store.ensure_collection(collection_id, description=None)
 
         view: CollectionScopedView[str] = CollectionScopedView(
             store=chunk_store,
@@ -154,7 +154,7 @@ class ConfluenceIngest:
                 transport=transport,
                 reader=reader,
             )
-            stats = LoggedIndexRun.drain(
+            stats = await LoggedIndexRun.drain(
                 pipeline.index(
                     chunker=chunker,
                     sink=view,
@@ -175,7 +175,7 @@ class ConfluenceIngest:
         }
 
     @staticmethod
-    def ingest(
+    async def ingest(
         cfg: ConfluenceIngestConfig,
         request_source: RequestSource[ConfluenceRequest],
         prune_missing: bool,
@@ -196,7 +196,7 @@ class ConfluenceIngest:
             profile=cfg.confluence,
             body_format=cfg.body_format,
         )
-        return ConfluenceIngest.run(
+        return await ConfluenceIngest.run(
             request_source=request_source,
             conn=conn,
             chunk_store=chunk_store,

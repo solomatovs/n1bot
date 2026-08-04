@@ -1,9 +1,12 @@
-"""Pipeline — сборка стадий source -> transport -> reader с двумя терминалами: sections() и index()."""
+"""
+Pipeline — сборка стадий source -> transport -> reader с двумя терминалами:
+sections() и index()
+"""
 
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
@@ -63,15 +66,18 @@ class Pipeline(Generic[ReqT, T]):
         for request in self._source.requests():
             yield from self._sections_of(request)
 
-    def index(
+    async def index(
         self,
         *,
         chunker: Chunker[T],
         sink: IndexSink[T],
         query: IndexQuery[T],
         config: IndexerConfig[T],
-    ) -> Iterator[IndexEvent]:
-        """Индексировать все источники; ленивый поток IndexEvent, cleanup после всех источников."""
+    ) -> AsyncIterator[IndexEvent]:
+        """
+        Индексировать все источники; ленивый поток IndexEvent,
+        cleanup после всех источников
+        """
         run_id = new_run_id()
         run_start = time.time()
         stats = IndexStatsBuilder()
@@ -80,7 +86,7 @@ class Pipeline(Generic[ReqT, T]):
         yield RunStarted(run_id=run_id, monotonic_ns=time.monotonic_ns())
 
         for request in self._source.requests():
-            for event in self._process_source(
+            async for event in self._process_source(
                 request=request,
                 chunker=chunker,
                 sink=sink,
@@ -91,7 +97,7 @@ class Pipeline(Generic[ReqT, T]):
                 self._observe(event, stats=stats, touched=touched)
                 yield event
 
-        for event in self._run_cleanup(
+        async for event in self._run_cleanup(
             query=query,
             config=config,
             run_id=run_id,
@@ -107,7 +113,7 @@ class Pipeline(Generic[ReqT, T]):
             stats=stats.build(),
         )
 
-    def run(
+    async def run(
         self,
         *,
         chunker: Chunker[T],
@@ -116,7 +122,7 @@ class Pipeline(Generic[ReqT, T]):
         config: IndexerConfig[T],
     ) -> IndexStats:
         """Прогнать index до конца; вернуть итоговый IndexStats."""
-        for event in self.index(
+        async for event in self.index(
             chunker=chunker, sink=sink, query=query, config=config
         ):
             if isinstance(event, RunFinished):
@@ -128,7 +134,7 @@ class Pipeline(Generic[ReqT, T]):
         for raw in self._transport.fetch(request):
             yield from self._reader.read(raw)
 
-    def _process_source(  # noqa: PLR0913
+    async def _process_source(  # noqa: PLR0913
         self,
         *,
         request: ReqT,
@@ -137,12 +143,12 @@ class Pipeline(Generic[ReqT, T]):
         config: IndexerConfig[T],
         run_id: RunId,
         run_start: float,
-    ) -> Iterator[IndexEvent]:
+    ) -> AsyncIterator[IndexEvent]:
         """Per-source streaming pipeline; yield ровно одно CompletedItem-событие."""
-        # identity выводит транспорт, а не request — резолв доступен и когда fetch упадёт
+        # identity выводит транспорт, а не request — резолв доступен и когда fetch упадё
         source_id = self._transport.source_id(request)
         try:
-            summary = sink.reconcile(
+            summary = await sink.reconcile(
                 chunks=self._chunks_of(request, chunker),
                 time_at_least=run_start,
                 force=config.force_update,
@@ -179,10 +185,12 @@ class Pipeline(Generic[ReqT, T]):
         request: ReqT,
         chunker: Chunker[T],
     ) -> Iterator[Chunk[T]]:
-        """sections одного источника -> chunker -> yield; чанки приходят с уже заполненным content_hash."""
+        """sections одного источника -> chunker -> yield
+        чанки приходят с уже заполненным content_hash
+        """
         yield from chunker.chunk(self._sections_of(request))
 
-    def _run_cleanup(
+    async def _run_cleanup(
         self,
         *,
         query: IndexQuery[T],
@@ -190,7 +198,7 @@ class Pipeline(Generic[ReqT, T]):
         run_id: RunId,
         run_start: float,
         touched: set[SourceId],
-    ) -> Iterator[IndexEvent]:
+    ) -> AsyncIterator[IndexEvent]:
         """Per-run cleanup: config.cleanup.execute через CleanupContext."""
         yield CleanupStarted(
             run_id=run_id,
@@ -198,7 +206,7 @@ class Pipeline(Generic[ReqT, T]):
             strategy=type(config.cleanup).__name__,
         )
 
-        deleted = config.cleanup.execute(
+        deleted = await config.cleanup.execute(
             CleanupContext(
                 query=query,
                 run_start=run_start,

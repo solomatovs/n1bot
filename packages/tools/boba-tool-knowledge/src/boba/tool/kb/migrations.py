@@ -43,7 +43,7 @@ class Migrations:
         )
 
     @staticmethod
-    def apply_bootstrap(
+    async def apply_bootstrap(
         conn: Any,
         *,
         schema_cfg: PostgresStoreSchema,
@@ -67,10 +67,10 @@ class Migrations:
                 schema_cfg.chunks_table,
                 schema_cfg.collections_table,
             )
-            conn.execute(rendered, prepare=False)
+            await conn.execute(rendered, prepare=False)
 
     @staticmethod
-    def ensure_vector_index(
+    async def ensure_vector_index(
         conn: Any,
         *,
         dim: int,
@@ -92,4 +92,4 @@ class Migrations:
             chunks_table=schema_cfg.chunks_ident(),
             dim=sql.Literal(dim),
         )
-        conn.execute(stmt, prepare=False)
+        await conn.execute(stmt, prepare=False)

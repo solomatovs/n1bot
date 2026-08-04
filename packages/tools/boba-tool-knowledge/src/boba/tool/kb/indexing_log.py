@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import AsyncIterable
 from typing import ClassVar
 
 from boba.indexing import (
@@ -28,13 +28,13 @@ class LoggedIndexRun:
     }
 
     @staticmethod
-    def drain(
-        events: Iterable[IndexEvent],
+    async def drain(
+        events: AsyncIterable[IndexEvent],
         logger: logging.Logger,
     ) -> IndexStats:
         """Потребить поток Pipeline.index(...), пишет каждое событие в logger."""
         stats = IndexStatsBuilder().build()
-        for event in events:
+        async for event in events:
             LoggedIndexRun._emit(logger, event)
             if isinstance(event, RunFinished):
                 stats = event.stats

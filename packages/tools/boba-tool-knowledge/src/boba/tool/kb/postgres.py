@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import islice
 from typing import Any, ClassVar, Self, TypeVar
 
-from pgvector.psycopg import register_vector
+from pgvector.psycopg import register_vector_async
 from psycopg import sql
 from pydantic import BaseModel, Field, model_validator
 
-from boba.db.postgres import PostgresConfig, PostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresConfig
 from boba.indexing.chunk_store import (
     ChunkStore,
     CollectionInfo,
@@ -58,16 +58,15 @@ _E = TypeVar("_E")
 
 
 class KbPool:
-    """PostgresPool (singleton по конфигу) с register_vector: без него INSERT vector падает."""
+    """Пул-singleton по конфигу с register_vector: без него INSERT vector падает."""
 
     @staticmethod
-    def open(connection: PostgresConfig) -> CancellablePool:
-        return CancellablePool(
-            PostgresPool.get(
-                connection,
-                configure=register_vector,
-            ),
+    async def open(connection: PostgresConfig) -> CancellablePool:
+        pool = await AsyncPostgresPool.get(
+            connection,
+            configure=register_vector_async,
         )
+        return CancellablePool(pool)
 
 
 class PostgresStoreSchema(BaseModel):
@@ -148,16 +147,22 @@ class PostgresChunkStore(ChunkStore[str]):
     ) -> None:
         self._cfg = cfg
         self._tables = cfg.tables
-        self._pool = KbPool.open(cfg.connection)
+        self._pool_ref: CancellablePool | None = None
 
-    def get_by_ids(
+    async def _pool(self) -> CancellablePool:
+        """Пул берётся при первом обращении: __init__ не может await."""
+        if self._pool_ref is None:
+            self._pool_ref = await KbPool.open(self._cfg.connection)
+        return self._pool_ref
+
+    async def get_by_ids(
         self,
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
-    ) -> Iterable[Chunk[str]]:
+    ) -> Sequence[Chunk[str]]:
         ids = [str(c) for c in chunk_ids]
         if not ids:
-            return
+            return []
 
         query = sql.SQL(
             """
@@ -178,19 +183,25 @@ class PostgresChunkStore(ChunkStore[str]):
             """,
         ).format(chunks_table=self._tables.chunks_ident())
 
-        with self._pool.dict_cursor() as cur:
-            cur.execute(query, (str(collection), ids))
-            for row in cur:
-                yield self._row_to_chunk(row)
+        pool = await self._pool()
+        async with pool.dict_cursor() as cur:
+            await cur.execute(query, (str(collection), ids))
+            rows = await cur.fetchall()
 
-    def peek(
+        chunks: list[Chunk[str]] = []
+        for row in rows:
+            chunks.append(self._row_to_chunk(row))
+        return chunks
+
+    async def peek(
         self,
         collection: CollectionId,
         *,
         source_id: SourceId | None,
         limit: int,
-    ) -> Iterable[ChunkSummary[str]]:
-        with self._pool.dict_cursor() as cur:
+    ) -> Sequence[ChunkSummary[str]]:
+        pool = await self._pool()
+        async with pool.dict_cursor() as cur:
             if source_id is None:
                 query = sql.SQL(
                     """
@@ -202,7 +213,7 @@ class PostgresChunkStore(ChunkStore[str]):
                     LIMIT %s
                     """,
                 ).format(chunks_table=self._tables.chunks_ident())
-                cur.execute(query, (str(collection), limit))
+                await cur.execute(query, (str(collection), limit))
             else:
                 query = sql.SQL(
                     """
@@ -214,18 +225,19 @@ class PostgresChunkStore(ChunkStore[str]):
                     LIMIT %s
                     """,
                 ).format(chunks_table=self._tables.chunks_ident())
-                cur.execute(query, (str(collection), str(source_id), limit))
+                await cur.execute(query, (str(collection), str(source_id), limit))
 
-            for row in cur:
-                yield self._row_to_summary(row)
+            rows = await cur.fetchall()
 
-    def find(
+        return self._to_summaries(rows)
+
+    async def find(
         self,
         collection: CollectionId,
         *,
         where: Filter | None,
         limit: int | None = None,
-    ) -> Iterable[ChunkSummary[str]]:
+    ) -> Sequence[ChunkSummary[str]]:
         where_sql, params = self._compile_filter(where)
         clauses: list[sql.Composable] = [sql.SQL("collection = %s")]
         bind_params: list[Any] = [str(collection)]
@@ -258,12 +270,14 @@ class PostgresChunkStore(ChunkStore[str]):
                 lim=sql.Literal(limit),
             )
 
-        with self._pool.dict_cursor() as cur:
-            cur.execute(query, bind_params)
-            for row in cur:
-                yield self._row_to_summary(row)
+        pool = await self._pool()
+        async with pool.dict_cursor() as cur:
+            await cur.execute(query, bind_params)
+            rows = await cur.fetchall()
 
-    def diff_by_hash(
+        return self._to_summaries(rows)
+
+    async def diff_by_hash(
         self,
         collection: CollectionId,
         candidates: Iterable[tuple[ChunkId, ContentHash]],
@@ -280,9 +294,14 @@ class PostgresChunkStore(ChunkStore[str]):
             WHERE collection = %s AND chunk_id = ANY(%s)
             """,
         ).format(chunks_table=self._tables.chunks_ident())
-        with self._pool.cursor() as cur:
-            cur.execute(query, (str(collection), ids))
-            stored: dict[str, str] = {row[0]: row[1] for row in cur}
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, (str(collection), ids))
+            fetched = await cur.fetchall()
+
+        stored: dict[str, str] = {}
+        for row in fetched:
+            stored[row[0]] = row[1]
 
         to_upsert: list[ChunkId] = []
         unchanged: list[ChunkId] = []
@@ -300,7 +319,7 @@ class PostgresChunkStore(ChunkStore[str]):
             unchanged=unchanged,
         )
 
-    def upsert(
+    async def upsert(
         self,
         collection: CollectionId,
         chunks: Iterable[EmbeddedChunk[str]],
@@ -347,10 +366,11 @@ class PostgresChunkStore(ChunkStore[str]):
                 for ec in batch
             ]
 
-            with self._pool.cursor() as cur:
-                cur.executemany(upsert_sql, rows)
+            pool = await self._pool()
+            async with pool.cursor() as cur:
+                await cur.executemany(upsert_sql, rows)
 
-    def delete(
+    async def delete(
         self,
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
@@ -361,10 +381,11 @@ class PostgresChunkStore(ChunkStore[str]):
         query = sql.SQL(
             "DELETE FROM {chunks_table} WHERE collection = %s AND chunk_id = ANY(%s)",
         ).format(chunks_table=self._tables.chunks_ident())
-        with self._pool.cursor() as cur:
-            cur.execute(query, (str(collection), ids))
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, (str(collection), ids))
 
-    def update_metadata(
+    async def update_metadata(
         self,
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
@@ -382,8 +403,9 @@ class PostgresChunkStore(ChunkStore[str]):
             WHERE collection = %s AND chunk_id = ANY(%s)
             """,
         ).format(chunks_table=self._tables.chunks_ident())
-        with self._pool.cursor() as cur:
-            cur.execute(query, (json.dumps(wire_patch), str(collection), ids))
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, (json.dumps(wire_patch), str(collection), ids))
 
     def _row_to_chunk(self, row: Mapping[str, Any]) -> Chunk[str]:
         return Chunk(
@@ -396,6 +418,15 @@ class PostgresChunkStore(ChunkStore[str]):
             metadata=self._row_to_metadata(row),
             tags=frozenset(row.get("tags") or ()),
         )
+
+    def _to_summaries(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+    ) -> Sequence[ChunkSummary[str]]:
+        summaries: list[ChunkSummary[str]] = []
+        for row in rows:
+            summaries.append(self._row_to_summary(row))
+        return summaries
 
     def _row_to_summary(self, row: Mapping[str, Any]) -> ChunkSummary[str]:
         return ChunkSummary(
@@ -576,9 +607,15 @@ class PostgresCollectionsStore(CollectionsStore):
     ) -> None:
         self._cfg = cfg
         self._tables = cfg.tables
-        self._pool = KbPool.open(cfg.connection)
+        self._pool_ref: CancellablePool | None = None
 
-    def list_collections(self) -> Iterable[CollectionInfo]:
+    async def _pool(self) -> CancellablePool:
+        """Пул берётся при первом обращении: __init__ не может await."""
+        if self._pool_ref is None:
+            self._pool_ref = await KbPool.open(self._cfg.connection)
+        return self._pool_ref
+
+    async def list_collections(self) -> Sequence[CollectionInfo]:
         query = sql.SQL(
             """
             SELECT c.name,
@@ -596,16 +633,23 @@ class PostgresCollectionsStore(CollectionsStore):
             collections_table=self._tables.collections_ident(),
             chunks_table=self._tables.chunks_ident(),
         )
-        with self._pool.dict_cursor() as cur:
-            cur.execute(query)
-            for row in cur:
-                yield CollectionInfo(
+        pool = await self._pool()
+        async with pool.dict_cursor() as cur:
+            await cur.execute(query)
+            rows = await cur.fetchall()
+
+        collections: list[CollectionInfo] = []
+        for row in rows:
+            collections.append(
+                CollectionInfo(
                     name=CollectionId(row["name"]),
                     description=row["description"] or "",
                     count=int(row["count"]),
                 )
+            )
+        return collections
 
-    def collection_info(self, name: CollectionId) -> CollectionInfo:
+    async def collection_info(self, name: CollectionId) -> CollectionInfo:
         query = sql.SQL(
             """
             SELECT c.name, c.description,
@@ -618,9 +662,10 @@ class PostgresCollectionsStore(CollectionsStore):
             chunks_table=self._tables.chunks_ident(),
             collections_table=self._tables.collections_ident(),
         )
-        with self._pool.dict_cursor() as cur:
-            cur.execute(query, (str(name),))
-            row = cur.fetchone()
+        pool = await self._pool()
+        async with pool.dict_cursor() as cur:
+            await cur.execute(query, (str(name),))
+            row = await cur.fetchone()
             if row is None:
                 return CollectionInfo(
                     name=name,
@@ -633,7 +678,7 @@ class PostgresCollectionsStore(CollectionsStore):
                 count=int(row["count"]),
             )
 
-    def ensure_collection(
+    async def ensure_collection(
         self,
         name: CollectionId,
         *,
@@ -646,12 +691,14 @@ class PostgresCollectionsStore(CollectionsStore):
             ON CONFLICT (name) DO NOTHING
             """,
         ).format(collections_table=self._tables.collections_ident())
-        with self._pool.cursor() as cur:
-            cur.execute(query, (str(name), description or ""))
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, (str(name), description or ""))
 
-    def delete_collection(self, name: CollectionId) -> None:
-        with self._pool.cursor() as cur:
-            cur.execute(
+    async def delete_collection(self, name: CollectionId) -> None:
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(
                 sql.SQL(
                     """DELETE FROM {chunks_table} WHERE collection = %s;
             DELETE FROM {collections_table} WHERE name = %s""",

@@ -21,29 +21,28 @@ class PostgresOps:
     OPS: ClassVar[tuple[str, ...]] = ("pg_query", "pg_copy")
 
     @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
         op = request["op"]
         if op == "pg_query":
-            return cls.query(request)
+            return await cls.query(request)
         if op == "pg_copy":
-            return cls.copy(request)
+            return await cls.copy(request)
         msg = f"unknown postgres op: {op!r}"
         raise ValueError(msg)
 
     @classmethod
-    def query(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def query(cls, request: dict[str, Any]) -> dict[str, Any]:
         """Запрос с лимитом строк: лишняя строка ловит факт усечения."""
         limit = request["row_limit"]
         fetch = limit + 1
         params = request["params"]
         if not params:
             params = None
-        with PayloadPostgres.connect(request) as conn, conn.cursor(
-            row_factory=dict_row
-        ) as cur:
+        conn = await PayloadPostgres.connect(request)
+        async with conn, conn.cursor(row_factory=dict_row) as cur:
             try:
-                cur.execute(request["sql"], params)
-                fetched = cur.fetchmany(fetch)
+                await cur.execute(request["sql"], params)
+                fetched = await cur.fetchmany(fetch)
             except psycopg.Error as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
                 raise RuntimeError(msg) from e
@@ -54,17 +53,18 @@ class PostgresOps:
         return {"rows": rows, "truncated": truncated}
 
     @classmethod
-    def copy(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def copy(cls, request: dict[str, Any]) -> dict[str, Any]:
         """COPY ... TO STDOUT: текстовая выгрузка с потолком по байтам."""
         statement = f"COPY ({request['sql']}) TO STDOUT WITH (FORMAT TEXT, HEADER)"
         max_bytes = request["max_bytes"]
         chunks: list[bytes] = []
         size = 0
         truncated = False
-        with PayloadPostgres.connect(request) as conn, conn.cursor() as cur:
+        conn = await PayloadPostgres.connect(request)
+        async with conn, conn.cursor() as cur:
             try:
-                with cur.copy(statement) as copy_out:  # type: ignore[arg-type]
-                    for block in copy_out:
+                async with cur.copy(statement) as copy_out:  # type: ignore[arg-type]
+                    async for block in copy_out:
                         data = bytes(block)
                         if size + len(data) > max_bytes:
                             chunks.append(data[: max_bytes - size])
@@ -80,4 +80,4 @@ class PostgresOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(PostgresOps.dispatch))
+    sys.exit(PayloadEntry.main_async(PostgresOps.dispatch))

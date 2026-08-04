@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
+from boba.db.postgres import PostgresConfig
 from boba.toolkit.sandbox import SandboxCaller, SandboxToolConfig
 
 __all__ = ["KbCaller", "KbSearchAnswer", "KbSearchRequest"]
@@ -18,7 +19,11 @@ class KbSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     op: str = Field(min_length=1)
-    connection: dict[str, Any]
+    connection: PostgresConfig = Field(
+        description=(
+            "Профиль подключения целиком: payload сам получает по нему TGT из keytab."
+        ),
+    )
     sql_template: str = Field(min_length=1)
     schema_name: str = Field(min_length=1)
     chunks_table: str = Field(min_length=1)
@@ -29,6 +34,14 @@ class KbSearchRequest(BaseModel):
     embedding: dict[str, str] = Field(
         description="Модель эмбеддера и каталог весов внутри песочницы.",
     )
+
+    @field_serializer("connection", when_used="json")
+    def _dump_connection(self, value: PostgresConfig) -> dict[str, Any]:
+        """stdin песочницы — доверенный канал: только здесь пароль едет раскрытым."""
+        return value.model_dump(
+            mode="json",
+            context={PostgresConfig.REVEAL_SECRETS: True},
+        )
 
 
 class KbSearchAnswer(BaseModel):
@@ -59,7 +72,7 @@ class KbCaller:
         self,
         *,
         op: str,
-        connection: Mapping[str, Any],
+        connection: PostgresConfig,
         sql_template: str,
         schema_name: str,
         chunks_table: str,
@@ -71,7 +84,7 @@ class KbCaller:
     ) -> KbSearchAnswer:
         request = KbSearchRequest(
             op=op,
-            connection=dict(connection),
+            connection=connection,
             sql_template=sql_template,
             schema_name=schema_name,
             chunks_table=chunks_table,

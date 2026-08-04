@@ -32,7 +32,7 @@ class CleanupStrategy(ABC):
     """Стратегия удаления устаревших записей в конце Indexer.run."""
 
     @abstractmethod
-    def execute(self, ctx: CleanupContext) -> int:
+    async def execute(self, ctx: CleanupContext) -> int:
         """Выполнить cleanup; вернуть количество удалённых чанков."""
         ...
 
@@ -40,7 +40,7 @@ class CleanupStrategy(ABC):
 class NoneCleanup(CleanupStrategy):
     """No-op: ничего не удаляет, всегда возвращает 0."""
 
-    def execute(self, ctx: CleanupContext) -> int:
+    async def execute(self, ctx: CleanupContext) -> int:
         del ctx
         return 0
 
@@ -48,7 +48,7 @@ class NoneCleanup(CleanupStrategy):
 class IncrementalCleanup(CleanupStrategy):
     """Удалить stale-записи только для touched source_id; безопасно при частичных прогонах."""
 
-    def execute(self, ctx: CleanupContext) -> int:
+    async def execute(self, ctx: CleanupContext) -> int:
         if not ctx.touched_sources:
             return 0
         where: Filter = And([
@@ -58,7 +58,7 @@ class IncrementalCleanup(CleanupStrategy):
                 list(ctx.touched_sources),
             ),
         ])
-        return ctx.query.clean(where=where)
+        return await ctx.query.clean(where=where)
 
 
 class FullCleanup(CleanupStrategy):
@@ -67,6 +67,6 @@ class FullCleanup(CleanupStrategy):
     Требует full-coverage от RequestSource: при частичном фиде удалит актуальные записи.
     """
 
-    def execute(self, ctx: CleanupContext) -> int:
+    async def execute(self, ctx: CleanupContext) -> int:
         where: Filter = Lt(TrackingKeys.UPDATED_AT, ctx.run_start)
-        return ctx.query.clean(where=where)
+        return await ctx.query.clean(where=where)

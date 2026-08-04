@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -72,11 +72,18 @@ class TestPgTools:
         assert list(result.rows) == [{"target": "main"}]
         assert result.ok is True
 
+    # query до сих пор принимает target, остальные уже connection_name
+    _TARGET_ARG: ClassVar[dict[str, str]] = {
+        "list_tables": "connection_name",
+        "describe_table": "connection_name",
+        "query": "target",
+    }
+
     def test_unknown_target_becomes_error_result(self) -> None:
         """Профиль не в whitelist — ошибка инструмента, а не падение хода."""
         for name in ("list_tables", "describe_table", "query"):
             tool = next(t for t in build_pg_tools(pg_config(), dict) if t.name == name)
-            args = {"target": "нет-такого"}
+            args = {self._TARGET_ARG[name]: "нет-такого"}
             if name == "describe_table":
                 args["table"] = "t"
             if name == "query":
@@ -93,7 +100,7 @@ class TestPgTools:
         monkeypatch.setattr(pg_executor.SqlExecutor, "execute", boom)
         built = build_pg_tools(pg_config(), dict)
         tool = next(t for t in built if t.name == "list_tables")
-        result = invoke(tool, {"target": "main"})
+        result = invoke(tool, {"connection_name": "main"})
         assert isinstance(result, ErrorResult)
         assert result.ok is False
         assert "relation does not exist" in result.message
