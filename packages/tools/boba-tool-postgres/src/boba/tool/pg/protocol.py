@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+from boba.db.postgres import PostgresConfig
 
 __all__ = [
     "PgCopyAnswer",
@@ -20,10 +22,21 @@ class PgCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     op: str = Field(min_length=1)
-    connection: dict[str, Any] = Field(
-        description="libpq-параметры connect(): host/dbname/user/options/...",
+    connection: PostgresConfig = Field(
+        description=(
+            "Профиль подключения целиком: libpq-параметры, опции сессии и "
+            "креды kerberos, по которым payload сам получает TGT."
+        ),
     )
     sql: str = Field(min_length=1)
+
+    @field_serializer("connection", when_used="json")
+    def _dump_connection(self, value: PostgresConfig) -> dict[str, Any]:
+        """stdin песочницы — доверенный канал: только здесь пароль едет раскрытым."""
+        return value.model_dump(
+            mode="json",
+            context={PostgresConfig.REVEAL_SECRETS: True},
+        )
 
 
 class PgQueryRequest(PgCall):

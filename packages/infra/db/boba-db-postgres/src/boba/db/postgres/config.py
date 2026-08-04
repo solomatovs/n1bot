@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Self
+from collections.abc import Mapping
+from typing import Annotated, Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializationInfo,
+    field_serializer,
+    model_validator,
+)
+
+from boba.krb import KeytabConfig
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 
@@ -60,6 +71,10 @@ class PostgresOptionsConfig(BaseModel):
         default=None, description="Таймаут простоя открытой транзакции."
     )
     timezone: str | None = Field(default=None, description="TimeZone сессии.")
+    default_transaction_read_only: str | None = Field(
+        default=None, description="default_transaction_read_only: on|off."
+    )
+    search_path: str | None = Field(default=None, description="search_path сессии.")
 
     def to_options(self, override_options: dict[str, str] | None = None) -> str | None:
         """libpq options '-c k=v ...': GUC-поля + override; None если пусто."""
@@ -81,6 +96,17 @@ class PostgresConfig(BaseModel):
     """libpq connection keywords + поведение connect() psycopg; см. PostgreSQL docs."""
 
     model_config = ConfigDict(extra="ignore")
+
+    # режимы gssencmode, при которых libpq идёт в KDC и соединению нужен свой TGT
+    GSS_MODES: ClassVar[frozenset[str]] = frozenset({"prefer", "require"})
+
+    # ключ контекста сериализации: пароль раскрывается только в доверенный канал
+    REVEAL_SECRETS: ClassVar[str] = "reveal_secrets"
+
+    # не connect-параметры: конструктор пула, строка '-c k=v', креды kerberos
+    NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"pool", "options", "kind", "kerberos"}
+    )
 
     kind: Literal["postgres"] = Field(
         default="postgres",
@@ -205,6 +231,32 @@ class PostgresConfig(BaseModel):
         ),
     ]
 
+    # креды kerberos этого соединения; libpq keytab не принимает, его даёт libkrb5
+    kerberos: KeytabConfig | None = Field(
+        default=None,
+        description=(
+            "Keytab, принципал и свой ccache соединения; "
+            "в конфиге подключается ссылкой ${kerberos.<name>}."
+        ),
+    )
+
+    @field_serializer("password", when_used="json")
+    def _dump_password(
+        self, value: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
+        """Пароль уходит в дамп только с REVEAL_SECRETS в контексте, иначе его нет."""
+        if value is None:
+            return None
+
+        context = info.context
+        if not isinstance(context, Mapping):
+            return None
+
+        if not context.get(PostgresConfig.REVEAL_SECRETS):
+            return None
+
+        return value.get_secret_value()
+
     @model_validator(mode="after")
     def _validate(self) -> Self:
         if not self.user:
@@ -222,6 +274,17 @@ class PostgresConfig(BaseModel):
                 f"должен быть ≥ pool.min_size ({self.pool.min_size})"
             )
             raise ValueError(msg)
+
+        if self.gssencmode in self.GSS_MODES and self.kerberos is None:
+            modes = ", ".join(sorted(self.GSS_MODES))
+            msg = (
+                f"postgres connection: gssencmode={self.gssencmode!r} требует "
+                f"секцию kerberos (keytab/principal/ccache); задайте её ссылкой "
+                f"kerberos = \"${{kerberos.<name>}}\" или поставьте "
+                f"gssencmode = \"disable\". Режимы, требующие секцию: {modes}"
+            )
+            raise ValueError(msg)
+
         return self
 
     def conn_settings(
@@ -229,23 +292,38 @@ class PostgresConfig(BaseModel):
         override_options: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         "kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts"
-        # pool/options не connect-параметры: конструктор пула и строка '-c k=v'
         conn: dict[str, Any] = {}
 
         for name in PostgresConfig.model_fields:
-            if name not in ("pool", "options", "kind"):
-                value = getattr(self, name)
-                if value is not None:
-                    conn[name] = (
-                        value.get_secret_value()
-                        if isinstance(value, SecretStr)
-                        else value
-                    )
+            if name in self.NOT_CONNECT_FIELDS:
+                continue
+
+            value = getattr(self, name)
+            if value is None:
+                continue
+
+            if isinstance(value, SecretStr):
+                conn[name] = value.get_secret_value()
+                continue
+
+            conn[name] = value
 
         if opts := self.options.to_options(override_options):
             conn["options"] = opts
 
         return conn
+
+    def read_only(self) -> PostgresConfig:
+        """Копия профиля с сессией только на чтение."""
+        options = self.options.model_copy(
+            update={"default_transaction_read_only": "on"}
+        )
+        return self.model_copy(update={"options": options})
+
+    def with_schema(self, schema: str) -> PostgresConfig:
+        """Копия профиля с search_path сервиса."""
+        options = self.options.model_copy(update={"search_path": schema})
+        return self.model_copy(update={"options": options})
 
     def pool_settings(self) -> dict[str, Any]:
         """kwargs конструктора ConnectionPool (без None)."""

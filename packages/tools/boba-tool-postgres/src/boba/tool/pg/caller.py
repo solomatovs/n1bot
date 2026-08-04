@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
+from boba.db.postgres import PostgresConfig
 from boba.tool.pg.protocol import (
     PgCopyAnswer,
     PgCopyRequest,
@@ -32,14 +33,14 @@ class PgCaller:
     def query(
         self,
         *,
-        connection: Mapping[str, Any],
+        connection: PostgresConfig,
         sql: str,
         params: Sequence[Any],
         row_limit: int,
     ) -> PgQueryAnswer:
         request = PgQueryRequest(
             op=PgQueryRequest.OP,
-            connection=dict(connection),
+            connection=connection,
             sql=sql,
             params=tuple(params),
             row_limit=row_limit,
@@ -49,13 +50,13 @@ class PgCaller:
     def copy(
         self,
         *,
-        connection: Mapping[str, Any],
+        connection: PostgresConfig,
         sql: str,
         max_bytes: int,
     ) -> PgCopyAnswer:
         request = PgCopyRequest(
             op=PgCopyRequest.OP,
-            connection=dict(connection),
+            connection=connection,
             sql=sql,
             max_bytes=max_bytes,
         )

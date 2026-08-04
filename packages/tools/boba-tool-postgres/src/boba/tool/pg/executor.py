@@ -22,6 +22,7 @@ __all__ = [
     "SqlResult",
 ]
 
+
 class SqlExecutorConfig(BaseModel):
     """Конфиг для SqlExecutor."""
 
@@ -66,17 +67,13 @@ class SqlExecutorConfig(BaseModel):
     def targets(self) -> list[str]:
         return sorted(self.profiles)
 
-    def resolve(self, target: str) -> PostgresConfig:
-        conn = self.profiles.get(target)
+    def resolve(self, profile: str) -> PostgresConfig:
+        conn = self.profiles.get(profile)
         if conn is None:
             allowed = self.targets()
-            msg = f"pg: target {target!r} is not in the whitelist (allowed={allowed})"
+            msg = f"pg: target {profile!r} is not in the whitelist (allowed={allowed})"
             raise ValueError(msg)
         return conn
-
-    @staticmethod
-    def session_options(conn: PostgresConfig) -> dict[str, str]:
-        return {"default_transaction_read_only": "on"}
 
 
 class SqlQueryError(RuntimeError):
@@ -115,23 +112,20 @@ class SqlExecutor:
     def allowed_targets(self) -> list[str]:
         return self._cfg.targets()
 
-    def connection_of(self, target: str) -> dict[str, Any]:
-        """libpq-параметры цели: их payload передаёт в connect() как есть."""
-        conn = self._cfg.resolve(target)
-        return conn.conn_settings(
-            override_options=self._cfg.session_options(conn),
-        )
+    def connection_of(self, connection_name: str) -> PostgresConfig:
+        """Профиль цели с read-only сессией: payload подключается по нему сам."""
+        return self._cfg.resolve(connection_name).read_only()
 
-    def execute_copy(self, query: str, *, target: str) -> str:
+    def execute_copy(self, query: str, *, connection_name: str) -> str:
         try:
             answer = self._caller.copy(
-                connection=self.connection_of(target),
+                connection=self.connection_of(connection_name),
                 sql=query,
                 max_bytes=self._cfg.max_bytes,
             )
         except SandboxPayloadError as e:
             raise SqlQueryError(
-                f"SQL copy failed (target={target!r}): {e}",
+                f"SQL copy failed (connection_name={connection_name!r}): {e}",
             ) from e
         return answer.text
 
@@ -139,21 +133,21 @@ class SqlExecutor:
         self,
         query: str,
         *,
-        target: str,
+        connection_name: str,
         row_limit: int,
         params: Sequence[Any] | None = None,
     ) -> SqlResult:
         effective_limit = min(max(row_limit, 1), self._cfg.max_rows)
         try:
             answer = self._caller.query(
-                connection=self.connection_of(target),
+                connection=self.connection_of(connection_name),
                 sql=query,
                 params=params or (),
                 row_limit=effective_limit,
             )
         except SandboxPayloadError as e:
             raise SqlQueryError(
-                f"SQL execute failed (target={target!r}): {e}",
+                f"SQL execute failed (connection_name={connection_name!r}): {e}",
             ) from e
         rows: list[dict[str, Any]] = []
         for row in answer.rows:
