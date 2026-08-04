@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-auth"
-version = "0.0.8"
+version = "0.0.8.dev1"
 description = "Boba chainlit authentication: local/LDAP/Kerberos(SPNEGO) providers, role mapping, domain errors."
 requires-python = ">=3.11,<4"
 dependencies = [
@@ -17,7 +17,7 @@ dependencies = [
     "pydantic>=2.10,<2.11",
     "ldap3",
     # kerberos-механика (keytab/SPNEGO/S4U/PAC) вынесена в общий пакет
-    "boba-krb",
+    "boba-krb==0.0.8.dev1",
 ]
 
 [tool.setuptools.packages.find]

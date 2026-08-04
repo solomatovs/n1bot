@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-postgres"
-version = "0.0.8"
+version = "0.0.8.dev1"
 description = "Boba PostgreSQL: PostgresConfig + AsyncPostgresPool — единственный async-пул системы, с kerberos-кредами на подключение."
 requires-python = ">=3.11,<4"
 dependencies = [
     # 3.3+: AsyncConnection сам возвращается в пул, обёртка AsyncPoolConnection не нужна
     "psycopg[binary,pool]>=3.3",
     "pydantic>=2.10,<2.11",
-    "boba-krb",
+    "boba-krb==0.0.8.dev1",
 ]
 
 [tool.setuptools.packages.find]
