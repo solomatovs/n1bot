@@ -196,7 +196,7 @@ version-set:
 	    exit 1
 	fi
 	sed -i -e 's/^version = "$(VERSION)"$$/version = "$(VER)"/' \
-	       -e 's/"\(boba-[a-z0-9-]*\)==$(VERSION)"/"\1==$(VER)"/g' $(PYPROJECTS)
+	       -e 's/"\(boba-[a-z0-9-]*\(\[[a-z0-9,_-]*\]\)\?\)==$(VERSION)"/"\1==$(VER)"/g' $(PYPROJECTS)
 	echo ">>> $(VERSION) -> $(VER) в $(words $(PYPROJECTS)) пакетах"
 	$(MAKE) --no-print-directory version-check VERSION=$(VER)
 
@@ -211,7 +211,7 @@ version-check:
 	    exit 1
 	fi
 	bad=$$(grep -hoE '^[[:space:]]+"boba-[a-z0-9-]+[^"]*"' $(PYPROJECTS) | tr -d '[:blank:]' \
-	       | grep -v '^"boba-[a-z0-9-]*==$(VERSION)"$$' | sort -u || true)
+	       | grep -v '^"boba-[a-z0-9-]*\(\[[a-z0-9,_-]*\]\)\?==$(VERSION)"$$' | sort -u || true)
 	if [ -n "$$bad" ]; then
 	    echo "внутренние зависимости не запинены на $(VERSION):" >&2
 	    echo "$$bad" >&2
