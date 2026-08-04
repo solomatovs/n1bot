@@ -7,6 +7,9 @@ from typing import Any
 
 import psycopg
 
+from boba.db.postgres import PostgresConfig
+from boba.krb import KerberosError, KeytabCredentials
+
 __all__ = ["PayloadPostgres"]
 
 
@@ -15,9 +18,24 @@ class PayloadPostgres:
 
     @staticmethod
     def connect(request: dict[str, Any]) -> psycopg.Connection[Any]:
-        settings = dict(request["connection"])
+        connection = PostgresConfig.model_validate(request["connection"])
+
+        if connection.kerberos is None:
+            return PayloadPostgres._connect(connection)
+
+        credentials = KeytabCredentials(connection.kerberos)
+
         try:
-            return psycopg.connect(**settings)
+            with credentials.applied():
+                return PayloadPostgres._connect(connection)
+        except KerberosError as e:
+            msg = f"kerberos failed: {type(e).__name__}: {e}"
+            raise RuntimeError(msg) from e
+
+    @staticmethod
+    def _connect(connection: PostgresConfig) -> psycopg.Connection[Any]:
+        try:
+            return psycopg.connect(**connection.conn_settings())
         except psycopg.Error as e:
             msg = f"connect failed: {type(e).__name__}: {e}"
             raise RuntimeError(msg) from e

@@ -61,6 +61,12 @@
     autocommit       = true
     pool             = { timeout = 5.0, min_size = 2, max_size = 4 }
     options          = { statement_timeout = "30s" }
+    # соединение само получает TGT из своего keytab в свой ccache
+    [postgres.kerberos]
+        keytab      = "/etc/boba/krb5.keytab"
+        principal   = "<пользователь>@EXAMPLE.LOCAL"
+        ccache      = "FILE:/tmp/krb5cc_boba_pg"
+        krb5_config = "/etc/krb5.conf"
 
 [checkpointer]
     postgres = "${postgres}"
@@ -205,7 +211,7 @@
         launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
         tmpfs               = ["/tmp:512M"]
         network             = true
-        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8", KRB5_CLIENT_KTNAME = "/etc/boba/krb5.keytab", KRB5_CONFIG = "/etc/krb5.conf", KRB5CCNAME = "FILE:/tmp/krb5cc" }
+        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
         timeout_sec         = 60
         max_memory_bytes    = 1073741824
         max_cpu_sec         = 60
@@ -233,7 +239,7 @@
         launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
         tmpfs               = ["/tmp:512M"]
         network             = true
-        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8", KRB5_CLIENT_KTNAME = "/etc/boba/krb5.keytab", KRB5_CONFIG = "/etc/krb5.conf", KRB5CCNAME = "FILE:/tmp/krb5cc" }
+        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
         timeout_sec         = 300
         max_memory_bytes    = 17179869184
         max_cpu_sec         = 300
@@ -433,9 +439,10 @@
 # SSO по kerberos; keytab пробрасывается в unit через BindReadOnlyPaths
 # [auth.kerberos]
 #     type             = "kerberos"
-#     service_name     = "HTTP/boba.example.local@EXAMPLE.LOCAL"
-#     keytab           = "/etc/krb5.keytab"
 #     principal_format = "{username}@EXAMPLE.LOCAL"
 #     require_roles    = true
+#     [auth.kerberos.accept]
+#         service_name = "HTTP/boba.example.local@EXAMPLE.LOCAL"
+#         keytab       = "/etc/krb5.keytab"
 #     [auth.kerberos.roles]
 #         principal = { "<логин>@EXAMPLE.LOCAL" = ["ADM"] }

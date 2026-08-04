@@ -8,6 +8,7 @@ pythonpath = [
     "packages/infra/format/boba-text/src",
     "packages/infra/transport/boba-transport-http/src",
     "packages/infra/db/boba-db-postgres/src",
+    "packages/infra/krb/boba-krb/src",
     "packages/infra/auth/boba-auth/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
@@ -41,6 +42,7 @@ extraPaths = [
     "packages/infra/format/boba-text/src",
     "packages/infra/transport/boba-transport-http/src",
     "packages/infra/db/boba-db-postgres/src",
+    "packages/infra/krb/boba-krb/src",
     "packages/infra/auth/boba-auth/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
@@ -108,6 +110,7 @@ boba-liteparse      = { workspace = true }
 boba-text           = { workspace = true }
 boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
+boba-krb            = { workspace = true }
 boba-auth           = { workspace = true }
 boba-chainlit      = { workspace = true }
 

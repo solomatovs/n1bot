@@ -94,7 +94,7 @@ class PgTools:
 
         @tool(response_format="content_and_artifact")
         def list_tables(
-            target: Annotated[
+            connection_name: Annotated[
                 str,
                 Field(min_length=1, description="Имя подключения"),
             ],
@@ -113,22 +113,19 @@ class PgTools:
             executor = owner._executor
             if pg_schema:
                 sql = owner.TABLES_SQL + (
-                    "WHERE table_schema = %s ORDER BY table_schema, table_name"
+                    "where table_schema = %s order by table_schema, table_name"
                 )
                 params: tuple[Any, ...] = (pg_schema,)
             else:
                 sql = owner.TABLES_SQL + (
-                    "WHERE table_schema NOT IN "
-                    "('pg_catalog', 'information_schema') "
-                    "AND table_schema NOT LIKE %s "
-                    "ORDER BY table_schema, table_name"
+                    "where 1=1 order by table_schema, table_name"
                 )
                 params = ("pg_%",)
 
             try:
                 result = executor.execute(
                     sql,
-                    target=target,
+                    connection_name=connection_name,
                     row_limit=executor.max_rows_cap,
                     params=params,
                 )
@@ -151,9 +148,9 @@ class PgTools:
 
         @tool(response_format="content_and_artifact")
         def describe_table(
-            target: Annotated[
+            connection_name: Annotated[
                 str,
-                Field(min_length=1, description="Имя профиля БД"),
+                Field(min_length=1, description="Имя коннекшина БД"),
             ],
             table: Annotated[
                 str,
@@ -172,7 +169,7 @@ class PgTools:
             try:
                 result = executor.execute(
                     owner.COLUMNS_SQL,
-                    target=target,
+                    connection_name=connection_name,
                     row_limit=executor.max_rows_cap,
                     params=(pg_schema, table),
                 )
@@ -214,7 +211,7 @@ class PgTools:
             """Выполнить read-only SQL на профиле target, результат — CSV."""
             executor = owner._executor
             try:
-                text = executor.execute_copy(sql, target=target)
+                text = executor.execute_copy(sql, connection_name=target)
             except BufferCapacityError:
                 return pack_result(
                     ErrorResult(
