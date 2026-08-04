@@ -120,7 +120,7 @@ class PgTools:
                 sql = owner.TABLES_SQL + (
                     "where 1=1 order by table_schema, table_name"
                 )
-                params = ("pg_%",)
+                params = ()
 
             try:
                 result = executor.execute(
