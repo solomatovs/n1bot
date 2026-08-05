@@ -8,7 +8,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, get_origin
+from typing import Any, ClassVar, get_origin
 
 import pytest
 from pydantic import BaseModel
@@ -138,10 +138,14 @@ class _PayloadRun:
         self.stdout = result.stdout
         self.chunks: list[str] = []
         self.trailer: dict[str, Any] | None = None
+        self.failure: dict[str, Any] | None = None
         for line in result.stdout.splitlines():
             if line.startswith(SandboxPayload.CHUNK_MARKER):
                 body = line[len(SandboxPayload.CHUNK_MARKER) :]
                 self.chunks.append(json.loads(body))
+                continue
+            if line.startswith(SandboxPayload.ERROR_MARKER):
+                self.failure = json.loads(line[len(SandboxPayload.ERROR_MARKER) :])
                 continue
             if line.startswith(SandboxPayload.MARKER):
                 self.trailer = json.loads(line[len(SandboxPayload.MARKER) :])
@@ -313,6 +317,41 @@ class TestPayloadContract:
                                       context_chars=5, max_matches=1))
         assert len(run.rows()) == 1
         assert DocSearchTrailer.model_validate(run.trailer).limit_reached is True
+
+    UNREADABLE_OPS: ClassVar[tuple[tuple[str, dict[str, Any]], ...]] = (
+        ("read_document", {"pages": "1"}),
+        ("read_document_window", {"start_char": 0, "length": 10}),
+        ("document_outline", {}),
+        ("search_document", {"query": "x", "context_chars": 5, "max_matches": 5}),
+    )
+
+    @pytest.mark.parametrize(("op", "extra"), UNREADABLE_OPS)
+    def test_unsupported_format_is_a_declared_failure(
+        self, tmp_path: Path, op: str, extra: dict[str, Any]
+    ) -> None:
+        """Формат, который liteparse не читает: понятный кадр, не трейсбек.
+
+        Нативный парсер (search_document) сообщает об этом иначе, чем публичный,
+        поэтому проверяются все операции разом.
+        """
+        doc = tmp_path / "notes.md"
+        doc.write_text("# Заметки", encoding="utf-8")
+        run = _PayloadRun(json.dumps(self._request(doc, op, **extra)))
+        assert run.returncode != 0
+        assert run.failure is not None
+        assert run.failure["kind"] == "document_unreadable"
+        assert ".md" in run.failure["message"]
+        assert "Traceback" not in run.stderr
+
+    def test_broken_request_is_a_declared_failure(self, pdf: Path) -> None:
+        """Запрос не по контракту: пользователь видит факт, а не стек."""
+        request = self._request(pdf, "read_document", pages="1")
+        request["params"]["max_text_chars"] = 0
+        run = _PayloadRun(json.dumps(request))
+        assert run.returncode != 0
+        assert run.failure is not None
+        assert run.failure["kind"] == "invalid_request"
+        assert "Traceback" not in run.stderr
 
     def test_unknown_op_fails(self, pdf: Path) -> None:
         result = subprocess.run(  # noqa: S603

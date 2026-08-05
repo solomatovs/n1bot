@@ -1,17 +1,21 @@
-"""Операции web: скачивание, конверсия и поиск идут из песочницы."""
+"""Операции web: скачивание, конверсия и поиск идут из песочницы.
+
+Ошибки: web_request_failed — страница не скачалась (сеть, TLS, HTTP-статус);
+это состояние внешнего мира, поэтому едет пользователю текстом без трейсбека.
+"""
 
 from __future__ import annotations
 
 import re
 import sys
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any, ClassVar
 
 import httpx
 
 from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
 
 
 class BearerAuth(httpx.Auth):
@@ -31,6 +35,9 @@ class WebOps:
     OPS: ClassVar[tuple[str, ...]] = ("web_fetch", "web_grep")
     ENCODING: ClassVar[str] = "utf-8"
     HEADING_STYLE: ClassVar[str] = "ATX"
+
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {}
+    """Отказы объявляются на месте через PayloadError: сторонних типов нет."""
 
     @classmethod
     async def dispatch(
@@ -59,7 +66,7 @@ class WebOps:
             response.raise_for_status()
         except httpx.HTTPError as e:
             msg = f"web request failed: {type(e).__name__}: {e}"
-            raise RuntimeError(msg) from e
+            raise PayloadError("web_request_failed", msg) from e
         text = response.content.decode(cls.ENCODING, errors="replace")
         if not request["as_markdown"]:
             return text
@@ -178,4 +185,4 @@ class WebOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(WebOps.dispatch))
+    sys.exit(PayloadEntry.main(WebOps))

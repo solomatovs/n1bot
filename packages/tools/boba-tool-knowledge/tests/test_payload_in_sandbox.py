@@ -54,6 +54,7 @@ from boba.tool.kb.html import (
 from boba.tool.kb.html.caller import HtmlCaller
 from boba.toolkit.launcher import (
     EmptyTrailer,
+    PayloadFailureError,
     RowCollector,
     TextCollector,
 )
@@ -246,8 +247,10 @@ class TestDocumentsInSandbox:
             pages="1-2",
             params=params,
         )
-        with pytest.raises(SandboxPayloadError, match="каталога моделей"):
+        with pytest.raises(PayloadFailureError, match="каталога моделей") as failure:
             _text_of(_caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer)
+        assert failure.value.kind == "document_unreadable"
+        assert "Traceback" not in str(failure.value)
 
     def test_missing_file_is_reported(self, docs: Path) -> None:
         request = DocPagesRequest(

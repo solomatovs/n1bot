@@ -4,20 +4,22 @@
 caller-сторона (boba.tool.doc.protocol и doc.liteparse.protocol): контракт
 границы — физически один код с обеих сторон.
 
-Ошибки: ValueError — неизвестный op; pydantic.ValidationError — запрос не
-по контракту; LiteParseError/RuntimeError — сбой парсинга. Все они роняют
-payload, и PayloadEntry отдаёт их наружу через stderr песочницы.
+Ошибки: LiteParseError — документ не разобрать (формат, битый файл, нет моделей
+OCR) и pydantic.ValidationError — запрос не по контракту; обе объявлены
+ожидаемыми и уезжают пользователю кадром с готовым текстом. Остальное, включая
+ValueError на неизвестном op, роняет payload трейсбеком: это дефект кода.
 """
 
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
 from boba.liteparse.engine import LiteParseEngine
+from boba.text.document import LiteParseError
 from boba.tool.doc.liteparse.protocol import (
     ParseBytesRequest,
     ParseBytesTrailer,
@@ -117,6 +119,10 @@ class DocumentOps:
         DocSearchRequest.OP,
         ParseBytesRequest.OP,
     )
+
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
+        LiteParseError: "document_unreadable",
+    }
 
     @classmethod
     async def dispatch(
@@ -243,4 +249,4 @@ class DocumentOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(DocumentOps.dispatch))
+    sys.exit(PayloadEntry.main(DocumentOps))
