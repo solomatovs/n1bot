@@ -8,7 +8,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, get_origin
 
 import pytest
 from pydantic import BaseModel
@@ -17,11 +17,14 @@ from boba.sandbox import SandboxPayload
 from boba.tool.doc import DocToolsConfig, build_doc_tools
 from boba.tool.doc.engine import DocEngine
 from boba.tool.doc.protocol import (
-    DocOutlineAnswer,
-    DocPagesAnswer,
-    DocSearchAnswer,
-    DocWindowAnswer,
+    DocOutlineRow,
+    DocOutlineTrailer,
+    DocPagesTrailer,
+    DocSearchRow,
+    DocSearchTrailer,
+    DocWindowTrailer,
 )
+from boba.toolkit.launcher import ChunkSink
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -98,31 +101,60 @@ class _Caller:
         self.pdf = pdf
         self.requests: list[dict[str, Any]] = []
 
-    def call_json(
+    def call_stream(
         self,
         entry: tuple[str, ...],
         request: BaseModel,
-        schema: type[BaseModel],
+        sink: ChunkSink,
+        trailer: type[BaseModel],
     ) -> Any:
         body = json.loads(request.model_dump_json())
         self.requests.append(json.loads(request.model_dump_json()))
         body["path"] = str(self.pdf)
+        run = _PayloadRun(json.dumps(body))
+        if run.returncode != 0:
+            raise RuntimeError(run.stderr)
+        for chunk in run.chunks:
+            sink.write(chunk)
+        if run.trailer is None:
+            msg = f"payload не напечатал трейлер: {run.stdout!r}"
+            raise RuntimeError(msg)
+        return trailer.model_validate(run.trailer)
+
+
+class _PayloadRun:
+    """Локальный запуск payload'а: кадры и трейлер по тому же контракту."""
+
+    def __init__(self, stdin: str) -> None:
         result = subprocess.run(  # noqa: S603
             [sys.executable, "-m", PAYLOAD_MODULE],
-            input=json.dumps(body),
+            input=stdin,
             capture_output=True,
             text=True,
             check=False,
         )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr)
+        self.returncode = result.returncode
+        self.stderr = result.stderr
+        self.stdout = result.stdout
+        self.chunks: list[str] = []
+        self.trailer: dict[str, Any] | None = None
         for line in result.stdout.splitlines():
+            if line.startswith(SandboxPayload.CHUNK_MARKER):
+                body = line[len(SandboxPayload.CHUNK_MARKER) :]
+                self.chunks.append(json.loads(body))
+                continue
             if line.startswith(SandboxPayload.MARKER):
-                return schema.model_validate(
-                    json.loads(line[len(SandboxPayload.MARKER) :])
-                )
-        msg = f"payload не напечатал результат: {result.stdout!r}"
-        raise RuntimeError(msg)
+                self.trailer = json.loads(line[len(SandboxPayload.MARKER) :])
+
+    @property
+    def text(self) -> str:
+        return "".join(self.chunks)
+
+    def rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for chunk in self.chunks:
+            rows.append(json.loads(chunk))
+        return rows
 
 
 @pytest.fixture
@@ -138,14 +170,28 @@ class _Recorder:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
 
-    def call_json(
+    def call_stream(
         self,
         entry: tuple[str, ...],
         request: BaseModel,
-        schema: type[BaseModel],
+        sink: ChunkSink,
+        trailer: type[BaseModel],
     ) -> Any:
         self.requests.append(json.loads(request.model_dump_json()))
-        return schema.model_construct()
+        return trailer.model_validate(self._empty(trailer))
+
+    @staticmethod
+    def _empty(trailer: type[BaseModel]) -> dict[str, Any]:
+        """Пустой трейлер по схеме: важно, что послали, а не что вернулось."""
+        zeros: dict[Any, Any] = {int: 0, bool: False, str: "", tuple: ()}
+        fields: dict[str, Any] = {}
+        for name, field in trailer.model_fields.items():
+            annotation = field.annotation
+            origin = get_origin(annotation)
+            if origin is not None:
+                annotation = origin
+            fields[name] = zeros[annotation]
+        return fields
 
 
 _LAUNCHER: dict[str, Any] = {}
@@ -157,8 +203,8 @@ class _Proxy:
     def call_text(self, command: str, stdin: str) -> Any:
         return _LAUNCHER["current"].call_text(command, stdin)
 
-    def call_json(self, entry: Any, request: Any, schema: Any) -> Any:
-        return _LAUNCHER["current"].call_json(entry, request, schema)
+    def call_stream(self, entry: Any, request: Any, sink: Any, trailer: Any) -> Any:
+        return _LAUNCHER["current"].call_stream(entry, request, sink, trailer)
 
 
 def launchers(_tool: str) -> Any:
@@ -188,18 +234,11 @@ class TestPayloadContract:
     """Payload реально парсит документ и отвечает по контракту."""
 
     @staticmethod
-    def _run(request: dict[str, Any]) -> dict[str, Any]:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=json.dumps(request),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        line = result.stdout.splitlines()[-1]
-        assert line.startswith(SandboxPayload.MARKER)
-        return json.loads(line[len(SandboxPayload.MARKER) :])
+    def _run(request: dict[str, Any]) -> _PayloadRun:
+        run = _PayloadRun(json.dumps(request))
+        assert run.returncode == 0, run.stderr
+        assert run.trailer is not None
+        return run
 
     @staticmethod
     def _request(pdf: Path, op: str, **kw: Any) -> dict[str, Any]:
@@ -219,64 +258,61 @@ class TestPayloadContract:
         return request
 
     def test_read_document_returns_all_pages(self, pdf: Path) -> None:
-        answer = DocPagesAnswer.model_validate(
-            self._run(self._request(pdf, "read_document", pages="1-2"))
-        )
-        assert answer.pages == (1, 2)
-        assert "Alpha page one" in answer.text
-        assert "Beta page two" in answer.text
-        assert answer.truncated is False
+        run = self._run(self._request(pdf, "read_document", pages="1-2"))
+        trailer = DocPagesTrailer.model_validate(run.trailer)
+        assert trailer.pages == (1, 2)
+        assert "Alpha page one" in run.text
+        assert "Beta page two" in run.text
+        assert trailer.truncated is False
 
     def test_read_document_selects_subset(self, pdf: Path) -> None:
-        answer = DocPagesAnswer.model_validate(
-            self._run(self._request(pdf, "read_document", pages="2"))
-        )
-        assert answer.pages == (2,)
-        assert "Beta page two" in answer.text
-        assert "page one" not in answer.text
+        run = self._run(self._request(pdf, "read_document", pages="2"))
+        trailer = DocPagesTrailer.model_validate(run.trailer)
+        assert trailer.pages == (2,)
+        assert "Beta page two" in run.text
+        assert "page one" not in run.text
 
     def test_read_document_clips_text(self, pdf: Path) -> None:
         request = self._request(pdf, "read_document", pages="1-2")
         request["params"]["max_text_chars"] = 5
-        answer = DocPagesAnswer.model_validate(self._run(request))
-        assert answer.truncated is True
-        assert len(answer.text) == 5
+        run = self._run(request)
+        assert DocPagesTrailer.model_validate(run.trailer).truncated is True
+        assert len(run.text) == 5
 
     def test_window_reports_cursor(self, pdf: Path) -> None:
-        answer = DocWindowAnswer.model_validate(
-            self._run(
-                self._request(pdf, "read_document_window", start_char=0, length=5)
-            )
+        run = self._run(
+            self._request(pdf, "read_document_window", start_char=0, length=5)
         )
-        assert (answer.start_char, answer.end_char) == (0, 5)
-        assert answer.has_more is True
-        assert answer.total_chars > 5
+        trailer = DocWindowTrailer.model_validate(run.trailer)
+        assert (trailer.start_char, trailer.end_char) == (0, 5)
+        assert trailer.has_more is True
+        assert trailer.total_chars > 5
 
     def test_outline_has_row_per_page(self, pdf: Path) -> None:
-        answer = DocOutlineAnswer.model_validate(
-            self._run(self._request(pdf, "document_outline"))
-        )
-        assert answer.num_pages == 2
-        assert [row.page for row in answer.rows] == [1, 2]
-        assert answer.rows[0].chars > 0
+        run = self._run(self._request(pdf, "document_outline"))
+        assert DocOutlineTrailer.model_validate(run.trailer).num_pages == 2
+        rows: list[DocOutlineRow] = []
+        for raw in run.rows():
+            rows.append(DocOutlineRow.model_validate(raw))
+        assert [row.page for row in rows] == [1, 2]
+        assert rows[0].chars > 0
 
     def test_search_returns_coordinates_and_snippet(self, pdf: Path) -> None:
-        answer = DocSearchAnswer.model_validate(
-            self._run(self._request(pdf, "search_document", query="Alpha",
-                                    context_chars=5, max_matches=50))
-        )
-        assert [row.page for row in answer.rows] == [1, 2]
-        assert "Alpha" in answer.rows[0].snippet
-        assert answer.rows[0].height > 0
-        assert answer.limit_reached is False
+        run = self._run(self._request(pdf, "search_document", query="Alpha",
+                                      context_chars=5, max_matches=50))
+        rows: list[DocSearchRow] = []
+        for raw in run.rows():
+            rows.append(DocSearchRow.model_validate(raw))
+        assert [row.page for row in rows] == [1, 2]
+        assert "Alpha" in rows[0].snippet
+        assert rows[0].height > 0
+        assert DocSearchTrailer.model_validate(run.trailer).limit_reached is False
 
     def test_search_reports_limit(self, pdf: Path) -> None:
-        answer = DocSearchAnswer.model_validate(
-            self._run(self._request(pdf, "search_document", query="Alpha",
-                                    context_chars=5, max_matches=1))
-        )
-        assert len(answer.rows) == 1
-        assert answer.limit_reached is True
+        run = self._run(self._request(pdf, "search_document", query="Alpha",
+                                      context_chars=5, max_matches=1))
+        assert len(run.rows()) == 1
+        assert DocSearchTrailer.model_validate(run.trailer).limit_reached is True
 
     def test_unknown_op_fails(self, pdf: Path) -> None:
         result = subprocess.run(  # noqa: S603

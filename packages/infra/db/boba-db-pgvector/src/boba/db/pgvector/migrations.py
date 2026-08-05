@@ -8,7 +8,7 @@ from typing import Any, ClassVar, LiteralString, cast
 
 from psycopg import sql
 
-from boba.tool.kb.postgres import PostgresStoreSchema
+from boba.db.pgvector.store import PostgresStoreSchema
 
 logger = logging.getLogger(__name__)
 

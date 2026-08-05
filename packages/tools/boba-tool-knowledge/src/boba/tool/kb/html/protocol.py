@@ -10,9 +10,7 @@ __all__ = [
     "ConfluenceSection",
     "ConfluenceSectionsAnswer",
     "ConfluenceSectionsRequest",
-    "HtmlToMarkdownAnswer",
     "HtmlToMarkdownRequest",
-    "PlainTextAnswer",
     "PlainTextRequest",
 ]
 
@@ -36,14 +34,6 @@ class HtmlToMarkdownRequest(BaseModel):
         return cls(op=cls.OP, html=html, heading_style=heading_style)
 
 
-class HtmlToMarkdownAnswer(BaseModel):
-    """Результат конверсии."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    markdown: str
-
-
 class PlainTextRequest(BaseModel):
     """Достать из HTML только текст, без макросов Confluence."""
 
@@ -57,14 +47,6 @@ class PlainTextRequest(BaseModel):
     @classmethod
     def of(cls, html: str) -> PlainTextRequest:
         return cls(op=cls.OP, html=html)
-
-
-class PlainTextAnswer(BaseModel):
-    """Текст страницы одной строкой."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    text: str
 
 
 class ConfluenceSectionsRequest(BaseModel):

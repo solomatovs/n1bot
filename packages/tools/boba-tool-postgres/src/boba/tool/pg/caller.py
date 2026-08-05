@@ -7,12 +7,12 @@ from typing import Any, ClassVar
 
 from boba.db.postgres import PostgresConfig
 from boba.tool.pg.protocol import (
-    PgCopyAnswer,
     PgCopyRequest,
-    PgQueryAnswer,
+    PgCopyTrailer,
     PgQueryRequest,
+    PgQueryTrailer,
 )
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.launcher import ChunkSink, LauncherFactory
 
 __all__ = ["PgCaller"]
 
@@ -32,7 +32,8 @@ class PgCaller:
         sql: str,
         params: Sequence[Any],
         row_limit: int,
-    ) -> PgQueryAnswer:
+        sink: ChunkSink,
+    ) -> PgQueryTrailer:
         request = PgQueryRequest(
             op=PgQueryRequest.OP,
             connection=connection,
@@ -40,7 +41,7 @@ class PgCaller:
             params=tuple(params),
             row_limit=row_limit,
         )
-        return self._caller.call_json(self.ENTRY, request, PgQueryAnswer)
+        return self._caller.call_stream(self.ENTRY, request, sink, PgQueryTrailer)
 
     def copy(
         self,
@@ -48,11 +49,12 @@ class PgCaller:
         connection: PostgresConfig,
         sql: str,
         max_bytes: int,
-    ) -> PgCopyAnswer:
+        sink: ChunkSink,
+    ) -> PgCopyTrailer:
         request = PgCopyRequest(
             op=PgCopyRequest.OP,
             connection=connection,
             sql=sql,
             max_bytes=max_bytes,
         )
-        return self._caller.call_json(self.ENTRY, request, PgCopyAnswer)
+        return self._caller.call_stream(self.ENTRY, request, sink, PgCopyTrailer)

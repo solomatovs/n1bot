@@ -16,9 +16,10 @@ from boba.text.document import LiteParseParams, PagedDocumentReader, ParsedPage
 from boba.tool.doc.liteparse.protocol import (
     ParseBytesAnswer,
     ParseBytesRequest,
+    ParseBytesTrailer,
     ParseParams,
 )
-from boba.toolkit.launcher import LauncherError, LauncherFactory
+from boba.toolkit.launcher import LauncherError, LauncherFactory, RowCollector
 
 __all__ = ["LiteParseCaller", "SandboxLiteParseReader", "SandboxParserConfig"]
 
@@ -38,6 +39,9 @@ class LiteParseCaller:
 
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.doc.payload")
 
+    MAX_RESULT_CHARS: ClassVar[int] = 50_000_000
+    """Транспортный потолок объёма потока страниц; сам объём режет max_pages."""
+
     def __init__(
         self,
         tool: str,
@@ -49,7 +53,14 @@ class LiteParseCaller:
 
     def parse_bytes(self, data: bytes, filename: str) -> ParseBytesAnswer:
         request = ParseBytesRequest.of(data, filename, self._params)
-        return self._caller.call_json(self.ENTRY, request, ParseBytesAnswer)
+        collector = RowCollector(max_chars=self.MAX_RESULT_CHARS, limit_rows=None)
+        trailer = self._caller.call_stream(
+            self.ENTRY, request, collector, ParseBytesTrailer
+        )
+        pages: list[ParsedPage] = []
+        for raw in collector.rows():
+            pages.append(ParsedPage.model_validate(raw))
+        return ParseBytesAnswer(num_pages=trailer.num_pages, pages=tuple(pages))
 
 
 class SandboxLiteParseReader(PagedDocumentReader):

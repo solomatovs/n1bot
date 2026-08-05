@@ -8,6 +8,11 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import ConfigDict, Field
 
+from boba.db.pgvector import (
+    PostgresChunkStore,
+    PostgresCollectionsStore,
+    PostgresStoreConfig,
+)
 from boba.indexing import (
     CleanupStrategy,
     CollectionScopedView,
@@ -38,11 +43,6 @@ from boba.tool.kb.embedding import (
     LocalFastEmbedEmbedderFactory,
 )
 from boba.tool.kb.indexing_log import LoggedIndexRun
-from boba.tool.kb.postgres import (
-    PostgresChunkStore,
-    PostgresCollectionsStore,
-    PostgresStoreConfig,
-)
 from boba.toolkit.types import StringList
 from boba.transport.http import HttpProfile
 

@@ -6,14 +6,13 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import Field
 
-from boba.db.postgres import PostgresConfig
+from boba.db.pgvector import PostgresStoreConfig
 from boba.tool.kb.caller import KbCaller
 from boba.tool.kb.embedding import EmbeddingModel
 from boba.tool.kb.models import KnowledgeBaseError, SearchHit
-from boba.tool.kb.postgres import PostgresStoreSchema
-from boba.toolkit.launcher import LauncherError
+from boba.toolkit.launcher import LauncherError, RowCollector
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +22,16 @@ __all__ = [
 ]
 
 
-class PostgresKnowledgeBaseConfig(BaseModel):
+class PostgresKnowledgeBaseConfig(PostgresStoreConfig):
     """Composite-конфиг read-side KB: языки FTS зашиты и в SQL-шаблоны, и в DDL
     tsv-колонки (migrations/002_multilang_tsv.sql) — оба места должны быть синхронны."""
 
-    connection: PostgresConfig
-    tables: PostgresStoreSchema
     embedding: EmbeddingModel
+    max_result_chars: int = Field(
+        default=1_000_000,
+        ge=1,
+        description="Потолок суммарного объёма потока выдачи (символов).",
+    )
 
 
 class PostgresKnowledgeBase:
@@ -60,8 +62,12 @@ class PostgresKnowledgeBase:
         sql_template: str,
     ) -> Iterable[SearchHit]:
         """Эмбеддинг и SQL исполняет payload; здесь только разбор строк."""
+        collector = RowCollector(
+            max_chars=self._cfg.max_result_chars,
+            limit_rows=top_k,
+        )
         try:
-            answer = self._caller.search(
+            self._caller.search(
                 op=op,
                 connection=self._cfg.connection,
                 sql_template=sql_template,
@@ -75,12 +81,13 @@ class PostgresKnowledgeBase:
                     "model": self._cfg.embedding.model,
                     "cache_dir": self._cfg.embedding.cache_dir,
                 },
+                sink=collector,
             )
         except LauncherError as e:
             raise KnowledgeBaseError(
                 f"kb search failed for collections {collections!r}: {e}",
             ) from e
-        for row in answer.rows:
+        for row in collector.rows():
             yield self._hit(row, op=op)
 
     @classmethod

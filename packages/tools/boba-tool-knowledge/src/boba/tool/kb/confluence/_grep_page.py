@@ -92,7 +92,7 @@ def confluence_grep_page(  # noqa: PLR0913
         max_text_chars=cfg.max_text_chars,
     )
     rows: list[dict[str, Any]] = []
-    for row in caller.grep(request).rows:
+    for row in caller.grep(request):
         rows.append(row.model_dump())
     if rows:
         note = f"page_id={page_id}: совпадений {len(rows)}"

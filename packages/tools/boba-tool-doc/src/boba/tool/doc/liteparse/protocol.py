@@ -17,6 +17,7 @@ from boba.text.document import LiteParseParams, ParsedPage
 __all__ = [
     "ParseBytesAnswer",
     "ParseBytesRequest",
+    "ParseBytesTrailer",
     "ParseParams",
     "ParsedPage",
 ]
@@ -65,6 +66,14 @@ class ParseBytesRequest(BaseModel):
     def content(self) -> bytes:
         """Байты документа из base64-поля запроса."""
         return base64.b64decode(self.content_b64)
+
+
+class ParseBytesTrailer(BaseModel):
+    """Итог разбора: страницы ушли кадрами-записями."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    num_pages: int = Field(ge=0)
 
 
 class ParseBytesAnswer(BaseModel):

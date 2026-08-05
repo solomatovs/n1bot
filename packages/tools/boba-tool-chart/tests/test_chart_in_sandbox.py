@@ -12,6 +12,7 @@ from boba.tool.chart.caller import (
     ValidateFigureAnswer,
     ValidateFigureRequest,
 )
+from boba.toolkit.launcher import NoChunks
 from boba.toolkit.result import ChartResult
 
 
@@ -34,28 +35,37 @@ class TestChartInSandbox:
 
     def test_valid_spec_returns_title(self) -> None:
         request = ValidateFigureRequest.of(self._SPEC)
-        answer = _caller().call_json(ChartCaller.ENTRY, request, ValidateFigureAnswer)
+        answer = _caller().call_stream(
+            ChartCaller.ENTRY, request, NoChunks(), ValidateFigureAnswer
+        )
         assert answer.title == "Продажи"
 
     def test_title_may_be_a_plain_string(self) -> None:
         spec = '{"data": [], "layout": {"title": "Отчёт"}}'
-        answer = _caller().call_json(
-            ChartCaller.ENTRY, ValidateFigureRequest.of(spec), ValidateFigureAnswer
+        answer = _caller().call_stream(
+            ChartCaller.ENTRY,
+                ValidateFigureRequest.of(spec),
+                NoChunks(),
+                ValidateFigureAnswer,
         )
         assert answer.title == "Отчёт"
 
     def test_spec_without_title(self) -> None:
         spec = '{"data": [{"type": "bar", "x": ["a"], "y": [1]}]}'
-        answer = _caller().call_json(
-            ChartCaller.ENTRY, ValidateFigureRequest.of(spec), ValidateFigureAnswer
+        answer = _caller().call_stream(
+            ChartCaller.ENTRY,
+                ValidateFigureRequest.of(spec),
+                NoChunks(),
+                ValidateFigureAnswer,
         )
         assert answer.title == ""
 
     def test_broken_json_is_reported(self) -> None:
         with pytest.raises(SandboxPayloadError, match="not valid JSON"):
-            _caller().call_json(
+            _caller().call_stream(
                 ChartCaller.ENTRY,
                 ValidateFigureRequest.of("{не json"),
+                NoChunks(),
                 ValidateFigureAnswer,
             )
 
@@ -63,15 +73,19 @@ class TestChartInSandbox:
         """Схему держит plotly: выдуманный тип графика должен быть отклонён."""
         spec = '{"data": [{"type": "нет-такого-типа", "x": [1], "y": [2]}]}'
         with pytest.raises(SandboxPayloadError, match="invalid Plotly figure spec"):
-            _caller().call_json(
-                ChartCaller.ENTRY, ValidateFigureRequest.of(spec), ValidateFigureAnswer
+            _caller().call_stream(
+                ChartCaller.ENTRY,
+                ValidateFigureRequest.of(spec),
+                NoChunks(),
+                ValidateFigureAnswer,
             )
 
     def test_non_object_spec_is_reported(self) -> None:
         with pytest.raises(SandboxPayloadError, match="must be a JSON figure object"):
-            _caller().call_json(
+            _caller().call_stream(
                 ChartCaller.ENTRY,
                 ValidateFigureRequest.of("[1, 2, 3]"),
+                NoChunks(),
                 ValidateFigureAnswer,
             )
 

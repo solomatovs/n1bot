@@ -6,13 +6,13 @@ from typing import ClassVar
 
 from pydantic import SecretStr
 
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.launcher import ChunkSink, LauncherFactory
 from boba.transport.http import HttpProfile
 from boba.web.protocol import (
-    WebFetchAnswer,
     WebFetchRequest,
-    WebGrepAnswer,
+    WebFetchTrailer,
     WebGrepRequest,
+    WebGrepTrailer,
     WebProfile,
 )
 
@@ -27,7 +27,7 @@ class WebCaller:
     def __init__(self, tool: str, launchers: LauncherFactory) -> None:
         self._caller = launchers(tool)
 
-    def fetch(
+    def fetch(  # noqa: PLR0913
         self,
         *,
         url: str,
@@ -35,7 +35,8 @@ class WebCaller:
         as_markdown: bool,
         line_offset: int,
         line_count: int,
-    ) -> WebFetchAnswer:
+        sink: ChunkSink,
+    ) -> WebFetchTrailer:
         request = WebFetchRequest(
             op=WebFetchRequest.OP,
             url=url,
@@ -44,10 +45,10 @@ class WebCaller:
             line_offset=line_offset,
             line_count=line_count,
         )
-        return self._caller.call_json(self.ENTRY, request, WebFetchAnswer)
+        return self._caller.call_stream(self.ENTRY, request, sink, WebFetchTrailer)
 
-    def grep(self, request: WebGrepRequest) -> WebGrepAnswer:
-        return self._caller.call_json(self.ENTRY, request, WebGrepAnswer)
+    def grep(self, request: WebGrepRequest, sink: ChunkSink) -> WebGrepTrailer:
+        return self._caller.call_stream(self.ENTRY, request, sink, WebGrepTrailer)
 
     @staticmethod
     def transport_of(profile: HttpProfile) -> WebProfile:

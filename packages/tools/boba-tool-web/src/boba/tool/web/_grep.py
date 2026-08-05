@@ -7,20 +7,26 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.tool.web.connection import WebConnection
+from boba.toolkit.launcher import RowCollector
 from boba.toolkit.result import TableResult
 from boba.web.caller import WebCaller
-from boba.web.protocol import WebGrepRequest
+from boba.web.protocol import WebGrepRequest, WebGrepRow
 
 __all__ = ["WebGrepConfig", "web_grep"]
 
 
 class WebGrepConfig(WebConnection):
-    """Config web-инструментов: профили, лимит выдачи и песочница запроса."""
+    """Config web-инструментов: профили, лимиты выдачи и песочница запроса."""
 
     max_text_chars: int = Field(
         default=2000,
         ge=1,
         description="Потолок длины content/before/after на match.",
+    )
+    max_result_chars: int = Field(
+        default=1_000_000,
+        ge=1,
+        description="Потолок суммарного объёма потока результата (символов).",
     )
 
 
@@ -83,9 +89,10 @@ def web_grep(  # noqa: PLR0913
         fixed_string=fixed_string,
         max_text_chars=cfg.max_text_chars,
     )
-    answer = caller.grep(request)
+    collector = RowCollector(max_chars=cfg.max_result_chars, limit_rows=limit)
+    caller.grep(request, collector)
     rows: list[dict[str, Any]] = []
-    for row in answer.rows:
-        rows.append(row.model_dump())
+    for raw in collector.rows():
+        rows.append(WebGrepRow.model_validate(raw).model_dump())
     note = WebGrepNote.build(url, rows, limit=limit)
     return TableResult(rows=rows, note=note, metadata={"url": url})

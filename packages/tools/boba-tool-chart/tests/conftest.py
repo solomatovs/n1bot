@@ -22,6 +22,7 @@ SRC_PACKAGES = (
     "core/boba-toolkit",
     "infra/sandbox/boba-sandbox",
     "infra/db/boba-db-postgres",
+    "infra/db/boba-db-pgvector",
     "infra/krb/boba-krb",
     "infra/transport/boba-web",
     "tools/boba-tool-shell",

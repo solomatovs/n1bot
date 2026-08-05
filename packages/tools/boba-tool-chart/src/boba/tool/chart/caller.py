@@ -6,7 +6,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.launcher import LauncherFactory, NoChunks
 
 __all__ = ["ChartCaller", "ValidateFigureAnswer", "ValidateFigureRequest"]
 
@@ -45,5 +45,7 @@ class ChartCaller:
     def validate(self, spec: str) -> str:
         """Заголовок графика; спека, не прошедшая схему, роняет payload."""
         request = ValidateFigureRequest.of(spec)
-        answer = self._caller.call_json(self.ENTRY, request, ValidateFigureAnswer)
+        answer = self._caller.call_stream(
+            self.ENTRY, request, NoChunks(), ValidateFigureAnswer
+        )
         return answer.title

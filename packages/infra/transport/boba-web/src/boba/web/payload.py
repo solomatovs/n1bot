@@ -10,7 +10,8 @@ from typing import Any, ClassVar
 
 import httpx
 
-from boba.toolkit.payload import PayloadEntry
+from boba.toolkit.launcher import RowStream
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class BearerAuth(httpx.Auth):
@@ -32,12 +33,14 @@ class WebOps:
     HEADING_STYLE: ClassVar[str] = "ATX"
 
     @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         op = request["op"]
         if op == "web_fetch":
-            return cls.web_fetch(request)
+            return cls.web_fetch(request, emit)
         if op == "web_grep":
-            return cls.web_grep(request)
+            return cls.web_grep(request, emit)
         msg = f"unknown web op: {op!r}"
         raise ValueError(msg)
 
@@ -80,32 +83,39 @@ class WebOps:
         raise ValueError(msg)
 
     @classmethod
-    def web_fetch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    def web_fetch(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:
+        """Окно строк уходит кадрами построчно; трейлер несёт счётчики."""
         lines = cls.load(request).splitlines()
         offset = request["line_offset"]
         window = lines[offset : offset + request["line_count"]]
+        last = len(window) - 1
+        for index, line in enumerate(window):
+            if index < last:
+                emit(f"{line}\n")
+                continue
+            if line:
+                emit(line)
         return {
-            "content": "\n".join(window),
             "source_url": request["url"],
             "total_lines": len(lines),
             "returned_lines": len(window),
         }
 
     @classmethod
-    def web_grep(cls, request: dict[str, Any]) -> dict[str, Any]:
+    def web_grep(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:
+        """Каждое совпадение уходит отдельным кадром-записью."""
         text = cls.load(request)
         pattern = cls.compile_pattern(
             request["pattern"],
             fixed_string=request["fixed_string"],
             case_insensitive=request["case_insensitive"],
         )
-        rows: list[dict[str, Any]] = []
         matches = cls.iter_matches(text, pattern, context=request["context"])
-        for row in matches:
-            rows.append(cls.clip_row(row, request["max_text_chars"]))
-            if len(rows) >= request["limit"]:
+        for emitted, row in enumerate(matches):
+            if emitted >= request["limit"]:
                 break
-        return {"rows": rows, "source_url": request["url"]}
+            emit(RowStream.encode(cls.clip_row(row, request["max_text_chars"])))
+        return {"source_url": request["url"]}
 
     @staticmethod
     def compile_pattern(

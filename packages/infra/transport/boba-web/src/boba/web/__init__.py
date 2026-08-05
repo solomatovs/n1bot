@@ -2,18 +2,20 @@
 
 from boba.web.caller import WebCaller
 from boba.web.protocol import (
-    WebFetchAnswer,
     WebFetchRequest,
-    WebGrepAnswer,
+    WebFetchTrailer,
     WebGrepRequest,
+    WebGrepRow,
+    WebGrepTrailer,
     WebProfile,
 )
 
 __all__ = [
     "WebCaller",
-    "WebFetchAnswer",
     "WebFetchRequest",
-    "WebGrepAnswer",
+    "WebFetchTrailer",
     "WebGrepRequest",
+    "WebGrepRow",
+    "WebGrepTrailer",
     "WebProfile",
 ]

@@ -7,9 +7,8 @@ import logging
 from psycopg import AsyncConnection, sql
 from psycopg.errors import InsufficientPrivilege
 
-from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
-from boba.tool.kb.migrations import Migrations
-from boba.tool.kb.postgres import KbPool
+from boba.db.pgvector.migrations import Migrations
+from boba.db.pgvector.store import KbPool, PostgresStoreConfig
 
 __all__ = ["KbSchema"]
 
@@ -19,8 +18,9 @@ logger = logging.getLogger(__name__)
 class KbSchema:
     """Приводит схему базы знаний к актуальному виду."""
 
-    def __init__(self, cfg: PostgresKnowledgeBaseConfig) -> None:
+    def __init__(self, cfg: PostgresStoreConfig, *, dim: int) -> None:
         self._cfg = cfg
+        self._dim = dim
 
     async def _ensure_schema(self, conn: AsyncConnection) -> None:
         """Схема под таблицы KB; без прав на CREATE считаем, что её завёл админ."""
@@ -46,12 +46,12 @@ class KbSchema:
 
         async with pool.connection() as conn:
             await Migrations.ensure_vector_index(
-                conn, dim=self._cfg.embedding.dim, schema_cfg=self._cfg.tables
+                conn, dim=self._dim, schema_cfg=self._cfg.tables
             )
 
         logger.info(
             "KB schema ready: schema=%s chunks=%s dim=%d",
             self._cfg.tables.pg_schema,
             self._cfg.tables.chunks_table,
-            self._cfg.embedding.dim,
+            self._dim,
         )

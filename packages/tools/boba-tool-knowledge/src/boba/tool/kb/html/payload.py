@@ -9,7 +9,8 @@ import markdownify
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
 
-from boba.toolkit.payload import PayloadEntry
+from boba.toolkit.launcher import RowStream
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class ConfluenceHtml:
@@ -136,14 +137,21 @@ class PageOps:
     )
 
     @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
+        """Текст уходит кадрами-кусками, секции — кадрами-записями."""
         op = request["op"]
         if op == "to_markdown":
-            return cls.to_markdown(request)
+            PayloadEntry.emit_text(emit, cls.to_markdown(request)["markdown"])
+            return {}
         if op == "plain_text":
-            return cls.plain_text(request)
+            PayloadEntry.emit_text(emit, cls.plain_text(request)["text"])
+            return {}
         if op == "confluence_sections":
-            return cls.confluence_sections(request)
+            for section in cls.confluence_sections(request)["sections"]:
+                emit(RowStream.encode(section))
+            return {}
         msg = f"unknown page op: {op!r}"
         raise ValueError(msg)
 

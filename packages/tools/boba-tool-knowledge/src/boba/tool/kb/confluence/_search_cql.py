@@ -84,7 +84,7 @@ def confluence_search_cql(  # noqa: PLR0913
         snippet_chars=snippet_chars,
     )
     rows: list[dict[str, Any]] = []
-    for hit in caller.search(request).hits:
+    for hit in caller.search(request):
         rows.append(hit.model_dump())
     note = "ничего не найдено"
     if rows:
