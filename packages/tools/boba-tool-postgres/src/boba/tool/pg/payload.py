@@ -1,26 +1,34 @@
 """Операции postgres: соединение и запрос идут из песочницы.
 
 Учётные данные едут через stdin — не видны ни в argv, ни в /proc, ни в логах.
+
+Ошибки: PostgresError — до базы не достучаться, и sql_failed из PayloadError —
+СУБД отклонила запрос; обе объявлены ожидаемыми и едут пользователю текстом.
 """
 
 from __future__ import annotations
 
 import codecs
 import sys
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import psycopg
 from psycopg.rows import dict_row
 
-from boba.db.postgres import PayloadPostgres
+from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
 
 
 class PostgresOps:
     """Исполнение SQL; вызывается диспетчером payload'а по имени операции."""
 
     OPS: ClassVar[tuple[str, ...]] = ("pg_query", "pg_copy")
+
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
+        PostgresError: "database_unavailable",
+    }
 
     @classmethod
     async def dispatch(
@@ -55,7 +63,7 @@ class PostgresOps:
                     emitted += 1
             except psycopg.Error as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
-                raise RuntimeError(msg) from e
+                raise PayloadError("sql_failed", msg) from e
         return {"truncated": truncated}
 
     @classmethod
@@ -84,7 +92,7 @@ class PostgresOps:
                             break
             except psycopg.Error as e:
                 msg = f"copy failed: {type(e).__name__}: {e}"
-                raise RuntimeError(msg) from e
+                raise PayloadError("sql_failed", msg) from e
         tail = decoder.decode(b"", True)
         if tail:
             emit(tail)
@@ -92,4 +100,4 @@ class PostgresOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(PostgresOps.dispatch))
+    sys.exit(PayloadEntry.main(PostgresOps))

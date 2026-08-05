@@ -14,6 +14,7 @@ from typing import ClassVar, cast
 
 from langchain_core.tools import BaseTool
 
+from boba.toolkit.launcher import ErrorKind
 from boba.toolkit.result import ErrorResult, ToolResult, pack_result
 
 __all__ = ["ToolErrorGuard"]
@@ -73,6 +74,6 @@ class ToolErrorGuard:
         return pack_result(
             ErrorResult(
                 message=f"{cls.PREFIX} {name!r}: {error}",
-                error_kind=type(error).__name__,
+                error_kind=ErrorKind.of(error),
             )
         )

@@ -1,6 +1,7 @@
 """Вызов инструмента в песочнице: call_text/call_stream и контракт ответа.
 
-Ошибки: SandboxPayloadError — payload нарушил потоковый контракт; исключения
+Ошибки: SandboxPayloadError — payload нарушил потоковый контракт;
+PayloadFailureError — payload сообщил кадром об ожидаемом отказе; исключения
 sink'а проходят наверх как есть — их контракт задаёт потребитель потока.
 """
 
@@ -11,7 +12,7 @@ import shlex
 from collections.abc import Callable, Mapping, Sequence
 from typing import ClassVar, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxOutcome, SandboxRunner
@@ -20,15 +21,27 @@ from boba.toolkit.launcher import (
     LauncherError,
     LaunchOutcome,
     LaunchPayload,
+    PayloadFailureError,
     ToolLauncher,
 )
 
 __all__ = [
+    "FailureFrame",
     "SandboxCaller",
     "SandboxFrameDecoder",
     "SandboxPayload",
     "SandboxPayloadError",
 ]
+
+
+class FailureFrame(BaseModel):
+    """Кадр ожидаемой ошибки: классификация отказа и его формулировка."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -98,6 +111,7 @@ class SandboxFrameDecoder:
         self._sink = sink
         self._tail = bytearray()
         self._trailers: list[str] = []
+        self._failures: list[str] = []
         self._chunk_after_trailer = False
 
     def feed(self, data: bytes) -> None:
@@ -124,6 +138,10 @@ class SandboxFrameDecoder:
         if result.timed_out:
             msg = f"{outcome.tool}: timed out; {SandboxPayload.context(outcome)}"
             raise SandboxPayloadError(msg)
+
+        # кадр ошибки объясняет отказ сам: он важнее ненулевого кода возврата
+        self._raise_declared_failure(outcome)
+
         if result.exit_code != 0:
             msg = (
                 f"{outcome.tool}: exited with code {result.exit_code}; "
@@ -158,6 +176,33 @@ class SandboxFrameDecoder:
             msg = f"{outcome.tool}: result does not match {schema.__name__}: {e}"
             raise SandboxPayloadError(msg) from e
 
+    def _raise_declared_failure(self, outcome: SandboxOutcome) -> None:
+        """Ожидаемый отказ: текст payload'а без stderr, диагностика лимита — с ним."""
+        if not self._failures:
+            return
+        if len(self._failures) > 1:
+            msg = (
+                f"{outcome.tool}: {len(self._failures)} "
+                f"{SandboxPayload.ERROR_MARKER!r} lines in output, at most one "
+                "expected"
+            )
+            raise SandboxPayloadError(msg)
+        try:
+            data = json.loads(self._failures[0])
+        except json.JSONDecodeError as e:
+            msg = f"{outcome.tool}: error frame is not valid JSON: {e}"
+            raise SandboxPayloadError(msg) from e
+        try:
+            failure = FailureFrame.model_validate(data)
+        except ValidationError as e:
+            msg = f"{outcome.tool}: error frame does not match contract: {e}"
+            raise SandboxPayloadError(msg) from e
+
+        message = failure.message
+        if outcome.diagnostic:
+            message = f"{message}; {outcome.diagnostic}"
+        raise PayloadFailureError(failure.kind, message)
+
     def _flush_tail(self) -> None:
         if not self._tail:
             return
@@ -168,6 +213,9 @@ class SandboxFrameDecoder:
     def _line(self, line: str) -> None:
         if line.startswith(SandboxPayload.CHUNK_MARKER):
             self._chunk(line[len(SandboxPayload.CHUNK_MARKER) :])
+            return
+        if line.startswith(SandboxPayload.ERROR_MARKER):
+            self._failures.append(line[len(SandboxPayload.ERROR_MARKER) :])
             return
         if line.startswith(SandboxPayload.MARKER):
             self._trailers.append(line[len(SandboxPayload.MARKER) :])

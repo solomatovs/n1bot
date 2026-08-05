@@ -4,14 +4,21 @@
 ридеры локальные: вложенной песочницы внутри песочницы быть не может, а
 liteparse и bs4 здесь и так под рукой. Модель эмбеддера грузится один раз на
 весь прогон, потому что весь ingest — один запуск payload'а.
+
+Ошибки: PostgresError — до хранилища не достучаться; ingest_request_failed —
+Confluence недоступен или ответил статусом. Сбой разбора отдельного документа
+ingest переживает сам, наружу он не выходит.
 """
 
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any, ClassVar
 
+import httpx
+
+from boba.db.postgres import PostgresError
 from boba.indexing import (
     RawDocument,
     Reader,
@@ -74,6 +81,11 @@ class IngestOps:
 
     OPS: ClassVar[tuple[str, ...]] = ("confluence_ingest",)
 
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
+        PostgresError: "database_unavailable",
+        httpx.HTTPError: "ingest_request_failed",
+    }
+
     @classmethod
     async def dispatch(
         cls, request: dict[str, Any], emit: ChunkEmitter
@@ -135,4 +147,4 @@ class IngestOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(IngestOps.dispatch))
+    sys.exit(PayloadEntry.main(IngestOps))

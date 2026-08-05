@@ -1,23 +1,33 @@
 """Операции базы знаний в песочнице: ONNX-инференс над недоверенным текстом
-не идёт в процессе приложения, ценой перезагрузки модели на каждый вызов."""
+не идёт в процессе приложения, ценой перезагрузки модели на каждый вызов.
+
+Ошибки: PostgresError — до базы знаний не достучаться; kb_query_failed —
+СУБД отклонила поисковый запрос. Отсутствие весов эмбеддера ожидаемым не
+считается: это дефект сборки rootfs, и трейсбек там по делу."""
 
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
+import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from boba.db.postgres import PayloadPostgres
+from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
 
 
 class KbOps:
     """Векторный и полнотекстовый поиск по чанкам."""
 
     OPS: ClassVar[tuple[str, ...]] = ("kb_vector_search", "kb_fts_search")
+
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
+        PostgresError: "database_unavailable",
+    }
 
     @classmethod
     async def dispatch(
@@ -98,10 +108,14 @@ class KbOps:
         """Каждая строка выдачи уходит кадром-записью, не задерживаясь в памяти."""
         conn = await PayloadPostgres.connect(request)
         async with conn, conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(statement, params)
-            async for row in cur:
-                emit(RowStream.encode(PayloadPostgres.jsonable(row)))
+            try:
+                await cur.execute(statement, params)
+                async for row in cur:
+                    emit(RowStream.encode(PayloadPostgres.jsonable(row)))
+            except psycopg.Error as e:
+                msg = f"kb search failed: {type(e).__name__}: {e}"
+                raise PayloadError("kb_query_failed", msg) from e
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(KbOps.dispatch))
+    sys.exit(PayloadEntry.main(KbOps))

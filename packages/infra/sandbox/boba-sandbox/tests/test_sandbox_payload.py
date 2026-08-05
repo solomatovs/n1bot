@@ -19,7 +19,12 @@ from boba.sandbox import (
 )
 from boba.sandbox.caller import SandboxFrameDecoder
 from boba.sandbox.process_runner import RunResult
-from boba.toolkit.launcher import LauncherError, NoChunks, TextCollector
+from boba.toolkit.launcher import (
+    LauncherError,
+    NoChunks,
+    PayloadFailureError,
+    TextCollector,
+)
 
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
@@ -148,6 +153,63 @@ class TestDecode:
         decoder = SandboxFrameDecoder("doc", NoChunks())
         with pytest.raises(LauncherError, match="unexpected data chunk"):
             decoder.feed((SandboxPayload.encode_chunk("данные") + "\n").encode())
+
+    def test_declared_failure_has_no_traceback(self) -> None:
+        """Ожидаемый отказ: текст payload'а без хвоста stderr и кода возврата."""
+        stdout = SandboxPayload.encode_error("bad_format", "формат .md не читается")
+        with pytest.raises(PayloadFailureError) as failure:
+            _decode(
+                stdout + "\n",
+                Answer,
+                exit_code=1,
+                stderr="payload-error: bad_format: формат .md не читается",
+            )
+        assert str(failure.value) == "формат .md не читается"
+        assert failure.value.kind == "bad_format"
+
+    def test_declared_failure_keeps_limit_diagnostic(self) -> None:
+        """Объяснение упёршегося лимита не теряется: трейсбека в нём нет."""
+        stdout = SandboxPayload.encode_error("document_unreadable", "не разобрать")
+        outcome = SandboxOutcome(
+            "doc",
+            RunResult(
+                exit_code=1,
+                stdout=stdout,
+                stderr="",
+                truncated_stdout=False,
+                truncated_stderr=False,
+                duration_ms=1,
+                timed_out=False,
+            ),
+            "упёрлись в max_memory_bytes",
+        )
+        collector = TextCollector(max_chars=1000, limit_rows=None, header_lines=0)
+        decoder = SandboxFrameDecoder("doc", collector)
+        decoder.feed((stdout + "\n").encode("utf-8"))
+        with pytest.raises(PayloadFailureError, match="упёрлись в max_memory_bytes"):
+            decoder.finish(outcome, Answer)
+
+    def test_failure_wins_over_exit_code(self) -> None:
+        """Кадр ошибки объясняет отказ лучше, чем «exited with code 1»."""
+        stdout = SandboxPayload.encode_error("unreadable", "файл не открыть")
+        with pytest.raises(PayloadFailureError):
+            _decode(stdout + "\n", Answer, exit_code=1, stderr="Traceback: шум")
+
+    def test_two_failure_frames_are_error(self) -> None:
+        line = SandboxPayload.encode_error("k", "m")
+        with pytest.raises(SandboxPayloadError, match=r"2 .* lines"):
+            _decode(f"{line}\n{line}\n", Answer, exit_code=1)
+
+    def test_broken_failure_frame_is_error(self) -> None:
+        with pytest.raises(SandboxPayloadError, match="error frame is not valid JSON"):
+            _decode("sandbox-error:{битый\n", Answer, exit_code=1)
+
+    def test_failure_frame_without_kind_is_error(self) -> None:
+        stdout = 'sandbox-error:{"message": "текст"}\n'
+        with pytest.raises(
+            SandboxPayloadError, match="error frame does not match contract"
+        ):
+            _decode(stdout, Answer, exit_code=1)
 
     def test_missing_trailer_is_error(self) -> None:
         with pytest.raises(SandboxPayloadError, match="no 'sandbox-result:' line"):

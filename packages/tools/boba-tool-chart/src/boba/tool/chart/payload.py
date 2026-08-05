@@ -1,20 +1,30 @@
-"""Операции над графиками: валидация Plotly-спеки внутри песочницы."""
+"""Операции над графиками: валидация Plotly-спеки внутри песочницы.
+
+Ошибки: invalid_figure_spec — спека не разбирается или не проходит схему
+plotly; это ответ LLM на её же спеку, поэтому едет текстом без трейсбека.
+"""
 
 from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from plotly import graph_objects as go
 
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
 
 
 class ChartOps:
     """Операции над figure-спекой; вызываются диспетчером payload'а."""
 
     OPS: ClassVar[tuple[str, ...]] = ("validate_figure",)
+
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {}
+    """Отказы объявляются на месте через PayloadError: сторонних типов нет."""
+
+    BAD_SPEC: ClassVar[str] = "invalid_figure_spec"
 
     @classmethod
     async def dispatch(
@@ -33,15 +43,15 @@ class ChartOps:
             parsed = json.loads(request["spec"])
         except json.JSONDecodeError as e:
             msg = f"spec is not valid JSON: {e}"
-            raise ValueError(msg) from e
+            raise PayloadError(cls.BAD_SPEC, msg) from e
         if not isinstance(parsed, dict):
             msg = f"spec must be a JSON figure object, got {type(parsed).__name__}"
-            raise ValueError(msg)
+            raise PayloadError(cls.BAD_SPEC, msg)
         try:
             go.Figure(parsed)
         except (ValueError, TypeError) as e:
             msg = f"invalid Plotly figure spec: {e}"
-            raise ValueError(msg) from e
+            raise PayloadError(cls.BAD_SPEC, msg) from e
         return {"title": cls.title_of(parsed)}
 
     @staticmethod
@@ -59,4 +69,4 @@ class ChartOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(ChartOps.dispatch))
+    sys.exit(PayloadEntry.main(ChartOps))

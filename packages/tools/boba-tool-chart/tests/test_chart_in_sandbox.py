@@ -5,14 +5,14 @@ from __future__ import annotations
 import pytest
 from conftest import needs_sandbox, needs_userns, sandbox_profile
 
-from boba.sandbox import SandboxCaller, SandboxPayloadError, SandboxToolConfig
+from boba.sandbox import SandboxCaller, SandboxToolConfig
 from boba.tool.chart import build_chart_tools
 from boba.tool.chart.caller import (
     ChartCaller,
     ValidateFigureAnswer,
     ValidateFigureRequest,
 )
-from boba.toolkit.launcher import NoChunks
+from boba.toolkit.launcher import NoChunks, PayloadFailureError
 from boba.toolkit.result import ChartResult
 
 
@@ -61,7 +61,7 @@ class TestChartInSandbox:
         assert answer.title == ""
 
     def test_broken_json_is_reported(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="not valid JSON"):
+        with pytest.raises(PayloadFailureError, match="not valid JSON"):
             _caller().call_stream(
                 ChartCaller.ENTRY,
                 ValidateFigureRequest.of("{не json"),
@@ -72,7 +72,7 @@ class TestChartInSandbox:
     def test_unknown_trace_type_is_reported(self) -> None:
         """Схему держит plotly: выдуманный тип графика должен быть отклонён."""
         spec = '{"data": [{"type": "нет-такого-типа", "x": [1], "y": [2]}]}'
-        with pytest.raises(SandboxPayloadError, match="invalid Plotly figure spec"):
+        with pytest.raises(PayloadFailureError, match="invalid Plotly figure spec"):
             _caller().call_stream(
                 ChartCaller.ENTRY,
                 ValidateFigureRequest.of(spec),
@@ -81,7 +81,7 @@ class TestChartInSandbox:
             )
 
     def test_non_object_spec_is_reported(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="must be a JSON figure object"):
+        with pytest.raises(PayloadFailureError, match="must be a JSON figure object"):
             _caller().call_stream(
                 ChartCaller.ENTRY,
                 ValidateFigureRequest.of("[1, 2, 3]"),
@@ -126,7 +126,7 @@ class TestChartTool:
         assert message.content == "[chart rendered: T]"
 
     def test_invalid_spec_reaches_the_caller(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="invalid Plotly"):
+        with pytest.raises(PayloadFailureError, match="invalid Plotly") as failure:
             self._tool().invoke(
                 {
                     "args": {"spec": '{"data": 42}'},
@@ -135,5 +135,7 @@ class TestChartTool:
                     "type": "tool_call",
                 }
             )
+        assert failure.value.kind == "invalid_figure_spec"
+        assert "Traceback" not in str(failure.value)
 
 

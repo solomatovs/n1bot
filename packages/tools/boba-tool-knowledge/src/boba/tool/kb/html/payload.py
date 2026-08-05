@@ -1,8 +1,13 @@
-"""Операции над HTML в песочнице: недоверенную разметку разбирают только здесь."""
+"""Операции над HTML в песочнице: недоверенную разметку разбирают только здесь.
+
+Ошибки: ожидаемых нет. bs4 и markdownify не отказывают на битой разметке —
+они её восстанавливают, поэтому любая ошибка здесь означает дефект кода.
+"""
 
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import markdownify
@@ -136,6 +141,9 @@ class PageOps:
         "confluence_sections",
     )
 
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {}
+    """Разбор HTML не отказывает: сломался — значит дефект, нужен трейсбек."""
+
     @classmethod
     async def dispatch(
         cls, request: dict[str, Any], emit: ChunkEmitter
@@ -251,4 +259,4 @@ class PageOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(PageOps.dispatch))
+    sys.exit(PayloadEntry.main(PageOps))

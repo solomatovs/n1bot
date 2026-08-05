@@ -7,8 +7,9 @@
 Структурный ответ без данных — вырожденный поток (кадров нет, всё в трейлере).
 
 Ошибки: LauncherError — исполнитель нарушил контракт, результату доверять нельзя;
-CollectorCapacityError/CollectorRowLimitError — потребитель остановил поток
-по своему лимиту.
+PayloadFailureError — payload сообщил об ожидаемой ошибке кадром, текст готов для
+пользователя; CollectorCapacityError/CollectorRowLimitError — потребитель
+остановил поток по своему лимиту.
 """
 
 from __future__ import annotations
@@ -26,11 +27,13 @@ __all__ = [
     "CollectorCapacityError",
     "CollectorRowLimitError",
     "EmptyTrailer",
+    "ErrorKind",
     "LaunchOutcome",
     "LaunchPayload",
     "LauncherError",
     "LauncherFactory",
     "NoChunks",
+    "PayloadFailureError",
     "RowCollector",
     "RowStream",
     "RunResult",
@@ -45,6 +48,28 @@ class LauncherError(RuntimeError):
     """Исполнитель нарушил контракт: результату доверять нельзя."""
 
 
+class PayloadFailureError(LauncherError):
+    """Ожидаемая ошибка операции: payload объявил её и назвал причину.
+
+    Не нарушение контракта: поток отработал штатно, операция сообщила отказ.
+    Текст пригоден для показа пользователю и LLM — трейсбека в нём нет.
+    """
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class ErrorKind:
+    """Классификация ошибки для ErrorResult: имя kind'а или имя класса."""
+
+    @staticmethod
+    def of(error: Exception) -> str:
+        if isinstance(error, PayloadFailureError):
+            return error.kind
+        return type(error).__name__
+
+
 class EmptyTrailer(BaseModel):
     """Трейлер без полей: весь результат операции ушёл кадрами."""
 
@@ -52,10 +77,12 @@ class EmptyTrailer(BaseModel):
 
 
 class LaunchPayload:
-    """Контракт ответа: кадры `sandbox-chunk:` и один трейлер `sandbox-result:`."""
+    """Контракт ответа: кадры `sandbox-chunk:`, трейлер `sandbox-result:`
+    либо кадр ожидаемой ошибки `sandbox-error:` вместо трейлера."""
 
     MARKER: ClassVar[str] = "sandbox-result:"
     CHUNK_MARKER: ClassVar[str] = "sandbox-chunk:"
+    ERROR_MARKER: ClassVar[str] = "sandbox-error:"
 
     @classmethod
     def encode(cls, data: BaseModel) -> str:
@@ -67,6 +94,12 @@ class LaunchPayload:
         """Строка кадра данных; JSON-строка держит кадр в одной строке stdout."""
         body = json.dumps(chunk, ensure_ascii=False)
         return f"{cls.CHUNK_MARKER}{body}"
+
+    @classmethod
+    def encode_error(cls, kind: str, message: str) -> str:
+        """Строка ожидаемой ошибки: причина известна, трейсбек не нужен."""
+        body = json.dumps({"kind": kind, "message": message}, ensure_ascii=False)
+        return f"{cls.ERROR_MARKER}{body}"
 
 
 class ChunkSink(Protocol):

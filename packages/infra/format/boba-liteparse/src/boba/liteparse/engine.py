@@ -4,10 +4,9 @@
 песочницы. App-safe часть пакета живёт в `boba.liteparse` и
 `boba.liteparse.sections`.
 
-Ошибки: LiteParseError — парсинг не удался или нет каталога tessdata;
-RuntimeError — сырой сбой нативного парсера вне ParseError (LiteParseError
-наследует RuntimeError, так что `except RuntimeError` ловит оба);
-IncompatibleContentError — из LiteParseReader через базу PagedDocumentReader.
+Ошибки: LiteParseError — парсинг не удался или нет каталога tessdata; сбой
+нативного парсера тоже приводится к нему; IncompatibleContentError — из
+LiteParseReader через базу PagedDocumentReader.
 """
 
 from __future__ import annotations
@@ -177,9 +176,16 @@ class LiteParseEngine:
 
     @staticmethod
     def _run(parser: DocumentParser, path: str) -> Any:
+        """Единственная граница парсера: наружу выходит только LiteParseError.
+
+        Нативный парсер сообщает о неподдержанном формате обычным RuntimeError,
+        поэтому одного ParseError мало.
+        """
         try:
             return LocaleRetry.parse(parser, path)
-        except ParseError as e:
+        except LiteParseError:
+            raise
+        except (ParseError, RuntimeError) as e:
             raise LiteParseError(str(e)) from e
 
     @staticmethod

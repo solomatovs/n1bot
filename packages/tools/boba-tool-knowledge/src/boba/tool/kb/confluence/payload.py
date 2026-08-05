@@ -3,19 +3,25 @@
 Приложение отдаёт сюда базовый URL и профиль соединения, а обратно получает
 уже готовый текст или строки таблицы. Пагинацию, разбор JSON и HTML делает
 payload: наружу не уезжает ни сырой ответ, ни исходная разметка страницы.
+
+Ошибки: confluence_request_failed — REST недоступен или ответил статусом;
+attachment_not_found — вложения с таким именем на странице нет;
+document_unreadable — вложение скачалось, но не разбирается.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from typing import Any, ClassVar
 from urllib.parse import quote
 
 import httpx
 
+from boba.text.document import LiteParseError
 from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
 from boba.web.payload import WebOps
 
 
@@ -54,6 +60,10 @@ class ConfluenceOps:
         "confluence_spaces",
         "confluence_attachment",
     )
+
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
+        LiteParseError: "document_unreadable",
+    }
 
     @classmethod
     async def dispatch(
@@ -95,7 +105,7 @@ class ConfluenceOps:
             response.raise_for_status()
         except httpx.HTTPError as e:
             msg = f"Confluence request failed: {type(e).__name__}: {e}"
-            raise RuntimeError(msg) from e
+            raise PayloadError("confluence_request_failed", msg) from e
         return response
 
     @classmethod
@@ -191,7 +201,7 @@ class ConfluenceOps:
         link = cls.attachment_link(data, filename)
         if not link:
             msg = f"attachment {filename!r} not found on page {request['page_id']!r}"
-            raise RuntimeError(msg)
+            raise PayloadError("attachment_not_found", msg)
         content = cls.get(request, link).content
         from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
         from boba.text.document import LiteParseParams  # noqa: PLC0415
@@ -218,4 +228,4 @@ class ConfluenceOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(ConfluenceOps.dispatch))
+    sys.exit(PayloadEntry.main(ConfluenceOps))
