@@ -11,6 +11,7 @@ from uuid import UUID, uuid5
 
 from literalai.observability.step import TrueStepType
 
+from boba.cancellation import StopReason
 from boba.chainlit.rendering.chart_figure import build_plotly_element
 from boba.chainlit.rendering.result_view import (
     ChartRendering,
@@ -75,6 +76,7 @@ class ChatView:
     CONTAINER_NAME: ClassVar[str] = "process..."
     RUNNING_TEXT: ClassVar[str] = "выполняется"
     STOPPED_TEXT: ClassVar[str] = "остановлено пользователем"
+    DISCONNECTED_TEXT: ClassVar[str] = "остановлено при разрыве связи"
     USER_MESSAGE: ClassVar[TrueStepType] = cast("TrueStepType", "user_message")
     ASSISTANT_MESSAGE: ClassVar[TrueStepType] = cast(
         "TrueStepType", "assistant_message"
@@ -88,6 +90,13 @@ class ChatView:
     def titled(cls, status: str, name: str) -> str:
         """Название шага со статусным кружком слева."""
         return f"{status} {name}"
+
+    @classmethod
+    def stopped_text(cls, reason: StopReason | None) -> str:
+        """Формулировка остановки: пользователь нажал stop или ушёл из сессии."""
+        if reason is StopReason.DISCONNECT:
+            return cls.DISCONNECTED_TEXT
+        return cls.STOPPED_TEXT
 
     def __init__(
         self,
@@ -216,10 +225,10 @@ class ChatView:
                 step.is_error = failed
                 await self._sink.put(step)
 
-    async def tool_stopped(self, step: Step) -> None:
-        """Инструмент не доработал: генерацию остановил пользователь."""
+    async def tool_stopped(self, step: Step, note: str) -> None:
+        """Инструмент не доработал: ход остановлен."""
         step.name = self.titled(self.FAILED, self._tool_names.get(step.id, step.name))
-        step.output = self.STOPPED_TEXT
+        step.output = note
         step.end = utc_now()
         await self._sink.put(step)
 

@@ -17,8 +17,13 @@ from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.profile import SandboxProfile
 from boba.tool.shell.tools import build_bash_tool
-from boba.workspace import FUSE_DEVICE, build_chain_argv, render_image_path
-from boba.workspace.launcher import LauncherOptions, ResourceLimits
+from boba.workspace.launcher import (
+    FUSE_DEVICE,
+    LauncherOptions,
+    ResourceLimits,
+    build_chain_argv,
+    render_image_path,
+)
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
 

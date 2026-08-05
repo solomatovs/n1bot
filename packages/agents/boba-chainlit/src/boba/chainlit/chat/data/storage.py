@@ -17,7 +17,6 @@ import aiofiles.os
 
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.workspace import build_chain_argv, render_image_path, require_fuse
 from boba.workspace.launcher import (
     EXIT_MOUNT_ERROR,
     EXIT_NO_SPACE,
@@ -25,6 +24,9 @@ from boba.workspace.launcher import (
     LAUNCHER_ERROR_PREFIX,
     LAUNCHER_LOG_PREFIX,
     ResourceLimits,
+    build_chain_argv,
+    render_image_path,
+    require_fuse,
 )
 from chainlit.data.storage_clients.base import BaseStorageClient
 

@@ -11,6 +11,7 @@ from typing import ClassVar, cast
 from langchain_core.tools import BaseTool
 
 from boba.sandbox.runner import ToolCallContext
+from boba.toolkit.result import ToolResult, ToolResultBase, render_for_llm
 
 __all__ = ["ToolRunLogger"]
 
@@ -21,6 +22,9 @@ class ToolRunLogger:
     """Пишет start/ok/failed вокруг каждого вызова инструмента."""
 
     ARGS_LIMIT: ClassVar[int] = 500
+
+    PACKED_RESULT: ClassVar[int] = 2
+    """Длина кортежа (content, artifact) у tool'ов с content_and_artifact."""
 
     @staticmethod
     def guard_all(tools: list[BaseTool]) -> list[BaseTool]:
@@ -50,7 +54,7 @@ class ToolRunLogger:
                 raise
             finally:
                 ToolCallContext.reset(token)
-            ToolRunLogger._log_success(name, started)
+            ToolRunLogger._log_outcome(name, started, result)
             return result
 
         return wrapped
@@ -72,7 +76,7 @@ class ToolRunLogger:
                 raise
             finally:
                 ToolCallContext.reset(token)
-            ToolRunLogger._log_success(name, started)
+            ToolRunLogger._log_outcome(name, started, result)
             return result
 
         return wrapped
@@ -87,8 +91,24 @@ class ToolRunLogger:
         logger.info("tool[%s]: start args=%s", name, cls._render_args(args, kwargs))
 
     @staticmethod
-    def _log_success(name: str, started: float) -> None:
-        logger.info("tool[%s]: ok in %dms", name, ToolRunLogger._elapsed_ms(started))
+    def _log_outcome(name: str, started: float, result: object) -> None:
+        """Инструмент мог вернуть отказ вместо исключения — это не «ok»."""
+        elapsed = ToolRunLogger._elapsed_ms(started)
+        failure = ToolRunLogger._reported_failure(result)
+        if failure is None:
+            logger.info("tool[%s]: ok in %dms", name, elapsed)
+            return
+        logger.warning("tool[%s]: failed in %dms: %s", name, elapsed, failure)
+
+    @staticmethod
+    def _reported_failure(result: object) -> str | None:
+        """Текст отказа из ToolResult; None — инструмент отработал успешно."""
+        payload = result
+        if isinstance(payload, tuple) and len(payload) == ToolRunLogger.PACKED_RESULT:
+            payload = payload[1]
+        if not isinstance(payload, ToolResultBase) or payload.ok:
+            return None
+        return render_for_llm(cast("ToolResult", payload))
 
     @staticmethod
     def _log_failure(name: str, started: float, error: BaseException) -> None:

@@ -19,12 +19,13 @@ from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.launcher import LaunchOutcome
-from boba.workspace import build_chain_argv, require_fuse
 from boba.workspace.launcher import (
     EXIT_MOUNT_ERROR,
     LAUNCHER_ERROR_PREFIX,
     LAUNCHER_LOG_PREFIX,
     ResourceLimits,
+    build_chain_argv,
+    require_fuse,
 )
 
 

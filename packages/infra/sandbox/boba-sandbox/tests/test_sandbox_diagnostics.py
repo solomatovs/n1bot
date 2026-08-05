@@ -16,7 +16,7 @@ from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult
 from boba.sandbox.profile import SandboxProfile
 from boba.tool.shell.tools import build_bash_tool
-from boba.workspace import FUSE_DEVICE
+from boba.workspace.launcher import FUSE_DEVICE
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
 
