@@ -157,7 +157,9 @@ class TestBwrapArgv:
 
     def test_rootfs_mounted_as_root_before_proc_dev(self) -> None:
         argv = build_bwrap_argv(
-            _profile(rootfs="/srv/rootfs", ro_binds=()), "true", env={},
+            _profile(rootfs="/srv/rootfs", ro_binds=()),
+            "true",
+            env={},
         )
         i = argv.index("--ro-bind")
         assert argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]
@@ -166,7 +168,9 @@ class TestBwrapArgv:
 
     def test_env_cleared_and_set(self) -> None:
         argv = build_bwrap_argv(
-            _profile(), "true", env={"PATH": "/usr/bin:/bin"},
+            _profile(),
+            "true",
+            env={"PATH": "/usr/bin:/bin"},
         )
         assert "--clearenv" in argv
         i = argv.index("--setenv")
@@ -224,14 +228,13 @@ class TestBashTool:
 
     def test_workspace_writes_persist_on_host(self, tmp_path: Path) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path), command="echo content > out.txt",
+            self._make_tool(tmp_path),
+            command="echo content > out.txt",
         )
         assert payload["exit_code"] == 0
         assert (tmp_path / "out.txt").read_text() == "content\n"
 
-    def test_outside_workspace_write_does_not_reach_host(
-        self, tmp_path: Path
-    ) -> None:
+    def test_outside_workspace_write_does_not_reach_host(self, tmp_path: Path) -> None:
         payload = self._invoke(
             self._make_tool(tmp_path),
             command="echo x > /etc/from-sandbox 2>&1; echo rc=$?",
@@ -294,7 +297,9 @@ class TestBashTool:
     def test_placeholders_render_and_dirs_created(self, tmp_path: Path) -> None:
         template = f"{tmp_path}/{{user_id}}/{{thread_id}}"
         profile_dto = _profile(
-            ro_binds=_HOST_RO_BINDS, rw_binds=(template,), cwd=template,
+            ro_binds=_HOST_RO_BINDS,
+            rw_binds=(template,),
+            cwd=template,
         )
         profile = SandboxToolConfig(profile=profile_dto, override={}).effective()
         tool = build_bash_tool(

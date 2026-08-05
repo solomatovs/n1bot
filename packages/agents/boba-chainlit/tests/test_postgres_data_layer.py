@@ -119,6 +119,35 @@ async def test_create_get_delete_element(
     assert not (files_dir / object_key).exists()
 
 
+async def test_element_uploaded_by_route_keeps_its_stored_content(
+    seeded: Seed, files_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Вложение пользователя уже в хранилище: слой пишет строку и не трогает файл."""
+    layer = seeded.layer
+    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+
+    # так выглядит element после загрузки: путь из реестра сессии, копии на диске нет
+    element = Text(
+        thread_id=seeded.thread_id,
+        for_id=seeded.answer_step_id,
+        name="report.txt",
+        path=str(files_dir / "session-files" / "missing.txt"),
+    )
+    object_key = ObjectKey.build(
+        seeded.user.id, seeded.thread_id, element.name, element.id
+    ).render()
+
+    stored = files_dir / object_key
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_bytes(b"streamed by the upload route")
+
+    await layer.create_element(element)
+
+    fetched = await layer.get_element(seeded.thread_id, element.id)
+    assert fetched is not None
+    assert stored.read_bytes() == b"streamed by the upload route"
+
+
 async def test_get_thread_builds_steps_from_history(seeded: Seed):
     layer = seeded.layer
     thread = await layer.get_thread(seeded.thread_id)
@@ -158,6 +187,7 @@ async def test_list_threads(seeded: Seed):
 
     with pytest.raises(ValueError, match="userId is required"):
         await layer.list_threads(Pagination(first=10), ThreadFilter())
+
 
 async def test_delete_thread(seeded: Seed):
     layer = seeded.layer

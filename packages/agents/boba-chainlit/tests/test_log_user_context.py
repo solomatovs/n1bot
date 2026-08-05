@@ -61,9 +61,7 @@ class TestUserInEveryRecord:
         UserLogContext.install()
         assert logging.getLogRecordFactory() is factory
 
-    def test_format_with_user_field(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_format_with_user_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(log_context, "current_user_label", lambda: "petrov")
         formatter = logging.Formatter("[%(user)s] %(message)s")
         assert formatter.format(self._record()) == "[petrov] сообщение"
@@ -89,6 +87,7 @@ class TestUserInEveryRecord:
 class TestRequestUserMiddleware:
     class _JwtUser:
         identifier = "sidorov"
+
     @staticmethod
     def _scope(headers: list[tuple[bytes, bytes]]) -> dict[str, Any]:
         return {"type": "http", "headers": headers, "path": "/", "query_string": b""}
@@ -108,9 +107,7 @@ class TestRequestUserMiddleware:
     ) -> None:
         import chainlit.auth.jwt
 
-        monkeypatch.setattr(
-            chainlit.auth.jwt, "decode_jwt", lambda _t: self._JwtUser()
-        )
+        monkeypatch.setattr(chainlit.auth.jwt, "decode_jwt", lambda _t: self._JwtUser())
         seen: list[str] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:

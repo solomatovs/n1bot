@@ -24,9 +24,7 @@ class ToolAccess:
     WILDCARD: ClassVar[str] = "*"
 
     def __init__(self, roles_by_tool: Mapping[str, Iterable[str]]) -> None:
-        self._roles = {
-            name: frozenset(roles) for name, roles in roles_by_tool.items()
-        }
+        self._roles = {name: frozenset(roles) for name, roles in roles_by_tool.items()}
 
     def known(self, tool_name: str) -> bool:
         return tool_name in self._roles
@@ -57,7 +55,10 @@ class ToolAccessGuard:
             func = getattr(tool, "func", None)
             if callable(func):
                 tool.func = ToolAccessGuard._guard(
-                    func, tool.name, access, roles_source,
+                    func,
+                    tool.name,
+                    access,
+                    roles_source,
                 )
             coroutine = cast(
                 "Callable[..., Awaitable[object]] | None",
@@ -65,7 +66,10 @@ class ToolAccessGuard:
             )
             if callable(coroutine):
                 tool.coroutine = ToolAccessGuard._guard_async(
-                    coroutine, tool.name, access, roles_source,
+                    coroutine,
+                    tool.name,
+                    access,
+                    roles_source,
                 )
         return tools
 

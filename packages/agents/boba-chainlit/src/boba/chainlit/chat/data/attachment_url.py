@@ -19,9 +19,7 @@ class AttachmentUrl:
     """Общий шаблон route и ссылки."""
 
     def path(self) -> str:
-        return self.ROUTE.format(
-            thread_id=self.thread_id, element_id=self.element_id
-        )
+        return self.ROUTE.format(thread_id=self.thread_id, element_id=self.element_id)
 
 
 @dataclass(frozen=True, slots=True)

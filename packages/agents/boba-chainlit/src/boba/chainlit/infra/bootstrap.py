@@ -126,10 +126,12 @@ def _use_file_serving(c: AppConfig) -> None:
     from boba.chainlit.chat.data.data_layer import PostgresDataLayer  # noqa: PLC0415
     from boba.chainlit.chat.data.serving import AttachmentServing  # noqa: PLC0415
     from boba.chainlit.chat.data.storage import LocalStorageClient  # noqa: PLC0415
+    from boba.chainlit.chat.data.upload import UploadRoute  # noqa: PLC0415
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     storage = LocalStorageClient.from_config(c.storage)
+    UploadRoute(storage).install(chainlit_app)
     route_path = c.storage.public_prefix.removeprefix(c.chainlit.url_prefix)
 
     def data_layer() -> PostgresDataLayer:

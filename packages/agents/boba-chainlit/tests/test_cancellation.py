@@ -68,7 +68,6 @@ def _sandbox_config() -> SandboxToolConfig:
     return SandboxToolConfig(profile=profile, override={})
 
 
-
 class TestTurnCancellation:
     def test_not_cancelled_initially(self) -> None:
         assert TurnCancellation().cancelled is False
@@ -267,8 +266,9 @@ class TestSubprocessAbort:
             with ThreadPoolExecutor(1) as pool:
                 future = pool.submit(
                     ctx.run,
-                    lambda: tool_.invoke({"command": f"sleep {self.DURATION}",
-                                          "stdin": ""}),
+                    lambda: tool_.invoke(
+                        {"command": f"sleep {self.DURATION}", "stdin": ""}
+                    ),
                 )
                 assert c.wait(0.0) is False
                 threading.Event().wait(1.5)

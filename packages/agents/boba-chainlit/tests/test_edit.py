@@ -58,9 +58,7 @@ class TestRewindPlan:
     def test_chart_elements_are_collected(self) -> None:
         messages = turn("q1", "a1", call_id="call_1")
         plan = ThreadRewind.plan(messages, "q1", THREAD)
-        assert plan.element_ids == [
-            ChatView.derive_id(THREAD, "call_1", "element")
-        ]
+        assert plan.element_ids == [ChatView.derive_id(THREAD, "call_1", "element")]
         assert "a1-tool" in plan.remove_ids
 
     def test_nothing_after_question(self) -> None:

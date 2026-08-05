@@ -90,9 +90,7 @@ class TestTracerFailuresVisible:
 
     def test_failure_does_not_break_the_turn(self, shown: list[str]) -> None:
         tracer = _tracer()
-        result = asyncio.run(
-            tracer.on_tool_start({}, "", run_id=uuid4(), inputs={})
-        )
+        result = asyncio.run(tracer.on_tool_start({}, "", run_id=uuid4(), inputs={}))
         assert result is None
         assert shown
 

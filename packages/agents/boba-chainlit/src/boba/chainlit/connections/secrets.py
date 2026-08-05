@@ -25,9 +25,12 @@ class SecretCipher:
 
     def encrypt(self, value: Any) -> Any:
         if isinstance(value, SecretStr):
-            return self.PREFIX + self._fernet.encrypt(
-                value.get_secret_value().encode(),
-            ).decode()
+            return (
+                self.PREFIX
+                + self._fernet.encrypt(
+                    value.get_secret_value().encode(),
+                ).decode()
+            )
         if isinstance(value, BaseModel):
             return {
                 name: self.encrypt(getattr(value, name))

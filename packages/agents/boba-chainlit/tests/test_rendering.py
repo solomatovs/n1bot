@@ -69,7 +69,8 @@ class TestToolResultView:
     def test_chart(self) -> None:
         result = ChartResult(spec={"data": []}, title="t")
         assert ToolResultView(result).render() == ChartRendering(
-            spec={"data": []}, title="t",
+            spec={"data": []},
+            title="t",
         )
 
     def test_markdown_variants(self) -> None:
