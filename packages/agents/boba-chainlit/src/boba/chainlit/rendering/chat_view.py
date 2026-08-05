@@ -82,9 +82,11 @@ class ChatView:
         "TrueStepType", "assistant_message"
     )
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
-    IDLE: ClassVar[str] = "\u26aa"
-    DONE: ClassVar[str] = "\U0001f7e2"
-    FAILED: ClassVar[str] = "\U0001f534"
+    # Dingbats \u0438 Geometric Shapes: \u044d\u043c\u043e\u0434\u0437\u0438-\u043a\u0440\u0443\u0436\u043a\u0438 \u0442\u0440\u0435\u0431\u0443\u044e\u0442 \u0448\u0440\u0438\u0444\u0442\u0430 Unicode 12,
+    # \u043d\u0430 \u0441\u0442\u0430\u0440\u044b\u0445 \u043a\u043b\u0438\u0435\u043d\u0442\u0430\u0445 \u0432\u043c\u0435\u0441\u0442\u043e \u043d\u0438\u0445 \u0440\u0438\u0441\u0443\u0435\u0442\u0441\u044f \u043f\u0443\u0441\u0442\u043e\u0439 \u043a\u0432\u0430\u0434\u0440\u0430\u0442
+    IDLE: ClassVar[str] = "\u25cb"
+    DONE: ClassVar[str] = "\u2714"
+    FAILED: ClassVar[str] = "\u2716"
 
     @classmethod
     def titled(cls, status: str, name: str) -> str:

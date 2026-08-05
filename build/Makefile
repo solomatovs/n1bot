@@ -63,6 +63,16 @@ TESSDATA_REPO 	?= https://github.com/tesseract-ocr/tessdata_best/raw/main
 # embedding-веса fastembed
 EMBED_MODELS  	?= intfloat/multilingual-e5-large
 
+# фронт chainlit тянет шрифт и стили формул с CDN; в закрытом контуре их
+# кладут в data/public/vendor, а ссылки в index.html переписывает Dockerfile
+WEBASSETS_DIR 	:= $(DEPS_DIR)/webassets
+KATEX_VERSION 	?= 0.16.22
+KATEX_URL     	?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
+INTER_VERSION 	?= 5.3.0
+INTER_URL     	?= https://registry.npmjs.org/@fontsource/inter/-/inter-$(INTER_VERSION).tgz
+# начертания Inter, которые запрашивает фронт
+INTER_WEIGHTS 	?= 400 500 700
+
 # готовый бинарь; для внутреннего mirror переопредели UV_URL
 UV_VERSION  	?= 0.11.21
 UV_PLATFORM 	?= x86_64-unknown-linux-musl
@@ -128,11 +138,11 @@ help:
 	echo ""
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(SRC_ARTIFACTS)"
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
-	echo "                 {uv,tessdata,fastembed,"
+	echo "                 {uv,tessdata,fastembed,webassets,"
 	echo "                  sandbox/{rootfs,python,site,data,workspace.ext4}}"
 	echo "                 цели по отдельности: uv, tessdata, fastembed,"
-	echo "                 sandbox-rootfs, sandbox-site, sandbox-python,"
-	echo "                 sandbox-data, sandbox-workspace"
+	echo "                 webassets, sandbox-rootfs, sandbox-site,"
+	echo "                 sandbox-python, sandbox-data, sandbox-workspace"
 	echo "  make build     собрать образ $(IMAGE)"
 	echo "  make test      проверить релиз внутри образа"
 	echo "  make extract   портативная папка из готового образа:"
@@ -151,8 +161,9 @@ help:
 	echo "    conf/ca-chain.crt            CA внутреннего TLS: ставится в bundle"
 	echo "                                 образа и подставляется в curl хоста"
 	echo "    http_proxy/https_proxy/no_proxy из env уходят в docker build"
-	echo "    Зеркала tarball'ов (иначе github/kernel.org):"
-	echo "      UV_URL, BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, TESSDATA_REPO"
+	echo "    Зеркала tarball'ов (иначе github/kernel.org/npm):"
+	echo "      UV_URL, BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, TESSDATA_REPO,"
+	echo "      KATEX_URL, INTER_URL"
 	echo ""
 	echo "  Переменные: DEST_DIR=$(DEST_DIR), BOBA_TAG=<тег>, NO_CACHE=1,"
 	echo "              PYTHON_VERSION=$(PYTHON_VERSION), GLIBC_IMAGE=$(GLIBC_IMAGE),"
@@ -243,9 +254,9 @@ sources:
 
 
 .PHONY: deps
-deps: uv tessdata fastembed sandbox-rootfs sandbox-site sandbox-python \
+deps: uv tessdata fastembed webassets sandbox-rootfs sandbox-site sandbox-python \
       sandbox-data sandbox-workspace
-	@du -sh $(DEPS_DIR)/uv $(SANDBOX_DIR)/*
+	@du -sh $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(SANDBOX_DIR)/*
 
 
 .PHONY: uv
@@ -274,6 +285,41 @@ tessdata:
 	        curl -fSL $(CURL_OPTS) -o "$$dest" "$(TESSDATA_REPO)/$$lang.traineddata"
 	    fi
 	done
+
+
+# статика фронта: KaTeX (стили формул) и Inter (шрифт UI) целиком локально
+.PHONY: webassets
+webassets:
+	@mkdir -p $(WEBASSETS_DIR)/katex/fonts $(WEBASSETS_DIR)/inter/files
+	echo "== katex $(KATEX_VERSION) =="
+	if [ -f "$(WEBASSETS_DIR)/katex/katex.min.css" ]; then
+	    echo "  ✓ $(WEBASSETS_DIR)/katex"
+	else
+	    tmp=$$(mktemp -d)
+	    curl -fSL $(CURL_OPTS) -o "$$tmp/katex.tar.gz" "$(KATEX_URL)"
+	    # ttf и woff не нужны: woff2 стоит в src первым и его понимают все браузеры
+	    tar -xzf "$$tmp/katex.tar.gz" -C "$$tmp" --wildcards \
+	        katex/katex.min.css 'katex/fonts/*.woff2'
+	    cp "$$tmp/katex/katex.min.css" "$(WEBASSETS_DIR)/katex/"
+	    cp "$$tmp"/katex/fonts/*.woff2 "$(WEBASSETS_DIR)/katex/fonts/"
+	    rm -rf "$$tmp"
+	fi
+	echo "== Inter $(INTER_VERSION): $(INTER_WEIGHTS) =="
+	if [ -f "$(WEBASSETS_DIR)/inter/inter.css" ]; then
+	    echo "  ✓ $(WEBASSETS_DIR)/inter"
+	else
+	    tmp=$$(mktemp -d)
+	    curl -fSL $(CURL_OPTS) -o "$$tmp/inter.tgz" "$(INTER_URL)"
+	    tar -xzf "$$tmp/inter.tgz" -C "$$tmp"
+	    : > "$(WEBASSETS_DIR)/inter/inter.css"
+	    # <вес>.css несёт все подсеты с unicode-range, включая кириллицу
+	    for w in $(INTER_WEIGHTS); do
+	        cat "$$tmp/package/$$w.css" >> "$(WEBASSETS_DIR)/inter/inter.css"
+	        cp "$$tmp"/package/files/inter-*-$$w-normal.woff2 "$(WEBASSETS_DIR)/inter/files/"
+	    done
+	    rm -rf "$$tmp"
+	fi
+	du -sh $(WEBASSETS_DIR)/*
 
 
 # базовый rootfs песочницы: glibc + office-конвертеры + точки монтирования
@@ -409,6 +455,12 @@ check-artifacts:
 	[ -n "$$(ls -A "$(DEPS_DIR)/fastembed" 2>/dev/null)" ] || {
 	    echo "нет весов fastembed — запусти: make deps" >&2; exit 1
 	}
+	[ -f "$(WEBASSETS_DIR)/katex/katex.min.css" ] || {
+	    echo "нет стилей katex — запусти: make webassets" >&2; exit 1
+	}
+	[ -f "$(WEBASSETS_DIR)/inter/inter.css" ] || {
+	    echo "нет шрифта Inter — запусти: make webassets" >&2; exit 1
+	}
 
 
 .PHONY: build
@@ -489,7 +541,7 @@ extract:
 .PHONY: clean
 clean:
 	rm -rf $(SRC_ARTIFACTS) $(ARTIFACTS)/build \
-	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(SANDBOX_DIR)
+	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR)
 
 
 .PHONY: print-tag
