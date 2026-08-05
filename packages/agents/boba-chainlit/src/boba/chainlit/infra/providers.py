@@ -21,9 +21,9 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg_pool import PoolTimeout
 from pydantic import SecretStr
 
-from boba.auth.errors import InternalServiceError
 from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.agent.dump import DumpingTransport
+from boba.chainlit.auth.errors import InternalServiceError
 from boba.chainlit.chat.data import PostgresDataLayer
 from boba.chainlit.chat.data.attachment_url import AttachmentLinks
 from boba.chainlit.chat.data.storage import LocalStorageClient

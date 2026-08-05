@@ -16,9 +16,9 @@ from typing import Any, ClassVar
 import psycopg
 from psycopg.rows import DictRow, dict_row
 
+from boba.cancellation import current_cancellation
 from boba.db.postgres.config import PostgresConfig
 from boba.krb import KerberosCredentials, KeytabCredentials
-from boba.toolkit.cancellation import current_cancellation
 
 __all__ = [
     "AsyncPostgresPool",

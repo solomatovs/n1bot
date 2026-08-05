@@ -14,8 +14,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from boba.auth import ChainlitAuthInstaller
-from boba.auth.errors import DomainErrorMiddleware
+from boba.chainlit.auth import ChainlitAuthInstaller
+from boba.chainlit.auth.errors import DomainErrorMiddleware
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
     AppConfig,
@@ -121,7 +121,7 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
 
 def _use_file_serving(c: AppConfig) -> None:
-    from boba.auth.errors import InternalServiceError  # noqa: PLC0415
+    from boba.chainlit.auth.errors import InternalServiceError  # noqa: PLC0415
     from boba.chainlit.chat.data.attachment_url import AttachmentUrl  # noqa: PLC0415
     from boba.chainlit.chat.data.data_layer import PostgresDataLayer  # noqa: PLC0415
     from boba.chainlit.chat.data.serving import AttachmentServing  # noqa: PLC0415

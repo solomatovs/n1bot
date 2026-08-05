@@ -6,7 +6,6 @@ from typing import Annotated
 
 from pydantic import Field
 
-from boba.settings import LLMStringList
 from boba.tool.kb.confluence.ingest_base import (
     ConfluenceIngestConfig,
 )
@@ -14,6 +13,7 @@ from boba.tool.kb.confluence.ingest_caller import (
     ConfluenceIngestCaller,
 )
 from boba.toolkit.result import TableResult
+from boba.toolkit.types import LLMStringList
 
 __all__ = ["confluence_ingest_spaces"]
 

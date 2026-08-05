@@ -14,8 +14,8 @@ from urllib.parse import quote
 
 import httpx
 
-from boba.tool.web.payload import WebOps
 from boba.toolkit.payload import PayloadEntry
+from boba.web.payload import WebOps
 
 
 class ConfluenceRest:

@@ -9,7 +9,7 @@ description = "Boba PostgreSQL: PostgresConfig + AsyncPostgresPool — един�
 requires-python = ">=3.11,<4"
 dependencies = [
     # остановка хода: прерыватель регистрируется в TurnCancellation
-    "boba-toolkit==0.0.8.dev1",
+    "boba-cancellation==0.0.8.dev1",
     # 3.3+: AsyncConnection сам возвращается в пул, обёртка AsyncPoolConnection не нужна
     "psycopg[binary,pool]>=3.3",
     "pydantic>=2.10,<2.11",

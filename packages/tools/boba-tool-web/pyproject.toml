@@ -10,9 +10,9 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.8.dev1",
     "boba-transport-http==0.0.8.dev1",
+    "boba-web==0.0.8.dev1",
     "langchain",
     "langchain-core",
-    "httpx[http2]>=0.28,<1",
     "pydantic>=2.10,<2.11",
 ]
 
@@ -20,7 +20,6 @@ dependencies = [
 # в окружении приложения их быть не должно
 [project.optional-dependencies]
 payload = [
-    "markdownify>=0.11,<1.0",
 ]
 
 [tool.setuptools.packages.find]

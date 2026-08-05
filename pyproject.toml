@@ -6,10 +6,11 @@ pythonpath = [
     "packages/infra/format/boba-liteparse/src",
     "packages/infra/format/boba-text/src",
     "packages/infra/transport/boba-transport-http/src",
+    "packages/infra/transport/boba-web/src",
     "packages/infra/db/boba-db-postgres/src",
-    "packages/infra/boba-sandbox/src",
-    "packages/infra/auth/boba-krb/src",
-    "packages/infra/auth/boba-auth/src",
+    "packages/infra/sandbox/boba-sandbox/src",
+    "packages/infra/krb/boba-krb/src",
+    "packages/core/boba-cancellation/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
@@ -17,6 +18,7 @@ pythonpath = [
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
+    "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-knowledge/src",
 ]
@@ -40,10 +42,11 @@ extraPaths = [
     "packages/infra/format/boba-liteparse/src",
     "packages/infra/format/boba-text/src",
     "packages/infra/transport/boba-transport-http/src",
+    "packages/infra/transport/boba-web/src",
     "packages/infra/db/boba-db-postgres/src",
-    "packages/infra/boba-sandbox/src",
-    "packages/infra/auth/boba-krb/src",
-    "packages/infra/auth/boba-auth/src",
+    "packages/infra/sandbox/boba-sandbox/src",
+    "packages/infra/krb/boba-krb/src",
+    "packages/core/boba-cancellation/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
@@ -51,6 +54,7 @@ extraPaths = [
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
+    "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-knowledge/src",
 ]
@@ -93,27 +97,27 @@ members = [
     "packages/agents/*",
     "packages/tools/*",
     "packages/infra/*/*",
-    "packages/infra/boba-sandbox",
 ]
-exclude = ["packages/infra/boba-sandbox/*"]
 
 [tool.uv.sources]
 boba-settings       = { workspace = true }
+boba-cancellation   = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }
 boba-tool-chart     = { workspace = true }
 boba-tool-web       = { workspace = true }
+boba-tool-doc       = { workspace = true }
 boba-tool-postgres  = { workspace = true }
 boba-tool-knowledge = { workspace = true }
 boba-kbdoc          = { workspace = true }
 boba-liteparse      = { workspace = true }
 boba-text           = { workspace = true }
 boba-transport-http = { workspace = true }
+boba-web            = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-sandbox        = { workspace = true }
 boba-krb            = { workspace = true }
-boba-auth           = { workspace = true }
 boba-chainlit       = { workspace = true }
 
 [dependency-groups]

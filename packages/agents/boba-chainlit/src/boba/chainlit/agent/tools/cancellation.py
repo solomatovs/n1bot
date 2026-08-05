@@ -8,7 +8,7 @@ from typing import cast
 
 from langchain_core.tools import BaseTool
 
-from boba.toolkit.cancellation import current_cancellation
+from boba.cancellation import current_cancellation
 
 __all__ = ["CancellableTools"]
 

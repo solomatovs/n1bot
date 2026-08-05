@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from boba.auth import AuthConfig
+from boba.chainlit.auth import AuthConfig
 from boba.db.postgres import PostgresConfig
 from boba.sandbox.profile import SandboxConfig
 from boba.workspace.launcher import LauncherConfig

@@ -41,7 +41,6 @@ from boba.tool.doc.protocol import (
     DocPathRequest,
     DocSearchAnswer,
     DocSearchRequest,
-    DocTextAnswer,
 )
 from boba.tool.kb.html import (
     ConfluenceSectionsAnswer,
@@ -118,13 +117,14 @@ class TestDocumentsInSandbox:
     """Инструменты doc: файл лежит в песочнице, парсит его liteparse оттуда."""
 
     def test_read_document(self, docs: Path) -> None:
-        request = DocPathRequest(
-            op=DocPathRequest.READ,
+        request = DocPagesRequest(
+            op=DocPagesRequest.OP,
             path="/workspace/report.pdf",
+            pages="1-2",
             params=_doc_params(),
         )
-        answer = _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocTextAnswer)
-        assert answer.num_pages == 2
+        answer = _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocPagesAnswer)
+        assert answer.pages == (1, 2)
         assert "Alpha page one" in answer.text
 
     def test_document_outline(self, docs: Path) -> None:
@@ -158,7 +158,7 @@ class TestDocumentsInSandbox:
         assert [row.page for row in answer.rows] == [1, 2]
         assert "Alpha" in answer.rows[0].snippet
 
-    def test_read_pages(self, docs: Path) -> None:
+    def test_read_document_page_subset(self, docs: Path) -> None:
         answer = _caller(docs).call_json(
             LiteParseCaller.ENTRY,
             DocPagesRequest(
@@ -182,14 +182,15 @@ class TestDocumentsInSandbox:
 
     def test_small_address_space_is_reported(self, docs: Path) -> None:
         """Заниженный RLIMIT_AS ломает pdfium — ошибка должна это показать."""
-        request = DocPathRequest(
-            op=DocPathRequest.READ,
+        request = DocPagesRequest(
+            op=DocPagesRequest.OP,
             path="/workspace/report.pdf",
+            pages="1-2",
             params=_doc_params(),
         )
         caller = _caller(docs, max_memory_bytes=1024 * 1024 * 1024)
         with pytest.raises(SandboxPayloadError) as failure:
-            caller.call_json(LiteParseCaller.ENTRY, request, DocTextAnswer)
+            caller.call_json(LiteParseCaller.ENTRY, request, DocPagesAnswer)
         message = str(failure.value)
         assert "pdfium" in message
         assert "RLIMIT_AS" in message, (
@@ -200,20 +201,24 @@ class TestDocumentsInSandbox:
     def test_ocr_without_tessdata_is_reported(self, docs: Path) -> None:
         """Без моделей OCR liteparse пошёл бы в сеть; сети в песочнице нет."""
         params = _doc_params(ocr_enabled=True, tessdata_path="/нет-такого-каталога")
-        request = DocPathRequest(
-            op=DocPathRequest.READ, path="/workspace/report.pdf", params=params
+        request = DocPagesRequest(
+            op=DocPagesRequest.OP,
+            path="/workspace/report.pdf",
+            pages="1-2",
+            params=params,
         )
         with pytest.raises(SandboxPayloadError, match="каталога моделей"):
-            _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocTextAnswer)
+            _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocPagesAnswer)
 
     def test_missing_file_is_reported(self, docs: Path) -> None:
-        request = DocPathRequest(
-            op=DocPathRequest.READ,
+        request = DocPagesRequest(
+            op=DocPagesRequest.OP,
             path="/workspace/нет-такого.pdf",
+            pages="1",
             params=_doc_params(),
         )
         with pytest.raises(SandboxPayloadError, match="exited with code"):
-            _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocTextAnswer)
+            _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocPagesAnswer)
 
 
 @needs_sandbox
@@ -271,24 +276,25 @@ class TestOfficeNonAsciiNames:
         (workspace / self.CYRILLIC_NAME).write_bytes(payload)
         return workspace
 
-    def _read(self, workspace: Path, name: str) -> DocTextAnswer:
-        request = DocPathRequest(
-            op=DocPathRequest.READ,
+    def _read(self, workspace: Path, name: str) -> DocPagesAnswer:
+        request = DocPagesRequest(
+            op=DocPagesRequest.OP,
             path=f"/workspace/{name}",
+            pages="1",
             params=_doc_params(),
         )
         return _caller(workspace).call_json(
-            LiteParseCaller.ENTRY, request, DocTextAnswer
+            LiteParseCaller.ENTRY, request, DocPagesAnswer
         )
 
     def test_ascii_named_docx_is_readable(self, office_docs: Path) -> None:
         answer = self._read(office_docs, self.ASCII_NAME)
-        assert answer.num_pages >= 1
+        assert answer.pages == (1,)
         assert "Alpha section one" in answer.text
 
     def test_cyrillic_named_docx_is_readable(self, office_docs: Path) -> None:
         answer = self._read(office_docs, self.CYRILLIC_NAME)
-        assert answer.num_pages >= 1
+        assert answer.pages == (1,)
         assert "Alpha section one" in answer.text
 
 

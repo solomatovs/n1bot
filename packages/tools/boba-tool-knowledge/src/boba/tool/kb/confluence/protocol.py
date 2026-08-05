@@ -11,7 +11,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.tool.doc.liteparse.protocol import ParseParams
-from boba.tool.web.protocol import WebProfile
+from boba.web.protocol import WebProfile
 
 __all__ = [
     "ConfluenceAttachmentAnswer",

@@ -6,10 +6,10 @@ from typing import Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.settings import LLMStringList
 from boba.tool.kb.confluence.caller import ConfluenceCaller
 from boba.tool.kb.confluence.protocol import ConfluenceSearchRequest
 from boba.toolkit.result import TableResult
+from boba.toolkit.types import LLMStringList
 from boba.transport.http import HttpProfile
 
 __all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]

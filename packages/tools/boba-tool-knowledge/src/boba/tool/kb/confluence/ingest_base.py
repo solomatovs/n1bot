@@ -22,9 +22,6 @@ from boba.indexing import (
 )
 from boba.indexing.ports import Embedder, ReaderId
 from boba.indexing.values import CollectionId
-from boba.settings import (
-    StringList,
-)
 from boba.text import StructuralChunker
 from boba.tool.doc.liteparse import SandboxParserConfig
 from boba.tool.kb.chunking import (
@@ -46,6 +43,7 @@ from boba.tool.kb.postgres import (
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
+from boba.toolkit.types import StringList
 from boba.transport.http import HttpProfile
 
 __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
