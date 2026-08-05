@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
@@ -18,7 +19,8 @@ from boba.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
-from boba.toolkit.launcher import LaunchOutcome
+from boba.toolkit.launcher import LaunchOutcome, LaunchPayload
+from boba.toolkit.payload import PayloadLogging
 from boba.workspace.launcher import (
     EXIT_MOUNT_ERROR,
     LAUNCHER_ERROR_PREFIX,
@@ -37,15 +39,95 @@ def has_bwrap() -> bool:
 SandboxOutcome = LaunchOutcome
 """Историческое имя результата запуска; тип задаёт порт."""
 
-__all__ = ["SandboxOutcome", "SandboxRunner", "ToolCallContext", "has_bwrap"]
+__all__ = [
+    "SandboxLogRelay",
+    "SandboxOutcome",
+    "SandboxRunner",
+    "ToolCallContext",
+    "has_bwrap",
+]
 
 logger = logging.getLogger(__name__)
+
+
+class SandboxLogRelay:
+    """Логи payload'а из stderr в общий журнал: видно инструмент и уровень.
+
+    Пользователь в записи попадает сам — его подставляет фабрика записей
+    приложения, а релей работает в контексте вызвавшего инструмента.
+    """
+
+    NOISE_LEVEL: ClassVar[int] = logging.DEBUG
+    """Уровень для сырых строк stderr: варнинги библиотек, трейсбеки."""
+
+    def __init__(self, label: str) -> None:
+        self._label = label
+        self._tail = bytearray()
+
+    def feed(self, data: bytes) -> None:
+        """Приём байт по мере чтения: долгий инструмент не молчит до конца."""
+        self._tail.extend(data)
+        while True:
+            index = self._tail.find(b"\n")
+            if index < 0:
+                return
+            line = bytes(self._tail[:index]).decode("utf-8", errors="replace")
+            del self._tail[: index + 1]
+            self._line(line)
+
+    def flush(self) -> None:
+        """Последняя строка без перевода тоже должна попасть в журнал."""
+        if not self._tail:
+            return
+        line = bytes(self._tail).decode("utf-8", errors="replace")
+        self._tail.clear()
+        self._line(line)
+
+    @classmethod
+    def relayed(cls, line: str) -> bool:
+        """Строка уже ушла в журнал: в stderr результата её держать незачем."""
+        return line.startswith((LaunchPayload.LOG_MARKER, LAUNCHER_LOG_PREFIX))
+
+    def _line(self, line: str) -> None:
+        if line.startswith(LaunchPayload.LOG_MARKER):
+            self._log_frame(line[len(LaunchPayload.LOG_MARKER) :])
+            return
+        if line.startswith(LAUNCHER_LOG_PREFIX):
+            body = line[len(LAUNCHER_LOG_PREFIX) :]
+            logger.info("sandbox[%s]: %s", self._label, body)
+            return
+        if line.strip():
+            logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, line)
+
+    def _log_frame(self, body: str) -> None:
+        try:
+            frame = json.loads(body)
+        except json.JSONDecodeError:
+            logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, body)
+            return
+        if not isinstance(frame, dict):
+            logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, body)
+            return
+        level = self._level_of(str(frame.get("lvl") or ""))
+        name = str(frame.get("name") or "?")
+        message = str(frame.get("msg") or "")
+        logger.log(level, "tool[%s] %s: %s", self._label, name, message)
+
+    @staticmethod
+    def _level_of(name: str) -> int:
+        resolved = logging.getLevelName(name.upper())
+        if isinstance(resolved, int):
+            return resolved
+        return logging.INFO
 
 
 class SandboxRunner:
     """Выполняет команду в уже собранном профиле песочницы."""
 
     FAIL_TAIL_CHARS: ClassVar[int] = 2000
+
+    APP_LOGGER: ClassVar[str] = "boba"
+    """Чей уровень наследует payload: настройка живёт в конфиге приложения."""
 
     def __init__(
         self,
@@ -70,6 +152,7 @@ class SandboxRunner:
         argv, runner_limits = self._build_argv(rendered, command, limits)
 
         name = self._label()
+        relay = SandboxLogRelay(name)
         self._log_start(name, rendered, limits, command)
         group = GroupLimits.of_profile(rendered)
         cgroup_dir: str | None = None
@@ -89,13 +172,15 @@ class SandboxRunner:
                 cwd="/",
                 env=os.environ,
                 stdout_sink=stdout_sink,
+                stderr_sink=relay.feed,
                 limits=runner_limits,
                 cgroup_dir=cgroup_dir,
             )
         finally:
+            relay.flush()
             if manager is not None and cgroup_dir is not None:
                 manager.release(cgroup_dir)
-        result = self._drain_launcher_log(name, result)
+        result = self._drop_relayed(result)
         self._log_finish(name, result)
         if result.timed_out or result.exit_code != 0:
             self._log_failure(name, result)
@@ -112,6 +197,14 @@ class SandboxRunner:
         if call and call != self._tool:
             return f"{self._tool}:{call}"
         return self._tool
+
+    @staticmethod
+    def _env_of(profile: SandboxProfile) -> dict[str, str]:
+        """env профиля плюс уровень логов: он берётся из секции logger приложения."""
+        env = dict(profile.env_set)
+        level = logging.getLogger(SandboxRunner.APP_LOGGER).getEffectiveLevel()
+        env[PayloadLogging.LEVEL_ENV] = logging.getLevelName(level)
+        return env
 
     @staticmethod
     def limits_of(profile: SandboxProfile) -> ResourceLimits:
@@ -136,8 +229,9 @@ class SandboxRunner:
         command: str,
         limits: ResourceLimits,
     ) -> tuple[list[str], ResourceLimits | None]:
+        env = self._env_of(profile)
         if not profile.rw_images:
-            argv = build_bwrap_argv(profile, command, env=profile.env_set)
+            argv = build_bwrap_argv(profile, command, env=env)
             return argv, limits
 
         require_fuse()
@@ -154,7 +248,7 @@ class SandboxRunner:
         inner = profile.model_copy(
             update={"rw_binds": profile.rw_binds + tuple(mounts)},
         )
-        inner_argv = build_bwrap_argv(inner, command, env=inner.env_set, nested=True)
+        inner_argv = build_bwrap_argv(inner, command, env=env, nested=True)
         argv = build_chain_argv(
             images=images,
             template=profile.image_template,
@@ -241,18 +335,13 @@ class SandboxRunner:
         return "…" + stripped[-cls.FAIL_TAIL_CHARS :]
 
     @staticmethod
-    def _drain_launcher_log(profile: str, result: RunResult) -> RunResult:
-        """Строки лаунчера уходят в лог: в stderr остаётся вывод команды."""
-        if LAUNCHER_LOG_PREFIX not in result.stderr:
-            return result
+    def _drop_relayed(result: RunResult) -> RunResult:
+        """Залогированное релеем убираем: в stderr остаётся объяснение падения."""
         kept: list[str] = []
         for line in result.stderr.splitlines():
-            if line.startswith(LAUNCHER_LOG_PREFIX):
-                logger.info(
-                    "sandbox[%s]: %s", profile, line[len(LAUNCHER_LOG_PREFIX) :]
-                )
-            else:
-                kept.append(line)
+            if SandboxLogRelay.relayed(line):
+                continue
+            kept.append(line)
         stderr = "\n".join(kept)
         if kept and result.stderr.endswith("\n"):
             stderr += "\n"

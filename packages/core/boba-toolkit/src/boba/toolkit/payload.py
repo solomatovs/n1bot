@@ -1,5 +1,9 @@
 """Точка входа payload'а: запрос со stdin, кадры и трейлер в stdout.
 
+Логи инструмента едут кадрами в stderr: stdout занят данными, а stderr на
+исход операции не влияет — его читает только релей хоста и сливает в общий
+журнал приложения. Инструменту достаточно обычного logging.getLogger.
+
 Ошибки делятся на два класса. Ожидаемые — объявленные в PayloadOps.EXPECTED
 типы и PayloadError — уходят кадром `sandbox-error:` с готовым для пользователя
 текстом; трейсбек в этом случае не печатается. Всё остальное не ловится и
@@ -11,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import sys
 from abc import abstractmethod
 from collections.abc import Callable, Coroutine, Mapping
@@ -20,9 +26,54 @@ from pydantic import ValidationError
 
 from boba.toolkit.launcher import LaunchPayload
 
-__all__ = ["ChunkEmitter", "PayloadEntry", "PayloadError", "PayloadOps"]
+__all__ = [
+    "ChunkEmitter",
+    "PayloadEntry",
+    "PayloadError",
+    "PayloadLogging",
+    "PayloadOps",
+]
 
 ChunkEmitter: TypeAlias = Callable[[str], None]
+
+
+class PayloadLogFormatter(logging.Formatter):
+    """Запись логера -> кадр `sandbox-log:` одной строкой."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = record.getMessage()
+        if record.exc_info:
+            message = f"{message}\n{self.formatException(record.exc_info)}"
+        return LaunchPayload.encode_log(record.levelname, record.name, message)
+
+
+class PayloadLogging:
+    """Логер payload'а: кадры в stderr вместо свободного текста.
+
+    Уровень не настраивается здесь: его вычисляет хост из своей секции logger
+    и передаёт переменной окружения — так у настройки остаётся один источник.
+    """
+
+    LEVEL_ENV: ClassVar[str] = "BOBA_LOG_LEVEL"
+    """Канал доставки уровня от хоста; в конфиге такой ручки нет."""
+
+    FALLBACK_LEVEL: ClassVar[str] = "INFO"
+    """Только для запуска payload'а руками, без хоста."""
+
+    @classmethod
+    def setup(cls) -> None:
+        """Ставится один раз на процесс; уровень приходит от хоста."""
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(PayloadLogFormatter())
+        logging.basicConfig(level=cls.level(), handlers=[handler], force=True)
+
+    @classmethod
+    def level(cls) -> int:
+        raw = os.environ.get(cls.LEVEL_ENV, cls.FALLBACK_LEVEL).upper()
+        resolved = logging.getLevelName(raw)
+        if isinstance(resolved, int):
+            return resolved
+        return logging.INFO
 
 
 class PayloadError(Exception):
@@ -75,6 +126,7 @@ class PayloadEntry:
 
     @staticmethod
     def main(ops: type[PayloadOps]) -> int:
+        PayloadLogging.setup()
         request = json.loads(sys.stdin.read())
         try:
             trailer = asyncio.run(ops.dispatch(request, PayloadEntry.emit))
@@ -117,14 +169,13 @@ class PayloadEntry:
 
     @staticmethod
     def _write_error(kind: str, message: str) -> None:
-        """Кадр ошибки хосту, одна строка в stderr — оператору в логи."""
+        """Кадр ошибки хосту; в журнал тот же факт уходит обычным логом."""
         if not message.strip():
             message = kind
         sys.stdout.write(LaunchPayload.encode_error(kind, message))
         sys.stdout.write("\n")
         sys.stdout.flush()
-        sys.stderr.write(f"payload-error: {kind}: {message}\n")
-        sys.stderr.flush()
+        logging.getLogger(__name__).error("%s: %s", kind, message)
 
     @staticmethod
     def _write_trailer(trailer: dict[str, Any]) -> None:

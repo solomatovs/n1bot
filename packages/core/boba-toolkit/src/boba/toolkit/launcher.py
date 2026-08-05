@@ -83,6 +83,8 @@ class LaunchPayload:
     MARKER: ClassVar[str] = "sandbox-result:"
     CHUNK_MARKER: ClassVar[str] = "sandbox-chunk:"
     ERROR_MARKER: ClassVar[str] = "sandbox-error:"
+    LOG_MARKER: ClassVar[str] = "sandbox-log:"
+    """Кадр лога; едет в stderr — там он никому не мешает и ничего не решает."""
 
     @classmethod
     def encode(cls, data: BaseModel) -> str:
@@ -100,6 +102,15 @@ class LaunchPayload:
         """Строка ожидаемой ошибки: причина известна, трейсбек не нужен."""
         body = json.dumps({"kind": kind, "message": message}, ensure_ascii=False)
         return f"{cls.ERROR_MARKER}{body}"
+
+    @classmethod
+    def encode_log(cls, level: str, name: str, message: str) -> str:
+        """Строка лога: многострочное сообщение экранируется в одну строку."""
+        body = json.dumps(
+            {"lvl": level, "name": name, "msg": message},
+            ensure_ascii=False,
+        )
+        return f"{cls.LOG_MARKER}{body}"
 
 
 class ChunkSink(Protocol):

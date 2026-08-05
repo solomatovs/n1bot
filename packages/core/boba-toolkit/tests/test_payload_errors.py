@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
@@ -31,6 +32,8 @@ class SilentError(Exception):
 class Ops:
     """Тестовый payload: у каждой операции свой способ упасть."""
 
+    LOG: ClassVar[logging.Logger] = logging.getLogger("boba.tool.probe")
+
     EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
         UnreadableError: "document_unreadable",
         SilentError: "silent_failure",
@@ -41,6 +44,10 @@ class Ops:
         cls, request: dict[str, Any], emit: ChunkEmitter
     ) -> dict[str, Any]:
         req = Request.model_validate(request)
+        if req.op == "logs":
+            cls.LOG.info("работаю: size=%d", req.size)
+            cls.LOG.warning("что-то подозрительное")
+            return {"size": req.size}
         if req.op == "ok":
             emit("данные")
             return {"size": req.size}
@@ -122,9 +129,11 @@ class TestExpectedErrors:
     def test_reason_goes_to_stderr_without_traceback(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Оператору — одна строка в лог, а не простыня стека."""
+        """Оператору — одна запись в журнал, а не простыня стека."""
         _, captured = _run({"op": "declared", "size": 1}, capsys)
-        assert captured.err.strip().startswith("payload-error: document_unreadable:")
+        frames = _frames(captured.err, LaunchPayload.LOG_MARKER)
+        assert len(frames) == 1
+        assert frames[0]["lvl"] == "ERROR"
         assert "Traceback" not in captured.err
 
 
@@ -136,6 +145,40 @@ class TestUnexpectedErrors:
     ) -> None:
         with pytest.raises(KeyError):
             _run({"op": "неизвестная", "size": 1}, capsys)
+
+
+class TestLogging:
+    """Логи инструмента уезжают кадрами в stderr — на исход они не влияют."""
+
+    def test_log_frames_go_to_stderr(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, captured = _run({"op": "logs", "size": 3}, capsys)
+        frames = _frames(captured.err, LaunchPayload.LOG_MARKER)
+        levels = [frame["lvl"] for frame in frames]
+        assert code == 0
+        assert "INFO" in levels
+        assert "WARNING" in levels
+        assert frames[0]["name"] == "boba.tool.probe"
+        assert "size=3" in frames[0]["msg"]
+
+    def test_logs_do_not_touch_stdout(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """stdout — плоскость данных: лог там сломал бы разбор кадров."""
+        _, captured = _run({"op": "logs", "size": 1}, capsys)
+        assert LaunchPayload.LOG_MARKER not in captured.out
+        assert _frames(captured.out, LaunchPayload.MARKER) == [{"size": 1}]
+
+    def test_declared_error_is_logged_too(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Отказ виден и в журнале, но решает его кадр на stdout."""
+        _, captured = _run({"op": "declared", "size": 1}, capsys)
+        frames = _frames(captured.err, LaunchPayload.LOG_MARKER)
+        assert [frame["lvl"] for frame in frames] == ["ERROR"]
+        assert "document_unreadable" in frames[0]["msg"]
+        assert _frames(captured.out, LaunchPayload.ERROR_MARKER)
 
 
 class TestSuccess:
