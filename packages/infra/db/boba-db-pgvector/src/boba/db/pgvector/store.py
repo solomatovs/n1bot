@@ -8,7 +8,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from itertools import islice
 from typing import Any, ClassVar, Self, TypeVar
 
-from pgvector.psycopg import register_vector_async
 from psycopg import sql
 from pydantic import BaseModel, Field, model_validator
 
@@ -40,6 +39,7 @@ from boba.indexing.store import (
     HashDiff,
 )
 from boba.indexing.values import CollectionId, ContentHash, Metadata, StringContentHash
+from pgvector.psycopg import register_vector_async
 
 logger = logging.getLogger(__name__)
 

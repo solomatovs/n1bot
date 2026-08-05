@@ -14,17 +14,14 @@ from boba.tool.doc.liteparse.protocol import ParseParams
 from boba.web.protocol import WebProfile
 
 __all__ = [
-    "ConfluenceAttachmentAnswer",
     "ConfluenceAttachmentRequest",
-    "ConfluenceGrepAnswer",
     "ConfluenceGrepRequest",
-    "ConfluencePageAnswer",
+    "ConfluenceGrepRow",
     "ConfluencePageRequest",
-    "ConfluenceSearchAnswer",
+    "ConfluencePageTrailer",
     "ConfluenceSearchHit",
     "ConfluenceSearchRequest",
     "ConfluenceSpace",
-    "ConfluenceSpacesAnswer",
     "ConfluenceSpacesRequest",
 ]
 
@@ -49,12 +46,11 @@ class ConfluencePageRequest(ConfluenceCall):
     as_markdown: bool
 
 
-class ConfluencePageAnswer(BaseModel):
-    """Контент страницы и её заголовок."""
+class ConfluencePageTrailer(BaseModel):
+    """Итог страницы: контент ушёл кадрами, здесь её заголовок."""
 
     model_config = ConfigDict(extra="forbid")
 
-    text: str
     title: str
 
 
@@ -82,14 +78,6 @@ class ConfluenceGrepRow(BaseModel):
     after: tuple[str, ...]
 
 
-class ConfluenceGrepAnswer(BaseModel):
-    """Найденные совпадения."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    rows: tuple[ConfluenceGrepRow, ...]
-
-
 class ConfluenceSearchRequest(ConfluenceCall):
     """Поиск страниц по CQL."""
 
@@ -112,14 +100,6 @@ class ConfluenceSearchHit(BaseModel):
     excerpt: str
 
 
-class ConfluenceSearchAnswer(BaseModel):
-    """Результаты поиска по порядку выдачи Confluence."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    hits: tuple[ConfluenceSearchHit, ...]
-
-
 class ConfluenceSpacesRequest(ConfluenceCall):
     """Список пространств."""
 
@@ -139,14 +119,6 @@ class ConfluenceSpace(BaseModel):
     type: str
 
 
-class ConfluenceSpacesAnswer(BaseModel):
-    """Пространства, доступные учётной записи."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    spaces: tuple[ConfluenceSpace, ...]
-
-
 class ConfluenceAttachmentRequest(ConfluenceCall):
     """Скачать вложение страницы и распарсить его."""
 
@@ -156,11 +128,3 @@ class ConfluenceAttachmentRequest(ConfluenceCall):
     body_format: str = Field(min_length=1)
     filename: str = Field(min_length=1)
     params: ParseParams
-
-
-class ConfluenceAttachmentAnswer(BaseModel):
-    """Текст вложения целиком."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    text: str

@@ -5,9 +5,7 @@ from boba.tool.kb.html.protocol import (
     ConfluenceSection,
     ConfluenceSectionsAnswer,
     ConfluenceSectionsRequest,
-    HtmlToMarkdownAnswer,
     HtmlToMarkdownRequest,
-    PlainTextAnswer,
     PlainTextRequest,
 )
 
@@ -16,8 +14,6 @@ __all__ = [
     "ConfluenceSectionsAnswer",
     "ConfluenceSectionsRequest",
     "HtmlCaller",
-    "HtmlToMarkdownAnswer",
     "HtmlToMarkdownRequest",
-    "PlainTextAnswer",
     "PlainTextRequest",
 ]

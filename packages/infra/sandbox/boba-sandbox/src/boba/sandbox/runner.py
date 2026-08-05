@@ -56,7 +56,12 @@ class SandboxRunner:
         self._profile = profile
         self._path_vars = path_vars
 
-    def run(self, command: str, stdin: str) -> SandboxOutcome:
+    def run(
+        self,
+        command: str,
+        stdin: str,
+        stdout_sink: Callable[[bytes], None] | None = None,
+    ) -> SandboxOutcome:
         rendered = self._profile.render(dict(self._path_vars()))
         self._prepare_dirs(rendered)
 
@@ -82,6 +87,7 @@ class SandboxRunner:
                 max_output_bytes=rendered.max_output_bytes,
                 cwd="/",
                 env=os.environ,
+                stdout_sink=stdout_sink,
                 limits=runner_limits,
                 cgroup_dir=cgroup_dir,
             )

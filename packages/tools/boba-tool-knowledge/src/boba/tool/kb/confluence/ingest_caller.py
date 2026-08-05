@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.launcher import LauncherFactory, NoChunks
 
 __all__ = ["ConfluenceIngestCaller", "IngestAnswer", "IngestRequest"]
 
@@ -91,4 +91,6 @@ class ConfluenceIngestCaller:
             prune_missing=prune_missing,
             force_update=force_update,
         )
-        return self._caller.call_json(self.ENTRY, request, IngestAnswer).stats
+        return self._caller.call_stream(
+            self.ENTRY, request, NoChunks(), IngestAnswer
+        ).stats

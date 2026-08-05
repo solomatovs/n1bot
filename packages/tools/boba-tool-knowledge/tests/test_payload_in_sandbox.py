@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 import zipfile
+from collections.abc import Sequence
 from io import BytesIO
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 import pytest
 from conftest import (
@@ -20,6 +21,7 @@ from conftest import (
     needs_userns,
     sandbox_profile,
 )
+from pydantic import BaseModel
 
 from boba.sandbox import (
     SandboxCaller,
@@ -29,28 +31,61 @@ from boba.sandbox import (
 )
 from boba.tool.doc.liteparse import (
     LiteParseCaller,
-    ParseBytesAnswer,
     ParseBytesRequest,
 )
-from boba.tool.doc.liteparse.protocol import ParsedPage, ParseParams
+from boba.tool.doc.liteparse.protocol import ParseBytesTrailer, ParseParams
 from boba.tool.doc.protocol import (
-    DocOutlineAnswer,
-    DocPagesAnswer,
+    DocOutlineRow,
+    DocOutlineTrailer,
     DocPagesRequest,
+    DocPagesTrailer,
     DocParams,
     DocPathRequest,
-    DocSearchAnswer,
     DocSearchRequest,
+    DocSearchRow,
+    DocSearchTrailer,
 )
 from boba.tool.kb.html import (
-    ConfluenceSectionsAnswer,
+    ConfluenceSection,
     ConfluenceSectionsRequest,
-    HtmlToMarkdownAnswer,
     HtmlToMarkdownRequest,
-    PlainTextAnswer,
     PlainTextRequest,
 )
 from boba.tool.kb.html.caller import HtmlCaller
+from boba.toolkit.launcher import (
+    EmptyTrailer,
+    RowCollector,
+    TextCollector,
+)
+
+_MAX_CHARS = 50_000_000
+
+
+def _text_of(
+    caller: SandboxCaller,
+    entry: Sequence[str],
+    request: BaseModel,
+    trailer: type[M],
+) -> tuple[str, M]:
+    """Текстовый поток payload'а: кадры собираются, трейлер разбирается схемой."""
+    collector = TextCollector(max_chars=_MAX_CHARS, limit_rows=None, header_lines=0)
+    answer = caller.call_stream(entry, request, collector, trailer)
+    return collector.text(), answer
+
+
+def _rows_of(
+    caller: SandboxCaller,
+    entry: Sequence[str],
+    request: BaseModel,
+    trailer: type[M],
+) -> tuple[list[dict[str, Any]], M]:
+    """Строчный поток payload'а: кадры-записи собираются в список."""
+    collector = RowCollector(max_chars=_MAX_CHARS, limit_rows=None)
+    answer = caller.call_stream(entry, request, collector, trailer)
+    return collector.rows(), answer
+
+
+M = TypeVar("M", bound=BaseModel)
 
 _TESSDATA = "/usr/share/tessdata"
 
@@ -123,9 +158,11 @@ class TestDocumentsInSandbox:
             pages="1-2",
             params=_doc_params(),
         )
-        answer = _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocPagesAnswer)
-        assert answer.pages == (1, 2)
-        assert "Alpha page one" in answer.text
+        text, trailer = _text_of(
+            _caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer
+        )
+        assert trailer.pages == (1, 2)
+        assert "Alpha page one" in text
 
     def test_document_outline(self, docs: Path) -> None:
         request = DocPathRequest(
@@ -133,13 +170,14 @@ class TestDocumentsInSandbox:
             path="/workspace/report.pdf",
             params=_doc_params(),
         )
-        answer = _caller(
-            docs).call_json(LiteParseCaller.ENTRY,
-            request,
-            DocOutlineAnswer,
+        raw, _ = _rows_of(
+            _caller(docs), LiteParseCaller.ENTRY, request, DocOutlineTrailer
         )
-        assert [row.page for row in answer.rows] == [1, 2]
-        assert answer.rows[0].chars > 0
+        rows: list[DocOutlineRow] = []
+        for item in raw:
+            rows.append(DocOutlineRow.model_validate(item))
+        assert [row.page for row in rows] == [1, 2]
+        assert rows[0].chars > 0
 
     def test_search_document(self, docs: Path) -> None:
         request = DocSearchRequest(
@@ -150,35 +188,36 @@ class TestDocumentsInSandbox:
             max_matches=50,
             params=_doc_params(),
         )
-        answer = _caller(
-            docs).call_json(LiteParseCaller.ENTRY,
-            request,
-            DocSearchAnswer,
+        raw, _ = _rows_of(
+            _caller(docs), LiteParseCaller.ENTRY, request, DocSearchTrailer
         )
-        assert [row.page for row in answer.rows] == [1, 2]
-        assert "Alpha" in answer.rows[0].snippet
+        rows: list[DocSearchRow] = []
+        for item in raw:
+            rows.append(DocSearchRow.model_validate(item))
+        assert [row.page for row in rows] == [1, 2]
+        assert "Alpha" in rows[0].snippet
 
     def test_read_document_page_subset(self, docs: Path) -> None:
-        answer = _caller(docs).call_json(
-            LiteParseCaller.ENTRY,
-            DocPagesRequest(
-                op=DocPagesRequest.OP,
-                path="/workspace/report.pdf",
-                pages="2",
-                params=_doc_params(),
-            ),
-            DocPagesAnswer,
+        request = DocPagesRequest(
+            op=DocPagesRequest.OP,
+            path="/workspace/report.pdf",
+            pages="2",
+            params=_doc_params(),
         )
-        assert answer.pages == (2,)
-        assert "Beta page two" in answer.text
+        text, trailer = _text_of(
+            _caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer
+        )
+        assert trailer.pages == (2,)
+        assert "Beta page two" in text
 
     def test_parse_bytes(self) -> None:
         """Вложения приезжают содержимым: файловая система не нужна."""
         request = ParseBytesRequest.of(_PDF, "report.pdf", _params())
-        answer = _caller().call_json(LiteParseCaller.ENTRY, request, ParseBytesAnswer)
-        assert answer.num_pages == 2
-        assert isinstance(answer.pages[0], ParsedPage)
-        assert "Alpha page one" in answer.pages[0].text
+        rows, trailer = _rows_of(
+            _caller(), LiteParseCaller.ENTRY, request, ParseBytesTrailer
+        )
+        assert trailer.num_pages == 2
+        assert "Alpha page one" in rows[0]["text"]
 
     def test_small_address_space_is_reported(self, docs: Path) -> None:
         """Заниженный RLIMIT_AS ломает pdfium — ошибка должна это показать."""
@@ -190,7 +229,7 @@ class TestDocumentsInSandbox:
         )
         caller = _caller(docs, max_memory_bytes=1024 * 1024 * 1024)
         with pytest.raises(SandboxPayloadError) as failure:
-            caller.call_json(LiteParseCaller.ENTRY, request, DocPagesAnswer)
+            _text_of(caller, LiteParseCaller.ENTRY, request, DocPagesTrailer)
         message = str(failure.value)
         assert "pdfium" in message
         assert "RLIMIT_AS" in message, (
@@ -208,7 +247,7 @@ class TestDocumentsInSandbox:
             params=params,
         )
         with pytest.raises(SandboxPayloadError, match="каталога моделей"):
-            _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocPagesAnswer)
+            _text_of(_caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer)
 
     def test_missing_file_is_reported(self, docs: Path) -> None:
         request = DocPagesRequest(
@@ -218,7 +257,7 @@ class TestDocumentsInSandbox:
             params=_doc_params(),
         )
         with pytest.raises(SandboxPayloadError, match="exited with code"):
-            _caller(docs).call_json(LiteParseCaller.ENTRY, request, DocPagesAnswer)
+            _text_of(_caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer)
 
 
 @needs_sandbox
@@ -276,26 +315,26 @@ class TestOfficeNonAsciiNames:
         (workspace / self.CYRILLIC_NAME).write_bytes(payload)
         return workspace
 
-    def _read(self, workspace: Path, name: str) -> DocPagesAnswer:
+    def _read(self, workspace: Path, name: str) -> tuple[str, DocPagesTrailer]:
         request = DocPagesRequest(
             op=DocPagesRequest.OP,
             path=f"/workspace/{name}",
             pages="1",
             params=_doc_params(),
         )
-        return _caller(workspace).call_json(
-            LiteParseCaller.ENTRY, request, DocPagesAnswer
+        return _text_of(
+            _caller(workspace), LiteParseCaller.ENTRY, request, DocPagesTrailer
         )
 
     def test_ascii_named_docx_is_readable(self, office_docs: Path) -> None:
-        answer = self._read(office_docs, self.ASCII_NAME)
-        assert answer.pages == (1,)
-        assert "Alpha section one" in answer.text
+        text, trailer = self._read(office_docs, self.ASCII_NAME)
+        assert trailer.pages == (1,)
+        assert "Alpha section one" in text
 
     def test_cyrillic_named_docx_is_readable(self, office_docs: Path) -> None:
-        answer = self._read(office_docs, self.CYRILLIC_NAME)
-        assert answer.pages == (1,)
-        assert "Alpha section one" in answer.text
+        text, trailer = self._read(office_docs, self.CYRILLIC_NAME)
+        assert trailer.pages == (1,)
+        assert "Alpha section one" in text
 
 
 @needs_sandbox
@@ -306,25 +345,24 @@ class TestPagesInSandbox:
     def test_to_markdown(self) -> None:
         html = "<html><body><h1>Заголовок</h1><p>Абзац</p></body></html>"
         request = HtmlToMarkdownRequest.of(html, "ATX")
-        answer = _caller().call_json(HtmlCaller.ENTRY, request, HtmlToMarkdownAnswer)
-        assert "# Заголовок" in answer.markdown
+        markdown, _ = _text_of(_caller(), HtmlCaller.ENTRY, request, EmptyTrailer)
+        assert "# Заголовок" in markdown
 
     def test_plain_text(self) -> None:
         request = PlainTextRequest.of("<p>Текст <b>жирный</b></p>")
-        answer = _caller().call_json(HtmlCaller.ENTRY, request, PlainTextAnswer)
-        assert answer.text == "Текст жирный"
+        text, _ = _text_of(_caller(), HtmlCaller.ENTRY, request, EmptyTrailer)
+        assert text == "Текст жирный"
 
     def test_confluence_sections(self) -> None:
         request = ConfluenceSectionsRequest.of(_CONFLUENCE_HTML, "Страница")
-        answer = _caller(
-            ).call_json(HtmlCaller.ENTRY,
-            request,
-            ConfluenceSectionsAnswer,
-        )
-        assert [s.heading_text for s in answer.sections] == ["Введение", "Детали"]
-        assert answer.sections[0].heading_path == "Страница › Введение"
-        assert answer.sections[0].anchor == "intro"
-        for section in answer.sections:
+        raw, _ = _rows_of(_caller(), HtmlCaller.ENTRY, request, EmptyTrailer)
+        sections: list[ConfluenceSection] = []
+        for item in raw:
+            sections.append(ConfluenceSection.model_validate(item))
+        assert [s.heading_text for s in sections] == ["Введение", "Детали"]
+        assert sections[0].heading_path == "Страница › Введение"
+        assert sections[0].anchor == "intro"
+        for section in sections:
             assert "служебное" not in section.content
 
 

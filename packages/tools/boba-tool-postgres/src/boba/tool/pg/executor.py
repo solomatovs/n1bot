@@ -11,7 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.db.postgres import PostgresConfig
 from boba.tool.pg.caller import PgCaller
-from boba.toolkit.launcher import LauncherError
+from boba.toolkit.launcher import (
+    CollectorCapacityError,
+    LauncherError,
+    RowCollector,
+    TextCollector,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,17 +119,26 @@ class SqlExecutor:
         return self._cfg.resolve(connection_name).read_only()
 
     def execute_copy(self, query: str, *, connection_name: str) -> str:
+        collector = TextCollector(
+            max_chars=self._cfg.max_bytes,
+            limit_rows=self._cfg.max_rows,
+            header_lines=1,
+        )
         try:
-            answer = self._caller.copy(
+            trailer = self._caller.copy(
                 connection=self.connection_of(connection_name),
                 sql=query,
                 max_bytes=self._cfg.max_bytes,
+                sink=collector,
             )
         except LauncherError as e:
             raise SqlQueryError(
                 f"SQL copy failed (connection_name={connection_name!r}): {e}",
             ) from e
-        return answer.text
+        if trailer.truncated:
+            msg = f"pg copy: stream exceeded max_bytes {self._cfg.max_bytes}"
+            raise CollectorCapacityError(msg)
+        return collector.text()
 
     def execute(
         self,
@@ -135,18 +149,20 @@ class SqlExecutor:
         params: Sequence[Any] | None = None,
     ) -> SqlResult:
         effective_limit = min(max(row_limit, 1), self._cfg.max_rows)
+        collector = RowCollector(
+            max_chars=self._cfg.max_bytes,
+            limit_rows=effective_limit,
+        )
         try:
-            answer = self._caller.query(
+            trailer = self._caller.query(
                 connection=self.connection_of(connection_name),
                 sql=query,
                 params=params or (),
                 row_limit=effective_limit,
+                sink=collector,
             )
         except LauncherError as e:
             raise SqlQueryError(
                 f"SQL execute failed (connection_name={connection_name!r}): {e}",
             ) from e
-        rows: list[dict[str, Any]] = []
-        for row in answer.rows:
-            rows.append(dict(row))
-        return SqlResult(rows=rows, truncated=answer.truncated)
+        return SqlResult(rows=collector.rows(), truncated=trailer.truncated)

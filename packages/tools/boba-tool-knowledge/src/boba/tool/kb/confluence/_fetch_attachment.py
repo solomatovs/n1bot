@@ -62,4 +62,4 @@ def confluence_fetch_attachment(
         filename=filename,
         params=cfg.parse_params(),
     )
-    return caller.attachment(request).text
+    return caller.attachment(request)

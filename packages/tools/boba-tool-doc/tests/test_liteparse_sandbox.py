@@ -33,6 +33,8 @@ from boba.tool.doc.liteparse import (
     SandboxLiteParseReader,
     SandboxParserConfig,
 )
+from boba.tool.doc.liteparse.protocol import ParseBytesTrailer, ParsedPage
+from boba.toolkit.launcher import ChunkSink
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -109,32 +111,57 @@ class _LocalCaller:
         self.requests: list[dict[str, Any]] = []
 
     def call_text(self, command: str, stdin: str) -> Any:
-        raise NotImplementedError("этим инструментам нужен только call_json")
+        raise NotImplementedError("этим инструментам нужен только call_stream")
 
-    def call_json(
+    def call_stream(
         self,
         entry: Sequence[str],
         request: BaseModel,
-        schema: type[BaseModel],
+        sink: ChunkSink,
+        trailer: type[BaseModel],
     ) -> Any:
         body = json.loads(request.model_dump_json())
         self.requests.append(body)
+        run = _PayloadRun(json.dumps(body))
+        if run.returncode != 0:
+            raise SandboxPayloadError(run.stderr)
+        for chunk in run.chunks:
+            sink.write(chunk)
+        if run.trailer is None:
+            msg = f"payload не напечатал трейлер: {run.stdout!r}"
+            raise SandboxPayloadError(msg)
+        return trailer.model_validate(run.trailer)
+
+
+class _PayloadRun:
+    """Локальный запуск payload'а: кадры и трейлер по тому же контракту."""
+
+    def __init__(self, stdin: str) -> None:
         result = subprocess.run(  # noqa: S603
             [sys.executable, "-m", PAYLOAD_MODULE],
-            input=json.dumps(body),
+            input=stdin,
             capture_output=True,
             text=True,
             check=False,
         )
-        if result.returncode != 0:
-            raise SandboxPayloadError(result.stderr)
+        self.returncode = result.returncode
+        self.stderr = result.stderr
+        self.stdout = result.stdout
+        self.chunks: list[str] = []
+        self.trailer: dict[str, Any] | None = None
         for line in result.stdout.splitlines():
+            if line.startswith(SandboxPayload.CHUNK_MARKER):
+                body = line[len(SandboxPayload.CHUNK_MARKER) :]
+                self.chunks.append(json.loads(body))
+                continue
             if line.startswith(SandboxPayload.MARKER):
-                return schema.model_validate(
-                    json.loads(line[len(SandboxPayload.MARKER) :])
-                )
-        msg = f"payload не напечатал результат: {result.stdout!r}"
-        raise SandboxPayloadError(msg)
+                self.trailer = json.loads(line[len(SandboxPayload.MARKER) :])
+
+    def rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for chunk in self.chunks:
+            rows.append(json.loads(chunk))
+        return rows
 
 
 @pytest.fixture
@@ -158,19 +185,14 @@ class TestParseBytesContract:
 
     @staticmethod
     def _run(request: ParseBytesRequest) -> ParseBytesAnswer:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=request.model_dump_json(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        line = result.stdout.splitlines()[-1]
-        assert line.startswith(SandboxPayload.MARKER)
-        return ParseBytesAnswer.model_validate(
-            json.loads(line[len(SandboxPayload.MARKER) :])
-        )
+        run = _PayloadRun(request.model_dump_json())
+        assert run.returncode == 0, run.stderr
+        assert run.trailer is not None
+        pages: list[ParsedPage] = []
+        for row in run.rows():
+            pages.append(ParsedPage.model_validate(row))
+        trailer = ParseBytesTrailer.model_validate(run.trailer)
+        return ParseBytesAnswer(num_pages=trailer.num_pages, pages=tuple(pages))
 
     @staticmethod
     def _request(data: bytes, filename: str) -> ParseBytesRequest:

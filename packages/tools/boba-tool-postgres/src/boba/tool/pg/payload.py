@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import codecs
 import sys
 from typing import Any, ClassVar
 
@@ -12,7 +13,8 @@ import psycopg
 from psycopg.rows import dict_row
 
 from boba.db.postgres import PayloadPostgres
-from boba.toolkit.payload import PayloadEntry
+from boba.toolkit.launcher import RowStream
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class PostgresOps:
@@ -21,43 +23,48 @@ class PostgresOps:
     OPS: ClassVar[tuple[str, ...]] = ("pg_query", "pg_copy")
 
     @classmethod
-    async def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         op = request["op"]
         if op == "pg_query":
-            return await cls.query(request)
+            return await cls.query(request, emit)
         if op == "pg_copy":
-            return await cls.copy(request)
+            return await cls.copy(request, emit)
         msg = f"unknown postgres op: {op!r}"
         raise ValueError(msg)
 
     @classmethod
-    async def query(cls, request: dict[str, Any]) -> dict[str, Any]:
-        """Запрос с лимитом строк: лишняя строка ловит факт усечения."""
+    async def query(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:
+        """Запрос с лимитом: строки уходят кадрами, лишняя строка ловит усечение."""
         limit = request["row_limit"]
-        fetch = limit + 1
         params = request["params"]
         if not params:
             params = None
+        emitted = 0
+        truncated = False
         conn = await PayloadPostgres.connect(request)
         async with conn, conn.cursor(row_factory=dict_row) as cur:
             try:
                 await cur.execute(request["sql"], params)
-                fetched = await cur.fetchmany(fetch)
+                async for row in cur:
+                    if emitted >= limit:
+                        truncated = True
+                        break
+                    emit(RowStream.encode(PayloadPostgres.jsonable(row)))
+                    emitted += 1
             except psycopg.Error as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
                 raise RuntimeError(msg) from e
-        truncated = len(fetched) > limit
-        rows: list[dict[str, Any]] = []
-        for row in fetched[:limit]:
-            rows.append(PayloadPostgres.jsonable(row))
-        return {"rows": rows, "truncated": truncated}
+        return {"truncated": truncated}
 
     @classmethod
-    async def copy(cls, request: dict[str, Any]) -> dict[str, Any]:
-        """COPY ... TO STDOUT: текстовая выгрузка с потолком по байтам."""
+    async def copy(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:
+        """COPY ... TO STDOUT: блоки уходят кадрами сразу, потолок по байтам."""
         statement = f"COPY ({request['sql']}) TO STDOUT WITH (FORMAT TEXT, HEADER)"
         max_bytes = request["max_bytes"]
-        chunks: list[bytes] = []
+        # инкрементальный декодер: блоки COPY режут utf-8 в произвольном месте
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         size = 0
         truncated = False
         conn = await PayloadPostgres.connect(request)
@@ -67,17 +74,22 @@ class PostgresOps:
                     async for block in copy_out:
                         data = bytes(block)
                         if size + len(data) > max_bytes:
-                            chunks.append(data[: max_bytes - size])
+                            data = data[: max_bytes - size]
                             truncated = True
-                            break
-                        chunks.append(data)
                         size += len(data)
+                        text = decoder.decode(data)
+                        if text:
+                            emit(text)
+                        if truncated:
+                            break
             except psycopg.Error as e:
                 msg = f"copy failed: {type(e).__name__}: {e}"
                 raise RuntimeError(msg) from e
-        text = b"".join(chunks).decode("utf-8", errors="replace")
-        return {"text": text, "truncated": truncated}
+        tail = decoder.decode(b"", True)
+        if tail:
+            emit(tail)
+        return {"truncated": truncated}
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main_async(PostgresOps.dispatch))
+    sys.exit(PayloadEntry.main(PostgresOps.dispatch))

@@ -29,3 +29,8 @@ class DocToolsConfig(SandboxParserConfig):
         ge=1,
         description="Максимум совпадений в ответе search_document.",
     )
+    max_result_chars: int = Field(
+        default=10_000_000,
+        ge=1,
+        description="Потолок суммарного объёма потока строк выдачи (символов).",
+    )

@@ -9,16 +9,16 @@ from langchain_core.tools import BaseTool
 from pydantic import Field
 
 from boba.tool.pg.caller import PgCaller
-from boba.tool.pg.copy_buffer import (
-    BufferCapacityError,
-    RowLimitExceededError,
-)
 from boba.tool.pg.executor import (
     SqlExecutor,
     SqlExecutorConfig,
     SqlQueryError,
 )
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.launcher import (
+    CollectorCapacityError,
+    CollectorRowLimitError,
+    LauncherFactory,
+)
 from boba.toolkit.result import (
     ErrorResult,
     PgCopyTextResult,
@@ -212,7 +212,7 @@ class PgTools:
             executor = owner._executor
             try:
                 text = executor.execute_copy(sql, connection_name=target)
-            except BufferCapacityError:
+            except CollectorCapacityError:
                 return pack_result(
                     ErrorResult(
                         message=(
@@ -222,7 +222,7 @@ class PgTools:
                         error_kind="result_too_large",
                     )
                 )
-            except RowLimitExceededError:
+            except CollectorRowLimitError:
                 return pack_result(
                     ErrorResult(
                         message=(

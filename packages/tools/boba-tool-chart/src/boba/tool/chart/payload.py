@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 
 from plotly import graph_objects as go
 
-from boba.toolkit.payload import PayloadEntry
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class ChartOps:
@@ -17,7 +17,9 @@ class ChartOps:
     OPS: ClassVar[tuple[str, ...]] = ("validate_figure",)
 
     @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         op = request["op"]
         if op == "validate_figure":
             return cls.validate_figure(request)

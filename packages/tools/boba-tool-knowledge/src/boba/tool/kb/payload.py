@@ -10,7 +10,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 
 from boba.db.postgres import PayloadPostgres
-from boba.toolkit.payload import PayloadEntry
+from boba.toolkit.launcher import RowStream
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class KbOps:
@@ -19,12 +20,14 @@ class KbOps:
     OPS: ClassVar[tuple[str, ...]] = ("kb_vector_search", "kb_fts_search")
 
     @classmethod
-    async def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         op = request["op"]
         if op == "kb_vector_search":
-            return await cls.vector_search(request)
+            return await cls.vector_search(request, emit)
         if op == "kb_fts_search":
-            return await cls.fts_search(request)
+            return await cls.fts_search(request, emit)
         msg = f"unknown kb op: {op!r}"
         raise ValueError(msg)
 
@@ -46,7 +49,9 @@ class KbOps:
         return values, len(values)
 
     @classmethod
-    async def vector_search(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def vector_search(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         vector, dim = cls.embed(request)
         statement = sql.SQL(request["sql_template"]).format(
             dim=sql.Literal(dim),
@@ -58,10 +63,13 @@ class KbOps:
             "snippet_chars": request["snippet_chars"],
             "top_k": request["top_k"],
         }
-        return {"rows": await cls.select(request, statement, params)}
+        await cls.select(request, statement, params, emit)
+        return {}
 
     @classmethod
-    async def fts_search(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def fts_search(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         statement = sql.SQL(request["sql_template"]).format(
             chunks_table=cls.table(request),
             schema=sql.Identifier(request["schema_name"]),
@@ -72,7 +80,8 @@ class KbOps:
             "snippet_chars": request["snippet_chars"],
             "top_k": request["top_k"],
         }
-        return {"rows": await cls.select(request, statement, params)}
+        await cls.select(request, statement, params, emit)
+        return {}
 
     @staticmethod
     def table(request: dict[str, Any]) -> sql.Identifier:
@@ -80,17 +89,19 @@ class KbOps:
 
     @classmethod
     async def select(
-        cls, request: dict[str, Any], statement: sql.Composed, params: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+        cls,
+        request: dict[str, Any],
+        statement: sql.Composed,
+        params: dict[str, Any],
+        emit: ChunkEmitter,
+    ) -> None:
+        """Каждая строка выдачи уходит кадром-записью, не задерживаясь в памяти."""
         conn = await PayloadPostgres.connect(request)
         async with conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(statement, params)
-            fetched = await cur.fetchall()
-        rows: list[dict[str, Any]] = []
-        for row in fetched:
-            rows.append(PayloadPostgres.jsonable(row))
-        return rows
+            async for row in cur:
+                emit(RowStream.encode(PayloadPostgres.jsonable(row)))
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main_async(KbOps.dispatch))
+    sys.exit(PayloadEntry.main(KbOps.dispatch))

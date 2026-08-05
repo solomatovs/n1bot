@@ -17,14 +17,13 @@ from boba.sandbox import (
     SandboxToolConfig,
 )
 from boba.tool.kb.html import (
-    ConfluenceSectionsAnswer,
+    ConfluenceSection,
     ConfluenceSectionsRequest,
     HtmlCaller,
-    HtmlToMarkdownAnswer,
     HtmlToMarkdownRequest,
-    PlainTextAnswer,
     PlainTextRequest,
 )
+from boba.toolkit.launcher import ChunkSink
 
 _HTML = (
     "<html><body><h1>Заголовок</h1><p>Абзац с <b>жирным</b>.</p>"
@@ -83,32 +82,61 @@ class _LocalCaller:
         self.requests: list[dict[str, Any]] = []
 
     def call_text(self, command: str, stdin: str) -> Any:
-        raise NotImplementedError("этим инструментам нужен только call_json")
+        raise NotImplementedError("этим инструментам нужен только call_stream")
 
-    def call_json(
+    def call_stream(
         self,
         entry: Sequence[str],
         request: BaseModel,
-        schema: type[BaseModel],
+        sink: ChunkSink,
+        trailer: type[BaseModel],
     ) -> Any:
         body = json.loads(request.model_dump_json())
         self.requests.append(body)
+        run = _PayloadRun(json.dumps(body))
+        if run.returncode != 0:
+            raise SandboxPayloadError(run.stderr)
+        for chunk in run.chunks:
+            sink.write(chunk)
+        if run.trailer is None:
+            msg = f"payload не напечатал трейлер: {run.stdout!r}"
+            raise SandboxPayloadError(msg)
+        return trailer.model_validate(run.trailer)
+
+
+class _PayloadRun:
+    """Локальный запуск payload'а: кадры и трейлер по тому же контракту."""
+
+    def __init__(self, stdin: str) -> None:
         result = subprocess.run(  # noqa: S603
             [sys.executable, "-m", PAYLOAD_MODULE],
-            input=json.dumps(body),
+            input=stdin,
             capture_output=True,
             text=True,
             check=False,
         )
-        if result.returncode != 0:
-            raise SandboxPayloadError(result.stderr)
+        self.returncode = result.returncode
+        self.stderr = result.stderr
+        self.stdout = result.stdout
+        self.chunks: list[str] = []
+        self.trailer: dict[str, Any] | None = None
         for line in result.stdout.splitlines():
+            if line.startswith(SandboxPayload.CHUNK_MARKER):
+                body = line[len(SandboxPayload.CHUNK_MARKER) :]
+                self.chunks.append(json.loads(body))
+                continue
             if line.startswith(SandboxPayload.MARKER):
-                return schema.model_validate(
-                    json.loads(line[len(SandboxPayload.MARKER) :])
-                )
-        msg = f"payload не напечатал результат: {result.stdout!r}"
-        raise SandboxPayloadError(msg)
+                self.trailer = json.loads(line[len(SandboxPayload.MARKER) :])
+
+    @property
+    def text(self) -> str:
+        return "".join(self.chunks)
+
+    def rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for chunk in self.chunks:
+            rows.append(json.loads(chunk))
+        return rows
 
 
 @pytest.fixture
@@ -120,32 +148,23 @@ class TestPayloadContract:
     """Payload реально конвертирует HTML и отвечает маркерной строкой."""
 
     @staticmethod
-    def _run(request: HtmlToMarkdownRequest) -> HtmlToMarkdownAnswer:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=request.model_dump_json(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        line = result.stdout.splitlines()[-1]
-        assert line.startswith(SandboxPayload.MARKER)
-        return HtmlToMarkdownAnswer.model_validate(
-            json.loads(line[len(SandboxPayload.MARKER) :])
-        )
+    def _run(request: HtmlToMarkdownRequest) -> str:
+        run = _PayloadRun(request.model_dump_json())
+        assert run.returncode == 0, run.stderr
+        assert run.trailer is not None
+        return run.text
 
     def test_headings_and_emphasis(self) -> None:
-        answer = self._run(HtmlToMarkdownRequest.of(_HTML, "ATX"))
-        assert "# Заголовок" in answer.markdown
-        assert "**жирным**" in answer.markdown
+        markdown = self._run(HtmlToMarkdownRequest.of(_HTML, "ATX"))
+        assert "# Заголовок" in markdown
+        assert "**жирным**" in markdown
 
     def test_links_are_kept(self) -> None:
-        answer = self._run(HtmlToMarkdownRequest.of(_HTML, "ATX"))
-        assert "[ссылка](https://example.com)" in answer.markdown
+        markdown = self._run(HtmlToMarkdownRequest.of(_HTML, "ATX"))
+        assert "[ссылка](https://example.com)" in markdown
 
     def test_empty_html_is_allowed(self) -> None:
-        assert self._run(HtmlToMarkdownRequest.of("", "ATX")).markdown == ""
+        assert self._run(HtmlToMarkdownRequest.of("", "ATX")) == ""
 
     def test_unknown_op_fails(self) -> None:
         request = json.loads(HtmlToMarkdownRequest.of(_HTML, "ATX").model_dump_json())
@@ -174,84 +193,68 @@ class TestConfluenceSections:
     """Heading-aware нарезка страницы уехала в песочницу целиком."""
 
     @staticmethod
-    def _run(html: str, title: str) -> ConfluenceSectionsAnswer:
+    def _run(html: str, title: str) -> list[ConfluenceSection]:
         request = ConfluenceSectionsRequest.of(html, title)
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=request.model_dump_json(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        line = result.stdout.splitlines()[-1]
-        return ConfluenceSectionsAnswer.model_validate(
-            json.loads(line[len(SandboxPayload.MARKER) :])
-        )
+        run = _PayloadRun(request.model_dump_json())
+        assert run.returncode == 0, run.stderr
+        sections: list[ConfluenceSection] = []
+        for row in run.rows():
+            sections.append(ConfluenceSection.model_validate(row))
+        return sections
 
     def test_section_per_heading(self) -> None:
-        answer = self._run(_CONFLUENCE_HTML, "Страница")
-        assert [s.heading_text for s in answer.sections] == ["Введение", "Детали"]
-        assert [s.heading_level for s in answer.sections] == [1, 2]
+        sections = self._run(_CONFLUENCE_HTML, "Страница")
+        assert [s.heading_text for s in sections] == ["Введение", "Детали"]
+        assert [s.heading_level for s in sections] == [1, 2]
 
     def test_breadcrumb_starts_from_title(self) -> None:
-        answer = self._run(_CONFLUENCE_HTML, "Страница")
-        assert answer.sections[0].heading_path == "Страница › Введение"
-        assert answer.sections[1].heading_path == "Страница › Введение › Детали"
+        sections = self._run(_CONFLUENCE_HTML, "Страница")
+        assert sections[0].heading_path == "Страница › Введение"
+        assert sections[1].heading_path == "Страница › Введение › Детали"
 
     def test_text_follows_heading(self) -> None:
-        answer = self._run(_CONFLUENCE_HTML, "Страница")
-        assert answer.sections[0].content == "Введение\n\nПервый абзац."
+        sections = self._run(_CONFLUENCE_HTML, "Страница")
+        assert sections[0].content == "Введение\n\nПервый абзац."
 
     def test_macros_are_dropped(self) -> None:
         """Содержимое ac:*/ri: в текст не попадает."""
-        answer = self._run(_CONFLUENCE_HTML, "Страница")
-        for section in answer.sections:
+        for section in self._run(_CONFLUENCE_HTML, "Страница"):
             assert "служебное" not in section.content
 
     def test_anchor_from_html_id(self) -> None:
-        assert self._run(_CONFLUENCE_HTML, "Страница").sections[0].anchor == "intro"
+        assert self._run(_CONFLUENCE_HTML, "Страница")[0].anchor == "intro"
 
     def test_anchor_falls_back_to_index(self) -> None:
-        assert self._run(_CONFLUENCE_HTML, "Страница").sections[1].anchor == "idx:2"
+        assert self._run(_CONFLUENCE_HTML, "Страница")[1].anchor == "idx:2"
 
     def test_page_without_headings_gives_one_section(self) -> None:
-        answer = self._run("<html><body><p>Просто текст</p></body></html>", "Тема")
-        assert len(answer.sections) == 1
-        assert answer.sections[0].content == "Тема\n\nПросто текст"
-        assert answer.sections[0].heading_level == 0
-        assert answer.sections[0].anchor == ""
+        sections = self._run("<html><body><p>Просто текст</p></body></html>", "Тема")
+        assert len(sections) == 1
+        assert sections[0].content == "Тема\n\nПросто текст"
+        assert sections[0].heading_level == 0
+        assert sections[0].anchor == ""
 
     def test_empty_page_gives_nothing(self) -> None:
-        assert self._run("", "Тема").sections == ()
+        assert self._run("", "Тема") == []
 
 
 class TestPlainText:
     """Excerpt'ы поиска тоже разбираются в песочнице."""
 
     @staticmethod
-    def _run(html: str) -> PlainTextAnswer:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=PlainTextRequest.of(html).model_dump_json(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        line = result.stdout.splitlines()[-1]
-        return PlainTextAnswer.model_validate(
-            json.loads(line[len(SandboxPayload.MARKER) :])
-        )
+    def _run(html: str) -> str:
+        run = _PayloadRun(PlainTextRequest.of(html).model_dump_json())
+        assert run.returncode == 0, run.stderr
+        return run.text
 
     def test_tags_are_stripped(self) -> None:
-        assert self._run("<p>Текст <b>жирный</b></p>").text == "Текст жирный"
+        assert self._run("<p>Текст <b>жирный</b></p>") == "Текст жирный"
 
     def test_macros_are_dropped(self) -> None:
         html = (
             '<p>Видно</p><ac:structured-macro ac:name="x">скрыто</ac:structured-macro>'
         )
-        assert self._run(html).text == "Видно"
+        assert self._run(html) == "Видно"
 
 
 class TestHtmlCaller:

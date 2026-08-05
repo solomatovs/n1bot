@@ -96,7 +96,7 @@ def confluence_list_spaces(
         limit=cfg.page_size,
     )
     rows: list[dict[str, Any]] = []
-    for space in caller.spaces(request).spaces:
+    for space in caller.spaces(request):
         if not SpaceFilter.matches(space, pattern):
             continue
         rows.append(space.model_dump())

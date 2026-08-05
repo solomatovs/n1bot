@@ -9,10 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from boba.db.postgres import PostgresConfig
 
 __all__ = [
-    "PgCopyAnswer",
     "PgCopyRequest",
-    "PgQueryAnswer",
+    "PgCopyTrailer",
     "PgQueryRequest",
+    "PgQueryTrailer",
 ]
 
 
@@ -50,12 +50,11 @@ class PgQueryRequest(PgCall):
     row_limit: int = Field(ge=1)
 
 
-class PgQueryAnswer(BaseModel):
-    """Строки результата и признак того, что их было больше лимита."""
+class PgQueryTrailer(BaseModel):
+    """Итог запроса: строки ушли кадрами, здесь признак превышения лимита."""
 
     model_config = ConfigDict(extra="forbid")
 
-    rows: tuple[dict[str, Any], ...]
     truncated: bool
 
 
@@ -67,10 +66,9 @@ class PgCopyRequest(PgCall):
     max_bytes: int = Field(ge=1)
 
 
-class PgCopyAnswer(BaseModel):
-    """Текст выгрузки и признак обрезки по max_bytes."""
+class PgCopyTrailer(BaseModel):
+    """Итог выгрузки: текст ушёл кадрами, здесь только признак обрезки."""
 
     model_config = ConfigDict(extra="forbid")
 
-    text: str
     truncated: bool

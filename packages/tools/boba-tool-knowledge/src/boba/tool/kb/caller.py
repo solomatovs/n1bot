@@ -8,9 +8,9 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from boba.db.postgres import PostgresConfig
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.launcher import ChunkSink, LauncherFactory
 
-__all__ = ["KbCaller", "KbSearchAnswer", "KbSearchRequest"]
+__all__ = ["KbCaller", "KbSearchRequest", "KbSearchTrailer"]
 
 
 class KbSearchRequest(BaseModel):
@@ -44,12 +44,10 @@ class KbSearchRequest(BaseModel):
         )
 
 
-class KbSearchAnswer(BaseModel):
-    """Строки выдачи; в SearchHit их превращает приложение."""
+class KbSearchTrailer(BaseModel):
+    """Итог поиска: строки выдачи ушли кадрами-записями."""
 
     model_config = ConfigDict(extra="forbid")
-
-    rows: tuple[dict[str, Any], ...]
 
 
 class KbCaller:
@@ -76,7 +74,8 @@ class KbCaller:
         top_k: int,
         snippet_chars: int,
         embedding: Mapping[str, str],
-    ) -> KbSearchAnswer:
+        sink: ChunkSink,
+    ) -> KbSearchTrailer:
         request = KbSearchRequest(
             op=op,
             connection=connection,
@@ -89,4 +88,4 @@ class KbCaller:
             snippet_chars=snippet_chars,
             embedding=dict(embedding),
         )
-        return self._caller.call_json(self.ENTRY, request, KbSearchAnswer)
+        return self._caller.call_stream(self.ENTRY, request, sink, KbSearchTrailer)

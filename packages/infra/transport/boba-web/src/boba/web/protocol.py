@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
-    "WebFetchAnswer",
     "WebFetchRequest",
-    "WebGrepAnswer",
+    "WebFetchTrailer",
     "WebGrepRequest",
     "WebGrepRow",
+    "WebGrepTrailer",
     "WebProfile",
 ]
 
@@ -46,18 +46,14 @@ class WebFetchRequest(BaseModel):
     line_count: int = Field(ge=1)
 
 
-class WebFetchAnswer(BaseModel):
-    """Окно строк и сколько их всего в материализованном контенте."""
+class WebFetchTrailer(BaseModel):
+    """Итог скачивания: окно ушло кадрами, здесь счётчики для пагинации."""
 
     model_config = ConfigDict(extra="forbid")
 
-    content: str
     source_url: str
     total_lines: int = Field(ge=0)
     returned_lines: int = Field(ge=0)
-
-    def as_payload(self) -> dict[str, Any]:
-        return self.model_dump()
 
 
 class WebGrepRequest(BaseModel):
@@ -90,10 +86,9 @@ class WebGrepRow(BaseModel):
     after: tuple[str, ...]
 
 
-class WebGrepAnswer(BaseModel):
-    """Найденные совпадения по порядку в тексте."""
+class WebGrepTrailer(BaseModel):
+    """Итог поиска: совпадения ушли кадрами-записями."""
 
     model_config = ConfigDict(extra="forbid")
 
-    rows: tuple[WebGrepRow, ...]
     source_url: str

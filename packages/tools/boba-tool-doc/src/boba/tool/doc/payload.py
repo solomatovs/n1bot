@@ -19,23 +19,24 @@ from pydantic import BaseModel
 
 from boba.liteparse.engine import LiteParseEngine
 from boba.tool.doc.liteparse.protocol import (
-    ParseBytesAnswer,
     ParseBytesRequest,
+    ParseBytesTrailer,
     ParsedPage,
 )
 from boba.tool.doc.protocol import (
-    DocOutlineAnswer,
     DocOutlineRow,
-    DocPagesAnswer,
+    DocOutlineTrailer,
     DocPagesRequest,
+    DocPagesTrailer,
     DocPathRequest,
-    DocSearchAnswer,
     DocSearchRequest,
     DocSearchRow,
-    DocWindowAnswer,
+    DocSearchTrailer,
     DocWindowRequest,
+    DocWindowTrailer,
 )
-from boba.toolkit.payload import PayloadEntry
+from boba.toolkit.launcher import RowStream
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class TextClip:
@@ -118,8 +119,11 @@ class DocumentOps:
     )
 
     @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
-        handlers: dict[str, Callable[[dict[str, Any]], BaseModel]] = {
+    async def dispatch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
+        """Текст уходит кадрами-кусками, строки выдачи — кадрами-записями."""
+        handlers: dict[str, Callable[[dict[str, Any], ChunkEmitter], BaseModel]] = {
             DocPagesRequest.OP: cls.read_document,
             DocWindowRequest.OP: cls.read_document_window,
             DocPathRequest.OUTLINE: cls.document_outline,
@@ -132,28 +136,33 @@ class DocumentOps:
             msg = f"unknown document op: {op!r}"
             raise ValueError(msg)
 
-        answer = handlers[op](request)
-        return answer.model_dump()
+        trailer = handlers[op](request, emit)
+        return trailer.model_dump()
 
     @classmethod
-    def read_document(cls, request: dict[str, Any]) -> DocPagesAnswer:
+    def read_document(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> DocPagesTrailer:
         req = DocPagesRequest.model_validate(request)
         result = LiteParseEngine.parse_pages(req.params, req.path, req.pages)
 
         text, truncated = TextClip.clip(result.text, req.params.max_text_chars)
+        PayloadEntry.emit_text(emit, text)
         pages = tuple(cls._page_numbers(result))
-        return DocPagesAnswer(text=text, truncated=truncated, pages=pages)
+        return DocPagesTrailer(truncated=truncated, pages=pages)
 
     @classmethod
-    def read_document_window(cls, request: dict[str, Any]) -> DocWindowAnswer:
+    def read_document_window(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> DocWindowTrailer:
         req = DocWindowRequest.model_validate(request)
         result = LiteParseEngine.parse(req.params, req.path)
 
         full = result.text
         chunk = full[req.start_char : req.start_char + req.length]
         end = req.start_char + len(chunk)
-        return DocWindowAnswer(
-            text=chunk,
+        PayloadEntry.emit_text(emit, chunk)
+        return DocWindowTrailer(
             start_char=req.start_char,
             end_char=end,
             total_chars=len(full),
@@ -161,26 +170,32 @@ class DocumentOps:
         )
 
     @classmethod
-    def document_outline(cls, request: dict[str, Any]) -> DocOutlineAnswer:
+    def document_outline(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> DocOutlineTrailer:
         req = DocPathRequest.model_validate(request)
         result = LiteParseEngine.parse(req.params, req.path)
 
-        rows = tuple(cls._outline_rows(result))
-        return DocOutlineAnswer(num_pages=result.num_pages, rows=rows)
+        for row in cls._outline_rows(result):
+            emit(RowStream.encode(row.model_dump()))
+        return DocOutlineTrailer(num_pages=result.num_pages)
 
     @classmethod
-    def search_document(cls, request: dict[str, Any]) -> DocSearchAnswer:
+    def search_document(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> DocSearchTrailer:
         req = DocSearchRequest.model_validate(request)
         native = LiteParseEngine.parse_native(req.params, req.path)
 
-        rows: list[DocSearchRow] = []
+        emitted = 0
         for page in native.pages:
-            rows.extend(cls.search_page(page, req))
-            if len(rows) >= req.max_matches:
-                del rows[req.max_matches :]
-                return DocSearchAnswer(rows=tuple(rows), limit_reached=True)
+            for row in cls.search_page(page, req):
+                if emitted >= req.max_matches:
+                    return DocSearchTrailer(limit_reached=True)
+                emit(RowStream.encode(row.model_dump()))
+                emitted += 1
 
-        return DocSearchAnswer(rows=tuple(rows), limit_reached=False)
+        return DocSearchTrailer(limit_reached=False)
 
     @classmethod
     def search_page(cls, page: Any, req: DocSearchRequest) -> list[DocSearchRow]:
@@ -194,13 +209,16 @@ class DocumentOps:
         return list(matcher.rows(hits))
 
     @classmethod
-    def parse_bytes(cls, request: dict[str, Any]) -> ParseBytesAnswer:
+    def parse_bytes(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> ParseBytesTrailer:
         """Разобрать документ, приехавший содержимым в запросе (base64)."""
         req = ParseBytesRequest.model_validate(request)
         result = LiteParseEngine.parse_bytes(req.params, req.content(), req.filename)
 
-        pages = tuple(cls._parsed_pages(result))
-        return ParseBytesAnswer(num_pages=result.num_pages, pages=pages)
+        for page in cls._parsed_pages(result):
+            emit(RowStream.encode(page.model_dump()))
+        return ParseBytesTrailer(num_pages=result.num_pages)
 
     @staticmethod
     def _page_numbers(result: Any) -> Iterator[int]:

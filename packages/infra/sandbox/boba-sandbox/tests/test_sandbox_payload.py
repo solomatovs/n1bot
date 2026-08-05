@@ -1,4 +1,4 @@
-"""Payload-контракт: маркерная строка с JSON и жёсткий разбор результата."""
+"""Payload-контракт: кадры данных плюс трейлер и жёсткий разбор результата."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ from boba.sandbox import (
     SandboxPayloadError,
     SandboxProfile,
 )
+from boba.sandbox.caller import SandboxFrameDecoder
 from boba.sandbox.process_runner import RunResult
+from boba.toolkit.launcher import LauncherError, NoChunks, TextCollector
 
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
@@ -48,9 +50,15 @@ _PROFILE_BASE: dict[str, Any] = {
 
 
 class Answer(BaseModel):
-    """Схема ответа payload'а в тестах."""
+    """Схема трейлера payload'а в тестах."""
 
     text: str
+    pages: int
+
+
+class Trailer(BaseModel):
+    """Трейлер потокового payload'а: данные уехали кадрами."""
+
     pages: int
 
 
@@ -83,64 +91,107 @@ def _outcome(stdout: str, **kw: Any) -> SandboxOutcome:
     return SandboxOutcome("doc", RunResult(**fields), kw.pop("diagnostic", ""))
 
 
+def _decode(stdout: str, schema: type[Answer], **kw: Any) -> Answer:
+    """Разбор готового stdout: декодер кормится теми же байтами, что из процесса."""
+    collector = TextCollector(max_chars=1_000_000, limit_rows=None, header_lines=0)
+    decoder = SandboxFrameDecoder("doc", collector)
+    decoder.feed(stdout.encode("utf-8"))
+    return decoder.finish(_outcome(stdout, **kw), schema)
+
+
 class TestDecode:
     """Всё, что отклоняется от контракта, — ошибка, а не частичный результат."""
 
-    def test_marker_line_is_parsed(self) -> None:
+    def test_trailer_line_is_parsed(self) -> None:
         line = SandboxPayload.encode(Answer(text="привет", pages=2))
-        answer = SandboxPayload.decode(_outcome(line + "\n"), Answer)
+        answer = _decode(line + "\n", Answer)
         assert (answer.text, answer.pages) == ("привет", 2)
 
-    def test_free_output_around_marker_is_ignored(self) -> None:
+    def test_free_output_around_trailer_is_ignored(self) -> None:
         line = SandboxPayload.encode(Answer(text="ok", pages=1))
         stdout = f"загружаю\n{line}\nготово\n"
-        assert SandboxPayload.decode(_outcome(stdout), Answer).pages == 1
+        assert _decode(stdout, Answer).pages == 1
 
-    def test_missing_marker_is_error(self) -> None:
+    def test_data_chunks_reach_the_sink(self) -> None:
+        """Кадры уходят потребителю, трейлер данных не несёт."""
+        collector = TextCollector(max_chars=1000, limit_rows=None, header_lines=0)
+        decoder = SandboxFrameDecoder("doc", collector)
+        chunks = "".join(
+            [
+                SandboxPayload.encode_chunk("первый ") + "\n",
+                SandboxPayload.encode_chunk("второй") + "\n",
+            ]
+        )
+        stdout = chunks + SandboxPayload.encode(Answer(text="", pages=2)) + "\n"
+        decoder.feed(stdout.encode("utf-8"))
+        answer = decoder.finish(_outcome(stdout), Answer)
+        assert collector.text() == "первый второй"
+        assert answer.pages == 2
+
+    def test_chunks_arrive_split_across_reads(self) -> None:
+        """Границы чтения из пайпа не совпадают с границами строк."""
+        collector = TextCollector(max_chars=1000, limit_rows=None, header_lines=0)
+        decoder = SandboxFrameDecoder("doc", collector)
+        stdout = (
+            SandboxPayload.encode_chunk("данные") + "\n"
+            + SandboxPayload.encode(Answer(text="", pages=1)) + "\n"
+        )
+        raw = stdout.encode("utf-8")
+        for start in range(0, len(raw), 7):
+            decoder.feed(raw[start : start + 7])
+        answer = decoder.finish(_outcome(stdout), Answer)
+        assert collector.text() == "данные"
+        assert answer.pages == 1
+
+    def test_chunk_without_sink_is_error(self) -> None:
+        """Trailer-only вызов не вправе получать кадры данных."""
+        decoder = SandboxFrameDecoder("doc", NoChunks())
+        with pytest.raises(LauncherError, match="unexpected data chunk"):
+            decoder.feed((SandboxPayload.encode_chunk("данные") + "\n").encode())
+
+    def test_missing_trailer_is_error(self) -> None:
         with pytest.raises(SandboxPayloadError, match="no 'sandbox-result:' line"):
-            SandboxPayload.decode(_outcome("просто текст\n"), Answer)
+            _decode("просто текст\n", Answer)
 
-    def test_two_markers_are_error(self) -> None:
+    def test_two_trailers_are_error(self) -> None:
         line = SandboxPayload.encode(Answer(text="ok", pages=1))
         with pytest.raises(SandboxPayloadError, match=r"2 .* lines"):
-            SandboxPayload.decode(_outcome(f"{line}\n{line}\n"), Answer)
+            _decode(f"{line}\n{line}\n", Answer)
 
-    def test_truncated_output_is_error(self) -> None:
-        """Обрезанный JSON распарсить может и получиться — доверять нельзя."""
-        line = SandboxPayload.encode(Answer(text="ok", pages=1))
-        outcome = _outcome(line + "\n", truncated_stdout=True)
-        with pytest.raises(SandboxPayloadError, match="output truncated"):
-            SandboxPayload.decode(outcome, Answer)
+    def test_chunk_after_trailer_is_error(self) -> None:
+        """Кадр после трейлера означает, что поток собран не полностью."""
+        stdout = (
+            SandboxPayload.encode(Answer(text="ok", pages=1)) + "\n"
+            + SandboxPayload.encode_chunk("лишнее") + "\n"
+        )
+        with pytest.raises(SandboxPayloadError, match="chunk after trailer"):
+            _decode(stdout, Answer)
 
     def test_timeout_is_error(self) -> None:
         with pytest.raises(SandboxPayloadError, match="timed out"):
-            SandboxPayload.decode(_outcome("", timed_out=True), Answer)
+            _decode("", Answer, timed_out=True)
 
     def test_nonzero_exit_is_error(self) -> None:
         line = SandboxPayload.encode(Answer(text="ok", pages=1))
-        outcome = _outcome(line + "\n", exit_code=3, stderr="упал")
         with pytest.raises(SandboxPayloadError, match="exited with code 3"):
-            SandboxPayload.decode(outcome, Answer)
+            _decode(line + "\n", Answer, exit_code=3, stderr="упал")
 
     def test_stderr_is_shown_in_error(self) -> None:
-        outcome = _outcome("", exit_code=1, stderr="Traceback: нет файла")
         with pytest.raises(SandboxPayloadError, match="нет файла"):
-            SandboxPayload.decode(outcome, Answer)
+            _decode("", Answer, exit_code=1, stderr="Traceback: нет файла")
 
     def test_broken_json_is_error(self) -> None:
         with pytest.raises(SandboxPayloadError, match="not valid JSON"):
-            SandboxPayload.decode(_outcome("sandbox-result:{текст\n"), Answer)
+            _decode("sandbox-result:{текст\n", Answer)
 
     def test_schema_mismatch_is_error(self) -> None:
-        stdout = 'sandbox-result:{"text": "ok"}\n'
         with pytest.raises(SandboxPayloadError, match="does not match Answer"):
-            SandboxPayload.decode(_outcome(stdout), Answer)
+            _decode('sandbox-result:{"text": "ok"}\n', Answer)
 
     def test_plain_json_without_marker_is_error(self) -> None:
         """Маркер обязателен: иначе результат не отличить от вывода команды."""
-        stdout = '{"text": "ok", "pages": 1}\n'
         with pytest.raises(SandboxPayloadError, match="no 'sandbox-result:' line"):
-            SandboxPayload.decode(_outcome(stdout), Answer)
+            _decode('{"text": "ok", "pages": 1}\n', Answer)
 
 
 _PAYLOAD = """
@@ -149,15 +200,16 @@ from pathlib import Path
 
 request = json.loads(sys.stdin.read())
 print("payload: работаю", file=sys.stderr)
-answer = {"text": Path(request["path"]).read_text(encoding="utf-8"), "pages": 1}
-print("sandbox-result:" + json.dumps(answer, ensure_ascii=False))
+text = Path(request["path"]).read_text(encoding="utf-8")
+print("sandbox-chunk:" + json.dumps(text, ensure_ascii=False))
+print("sandbox-result:" + json.dumps({"pages": 1}, ensure_ascii=False))
 """
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap не установлен")
 @pytest.mark.skipif(os.geteuid() == 0, reason="под root userns ведёт себя иначе")
-class TestCallJson:
-    """Payload реально исполняется внутри песочницы и возвращает структуру."""
+class TestCallStream:
+    """Payload реально исполняется внутри песочницы и стримит результат."""
 
     @staticmethod
     def _caller(tmp_path: Path, script: str, **profile_kw: Any) -> SandboxCaller:
@@ -170,19 +222,23 @@ class TestCallJson:
         )
         return SandboxCaller("doc", profile, dict)
 
-    def test_request_and_answer_travel_through_stdin_stdout(
+    def test_request_and_stream_travel_through_stdin_stdout(
         self, tmp_path: Path
     ) -> None:
         doc = tmp_path / "payload" / "doc.txt"
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("содержимое", encoding="utf-8")
         caller = self._caller(tmp_path, _PAYLOAD)
-        answer = caller.call_json(
+        collector = TextCollector(
+            max_chars=1_000_000, limit_rows=None, header_lines=0
+        )
+        trailer = caller.call_stream(
             ["python3", "/opt/payload/main.py"],
             Request(path="/opt/payload/doc.txt"),
-            Answer,
+            collector,
+            Trailer,
         )
-        assert (answer.text, answer.pages) == ("содержимое", 1)
+        assert (collector.text(), trailer.pages) == ("содержимое", 1)
 
     def test_payload_is_read_only_inside(self, tmp_path: Path) -> None:
         script = (
@@ -197,8 +253,8 @@ class TestCallJson:
             "print('sandbox-result:{\"text\": \"перезаписал\", \"pages\": 0}')\n"
         )
         caller = self._caller(tmp_path, script)
-        answer = caller.call_json(
-            ["python3", "/opt/payload/main.py"], Request(path=""), Answer
+        answer = caller.call_stream(
+            ["python3", "/opt/payload/main.py"], Request(path=""), NoChunks(), Answer
         )
         assert answer.text == "OSError"
 
@@ -206,31 +262,41 @@ class TestCallJson:
         script = "raise SystemExit('нет такого файла')\n"
         caller = self._caller(tmp_path, script)
         with pytest.raises(SandboxPayloadError, match="нет такого файла"):
-            caller.call_json(
-                ["python3", "/opt/payload/main.py"], Request(path=""), Answer
+            caller.call_stream(
+                ["python3", "/opt/payload/main.py"],
+                Request(path=""),
+                NoChunks(),
+                Answer,
             )
 
     def test_payload_timeout_is_reported(self, tmp_path: Path) -> None:
         script = "import time\ntime.sleep(30)\n"
         caller = self._caller(tmp_path, script, timeout_sec=1)
         with pytest.raises(SandboxPayloadError, match="timed out"):
-            caller.call_json(
-                ["python3", "/opt/payload/main.py"], Request(path=""), Answer
+            caller.call_stream(
+                ["python3", "/opt/payload/main.py"],
+                Request(path=""),
+                NoChunks(),
+                Answer,
             )
 
-    def test_oversized_answer_is_reported(self, tmp_path: Path) -> None:
+    def test_oversized_line_is_reported(self, tmp_path: Path) -> None:
+        """Данные обязаны ехать кадрами: одна гигантская строка — нарушение."""
         script = (
             "import json\n"
             "print('sandbox-result:' + json.dumps("
-            "{'text': 'x' * 200000, 'pages': 1}))\n"
+            "{'text': 'x' * 8_000_000, 'pages': 1}))\n"
         )
-        caller = self._caller(tmp_path, script, max_output_bytes=4096)
-        with pytest.raises(SandboxPayloadError, match="output truncated"):
-            caller.call_json(
-                ["python3", "/opt/payload/main.py"], Request(path=""), Answer
+        caller = self._caller(tmp_path, script)
+        with pytest.raises(SandboxPayloadError, match="output line exceeds"):
+            caller.call_stream(
+                ["python3", "/opt/payload/main.py"],
+                Request(path=""),
+                NoChunks(),
+                Answer,
             )
 
     def test_entry_must_not_be_empty(self, tmp_path: Path) -> None:
         caller = self._caller(tmp_path, _PAYLOAD)
         with pytest.raises(ValueError, match="entry must not be empty"):
-            caller.call_json([], Request(path=""), Answer)
+            caller.call_stream([], Request(path=""), NoChunks(), Answer)

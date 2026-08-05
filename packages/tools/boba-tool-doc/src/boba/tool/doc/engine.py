@@ -14,16 +14,27 @@ from pydantic import BaseModel
 from boba.tool.doc.config import DocToolsConfig
 from boba.tool.doc.protocol import (
     DocOutlineAnswer,
+    DocOutlineRow,
+    DocOutlineTrailer,
     DocPagesAnswer,
     DocPagesRequest,
+    DocPagesTrailer,
     DocParams,
     DocPathRequest,
     DocSearchAnswer,
     DocSearchRequest,
+    DocSearchRow,
+    DocSearchTrailer,
     DocWindowAnswer,
     DocWindowRequest,
+    DocWindowTrailer,
 )
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.launcher import (
+    ChunkSink,
+    LauncherFactory,
+    RowCollector,
+    TextCollector,
+)
 
 __all__ = ["DocEngine"]
 
@@ -57,7 +68,13 @@ class DocEngine:
             pages=pages,
             params=self._params(ocr_enabled, num_workers, ocr_language),
         )
-        return await self._call(request, DocPagesAnswer)
+        collector = self._text_collector()
+        trailer = await self._call(request, collector, DocPagesTrailer)
+        return DocPagesAnswer(
+            text=collector.text(),
+            truncated=trailer.truncated,
+            pages=trailer.pages,
+        )
 
     async def read_window(
         self,
@@ -75,7 +92,15 @@ class DocEngine:
             length=length,
             params=self._params(ocr_enabled, num_workers, ocr_language),
         )
-        return await self._call(request, DocWindowAnswer)
+        collector = self._text_collector()
+        trailer = await self._call(request, collector, DocWindowTrailer)
+        return DocWindowAnswer(
+            text=collector.text(),
+            start_char=trailer.start_char,
+            end_char=trailer.end_char,
+            total_chars=trailer.total_chars,
+            has_more=trailer.has_more,
+        )
 
     async def outline(
         self,
@@ -89,7 +114,12 @@ class DocEngine:
             path=path,
             params=self._params(ocr_enabled, num_workers, ocr_language),
         )
-        return await self._call(request, DocOutlineAnswer)
+        collector = self._row_collector(None)
+        trailer = await self._call(request, collector, DocOutlineTrailer)
+        rows: list[DocOutlineRow] = []
+        for raw in collector.rows():
+            rows.append(DocOutlineRow.model_validate(raw))
+        return DocOutlineAnswer(num_pages=trailer.num_pages, rows=tuple(rows))
 
     async def search(
         self,
@@ -107,7 +137,12 @@ class DocEngine:
             max_matches=self._cfg.search_max_matches,
             params=self._params(ocr_enabled, num_workers, ocr_language),
         )
-        return await self._call(request, DocSearchAnswer)
+        collector = self._row_collector(self._cfg.search_max_matches)
+        trailer = await self._call(request, collector, DocSearchTrailer)
+        rows: list[DocSearchRow] = []
+        for raw in collector.rows():
+            rows.append(DocSearchRow.model_validate(raw))
+        return DocSearchAnswer(rows=tuple(rows), limit_reached=trailer.limit_reached)
 
     def _params(
         self, ocr_enabled: bool, num_workers: int, ocr_language: str
@@ -122,8 +157,20 @@ class DocEngine:
             max_text_chars=self._cfg.max_text_chars,
         )
 
-    async def _call(self, request: BaseModel, schema: type[M]) -> M:
+    async def _call(
+        self, request: BaseModel, sink: ChunkSink, trailer: type[M]
+    ) -> M:
         """Парсинг долгий и синхронный — уходит в отдельный поток."""
         return await asyncio.to_thread(
-            self._caller.call_json, self.ENTRY, request, schema
+            self._caller.call_stream, self.ENTRY, request, sink, trailer
         )
+
+    def _text_collector(self) -> TextCollector:
+        return TextCollector(
+            max_chars=self._cfg.max_text_chars,
+            limit_rows=None,
+            header_lines=0,
+        )
+
+    def _row_collector(self, limit_rows: int | None) -> RowCollector:
+        return RowCollector(max_chars=self._cfg.max_result_chars, limit_rows=limit_rows)

@@ -14,7 +14,8 @@ from urllib.parse import quote
 
 import httpx
 
-from boba.toolkit.payload import PayloadEntry
+from boba.toolkit.launcher import RowStream
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 from boba.web.payload import WebOps
 
 
@@ -55,18 +56,27 @@ class ConfluenceOps:
     )
 
     @classmethod
-    def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
+        """Текст уходит кадрами-кусками, таблицы — кадрами-записями."""
         op = request["op"]
         if op == "confluence_page":
-            return cls.page(request)
+            data = cls.page(request)
+            PayloadEntry.emit_text(emit, data["text"])
+            return {"title": data["title"]}
         if op == "confluence_grep":
-            return cls.grep(request)
+            cls.grep(request, emit)
+            return {}
         if op == "confluence_search":
-            return cls.search(request)
+            cls.search(request, emit)
+            return {}
         if op == "confluence_spaces":
-            return cls.spaces(request)
+            cls.spaces(request, emit)
+            return {}
         if op == "confluence_attachment":
-            return cls.attachment(request)
+            PayloadEntry.emit_text(emit, cls.attachment(request)["text"])
+            return {}
         msg = f"unknown confluence op: {op!r}"
         raise ValueError(msg)
 
@@ -116,30 +126,27 @@ class ConfluenceOps:
         return {"text": answer["markdown"], "title": title}
 
     @classmethod
-    def grep(cls, request: dict[str, Any]) -> dict[str, Any]:
+    def grep(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
         text = cls.page(request)["text"]
         pattern = WebOps.compile_pattern(
             request["pattern"],
             fixed_string=request["fixed_string"],
             case_insensitive=request["case_insensitive"],
         )
-        rows: list[dict[str, Any]] = []
-        for row in WebOps.iter_matches(text, pattern, context=request["context"]):
-            rows.append(WebOps.clip_row(row, request["max_text_chars"]))
-            if len(rows) >= request["limit"]:
+        matches = WebOps.iter_matches(text, pattern, context=request["context"])
+        for emitted, row in enumerate(matches):
+            if emitted >= request["limit"]:
                 break
-        return {"rows": rows}
+            emit(RowStream.encode(WebOps.clip_row(row, request["max_text_chars"])))
 
     @classmethod
-    def search(cls, request: dict[str, Any]) -> dict[str, Any]:
+    def search(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
         path = ConfluenceRest.search(request["cql"], request["limit"])
         response = cls.get(request, path)
         data = json.loads(response.content)
         base = str(data.get("_links", {}).get("base") or request["base_url"])
-        hits: list[dict[str, Any]] = []
         for hit in data.get("results") or []:
-            hits.append(cls.hit(hit, base, request["snippet_chars"]))
-        return {"hits": hits}
+            emit(RowStream.encode(cls.hit(hit, base, request["snippet_chars"])))
 
     @classmethod
     def hit(cls, hit: dict[str, Any], base: str, snippet_chars: int) -> dict[str, Any]:
@@ -165,19 +172,16 @@ class ConfluenceOps:
         }
 
     @classmethod
-    def spaces(cls, request: dict[str, Any]) -> dict[str, Any]:
+    def spaces(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
         path = ConfluenceRest.spaces(request["space_type"], request["limit"])
         data = json.loads(cls.get(request, path).content)
-        rows: list[dict[str, Any]] = []
         for space in data.get("results") or []:
-            rows.append(
-                {
-                    "key": str(space.get("key") or ""),
-                    "name": str(space.get("name") or ""),
-                    "type": str(space.get("type") or ""),
-                }
-            )
-        return {"spaces": rows}
+            row = {
+                "key": str(space.get("key") or ""),
+                "name": str(space.get("name") or ""),
+                "type": str(space.get("type") or ""),
+            }
+            emit(RowStream.encode(row))
 
     @classmethod
     def attachment(cls, request: dict[str, Any]) -> dict[str, Any]:

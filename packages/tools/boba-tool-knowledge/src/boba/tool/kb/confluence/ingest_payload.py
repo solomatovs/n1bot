@@ -32,7 +32,7 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluencePagesRequestSource,
 )
 from boba.tool.kb.html.payload import PageOps
-from boba.toolkit.payload import PayloadEntry
+from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class LocalConfluenceReader(Reader[str]):
@@ -75,7 +75,9 @@ class IngestOps:
     OPS: ClassVar[tuple[str, ...]] = ("confluence_ingest",)
 
     @classmethod
-    async def dispatch(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         op = request["op"]
         if op == "confluence_ingest":
             return await cls.ingest(request)
@@ -133,4 +135,4 @@ class IngestOps:
 
 
 if __name__ == "__main__":
-    sys.exit(PayloadEntry.main_async(IngestOps.dispatch))
+    sys.exit(PayloadEntry.main(IngestOps.dispatch))
