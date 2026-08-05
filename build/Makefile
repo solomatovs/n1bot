@@ -96,11 +96,13 @@ CA_CHAIN := $(firstword $(wildcard $(CONF_DIR)/ca-chain.crt) $(wildcard $(ARTIFA
 # curl на хосте: прокси берёт из env, CA — отсюда
 CURL_OPTS := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
 
-# те же индексы и CA, что стадия base запекает в образ: для docker run
-CONF_OPTS := $(if $(wildcard $(CONF_DIR)/pip.conf),-v "$(CONF_DIR)/pip.conf":/etc/pip.conf:ro)  \
-             $(if $(wildcard $(CONF_DIR)/uv.toml),-v "$(CONF_DIR)/uv.toml":/etc/uv/uv.toml:ro)  \
-             $(if $(CA_CHAIN),-v "$(CA_CHAIN)":/tmp/ca-chain.crt:ro                             \
-                 -e REQUESTS_CA_BUNDLE=/tmp/ca-chain.crt -e CURL_CA_BUNDLE=/tmp/ca-chain.crt)
+# nexus в docker run: каталогом, поштучный bind-mount ломается о /etc/pip.conf,
+# который стадия base уже создала. CA берётся из conf/, как и в Dockerfile
+CONF_OPTS := -v "$(CONF_DIR)":/tmp/conf:ro                                                    \
+             $(if $(wildcard $(CONF_DIR)/pip.conf),-e PIP_CONFIG_FILE=/tmp/conf/pip.conf)     \
+             $(if $(wildcard $(CONF_DIR)/uv.toml),-e UV_CONFIG_FILE=/tmp/conf/uv.toml)        \
+             $(if $(wildcard $(CONF_DIR)/ca-chain.crt),-e REQUESTS_CA_BUNDLE=/tmp/conf/ca-chain.crt \
+                 -e CURL_CA_BUNDLE=/tmp/conf/ca-chain.crt)
 
 # прокси в docker build: apt/pip/uv внутри стадий ходят в nexus через него
 PROXY_VARS := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
