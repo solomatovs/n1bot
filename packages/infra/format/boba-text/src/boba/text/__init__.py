@@ -14,7 +14,8 @@
   потребляет Section.to_format_plan(), реплицирует header в каждый чанк
   секции, ведёт стек breadcrumbs per source_id.
 - reader.py   — PlainTextReader: тривиальный Reader[str] (decode ->
-  один Section со всем текстом).
+  один Section со всем текстом) и TextMedia: карта текстовых форматов
+  мимо liteparse.
 
 Зависимости: boba-indexing.
 """
@@ -30,7 +31,7 @@ from boba.text.document import (
     PageSectionBuilder,
     ParsedPage,
 )
-from boba.text.reader import PlainTextReader
+from boba.text.reader import PlainTextReader, TextMedia
 from boba.text.splitter import OverlapCharSplitter
 from boba.text.structural_chunker import SplitterFactory, StructuralChunker
 
@@ -46,4 +47,5 @@ __all__ = [
     "SectionChunker",
     "SplitterFactory",
     "StructuralChunker",
+    "TextMedia",
 ]
