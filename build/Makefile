@@ -96,6 +96,12 @@ CA_CHAIN := $(firstword $(wildcard $(CONF_DIR)/ca-chain.crt) $(wildcard $(ARTIFA
 # curl на хосте: прокси берёт из env, CA — отсюда
 CURL_OPTS := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
 
+# те же индексы и CA, что стадия base запекает в образ: для docker run
+CONF_OPTS := $(if $(wildcard $(CONF_DIR)/pip.conf),-v "$(CONF_DIR)/pip.conf":/etc/pip.conf:ro)  \
+             $(if $(wildcard $(CONF_DIR)/uv.toml),-v "$(CONF_DIR)/uv.toml":/etc/uv/uv.toml:ro)  \
+             $(if $(CA_CHAIN),-v "$(CA_CHAIN)":/tmp/ca-chain.crt:ro                             \
+                 -e REQUESTS_CA_BUNDLE=/tmp/ca-chain.crt -e CURL_CA_BUNDLE=/tmp/ca-chain.crt)
+
 # прокси в docker build: apt/pip/uv внутри стадий ходят в nexus через него
 PROXY_VARS := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
 PROXY_ARGS := $(foreach v,$(PROXY_VARS),$(if $($(v)),--build-arg $(v)="$($(v))"))
@@ -351,8 +357,7 @@ fastembed: base
 	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)" \
 	  -e EMBED_MODELS="$(EMBED_MODELS)" \
 	  -e HTTP_PROXY -e HTTPS_PROXY -e NO_PROXY -e http_proxy -e https_proxy -e no_proxy \
-	  $(if $(CA_CHAIN),-v "$(ARTIFACTS)/ca-chain.crt":/tmp/ca-chain.crt:ro \
-	    -e REQUESTS_CA_BUNDLE=/tmp/ca-chain.crt -e CURL_CA_BUNDLE=/tmp/ca-chain.crt) \
+	  $(CONF_OPTS) \
 	  -v "$(DEPS_DIR)/fastembed":/fastembed \
 	  --entrypoint sh $(BASE_IMAGE) -c '
 	    set -e
