@@ -22,6 +22,7 @@ from boba.chainlit.infra.session import (
 )
 from boba.sandbox import SandboxCaller, SandboxToolConfig, has_bwrap
 from boba.settings import bind
+from boba.tool.ch import ChExecutorConfig, build_ch_tools
 from boba.tool.chart import build_chart_tools
 from boba.tool.doc import DocToolsConfig, build_doc_tools
 from boba.tool.kb import (
@@ -162,6 +163,19 @@ def _build_pg_tools(
     return build_pg_tools(cfg, launchers)
 
 
+def _build_ch_tools(
+    cfg: ChExecutorConfig,
+    launchers: LauncherFactory,
+) -> list[BaseTool]:
+    if not has_bwrap():
+        logger.warning(
+            "[tool.ch] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "clickhouse tools were not registered",
+        )
+        return []
+    return build_ch_tools(cfg, launchers)
+
+
 def _build_kb_tools(
     cfg: PostgresKnowledgeBaseConfig,
     launchers: LauncherFactory,
@@ -209,6 +223,11 @@ _PLUGINS: dict[str, ToolPlugin] = {
         section="pg",
         config_model=SqlExecutorConfig,
         build=_build_pg_tools,
+    ),
+    "ch": ToolPlugin(
+        section="ch",
+        config_model=ChExecutorConfig,
+        build=_build_ch_tools,
     ),
     "kb": ToolPlugin(
         section="kb",
