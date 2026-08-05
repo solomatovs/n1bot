@@ -91,9 +91,7 @@ class Row:
 
     @classmethod
     def insert_columns(cls) -> sql.Composable:
-        return sql.SQL(", ").join(
-            sql.Identifier(f.name) for f in cls._insertable()
-        )
+        return sql.SQL(", ").join(sql.Identifier(f.name) for f in cls._insertable())
 
     @classmethod
     def insert_placeholders(cls) -> sql.Composable:

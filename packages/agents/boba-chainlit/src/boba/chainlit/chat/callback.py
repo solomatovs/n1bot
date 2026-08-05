@@ -75,11 +75,7 @@ class ChainlitAdapter:
         await view.error(text, key)
         await graph.aupdate_state(
             RunnableConfig(configurable={"thread_id": thread_id}),
-            {
-                "messages": [
-                    AIMessage(content=text, additional_kwargs={"error": True})
-                ]
-            },
+            {"messages": [AIMessage(content=text, additional_kwargs={"error": True})]},
         )
 
     @staticmethod

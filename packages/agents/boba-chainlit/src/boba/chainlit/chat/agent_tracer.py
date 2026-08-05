@@ -87,7 +87,11 @@ class AgentTracer(AsyncBaseTracer):
                 await self._view.container(run_key)
             self._reasoning[run_key] = self._reasoning.get(run_key, "") + reasoning
         return await super().on_llm_new_token(
-            token, chunk=chunk, run_id=run_id, parent_run_id=parent_run_id, **kwargs,
+            token,
+            chunk=chunk,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            **kwargs,
         )
 
     @override
@@ -111,7 +115,10 @@ class AgentTracer(AsyncBaseTracer):
             await self._view.thinking(text)
 
         return await super().on_llm_end(
-            response, run_id=run_id, parent_run_id=parent_run_id, **kwargs,
+            response,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            **kwargs,
         )
 
     @override
@@ -133,8 +140,15 @@ class AgentTracer(AsyncBaseTracer):
         tool_name = name or (serialized or {}).get("name", "tool")
         self._tool_steps[str(run_id)] = await self._view.tool_started(tool_name, inputs)
         return await super().on_tool_start(
-            serialized, input_str, run_id=run_id, parent_run_id=parent_run_id,
-            tags=tags, metadata=metadata, name=name, inputs=inputs, **kwargs,
+            serialized,
+            input_str,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
+            metadata=metadata,
+            name=name,
+            inputs=inputs,
+            **kwargs,
         )
 
     @override
@@ -182,7 +196,11 @@ class AgentTracer(AsyncBaseTracer):
         if step := self._tool_steps.pop(str(run_id), None):
             await self._view.tool_failed(step, error)
         return await super().on_tool_error(
-            error, run_id=run_id, parent_run_id=parent_run_id, tags=tags, **kwargs,
+            error,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
+            **kwargs,
         )
 
     @override

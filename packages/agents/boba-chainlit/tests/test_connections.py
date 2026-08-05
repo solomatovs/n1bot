@@ -42,8 +42,12 @@ def _cipher() -> SecretCipher:
 
 def _pg(**kw) -> PostgresConfig:
     return PostgresConfig(
-        host="db", user="boba", dbname="n1bot",
-        options=PostgresOptionsConfig(), pool=PostgresPoolConfig(), **kw,
+        host="db",
+        user="boba",
+        dbname="n1bot",
+        options=PostgresOptionsConfig(),
+        pool=PostgresPoolConfig(),
+        **kw,
     )
 
 
@@ -109,7 +113,8 @@ class TestDeepEncryption:
         back = DeepProfile.model_validate(cipher.decrypt(cipher.encrypt(self._deep())))
         assert back.endpoint.creds.password.get_secret_value() == "ГЛУБОКИЙ"
         assert [k.get_secret_value() for k in back.keys] == [
-            "КЛЮЧ-СПИСКА-1", "КЛЮЧ-СПИСКА-2",
+            "КЛЮЧ-СПИСКА-1",
+            "КЛЮЧ-СПИСКА-2",
         ]
         assert back.extras["api"].get_secret_value() == "КЛЮЧ-СЛОВАРЯ"
 
@@ -157,7 +162,9 @@ class TestRealProfiles:
         first = {**_pg(password="А").conn_settings(), **_pg().pool_settings()}
         second = {**_pg(password="Б").conn_settings(), **_pg().pool_settings()}
         assert json.dumps(first, sort_keys=True, default=str) != json.dumps(
-            second, sort_keys=True, default=str,
+            second,
+            sort_keys=True,
+            default=str,
         )
 
     @pytest.mark.parametrize(

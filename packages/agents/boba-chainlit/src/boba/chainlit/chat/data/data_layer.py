@@ -4,6 +4,7 @@ from typing import ClassVar
 from uuid import UUID
 
 import aiofiles
+import aiofiles.os
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import class_row, tuple_row
@@ -221,10 +222,11 @@ class PostgresDataLayer(BaseDataLayer):
 
     @staticmethod
     async def _read_element_content(element: ChainlitElement) -> bytes | str | None:
+        """None значит, что содержимое уже в хранилище: его лил стриминговый роут."""
         if element.content is not None:
             return element.content
 
-        if element.path:
+        if element.path and await aiofiles.os.path.exists(element.path):
             async with aiofiles.open(element.path, "rb") as f:
                 return await f.read()
 
@@ -253,9 +255,6 @@ class PostgresDataLayer(BaseDataLayer):
 
     async def _create_element(self, element: ChainlitElement) -> None:
         content = await self._read_element_content(element)
-        if content is None:
-            raise ValueError("Content is None, cannot upload file")
-
         user_id = self._session_user_id()
 
         mime = element.mime or "application/octet-stream"
@@ -278,12 +277,20 @@ class PostgresDataLayer(BaseDataLayer):
             ph=Element.all_placeholders(),
             asg=Element.all_assignments(exclude=("id",)),
         )
+        object_key = ObjectKey.build(
+            user_id, element.thread_id, element.name, element.id
+        ).render()
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute(query, model.all_params())
+            if content is None:
+                # вложение пользователя: его уже залил в хранилище UploadRoute
+                logger.info(
+                    "element %s is already in storage as %s", element.id, object_key
+                )
+                return
+
             uploaded = await self._storage.upload_file(
-                object_key=ObjectKey.build(
-                    user_id, element.thread_id, element.name, element.id
-                ).render(),
+                object_key=object_key,
                 data=content,
                 mime=mime,
                 overwrite=True,

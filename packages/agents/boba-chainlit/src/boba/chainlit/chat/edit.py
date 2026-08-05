@@ -89,9 +89,7 @@ class ThreadRewind:
             if not isinstance(message, AIMessage):
                 continue
             for call in message.tool_calls or ():
-                element_id = ChatView.derive_id(
-                    thread_id, call.get("id"), "element"
-                )
+                element_id = ChatView.derive_id(thread_id, call.get("id"), "element")
                 if element_id:
                     element_ids.append(element_id)
 

@@ -239,9 +239,7 @@ class TestTranscript:
         )
         thinking = [s for s in sink.steps if s.get("type") == "llm"]
         assert len(thinking) == 1
-        assert thinking[0].get("name") == ChatView.titled(
-            ChatView.IDLE, "thinking"
-        )
+        assert thinking[0].get("name") == ChatView.titled(ChatView.IDLE, "thinking")
         assert thinking[0].get("output") == "размышляю"
 
     def test_answer_id_matches_live_rendering(self) -> None:

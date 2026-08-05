@@ -22,8 +22,10 @@ class CancellableTools:
             func = getattr(tool, "func", None)
             if callable(func):
                 tool.func = CancellableTools._guard(func)
-            coroutine = cast("Callable[..., Awaitable[object]] | None",
-                             getattr(tool, "coroutine", None))
+            coroutine = cast(
+                "Callable[..., Awaitable[object]] | None",
+                getattr(tool, "coroutine", None),
+            )
             if callable(coroutine):
                 tool.coroutine = CancellableTools._guard_async(coroutine)
         return tools

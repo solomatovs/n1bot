@@ -254,7 +254,6 @@ async def langchain_checkpoint_saver(
         await pool.close()
 
 
-
 async def chainlit_data_layer(
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     storage_cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
@@ -278,6 +277,7 @@ async def chainlit_data_layer(
         yield layer
     finally:
         await pool.close()
+
 
 def build_history_view(allowed_tools: frozenset[str], history_messages: int):
     @wrap_model_call

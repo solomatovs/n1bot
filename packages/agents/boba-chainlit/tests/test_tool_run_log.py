@@ -77,6 +77,7 @@ class TestToolRunLogger:
 
         tool = self._tool(lambda query: "sync", probe)
         ToolRunLogger.guard_all([tool])
+
         async def invoke() -> object:
             assert tool.coroutine is not None
             return await tool.coroutine(query="q")
@@ -127,9 +128,7 @@ class TestSandboxFailureLog:
 
     def test_timed_out_reason(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER_NAME):
-            SandboxRunner._log_failure(
-                "conf", self._result(-9, "", timed_out=True)
-            )
+            SandboxRunner._log_failure("conf", self._result(-9, "", timed_out=True))
         assert "timed out after 42ms" in caplog.records[0].getMessage()
 
     def test_tail_truncates_long_output(self) -> None:

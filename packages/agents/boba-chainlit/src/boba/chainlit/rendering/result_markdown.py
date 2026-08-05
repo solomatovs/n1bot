@@ -54,7 +54,9 @@ class ToolResultMarkdown:
         return f"\n```json\n{pretty}\n```\n"
 
     def _table_block(
-        self, rows: Sequence[Mapping[str, Any]], note: str | None,
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        note: str | None,
     ) -> str:
         body = self._render_rows(rows)
         if note:
@@ -69,16 +71,17 @@ class ToolResultMarkdown:
         header = [self._flatten_cell(cell) for cell in rows[0]]
         data = [[self._flatten_cell(cell) for cell in row] for row in rows[1:]]
         return "\n" + tabulate(
-            data, headers=header, tablefmt="github", disable_numparse=True,
+            data,
+            headers=header,
+            tablefmt="github",
+            disable_numparse=True,
         )
 
     @staticmethod
     def _flatten_cell(cell: str | None) -> str:
         if cell is None:
             return ""
-        return (
-            cell.replace("\r\n", " ⏎ ").replace("\n", " ⏎ ").replace("\r", " ⏎ ")
-        )
+        return cell.replace("\r\n", " ⏎ ").replace("\n", " ⏎ ").replace("\r", " ⏎ ")
 
     @classmethod
     def _cell(cls, value: Any) -> str:
@@ -94,5 +97,8 @@ class ToolResultMarkdown:
 
         flat = [{k: self._cell(v) for k, v in row.items()} for row in rows]
         return tabulate(
-            flat, headers="keys", tablefmt="github", disable_numparse=True,
+            flat,
+            headers="keys",
+            tablefmt="github",
+            disable_numparse=True,
         )

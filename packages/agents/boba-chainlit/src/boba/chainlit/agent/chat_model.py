@@ -22,7 +22,9 @@ class ReasoningChatOpenAI(ChatOpenAI):
         base_generation_info: dict | None,
     ) -> ChatGenerationChunk | None:
         generation_chunk = super()._convert_chunk_to_generation_chunk(
-            chunk, default_chunk_class, base_generation_info,
+            chunk,
+            default_chunk_class,
+            base_generation_info,
         )
         if generation_chunk is None:
             return None
@@ -31,8 +33,8 @@ class ReasoningChatOpenAI(ChatOpenAI):
             delta = choices[0].get("delta") or {}
             reasoning = delta.get("reasoning_content")
             if reasoning:
-                generation_chunk.message.additional_kwargs["reasoning_content"] = (
-                    str(reasoning)
+                generation_chunk.message.additional_kwargs["reasoning_content"] = str(
+                    reasoning
                 )
         return generation_chunk
 
@@ -51,7 +53,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
             message = choices[0].get("message") or {}
             reasoning = message.get("reasoning_content")
             if reasoning:
-                result.generations[0].message.additional_kwargs[
-                    "reasoning_content"
-                ] = str(reasoning)
+                result.generations[0].message.additional_kwargs["reasoning_content"] = (
+                    str(reasoning)
+                )
         return result

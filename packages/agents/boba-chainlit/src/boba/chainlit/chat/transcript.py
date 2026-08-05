@@ -22,8 +22,7 @@ __all__ = ["CheckpointMessages", "ConversationTranscript", "ThreadMessages"]
 class ThreadMessages(Protocol):
     """Источник сообщений треда, из которых собирается лента."""
 
-    async def load(self, thread_id: str) -> list[BaseMessage]:
-        ...
+    async def load(self, thread_id: str) -> list[BaseMessage]: ...
 
 
 class CheckpointMessages:

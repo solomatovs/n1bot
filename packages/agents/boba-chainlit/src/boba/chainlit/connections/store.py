@@ -62,7 +62,7 @@ class ConnectionsConfig(BaseModel):
         default=SecretStr(""),
         description=(
             "Ключ шифрования значений: 32 байта в base64. Сгенерировать — "
-            "python -c \"import base64,secrets;"
+            'python -c "import base64,secrets;'
             'print(base64.b64encode(secrets.token_bytes(32)).decode())"'
         ),
     )
@@ -113,10 +113,7 @@ class ConnectionKinds:
         try:
             return cls._BY_KIND[kind]
         except KeyError:
-            msg = (
-                f"unknown connection kind {kind!r} "
-                f"(known: {', '.join(cls.known())})"
-            )
+            msg = f"unknown connection kind {kind!r} (known: {', '.join(cls.known())})"
             raise ValueError(msg) from None
 
     @classmethod
@@ -151,8 +148,7 @@ class GrantKinds:
     def validate_src(cls, kind: str) -> str:
         if kind not in cls.known_src():
             msg = (
-                f"unknown grant src_kind {kind!r} "
-                f"(known: {', '.join(cls.known_src())})"
+                f"unknown grant src_kind {kind!r} (known: {', '.join(cls.known_src())})"
             )
             raise ValueError(msg)
         return kind
@@ -161,8 +157,7 @@ class GrantKinds:
     def validate_tgt(cls, kind: str) -> str:
         if kind not in cls.known_tgt():
             msg = (
-                f"unknown grant tgt_kind {kind!r} "
-                f"(known: {', '.join(cls.known_tgt())})"
+                f"unknown grant tgt_kind {kind!r} (known: {', '.join(cls.known_tgt())})"
             )
             raise ValueError(msg)
         return kind
@@ -491,9 +486,7 @@ class ConnectionStore:
             await cur.execute(query, params)
             return cur.rowcount > 0
 
-    async def grants_of(
-        self, src_kind: str, src_kind_id: int
-    ) -> list[tuple[str, int]]:
+    async def grants_of(self, src_kind: str, src_kind_id: int) -> list[tuple[str, int]]:
         GrantKinds.validate_src(src_kind)
         query = sql.SQL(
             """
@@ -518,9 +511,7 @@ class ConnectionStore:
 
         return [(row[0], int(row[1])) for row in fetched]
 
-    async def grant_connection(
-        self, name: str, tgt_kind: str, tgt_kind_id: int
-    ) -> int:
+    async def grant_connection(self, name: str, tgt_kind: str, tgt_kind_id: int) -> int:
         connection_id = await self._connection_id(name)
         return await self.grant(
             GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id

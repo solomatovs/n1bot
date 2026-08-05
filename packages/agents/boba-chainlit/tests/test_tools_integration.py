@@ -346,9 +346,7 @@ class TestBashTool:
 
     async def test_network_is_unavailable(self, bash_tool, workspace_image) -> None:
         """Профиль bash без сети: имена не резолвятся, наружу хода нет."""
-        result = await Call.result(
-            bash_tool, command="getent hosts confl.loshara.com"
-        )
+        result = await Call.result(bash_tool, command="getent hosts confl.loshara.com")
         assert not result.ok
 
 

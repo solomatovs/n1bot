@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 __all__ = [
     "EXIT_MOUNT_ERROR",
     "EXIT_NOT_FOUND",
+    "EXIT_NO_SPACE",
     "FUSE_DEVICE",
     "LAUNCHER_ENV",
     "LAUNCHER_ERROR_PREFIX",
@@ -46,6 +47,7 @@ __all__ = [
 
 EXIT_MOUNT_ERROR = 2
 EXIT_NOT_FOUND = 3
+EXIT_NO_SPACE = 4
 
 LAUNCHER_LOG_PREFIX = "sandbox-mount: "
 """Маркер трассировки в stderr: хост уводит такие строки в лог, LLM их не видит."""
@@ -183,10 +185,7 @@ class FuseMounter:
         started = time.monotonic()
         self._wait_mounted(mnt, daemon)
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        trace(
-            f"{image} mounted at {mnt} in {elapsed_ms}ms "
-            f"(fuse2fs pid {daemon.pid})"
-        )
+        trace(f"{image} mounted at {mnt} in {elapsed_ms}ms (fuse2fs pid {daemon.pid})")
 
     def shutdown(self) -> None:
         for daemon in self._daemons:
@@ -261,14 +260,37 @@ class FileOperations:
     def __init__(self, root: str) -> None:
         self._root = root
 
+    NO_SPACE_ERRNO: ClassVar[frozenset[int]] = frozenset(
+        (errno.ENOSPC, errno.EDQUOT, errno.EFBIG)
+    )
+    """Образ кончился: недописанный файл сносится, чтобы не занимать остаток."""
+
     def write(self, rel: str, src: BinaryIO) -> int:
         path = self._resolve(rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            shutil.copyfileobj(src, f)
-            f.flush()
-            os.fsync(f.fileno())
+        try:
+            with open(path, "wb") as f:
+                shutil.copyfileobj(src, f)
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as e:
+            if e.errno not in self.NO_SPACE_ERRNO:
+                raise
+            self._discard(path)
+            print(  # noqa: T201
+                f"{LAUNCHER_ERROR_PREFIX}no space left in the workspace image "
+                f"for {rel!r}",
+                file=sys.stderr,
+            )
+            return EXIT_NO_SPACE
         return 0
+
+    @staticmethod
+    def _discard(path: str) -> None:
+        try:
+            os.remove(path)
+        except OSError:
+            trace(f"cannot remove partial file {path}")
 
     def read(self, rel: str, dst: BinaryIO) -> int:
         try:

@@ -44,12 +44,14 @@ class TestPluginMetaNotation:
 
 
 class TestToolAccess:
-    ACCESS = ToolAccess({
-        "query": ["ADM"],
-        "list_targets": ["DEV", "ADM"],
-        "visualize": ["*"],
-        "forgotten": [],
-    })
+    ACCESS = ToolAccess(
+        {
+            "query": ["ADM"],
+            "list_targets": ["DEV", "ADM"],
+            "visualize": ["*"],
+            "forgotten": [],
+        }
+    )
 
     def test_matching_role_allowed(self) -> None:
         assert self.ACCESS.allowed("query", {"ADM"}) is True
@@ -146,8 +148,9 @@ class TestHistoryHidesForeignTools:
             AIMessage(
                 content="",
                 id="a1",
-                tool_calls=[{"name": "query", "args": {}, "id": "c1",
-                             "type": "tool_call"}],
+                tool_calls=[
+                    {"name": "query", "args": {}, "id": "c1", "type": "tool_call"}
+                ],
             ),
             ToolMessage(content="rows", tool_call_id="c1", id="t1"),
         ]
@@ -197,6 +200,4 @@ class TestHistoryHidesForeignTools:
         history = [*self._history(), HumanMessage(content="ещё", id="u2")]
         view = build_llm_view(history, frozenset({"query"}))
         assert not any(isinstance(m, ToolMessage) for m in view)
-        assert not any(
-            isinstance(m, AIMessage) and m.tool_calls for m in view
-        )
+        assert not any(isinstance(m, AIMessage) and m.tool_calls for m in view)

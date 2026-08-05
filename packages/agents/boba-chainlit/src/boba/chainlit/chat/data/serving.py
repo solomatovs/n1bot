@@ -34,9 +34,7 @@ class AttachmentServing:
         self,
         thread_id: UUID,
         element_id: UUID,
-        current_user: Annotated[
-            User | PersistedUser | None, Depends(get_current_user)
-        ],
+        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
     ) -> Response:
         if not isinstance(current_user, PersistedUser):
             raise HTTPException(status_code=401, detail="Unauthorized")
