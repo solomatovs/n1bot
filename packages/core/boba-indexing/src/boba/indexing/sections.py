@@ -43,7 +43,7 @@ class SectionKeys:
     HEADING_LEVEL / HEADING_TEXT — структурные поля HeadingSection,
     эмитятся через to_chunk_metadata().
 
-    Format-specific подклассы (в boba-html и т.п.) определяют свои
+    Format-specific подклассы (в format-пакетах) определяют свои
     собственные *Keys-классы рядом со своими Section-типами.
     """
 

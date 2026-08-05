@@ -2,7 +2,6 @@
 testpaths = ["packages"]
 python_files = ["test_*.py"]
 pythonpath = [
-    "packages/infra/format/boba-html/src",
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-liteparse/src",
     "packages/infra/format/boba-text/src",
@@ -37,7 +36,6 @@ exclude = [
     "**/build",
 ]
 extraPaths = [
-    "packages/infra/format/boba-html/src",
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-liteparse/src",
     "packages/infra/format/boba-text/src",
@@ -108,7 +106,6 @@ boba-tool-chart     = { workspace = true }
 boba-tool-web       = { workspace = true }
 boba-tool-postgres  = { workspace = true }
 boba-tool-knowledge = { workspace = true }
-boba-html           = { workspace = true }
 boba-kbdoc          = { workspace = true }
 boba-liteparse      = { workspace = true }
 boba-text           = { workspace = true }
@@ -125,6 +122,9 @@ dev = [
     "ruff>=0.15.17",
     "pyright>=1.1.400",
     "boba-liteparse",
+    "markdownify>=0.11,<1.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
 ]
 
 [tool.uv]

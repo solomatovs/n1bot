@@ -16,6 +16,7 @@ dependencies = [
     # ("CodeSettings is not fully defined"). Держим 2.10.x до апдейта chainlit.
     "pydantic>=2.10,<2.11",
     "ldap3",
+    "starlette",
     # kerberos-механика (keytab/SPNEGO/S4U/PAC) вынесена в общий пакет
     "boba-krb==0.0.8.dev1",
 ]

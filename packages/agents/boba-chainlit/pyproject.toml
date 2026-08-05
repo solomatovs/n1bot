@@ -29,7 +29,14 @@ dependencies = [
     "uvicorn[standard]",
     "pydantic>=2.10,<2.11",
     "langchain[openai]",
+    "langchain-core",
+    "langgraph",
     "langgraph-checkpoint-postgres",
+    "starlette",
+    "httpcore",
+    "aiofiles",
+    "python-engineio",
+    "literalai",
     "psycopg[binary,pool]>=3.2",
 ]
 
