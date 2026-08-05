@@ -12,6 +12,7 @@ ingest переживает сам, наружу он не выходит.
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Iterable, Mapping
 from typing import Any, ClassVar
@@ -40,7 +41,10 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluencePagesRequestSource,
 )
 from boba.tool.kb.html.payload import PageOps
+from boba.tool.kb.indexing_log import LoggingReader
 from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+
+logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
 class LocalConfluenceReader(Reader[str]):
@@ -137,15 +141,22 @@ class IngestOps:
 
     @staticmethod
     def routes(cfg: ConfluenceIngestConfig) -> dict[str, Reader[str]]:
-        """HTML читает bs4-ридер, документы — liteparse, txt/md/csv — decode."""
+        """HTML читает bs4-ридер, документы — liteparse, txt/md/csv — decode.
+
+        Каждый роут обёрнут логом: иначе долгий разбор (OCR) молчит до конца.
+        """
         documents = LiteParseReader(cfg)
-        routes: dict[str, Reader[str]] = {}
+        plain: dict[str, Reader[str]] = {}
         for content_type in ConfluenceIngest.HTML_CONTENT_TYPES:
-            routes[content_type] = LocalConfluenceReader()
+            plain[content_type] = LocalConfluenceReader()
         for media_type in documents.media_types:
-            routes[media_type] = documents
+            plain[media_type] = documents
         for media_type, reader in TextMedia.readers(cfg.text_encodings).items():
-            routes[media_type] = reader
+            plain[media_type] = reader
+
+        routes: dict[str, Reader[str]] = {}
+        for media_type, inner in plain.items():
+            routes[media_type] = LoggingReader(inner, logger)
         return routes
 
 

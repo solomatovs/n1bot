@@ -123,9 +123,16 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         return self._inner.source_id(request)
 
     def fetch(self, request: ConfluenceRequest) -> Iterable[RawDocument]:
-        if request.metadata.has(ConfluenceKeys.ATTACHMENT_INFO):
+        if att := request.metadata.get(ConfluenceKeys.ATTACHMENT_INFO):
+            logger.info(
+                "fetch attachment: %s [%s] %d bytes",
+                att.title,
+                att.media_type,
+                att.file_size,
+            )
             yield from self._inner.fetch(request)
             return
+        logger.info("fetch page: %s", self._inner.source_id(request))
         for raw in self._inner.fetch(request):
             decoded = self._decoder.decode(raw)
             yield decoded
@@ -147,6 +154,9 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         attachments = parent.metadata.get(ConfluenceKeys.ATTACHMENTS)
         if not attachments:
             return
+        logger.info(
+            "page %s: %d attachments", parent.source_id, len(attachments)
+        )
         flt = att_filter or AttachmentFilter()
         for att in attachments:
             if not flt.matches(att):
