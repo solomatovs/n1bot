@@ -16,9 +16,9 @@ from boba.tool.kb.confluence.protocol import (
     ConfluenceSpacesAnswer,
     ConfluenceSpacesRequest,
 )
-from boba.tool.web.caller import WebCaller
 from boba.toolkit.launcher import LauncherFactory
 from boba.transport.http import HttpProfile
+from boba.web.caller import WebCaller
 
 __all__ = ["ConfluenceCaller"]
 

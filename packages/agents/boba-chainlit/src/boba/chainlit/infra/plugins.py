@@ -22,7 +22,6 @@ from boba.chainlit.infra.session import (
 )
 from boba.sandbox import SandboxCaller, SandboxToolConfig, has_bwrap
 from boba.settings import bind
-from boba.settings.types import StringList
 from boba.tool.chart import build_chart_tools
 from boba.tool.doc import DocToolsConfig, build_doc_tools
 from boba.tool.kb import (
@@ -41,6 +40,7 @@ from boba.tool.pg import SqlExecutorConfig, build_pg_tools
 from boba.tool.shell import build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
+from boba.toolkit.types import StringList
 
 __all__ = ["PluginMeta", "ToolPlugin", "ToolRegistry", "load_tools"]
 

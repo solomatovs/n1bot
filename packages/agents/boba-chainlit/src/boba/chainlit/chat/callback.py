@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
+from boba.cancellation import turn_cancellation
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.chat.edit import ThreadRewind
@@ -20,7 +21,6 @@ from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
 from boba.chainlit.infra.session import current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.sandbox import WORKSPACE_MOUNT
-from boba.toolkit.cancellation import turn_cancellation
 from chainlit.data.base import BaseDataLayer
 from chainlit.session import HTTPSession, WebsocketSession
 from chainlit.types import ThreadDict

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-cancellation"
+version = "0.0.8.dev1"
+description = "Boba cancellation: остановка хода — флаг отмены и прерыватели длинных операций."
+requires-python = ">=3.11,<4"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

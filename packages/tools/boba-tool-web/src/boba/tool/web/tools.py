@@ -8,9 +8,9 @@ from pydantic import Field
 
 from boba.tool.web._fetch import web_fetch
 from boba.tool.web._grep import WebGrepConfig, web_grep
-from boba.tool.web.caller import WebCaller
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import ErrorResult, JsonResult, ToolResult, pack_result
+from boba.web.caller import WebCaller
 
 __all__ = ["WebTools", "build_web_tools"]
 

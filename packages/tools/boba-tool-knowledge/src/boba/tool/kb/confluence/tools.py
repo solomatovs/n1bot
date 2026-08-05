@@ -11,7 +11,6 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.settings import LLMStringList
 from boba.tool.kb.confluence._fetch import (
     ConfluenceFetchPageConfig,
     confluence_fetch_page,
@@ -31,6 +30,7 @@ from boba.tool.kb.confluence._search_cql import (
 from boba.tool.kb.confluence.caller import ConfluenceCaller
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
+from boba.toolkit.types import LLMStringList
 from boba.transport.http import HttpProfile
 
 __all__ = ["ConfluenceTools", "ConfluenceToolsConfig", "build_confluence_tools"]

@@ -10,7 +10,6 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.settings import LLMStringList
 from boba.tool.kb.confluence._fetch_attachment import (
     ConfluenceFetchAttachmentConfig,
     confluence_fetch_attachment,
@@ -35,6 +34,7 @@ from boba.toolkit.result import (
     ToolResult,
     pack_result,
 )
+from boba.toolkit.types import LLMStringList
 
 __all__ = ["ConfluenceIngestTools", "build_confluence_ingest_tools"]
 

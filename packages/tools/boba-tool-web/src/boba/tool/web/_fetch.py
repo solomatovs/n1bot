@@ -6,8 +6,8 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.web.caller import WebCaller
 from boba.tool.web.connection import WebConnection
+from boba.web.caller import WebCaller
 
 __all__ = ["web_fetch"]
 

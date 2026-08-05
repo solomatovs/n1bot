@@ -197,7 +197,7 @@ COPY --from=boba-wheels /tmp/names.txt  /tmp/names.txt
 # в песочнице живут только инструменты: приложение сюда не ставится,
 # а tool-пакеты берутся с extra payload (парсеры, эмбеддер, plotly)
 RUN set -eu                                                                     \
-    && sed -n 's/^\(boba-tool-[a-z]*\)$/\1[payload]/p' /tmp/names.txt          \
+    && sed -n 's/^\(boba-tool-[a-z]*\|boba-web\)$/\1[payload]/p' /tmp/names.txt \
          > /tmp/names-sandbox.txt                                               \
     && uv pip install --python "$(command -v python3)" --target /opt/site       \
            --find-links=/tmp/wheels $(cat /tmp/names-sandbox.txt)               \

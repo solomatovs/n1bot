@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 import chainlit as cl
-from boba.auth.errors import BaseError
+from boba.chainlit.auth.errors import BaseError
 
 __all__ = ["chainlit_error_ctx_handler", "show_error"]
 

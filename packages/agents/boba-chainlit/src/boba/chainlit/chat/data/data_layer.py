@@ -10,7 +10,7 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
 
-from boba.auth.errors import InternalServiceError
+from boba.chainlit.auth.errors import InternalServiceError
 from boba.chainlit.chat.data.attachment_url import AttachmentLinks
 from boba.chainlit.chat.data.models import (
     Codec,

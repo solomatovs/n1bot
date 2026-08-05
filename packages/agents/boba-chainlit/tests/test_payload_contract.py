@@ -29,8 +29,8 @@ from boba.tool.kb.confluence.protocol import (
 from boba.tool.kb.html.caller import HtmlCaller
 from boba.tool.pg.caller import PgCaller
 from boba.tool.pg.protocol import PgQueryRequest
-from boba.tool.web.caller import WebCaller
-from boba.tool.web.protocol import WebFetchRequest, WebGrepRequest
+from boba.web.caller import WebCaller
+from boba.web.protocol import WebFetchRequest, WebGrepRequest
 
 CALLERS = [
     ChartCaller,

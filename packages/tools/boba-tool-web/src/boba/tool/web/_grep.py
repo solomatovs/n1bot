@@ -6,10 +6,10 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.web.caller import WebCaller
 from boba.tool.web.connection import WebConnection
-from boba.tool.web.protocol import WebGrepRequest
 from boba.toolkit.result import TableResult
+from boba.web.caller import WebCaller
+from boba.web.protocol import WebGrepRequest
 
 __all__ = ["WebGrepConfig", "web_grep"]
 
