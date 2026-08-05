@@ -37,7 +37,6 @@ from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 __all__ = [
     "ConfluenceCqlRequestSource",
-    "ConfluenceCqlSearchRequestSource",
     "ConfluenceMultiSpaceRequestSource",
     "ConfluencePagesRequestSource",
     "ConfluencePaginator",
@@ -352,36 +351,3 @@ class ConfluenceMultiSpaceRequestSource(RequestSource[ConfluenceRequest]):
     def requests(self) -> Iterable[ConfluenceRequest]:
         for src in self._inner:
             yield from src.requests()
-
-
-class ConfluenceCqlSearchRequestSource(RequestSource[ConfluenceRequest]):
-    """CQL-запрос -> один HttpRequest на /content/search.
-
-    В отличии от ConfluenceCqlRequestSource (discovery: один request на
-    каждую найденную страницу), этот источник эмитит ОДИН request на сам
-    search-endpoint и оставляет JSON-ответ нетронутым — его разбирает
-    ConfluenceSearchHitsReader.
-    """
-
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        cql: str,
-        limit: int,
-    ) -> None:
-        self._host = ConfluenceRest.extract_host(base_url)
-        self._cql = cql
-        self._limit = limit
-
-    def requests(self) -> Iterable[ConfluenceRequest]:
-        path = ConfluenceRest.cql_search_path(
-            self._cql,
-            limit=self._limit,
-            expand="body.view,version,space",
-        )
-
-        yield ConfluenceRequest(
-            http=HttpRequest(url=path, method="GET"),
-            metadata=Metadata.empty().set(ConfluenceKeys.HOST, self._host),
-        )

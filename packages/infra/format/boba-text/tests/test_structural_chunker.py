@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from io import BytesIO
+from dataclasses import dataclass
 
-from boba.html import HtmlReader
 from boba.indexing import (
     ChunkerId,
     ChunkId,
     ChunkIdGenerator,
     ChunkLocation,
+    FormatBlock,
+    FormatPlan,
     HeadingSection,
-    Metadata,
-    RawDocument,
     Section,
     SectionKeys,
     Sha256TextEncoder,
@@ -136,21 +135,33 @@ def test_to_chunk_metadata_is_merged():
 # ---------------- table: replicate header + per-row raw -----------------------
 
 
+@dataclass(frozen=True)
+class _TableSection(Section[str]):
+    """План markdown-таблицы: header реплицируется, каждый row atomic."""
+
+    def to_format_plan(self) -> FormatPlan:
+        return FormatPlan(
+            blocks=(
+                FormatBlock(
+                    format_content="| id | int |",
+                    raw_content="<tr><td>id</td><td>int</td></tr>",
+                    location=ChunkLocation(start=0, end=11),
+                    is_atomic=True,
+                ),
+                FormatBlock(
+                    format_content="| foo | str |",
+                    raw_content="<tr><td>foo</td><td>str</td></tr>",
+                    location=ChunkLocation(start=11, end=24),
+                    is_atomic=True,
+                ),
+            ),
+            repeat_header="| name | type |\n| --- | --- |\n",
+            block_glue="\n",
+        )
+
+
 def test_table_replicates_header_in_each_row_chunk():
-    html = (
-        "<html><body><table>"
-        "<thead><tr><th>name</th><th>type</th></tr></thead>"
-        "<tbody>"
-        "<tr><td>id</td><td>int</td></tr>"
-        "<tr><td>foo</td><td>str</td></tr>"
-        "</tbody></table></body></html>"
-    )
-    doc = RawDocument(
-        handle=BytesIO(html.encode()),
-        source_id=SourceId("t"),
-        metadata=Metadata.empty(),
-    )
-    sections = list(HtmlReader().read(doc))
+    section = _TableSection(source_id=SourceId("t"), content="<table/>", order=0)
 
     # Splitter режет body по \n (block_glue таблицы), один row на чанк
     # при chunk_size=15.
@@ -162,7 +173,7 @@ def test_table_replicates_header_in_each_row_chunk():
             extra_overhead=extra_overhead,
         )
 
-    chunks = list(_chunker(factory).chunk(iter(sections)))
+    chunks = list(_chunker(factory).chunk(iter([section])))
     # Каждый row-чанк начинается с реплицированного markdown header'а.
     table_chunks = [c for c in chunks if "| name | type |" in c.format_content]
     assert len(table_chunks) == 2
@@ -176,30 +187,46 @@ def test_table_replicates_header_in_each_row_chunk():
 # ---------------- code: fenced wrapping ----------------------------------------
 
 
+@dataclass(frozen=True)
+class _CodeSection(Section[str]):
+    """План fenced code-block: repeat_header/footer оборачивают тело."""
+
+    def to_format_plan(self) -> FormatPlan:
+        return FormatPlan(
+            blocks=(
+                FormatBlock(
+                    format_content="x = 1",
+                    raw_content='<pre><code class="language-py">x = 1</code></pre>',
+                    location=ChunkLocation(start=0, end=5),
+                    is_atomic=False,
+                ),
+            ),
+            repeat_header="```py\n",
+            repeat_footer="\n```",
+            block_glue="\n",
+        )
+
+
 def test_code_block_wrapped_with_fence():
-    html = '<html><body><pre><code class="language-py">x = 1</code></pre></body></html>'
-    doc = RawDocument(
-        handle=BytesIO(html.encode()),
-        source_id=SourceId("c"),
-        metadata=Metadata.empty(),
-    )
-    sections = list(HtmlReader().read(doc))
-    [chunk] = list(_chunker().chunk(iter(sections)))
+    section = _CodeSection(source_id=SourceId("c"), content="<pre/>", order=0)
+    [chunk] = list(_chunker().chunk(iter([section])))
     assert chunk.format_content == "```py\nx = 1\n```"
 
 
 # ---------------- hr: skipped --------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _EmptyPlanSection(Section[str]):
+    """Структурный маркёр (<hr>): пустой план, chunker пропускает."""
+
+    def to_format_plan(self) -> FormatPlan:
+        return FormatPlan()
+
+
 def test_hr_section_is_skipped():
-    html = "<html><body><hr></body></html>"
-    doc = RawDocument(
-        handle=BytesIO(html.encode()),
-        source_id=SourceId("h"),
-        metadata=Metadata.empty(),
-    )
-    sections = list(HtmlReader().read(doc))
-    chunks = list(_chunker().chunk(iter(sections)))
+    section = _EmptyPlanSection(source_id=SourceId("h"), content="<hr/>", order=0)
+    chunks = list(_chunker().chunk(iter([section])))
     assert chunks == []
 
 
