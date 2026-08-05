@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-web"
-version = "0.0.8"
+version = "0.0.9.dev1"
 description = "Boba web: WebCaller + протокол fetch/grep + payload, исполняемый в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.8",
-    "boba-transport-http==0.0.8",
+    "boba-toolkit==0.0.9.dev1",
+    "boba-transport-http==0.0.9.dev1",
     "httpx[http2]>=0.28,<1",
     "pydantic>=2.10,<2.11",
 ]
