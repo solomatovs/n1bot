@@ -174,12 +174,12 @@ class AgentTracer(AsyncBaseTracer):
         return await super().on_tool_end(output, run_id=run_id, **kwargs)
 
     @_visible_failure
-    async def stop_pending(self) -> None:
+    async def stop_pending(self, note: str) -> None:
         """Закрыть шаги инструментов, оставшиеся в работе после остановки."""
         self._set_context()
         while self._tool_steps:
             _, step = self._tool_steps.popitem()
-            await self._view.tool_stopped(step)
+            await self._view.tool_stopped(step, note)
 
     @override
     @_visible_failure

@@ -1,10 +1,6 @@
-"""Workspace-образ треда: fuse2fs-монтирование на время одной операции."""
+"""Workspace-образ треда: fuse2fs-монтирование на время одной операции.
 
-from boba.workspace.launcher import (
-    FUSE_DEVICE,
-    build_chain_argv,
-    render_image_path,
-    require_fuse,
-)
-
-__all__ = ["FUSE_DEVICE", "build_chain_argv", "render_image_path", "require_fuse"]
+Реэкспорта здесь нет намеренно: launcher запускается как `python -m
+boba.workspace.launcher`, и импорт модуля в __init__ пакета даёт runpy-warning
+в stderr команды.
+"""

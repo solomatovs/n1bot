@@ -1,24 +1,23 @@
 """Callback'и chainlit: мост между интерфейсом чата и агентом langgraph."""
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Annotated, Any, cast
 
 from fastapi import Request, Response
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
-from boba.cancellation import turn_cancellation
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.chat.edit import ThreadRewind
 from boba.chainlit.chat.handler import chainlit_error_ctx_handler
+from boba.chainlit.chat.turn import ChatTurn, TurnStopper
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
-from boba.chainlit.infra.session import current_user_id
+from boba.chainlit.infra.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.sandbox import WORKSPACE_MOUNT
 from chainlit.data.base import BaseDataLayer
@@ -64,51 +63,6 @@ class ChainlitAdapter:
         raise RuntimeError("user does't exists in session")
 
     @staticmethod
-    async def report_failure(
-        graph: CompiledStateGraph,
-        thread_id: str,
-        view: ChatView,
-        key: str,
-        error: BaseException,
-    ) -> None:
-        text = f"**сбой:** {error}"
-        await view.error(text, key)
-        await graph.aupdate_state(
-            RunnableConfig(configurable={"thread_id": thread_id}),
-            {"messages": [AIMessage(content=text, additional_kwargs={"error": True})]},
-        )
-
-    @staticmethod
-    async def report_stop(
-        graph: CompiledStateGraph,
-        thread_id: str,
-        tracer: AgentTracer,
-        key: str,
-        answer: cl.Message | None,
-    ) -> None:
-        "фиксирует остановку: закрывает шаги и кладёт прерванный ответ в историю"
-        await tracer.stop_pending()
-
-        partial = (answer.content if answer else "") or ""
-        note = f"_{ChatView.STOPPED_TEXT}_"
-        content = f"{partial}\n\n{note}" if partial else note
-
-        if answer is not None:
-            answer.content = content
-            await answer.send()
-        else:
-            await tracer.view.answer(content, key)
-
-        await graph.aupdate_state(
-            RunnableConfig(configurable={"thread_id": thread_id}),
-            {
-                "messages": [
-                    AIMessage(content=content, additional_kwargs={"stopped": True})
-                ]
-            },
-        )
-
-    @staticmethod
     async def refresh_view(data_layer: BaseDataLayer, thread_id: str) -> None:
         "перерисовывает ленту треда из истории агента"
         if thread := await data_layer.get_thread(thread_id):
@@ -149,39 +103,7 @@ async def on_message(
         ),
     )
 
-    final_answer: cl.Message | None = None
-
-    async def _final_message() -> cl.Message:
-        nonlocal final_answer
-        if final_answer is None:
-            final_answer = view.open_answer(msg.id)
-        return final_answer
-
-    with turn_cancellation() as cancellation:
-        try:
-            async for chunk, _metadata in stream:
-                if (
-                    isinstance(chunk, AIMessageChunk)
-                    and isinstance(chunk.content, str)
-                    and chunk.content
-                ):
-                    answer = await _final_message()
-                    await answer.stream_token(chunk.content)
-        except asyncio.CancelledError:
-            cancellation.cancel()
-            await ChainlitAdapter.report_stop(
-                graph, thread_id, tracer, msg.id, final_answer
-            )
-            raise
-        except Exception as e:
-            logger.exception("agent run failed")
-            cancellation.cancel()
-            await ChainlitAdapter.report_failure(graph, thread_id, view, msg.id, e)
-            return
-
-    if final_answer is None:
-        final_answer = view.open_answer(msg.id)
-    await final_answer.send()
+    await ChatTurn(graph, thread_id, view, tracer, msg.id).run(stream)
 
 
 @cl.on_chat_start
@@ -199,14 +121,21 @@ def on_logout(request: Request, response: Response):
 
 @cl.on_stop
 async def on_stop():
-    user = ChainlitAdapter.get_chat_user(cl.user_session)
-    logger.info(f"{user.identifier} has stopped the task!")
+    """Кнопка Stop: обрываем ход треда, а не надеемся на отмену задачи chainlit."""
+    thread_id = current_thread_id()
+    if thread_id is None:
+        return
+    if not TurnStopper.stop(thread_id):
+        logger.info("stop pressed for thread %s: nothing is running", thread_id)
 
 
 @cl.on_chat_end
-def on_chat_end():
-    user = ChainlitAdapter.get_chat_user(cl.user_session)
-    logger.info(f"{user.identifier} has ended the chat")
+async def on_chat_end():
+    """Разрыв связи: ход обрывается после грейса, если пользователь не вернулся."""
+    thread_id = current_thread_id()
+    if thread_id is None:
+        return
+    TurnStopper.disconnected(thread_id)
 
 
 @cl.data_layer

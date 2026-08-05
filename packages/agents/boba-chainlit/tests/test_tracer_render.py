@@ -117,7 +117,7 @@ class TestToolFinished:
 
         async def scenario():
             step = await view.tool_started("visualize", {"x": 1}, "k1")
-            await view.tool_stopped(step)
+            await view.tool_stopped(step, ChatView.STOPPED_TEXT)
             return step
 
         step = run(scenario())
