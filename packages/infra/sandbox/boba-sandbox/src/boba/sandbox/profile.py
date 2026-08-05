@@ -182,8 +182,7 @@ class SandboxProfile(BaseModel):
     )
     timeout_sec: int = Field(
         ge=1,
-        le=3600,
-        description="Жёсткий таймаут выполнения процесса (1..3600 сек).",
+        description="Жёсткий таймаут выполнения процесса, сек; обязателен.",
     )
     max_memory_bytes: int = Field(
         gt=0,
