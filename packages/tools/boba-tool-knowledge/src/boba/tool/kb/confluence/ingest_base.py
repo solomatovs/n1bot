@@ -89,6 +89,18 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, SandboxParserCo
             ),
         ),
     ] = []  # noqa: RUF012
+    text_encodings: Annotated[
+        StringList,
+        Field(
+            min_length=1,
+            description=(
+                "Кодировки текстовых вложений (`text/plain`, `text/markdown`, "
+                "`text/csv`) в порядке перебора: первая, которой payload "
+                "декодировался, и выигрывает. Не подошла ни одна — вложение "
+                "уходит в `failed`."
+            ),
+        ),
+    ] = ["utf-8"]  # noqa: RUF012
 
 
 class ConfluenceIngest:

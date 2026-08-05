@@ -28,6 +28,7 @@ from boba.indexing import (
     SectionKeys,
 )
 from boba.liteparse.engine import LiteParseReader
+from boba.text import TextMedia
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import (
     ConfluenceIngest,
@@ -135,14 +136,16 @@ class IngestOps:
         raise ValueError(msg)
 
     @staticmethod
-    def routes(cfg: Any) -> dict[str, Reader[str]]:
-        """HTML читает bs4-ридер, вложения — liteparse; оба локальные."""
+    def routes(cfg: ConfluenceIngestConfig) -> dict[str, Reader[str]]:
+        """HTML читает bs4-ридер, документы — liteparse, txt/md/csv — decode."""
         documents = LiteParseReader(cfg)
         routes: dict[str, Reader[str]] = {}
         for content_type in ConfluenceIngest.HTML_CONTENT_TYPES:
             routes[content_type] = LocalConfluenceReader()
         for media_type in documents.media_types:
             routes[media_type] = documents
+        for media_type, reader in TextMedia.readers(cfg.text_encodings).items():
+            routes[media_type] = reader
         return routes
 
 

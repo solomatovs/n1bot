@@ -94,9 +94,24 @@ class DocumentMedia:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
         "application/vnd.openxmlformats-officedocument."
         "presentationml.presentation": ".pptx",
+        "application/msword": ".doc",
+        "application/vnd.ms-excel": ".xls",
+        "application/vnd.ms-powerpoint": ".ppt",
+        "application/vnd.oasis.opendocument.text": ".odt",
+        "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+        "application/vnd.oasis.opendocument.presentation": ".odp",
+        "application/rtf": ".rtf",
+        "text/rtf": ".rtf",
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/bmp": ".bmp",
+        "image/webp": ".webp",
+        "image/tiff": ".tif",
     }
     """media_type -> расширение. Ключи задают и набор поддерживаемых типов
-    (media_types для routes DispatchReader'а), и суффикс для liteparse."""
+    (media_types для routes DispatchReader'а), и суффикс для liteparse.
+    Картинки без ocr_enabled дают пустой текст."""
 
     @classmethod
     def media_types(cls) -> tuple[str, ...]:
