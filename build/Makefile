@@ -1,5 +1,7 @@
-BASE_DIR      	?= $(abspath .)
-SRC_DIR       	?= $(abspath ..)
+# от каталога Makefile, а не от cwd: make -f build/Makefile из корня искал бы
+# test/ и conf/ рядом с собой
+BASE_DIR      	?= $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+SRC_DIR       	?= $(abspath $(BASE_DIR)/..)
 ARTIFACTS     	?= $(BASE_DIR)/artifacts
 BUILD_CONTEXT 	?= $(SRC_DIR)
 TEST_DIR      	?= $(BASE_DIR)/test
@@ -422,7 +424,11 @@ build: version-check check-artifacts
 
 .PHONY: test
 test: build
-	@echo "== проверка $(RELEASE_NAME) в образе $(IMAGE) =="
+	@[ -f "$(TEST_DIR)/bobacheck.py" ] || {
+	    echo "нет $(TEST_DIR)/bobacheck.py — файл лежит в репозитории, TEST_DIR=$(TEST_DIR)" >&2
+	    exit 1
+	}
+	echo "== проверка $(RELEASE_NAME) в образе $(IMAGE) =="
 	docker run --rm \
 	  -v "$(TEST_DIR)":/test:ro \
 	  --entrypoint sh $(IMAGE) -c '
