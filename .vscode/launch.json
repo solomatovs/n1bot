@@ -21,6 +21,57 @@
             }
         },
         {
+            "name": "Ingest: Confluence целиком (OCR, полное пересоздание)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.chainlit.cli.ingest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "justMyCode": false,
+            "args": [
+                "--mode", "spaces",
+                "--target", "IPKD,DQ,PIXBI,TMETA,PHDD2",
+                "--ocr-enabled",
+                "--ocr-language", "rus+eng",
+                "--num-workers", "2",
+                "--force-update",
+                "--prune-missing"
+            ],
+            "env": {
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
+            }
+        },
+        {
+            "name": "Ingest: одна страница (OCR, без prune)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.chainlit.cli.ingest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "justMyCode": false,
+            "args": [
+                "--mode", "pages",
+                "--target", "983049",
+                "--ocr-enabled",
+                "--ocr-language", "rus+eng",
+                "--num-workers", "2",
+                "--force-update"
+            ],
+            "env": {
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
+                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
+                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
+            }
+        },
+        {
             "name": "pytest: текущий файл",
             "type": "debugpy",
             "request": "launch",
