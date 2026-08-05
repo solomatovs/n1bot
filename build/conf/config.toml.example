@@ -2,6 +2,14 @@
 # conf/ — правится руками, local/ — пишет приложение, third/ — артефакты.
 # Заполнить помеченное <...>.
 
+# единственная привязка к месту установки: BOBA_DIR берётся из conf/boba.env,
+# всё остальное в конфиге — пути относительно него
+[paths]
+    root    = "${oc.env:BOBA_DIR}"
+    data    = "${paths.root}/data"
+    sandbox = "${paths.root}/third/sandbox"
+
+
 [app]
     chainlit     = "${chainlit}"
     agent        = "${agent}"
@@ -30,7 +38,7 @@
     port        = 8501
     url_prefix  = ""
     auth_secret = "<32 байта hex: openssl rand -hex 32>"
-    root        = "${oc.env:BOBA_DIR}/data"
+    root        = "${paths.data}"
 
 
 [auth.local]
@@ -85,7 +93,7 @@
 [storage]
     kind           = "image"
     image_path     = "${chainlit.root}/workspace/{user_id}.ext4"
-    image_template = "${oc.env:BOBA_DIR}/third/sandbox/workspace.ext4"
+    image_template = "${paths.sandbox}/workspace.ext4"
     op_timeout_sec = 60
     launcher       = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
     public_prefix  = "${chainlit.url_prefix}/workspace"
@@ -94,11 +102,11 @@
 [sandbox]
     ## shell пользователя: workspace-образ, python не нужен
     [sandbox.profiles.default]
-        rootfs              = "${oc.env:BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["${oc.env:BOBA_DIR}/third/sandbox/python:/opt/python", "${oc.env:BOBA_DIR}/third/sandbox/site:/opt/site"]
+        rootfs              = "${paths.sandbox}/rootfs"
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site"]
         rw_binds            = []
         rw_images           = ["${chainlit.root}/workspace/{user_id}.ext4:/workspace"]
-        image_template      = "${oc.env:BOBA_DIR}/third/sandbox/workspace.ext4"
+        image_template      = "${paths.sandbox}/workspace.ext4"
         launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
         tmpfs               = ["/tmp:512M"]
         network             = false
@@ -122,11 +130,11 @@
 
     ## чтение документов: python и парсеры плюс образ пользователя
     [sandbox.profiles.docs]
-        rootfs              = "${oc.env:BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["${oc.env:BOBA_DIR}/third/sandbox/python:/opt/python", "${oc.env:BOBA_DIR}/third/sandbox/site:/opt/site", "${oc.env:BOBA_DIR}/third/sandbox/data/tessdata:/usr/share/tessdata"]
+        rootfs              = "${paths.sandbox}/rootfs"
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = ["${chainlit.root}/workspace/{user_id}.ext4:/workspace"]
-        image_template      = "${oc.env:BOBA_DIR}/third/sandbox/workspace.ext4"
+        image_template      = "${paths.sandbox}/workspace.ext4"
         launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
         tmpfs               = ["/tmp:512M"]
         network             = false
@@ -150,8 +158,8 @@
 
     ## разбор данных, пришедших в запросе: файловая система не нужна
     [sandbox.profiles.parser]
-        rootfs              = "${oc.env:BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["${oc.env:BOBA_DIR}/third/sandbox/python:/opt/python", "${oc.env:BOBA_DIR}/third/sandbox/site:/opt/site", "${oc.env:BOBA_DIR}/third/sandbox/data/tessdata:/usr/share/tessdata"]
+        rootfs              = "${paths.sandbox}/rootfs"
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -180,8 +188,8 @@
     ## SSL_CERT_FILE обязателен: httpx проверяет TLS по бандлу certifi, а
     ## внутренний CA лежит в системном — он собран в rootfs из conf/ca-chain.crt
     [sandbox.profiles.network]
-        rootfs              = "${oc.env:BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${oc.env:BOBA_DIR}/third/sandbox/python:/opt/python", "${oc.env:BOBA_DIR}/third/sandbox/site:/opt/site"]
+        rootfs              = "${paths.sandbox}/rootfs"
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -208,8 +216,8 @@
 
     ## SQL к БД: сеть до постгреса, keytab и krb5.conf только на чтение
     [sandbox.profiles.pg]
-        rootfs              = "${oc.env:BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${oc.env:BOBA_DIR}/third/sandbox/python:/opt/python", "${oc.env:BOBA_DIR}/third/sandbox/site:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        rootfs              = "${paths.sandbox}/rootfs"
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -236,8 +244,8 @@
 
     ## поиск по базе знаний: тот же профиль плюс веса эмбеддера
     [sandbox.profiles.kb]
-        rootfs              = "${oc.env:BOBA_DIR}/third/sandbox/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${oc.env:BOBA_DIR}/third/sandbox/python:/opt/python", "${oc.env:BOBA_DIR}/third/sandbox/site:/opt/site", "${oc.env:BOBA_DIR}/third/sandbox/data/fastembed:/opt/fastembed", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        rootfs              = "${paths.sandbox}/rootfs"
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site", "${paths.sandbox}/data/fastembed:/opt/fastembed", "${paths.sandbox}/data/tessdata:/usr/share/tessdata", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
