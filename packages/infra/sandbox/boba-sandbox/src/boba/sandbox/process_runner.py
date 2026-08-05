@@ -28,6 +28,7 @@ def run_subprocess(  # noqa: PLR0913
     cwd: str,
     env: Mapping[str, str],
     stdout_sink: Callable[[bytes], None] | None,
+    stderr_sink: Callable[[bytes], None] | None = None,
     limits: ResourceLimits | None = None,
     cgroup_dir: str | None = None,
 ) -> RunResult:
@@ -67,7 +68,8 @@ def run_subprocess(  # noqa: PLR0913
     with cancellation.abort_with(proc.kill):
         _feed_stdin(proc, stdin_data)
         out_bytes, err_bytes, trunc_out, trunc_err, timed_out = _pump(
-            proc, timeout_sec, max_output_bytes, cancellation, stdout_sink,
+            proc, timeout_sec, max_output_bytes, cancellation,
+            stdout_sink, stderr_sink,
         )
     cancellation.raise_if_cancelled()
     duration_ms = int((time.monotonic() - started) * 1000)
@@ -97,12 +99,13 @@ def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
         proc.stdin.close()
 
 
-def _pump(
+def _pump(  # noqa: PLR0913
     proc: subprocess.Popen[bytes],
     timeout_sec: int,
     max_output_bytes: int,
     cancellation: TurnCancellation,
     stdout_sink: Callable[[bytes], None] | None,
+    stderr_sink: Callable[[bytes], None] | None,
 ) -> tuple[bytes, bytes, bool, bool, bool]:
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
@@ -114,14 +117,16 @@ def _pump(
     buffers = {"out": bytearray(), "err": bytearray()}
     sinks: dict[str, Callable[[bytes], None] | None] = {
         "out": stdout_sink,
-        "err": None,
+        "err": stderr_sink,
     }
+    # stderr копится и при живом релее: его хвост объясняет падение процесса
+    keeps = {"out": stdout_sink is None, "err": True}
     truncated = {"out": False, "err": False}
     open_fds = set(fds.keys())
 
     try:
         timed_out = _select_loop(
-            deadline, fds, buffers, sinks, truncated, open_fds,
+            deadline, fds, buffers, sinks, keeps, truncated, open_fds,
             max_output_bytes, cancellation,
         )
     except Exception:
@@ -156,6 +161,7 @@ def _select_loop(  # noqa: PLR0913
     fds: dict[int, str],
     buffers: dict[str, bytearray],
     sinks: dict[str, Callable[[bytes], None] | None],
+    keeps: dict[str, bool],
     truncated: dict[str, bool],
     open_fds: set[int],
     max_output_bytes: int,
@@ -174,7 +180,8 @@ def _select_loop(  # noqa: PLR0913
         for fd in ready:
             tag = fds[fd]
             more = _read_chunk(
-                fd, buffers[tag], truncated, tag, max_output_bytes, sinks[tag]
+                fd, buffers[tag], truncated, tag,
+                max_output_bytes, sinks[tag], keeps[tag],
             )
             if not more:
                 open_fds.discard(fd)
@@ -188,12 +195,14 @@ def _read_chunk(  # noqa: PLR0913
     tag: str,
     max_output_bytes: int,
     sink: Callable[[bytes], None] | None,
+    keep: bool,
 ) -> bool:
     chunk = os.read(fd, 65536)
     if not chunk:
         return False
     if sink is not None:
         sink(chunk)
+    if not keep:
         return True
     if truncated[tag]:
         return True
