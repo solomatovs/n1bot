@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-db-clickhouse"
+version = "0.0.9.dev2"
+description = "Boba ClickHouse: ClickHouseConfig + подключение payload'а по HTTP, пароль или Kerberos SPNEGO на каждый запрос."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-krb==0.0.9.dev2",
+    "pydantic>=2.10,<2.11",
+]
+
+# зависимости payload'а: нужны только внутри песочницы,
+# в окружении приложения их быть не должно
+[project.optional-dependencies]
+payload = [
+    "clickhouse-connect[async]>=1.6,<2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

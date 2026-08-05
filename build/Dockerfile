@@ -202,7 +202,7 @@ RUN set -eu                                                                     
     && uv pip install --python "$(command -v python3)" --target /opt/site       \
            --find-links=/tmp/wheels $(cat /tmp/names-sandbox.txt)               \
     && rm -rf /tmp/wheels                                                       \
-    && PYTHONPATH=/opt/site python3 -c "import liteparse, markdownify, bs4, lxml, plotly, httpx, psycopg, fastembed, gssapi, krb5; print('site ok')"
+    && PYTHONPATH=/opt/site python3 -c "import liteparse, markdownify, bs4, lxml, plotly, httpx, psycopg, clickhouse_connect, aiohttp, fastembed, gssapi, krb5; print('site ok')"
 
 
 # runtime image for docker-compose

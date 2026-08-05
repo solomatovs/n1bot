@@ -9,6 +9,7 @@ pythonpath = [
     "packages/infra/transport/boba-web/src",
     "packages/infra/db/boba-db-postgres/src",
     "packages/infra/db/boba-db-pgvector/src",
+    "packages/infra/db/boba-db-clickhouse/src",
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/krb/boba-krb/src",
     "packages/core/boba-cancellation/src",
@@ -21,6 +22,7 @@ pythonpath = [
     "packages/tools/boba-tool-web/src",
     "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-postgres/src",
+    "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration"]
@@ -46,6 +48,7 @@ extraPaths = [
     "packages/infra/transport/boba-web/src",
     "packages/infra/db/boba-db-postgres/src",
     "packages/infra/db/boba-db-pgvector/src",
+    "packages/infra/db/boba-db-clickhouse/src",
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/krb/boba-krb/src",
     "packages/core/boba-cancellation/src",
@@ -58,6 +61,7 @@ extraPaths = [
     "packages/tools/boba-tool-web/src",
     "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-postgres/src",
+    "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
 ]
 venvPath = "."
@@ -111,6 +115,7 @@ boba-tool-chart     = { workspace = true }
 boba-tool-web       = { workspace = true }
 boba-tool-doc       = { workspace = true }
 boba-tool-postgres  = { workspace = true }
+boba-tool-clickhouse = { workspace = true }
 boba-tool-knowledge = { workspace = true }
 boba-kbdoc          = { workspace = true }
 boba-liteparse      = { workspace = true }
@@ -119,6 +124,7 @@ boba-transport-http = { workspace = true }
 boba-web            = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-db-pgvector    = { workspace = true }
+boba-db-clickhouse  = { workspace = true }
 boba-sandbox        = { workspace = true }
 boba-krb            = { workspace = true }
 boba-chainlit       = { workspace = true }
@@ -132,6 +138,7 @@ dev = [
     "markdownify>=0.11,<1.0",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
+    "clickhouse-connect[async]>=1.6,<2",
 ]
 
 [tool.uv]
