@@ -2,6 +2,13 @@
 
 _dev_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE:-$0}")" 2>/dev/null && pwd)
 
+# чужой PYTHONHOME (например от airflow) уводит stdlib любого запускаемого
+# python в чужой префикс: сборочный интерпретатор uv падает на encodings
+if [ -n "${PYTHONHOME:-}" ] || [ -n "${PYTHONPATH:-}" ]; then
+  echo "dev: снимаю PYTHONHOME=${PYTHONHOME:-} PYTHONPATH=${PYTHONPATH:-}" >&2
+  unset PYTHONHOME PYTHONPATH
+fi
+
 # если в PATH уже есть uv, то не добавляем его туда
 case ":$PATH:" in
   *":$_dev_dir/build/artifacts/uv:"*) ;;
