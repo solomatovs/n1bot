@@ -481,12 +481,11 @@ test: build
 	    exit 1
 	}
 	echo "== проверка $(RELEASE_NAME) в образе $(IMAGE) =="
-	docker run --rm \
-	  -v "$(TEST_DIR)":/test:ro \
+	docker run --rm -i \
 	  --entrypoint sh $(IMAGE) -c '
 	    set -a && . "$(DEST_DIR)/conf/boba.env" && set +a
-	    "$$PYTHONHOME/bin/python3" /test/bobacheck.py --names "$(DEST_DIR)/conf/packages.txt"
-	  '
+	    "$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/conf/packages.txt"
+	  ' < "$(TEST_DIR)/bobacheck.py"
 
 .PHONY: extract
 extract:
