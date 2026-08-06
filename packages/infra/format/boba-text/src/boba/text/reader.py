@@ -10,7 +10,7 @@ TextMedia — карта текстовых форматов, которые lit
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import ClassVar
 
 from boba.indexing import (
@@ -44,8 +44,8 @@ class PlainTextReader(Reader[str]):
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def read(self, value: RawDocument) -> Iterable[Section[str]]:
-        raw = value.handle.read()
+    async def read(self, value: RawDocument) -> AsyncIterator[Section[str]]:
+        raw = await value.handle.read()
         yield Section(
             source_id=value.source_id,
             content=self._decode(raw, value),

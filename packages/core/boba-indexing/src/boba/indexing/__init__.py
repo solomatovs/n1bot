@@ -71,7 +71,8 @@ from boba.indexing.ports import (
     Transport,
 )
 from boba.indexing.sections import (
-    BinaryStream,
+    AsyncBinaryStream,
+    ChunkStream,
     Decoder,
     DecoderId,
     HeadingSection,
@@ -116,10 +117,10 @@ from boba.indexing.values import (
 
 __all__ = [
     "And",
+    "AsyncBinaryStream",
     "BaseIndexEvent",
     "BatchStarted",
     "BatchUpserted",
-    "BinaryStream",
     "BytesContentHash",
     "Chunk",
     "ChunkId",
@@ -127,6 +128,7 @@ __all__ = [
     "ChunkKeys",
     "ChunkLocation",
     "ChunkStore",
+    "ChunkStream",
     "ChunkSummary",
     "Chunker",
     "ChunkerId",

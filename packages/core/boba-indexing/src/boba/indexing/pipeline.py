@@ -1,12 +1,19 @@
 """
 Pipeline — сборка стадий source -> transport -> reader с двумя терминалами:
 sections() и index()
+
+Источники обходятся параллельно: в полёте не больше config.workers штук.
+Стадии соединены async-потоками, поэтому ожидание сети и записи одного
+источника перекрывается работой остальных. Синхронную часть (разбор документа,
+инференс эмбеддера) уносят с loop'а сами реализации портов — конвейер лишь
+задаёт, сколько источников идёт одновременно.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
@@ -42,12 +49,20 @@ ReqT = TypeVar("ReqT", bound=Request)
 T = TypeVar("T")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class IndexerConfig(Generic[T]):
     """Параметры одного прогона Pipeline.index / Pipeline.run."""
 
+    workers: int
+    """Сколько источников обрабатывается одновременно"""
+
     cleanup: CleanupStrategy = field(default_factory=NoneCleanup)
     force_update: bool = False
+
+    def __post_init__(self) -> None:
+        if self.workers < 1:
+            msg = f"IndexerConfig.workers must be >= 1, got {self.workers}"
+            raise ValueError(msg)
 
 
 class Pipeline(Generic[ReqT, T]):
@@ -64,10 +79,11 @@ class Pipeline(Generic[ReqT, T]):
         self._transport = transport
         self._reader = reader
 
-    def sections(self) -> Iterator[Section[T]]:
+    async def sections(self) -> AsyncIterator[Section[T]]:
         """Плоский поток Section[T] по всем источникам; без записи в индекс."""
-        for request in self._source.requests():
-            yield from self._sections_of(request)
+        async for request in self._source.requests():
+            async for section in self._sections_of(request):
+                yield section
 
     async def index(
         self,
@@ -88,17 +104,15 @@ class Pipeline(Generic[ReqT, T]):
 
         yield RunStarted(run_id=run_id, monotonic_ns=time.monotonic_ns())
 
-        for request in self._source.requests():
-            async for event in self._process_source(
-                request=request,
-                chunker=chunker,
-                sink=sink,
-                config=config,
-                run_id=run_id,
-                run_start=run_start,
-            ):
-                self._observe(event, stats=stats, touched=touched)
-                yield event
+        async for event in self._index_sources(
+            chunker=chunker,
+            sink=sink,
+            config=config,
+            run_id=run_id,
+            run_start=run_start,
+        ):
+            self._observe(event, stats=stats, touched=touched)
+            yield event
 
         async for event in self._run_cleanup(
             query=query,
@@ -132,10 +146,63 @@ class Pipeline(Generic[ReqT, T]):
                 return event.stats
         return IndexStatsBuilder().build()
 
-    def _sections_of(self, request: ReqT) -> Iterator[Section[T]]:
-        """transport -> reader для одного request'а; секции по одной."""
-        for raw in self._transport.fetch(request):
-            yield from self._reader.read(raw)
+    async def _index_sources(
+        self,
+        *,
+        chunker: Chunker[T],
+        sink: IndexSink[T],
+        config: IndexerConfig[T],
+        run_id: RunId,
+        run_start: float,
+    ) -> AsyncIterator[IndexEvent]:
+        """Обход источников по config.workers штук в полёте; событие — как готово."""
+        pending: set[asyncio.Task[IndexEvent]] = set()
+        try:
+            async for request in self._source.requests():
+                pending.add(
+                    asyncio.create_task(
+                        self._process_source(
+                            request=request,
+                            chunker=chunker,
+                            sink=sink,
+                            config=config,
+                            run_id=run_id,
+                            run_start=run_start,
+                        ),
+                    ),
+                )
+                if len(pending) < config.workers:
+                    continue
+                events, pending = await self._harvest(pending)
+                for event in events:
+                    yield event
+
+            while pending:
+                events, pending = await self._harvest(pending)
+                for event in events:
+                    yield event
+        finally:
+            await self._drop(pending)
+
+    @staticmethod
+    async def _harvest(
+        pending: set[asyncio.Task[IndexEvent]],
+    ) -> tuple[list[IndexEvent], set[asyncio.Task[IndexEvent]]]:
+        """Дождаться первого доработавшего источника: его события и остаток."""
+        done, rest = await asyncio.wait(
+            pending,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        return [task.result() for task in done], rest
+
+    @staticmethod
+    async def _drop(pending: set[asyncio.Task[IndexEvent]]) -> None:
+        """Снять недоработавшие источники: потребитель ушёл или упал."""
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     async def _process_source(  # noqa: PLR0913
         self,
@@ -146,8 +213,8 @@ class Pipeline(Generic[ReqT, T]):
         config: IndexerConfig[T],
         run_id: RunId,
         run_start: float,
-    ) -> AsyncIterator[IndexEvent]:
-        """Per-source streaming pipeline; yield ровно одно CompletedItem-событие."""
+    ) -> IndexEvent:
+        """Per-source streaming pipeline; ровно одно CompletedItem-событие."""
         # identity выводит транспорт, а не request — резолв доступен и когда fetch упадё
         source_id = self._transport.source_id(request)
         try:
@@ -157,24 +224,22 @@ class Pipeline(Generic[ReqT, T]):
                 force=config.force_update,
             )
         except IndexingError as e:
-            yield SourceFailed(
+            return SourceFailed(
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),
                 source_id=source_id,
                 reason=str(e),
             )
-            return
 
         if summary.upserted == 0:
-            yield SourceSkippedUnchanged(
+            return SourceSkippedUnchanged(
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),
                 source_id=source_id,
                 chunks_total=summary.total,
             )
-            return
 
-        yield SourceIndexed(
+        return SourceIndexed(
             run_id=run_id,
             monotonic_ns=time.monotonic_ns(),
             source_id=source_id,
@@ -183,15 +248,21 @@ class Pipeline(Generic[ReqT, T]):
             chunks_skipped=summary.unchanged,
         )
 
+    async def _sections_of(self, request: ReqT) -> AsyncIterator[Section[T]]:
+        """transport -> reader для одного request'а; секции по одной."""
+        async for raw in self._transport.fetch(request):
+            async for section in self._reader.read(raw):
+                yield section
+
     def _chunks_of(
         self,
         request: ReqT,
         chunker: Chunker[T],
-    ) -> Iterator[Chunk[T]]:
-        """sections одного источника -> chunker -> yield
+    ) -> AsyncIterator[Chunk[T]]:
+        """sections одного источника -> chunker
         чанки приходят с уже заполненным content_hash
         """
-        yield from chunker.chunk(self._sections_of(request))
+        return chunker.chunk(self._sections_of(request))
 
     async def _run_cleanup(
         self,

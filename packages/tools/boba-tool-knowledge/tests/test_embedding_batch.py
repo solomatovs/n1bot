@@ -45,12 +45,16 @@ class _Vector(list):
         return list(self)
 
 
+class _FastembedModule(types.ModuleType):
+    """Модуль-заглушка: атрибут объявлен типом, а не проставлен снаружи."""
+
+    TextEmbedding: ClassVar[type[FakeTextEmbedding]] = FakeTextEmbedding
+
+
 @pytest.fixture
 def fake_fastembed(monkeypatch: pytest.MonkeyPatch):
     FakeTextEmbedding.calls = []
-    module = types.ModuleType("fastembed")
-    module.TextEmbedding = FakeTextEmbedding  # pyright: ignore[reportAttributeAccessIssue]
-    monkeypatch.setitem(sys.modules, "fastembed", module)
+    monkeypatch.setitem(sys.modules, "fastembed", _FastembedModule("fastembed"))
     return FakeTextEmbedding
 
 
@@ -66,14 +70,19 @@ def _config(batch_size: int) -> EmbeddingModel:
 class TestBatchSizeReachesModel:
     """Настройка обязана доезжать до fastembed, иначе он берёт свой дефолт."""
 
-    def test_documents_are_embedded_in_configured_batches(self, fake_fastembed) -> None:
+    @pytest.mark.anyio
+    async def test_documents_are_embedded_in_configured_batches(
+        self,
+        fake_fastembed,
+    ) -> None:
         embedder = LocalFastEmbedEmbedderFactory.build(_config(8))
-        list(embedder.embed_documents([f"текст {i}" for i in range(100)]))
+        await embedder.embed_documents([f"текст {i}" for i in range(100)])
         assert fake_fastembed.calls == [{"method": "passage", "batch_size": 8}]
 
-    def test_query_uses_the_same_batch_size(self, fake_fastembed) -> None:
+    @pytest.mark.anyio
+    async def test_query_uses_the_same_batch_size(self, fake_fastembed) -> None:
         embedder = LocalFastEmbedEmbedderFactory.build(_config(8))
-        embedder.embed_query("запрос")
+        await embedder.embed_query("запрос")
         assert fake_fastembed.calls == [{"method": "query", "batch_size": 8}]
 
 

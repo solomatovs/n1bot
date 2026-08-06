@@ -24,6 +24,7 @@
     base_url   = "<https://llm.example.local/v1>"
     api_key    = "<ключ>"
     ssl_verify = true
+    dump       = false
 
 
 [agent]
@@ -262,8 +263,8 @@
         max_output_bytes    = 16777216
         cwd                 = "/tmp"
         cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
-        cgroup_memory_bytes   = 6442450944
-        cgroup_cpu_percent    = 200
+        cgroup_memory_bytes   = 8589934592
+        cgroup_cpu_percent    = 400
         cgroup_cpu_weight     = 100
         cgroup_pids_max       = 256
         cgroup_swap_max_bytes = 0
@@ -377,10 +378,11 @@
     chunk_overlap     = 0
     attachment_titles = ["*.pdf", "*.docx", "*.xlsx"]
     tessdata_path     = "/usr/share/tessdata"
+    page_workers      = 4
 
     [tool.ingest.sandbox]
         profile  = "${sandbox.profiles.kb}"
-        override = { timeout_sec = 3600, max_cpu_sec = 3600 }
+        override = { timeout_sec = 3600, max_cpu_sec = 14400 }
 
     [tool.ingest.tools]
         confluence_index_pages  = []

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
+
+import pytest
 
 from boba.indexing import (
     ChunkerId,
@@ -20,6 +22,22 @@ from boba.indexing import (
 )
 from boba.text.chunker import SectionChunker
 
+pytestmark = pytest.mark.anyio
+
+
+async def _astream(
+    items: Iterable[Section[str]],
+) -> AsyncIterator[Section[str]]:
+    """Готовые секции как поток — вход чанкера только асинхронный."""
+    for item in items:
+        yield item
+
+
+
+@pytest.fixture(scope="module")
+def anyio_backend() -> str:
+    return "asyncio"
+
 
 class _IdentitySplitter(Splitter[str]):
     """Один piece на всю секцию — изолируем тест от splitter-логики."""
@@ -35,7 +53,7 @@ class _StaticIdGenerator(ChunkIdGenerator[str]):
 
 
 
-def test_to_chunk_metadata_is_merged_into_chunk():
+async def test_to_chunk_metadata_is_merged_into_chunk():
     """HeadingSection кладёт HEADING_LEVEL/TEXT через to_chunk_metadata."""
     section = HeadingSection(
         source_id=SourceId("doc1"),
@@ -50,12 +68,12 @@ def test_to_chunk_metadata_is_merged_into_chunk():
         id_strategy=_StaticIdGenerator(),
         content_hasher=Sha256TextEncoder(),
     )
-    [chunk] = list(chunker.chunk(iter([section])))
+    [chunk] = [item async for item in chunker.chunk(_astream([section]))]
     assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 1
     assert chunk.metadata.get(SectionKeys.HEADING_TEXT) == "Intro"
 
 
-def test_section_metadata_overrides_typed_keys_on_collision():
+async def test_section_metadata_overrides_typed_keys_on_collision():
     """Section.metadata.merge(to_chunk_metadata()): другой побеждает.
 
     Контракт Metadata.merge: правый аргумент перекрывает левый. Значит
@@ -77,5 +95,5 @@ def test_section_metadata_overrides_typed_keys_on_collision():
         id_strategy=_StaticIdGenerator(),
         content_hasher=Sha256TextEncoder(),
     )
-    [chunk] = list(chunker.chunk(iter([section])))
+    [chunk] = [item async for item in chunker.chunk(_astream([section]))]
     assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 2

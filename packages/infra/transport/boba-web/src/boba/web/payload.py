@@ -45,29 +45,30 @@ class WebOps:
     ) -> dict[str, Any]:
         op = request["op"]
         if op == "web_fetch":
-            return cls.web_fetch(request, emit)
+            return await cls.web_fetch(request, emit)
         if op == "web_grep":
-            return cls.web_grep(request, emit)
+            return await cls.web_grep(request, emit)
         msg = f"unknown web op: {op!r}"
         raise ValueError(msg)
 
     @classmethod
-    def load(cls, request: dict[str, Any]) -> str:
+    async def load(cls, request: dict[str, Any]) -> str:
         """Скачать страницу профилем из запроса и при нужде — в markdown."""
         profile = request["profile"]
         try:
-            response = httpx.get(
-                request["url"],
+            async with httpx.AsyncClient(
                 timeout=profile["timeout_sec"],
                 verify=profile["ssl_verify"],
                 follow_redirects=True,
                 auth=cls.auth_of(profile["auth"]),
-            )
-            response.raise_for_status()
+            ) as client:
+                response = await client.get(request["url"])
+                response.raise_for_status()
+                body = await response.aread()
         except httpx.HTTPError as e:
             msg = f"web request failed: {type(e).__name__}: {e}"
             raise PayloadError("web_request_failed", msg) from e
-        text = response.content.decode(cls.ENCODING, errors="replace")
+        text = body.decode(cls.ENCODING, errors="replace")
         if not request["as_markdown"]:
             return text
         import markdownify  # noqa: PLC0415
@@ -90,9 +91,12 @@ class WebOps:
         raise ValueError(msg)
 
     @classmethod
-    def web_fetch(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:
+    async def web_fetch(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         """Окно строк уходит кадрами построчно; трейлер несёт счётчики."""
-        lines = cls.load(request).splitlines()
+        page = await cls.load(request)
+        lines = page.splitlines()
         offset = request["line_offset"]
         window = lines[offset : offset + request["line_count"]]
         last = len(window) - 1
@@ -109,9 +113,11 @@ class WebOps:
         }
 
     @classmethod
-    def web_grep(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:
+    async def web_grep(
+        cls, request: dict[str, Any], emit: ChunkEmitter
+    ) -> dict[str, Any]:
         """Каждое совпадение уходит отдельным кадром-записью."""
-        text = cls.load(request)
+        text = await cls.load(request)
         pattern = cls.compile_pattern(
             request["pattern"],
             fixed_string=request["fixed_string"],

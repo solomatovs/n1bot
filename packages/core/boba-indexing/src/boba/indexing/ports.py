@@ -1,9 +1,14 @@
-"""Порты конвейера: запрос, транспорт, reader, chunker, embedder."""
+"""Порты конвейера: запрос, транспорт, reader, chunker, embedder.
+
+Каркас асинхронный целиком: стадии соединяются async-потоками, чтобы конвейер
+мог вести несколько источников сразу. Синхронная работа (разбор документа,
+инференс эмбеддера) — забота реализации порта: она сама уносит её с loop'а.
+"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Mapping, Sequence
 from typing import Generic, Literal, NewType, Protocol, TypeVar, runtime_checkable
 
 from boba.indexing.chunks import Chunk
@@ -33,14 +38,16 @@ ReaderId = NewType("ReaderId", str)
 class Reader(ABC, Generic[T]):
     """Разбирает RawDocument на Section[T].
 
-    Handle не закрывает (это Transport), на несовместимый payload бросает IncompatibleContentError, autodetect'а нет.
+    Handle не закрывает (это Transport), на несовместимый payload бросает
+    IncompatibleContentError, autodetect'а нет. Разбор обычно синхронный и
+    тяжёлый (native-парсер, OCR) — уносить его с loop'а обязана реализация.
     """
 
     @abstractmethod
     def reader_id(self) -> ReaderId: ...
 
     @abstractmethod
-    def read(self, raw: RawDocument) -> Iterable[Section[T]]: ...
+    def read(self, raw: RawDocument) -> AsyncIterator[Section[T]]: ...
 
 T = TypeVar("T")
 
@@ -52,28 +59,36 @@ ChunkerId = NewType("ChunkerId", str)
 class Chunker(ABC, Generic[T]):
     """Преобразует поток Section[T] в поток Chunk[T].
 
-    chunk_id детерминирован (re-index), chunk_index сквозной по source_id, content_hash обязан заполнить сам Chunker.
+    chunk_id детерминирован (re-index), chunk_index сквозной по source_id,
+    content_hash обязан заполнить сам Chunker.
     """
 
     @abstractmethod
     def chunker_id(self) -> ChunkerId: ...
 
     @abstractmethod
-    def chunk(self, sections: Iterable[Section[T]]) -> Iterable[Chunk[T]]: ...
+    def chunk(self, sections: AsyncIterable[Section[T]]) -> AsyncIterator[Chunk[T]]: ...
 
 T = TypeVar("T")
 
 
 class Embedder(ABC, Generic[T]):
-    """Преобразует content в вектор; provider-нейтральная абстракция."""
+    """Преобразует content в вектор; provider-нейтральная абстракция.
+
+    Батч эмбеддится долго: локальный backend обязан уносить инференс с loop'а,
+    удалённый — просто ходит по сети.
+    """
 
     @abstractmethod
-    def embed_documents(self, contents: Iterable[T]) -> Iterable[Sequence[float]]:
+    async def embed_documents(
+        self,
+        contents: Sequence[T],
+    ) -> Sequence[Sequence[float]]:
         """Векторизация для индексации (потенциально с document-prefix)."""
         ...
 
     @abstractmethod
-    def embed_query(self, content: T) -> Sequence[float]:
+    async def embed_query(self, content: T) -> Sequence[float]:
         """Векторизация запроса (для асимметричных моделей — с query-prefix)."""
         ...
 
@@ -86,7 +101,8 @@ class Embedder(ABC, Generic[T]):
 class Request(Protocol):
     """Контракт Request-DTO — чистый план «что забрать» + исходная metadata.
 
-    source_id НЕ часть Request — его вычисляет Transport из реального адреса, чтобы identity не дрейфовала.
+    source_id НЕ часть Request — его вычисляет Transport из реального адреса,
+    чтобы identity не дрейфовала.
     """
 
     @property
@@ -97,10 +113,14 @@ ReqT = TypeVar("ReqT", bound=Request)
 
 
 class RequestSource(ABC, Generic[ReqT]):
-    """Источник Request'ов для Transport'а; source_id не формирует — его выводит Transport."""
+    """Источник Request'ов; source_id не формирует — его выводит Transport.
+
+    Поток асинхронный: discovery сам ходит по сети (пагинация REST), и держать
+    его синхронным значило бы блокировать loop на всё время обхода.
+    """
 
     @abstractmethod
-    def requests(self) -> Iterable[ReqT]:
+    def requests(self) -> AsyncIterator[ReqT]:
         """Сгенерировать поток ReqT-планов для Transport'а."""
         ...
 
@@ -113,7 +133,7 @@ class Transport(ABC, Generic[ReqT]):
 
     **Схема**:
     python
-    ReqT   ───────────────────────transport.fetch──->  Iterable[RawDocument]
+    ReqT   ───────────────────────transport.fetch──->  AsyncIterator[RawDocument]
         <fields: url|path|…>     ──open/fetch───────->
         source_id   : SourceId   ──pass─────────────->     source_id   (тот же)
         metadata    : Metadata   ──merge────────────->     metadata    (+ TransportKeys.ETAG / MTIME / CONTENT_TYPE …)
@@ -121,9 +141,12 @@ class Transport(ABC, Generic[ReqT]):
 
 
     Один request может развернуться в несколько RawDocument (например
-    Confluence-страница -> HTML + вложения), поэтому выход — Iterable.
+    Confluence-страница -> HTML + вложения), поэтому выход — поток.
 
     **Контракты**:
+    - fetch асинхронен: сеть не занимает поток, а разбор документа идёт синхронно
+      в чужом исполнителе, куда открытый сетевой handle протаскивать нельзя —
+      поэтому к моменту yield тело документа уже доступно целиком
     - Transport владеет lifecycle handle: открывает handle в generator через with,
       закрывает по выходу из fetch. Reader потребляет, но не закрывает
     - Один Transport работает только с одним типом Request: Transport[HttpRequest]
@@ -142,10 +165,10 @@ class Transport(ABC, Generic[ReqT]):
         metadata=Metadata.empty().set(FsKeys.PATH, "/abs/note.md"),
     )
 
-    # Первый next(...) даёт открытый RawDocument; следующий next закроет handle.
-    raw = next(iter(transport.fetch(request)))
+    # Первый шаг итерации даёт RawDocument; следующий закроет handle.
+    raw = await anext(aiter(transport.fetch(request)))
     raw == RawDocument(
-        handle=<BufferedReader name='/abs/note.md'>,    # новое: открытый файловый дескриптор
+        handle=<AsyncBinaryStream>,                     # новое: открытый поток тела
         source_id=SourceId("fs:/abs/note.md"),          # выводит FsTransport.source_id из path
         metadata=(                                      # merge из FsRequest.metadata + транспортные ключи
             Metadata.empty()
@@ -155,7 +178,7 @@ class Transport(ABC, Generic[ReqT]):
             .set(FsKeys.SUFFIX, "md")                   # добавил Transport
         ),
     )
-    raw.handle.read()  # -> b"# Note\\n..."  (Reader потребляет до следующей итерации)
+    await raw.handle.read()  # -> b"# Note\\n..."  (Reader потребляет до следующей итерации)
 
     """  # noqa: E501
 
@@ -167,16 +190,16 @@ class Transport(ABC, Generic[ReqT]):
         ...
 
     @abstractmethod
-    def fetch(self, request: ReqT) -> Iterable[RawDocument]: ...
+    def fetch(self, request: ReqT) -> AsyncIterator[RawDocument]: ...
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Освободить ресурсы транспорта (соединения/пулы). По умолчанию — no-op."""
 
-    def __enter__(self) -> Transport[ReqT]:
+    async def __aenter__(self) -> Transport[ReqT]:
         return self
 
-    def __exit__(self, *exc: object) -> None:
-        self.close()
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
 
 T = TypeVar("T")
 
@@ -203,7 +226,7 @@ class DispatchReader(Reader[T]):
     def reader_id(self) -> ReaderId:
         return self._reader_id
 
-    def read(self, raw: RawDocument) -> Iterable[Section[T]]:
+    async def read(self, raw: RawDocument) -> AsyncIterator[Section[T]]:
         key_value = raw.metadata.get(self._by)
         if key_value is None:
             if self._on_unknown == "skip":
@@ -231,4 +254,5 @@ class DispatchReader(Reader[T]):
                 ),
             )
 
-        yield from inner.read(raw)
+        async for section in inner.read(raw):
+            yield section
