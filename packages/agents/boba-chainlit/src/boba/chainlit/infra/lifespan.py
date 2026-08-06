@@ -11,7 +11,7 @@ from fastapi import FastAPI
 async def _manager(
     app: FastAPI,
     lifespans: Sequence[Callable[[FastAPI], AbstractAsyncContextManager[None]]],
-) -> AsyncGenerator[None]:
+) -> AsyncGenerator[None, None]:
     exit_stack = contextlib.AsyncExitStack()
     async with exit_stack:
         for lifespan in lifespans:

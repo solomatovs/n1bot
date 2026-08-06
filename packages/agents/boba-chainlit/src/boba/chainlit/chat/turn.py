@@ -1,8 +1,8 @@
-"""Ход агента в чате: прогон стрима, фиксация остановки и точки её запуска.
+"""Ход агента в чате: прогон стрима, фиксация остановки и точка её запуска.
 
-Отмену держит TurnRegistry по thread_id, поэтому кнопка Stop и разрыв связи
-ведут в одну и ту же точку. Разрыв связи даёт грейс: вкладку могли перегрузить
-или сеть моргнула, и ход не должен пропадать из-за этого.
+Ход обрывается только по кнопке Stop: отмену держит TurnRegistry по thread_id,
+и дотягивается до неё единственный обработчик. Разрыв связи ход не трогает —
+пользователь мог закрыть вкладку, ответ он увидит в истории при возвращении.
 
 Ошибки: наружу выходит только asyncio.CancelledError — её ждёт chainlit как
 признак снятой задачи; прикладные сбои превращаются в сообщение об ошибке
@@ -31,43 +31,12 @@ logger = logging.getLogger(__name__)
 
 
 class TurnStopper:
-    """Единственная точка остановки хода для callback'ов chainlit."""
+    """Кнопка Stop: единственная точка остановки хода для callback'ов chainlit."""
 
-    DISCONNECT_GRACE_SEC: ClassVar[float] = 20.0
-    """Сколько ждать возврата пользователя, прежде чем обрывать ход."""
-
-    _PENDING: ClassVar[dict[str, asyncio.Task[None]]] = {}
-
-    @classmethod
-    def stop(cls, thread_id: str) -> bool:
-        """Кнопка Stop: обрываем ход немедленно."""
-        cls.keep_alive(thread_id)
+    @staticmethod
+    def stop(thread_id: str) -> bool:
+        """Обрываем ход немедленно; False — останавливать нечего."""
         return TurnRegistry.instance().stop(thread_id, StopReason.USER_STOP)
-
-    @classmethod
-    def disconnected(cls, thread_id: str) -> None:
-        """Связь оборвалась: даём грейс на возвращение и только потом рвём."""
-        if TurnRegistry.instance().active(thread_id) is None:
-            return
-        cls.keep_alive(thread_id)
-        cls._PENDING[thread_id] = asyncio.create_task(cls._stop_later(thread_id))
-
-    @classmethod
-    def keep_alive(cls, thread_id: str) -> None:
-        """Пользователь вернулся: отложенный обрыв снимается."""
-        pending = cls._PENDING.pop(thread_id, None)
-        if pending is not None:
-            pending.cancel()
-
-    @classmethod
-    async def _stop_later(cls, thread_id: str) -> None:
-        try:
-            await asyncio.sleep(cls.DISCONNECT_GRACE_SEC)
-        except asyncio.CancelledError:
-            logger.info("thread %s: user came back, turn kept", thread_id)
-            raise
-        cls._PENDING.pop(thread_id, None)
-        TurnRegistry.instance().stop(thread_id, StopReason.DISCONNECT)
 
 
 class TurnReport:
@@ -137,6 +106,9 @@ class TurnReport:
 class ChatTurn:
     """Один ход: стрим ответа под отменой, зарегистрированной на thread_id."""
 
+    _REPORTS: ClassVar[set[asyncio.Future[None]]] = set()
+    """Живые отчёты об остановке: без ссылки задачу заберёт сборщик мусора."""
+
     def __init__(
         self,
         graph: CompiledStateGraph,
@@ -176,15 +148,14 @@ class ChatTurn:
         self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
     ) -> None:
         """Гоняет стрим до конца либо до остановки; отменённый ход не молчит."""
-        TurnStopper.keep_alive(self._thread_id)
-
         with TurnRegistry.instance().open(self._thread_id) as cancellation:
             try:
                 async for chunk, _metadata in stream:
                     cancellation.raise_if_cancelled()
                     await self._on_chunk(chunk)
             except asyncio.CancelledError:
-                cancellation.cancel(StopReason.USER_STOP)
+                # задачу сняли снаружи; после кнопки Stop причина уже своя
+                cancellation.cancel(StopReason.ABORTED)
                 await self._report_stop(cancellation.reason)
                 raise
             except ToolStopped:
@@ -192,7 +163,7 @@ class ChatTurn:
                 return
             except Exception as e:
                 logger.exception("agent run failed")
-                cancellation.cancel(StopReason.USER_STOP)
+                cancellation.cancel(StopReason.FAILED)
                 await TurnReport.failure(
                     self._graph, self._thread_id, self._view, self._key, e
                 )
@@ -203,7 +174,15 @@ class ChatTurn:
         await self._answer.send()
 
     async def _report_stop(self, reason: StopReason | None) -> None:
-        await TurnReport.stopped(self, reason)
+        """Отчёт идёт своей задачей: повторная отмена хода не должна его съесть.
+
+        Кнопку Stop chainlit обрабатывает отменой задачи хода, а прерыватель
+        отменяет её второй раз — эта отмена приходит уже во время отрисовки.
+        """
+        report = asyncio.ensure_future(TurnReport.stopped(self, reason))
+        self._REPORTS.add(report)
+        report.add_done_callback(self._REPORTS.discard)
+        await asyncio.shield(report)
 
     async def _on_chunk(self, chunk: BaseMessage) -> None:
         if not isinstance(chunk, AIMessageChunk):

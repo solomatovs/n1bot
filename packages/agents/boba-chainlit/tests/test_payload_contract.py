@@ -6,6 +6,7 @@ import importlib
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar, Protocol
 
 import pytest
 from pydantic import BaseModel, SecretStr
@@ -32,7 +33,14 @@ from boba.tool.pg.protocol import PgQueryRequest
 from boba.web.caller import WebCaller
 from boba.web.protocol import WebFetchRequest, WebGrepRequest
 
-CALLERS = [
+
+class PayloadCaller(Protocol):
+    """Контракт caller'а: точка входа payload'а как аргументы `python3 -m`."""
+
+    ENTRY: ClassVar[tuple[str, ...]]
+
+
+CALLERS: list[type[PayloadCaller]] = [
     ChartCaller,
     DocEngine,
     LiteParseCaller,
@@ -67,7 +75,7 @@ class TestEntryPoints:
     """Точка входа — свойство кода инструмента, а не конфига."""
 
     @pytest.mark.parametrize("caller", CALLERS)
-    def test_entry_is_an_importable_module(self, caller: type) -> None:
+    def test_entry_is_an_importable_module(self, caller: type[PayloadCaller]) -> None:
         entry = caller.ENTRY
         assert entry[:2] == ("python3", "-m"), (
             f"{caller.__name__}.ENTRY={entry} — payload запускается как модуль"
@@ -75,7 +83,7 @@ class TestEntryPoints:
         importlib.import_module(entry[2])
 
     @pytest.mark.parametrize("caller", CALLERS)
-    def test_entry_module_is_runnable(self, caller: type) -> None:
+    def test_entry_module_is_runnable(self, caller: type[PayloadCaller]) -> None:
         """У модуля должен быть __main__: иначе `python3 -m` ничего не сделает."""
         module = importlib.import_module(caller.ENTRY[2])
         assert module.__file__ is not None

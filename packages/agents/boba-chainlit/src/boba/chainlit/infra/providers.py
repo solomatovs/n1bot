@@ -172,53 +172,42 @@ def httpx_timeout(c: OpenAiConfig) -> httpx.Timeout:
     )
 
 
-def httpx_client(c: Annotated[AppConfig, Depends(get_app_config)]):
-    return AsyncClient(
-        timeout=httpx_timeout(c.agent.openai),
-        transport=httpx.AsyncHTTPTransport(**_openai_transport_options(c.agent.openai)),
-    )
-
-
-async def httpx_debug_client(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-) -> AsyncIterator[AsyncClient]:
+def _openai_dump_transport(c: AppConfig) -> DumpingTransport:
     from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
 
     def chainlit_filename(request: httpx.Request) -> str:
         try:
             ctx = get_context()
         except ChainlitContextException:
-            return "no-context"
+            return f"no-context-{request.url.host}.log"
 
         who = "anon"
         if user := getattr(ctx.session, "user", None):
             who = user.identifier
 
-        what = ctx.session.id
-        if run := ctx.current_run:
-            what = run.parent_id or run.id
+        label = re.sub(r"[^\w.@-]", "_", f"{who}-{ctx.session.thread_id}")
 
-        label = re.sub(r"[^\w.@-]", "_", f"{who}-{what}")
+        return f"{label}-{request.url.host}.log"
 
-        res = f"{label}-{request.url.host}.log"
-
-        return res
-
-    transport = DumpingTransport(
-        dump_dir=Path(Path(c.chainlit.root) / "dump"),
+    return DumpingTransport(
+        dump_dir=Path(c.chainlit.root) / "dump",
         dump_file=chainlit_filename,
         **_openai_transport_options(c.agent.openai),
     )
 
-    client = AsyncClient(
+
+def httpx_client(c: Annotated[AppConfig, Depends(get_app_config)]) -> AsyncClient:
+    if c.agent.openai.dump:
+        transport = _openai_dump_transport(c)
+    else:
+        transport = httpx.AsyncHTTPTransport(
+            **_openai_transport_options(c.agent.openai)
+        )
+
+    return AsyncClient(
         timeout=httpx_timeout(c.agent.openai),
         transport=transport,
     )
-
-    try:
-        yield client
-    finally:
-        pass
 
 
 async def langchain_checkpoint_saver(
@@ -357,7 +346,7 @@ def _index_of_last_user_turn(msgs: list) -> int:
 
 def langchain_agent(
     c: Annotated[AppConfig, Depends(get_app_config)],
-    client: Annotated[AsyncClient, Depends(httpx_debug_client)],
+    client: Annotated[AsyncClient, Depends(httpx_client)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
     tools: Annotated[list[BaseTool], Depends(session_tools, scope="session")],
 ) -> CompiledStateGraph:

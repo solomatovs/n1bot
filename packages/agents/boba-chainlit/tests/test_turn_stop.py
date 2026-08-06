@@ -1,4 +1,4 @@
-"""Единая точка отмены: кнопка Stop и разрыв связи обрывают один и тот же ход."""
+"""Единая точка отмены: ход обрывает кнопка Stop, и только она."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import pytest
 from boba.cancellation import (
     StopReason,
     ToolStopped,
-    TurnCancellation,
     TurnRegistry,
     current_cancellation,
 )
@@ -56,7 +55,7 @@ class TestRegistry:
     ) -> None:
         """Инструменты читают отмену из контекста: снаружи и изнутри один объект."""
         with registry.open(THREAD):
-            registry.stop(THREAD, StopReason.DISCONNECT)
+            registry.stop(THREAD, StopReason.USER_STOP)
             assert current_cancellation().cancelled is True
             with pytest.raises(ToolStopped):
                 current_cancellation().raise_if_cancelled()
@@ -140,68 +139,28 @@ class TestAsyncTurn:
         assert asyncio.run(scenario()) is True
 
 
-class TestDisconnectGrace:
-    """Разрыв связи даёт вернуться: моргнувшая сеть не убивает ход."""
+class TestStopButton:
+    """Кнопка Stop — единственный способ оборвать ход."""
 
-    GRACE = 0.2
-
-    @pytest.fixture(autouse=True)
-    def short_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(TurnStopper, "DISCONNECT_GRACE_SEC", self.GRACE)
-        TurnStopper._PENDING.clear()
-
-    def test_turn_survives_the_grace_if_user_returns(self) -> None:
-        async def scenario() -> bool:
-            registry = TurnRegistry.instance()
-            with registry.open(THREAD) as cancellation:
-                TurnStopper.disconnected(THREAD)
-                await asyncio.sleep(self.GRACE / 2)
-                TurnStopper.keep_alive(THREAD)
-                await asyncio.sleep(self.GRACE)
-                return cancellation.cancelled
-
-        assert asyncio.run(scenario()) is False
-
-    def test_turn_is_stopped_when_user_does_not_return(self) -> None:
-        """Ход идёт своей задачей: по истечении грейса её обязаны снять."""
-        seen: dict[str, object] = {}
-
-        async def scenario() -> None:
-            registry = TurnRegistry.instance()
-            started = asyncio.Event()
-
-            async def turn() -> None:
-                with registry.open(THREAD) as cancellation:
-                    seen["cancellation"] = cancellation
-                    started.set()
-                    await asyncio.sleep(self.GRACE * 10)
-
-            task = asyncio.create_task(turn())
-            await started.wait()
-            TurnStopper.disconnected(THREAD)
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-        asyncio.run(scenario())
-        cancellation = seen["cancellation"]
-        assert isinstance(cancellation, TurnCancellation)
-        assert cancellation.reason is StopReason.DISCONNECT
-
-    def test_disconnect_without_turn_schedules_nothing(self) -> None:
-        async def scenario() -> int:
-            TurnStopper.disconnected(THREAD)
-            return len(TurnStopper._PENDING)
-
-        assert asyncio.run(scenario()) == 0
-
-    def test_stop_button_wins_over_pending_grace(self) -> None:
-        """Нажали Stop во время грейса — обрыв немедленный и с причиной кнопки."""
-
+    def test_button_stops_the_open_turn(self) -> None:
         async def scenario() -> StopReason | None:
             registry = TurnRegistry.instance()
             with registry.open(THREAD) as cancellation:
-                TurnStopper.disconnected(THREAD)
-                TurnStopper.stop(THREAD)
+                assert TurnStopper.stop(THREAD) is True
                 return cancellation.reason
 
         assert asyncio.run(scenario()) is StopReason.USER_STOP
+
+    def test_button_without_turn_stops_nothing(self) -> None:
+        assert TurnStopper.stop(THREAD) is False
+
+    def test_turn_survives_when_nobody_pressed_stop(self) -> None:
+        """Разрыв связи сам по себе ход не трогает: он доигрывает до конца."""
+
+        async def scenario() -> bool:
+            registry = TurnRegistry.instance()
+            with registry.open(THREAD) as cancellation:
+                await asyncio.sleep(0)
+                return cancellation.cancelled
+
+        assert asyncio.run(scenario()) is False

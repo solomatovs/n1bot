@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import abstractmethod
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -193,20 +194,23 @@ class PagedDocumentReader(Reader[str]):
         """Поддерживаемые media_type — для сборки routes DispatchReader'а."""
         return DocumentMedia.media_types()
 
-    def read(self, value: RawDocument) -> Iterable[Section[str]]:
+    async def read(self, value: RawDocument) -> AsyncIterator[Section[str]]:
+        """Разбор документа уходит в поток: liteparse и OCR отпускают GIL."""
         suffix = self._resolve_suffix(value)
 
-        data = value.handle.read()
+        data = await value.handle.read()
         if not data:
-            return []
+            return
 
+        filename = DocumentMedia.filename_for(suffix)
         try:
-            pages = self.parse_pages(data, DocumentMedia.filename_for(suffix))
+            pages = await asyncio.to_thread(self.parse_pages, data, filename)
         except self.PARSE_ERRORS as e:
             raise self._incompatible(value, str(e)) from e
 
         doc_type = DocumentMedia.doc_type_of(suffix)
-        return PageSectionBuilder.build(value, pages, doc_type)
+        for section in PageSectionBuilder.build(value, pages, doc_type):
+            yield section
 
     @abstractmethod
     def parse_pages(self, data: bytes, filename: str) -> Sequence[ParsedPage]:

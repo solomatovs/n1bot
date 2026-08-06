@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import asyncio
+from collections.abc import Sequence
 
 from pydantic import BaseModel, Field
 
@@ -16,7 +17,12 @@ __all__ = [
 
 
 class LocalFastEmbedEmbedder(Embedder[str]):
-    """Embedder[str] на fastembed (in-process, ONNX); префиксы e5 подставляет fastembed."""
+    """Embedder[str] на fastembed (in-process, ONNX); префиксы e5 подставляет fastembed.
+
+    Модель одна на процесс, поэтому инференс уходит в поток под локом: loop
+    остаётся свободен для остальных источников, а ONNX внутри и так занимает
+    все выделенные ядра — параллельные прогоны только отнимали бы память.
+    """
 
     def __init__(
         self, model_name: str, cache_dir: str, dim: int, batch_size: int
@@ -31,17 +37,28 @@ class LocalFastEmbedEmbedder(Embedder[str]):
         )
         self._dim = dim
         self._batch_size = batch_size
+        self._lock = asyncio.Lock()
 
-    def embed_documents(
+    async def embed_documents(
         self,
-        contents: Iterable[str],
-    ) -> Iterable[Sequence[float]]:
+        contents: Sequence[str],
+    ) -> Sequence[Sequence[float]]:
+        async with self._lock:
+            return await asyncio.to_thread(self._passage_embed, contents)
+
+    async def embed_query(self, content: str) -> Sequence[float]:
+        async with self._lock:
+            return await asyncio.to_thread(self._query_embed, content)
+
+    def _passage_embed(self, contents: Sequence[str]) -> list[Sequence[float]]:
+        vectors: list[Sequence[float]] = []
         for vec in self._model.passage_embed(contents, batch_size=self._batch_size):
             v = vec.tolist()
             self._record_dim(v)
-            yield v
+            vectors.append(v)
+        return vectors
 
-    def embed_query(self, content: str) -> Sequence[float]:
+    def _query_embed(self, content: str) -> Sequence[float]:
         gen = self._model.query_embed([content], batch_size=self._batch_size)
         vec = next(iter(gen))
         v = vec.tolist()

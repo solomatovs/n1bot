@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any, ClassVar, Generic, TypeVar
@@ -209,7 +216,7 @@ class IndexSink(ABC, Generic[T]):
     @abstractmethod
     async def reconcile(
         self,
-        chunks: Iterable[Chunk[T]],
+        chunks: AsyncIterable[Chunk[T]],
         *,
         time_at_least: float,
         force: bool = False,
@@ -266,7 +273,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
 
     async def reconcile(
         self,
-        chunks: Iterable[Chunk[T]],
+        chunks: AsyncIterable[Chunk[T]],
         *,
         time_at_least: float,
         force: bool = False,
@@ -280,7 +287,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
             TrackingKeys.UPDATED_AT: float(time_at_least),
         }
 
-        for batch in self._batched(chunks, self._batch_size):
+        async for batch in self._abatched(chunks, self._batch_size):
             if force:
                 changed_ids = [c.chunk_id for c in batch]
                 unchanged_ids: list[ChunkId] = []
@@ -297,7 +304,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
 
             if dirty:
                 documents = [c.format_content for c in dirty]
-                embeddings = list(self._embedder.embed_documents(documents))
+                embeddings = await self._embedder.embed_documents(documents)
                 embedded = [
                     EmbeddedChunk.of(c, tuple(e))
                     for c, e in zip(dirty, embeddings, strict=True)
@@ -357,6 +364,20 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
             batch = list(islice(it, batch_size))
             if not batch:
                 return
+            yield batch
+
+    @staticmethod
+    async def _abatched(
+        items: AsyncIterable[_E],
+        batch_size: int,
+    ) -> AsyncIterator[list[_E]]:
+        batch: list[_E] = []
+        async for item in items:
+            batch.append(item)
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+        if batch:
             yield batch
 
 @dataclass(frozen=True)

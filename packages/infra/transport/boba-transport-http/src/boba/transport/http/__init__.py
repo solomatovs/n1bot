@@ -17,6 +17,8 @@ from boba.transport.http.transport import (
     HttpRequest,
     HttpResponse,
     HttpTransport,
+    ResponseStream,
+    RetryPolicy,
 )
 
 __all__ = [
@@ -31,5 +33,7 @@ __all__ = [
     "HttpTransport",
     "HttpxBearerAuth",
     "NoneAuth",
+    "ResponseStream",
+    "RetryPolicy",
     "WebAuth",
 ]

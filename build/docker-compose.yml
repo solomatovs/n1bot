@@ -6,7 +6,7 @@ services:
     # не мапит владельца и не может писать в том
     user: "${BOBA_UID:-1000}:${BOBA_GID:-984}"
     container_name: chainlit
-    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && export CHAINLIT_APP_ROOT=$$BOBA_DIR/data && exec boba-chainlit \"$$@\"", "--"]
+    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && exec boba-chainlit \"$$@\"", "--"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - KRB5_CLIENT_KTNAME=/etc/boba/krb5.keytab

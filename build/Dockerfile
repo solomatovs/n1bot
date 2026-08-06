@@ -182,6 +182,15 @@ RUN set -eu                                                                     
     && uv pip install --python "$(command -v python3)" --target /opt/app-site   \
            --find-links=/tmp/wheels boba-chainlit                               \
     && rm -rf /tmp/wheels                                                       \
+    # фронт chainlit тянет шрифт и стили формул с CDN: в закрытом контуре их
+    # отдаёт сам сервер из public/, куда make webassets кладёт katex и Inter
+    && sed -i                                                                   \
+        -e '/rel="preconnect"/d'                                                \
+        -e 's#https://fonts.googleapis.com/css2?family=Inter[^"]*#/public/vendor/inter/inter.css#' \
+        -e 's#https://cdn.jsdelivr.net/npm/katex@[0-9.]*/dist/katex.min.css#/public/vendor/katex/katex.min.css#' \
+        /opt/app-site/chainlit/frontend/dist/index.html                         \
+    && ! grep -qE 'fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net'         \
+        /opt/app-site/chainlit/frontend/dist/index.html                         \
     && PYTHONPATH=/opt/app-site python3 -c "import boba.chainlit; print('app-site ok')" \
     && PYTHONPATH=/opt/app-site python3 -c "import importlib.metadata as md; \
 print('\\n'.join(sorted(d.metadata['Name'] for d in md.distributions() \
@@ -238,9 +247,12 @@ COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BO
 COPY build/artifacts/tessdata/                  ${BOBA_DIR}/third/sandbox/data/tessdata/
 COPY build/artifacts/fastembed/                 ${BOBA_DIR}/third/sandbox/data/fastembed/
 COPY build/conf/                                /tmp/conf/
-# оформление и переводы UI: лежат в репозитории, едут вместе с образом
-COPY packages/agents/boba-chainlit/assets/chainlit/ ${BOBA_DIR}/data/.chainlit/
-COPY packages/agents/boba-chainlit/assets/public/   ${BOBA_DIR}/data/public/
+# UI
+COPY packages/agents/boba-chainlit/assets/chainlit/config.toml      ${BOBA_DIR}/data/.chainlit/
+COPY packages/agents/boba-chainlit/assets/chainlit/translations/    ${BOBA_DIR}/data/.chainlit/translations/
+COPY packages/agents/boba-chainlit/assets/chainlit/chainlit.md      ${BOBA_DIR}/data/
+COPY packages/agents/boba-chainlit/assets/public/                   ${BOBA_DIR}/data/public/
+COPY build/artifacts/webassets/                                     ${BOBA_DIR}/data/public/vendor/
 
 RUN set -eu \
     && if [ -f /tmp/conf/ca-chain.crt ]; then                                                   \
@@ -255,7 +267,7 @@ RUN set -eu \
     && rmdir "$SITE"/bin                                                                        \
     && sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/python/bin/python3.11|"                    \
             ${BOBA_DIR}/third/python/bin/boba-*                                                 \
-    # conf — boba.env и config.toml; data/.chainlit — app_root chainlit;
+    # conf — boba.env и config.toml; data — app_root chainlit;
     # data/home — HOME процесса; data/workspace — ext4-образы пользователей
     && mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/data/.chainlit                                     \
              ${BOBA_DIR}/data/home ${BOBA_DIR}/data/workspace                                   \

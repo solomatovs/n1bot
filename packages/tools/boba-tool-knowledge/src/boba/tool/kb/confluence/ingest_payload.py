@@ -12,9 +12,10 @@ ingest переживает сам, наружу он не выходит.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any, ClassVar
 
 import httpx
@@ -56,13 +57,17 @@ class LocalConfluenceReader(Reader[str]):
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def read(self, value: RawDocument) -> Iterable[Section[str]]:
-        payload = value.handle.read()
+    async def read(self, value: RawDocument) -> AsyncIterator[Section[str]]:
+        """Разбор HTML уходит в поток: bs4 на большой странице считает секунды."""
+        payload = await value.handle.read()
         if not payload.strip():
             return
         html = payload.decode("utf-8", errors="replace")
         title = value.metadata.get(ReaderKeys.PAGE_TITLE) or ""
-        answer = PageOps.confluence_sections({"html": html, "title": title})
+        answer = await asyncio.to_thread(
+            PageOps.confluence_sections,
+            {"html": html, "title": title},
+        )
         for row in answer["sections"]:
             yield Section(
                 source_id=value.source_id,

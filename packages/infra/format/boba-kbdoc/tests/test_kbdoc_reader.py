@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from io import BytesIO
 
 import pytest
 
 from boba.indexing import (
+    ChunkStream,
     Metadata,
     RawDocument,
     ReaderKeys,
     SourceId,
 )
 from boba.kbdoc import KbDocFormatError, KbDocKeys, KbDocReader
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(scope="module")
+def anyio_backend() -> str:
+    return "asyncio"
 
 _VALID = (
     "source: https://confl.example.com/pages/viewpage.action?pageId=950276\n"
@@ -32,7 +39,7 @@ _VALID = (
 def make_raw_doc() -> Callable[..., RawDocument]:
     def _factory(text: str, *, source_id: str = "ws:sess:upload/x.md") -> RawDocument:
         return RawDocument(
-            handle=BytesIO(text.encode("utf-8")),
+            handle=ChunkStream.of(text.encode("utf-8")),
             source_id=SourceId(source_id),
             metadata=Metadata.empty(),
         )
@@ -40,10 +47,10 @@ def make_raw_doc() -> Callable[..., RawDocument]:
     return _factory
 
 
-def test_valid_header_maps_to_metadata(
+async def test_valid_header_maps_to_metadata(
     make_raw_doc: Callable[..., RawDocument],
 ) -> None:
-    sections = list(KbDocReader().read(make_raw_doc(_VALID)))
+    sections = [item async for item in KbDocReader().read(make_raw_doc(_VALID))]
 
     assert len(sections) == 1
     sec = sections[0]
@@ -58,20 +65,22 @@ def test_valid_header_maps_to_metadata(
     assert sec.content.startswith("# Правила именования")
 
 
-def test_optional_version_parsed_as_int(
+async def test_optional_version_parsed_as_int(
     make_raw_doc: Callable[..., RawDocument],
 ) -> None:
     """header `version: 7` -> KbDocKeys.VERSION (int) для сверки устаревания."""
     text = _VALID.replace("space: PAAS\n", "space: PAAS\nversion: 7\n")
-    meta = next(iter(KbDocReader().read(make_raw_doc(text)))).metadata
+    sections = [item async for item in KbDocReader().read(make_raw_doc(text))]
+    meta = sections[0].metadata
     assert meta.get(KbDocKeys.VERSION) == 7
 
 
-def test_version_absent_when_no_header_field(
+async def test_version_absent_when_no_header_field(
     make_raw_doc: Callable[..., RawDocument],
 ) -> None:
     """Без `version:` в header'е ключ VERSION не выставляется (пустая колонка)."""
-    meta = next(iter(KbDocReader().read(make_raw_doc(_VALID)))).metadata
+    sections = [item async for item in KbDocReader().read(make_raw_doc(_VALID))]
+    meta = sections[0].metadata
     assert not meta.has(KbDocKeys.VERSION)
 
 
@@ -84,7 +93,7 @@ def test_url_value_with_colon_not_truncated(
 
 
 @pytest.mark.parametrize("missing_line", ["source:", "title:", "page_id:", "space:"])
-def test_missing_required_field_raises(
+async def test_missing_required_field_raises(
     make_raw_doc: Callable[..., RawDocument],
     missing_line: str,
 ) -> None:
@@ -93,29 +102,33 @@ def test_missing_required_field_raises(
         line for line in _VALID.splitlines() if not line.startswith(f"{key}:")
     )
     with pytest.raises(KbDocFormatError) as exc:
-        list(KbDocReader().read(make_raw_doc(text)))
+        [item async for item in KbDocReader().read(make_raw_doc(text))]
     assert key in exc.value.missing
 
 
-def test_no_separator_is_invalid(make_raw_doc: Callable[..., RawDocument]) -> None:
+async def test_no_separator_is_invalid(
+    make_raw_doc: Callable[..., RawDocument],
+) -> None:
     text = "source: https://x\ntitle: T\npage_id: 1\nspace: S\nbody without separator"
     with pytest.raises(KbDocFormatError):
-        list(KbDocReader().read(make_raw_doc(text)))
+        [item async for item in KbDocReader().read(make_raw_doc(text))]
 
 
-def test_empty_body_is_invalid(make_raw_doc: Callable[..., RawDocument]) -> None:
+async def test_empty_body_is_invalid(make_raw_doc: Callable[..., RawDocument]) -> None:
     text = (
         "source: https://x\ntitle: T\npage_id: 1\nspace: S\n---\n"
     )
     with pytest.raises(KbDocFormatError):
-        list(KbDocReader().read(make_raw_doc(text)))
+        [item async for item in KbDocReader().read(make_raw_doc(text))]
 
 
-def test_optional_fields_absent_ok(make_raw_doc: Callable[..., RawDocument]) -> None:
+async def test_optional_fields_absent_ok(
+    make_raw_doc: Callable[..., RawDocument],
+) -> None:
     text = (
         "source: https://x\ntitle: T\npage_id: 1\nspace: S\n---\nbody\n"
     )
-    sections = list(KbDocReader().read(make_raw_doc(text)))
+    sections = [item async for item in KbDocReader().read(make_raw_doc(text))]
     assert len(sections) == 1
     assert sections[0].tags == frozenset()
 

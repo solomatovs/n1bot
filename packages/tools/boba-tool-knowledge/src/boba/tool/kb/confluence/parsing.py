@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from io import BytesIO
 from typing import Any, ClassVar
 
 from boba.indexing import (
+    ChunkStream,
     Decoder,
     DecoderId,
     Metadata,
@@ -147,8 +147,8 @@ class ConfluenceJsonDecoder(Decoder):
     def decoder_id(self) -> DecoderId:
         return self.DECODER_ID
 
-    def decode(self, value: RawDocument) -> RawDocument:
-        payload = value.handle.read()
+    async def decode(self, value: RawDocument) -> RawDocument:
+        payload = await value.handle.read()
         if not payload:
             return value
         try:
@@ -178,7 +178,7 @@ class ConfluenceJsonDecoder(Decoder):
 
         return replace(
             value,
-            handle=BytesIO(html.encode("utf-8")),
+            handle=ChunkStream.of(html.encode("utf-8")),
             metadata=meta,
         )
 

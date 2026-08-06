@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import AsyncIterable, AsyncIterator
 from typing import TypeVar
 
 from boba.indexing import (
@@ -54,12 +54,12 @@ class SectionChunker(Chunker[T]):
     def chunker_id(self) -> ChunkerId:
         return self._chunker_id
 
-    def chunk(
+    async def chunk(
         self,
-        sections: Iterable[Section[T]],
-    ) -> Iterable[Chunk[T]]:
+        sections: AsyncIterable[Section[T]],
+    ) -> AsyncIterator[Chunk[T]]:
         per_source_index: dict[str, int] = {}
-        for section in sections:
+        async for section in sections:
             chunk_metadata = section.metadata.merge(section.to_chunk_metadata())
             for piece in self._splitter.split(section.content):
                 key = section.source_id
