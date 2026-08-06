@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-krb"
-version = "0.0.9.dev2"
+version = "0.0.9"
 description = "Boba Kerberos: KeytabCredentials (TGT из keytab в свой ccache), SPNEGO-accept, S4U-делегирование, PAC group SIDs."
 requires-python = ">=3.11,<4"
 dependencies = [
