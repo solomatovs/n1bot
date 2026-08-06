@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
-from typing import Annotated, Any, ClassVar, Literal
+from concurrent.futures import ThreadPoolExecutor
+from typing import Annotated, Any, ClassVar, Literal, Self
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from boba.db.pgvector import (
     PostgresChunkStore,
@@ -104,6 +106,31 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, SandboxParserCo
             ),
         ),
     ] = ["utf-8"]  # noqa: RUF012
+    page_workers: int = Field(
+        ge=1,
+        description=(
+            "Сколько страниц индексируется одновременно; обязателен. Каждая "
+            "страница занимает поток разбора, поэтому реальный потолок задают "
+            "лимиты песочницы: cpu-квота (`cgroup_cpu_percent`), суммарное "
+            "cpu-время (`max_cpu_sec` — оно тратится в page_workers раз "
+            "быстрее) и память (`cgroup_memory_bytes`: вложение читается "
+            "целиком, а OCR берёт ещё `num_workers` × 50-100 MiB на страницу). "
+            "Пул соединений postgres должен быть не меньше page_workers."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _pool_fits_workers(self) -> Self:
+        """Параллельные страницы пишут одновременно — пула должно хватать."""
+        pool = self.connection.pool
+        limit = pool.max_size if pool.max_size is not None else pool.min_size
+        if limit < self.page_workers:
+            msg = (
+                f"page_workers={self.page_workers} превышает пул соединений "
+                f"postgres ({limit}): подними connection.pool.max_size"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class ConfluenceIngest:
@@ -123,6 +150,7 @@ class ConfluenceIngest:
         chunker: Chunker[str],
         collection: str,
         prune_missing: bool,
+        workers: int,
         force_update: bool = False,
         attachment_filter: AttachmentFilter | None = None,
         routes: Mapping[str, Reader[str]],
@@ -148,7 +176,7 @@ class ConfluenceIngest:
             attachment_filter=attachment_filter,
         )
 
-        # prune_missing сносит весь стейл коллекции; force_update без prune — только страниц
+        # prune_missing сносит весь стейл коллекции; force_update без prune — страницы
         if prune_missing:
             cleanup: CleanupStrategy = FullCleanup()
         elif force_update:
@@ -159,7 +187,9 @@ class ConfluenceIngest:
         config: IndexerConfig[str] = IndexerConfig(
             cleanup=cleanup,
             force_update=force_update,
+            workers=workers,
         )
+        ConfluenceIngest._widen_thread_pool(workers)
         try:
             pipeline: Pipeline[ConfluenceRequest, str] = Pipeline(
                 source=request_source,
@@ -176,7 +206,7 @@ class ConfluenceIngest:
                 logger,
             )
         finally:
-            transport.close()
+            await transport.close()
 
         return {
             "collection": str(collection_id),
@@ -185,6 +215,19 @@ class ConfluenceIngest:
             "pruned": stats.chunks_deleted,
             "failed": stats.sources_failed,
         }
+
+    @staticmethod
+    def _widen_thread_pool(workers: int) -> None:
+        """Свой пул под asyncio.to_thread: дефолтный ограничен min(32, cpu+4).
+
+        Слотов на один больше числа страниц — разбор не должен ждать, пока
+        освободится поток, занятый эмбеддингом батча.
+        """
+        pool = ThreadPoolExecutor(
+            max_workers=workers + 1,
+            thread_name_prefix="boba-ingest",
+        )
+        asyncio.get_running_loop().set_default_executor(pool)
 
     @staticmethod
     async def ingest(
@@ -219,6 +262,7 @@ class ConfluenceIngest:
             chunker=chunker,
             collection=cfg.collection,
             prune_missing=prune_missing,
+            workers=cfg.page_workers,
             force_update=force_update,
             attachment_filter=att_filter,
             routes=routes,

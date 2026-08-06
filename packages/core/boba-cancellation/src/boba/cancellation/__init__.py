@@ -1,8 +1,8 @@
 """Остановка хода: флаг отмены, прерыватели и реестр активных ходов.
 
 Ход адресуется идентификатором треда: остановить его можно откуда угодно —
-из обработчика кнопки, из обработчика разрыва связи, из фоновой задачи. Это
-единственная точка отмены, других способов остановить ход быть не должно.
+из обработчика кнопки, из фоновой задачи. Это единственная точка отмены,
+других способов остановить ход быть не должно.
 
 Отмена работает в двух мирах сразу. Синхронный код (песочница, libpq, http)
 прерывается зарегистрированными прерывателями, асинхронный — отменой задачи
@@ -38,8 +38,9 @@ class StopReason(StrEnum):
     """Почему ход остановлен; текст для пользователя выбирает интерфейс."""
 
     USER_STOP = "user_stop"
-    DISCONNECT = "disconnect"
+    ABORTED = "aborted"
     SUPERSEDED = "superseded"
+    FAILED = "failed"
 
 
 class ToolStopped(BaseException):
@@ -87,7 +88,7 @@ class TurnCancellation:
         return self._event.wait(timeout)
 
     @contextmanager
-    def abort_with(self, abort: Callable[[], None]) -> Generator[None]:
+    def abort_with(self, abort: Callable[[], None]) -> Generator[None, None, None]:
         "регистрирует прерыватель на время блока и проверяет отмену на входе"
         self.raise_if_cancelled()
         with self._lock:
@@ -118,7 +119,7 @@ class TurnRegistry:
         return cls._INSTANCE
 
     @contextmanager
-    def open(self, thread_id: str) -> Generator[TurnCancellation]:
+    def open(self, thread_id: str) -> Generator[TurnCancellation, None, None]:
         """Открывает ход треда: публикует отмену в контексте и в реестре."""
         with turn_cancellation() as cancellation:
             self._register(thread_id, cancellation)
@@ -158,7 +159,10 @@ class TurnRegistry:
                 del self._turns[thread_id]
 
     @contextmanager
-    def _task_abort(self, cancellation: TurnCancellation) -> Generator[None]:
+    def _task_abort(
+        self,
+        cancellation: TurnCancellation,
+    ) -> Generator[None, None, None]:
         """Отмена задачи хода как прерыватель: асинхронный мир тоже обрывается."""
         abort = self._task_canceller()
         if abort is None:
@@ -198,7 +202,7 @@ def current_cancellation() -> TurnCancellation:
 
 
 @contextmanager
-def turn_cancellation() -> Generator[TurnCancellation]:
+def turn_cancellation() -> Generator[TurnCancellation, None, None]:
     "открывает ход: публикует свежий TurnCancellation в контексте"
     cancellation = TurnCancellation()
     token = _CURRENT.set(cancellation)

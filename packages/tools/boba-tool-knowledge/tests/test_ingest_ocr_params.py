@@ -45,6 +45,7 @@ def _config() -> ConfluenceIngestConfig:
             "embedding": {"model": "intfloat/e5", "dim": 8, "batch_size": 4},
             "confluence": {"base_url": "https://confl.example"},
             "tessdata_path": "/usr/share/tessdata",
+            "page_workers": 1,
             "sandbox": {"profile": _PROFILE, "override": {}},
         }
     )

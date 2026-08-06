@@ -245,6 +245,6 @@ class CancellablePool:
 
     @staticmethod
     @contextmanager
-    def _abort(conn: psycopg.AsyncConnection[Any]) -> Generator[None]:
+    def _abort(conn: psycopg.AsyncConnection[Any]) -> Generator[None, None, None]:
         with current_cancellation().abort_with(conn.cancel):
             yield

@@ -129,15 +129,6 @@ async def on_stop():
         logger.info("stop pressed for thread %s: nothing is running", thread_id)
 
 
-@cl.on_chat_end
-async def on_chat_end():
-    """Разрыв связи: ход обрывается после грейса, если пользователь не вернулся."""
-    thread_id = current_thread_id()
-    if thread_id is None:
-        return
-    TurnStopper.disconnected(thread_id)
-
-
 @cl.data_layer
 @di_inject
 def get_data_layer(

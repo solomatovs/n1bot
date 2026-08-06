@@ -13,15 +13,12 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.config
-import os
 import sys
-from pathlib import Path
 from typing import ClassVar
 
 from omegaconf import DictConfig
 
-from boba.chainlit.infra import providers
-from boba.chainlit.infra.log_context import UserLogContext
+from boba.chainlit.infra.entry import AppEntry
 from boba.sandbox import SandboxCaller, SandboxToolConfig
 from boba.settings import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
@@ -41,18 +38,18 @@ class ConfluenceIngestCli:
 
     SECTION: ClassVar[str] = "tool.ingest"
 
-    CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
-
     @classmethod
     def main(cls, argv: list[str]) -> int:
         args = cls.parser().parse_args(argv)
 
-        config_path = os.environ.get(cls.CONFIG_ENV)
-        if not config_path:
-            msg = f"{cls.CONFIG_ENV} не задан — укажи конфиг приложения"
-            raise ValueError(msg)
+        config_path = AppEntry.config_path()
+        AppEntry.export_env(config_path)
 
-        app = providers.get_app_config(config_path=Path(config_path))
+        # импорт здесь: chainlit фиксирует пути из env на импорте своих модулей
+        from boba.chainlit.infra import providers  # noqa: PLC0415
+        from boba.chainlit.infra.log_context import UserLogContext  # noqa: PLC0415
+
+        app = providers.get_app_config(config_path=config_path)
         # форматтер приложения ждёт поле user в каждой записи; вне сессии это "-"
         UserLogContext.install()
         logging.config.dictConfig(app.logger)

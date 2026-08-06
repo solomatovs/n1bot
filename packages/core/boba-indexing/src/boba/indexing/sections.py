@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import ClassVar, Generic, NewType, Protocol, TypeVar
 
@@ -15,7 +16,8 @@ from boba.indexing.values import (
 )
 
 __all__ = [
-    "BinaryStream",
+    "AsyncBinaryStream",
+    "ChunkStream",
     "Decoder",
     "DecoderId",
     "HeadingSection",
@@ -191,18 +193,47 @@ class ParagraphSection(Section[str]):
 
     SECTION_TYPE: ClassVar[str] = "paragraph"
 
-class BinaryStream(Protocol):
-    """Минимальный read-only handle: всё, что имеет read() -> bytes (BufferedReader, BytesIO, streaming-адаптер)."""
+class AsyncBinaryStream(Protocol):
+    """Открытый async-поток тела: итерация чанками либо чтение целиком."""
 
-    def read(self, n: int = -1, /) -> bytes: ...
+    def __aiter__(self) -> AsyncIterator[bytes]: ...
+
+    async def read(self) -> bytes:
+        """Дочитать остаток потока; для парсеров, которым нужен весь вход."""
+        ...
+
+
+class ChunkStream(AsyncBinaryStream):
+    """AsyncBinaryStream поверх источника чанков; одноразовый, как и источник."""
+
+    def __init__(self, chunks: AsyncIterator[bytes]) -> None:
+        self._chunks = chunks
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._chunks
+
+    async def read(self) -> bytes:
+        parts: list[bytes] = []
+        async for chunk in self._chunks:
+            parts.append(chunk)
+        return b"".join(parts)
+
+    @classmethod
+    def of(cls, payload: bytes) -> ChunkStream:
+        """Поток из готового буфера — для стадий, которые сами собрали тело."""
+
+        async def one() -> AsyncIterator[bytes]:
+            yield payload
+
+        return cls(one())
 
 
 @dataclass(frozen=True)
 class RawDocument:
-    """Открытый handle + metadata; lifecycle handle'а — у Transport."""
+    """Открытый поток тела + metadata; lifecycle потока — у Transport."""
 
-    handle: BinaryStream
-    """Уже открытый handle; Reader читает, закрытие — обязанность Transport'а."""
+    handle: AsyncBinaryStream
+    """Открытый поток; Reader читает, закрывает его Transport."""
 
     source_id: SourceId
     """Identity документа; выводит и проставляет Transport (Transport.source_id)."""
@@ -221,7 +252,7 @@ class Decoder(ABC):
     def decoder_id(self) -> DecoderId: ...
 
     @abstractmethod
-    def decode(
+    async def decode(
         self,
         raw: RawDocument,
     ) -> RawDocument: ...

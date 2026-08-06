@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
+
+import pytest
 
 from boba.indexing import (
     ChunkerId,
@@ -21,6 +23,22 @@ from boba.indexing import (
     Splitter,
 )
 from boba.text import OverlapCharSplitter, StructuralChunker
+
+pytestmark = pytest.mark.anyio
+
+
+async def _astream(
+    items: Iterable[Section[str]],
+) -> AsyncIterator[Section[str]]:
+    """Готовые секции как поток — вход чанкера только асинхронный."""
+    for item in items:
+        yield item
+
+
+
+@pytest.fixture(scope="module")
+def anyio_backend() -> str:
+    return "asyncio"
 
 
 class _StaticIdGenerator(ChunkIdGenerator[str]):
@@ -55,7 +73,7 @@ def _chunker(splitter_factory=_identity_factory) -> StructuralChunker:
 # ---------------- breadcrumbs --------------------------------------------------
 
 
-def test_breadcrumbs_grow_and_pop_correctly():
+async def test_breadcrumbs_grow_and_pop_correctly():
     """H1 -> H2 -> H1 сбрасывает H2; HEADING_PATH в metadata следующих чанков."""
     sections = [
         HeadingSection(
@@ -71,7 +89,7 @@ def test_breadcrumbs_grow_and_pop_correctly():
         ),
         Section(source_id=SourceId("d"), content="body-under-C", order=4),
     ]
-    chunks = list(_chunker().chunk(iter(sections)))
+    chunks = [item async for item in _chunker().chunk(_astream(sections))]
     by_text = {c.format_content: c for c in chunks}
     # Body после H1>A>H2>B видит "A › B"
     body_b = by_text["A › B\n\nbody-under-B"]
@@ -81,7 +99,7 @@ def test_breadcrumbs_grow_and_pop_correctly():
     assert body_c.metadata.get(SectionKeys.HEADING_PATH) == "C"
 
 
-def test_breadcrumbs_reset_on_source_id_change():
+async def test_breadcrumbs_reset_on_source_id_change():
     """Стек не утекает между разными source_id."""
     sections = [
         HeadingSection(
@@ -89,14 +107,14 @@ def test_breadcrumbs_reset_on_source_id_change():
         ),
         Section(source_id=SourceId("doc2"), content="hello", order=0),
     ]
-    chunks = list(_chunker().chunk(iter(sections)))
+    chunks = [item async for item in _chunker().chunk(_astream(sections))]
     [_, body] = chunks
     # Для doc2 стек пуст -> нет HEADING_PATH и нет prefix в format_content.
     assert body.format_content == "hello"
     assert body.metadata.get(SectionKeys.HEADING_PATH) is None
 
 
-def test_heading_chunk_itself_has_no_prefix_but_path_in_metadata():
+async def test_heading_chunk_itself_has_no_prefix_but_path_in_metadata():
     """Сам heading-чанк — atomic markdown без breadcrumb-prefix; в metadata
     HEADING_PATH полный путь после обновления стека.
     """
@@ -108,7 +126,7 @@ def test_heading_chunk_itself_has_no_prefix_but_path_in_metadata():
             source_id=SourceId("d"), content="<h2>B</h2>", order=1, level=2, text="B"
         ),
     ]
-    chunks = list(_chunker().chunk(iter(sections)))
+    chunks = [item async for item in _chunker().chunk(_astream(sections))]
     a, b = chunks
     assert a.format_content == "# A"
     assert a.metadata.get(SectionKeys.HEADING_PATH) == "A"
@@ -119,7 +137,7 @@ def test_heading_chunk_itself_has_no_prefix_but_path_in_metadata():
 # ---------------- to_chunk_metadata + typed keys -------------------------------
 
 
-def test_to_chunk_metadata_is_merged():
+async def test_to_chunk_metadata_is_merged():
     section = HeadingSection(
         source_id=SourceId("d"),
         content="<h1>X</h1>",
@@ -127,7 +145,7 @@ def test_to_chunk_metadata_is_merged():
         level=3,
         text="X",
     )
-    [chunk] = list(_chunker().chunk(iter([section])))
+    [chunk] = [item async for item in _chunker().chunk(_astream([section]))]
     assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 3
     assert chunk.metadata.get(SectionKeys.HEADING_TEXT) == "X"
 
@@ -160,7 +178,7 @@ class _TableSection(Section[str]):
         )
 
 
-def test_table_replicates_header_in_each_row_chunk():
+async def test_table_replicates_header_in_each_row_chunk():
     section = _TableSection(source_id=SourceId("t"), content="<table/>", order=0)
 
     # Splitter режет body по \n (block_glue таблицы), один row на чанк
@@ -173,7 +191,7 @@ def test_table_replicates_header_in_each_row_chunk():
             extra_overhead=extra_overhead,
         )
 
-    chunks = list(_chunker(factory).chunk(iter([section])))
+    chunks = [item async for item in _chunker(factory).chunk(_astream([section]))]
     # Каждый row-чанк начинается с реплицированного markdown header'а.
     table_chunks = [c for c in chunks if "| name | type |" in c.format_content]
     assert len(table_chunks) == 2
@@ -207,9 +225,9 @@ class _CodeSection(Section[str]):
         )
 
 
-def test_code_block_wrapped_with_fence():
+async def test_code_block_wrapped_with_fence():
     section = _CodeSection(source_id=SourceId("c"), content="<pre/>", order=0)
-    [chunk] = list(_chunker().chunk(iter([section])))
+    [chunk] = [item async for item in _chunker().chunk(_astream([section]))]
     assert chunk.format_content == "```py\nx = 1\n```"
 
 
@@ -224,21 +242,21 @@ class _EmptyPlanSection(Section[str]):
         return FormatPlan()
 
 
-def test_hr_section_is_skipped():
+async def test_hr_section_is_skipped():
     section = _EmptyPlanSection(source_id=SourceId("h"), content="<hr/>", order=0)
-    chunks = list(_chunker().chunk(iter([section])))
+    chunks = [item async for item in _chunker().chunk(_astream([section]))]
     assert chunks == []
 
 
 # ---------------- chunk_index continuous per source_id -------------------------
 
 
-def test_chunk_index_is_continuous_per_source():
+async def test_chunk_index_is_continuous_per_source():
     sections = [
         HeadingSection(
             source_id=SourceId("d"), content="<h1>A</h1>", order=0, level=1, text="A"
         ),
         Section(source_id=SourceId("d"), content="body", order=1),
     ]
-    chunks = list(_chunker().chunk(iter(sections)))
+    chunks = [item async for item in _chunker().chunk(_astream(sections))]
     assert [c.chunk_index for c in chunks] == [0, 1]

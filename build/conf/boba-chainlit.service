@@ -18,10 +18,21 @@ User=boba
 Group=boba
 
 ## нужен /dev/fuse что бы монтировать образы .ext4 для пользователей
-## модуль должен быть загрузен в ядро:/etc/modules-load.d/fuse.conf
 ## и включена поддержка userns в sysctl (sysctl user.max_user_namespaces > 0)
 PrivateDevices=no
 RestrictNamespaces=no
+
+## песочница сама заворачивается в user namespace: своим userns служба его
+## сделала бы вложенным, а вложенные ядро запрещает (bwrap: ENOSPC)
+PrivateUsers=no
+DynamicUser=no
+
+## лаунчер образов обнуляет max_user_namespaces перед запуском чужого кода
+ProtectKernelTunables=no
+
+## групповые лимиты песочницы: cgroup_base профиля лежит внутри cgroup службы
+## /sys/fs/cgroup/system.slice/boba-chainlit.service/<имя из config.toml>
+Delegate=yes
 
 [Install]
 WantedBy=multi-user.target

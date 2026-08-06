@@ -75,6 +75,11 @@ class OpenAiConfig(BaseModel):
         description="Проверять TLS-сертификат сервера.",
     )
 
+    dump: bool = Field(
+        default=False,
+        description="Писать HTTP-обмен с провайдером в {chainlit.root}/dump.",
+    )
+
     connect_timeout: float = Field(
         default=5,
         description="установка TCP-соединения с хостом (включая TLS handshake)",

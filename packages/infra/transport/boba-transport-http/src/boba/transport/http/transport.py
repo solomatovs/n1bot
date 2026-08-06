@@ -1,11 +1,16 @@
-"HttpTransport: HttpProfile + HttpRequest -> HttpResponse через httpx.Client"
+"""HttpTransport: HttpProfile + HttpRequest -> HttpResponse через httpx.AsyncClient.
+
+Транспорт только асинхронный: конвейер индексации ведёт несколько источников
+сразу, и синхронного варианта, который занимал бы поток на время сетевого
+ожидания, здесь нет.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import time
-from collections.abc import Iterable, Iterator, Mapping
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -20,35 +25,83 @@ __all__ = [
     "HttpRequest",
     "HttpResponse",
     "HttpTransport",
+    "ResponseStream",
+    "RetryPolicy",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-class HttpTransport:
-    """Исполняет HttpRequest через httpx.Client, которым владеет (close/with).
+class RetryPolicy:
+    """Политика повторов: 5xx и transport-ошибки повторяются, 4xx — нет."""
 
-    Retry покрывает соединение/заголовки/статус; обрыв чтения тела не ретраится.
+    def __init__(self, profile: HttpProfile) -> None:
+        self._attempts = profile.retry_attempts
+        self._backoff = profile.retry_backoff_sec
+
+    @property
+    def attempts(self) -> int:
+        return self._attempts
+
+    @staticmethod
+    def retryable(exc: httpx.HTTPError) -> bool:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.is_server_error
+        return isinstance(exc, httpx.TransportError)
+
+    def more(self, attempt: int) -> bool:
+        """Остались ли попытки после attempt."""
+        return attempt < self._attempts
+
+    def delay(self, attempt: int) -> float:
+        """Линейный backoff между попытками."""
+        return self._backoff * attempt
+
+    def log(self, attempt: int, request: HttpRequest, exc: httpx.HTTPError) -> None:
+        logger.warning(
+            "HTTP %s %s неудачно (%s); retry %d/%d через %.1fs",
+            request.method,
+            request.url,
+            type(exc).__name__,
+            attempt,
+            self._attempts,
+            self.delay(attempt),
+        )
+
+    @staticmethod
+    def exhausted(request: HttpRequest) -> httpx.HTTPError:
+        """Недостижимая ветка: цикл либо вернул ответ, либо запомнил ошибку."""
+        return httpx.HTTPError(
+            f"HTTP {request.method} {request.url}: неизвестная ошибка",
+        )
+
+
+class HttpTransport:
+    """Исполняет HttpRequest через httpx.AsyncClient, которым владеет.
+
+    Retry покрывает соединение, заголовки и статус; обрыв чтения тела не
+    ретраится. Тело отдаётся потоком и живёт, пока открыт блок fetch.
     """
 
     def __init__(self, profile: HttpProfile) -> None:
         self._profile = profile
+        self._retry = RetryPolicy(profile)
         # headers/params на клиент не кладём: они целиком per-request
-        self._client = httpx.Client(
+        self._client = httpx.AsyncClient(
             base_url=profile.base_url or "",
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
             auth=profile.auth.httpx_auth(),
         )
 
-    def __enter__(self) -> HttpTransport:
+    async def __aenter__(self) -> HttpTransport:
         return self
 
-    def __exit__(self, *exc: object) -> None:
-        self.close()
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
 
-    def close(self) -> None:
-        self._client.close()
+    async def close(self) -> None:
+        await self._client.aclose()
 
     def resolve_url(self, request: HttpRequest) -> str:
         "Абсолютный URL (base_url + url + params) без сетевого вызова"
@@ -61,124 +114,54 @@ class HttpTransport:
             ).url,
         )
 
-    @contextmanager
-    def fetch(self, request: HttpRequest) -> Iterator[HttpResponse]:
-        """Открыть запрос с retry и отдать HttpResponse; тело закроется на выходе."""
-        resp = self._open_with_retry(request)
+    @asynccontextmanager
+    async def fetch(self, request: HttpRequest) -> AsyncGenerator[HttpResponse, None]:
+        """Открыть запрос с retry; тело живёт потоком до выхода из блока."""
+        resp = await self._open_with_retry(request)
         try:
             yield HttpResponse(
                 status=resp.status_code,
                 headers=dict(resp.headers),
-                stream=_ResponseHandle(resp),
+                stream=ResponseStream(resp),
             )
         finally:
-            resp.close()
+            await resp.aclose()
 
-    def _open_with_retry(self, request: HttpRequest) -> httpx.Response:
+    async def _open_with_retry(self, request: HttpRequest) -> httpx.Response:
         """Соединение + заголовки + статус; retry на 5xx/transport-ошибках."""
         last_exc: httpx.HTTPError | None = None
-        for attempt in range(1, self._profile.retry_attempts + 1):
+        for attempt in range(1, self._retry.attempts + 1):
             resp: httpx.Response | None = None
             try:
-                resp = self._client.send(
-                    self._client.build_request(
-                        request.method,
-                        request.url,
-                        headers=request.headers,
-                        # см. resolve_url: пустой dict обнуляет url-query в httpx.
-                        params=request.params or None,
-                        content=request.content,
-                        data=request.data,
-                        files=request.files,
-                        json=request.json,
-                    ),
-                    stream=True,
-                )
+                resp = await self._client.send(self._build(request), stream=True)
                 resp.raise_for_status()
                 return resp
-            except httpx.HTTPStatusError as e:
+            except httpx.HTTPError as e:
                 if resp is not None:
-                    resp.close()
-
-                if not e.response.is_server_error:  # 4xx — не ретраим
+                    await resp.aclose()
+                if not self._retry.retryable(e):
                     raise
-
                 last_exc = e
-            except httpx.TransportError as e:  # timeout / connect — transient
-                if resp is not None:
-                    resp.close()
-                last_exc = e
-            self._backoff(attempt, request, last_exc)
-        if last_exc is None:  # недостижимо: цикл либо вернул, либо выставил last_exc
-            msg = f"HTTP {request.method} {request.url}: неизвестная ошибка"
-            raise httpx.HTTPError(msg)
+                if not self._retry.more(attempt):
+                    break
+                self._retry.log(attempt, request, e)
+                await asyncio.sleep(self._retry.delay(attempt))
+        if last_exc is None:
+            raise RetryPolicy.exhausted(request)
         raise last_exc
 
-    def _backoff(
-        self,
-        attempt: int,
-        request: HttpRequest,
-        exc: httpx.HTTPError | None,
-    ) -> None:
-        """Линейный backoff между попытками; на последней попытке не спит."""
-        if attempt >= self._profile.retry_attempts:
-            return
-        delay = self._profile.retry_backoff_sec * attempt
-        logger.warning(
-            "HTTP %s %s неудачно (%s); retry %d/%d через %.1fs",
+    def _build(self, request: HttpRequest) -> httpx.Request:
+        return self._client.build_request(
             request.method,
             request.url,
-            type(exc).__name__,
-            attempt,
-            self._profile.retry_attempts,
-            delay,
+            headers=request.headers,
+            # см. resolve_url: пустой dict обнуляет url-query в httpx
+            params=request.params or None,
+            content=request.content,
+            data=request.data,
+            files=request.files,
+            json=request.json,
         )
-        time.sleep(delay)
-
-
-class _ResponseHandle:
-    """Адаптер httpx.Response.iter_bytes -> ByteStream (read)."""
-
-    def __init__(self, resp: httpx.Response) -> None:
-        self._resp = resp
-        self._buffer = b""
-        self._iter = resp.iter_bytes()
-        self._eof = False
-
-    def read(self, n: int = -1) -> bytes:
-        if n < 0:
-            chunks = [self._buffer]
-            self._buffer = b""
-            for chunk in self._iter:
-                chunks.append(chunk)
-            self._eof = True
-            return b"".join(chunks)
-        while len(self._buffer) < n and not self._eof:
-            try:
-                self._buffer += next(self._iter)
-            except StopIteration:
-                self._eof = True
-                break
-        out = self._buffer[:n]
-        self._buffer = self._buffer[n:]
-        return out
-
-    def readable(self) -> bool:
-        return True
-
-    def writable(self) -> bool:
-        return False
-
-    def seekable(self) -> bool:
-        return False
-
-    def close(self) -> None:
-        # Закрытие ответа — обязанность HttpTransport.fetch (finally).
-        pass
-
-    @property
-    def closed(self) -> bool:
-        return self._eof and not self._buffer
 
 
 @dataclass(frozen=True)
@@ -199,14 +182,29 @@ class HttpRequest:
 
 
 class ByteStream(Protocol):
-    """Минимальный read-only поток байт: только read()."""
+    """Открытый async-поток тела: итерация чанками либо чтение целиком."""
 
-    def read(self, n: int = -1, /) -> bytes: ...
+    def __aiter__(self) -> AsyncIterator[bytes]: ...
+
+    async def read(self) -> bytes: ...
+
+
+class ResponseStream(ByteStream):
+    """ByteStream поверх httpx-ответа; тело не буферизуется до запроса на чтение."""
+
+    def __init__(self, resp: httpx.Response) -> None:
+        self._resp = resp
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._resp.aiter_bytes()
+
+    async def read(self) -> bytes:
+        return await self._resp.aread()
 
 
 @dataclass(frozen=True)
 class HttpResponse:
-    "Статус, заголовки и поток тела; stream живёт только внутри with fetch(...)"
+    "Статус, заголовки и поток тела; stream живёт только внутри блока fetch(...)"
 
     status: int
     headers: Mapping[str, str]
@@ -214,17 +212,33 @@ class HttpResponse:
 
 
 class CancellableHttpTransport(HttpTransport):
-    """HttpTransport, обрываемый остановкой хода."""
+    """HttpTransport, обрываемый остановкой хода.
+
+    Прерыватель зовут из чужого потока, поэтому он не трогает клиент напрямую,
+    а отменяет через loop задачу, которая ведёт запрос: и соединение, и чтение
+    тела обрываются на ближайшем await, а не дочитываются до конца.
+    """
 
     def __init__(self, profile: HttpProfile) -> None:
         super().__init__(profile)
-        cancellation = current_cancellation()
-        cancellation.raise_if_cancelled()
-        self._abort: AbstractContextManager[None] = cancellation.abort_with(self.close)
-        self._abort.__enter__()
+        self._cancellation = current_cancellation()
+        self._cancellation.raise_if_cancelled()
 
-    def close(self) -> None:
-        abort = self.__dict__.pop("_abort", None)
-        if abort is not None:
-            abort.__exit__(None, None, None)
-        super().close()
+    @asynccontextmanager
+    async def fetch(self, request: HttpRequest) -> AsyncGenerator[HttpResponse, None]:
+        self._cancellation.raise_if_cancelled()
+        with self._abort_current_task():
+            async with super().fetch(request) as resp:
+                yield resp
+
+    def _abort_current_task(self) -> AbstractContextManager[None]:
+        """Прерыватель на время запроса: отмена хода отменяет эту задачу."""
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        if task is None:
+            return nullcontext()
+
+        def cancel_task() -> None:
+            loop.call_soon_threadsafe(task.cancel)
+
+        return self._cancellation.abort_with(cancel_task)

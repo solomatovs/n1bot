@@ -12,7 +12,7 @@ Pipeline эмитит события по завершении source'а, поэ
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterable, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from typing import ClassVar, Generic, TypeVar
 
 from boba.indexing import (
@@ -85,7 +85,7 @@ class LoggingReader(Reader[T], Generic[T]):
     def reader_id(self) -> ReaderId:
         return self._inner.reader_id()
 
-    def read(self, value: RawDocument) -> Iterable[Section[T]]:
+    async def read(self, value: RawDocument) -> AsyncIterator[Section[T]]:
         title = value.metadata.get(ReaderKeys.PAGE_TITLE) or ""
         content_type = value.metadata.get(TransportKeys.CONTENT_TYPE) or "?"
         self._logger.info(
@@ -96,7 +96,7 @@ class LoggingReader(Reader[T], Generic[T]):
             value.source_id,
         )
         sections = 0
-        for section in self._inner.read(value):
+        async for section in self._inner.read(value):
             sections += 1
             yield section
         self._logger.info("read done: %s -> %d sections", title or "?", sections)
@@ -109,16 +109,17 @@ class LoggingEmbedder(Embedder[T], Generic[T]):
         self._inner = inner
         self._logger = logger
 
-    def embed_documents(self, contents: Iterable[T]) -> Iterable[Sequence[float]]:
-        # store уже передаёт готовый список батча, материализации здесь нет
-        items = list(contents)
-        self._logger.info("embedding %d chunks", len(items))
-        vectors = list(self._inner.embed_documents(items))
+    async def embed_documents(
+        self,
+        contents: Sequence[T],
+    ) -> Sequence[Sequence[float]]:
+        self._logger.info("embedding %d chunks", len(contents))
+        vectors = await self._inner.embed_documents(contents)
         self._logger.info("embedded %d chunks", len(vectors))
         return vectors
 
-    def embed_query(self, content: T) -> Sequence[float]:
-        return self._inner.embed_query(content)
+    async def embed_query(self, content: T) -> Sequence[float]:
+        return await self._inner.embed_query(content)
 
     def dim(self) -> int:
         return self._inner.dim()
@@ -136,9 +137,12 @@ class LoggingChunker(Chunker[T], Generic[T]):
     def chunker_id(self) -> ChunkerId:
         return self._inner.chunker_id()
 
-    def chunk(self, sections: Iterable[Section[T]]) -> Iterator[Chunk[T]]:
+    async def chunk(
+        self,
+        sections: AsyncIterable[Section[T]],
+    ) -> AsyncIterator[Chunk[T]]:
         produced = 0
-        for chunk in self._inner.chunk(sections):
+        async for chunk in self._inner.chunk(sections):
             produced += 1
             if produced % self.EVERY == 0:
                 self._logger.info(

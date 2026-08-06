@@ -1,5 +1,5 @@
 {
-  "custom_fonts": [],
+  "custom_fonts": ["/public/vendor/inter/inter.css"],
   "variables": {
     "light": {
       "--primary": "221 83% 53%",
