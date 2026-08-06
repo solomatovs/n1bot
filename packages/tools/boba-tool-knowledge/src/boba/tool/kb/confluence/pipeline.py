@@ -28,7 +28,7 @@ attachment-media-types).
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import AsyncIterator
 
 from boba.indexing import (
     Metadata,
@@ -49,7 +49,11 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceRequest,
     ConfluenceRest,
 )
-from boba.transport.http import CancellableHttpTransport, HttpResponse, HttpTransport
+from boba.transport.http import (
+    CancellableHttpTransport,
+    HttpResponse,
+    HttpTransport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,22 +66,22 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
     Оборачивает чистый HttpTransport: исполняет request.http, собирает
     RawDocument (source_id выводит сам из реально запрашиваемого URL —
     resolve_url без query; metadata + ключи из заголовков ответа).
-    Lifecycle handle — у HttpTransport.fetch: поток открыт пока идёт итерация
-    результата, закроется на выходе из этого generator'а.
+    Lifecycle handle — у HttpTransport.fetch: handle живёт пока идёт
+    итерация результата, закроется на выходе из этого generator'а.
     """
 
     def __init__(self, http: HttpTransport) -> None:
         self._http = http
 
-    def close(self) -> None:
-        self._http.close()
+    async def close(self) -> None:
+        await self._http.close()
 
     def source_id(self, request: ConfluenceRequest) -> SourceId:
         resolved = self._http.resolve_url(request.http)
         return SourceId(resolved.split("?", 1)[0])
 
-    def fetch(self, request: ConfluenceRequest) -> Iterable[RawDocument]:
-        with self._http.fetch(request.http) as resp:
+    async def fetch(self, request: ConfluenceRequest) -> AsyncIterator[RawDocument]:
+        async with self._http.fetch(request.http) as resp:
             yield RawDocument(
                 handle=resp.stream,
                 source_id=self.source_id(request),
@@ -116,13 +120,13 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         self._base_url = base_url
         self._attachment_filter = attachment_filter or AttachmentFilter()
 
-    def close(self) -> None:
-        self._inner.close()
+    async def close(self) -> None:
+        await self._inner.close()
 
     def source_id(self, request: ConfluenceRequest) -> SourceId:
         return self._inner.source_id(request)
 
-    def fetch(self, request: ConfluenceRequest) -> Iterable[RawDocument]:
+    async def fetch(self, request: ConfluenceRequest) -> AsyncIterator[RawDocument]:
         if att := request.metadata.get(ConfluenceKeys.ATTACHMENT_INFO):
             logger.info(
                 "fetch attachment: %s [%s] %d bytes",
@@ -130,27 +134,30 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
                 att.media_type,
                 att.file_size,
             )
-            yield from self._inner.fetch(request)
+            async for raw in self._inner.fetch(request):
+                yield raw
             return
         logger.info("fetch page: %s", self._inner.source_id(request))
-        for raw in self._inner.fetch(request):
-            decoded = self._decoder.decode(raw)
+        async for raw in self._inner.fetch(request):
+            decoded = await self._decoder.decode(raw)
             yield decoded
-            yield from self._iter_attachments(
+            attachments = self._iter_attachments(
                 parent=decoded,
                 base_url=self._base_url,
                 transport=self._inner,
                 att_filter=self._attachment_filter,
             )
+            async for attachment in attachments:
+                yield attachment
 
     @staticmethod
-    def _iter_attachments(
+    async def _iter_attachments(
         *,
         parent: RawDocument,
         base_url: str,
         transport: Transport[ConfluenceRequest],
         att_filter: AttachmentFilter | None = None,
-    ) -> Iterator[RawDocument]:
+    ) -> AsyncIterator[RawDocument]:
         attachments = parent.metadata.get(ConfluenceKeys.ATTACHMENTS)
         if not attachments:
             return
@@ -172,7 +179,8 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
                 parent_metadata=parent.metadata,
                 attachment=att,
             )
-            yield from transport.fetch(req)
+            async for raw in transport.fetch(req):
+                yield raw
 
     @classmethod
     def from_connection(
@@ -189,16 +197,17 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         )
 
     @classmethod
-    def iter_documents(
+    async def iter_documents(
         cls,
         *,
         request_source: RequestSource[ConfluenceRequest],
         conn: ConfluenceConnection,
         attachment_filter: AttachmentFilter | None = None,
-    ) -> Iterator[RawDocument]:
+    ) -> AsyncIterator[RawDocument]:
         transport = cls.from_connection(conn, attachment_filter=attachment_filter)
         try:
-            for request in request_source.requests():
-                yield from transport.fetch(request)
+            async for request in request_source.requests():
+                async for raw in transport.fetch(request):
+                    yield raw
         finally:
-            transport.close()
+            await transport.close()

@@ -190,7 +190,7 @@ class LiteParseEngine:
 
     @staticmethod
     @contextmanager
-    def _on_disk(data: bytes, filename: str) -> Generator[str]:
+    def _on_disk(data: bytes, filename: str) -> Generator[str, None, None]:
         """Байты во временный файл с суффиксом исходного имени; файл удаляется."""
         # office-форматы (docx/xlsx/pptx — это zip) liteparse узнаёт по расширению
         suffix = os.path.splitext(filename)[1]

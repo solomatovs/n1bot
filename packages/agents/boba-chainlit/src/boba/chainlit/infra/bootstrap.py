@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import logging.config
-import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,11 +24,9 @@ from boba.chainlit.infra.di import Container
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
 
 
-def run_app():
-    if (config_path := os.environ.get("BOBA_CONFIG_PATH")) is None:
-        raise ValueError("please pass env BOBA_CONFIG_PATH")
-
-    c = providers.get_app_config(config_path=Path(config_path))
+def run_app(config_path: Path):
+    """Запуск приложения; env chainlit к этому моменту выставлен AppEntry."""
+    c = providers.get_app_config(config_path=config_path)
 
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
@@ -71,7 +68,7 @@ def run_app():
 
 
 @asynccontextmanager
-async def _run_container(app: FastAPI) -> AsyncGenerator[None]:
+async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     container = app.state.container
     await container.start()
 
@@ -92,12 +89,6 @@ def _use_domain_error(app: FastAPI):
 
 def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
     import boba.chainlit.chat.callback  # type: ignore # noqa: F401, PLC0415
-
-    os.environ["CHAINLIT_APP_ROOT"] = config.root
-    os.environ["CHAINLIT_ROOT_PATH"] = config.url_prefix
-    if config.auth_secret:
-        os.environ["CHAINLIT_AUTH_SECRET"] = config.auth_secret
-
     from chainlit.markdown import init_markdown  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
     from chainlit.server import sio  # noqa: PLC0415

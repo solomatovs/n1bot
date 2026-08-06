@@ -11,6 +11,7 @@ document_unreadable — вложение скачалось, но не разб�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from collections.abc import Mapping
@@ -72,46 +73,47 @@ class ConfluenceOps:
         """Текст уходит кадрами-кусками, таблицы — кадрами-записями."""
         op = request["op"]
         if op == "confluence_page":
-            data = cls.page(request)
+            data = await cls.page(request)
             PayloadEntry.emit_text(emit, data["text"])
             return {"title": data["title"]}
         if op == "confluence_grep":
-            cls.grep(request, emit)
+            await cls.grep(request, emit)
             return {}
         if op == "confluence_search":
-            cls.search(request, emit)
+            await cls.search(request, emit)
             return {}
         if op == "confluence_spaces":
-            cls.spaces(request, emit)
+            await cls.spaces(request, emit)
             return {}
         if op == "confluence_attachment":
-            PayloadEntry.emit_text(emit, cls.attachment(request)["text"])
+            answer = await cls.attachment(request)
+            PayloadEntry.emit_text(emit, answer["text"])
             return {}
         msg = f"unknown confluence op: {op!r}"
         raise ValueError(msg)
 
     @staticmethod
-    def get(request: dict[str, Any], path: str) -> httpx.Response:
+    async def get(request: dict[str, Any], path: str) -> bytes:
         profile = request["profile"]
         url = request["base_url"].rstrip("/") + path
         try:
-            response = httpx.get(
-                url,
+            async with httpx.AsyncClient(
                 timeout=profile["timeout_sec"],
                 verify=profile["ssl_verify"],
                 follow_redirects=True,
                 auth=WebOps.auth_of(profile["auth"]),
-            )
-            response.raise_for_status()
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                return await response.aread()
         except httpx.HTTPError as e:
             msg = f"Confluence request failed: {type(e).__name__}: {e}"
             raise PayloadError("confluence_request_failed", msg) from e
-        return response
 
     @classmethod
-    def page_json(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def page_json(cls, request: dict[str, Any]) -> dict[str, Any]:
         path = ConfluenceRest.page(request["page_id"], request["body_format"])
-        return json.loads(cls.get(request, path).content)
+        return json.loads(await cls.get(request, path))
 
     @staticmethod
     def body_html(data: dict[str, Any], body_format: str) -> str:
@@ -124,8 +126,8 @@ class ConfluenceOps:
         return str(view.get("value") or "")
 
     @classmethod
-    def page(cls, request: dict[str, Any]) -> dict[str, Any]:
-        data = cls.page_json(request)
+    async def page(cls, request: dict[str, Any]) -> dict[str, Any]:
+        data = await cls.page_json(request)
         html = cls.body_html(data, request["body_format"])
         title = str(data.get("title") or "")
         if not request["as_markdown"]:
@@ -136,8 +138,9 @@ class ConfluenceOps:
         return {"text": answer["markdown"], "title": title}
 
     @classmethod
-    def grep(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
-        text = cls.page(request)["text"]
+    async def grep(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
+        page = await cls.page(request)
+        text = page["text"]
         pattern = WebOps.compile_pattern(
             request["pattern"],
             fixed_string=request["fixed_string"],
@@ -150,10 +153,9 @@ class ConfluenceOps:
             emit(RowStream.encode(WebOps.clip_row(row, request["max_text_chars"])))
 
     @classmethod
-    def search(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
+    async def search(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
         path = ConfluenceRest.search(request["cql"], request["limit"])
-        response = cls.get(request, path)
-        data = json.loads(response.content)
+        data = json.loads(await cls.get(request, path))
         base = str(data.get("_links", {}).get("base") or request["base_url"])
         for hit in data.get("results") or []:
             emit(RowStream.encode(cls.hit(hit, base, request["snippet_chars"])))
@@ -182,9 +184,9 @@ class ConfluenceOps:
         }
 
     @classmethod
-    def spaces(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
+    async def spaces(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
         path = ConfluenceRest.spaces(request["space_type"], request["limit"])
-        data = json.loads(cls.get(request, path).content)
+        data = json.loads(await cls.get(request, path))
         for space in data.get("results") or []:
             row = {
                 "key": str(space.get("key") or ""),
@@ -194,20 +196,23 @@ class ConfluenceOps:
             emit(RowStream.encode(row))
 
     @classmethod
-    def attachment(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def attachment(cls, request: dict[str, Any]) -> dict[str, Any]:
         """Вложение скачивается и парсится здесь же: наружу едет только текст."""
-        data = cls.page_json(request)
+        data = await cls.page_json(request)
         filename = request["filename"]
         link = cls.attachment_link(data, filename)
         if not link:
             msg = f"attachment {filename!r} not found on page {request['page_id']!r}"
             raise PayloadError("attachment_not_found", msg)
-        content = cls.get(request, link).content
+        content = await cls.get(request, link)
         from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
         from boba.text.document import LiteParseParams  # noqa: PLC0415
 
         params = LiteParseParams.model_validate(request["params"])
-        result = LiteParseEngine.parse_bytes(params, content, filename)
+        # парсер нативный и держит GIL: без потока он застопорит loop payload'а
+        result = await asyncio.to_thread(
+            LiteParseEngine.parse_bytes, params, content, filename
+        )
         return {"text": result.text}
 
     @staticmethod

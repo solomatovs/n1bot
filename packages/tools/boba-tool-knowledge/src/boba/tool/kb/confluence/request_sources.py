@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 from urllib.parse import quote, urlparse
@@ -186,42 +186,42 @@ class ConfluencePaginator:
     def __init__(self, conn: ConfluenceConnection):
         self._http = CancellableHttpTransport(conn.profile)
 
-    def __call__(self, path: str, item: type[T]) -> Iterator[T]:
+    async def __call__(self, path: str, item: type[T]) -> AsyncIterator[T]:
         next_path: str | None = path
         while next_path:
-            data = self._get_json(next_path)
+            data = await self._get_json(next_path)
             for raw in ConfluenceJson.results(data):
                 yield item.model_validate(raw)
 
             next_path = ConfluenceJson.next_link(data)
 
-    def _get_json(self, path: str) -> dict[str, Any]:
-        with self._http.fetch(HttpRequest(url=path)) as resp:
-            return json.loads(resp.stream.read())
+    async def _get_json(self, path: str) -> dict[str, Any]:
+        async with self._http.fetch(HttpRequest(url=path)) as resp:
+            return json.loads(await resp.stream.read())
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
-        self._http.close()
+    async def __aexit__(self, exc_type, exc, tb):
+        await self._http.close()
 
     @classmethod
-    def discover_spaces(
+    async def discover_spaces(
         cls, conn: ConfluenceConnection, space_type: str,
-    ) -> Iterable[str]:
-        with cls(conn) as paginator:
-            for item in paginator(
+    ) -> AsyncIterator[str]:
+        async with cls(conn) as paginator:
+            async for item in paginator(
                 ConfluenceRest.space_list_path(space_type), ConfluenceSpaceItem,
             ):
                 if item.key:
                     yield item.key
 
     @classmethod
-    def discover_space_pages(
+    async def discover_space_pages(
         cls, conn: ConfluenceConnection, space_key: str,
-    ) -> Iterable[str]:
-        with cls(conn) as paginator:
-            for item in paginator(
+    ) -> AsyncIterator[str]:
+        async with cls(conn) as paginator:
+            async for item in paginator(
                 ConfluenceRest.space_pages_path(space_key), ConfluencePageItem,
             ):
                 page_id = item.id.strip()
@@ -229,11 +229,11 @@ class ConfluencePaginator:
                     yield page_id
 
     @classmethod
-    def discover_pages_by_cql(
+    async def discover_pages_by_cql(
         cls, conn: ConfluenceConnection, cql: str,
-    ) -> Iterable[str]:
-        with cls(conn) as paginator:
-            for item in paginator(
+    ) -> AsyncIterator[str]:
+        async with cls(conn) as paginator:
+            async for item in paginator(
                 ConfluenceRest.cql_search_path(cql), ConfluencePageItem,
             ):
                 page_id = item.id.strip()
@@ -259,9 +259,9 @@ class ConfluenceCqlRequestSource(RequestSource[ConfluenceRequest]):
         self._body_format = body_format
         self._host = ConfluenceRest.extract_host(conn.base_url)
 
-    def requests(self) -> Iterable[ConfluenceRequest]:
-
-        for page_id in ConfluencePaginator.discover_pages_by_cql(self._conn, self._cql):
+    async def requests(self) -> AsyncIterator[ConfluenceRequest]:
+        pages = ConfluencePaginator.discover_pages_by_cql(self._conn, self._cql)
+        async for page_id in pages:
             yield ConfluenceRest.make_page_request(
                 host=self._host,
                 page_id=page_id,
@@ -283,7 +283,7 @@ class ConfluencePagesRequestSource(RequestSource[ConfluenceRequest]):
         self._page_ids = list(page_ids)
         self._body_format = body_format
 
-    def requests(self) -> Iterable[ConfluenceRequest]:
+    async def requests(self) -> AsyncIterator[ConfluenceRequest]:
         for page_id in self._page_ids:
             yield ConfluenceRest.make_page_request(
                 host=self._host,
@@ -307,11 +307,11 @@ class ConfluenceSpaceRequestSource(RequestSource[ConfluenceRequest]):
         self._body_format = body_format
         self._host = ConfluenceRest.extract_host(conn.base_url)
 
-    def requests(self) -> Iterable[ConfluenceRequest]:
-
-        for page_id in ConfluencePaginator.discover_space_pages(
+    async def requests(self) -> AsyncIterator[ConfluenceRequest]:
+        pages = ConfluencePaginator.discover_space_pages(
             self._conn, self._space_key,
-        ):
+        )
+        async for page_id in pages:
             yield ConfluenceRest.make_page_request(
                 host=self._host,
                 page_id=page_id,
@@ -348,6 +348,7 @@ class ConfluenceMultiSpaceRequestSource(RequestSource[ConfluenceRequest]):
         self._space_keys = tuple(space_keys)
         self._host = ConfluenceRest.extract_host(conn.base_url)
 
-    def requests(self) -> Iterable[ConfluenceRequest]:
+    async def requests(self) -> AsyncIterator[ConfluenceRequest]:
         for src in self._inner:
-            yield from src.requests()
+            async for request in src.requests():
+                yield request

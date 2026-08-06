@@ -19,7 +19,7 @@ raw_content каждого чанка собирается из FormatBlock.raw_
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
 from typing import Final
 
 from boba.indexing import (
@@ -76,15 +76,15 @@ class StructuralChunker(Chunker[str]):
     def chunker_id(self) -> ChunkerId:
         return self._chunker_id
 
-    def chunk(
+    async def chunk(
         self,
-        sections: Iterable[Section[str]],
-    ) -> Iterable[Chunk[str]]:
+        sections: AsyncIterable[Section[str]],
+    ) -> AsyncIterator[Chunk[str]]:
         breadcrumbs: list[tuple[int, str]] = []
         per_source_index: dict[str, int] = {}
         prev_source: SourceId | None = None
 
-        for section in sections:
+        async for section in sections:
             if prev_source is None or prev_source != section.source_id:
                 breadcrumbs.clear()
                 prev_source = section.source_id

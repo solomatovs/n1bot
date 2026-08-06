@@ -7,7 +7,6 @@ import json
 import subprocess
 import sys
 from collections.abc import Sequence
-from io import BytesIO
 from typing import Any
 
 import pydantic
@@ -15,6 +14,7 @@ import pytest
 from pydantic import BaseModel
 
 from boba.indexing import (
+    ChunkStream,
     IncompatibleContentError,
     Metadata,
     RawDocument,
@@ -35,6 +35,13 @@ from boba.tool.doc.liteparse import (
 )
 from boba.tool.doc.liteparse.protocol import ParseBytesTrailer, ParsedPage
 from boba.toolkit.launcher import ChunkSink
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(scope="module")
+def anyio_backend() -> str:
+    return "asyncio"
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -175,7 +182,7 @@ def _raw(data: bytes, content_type: str | None) -> RawDocument:
         metadata = metadata.set(TransportKeys.CONTENT_TYPE, content_type)
     return RawDocument(
         source_id=SourceId("https://confluence/attachment/report.pdf"),
-        handle=BytesIO(data),
+        handle=ChunkStream.of(data),
         metadata=metadata,
     )
 
@@ -240,47 +247,65 @@ class TestParseBytesContract:
 class TestSandboxLiteParseReader:
     """Ридер индексации: тот же контракт, что у прежнего LiteParseReader."""
 
-    def test_section_per_page(self, caller: LiteParseCaller) -> None:
-        sections = list(SandboxLiteParseReader(caller).read(_raw(_PDF, _PDF_TYPE)))
+    async def test_section_per_page(self, caller: LiteParseCaller) -> None:
+        sections = [
+            item
+            async for item in SandboxLiteParseReader(caller).read(
+                _raw(_PDF, _PDF_TYPE),
+            )
+        ]
         assert [s.order for s in sections] == [1, 2]
         assert "Alpha page one" in sections[0].content
 
-    def test_metadata_carries_page_and_doc_type(
+    async def test_metadata_carries_page_and_doc_type(
         self, caller: LiteParseCaller
     ) -> None:
-        [first, *_] = list(SandboxLiteParseReader(caller).read(_raw(_PDF, _PDF_TYPE)))
+        [first, *_] = [
+            item
+            async for item in SandboxLiteParseReader(caller).read(
+                _raw(_PDF, _PDF_TYPE),
+            )
+        ]
         assert first.metadata.get(ReaderKeys.DOC_TYPE) == "pdf"
         assert first.metadata.get(SectionKeys.PAGE_NUMBER) == 1
 
-    def test_content_type_with_charset(self, caller: LiteParseCaller) -> None:
+    async def test_content_type_with_charset(self, caller: LiteParseCaller) -> None:
         raw = _raw(_PDF, "Application/PDF; charset=binary")
-        assert list(SandboxLiteParseReader(caller).read(raw))
+        assert [item async for item in SandboxLiteParseReader(caller).read(raw)]
 
-    def test_unsupported_type_rejected(self, caller: LiteParseCaller) -> None:
+    async def test_unsupported_type_rejected(self, caller: LiteParseCaller) -> None:
+        stream = SandboxLiteParseReader(caller).read(_raw(_PDF, "image/png"))
+
         with pytest.raises(IncompatibleContentError):
-            list(SandboxLiteParseReader(caller).read(_raw(_PDF, "image/png")))
+            [item async for item in stream]
 
-    def test_missing_type_rejected(self, caller: LiteParseCaller) -> None:
+    async def test_missing_type_rejected(self, caller: LiteParseCaller) -> None:
+        stream = SandboxLiteParseReader(caller).read(_raw(_PDF, None))
+
         with pytest.raises(IncompatibleContentError):
-            list(SandboxLiteParseReader(caller).read(_raw(_PDF, None)))
+            [item async for item in stream]
 
-    def test_broken_document_isolated(self, caller: LiteParseCaller) -> None:
+    async def test_broken_document_isolated(self, caller: LiteParseCaller) -> None:
         """Битое вложение не должно ронять прогон индексации целиком."""
-        with pytest.raises(IncompatibleContentError):
-            list(SandboxLiteParseReader(caller).read(_raw(b"not a pdf", _PDF_TYPE)))
+        stream = SandboxLiteParseReader(caller).read(_raw(b"not a pdf", _PDF_TYPE))
 
-    def test_empty_document_yields_nothing(self, caller: LiteParseCaller) -> None:
-        assert list(SandboxLiteParseReader(caller).read(_raw(b"", _PDF_TYPE))) == []
+        with pytest.raises(IncompatibleContentError):
+            [item async for item in stream]
+
+    async def test_empty_document_yields_nothing(self, caller: LiteParseCaller) -> None:
+        empty = SandboxLiteParseReader(caller).read(_raw(b"", _PDF_TYPE))
+        assert [section async for section in empty] == []
 
     def test_media_types_match_suffixes(self, caller: LiteParseCaller) -> None:
         reader = SandboxLiteParseReader(caller)
         assert set(reader.media_types) == set(DocumentMedia.SUFFIX_BY_MEDIA_TYPE)
 
-    def test_filename_suffix_matches_media_type(
+    async def test_filename_suffix_matches_media_type(
         self, caller: LiteParseCaller
     ) -> None:
         """В payload уезжает имя с расширением, выведенным из content_type."""
-        list(SandboxLiteParseReader(caller).read(_raw(_PDF, _PDF_TYPE)))
+        stream = SandboxLiteParseReader(caller).read(_raw(_PDF, _PDF_TYPE))
+        [item async for item in stream]
         sandbox: Any = caller._caller
         assert sandbox.requests[0]["filename"] == "document.pdf"
 

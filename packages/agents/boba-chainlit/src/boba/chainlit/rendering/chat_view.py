@@ -76,7 +76,7 @@ class ChatView:
     CONTAINER_NAME: ClassVar[str] = "process..."
     RUNNING_TEXT: ClassVar[str] = "выполняется"
     STOPPED_TEXT: ClassVar[str] = "остановлено пользователем"
-    DISCONNECTED_TEXT: ClassVar[str] = "остановлено при разрыве связи"
+    ABORTED_TEXT: ClassVar[str] = "остановлено"
     USER_MESSAGE: ClassVar[TrueStepType] = cast("TrueStepType", "user_message")
     ASSISTANT_MESSAGE: ClassVar[TrueStepType] = cast(
         "TrueStepType", "assistant_message"
@@ -95,10 +95,10 @@ class ChatView:
 
     @classmethod
     def stopped_text(cls, reason: StopReason | None) -> str:
-        """Формулировка остановки: пользователь нажал stop или ушёл из сессии."""
-        if reason is StopReason.DISCONNECT:
-            return cls.DISCONNECTED_TEXT
-        return cls.STOPPED_TEXT
+        """Формулировка остановки: кнопка пользователя или снятая снаружи задача."""
+        if reason is StopReason.USER_STOP:
+            return cls.STOPPED_TEXT
+        return cls.ABORTED_TEXT
 
     def __init__(
         self,

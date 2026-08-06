@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import Iterator
@@ -10,7 +11,6 @@ from contextvars import copy_context
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-import httpx
 import pytest
 from langchain_core.tools import tool
 
@@ -211,24 +211,30 @@ class TestHttpAbort:
             server.shutdown()
 
     def test_cancel_aborts_in_flight_request(self, drip_url: str) -> None:
-        def read_all() -> int:
+        """Отмена приходит из чужого потока и обязана оборвать задачу запроса."""
+
+        async def read_all() -> int:
             profile = HttpProfile(base_url=drip_url)
-            with (
+            async with (
                 CancellableHttpTransport(profile) as transport,
                 transport.fetch(HttpRequest(url=f"{drip_url}/slow")) as resp,
             ):
-                return len(resp.stream.read(-1))
+                return len(await resp.stream.read())
 
-        with turn_cancellation() as c:
-            ctx = copy_context()
-            with ThreadPoolExecutor(1) as pool:
-                future = pool.submit(ctx.run, read_all)
-                threading.Event().wait(1.0)
+        async def stop_after(c: TurnCancellation, delay: float) -> None:
+            await asyncio.to_thread(threading.Event().wait, delay)
+            c.cancel()
+
+        async def scenario() -> float:
+            with turn_cancellation() as c:
+                task = asyncio.ensure_future(read_all())
+                await stop_after(c, 1.0)
                 started = time.monotonic()
-                c.cancel()
-                with pytest.raises(httpx.HTTPError):
-                    future.result(timeout=20)
-                elapsed = time.monotonic() - started
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=20)
+                return time.monotonic() - started
+
+        elapsed = asyncio.run(scenario())
         assert elapsed < self.ABORT_DEADLINE_SEC, (
             f"обрыв занял {elapsed:.1f}с — запрос дочитывался, а не прерывался"
         )

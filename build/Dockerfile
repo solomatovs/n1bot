@@ -247,11 +247,12 @@ COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BO
 COPY build/artifacts/tessdata/                  ${BOBA_DIR}/third/sandbox/data/tessdata/
 COPY build/artifacts/fastembed/                 ${BOBA_DIR}/third/sandbox/data/fastembed/
 COPY build/conf/                                /tmp/conf/
-# оформление и переводы UI: лежат в репозитории, едут вместе с образом
-COPY packages/agents/boba-chainlit/assets/chainlit/ ${BOBA_DIR}/data/.chainlit/
-COPY packages/agents/boba-chainlit/assets/public/   ${BOBA_DIR}/data/public/
-# katex и Inter вместо CDN: ссылки на них уже переписаны в index.html
-COPY build/artifacts/webassets/                     ${BOBA_DIR}/data/public/vendor/
+# UI
+COPY packages/agents/boba-chainlit/assets/chainlit/config.toml      ${BOBA_DIR}/data/.chainlit/
+COPY packages/agents/boba-chainlit/assets/chainlit/translations/    ${BOBA_DIR}/data/.chainlit/translations/
+COPY packages/agents/boba-chainlit/assets/chainlit/chainlit.md      ${BOBA_DIR}/data/
+COPY packages/agents/boba-chainlit/assets/public/                   ${BOBA_DIR}/data/public/
+COPY build/artifacts/webassets/                                     ${BOBA_DIR}/data/public/vendor/
 
 RUN set -eu \
     && if [ -f /tmp/conf/ca-chain.crt ]; then                                                   \
@@ -266,7 +267,7 @@ RUN set -eu \
     && rmdir "$SITE"/bin                                                                        \
     && sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/python/bin/python3.11|"                    \
             ${BOBA_DIR}/third/python/bin/boba-*                                                 \
-    # conf — boba.env и config.toml; data/.chainlit — app_root chainlit;
+    # conf — boba.env и config.toml; data — app_root chainlit;
     # data/home — HOME процесса; data/workspace — ext4-образы пользователей
     && mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/data/.chainlit                                     \
              ${BOBA_DIR}/data/home ${BOBA_DIR}/data/workspace                                   \

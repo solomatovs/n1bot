@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from io import BytesIO
-
 import pytest
 
 from boba.indexing import (
+    ChunkStream,
     IncompatibleContentError,
     Metadata,
     RawDocument,
@@ -17,6 +16,13 @@ from boba.indexing import (
 )
 from boba.liteparse.engine import LiteParseReader
 from boba.text.document import DocumentMedia, LiteParseParams
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(scope="module")
+def anyio_backend() -> str:
+    return "asyncio"
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two".
 _PDF = b"""%PDF-1.4
@@ -38,6 +44,8 @@ trailer<</Root 1 0 R/Size 8>>
 
 _SOURCE = "https://confl/download/attachments/42/report.pdf"
 
+_PDF_TYPE = "application/pdf"
+
 _PARAMS = LiteParseParams(ocr_enabled=False, tessdata_path="/usr/share/tessdata")
 
 
@@ -46,11 +54,18 @@ def _raw(data: bytes, content_type: str | None) -> RawDocument:
     meta = Metadata.empty().set(ReaderKeys.PAGE_TITLE, "report.pdf")
     if content_type is not None:
         meta = meta.set(TransportKeys.CONTENT_TYPE, content_type)
-    return RawDocument(handle=BytesIO(data), source_id=SourceId(_SOURCE), metadata=meta)
+    return RawDocument(
+        handle=ChunkStream.of(data),
+        source_id=SourceId(_SOURCE),
+        metadata=meta,
+    )
 
 
-def test_pdf_one_section_per_page_with_locus() -> None:
-    secs = list(LiteParseReader(_PARAMS).read(_raw(_PDF, "application/pdf")))
+async def test_pdf_one_section_per_page_with_locus() -> None:
+    secs = [
+        item
+        async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, _PDF_TYPE))
+    ]
     assert [s.order for s in secs] == [1, 2]
     assert [s.metadata.get(SectionKeys.PAGE_NUMBER) for s in secs] == [1, 2]
     assert all(s.metadata.get(ReaderKeys.DOC_TYPE) == "pdf" for s in secs)
@@ -58,36 +73,42 @@ def test_pdf_one_section_per_page_with_locus() -> None:
     assert "Beta page two" in secs[1].content
 
 
-def test_passes_through_source_metadata() -> None:
-    [first, *_] = list(LiteParseReader(_PARAMS).read(_raw(_PDF, "application/pdf")))
+async def test_passes_through_source_metadata() -> None:
+    [first, *_] = [
+        item
+        async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, _PDF_TYPE))
+    ]
     assert first.source_id == SourceId(_SOURCE)
     # имя файла (page_title), выставленное upstream, доезжает до Section
     assert first.metadata.get(ReaderKeys.PAGE_TITLE) == "report.pdf"
 
 
-def test_content_type_with_params_is_normalized() -> None:
+async def test_content_type_with_params_is_normalized() -> None:
     raw = _raw(_PDF, "Application/PDF; charset=binary")
-    secs = list(LiteParseReader(_PARAMS).read(raw))
+    secs = [item async for item in LiteParseReader(_PARAMS).read(raw)]
     assert [s.order for s in secs] == [1, 2]
 
 
-def test_unsupported_content_type_raises_incompatible() -> None:
+async def test_unsupported_content_type_raises_incompatible() -> None:
     with pytest.raises(IncompatibleContentError):
-        list(LiteParseReader(_PARAMS).read(_raw(_PDF, "image/png")))
+        [item async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, "image/png"))]
 
 
-def test_missing_content_type_raises_incompatible() -> None:
+async def test_missing_content_type_raises_incompatible() -> None:
     with pytest.raises(IncompatibleContentError):
-        list(LiteParseReader(_PARAMS).read(_raw(_PDF, None)))
+        [item async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, None))]
 
 
-def test_corrupt_document_raises_incompatible() -> None:
+async def test_corrupt_document_raises_incompatible() -> None:
+    stream = LiteParseReader(_PARAMS).read(_raw(b"not a real pdf", _PDF_TYPE))
+
     with pytest.raises(IncompatibleContentError):
-        list(LiteParseReader(_PARAMS).read(_raw(b"not a real pdf", "application/pdf")))
+        [item async for item in stream]
 
 
-def test_empty_payload_yields_nothing() -> None:
-    assert list(LiteParseReader(_PARAMS).read(_raw(b"", "application/pdf"))) == []
+async def test_empty_payload_yields_nothing() -> None:
+    empty = LiteParseReader(_PARAMS).read(_raw(b"", "application/pdf"))
+    assert [section async for section in empty] == []
 
 
 def test_media_types_match_default_suffix_map() -> None:

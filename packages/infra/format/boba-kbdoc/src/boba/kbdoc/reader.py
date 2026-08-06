@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -139,8 +139,9 @@ class KbDocReader(Reader[str]):
     def reader_id(self) -> ReaderId:
         return self.READER_ID
 
-    def read(self, value: RawDocument) -> Iterable[Section[str]]:
-        text = value.handle.read().decode(self._encoding, errors="replace")
+    async def read(self, value: RawDocument) -> AsyncIterator[Section[str]]:
+        raw = await value.handle.read()
+        text = raw.decode(self._encoding, errors="replace")
         parsed = self.parse(text)
 
         missing = parsed.missing_required()

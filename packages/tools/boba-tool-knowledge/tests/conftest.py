@@ -26,6 +26,7 @@ SRC_PACKAGES = (
     "infra/db/boba-db-pgvector",
     "infra/krb/boba-krb",
     "infra/transport/boba-web",
+    "infra/transport/boba-transport-http",
     "infra/format/boba-liteparse",
     "infra/format/boba-text",
     "tools/boba-tool-shell",
@@ -127,3 +128,8 @@ def raw_config():
     from boba.settings import build_app_config
 
     return build_app_config(config_path=Path(config_path))
+
+
+@pytest.fixture(scope="session")
+def anyio_backend() -> str:
+    return "asyncio"
