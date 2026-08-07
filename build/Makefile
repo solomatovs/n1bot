@@ -71,6 +71,8 @@ EMBED_MODELS  	?= intfloat/multilingual-e5-large
 # фронт chainlit тянет шрифт и стили формул с CDN; в закрытом контуре их
 # кладут в data/public/vendor, а ссылки в index.html переписывает Dockerfile
 WEBASSETS_DIR 	:= $(DEPS_DIR)/webassets
+# та же статика в дереве исходников: оттуда её отдаёт запуск из IDE
+ASSETS_VENDOR 	:= $(SRC_DIR)/packages/agents/boba-chainlit/assets/public/vendor
 KATEX_VERSION 	?= 0.16.22
 KATEX_URL     	?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
 INTER_VERSION 	?= 5.3.0
@@ -330,6 +332,12 @@ webassets:
 	    done
 	    rm -rf "$$tmp"
 	fi
+	# assets/public/theme.json просит /public/vendor/inter/inter.css — путь обязан
+	# существовать и при запуске из IDE, где public берётся из дерева исходников.
+	# В образ тот же каталог кладёт COPY build/src/webassets (стадия runtime)
+	rm -rf "$(ASSETS_VENDOR)"
+	mkdir -p "$(dir $(ASSETS_VENDOR))"
+	cp -a "$(WEBASSETS_DIR)" "$(ASSETS_VENDOR)"
 	du -sh $(WEBASSETS_DIR)/*
 
 

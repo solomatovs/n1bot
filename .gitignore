@@ -35,3 +35,6 @@ packages/**/dist/
 !/build/conf/README.md
 !/build/conf/pip.conf.example
 !/build/conf/uv.toml.example
+
+# статика фронта: кладётся make webassets, в образ идёт из build/src/webassets
+packages/agents/boba-chainlit/assets/public/vendor/
