@@ -21,9 +21,6 @@ __all__ = [
     "DocSearchRequest",
     "DocSearchRow",
     "DocSearchTrailer",
-    "DocWindowAnswer",
-    "DocWindowRequest",
-    "DocWindowTrailer",
 ]
 
 
@@ -57,15 +54,6 @@ class DocPagesRequest(DocRequest):
     pages: str = Field(min_length=1, description="Страницы 1-based: '1-5,10'.")
 
 
-class DocWindowRequest(DocRequest):
-    """Запрос среза текста [start_char, start_char+length)."""
-
-    OP: ClassVar[str] = "read_document_window"
-
-    start_char: int = Field(ge=0, description="Начало окна в символах.")
-    length: int = Field(ge=1, description="Длина окна в символах.")
-
-
 class DocSearchRequest(DocRequest):
     """Запрос поиска фразы с координатами совпадений."""
 
@@ -83,17 +71,6 @@ class DocPagesTrailer(BaseModel):
 
     truncated: bool
     pages: tuple[int, ...]
-
-
-class DocWindowTrailer(BaseModel):
-    """Итог окна: срез ушёл кадрами, здесь позиция курсора."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    start_char: int = Field(ge=0)
-    end_char: int = Field(ge=0)
-    total_chars: int = Field(ge=0)
-    has_more: bool
 
 
 class DocOutlineTrailer(BaseModel):
@@ -120,18 +97,6 @@ class DocPagesAnswer(BaseModel):
     text: str
     truncated: bool
     pages: tuple[int, ...]
-
-
-class DocWindowAnswer(BaseModel):
-    """Срез текста и позиция курсора для следующего окна."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    text: str
-    start_char: int = Field(ge=0)
-    end_char: int = Field(ge=0)
-    total_chars: int = Field(ge=0)
-    has_more: bool
 
 
 class DocOutlineRow(BaseModel):

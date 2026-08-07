@@ -9,13 +9,7 @@ packages/**/*.egg-info
 
 .venv
 
-build/.git
-build/artifacts/.git
-build/artifacts/images
-# в образ не копируются: rootfs песочницы — хостовый артефакт, wheelhouse отменён
-build/artifacts/sandbox
-build/artifacts/wheels
-build/artifacts/build
-build/artifacts/local/workspaces
-build/artifacts/local/logs
-build/artifacts/local/chainlit
+# в контекст не уезжают: артефакты песочницы собирают стадии Dockerfile
+# (sandbox-rootfs, sandbox-site, fuse2fs-build), колёса — стадия boba-wheels
+build/src/sandbox
+build/src/wheels

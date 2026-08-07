@@ -39,7 +39,7 @@ RUN set -eu \
            && update-ca-certificates;                                        \
        fi \
     && rm -rf /tmp/conf
-COPY build/artifacts/uv/uv /usr/local/bin/uv
+COPY build/src/uv/uv /usr/local/bin/uv
 
 
 # bubblewrap building
@@ -53,7 +53,7 @@ RUN apt-get update                                  \
         xz-utils                                    \
     && rm -rf /var/lib/apt/lists/*
 
-COPY build/artifacts/src/bubblewrap-${BWRAP_VERSION}.tar.xz /tmp/bwrap.tar.xz
+COPY build/src/bubblewrap-${BWRAP_VERSION}.tar.xz /tmp/bwrap.tar.xz
 
 RUN set -eu                                                                   \
     && mkdir -p /tmp/bwrap-src && cd /tmp/bwrap-src                           \
@@ -82,8 +82,8 @@ RUN apt-get update                                  \
         meson ninja-build pkg-config xz-utils       \
     && rm -rf /var/lib/apt/lists/*
 
-COPY build/artifacts/src/fuse-${LIBFUSE_VERSION}.tar.xz         /tmp/fuse.tar.xz
-COPY build/artifacts/src/e2fsprogs-${E2FSPROGS_VERSION}.tar.xz  /tmp/e2fsprogs.tar.xz
+COPY build/src/fuse-${LIBFUSE_VERSION}.tar.xz         /tmp/fuse.tar.xz
+COPY build/src/e2fsprogs-${E2FSPROGS_VERSION}.tar.xz  /tmp/e2fsprogs.tar.xz
 
 RUN set -eu                                                                   \
     && mkdir -p /tmp/fuse-src && cd /tmp/fuse-src                             \
@@ -151,8 +151,8 @@ RUN set -eu                                                                     
        fi                                                                       \
     # точки монтирования: bwrap не создаёт их в read-only корне
     && mkdir -p /opt/python /opt/site /opt/src /opt/fastembed                   \
-                /usr/share/tessdata /workspace /etc/boba /mnt/pgsock            \
-    && touch /etc/boba/krb5.keytab /etc/krb5.conf                               \
+                /usr/share/tessdata /workspace /mnt/pgsock                      \
+                /app/boba/conf/krb                                              \
     && for tool in unzip 7z file head curl jq convert magick soffice gs; do     \
            command -v "$tool" >/dev/null;                                       \
        done
@@ -242,9 +242,9 @@ COPY --from=fuse2fs-build /out/fuse2fs          ${BOBA_DIR}/third/bin/fuse2fs
 COPY --from=sandbox-rootfs                      / ${BOBA_DIR}/sandbox/rootfs/
 COPY --from=python-dist                         /opt/python/usr/local ${BOBA_DIR}/sandbox/third/python/
 COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BOBA_DIR}/sandbox/workspace.ext4
-COPY build/artifacts/tessdata/                  ${BOBA_DIR}/sandbox/third/tessdata/
-COPY build/artifacts/fastembed/                 ${BOBA_DIR}/sandbox/third/fastembed/
-COPY build/conf/                                /tmp/conf/
+COPY build/src/tessdata/                  ${BOBA_DIR}/sandbox/third/tessdata/
+COPY build/src/fastembed/                 ${BOBA_DIR}/sandbox/third/fastembed/
+COPY build/conf/                              /tmp/conf/
 
 COPY --from=app-site /opt/app-site              ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/
 COPY --from=sandbox-site /opt/site              ${BOBA_DIR}/app/${BOBA_VERSION}/boba-tool/
@@ -254,7 +254,7 @@ COPY packages/agents/boba-chainlit/assets/chainlit/config.toml      ${BOBA_DIR}/
 COPY packages/agents/boba-chainlit/assets/chainlit/translations/    ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/.chainlit/translations/
 COPY packages/agents/boba-chainlit/assets/chainlit/chainlit.md      ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/
 COPY packages/agents/boba-chainlit/assets/public/                   ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/public/
-COPY build/artifacts/webassets/                                     ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/public/vendor/
+COPY build/src/webassets/                                     ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/public/vendor/
 
 RUN set -eu \
     && if [ -f /tmp/conf/ca-chain.crt ]; then                                                   \

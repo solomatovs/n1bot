@@ -44,9 +44,9 @@ class TestChartInSandbox:
         spec = '{"data": [], "layout": {"title": "Отчёт"}}'
         answer = _caller().call_stream(
             ChartCaller.ENTRY,
-                ValidateFigureRequest.of(spec),
-                NoChunks(),
-                ValidateFigureAnswer,
+            ValidateFigureRequest.of(spec),
+            NoChunks(),
+            ValidateFigureAnswer,
         )
         assert answer.title == "Отчёт"
 
@@ -54,9 +54,9 @@ class TestChartInSandbox:
         spec = '{"data": [{"type": "bar", "x": ["a"], "y": [1]}]}'
         answer = _caller().call_stream(
             ChartCaller.ENTRY,
-                ValidateFigureRequest.of(spec),
-                NoChunks(),
-                ValidateFigureAnswer,
+            ValidateFigureRequest.of(spec),
+            NoChunks(),
+            ValidateFigureAnswer,
         )
         assert answer.title == ""
 
@@ -137,5 +137,3 @@ class TestChartTool:
             )
         assert failure.value.kind == "invalid_figure_spec"
         assert "Traceback" not in str(failure.value)
-
-

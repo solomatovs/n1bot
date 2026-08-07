@@ -2,15 +2,17 @@
 # test/ и conf/ рядом с собой
 BASE_DIR      	?= $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 SRC_DIR       	?= $(abspath $(BASE_DIR)/..)
-ARTIFACTS     	?= $(BASE_DIR)/artifacts
 BUILD_CONTEXT 	?= $(SRC_DIR)
 TEST_DIR      	?= $(BASE_DIR)/test
+# шаблоны для сборки (make extract, Dockerfile COPY) живут в build/conf
 CONF_DIR      	:= $(BASE_DIR)/conf
 
-# исходники, которые собираются внутри Dockerfile
-SRC_ARTIFACTS 	:= $(ARTIFACTS)/src
-# бинарные зависимости, которые внутри Dockerfile не достать
-DEPS_DIR      	?= $(ARTIFACTS)
+# артефакты для сборки: tarball'ы, uv, tessdata, fastembed, webassets, wheels, sandbox
+DEPS_DIR      	?= $(BASE_DIR)/src
+# исходники, которые собираются внутри Dockerfile, лежат там же
+SRC_ARTIFACTS 	:= $(DEPS_DIR)
+# результаты make extract — в корне репо
+RELEASE_DIR   	:= $(SRC_DIR)/release
 
 
 .DEFAULT_GOAL := help
@@ -38,7 +40,7 @@ DEST_DIR      ?= /app/boba
 IMAGE         := boba:$(BOBA_TAG)
 # из какого образа make extract достаёт портативную папку и куда её кладёт
 RELEASE_IMAGE ?= $(IMAGE)
-OUT           ?= $(ARTIFACTS)/build/$(RELEASE_NAME)
+OUT           ?= $(RELEASE_DIR)/$(RELEASE_NAME)
 
 PYTHON_VERSION	?= 3.11
 # чистая рантайм-база (только glibc), от неё строится финальный образ runtime
@@ -105,9 +107,8 @@ NO_CACHE_OPT	:= $(if $(filter 1,$(NO_CACHE)),--no-cache,)
 # --progress есть только у buildkit; на старом docker флага нет — не подставляем
 PROGRESS      ?= $(shell docker build --help 2>/dev/null | grep -q -- '--progress' && echo '--progress plain')
 
-# закрытый контур: CA внутреннего TLS (nexus). Кладётся в conf/ рядом с
-# pip.conf и uv.toml; artifacts/ поддержан для совместимости
-CA_CHAIN := $(firstword $(wildcard $(CONF_DIR)/ca-chain.crt) $(wildcard $(ARTIFACTS)/ca-chain.crt))
+# закрытый контур: CA внутреннего TLS (nexus). Кладётся в conf/ рядом с pip.conf и uv.toml
+CA_CHAIN := $(firstword $(wildcard $(CONF_DIR)/ca-chain.crt) $(wildcard $(BASE_DIR)/ca-chain.crt))
 # curl на хосте: прокси берёт из env, CA — отсюда
 CURL_OPTS := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
 
@@ -139,10 +140,11 @@ DOCKER_ARGS = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)             \
 help:
 	@echo "Сборка boba $(VERSION) из дерева пакетов $(SRC_DIR) -> $(IMAGE)"
 	echo ""
-	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(SRC_ARTIFACTS)"
+	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(DEPS_DIR)"
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
 	echo "                 {uv,tessdata,fastembed,webassets,"
-	echo "                  sandbox/{rootfs,python,site,third,workspace.ext4}}"
+	echo "                  sandbox/{rootfs,site,workspace.ext4,"
+	echo "                           third/{python,tessdata,fastembed}}}"
 	echo "                 цели по отдельности: uv, tessdata, fastembed,"
 	echo "                 webassets, sandbox-rootfs, sandbox-site,"
 	echo "                 sandbox-python, sandbox-data, sandbox-workspace"
@@ -150,6 +152,7 @@ help:
 	echo "  make test      проверить релиз внутри образа"
 	echo "  make extract   дерево установки из готового образа:"
 	echo "                 RELEASE_IMAGE=$(RELEASE_IMAGE), OUT=$(OUT)"
+	echo "                 ($(RELEASE_DIR), а не build/)"
 	echo "                 {third,sandbox,app/$(VERSION)/{boba-chainlit,boba-tool},conf,data}"
 	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR)"
 	echo "  make clean     удалить исходники, deps и собранную папку (кроме fastembed)"
@@ -182,9 +185,10 @@ debug:
 	@true
 	$(info BASE_DIR       = $(BASE_DIR))
 	$(info SRC_DIR        = $(SRC_DIR))
-	$(info ARTIFACTS      = $(ARTIFACTS))
-	$(info SRC_ARTIFACTS  = $(SRC_ARTIFACTS))
+	$(info CONF_DIR       = $(CONF_DIR))
 	$(info DEPS_DIR       = $(DEPS_DIR))
+	$(info SRC_ARTIFACTS  = $(SRC_ARTIFACTS))
+	$(info RELEASE_DIR    = $(RELEASE_DIR))
 	$(info TEST_DIR       = $(TEST_DIR))
 	$(info VERSION        = $(VERSION))
 	$(info RELEASE_NAME   = $(RELEASE_NAME))
@@ -333,7 +337,7 @@ webassets:
 .PHONY: sandbox-rootfs
 sandbox-rootfs:
 	@dest="$(SANDBOX_DIR)/rootfs"
-	echo "== rootfs песочницы из $(SANDBOX_IMAGE) + утилиты =="
+	echo "== rootfs песочницы из $(GLIBC_IMAGE) + утилиты =="
 		docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
 	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
 	    --target sandbox-rootfs                            \
@@ -345,6 +349,10 @@ sandbox-rootfs:
 	docker export "$$cid" | tar -x -C "$$dest"
 	docker rm "$$cid" >/dev/null
 	mkdir -p "$$dest/workspace"
+	# в образе krb монтируется в свой же путь ($(DEST_DIR)/conf/krb) — точка есть
+	# в rootfs. При запуске из IDE путь хостовый, точку под него создаём здесь:
+	# bwrap не заводит её сам на read-only корне
+	mkdir -p "$$dest$(SRC_DIR)/compose/conf/krb"
 
 
 # site-packages песочницы одним каталогом: его монтируют профили в /opt/site.
@@ -552,11 +560,12 @@ extract:
 	echo "    установка:      cp -a $(OUT)/. $(INSTALL_DIR)/"
 
 
-# fastembed не трогаем: веса качаются долго
+# fastembed и wheels не трогаем: веса качаются долго, колеса — кэш
 .PHONY: clean
 clean:
-	rm -rf $(SRC_ARTIFACTS) $(ARTIFACTS)/build \
-	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR)
+	rm -rf $(RELEASE_DIR) \
+	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
+	       $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL)
 
 
 .PHONY: print-tag

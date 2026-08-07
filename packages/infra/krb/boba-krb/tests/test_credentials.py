@@ -16,8 +16,9 @@ import pytest
 
 from boba.krb import KerberosEnv, KeytabConfig, KeytabCredentials
 
-KEYTAB = Path("/app/docker/compose/boba/.vscode/data/keytab/boba-svc.keytab")
-KRB5_CONF = Path("/app/docker/compose/boba/.vscode/data/keytab/krb5.conf")
+_KRB = Path(__file__).resolve().parents[5] / "compose" / "conf" / "krb"
+KEYTAB = _KRB / "boba-svc.keytab"
+KRB5_CONF = _KRB / "krb5.conf"
 PRINCIPAL = "boba-svc@LOSHARA.COM"
 
 live_kdc = pytest.mark.skipif(

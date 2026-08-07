@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 REPO = Path(__file__).resolve().parents[4]
-SANDBOX = REPO / "build" / "artifacts" / "sandbox"
+SANDBOX = REPO / "build" / "src" / "sandbox"
 ROOTFS = SANDBOX / "rootfs"
 
 SRC_PACKAGES = (
@@ -56,10 +56,10 @@ class SandboxLayout:
     @staticmethod
     def ro_binds(docs_dir: Path | None) -> list[str]:
         binds = [
-            f"{SANDBOX / 'python'}:/opt/python",
+            f"{SANDBOX / 'third' / 'python'}:/opt/python",
             f"{SANDBOX / 'site'}:/opt/site",
-            f"{SANDBOX / 'data' / 'fastembed'}:/opt/fastembed",
-            f"{SANDBOX / 'data' / 'tessdata'}:/usr/share/tessdata",
+            f"{SANDBOX / 'third' / 'fastembed'}:/opt/fastembed",
+            f"{SANDBOX / 'third' / 'tessdata'}:/usr/share/tessdata",
         ]
         binds.append(f"{REPO / 'packages'}:/opt/src")
         if docs_dir is not None:

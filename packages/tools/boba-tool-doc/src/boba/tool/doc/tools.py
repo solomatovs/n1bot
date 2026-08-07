@@ -101,48 +101,6 @@ def build_doc_tools(
         )
 
     @tool(response_format="content_and_artifact")
-    async def read_document_window(  # noqa: PLR0913
-        path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
-        start_char: Annotated[
-            int, Field(ge=0, description="Смещение начала окна в символах, 0-based.")
-        ],
-        length: Annotated[
-            int, Field(ge=1, description="Сколько символов вернуть от start_char.")
-        ],
-        ocr_enabled: Annotated[
-            bool, Field(description=_OCR_DESCRIPTION)
-        ] = False,
-        num_workers: Annotated[
-            int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
-        ] = 1,
-        ocr_language: Annotated[
-            str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
-        ] = "rus+eng",
-    ) -> tuple[str, ToolResult]:
-        """Вернуть срез текста [start_char, start_char+length) для чтения порциями."""
-        if length > cfg.max_text_chars:
-            msg = (
-                f"length ({length}) exceeds max_text_chars "
-                f"({cfg.max_text_chars}): read in smaller windows"
-            )
-            raise RuntimeError(msg)
-        answer = await engine.read_window(
-            path, start_char, length, ocr_enabled, num_workers, ocr_language
-        )
-        return pack_result(
-            TextResult(
-                text=answer.text,
-                metadata={
-                    "path": path,
-                    "start_char": str(answer.start_char),
-                    "end_char": str(answer.end_char),
-                    "total_chars": str(answer.total_chars),
-                    "has_more": str(answer.has_more),
-                },
-            )
-        )
-
-    @tool(response_format="content_and_artifact")
     async def document_outline(
         path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
         ocr_enabled: Annotated[
@@ -204,7 +162,6 @@ def build_doc_tools(
 
     return [
         read_document,
-        read_document_window,
         document_outline,
         search_document,
     ]

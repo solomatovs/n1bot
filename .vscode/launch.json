@@ -8,17 +8,11 @@
             "program": "${workspaceFolder}/packages/agents/boba-chainlit/src/boba/chainlit/main.py",
             "console": "integratedTerminal",
             "jinja": true,
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "justMyCode": false,
-            "stopOnEntry": false,
-            "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
-                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
-                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
-            }
+            "stopOnEntry": false
         },
         {
             "name": "Ingest: Confluence целиком (OCR, полное пересоздание)",
@@ -26,8 +20,9 @@
             "request": "launch",
             "module": "boba.chainlit.cli.ingest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "justMyCode": false,
             "args": [
                 "--mode", "spaces",
@@ -37,14 +32,7 @@
                 "--num-workers", "2",
                 "--force-update",
                 "--prune-missing"
-            ],
-            "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
-                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
-                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
-            }
+            ]
         },
         {
             "name": "Ingest: одна страница (OCR, без prune)",
@@ -52,8 +40,9 @@
             "request": "launch",
             "module": "boba.chainlit.cli.ingest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "justMyCode": false,
             "args": [
                 "--mode", "pages",
@@ -62,14 +51,7 @@
                 "--ocr-language", "rus+eng",
                 "--num-workers", "2",
                 "--force-update"
-            ],
-            "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
-                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
-                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
-            }
+            ]
         },
         {
             "name": "pytest: текущий файл",
@@ -77,20 +59,14 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "justMyCode": false,
             "args": [
                 "${file}",
                 "-v"
-            ],
-            "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
-                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
-                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
-            }
+            ]
         },
         {
             "name": "pytest: все тесты",
@@ -98,20 +74,14 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "justMyCode": false,
             "args": [
                 "${workspaceFolder}/packages",
                 "-q"
-            ],
-            "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
-                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
-                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
-            }
+            ]
         },
         {
             "name": "pytest: интеграционные (живые сервисы)",
@@ -119,29 +89,23 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "justMyCode": false,
             "args": [
                 "${workspaceFolder}/packages/agents/boba-chainlit/tests/test_tools_integration.py",
                 "-m",
                 "integration",
                 "-v"
-            ],
-            "env": {
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/.vscode/data/chainlit-debug.toml",
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/.vscode/data",
-                "KRB5_CONFIG": "${workspaceFolder}/.vscode/data/keytab/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/.vscode/data/keytab/boba-svc.keytab",
-                "KRB5CCNAME": "FILE:/tmp/krb5cc_vscode"
-            }
+            ]
         },
         {
             "name": "Python: current file",
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "program": "${file}"

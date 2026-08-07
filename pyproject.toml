@@ -1,5 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["packages"]
+cache_dir = "compose/.pytest_cache"
 python_files = ["test_*.py"]
 pythonpath = [
     "packages/infra/format/boba-kbdoc/src",
@@ -37,7 +38,6 @@ exclude = [
     "**/node_modules",
     "**/__pycache__",
     "**/.*",
-    # копии исходников, которые setuptools/uv build оставляет в packages/**/build/lib
     "**/build",
 ]
 extraPaths = [
@@ -83,7 +83,6 @@ select = [
     "A", "C4", "T20", "PT", "RET", "PIE", "PL", "RUF",
 ]
 ignore = [
-    # ambiguous unicode — ложные срабатывания на кириллице
     "RUF001", "RUF002", "RUF003",
     "RET504",
 ]
