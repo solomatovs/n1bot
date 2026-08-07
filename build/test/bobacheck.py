@@ -3,8 +3,8 @@
 интерпретатор, uv, offline-установленные пакеты (boba-* и внешние),
 консольные точки входа, OCR-модели и внешние инструменты (magick, soffice, gs).
 
-Запускается на каталоге релиза с его окружением (make test):
-  cd <релиз>; set -a; . conf/boba.env; set +a
+Запускается с окружением установки (make test):
+  set -a; . conf/boba.env; set +a
   python3 test/bobacheck.py --names <файл со списком имён пакетов boba>
 
 Список имён пакетов берётся из стадии deps (boba/names.txt); если его нет —

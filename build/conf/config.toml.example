@@ -1,14 +1,12 @@
-# Конфиг boba-chainlit для портативного релиза.
-# conf/ — правится руками, local/ — пишет приложение, third/ — артефакты.
-# Заполнить помеченное <...>.
-
-# единственная привязка к месту установки: BOBA_DIR берётся из conf/boba.env,
-# всё остальное в конфиге — пути относительно него
 [paths]
-    root    = "${oc.env:BOBA_DIR}"
-    data    = "${paths.root}/data"
-    sandbox = "${paths.root}/third/sandbox"
-
+    base      = "${oc.env:BOBA_BASE}"
+    version   = "${oc.env:BOBA_VERSION}"
+    app       = "${paths.base}/app/${paths.version}"
+    third     = "${paths.base}/third"
+    data      = "${paths.base}/data"
+    sandbox   = "${paths.base}/sandbox"
+    tool_site = "${paths.app}/boba-tool"
+    assets    = "${paths.app}/boba-chainlit/assets"
 
 [app]
     chainlit     = "${chainlit}"
@@ -19,13 +17,14 @@
     sandbox      = "${sandbox}"
     auth         = ["${auth.local}"]
 
-
 [openai.main]
     base_url   = "<https://llm.example.local/v1>"
     api_key    = "<ключ>"
     ssl_verify = true
-    dump       = false
 
+    [openai.main.dump]
+        enable = false
+        path   = "${paths.data}/dumps"
 
 [agent]
     openai                = "${openai.main}"
@@ -33,14 +32,12 @@
     default_system_prompt = "Ты ассистент. Отвечай по найденному контексту."
     history_messages      = 30
 
-
 [chainlit]
     host        = "0.0.0.0"
     port        = 8501
     url_prefix  = ""
     auth_secret = "<32 байта hex: openssl rand -hex 32>"
-    root        = "${paths.data}"
-
+    root        = "${paths.assets}"
 
 [auth.local]
     type          = "local"
@@ -51,8 +48,6 @@
 [role.local]
     "<логин>" = ["ADM"]
 
-
-# libpq-параметры: https://www.postgresql.org/docs/current/libpq-connect.html
 [postgres]
     host             = "<хост postgres>"
     port             = 5432
@@ -64,7 +59,6 @@
     autocommit       = true
     pool             = { timeout = 5.0, min_size = 2, max_size = 4 }
     options          = { statement_timeout = "30s" }
-    # соединение само получает TGT из своего keytab в свой ccache
     [postgres.kerberos]
         keytab      = "/etc/boba/krb5.keytab"
         principal   = "<пользователь>@EXAMPLE.LOCAL"
@@ -79,8 +73,6 @@
     postgres = "${postgres}"
     schema   = "chainlit"
 
-# соединения пользователей в базе; encryption_key — 32 байта в base64:
-# python -c "import base64,secrets;print(base64.b64encode(secrets.token_bytes(32)).decode())"
 [connections]
     enable         = true
     connection     = "${postgres}"
@@ -88,25 +80,20 @@
     table          = "connections"
     encryption_key = "<ключ base64>"
 
-
-# kind = "image" — вложения внутри ext4-образа пользователя (пути обязаны
-# совпадать с rw_images профиля), kind = "local" — файлы на диске
 [storage]
     kind           = "image"
-    image_path     = "${chainlit.root}/workspace/{user_id}.ext4"
+    image_path     = "${paths.data}/workspace/{user_id}.ext4"
     image_template = "${paths.sandbox}/workspace.ext4"
     op_timeout_sec = 60
     launcher       = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
     public_prefix  = "${chainlit.url_prefix}/workspace"
 
-
 [sandbox]
-    ## shell пользователя: workspace-образ, python не нужен
     [sandbox.profiles.default]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site"]
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site"]
         rw_binds            = []
-        rw_images           = ["${chainlit.root}/workspace/{user_id}.ext4:/workspace"]
+        rw_images           = ["${paths.data}/workspace/{user_id}.ext4:/workspace"]
         image_template      = "${paths.sandbox}/workspace.ext4"
         launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
         tmpfs               = ["/tmp:512M"]
@@ -129,12 +116,11 @@
         cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
-    ## чтение документов: python и парсеры плюс образ пользователя
     [sandbox.profiles.docs]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
         rw_binds            = []
-        rw_images           = ["${chainlit.root}/workspace/{user_id}.ext4:/workspace"]
+        rw_images           = ["${paths.data}/workspace/{user_id}.ext4:/workspace"]
         image_template      = "${paths.sandbox}/workspace.ext4"
         launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
         tmpfs               = ["/tmp:512M"]
@@ -157,10 +143,9 @@
         cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
-    ## разбор данных, пришедших в запросе: файловая система не нужна
     [sandbox.profiles.parser]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -185,12 +170,9 @@
         cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
-    ## инструменты, которые сами ходят в сеть: web и confluence.
-    ## SSL_CERT_FILE обязателен: httpx проверяет TLS по бандлу certifi, а
-    ## внутренний CA лежит в системном — он собран в rootfs из conf/ca-chain.crt
     [sandbox.profiles.network]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -215,10 +197,9 @@
         cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
-    ## SQL к БД: сеть до постгреса, keytab и krb5.conf только на чтение
     [sandbox.profiles.pg]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -243,10 +224,9 @@
         cgroup_oom_kill_all   = true
         oom_score_adj       = 500
 
-    ## поиск по базе знаний: тот же профиль плюс веса эмбеддера
     [sandbox.profiles.kb]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.sandbox}/site:/opt/site", "${paths.sandbox}/data/fastembed:/opt/fastembed", "${paths.sandbox}/data/tessdata:/usr/share/tessdata", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site", "${paths.sandbox}/data/fastembed:/opt/fastembed", "${paths.sandbox}/data/tessdata:/usr/share/tessdata", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -282,7 +262,6 @@
     [tool.bash.tools]
         bash = []
 
-
 [tool.doc]
     enable               = true
     roles                = ["ADM"]
@@ -301,7 +280,6 @@
         document_outline     = []
         search_document      = []
 
-
 [tool.chart]
     enable = true
     roles  = ["*"]
@@ -313,8 +291,6 @@
     [tool.chart.tools]
         visualize = []
 
-
-# whitelist хостов: URL с хостом не из profiles до песочницы не доходит
 [tool.web]
     enable         = true
     roles          = ["ADM"]
@@ -346,7 +322,6 @@
     retry_backoff_sec = 1.0
     auth              = { method = "bearer", token = "<токен>" }
 
-
 [tool.confluence]
     enable         = true
     roles          = ["ADM"]
@@ -363,7 +338,6 @@
         confluence_grep   = []
         confluence_search = []
         confluence_spaces = []
-
 
 [tool.ingest]
     enable            = true
@@ -390,7 +364,6 @@
         confluence_index_spaces = []
         confluence_attachment   = []
 
-
 [tool.pg]
     enable    = true
     roles     = ["ADM"]
@@ -409,7 +382,6 @@
         pg_query          = []
         pg_export         = []
 
-
 [tool.kb]
     enable     = true
     roles      = ["ADM"]
@@ -425,38 +397,14 @@
         kb_vector_search = []
         kb_fts_search    = []
 
-
 [kb.tables]
     pg_schema         = "kb"
     chunks_table      = "kb_chunks"
     collections_table = "kb_collections"
 
-# веса лежат внутри песочницы, монтировать их не нужно
 [embedding.e5]
     model     = "intfloat/multilingual-e5-large"
     cache_dir = "/opt/fastembed"
     dim       = 1024
     batch_size = 8
 
-
-# вход по домену (bind в AD)
-# [auth.ldap]
-#     type             = "ldap"
-#     server           = "ldaps://dc.example.local:636"
-#     base_dn          = "DC=example,DC=local"
-#     user_filter      = "(sAMAccountName={username})"
-#     bind_dn_template = "EXAMPLE\\{username}"
-#     require_roles    = true
-#     [auth.ldap.roles]
-#         member_of = { "CN=boba-ADM,CN=Users,DC=example,DC=local" = ["ADM"] }
-
-# SSO по kerberos; keytab пробрасывается в unit через BindReadOnlyPaths
-# [auth.kerberos]
-#     type             = "kerberos"
-#     principal_format = "{username}@EXAMPLE.LOCAL"
-#     require_roles    = true
-#     [auth.kerberos.accept]
-#         service_name = "HTTP/boba.example.local@EXAMPLE.LOCAL"
-#         keytab       = "/etc/krb5.keytab"
-#     [auth.kerberos.roles]
-#         principal = { "<логин>@EXAMPLE.LOCAL" = ["ADM"] }

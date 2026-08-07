@@ -220,6 +220,7 @@ FROM ${GLIBC_IMAGE} AS runtime
 
 ARG PYTHON_VERSION=3.11 \
     BOBA_DIR=/app/boba \
+    BOBA_VERSION=0.0.0 \
     BOBA_UID=1000 \
     BOBA_GID=1000
 
@@ -232,27 +233,28 @@ RUN apt-get update                                              \
         gettext-base                                            \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=python-dist                         /opt/python/usr/local   ${BOBA_DIR}/third/python
+COPY --from=python-dist                         /opt/python/usr/local   ${BOBA_DIR}/third
 COPY --from=base /usr/local/lib64/libstdc++.so.6      ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/local/lib64/libstdc++.so.6.0.25 ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/local/bin/uv              ${BOBA_DIR}/third/bin/uv
-COPY --from=app-site /opt/app-site              ${BOBA_DIR}/third/python/lib/python${PYTHON_VERSION}/site-packages/
-COPY --from=app-site    /opt/app-packages.txt   ${BOBA_DIR}/conf/packages.txt
 COPY --from=bwrap-build /out/bwrap              ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs          ${BOBA_DIR}/third/bin/fuse2fs
-COPY --from=sandbox-rootfs                      / ${BOBA_DIR}/third/sandbox/rootfs/
-COPY --from=sandbox-site                        /opt/site ${BOBA_DIR}/third/sandbox/site/
-COPY --from=python-dist                         /opt/python/usr/local ${BOBA_DIR}/third/sandbox/python/
-COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BOBA_DIR}/third/sandbox/workspace.ext4
-COPY build/artifacts/tessdata/                  ${BOBA_DIR}/third/sandbox/data/tessdata/
-COPY build/artifacts/fastembed/                 ${BOBA_DIR}/third/sandbox/data/fastembed/
+COPY --from=sandbox-rootfs                      / ${BOBA_DIR}/sandbox/rootfs/
+COPY --from=python-dist                         /opt/python/usr/local ${BOBA_DIR}/sandbox/python/
+COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BOBA_DIR}/sandbox/workspace.ext4
+COPY build/artifacts/tessdata/                  ${BOBA_DIR}/sandbox/data/tessdata/
+COPY build/artifacts/fastembed/                 ${BOBA_DIR}/sandbox/data/fastembed/
 COPY build/conf/                                /tmp/conf/
-# UI
-COPY packages/agents/boba-chainlit/assets/chainlit/config.toml      ${BOBA_DIR}/data/.chainlit/
-COPY packages/agents/boba-chainlit/assets/chainlit/translations/    ${BOBA_DIR}/data/.chainlit/translations/
-COPY packages/agents/boba-chainlit/assets/chainlit/chainlit.md      ${BOBA_DIR}/data/
-COPY packages/agents/boba-chainlit/assets/public/                   ${BOBA_DIR}/data/public/
-COPY build/artifacts/webassets/                                     ${BOBA_DIR}/data/public/vendor/
+
+COPY --from=app-site /opt/app-site              ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/
+COPY --from=sandbox-site /opt/site              ${BOBA_DIR}/app/${BOBA_VERSION}/boba-tool/
+COPY --from=app-site    /opt/app-packages.txt   ${BOBA_DIR}/conf/packages.txt
+
+COPY packages/agents/boba-chainlit/assets/chainlit/config.toml      ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/.chainlit/
+COPY packages/agents/boba-chainlit/assets/chainlit/translations/    ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/.chainlit/translations/
+COPY packages/agents/boba-chainlit/assets/chainlit/chainlit.md      ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/
+COPY packages/agents/boba-chainlit/assets/public/                   ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/public/
+COPY build/artifacts/webassets/                                     ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/assets/public/vendor/
 
 RUN set -eu \
     && if [ -f /tmp/conf/ca-chain.crt ]; then                                                   \
@@ -260,26 +262,21 @@ RUN set -eu \
            && cp /tmp/conf/ca-chain.crt /usr/local/share/ca-certificates/                       \
            && update-ca-certificates;                                                           \
        fi \
-    && cp /tmp/conf/boba.env /tmp/boba.env.tmpl \
-    && export LD_LIBRARY_PATH="${BOBA_DIR}/third/lib:${BOBA_DIR}/third/python/lib"                                    \
-    && SITE=${BOBA_DIR}/third/python/lib/python${PYTHON_VERSION}/site-packages                  \
-    && mv "$SITE"/bin/* ${BOBA_DIR}/third/python/bin/                                           \
-    && rmdir "$SITE"/bin                                                                        \
-    && sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/python/bin/python3.11|"                    \
-            ${BOBA_DIR}/third/python/bin/boba-*                                                 \
-    # conf — boba.env и config.toml; data — app_root chainlit;
-    # data/home — HOME процесса; data/workspace — ext4-образы пользователей
-    && mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/data/.chainlit                                     \
-             ${BOBA_DIR}/data/home ${BOBA_DIR}/data/workspace                                   \
+    && cp /tmp/conf/boba.env /tmp/boba.env.tmpl                                                 \
+    && APP=${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit                                   \
+    # .files создаётся заранее: chainlit делает mkdir на импорте, ассеты read-only
+    && mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/data/workspace "$APP"/assets/.files                \
+    # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
+    && sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" "$APP"/bin/*                 \
     # приложение бежит непривилегированным: под root образы пользователей
     # ложились бы в том с чужим uid, а userns песочницы его не мапит
     && chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/data                                        \
-    && ln -sf eng.traineddata ${BOBA_DIR}/third/sandbox/data/tessdata/rus+eng.traineddata       \
-    && ln -sf rus.traineddata ${BOBA_DIR}/third/sandbox/data/tessdata/eng+rus.traineddata       \
+    && ln -sf eng.traineddata ${BOBA_DIR}/sandbox/data/tessdata/rus+eng.traineddata       \
+    && ln -sf rus.traineddata ${BOBA_DIR}/sandbox/data/tessdata/eng+rus.traineddata       \
     && ${BOBA_DIR}/third/bin/bwrap --version                                                    \
     && ${BOBA_DIR}/third/bin/fuse2fs -V                                                         \
-    && BOBA_DIR="${BOBA_DIR}" PYTHON_VERSION="${PYTHON_VERSION}"                                \
-       envsubst '${BOBA_DIR} ${PYTHON_VERSION}'                                                 \
+    && BOBA_BASE="${BOBA_DIR}" BOBA_VERSION="${BOBA_VERSION}"                                   \
+       envsubst '${BOBA_BASE} ${BOBA_VERSION}'                                                  \
        < /tmp/boba.env.tmpl > ${BOBA_DIR}/conf/boba.env                                         \
     && rm -rf /tmp/boba.env.tmpl /tmp/conf
 
@@ -288,5 +285,5 @@ EXPOSE 8501
 
 ENV BOBA_DIR=${BOBA_DIR}
 USER ${BOBA_UID}:${BOBA_GID}
-ENTRYPOINT ["/bin/sh", "-c", "set -o allexport && . \"$BOBA_DIR/conf/boba.env\" && set +o allexport && exec boba-chainlit \"$@\"", "--"]
+ENTRYPOINT ["/bin/sh", "-c", "set -o allexport && . \"$BOBA_DIR/conf/boba.env\" && set +o allexport && exec python3 -m boba.chainlit.main \"$@\"", "--"]
 CMD []

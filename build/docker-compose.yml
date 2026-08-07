@@ -2,11 +2,9 @@ services:
   chainlit:
     image: boba:${BOBA_TAG}
     hostname: chainlit
-    # тот же uid, что у смонтированных данных: под root userns песочницы
-    # не мапит владельца и не может писать в том
     user: "${BOBA_UID:-1000}:${BOBA_GID:-984}"
     container_name: chainlit
-    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && exec boba-chainlit \"$$@\"", "--"]
+    entrypoint: ["/bin/sh", "-c", "set -a && . \"$$BOBA_DIR/conf/boba.env\" && set +a && export BOBA_CONFIG_PATH=/app/local/config.toml && exec python3 -m boba.chainlit.main \"$$@\"", "--"]
     environment:
       - BOBA_CONFIG_PATH=/app/local/config.toml
       - KRB5_CLIENT_KTNAME=/etc/boba/krb5.keytab
@@ -18,9 +16,9 @@ services:
       - ${HOST_DIR}/data/keytab/krb5.keytab:/etc/krb5.keytab:ro
       - ${HOST_DIR}/data/keytab/boba-svc.keytab:/etc/boba/krb5.keytab:ro
       - ${HOST_DIR}/data/keytab/krb5.conf:/etc/krb5.conf:ro
-      - ${HOST_DIR}/artifacts/sandbox:/app/boba/${BOBA_TAG}/third/sandbox:ro
-      # образы пользователей переживают пересоздание контейнера
-      - ${HOST_DIR}/data/chainlit/workspace:/app/boba/${BOBA_TAG}/data/workspace:rw
+      - ${HOST_DIR}/artifacts/sandbox:/app/boba/sandbox:ro
+      - ${HOST_DIR}/artifacts/sandbox/site:/app/boba/app/${BOBA_TAG}/boba-tool:ro
+      - ${HOST_DIR}/data/chainlit/boba-data:/app/boba/data:rw
     devices:
       - /dev/fuse
     security_opt:

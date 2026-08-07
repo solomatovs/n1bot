@@ -29,7 +29,10 @@ REQUIRES_PY  := $(shell sed -n 's/^requires-python = ">=\([0-9]*\.[0-9]*\).*/\1/
 
 # релиз для make extract
 RELEASE_NAME  := boba-$(VERSION)
-DEST_DIR      ?= /app/boba/$(VERSION)
+# корень установки на сервере: в него уедет дерево из make extract
+INSTALL_DIR   ?= /srv/boba
+# тот же корень внутри образа; версия живёт в app/<version>, не в нём
+DEST_DIR      ?= /app/boba
 
 # финальный runtime-образ
 IMAGE         := boba:$(BOBA_TAG)
@@ -145,8 +148,10 @@ help:
 	echo "                 sandbox-python, sandbox-data, sandbox-workspace"
 	echo "  make build     собрать образ $(IMAGE)"
 	echo "  make test      проверить релиз внутри образа"
-	echo "  make extract   портативная папка из готового образа:"
+	echo "  make extract   дерево установки из готового образа:"
 	echo "                 RELEASE_IMAGE=$(RELEASE_IMAGE), OUT=$(OUT)"
+	echo "                 {third,sandbox,app/$(VERSION)/{boba-chainlit,boba-tool},conf,data}"
+	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR)"
 	echo "  make clean     удалить исходники, deps и собранную папку (кроме fastembed)"
 	echo ""
 	echo "  make all       sources + deps + build + test"
@@ -165,7 +170,8 @@ help:
 	echo "      UV_URL, BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, TESSDATA_REPO,"
 	echo "      KATEX_URL, INTER_URL"
 	echo ""
-	echo "  Переменные: DEST_DIR=$(DEST_DIR), BOBA_TAG=<тег>, NO_CACHE=1,"
+	echo "  Переменные: INSTALL_DIR=$(INSTALL_DIR), DEST_DIR=$(DEST_DIR),"
+	echo "              BOBA_TAG=<тег>, NO_CACHE=1,"
 	echo "              PYTHON_VERSION=$(PYTHON_VERSION), GLIBC_IMAGE=$(GLIBC_IMAGE),"
 	echo "              GCC_IMAGE=$(GCC_IMAGE), PYTHON_IMAGE=$(PYTHON_IMAGE)"
 	echo "  Пакетам нужен python >=$(REQUIRES_PY)"
@@ -186,6 +192,7 @@ debug:
 	$(info RELEASE_IMAGE  = $(RELEASE_IMAGE))
 	$(info OUT            = $(OUT))
 	$(info DEST_DIR       = $(DEST_DIR))
+	$(info INSTALL_DIR    = $(INSTALL_DIR))
 	$(info BASE_IMAGE     = $(BASE_IMAGE))
 	$(info GLIBC_IMAGE    = $(GLIBC_IMAGE))
 	$(info GCC_IMAGE      = $(GCC_IMAGE))
@@ -340,9 +347,10 @@ sandbox-rootfs:
 	mkdir -p "$$dest/workspace"
 
 
-# site-packages песочницы одним каталогом: его монтируют профили в /opt/site
+# site-packages песочницы одним каталогом: его монтируют профили в /opt/site.
+# version-check первым: иначе разъехавшиеся версии всплывут отказом резолвера uv
 .PHONY: sandbox-site
-sandbox-site:
+sandbox-site: version-check
 	@dest="$(SANDBOX_DIR)/site"
 	echo "== site-packages песочницы =="
 		docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
@@ -470,6 +478,7 @@ build: version-check check-artifacts
 	    $(DOCKER_ARGS) $(PROXY_ARGS)                       \
 	    --target runtime                                   \
 	    --build-arg BOBA_DIR="$(DEST_DIR)"                 \
+	    --build-arg BOBA_VERSION="$(VERSION)"              \
 	    --tag $(IMAGE) --tag boba:latest                   \
 	    $(PROGRESS) $(BUILD_CONTEXT)
 
@@ -493,47 +502,53 @@ extract:
 	    echo "нет образа $(RELEASE_IMAGE) — собери: make build" >&2; exit 1
 	}
 	rm -rf "$(OUT)"
-	mkdir -p "$(OUT)"
+	mkdir -p "$(OUT)/image"
 	cid=$$(docker create --entrypoint /bin/sh $(RELEASE_IMAGE))
 	trap 'docker rm -f "$$cid" >/dev/null 2>&1 || true' EXIT
-	docker cp "$$cid:$(DEST_DIR)/." "$(OUT)/"
+	docker cp "$$cid:$(DEST_DIR)/." "$(OUT)/image/"
 	docker rm "$$cid" >/dev/null
 	trap - EXIT
 
-	# каталог образов workspace: пишет сюда приложение
-	mkdir -p "$(OUT)/data/workspace"
+	mkdir -p "$(OUT)/app/$(VERSION)" "$(OUT)/conf" \
+	         "$(OUT)/data/workspace" "$(OUT)/data/dumps"
+	mv "$(OUT)/image/third"                             "$(OUT)/third"
+	mv "$(OUT)/image/sandbox"                           "$(OUT)/sandbox"
+	mv "$(OUT)/image/app/$(VERSION)/boba-chainlit"  "$(OUT)/app/$(VERSION)/boba-chainlit"
+	mv "$(OUT)/image/app/$(VERSION)/boba-tool"      "$(OUT)/app/$(VERSION)/boba-tool"
+	rm -rf "$(OUT)/image"
 
-	# текстовые шаблоны — envsubst с путём релиза ${BOBA_DIR}. В config.toml
-	# остаются TOML-интерполяции (${agent.default}, ...): envsubst с явным
-	# списком переменных их не трогает.
-	export BOBA_DIR="$(DEST_DIR)" PYTHON_VERSION="$(PYTHON_VERSION)"
-	envsubst '$${BOBA_DIR}' \
+	# шебанги указывают внутрь образа: переставляем на путь установки
+	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" \
+	    "$(OUT)/app/$(VERSION)/boba-chainlit/bin"/*
+
+	# envsubst с явным списком: ${PYTHONHOME} и TOML-интерполяции не трогаются
+	export INSTALL_DIR="$(INSTALL_DIR)"
+	export BOBA_BASE="$(INSTALL_DIR)" BOBA_VERSION="$(VERSION)"
+	envsubst '$${INSTALL_DIR}' \
 	    < "$(CONF_DIR)/boba-chainlit.service" > "$(OUT)/conf/boba-chainlit.service"
-	envsubst '$${BOBA_DIR} $${PYTHON_VERSION}' \
+	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' \
 	    < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
-	envsubst '$${BOBA_DIR}' \
-	    < "$(CONF_DIR)/config.toml.example" > "$(OUT)/conf/config.toml"
+	cp "$(CONF_DIR)/config.toml.example" "$(OUT)/conf/config.toml"
 
 	# артефакты песочницы: без них профили [tool.*.sandbox] не поднимутся
-	for art in rootfs/bin/sh python/bin/python3 site/liteparse \
+	for art in rootfs/bin/sh python/bin/python3 \
 	           data/fastembed data/tessdata/eng.traineddata workspace.ext4; do
-	    [ -e "$(OUT)/third/sandbox/$$art" ] || {
-	        echo "в релизе нет third/sandbox/$$art — запусти: make deps" >&2
+	    [ -e "$(OUT)/sandbox/$$art" ] || {
+	        echo "в релизе нет sandbox/$$art — запусти: make deps" >&2
 	        exit 1
 	    }
 	done
+	[ -e "$(OUT)/app/$(VERSION)/boba-tool/liteparse" ] || {
+	    echo "в релизе нет app/$(VERSION)/boba-tool/liteparse — запусти: make deps" >&2
+	    exit 1
+	}
 	echo ">>> артефакты песочницы на месте"
 
-	{
-	    echo "release: $(RELEASE_NAME)"
-	    echo "version: $(VERSION)"
-	    echo "python:  $(PYTHON_VERSION)"
-	    echo "image:   $(RELEASE_IMAGE)"
-	    echo "dest:    $(DEST_DIR)"
-	} > "$(OUT)/VERSION.txt"
-
 	echo ">>> релиз готов: $(OUT)  ($$(du -sh --apparent-size "$(OUT)" 2>/dev/null | cut -f1))"
-	echo "    на сервере он должен лежать в $(DEST_DIR) — путь зашит в conf/"
+	echo "    третья сторона: $$(du -sh --apparent-size "$(OUT)/third" 2>/dev/null | cut -f1)"
+	echo "    песочница:      $$(du -sh --apparent-size "$(OUT)/sandbox" 2>/dev/null | cut -f1)"
+	echo "    версия:         $$(du -sh --apparent-size "$(OUT)/app/$(VERSION)" 2>/dev/null | cut -f1)"
+	echo "    установка:      cp -a $(OUT)/. $(INSTALL_DIR)/"
 
 
 # fastembed не трогаем: веса качаются долго
