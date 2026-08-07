@@ -19,6 +19,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 __all__ = [
+    "AffectedResult",
     "ChartResult",
     "ErrorResult",
     "JsonResult",
@@ -107,6 +108,17 @@ class PgCopyTextResult(ToolResultBase):
         return "".join(out)
 
 
+class AffectedResult(ToolResultBase):
+    """Запрос без выборки: DML/DDL отработал, строк нет — только счётчик."""
+
+    kind: Literal["affected"] = "affected"
+    affected_rows: int | None
+    """Число затронутых строк; None там, где драйвер счётчика не даёт (DDL)."""
+    status: str | None
+    """Нативный статус выполнения, напр. statusmessage psycopg — 'DELETE 5'."""
+    metadata: Mapping[str, str] = Field(default_factory=dict)
+
+
 class ChartResult(ToolResultBase):
     """Интерактивный график: Plotly figure spec как чистый dict."""
 
@@ -132,6 +144,7 @@ ToolResult: TypeAlias = Annotated[
     | JsonResult
     | TableResult
     | PgCopyTextResult
+    | AffectedResult
     | ChartResult
     | ErrorResult,
     Field(discriminator="kind"),
@@ -150,6 +163,13 @@ def render_for_llm(result: ToolResult) -> str:
             content = body if n is None else f"{body}\n\n{n}"
         case PgCopyTextResult(text=t):
             content = t
+        case AffectedResult(affected_rows=n, status=s):
+            if s:
+                content = s
+            elif n is not None:
+                content = f"affected rows: {n}"
+            else:
+                content = "statement executed"
         case ChartResult(title=title):
             content = f"[chart rendered: {title}]" if title else "[chart rendered]"
         case ErrorResult(message=m):

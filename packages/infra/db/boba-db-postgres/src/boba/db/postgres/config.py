@@ -313,13 +313,6 @@ class PostgresConfig(BaseModel):
 
         return conn
 
-    def read_only(self) -> PostgresConfig:
-        """Копия профиля с сессией только на чтение."""
-        options = self.options.model_copy(
-            update={"default_transaction_read_only": "on"}
-        )
-        return self.model_copy(update={"options": options})
-
     def with_schema(self, schema: str) -> PostgresConfig:
         """Копия профиля с search_path сервиса."""
         options = self.options.model_copy(update={"search_path": schema})

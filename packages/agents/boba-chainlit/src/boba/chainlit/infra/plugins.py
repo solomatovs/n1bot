@@ -37,7 +37,7 @@ from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.confluence.ingest_tools import (
     build_confluence_ingest_tools,
 )
-from boba.tool.pg import SqlExecutorConfig, build_pg_tools
+from boba.tool.pg import PgExecutorConfig, build_pg_tools
 from boba.tool.shell import build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
@@ -151,7 +151,7 @@ def _build_chart_tools(
 
 
 def _build_pg_tools(
-    cfg: SqlExecutorConfig,
+    cfg: PgExecutorConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
     if not has_bwrap():
@@ -221,7 +221,7 @@ _PLUGINS: dict[str, ToolPlugin] = {
     ),
     "pg": ToolPlugin(
         section="pg",
-        config_model=SqlExecutorConfig,
+        config_model=PgExecutorConfig,
         build=_build_pg_tools,
     ),
     "ch": ToolPlugin(

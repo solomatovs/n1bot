@@ -1,4 +1,8 @@
-"""Вызов postgres-payload'а: соединение и запрос идут внутри песочницы."""
+"""Вызов postgres-payload'а: соединение и запрос идут внутри песочницы.
+
+Ошибки: LauncherError — исполнитель нарушил контракт; PayloadFailureError —
+payload объявил ожидаемый отказ (СУБД недоступна, запрос отклонён).
+"""
 
 from __future__ import annotations
 
@@ -10,9 +14,9 @@ from boba.tool.pg.protocol import (
     PgCopyRequest,
     PgCopyTrailer,
     PgQueryRequest,
-    PgQueryTrailer,
 )
 from boba.toolkit.launcher import ChunkSink, LauncherFactory
+from boba.toolkit.sql import SqlQueryTrailer
 
 __all__ = ["PgCaller"]
 
@@ -33,7 +37,7 @@ class PgCaller:
         params: Sequence[Any],
         row_limit: int,
         sink: ChunkSink,
-    ) -> PgQueryTrailer:
+    ) -> SqlQueryTrailer:
         request = PgQueryRequest(
             op=PgQueryRequest.OP,
             connection=connection,
@@ -41,7 +45,7 @@ class PgCaller:
             params=tuple(params),
             row_limit=row_limit,
         )
-        return self._caller.call_stream(self.ENTRY, request, sink, PgQueryTrailer)
+        return self._caller.call_stream(self.ENTRY, request, sink, SqlQueryTrailer)
 
     def copy(
         self,

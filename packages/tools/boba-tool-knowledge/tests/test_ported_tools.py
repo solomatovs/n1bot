@@ -16,11 +16,16 @@ from boba.tool.kb.confluence import (
     build_confluence_tools,
 )
 from boba.tool.pg import (
-    SqlExecutorConfig,
+    PgExecutorConfig,
     build_pg_tools,
 )
 from boba.tool.pg import executor as pg_executor
-from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
+from boba.toolkit.result import (
+    ErrorResult,
+    TableResult,
+    ToolArtifact,
+)
+from boba.toolkit.sql import SqlQueryError
 from boba.transport.http import HttpProfile
 
 
@@ -43,8 +48,8 @@ def _no_launcher(tool: str) -> Any:
     return _NoLauncher()
 
 
-def pg_config() -> SqlExecutorConfig:
-    return SqlExecutorConfig.model_validate(
+def pg_config() -> PgExecutorConfig:
+    return PgExecutorConfig.model_validate(
         {
             "profiles": {"main": {"host": "h", "dbname": "d", "user": "u"}},
             "sandbox": _SANDBOX,
@@ -73,48 +78,58 @@ def invoke(tool: Any, args: dict[str, Any]) -> Any:
     return ToolArtifact.revive(message.artifact)
 
 
-class TestPgTools:
-    def test_all_four_are_built(self) -> None:
-        names = [t.name for t in build_pg_tools(pg_config(), _no_launcher)]
-        assert names == ["list_targets", "list_tables", "describe_table", "query"]
+async def ainvoke(tool: Any, args: dict[str, Any]) -> Any:
+    """pg-инструменты асинхронные: sync-вызова у них нет по построению."""
+    message = await tool.ainvoke({"name": tool.name, "args": args, "id": "c1",
+                                  "type": "tool_call"})
+    return ToolArtifact.revive(message.artifact)
 
-    def test_list_targets_returns_whitelist(self) -> None:
+
+class TestPgTools:
+    pytestmark = pytest.mark.anyio
+
+    _NAMES: ClassVar[list[str]] = [
+        "pg_list_targets",
+        "pg_list_tables",
+        "pg_describe_table",
+        "pg_query",
+        "pg_export",
+    ]
+
+    def test_all_five_are_built(self) -> None:
+        names = [t.name for t in build_pg_tools(pg_config(), _no_launcher)]
+        assert names == self._NAMES
+
+    async def test_list_targets_returns_whitelist(self) -> None:
         tool = build_pg_tools(pg_config(), _no_launcher)[0]
-        result = invoke(tool, {})
+        result = await ainvoke(tool, {})
         assert isinstance(result, TableResult)
-        assert list(result.rows) == [{"target": "main"}]
+        assert list(result.rows) == [{"connection_name": "main"}]
         assert result.ok is True
 
-    # query до сих пор принимает target, остальные уже connection_name
-    _TARGET_ARG: ClassVar[dict[str, str]] = {
-        "list_tables": "connection_name",
-        "describe_table": "connection_name",
-        "query": "target",
-    }
-
-    def test_unknown_target_becomes_error_result(self) -> None:
+    async def test_unknown_target_becomes_error_result(self) -> None:
         """Профиль не в whitelist — ошибка инструмента, а не падение хода."""
-        for name in ("list_tables", "describe_table", "query"):
+        for name in ("pg_list_tables", "pg_describe_table", "pg_query", "pg_export"):
             built = build_pg_tools(pg_config(), _no_launcher)
             tool = next(t for t in built if t.name == name)
-            args = {self._TARGET_ARG[name]: "нет-такого"}
-            if name == "describe_table":
+            args: dict[str, Any] = {"connection_name": "нет-такого"}
+            if name == "pg_describe_table":
                 args["table"] = "t"
-            if name == "query":
+            if name in ("pg_query", "pg_export"):
                 args["sql"] = "select 1"
-            result = invoke(tool, args)
+            result = await ainvoke(tool, args)
             assert isinstance(result, ErrorResult), name
             assert result.error_kind == "unknown_target", name
             assert result.ok is False, name
 
-    def test_sql_error_becomes_error_result(self, monkeypatch) -> None:
-        def boom(*_args: Any, **_kwargs: Any):
-            raise pg_executor.SqlQueryError("relation does not exist")
+    async def test_sql_error_becomes_error_result(self, monkeypatch) -> None:
+        async def boom(*_args: Any, **_kwargs: Any):
+            raise SqlQueryError("relation does not exist")
 
-        monkeypatch.setattr(pg_executor.SqlExecutor, "execute", boom)
+        monkeypatch.setattr(pg_executor.PgExecutor, "execute", boom)
         built = build_pg_tools(pg_config(), _no_launcher)
-        tool = next(t for t in built if t.name == "list_tables")
-        result = invoke(tool, {"connection_name": "main"})
+        tool = next(t for t in built if t.name == "pg_list_tables")
+        result = await ainvoke(tool, {"connection_name": "main"})
         assert isinstance(result, ErrorResult)
         assert result.ok is False
         assert "relation does not exist" in result.message

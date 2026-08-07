@@ -1,168 +1,92 @@
-"""SqlExecutorConfig + SqlExecutor."""
+"""PgExecutorConfig + PgExecutor: postgres поверх общего SQL-слоя.
+
+Ошибки: SqlQueryError — запрос не выполнен; UnknownConnectionError — имя
+подключения вне whitelist'а; CollectorCapacityError — выгрузка переросла
+max_bytes.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Any, Self
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field
 
 from boba.db.postgres import PostgresConfig
 from boba.tool.pg.caller import PgCaller
 from boba.toolkit.launcher import (
     CollectorCapacityError,
     LauncherError,
-    RowCollector,
     TextCollector,
 )
+from boba.toolkit.sql import SqlExecutor, SqlProfiles, SqlQueryError
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "SqlExecutor",
-    "SqlExecutorConfig",
-    "SqlQueryError",
-    "SqlResult",
+    "PgExecutor",
+    "PgExecutorConfig",
 ]
 
 
-class SqlExecutorConfig(BaseModel):
-    """Конфиг для SqlExecutor."""
+class PgExecutorConfig(SqlProfiles[PostgresConfig]):
+    """Конфиг для PgExecutor."""
 
-    model_config = ConfigDict(extra="ignore")
+    SECTION: ClassVar[str] = "tool.pg"
 
     profiles: dict[str, PostgresConfig] = Field(
         default_factory=dict,
         description=(
-            "dict[target, postgres-профиль ссылкой]: "
+            "dict[connection_name, postgres-профиль ссылкой]: "
             '`[tool.pg.profiles] main = "${postgres.main}"`. '
-            "Ключ — значение tool-arg `target` (LLM выбирает БД по нему)."
-        ),
-    )
-    max_rows: int = Field(
-        default=100,
-        ge=1,
-        description="Ограничение по кол-ву строк.",
-    )
-    max_bytes: int = Field(
-        default=1_000_000,
-        ge=1,
-        description=(
-            "Hardlimit на суммарный размер CSV-результата COPY (байт). "
-            f"Default {1_000_000}. Превышение -> ошибка LLM "
-            "«добавьте LIMIT»."
+            "Ключ — значение tool-arg `connection_name` (LLM выбирает БД по нему)."
         ),
     )
 
-    @model_validator(mode="after")
-    def _validate(self) -> Self:
-        if not self.profiles:
-            msg = (
-                "tool.pg: no profiles configured. Add [postgres.<name>] and "
-                'reference it: [tool.pg.profiles] <name> = "${postgres.<name>}".'
-            )
-            raise ValueError(msg)
-        return self
 
-    def targets(self) -> list[str]:
-        return sorted(self.profiles)
-
-    def resolve(self, profile: str) -> PostgresConfig:
-        conn = self.profiles.get(profile)
-        if conn is None:
-            allowed = self.targets()
-            msg = f"pg: target {profile!r} is not in the whitelist (allowed={allowed})"
-            raise ValueError(msg)
-        return conn
+PgParams = tuple[Any, ...]
+"""Позиционные параметры psycopg под плейсхолдеры %s."""
 
 
-class SqlQueryError(RuntimeError):
-    """Ошибка выполнения SQL."""
+class PgExecutor(SqlExecutor[PostgresConfig, PgParams]):
+    """Исполняет SQL в песочнице; каждый вызов — отдельный процесс и соединение.
 
+    Режим сессии берётся из профиля: read-only задаётся параметром
+    default_transaction_read_only в [postgres.<name>.options].
+    """
 
-@dataclass(frozen=True)
-class SqlResult:
-    """Результат SqlExecutor.execute: JSON-safe строки-словари + флаг усечения."""
-
-    rows: list[dict[str, Any]]
-    truncated: bool
-
-
-class SqlExecutor:
-    """Исполняет SQL в песочнице; каждый вызов — отдельный процесс и соединение."""
-
-    def __init__(self, *, cfg: SqlExecutorConfig, caller: PgCaller) -> None:
-        self._cfg = cfg
-        self._caller = caller
+    def __init__(self, *, cfg: PgExecutorConfig, caller: PgCaller) -> None:
+        super().__init__(cfg=cfg, caller=caller)
+        self._pg_caller = caller
         logger.info(
-            "SqlExecutor opened: targets=%s max_rows=%d max_bytes=%d",
+            "PgExecutor opened: targets=%s max_rows=%d max_bytes=%d",
             cfg.targets(),
             cfg.max_rows,
             cfg.max_bytes,
         )
 
-    @property
-    def max_rows_cap(self) -> int:
-        return self._cfg.max_rows
-
-    @property
-    def max_bytes(self) -> int:
-        return self._cfg.max_bytes
-
-    def allowed_targets(self) -> list[str]:
-        return self._cfg.targets()
-
-    def connection_of(self, connection_name: str) -> PostgresConfig:
-        """Профиль цели с read-only сессией: payload подключается по нему сам."""
-        return self._cfg.resolve(connection_name).read_only()
-
-    def execute_copy(self, query: str, *, connection_name: str) -> str:
+    async def execute_copy(self, query: str, *, connection_name: str) -> str:
+        """COPY ... TO STDOUT: текст собирается целиком, потолок по байтам."""
         collector = TextCollector(
-            max_chars=self._cfg.max_bytes,
-            limit_rows=self._cfg.max_rows,
+            max_chars=self.max_bytes,
+            limit_rows=self.max_rows_cap,
             header_lines=1,
         )
+        connection = self.connection_of(connection_name)
         try:
-            trailer = self._caller.copy(
-                connection=self.connection_of(connection_name),
+            trailer = await asyncio.to_thread(
+                self._pg_caller.copy,
+                connection=connection,
                 sql=query,
-                max_bytes=self._cfg.max_bytes,
+                max_bytes=self.max_bytes,
                 sink=collector,
             )
         except LauncherError as e:
-            raise SqlQueryError(
-                f"SQL copy failed (connection_name={connection_name!r}): {e}",
-            ) from e
+            msg = f"SQL copy failed (connection_name={connection_name!r}): {e}"
+            raise SqlQueryError(msg) from e
+
         if trailer.truncated:
-            msg = f"pg copy: stream exceeded max_bytes {self._cfg.max_bytes}"
+            msg = f"pg copy: stream exceeded max_bytes {self.max_bytes}"
             raise CollectorCapacityError(msg)
         return collector.text()
-
-    def execute(
-        self,
-        query: str,
-        *,
-        connection_name: str,
-        row_limit: int,
-        params: Sequence[Any] | None = None,
-    ) -> SqlResult:
-        effective_limit = min(max(row_limit, 1), self._cfg.max_rows)
-        collector = RowCollector(
-            max_chars=self._cfg.max_bytes,
-            limit_rows=effective_limit,
-        )
-        try:
-            trailer = self._caller.query(
-                connection=self.connection_of(connection_name),
-                sql=query,
-                params=params or (),
-                row_limit=effective_limit,
-                sink=collector,
-            )
-        except LauncherError as e:
-            raise SqlQueryError(
-                f"SQL execute failed (connection_name={connection_name!r}): {e}",
-            ) from e
-        return SqlResult(rows=collector.rows(), truncated=trailer.truncated)

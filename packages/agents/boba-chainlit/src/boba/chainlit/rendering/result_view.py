@@ -8,6 +8,7 @@ from typing import Any, assert_never
 
 from boba.chainlit.rendering.result_markdown import ToolResultMarkdown
 from boba.toolkit.result import (
+    AffectedResult,
     ChartResult,
     ErrorResult,
     JsonResult,
@@ -58,6 +59,7 @@ class ToolResultView:
                 | JsonResult()
                 | TableResult()
                 | PgCopyTextResult()
+                | AffectedResult()
                 | ErrorResult()
             ):
                 return MarkdownRendering(ToolResultMarkdown(self._result).render())
