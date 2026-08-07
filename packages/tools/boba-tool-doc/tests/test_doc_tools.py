@@ -22,9 +22,11 @@ from boba.tool.doc.protocol import (
     DocPagesTrailer,
     DocSearchRow,
     DocSearchTrailer,
-    DocWindowTrailer,
 )
 from boba.toolkit.launcher import ChunkSink
+
+_REPO = Path(__file__).resolve().parents[4]
+_TESSDATA = _REPO / "build" / "src" / "sandbox" / "third" / "tessdata"
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -82,9 +84,7 @@ def chainlit_context() -> None:
 
 def _config(**kw: Any) -> DocToolsConfig:
     fields: dict[str, Any] = {
-        "tessdata_path": (
-            "/app/docker/compose/boba/build/artifacts/sandbox/data/tessdata"
-        ),
+        "tessdata_path": str(_TESSDATA),
         "sandbox": {
             "profile": _PROFILE,
             "override": {},
@@ -283,15 +283,6 @@ class TestPayloadContract:
         assert DocPagesTrailer.model_validate(run.trailer).truncated is True
         assert len(run.text) == 5
 
-    def test_window_reports_cursor(self, pdf: Path) -> None:
-        run = self._run(
-            self._request(pdf, "read_document_window", start_char=0, length=5)
-        )
-        trailer = DocWindowTrailer.model_validate(run.trailer)
-        assert (trailer.start_char, trailer.end_char) == (0, 5)
-        assert trailer.has_more is True
-        assert trailer.total_chars > 5
-
     def test_outline_has_row_per_page(self, pdf: Path) -> None:
         run = self._run(self._request(pdf, "document_outline"))
         assert DocOutlineTrailer.model_validate(run.trailer).num_pages == 2
@@ -320,7 +311,6 @@ class TestPayloadContract:
 
     UNREADABLE_OPS: ClassVar[tuple[tuple[str, dict[str, Any]], ...]] = (
         ("read_document", {"pages": "1"}),
-        ("read_document_window", {"start_char": 0, "length": 10}),
         ("document_outline", {}),
         ("search_document", {"query": "x", "context_chars": 5, "max_matches": 5}),
     )
@@ -480,7 +470,6 @@ class TestTools:
         names = [t.name for t in build_doc_tools(_config(), launchers)]
         assert names == [
             "read_document",
-            "read_document_window",
             "document_outline",
             "search_document",
         ]
@@ -495,7 +484,6 @@ class TestTools:
 
     @pytest.mark.parametrize("name", [
         "read_document",
-        "read_document_window",
         "document_outline",
         "search_document",
     ])
@@ -513,24 +501,6 @@ class TestTools:
         assert props["ocr_language"]["default"] == "rus+eng"
         for control in ("ocr_enabled", "num_workers", "ocr_language"):
             assert control not in schema["required"]
-
-    def test_window_wider_than_limit_rejected(self) -> None:
-        tools = {
-            t.name: t for t in build_doc_tools(_config(max_text_chars=100), launchers)
-        }
-        window = tools["read_document_window"]
-        with pytest.raises(RuntimeError, match="exceeds max_text_chars"):
-            asyncio.run(
-                window.ainvoke(
-                    {
-                        "path": "/workspace/a.pdf",
-                        "start_char": 0,
-                        "length": 500,
-                        "ocr_enabled": False,
-                        "num_workers": 1,
-                    }
-                )
-            )
 
     @staticmethod
     def _read(cfg: DocToolsConfig) -> Any:

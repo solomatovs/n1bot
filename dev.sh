@@ -11,16 +11,28 @@ fi
 
 # если в PATH уже есть uv, то не добавляем его туда
 case ":$PATH:" in
-  *":$_dev_dir/build/artifacts/uv:"*) ;;
-  *) PATH="$_dev_dir/build/artifacts/uv:$PATH"; export PATH ;;
+  *":$_dev_dir/build/src/uv:"*) ;;
+  *) PATH="$_dev_dir/build/src/uv:$PATH"; export PATH ;;
 esac
 
 if ( set -eu; cd -- "$_dev_dir"; \
      [ -d .venv ] || uv venv --python 3.11 --clear --no-managed-python; uv sync -v --system-certs ); then
   . "$_dev_dir/.venv/bin/activate"
   # после source .venv/bin/activate сбрасывается переменная PATH, поэтому заново добавляю туда uv
-  PATH="$_dev_dir/build/artifacts/uv:$PATH"
+  PATH="$_dev_dir/build/src/uv:$PATH"
   echo "dev: окружение .venv активировано"
 else
   echo "dev: ошибка подготовки окружения (.venv не активировано)" >&2
+fi
+
+# тот же env, что launch.json отдаёт отладчику: конфиг один, и терминальный
+# pytest должен видеть его так же, как IDE
+_dev_env="$_dev_dir/.vscode/boba-debug.env"
+if [ -f "$_dev_env" ]; then
+  set -a
+  . "$_dev_env"
+  set +a
+  echo "dev: BOBA_* из $(basename -- "$_dev_env"); конфиг $BOBA_CONFIG_PATH"
+else
+  echo "dev: нет $_dev_env — BOBA_* не выставлены" >&2
 fi

@@ -34,8 +34,6 @@ from boba.tool.doc.protocol import (
     DocSearchRequest,
     DocSearchRow,
     DocSearchTrailer,
-    DocWindowRequest,
-    DocWindowTrailer,
 )
 from boba.toolkit.launcher import RowStream
 from boba.toolkit.payload import ChunkEmitter, PayloadEntry
@@ -114,7 +112,6 @@ class DocumentOps:
 
     OPS: ClassVar[tuple[str, ...]] = (
         DocPagesRequest.OP,
-        DocWindowRequest.OP,
         DocPathRequest.OUTLINE,
         DocSearchRequest.OP,
         ParseBytesRequest.OP,
@@ -131,7 +128,6 @@ class DocumentOps:
         """Текст уходит кадрами-кусками, строки выдачи — кадрами-записями."""
         handlers: dict[str, Callable[[dict[str, Any], ChunkEmitter], BaseModel]] = {
             DocPagesRequest.OP: cls.read_document,
-            DocWindowRequest.OP: cls.read_document_window,
             DocPathRequest.OUTLINE: cls.document_outline,
             DocSearchRequest.OP: cls.search_document,
             ParseBytesRequest.OP: cls.parse_bytes,
@@ -156,24 +152,6 @@ class DocumentOps:
         PayloadEntry.emit_text(emit, text)
         pages = tuple(cls._page_numbers(result))
         return DocPagesTrailer(truncated=truncated, pages=pages)
-
-    @classmethod
-    def read_document_window(
-        cls, request: dict[str, Any], emit: ChunkEmitter
-    ) -> DocWindowTrailer:
-        req = DocWindowRequest.model_validate(request)
-        result = LiteParseEngine.parse(req.params, req.path)
-
-        full = result.text
-        chunk = full[req.start_char : req.start_char + req.length]
-        end = req.start_char + len(chunk)
-        PayloadEntry.emit_text(emit, chunk)
-        return DocWindowTrailer(
-            start_char=req.start_char,
-            end_char=end,
-            total_chars=len(full),
-            has_more=end < len(full),
-        )
 
     @classmethod
     def document_outline(

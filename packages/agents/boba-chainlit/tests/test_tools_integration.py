@@ -54,7 +54,7 @@ from boba.toolkit.result import (
 )
 
 _REPO = Path(__file__).resolve().parents[4]
-_ROOTFS = _REPO / "build" / "artifacts" / "sandbox" / "rootfs"
+_ROOTFS = _REPO / "build" / "src" / "sandbox" / "rootfs"
 
 _UID = os.getuid()
 _DELEGATED = f"/sys/fs/cgroup/user.slice/user-{_UID}.slice/user@{_UID}.service"
@@ -393,19 +393,6 @@ class TestDocTools:
         )
         assert "Beta page two" in result.text
         assert "Alpha page one" not in result.text
-
-    async def test_read_document_window(self, doc_tools, workspace_pdf) -> None:
-        result = await Call.ok(
-            doc_tools["read_document_window"],
-            path=workspace_pdf,
-            start_char=0,
-            length=5,
-            ocr_enabled=False,
-            num_workers=1,
-            ocr_language="rus+eng",
-        )
-        assert len(result.text) == 5
-        assert result.metadata["has_more"] == "True"
 
     async def test_search_document(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(

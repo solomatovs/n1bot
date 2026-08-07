@@ -25,9 +25,6 @@ from boba.tool.doc.protocol import (
     DocSearchRequest,
     DocSearchRow,
     DocSearchTrailer,
-    DocWindowAnswer,
-    DocWindowRequest,
-    DocWindowTrailer,
 )
 from boba.toolkit.launcher import (
     ChunkSink,
@@ -74,32 +71,6 @@ class DocEngine:
             text=collector.text(),
             truncated=trailer.truncated,
             pages=trailer.pages,
-        )
-
-    async def read_window(
-        self,
-        path: str,
-        start_char: int,
-        length: int,
-        ocr_enabled: bool,
-        num_workers: int,
-        ocr_language: str,
-    ) -> DocWindowAnswer:
-        request = DocWindowRequest(
-            op=DocWindowRequest.OP,
-            path=path,
-            start_char=start_char,
-            length=length,
-            params=self._params(ocr_enabled, num_workers, ocr_language),
-        )
-        collector = self._text_collector()
-        trailer = await self._call(request, collector, DocWindowTrailer)
-        return DocWindowAnswer(
-            text=collector.text(),
-            start_char=trailer.start_char,
-            end_char=trailer.end_char,
-            total_chars=trailer.total_chars,
-            has_more=trailer.has_more,
         )
 
     async def outline(

@@ -16,6 +16,7 @@ dependencies = [
     "boba-tool-web==0.0.10.dev1",
     "boba-tool-doc==0.0.10.dev1",
     "boba-tool-postgres==0.0.10.dev1",
+    "boba-tool-clickhouse==0.0.10.dev1",
     "boba-tool-knowledge==0.0.10.dev1",
     "boba-db-postgres==0.0.10.dev1",
     "boba-db-pgvector==0.0.10.dev1",

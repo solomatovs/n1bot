@@ -1,30 +1,31 @@
-[paths]
-    base        = "${oc.env:BOBA_BASE}"
-    version     = "${oc.env:BOBA_VERSION}"
-    data        = "${paths.base}/data"
-    third       = "${paths.base}/third"
-    sandbox     = "${paths.base}/sandbox"
-    app         = "${paths.base}/app/${paths.version}"
-    tools       = "${paths.app}/boba-tool"
-    assets      = "${paths.app}/boba-chainlit/assets"
+## единственное место, где конфиг читает окружение. BOBA_*-переменные задаются
+## явно: в релизе — conf/boba.env, при запуске из IDE — .vscode/boba-debug.env.
+## Ими же отдельные ветки переводятся на дерево исходников, поэтому один файл
+## обслуживает и контейнер, и отладку
+[env]
+    runtime            = "${oc.env:BOBA_RUNTIME}"
+    sandbox            = "${oc.env:BOBA_SANDBOX}"
+    tools              = "${oc.env:BOBA_TOOLS}"
+    assets             = "${oc.env:BOBA_ASSETS}"
+    bind_code          = "${oc.env:BOBA_BIND_CODE}"
+    sandbox_pythonpath = "${oc.env:BOBA_SANDBOX_PYTHONPATH}"
+    cgroup_base        = "${oc.env:BOBA_CGROUP_BASE}"
+    port               = "${oc.env:BOBA_PORT}"
+    url_prefix         = "${oc.env:BOBA_URL_PREFIX}"
+
+    data               = "${env.runtime}/data"
+    krb                = "${env.runtime}/conf/krb"
 
 [app]
-    chainlit    = "${chainlit}"
-    agent       = "${agent}"
-    checkpointer= "${checkpointer}"
-    data_layer  = "${data_layer}"
-    storage     = "${storage}"
-    sandbox     = "${sandbox}"
-    auth        = ["${auth.local}"]
-
-[openai.main]
-    base_url    = "<https://llm.example.local/v1>"
-    api_key     = "<ключ>"
-    ssl_verify  = true
-
-    [openai.main.dump]
-        enable  = false
-        path    = "${paths.data}/dumps"
+    chainlit     = "${chainlit}"
+    agent        = "${agent}"
+    checkpointer = "${checkpointer}"
+    data_layer   = "${data_layer}"
+    storage      = "${storage}"
+    sandbox      = "${sandbox}"
+    auth         = [
+        "${auth.local}"
+    ]
 
 [agent]
     openai                = "${openai.main}"
@@ -32,379 +33,529 @@
     default_system_prompt = "Ты ассистент. Отвечай по найденному контексту."
     history_messages      = 30
 
-[chainlit]
-    host        = "0.0.0.0"
-    port        = 8501
-    url_prefix  = ""
-    auth_secret = "<32 байта hex: openssl rand -hex 32>"
-    root        = "${paths.assets}"
+[openai.main]
+    base_url   = "<https://llm.example.local/v1>"
+    api_key    = "<ключ>"
+    ssl_verify = true
+    dump       = { enable = false }
 
-[auth.local]
-    type            = "local"
-    users           = { "<логин>" = "<пароль>" }
-    roles           = "${role.local}"
-    require_roles   = true
+[openai.local]
+    base_url   = "http://127.0.0.1:11434/v1"
+    api_key    = "none"
+    ssl_verify = false
+    dump       = { enable = false }
 
-[role.local]
-    "<логин>" = ["ADM"]
 
+## общий postgres: libpq-параметры подключения + пул
+## (поля по https://www.postgresql.org/docs/current/libpq-connect.html)
+## сервисы ([checkpointer], [data_layer]) включают его ссылкой ${postgres}
 [postgres]
-    host                = "<хост postgres>"
-    port                = 5432
-    user                = "<пользователь>"
-    dbname              = "<база>"
-    gssencmode          = "prefer"
-    sslmode             = "disable"
-    application_name    = "boba"
-    autocommit          = true
-    pool                = { timeout = 5.0, min_size = 2, max_size = 4 }
-    options             = { statement_timeout = "30s" }
+    host              = "<postgres.example.local>"
+    hostaddr          = "<ip postgres>"
+    port              = 5432
+    user              = "<пользователь>"
+    dbname            = "<база>"
+    gssencmode        = "prefer"
+    krbsrvname        = "postgres"
+    sslmode           = "disable"
+    application_name  = "boba"
+    autocommit        = true
+    prepare_threshold = 0
+    options           = { statement_timeout = "30s" }
     [postgres.kerberos]
-        keytab          = "/etc/boba/krb5.keytab"
-        principal       = "<пользователь>@EXAMPLE.LOCAL"
-        ccache          = "FILE:/tmp/krb5cc_boba_pg"
-        krb5_config     = "/etc/krb5.conf"
+        keytab      = "${env.krb}/<сервисный>.keytab"
+        principal   = "<пользователь>@EXAMPLE.LOCAL"
+        ccache      = "FILE:/tmp/krb5cc_boba_pg"
+        krb5_config = "${env.krb}/krb5.conf"
+    [postgres.pool]
+        timeout           = 5.0
+        min_size          = 2
+        max_size          = 4
+        max_waiting       = 0
+        max_lifetime      = 12000
+        max_idle          = 600
+        reconnect_timeout = 300
+        num_workers       = 3
 
+
+# настройка подключения к clickhouse
+[clickhouse]
+    host                 = "<ip clickhouse>"
+    port                 = 8123
+    interface            = "http"
+    database             = "default"
+    server_host_name     = "<ch01.example.local>"
+    krbsrvname           = "HTTP"
+    connect_timeout      = 10
+    send_receive_timeout = 60
+    query_limit          = 0
+    compress             = "lz4"
+    client_name          = "boba"
+    settings             = { max_execution_time = 30 }
+    [clickhouse.kerberos]
+        keytab      = "${env.krb}/<сервисный>.keytab"
+        principal   = "${postgres.kerberos.principal}"
+        ccache      = "FILE:/tmp/krb5cc_boba_ch"
+        krb5_config = "${env.krb}/krb5.conf"
+
+
+# схема checkpointer (langgraph) — уходит в search_path соединения
 [checkpointer]
     postgres = "${postgres}"
     schema   = "checkpoints"
 
+
+# схема chainlit data layer — квалифицируется в SQL явно
 [data_layer]
     postgres = "${postgres}"
     schema   = "chainlit"
 
+
+# конфигурация для chainlit
+## соединения в базе: профили postgres/web со скрытыми секретами
 [connections]
     enable         = true
     connection     = "${postgres}"
     db_schema      = "chainlit"
     table          = "connections"
+    ## 32 байта в base64 (openssl rand -base64 32); смена ключа делает
+    ## сохранённые секреты нечитаемыми
     encryption_key = "<ключ base64>"
 
+
+# хранилище вложений (upload файлов)
 [storage]
     kind           = "image"
-    image_path     = "${paths.data}/workspace/{user_id}.ext4"
-    image_template = "${paths.sandbox}/workspace.ext4"
+    image_path     = "${env.data}/workspace/{user_id}.ext4"
+    image_template = "${env.sandbox}/workspace.ext4"
     op_timeout_sec = 60
-    launcher       = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
     public_prefix  = "${chainlit.url_prefix}/workspace"
+    [storage.launcher]
+        mount_wait_sec    = 10.0
+        mount_poll_sec    = 0.05
+        shutdown_wait_sec = 5.0
+        copy_chunk_bytes  = 1048576
+
+
+# kerberos авторизация; подключается добавлением ${auth.kerberos} в [app].auth
+[auth.kerberos]
+    type                = "kerberos"
+    principal_format    = "{username}@EXAMPLE.LOCAL"
+    [auth.kerberos.accept]
+        service_name    = 'HTTP/<boba.example.local>@EXAMPLE.LOCAL'
+        keytab          = '${env.krb}/<сервисный>.keytab'
+    # маппинг ролей через ldap
+    [auth.kerberos.ldap_roles]
+        server          = "ldaps://<dc1.example.local>:3269"
+        base_dn         = "DC=example,DC=local"
+        bind_dn         = "EXAMPLE\\<читающий>"
+        bind_password   = "<пароль>"
+        [auth.kerberos.ldap_roles.mapping]
+            member_of   = "${role.ldap.memberof}"
+            dn          = "${role.ldap.dn}"
+
+
+# ldap авторизация; подключается добавлением ${auth.ldap} в [app].auth
+[auth.ldap]
+    type                = "ldap"
+    server              = "ldaps://<dc1.example.local>:3269"
+    base_dn             = "DC=example,DC=local"
+    user_filter         = "(sAMAccountName={username})"
+    bind_dn_template    = "EXAMPLE\\{username}"
+    # маппинг ролей
+    [auth.ldap.roles]
+        member_of       = "${role.ldap.memberof}"
+        dn              = "${role.ldap.dn}"
+
+# Источник ролей пользователя из атрибутов memberOf
+[role.ldap.memberof]
+    "CN=boba-DEV,CN=Users,DC=example,DC=local" = ["ADM", "DEV"]
+    "CN=boba-ADM,CN=Users,DC=example,DC=local" = ["ADM"]
+
+# источник ролей пользователя из атрибутов DN
+[role.ldap.dn]
+    'EXAMPLE\<логин>' = ["DEV"]
+
+
+# local авторизация
+[auth.local]
+    type          = "local"
+    require_roles = true
+    [auth.local.users]
+        "<логин>" = "<пароль>"
+    [auth.local.roles]
+        "<логин>" = ["ADM", "DEV"]
+
+
+# настройки webserver chainlit ui
+[chainlit]
+    host        = "0.0.0.0"
+    port        = "${env.port}"
+    url_prefix  = "${env.url_prefix}"
+    # ssl_cert      = "./data/certs/cert.crt"
+    # ssl_key       = "./data/certs/private.key"
+    # ssl_ca_certs  = "./data/certs/ca-cert.crt"
+    root        = "${env.assets}"
+    auth_secret = "<32 байта hex: openssl rand -hex 32>"
+
+
 
 [sandbox]
-    [sandbox.profiles.default]
-        rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site"]
-        rw_binds            = []
-        rw_images           = ["${paths.data}/workspace/{user_id}.ext4:/workspace"]
-        image_template      = "${paths.sandbox}/workspace.ext4"
-        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
-        tmpfs               = ["/tmp:512M"]
-        network             = false
-        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
-        timeout_sec         = 30
-        max_memory_bytes    = 536870912
-        max_cpu_sec         = 30
-        max_file_size_bytes = 67108864
-        max_open_files      = 1024
-        max_processes       = 256
-        max_output_bytes    = 262144
-        cwd                 = "/workspace"
-        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
+    [sandbox.bind]
+        python    = "${env.sandbox}/third/python:/opt/python"
+        ## site — третья сторона, code — код инструментов; в релизе это один
+        ## и тот же собранный каталог, в IDE code уводится на дерево исходников
+        site      = "${env.tools}:/opt/site"
+        code      = "${env.bind_code}"
+        tessdata  = "${env.sandbox}/third/tessdata:/usr/share/tessdata"
+        fastembed = "${env.sandbox}/third/fastembed:/opt/fastembed"
+        krb       = "${env.krb}:${env.krb}"
+        resolv    = "/etc/resolv.conf:/etc/resolv.conf"
+        hosts     = "/etc/hosts:/etc/hosts"
+
+    [sandbox.binds]
+        core = [
+            "${sandbox.bind.python}",
+            "${sandbox.bind.site}",
+            "${sandbox.bind.code}"
+        ]
+        docs = [
+            "${sandbox.bind.python}",
+            "${sandbox.bind.site}",
+            "${sandbox.bind.code}",
+            "${sandbox.bind.tessdata}"
+        ]
+        net  = [
+            "${sandbox.bind.resolv}",
+            "${sandbox.bind.hosts}",
+            "${sandbox.bind.python}",
+            "${sandbox.bind.site}",
+            "${sandbox.bind.code}"
+        ]
+        pg   = [
+            "${sandbox.bind.resolv}",
+            "${sandbox.bind.hosts}",
+            "${sandbox.bind.python}",
+            "${sandbox.bind.site}",
+            "${sandbox.bind.code}",
+            "${sandbox.bind.krb}"
+        ]
+        kb   = [
+            "${sandbox.bind.resolv}",
+            "${sandbox.bind.hosts}",
+            "${sandbox.bind.python}",
+            "${sandbox.bind.site}",
+            "${sandbox.bind.code}",
+            "${sandbox.bind.fastembed}",
+            "${sandbox.bind.tessdata}",
+            "${sandbox.bind.krb}"
+        ]
+
+    ## единственный профиль; инструменты меняют его через [tool.<name>.sandbox.override]
+    [sandbox.profiles.base]
+        rootfs                = "${env.sandbox}/rootfs"
+        ro_binds              = "${sandbox.binds.core}"
+        rw_binds              = []
+        rw_images             = ["${env.data}/workspace/{user_id}.ext4:/workspace"]
+        image_template        = "${env.sandbox}/workspace.ext4"
+        tmpfs                 = ["/tmp:512M"]
+        network               = false
+        timeout_sec           = 30
+        max_memory_bytes      = 536870912
+        max_cpu_sec           = 30
+        max_file_size_bytes   = 67108864
+        max_open_files        = 1024
+        max_processes         = 256
+        max_output_bytes      = 262144
+        cwd                   = "/workspace"
+        oom_score_adj         = 500
+        cgroup_base           = "${env.cgroup_base}"
         cgroup_memory_bytes   = 1073741824
         cgroup_cpu_percent    = 100
         cgroup_cpu_weight     = 100
         cgroup_pids_max       = 64
         cgroup_swap_max_bytes = 0
         cgroup_oom_kill_all   = true
-        oom_score_adj       = 500
+        [sandbox.profiles.base.launcher]
+            mount_wait_sec    = 10.0
+            mount_poll_sec    = 0.05
+            shutdown_wait_sec = 5.0
+            copy_chunk_bytes  = 1048576
+        [sandbox.profiles.base.env_set]
+            PATH            = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin"
+            PYTHONHOME      = "/opt/python"
+            PYTHONPATH      = "${env.sandbox_pythonpath}"
+            LD_LIBRARY_PATH = "/opt/python/lib"
+            HOME            = "/tmp"
+            LANG            = "C.UTF-8"
+            SSL_CERT_FILE   = "/etc/ssl/certs/ca-certificates.crt"
 
-    [sandbox.profiles.docs]
-        rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/third/tessdata:/usr/share/tessdata"]
-        rw_binds            = []
-        rw_images           = ["${paths.data}/workspace/{user_id}.ext4:/workspace"]
-        image_template      = "${paths.sandbox}/workspace.ext4"
-        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
-        tmpfs               = ["/tmp:512M"]
-        network             = false
-        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
-        timeout_sec         = 120
-        max_memory_bytes    = 17179869184
-        max_cpu_sec         = 120
-        max_file_size_bytes = 67108864
-        max_open_files      = 1024
-        max_processes       = 256
-        max_output_bytes    = 4194304
-        cwd                 = "/workspace"
-        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
-        cgroup_memory_bytes   = 4294967296
-        cgroup_cpu_percent    = 200
-        cgroup_cpu_weight     = 100
-        cgroup_pids_max       = 256
-        cgroup_swap_max_bytes = 0
-        cgroup_oom_kill_all   = true
-        oom_score_adj       = 500
-
-    [sandbox.profiles.parser]
-        rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/third/tessdata:/usr/share/tessdata"]
-        rw_binds            = []
-        rw_images           = []
-        image_template      = ""
-        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
-        tmpfs               = ["/tmp:512M"]
-        network             = false
-        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
-        timeout_sec         = 120
-        max_memory_bytes    = 17179869184
-        max_cpu_sec         = 120
-        max_file_size_bytes = 67108864
-        max_open_files      = 1024
-        max_processes       = 256
-        max_output_bytes    = 16777216
-        cwd                 = "/tmp"
-        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
-        cgroup_memory_bytes   = 4294967296
-        cgroup_cpu_percent    = 200
-        cgroup_cpu_weight     = 100
-        cgroup_pids_max       = 256
-        cgroup_swap_max_bytes = 0
-        cgroup_oom_kill_all   = true
-        oom_score_adj       = 500
-
-    [sandbox.profiles.network]
-        rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site"]
-        rw_binds            = []
-        rw_images           = []
-        image_template      = ""
-        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
-        tmpfs               = ["/tmp:512M"]
-        network             = true
-        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8", SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt" }
-        timeout_sec         = 120
-        max_memory_bytes    = 4294967296
-        max_cpu_sec         = 120
-        max_file_size_bytes = 67108864
-        max_open_files      = 1024
-        max_processes       = 256
-        max_output_bytes    = 4194304
-        cwd                 = "/tmp"
-        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
-        cgroup_memory_bytes   = 2147483648
-        cgroup_cpu_percent    = 100
-        cgroup_cpu_weight     = 100
-        cgroup_pids_max       = 64
-        cgroup_swap_max_bytes = 0
-        cgroup_oom_kill_all   = true
-        oom_score_adj       = 500
-
-    [sandbox.profiles.pg]
-        rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
-        rw_binds            = []
-        rw_images           = []
-        image_template      = ""
-        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
-        tmpfs               = ["/tmp:512M"]
-        network             = true
-        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8" }
-        timeout_sec         = 60
-        max_memory_bytes    = 1073741824
-        max_cpu_sec         = 60
-        max_file_size_bytes = 67108864
-        max_open_files      = 256
-        max_processes       = 32
-        max_output_bytes    = 4194304
-        cwd                 = "/tmp"
-        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
-        cgroup_memory_bytes   = 1073741824
-        cgroup_cpu_percent    = 100
-        cgroup_cpu_weight     = 100
-        cgroup_pids_max       = 32
-        cgroup_swap_max_bytes = 0
-        cgroup_oom_kill_all   = true
-        oom_score_adj       = 500
-
-    [sandbox.profiles.kb]
-        rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/third/fastembed:/opt/fastembed", "${paths.sandbox}/third/tessdata:/usr/share/tessdata", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
-        rw_binds            = []
-        rw_images           = []
-        image_template      = ""
-        launcher            = { mount_wait_sec = 10.0, mount_poll_sec = 0.05, shutdown_wait_sec = 5.0, copy_chunk_bytes = 1048576 }
-        tmpfs               = ["/tmp:512M"]
-        network             = true
-        env_set             = { PATH = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin", PYTHONHOME = "/opt/python", PYTHONPATH = "/opt/site", LD_LIBRARY_PATH = "/opt/python/lib", HOME = "/tmp", LANG = "C.UTF-8", SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt" }
-        timeout_sec         = 300
-        max_memory_bytes    = 17179869184
-        max_cpu_sec         = 300
-        max_file_size_bytes = 67108864
-        max_open_files      = 1024
-        max_processes       = 256
-        max_output_bytes    = 16777216
-        cwd                 = "/tmp"
-        cgroup_base           = "/sys/fs/cgroup/boba-sandbox"
-        cgroup_memory_bytes   = 8589934592
-        cgroup_cpu_percent    = 400
-        cgroup_cpu_weight     = 100
-        cgroup_pids_max       = 256
-        cgroup_swap_max_bytes = 0
-        cgroup_oom_kill_all   = true
-        oom_score_adj       = 500
 
 [tool.bash]
     enable = true
-    roles  = ["ADM"]
-
+    roles  = ["*"]
+    tools  = { bash = [] }
     [tool.bash.sandbox]
-        profile  = "${sandbox.profiles.default}"
-        override = {}
-
-    [tool.bash.tools]
-        bash = []
+        profile  = "${sandbox.profiles.base}"
+        override = {  }
 
 [tool.doc]
-    enable               = true
-    roles                = ["ADM"]
-    ocr_enabled          = false
-    tessdata_path        = "/usr/share/tessdata"
-    max_text_chars       = 200000
-    search_context_chars = 80
-    search_max_matches   = 50
-
+    enable                  = true
+    roles                   = ["*"]
+    ocr_enabled             = true
+    tessdata_path           = "/usr/share/tessdata"
+    max_text_chars          = 200000
+    search_context_chars    = 80
+    search_max_matches      = 50
+    tools                   = { read_document = [], document_outline = [], search_document = [] }
     [tool.doc.sandbox]
-        profile  = "${sandbox.profiles.docs}"
-        override = {}
+        profile = "${sandbox.profiles.base}"
+        [tool.doc.sandbox.override]
+            ro_binds            = "${sandbox.binds.docs}"
+            timeout_sec         = 120
+            max_memory_bytes    = 17179869184
+            max_cpu_sec         = 120
+            max_output_bytes    = 4194304
+            cgroup_memory_bytes = 4294967296
+            cgroup_pids_max     = 256
+            cgroup_cpu_percent  = 200
 
-    [tool.doc.tools]
-        read_document        = []
-        document_outline     = []
-        search_document      = []
 
 [tool.chart]
-    enable = true
-    roles  = ["*"]
-
+    enable  = false
+    roles   = ["*"]
+    tools   = { visualize = [] }
     [tool.chart.sandbox]
-        profile  = "${sandbox.profiles.parser}"
-        override = {}
+        profile = "${sandbox.profiles.base}"
+        [tool.chart.sandbox.override]
+            ro_binds            = "${sandbox.binds.docs}"
+            rw_images           = []
+            image_template      = ""
+            cwd                 = "/tmp"
+            timeout_sec         = 120
+            max_memory_bytes    = 17179869184
+            max_cpu_sec         = 120
+            max_output_bytes    = 16777216
+            cgroup_memory_bytes = 4294967296
+            cgroup_pids_max     = 256
+            cgroup_cpu_percent  = 200
 
-    [tool.chart.tools]
-        visualize = []
-
-[tool.web]
-    enable         = true
-    roles          = ["ADM"]
-    max_text_chars = 2000
-    profiles       = { "<hostname>" = "${web.public}" }
-
-    [tool.web.sandbox]
-        profile  = "${sandbox.profiles.network}"
-        override = {}
-
-    [tool.web.tools]
-        web_fetch_page = []
-        web_grep_page  = []
 
 [web.public]
-    kind              = "web"
     timeout_sec       = 30.0
-    ssl_verify        = true
-    retry_attempts    = 3
+    ssl_verify        = false
+    retry_attempts    = 2
     retry_backoff_sec = 1.0
-    auth              = { method = "none" }
 
 [web.confluence]
-    kind              = "web"
     base_url          = "<https://confluence.example.local>"
     timeout_sec       = 30.0
-    ssl_verify        = true
+    ssl_verify        = false
     retry_attempts    = 3
     retry_backoff_sec = 1.0
     auth              = { method = "bearer", token = "<токен>" }
 
+[tool.web]
+    enable          = true
+    roles           = ["*"]
+    max_text_chars  = 2000
+    profiles        = { "<confluence.example.local>" = "${web.confluence}" }
+    tools           = { web_fetch_page = [], web_grep_page = [] }
+    [tool.web.sandbox]
+        profile = "${sandbox.profiles.base}"
+        [tool.web.sandbox.override]
+            ro_binds            = "${sandbox.binds.net}"
+            rw_images           = []
+            image_template      = ""
+            network             = true
+            cwd                 = "/tmp"
+            timeout_sec         = 120
+            max_memory_bytes    = 4294967296
+            max_cpu_sec         = 120
+            max_output_bytes    = 4194304
+            cgroup_memory_bytes = 2147483648
+            cgroup_pids_max     = 64
+            cgroup_cpu_percent  = 100
+
+
 [tool.confluence]
-    enable         = true
-    roles          = ["ADM"]
-    confluence     = "${web.confluence}"
-    body_format    = "view"
-    max_text_chars = 2000
-
+    enable          = true
+    roles           = ["*"]
+    confluence      = "${web.confluence}"
+    body_format     = "view"
+    max_text_chars  = 2000
+    tools           = { confluence_search = [], confluence_spaces = [], confluence_fetch  = [], confluence_grep   = [] }
     [tool.confluence.sandbox]
-        profile  = "${sandbox.profiles.network}"
-        override = {}
+        profile = "${sandbox.profiles.base}"
+        [tool.confluence.sandbox.override]
+            ro_binds            = "${sandbox.binds.net}"
+            rw_images           = []
+            image_template      = ""
+            network             = true
+            cwd                 = "/tmp"
+            timeout_sec         = 120
+            max_memory_bytes    = 4294967296
+            max_cpu_sec         = 120
+            max_output_bytes    = 4194304
+            cgroup_memory_bytes = 2147483648
+            cgroup_pids_max     = 64
+            cgroup_cpu_percent  = 100
 
-    [tool.confluence.tools]
-        confluence_fetch  = []
-        confluence_grep   = []
-        confluence_search = []
-        confluence_spaces = []
+
+[tables.kb]
+    pg_schema         = "kb"
+    chunks_table      = "kb_chunks"
+    collections_table = "kb_collections"
+
+[embedding]
+    model      = "intfloat/multilingual-e5-large"
+    cache_dir  = "/opt/fastembed"
+    dim        = 1024
+    batch_size = 8
 
 [tool.ingest]
-    enable            = true
-    roles             = ["ADM"]
-    connection        = "${postgres}"
-    tables            = "${kb.tables}"
-    embedding         = "${embedding.e5}"
-    confluence        = "${web.confluence}"
-    body_format       = "view"
-    collection        = "kb_confluence"
-    chunk_size        = 4000
-    chunk_overlap     = 0
-    attachment_titles = ["*.pdf", "*.docx", "*.xlsx"]
-    tessdata_path     = "/usr/share/tessdata"
-    page_workers      = 4
-
+    enable                 = true
+    roles                  = ["*"]
+    connection             = "${postgres}"
+    confluence             = "${web.confluence}"
+    body_format            = "view"
+    collection             = "kb_confluence"
+    chunk_size             = 4000
+    chunk_overlap          = 0
+    attachment_titles      = []
+    attachment_media_types = [
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.oasis.opendocument.presentation",
+        "application/rtf",
+        "text/rtf",
+        "text/plain",
+        "text/markdown",
+        "text/x-markdown",
+        "text/csv",
+        "text/tab-separated-values",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/bmp",
+        "image/webp",
+        "image/tiff"
+    ]
+    text_encodings         = [
+        "utf-8",
+        "cp1251"
+    ]
+    tessdata_path           = "/usr/share/tessdata"
+    page_workers            = 4
+    embedding               = "${embedding}"
+    tables                  = "${tables.kb}"
     [tool.ingest.sandbox]
-        profile  = "${sandbox.profiles.kb}"
-        override = { timeout_sec = 3600, max_cpu_sec = 14400 }
-
+        profile = "${sandbox.profiles.base}"
+        [tool.ingest.sandbox.override]
+            ro_binds            = "${sandbox.binds.kb}"
+            rw_images           = []
+            image_template      = ""
+            network             = true
+            cwd                 = "/tmp"
+            timeout_sec         = 3600
+            max_memory_bytes    = 17179869184
+            max_cpu_sec         = 14400
+            max_output_bytes    = 16777216
+            cgroup_memory_bytes = 8589934592
+            cgroup_pids_max     = 256
+            cgroup_cpu_percent  = 400
     [tool.ingest.tools]
         confluence_index_pages  = []
         confluence_index_cql    = []
         confluence_index_spaces = []
         confluence_attachment   = []
 
-[tool.pg]
-    enable    = true
-    roles     = ["ADM"]
-    max_rows  = 100
-    max_bytes = 1000000
-    profiles  = { main = "${postgres}" }
-
-    [tool.pg.sandbox]
-        profile  = "${sandbox.profiles.pg}"
-        override = {}
-
-    [tool.pg.tools]
-        pg_list_targets   = []
-        pg_list_tables    = []
-        pg_describe_table = []
-        pg_query          = []
-        pg_export         = []
 
 [tool.kb]
     enable     = true
-    roles      = ["ADM"]
+    roles      = ["*"]
     connection = "${postgres}"
-    tables     = "${kb.tables}"
-    embedding  = "${embedding.e5}"
-
+    embedding  = "${embedding}"
+    tables     = "${tables.kb}"
+    tools      = { kb_vector_search = [], kb_fts_search = [] }
     [tool.kb.sandbox]
-        profile  = "${sandbox.profiles.kb}"
-        override = {}
+        profile = "${sandbox.profiles.base}"
+        [tool.kb.sandbox.override]
+            ro_binds            = "${sandbox.binds.kb}"
+            rw_images           = []
+            image_template      = ""
+            network             = true
+            cwd                 = "/tmp"
+            timeout_sec         = 300
+            max_memory_bytes    = 17179869184
+            max_cpu_sec         = 300
+            max_output_bytes    = 16777216
+            cgroup_memory_bytes = 8589934592
+            cgroup_pids_max     = 256
+            cgroup_cpu_percent  = 400
 
-    [tool.kb.tools]
-        kb_vector_search = []
-        kb_fts_search    = []
 
-[kb.tables]
-    pg_schema         = "kb"
-    chunks_table      = "kb_chunks"
-    collections_table = "kb_collections"
+[tool.pg]
+    enable     = true
+    roles      = ["*"]
+    max_rows   = 100
+    max_bytes  = 1000000
+    profiles   = { main = "${postgres}" }
+    connection = "${postgres}"
+    tools      = { pg_list_targets = [], pg_list_tables = [], pg_describe_table = [], pg_query = [], pg_export = [] }
+    [tool.pg.sandbox]
+        profile = "${sandbox.profiles.base}"
+        [tool.pg.sandbox.override]
+            ro_binds            = "${sandbox.binds.pg}"
+            rw_images           = []
+            image_template      = ""
+            network             = true
+            cwd                 = "/tmp"
+            timeout_sec         = 60
+            max_memory_bytes    = 1073741824
+            max_cpu_sec         = 60
+            max_open_files      = 256
+            max_processes       = 32
+            max_output_bytes    = 4194304
+            cgroup_memory_bytes = 1073741824
+            cgroup_pids_max     = 32
+            cgroup_cpu_percent  = 100
 
-[embedding.e5]
-    model     = "intfloat/multilingual-e5-large"
-    cache_dir = "/opt/fastembed"
-    dim       = 1024
-    batch_size = 8
 
+[tool.ch]
+    enable     = false
+    roles      = ["*"]
+    max_rows   = 100
+    max_bytes  = 1000000
+    profiles   = { main = "${clickhouse}" }
+    tools      = { ch_list_targets = [], ch_list_tables = [], ch_describe_table = [], ch_query = [] }
+    [tool.ch.sandbox]
+        profile = "${sandbox.profiles.base}"
+        [tool.ch.sandbox.override]
+            ro_binds            = "${sandbox.binds.pg}"
+            rw_images           = []
+            image_template      = ""
+            network             = true
+            cwd                 = "/tmp"
+            timeout_sec         = 60
+            max_memory_bytes    = 1073741824
+            max_cpu_sec         = 60
+            max_open_files      = 256
+            max_processes       = 32
+            max_output_bytes    = 4194304
+            cgroup_memory_bytes = 1073741824
+            cgroup_pids_max     = 32
+            cgroup_cpu_percent  = 100
+
+
+[tool.send_file]
+    enable = true
+    roles  = ["*"]
+    tools  = { send_file = [] }

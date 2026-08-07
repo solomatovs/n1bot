@@ -9,19 +9,19 @@ docs
 .claude
 CLAUDE.md
 
+/release/
+/compose/
+uv.lock
+
 packages/**/build/
 packages/**/dist/
+
 .ruff_cache
 .pytest_cache
-# chainlit на импорте создаёт эти каталоги в cwd (управляется CHAINLIT_APP_ROOT)
 .chainlit/
 .files/
-# в build/ версионируем только сборочные исходники; артефакты (artifacts, dist,
-# extract, local) не трогаем. Каталоги приходится сначала вернуть целиком —
-# git не заглядывает внутрь исключённого каталога, и !/build/test/bobacheck.py
-# сам по себе не сработал бы.
+
 /build/*
-!/build/docker-compose.yml
 !/build/Dockerfile
 !/build/Makefile
 !/build/test/
@@ -35,4 +35,3 @@ packages/**/dist/
 !/build/conf/README.md
 !/build/conf/pip.conf.example
 !/build/conf/uv.toml.example
-uv.lock
