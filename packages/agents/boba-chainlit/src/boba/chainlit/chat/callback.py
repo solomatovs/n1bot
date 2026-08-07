@@ -19,13 +19,14 @@ from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
 from boba.chainlit.infra.session import current_thread_id
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
+from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
 from chainlit.types import ThreadDict
+from chainlit.utils import wrap_user_function
 
 logger = logging.getLogger(__name__)
 
 
-@cl.on_message
 @chainlit_error_ctx_handler
 @di_inject
 async def on_message(
@@ -62,6 +63,9 @@ async def on_message(
     )
 
     await ChatTurn(graph, thread_id, view, tracer, msg.id).run(stream)
+
+
+chainlit_config.code.on_message = wrap_user_function(on_message)
 
 
 @cl.on_chat_start
