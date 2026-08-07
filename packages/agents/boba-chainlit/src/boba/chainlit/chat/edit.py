@@ -13,7 +13,8 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
-from boba.chainlit.rendering.chat_view import ChatView
+import chainlit as cl
+from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from chainlit.data.base import BaseDataLayer
 
 __all__ = ["RewindPlan", "ThreadRewind"]
@@ -89,7 +90,9 @@ class ThreadRewind:
             if not isinstance(message, AIMessage):
                 continue
             for call in message.tool_calls or ():
-                element_id = ChatView.derive_id(thread_id, call.get("id"), "element")
+                element_id = ChatView.derive_id(
+                    thread_id, call.get("id"), StepRole.ELEMENT
+                )
                 if element_id:
                     element_ids.append(element_id)
 
@@ -108,3 +111,8 @@ class ThreadRewind:
         updates.append(HumanMessage(content=content, id=message_id))
         await self._graph.aupdate_state(self._config, {"messages": updates})
         return rewind
+
+    async def refresh_view(self) -> None:
+        """Перерисовывает ленту треда из истории агента."""
+        if thread := await self._data_layer.get_thread(self._thread_id):
+            await cl.context.emitter.resume_thread(thread)

@@ -20,14 +20,12 @@ class PgQueryRequest(SqlQueryRequest[PostgresConfig, tuple[Any, ...]]):
     """Запрос строк с лимитом; параметры позиционные, под %s psycopg."""
 
     OP: ClassVar[str] = "pg_query"
-    REVEAL_SECRETS: ClassVar[str] = PostgresConfig.REVEAL_SECRETS
 
 
 class PgCopyRequest(SqlCall[PostgresConfig]):
     """Выгрузка COPY ... TO STDOUT с потолком по байтам."""
 
     OP: ClassVar[str] = "pg_copy"
-    REVEAL_SECRETS: ClassVar[str] = PostgresConfig.REVEAL_SECRETS
 
     max_bytes: int = Field(ge=1)
 

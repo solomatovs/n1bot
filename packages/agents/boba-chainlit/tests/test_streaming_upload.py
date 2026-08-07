@@ -1,7 +1,7 @@
 """Загрузка вложения: тело идёт в хранилище потоком, а не через память или tmp."""
 
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from boba.chainlit.chat.data.storage import LocalStorageClient, StorageFullError
-from boba.chainlit.chat.data.upload import UploadRoute
+from boba.chainlit.chat.data.upload import UploadPolicy, UploadRoute
 
 pytestmark = pytest.mark.anyio
 
@@ -75,20 +75,29 @@ def session(tmp_path: Path) -> FakeSession:
 
 
 @pytest.fixture
-def client_app(
+def app_builder(
     session: FakeSession,
     storage: LocalStorageClient,
     monkeypatch: pytest.MonkeyPatch,
-) -> FastAPI:
+) -> Callable[[UploadPolicy], FastAPI]:
     from chainlit.session import WebsocketSession
 
     monkeypatch.setattr(
         WebsocketSession, "get_by_id", staticmethod(FakeSession.INSTANCES.get)
     )
-    app = FastAPI()
-    UploadRoute(storage).install(app)
-    app.dependency_overrides[get_current_user] = lambda: session.user
-    return app
+
+    def build(policy: UploadPolicy) -> FastAPI:
+        app = FastAPI()
+        UploadRoute(storage, policy).install(app)
+        app.dependency_overrides[get_current_user] = lambda: session.user
+        return app
+
+    return build
+
+
+@pytest.fixture
+def client_app(app_builder: Callable[[UploadPolicy], FastAPI]) -> FastAPI:
+    return app_builder(UploadPolicy())
 
 
 def transport(app: FastAPI) -> AsyncClient:
@@ -177,12 +186,12 @@ async def test_upload_never_buffers_the_body(
 
 
 async def test_rejected_upload_stops_reading_at_the_cap(
-    client_app: FastAPI,
+    app_builder: Callable[[UploadPolicy], FastAPI],
     session: FakeSession,
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Отвергнутый файл не должен заливаться целиком: вычитывание ограничено."""
-    monkeypatch.setattr(UploadRoute, "DRAIN_BYTES", 64 * 1024)
+    client_app = app_builder(UploadPolicy(drain_bytes=64 * 1024))
 
     async def full(
         self: LocalStorageClient,

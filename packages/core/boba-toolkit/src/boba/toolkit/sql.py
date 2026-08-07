@@ -5,7 +5,9 @@
 нативный SQL, вызов payload'а и фасады @tool.
 
 Ошибки: SqlQueryError — запрос не выполнен; UnknownConnectionError — имя
-подключения вне whitelist'а. Текст обеих готов для пользователя.
+подключения вне whitelist'а; CollectorCapacityError/CollectorRowLimitError
+(boba.toolkit.launcher) — выдача переросла max_bytes/max_rows потребителя.
+Текст всех готов для пользователя.
 """
 
 from __future__ import annotations
@@ -24,10 +26,17 @@ from pydantic import (
     model_validator,
 )
 
-from boba.toolkit.launcher import ChunkSink, LauncherError, RowCollector
+from boba.toolkit.launcher import (
+    ChunkSink,
+    CollectorCapacityError,
+    CollectorRowLimitError,
+    LauncherError,
+    RowCollector,
+)
 from boba.toolkit.result import ErrorResult
 
 __all__ = [
+    "ConnectionProfile",
     "SqlCall",
     "SqlCaller",
     "SqlErrors",
@@ -41,13 +50,22 @@ __all__ = [
     "UnknownConnectionError",
 ]
 
-TConn = TypeVar("TConn", bound=BaseModel)
+class ConnectionProfile(BaseModel):
+    """Базовый профиль соединения: несёт ключ раскрытия секретов в дампе."""
+
+    REVEAL_SECRETS: ClassVar[str]
+    """Ключ контекста сериализации, по которому профиль раскрывает секреты."""
+
+
+TConn = TypeVar("TConn", bound=ConnectionProfile)
 """Профиль соединения коннектора: PostgresConfig, ClickHouseConfig, ..."""
 
 TParams = TypeVar("TParams")
 """Стиль параметров драйвера: позиционный кортеж psycopg, именованный dict ch."""
 
-TConn_contra = TypeVar("TConn_contra", bound=BaseModel, contravariant=True)
+TConn_contra = TypeVar(
+    "TConn_contra", bound=ConnectionProfile, contravariant=True
+)
 """То же, что TConn, но для протокола: тип стоит только во входных позициях."""
 
 TParams_contra = TypeVar("TParams_contra", contravariant=True)
@@ -121,8 +139,8 @@ class SqlCall(BaseModel, Generic[TConn]):
 
     model_config = ConfigDict(extra="forbid")
 
-    REVEAL_SECRETS: ClassVar[str]
-    """Ключ контекста, по которому профиль раскрывает секреты; задаёт подкласс."""
+    OP: ClassVar[str]
+    """Имя операции payload'а; подкласс обязан задать, в поле op едет оно же."""
 
     op: str = Field(min_length=1)
     connection: TConn = Field(
@@ -135,7 +153,7 @@ class SqlCall(BaseModel, Generic[TConn]):
         """stdin песочницы — доверенный канал: только здесь пароль едет раскрытым."""
         return value.model_dump(
             mode="json",
-            context={type(self).REVEAL_SECRETS: True},
+            context={type(value).REVEAL_SECRETS: True},
         )
 
 
@@ -257,9 +275,31 @@ class SqlExecutor(Generic[TConn, TParams]):
 class SqlErrors:
     """Отказы SQL-инструмента в виде ErrorResult с текстом для LLM."""
 
+    CATCHES: ClassVar[
+        tuple[
+            type[SqlQueryError],
+            type[CollectorCapacityError],
+            type[CollectorRowLimitError],
+        ]
+    ] = (SqlQueryError, CollectorCapacityError, CollectorRowLimitError)
+    """Ошибки SQL-тула, которые pack превращает в ErrorResult."""
+
     def __init__(self, *, max_rows: int, max_bytes: int) -> None:
         self._max_rows = max_rows
         self._max_bytes = max_bytes
+
+    def pack(
+        self,
+        error: SqlQueryError | CollectorCapacityError | CollectorRowLimitError,
+    ) -> ErrorResult:
+        """Единая карта отказов фасада: тип ошибки -> ErrorResult."""
+        if isinstance(error, UnknownConnectionError):
+            return self.unknown_target(error)
+        if isinstance(error, SqlQueryError):
+            return self.failed(error)
+        if isinstance(error, CollectorCapacityError):
+            return self.too_large()
+        return self.too_many_rows()
 
     def failed(self, error: SqlQueryError) -> ErrorResult:
         return ErrorResult(message=str(error), error_kind="sql_failed")
@@ -312,11 +352,18 @@ class SqlRows:
     def scalar(cls, value: Any) -> Any:
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, (list, tuple)):
             items: list[Any] = []
             for item in value:
                 items.append(cls.scalar(item))
             return items
+        if isinstance(value, (set, frozenset)):
+            # порядок set недетерминирован — сортируем по строковому образу
+            unordered: list[Any] = []
+            for item in value:
+                unordered.append(cls.scalar(item))
+            unordered.sort(key=str)
+            return unordered
         if isinstance(value, Mapping):
             mapping: dict[str, Any] = {}
             for key, item in value.items():

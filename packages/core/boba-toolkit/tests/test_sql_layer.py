@@ -10,7 +10,6 @@ from uuid import UUID
 
 import pytest
 from pydantic import (
-    BaseModel,
     ConfigDict,
     SecretStr,
     SerializationInfo,
@@ -18,8 +17,10 @@ from pydantic import (
     field_serializer,
 )
 
+from boba.toolkit.launcher import CollectorCapacityError, CollectorRowLimitError
 from boba.toolkit.result import AffectedResult, ToolArtifact, render_for_llm
 from boba.toolkit.sql import (
+    ConnectionProfile,
     SqlCall,
     SqlErrors,
     SqlProfiles,
@@ -31,7 +32,7 @@ from boba.toolkit.sql import (
 )
 
 
-class FakeConn(BaseModel):
+class FakeConn(ConnectionProfile):
     """Профиль соединения выдуманного коннектора: минимум, но с секретом."""
 
     model_config = ConfigDict(extra="ignore")
@@ -61,7 +62,6 @@ class FakeProfiles(SqlProfiles[FakeConn]):
 
 class FakeQueryRequest(SqlQueryRequest[FakeConn, tuple[Any, ...]]):
     OP: ClassVar[str] = "fake_query"
-    REVEAL_SECRETS: ClassVar[str] = FakeConn.REVEAL_SECRETS
 
 
 def fake_profiles() -> FakeProfiles:
@@ -149,6 +149,23 @@ class TestSqlErrors:
         unknown = UnknownConnectionError("no")
         assert errors.unknown_target(unknown).error_kind == "unknown_target"
 
+    def test_pack_maps_each_error_to_its_kind(self) -> None:
+        errors = SqlErrors(max_rows=100, max_bytes=1000)
+        assert errors.pack(UnknownConnectionError("no")).error_kind == "unknown_target"
+        assert errors.pack(SqlQueryError("boom")).error_kind == "sql_failed"
+        too_large = errors.pack(CollectorCapacityError("big"))
+        assert too_large.error_kind == "result_too_large"
+        assert errors.pack(CollectorRowLimitError()).error_kind == "too_many_rows"
+
+    def test_catches_work_as_except_clause(self) -> None:
+        """Фасад ловит одной веткой всё, что pack умеет упаковать."""
+        errors = SqlErrors(max_rows=1, max_bytes=1)
+        try:
+            raise CollectorCapacityError("big")
+        except SqlErrors.CATCHES as e:
+            packed = errors.pack(e)
+        assert packed.error_kind == "result_too_large"
+
 
 class TestSqlRows:
     def test_mapping_row_becomes_json_safe(self) -> None:
@@ -177,6 +194,10 @@ class TestSqlRows:
             "map": {"k": "v"},
             "st": [3],
         }
+
+    def test_set_order_is_deterministic(self) -> None:
+        assert SqlRows.scalar({"b", "c", "a"}) == ["a", "b", "c"]
+        assert SqlRows.scalar(frozenset({3, 1, 2})) == [1, 2, 3]
 
 
 class TestAffectedResult:

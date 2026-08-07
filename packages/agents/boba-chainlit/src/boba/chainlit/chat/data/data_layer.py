@@ -11,7 +11,7 @@ from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
 
 from boba.chainlit.auth.errors import InternalServiceError
-from boba.chainlit.chat.data.attachment_url import AttachmentLinks
+from boba.chainlit.chat.data.fields import ElementField, StepField, ThreadField
 from boba.chainlit.chat.data.models import (
     Codec,
     Element,
@@ -20,8 +20,8 @@ from boba.chainlit.chat.data.models import (
     Thread,
     User,
 )
-from boba.chainlit.chat.data.object_key import ObjectKey
-from boba.chainlit.chat.handler.error import show_error
+from boba.chainlit.chat.data.object_key import AttachmentLinks, ObjectKey
+from boba.chainlit.chat.errors import show_error
 from boba.chainlit.chat.transcript import ConversationTranscript, ThreadMessages
 from boba.chainlit.infra.session import current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
@@ -260,7 +260,7 @@ class PostgresDataLayer(BaseDataLayer):
         mime = element.mime or "application/octet-stream"
 
         data = element.to_dict()
-        data["mime"] = mime
+        data[ElementField.MIME] = mime
 
         model = Element.from_chainlit(data)
         query = sql.SQL(
@@ -523,7 +523,7 @@ class PostgresDataLayer(BaseDataLayer):
             Codec.uuid_str(f.for_id): f.to_chainlit() for f in feedback_rows
         }
         for step in steps:
-            step["feedback"] = feedback_by_step.get(step.get("id", ""))
+            step[StepField.FEEDBACK] = feedback_by_step.get(step.get(StepField.ID, ""))
 
         elements: list[ElementDict] = [e.to_chainlit() for e in element_rows]
 
@@ -679,8 +679,8 @@ class PostgresDataLayer(BaseDataLayer):
         return PaginatedResponse(
             pageInfo=PageInfo(
                 hasNextPage=has_next,
-                startCursor=page[0]["id"] if page else None,
-                endCursor=page[-1]["id"] if page else None,
+                startCursor=page[0][ThreadField.ID] if page else None,
+                endCursor=page[-1][ThreadField.ID] if page else None,
             ),
             data=page,
         )
@@ -706,9 +706,11 @@ class PostgresDataLayer(BaseDataLayer):
         return str(user_id)
 
     def _sign_element_urls(self, thread: ThreadDict) -> None:
-        for element in thread.get("elements") or []:
+        for element in thread.get(ThreadField.ELEMENTS) or []:
             self._sign_element_url(element)
 
     def _sign_element_url(self, element: ElementDict) -> None:
         """Собирает ссылку на вложение: она вычисляется, а не хранится."""
-        element["url"] = self._links.url(element.get("threadId"), element.get("id"))
+        element[ElementField.URL] = self._links.url(
+            element.get(ElementField.THREAD_ID), element.get(ElementField.ID)
+        )

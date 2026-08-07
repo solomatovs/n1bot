@@ -11,11 +11,7 @@ from pydantic import Field
 from boba.tool.pg.caller import PgCaller
 from boba.tool.pg.catalog import PgCatalog
 from boba.tool.pg.executor import PgExecutor, PgExecutorConfig
-from boba.toolkit.launcher import (
-    CollectorCapacityError,
-    CollectorRowLimitError,
-    LauncherFactory,
-)
+from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import (
     AffectedResult,
     PgCopyTextResult,
@@ -23,12 +19,7 @@ from boba.toolkit.result import (
     ToolResult,
     pack_result,
 )
-from boba.toolkit.sql import (
-    SqlErrors,
-    SqlQueryError,
-    SqlResult,
-    UnknownConnectionError,
-)
+from boba.toolkit.sql import SqlErrors, SqlResult
 
 __all__ = ["PgTools", "build_pg_tools"]
 
@@ -122,10 +113,8 @@ class PgTools:
                     row_limit=executor.max_rows_cap,
                     params=query.params,
                 )
-            except UnknownConnectionError as e:
-                return pack_result(owner._errors.unknown_target(e))
-            except SqlQueryError as e:
-                return pack_result(owner._errors.failed(e))
+            except SqlErrors.CATCHES as e:
+                return pack_result(owner._errors.pack(e))
 
             return owner._rows(result)
 
@@ -168,10 +157,8 @@ class PgTools:
                     row_limit=executor.max_rows_cap,
                     params=query.params,
                 )
-            except UnknownConnectionError as e:
-                return pack_result(owner._errors.unknown_target(e))
-            except SqlQueryError as e:
-                return pack_result(owner._errors.failed(e))
+            except SqlErrors.CATCHES as e:
+                return pack_result(owner._errors.pack(e))
 
             return owner._rows(result)
 
@@ -208,14 +195,8 @@ class PgTools:
                     row_limit=executor.max_rows_cap,
                     params=(),
                 )
-            except CollectorCapacityError:
-                return pack_result(owner._errors.too_large())
-            except CollectorRowLimitError:
-                return pack_result(owner._errors.too_many_rows())
-            except UnknownConnectionError as e:
-                return pack_result(owner._errors.unknown_target(e))
-            except SqlQueryError as e:
-                return pack_result(owner._errors.failed(e))
+            except SqlErrors.CATCHES as e:
+                return pack_result(owner._errors.pack(e))
 
             if not result.returns_rows:
                 return pack_result(
@@ -254,14 +235,8 @@ class PgTools:
             executor = owner._executor
             try:
                 text = await executor.execute_copy(sql, connection_name=connection_name)
-            except CollectorCapacityError:
-                return pack_result(owner._errors.too_large())
-            except CollectorRowLimitError:
-                return pack_result(owner._errors.too_many_rows())
-            except UnknownConnectionError as e:
-                return pack_result(owner._errors.unknown_target(e))
-            except SqlQueryError as e:
-                return pack_result(owner._errors.failed(e))
+            except SqlErrors.CATCHES as e:
+                return pack_result(owner._errors.pack(e))
 
             return pack_result(PgCopyTextResult(text=text))
 

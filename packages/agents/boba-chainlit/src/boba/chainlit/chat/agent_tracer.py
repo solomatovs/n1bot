@@ -12,7 +12,7 @@ from langchain_core.outputs import ChatGenerationChunk, GenerationChunk
 from langchain_core.tracers.base import AsyncBaseTracer
 from typing_extensions import ParamSpec, override
 
-from boba.chainlit.chat.handler.error import show_error
+from boba.chainlit.chat.errors import show_error
 from boba.chainlit.rendering.chat_view import ChatView
 from chainlit.context import context_var
 from chainlit.step import Step
@@ -56,6 +56,11 @@ class AgentTracer(AsyncBaseTracer):
     def view(self) -> ChatView:
         """Лента, в которую трасер пишет шаги."""
         return self._view
+
+    @property
+    def pending_tool_steps(self) -> list[Step]:
+        """Шаги инструментов, ещё не завершённые ходом."""
+        return list(self._tool_steps.values())
 
     def _set_context(self) -> None:
         context_var.set(self._context)

@@ -12,8 +12,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from boba.chainlit.chat.data import data_layer as data_layer_module
-from boba.chainlit.chat.data.attachment_url import AttachmentUrl
-from boba.chainlit.chat.data.serving import AttachmentServing
+from boba.chainlit.chat.data.object_key import AttachmentUrl
+from boba.chainlit.chat.data.upload import AttachmentServing
 from boba.chainlit.chat.data.storage import LocalStorageClient
 
 pytestmark = pytest.mark.anyio

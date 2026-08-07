@@ -13,11 +13,11 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from omegaconf import DictConfig
 from psycopg import sql
 
-from boba.chainlit.chat.data.attachment_url import AttachmentLinks
+from boba.chainlit.chat.data.object_key import AttachmentLinks
 from boba.chainlit.chat.data.data_layer import PostgresDataLayer
 from boba.chainlit.chat.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.rendering.chat_view import ChatView
+from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.settings import bind, build_app_config
 
@@ -195,7 +195,7 @@ async def seeded(
     ]
     thread_messages.by_thread[thread_id] = messages
 
-    answer_step_id = ChatView.derive_id(thread_id, "m1", "answer")
+    answer_step_id = ChatView.derive_id(thread_id, "m1", StepRole.ANSWER)
     assert answer_step_id is not None
 
     return Seed(
