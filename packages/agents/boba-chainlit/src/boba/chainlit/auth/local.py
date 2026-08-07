@@ -92,33 +92,35 @@ class LocalAuth:
             self._local_roles_ex = LocalExcludeUserProvider(roles_ex)
 
     async def password_auth(self, username: str, password: str) -> cl.User | None:
-        if self._config.users.get(username) == password:
-            excluded = False
-            if self._local_roles_ex:
-                excluded = any(self._local_roles_ex.exclude_of(username))
-            if excluded:
-                raise AuthorizationError("Access denied")
+        if self._config.users.get(username) != password:
+            return None
 
-            metadata: dict[str, Any] = {
-                UserMetadataField.PROVIDER: LocalAuth.__name__,
-            }
+        excluded = False
+        if self._local_roles_ex:
+            excluded = any(self._local_roles_ex.exclude_of(username))
 
-            roles: list[str] = []
-            if self._local_roles:
-                roles.extend(self._local_roles.roles_of(username))
+        if excluded:
+            raise AuthorizationError("Access denied")
 
-            roles = list(set(roles))
+        metadata: dict[str, Any] = {
+            UserMetadataField.PROVIDER: LocalAuth.__name__,
+        }
 
-            if self._config.require_roles and not roles:
-                raise AuthorizationError("Access denied")
+        roles: list[str] = []
+        if self._local_roles:
+            roles.extend(self._local_roles.roles_of(username))
 
-            if roles:
-                metadata[UserMetadataField.ROLES] = roles
+        roles = sorted(set(roles))
 
-            return cl.User(
-                identifier=username,
-                display_name=username,
-                metadata=metadata,
-            )
+        requires_roles = self._config.require_roles
+        if requires_roles and not roles:
+            raise AuthorizationError("Access denied")
 
-        return None
+        if roles:
+            metadata[UserMetadataField.ROLES] = roles
+
+        return cl.User(
+            identifier=username,
+            display_name=username,
+            metadata=metadata,
+        )

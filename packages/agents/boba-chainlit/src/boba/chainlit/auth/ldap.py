@@ -1,9 +1,8 @@
 import asyncio
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from itertools import chain
 from typing import Any, Literal
 
 from ldap3 import (
@@ -359,30 +358,34 @@ class LdapAuth:
             self._dn_roles_ex = DnExcludeUserProvider(roles)
 
     def _excluded_of(self, username: str, user_dn: str, member_of: list[str]) -> bool:
-        res = []
+        return any(self._exclusions_of(username, user_dn, member_of))
+
+    def _exclusions_of(
+        self, username: str, user_dn: str, member_of: list[str]
+    ) -> Iterator[bool]:
         if self._samaccountname_roles_ex:
-            res.append(self._samaccountname_roles_ex.exclude_of(username))
+            yield from self._samaccountname_roles_ex.exclude_of(username)
 
         if self._member_of_roles_ex:
-            res.append(self._member_of_roles_ex.exclude_of(member_of))
+            yield from self._member_of_roles_ex.exclude_of(member_of)
 
         if self._dn_roles_ex:
-            res.append(self._dn_roles_ex.exclude_of(user_dn))
-
-        return any(chain.from_iterable(res))
+            yield from self._dn_roles_ex.exclude_of(user_dn)
 
     def _roles_of(self, username: str, user_dn: str, member_of: list[str]) -> list[str]:
-        roles: list[str] = []
+        return sorted(set(self._role_matches(username, user_dn, member_of)))
+
+    def _role_matches(
+        self, username: str, user_dn: str, member_of: list[str]
+    ) -> Iterator[str]:
         if self._samaccountname_roles:
-            roles.extend(self._samaccountname_roles.roles_of(username))
+            yield from self._samaccountname_roles.roles_of(username)
 
         if self._member_of_roles:
-            roles.extend(self._member_of_roles.roles_of(member_of))
+            yield from self._member_of_roles.roles_of(member_of)
 
         if self._dn_roles:
-            roles.extend(self._dn_roles.roles_of(user_dn))
-
-        return list(set(roles))
+            yield from self._dn_roles.roles_of(user_dn)
 
     async def password_auth(self, username: str, password: str) -> cl.User | None:
         # личность подтверждаем bind'ом под пользователем
@@ -410,7 +413,8 @@ class LdapAuth:
 
             roles = self._roles_of(username, user_dn, member_of)
 
-            if self._config.require_roles and not roles:
+            requires_roles = self._config.require_roles
+            if requires_roles and not roles:
                 self._logger.warning(
                     "access denied for %s (no roles mapped)", username
                 )

@@ -251,7 +251,12 @@ class SpnegoMiddleware:
             )
 
         scheme, _, value = auth.partition(" ")
-        if scheme.lower() != "negotiate" or not value:
+        if scheme.lower() != "negotiate":
+            return await self._challenge(
+                scope, receive, send, f"unexpected auth scheme {scheme!r}"
+            )
+
+        if not value:
             return await self._challenge(
                 scope, receive, send, f"unexpected auth scheme {scheme!r}"
             )
@@ -295,13 +300,11 @@ class SpnegoMiddleware:
 
     def _client(self, headers: Headers, scope: Scope) -> str:
         "Лучший идентификатор клиента для логов: реальный IP за прокси, иначе peer."
-        xff = headers.get("x-forwarded-for")
-        if xff:
+        if xff := headers.get("x-forwarded-for"):
             first, _, _ = xff.partition(",")
             return first.strip()
 
-        real = headers.get("x-real-ip")
-        if real:
+        if real := headers.get("x-real-ip"):
             return real
 
         peer = scope.get("client")
@@ -341,33 +344,23 @@ class KerberosRolesInLdapProvider:
         self._dn_roles: DnUserRolesProvider | None = None
         self._dn_roles_ex: DnExcludeUserProvider | None = None
 
-        samaccountname = self._config.mapping.samaccountname
-        if samaccountname:
-            self._samaccountname_roles = SAMAccountNameUserRolesProvider(
-                samaccountname
-            )
+        if roles := self._config.mapping.samaccountname:
+            self._samaccountname_roles = SAMAccountNameUserRolesProvider(roles)
 
-        samaccountname_ex = self._config.mapping.samaccountname_ex
-        if samaccountname_ex:
-            self._samaccountname_roles_ex = SAMAccountNameExcludeUserProvider(
-                samaccountname_ex
-            )
+        if roles := self._config.mapping.samaccountname_ex:
+            self._samaccountname_roles_ex = SAMAccountNameExcludeUserProvider(roles)
 
-        member_of = self._config.mapping.member_of
-        if member_of:
-            self._member_of_roles = MemberOfUserRolesProvider(member_of)
+        if roles := self._config.mapping.member_of:
+            self._member_of_roles = MemberOfUserRolesProvider(roles)
 
-        member_of_ex = self._config.mapping.member_of_ex
-        if member_of_ex:
-            self._member_of_roles_ex = MemberOfExcludeUserProvider(member_of_ex)
+        if roles := self._config.mapping.member_of_ex:
+            self._member_of_roles_ex = MemberOfExcludeUserProvider(roles)
 
-        dn = self._config.mapping.dn
-        if dn:
-            self._dn_roles = DnUserRolesProvider(dn)
+        if roles := self._config.mapping.dn:
+            self._dn_roles = DnUserRolesProvider(roles)
 
-        dn_ex = self._config.mapping.dn_ex
-        if dn_ex:
-            self._dn_roles_ex = DnExcludeUserProvider(dn_ex)
+        if roles := self._config.mapping.dn_ex:
+            self._dn_roles_ex = DnExcludeUserProvider(roles)
 
     async def request(self, principal: str) -> ADUserEntry:
         search_filter = f"(userPrincipalName={principal})"
@@ -462,8 +455,7 @@ class KerberosAuth:
         self._sid_roles_ex: SidExcludeUserProvider | None = None
         self._kerberos_roles_in_ldap: KerberosRolesInLdapProvider | None = None
 
-        roles = self._config.roles
-        if roles:
+        if roles := self._config.roles:
             if roles.principal:
                 self._principal_roles = LocalUserRolesProvider(roles.principal)
 
@@ -476,8 +468,7 @@ class KerberosAuth:
             if roles.sid_ex:
                 self._sid_roles_ex = SidExcludeUserProvider(roles.sid_ex)
 
-        ldap_roles = self._config.ldap_roles
-        if ldap_roles:
+        if ldap_roles := self._config.ldap_roles:
             self._kerberos_roles_in_ldap = KerberosRolesInLdapProvider(ldap_roles)
 
     @staticmethod
@@ -557,7 +548,8 @@ class KerberosAuth:
 
         roles = sorted(set(roles))
 
-        if self._config.require_roles and not roles:
+        requires_roles = self._config.require_roles
+        if requires_roles and not roles:
             self._logger.warning("access denied for %s (no roles mapped)", principal)
             raise AuthorizationError("Access denied")
 
@@ -608,8 +600,7 @@ class KerberosAuth:
             if user is None:
                 return RedirectResponse(url=self._login_url, status_code=303)
 
-            data_layer = get_data_layer()
-            if data_layer is not None:
+            if data_layer := get_data_layer():
                 try:
                     await data_layer.create_user(user)
                 except Exception as exc:
