@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from boba.chainlit.chat.data.fields import ElementField
 from chainlit.element import (
     ElementDict,
     ElementDisplay,
@@ -247,34 +248,34 @@ class Element(Row):
     @classmethod
     def from_chainlit(cls, data: ElementDict) -> Self:
         return cls(
-            id=Codec.uuid(data.get("id")),
-            thread_id=Codec.uuid_opt(data.get("threadId")),
-            for_id=Codec.uuid_opt(data.get("forId")),
-            type=Codec.require(data.get("type")),
-            chainlit_key=data.get("chainlitKey"),
-            name=Codec.require(data.get("name")),
-            display=Codec.require(data.get("display")),
-            size=data.get("size"),
-            language=data.get("language"),
-            page=data.get("page"),
-            props=data.get("props"),
-            mime=data.get("mime"),
+            id=Codec.uuid(data.get(ElementField.ID)),
+            thread_id=Codec.uuid_opt(data.get(ElementField.THREAD_ID)),
+            for_id=Codec.uuid_opt(data.get(ElementField.FOR_ID)),
+            type=Codec.require(data.get(ElementField.TYPE)),
+            chainlit_key=data.get(ElementField.CHAINLIT_KEY),
+            name=Codec.require(data.get(ElementField.NAME)),
+            display=Codec.require(data.get(ElementField.DISPLAY)),
+            size=data.get(ElementField.SIZE),
+            language=data.get(ElementField.LANGUAGE),
+            page=data.get(ElementField.PAGE),
+            props=data.get(ElementField.PROPS),
+            mime=data.get(ElementField.MIME),
         )
 
     def to_chainlit(self) -> ElementDict:
         return {
-            "id": Codec.uuid_str(self.id),
-            "threadId": Codec.uuid_str_opt(self.thread_id),
-            "type": self.type,
-            "chainlitKey": self.chainlit_key,
-            "name": self.name,
-            "display": self.display,
-            "size": self.size,
-            "language": self.language,
-            "page": self.page,
-            "props": self.props,
-            "forId": Codec.uuid_str_opt(self.for_id),
-            "mime": self.mime,
+            ElementField.ID: Codec.uuid_str(self.id),
+            ElementField.THREAD_ID: Codec.uuid_str_opt(self.thread_id),
+            ElementField.TYPE: self.type,
+            ElementField.CHAINLIT_KEY: self.chainlit_key,
+            ElementField.NAME: self.name,
+            ElementField.DISPLAY: self.display,
+            ElementField.SIZE: self.size,
+            ElementField.LANGUAGE: self.language,
+            ElementField.PAGE: self.page,
+            ElementField.PROPS: self.props,
+            ElementField.FOR_ID: Codec.uuid_str_opt(self.for_id),
+            ElementField.MIME: self.mime,
         }
 
     @classmethod

@@ -19,25 +19,31 @@ import logging
 import mimetypes
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, ClassVar
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
+from uuid import UUID
 from urllib.parse import quote
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 from fastapi.datastructures import UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
+from boba.chainlit.chat.data.data_layer import PostgresDataLayer
+from boba.chainlit.chat.data.fields import ElementField, FileField
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.chat.data.storage import LocalStorageClient, StorageFullError
 from chainlit.auth import get_current_user
+from chainlit.user import PersistedUser, User
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from fastapi import FastAPI
 
-__all__ = ["MultipartFile", "UploadRoute"]
+__all__ = ["AttachmentServing", "MultipartFile", "UploadPolicy", "UploadRoute"]
 
 logger = logging.getLogger(__name__)
 
@@ -182,29 +188,36 @@ class MultipartFile:
             self._part_done = True
 
 
+@dataclass(frozen=True, slots=True)
+class UploadPolicy:
+    """Маршруты и пределы потоковой загрузки вложений."""
+
+    upload_path: str = "/project/file"
+    download_path: str = "/project/file/{file_id}"
+    no_space_status: int = 507
+    object_key: str = "object_key"
+    mib: int = 1024 * 1024
+    log_every_bytes: int = 32 * 1024 * 1024
+    drain_bytes: int = 8 * 1024 * 1024
+    """Потолок вычитывания после отказа: дальше соединение закрывается."""
+    drain_seconds: float = 3.0
+
+
 class UploadRoute:
     """Замена chainlit-роутов вложения: файл течёт в хранилище и обратно."""
 
-    UPLOAD_PATH: ClassVar[str] = "/project/file"
-    DOWNLOAD_PATH: ClassVar[str] = "/project/file/{file_id}"
-    NO_SPACE_STATUS: ClassVar[int] = 507
-    OBJECT_KEY: ClassVar[str] = "object_key"
     CURRENT_USER: ClassVar[Any] = Depends(get_current_user)
-    """Та же проверка токена, что и у штатных роутов chainlit."""
-    MIB: ClassVar[int] = 1024 * 1024
-    LOG_EVERY_BYTES: ClassVar[int] = 32 * 1024 * 1024
-    DRAIN_BYTES: ClassVar[int] = 8 * 1024 * 1024
-    DRAIN_SECONDS: ClassVar[float] = 3.0
-    """Потолок вычитывания после отказа: дальше соединение закрывается."""
+    """Та же проверка токена, что и у chainlit; дефолт сигнатуры — только класс."""
 
-    def __init__(self, storage: LocalStorageClient) -> None:
+    def __init__(self, storage: LocalStorageClient, policy: UploadPolicy) -> None:
         self._storage = storage
+        self._policy = policy
 
     def install(self, chainlit_app: FastAPI) -> None:
         """Роуты встают перед chainlit-овскими: побеждает первый совпавший."""
         routes = [
-            (self.UPLOAD_PATH, self.upload, "POST"),
-            (self.DOWNLOAD_PATH, self.download, "GET"),
+            (self._policy.upload_path, self.upload, "POST"),
+            (self._policy.download_path, self.download, "GET"),
         ]
         for path, endpoint, method in routes:
             chainlit_app.add_api_route(
@@ -252,11 +265,11 @@ class UploadRoute:
             except StorageFullError as e:
                 logger.warning("upload: %s rejected, %s", key.render(), e)
                 raise HTTPException(
-                    status_code=self.NO_SPACE_STATUS, detail=str(e)
+                    status_code=self._policy.no_space_status, detail=str(e)
                 ) from e
         except HTTPException:
             # клиент ещё шлёт файл: без этого соединение оборвётся и он повторит запрос
-            skipped = await part.drain(self.DRAIN_BYTES, self.DRAIN_SECONDS)
+            skipped = await part.drain(self._policy.drain_bytes, self._policy.drain_seconds)
             logger.info(
                 "upload: %s of the rejected body discarded", self._volume(skipped)
             )
@@ -280,18 +293,18 @@ class UploadRoute:
         session = self._session(session_id, current_user)
 
         record = session.files.get(file_id)
-        if not record or self.OBJECT_KEY not in record:
+        if not record or self._policy.object_key not in record:
             raise HTTPException(status_code=404, detail="File not found")
 
-        name = quote(str(record["name"]))
+        name = quote(str(record[FileField.NAME]))
         logger.info(
             "upload: serving %s from storage (%s)",
-            record["name"],
-            record[self.OBJECT_KEY],
+            record[FileField.NAME],
+            record[self._policy.object_key],
         )
         return StreamingResponse(
-            self._storage.read_stream(str(record[self.OBJECT_KEY])),
-            media_type=str(record["type"]),
+            self._storage.read_stream(str(record[self._policy.object_key])),
+            media_type=str(record[FileField.TYPE]),
             headers={"Content-Disposition": f'inline; filename="{name}"'},
         )
 
@@ -303,11 +316,11 @@ class UploadRoute:
 
         async def counted() -> AsyncIterator[bytes]:
             nonlocal written
-            milestone = self.LOG_EVERY_BYTES
+            milestone = self._policy.log_every_bytes
             async for chunk in part.chunks():
                 written += len(chunk)
                 if written >= milestone:
-                    milestone = written + self.LOG_EVERY_BYTES
+                    milestone = written + self._policy.log_every_bytes
                     logger.info(
                         "upload: %s streaming, %s in %s (%s)",
                         target,
@@ -328,20 +341,18 @@ class UploadRoute:
         )
         return written
 
-    @classmethod
-    def _volume(cls, written: int) -> str:
-        return f"{written / cls.MIB:.1f} MiB"
+    def _volume(self, written: int) -> str:
+        return f"{written / self._policy.mib:.1f} MiB"
 
     @staticmethod
     def _took(started: float) -> str:
         return f"{time.monotonic() - started:.1f}s"
 
-    @classmethod
-    def _rate(cls, written: int, started: float) -> str:
+    def _rate(self, written: int, started: float) -> str:
         elapsed = time.monotonic() - started
         if elapsed <= 0:
             return "instant"
-        return f"{written / cls.MIB / elapsed:.1f} MiB/s"
+        return f"{written / self._policy.mib / elapsed:.1f} MiB/s"
 
     def _validate(
         self,
@@ -387,7 +398,7 @@ class UploadRoute:
             "name": key.name,
             "type": part.content_type,
             "size": written,
-            self.OBJECT_KEY: key.render(),
+            self._policy.object_key: key.render(),
         }
         return {
             "id": file_id,
@@ -419,3 +430,47 @@ class UploadRoute:
         if not identifier:
             raise HTTPException(status_code=401, detail="Session has no user")
         return str(identifier)
+
+
+class AttachmentServing:
+    """GET-обработчик вложений: mime едет из elements, иначе фронт не рисует."""
+
+    FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
+
+    def __init__(
+        self,
+        storage: LocalStorageClient,
+        layer: Callable[[], PostgresDataLayer],
+    ) -> None:
+        self._storage = storage
+        self._layer = layer
+
+    async def serve(
+        self,
+        thread_id: UUID,
+        element_id: UUID,
+        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+    ) -> Response:
+        if not isinstance(current_user, PersistedUser):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        element = await self._layer().get_element(str(thread_id), str(element_id))
+        if element is None:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # путь от текущего пользователя: чужие образы недостижимы
+        key = ObjectKey.build(
+            current_user.id,
+            element.get(ElementField.THREAD_ID),
+            element.get(ElementField.NAME),
+            element.get(ElementField.ID),
+        )
+        try:
+            content = await self._storage.read_file(key.render())
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail="File not found") from e
+
+        mime = element.get(ElementField.MIME)
+        if mime is None:
+            mime = self.FALLBACK_MIME
+        return Response(content=content, media_type=mime)

@@ -25,7 +25,7 @@ from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.agent.dump import DumpingTransport
 from boba.chainlit.auth.errors import InternalServiceError
 from boba.chainlit.chat.data import PostgresDataLayer
-from boba.chainlit.chat.data.attachment_url import AttachmentLinks
+from boba.chainlit.chat.data.object_key import AttachmentLinks
 from boba.chainlit.chat.data.storage import LocalStorageClient
 from boba.chainlit.chat.transcript import CheckpointMessages
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore

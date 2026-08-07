@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.rendering.result_markdown import ToolResultMarkdown
-from boba.chainlit.rendering.result_view import (
+from boba.chainlit.rendering.result import (
+    ToolResultMarkdown,
     ChartRendering,
     MarkdownRendering,
     ToolResultView,

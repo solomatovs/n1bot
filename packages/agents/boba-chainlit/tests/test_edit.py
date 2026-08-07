@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from boba.chainlit.chat.edit import ThreadRewind
-from boba.chainlit.rendering.chat_view import ChatView
+from boba.chainlit.rendering.chat_view import ChatView, StepRole
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 
@@ -58,7 +58,7 @@ class TestRewindPlan:
     def test_chart_elements_are_collected(self) -> None:
         messages = turn("q1", "a1", call_id="call_1")
         plan = ThreadRewind.plan(messages, "q1", THREAD)
-        assert plan.element_ids == [ChatView.derive_id(THREAD, "call_1", "element")]
+        assert plan.element_ids == [ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)]
         assert "a1-tool" in plan.remove_ids
 
     def test_nothing_after_question(self) -> None:

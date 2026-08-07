@@ -5,68 +5,24 @@ from collections.abc import AsyncIterator
 from typing import Annotated, Any, cast
 
 from fastapi import Request, Response
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
 from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.data.object_key import ObjectKey
+from boba.chainlit.chat.data.fields import StepField, ThreadField
 from boba.chainlit.chat.edit import ThreadRewind
-from boba.chainlit.chat.handler import chainlit_error_ctx_handler
-from boba.chainlit.chat.turn import ChatTurn, TurnStopper
+from boba.chainlit.chat.errors import chainlit_error_ctx_handler
+from boba.chainlit.chat.turn import ChatTurn, ThreadRoom
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
-from boba.chainlit.infra.session import current_thread_id, current_user_id
+from boba.chainlit.infra.session import current_thread_id
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
-from boba.sandbox import WORKSPACE_MOUNT
 from chainlit.data.base import BaseDataLayer
-from chainlit.session import HTTPSession, WebsocketSession
 from chainlit.types import ThreadDict
-from chainlit.user_session import UserSession
 
 logger = logging.getLogger(__name__)
-
-
-class ChainlitAdapter:
-    "Мост взаимодействия бизнес логики и chainlit"
-
-    @staticmethod
-    def get_chat_id(session: HTTPSession | WebsocketSession):
-        return session.thread_id
-
-    @staticmethod
-    def to_human_message(msg: cl.Message) -> HumanMessage:
-        """Сообщение пользователя; пути вложений — как их видит песочница."""
-        attachments: list[dict[str, str]] = []
-        for element in msg.elements or []:
-            key = ObjectKey.build(
-                current_user_id(), element.thread_id, element.name, element.id
-            )
-            attachments.append(
-                {
-                    "name": element.name or element.id,
-                    "path": f"{WORKSPACE_MOUNT}/{key.in_thread()}",
-                }
-            )
-        extra = {"attachments": attachments} if attachments else {}
-        return HumanMessage(content=msg.content, id=msg.id, additional_kwargs=extra)
-
-    @staticmethod
-    def get_chat_user(session: UserSession):
-        if user := session.get("user"):
-            if not isinstance(user, (cl.PersistedUser, cl.User)):
-                raise RuntimeError(f"user in user_session is not valud: {type(user)}")
-
-            return user
-
-        raise RuntimeError("user does't exists in session")
-
-    @staticmethod
-    async def refresh_view(data_layer: BaseDataLayer, thread_id: str) -> None:
-        "перерисовывает ленту треда из истории агента"
-        if thread := await data_layer.get_thread(thread_id):
-            await cl.context.emitter.resume_thread(thread)
 
 
 @cl.on_message
@@ -80,12 +36,13 @@ async def on_message(
     ],
     data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
 ):
-    thread_id = ChainlitAdapter.get_chat_id(cl.context.session)
+    thread_id = cl.context.session.thread_id
+    ThreadRoom.activate(thread_id)
 
     rewind = ThreadRewind(graph, data_layer, thread_id)
     if await rewind.is_edit(msg.id):
         await rewind.apply(msg.id, msg.content)
-        await ChainlitAdapter.refresh_view(data_layer, thread_id)
+        await rewind.refresh_view()
 
     view = ChatView(thread_id, LiveSink())
     tracer = AgentTracer(view)
@@ -97,7 +54,7 @@ async def on_message(
     stream = cast(
         "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
         graph.astream(
-            {"messages": [ChainlitAdapter.to_human_message(msg)]},
+            {"messages": [ChatTurn.human_message(msg)]},
             stream_mode="messages",
             config=run_config,
         ),
@@ -110,7 +67,10 @@ async def on_message(
 @chainlit_error_ctx_handler
 @di_inject
 async def on_chat_start():
-    pass
+    session = cl.context.session
+    logger.info(
+        "chat start: session=%s, thread=%s", session.id, session.thread_id
+    )
 
 
 @cl.on_logout
@@ -125,7 +85,7 @@ async def on_stop():
     thread_id = current_thread_id()
     if thread_id is None:
         return
-    if not TurnStopper.stop(thread_id):
+    if not ChatTurn.stop(thread_id):
         logger.info("stop pressed for thread %s: nothing is running", thread_id)
 
 
@@ -140,4 +100,49 @@ def get_data_layer(
 @cl.on_chat_resume
 @chainlit_error_ctx_handler
 async def on_chat_resume(thread_dict: ThreadDict):
-    pass
+    """Вкладка вернулась к треду: если ход жив — сохранить loading и живые шаги.
+
+    task_start уже отправлен обёрткой chainlit вокруг хендлера; её же task_end
+    глушится, пока ход не закончится. Незавершённых шагов ещё нет в истории,
+    а stream_token дописывает только в существующее сообщение — подкладываем
+    их в ленту до её отправки клиенту.
+    """
+    thread_id = thread_dict[ThreadField.ID]
+    turn = ChatTurn.active(thread_id)
+    room: list[str] = []
+    for session in ThreadRoom.sessions(thread_id):
+        room.append(session.id)
+    turn_state = "alive" if turn is not None else "none"
+    logger.info(
+        "resume thread %s: turn=%s, thread sessions=%s, current session=%s",
+        thread_id,
+        turn_state,
+        room,
+        cl.context.session.id,
+    )
+    if turn is None:
+        return
+
+    live = turn.resume_steps()
+    steps = list(thread_dict.get(ThreadField.STEPS) or [])
+    positions: dict[str, int] = {}
+    for index, step in enumerate(steps):
+        positions[step.get(StepField.ID, "")] = index
+    for step in live:
+        index = positions.get(step.get(StepField.ID, ""))
+        if index is None:
+            steps.append(step)
+        else:
+            steps[index] = step
+    thread_dict[ThreadField.STEPS] = steps
+    names: list[str] = []
+    for step in live:
+        names.append(str(step.get(StepField.NAME, "")))
+    logger.info(
+        "resume thread %s: %d live steps merged (%s)",
+        thread_id,
+        len(live),
+        ", ".join(names),
+    )
+
+    ThreadRoom.keep_loading()

@@ -403,10 +403,11 @@
         override = {}
 
     [tool.pg.tools]
-        list_targets   = []
-        list_tables    = []
-        describe_table = []
-        query          = ["ADM"]
+        pg_list_targets   = []
+        pg_list_tables    = []
+        pg_describe_table = []
+        pg_query          = []
+        pg_export         = []
 
 
 [tool.kb]

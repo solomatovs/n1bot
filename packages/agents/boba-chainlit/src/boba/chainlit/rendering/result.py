@@ -1,13 +1,15 @@
-"""Markdown-рендер ToolResult-вариантов для Chainlit Step."""
+"""Представление ToolResult: выбор формы, markdown-рендер, plotly-элемент."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, assert_never
 
 from tabulate import tabulate
 
+import chainlit as cl
 from boba.toolkit.result import (
     AffectedResult,
     ChartResult,
@@ -18,8 +20,63 @@ from boba.toolkit.result import (
     TextResult,
     ToolResult,
 )
+from chainlit.element import ElementDisplay
 
-__all__ = ["ToolResultMarkdown"]
+__all__ = [
+    "ChartRendering",
+    "MarkdownRendering",
+    "ToolResultMarkdown",
+    "ToolResultRendering",
+    "ToolResultView",
+]
+
+
+@dataclass(frozen=True)
+class MarkdownRendering:
+    """Результат показывается markdown-строкой (текст/json/таблица/ошибка)."""
+
+    markdown: str
+
+
+@dataclass(frozen=True)
+class ChartRendering:
+    """Результат показывается интерактивным Plotly-графиком."""
+
+    spec: Mapping[str, Any]
+    title: str | None
+
+    def plotly_element(self, *, display: ElementDisplay = "inline") -> cl.Plotly:
+        """cl.Plotly из spec — единственное место, знающее про plotly."""
+        from plotly import graph_objects as go  # noqa: PLC0415
+
+        figure = go.Figure(dict(self.spec))
+        return cl.Plotly(name=self.title or "chart", figure=figure, display=display)
+
+
+ToolResultRendering = MarkdownRendering | ChartRendering
+
+
+class ToolResultView:
+    """Выбирает форму представления для одного ToolResult."""
+
+    def __init__(self, result: ToolResult) -> None:
+        self._result = result
+
+    def render(self) -> ToolResultRendering:
+        match self._result:
+            case ChartResult(spec=spec, title=title):
+                return ChartRendering(spec=spec, title=title)
+            case (
+                TextResult()
+                | JsonResult()
+                | TableResult()
+                | PgCopyTextResult()
+                | AffectedResult()
+                | ErrorResult()
+            ):
+                return MarkdownRendering(ToolResultMarkdown(self._result).render())
+            case _ as never:
+                assert_never(never)
 
 
 class ToolResultMarkdown:

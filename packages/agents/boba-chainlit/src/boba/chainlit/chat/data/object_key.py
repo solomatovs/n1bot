@@ -1,4 +1,4 @@
-"""Storage-ключ вложения: единственное место сборки и разбора пути."""
+"""Адресация вложений: storage-ключ, ссылка и её маршрут."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import ClassVar, Self
 
-__all__ = ["ObjectKey"]
+__all__ = ["AttachmentLinks", "AttachmentUrl", "ObjectKey"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,3 +87,28 @@ class ObjectKey:
         while len(head.encode("utf-8")) > room:
             head = head[:-1]
         return head + tail
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentUrl:
+    """Адресация вложения по треду и id элемента — не по пути в хранилище."""
+
+    thread_id: str
+    element_id: str
+
+    ROUTE: ClassVar[str] = "/attachment/{thread_id}/{element_id}"
+    """Общий шаблон route и ссылки."""
+
+    def path(self) -> str:
+        return self.ROUTE.format(thread_id=self.thread_id, element_id=self.element_id)
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentLinks:
+    """Выдаёт публичные ссылки на вложения; url-префикс знает только он."""
+
+    prefix: str
+
+    def url(self, thread_id: object, element_id: object) -> str:
+        path = AttachmentUrl(str(thread_id), str(element_id)).path()
+        return self.prefix.rstrip("/") + path

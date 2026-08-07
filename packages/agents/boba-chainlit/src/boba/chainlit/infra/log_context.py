@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit.infra.session import current_user_label
+from boba.chainlit.infra.session import current_thread_id, current_user_label
 
 __all__ = ["RequestUserContext", "RequestUserMiddleware", "UserLogContext"]
 
@@ -77,10 +77,11 @@ class RequestUserMiddleware:
 
 
 class UserLogContext:
-    """Добавляет полю `user` значение из сессии chainlit."""
+    """Добавляет полю `user` логин и короткий thread-id из сессии chainlit."""
 
     ATTRIBUTE: ClassVar[str] = "user"
     UNKNOWN: ClassVar[str] = "-"
+    THREAD_LEN: ClassVar[int] = 8
 
     _installed: ClassVar[bool] = False
     _previous: ClassVar[Any] = None
@@ -111,4 +112,18 @@ class UserLogContext:
             label = RequestUserContext.get()
         if not label:
             return cls.UNKNOWN
+
+        thread = cls._thread()
+        if thread:
+            return f"{label} {thread}"
         return label
+
+    @classmethod
+    def _thread(cls) -> str:
+        try:
+            thread_id = current_thread_id()
+        except Exception:
+            return ""
+        if not thread_id:
+            return ""
+        return thread_id[: cls.THREAD_LEN]

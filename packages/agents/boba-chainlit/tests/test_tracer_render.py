@@ -10,7 +10,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
 from boba.chainlit.chat.transcript import ConversationTranscript
-from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
+from boba.chainlit.rendering.chat_view import (
+    ChatView,
+    RecordingSink,
+    StepRole,
+    StepStatus,
+    StepText,
+)
 from boba.toolkit.result import (
     ChartResult,
     ErrorResult,
@@ -89,7 +95,7 @@ class TestToolFinished:
     def test_chart_step_id_is_derived_from_tool_call(self) -> None:
         _, sink = self._finish(ChartResult(spec={"data": []}, title="T"))
         chart = next(s for s in sink.steps if s.get("type") == "assistant_message")
-        assert chart.get("id") == ChatView.derive_id(THREAD, "call_1", "chart")
+        assert chart.get("id") == ChatView.derive_id(THREAD, "call_1", StepRole.CHART)
 
     def test_artifact_dict_renders_like_model(self) -> None:
         step, _ = self._finish({"kind": "text", "text": "from checkpoint"})
@@ -100,12 +106,12 @@ class TestToolFinished:
         step, _ = self._finish(
             JsonResult(ok=False, payload={"exit_code": 127, "stderr": "not found"})
         )
-        assert step.name == ChatView.titled(ChatView.FAILED, "demo")
+        assert step.name == StepStatus.FAILED.title("demo")
         assert step.is_error is True
 
     def test_successful_command_is_marked_green(self) -> None:
         step, _ = self._finish(JsonResult(payload={"exit_code": 0, "stdout": "ok"}))
-        assert step.name == ChatView.titled(ChatView.DONE, "demo")
+        assert step.name == StepStatus.DONE.title("demo")
         assert step.is_error is False
 
     def test_error_result_is_not_ok_by_default(self) -> None:
@@ -117,12 +123,12 @@ class TestToolFinished:
 
         async def scenario():
             step = await view.tool_started("visualize", {"x": 1}, "k1")
-            await view.tool_stopped(step, ChatView.STOPPED_TEXT)
+            await view.tool_stopped(step, StepText.STOPPED)
             return step
 
         step = run(scenario())
-        assert step.name == ChatView.titled(ChatView.FAILED, "visualize")
-        assert step.output == ChatView.STOPPED_TEXT
+        assert step.name == StepStatus.FAILED.title("visualize")
+        assert step.output == StepText.STOPPED
         assert sink.steps
 
     def test_non_tool_result_falls_through(self) -> None:
@@ -167,10 +173,8 @@ class TestTranscript:
             by_type.setdefault(str(step.get("type")), []).append(step)
 
         assert [s.get("output") for s in by_type["user_message"]] == ["нарисуй график"]
-        assert by_type["run"][0].get("name") == ChatView.CONTAINER_NAME
-        assert by_type["tool"][0].get("name") == ChatView.titled(
-            ChatView.DONE, "visualize"
-        )
+        assert by_type["run"][0].get("name") == StepText.CONTAINER
+        assert by_type["tool"][0].get("name") == StepStatus.DONE.title("visualize")
         assert by_type["tool"][0].get("parentId") == by_type["run"][0].get("id")
         answers = [s.get("output") for s in by_type["assistant_message"]]
         assert answers == ["Final", "готово"]
@@ -208,7 +212,7 @@ class TestTranscript:
             ]
         )
         tool = next(s for s in sink.steps if s.get("type") == "tool")
-        assert tool.get("name") == ChatView.titled(ChatView.FAILED, "bad")
+        assert tool.get("name") == StepStatus.FAILED.title("bad")
 
     def test_error_tool_message(self) -> None:
         sink = self._replay(
@@ -239,7 +243,7 @@ class TestTranscript:
         )
         thinking = [s for s in sink.steps if s.get("type") == "llm"]
         assert len(thinking) == 1
-        assert thinking[0].get("name") == ChatView.titled(ChatView.IDLE, "thinking")
+        assert thinking[0].get("name") == StepStatus.IDLE.title("thinking")
         assert thinking[0].get("output") == "размышляю"
 
     def test_answer_id_matches_live_rendering(self) -> None:
@@ -250,7 +254,7 @@ class TestTranscript:
             ]
         )
         answer = next(s for s in sink.steps if s.get("type") == "assistant_message")
-        expected = ChatView.derive_id(THREAD, "chainlit-msg-1", "answer")
+        expected = ChatView.derive_id(THREAD, "chainlit-msg-1", StepRole.ANSWER)
         assert answer.get("id") == expected
 
     def test_question_keeps_chainlit_message_id(self) -> None:

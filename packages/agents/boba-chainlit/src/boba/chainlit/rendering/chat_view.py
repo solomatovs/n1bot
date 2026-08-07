@@ -6,14 +6,14 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid5
 
 from literalai.observability.step import TrueStepType
 
 from boba.cancellation import StopReason
-from boba.chainlit.rendering.chart_figure import build_plotly_element
-from boba.chainlit.rendering.result_view import (
+from boba.chainlit.rendering.result import (
     ChartRendering,
     MarkdownRendering,
     ToolResultView,
@@ -25,9 +25,72 @@ from chainlit.message import Message
 from chainlit.step import Step, StepDict
 from chainlit.utils import utc_now
 
-__all__ = ["ChatSink", "ChatView", "LiveSink", "RecordingSink"]
+__all__ = [
+    "ChatSink",
+    "ChatView",
+    "LiveSink",
+    "RecordingSink",
+    "StepKind",
+    "StepRole",
+    "StepStatus",
+    "StepText",
+]
 
 logger = logging.getLogger(__name__)
+
+
+class StepText(StrEnum):
+    """Тексты шагов ленты."""
+
+    CONTAINER = "process..."
+    RUNNING = "выполняется"
+    STOPPED = "остановлено пользователем"
+    ABORTED = "остановлено"
+
+    @classmethod
+    def for_stop(cls, reason: StopReason | None) -> StepText:
+        """Формулировка остановки: кнопка пользователя или снятая снаружи задача."""
+        if reason is StopReason.USER_STOP:
+            return cls.STOPPED
+        return cls.ABORTED
+
+
+class StepKind(StrEnum):
+    """Типы шагов chainlit, которыми пользуется лента."""
+
+    USER = "user_message"
+    ASSISTANT = "assistant_message"
+    RUN = "run"
+    TOOL = "tool"
+    LLM = "llm"
+
+    @property
+    def step_type(self) -> TrueStepType:
+        return cast("TrueStepType", self.value)
+
+
+class StepStatus(StrEnum):
+    """Статусный кружок в названии шага."""
+
+    IDLE = "○"
+    DONE = "✔"
+    FAILED = "✖"
+
+    def title(self, name: str) -> str:
+        """Название шага со статусным кружком слева."""
+        return f"{self.value} {name}"
+
+
+class StepRole(StrEnum):
+    """Роль шага в детерминированном id: один ключ — несколько шагов."""
+
+    ANSWER = "answer"
+    ERROR = "error"
+    PROCESS = "process"
+    THINKING = "thinking"
+    TOOL = "tool"
+    CHART = "chart"
+    ELEMENT = "element"
 
 
 class ChatSink(ABC):
@@ -73,32 +136,7 @@ class RecordingSink(ChatSink):
 class ChatView:
     """Строит step-иерархию хода диалога и пишет её в sink."""
 
-    CONTAINER_NAME: ClassVar[str] = "process..."
-    RUNNING_TEXT: ClassVar[str] = "выполняется"
-    STOPPED_TEXT: ClassVar[str] = "остановлено пользователем"
-    ABORTED_TEXT: ClassVar[str] = "остановлено"
-    USER_MESSAGE: ClassVar[TrueStepType] = cast("TrueStepType", "user_message")
-    ASSISTANT_MESSAGE: ClassVar[TrueStepType] = cast(
-        "TrueStepType", "assistant_message"
-    )
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
-    # Dingbats \u0438 Geometric Shapes: \u044d\u043c\u043e\u0434\u0437\u0438-\u043a\u0440\u0443\u0436\u043a\u0438 \u0442\u0440\u0435\u0431\u0443\u044e\u0442 \u0448\u0440\u0438\u0444\u0442\u0430 Unicode 12,
-    # \u043d\u0430 \u0441\u0442\u0430\u0440\u044b\u0445 \u043a\u043b\u0438\u0435\u043d\u0442\u0430\u0445 \u0432\u043c\u0435\u0441\u0442\u043e \u043d\u0438\u0445 \u0440\u0438\u0441\u0443\u0435\u0442\u0441\u044f \u043f\u0443\u0441\u0442\u043e\u0439 \u043a\u0432\u0430\u0434\u0440\u0430\u0442
-    IDLE: ClassVar[str] = "\u25cb"
-    DONE: ClassVar[str] = "\u2714"
-    FAILED: ClassVar[str] = "\u2716"
-
-    @classmethod
-    def titled(cls, status: str, name: str) -> str:
-        """Название шага со статусным кружком слева."""
-        return f"{status} {name}"
-
-    @classmethod
-    def stopped_text(cls, reason: StopReason | None) -> str:
-        """Формулировка остановки: кнопка пользователя или снятая снаружи задача."""
-        if reason is StopReason.USER_STOP:
-            return cls.STOPPED_TEXT
-        return cls.ABORTED_TEXT
 
     def __init__(
         self,
@@ -112,7 +150,18 @@ class ChatView:
         self._user_name = user_name or "User"
         self._assistant_name = chainlit_config.ui.name
         self._container: Step | None = None
+        self._answer: Message | None = None
         self._tool_names: dict[str, str] = {}
+
+    @property
+    def container_step(self) -> Step | None:
+        """Открытый контейнер процесса; None — ход шагов ещё не рисовал."""
+        return self._container
+
+    @property
+    def answer_message(self) -> Message | None:
+        """Стримящийся ответ хода; None — ни одного токена ещё не было."""
+        return self._answer
 
     def end_turn(self) -> None:
         self._container = None
@@ -120,7 +169,7 @@ class ChatView:
     async def question(self, text: str, step_id: str | None = None) -> Step:
         step = self._step(
             self._user_name,
-            self.USER_MESSAGE,
+            StepKind.USER,
             parent_id=None,
             step_id=step_id,
         )
@@ -131,9 +180,9 @@ class ChatView:
     async def answer(self, text: str, key: str | None = None) -> Step:
         step = self._step(
             self._assistant_name,
-            self.ASSISTANT_MESSAGE,
+            StepKind.ASSISTANT,
             parent_id=None,
-            step_id=self.derive_id(self._thread_id, key, "answer"),
+            step_id=self.derive_id(self._thread_id, key, StepRole.ANSWER),
         )
         step.output = text
         await self._sink.put(step)
@@ -142,17 +191,40 @@ class ChatView:
     async def error(self, text: str, key: str | None = None) -> Step:
         step = self._step(
             self._assistant_name,
-            self.ASSISTANT_MESSAGE,
+            StepKind.ASSISTANT,
             parent_id=None,
-            step_id=self.derive_id(self._thread_id, key, "error"),
+            step_id=self.derive_id(self._thread_id, key, StepRole.ERROR),
         )
         step.output = text
         step.is_error = True
         await self._sink.put(step)
         return step
 
-    def open_answer(self, key: str | None = None) -> Message:
-        message = Message(content="", id=self.derive_id(self._thread_id, key, "answer"))
+    async def stream_answer(self, token: str, key: str | None = None) -> None:
+        """Токен в стримящийся ответ; первое обращение открывает сообщение."""
+        if self._answer is None:
+            self._answer = self._open_answer(key)
+        await self._answer.stream_token(token)
+
+    async def close_answer(self, key: str | None = None) -> None:
+        """Финальная отправка ответа; пустой ход тоже получает сообщение."""
+        if self._answer is None:
+            self._answer = self._open_answer(key)
+        await self._answer.send()
+
+    async def rewrite_answer(self, content: str, key: str | None = None) -> None:
+        """Замещает текст ответа целиком: фиксация прерванного стрима."""
+        if self._answer is None:
+            await self.answer(content, key)
+            return
+        self._answer.content = content
+        await self._answer.send()
+
+    def _open_answer(self, key: str | None = None) -> Message:
+        message = Message(
+            content="",
+            id=self.derive_id(self._thread_id, key, StepRole.ANSWER),
+        )
         message.parent_id = None
         return message
 
@@ -160,10 +232,10 @@ class ChatView:
         if self._container is not None:
             return self._container
         step = self._step(
-            self.CONTAINER_NAME,
-            "run",
+            StepText.CONTAINER,
+            StepKind.RUN,
             parent_id=None,
-            step_id=self.derive_id(self._thread_id, key, "process"),
+            step_id=self.derive_id(self._thread_id, key, StepRole.PROCESS),
         )
         await self._sink.put(step)
         self._container = step
@@ -171,7 +243,7 @@ class ChatView:
 
     async def thinking(self, text: str, key: str | None = None) -> Step:
         step = await self._child(
-            self.titled(self.IDLE, "thinking"), "llm", key, "thinking"
+            StepStatus.IDLE.title("thinking"), StepKind.LLM, key, StepRole.THINKING
         )
         step.output = text
         step.start = utc_now()
@@ -185,11 +257,13 @@ class ChatView:
         args: Mapping[str, Any] | None,
         key: str | None = None,
     ) -> Step:
-        step = await self._child(self.titled(self.IDLE, name), "tool", key, "tool")
+        step = await self._child(
+            StepStatus.IDLE.title(name), StepKind.TOOL, key, StepRole.TOOL
+        )
         self._tool_names[step.id] = name
         if args:
             step.input = self._render_args(args)
-        step.output = self.RUNNING_TEXT
+        step.output = StepText.RUNNING
         step.start = utc_now()
         await self._sink.put(step)
         return step
@@ -206,22 +280,22 @@ class ChatView:
             content, lang = process_content(artifact)
             step.output = content
             step.language = lang
-            step.name = self.titled(self.DONE, self._tool_names.get(step.id, step.name))
+            step.name = StepStatus.DONE.title(self._tool_names.get(step.id, step.name))
             await self._sink.put(step)
             return
 
         failed = not result.ok
-        step.name = self.titled(
-            self.FAILED if failed else self.DONE,
-            self._tool_names.get(step.id, step.name),
-        )
+        status = StepStatus.FAILED if failed else StepStatus.DONE
+        step.name = status.title(self._tool_names.get(step.id, step.name))
         match ToolResultView(result).render():
-            case ChartRendering(spec=spec, title=title):
+            case ChartRendering() as chart:
                 step.output = (
-                    f"график отрисован: {title}" if title else "график отрисован"
+                    f"график отрисован: {chart.title}"
+                    if chart.title
+                    else "график отрисован"
                 )
                 await self._sink.put(step)
-                await self._chart(title, spec, tool_call_id)
+                await self._chart(chart, tool_call_id)
             case MarkdownRendering(markdown=markdown):
                 step.output = markdown
                 step.is_error = failed
@@ -229,41 +303,41 @@ class ChatView:
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
-        step.name = self.titled(self.FAILED, self._tool_names.get(step.id, step.name))
+        step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = note
         step.end = utc_now()
         await self._sink.put(step)
 
     async def tool_failed(self, step: Step, error: object) -> None:
         step.is_error = True
-        step.name = self.titled(self.FAILED, self._tool_names.get(step.id, step.name))
+        step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = f"**tool failed:** {error}"
         step.end = utc_now()
         await self._sink.put(step)
 
     async def _chart(
         self,
-        title: str | None,
-        spec: Mapping[str, Any],
+        chart: ChartRendering,
         tool_call_id: str | None,
     ) -> None:
         step = self._step(
             self._assistant_name,
-            self.ASSISTANT_MESSAGE,
+            StepKind.ASSISTANT,
             parent_id=None,
-            step_id=self.derive_id(self._thread_id, tool_call_id, "chart"),
+            step_id=self.derive_id(self._thread_id, tool_call_id, StepRole.CHART),
         )
-        step.output = title or ""
+        step.output = chart.title or ""
         if self._sink.EMITS_ELEMENTS:
-            element = build_plotly_element(title or "chart", dict(spec))
+            element = chart.plotly_element()
             element.id = str(
-                self.derive_id(self._thread_id, tool_call_id, "element") or element.id
+                self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
+                or element.id
             )
             step.elements = [element]
         await self._sink.put(step)
 
     @classmethod
-    def derive_id(cls, thread_id: str, key: str | None, role: str) -> str | None:
+    def derive_id(cls, thread_id: str, key: str | None, role: StepRole) -> str | None:
         if not key:
             return None
         return str(uuid5(cls.NAMESPACE, f"{thread_id}/{key}/{role}"))
@@ -271,14 +345,14 @@ class ChatView:
     async def _child(
         self,
         name: str,
-        step_type: TrueStepType,
+        kind: StepKind,
         key: str | None,
-        role: str,
+        role: StepRole,
     ) -> Step:
         container = await self.container(key)
         return self._step(
             name,
-            step_type,
+            kind,
             parent_id=container.id,
             step_id=self.derive_id(self._thread_id, key, role),
         )
@@ -286,14 +360,14 @@ class ChatView:
     def _step(
         self,
         name: str,
-        step_type: TrueStepType,
+        kind: StepKind,
         *,
         parent_id: str | None,
         step_id: str | None = None,
     ) -> Step:
         return Step(
             name=name,
-            type=step_type,
+            type=kind.step_type,
             id=step_id,
             parent_id=parent_id,
             thread_id=self._thread_id,

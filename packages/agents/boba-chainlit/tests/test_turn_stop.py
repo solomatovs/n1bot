@@ -15,7 +15,7 @@ from boba.cancellation import (
     TurnRegistry,
     current_cancellation,
 )
-from boba.chainlit.chat.turn import TurnStopper
+from boba.chainlit.chat.turn import ChatTurn
 
 THREAD = "thread-1"
 
@@ -146,13 +146,13 @@ class TestStopButton:
         async def scenario() -> StopReason | None:
             registry = TurnRegistry.instance()
             with registry.open(THREAD) as cancellation:
-                assert TurnStopper.stop(THREAD) is True
+                assert ChatTurn.stop(THREAD) is True
                 return cancellation.reason
 
         assert asyncio.run(scenario()) is StopReason.USER_STOP
 
     def test_button_without_turn_stops_nothing(self) -> None:
-        assert TurnStopper.stop(THREAD) is False
+        assert ChatTurn.stop(THREAD) is False
 
     def test_turn_survives_when_nobody_pressed_stop(self) -> None:
         """Разрыв связи сам по себе ход не трогает: он доигрывает до конца."""
