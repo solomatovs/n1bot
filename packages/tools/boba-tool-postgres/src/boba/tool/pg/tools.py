@@ -1,56 +1,49 @@
-"""SQL-инструменты только на чтение: список профилей, таблиц, схема, запрос."""
+"""Postgres-инструменты: профили, таблицы, схема, запрос, выгрузка."""
 
 from __future__ import annotations
 
-from typing import Annotated, Any, ClassVar
+from typing import Annotated
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
 from boba.tool.pg.caller import PgCaller
-from boba.tool.pg.executor import (
-    SqlExecutor,
-    SqlExecutorConfig,
-    SqlQueryError,
-)
+from boba.tool.pg.catalog import PgCatalog
+from boba.tool.pg.executor import PgExecutor, PgExecutorConfig
 from boba.toolkit.launcher import (
     CollectorCapacityError,
     CollectorRowLimitError,
     LauncherFactory,
 )
 from boba.toolkit.result import (
-    ErrorResult,
+    AffectedResult,
     PgCopyTextResult,
     TableResult,
     ToolResult,
     pack_result,
+)
+from boba.toolkit.sql import (
+    SqlErrors,
+    SqlQueryError,
+    SqlResult,
+    UnknownConnectionError,
 )
 
 __all__ = ["PgTools", "build_pg_tools"]
 
 
 class PgTools:
-    """Собирает langchain-инструменты поверх SqlExecutor."""
-
-    TABLES_SQL: ClassVar[str] = (
-        "SELECT table_schema AS schema, table_name AS table, table_type AS kind "
-        "FROM information_schema.tables "
-    )
-    COLUMNS_SQL: ClassVar[str] = (
-        "SELECT column_name, data_type, is_nullable, column_default "
-        "FROM information_schema.columns "
-        "WHERE table_schema = %s AND table_name = %s "
-        "ORDER BY ordinal_position"
-    )
+    """Собирает langchain-инструменты поверх PgExecutor."""
 
     def __init__(
         self,
-        cfg: SqlExecutorConfig,
+        cfg: PgExecutorConfig,
         launchers: LauncherFactory,
     ) -> None:
         self._caller = PgCaller("pg", launchers)
         self._cfg = cfg
+        self._errors = SqlErrors(max_rows=cfg.max_rows, max_bytes=cfg.max_bytes)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -58,42 +51,37 @@ class PgTools:
             self._list_tables(),
             self._describe_table(),
             self._query(),
+            self._export(),
         ]
 
     @property
-    def _executor(self) -> SqlExecutor:
-        return SqlExecutor(cfg=self._cfg, caller=self._caller)
+    def _executor(self) -> PgExecutor:
+        return PgExecutor(cfg=self._cfg, caller=self._caller)
 
-    @staticmethod
-    def _note(executor: SqlExecutor, truncated: bool) -> str | None:
-        if not truncated:
-            return None
-        return f"список усечён до max_rows ({executor.max_rows_cap})"
-
-    @staticmethod
-    def _failed(error: SqlQueryError) -> ErrorResult:
-        return ErrorResult(message=str(error), error_kind="sql_failed")
-
-    @staticmethod
-    def _unknown_target(error: ValueError) -> ErrorResult:
-        return ErrorResult(message=str(error), error_kind="unknown_target")
+    def _rows(self, result: SqlResult) -> tuple[str, ToolResult]:
+        return pack_result(
+            TableResult(rows=result.rows, note=self._errors.note(result.truncated))
+        )
 
     def _list_targets(self) -> BaseTool:
         cfg = self._cfg
 
         @tool(response_format="content_and_artifact")
-        def list_targets() -> tuple[str, ToolResult]:
-            """Список доступных значений параметра target для PG-инструментов."""
-            rows = [{"target": target} for target in cfg.targets()]
+        async def pg_list_targets() -> tuple[str, ToolResult]:
+            """Список доступных значений connection_name для postgres-инструментов."""
+            rows: list[dict[str, str]] = []
+            for target in cfg.targets():
+                rows.append({"connection_name": target})
+
             return pack_result(TableResult(rows=rows))
 
-        return list_targets
+        return pg_list_targets
 
     def _list_tables(self) -> BaseTool:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def list_tables(
+        async def pg_list_tables(
             connection_name: Annotated[
                 str,
                 Field(min_length=1, description="Имя подключения"),
@@ -102,52 +90,52 @@ class PgTools:
                 str | None,
                 Field(
                     description=(
-                        "Опциональный фильтр по схеме (например `public`). "
-                        "Пусто = все user-schema'ы "
-                        "(без pg_catalog/information_schema)."
+                        "Схема; пусто — все схемы, включая системные "
+                        "(pg_catalog, information_schema). Их много, и выдача "
+                        "упрётся в max_rows — сузьте фильтр."
+                    ),
+                ),
+            ] = None,
+            table_pattern: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Шаблон имени в синтаксисе LIKE: `kb_%`, `%log%`. "
+                        "Пусто — без фильтра по имени."
                     ),
                 ),
             ] = None,
         ) -> tuple[str, ToolResult]:
-            """Список таблиц/view на профиле target. Колонки: schema, table, kind."""
-            executor = owner._executor
-            if pg_schema:
-                sql = owner.TABLES_SQL + (
-                    "where table_schema = %s order by table_schema, table_name"
-                )
-                params: tuple[Any, ...] = (pg_schema,)
-            else:
-                sql = owner.TABLES_SQL + (
-                    "where 1=1 order by table_schema, table_name"
-                )
-                params = ()
+            """Таблицы и view подключения из pg_catalog.
 
+            Колонки: schema, table_name, kind, approx_rows, owner, total_bytes,
+            comment. kind: r таблица, p партиционированная, v view,
+            m материализованное view, f сторонняя таблица. Сложные условия по
+            каталогу пишутся запросом к pg_catalog через pg_query.
+            """
+            executor = owner._executor
+            query = PgCatalog.tables(pg_schema, table_pattern)
             try:
-                result = executor.execute(
-                    sql,
+                result = await executor.execute(
+                    query.text,
                     connection_name=connection_name,
                     row_limit=executor.max_rows_cap,
-                    params=params,
+                    params=query.params,
                 )
-            except ValueError as e:
-                return pack_result(owner._unknown_target(e))
+            except UnknownConnectionError as e:
+                return pack_result(owner._errors.unknown_target(e))
             except SqlQueryError as e:
-                return pack_result(owner._failed(e))
+                return pack_result(owner._errors.failed(e))
 
-            return pack_result(
-                TableResult(
-                    rows=result.rows,
-                    note=owner._note(executor, result.truncated),
-                )
-            )
+            return owner._rows(result)
 
-        return list_tables
+        return pg_list_tables
 
     def _describe_table(self) -> BaseTool:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def describe_table(
+        async def pg_describe_table(
             connection_name: Annotated[
                 str,
                 Field(min_length=1, description="Имя коннекшина БД"),
@@ -157,93 +145,131 @@ class PgTools:
                 Field(min_length=1, description="Имя таблицы (без схемы)"),
             ],
             pg_schema: Annotated[
-                str,
+                str | None,
                 Field(
-                    min_length=1,
-                    description="PG schema таблицы. По умолчанию public",
+                    description=(
+                        "Схема таблицы; пусто — искать во всех схемах, "
+                        "схема каждой найденной видна колонкой schema."
+                    ),
                 ),
-            ] = "public",
+            ] = None,
         ) -> tuple[str, ToolResult]:
-            """Схема таблицы на профиле target: колонки, типы, nullable, default."""
+            """Схема таблицы из pg_catalog: колонки, нативные типы, ключи.
+
+            Колонки: schema, position, column_name, type, nullable,
+            default_expression, identity, generated, primary_key, comment.
+            """
             executor = owner._executor
+            query = PgCatalog.columns(table, pg_schema)
             try:
-                result = executor.execute(
-                    owner.COLUMNS_SQL,
+                result = await executor.execute(
+                    query.text,
                     connection_name=connection_name,
                     row_limit=executor.max_rows_cap,
-                    params=(pg_schema, table),
+                    params=query.params,
                 )
-            except ValueError as e:
-                return pack_result(owner._unknown_target(e))
+            except UnknownConnectionError as e:
+                return pack_result(owner._errors.unknown_target(e))
             except SqlQueryError as e:
-                return pack_result(owner._failed(e))
+                return pack_result(owner._errors.failed(e))
 
-            return pack_result(
-                TableResult(
-                    rows=result.rows,
-                    note=owner._note(executor, result.truncated),
-                )
-            )
+            return owner._rows(result)
 
-        return describe_table
+        return pg_describe_table
 
     def _query(self) -> BaseTool:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def query(
+        async def pg_query(
+            connection_name: Annotated[
+                str,
+                Field(min_length=1, description="Имя подключения"),
+            ],
             sql: Annotated[
                 str,
                 Field(
                     min_length=1,
                     description=(
-                        "Произвольный read-only SQL-запрос. Выполняется через "
-                        "COPY (...) TO STDOUT и возвращается как CSV. Если строк "
-                        "больше лимита — добавьте LIMIT в сам запрос."
+                        "Произвольный SQL. Запрос с выборкой возвращает строки; "
+                        "если их больше лимита — добавьте LIMIT в сам запрос. "
+                        "INSERT/UPDATE/DELETE/DDL возвращают число затронутых "
+                        "строк и статус сервера."
                     ),
                 ),
             ],
-            target: Annotated[
+        ) -> tuple[str, ToolResult]:
+            """Выполнить SQL на подключении: строки либо счётчик затронутых."""
+            executor = owner._executor
+            try:
+                result = await executor.execute(
+                    sql,
+                    connection_name=connection_name,
+                    row_limit=executor.max_rows_cap,
+                    params=(),
+                )
+            except CollectorCapacityError:
+                return pack_result(owner._errors.too_large())
+            except CollectorRowLimitError:
+                return pack_result(owner._errors.too_many_rows())
+            except UnknownConnectionError as e:
+                return pack_result(owner._errors.unknown_target(e))
+            except SqlQueryError as e:
+                return pack_result(owner._errors.failed(e))
+
+            if not result.returns_rows:
+                return pack_result(
+                    AffectedResult(
+                        affected_rows=result.rowcount,
+                        status=result.status,
+                    )
+                )
+            return owner._rows(result)
+
+        return pg_query
+
+    def _export(self) -> BaseTool:
+        owner = self
+
+        @tool(response_format="content_and_artifact")
+        async def pg_export(
+            connection_name: Annotated[
                 str,
                 Field(min_length=1, description="Имя подключения"),
             ],
+            sql: Annotated[
+                str,
+                Field(
+                    min_length=1,
+                    description=(
+                        "Read-only SQL для выгрузки. Выполняется через "
+                        "COPY (...) TO STDOUT и возвращается текстом; запись и "
+                        "DDL внутри COPY сервер отклонит. Если строк больше "
+                        "лимита — добавьте LIMIT в сам запрос."
+                    ),
+                ),
+            ],
         ) -> tuple[str, ToolResult]:
-            """Выполнить read-only SQL на профиле target, результат — CSV."""
+            """Выгрузить результат SELECT текстом через COPY ... TO STDOUT."""
             executor = owner._executor
             try:
-                text = executor.execute_copy(sql, connection_name=target)
+                text = await executor.execute_copy(sql, connection_name=connection_name)
             except CollectorCapacityError:
-                return pack_result(
-                    ErrorResult(
-                        message=(
-                            f"результат превысил лимит {executor.max_bytes} "
-                            f"байт; добавьте LIMIT в запрос"
-                        ),
-                        error_kind="result_too_large",
-                    )
-                )
+                return pack_result(owner._errors.too_large())
             except CollectorRowLimitError:
-                return pack_result(
-                    ErrorResult(
-                        message=(
-                            f"запрос вернул больше {executor.max_rows_cap} "
-                            f"строк; добавьте LIMIT в запрос"
-                        ),
-                        error_kind="too_many_rows",
-                    )
-                )
-            except ValueError as e:
-                return pack_result(owner._unknown_target(e))
+                return pack_result(owner._errors.too_many_rows())
+            except UnknownConnectionError as e:
+                return pack_result(owner._errors.unknown_target(e))
             except SqlQueryError as e:
-                return pack_result(owner._failed(e))
+                return pack_result(owner._errors.failed(e))
 
             return pack_result(PgCopyTextResult(text=text))
 
-        return query
+        return pg_export
 
 
 def build_pg_tools(
-    cfg: SqlExecutorConfig,
+    cfg: PgExecutorConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
     return PgTools(cfg, launchers).build()

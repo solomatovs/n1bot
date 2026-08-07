@@ -14,11 +14,12 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.toolkit.launcher import RowStream
 from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
+from boba.toolkit.sql import SqlQueryTrailer, SqlRows
 
 
 class PostgresOps:
@@ -44,27 +45,57 @@ class PostgresOps:
 
     @classmethod
     async def query(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:
-        """Запрос с лимитом: строки уходят кадрами, лишняя строка ловит усечение."""
+        """Запрос с лимитом: строки кадрами, либо счётчик, если выборки не было."""
         limit = request["row_limit"]
         params = request["params"]
         if not params:
             params = None
-        emitted = 0
-        truncated = False
+
         conn = await PayloadPostgres.connect(request)
         async with conn, conn.cursor(row_factory=dict_row) as cur:
             try:
                 await cur.execute(request["sql"], params)
-                async for row in cur:
-                    if emitted >= limit:
-                        truncated = True
-                        break
-                    emit(RowStream.encode(PayloadPostgres.jsonable(row)))
-                    emitted += 1
+                if cur.description is None:
+                    return cls._affected(cur).model_dump()
+                truncated = await cls._emit_rows(cur, emit, limit)
             except psycopg.Error as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
                 raise PayloadError("sql_failed", msg) from e
-        return {"truncated": truncated}
+
+            trailer = SqlQueryTrailer(
+                truncated=truncated,
+                returns_rows=True,
+                rowcount=None,
+                status=cur.statusmessage,
+            )
+        return trailer.model_dump()
+
+    @classmethod
+    async def _emit_rows(
+        cls, cur: psycopg.AsyncCursor[DictRow], emit: ChunkEmitter, limit: int
+    ) -> bool:
+        """Кадр на строку; лишняя строка сверх лимита ловит усечение и рвёт поток."""
+        emitted = 0
+        async for row in cur:
+            if emitted >= limit:
+                return True
+            emit(RowStream.encode(SqlRows.of_mapping(row)))
+            emitted += 1
+        return False
+
+    @classmethod
+    def _affected(cls, cur: psycopg.AsyncCursor[DictRow]) -> SqlQueryTrailer:
+        """Итог запроса без выборки; rowcount -1 у psycopg значит «счётчика нет»."""
+        rowcount: int | None = cur.rowcount
+        if cur.rowcount < 0:
+            rowcount = None
+
+        return SqlQueryTrailer(
+            truncated=False,
+            returns_rows=False,
+            rowcount=rowcount,
+            status=cur.statusmessage,
+        )
 
     @classmethod
     async def copy(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:

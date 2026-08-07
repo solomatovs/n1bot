@@ -9,6 +9,7 @@ from typing import Any, assert_never
 from tabulate import tabulate
 
 from boba.toolkit.result import (
+    AffectedResult,
     ChartResult,
     ErrorResult,
     JsonResult,
@@ -37,6 +38,8 @@ class ToolResultMarkdown:
                 return self._table_block(rows, note)
             case PgCopyTextResult() as pg_text:
                 return self._copy_text_block(pg_text)
+            case AffectedResult(affected_rows=n, status=s):
+                return self._affected_block(n, s)
             case ChartResult(title=title):
                 return f"_(график: {title})_" if title else "_(график)_"
             case ErrorResult(message=m):
@@ -45,6 +48,18 @@ class ToolResultMarkdown:
                 return f"**Error:** {m}"
             case _ as never:
                 assert_never(never)
+
+    @staticmethod
+    def _affected_block(affected_rows: int | None, status: str | None) -> str:
+        if affected_rows is None:
+            if status is None:
+                return "_запрос выполнен_"
+            return f"_{status}_"
+
+        counted = f"затронуто строк: {affected_rows}"
+        if status is None:
+            return f"_{counted}_"
+        return f"_{counted} ({status})_"
 
     @staticmethod
     def _json_block(payload: Any) -> str:

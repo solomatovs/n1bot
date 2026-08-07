@@ -39,11 +39,12 @@ from boba.tool.kb.confluence.ingest_tools import (
     build_confluence_ingest_tools,
 )
 from boba.tool.kb.search import ConfluenceCollection
-from boba.tool.pg import SqlExecutorConfig, build_pg_tools
+from boba.tool.pg import PgExecutorConfig, build_pg_tools
 from boba.tool.shell import build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.result import (
+    AffectedResult,
     ChartResult,
     ErrorResult,
     JsonResult,
@@ -205,7 +206,7 @@ def confluence_tools(raw_config):
 
 @pytest.fixture(scope="module")
 def pg_tools(raw_config):
-    cfg = ToolSetup.config(raw_config, "tool.pg", SqlExecutorConfig)
+    cfg = ToolSetup.config(raw_config, "tool.pg", PgExecutorConfig)
     launchers = ToolSetup.launchers(raw_config, "tool.pg")
     return ToolSetup.by_name(build_pg_tools(cfg, launchers))
 
@@ -539,48 +540,89 @@ class TestPgTools:
     """pg: соединение, kerberos и SQL исполняются внутри песочницы."""
 
     async def test_list_targets(self, pg_tools) -> None:
-        result = await Call.ok(pg_tools["list_targets"])
+        result = await Call.ok(pg_tools["pg_list_targets"])
         targets = []
         for row in result.rows:
-            targets.append(row["target"])
+            targets.append(row["connection_name"])
         assert targets
 
     async def test_list_tables(self, pg_tools) -> None:
-        result = await Call.ok(pg_tools["list_tables"], connection_name="main")
+        result = await Call.ok(
+            pg_tools["pg_list_tables"],
+            connection_name="main",
+            pg_schema="pg_catalog",
+        )
         assert result.rows
-        assert set(result.rows[0]) >= {"schema", "table", "kind"}
+        assert set(result.rows[0]) >= {"schema", "table_name", "kind", "owner"}
+
+    async def test_system_schemas_are_not_hidden(self, pg_tools) -> None:
+        """Каталог не прячется: системные схемы видны наравне с остальными."""
+        result = await Call.ok(pg_tools["pg_list_tables"], connection_name="main")
+        schemas = set()
+        for row in result.rows:
+            schemas.add(row["schema"])
+        assert schemas
+
+    async def test_table_pattern_filters_by_name(self, pg_tools) -> None:
+        result = await Call.ok(
+            pg_tools["pg_list_tables"],
+            connection_name="main",
+            pg_schema="pg_catalog",
+            table_pattern="pg_cl%",
+        )
+        assert result.rows
+        for row in result.rows:
+            assert row["table_name"].startswith("pg_cl")
 
     async def test_describe_table(self, pg_tools) -> None:
-        tables = await Call.ok(pg_tools["list_tables"], connection_name="main")
+        tables = await Call.ok(
+            pg_tools["pg_list_tables"],
+            connection_name="main",
+            pg_schema="pg_catalog",
+            table_pattern="pg_class",
+        )
         first = tables.rows[0]
         result = await Call.ok(
-            pg_tools["describe_table"],
+            pg_tools["pg_describe_table"],
             connection_name="main",
-            table=first["table"],
+            table=first["table_name"],
             pg_schema=first["schema"],
         )
         assert result.rows
-        assert set(result.rows[0]) >= {"column_name", "data_type", "is_nullable"}
+        assert set(result.rows[0]) >= {"column_name", "type", "nullable", "primary_key"}
 
     async def test_query_returns_rows(self, pg_tools) -> None:
         result = await Call.ok(
-            pg_tools["query"], target="main", sql="select 1 as one, 'два' as two"
+            pg_tools["pg_query"],
+            connection_name="main",
+            sql="select 1 as one, 'два' as two",
+        )
+        assert isinstance(result, TableResult)
+        assert result.rows[0]["one"] == 1
+        assert result.rows[0]["two"] == "два"
+
+    async def test_statement_without_rows_reports_status(self, pg_tools) -> None:
+        """DDL проходит и отчитывается статусом; временная таблица живёт в сессии."""
+        result = await Call.ok(
+            pg_tools["pg_query"],
+            connection_name="main",
+            sql="create temp table integration_probe(x int)",
+        )
+        assert isinstance(result, AffectedResult)
+        assert result.status == "CREATE TABLE"
+
+    async def test_export_returns_copy_text(self, pg_tools) -> None:
+        result = await Call.ok(
+            pg_tools["pg_export"],
+            connection_name="main",
+            sql="select 1 as one, 'два' as two",
         )
         assert "one" in result.text
         assert "два" in result.text
 
-    async def test_write_is_rejected(self, pg_tools) -> None:
-        """Соединение read-only: запись не должна пройти даже случайно."""
-        result = await Call.result(
-            pg_tools["query"],
-            target="main",
-            sql="create table integration_probe(x int)",
-        )
-        assert isinstance(result, ErrorResult)
-
     async def test_unknown_target_is_rejected(self, pg_tools) -> None:
         result = await Call.result(
-            pg_tools["query"], target="нет-такого", sql="select 1"
+            pg_tools["pg_query"], connection_name="нет-такого", sql="select 1"
         )
         assert isinstance(result, ErrorResult)
 

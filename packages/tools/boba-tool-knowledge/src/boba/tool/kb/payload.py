@@ -18,6 +18,7 @@ from psycopg.rows import dict_row
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.toolkit.launcher import RowStream
 from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
+from boba.toolkit.sql import SqlRows
 
 
 class KbOps:
@@ -111,7 +112,7 @@ class KbOps:
             try:
                 await cur.execute(statement, params)
                 async for row in cur:
-                    emit(RowStream.encode(PayloadPostgres.jsonable(row)))
+                    emit(RowStream.encode(SqlRows.of_mapping(row)))
             except psycopg.Error as e:
                 msg = f"kb search failed: {type(e).__name__}: {e}"
                 raise PayloadError("kb_query_failed", msg) from e

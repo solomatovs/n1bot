@@ -4,64 +4,30 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres import PostgresConfig
+from boba.toolkit.sql import SqlCall, SqlQueryRequest
 
 __all__ = [
     "PgCopyRequest",
     "PgCopyTrailer",
     "PgQueryRequest",
-    "PgQueryTrailer",
 ]
 
 
-class PgCall(BaseModel):
-    """Общая часть: к чему подключаться и что выполнять."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    op: str = Field(min_length=1)
-    connection: PostgresConfig = Field(
-        description=(
-            "Профиль подключения целиком: libpq-параметры, опции сессии и "
-            "креды kerberos, по которым payload сам получает TGT."
-        ),
-    )
-    sql: str = Field(min_length=1)
-
-    @field_serializer("connection", when_used="json")
-    def _dump_connection(self, value: PostgresConfig) -> dict[str, Any]:
-        """stdin песочницы — доверенный канал: только здесь пароль едет раскрытым."""
-        return value.model_dump(
-            mode="json",
-            context={PostgresConfig.REVEAL_SECRETS: True},
-        )
-
-
-class PgQueryRequest(PgCall):
-    """Запрос строк с лимитом."""
+class PgQueryRequest(SqlQueryRequest[PostgresConfig, tuple[Any, ...]]):
+    """Запрос строк с лимитом; параметры позиционные, под %s psycopg."""
 
     OP: ClassVar[str] = "pg_query"
-
-    params: tuple[Any, ...] = Field(
-        description="Позиционные параметры запроса; пустой кортеж — без них.",
-    )
-    row_limit: int = Field(ge=1)
+    REVEAL_SECRETS: ClassVar[str] = PostgresConfig.REVEAL_SECRETS
 
 
-class PgQueryTrailer(BaseModel):
-    """Итог запроса: строки ушли кадрами, здесь признак превышения лимита."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    truncated: bool
-
-
-class PgCopyRequest(PgCall):
+class PgCopyRequest(SqlCall[PostgresConfig]):
     """Выгрузка COPY ... TO STDOUT с потолком по байтам."""
 
     OP: ClassVar[str] = "pg_copy"
+    REVEAL_SECRETS: ClassVar[str] = PostgresConfig.REVEAL_SECRETS
 
     max_bytes: int = Field(ge=1)
 

@@ -5,7 +5,9 @@ __pycache__
 *.pyo
 *.pyd
 *.egg-info/
+docs
 .claude
+CLAUDE.md
 
 packages/**/build/
 packages/**/dist/
