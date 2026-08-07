@@ -22,9 +22,9 @@ from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.launcher import LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
 from boba.workspace.launcher import (
-    EXIT_MOUNT_ERROR,
-    LAUNCHER_ERROR_PREFIX,
-    LAUNCHER_LOG_PREFIX,
+    LauncherExit,
+    LauncherMarker,
+    LauncherMode,
     ResourceLimits,
     build_chain_argv,
     require_fuse,
@@ -86,14 +86,14 @@ class SandboxLogRelay:
     @classmethod
     def relayed(cls, line: str) -> bool:
         """Строка уже ушла в журнал: в stderr результата её держать незачем."""
-        return line.startswith((LaunchPayload.LOG_MARKER, LAUNCHER_LOG_PREFIX))
+        return line.startswith((LaunchPayload.LOG_MARKER, LauncherMarker.LOG.value))
 
     def _line(self, line: str) -> None:
         if line.startswith(LaunchPayload.LOG_MARKER):
             self._log_frame(line[len(LaunchPayload.LOG_MARKER) :])
             return
-        if line.startswith(LAUNCHER_LOG_PREFIX):
-            body = line[len(LAUNCHER_LOG_PREFIX) :]
+        if line.startswith(LauncherMarker.LOG.value):
+            body = line[len(LauncherMarker.LOG) :]
             logger.info("sandbox[%s]: %s", self._label, body)
             return
         if line.strip():
@@ -252,7 +252,7 @@ class SandboxRunner:
         argv = build_chain_argv(
             images=images,
             template=profile.image_template,
-            op=["run", shlex.join(inner_argv)],
+            op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
             python_bin=sys.executable,
             options=profile.launcher.to_options(),
             limits=limits,
@@ -349,9 +349,9 @@ class SandboxRunner:
 
     @staticmethod
     def _raise_on_mount_error(result: RunResult) -> None:
-        if result.exit_code != EXIT_MOUNT_ERROR:
+        if result.exit_code != LauncherExit.MOUNT_ERROR:
             return
-        if LAUNCHER_ERROR_PREFIX not in result.stderr:
+        if LauncherMarker.ERROR.value not in result.stderr:
             return
         msg = f"sandbox: image not mounted: {result.stderr.strip()}"
         raise RuntimeError(msg)

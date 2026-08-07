@@ -17,24 +17,23 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import IntEnum, StrEnum
 from typing import BinaryIO, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
-    "EXIT_MOUNT_ERROR",
-    "EXIT_NOT_FOUND",
-    "EXIT_NO_SPACE",
     "FUSE_DEVICE",
-    "LAUNCHER_ENV",
-    "LAUNCHER_ERROR_PREFIX",
-    "LAUNCHER_LOG_PREFIX",
     "CapabilityDropper",
     "FileOperations",
     "FuseMounter",
     "ImageStore",
     "Launcher",
     "LauncherConfig",
+    "LauncherEnv",
+    "LauncherExit",
+    "LauncherMarker",
+    "LauncherMode",
     "LauncherOptions",
     "MountError",
     "ResourceLimits",
@@ -45,20 +44,43 @@ __all__ = [
     "trace",
 ]
 
-EXIT_MOUNT_ERROR = 2
-EXIT_NOT_FOUND = 3
-EXIT_NO_SPACE = 4
 
-LAUNCHER_LOG_PREFIX = "sandbox-mount: "
-"""Маркер трассировки в stderr: хост уводит такие строки в лог, LLM их не видит."""
+class LauncherExit(IntEnum):
+    """Коды возврата лаунчера."""
 
-LAUNCHER_ERROR_PREFIX = "sandbox-mount-error: "
-"""Отдельный маркер сбоя: по нему хост отличает его от обычной трассировки."""
+    OK = 0
+    MOUNT_ERROR = 2
+    NOT_FOUND = 3
+    NO_SPACE = 4
+
+
+class LauncherMarker(StrEnum):
+    """Маркеры строк stderr: хост отличает трассировку и сбой от чужого шума."""
+
+    LOG = "sandbox-mount: "
+    ERROR = "sandbox-mount-error: "
+
+
+class LauncherMode(StrEnum):
+    """Операции лаунчера над смонтированным образом."""
+
+    RUN = "run"
+    WRITE = "write"
+    READ = "read"
+    DELETE = "delete"
+
+
+class LauncherEnv(StrEnum):
+    """Переменные окружения портативного python: без них лаунчер не стартует."""
+
+    LD_LIBRARY_PATH = "LD_LIBRARY_PATH"
+    PYTHONHOME = "PYTHONHOME"
+    PYTHONPATH = "PYTHONPATH"
 
 
 def trace(message: str) -> None:
     """Ход монтирования — только в stderr: stdout занят данными операции."""
-    print(f"{LAUNCHER_LOG_PREFIX}{message}", file=sys.stderr, flush=True)  # noqa: T201
+    print(f"{LauncherMarker.LOG}{message}", file=sys.stderr, flush=True)  # noqa: T201
 
 
 class MountError(RuntimeError):
@@ -265,7 +287,7 @@ class FileOperations:
     )
     """Образ кончился: недописанный файл сносится, чтобы не занимать остаток."""
 
-    def write(self, rel: str, src: BinaryIO) -> int:
+    def write(self, rel: str, src: BinaryIO) -> LauncherExit:
         path = self._resolve(rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
@@ -278,12 +300,12 @@ class FileOperations:
                 raise
             self._discard(path)
             print(  # noqa: T201
-                f"{LAUNCHER_ERROR_PREFIX}no space left in the workspace image "
+                f"{LauncherMarker.ERROR}no space left in the workspace image "
                 f"for {rel!r}",
                 file=sys.stderr,
             )
-            return EXIT_NO_SPACE
-        return 0
+            return LauncherExit.NO_SPACE
+        return LauncherExit.OK
 
     @staticmethod
     def _discard(path: str) -> None:
@@ -292,22 +314,22 @@ class FileOperations:
         except OSError:
             trace(f"cannot remove partial file {path}")
 
-    def read(self, rel: str, dst: BinaryIO) -> int:
+    def read(self, rel: str, dst: BinaryIO) -> LauncherExit:
         try:
             f = open(self._resolve(rel), "rb")  # noqa: SIM115
         except FileNotFoundError:
-            return EXIT_NOT_FOUND
+            return LauncherExit.NOT_FOUND
         with f:
             shutil.copyfileobj(f, dst)
         dst.flush()
-        return 0
+        return LauncherExit.OK
 
-    def delete(self, rel: str) -> int:
+    def delete(self, rel: str) -> LauncherExit:
         try:
             os.remove(self._resolve(rel))
         except FileNotFoundError:
-            return EXIT_NOT_FOUND
-        return 0
+            return LauncherExit.NOT_FOUND
+        return LauncherExit.OK
 
     def _resolve(self, rel: str) -> str:
         norm = os.path.normpath(rel)
@@ -319,8 +341,6 @@ class FileOperations:
 
 class Launcher:
     """Оркестратор: валидация -> локи и образы -> mount -> операция -> гашение."""
-
-    MODES: ClassVar[tuple[str, ...]] = ("run", "write", "read", "delete")
 
     USERNS_SYSCTL: ClassVar[str] = "/proc/sys/user/max_user_namespaces"
     """bwrap --disable-userns несовместим с mount fuse, поэтому sysctl после mount."""
@@ -360,13 +380,13 @@ class Launcher:
         try:
             return launcher.run(args.mode, args.args)
         except (MountError, OSError, ValueError) as e:
-            print(f"{LAUNCHER_ERROR_PREFIX}{e}", file=sys.stderr)  # noqa: T201
-            return EXIT_MOUNT_ERROR
+            print(f"{LauncherMarker.ERROR}{e}", file=sys.stderr)  # noqa: T201
+            return LauncherExit.MOUNT_ERROR
 
-    def run(self, mode: str, op_args: list[str]) -> int:
+    def run(self, mode: LauncherMode, op_args: list[str]) -> int:
         operation = self._plan(mode, op_args)
         started = time.monotonic()
-        trace(f"operation {mode!r}, images: {len(self._images)}")
+        trace(f"operation {mode.value!r}, images: {len(self._images)}")
         for image, _ in self._images:
             self._store.acquire(image)
         mounter = FuseMounter(self._options, pass_fds=self._store.lock_fds)
@@ -375,7 +395,7 @@ class Launcher:
                 mounter.mount(image, mnt)
             code = operation()
             elapsed_ms = int((time.monotonic() - started) * 1000)
-            trace(f"operation {mode!r} finished rc={code} in {elapsed_ms}ms")
+            trace(f"operation {mode.value!r} finished rc={code} in {elapsed_ms}ms")
             return code
         finally:
             mounter.shutdown()
@@ -386,12 +406,9 @@ class Launcher:
             f.write("0")
         trace(f"{self.USERNS_SYSCTL}=0: nested user namespaces denied to the command")
 
-    def _plan(self, mode: str, op_args: list[str]) -> Callable[[], int]:
-        if mode not in self.MODES:
-            msg = f"unknown operation {mode!r}"
-            raise MountError(msg)
+    def _plan(self, mode: LauncherMode, op_args: list[str]) -> Callable[[], int]:
         argument = self._single_argument(mode, op_args)
-        if mode == "run":
+        if mode is LauncherMode.RUN:
             argv = shlex.split(argument)
             if not argv:
                 msg = "run: empty command"
@@ -399,12 +416,12 @@ class Launcher:
             return lambda: self._run_command(argv)
         return lambda: self._file_operation(mode, argument)
 
-    def _file_operation(self, mode: str, argument: str) -> int:
+    def _file_operation(self, mode: LauncherMode, argument: str) -> LauncherExit:
         ops = FileOperations(self._images[0][1])
         CapabilityDropper().drop_all()
-        if mode == "write":
+        if mode is LauncherMode.WRITE:
             return ops.write(argument, sys.stdin.buffer)
-        if mode == "read":
+        if mode is LauncherMode.READ:
             return ops.read(argument, sys.stdout.buffer)
         return ops.delete(argument)
 
@@ -444,12 +461,12 @@ class Launcher:
         parser.add_argument("--max-file-size-bytes", type=int, required=True)
         parser.add_argument("--max-open-files", type=int, required=True)
         parser.add_argument("--oom-score-adj", type=int, required=True)
-        parser.add_argument("mode", choices=cls.MODES)
+        parser.add_argument("mode", type=LauncherMode, choices=tuple(LauncherMode))
         parser.add_argument("args", nargs=argparse.REMAINDER)
         return parser.parse_args(argv)
 
     @staticmethod
-    def _single_argument(mode: str, op_args: list[str]) -> str:
+    def _single_argument(mode: LauncherMode, op_args: list[str]) -> str:
         if len(op_args) != 1:
             msg = f"{mode}: exactly one argument expected, got {len(op_args)}"
             raise MountError(msg)
@@ -459,9 +476,6 @@ class Launcher:
 _LAUNCHER_MODULE = "boba.workspace.launcher"
 
 FUSE_DEVICE = "/dev/fuse"
-
-LAUNCHER_ENV = ("LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH")
-"""Портативный python лаунчера без них не стартует: свои библиотеки и site."""
 
 
 def require_fuse() -> None:
@@ -545,11 +559,11 @@ def build_chain_argv(  # noqa: PLR0913
         "PATH",
         os.environ.get("PATH", "/usr/bin:/bin"),
     ]
-    for name in LAUNCHER_ENV:
-        value = os.environ.get(name)
+    for name in LauncherEnv:
+        value = os.environ.get(name.value)
         if not value:
             continue
-        argv += ["--setenv", name, value]
+        argv += ["--setenv", name.value, value]
     if not network:
         argv.append("--unshare-net")
     argv += [

@@ -113,18 +113,18 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
 def _use_file_serving(c: AppConfig) -> None:
     from boba.chainlit.auth.errors import InternalServiceError  # noqa: PLC0415
-    from boba.chainlit.chat.data.object_key import AttachmentUrl  # noqa: PLC0415
     from boba.chainlit.chat.data.data_layer import PostgresDataLayer  # noqa: PLC0415
-    from boba.chainlit.chat.data.upload import AttachmentServing  # noqa: PLC0415
-    from boba.chainlit.chat.data.storage import LocalStorageClient  # noqa: PLC0415
+    from boba.chainlit.chat.data.object_key import AttachmentUrl  # noqa: PLC0415
+    from boba.chainlit.chat.data.storage import StorageFactory  # noqa: PLC0415
     from boba.chainlit.chat.data.upload import (  # noqa: PLC0415
+        AttachmentServing,
         UploadPolicy,
         UploadRoute,
     )
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    storage = LocalStorageClient.from_config(c.storage)
+    storage = StorageFactory.create(c.storage)
     UploadRoute(storage, UploadPolicy()).install(chainlit_app)
     route_path = c.storage.public_prefix.removeprefix(c.chainlit.url_prefix)
 

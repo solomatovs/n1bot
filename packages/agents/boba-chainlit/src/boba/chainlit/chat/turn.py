@@ -30,8 +30,7 @@ from boba.cancellation import StopReason, ToolStopped, TurnRegistry
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.infra.session import current_user_id
-from boba.chainlit.rendering.chat_view import ChatView, StepText
-from boba.sandbox import WORKSPACE_MOUNT
+from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from chainlit.context import ChainlitContext, context_var, get_context
 from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio
@@ -155,6 +154,11 @@ class ChatTurn:
         """Живой ход треда; None — тред ничем не занят."""
         return cls._ACTIVE.get(thread_id)
 
+    @property
+    def answer_step_id(self) -> str | None:
+        """id шага ответа: к нему цепляются вложения, созданные инструментами."""
+        return ChatView.derive_id(self._thread_id, self._key, StepRole.ANSWER)
+
     @staticmethod
     def human_message(msg: cl.Message) -> HumanMessage:
         """Сообщение пользователя; пути вложений — как их видит песочница."""
@@ -163,12 +167,11 @@ class ChatTurn:
             key = ObjectKey.build(
                 current_user_id(), element.thread_id, element.name, element.id
             )
-            attachments.append(
-                {
-                    "name": element.name or element.id,
-                    "path": f"{WORKSPACE_MOUNT}/{key.in_thread()}",
-                }
-            )
+            name = element.name
+            if not name:
+                name = element.id
+
+            attachments.append({"name": name, "path": key.in_workspace()})
         extra: dict[str, Any] = {}
         if attachments:
             extra = {"attachments": attachments}

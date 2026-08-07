@@ -1,4 +1,8 @@
-"""Реализации chainlit BaseStorageClient: локальный диск и ext4-образ треда."""
+"""Клиенты хранилища вложений: локальный диск и ext4-образ пользователя.
+
+Ошибки: StorageError — операция не выполнена; StorageFullError — в образе нет
+места; FileNotFoundError — файла нет в хранилище.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,9 @@ import logging
 import os
 import sys
 import time
-from collections.abc import AsyncIterator
+from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator, AsyncIterator
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -18,11 +24,9 @@ import aiofiles.os
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.workspace.launcher import (
-    EXIT_MOUNT_ERROR,
-    EXIT_NO_SPACE,
-    EXIT_NOT_FOUND,
-    LAUNCHER_ERROR_PREFIX,
-    LAUNCHER_LOG_PREFIX,
+    LauncherExit,
+    LauncherMarker,
+    LauncherMode,
     ResourceLimits,
     build_chain_argv,
     render_image_path,
@@ -33,8 +37,11 @@ from chainlit.data.storage_clients.base import BaseStorageClient
 __all__ = [
     "ImageStorageClient",
     "LocalStorageClient",
+    "StorageClient",
     "StorageError",
+    "StorageFactory",
     "StorageFullError",
+    "StorageUrl",
 ]
 
 logger = logging.getLogger(__name__)
@@ -48,22 +55,85 @@ class StorageFullError(StorageError):
     """В образе пользователя не осталось места под файл."""
 
 
-class LocalStorageClient(BaseStorageClient):
-    """Хранит файлы вложений на локальном диске под files_dir."""
+class StorageUrl(StrEnum):
+    """Шаблон хранимого url вложения: сам ключ живёт в object_key."""
 
-    PREFIX_VAR: ClassVar[str] = "{public_prefix}"
-    KEY_VAR: ClassVar[str] = "{object_key}"
-    URL_TEMPLATE: ClassVar[str] = PREFIX_VAR + "/" + KEY_VAR
-    """Хранимый url — шаблон: сам ключ лежит в object_key и не дублируется."""
+    PREFIX = "{public_prefix}"
+    KEY = "{object_key}"
+    TEMPLATE = "{public_prefix}/{object_key}"
+
+    @classmethod
+    def render(cls, url: str, public_prefix: str, object_key: str) -> str:
+        rendered = url.replace(cls.PREFIX, public_prefix.rstrip("/"))
+        return rendered.replace(cls.KEY, object_key)
+
+
+class StorageClient(BaseStorageClient, ABC):
+    """База клиентов хранилища вложений."""
 
     def __init__(self, config: LocalStorageConfig) -> None:
         self._config = config
 
-    @classmethod
-    def from_config(cls, config: LocalStorageConfig) -> LocalStorageClient:
+    def render_url(self, url: str, object_key: str) -> str:
+        return StorageUrl.render(url, self._config.public_prefix, object_key)
+
+    async def get_read_url(self, object_key: str) -> str:
+        return self.render_url(StorageUrl.TEMPLATE, object_key)
+
+    async def close(self) -> None:
+        pass
+
+    @staticmethod
+    def _payload_bytes(data: bytes | str) -> bytes:
+        if isinstance(data, str):
+            return data.encode()
+        return data
+
+    @staticmethod
+    def _uploaded(object_key: str) -> dict[str, Any]:
+        return {"object_key": object_key, "url": StorageUrl.TEMPLATE.value}
+
+    @abstractmethod
+    async def upload_file(
+        self,
+        object_key: str,
+        data: bytes | str,
+        mime: str = "application/octet-stream",
+        overwrite: bool = True,
+        content_disposition: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    @abstractmethod
+    async def upload_stream(
+        self,
+        object_key: str,
+        source: AsyncIterator[bytes],
+        mime: str = "application/octet-stream",
+    ) -> dict[str, Any]: ...
+
+    @abstractmethod
+    async def read_file(self, object_key: str) -> bytes: ...
+
+    @abstractmethod
+    def read_stream(self, object_key: str) -> AsyncIterator[bytes]: ...
+
+    @abstractmethod
+    async def delete_file(self, object_key: str) -> bool: ...
+
+
+class StorageFactory:
+    """Выбирает реализацию хранилища по конфигу."""
+
+    @staticmethod
+    def create(config: LocalStorageConfig) -> StorageClient:
         if config.kind == "image":
             return ImageStorageClient(config)
+
         return LocalStorageClient(config)
+
+
+class LocalStorageClient(StorageClient):
+    """Хранит файлы вложений на локальном диске под files_dir."""
 
     def _resolve(self, object_key: str) -> Path:
         base_dir = Path(self._config.files_dir).resolve()
@@ -73,11 +143,6 @@ class LocalStorageClient(BaseStorageClient):
             raise ValueError(f"object_key outside files_dir: {object_key!r}")
 
         return path
-
-    def render_url(self, url: str, object_key: str) -> str:
-        return url.replace(
-            self.PREFIX_VAR, self._config.public_prefix.rstrip("/")
-        ).replace(self.KEY_VAR, object_key)
 
     async def upload_file(
         self,
@@ -89,22 +154,16 @@ class LocalStorageClient(BaseStorageClient):
     ) -> dict[str, Any]:
         path = self._resolve(object_key)
         if path.exists() and not overwrite:
-            return {
-                "object_key": object_key,
-                "url": self.URL_TEMPLATE,
-            }
+            return self._uploaded(object_key)
 
         await aiofiles.os.makedirs(path.parent, exist_ok=True)
 
-        if isinstance(data, str):
-            payload = data.encode()
-        else:
-            payload = data
+        payload = self._payload_bytes(data)
 
         async with aiofiles.open(path, "wb") as f:
             await f.write(payload)
 
-        return {"object_key": object_key, "url": self.URL_TEMPLATE}
+        return self._uploaded(object_key)
 
     async def upload_stream(
         self,
@@ -120,14 +179,14 @@ class LocalStorageClient(BaseStorageClient):
             async for chunk in source:
                 await f.write(chunk)
 
-        return {"object_key": object_key, "url": self.URL_TEMPLATE}
+        return self._uploaded(object_key)
 
     async def read_file(self, object_key: str) -> bytes:
         path = self._resolve(object_key)
         async with aiofiles.open(path, "rb") as f:
             return await f.read()
 
-    async def read_stream(self, object_key: str) -> AsyncIterator[bytes]:
+    async def read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
         """Отдаёт файл чанками: в памяти живёт один чанк, а не файл."""
         path = self._resolve(object_key)
         size = self._config.launcher.copy_chunk_bytes
@@ -138,9 +197,6 @@ class LocalStorageClient(BaseStorageClient):
                     break
                 yield chunk
 
-    async def get_read_url(self, object_key: str) -> str:
-        return self.render_url(self.URL_TEMPLATE, object_key)
-
     async def delete_file(self, object_key: str) -> bool:
         path = self._resolve(object_key)
         try:
@@ -149,12 +205,25 @@ class LocalStorageClient(BaseStorageClient):
             return False
         return True
 
-    async def close(self) -> None:
-        pass
+
+class OpProgress:
+    """Отметки прогресса операции: по ним таймаут отличает зависание от работы."""
+
+    def __init__(self) -> None:
+        self._last = time.monotonic()
+
+    def beat(self) -> None:
+        self._last = time.monotonic()
+
+    def idle_sec(self) -> float:
+        return time.monotonic() - self._last
 
 
-class ImageStorageClient(LocalStorageClient):
+class ImageStorageClient(StorageClient):
     """Хранит вложения внутри per-thread ext4-образа: fuse2fs на одну операцию."""
+
+    WATCH_POLL_SEC: ClassVar[float] = 1.0
+    """Период проверки простоя идущей операции."""
 
     async def upload_file(
         self,
@@ -165,19 +234,21 @@ class ImageStorageClient(LocalStorageClient):
         content_disposition: str | None = None,
     ) -> dict[str, Any]:
         image, rel = self._image_and_rel(object_key)
-        if not overwrite and await self._exists(image, rel):
-            return {"object_key": object_key, "url": self.URL_TEMPLATE}
 
-        if isinstance(data, str):
-            payload = data.encode()
-        else:
-            payload = data
-        rc, _, err = await self._op(image, ["write", rel], source=self._once(payload))
+        keep = False
+        if not overwrite:
+            keep = await self._exists(image, rel)
+
+        if keep:
+            return self._uploaded(object_key)
+
+        payload = self._payload_bytes(data)
+
+        rc, _, err = await self._op(
+            image, [LauncherMode.WRITE.value, rel], source=self._once(payload)
+        )
         self._check(rc, err)
-        return {
-            "object_key": object_key,
-            "url": self.URL_TEMPLATE,
-        }
+        return self._uploaded(object_key)
 
     async def upload_stream(
         self,
@@ -187,9 +258,11 @@ class ImageStorageClient(LocalStorageClient):
     ) -> dict[str, Any]:
         """Чанки уходят прямо в stdin лаунчера, а тот пишет их в образ."""
         image, rel = self._image_and_rel(object_key)
-        rc, _, err = await self._op(image, ["write", rel], source=source)
+        rc, _, err = await self._op(
+            image, [LauncherMode.WRITE.value, rel], source=source
+        )
         self._check(rc, err)
-        return {"object_key": object_key, "url": self.URL_TEMPLATE}
+        return self._uploaded(object_key)
 
     @staticmethod
     async def _once(payload: bytes) -> AsyncIterator[bytes]:
@@ -198,13 +271,13 @@ class ImageStorageClient(LocalStorageClient):
 
     async def read_file(self, object_key: str) -> bytes:
         image, rel = self._image_and_rel(object_key)
-        rc, out, err = await self._op(image, ["read", rel])
-        if rc == EXIT_NOT_FOUND:
+        rc, out, err = await self._op(image, [LauncherMode.READ.value, rel])
+        if rc == LauncherExit.NOT_FOUND:
             raise FileNotFoundError(object_key)
         self._check(rc, err)
         return out
 
-    async def read_stream(self, object_key: str) -> AsyncIterator[bytes]:
+    async def read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
         """Отдаёт файл чанками из stdout лаунчера, не собирая его в памяти.
 
         Первый чанк читается до отдачи наружу: пока он не получен, неизвестно,
@@ -212,7 +285,9 @@ class ImageStorageClient(LocalStorageClient):
         """
         image, rel = self._image_and_rel(object_key)
         size = self._config.launcher.copy_chunk_bytes
-        proc = await self._spawn(image, ["read", rel], with_stdin=False)
+        proc = await self._spawn(
+            image, [LauncherMode.READ.value, rel], with_stdin=False
+        )
         if proc.stdout is None or proc.stderr is None:
             raise StorageError("storage: launcher process has no pipes")
 
@@ -221,7 +296,7 @@ class ImageStorageClient(LocalStorageClient):
             head = await proc.stdout.read(size)
             if not head:
                 rc = await proc.wait()
-                if rc == EXIT_NOT_FOUND:
+                if rc == LauncherExit.NOT_FOUND:
                     raise FileNotFoundError(object_key)
                 self._check(rc, self._drain_launcher_log(await err_task))
                 return
@@ -243,8 +318,8 @@ class ImageStorageClient(LocalStorageClient):
 
     async def delete_file(self, object_key: str) -> bool:
         image, rel = self._image_and_rel(object_key)
-        rc, _, err = await self._op(image, ["delete", rel])
-        if rc == EXIT_NOT_FOUND:
+        rc, _, err = await self._op(image, [LauncherMode.DELETE.value, rel])
+        if rc == LauncherExit.NOT_FOUND:
             return False
         self._check(rc, err)
         return True
@@ -259,8 +334,8 @@ class ImageStorageClient(LocalStorageClient):
         return image, key.in_thread()
 
     async def _exists(self, image: str, rel: str) -> bool:
-        rc, _, err = await self._op(image, ["read", rel])
-        if rc == EXIT_NOT_FOUND:
+        rc, _, err = await self._op(image, [LauncherMode.READ.value, rel])
+        if rc == LauncherExit.NOT_FOUND:
             return False
         self._check(rc, err)
         return True
@@ -298,20 +373,24 @@ class ImageStorageClient(LocalStorageClient):
         op: list[str],
         source: AsyncIterator[bytes] | None = None,
     ) -> tuple[int, bytes, bytes]:
+        """op_timeout_sec ловит зависание, а не медленный источник: таймер
+        отсчитывается от последнего принятого чанка, не от старта операции."""
         proc = await self._spawn(image, op, with_stdin=source is not None)
         started = time.monotonic()
         logger.info("storage: operation %s in image %s", op, image)
+        progress = OpProgress()
+        exchange = asyncio.create_task(self._exchange(proc, source, progress))
         try:
-            out, err = await asyncio.wait_for(
-                self._exchange(proc, source),
-                timeout=self._config.op_timeout_sec,
-            )
+            out, err = await self._watch(exchange, progress)
         except TimeoutError:
-            proc.kill()
+            exchange.cancel()
+            await asyncio.gather(exchange, return_exceptions=True)
+            if proc.returncode is None:
+                proc.kill()
             await proc.wait()
             msg = (
-                f"storage: image operation {op[0]!r} did not finish "
-                f"within {self._config.op_timeout_sec}s"
+                f"storage: image operation {op[0]!r} stalled "
+                f"for {self._config.op_timeout_sec}s"
             )
             raise StorageError(msg) from None
         err = self._drain_launcher_log(err)
@@ -327,11 +406,27 @@ class ImageStorageClient(LocalStorageClient):
         )
         return code, out, err
 
+    async def _watch(
+        self,
+        exchange: asyncio.Task[tuple[bytes, bytes]],
+        progress: OpProgress,
+    ) -> tuple[bytes, bytes]:
+        """Ждёт обмен, пока тот подаёт признаки жизни; простой — TimeoutError."""
+        pending = {exchange}
+        while True:
+            done, _ = await asyncio.wait(pending, timeout=self.WATCH_POLL_SEC)
+            if done:
+                return exchange.result()
+
+            if progress.idle_sec() > self._config.op_timeout_sec:
+                raise TimeoutError
+
     @classmethod
     async def _exchange(
         cls,
         proc: asyncio.subprocess.Process,
         source: AsyncIterator[bytes] | None,
+        progress: OpProgress,
     ) -> tuple[bytes, bytes]:
         """communicate для источника-итератора: пайпы вычитываются, пока идёт запись."""
         if proc.stdout is None or proc.stderr is None:
@@ -340,7 +435,7 @@ class ImageStorageClient(LocalStorageClient):
         out_task = asyncio.create_task(proc.stdout.read())
         err_task = asyncio.create_task(proc.stderr.read())
         if source is not None:
-            await cls._feed(proc.stdin, source)
+            await cls._feed(proc.stdin, source, progress)
         out = await out_task
         err = await err_task
         await proc.wait()
@@ -350,6 +445,7 @@ class ImageStorageClient(LocalStorageClient):
     async def _feed(
         stdin: asyncio.StreamWriter | None,
         source: AsyncIterator[bytes],
+        progress: OpProgress,
     ) -> None:
         """Чанк записан — забыт: в памяти живёт один чанк, а не файл."""
         if stdin is None:
@@ -358,6 +454,7 @@ class ImageStorageClient(LocalStorageClient):
             async for chunk in source:
                 stdin.write(chunk)
                 await stdin.drain()
+                progress.beat()
         except (BrokenPipeError, ConnectionResetError):
             # лаунчер закрыл stdin раньше времени: причину скажет его код возврата
             logger.info("storage: launcher stopped reading input")
@@ -370,12 +467,12 @@ class ImageStorageClient(LocalStorageClient):
     def _drain_launcher_log(err: bytes) -> bytes:
         """Ход монтирования — в лог; наверх идёт только то, что не от лаунчера."""
         text = err.decode("utf-8", errors="replace")
-        if LAUNCHER_LOG_PREFIX not in text:
+        if LauncherMarker.LOG.value not in text:
             return err
         kept: list[str] = []
         for line in text.splitlines():
-            if line.startswith(LAUNCHER_LOG_PREFIX):
-                logger.info("storage: %s", line[len(LAUNCHER_LOG_PREFIX) :])
+            if line.startswith(LauncherMarker.LOG.value):
+                logger.info("storage: %s", line[len(LauncherMarker.LOG) :])
             else:
                 kept.append(line)
         return "\n".join(kept).encode("utf-8")
@@ -386,10 +483,10 @@ class ImageStorageClient(LocalStorageClient):
             return
         detail = err.decode("utf-8", errors="replace").strip()
         reason = cls._reason(detail)
-        if rc == EXIT_NO_SPACE:
+        if rc == LauncherExit.NO_SPACE:
             msg = f"storage: {reason or 'no space left in the workspace image'}"
             raise StorageFullError(msg)
-        if rc == EXIT_MOUNT_ERROR and LAUNCHER_ERROR_PREFIX in detail:
+        if rc == LauncherExit.MOUNT_ERROR and LauncherMarker.ERROR.value in detail:
             msg = f"storage: image not mounted: {reason}"
             raise StorageError(msg)
         msg = f"storage: image operation exited with code {rc}: {detail}"
@@ -400,6 +497,6 @@ class ImageStorageClient(LocalStorageClient):
         """Своя строка лаунчера, без чужого шума в stderr соседних процессов."""
         marked: list[str] = []
         for line in detail.splitlines():
-            if line.startswith(LAUNCHER_ERROR_PREFIX):
-                marked.append(line[len(LAUNCHER_ERROR_PREFIX) :])
+            if line.startswith(LauncherMarker.ERROR.value):
+                marked.append(line[len(LauncherMarker.ERROR) :])
         return " ".join(marked) or detail

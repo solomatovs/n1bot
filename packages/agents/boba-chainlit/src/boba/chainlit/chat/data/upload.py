@@ -22,8 +22,8 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar
-from uuid import UUID
 from urllib.parse import quote
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.datastructures import UploadFile
@@ -31,11 +31,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
-from boba.chainlit.chat.data.data_layer import PostgresDataLayer
 from boba.chainlit.chat.data.fields import ElementField, FileField
 from boba.chainlit.chat.data.object_key import ObjectKey
-from boba.chainlit.chat.data.storage import LocalStorageClient, StorageFullError
+from boba.chainlit.chat.data.storage import StorageClient, StorageFullError
 from chainlit.auth import get_current_user
+from chainlit.data.base import BaseDataLayer
 from chainlit.user import PersistedUser, User
 
 if TYPE_CHECKING:
@@ -209,7 +209,7 @@ class UploadRoute:
     CURRENT_USER: ClassVar[Any] = Depends(get_current_user)
     """Та же проверка токена, что и у chainlit; дефолт сигнатуры — только класс."""
 
-    def __init__(self, storage: LocalStorageClient, policy: UploadPolicy) -> None:
+    def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
         self._storage = storage
         self._policy = policy
 
@@ -269,7 +269,10 @@ class UploadRoute:
                 ) from e
         except HTTPException:
             # клиент ещё шлёт файл: без этого соединение оборвётся и он повторит запрос
-            skipped = await part.drain(self._policy.drain_bytes, self._policy.drain_seconds)
+            skipped = await part.drain(
+                self._policy.drain_bytes,
+                self._policy.drain_seconds,
+            )
             logger.info(
                 "upload: %s of the rejected body discarded", self._volume(skipped)
             )
@@ -441,8 +444,8 @@ class AttachmentServing:
 
     def __init__(
         self,
-        storage: LocalStorageClient,
-        layer: Callable[[], PostgresDataLayer],
+        storage: StorageClient,
+        layer: Callable[[], BaseDataLayer],
     ) -> None:
         self._storage = storage
         self._layer = layer

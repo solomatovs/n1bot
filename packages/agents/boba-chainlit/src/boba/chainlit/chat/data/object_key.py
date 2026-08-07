@@ -1,4 +1,4 @@
-"""Адресация вложений: storage-ключ, ссылка и её маршрут."""
+"""Адресация вложений: storage-ключ, путь в песочнице, ссылка и её маршрут."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ import os
 from dataclasses import dataclass
 from typing import ClassVar, Self
 
+from boba.sandbox import WORKSPACE_MOUNT
+
 __all__ = ["AttachmentLinks", "AttachmentUrl", "ObjectKey"]
 
 
 @dataclass(frozen=True, slots=True)
 class ObjectKey:
-    """Путь вложения в хранилище: {user_id}/{thread_id}/upload/{name}."""
+    """Адрес вложения: ключ хранилища и путь того же файла в песочнице."""
 
     user_id: str
     thread_id: str
@@ -20,6 +22,7 @@ class ObjectKey:
     SEPARATOR: ClassVar[str] = "/"
     UPLOAD_DIR: ClassVar[str] = "upload"
     SEGMENTS: ClassVar[int] = 4
+    THREAD_SEGMENTS: ClassVar[int] = 3
     MAX_NAME_BYTES: ClassVar[int] = 255
     """Предел ext4 на длину имени файла."""
 
@@ -50,12 +53,56 @@ class ObjectKey:
             raise ValueError(f"invalid object_key: {raw!r}")
         return cls(user_id=user_id, thread_id=thread_id, name=name)
 
+    @classmethod
+    def from_workspace(cls, user_id: object, thread_id: object, path: str) -> Self:
+        """Ключ по пути из песочницы; вне каталога вложений треда — ValueError."""
+        rel = path.strip()
+
+        mount = cls.SEPARATOR.join((WORKSPACE_MOUNT, ""))
+        if rel.startswith(mount):
+            rel = rel[len(mount) :]
+
+        parts = rel.split(cls.SEPARATOR)
+        if len(parts) != cls.THREAD_SEGMENTS:
+            raise ValueError(cls._outside(thread_id, path))
+
+        owner, upload_dir, name = parts
+        if owner != str(thread_id):
+            raise ValueError(cls._outside(thread_id, path))
+
+        if upload_dir != cls.UPLOAD_DIR:
+            raise ValueError(cls._outside(thread_id, path))
+
+        if name in ("", ".", ".."):
+            raise ValueError(cls._outside(thread_id, path))
+
+        return cls(user_id=str(user_id), thread_id=str(thread_id), name=name)
+
+    @classmethod
+    def _outside(cls, thread_id: object, path: str) -> str:
+        """Текст ошибки называет ожидаемый путь."""
+        name = os.path.basename(path.strip())
+        if not name:
+            name = "<file name>"
+
+        expected = cls.SEPARATOR.join(
+            (WORKSPACE_MOUNT, str(thread_id), cls.UPLOAD_DIR, name)
+        )
+        return (
+            f"file is outside the thread attachments dir: {path!r}; "
+            f"expected {expected!r}"
+        )
+
     def render(self) -> str:
         return self.SEPARATOR.join((self.user_id, self.in_thread()))
 
     def in_thread(self) -> str:
-        """Путь так, как его видит песочница внутри /workspace."""
+        """Путь файла внутри образа пользователя."""
         return self.SEPARATOR.join((self.thread_id, self.UPLOAD_DIR, self.name))
+
+    def in_workspace(self) -> str:
+        """Путь файла так, как его видит песочница."""
+        return self.SEPARATOR.join((WORKSPACE_MOUNT, self.in_thread()))
 
     @classmethod
     def safe_name(cls, name: object, element_id: object) -> str:

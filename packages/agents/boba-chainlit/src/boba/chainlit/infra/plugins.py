@@ -57,6 +57,8 @@ class ToolPlugin:
     section: str
     build: Callable[[Any, LauncherFactory], list[BaseTool]]
     config_model: type[BaseModel] | None = None
+    sandboxed: bool = True
+    """False — инструменты плагина ничего не запускают, секции sandbox у него нет."""
 
 
 class PluginMeta(BaseModel):
@@ -189,6 +191,17 @@ def _build_kb_tools(
     return build_kb_tools(cfg, launchers)
 
 
+def _build_send_file_tools(
+    cfg: None,
+    launchers: LauncherFactory,
+) -> list[BaseTool]:
+    from boba.chainlit.agent.tools.send_file import (  # noqa: PLC0415
+        build_send_file_tool,
+    )
+
+    return [build_send_file_tool()]
+
+
 def _sandbox_path_vars() -> dict[str, str]:
     """Значения {user_id}/{thread_id} для путей профиля на момент вызова."""
     values = {"user_id": current_user_id(), "thread_id": current_thread_id()}
@@ -205,6 +218,12 @@ def _launchers(sandbox: SandboxToolConfig) -> LauncherFactory:
     return launcher
 
 
+def _no_launchers(tool: str) -> ToolLauncher:
+    """Плагин объявлен без песочницы: запускать в ней нечего."""
+    msg = f"tool {tool!r} is registered without a sandbox profile"
+    raise RuntimeError(msg)
+
+
 _PLUGINS: dict[str, ToolPlugin] = {
     "bash": ToolPlugin(
         section="bash",
@@ -218,6 +237,11 @@ _PLUGINS: dict[str, ToolPlugin] = {
     "chart": ToolPlugin(
         section="chart",
         build=_build_chart_tools,
+    ),
+    "send_file": ToolPlugin(
+        section="send_file",
+        build=_build_send_file_tools,
+        sandboxed=False,
     ),
     "pg": ToolPlugin(
         section="pg",
@@ -283,10 +307,13 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
             if plugin.config_model is not None
             else None
         )
-        sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
-        built = [
-            t for t in plugin.build(cfg, _launchers(sandbox)) if t.name in meta.tools
-        ]
+
+        launchers: LauncherFactory = _no_launchers
+        if plugin.sandboxed:
+            sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
+            launchers = _launchers(sandbox)
+
+        built = [t for t in plugin.build(cfg, launchers) if t.name in meta.tools]
         for tool in built:
             roles_by_tool[tool.name] = meta.roles_of(tool.name)
         tools.extend(built)

@@ -1,5 +1,6 @@
 """PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
 
+from abc import ABC, abstractmethod
 from typing import ClassVar
 from uuid import UUID
 
@@ -21,13 +22,13 @@ from boba.chainlit.chat.data.models import (
     User,
 )
 from boba.chainlit.chat.data.object_key import AttachmentLinks, ObjectKey
+from boba.chainlit.chat.data.storage import StorageClient
 from boba.chainlit.chat.errors import show_error
 from boba.chainlit.chat.transcript import ConversationTranscript, ThreadMessages
 from boba.chainlit.infra.session import current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
 from boba.db.postgres import AsyncPostgresPool
 from chainlit.data.base import BaseDataLayer
-from chainlit.data.storage_clients.base import BaseStorageClient
 from chainlit.data.utils import queue_until_user_message
 from chainlit.element import Element as ChainlitElement
 from chainlit.element import ElementDict
@@ -47,11 +48,20 @@ from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 
 __all__ = [
+    "AttachmentDataLayer",
     "PostgresDataLayer",
 ]
 
 
-class PostgresDataLayer(BaseDataLayer):
+class AttachmentDataLayer(BaseDataLayer, ABC):
+    """Data layer, умеющий адресовать вложения публичными ссылками."""
+
+    @property
+    @abstractmethod
+    def links(self) -> AttachmentLinks: ...
+
+
+class PostgresDataLayer(AttachmentDataLayer):
     """Хранилище chainlit (users/threads/elements/feedbacks) на psycopg-пуле."""
 
     _MODELS: ClassVar[tuple[type[Row], ...]] = (User, Thread, Element, Feedback)
@@ -60,7 +70,7 @@ class PostgresDataLayer(BaseDataLayer):
         self,
         pool: AsyncPostgresPool,
         schema: str,
-        storage: BaseStorageClient,
+        storage: StorageClient,
         messages: ThreadMessages,
         links: AttachmentLinks,
     ) -> None:
@@ -69,6 +79,10 @@ class PostgresDataLayer(BaseDataLayer):
         self._storage = storage
         self._messages = messages
         self._links = links
+
+    @property
+    def links(self) -> AttachmentLinks:
+        return self._links
 
     async def _transcript_steps(
         self,

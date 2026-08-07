@@ -6,13 +6,19 @@ import asyncio
 import os
 import shutil
 import subprocess
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from boba.chainlit.chat.data.storage import ImageStorageClient, LocalStorageClient
+from boba.chainlit.chat.data.storage import (
+    ImageStorageClient,
+    LocalStorageClient,
+    StorageError,
+    StorageFactory,
+)
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.profile import SandboxProfile
@@ -135,14 +141,16 @@ def _invoke(tool, command: str, stdin: str = "") -> dict:
     return msg.artifact.payload
 
 
-def _storage(tmp_path: Path, template: Path) -> ImageStorageClient:
+def _storage(
+    tmp_path: Path, template: Path, op_timeout_sec: int = 60
+) -> ImageStorageClient:
     cfg = _storage_cfg(
         kind="image",
         image_path=_image_tpl(tmp_path),
         image_template=str(template),
-        op_timeout_sec=60,
+        op_timeout_sec=op_timeout_sec,
     )
-    client = LocalStorageClient.from_config(cfg)
+    client = StorageFactory.create(cfg)
     assert isinstance(client, ImageStorageClient)
     return client
 
@@ -175,11 +183,11 @@ class TestConfig:
             kind="image", image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
-        assert isinstance(LocalStorageClient.from_config(cfg), ImageStorageClient)
+        assert isinstance(StorageFactory.create(cfg), ImageStorageClient)
 
     def test_factory_picks_local_client(self) -> None:
         cfg = _storage_cfg(files_dir="/srv/files")
-        assert type(LocalStorageClient.from_config(cfg)) is LocalStorageClient
+        assert type(StorageFactory.create(cfg)) is LocalStorageClient
 
     def test_profile_images_require_template(self) -> None:
         with pytest.raises(ValueError, match="image_template is empty"):
@@ -193,7 +201,7 @@ class TestObjectKey:
             kind="image", image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
-        client = LocalStorageClient.from_config(cfg)
+        client = StorageFactory.create(cfg)
         assert isinstance(client, ImageStorageClient)
         return client
 
@@ -568,3 +576,36 @@ class TestLiveImage:
             return await storage.read_file("7/t1/upload/keep")
 
         assert asyncio.run(cycle()) == b"first"
+
+    def test_slow_source_outlives_op_timeout(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        """Медленный клиент — не зависание: пока чанки идут, операция живёт."""
+        storage = _storage(tmp_path, template, op_timeout_sec=2)
+
+        async def slow() -> AsyncIterator[bytes]:
+            for _ in range(8):
+                await asyncio.sleep(0.4)
+                yield b"x" * 1024
+
+        async def cycle() -> bytes:
+            await storage.upload_stream("7/t1/upload/slow.bin", slow())
+            return await storage.read_file("7/t1/upload/slow.bin")
+
+        assert asyncio.run(cycle()) == b"x" * 1024 * 8
+
+    def test_stalled_source_hits_op_timeout(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        storage = _storage(tmp_path, template, op_timeout_sec=1)
+
+        async def stalled() -> AsyncIterator[bytes]:
+            yield b"data"
+            await asyncio.sleep(30)
+            yield b"tail"
+
+        async def cycle() -> None:
+            await storage.upload_stream("7/t1/upload/stall.bin", stalled())
+
+        with pytest.raises(StorageError, match="stalled"):
+            asyncio.run(cycle())
