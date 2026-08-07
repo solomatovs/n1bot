@@ -1,30 +1,30 @@
 [paths]
-    base      = "${oc.env:BOBA_BASE}"
-    version   = "${oc.env:BOBA_VERSION}"
-    app       = "${paths.base}/app/${paths.version}"
-    third     = "${paths.base}/third"
-    data      = "${paths.base}/data"
-    sandbox   = "${paths.base}/sandbox"
-    tool_site = "${paths.app}/boba-tool"
-    assets    = "${paths.app}/boba-chainlit/assets"
+    base        = "${oc.env:BOBA_BASE}"
+    version     = "${oc.env:BOBA_VERSION}"
+    data        = "${paths.base}/data"
+    third       = "${paths.base}/third"
+    sandbox     = "${paths.base}/sandbox"
+    app         = "${paths.base}/app/${paths.version}"
+    tools       = "${paths.base}/app/boba-tool"
+    assets      = "${paths.base}/app/boba-chainlit/assets"
 
 [app]
-    chainlit     = "${chainlit}"
-    agent        = "${agent}"
-    checkpointer = "${checkpointer}"
-    data_layer   = "${data_layer}"
-    storage      = "${storage}"
-    sandbox      = "${sandbox}"
-    auth         = ["${auth.local}"]
+    chainlit    = "${chainlit}"
+    agent       = "${agent}"
+    checkpointer= "${checkpointer}"
+    data_layer  = "${data_layer}"
+    storage     = "${storage}"
+    sandbox     = "${sandbox}"
+    auth        = ["${auth.local}"]
 
 [openai.main]
-    base_url   = "<https://llm.example.local/v1>"
-    api_key    = "<ключ>"
-    ssl_verify = true
+    base_url    = "<https://llm.example.local/v1>"
+    api_key     = "<ключ>"
+    ssl_verify  = true
 
     [openai.main.dump]
-        enable = false
-        path   = "${paths.data}/dumps"
+        enable  = false
+        path    = "${paths.data}/dumps"
 
 [agent]
     openai                = "${openai.main}"
@@ -40,30 +40,30 @@
     root        = "${paths.assets}"
 
 [auth.local]
-    type          = "local"
-    users         = { "<логин>" = "<пароль>" }
-    roles         = "${role.local}"
-    require_roles = true
+    type            = "local"
+    users           = { "<логин>" = "<пароль>" }
+    roles           = "${role.local}"
+    require_roles   = true
 
 [role.local]
     "<логин>" = ["ADM"]
 
 [postgres]
-    host             = "<хост postgres>"
-    port             = 5432
-    user             = "<пользователь>"
-    dbname           = "<база>"
-    gssencmode       = "prefer"
-    sslmode          = "disable"
-    application_name = "boba"
-    autocommit       = true
-    pool             = { timeout = 5.0, min_size = 2, max_size = 4 }
-    options          = { statement_timeout = "30s" }
+    host                = "<хост postgres>"
+    port                = 5432
+    user                = "<пользователь>"
+    dbname              = "<база>"
+    gssencmode          = "prefer"
+    sslmode             = "disable"
+    application_name    = "boba"
+    autocommit          = true
+    pool                = { timeout = 5.0, min_size = 2, max_size = 4 }
+    options             = { statement_timeout = "30s" }
     [postgres.kerberos]
-        keytab      = "/etc/boba/krb5.keytab"
-        principal   = "<пользователь>@EXAMPLE.LOCAL"
-        ccache      = "FILE:/tmp/krb5cc_boba_pg"
-        krb5_config = "/etc/krb5.conf"
+        keytab          = "/etc/boba/krb5.keytab"
+        principal       = "<пользователь>@EXAMPLE.LOCAL"
+        ccache          = "FILE:/tmp/krb5cc_boba_pg"
+        krb5_config     = "/etc/krb5.conf"
 
 [checkpointer]
     postgres = "${postgres}"
@@ -91,7 +91,7 @@
 [sandbox]
     [sandbox.profiles.default]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site"]
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site"]
         rw_binds            = []
         rw_images           = ["${paths.data}/workspace/{user_id}.ext4:/workspace"]
         image_template      = "${paths.sandbox}/workspace.ext4"
@@ -118,7 +118,7 @@
 
     [sandbox.profiles.docs]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = ["${paths.data}/workspace/{user_id}.ext4:/workspace"]
         image_template      = "${paths.sandbox}/workspace.ext4"
@@ -145,7 +145,7 @@
 
     [sandbox.profiles.parser]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
+        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -172,7 +172,7 @@
 
     [sandbox.profiles.network]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -199,7 +199,7 @@
 
     [sandbox.profiles.pg]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -226,7 +226,7 @@
 
     [sandbox.profiles.kb]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tool_site}:/opt/site", "${paths.sandbox}/data/fastembed:/opt/fastembed", "${paths.sandbox}/data/tessdata:/usr/share/tessdata", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/data/fastembed:/opt/fastembed", "${paths.sandbox}/data/tessdata:/usr/share/tessdata", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
