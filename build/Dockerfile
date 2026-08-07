@@ -240,10 +240,10 @@ COPY --from=base /usr/local/bin/uv              ${BOBA_DIR}/third/bin/uv
 COPY --from=bwrap-build /out/bwrap              ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs          ${BOBA_DIR}/third/bin/fuse2fs
 COPY --from=sandbox-rootfs                      / ${BOBA_DIR}/sandbox/rootfs/
-COPY --from=python-dist                         /opt/python/usr/local ${BOBA_DIR}/sandbox/python/
+COPY --from=python-dist                         /opt/python/usr/local ${BOBA_DIR}/sandbox/third/python/
 COPY --from=fuse2fs-build                       /out/sandbox-workspace.ext4 ${BOBA_DIR}/sandbox/workspace.ext4
-COPY build/artifacts/tessdata/                  ${BOBA_DIR}/sandbox/data/tessdata/
-COPY build/artifacts/fastembed/                 ${BOBA_DIR}/sandbox/data/fastembed/
+COPY build/artifacts/tessdata/                  ${BOBA_DIR}/sandbox/third/tessdata/
+COPY build/artifacts/fastembed/                 ${BOBA_DIR}/sandbox/third/fastembed/
 COPY build/conf/                                /tmp/conf/
 
 COPY --from=app-site /opt/app-site              ${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit/
@@ -271,8 +271,8 @@ RUN set -eu \
     # приложение бежит непривилегированным: под root образы пользователей
     # ложились бы в том с чужим uid, а userns песочницы его не мапит
     && chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/data                                        \
-    && ln -sf eng.traineddata ${BOBA_DIR}/sandbox/data/tessdata/rus+eng.traineddata       \
-    && ln -sf rus.traineddata ${BOBA_DIR}/sandbox/data/tessdata/eng+rus.traineddata       \
+    && ln -sf eng.traineddata ${BOBA_DIR}/sandbox/third/tessdata/rus+eng.traineddata       \
+    && ln -sf rus.traineddata ${BOBA_DIR}/sandbox/third/tessdata/eng+rus.traineddata       \
     && ${BOBA_DIR}/third/bin/bwrap --version                                                    \
     && ${BOBA_DIR}/third/bin/fuse2fs -V                                                         \
     && BOBA_BASE="${BOBA_DIR}" BOBA_VERSION="${BOBA_VERSION}"                                   \

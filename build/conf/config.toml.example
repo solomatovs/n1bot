@@ -5,8 +5,8 @@
     third       = "${paths.base}/third"
     sandbox     = "${paths.base}/sandbox"
     app         = "${paths.base}/app/${paths.version}"
-    tools       = "${paths.base}/app/boba-tool"
-    assets      = "${paths.base}/app/boba-chainlit/assets"
+    tools       = "${paths.app}/boba-tool"
+    assets      = "${paths.app}/boba-chainlit/assets"
 
 [app]
     chainlit    = "${chainlit}"
@@ -91,7 +91,7 @@
 [sandbox]
     [sandbox.profiles.default]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site"]
+        ro_binds            = ["${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site"]
         rw_binds            = []
         rw_images           = ["${paths.data}/workspace/{user_id}.ext4:/workspace"]
         image_template      = "${paths.sandbox}/workspace.ext4"
@@ -118,7 +118,7 @@
 
     [sandbox.profiles.docs]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
+        ro_binds            = ["${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/third/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = ["${paths.data}/workspace/{user_id}.ext4:/workspace"]
         image_template      = "${paths.sandbox}/workspace.ext4"
@@ -145,7 +145,7 @@
 
     [sandbox.profiles.parser]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/data/tessdata:/usr/share/tessdata"]
+        ro_binds            = ["${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/third/tessdata:/usr/share/tessdata"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -172,7 +172,7 @@
 
     [sandbox.profiles.network]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -199,7 +199,7 @@
 
     [sandbox.profiles.pg]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
@@ -226,7 +226,7 @@
 
     [sandbox.profiles.kb]
         rootfs              = "${paths.sandbox}/rootfs"
-        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/data/fastembed:/opt/fastembed", "${paths.sandbox}/data/tessdata:/usr/share/tessdata", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
+        ro_binds            = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts", "${paths.sandbox}/third/python:/opt/python", "${paths.tools}:/opt/site", "${paths.sandbox}/third/fastembed:/opt/fastembed", "${paths.sandbox}/third/tessdata:/usr/share/tessdata", "/etc/boba/krb5.keytab:/etc/boba/krb5.keytab", "/etc/krb5.conf:/etc/krb5.conf"]
         rw_binds            = []
         rw_images           = []
         image_template      = ""
