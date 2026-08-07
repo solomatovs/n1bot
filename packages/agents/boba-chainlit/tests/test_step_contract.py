@@ -12,13 +12,13 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from chainlit.context import ChainlitContext, context_var
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.transcript import ConversationTranscript
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
-from chainlit.context import ChainlitContext, context_var
 
 THREAD = "22222222-2222-2222-2222-222222222222"
 TURN_KEY = "human-msg-1"

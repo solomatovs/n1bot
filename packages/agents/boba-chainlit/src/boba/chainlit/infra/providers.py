@@ -26,7 +26,7 @@ from boba.chainlit.agent.dump import DumpingTransport
 from boba.chainlit.auth.errors import InternalServiceError
 from boba.chainlit.chat.data import PostgresDataLayer
 from boba.chainlit.chat.data.object_key import AttachmentLinks
-from boba.chainlit.chat.data.storage import LocalStorageClient
+from boba.chainlit.chat.data.storage import StorageClient, StorageFactory
 from boba.chainlit.chat.transcript import CheckpointMessages
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.infra.config import (
@@ -86,8 +86,8 @@ def get_local_storage_config(
 
 def storage_provider(
     cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
-) -> LocalStorageClient:
-    return LocalStorageClient.from_config(cfg)
+) -> StorageClient:
+    return StorageFactory.create(cfg)
 
 
 def get_agent_profile(
@@ -190,14 +190,14 @@ def _openai_dump_transport(c: AppConfig) -> DumpingTransport:
         return f"{label}-{request.url.host}.log"
 
     return DumpingTransport(
-        dump_dir=Path(c.chainlit.root) / "dump",
+        dump_dir=Path(c.agent.openai.dump.path),
         dump_file=chainlit_filename,
         **_openai_transport_options(c.agent.openai),
     )
 
 
 def httpx_client(c: Annotated[AppConfig, Depends(get_app_config)]) -> AsyncClient:
-    if c.agent.openai.dump:
+    if c.agent.openai.dump.enable:
         transport = _openai_dump_transport(c)
     else:
         transport = httpx.AsyncHTTPTransport(
@@ -247,7 +247,7 @@ async def langchain_checkpoint_saver(
 async def chainlit_data_layer(
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     storage_cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
-    storage: Annotated[LocalStorageClient, Depends(storage_provider)],
+    storage: Annotated[StorageClient, Depends(storage_provider)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
 ) -> AsyncIterator[PostgresDataLayer]:
     pool = AsyncPostgresPool(

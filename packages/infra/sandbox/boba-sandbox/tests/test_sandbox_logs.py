@@ -10,7 +10,7 @@ from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxLogRelay, SandboxRunner
 from boba.toolkit.launcher import LaunchPayload
 from boba.toolkit.payload import PayloadLogging
-from boba.workspace.launcher import LAUNCHER_LOG_PREFIX
+from boba.workspace.launcher import LauncherMarker
 
 LABEL = "doc:read_document"
 
@@ -86,7 +86,7 @@ class TestRelay:
     ) -> None:
         relay = SandboxLogRelay(LABEL)
         with caplog.at_level(logging.DEBUG):
-            relay.feed(f"{LAUNCHER_LOG_PREFIX}image mounted\n".encode())
+            relay.feed(f"{LauncherMarker.LOG}image mounted\n".encode())
 
         record = caplog.records[-1]
         assert record.levelno == logging.INFO
@@ -116,7 +116,7 @@ class TestStderrCleanup:
 
     def test_relayed_lines_are_recognised(self) -> None:
         assert SandboxLogRelay.relayed(LaunchPayload.encode_log("INFO", "t", "m"))
-        assert SandboxLogRelay.relayed(f"{LAUNCHER_LOG_PREFIX}mounted")
+        assert SandboxLogRelay.relayed(f"{LauncherMarker.LOG}mounted")
 
     def test_traceback_lines_are_kept(self) -> None:
         assert SandboxLogRelay.relayed("Traceback (most recent call last):") is False

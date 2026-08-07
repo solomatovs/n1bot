@@ -55,6 +55,33 @@ LOGGING_CONFIG: dict[str, Any] = {
 }
 
 
+class OpenAiDumpConfig(BaseModel):
+    """Дамп HTTP-обмена с провайдером: флаг и каталог файлов."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enable: bool = Field(
+        default=False,
+        description="Писать HTTP-обмен с провайдером в path.",
+    )
+
+    path: str = Field(
+        default="",
+        description="Каталог дампов; обязателен при enable = true.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_path(self) -> Self:
+        if not self.enable:
+            return self
+
+        if not self.path:
+            msg = "openai.dump: enable = true требует path"
+            raise ValueError(msg)
+
+        return self
+
+
 class OpenAiConfig(BaseModel):
     """Транспорт openai-совместимого провайдера: endpoint + httpx-тюнинг."""
 
@@ -75,9 +102,9 @@ class OpenAiConfig(BaseModel):
         description="Проверять TLS-сертификат сервера.",
     )
 
-    dump: bool = Field(
-        default=False,
-        description="Писать HTTP-обмен с провайдером в {chainlit.root}/dump.",
+    dump: OpenAiDumpConfig = Field(
+        default_factory=OpenAiDumpConfig,
+        description="Дамп HTTP-обмена с провайдером.",
     )
 
     connect_timeout: float = Field(

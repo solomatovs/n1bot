@@ -15,14 +15,13 @@ from pathlib import Path
 import pytest
 
 from boba.workspace.launcher import (
-    EXIT_MOUNT_ERROR,
-    EXIT_NOT_FOUND,
-    LAUNCHER_ERROR_PREFIX,
     FileOperations,
     FuseMounter,
     ImageStore,
     Launcher,
     LauncherConfig,
+    LauncherExit,
+    LauncherMarker,
     LauncherOptions,
     MountError,
     ResourceLimits,
@@ -220,7 +219,7 @@ class TestFileOperations:
 
     def test_read_missing_is_not_found(self, tmp_path: Path) -> None:
         assert FileOperations(str(tmp_path)).read("nope", io.BytesIO()) == (
-            EXIT_NOT_FOUND
+            LauncherExit.NOT_FOUND
         )
 
     def test_delete_then_not_found(self, tmp_path: Path) -> None:
@@ -228,7 +227,7 @@ class TestFileOperations:
         ops = FileOperations(str(tmp_path))
         assert ops.delete("f.txt") == 0
         assert not (tmp_path / "f.txt").exists()
-        assert ops.delete("f.txt") == EXIT_NOT_FOUND
+        assert ops.delete("f.txt") == LauncherExit.NOT_FOUND
 
     @pytest.mark.parametrize("rel", ["/abs", "../x", "a/../../x"])
     def test_escape_rejected(self, tmp_path: Path, rel: str) -> None:
@@ -367,8 +366,8 @@ class TestLauncherMain:
         self, tmp_path: Path, template: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rc = self._main(tmp_path, template, "run", "a", "b")
-        assert rc == EXIT_MOUNT_ERROR
-        assert LAUNCHER_ERROR_PREFIX in capsys.readouterr().err
+        assert rc == LauncherExit.MOUNT_ERROR
+        assert LauncherMarker.ERROR in capsys.readouterr().err
         assert not (tmp_path / ("img" + ImageStore.LOCK_SUFFIX)).exists()
         assert not (tmp_path / "img").exists()
 
@@ -376,22 +375,22 @@ class TestLauncherMain:
         self, tmp_path: Path, template: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rc = self._main(tmp_path, template, "run", "   ")
-        assert rc == EXIT_MOUNT_ERROR
+        assert rc == LauncherExit.MOUNT_ERROR
         assert "empty command" in capsys.readouterr().err
 
     def test_unbalanced_quotes_rejected(
         self, tmp_path: Path, template: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rc = self._main(tmp_path, template, "run", "'unclosed")
-        assert rc == EXIT_MOUNT_ERROR
-        assert LAUNCHER_ERROR_PREFIX in capsys.readouterr().err
+        assert rc == LauncherExit.MOUNT_ERROR
+        assert LauncherMarker.ERROR in capsys.readouterr().err
 
     def test_missing_template_is_mount_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rc = self._main(tmp_path, tmp_path / "absent", "delete", "x")
-        assert rc == EXIT_MOUNT_ERROR
-        assert LAUNCHER_ERROR_PREFIX in capsys.readouterr().err
+        assert rc == LauncherExit.MOUNT_ERROR
+        assert LauncherMarker.ERROR in capsys.readouterr().err
 
     def test_cli_options_parsed_into_launcher(self) -> None:
         args = Launcher._parse_args(
