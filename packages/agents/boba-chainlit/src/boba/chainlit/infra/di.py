@@ -61,7 +61,9 @@ class Container:
         if cls.root is None:
             raise RuntimeError("DI Container is not initialised (set_root)")
 
-        session = cls._session_hook[0]() if cls._session_hook else None
+        session = None
+        if cls._session_hook:
+            session = cls._session_hook[0]()
         return cls(level="call", parent=session or cls.root)
 
     @staticmethod
@@ -206,7 +208,10 @@ def di_inject(fn: Callable) -> Callable:
         }
         return fn(*args, **kwargs, **resolved)
 
-    shim = async_shim if inspect.iscoroutinefunction(fn) else sync_shim
+    if inspect.iscoroutinefunction(fn):
+        shim = async_shim
+    else:
+        shim = sync_shim
 
     setattr(shim, "__signature__", sig.replace(parameters=framework_params))  # noqa: B010
     return shim

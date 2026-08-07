@@ -54,7 +54,9 @@ class Codec:
 
     @staticmethod
     def uuid_opt(value: str | None) -> UUID | None:
-        return UUID(value) if value else None
+        if value:
+            return UUID(value)
+        return None
 
     @staticmethod
     def uuid_str(value: UUID) -> str:
@@ -62,7 +64,15 @@ class Codec:
 
     @staticmethod
     def uuid_str_opt(value: UUID | None) -> str | None:
-        return str(value) if value is not None else None
+        if value is not None:
+            return str(value)
+        return None
+
+    @staticmethod
+    def int_str_opt(value: int | None) -> str | None:
+        if value is None:
+            return None
+        return str(value)
 
     @staticmethod
     def iso(value: datetime) -> str:
@@ -81,10 +91,13 @@ class Row:
 
     @classmethod
     def all_columns(cls, prefix: str | None = None) -> sql.Composable:
-        return sql.SQL(", ").join(
-            sql.Identifier(prefix, f.name) if prefix else sql.Identifier(f.name)
-            for f in fields(cls)
-        )
+        columns: list[sql.Composable] = []
+        for f in fields(cls):
+            if prefix:
+                columns.append(sql.Identifier(prefix, f.name))
+            else:
+                columns.append(sql.Identifier(f.name))
+        return sql.SQL(", ").join(columns)
 
     @classmethod
     def all_placeholders(cls) -> sql.Composable:
@@ -115,7 +128,10 @@ class Row:
         for f in fields(self):
             value = getattr(self, f.name)
             jsonb = f.metadata.get("jsonb") and value is not None
-            out[f.name] = Jsonb(value) if jsonb else value
+            if jsonb:
+                out[f.name] = Jsonb(value)
+            else:
+                out[f.name] = value
         return out
 
     @classmethod
@@ -194,7 +210,7 @@ class Thread(Row):
             id=Codec.uuid_str(self.id),
             createdAt=Codec.iso(self.created_at),
             name=self.name,
-            userId=str(self.user_id) if self.user_id is not None else None,
+            userId=Codec.int_str_opt(self.user_id),
             userIdentifier=user_identifier,
             tags=self.tags,
             metadata=self.meta,

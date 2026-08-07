@@ -45,6 +45,7 @@ async def on_message(
         await rewind.refresh_view()
 
     view = ChatView(thread_id, LiveSink())
+    view.begin_turn(msg.id)
     tracer = AgentTracer(view)
     run_config = RunnableConfig(
         callbacks=[tracer],
@@ -112,7 +113,9 @@ async def on_chat_resume(thread_dict: ThreadDict):
     room: list[str] = []
     for session in ThreadRoom.sessions(thread_id):
         room.append(session.id)
-    turn_state = "alive" if turn is not None else "none"
+    turn_state = "none"
+    if turn is not None:
+        turn_state = "alive"
     logger.info(
         "resume thread %s: turn=%s, thread sessions=%s, current session=%s",
         thread_id,

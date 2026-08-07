@@ -411,7 +411,9 @@ class UploadRoute:
     def _session(session_id: str, current_user: Any) -> Any:
         from chainlit.session import WebsocketSession  # noqa: PLC0415
 
-        session = WebsocketSession.get_by_id(session_id) if session_id else None
+        session = None
+        if session_id:
+            session = WebsocketSession.get_by_id(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 

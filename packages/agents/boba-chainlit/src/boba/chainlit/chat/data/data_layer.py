@@ -135,7 +135,9 @@ class PostgresDataLayer(BaseDataLayer):
                 user_detail="Not able to get user",
             ) from e
 
-        return row.to_persisted() if row else None
+        if row is None:
+            return None
+        return row.to_persisted()
 
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
         model = User.from_chainlit(user)
@@ -547,13 +549,19 @@ class PostgresDataLayer(BaseDataLayer):
         incoming = metadata or {}
         meta_set = {k: v for k, v in incoming.items() if v is not None}
         meta_del = [k for k, v in incoming.items() if v is None]
-        name_value = name if name is not None else meta_set.get("name")
+        name_value = meta_set.get("name")
+        if name is not None:
+            name_value = name
+
+        user_id_value: int | None = None
+        if user_id:
+            user_id_value = int(user_id)
 
         params = {
             "id": UUID(thread_id),
             "created_at": Codec.now(),
             "name": name_value,
-            "user_id": int(user_id) if user_id else None,
+            "user_id": user_id_value,
             "tags": tags,
             "meta_set": Jsonb(meta_set),
             "meta_del": meta_del,
@@ -670,17 +678,24 @@ class PostgresDataLayer(BaseDataLayer):
                 user_detail="Not able to list threads",
             ) from e
 
-        user_identifier = identifier_row[0] if identifier_row is not None else None
+        user_identifier = None
+        if identifier_row is not None:
+            user_identifier = identifier_row[0]
         has_next = len(rows) > pagination.first
         page = [
             t.to_chainlit(user_identifier=user_identifier, steps=[], elements=[])
             for t in rows[: pagination.first]
         ]
+        start_cursor = None
+        end_cursor = None
+        if page:
+            start_cursor = page[0][ThreadField.ID]
+            end_cursor = page[-1][ThreadField.ID]
         return PaginatedResponse(
             pageInfo=PageInfo(
                 hasNextPage=has_next,
-                startCursor=page[0][ThreadField.ID] if page else None,
-                endCursor=page[-1][ThreadField.ID] if page else None,
+                startCursor=start_cursor,
+                endCursor=end_cursor,
             ),
             data=page,
         )

@@ -169,7 +169,9 @@ class ChatTurn:
                     "path": f"{WORKSPACE_MOUNT}/{key.in_thread()}",
                 }
             )
-        extra = {"attachments": attachments} if attachments else {}
+        extra: dict[str, Any] = {}
+        if attachments:
+            extra = {"attachments": attachments}
         return HumanMessage(content=msg.content, id=msg.id, additional_kwargs=extra)
 
     def resume_steps(self) -> list[StepDict]:
@@ -262,9 +264,13 @@ class ChatTurn:
         """Фиксирует остановку: закрывает шаги и кладёт прерванный ответ в историю."""
         note_text = StepText.for_stop(reason)
         answer = self._view.answer_message
-        partial = (answer.content if answer else "") or ""
+        partial = ""
+        if answer is not None and answer.content:
+            partial = answer.content
         note = f"_{note_text}_"
-        content = f"{partial}\n\n{note}" if partial else note
+        content = note
+        if partial:
+            content = f"{partial}\n\n{note}"
 
         await self._draw_stop(note_text, content)
         await self._remember(content, {"stopped": True})
