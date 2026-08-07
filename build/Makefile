@@ -142,7 +142,7 @@ help:
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(SRC_ARTIFACTS)"
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
 	echo "                 {uv,tessdata,fastembed,webassets,"
-	echo "                  sandbox/{rootfs,python,site,data,workspace.ext4}}"
+	echo "                  sandbox/{rootfs,python,site,third,workspace.ext4}}"
 	echo "                 цели по отдельности: uv, tessdata, fastembed,"
 	echo "                 webassets, sandbox-rootfs, sandbox-site,"
 	echo "                 sandbox-python, sandbox-data, sandbox-workspace"
@@ -365,10 +365,11 @@ sandbox-site: version-check
 	docker rm "$$cid" >/dev/null
 
 
-# python-дистрибутив песочницы: тот же, что у приложения (стадия python-dist)
+# python-дистрибутив песочницы: тот же, что у приложения (стадия python-dist),
+# лежит в third/ как монтируемый артефакт наравне с tessdata и fastembed
 .PHONY: sandbox-python
 sandbox-python:
-	@dest="$(SANDBOX_DIR)/python"
+	@dest="$(SANDBOX_DIR)/third/python"
 	echo "== python-дистрибутив песочницы =="
 		rm -rf "$$dest"
 	mkdir -p "$$dest"
@@ -377,16 +378,16 @@ sandbox-python:
 	docker rm "$$cid" >/dev/null
 
 
-# данные песочницы: веса эмбеддера и модели OCR лежат отдельными каталогами
+# артефакты песочницы: python, веса эмбеддера и модели OCR в одном third/
 .PHONY: sandbox-data
 sandbox-data: tessdata fastembed
-	@mkdir -p "$(SANDBOX_DIR)/data"
+	@mkdir -p "$(SANDBOX_DIR)/third"
 	echo "== данные песочницы: tessdata + fastembed =="
-	rm -rf "$(SANDBOX_DIR)/data/tessdata" "$(SANDBOX_DIR)/data/fastembed"
-	cp -a "$(DEPS_DIR)/tessdata" "$(SANDBOX_DIR)/data/tessdata"
-	cp -a "$(DEPS_DIR)/fastembed" "$(SANDBOX_DIR)/data/fastembed"
-	ln -sf eng.traineddata "$(SANDBOX_DIR)/data/tessdata/rus+eng.traineddata"
-	ln -sf rus.traineddata "$(SANDBOX_DIR)/data/tessdata/eng+rus.traineddata"
+	rm -rf "$(SANDBOX_DIR)/third/tessdata" "$(SANDBOX_DIR)/third/fastembed"
+	cp -a "$(DEPS_DIR)/tessdata" "$(SANDBOX_DIR)/third/tessdata"
+	cp -a "$(DEPS_DIR)/fastembed" "$(SANDBOX_DIR)/third/fastembed"
+	ln -sf eng.traineddata "$(SANDBOX_DIR)/third/tessdata/rus+eng.traineddata"
+	ln -sf rus.traineddata "$(SANDBOX_DIR)/third/tessdata/eng+rus.traineddata"
 
 
 .PHONY: sandbox-workspace
@@ -531,8 +532,8 @@ extract:
 	cp "$(CONF_DIR)/config.toml.example" "$(OUT)/conf/config.toml"
 
 	# артефакты песочницы: без них профили [tool.*.sandbox] не поднимутся
-	for art in rootfs/bin/sh python/bin/python3 \
-	           data/fastembed data/tessdata/eng.traineddata workspace.ext4; do
+	for art in rootfs/bin/sh third/python/bin/python3 \
+	           third/fastembed third/tessdata/eng.traineddata workspace.ext4; do
 	    [ -e "$(OUT)/sandbox/$$art" ] || {
 	        echo "в релизе нет sandbox/$$art — запусти: make deps" >&2
 	        exit 1
