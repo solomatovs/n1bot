@@ -57,7 +57,7 @@ class ConversationTranscript:
             key = message.id or f"#{index}"
             match message:
                 case HumanMessage():
-                    self._view.end_turn()
+                    self._view.begin_turn(message.id)
                     self._pending.clear()
                     self._turn_key, self._answers = message.id, 0
                     await self._view.question(self._text(message), message.id)
@@ -85,23 +85,35 @@ class ConversationTranscript:
 
     async def _tool(self, message: ToolMessage, key: str) -> None:
         call = self._pending.pop(message.tool_call_id, None)
-        name = message.name or (call or {}).get("name") or "tool"
-        args = cast("Mapping[str, Any] | None", (call or {}).get("args"))
-        step = await self._view.tool_started(str(name), args, key)
+        if call is None:
+            call = {}
+
+        name = message.name
+        if not name:
+            name = call.get("name")
+        if not name:
+            name = "tool"
+
+        args = cast("Mapping[str, Any] | None", call.get("args"))
+        step = await self._view.tool_started(
+            str(name), args, message.tool_call_id or key
+        )
 
         if message.status == "error":
             await self._view.tool_failed(step, self._text(message))
             return
 
-        artifact = (
-            message.artifact if message.artifact is not None else self._text(message)
-        )
+        artifact = message.artifact
+        if artifact is None:
+            artifact = self._text(message)
         await self._view.tool_finished(step, artifact, message.tool_call_id)
 
     def _answer_key(self) -> str | None:
         if self._turn_key is None:
             return None
-        suffix = f"#{self._answers}" if self._answers else ""
+        suffix = ""
+        if self._answers:
+            suffix = f"#{self._answers}"
         key = f"{self._turn_key}{suffix}"
         self._answers += 1
         return key
@@ -113,7 +125,9 @@ class ConversationTranscript:
     @staticmethod
     def _reasoning(message: AIMessage) -> str:
         value = (message.additional_kwargs or {}).get("reasoning_content")
-        return str(value) if value else ""
+        if value:
+            return str(value)
+        return ""
 
     @staticmethod
     def _text(message: BaseMessage) -> str:

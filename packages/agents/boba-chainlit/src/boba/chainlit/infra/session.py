@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 import chainlit as cl
 from chainlit.context import ChainlitContextException
 
 __all__ = [
+    "UserMetadataField",
     "current_thread_id",
     "current_user_id",
     "current_user_label",
     "current_user_roles",
 ]
 
-ROLES_KEY = "roles"
+
+class UserMetadataField:
+    "Ключи metadata у cl.User; контракт chainlit."
+
+    PROVIDER: Final = "provider"
+    ROLES: Final = "roles"
 
 
 def _current_user() -> cl.User | cl.PersistedUser | None:
@@ -27,7 +35,13 @@ def current_user_roles() -> frozenset[str]:
     if user is None:
         return frozenset()
 
-    roles = (user.metadata or {}).get(ROLES_KEY) or []
+    metadata = user.metadata
+    if metadata is None:
+        metadata = {}
+
+    roles = metadata.get(UserMetadataField.ROLES)
+    if not roles:
+        roles = []
     if isinstance(roles, str):
         return frozenset({roles})
 

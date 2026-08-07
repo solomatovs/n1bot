@@ -71,14 +71,24 @@ class ConfluenceIngestCli:
             cfg.collection,
         )
 
+        page_ids: tuple[str, ...] = ()
+        if args.mode == "pages":
+            page_ids = cls.items(args)
+        cql = ""
+        if args.mode == "cql":
+            cql = args.target
+        space_keys: tuple[str, ...] = ()
+        if args.mode == "spaces":
+            space_keys = cls.items(args)
+
         stats = caller.ingest(
             cfg=cfg,
             mode=args.mode,
             prune_missing=args.prune_missing,
             force_update=args.force_update,
-            page_ids=cls.items(args) if args.mode == "pages" else (),
-            cql=args.target if args.mode == "cql" else "",
-            space_keys=cls.items(args) if args.mode == "spaces" else (),
+            page_ids=page_ids,
+            cql=cql,
+            space_keys=space_keys,
         )
         logger.info("ingest done: %s", stats)
         return 0

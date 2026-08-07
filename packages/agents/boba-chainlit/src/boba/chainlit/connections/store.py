@@ -329,7 +329,9 @@ class ConnectionStore:
         return self._to_profile(row["kind"], row["data"])
 
     async def load_all(self, kind: str | None = None) -> dict[str, BaseModel]:
-        where = sql.SQL("where kind = %(kind)s") if kind else sql.SQL("")
+        where = sql.SQL("")
+        if kind:
+            where = sql.SQL("where kind = %(kind)s")
         query = sql.SQL(
             """
             select

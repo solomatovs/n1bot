@@ -39,6 +39,7 @@ from boba.chainlit.auth.local import (
     RoleExcludeConfig,
     RoleMappingConfig,
 )
+from boba.chainlit.infra.session import UserMetadataField
 
 
 class LDAPError(Exception):
@@ -403,7 +404,9 @@ class LdapAuth:
                 self._logger.warning("access denied for %s (excluded)", username)
                 raise AuthorizationError("Access denied")
 
-            metadata: dict[str, Any] = {"provider": LdapAuth.__name__}
+            metadata: dict[str, Any] = {
+                UserMetadataField.PROVIDER: LdapAuth.__name__,
+            }
 
             roles = self._roles_of(username, user_dn, member_of)
 
@@ -414,7 +417,7 @@ class LdapAuth:
                 raise AuthorizationError("Access denied")
 
             if roles:
-                metadata.update(roles=roles)
+                metadata[UserMetadataField.ROLES] = roles
 
             return cl.User(
                 identifier=username,

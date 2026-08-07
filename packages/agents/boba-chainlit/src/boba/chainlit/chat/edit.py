@@ -71,14 +71,14 @@ class ThreadRewind:
         thread_id: str,
     ) -> RewindPlan:
         """Хвост после вопроса: id сообщений и id их вложений."""
-        index = next(
-            (
-                i
-                for i, m in enumerate(messages)
-                if isinstance(m, HumanMessage) and m.id == message_id
-            ),
-            None,
-        )
+        index = None
+        for position, message in enumerate(messages):
+            if not isinstance(message, HumanMessage):
+                continue
+            if message.id != message_id:
+                continue
+            index = position
+            break
         if index is None:
             return RewindPlan([], [])
 

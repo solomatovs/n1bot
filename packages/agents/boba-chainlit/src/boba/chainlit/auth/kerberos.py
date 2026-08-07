@@ -1,10 +1,19 @@
+"""SSO через Kerberos/SPNEGO для chainlit.
+
+Ошибки: AuthenticationError, AuthorizationError — отказ входа;
+ExternalServiceError — недоступен внешний сервис (KDC, LDAP);
+InternalServiceError — keytab/SPN/конфиг непригодны.
+"""
+
 import asyncio
 import base64
 import logging
 import re
-from collections.abc import Awaitable, Callable, Iterable
-from itertools import chain
-from typing import Any, Literal
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from boba.krb import SpnegoIdentity
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -42,6 +51,7 @@ from boba.chainlit.auth.local import (
     RoleExcludeConfig,
     RoleMappingConfig,
 )
+from boba.chainlit.infra.session import UserMetadataField
 from boba.krb import (
     AcceptConfig,
     CcacheRegistry,
@@ -68,27 +78,16 @@ class KerberosRolesInLdapConfig(BaseModel):
     base_dn: str = Field(
         description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
     )
-    bind_dn: str = Field(
-        description="",
-    )
-    bind_password: str = Field(
-        description="",
-    )
+    bind_dn: str
+    bind_password: str
     mapping: KerberosRolesInLdapMappingConfig = Field(
         default=KerberosRolesInLdapMappingConfig(),
-        description="",
     )
 
 
 class KerberosRolesConfig(BaseModel):
-    principal: RoleMappingConfig | None = Field(
-        default=None,
-        description="",
-    )
-    principal_ex: RoleExcludeConfig | None = Field(
-        default=None,
-        description="",
-    )
+    principal: RoleMappingConfig | None = None
+    principal_ex: RoleExcludeConfig | None = None
     sid: RoleMappingConfig | None = Field(
         default=None,
         description="Мапер SID группы из PAC kerberos-тикета - роли.",
@@ -110,9 +109,7 @@ class KerberosAuthConfig(BaseModel):
             'в конфиге подключается ссылкой ${kerberos.<name>}.'
         ),
     )
-    principal_format: str = Field(
-        description="",
-    )
+    principal_format: str
     sso_path: str = Field(default="/auth/sso")
     header: str = Field(
         default="X-Remote-User",
@@ -122,14 +119,8 @@ class KerberosAuthConfig(BaseModel):
         default_factory=DelegationConfig,
         description="Параметры ccache для unconstrained режима делегирования",
     )
-    roles: KerberosRolesConfig | None = Field(
-        default=None,
-        description="",
-    )
-    ldap_roles: KerberosRolesInLdapConfig | None = Field(
-        default=None,
-        description="",
-    )
+    roles: KerberosRolesConfig | None = None
+    ldap_roles: KerberosRolesInLdapConfig | None = None
     require_roles: bool = Field(
         default=True,
         description=(
@@ -197,6 +188,25 @@ class SidExcludeUserProvider:
             yield from self._mapping.exclude_of(s)
 
 
+class SidsHeader:
+    "Формат заголовка со списком SID: сериализация и разбор в одном месте."
+
+    @staticmethod
+    def render(sids: Iterable[str]) -> str:
+        return ",".join(sids)
+
+    @staticmethod
+    def parse(raw: str) -> list[str]:
+        return list(SidsHeader._parts(raw))
+
+    @staticmethod
+    def _parts(raw: str) -> Iterator[str]:
+        for part in raw.split(","):
+            if not part:
+                continue
+            yield part
+
+
 class SpnegoMiddleware:
     "SPNEGO-accept на /auth/sso"
 
@@ -215,7 +225,7 @@ class SpnegoMiddleware:
         self._acceptor = acceptor
         self._delegation = delegation
         self._negotiate = {"WWW-Authenticate": "Negotiate"}
-        self.logger = logging.getLogger(SpnegoMiddleware.__name__)
+        self._logger = logging.getLogger(SpnegoMiddleware.__name__)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):  # noqa: PLR0911
         if scope["type"] != "http":
@@ -248,24 +258,24 @@ class SpnegoMiddleware:
 
         try:
             token = base64.b64decode(value)
-        except Exception as e:
+        except ValueError as e:
             return await self._challenge(
                 scope, receive, send, f"invalid base64 token: {e}"
             )
 
         try:
-            identity = await self._acceptor.accept_async(token)
+            identity: SpnegoIdentity = await self._acceptor.accept_async(token)
         except InvalidTokenError as e:
             # проблема клиента: битый, просроченный или неполный токен
             return await self._challenge(scope, receive, send, str(e))
         except KerberosError as e:
             # проблема сервера: keytab/SPN
-            self.logger.exception(
+            self._logger.exception(
                 "kerberos: spnego accept failed (keytab/SPN) [client=%s]", client
             )
             raise KerberosErrorToDomain.map(e) from e
 
-        self.logger.info(
+        self._logger.info(
             "kerberos authenticated [principal=%s] [client=%s]",
             identity.principal,
             client,
@@ -276,19 +286,29 @@ class SpnegoMiddleware:
         header = self._config.header.lower()
         headers[header] = identity.principal
         # заголовок с SID-ами перетираем всегда — клиентское значение не пройдёт
-        headers[self._config.sids_header.lower()] = ",".join(identity.group_sids)
+        headers[self._config.sids_header.lower()] = SidsHeader.render(
+            identity.group_sids
+        )
         scope["headers"] = headers.raw
 
         return await self._app(scope, receive, send)
 
     def _client(self, headers: Headers, scope: Scope) -> str:
         "Лучший идентификатор клиента для логов: реальный IP за прокси, иначе peer."
-        if xff := headers.get("x-forwarded-for"):
-            return xff.split(",")[0].strip()
-        if real := headers.get("x-real-ip"):
+        xff = headers.get("x-forwarded-for")
+        if xff:
+            first, _, _ = xff.partition(",")
+            return first.strip()
+
+        real = headers.get("x-real-ip")
+        if real:
             return real
+
         peer = scope.get("client")
-        return peer[0] if peer else "unknown"
+        if peer:
+            return peer[0]
+
+        return "unknown"
 
     async def _challenge(
         self,
@@ -300,8 +320,10 @@ class SpnegoMiddleware:
     ) -> None:
         "Логирует причину и отдаёт 401 Negotiate (пользователь неизвестен)."
         client = self._client(Headers(scope=scope), scope)
-        self.logger.log(level, "kerberos challenge [client=%s]: %s", client, reason)
-        await Response(status_code=401, headers=self._negotiate)(scope, receive, send)
+        self._logger.log(level, "kerberos challenge [client=%s]: %s", client, reason)
+
+        response = Response(status_code=401, headers=self._negotiate)
+        await response(scope, receive, send)
 
 
 class KerberosRolesInLdapProvider:
@@ -319,23 +341,33 @@ class KerberosRolesInLdapProvider:
         self._dn_roles: DnUserRolesProvider | None = None
         self._dn_roles_ex: DnExcludeUserProvider | None = None
 
-        if roles := self._config.mapping.samaccountname:
-            self._samaccountname_roles = SAMAccountNameUserRolesProvider(roles)
+        samaccountname = self._config.mapping.samaccountname
+        if samaccountname:
+            self._samaccountname_roles = SAMAccountNameUserRolesProvider(
+                samaccountname
+            )
 
-        if roles := self._config.mapping.samaccountname_ex:
-            self._samaccountname_roles_ex = SAMAccountNameExcludeUserProvider(roles)
+        samaccountname_ex = self._config.mapping.samaccountname_ex
+        if samaccountname_ex:
+            self._samaccountname_roles_ex = SAMAccountNameExcludeUserProvider(
+                samaccountname_ex
+            )
 
-        if roles := self._config.mapping.member_of:
-            self._member_of_roles = MemberOfUserRolesProvider(roles)
+        member_of = self._config.mapping.member_of
+        if member_of:
+            self._member_of_roles = MemberOfUserRolesProvider(member_of)
 
-        if roles := self._config.mapping.member_of_ex:
-            self._member_of_roles_ex = MemberOfExcludeUserProvider(roles)
+        member_of_ex = self._config.mapping.member_of_ex
+        if member_of_ex:
+            self._member_of_roles_ex = MemberOfExcludeUserProvider(member_of_ex)
 
-        if roles := self._config.mapping.dn:
-            self._dn_roles = DnUserRolesProvider(roles)
+        dn = self._config.mapping.dn
+        if dn:
+            self._dn_roles = DnUserRolesProvider(dn)
 
-        if roles := self._config.mapping.dn_ex:
-            self._dn_roles_ex = DnExcludeUserProvider(roles)
+        dn_ex = self._config.mapping.dn_ex
+        if dn_ex:
+            self._dn_roles_ex = DnExcludeUserProvider(dn_ex)
 
     async def request(self, principal: str) -> ADUserEntry:
         search_filter = f"(userPrincipalName={principal})"
@@ -383,17 +415,17 @@ class KerberosRolesInLdapProvider:
             yield from self._dn_roles.roles_of(user.dn)
 
     def excluded_of(self, user: ADUserEntry) -> bool:
-        res = []
+        return any(self._exclusions_of(user))
+
+    def _exclusions_of(self, user: ADUserEntry) -> Iterator[bool]:
         if self._samaccountname_roles_ex:
-            res.append(self._samaccountname_roles_ex.exclude_of(user.samaccountname))
+            yield from self._samaccountname_roles_ex.exclude_of(user.samaccountname)
 
         if self._member_of_roles_ex:
-            res.append(self._member_of_roles_ex.exclude_of(user.member_of))
+            yield from self._member_of_roles_ex.exclude_of(user.member_of)
 
         if self._dn_roles_ex:
-            res.append(self._dn_roles_ex.exclude_of(user.dn))
-
-        return any(chain.from_iterable(res))
+            yield from self._dn_roles_ex.exclude_of(user.dn)
 
 
 class KerberosAuth:
@@ -430,7 +462,8 @@ class KerberosAuth:
         self._sid_roles_ex: SidExcludeUserProvider | None = None
         self._kerberos_roles_in_ldap: KerberosRolesInLdapProvider | None = None
 
-        if roles := self._config.roles:
+        roles = self._config.roles
+        if roles:
             if roles.principal:
                 self._principal_roles = LocalUserRolesProvider(roles.principal)
 
@@ -443,7 +476,8 @@ class KerberosAuth:
             if roles.sid_ex:
                 self._sid_roles_ex = SidExcludeUserProvider(roles.sid_ex)
 
-        if ldap_roles := self._config.ldap_roles:
+        ldap_roles = self._config.ldap_roles
+        if ldap_roles:
             self._kerberos_roles_in_ldap = KerberosRolesInLdapProvider(ldap_roles)
 
     @staticmethod
@@ -486,13 +520,15 @@ class KerberosAuth:
         self._install_routes(chainlit_app)
         self._install_button_js()
 
-    async def _build_user(self, headers) -> cl.User | None:
+    async def _build_user(self, headers: Headers) -> cl.User | None:
         """По X-Remote-User строит cl.User: username из принципала + роли из AD."""
         principal = headers.get(self._config.header)
         if not principal:
             return None
 
-        metadata: dict[str, Any] = {"provider": KerberosAuth.__name__}
+        metadata: dict[str, Any] = {
+            UserMetadataField.PROVIDER: KerberosAuth.__name__,
+        }
 
         roles: list[str] = []
         excluded = False
@@ -505,26 +541,28 @@ class KerberosAuth:
 
         sid_roles, sid_excluded = self._sid_mapping(headers)
         roles.extend(sid_roles)
-        excluded = excluded or sid_excluded
+        if sid_excluded:
+            excluded = True
 
         if self._kerberos_roles_in_ldap:
             user = await self._kerberos_roles_in_ldap.request(principal)
             roles.extend(self._kerberos_roles_in_ldap.roles_of(user))
 
-            excluded = excluded or self._kerberos_roles_in_ldap.excluded_of(user)
+            if self._kerberos_roles_in_ldap.excluded_of(user):
+                excluded = True
 
         if excluded:
             self._logger.warning("access denied for %s (excluded)", principal)
             raise AuthorizationError("Access denied")
 
-        roles = list(set(roles))
+        roles = sorted(set(roles))
 
         if self._config.require_roles and not roles:
             self._logger.warning("access denied for %s (no roles mapped)", principal)
             raise AuthorizationError("Access denied")
 
         if roles:
-            metadata.update(roles=roles)
+            metadata[UserMetadataField.ROLES] = roles
 
         username = self._username_from_principal(
             self._config.principal_format,
@@ -533,18 +571,28 @@ class KerberosAuth:
 
         return cl.User(identifier=username, metadata=metadata)
 
-    def _sid_mapping(self, headers) -> tuple[list[str], bool]:
+    def _sid_mapping(self, headers: Headers) -> tuple[list[str], bool]:
         "Роли и исключение по SID группам из PAC; заголовок ставит middleware."
-        if not (self._sid_roles or self._sid_roles_ex):
+        has_roles = self._sid_roles is not None
+        has_exclusions = self._sid_roles_ex is not None
+
+        if not has_roles and not has_exclusions:
             return [], False
 
-        raw_sids = headers.get(self._config.sids_header) or ""
-        sids = [s for s in raw_sids.split(",") if s]
+        raw_sids = headers.get(self._config.sids_header)
+        if raw_sids is None:
+            raw_sids = ""
 
-        roles = list(self._sid_roles.roles_of(sids)) if self._sid_roles else []
-        excluded = bool(
-            self._sid_roles_ex and any(self._sid_roles_ex.exclude_of(sids))
-        )
+        sids = SidsHeader.parse(raw_sids)
+
+        roles: list[str] = []
+        if self._sid_roles:
+            roles = list(self._sid_roles.roles_of(sids))
+
+        excluded = False
+        if self._sid_roles_ex:
+            excluded = any(self._sid_roles_ex.exclude_of(sids))
+
         return roles, excluded
 
     def _install_routes(self, chainlit_app: FastAPI) -> None:
@@ -560,11 +608,15 @@ class KerberosAuth:
             if user is None:
                 return RedirectResponse(url=self._login_url, status_code=303)
 
-            if data_layer := get_data_layer():
+            data_layer = get_data_layer()
+            if data_layer is not None:
                 try:
                     await data_layer.create_user(user)
-                except Exception:
-                    self._logger.exception("failed to persist SSO user")
+                except Exception as exc:
+                    raise InternalServiceError(
+                        internal_detail=f"failed to persist SSO user: {exc}",
+                        user_detail=None,
+                    ) from exc
 
             resp = RedirectResponse(url=self._app_url, status_code=303)
             set_auth_cookie(request, resp, create_jwt(user))
@@ -579,14 +631,17 @@ class KerberosAuth:
     def _install_button_js(self) -> None:
         """Подключает sso.js на странице логина через custom_js."""
         existing = cl_config.ui.custom_js
-        if existing and existing != self._js_path:
-            self._logger.warning(
-                "custom_js already set (%s) — skipping SSO button injection",
-                existing,
-            )
+        if not existing:
+            cl_config.ui.custom_js = self._js_path
             return
 
-        cl_config.ui.custom_js = self._js_path
+        if existing == self._js_path:
+            return
+
+        self._logger.warning(
+            "custom_js already set (%s) — skipping SSO button injection",
+            existing,
+        )
 
     @staticmethod
     def _prepend_route(
@@ -596,7 +651,9 @@ class KerberosAuth:
         chainlit_app.add_api_route(
             path, endpoint, methods=["GET"], include_in_schema=False
         )
-        chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+
+        route = chainlit_app.router.routes.pop()
+        chainlit_app.router.routes.insert(0, route)
 
     def _get_static_button(self) -> str:
         "Генерирует JS кнопки SSO: клонирует нативную кнопку формы login и ведёт на SSO"

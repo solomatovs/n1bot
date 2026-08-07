@@ -98,7 +98,9 @@ class ToolResultMarkdown:
             case AffectedResult(affected_rows=n, status=s):
                 return self._affected_block(n, s)
             case ChartResult(title=title):
-                return f"_(график: {title})_" if title else "_(график)_"
+                if title:
+                    return f"_(график: {title})_"
+                return "_(график)_"
             case ErrorResult(message=m):
                 if "\n" in m:
                     return f"**Error:**\n\n{m}"

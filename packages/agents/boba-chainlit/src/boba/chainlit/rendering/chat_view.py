@@ -134,7 +134,13 @@ class RecordingSink(ChatSink):
 
 
 class ChatView:
-    """Строит step-иерархию хода диалога и пишет её в sink."""
+    """Строит step-иерархию хода диалога и пишет её в sink.
+
+    Контракт id: каждый шаг адресуется детерминированно через derive_id, чтобы
+    live-отрисовка и повтор из истории давали одинаковую ленту. Ключи:
+    контейнер и ответ — id вопроса (turn key), thinking — id AIMessage,
+    tool/chart/element — tool_call_id.
+    """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
 
@@ -149,6 +155,7 @@ class ChatView:
         self._sink = sink
         self._user_name = user_name or "User"
         self._assistant_name = chainlit_config.ui.name
+        self._turn_key: str | None = None
         self._container: Step | None = None
         self._answer: Message | None = None
         self._tool_names: dict[str, str] = {}
@@ -163,8 +170,11 @@ class ChatView:
         """Стримящийся ответ хода; None — ни одного токена ещё не было."""
         return self._answer
 
-    def end_turn(self) -> None:
+    def begin_turn(self, key: str | None) -> None:
+        """Открывает ход: его ключ адресует контейнер и ответ."""
+        self._turn_key = key
         self._container = None
+        self._answer = None
 
     async def question(self, text: str, step_id: str | None = None) -> Step:
         step = self._step(
@@ -228,14 +238,14 @@ class ChatView:
         message.parent_id = None
         return message
 
-    async def container(self, key: str | None = None) -> Step:
+    async def container(self) -> Step:
         if self._container is not None:
             return self._container
         step = self._step(
             StepText.CONTAINER,
             StepKind.RUN,
             parent_id=None,
-            step_id=self.derive_id(self._thread_id, key, StepRole.PROCESS),
+            step_id=self.derive_id(self._thread_id, self._turn_key, StepRole.PROCESS),
         )
         await self._sink.put(step)
         self._container = step
@@ -285,15 +295,15 @@ class ChatView:
             return
 
         failed = not result.ok
-        status = StepStatus.FAILED if failed else StepStatus.DONE
+        status = StepStatus.DONE
+        if failed:
+            status = StepStatus.FAILED
         step.name = status.title(self._tool_names.get(step.id, step.name))
         match ToolResultView(result).render():
             case ChartRendering() as chart:
-                step.output = (
-                    f"график отрисован: {chart.title}"
-                    if chart.title
-                    else "график отрисован"
-                )
+                step.output = "график отрисован"
+                if chart.title:
+                    step.output = f"график отрисован: {chart.title}"
                 await self._sink.put(step)
                 await self._chart(chart, tool_call_id)
             case MarkdownRendering(markdown=markdown):
@@ -349,7 +359,7 @@ class ChatView:
         key: str | None,
         role: StepRole,
     ) -> Step:
-        container = await self.container(key)
+        container = await self.container()
         return self._step(
             name,
             kind,

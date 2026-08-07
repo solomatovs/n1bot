@@ -72,7 +72,9 @@ class AgentTracer(AsyncBaseTracer):
         value = getattr(message, "reasoning_content", None) or (
             getattr(message, "additional_kwargs", None) or {}
         ).get("reasoning_content")
-        return str(value) if value else ""
+        if value:
+            return str(value)
+        return ""
 
     @override
     @_visible_failure
@@ -89,7 +91,7 @@ class AgentTracer(AsyncBaseTracer):
         if reasoning := self._reasoning_of(getattr(chunk, "message", None)):
             run_key = str(run_id)
             if run_key not in self._reasoning:
-                await self._view.container(run_key)
+                await self._view.container()
             self._reasoning[run_key] = self._reasoning.get(run_key, "") + reasoning
         return await super().on_llm_new_token(
             token,
@@ -117,7 +119,8 @@ class AgentTracer(AsyncBaseTracer):
             message = getattr(response.generations[0][0], "message", None)
 
         if text := (reasoning or self._reasoning_of(message)):
-            await self._view.thinking(text)
+            message_id = getattr(message, "id", None)
+            await self._view.thinking(text, message_id)
 
         return await super().on_llm_end(
             response,
@@ -142,8 +145,18 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        tool_name = name or (serialized or {}).get("name", "tool")
-        self._tool_steps[str(run_id)] = await self._view.tool_started(tool_name, inputs)
+        tool_name = name
+        if not tool_name and serialized:
+            tool_name = serialized.get("name")
+        if not tool_name:
+            tool_name = "tool"
+        call_id = kwargs.get("tool_call_id")
+        call_key: str | None = None
+        if call_id:
+            call_key = str(call_id)
+        self._tool_steps[str(run_id)] = await self._view.tool_started(
+            tool_name, inputs, call_key
+        )
         return await super().on_tool_start(
             serialized,
             input_str,
@@ -171,9 +184,11 @@ class AgentTracer(AsyncBaseTracer):
                 await self._view.tool_failed(step, getattr(output, "content", output))
             else:
                 artifact = getattr(output, "artifact", None)
+                if artifact is None:
+                    artifact = output
                 await self._view.tool_finished(
                     step,
-                    artifact if artifact is not None else output,
+                    artifact,
                     getattr(output, "tool_call_id", None),
                 )
         return await super().on_tool_end(output, run_id=run_id, **kwargs)

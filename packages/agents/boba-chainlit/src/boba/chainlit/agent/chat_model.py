@@ -69,9 +69,10 @@ class ReasoningChatOpenAI(ChatOpenAI):
         generation_info: dict | None = None,
     ) -> ChatResult:
         result = super()._create_chat_result(response, generation_info)
-        response_dict = (
-            response if isinstance(response, dict) else response.model_dump()
-        )
+        if isinstance(response, dict):
+            response_dict = response
+        else:
+            response_dict = response.model_dump()
         choices = response_dict.get(ResponseField.CHOICES.value) or []
         if choices and result.generations:
             message = choices[0].get(ResponseField.MESSAGE.value) or {}

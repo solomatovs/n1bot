@@ -96,7 +96,10 @@ class LocalStorageClient(BaseStorageClient):
 
         await aiofiles.os.makedirs(path.parent, exist_ok=True)
 
-        payload = data.encode() if isinstance(data, str) else data
+        if isinstance(data, str):
+            payload = data.encode()
+        else:
+            payload = data
 
         async with aiofiles.open(path, "wb") as f:
             await f.write(payload)
@@ -165,10 +168,16 @@ class ImageStorageClient(LocalStorageClient):
         if not overwrite and await self._exists(image, rel):
             return {"object_key": object_key, "url": self.URL_TEMPLATE}
 
-        payload = data.encode() if isinstance(data, str) else data
+        if isinstance(data, str):
+            payload = data.encode()
+        else:
+            payload = data
         rc, _, err = await self._op(image, ["write", rel], source=self._once(payload))
         self._check(rc, err)
-        return {"object_key": object_key, "url": self.URL_TEMPLATE}
+        return {
+            "object_key": object_key,
+            "url": self.URL_TEMPLATE,
+        }
 
     async def upload_stream(
         self,
@@ -273,9 +282,12 @@ class ImageStorageClient(LocalStorageClient):
             options=self._config.launcher.to_options(),
             limits=ResourceLimits(),
         )
+        stdin = asyncio.subprocess.DEVNULL
+        if with_stdin:
+            stdin = asyncio.subprocess.PIPE
         return await asyncio.create_subprocess_exec(
             *argv,
-            stdin=asyncio.subprocess.PIPE if with_stdin else asyncio.subprocess.DEVNULL,
+            stdin=stdin,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
