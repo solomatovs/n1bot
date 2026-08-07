@@ -146,6 +146,36 @@ class TestStepContract:
                     children.append(step.get("parentId"))
             assert set(children) == {container_id}
 
+    def test_replayed_names_match_live(self) -> None:
+        """Заголовок шага («✓ demo», «✓ process...») живёт в name и обязан совпасть.
+
+        «Кружка сверху» в live-вкладке — это то же, что кружок resumed-вкладки:
+        status using/used run-шага. Несовпадение name означало бы расхождение
+        лент — на него и смотрим. end — wall-clock завершения, в двух прогонах
+        он разный; сравниваем только признак завершённости (start == end).
+        """
+        live = self._by_id(run(self._live()))
+        replay = self._by_id(run(self._replay()))
+        shared = set(live) & set(replay)
+        for step_id in shared:
+            live_step = live[step_id]
+            replay_step = replay[step_id]
+            assert live_step.get("name") == replay_step.get("name")
+            assert live_step.get("output") == replay_step.get("output")
+            assert live_step.get("parentId") == replay_step.get("parentId")
+            assert live_step.get("isError") == replay_step.get("isError")
+            if live_step.get("type") == "run":
+                # контейнер держится весь ход: start есть, end нет — он живой
+                assert live_step.get("end") is None
+                assert replay_step.get("end") is None
+                continue
+            # завершённый шаг не должен выглядеть живым: end есть и start == end
+            # (иначе фронт рисует loading-cursor)
+            assert live_step.get("end") is not None
+            assert replay_step.get("end") is not None
+            assert live_step.get("start") == live_step.get("end")
+            assert replay_step.get("start") == replay_step.get("end")
+
     def test_answer_id_matches_stream_target(self) -> None:
         """stream_token дописывает по id: ответ истории обязан совпасть с live."""
         replay = self._by_id(run(self._replay()))

@@ -153,7 +153,10 @@ class ChatView:
     ) -> None:
         self._thread_id = thread_id
         self._sink = sink
-        self._user_name = user_name or "User"
+        display_name = user_name
+        if not display_name:
+            display_name = "User"
+        self._user_name = display_name
         self._assistant_name = chainlit_config.ui.name
         self._turn_key: str | None = None
         self._container: Step | None = None
@@ -256,8 +259,9 @@ class ChatView:
             StepStatus.IDLE.title("thinking"), StepKind.LLM, key, StepRole.THINKING
         )
         step.output = text
-        step.start = utc_now()
-        step.end = utc_now()
+        stamp = utc_now()
+        step.start = stamp
+        step.end = stamp
         await self._sink.put(step)
         return step
 
@@ -284,7 +288,10 @@ class ChatView:
         artifact: Any,
         tool_call_id: str | None = None,
     ) -> None:
-        step.end = utc_now()
+        # завершённость шага = start == end; иначе фронт считает его живым
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
         result = ToolArtifact.revive(artifact)
         if result is None:
             content, lang = process_content(artifact)
@@ -315,14 +322,18 @@ class ChatView:
         """Инструмент не доработал: ход остановлен."""
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = note
-        step.end = utc_now()
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
         await self._sink.put(step)
 
     async def tool_failed(self, step: Step, error: object) -> None:
         step.is_error = True
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = f"**tool failed:** {error}"
-        step.end = utc_now()
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
         await self._sink.put(step)
 
     async def _chart(
@@ -336,13 +347,18 @@ class ChatView:
             parent_id=None,
             step_id=self.derive_id(self._thread_id, tool_call_id, StepRole.CHART),
         )
-        step.output = chart.title or ""
+        title = chart.title
+        if not title:
+            title = ""
+        step.output = title
         if self._sink.EMITS_ELEMENTS:
             element = chart.plotly_element()
-            element.id = str(
-                self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
-                or element.id
+            element_id = self.derive_id(
+                self._thread_id, tool_call_id, StepRole.ELEMENT
             )
+            if not element_id:
+                element_id = element.id
+            element.id = str(element_id)
             step.elements = [element]
         await self._sink.put(step)
 
