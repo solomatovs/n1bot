@@ -308,6 +308,30 @@ class TestEntry:
 
         assert failure.value.kind == DiagramErrorKind.BAD_FILE
 
+    @pytest.mark.anyio
+    async def test_read_refuses_file_over_the_limit(self, files: DiagramFiles) -> None:
+        """Потолок на объём держит тул: хранилище отдаёт что угодно потоком.
+
+        Файл в mermaid/ пишет bash, поэтому он может быть сколь угодно велик,
+        а спека целиком уезжает в props элемента и в LLM.
+        """
+        storage = files._layer().storage
+        oversized = "flowchart LR\n" + "  A --> B\n" * 4000
+        await storage.upload_file(
+            object_key=f"7/{THREAD}/mermaid/huge.mmd",
+            data=oversized,
+            mime="text/plain",
+        )
+
+        key = ObjectKey.build(
+            "7", THREAD, "huge.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        )
+
+        with pytest.raises(DiagramRefusedError) as failure:
+            await files.read(key)
+
+        assert failure.value.kind == DiagramErrorKind.BAD_FILE
+
 
 class FileFeed:
     """Источник содержимого для вотчера: лента снапшотов, управляемая тестом.

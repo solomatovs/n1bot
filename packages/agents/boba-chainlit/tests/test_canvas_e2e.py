@@ -225,15 +225,27 @@ async def test_image_is_rendered(panel: Any) -> None:
     image = side.locator("img").first
 
     assert await image.count()
-    assert await image.evaluate("el => el.complete && el.naturalWidth > 0")
+    # ждём саму загрузку: на холодном старте она приходит позже показа
+    await side.page.wait_for_function(
+        """() => {
+            const img = document.querySelector('#side-view-content img');
+            return !!img && img.complete && img.naturalWidth > 0;
+        }""",
+        timeout=15000,
+    )
 
 
 async def test_svg_is_rendered(panel: Any) -> None:
     show, _, _thread = panel
     side = await show("chart.svg")
-    image = side.locator("img").first
 
-    assert await image.evaluate("el => el.complete && el.naturalWidth > 0")
+    await side.page.wait_for_function(
+        """() => {
+            const img = document.querySelector('#side-view-content img');
+            return !!img && img.complete && img.naturalWidth > 0;
+        }""",
+        timeout=15000,
+    )
 
 
 async def test_diagram_is_drawn_not_shown_as_text(panel: Any) -> None:
@@ -415,3 +427,23 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
 
     assert rows
     assert max(rows) - min(rows) <= 2
+
+
+async def test_panel_switches_after_a_render_error(panel: Any) -> None:
+    """Сломанная диаграмма не должна запирать панель: следующий файл рисуется."""
+    show, _, thread = panel
+    side = await show("broken.mmd")
+    page = side.page
+
+    assert "не отрисована" in await side.inner_text()
+
+    await page.evaluate(
+        """path => window.dispatchEvent(
+            new CustomEvent('boba:canvas', {detail: {path}}))""",
+        f"/workspace/{thread}/upload/flow.mmd",
+    )
+    await page.wait_for_timeout(3000)
+
+    text = await side.inner_text()
+    assert "Доход" in text
+    assert "не отрисована" not in text

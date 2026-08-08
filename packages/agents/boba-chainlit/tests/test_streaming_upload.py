@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from boba.chainlit.chat.data.storage import LocalStorageClient, StorageFullError
 from boba.chainlit.chat.data.upload import UploadPolicy, UploadRoute
+from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
 
@@ -104,6 +105,16 @@ def transport(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+async def read_all(storage: LocalStorageClient, object_key: str) -> bytes:
+    """Файл целиком: накапливает вызывающий, хранилище только стримит."""
+    async with await storage.open_stream(object_key, ReadWindow.entire()) as body:
+        collected = bytearray()
+        async for chunk in body.chunks:
+            collected.extend(chunk)
+
+    return bytes(collected)
+
+
 async def test_upload_lands_in_storage_and_is_served_back(
     client_app: FastAPI,
     session: FakeSession,
@@ -124,7 +135,7 @@ async def test_upload_lands_in_storage_and_is_served_back(
     assert body["size"] == len(payload)
 
     record = session.files[body["id"]]
-    assert await storage.read_file(record["object_key"]) == payload
+    assert await read_all(storage, record["object_key"]) == payload
 
     async with transport(client_app) as client:
         served = await client.get(
@@ -133,6 +144,72 @@ async def test_upload_lands_in_storage_and_is_served_back(
 
     assert served.status_code == 200
     assert served.content == payload
+    assert served.headers["content-length"] == str(len(payload))
+    assert served.headers["accept-ranges"] == "bytes"
+
+
+async def test_download_honors_range(
+    client_app: FastAPI,
+    session: FakeSession,
+):
+    payload = b"0123456789" * 100
+
+    async with transport(client_app) as client:
+        uploaded = await client.post(
+            "/project/file",
+            params={"session_id": session.id},
+            files={"file": ("win.bin", payload, "application/octet-stream")},
+        )
+        file_id = uploaded.json()["id"]
+
+        partial = await client.get(
+            f"/project/file/{file_id}",
+            params={"session_id": session.id},
+            headers={"Range": "bytes=10-19"},
+        )
+        tail = await client.get(
+            f"/project/file/{file_id}",
+            params={"session_id": session.id},
+            headers={"Range": "bytes=990-"},
+        )
+        suffix = await client.get(
+            f"/project/file/{file_id}",
+            params={"session_id": session.id},
+            headers={"Range": "bytes=-5"},
+        )
+
+    assert partial.status_code == 206
+    assert partial.content == payload[10:20]
+    assert partial.headers["content-range"] == f"bytes 10-19/{len(payload)}"
+    assert partial.headers["content-length"] == "10"
+
+    assert tail.status_code == 206
+    assert tail.content == payload[990:]
+
+    assert suffix.status_code == 206
+    assert suffix.content == payload[-5:]
+
+
+async def test_download_range_beyond_file_is_416(
+    client_app: FastAPI,
+    session: FakeSession,
+):
+    async with transport(client_app) as client:
+        uploaded = await client.post(
+            "/project/file",
+            params={"session_id": session.id},
+            files={"file": ("small.bin", b"abc", "application/octet-stream")},
+        )
+        file_id = uploaded.json()["id"]
+
+        response = await client.get(
+            f"/project/file/{file_id}",
+            params={"session_id": session.id},
+            headers={"Range": "bytes=100-"},
+        )
+
+    assert response.status_code == 416
+    assert response.headers["content-range"] == "bytes */3"
 
 
 async def test_upload_never_buffers_the_body(
@@ -280,7 +357,7 @@ async def test_form_fields_before_the_file_are_skipped(
 
     assert response.status_code == 200, response.text
     record = session.files[response.json()["id"]]
-    assert await storage.read_file(record["object_key"]) == b"hello"
+    assert await read_all(storage, record["object_key"]) == b"hello"
 
 
 async def test_body_without_a_file_part_is_rejected(

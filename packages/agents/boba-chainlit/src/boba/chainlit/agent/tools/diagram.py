@@ -25,6 +25,7 @@ from boba.chainlit.agent.tools.canvas import CanvasOpener
 from boba.chainlit.chat.data.data_layer import AttachmentDataLayer
 from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
 from boba.chainlit.chat.data.storage import StorageError, StorageNotFoundError
+from boba.workspace.launcher import ReadWindow
 from boba.chainlit.chat.turn import ChatTurn
 from boba.chainlit.infra.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.canvas import (
@@ -127,7 +128,9 @@ class DiagramPrompt(StrEnum):
         "задаётся строкой 'direction LR' внутри спеки. Большую схему дроби на "
         "несколько диаграмм. Синтаксис тела проверяет браузер при показе, "
         "поэтому пиши строго: подпись подграфа без пробелов внутри скобок — "
-        "'subgraph ID[\"Текст\"]', а не 'subgraph ID[ \"Текст\" ]'."
+        "'subgraph ID[\"Текст\"]', а не 'subgraph ID[ \"Текст\" ]'. "
+        "sankey-beta принимает в подписях узлов только латиницу — для русских "
+        "подписей бери другой тип (flowchart, xychart-beta)."
     )
 
 
@@ -431,9 +434,13 @@ class DiagramFiles:
         except ValueError as e:
             raise DiagramRefusedError(DiagramErrorKind.BAD_PATH, str(e)) from e
 
+    UTF8_MAX_CHAR_BYTES: ClassVar[int] = 4
+    """Потолок чтения в байтах: максимум utf-8 байт на символ лимита спеки."""
+
     async def read(self, key: ObjectKey) -> str:
+        """Спека целиком в памяти: её размер ограничен, а хранилище лишь стримит."""
         try:
-            blob = await self._layer().storage.read_file(key.render())
+            blob = await self._collect(key)
         except StorageNotFoundError as e:
             raise DiagramRefusedError(
                 DiagramErrorKind.FILE_NOT_FOUND,
@@ -452,6 +459,24 @@ class DiagramFiles:
                 DiagramErrorKind.BAD_FILE,
                 f"the file is not utf-8 text: {key.in_workspace()}",
             ) from e
+
+    async def _collect(self, key: ObjectKey) -> bytes:
+        """Читает файл потоком; слишком большой отвергается по размеру, до тела."""
+        max_bytes = self._max_chars * self.UTF8_MAX_CHAR_BYTES
+        storage = self._layer().storage
+
+        async with await storage.open_stream(key.render(), ReadWindow.entire()) as body:
+            if body.stat.size > max_bytes:
+                raise DiagramRefusedError(
+                    DiagramErrorKind.BAD_FILE,
+                    f"the file is larger than the diagram limit: {key.in_workspace()}",
+                )
+
+            collected = bytearray()
+            async for chunk in body.chunks:
+                collected.extend(chunk)
+
+        return bytes(collected)
 
     @staticmethod
     def _layer() -> AttachmentDataLayer:

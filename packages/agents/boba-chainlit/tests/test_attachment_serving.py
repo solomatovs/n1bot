@@ -21,7 +21,7 @@ from boba.chainlit.chat.data.object_key import (
     ThreadDir,
 )
 from boba.chainlit.chat.data.storage import LocalStorageClient
-from boba.chainlit.chat.data.upload import AttachmentServing
+from boba.chainlit.chat.data.upload import AttachmentServing, UploadPolicy
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 
 pytestmark = pytest.mark.anyio
@@ -85,7 +85,7 @@ async def test_persisted_plotly_chart_is_served_as_json(
     assert stored_url is not None
     assert stored_url.endswith(url.path())
 
-    app = build_serving_app(AttachmentServing(storage, lambda: layer), seeded.user)
+    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         response = await client.get(url.path())
@@ -143,7 +143,7 @@ async def test_bot_file_is_shown_without_copying(
     assert stored_url is not None
     assert stored_url.endswith(url.path())
 
-    app = build_serving_app(AttachmentServing(storage, lambda: layer), seeded.user)
+    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         response = await client.get(url.path())
@@ -151,6 +151,54 @@ async def test_bot_file_is_shown_without_copying(
     assert response.status_code == 200
     assert response.content == REPORT_BODY
     assert response.headers["content-type"].startswith("text/plain")
+    assert response.headers["content-length"] == str(len(REPORT_BODY))
+    assert response.headers["accept-ranges"] == "bytes"
+
+
+async def test_attachment_range_is_served_partially(
+    seeded: Seed,
+    storage: LocalStorageClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Range — транспорт оконного чтения: вьюверы канваса тянут файл кусками."""
+    layer = seeded.layer
+    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+
+    key = ObjectKey.build(seeded.user.id, seeded.thread_id, REPORT_NAME, "el")
+    await storage.upload_file(
+        object_key=key.render(), data=REPORT_BODY, mime="text/plain"
+    )
+
+    element_id = ChatView.derive_id(seeded.thread_id, "call_rng", StepRole.ELEMENT)
+    assert element_id is not None
+    element = cl.File(
+        id=element_id,
+        name=key.name,
+        thread_id=seeded.thread_id,
+        for_id=seeded.answer_step_id,
+        url=layer.links.url(seeded.thread_id, element_id, ThreadDir.UPLOAD),
+        mime="text/plain",
+        display="inline",
+    )
+    await layer.create_element(element)
+
+    url = AttachmentUrl(
+        thread_id=seeded.thread_id,
+        dir=ThreadDir.UPLOAD,
+        element_id=element_id,
+    )
+    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://boba") as client:
+        partial = await client.get(url.path(), headers={"Range": "bytes=0-8"})
+        beyond = await client.get(url.path(), headers={"Range": "bytes=9999-"})
+
+    assert partial.status_code == 206
+    assert partial.content == REPORT_BODY[:9]
+    assert partial.headers["content-range"] == f"bytes 0-8/{len(REPORT_BODY)}"
+
+    assert beyond.status_code == 416
+    assert beyond.headers["content-range"] == f"bytes */{len(REPORT_BODY)}"
 
 
 async def test_foreign_user_gets_no_file(
@@ -165,7 +213,7 @@ async def test_foreign_user_gets_no_file(
     stranger = PersistedUser(
         id="999", identifier="stranger", createdAt=seeded.user.createdAt
     )
-    app = build_serving_app(AttachmentServing(storage, lambda: layer), stranger)
+    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), stranger)
     url = AttachmentUrl(
         thread_id=seeded.thread_id,
         dir=ThreadDir.UPLOAD,
@@ -220,7 +268,7 @@ async def test_diagram_from_mermaid_dir_is_served(
     assert stored_url is not None
     assert stored_url.endswith(f"/attachment/{seeded.thread_id}/mermaid/{element_id}")
 
-    app = build_serving_app(AttachmentServing(storage, lambda: layer), seeded.user)
+    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         response = await client.get(
