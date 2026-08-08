@@ -12,8 +12,14 @@ from conftest import Seed
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from boba.chainlit.agent.tools.send_file import WorkspaceFile
 from boba.chainlit.chat.data import data_layer as data_layer_module
-from boba.chainlit.chat.data.object_key import AttachmentUrl, ObjectKey
+from boba.chainlit.chat.data.object_key import (
+    AttachmentUrl,
+    ElementProps,
+    ObjectKey,
+    ThreadDir,
+)
 from boba.chainlit.chat.data.storage import LocalStorageClient
 from boba.chainlit.chat.data.upload import AttachmentServing
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
@@ -64,7 +70,11 @@ async def test_persisted_plotly_chart_is_served_as_json(
     monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
     element = await create_chart_element(seeded)
 
-    url = AttachmentUrl(thread_id=seeded.thread_id, element_id=element.id)
+    url = AttachmentUrl(
+        thread_id=seeded.thread_id,
+        dir=ThreadDir.UPLOAD,
+        element_id=element.id,
+    )
 
     thread = await layer.get_thread(seeded.thread_id)
     assert thread is not None
@@ -111,7 +121,7 @@ async def test_bot_file_is_shown_without_copying(
         name=key.name,
         thread_id=seeded.thread_id,
         for_id=seeded.answer_step_id,
-        url=layer.links.url(seeded.thread_id, element_id),
+        url=layer.links.url(seeded.thread_id, element_id, ThreadDir.UPLOAD),
         mime="text/plain",
         display="inline",
     )
@@ -124,7 +134,11 @@ async def test_bot_file_is_shown_without_copying(
     elements = thread["elements"]
     assert elements is not None
     shown = next(e for e in elements if e.get("id") == element_id)
-    url = AttachmentUrl(thread_id=seeded.thread_id, element_id=element_id)
+    url = AttachmentUrl(
+        thread_id=seeded.thread_id,
+        dir=ThreadDir.UPLOAD,
+        element_id=element_id,
+    )
     stored_url = shown.get("url")
     assert stored_url is not None
     assert stored_url.endswith(url.path())
@@ -152,9 +166,70 @@ async def test_foreign_user_gets_no_file(
         id="999", identifier="stranger", createdAt=seeded.user.createdAt
     )
     app = build_serving_app(AttachmentServing(storage, lambda: layer), stranger)
-    url = AttachmentUrl(thread_id=seeded.thread_id, element_id=element.id)
+    url = AttachmentUrl(
+        thread_id=seeded.thread_id,
+        dir=ThreadDir.UPLOAD,
+        element_id=element.id,
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         response = await client.get(url.path())
 
     assert response.status_code == 404
+
+
+async def test_diagram_from_mermaid_dir_is_served(
+    seeded: Seed,
+    storage: LocalStorageClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Файл из mermaid/ отдаётся по своей ссылке: раньше отдача звала upload/."""
+    layer = seeded.layer
+    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    key = ObjectKey.build(
+        seeded.user.id,
+        seeded.thread_id,
+        "ndfl.mmd",
+        "el",
+        dir_thread=ThreadDir.MERMAID,
+    )
+    await storage.upload_file(
+        object_key=key.render(), data="flowchart LR\n  A --> B\n", mime="text/plain"
+    )
+
+    element_id = ChatView.derive_id(seeded.thread_id, "call_diagram", StepRole.ELEMENT)
+    assert element_id is not None
+    element = WorkspaceFile(
+        id=element_id,
+        name=key.name,
+        thread_id=seeded.thread_id,
+        for_id=seeded.answer_step_id,
+        url=layer.links.url(seeded.thread_id, element_id, key.dir),
+        mime="text/plain",
+        display="inline",
+        props=ElementProps(dir=key.dir).model_dump(mode="json"),
+    )
+    await layer.create_element(element)
+
+    thread = await layer.get_thread(seeded.thread_id)
+    assert thread is not None
+    elements = thread["elements"]
+    assert elements is not None
+    shown = next(e for e in elements if e.get("id") == element_id)
+    stored_url = shown.get("url")
+    assert stored_url is not None
+    assert stored_url.endswith(f"/attachment/{seeded.thread_id}/mermaid/{element_id}")
+
+    app = build_serving_app(AttachmentServing(storage, lambda: layer), seeded.user)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://boba") as client:
+        response = await client.get(
+            AttachmentUrl(
+                thread_id=seeded.thread_id,
+                dir=ThreadDir.MERMAID,
+                element_id=element_id,
+            ).path()
+        )
+
+    assert response.status_code == 200
+    assert response.content.decode().startswith("flowchart LR")

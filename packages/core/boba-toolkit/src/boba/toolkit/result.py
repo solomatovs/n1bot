@@ -19,8 +19,10 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 __all__ = [
-    "AffectedResult",
+    "AffectedSqlResult",
     "ChartResult",
+    "CustomElementResult",
+    "DiagramResult",
     "ErrorResult",
     "JsonResult",
     "PgCopyTextResult",
@@ -29,7 +31,8 @@ __all__ = [
     "ToolArtifact",
     "ToolResult",
     "ToolResultBase",
-    "pack_result", "render_for_llm",
+    "pack_result",
+    "render_for_llm",
 ]
 
 
@@ -76,7 +79,12 @@ class PgCopyTextResult(ToolResultBase):
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
     _UNESCAPE: ClassVar[Mapping[str, str]] = {
-        "n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v",
+        "n": "\n",
+        "t": "\t",
+        "r": "\r",
+        "b": "\b",
+        "f": "\f",
+        "v": "\v",
         "\\": "\\",
     }
 
@@ -108,7 +116,7 @@ class PgCopyTextResult(ToolResultBase):
         return "".join(out)
 
 
-class AffectedResult(ToolResultBase):
+class AffectedSqlResult(ToolResultBase):
     """Запрос без выборки: DML/DDL отработал, строк нет — только счётчик."""
 
     kind: Literal["affected"] = "affected"
@@ -129,6 +137,29 @@ class ChartResult(ToolResultBase):
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
 
+class CustomElementResult(ToolResultBase):
+    """Кастомный UI-элемент: имя jsx-компонента и его props."""
+
+    kind: Literal["custom_element"] = "custom_element"
+    element: str
+    """Имя компонента: файл public/elements/<element>.jsx."""
+    props: Mapping[str, Any]
+    title: str | None = None
+    """Человекочитаемый заголовок — для сводки в LLM и подписи в UI."""
+    metadata: Mapping[str, str] = Field(default_factory=dict)
+
+
+class DiagramResult(ToolResultBase):
+    """Диаграмма: спека mermaid и путь её файла в workspace треда."""
+
+    kind: Literal["diagram"] = "diagram"
+    spec: str
+    path: str
+    title: str | None = None
+    """Человекочитаемый заголовок — для сводки в LLM и подписи в UI."""
+    metadata: Mapping[str, str] = Field(default_factory=dict)
+
+
 class ErrorResult(ToolResultBase):
     """Tool не выполнен; UI рендерит такой результат как ошибку."""
 
@@ -144,14 +175,16 @@ ToolResult: TypeAlias = Annotated[
     | JsonResult
     | TableResult
     | PgCopyTextResult
-    | AffectedResult
+    | AffectedSqlResult
     | ChartResult
+    | CustomElementResult
+    | DiagramResult
     | ErrorResult,
     Field(discriminator="kind"),
 ]
 
 
-def render_for_llm(result: ToolResult) -> str:
+def render_for_llm(result: ToolResult) -> str:  # noqa: C901, PLR0912
     content: str
     match result:
         case TextResult(text=t):
@@ -163,7 +196,7 @@ def render_for_llm(result: ToolResult) -> str:
             content = body if n is None else f"{body}\n\n{n}"
         case PgCopyTextResult(text=t):
             content = t
-        case AffectedResult(affected_rows=n, status=s):
+        case AffectedSqlResult(affected_rows=n, status=s):
             if s:
                 content = s
             elif n is not None:
@@ -172,6 +205,14 @@ def render_for_llm(result: ToolResult) -> str:
                 content = "statement executed"
         case ChartResult(title=title):
             content = f"[chart rendered: {title}]" if title else "[chart rendered]"
+        case CustomElementResult(element=element, title=title):
+            content = f"[{element} rendered]"
+            if title:
+                content = f"[{element} rendered: {title}]"
+        case DiagramResult(path=path, title=title):
+            content = f"[diagram rendered: {path}]"
+            if title:
+                content = f"[diagram rendered: {title} ({path})]"
         case ErrorResult(message=m):
             content = m
         case _ as never:

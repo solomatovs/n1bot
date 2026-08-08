@@ -10,6 +10,10 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
+from boba.chainlit.agent.tools.canvas import (
+    canvas_content_action,
+    open_canvas_action,
+)
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.data.fields import StepField, ThreadField
 from boba.chainlit.chat.edit import ThreadRewind
@@ -18,6 +22,7 @@ from boba.chainlit.chat.turn import ChatTurn, ThreadRoom
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
 from boba.chainlit.infra.session import current_thread_id
+from boba.chainlit.rendering.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
@@ -100,6 +105,27 @@ def get_data_layer(
     data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
 ) -> BaseDataLayer:
     return data_layer
+
+
+@cl.action_callback(CanvasAction.OPEN)
+@chainlit_error_ctx_handler
+async def on_canvas_open(action: cl.Action) -> None:
+    """Клик по ссылке в переписке открывает панель без участия агента."""
+    await open_canvas_action(action)
+
+
+@cl.action_callback(CanvasAction.CONTENT)
+@chainlit_error_ctx_handler
+async def on_canvas_content(action: cl.Action) -> dict[str, Any]:
+    """Панель уже открыта: отдаём описание файла, не подменяя элемент."""
+    return await canvas_content_action(action)
+
+
+@cl.action_callback(CanvasAction.STATUS)
+@chainlit_error_ctx_handler
+async def on_canvas_render_status(action: cl.Action) -> None:
+    """Отчёт браузера об исходе рендера: его ждёт вьювер по nonce."""
+    RenderVerdicts.report(action.payload)
 
 
 @cl.on_chat_resume

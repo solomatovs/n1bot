@@ -1,30 +1,83 @@
-"""Адресация вложений: storage-ключ, путь в песочнице, ссылка и её маршрут."""
+"""Адресация вложений: storage-ключ, путь в песочнице, ссылка и её маршрут.
+
+Ошибки: ValueError — сегмент ключа пуст, ведёт наружу каталога или называет
+неизвестный каталог треда.
+"""
 
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import ClassVar, Self
+
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from boba.sandbox import WORKSPACE_MOUNT
 
-__all__ = ["AttachmentLinks", "AttachmentUrl", "ObjectKey"]
+__all__ = [
+    "AttachmentLinks",
+    "AttachmentUrl",
+    "DirKey",
+    "ElementProps",
+    "KeyField",
+    "ObjectKey",
+    "ThreadDir",
+]
 
 
-@dataclass(frozen=True, slots=True)
-class ObjectKey:
-    """Адрес вложения: ключ хранилища и путь того же файла в песочнице."""
+class ThreadDir(StrEnum):
+    """Каталоги треда: вложения пользователя и спеки диаграмм."""
 
-    user_id: str
-    thread_id: str
-    name: str
+    UPLOAD = "upload"
+    MERMAID = "mermaid"
+
+
+class KeyField(StrEnum):
+    """Поля ключа: ими же именуются сегменты при разборе строки."""
+
+    USER_ID = "user_id"
+    THREAD_ID = "thread_id"
+    DIR = "dir"
+    NAME = "name"
+
+
+class KeySegment(BaseModel):
+    """Общая валидация сегментов ключа: пустых и путей наружу здесь не бывает."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     SEPARATOR: ClassVar[str] = "/"
-    UPLOAD_DIR: ClassVar[str] = "upload"
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _segment_is_safe(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+
+        if value in ("", ".", ".."):
+            raise ValueError(f"invalid key segment: {value!r}")
+
+        if cls.SEPARATOR in value:
+            raise ValueError(f"invalid key segment: {value!r}")
+
+        return value
+
+
+class ObjectKey(KeySegment):
+    """Адрес вложения: ключ хранилища и путь того же файла в песочнице."""
+
     SEGMENTS: ClassVar[int] = 4
     THREAD_SEGMENTS: ClassVar[int] = 3
     MAX_NAME_BYTES: ClassVar[int] = 255
     """Предел ext4 на длину имени файла."""
+
+    user_id: str
+    thread_id: str
+    name: str
+    dir: ThreadDir = ThreadDir.UPLOAD
+    """Каталог треда: upload — вложения, mermaid — спеки диаграмм."""
 
     @classmethod
     def build(
@@ -33,29 +86,34 @@ class ObjectKey:
         thread_id: object,
         name: object,
         element_id: object,
+        *,
+        dir_thread: ThreadDir = ThreadDir.UPLOAD,
     ) -> Self:
         return cls(
             user_id=str(user_id),
             thread_id=str(thread_id),
             name=cls.safe_name(name, element_id),
+            dir=dir_thread,
         )
 
     @classmethod
     def parse(cls, raw: str) -> Self:
+        """Ключ хранилища -> модель; проверки полей живут в самой модели."""
         parts = raw.split(cls.SEPARATOR)
         if len(parts) != cls.SEGMENTS:
             raise ValueError(f"invalid object_key: {raw!r}")
-        for part in parts:
-            if part in ("", ".", ".."):
-                raise ValueError(f"invalid object_key: {raw!r}")
-        user_id, thread_id, upload_dir, name = parts
-        if upload_dir != cls.UPLOAD_DIR:
-            raise ValueError(f"invalid object_key: {raw!r}")
-        return cls(user_id=user_id, thread_id=thread_id, name=name)
+
+        order = (KeyField.USER_ID, KeyField.THREAD_ID, KeyField.DIR, KeyField.NAME)
+        fields = dict(zip(order, parts, strict=True))
+
+        try:
+            return cls.model_validate(fields)
+        except ValidationError as e:
+            raise ValueError(f"invalid object_key: {raw!r}") from e
 
     @classmethod
     def from_workspace(cls, user_id: object, thread_id: object, path: str) -> Self:
-        """Ключ по пути из песочницы; вне каталога вложений треда — ValueError."""
+        """Ключ по пути из песочницы; вне каталогов треда — ValueError."""
         rel = path.strip()
 
         mount = cls.SEPARATOR.join((WORKSPACE_MOUNT, ""))
@@ -66,17 +124,19 @@ class ObjectKey:
         if len(parts) != cls.THREAD_SEGMENTS:
             raise ValueError(cls._outside(thread_id, path))
 
-        owner, upload_dir, name = parts
-        if owner != str(thread_id):
+        order = (KeyField.THREAD_ID, KeyField.DIR, KeyField.NAME)
+        fields: dict[str, str] = dict(zip(order, parts, strict=True))
+        fields[KeyField.USER_ID] = str(user_id)
+
+        try:
+            key = cls.model_validate(fields)
+        except ValidationError as e:
+            raise ValueError(cls._outside(thread_id, path)) from e
+
+        if key.thread_id != str(thread_id):
             raise ValueError(cls._outside(thread_id, path))
 
-        if upload_dir != cls.UPLOAD_DIR:
-            raise ValueError(cls._outside(thread_id, path))
-
-        if name in ("", ".", ".."):
-            raise ValueError(cls._outside(thread_id, path))
-
-        return cls(user_id=str(user_id), thread_id=str(thread_id), name=name)
+        return key
 
     @classmethod
     def _outside(cls, thread_id: object, path: str) -> str:
@@ -85,8 +145,9 @@ class ObjectKey:
         if not name:
             name = "<file name>"
 
+        dirs = "|".join(sorted(ThreadDir))
         expected = cls.SEPARATOR.join(
-            (WORKSPACE_MOUNT, str(thread_id), cls.UPLOAD_DIR, name)
+            (WORKSPACE_MOUNT, str(thread_id), f"{{{dirs}}}", name)
         )
         return (
             f"file is outside the thread attachments dir: {path!r}; "
@@ -98,11 +159,15 @@ class ObjectKey:
 
     def in_thread(self) -> str:
         """Путь файла внутри образа пользователя."""
-        return self.SEPARATOR.join((self.thread_id, self.UPLOAD_DIR, self.name))
+        return self.SEPARATOR.join((self.thread_id, self.dir, self.name))
 
     def in_workspace(self) -> str:
         """Путь файла так, как его видит песочница."""
         return self.SEPARATOR.join((WORKSPACE_MOUNT, self.in_thread()))
+
+    def dir_key(self) -> DirKey:
+        """Каталог, в котором лежит файл."""
+        return DirKey(user_id=self.user_id, thread_id=self.thread_id, dir=self.dir)
 
     @classmethod
     def safe_name(cls, name: object, element_id: object) -> str:
@@ -136,18 +201,95 @@ class ObjectKey:
         return head + tail
 
 
+class DirKey(KeySegment):
+    """Адрес каталога треда: префикс в хранилище и путь того же каталога в песочнице."""
+
+    SEGMENTS: ClassVar[int] = 3
+
+    user_id: str
+    thread_id: str
+    dir: ThreadDir
+
+    @classmethod
+    def of(cls, user_id: object, thread_id: object, dir_thread: ThreadDir) -> Self:
+        return cls(user_id=str(user_id), thread_id=str(thread_id), dir=dir_thread)
+
+    @classmethod
+    def parse(cls, raw: str) -> Self:
+        """Префикс каталога -> модель; проверки полей живут в самой модели."""
+        parts = raw.split(cls.SEPARATOR)
+        if len(parts) != cls.SEGMENTS:
+            raise ValueError(f"invalid dir key: {raw!r}")
+
+        order = (KeyField.USER_ID, KeyField.THREAD_ID, KeyField.DIR)
+        fields = dict(zip(order, parts, strict=True))
+
+        try:
+            return cls.model_validate(fields)
+        except ValidationError as e:
+            raise ValueError(f"invalid dir key: {raw!r}") from e
+
+    def render(self) -> str:
+        return self.SEPARATOR.join((self.user_id, self.in_thread()))
+
+    def in_thread(self) -> str:
+        """Путь каталога внутри образа пользователя."""
+        return self.SEPARATOR.join((self.thread_id, self.dir))
+
+    def in_workspace(self) -> str:
+        """Путь каталога так, как его видит песочница."""
+        return self.SEPARATOR.join((WORKSPACE_MOUNT, self.in_thread()))
+
+    def file(self, name: str) -> ObjectKey:
+        """Ключ файла в этом каталоге; имя приходит из листинга, не от LLM."""
+        return ObjectKey(
+            user_id=self.user_id,
+            thread_id=self.thread_id,
+            name=name,
+            dir=self.dir,
+        )
+
+
+class ElementProps(BaseModel):
+    """Наши поля в props элемента: где в workspace лежит его содержимое.
+
+    Вложения пользователя приходят без props — их всегда пишет UploadRoute в
+    upload/, поэтому разбор пустых props даёт именно этот каталог.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    dir: ThreadDir = ThreadDir.UPLOAD
+
+    @classmethod
+    def of(cls, raw: object) -> ElementProps:
+        if not isinstance(raw, Mapping):
+            return cls()
+
+        return cls.model_validate(raw)
+
+
 @dataclass(frozen=True, slots=True)
 class AttachmentUrl:
-    """Адресация вложения по треду и id элемента — не по пути в хранилище."""
+    """Адресация вложения по треду, каталогу и id элемента — не по пути в хранилище.
+
+    Каталог в ссылке обязателен: без него отдача искала бы файл только в
+    upload/, и вложение из mermaid/ отвечало бы 404.
+    """
 
     thread_id: str
+    dir: ThreadDir
     element_id: str
 
-    ROUTE: ClassVar[str] = "/attachment/{thread_id}/{element_id}"
+    ROUTE: ClassVar[str] = "/attachment/{thread_id}/{dir}/{element_id}"
     """Общий шаблон route и ссылки."""
 
     def path(self) -> str:
-        return self.ROUTE.format(thread_id=self.thread_id, element_id=self.element_id)
+        return self.ROUTE.format(
+            thread_id=self.thread_id,
+            dir=self.dir.value,
+            element_id=self.element_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +298,6 @@ class AttachmentLinks:
 
     prefix: str
 
-    def url(self, thread_id: object, element_id: object) -> str:
-        path = AttachmentUrl(str(thread_id), str(element_id)).path()
+    def url(self, thread_id: object, element_id: object, dir_thread: ThreadDir) -> str:
+        path = AttachmentUrl(str(thread_id), dir_thread, str(element_id)).path()
         return self.prefix.rstrip("/") + path

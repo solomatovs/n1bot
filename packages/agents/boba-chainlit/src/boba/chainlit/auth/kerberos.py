@@ -10,10 +10,8 @@ import base64
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable, Iterator
-from typing import Any, Literal, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from boba.krb import SpnegoIdentity
+from pathlib import Path
+from typing import Any, ClassVar, Literal
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -63,6 +61,7 @@ from boba.krb import (
     KerberosError,
     KeytabError,
     SpnegoAcceptor,
+    SpnegoIdentity,
 )
 from chainlit.config import config as cl_config
 
@@ -106,7 +105,7 @@ class KerberosAuthConfig(BaseModel):
     accept: AcceptConfig = Field(
         description=(
             "SPN и keytab сервиса для SPNEGO-accept; "
-            'в конфиге подключается ссылкой ${kerberos.<name>}.'
+            "в конфиге подключается ссылкой ${kerberos.<name>}."
         ),
     )
     principal_format: str
@@ -427,6 +426,11 @@ class KerberosAuth:
     Собран на FastAPI без chainlit header-auth: вход по явной кнопке, не автоматом.
     """
 
+    _BUTTON_JS: ClassVar[Path] = Path(__file__).parent / "sso_button.js"
+    """JS кнопки едет в wheel как package-data — см. pyproject boba-chainlit."""
+
+    _SSO_URL_VAR: ClassVar[str] = "__SSO_URL__"
+
     def __init__(self, url_prefix: str, config: KerberosAuthConfig):
         self._config = config
         # роуты без префикса (root_path учтёт роутер), middleware и кнопка — с полным
@@ -629,9 +633,11 @@ class KerberosAuth:
         if existing == self._js_path:
             return
 
-        self._logger.warning(
-            "custom_js already set (%s) — skipping SSO button injection",
+        # слот один на приложение: занявший его скрипт обязан подгрузить sso.js
+        self._logger.info(
+            "custom_js already set (%s) — expecting it to load %s itself",
             existing,
+            self._js_path,
         )
 
     @staticmethod
@@ -647,63 +653,6 @@ class KerberosAuth:
         chainlit_app.router.routes.insert(0, route)
 
     def _get_static_button(self) -> str:
-        "Генерирует JS кнопки SSO: клонирует нативную кнопку формы login и ведёт на SSO"
-        template = """\
-(() => {
-  "use strict";
-  const SSO_URL = "__SSO_URL__";
-  const BTN_ID = "sso-login-btn";
-
-  const onLogin = () => /\\/login\\/?$/.test(window.location.pathname);
-
-  function build(sample) {
-    // клон нативной кнопки: классы, вёрстка и тема наследуются автоматически
-    const btn = sample.cloneNode(true);
-    btn.id = BTN_ID;
-    btn.type = "button";
-    btn.textContent = "Войти через SSO";
-    btn.removeAttribute("disabled");
-    btn.removeAttribute("form");
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      fetch(SSO_URL, { credentials: "same-origin" })
-        .then((r) => {
-          if (r.ok) {
-            window.location.href = r.url;
-          } else {
-            window.location.href = window.location.pathname + "?error=sso";
-          }
-        })
-        .catch(() => {
-          window.location.href = window.location.pathname + "?error=sso";
-        });
-    });
-    return btn;
-  }
-
-  function inject() {
-    if (!onLogin()) {
-      const stale = document.getElementById(BTN_ID);
-      if (stale) stale.remove();
-      return;
-    }
-    if (document.getElementById(BTN_ID)) return;
-
-    const form = document.querySelector("form");
-    if (!form) return;
-
-    // образец стиля — нативная submit-кнопка формы
-    const sample =
-      form.querySelector('button[type="submit"]') || form.querySelector("button");
-    if (!sample) return;
-
-    sample.insertAdjacentElement("afterend", build(sample));
-  }
-
-  const obs = new MutationObserver(() => inject());
-  obs.observe(document.documentElement, { childList: true, subtree: true });
-  document.addEventListener("DOMContentLoaded", inject);
-  inject();
-})();
-"""
-        return template.replace("__SSO_URL__", self._sso_url)
+        """JS кнопки SSO из файла-ресурса рядом с модулем; сервер знает только URL."""
+        template = self._BUTTON_JS.read_text(encoding="utf-8")
+        return template.replace(self._SSO_URL_VAR, self._sso_url)

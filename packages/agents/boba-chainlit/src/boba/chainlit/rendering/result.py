@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, assert_never
+from typing import Any, ClassVar, assert_never
 
 from tabulate import tabulate
 
 import chainlit as cl
 from boba.toolkit.result import (
-    AffectedResult,
+    AffectedSqlResult,
     ChartResult,
+    CustomElementResult,
+    DiagramResult,
     ErrorResult,
     JsonResult,
     PgCopyTextResult,
@@ -24,6 +26,8 @@ from chainlit.element import ElementDisplay
 
 __all__ = [
     "ChartRendering",
+    "CustomElementRendering",
+    "DiagramRendering",
     "MarkdownRendering",
     "ToolResultMarkdown",
     "ToolResultRendering",
@@ -45,7 +49,7 @@ class ChartRendering:
     spec: Mapping[str, Any]
     title: str | None
 
-    def plotly_element(self, *, display: ElementDisplay = "inline") -> cl.Plotly:
+    def chat_element(self, *, display: ElementDisplay = "inline") -> cl.Plotly:
         """cl.Plotly из spec — единственное место, знающее про plotly."""
         from plotly import graph_objects as go  # noqa: PLC0415
 
@@ -53,7 +57,52 @@ class ChartRendering:
         return cl.Plotly(name=self.title or "chart", figure=figure, display=display)
 
 
-ToolResultRendering = MarkdownRendering | ChartRendering
+@dataclass(frozen=True)
+class CustomElementRendering:
+    """Результат показывается кастомным jsx-компонентом public/elements/<element>.jsx."""
+
+    element: str
+    props: Mapping[str, Any]
+    title: str | None
+
+    def chat_element(self, *, display: ElementDisplay = "inline") -> cl.CustomElement:
+        return cl.CustomElement(
+            name=self.element, props=dict(self.props), display=display
+        )
+
+
+@dataclass(frozen=True)
+class DiagramRendering:
+    """Результат показывается отрисованной диаграммой mermaid.
+
+    В ленте — компактная карточка того же CanvasView, что рисует панель;
+    клик по ней показывает файл в канвасе.
+    """
+
+    ELEMENT: ClassVar[str] = "CanvasView"
+
+    spec: str
+    path: str
+    title: str | None
+
+    def chat_element(self, *, display: ElementDisplay = "inline") -> cl.CustomElement:
+        label = self.title
+        if not label:
+            label = self.path
+
+        props = {
+            "kind": "mermaid",
+            "path": self.path,
+            "label": label,
+            "text": self.spec,
+            "preview": True,
+        }
+        return cl.CustomElement(name=self.ELEMENT, props=props, display=display)
+
+
+ToolResultRendering = (
+    MarkdownRendering | ChartRendering | CustomElementRendering | DiagramRendering
+)
 
 
 class ToolResultView:
@@ -66,12 +115,16 @@ class ToolResultView:
         match self._result:
             case ChartResult(spec=spec, title=title):
                 return ChartRendering(spec=spec, title=title)
+            case CustomElementResult(element=element, props=props, title=title):
+                return CustomElementRendering(element=element, props=props, title=title)
+            case DiagramResult(spec=spec, path=path, title=title):
+                return DiagramRendering(spec=spec, path=path, title=title)
             case (
                 TextResult()
                 | JsonResult()
                 | TableResult()
                 | PgCopyTextResult()
-                | AffectedResult()
+                | AffectedSqlResult()
                 | ErrorResult()
             ):
                 return MarkdownRendering(ToolResultMarkdown(self._result).render())
@@ -95,12 +148,20 @@ class ToolResultMarkdown:
                 return self._table_block(rows, note)
             case PgCopyTextResult() as pg_text:
                 return self._copy_text_block(pg_text)
-            case AffectedResult(affected_rows=n, status=s):
+            case AffectedSqlResult(affected_rows=n, status=s):
                 return self._affected_block(n, s)
             case ChartResult(title=title):
                 if title:
                     return f"_(график: {title})_"
                 return "_(график)_"
+            case CustomElementResult(title=title):
+                if title:
+                    return f"_(элемент: {title})_"
+                return "_(элемент)_"
+            case DiagramResult(path=path, title=title):
+                if title:
+                    return f"_(диаграмма: {title})_"
+                return f"_(диаграмма: {path})_"
             case ErrorResult(message=m):
                 if "\n" in m:
                     return f"**Error:**\n\n{m}"

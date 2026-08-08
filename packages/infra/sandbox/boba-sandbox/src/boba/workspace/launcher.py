@@ -68,6 +68,7 @@ class LauncherMode(StrEnum):
     WRITE = "write"
     READ = "read"
     DELETE = "delete"
+    LIST = "list"
 
 
 class LauncherEnv(StrEnum):
@@ -331,6 +332,28 @@ class FileOperations:
             return LauncherExit.NOT_FOUND
         return LauncherExit.OK
 
+    def list_dir(self, rel: str, dst: BinaryIO) -> LauncherExit:
+        """Имена обычных файлов каталога, по одному в строке, в порядке имён."""
+        try:
+            entries = os.listdir(self._resolve(rel))
+        except FileNotFoundError:
+            return LauncherExit.NOT_FOUND
+        except NotADirectoryError:
+            return LauncherExit.NOT_FOUND
+
+        root = self._resolve(rel)
+        names: list[str] = []
+        for entry in sorted(entries):
+            if not os.path.isfile(os.path.join(root, entry)):
+                continue
+            names.append(entry)
+
+        for name in names:
+            dst.write(name.encode("utf-8") + b"\n")
+
+        dst.flush()
+        return LauncherExit.OK
+
     def _resolve(self, rel: str) -> str:
         norm = os.path.normpath(rel)
         if norm.startswith(("/", "..")):
@@ -423,6 +446,8 @@ class Launcher:
             return ops.write(argument, sys.stdin.buffer)
         if mode is LauncherMode.READ:
             return ops.read(argument, sys.stdout.buffer)
+        if mode is LauncherMode.LIST:
+            return ops.list_dir(argument, sys.stdout.buffer)
         return ops.delete(argument)
 
     def _run_command(self, argv: list[str]) -> int:

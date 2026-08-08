@@ -18,7 +18,7 @@ from pydantic import (
 )
 
 from boba.toolkit.launcher import CollectorCapacityError, CollectorRowLimitError
-from boba.toolkit.result import AffectedResult, ToolArtifact, render_for_llm
+from boba.toolkit.result import AffectedSqlResult, ToolArtifact, render_for_llm
 from boba.toolkit.sql import (
     ConnectionProfile,
     SqlCall,
@@ -200,21 +200,21 @@ class TestSqlRows:
         assert SqlRows.scalar(frozenset({3, 1, 2})) == [1, 2, 3]
 
 
-class TestAffectedResult:
+class TestAffectedSqlResult:
     def test_status_wins_over_counter(self) -> None:
-        result = AffectedResult(affected_rows=5, status="DELETE 5")
+        result = AffectedSqlResult(affected_rows=5, status="DELETE 5")
         assert render_for_llm(result) == "DELETE 5"
 
     def test_counter_is_used_without_status(self) -> None:
-        result = AffectedResult(affected_rows=5, status=None)
+        result = AffectedSqlResult(affected_rows=5, status=None)
         assert render_for_llm(result) == "affected rows: 5"
 
     def test_ddl_without_counter_still_reports_success(self) -> None:
-        result = AffectedResult(affected_rows=None, status=None)
+        result = AffectedSqlResult(affected_rows=None, status=None)
         assert render_for_llm(result) == "statement executed"
         assert result.ok is True
 
     def test_artifact_survives_serialization(self) -> None:
-        result = AffectedResult(affected_rows=1, status="UPDATE 1")
+        result = AffectedSqlResult(affected_rows=1, status="UPDATE 1")
         revived = ToolArtifact.revive(result.model_dump(mode="json"))
         assert revived == result

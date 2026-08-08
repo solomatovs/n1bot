@@ -44,7 +44,7 @@ from boba.tool.shell import build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.result import (
-    AffectedResult,
+    AffectedSqlResult,
     ChartResult,
     ErrorResult,
     JsonResult,
@@ -595,7 +595,7 @@ class TestPgTools:
             connection_name="main",
             sql="create temp table integration_probe(x int)",
         )
-        assert isinstance(result, AffectedResult)
+        assert isinstance(result, AffectedSqlResult)
         assert result.status == "CREATE TABLE"
 
     async def test_export_returns_copy_text(self, pg_tools) -> None:
