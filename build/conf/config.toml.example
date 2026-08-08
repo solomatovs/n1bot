@@ -559,3 +559,16 @@
     enable = true
     roles  = ["*"]
     tools  = { send_file = [] }
+
+
+[tool.diagram]
+    enable    = true
+    roles     = ["*"]
+    max_chars = 32000
+    tools     = { diagram_save = [] }
+
+
+[tool.canvas]
+    enable = true
+    roles  = ["*"]
+    tools  = { canvas_open = [] }

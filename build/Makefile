@@ -79,6 +79,8 @@ INTER_VERSION 	?= 5.3.0
 INTER_URL     	?= https://registry.npmjs.org/@fontsource/inter/-/inter-$(INTER_VERSION).tgz
 # начертания Inter, которые запрашивает фронт
 INTER_WEIGHTS 	?= 400 500 700
+MERMAID_VERSION	?= 11.16.1
+MERMAID_URL   	?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
 
 # готовый бинарь; для внутреннего mirror переопредели UV_URL
 UV_VERSION  	?= 0.11.21
@@ -173,7 +175,7 @@ help:
 	echo "    http_proxy/https_proxy/no_proxy из env уходят в docker build"
 	echo "    Зеркала tarball'ов (иначе github/kernel.org/npm):"
 	echo "      UV_URL, BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, TESSDATA_REPO,"
-	echo "      KATEX_URL, INTER_URL"
+	echo "      KATEX_URL, INTER_URL, MERMAID_URL"
 	echo ""
 	echo "  Переменные: INSTALL_DIR=$(INSTALL_DIR), DEST_DIR=$(DEST_DIR),"
 	echo "              BOBA_TAG=<тег>, NO_CACHE=1,"
@@ -300,10 +302,10 @@ tessdata:
 	done
 
 
-# статика фронта: KaTeX (стили формул) и Inter (шрифт UI) целиком локально
+# статика фронта: KaTeX (формулы), Inter (шрифт UI), mermaid (диаграммы) локально
 .PHONY: webassets
 webassets:
-	@mkdir -p $(WEBASSETS_DIR)/katex/fonts $(WEBASSETS_DIR)/inter/files
+	@mkdir -p $(WEBASSETS_DIR)/katex/fonts $(WEBASSETS_DIR)/inter/files $(WEBASSETS_DIR)/mermaid
 	echo "== katex $(KATEX_VERSION) =="
 	if [ -f "$(WEBASSETS_DIR)/katex/katex.min.css" ]; then
 	    echo "  ✓ $(WEBASSETS_DIR)/katex"
@@ -330,6 +332,17 @@ webassets:
 	        cat "$$tmp/package/$$w.css" >> "$(WEBASSETS_DIR)/inter/inter.css"
 	        cp "$$tmp"/package/files/inter-*-$$w-normal.woff2 "$(WEBASSETS_DIR)/inter/files/"
 	    done
+	    rm -rf "$$tmp"
+	fi
+	echo "== mermaid $(MERMAID_VERSION) =="
+	if [ -f "$(WEBASSETS_DIR)/mermaid/mermaid.min.js" ]; then
+	    echo "  ✓ $(WEBASSETS_DIR)/mermaid"
+	else
+	    tmp=$$(mktemp -d)
+	    curl -fSL $(CURL_OPTS) -o "$$tmp/mermaid.tgz" "$(MERMAID_URL)"
+	    # из пакета нужен один IIFE-бандл: он выставляет globalThis.mermaid
+	    tar -xzf "$$tmp/mermaid.tgz" -C "$$tmp" package/dist/mermaid.min.js
+	    cp "$$tmp/package/dist/mermaid.min.js" "$(WEBASSETS_DIR)/mermaid/"
 	    rm -rf "$$tmp"
 	fi
 	# assets/public/theme.json просит /public/vendor/inter/inter.css — путь обязан

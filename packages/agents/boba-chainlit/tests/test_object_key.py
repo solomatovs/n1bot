@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.chat.data.object_key import AttachmentLinks, AttachmentUrl, ObjectKey
+from boba.chainlit.chat.data.object_key import (
+    AttachmentLinks,
+    AttachmentUrl,
+    ObjectKey,
+    ThreadDir,
+)
 from boba.sandbox import WORKSPACE_MOUNT
 
 USER = "7"
@@ -61,7 +66,9 @@ class TestFromWorkspace:
         """По тексту ошибки агент понимает, куда положить файл."""
         with pytest.raises(ValueError, match="attachments dir") as failure:
             ObjectKey.from_workspace(USER, THREAD, f"{WORKSPACE_MOUNT}/{NAME}")
-        assert f"{WORKSPACE_MOUNT}/{THREAD}/upload/{NAME}" in str(failure.value)
+        assert f"{WORKSPACE_MOUNT}/{THREAD}/{{mermaid|upload}}/{NAME}" in str(
+            failure.value
+        )
 
     def test_foreign_thread_rejected(self) -> None:
         other = "22222222-2222-2222-2222-222222222222"
@@ -88,8 +95,60 @@ class TestFromWorkspace:
             ObjectKey.from_workspace(USER, THREAD, NAME)
 
 
+class TestMermaidDir:
+    """Каталог mermaid/ адресуется тем же ключом, что и upload/."""
+
+    SPEC = "schema.mmd"
+
+    def test_render_is_storage_key(self) -> None:
+        key = ObjectKey.build(
+            USER, THREAD, self.SPEC, "el-1", dir_thread=ThreadDir.MERMAID
+        )
+        assert key.render() == f"{USER}/{THREAD}/mermaid/{self.SPEC}"
+
+    def test_in_workspace_points_to_mermaid_dir(self) -> None:
+        key = ObjectKey.build(
+            USER, THREAD, self.SPEC, "el-1", dir_thread=ThreadDir.MERMAID
+        )
+        assert key.in_workspace() == f"{WORKSPACE_MOUNT}/{THREAD}/mermaid/{self.SPEC}"
+
+    def test_parse_round_trip(self) -> None:
+        key = ObjectKey.build(
+            USER, THREAD, self.SPEC, "el-1", dir_thread=ThreadDir.MERMAID
+        )
+        assert ObjectKey.parse(key.render()) == key
+
+    def test_from_workspace_accepts_mermaid_path(self) -> None:
+        path = f"{WORKSPACE_MOUNT}/{THREAD}/mermaid/{self.SPEC}"
+        key = ObjectKey.from_workspace(USER, THREAD, path)
+        assert key.dir == ThreadDir.MERMAID
+        assert key.render() == f"{USER}/{THREAD}/mermaid/{self.SPEC}"
+
+    def test_build_defaults_to_upload(self) -> None:
+        key = ObjectKey.build(USER, THREAD, NAME, "el-1")
+        assert key.dir == ThreadDir.UPLOAD
+
+    def test_unknown_dir_rejected_in_parse(self) -> None:
+        with pytest.raises(ValueError, match="invalid object_key"):
+            ObjectKey.parse(f"{USER}/{THREAD}/other/{self.SPEC}")
+
+    def test_unknown_dir_rejected_in_workspace_path(self) -> None:
+        with pytest.raises(ValueError, match="attachments dir"):
+            ObjectKey.from_workspace(
+                USER, THREAD, f"{WORKSPACE_MOUNT}/{THREAD}/other/{self.SPEC}"
+            )
+
+
 class TestLinks:
     def test_url_points_to_attachment_route(self) -> None:
         links = AttachmentLinks("http://boba/workspace")
-        url = links.url(THREAD, "el-1")
-        assert url.endswith(AttachmentUrl(THREAD, "el-1").path())
+        url = links.url(THREAD, "el-1", ThreadDir.UPLOAD)
+        assert url.endswith(AttachmentUrl(THREAD, ThreadDir.UPLOAD, "el-1").path())
+
+    def test_url_keeps_the_directory(self) -> None:
+        """Без каталога отдача искала бы файл только в upload/ — это был 404."""
+        links = AttachmentLinks("http://boba/workspace")
+
+        url = links.url(THREAD, "el-1", ThreadDir.MERMAID)
+
+        assert url.endswith(f"/attachment/{THREAD}/mermaid/el-1")

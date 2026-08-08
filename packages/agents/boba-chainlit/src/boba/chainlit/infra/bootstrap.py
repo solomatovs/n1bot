@@ -40,6 +40,8 @@ def run_app(config_path: Path):
     container = _use_di_container(app, c)
     app.state.container = container
 
+    _use_canvas_viewers()
+
     _use_auth(c, container)
 
     _use_domain_error(app)
@@ -142,6 +144,15 @@ def _use_file_serving(c: AppConfig) -> None:
         f"{route_path}{AttachmentUrl.ROUTE}", serving.serve, methods=["GET"]
     )
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+
+
+def _use_canvas_viewers() -> None:
+    """
+    Вьюверы канваса — на старте: панель открывается кликом до первого хода
+    """
+    from boba.chainlit.infra.plugins import load_tools  # noqa: PLC0415
+
+    load_tools(providers.get_raw_config())
 
 
 def _use_auth(config: AppConfig, container: Container) -> None:

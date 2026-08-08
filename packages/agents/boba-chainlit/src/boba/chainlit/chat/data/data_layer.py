@@ -21,7 +21,11 @@ from boba.chainlit.chat.data.models import (
     Thread,
     User,
 )
-from boba.chainlit.chat.data.object_key import AttachmentLinks, ObjectKey
+from boba.chainlit.chat.data.object_key import (
+    AttachmentLinks,
+    ElementProps,
+    ObjectKey,
+)
 from boba.chainlit.chat.data.storage import StorageClient
 from boba.chainlit.chat.errors import show_error
 from boba.chainlit.chat.transcript import ConversationTranscript, ThreadMessages
@@ -60,6 +64,10 @@ class AttachmentDataLayer(BaseDataLayer, ABC):
     @abstractmethod
     def links(self) -> AttachmentLinks: ...
 
+    @property
+    @abstractmethod
+    def storage(self) -> StorageClient: ...
+
 
 class PostgresDataLayer(AttachmentDataLayer):
     """Хранилище chainlit (users/threads/elements/feedbacks) на psycopg-пуле."""
@@ -83,6 +91,10 @@ class PostgresDataLayer(AttachmentDataLayer):
     @property
     def links(self) -> AttachmentLinks:
         return self._links
+
+    @property
+    def storage(self) -> StorageClient:
+        return self._storage
 
     async def _transcript_steps(
         self,
@@ -740,6 +752,9 @@ class PostgresDataLayer(AttachmentDataLayer):
 
     def _sign_element_url(self, element: ElementDict) -> None:
         """Собирает ссылку на вложение: она вычисляется, а не хранится."""
+        props = ElementProps.of(element.get(ElementField.PROPS))
         element[ElementField.URL] = self._links.url(
-            element.get(ElementField.THREAD_ID), element.get(ElementField.ID)
+            element.get(ElementField.THREAD_ID),
+            element.get(ElementField.ID),
+            props.dir,
         )

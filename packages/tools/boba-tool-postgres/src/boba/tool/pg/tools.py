@@ -13,7 +13,7 @@ from boba.tool.pg.catalog import PgCatalog
 from boba.tool.pg.executor import PgExecutor, PgExecutorConfig
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import (
-    AffectedResult,
+    AffectedSqlResult,
     PgCopyTextResult,
     TableResult,
     ToolResult,
@@ -200,7 +200,7 @@ class PgTools:
 
             if not result.returns_rows:
                 return pack_result(
-                    AffectedResult(
+                    AffectedSqlResult(
                         affected_rows=result.rowcount,
                         status=result.status,
                     )

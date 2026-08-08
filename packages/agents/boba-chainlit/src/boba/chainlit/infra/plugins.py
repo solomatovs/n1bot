@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.chainlit.agent.tools.access import ToolAccess, ToolAccessGuard
 from boba.chainlit.agent.tools.cancellation import CancellableTools
+from boba.chainlit.agent.tools.canvas import CanvasToolConfig
+from boba.chainlit.agent.tools.diagram import DiagramToolConfig
 from boba.chainlit.agent.tools.errors import ToolErrorGuard
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
 from boba.chainlit.infra.session import (
@@ -202,6 +204,28 @@ def _build_send_file_tools(
     return [build_send_file_tool()]
 
 
+def _build_diagram_tools(
+    cfg: DiagramToolConfig,
+    launchers: LauncherFactory,
+) -> list[BaseTool]:
+    from boba.chainlit.agent.tools.diagram import (  # noqa: PLC0415
+        build_diagram_tools,
+    )
+
+    return build_diagram_tools(cfg)
+
+
+def _build_canvas_tools(
+    cfg: CanvasToolConfig,
+    launchers: LauncherFactory,
+) -> list[BaseTool]:
+    from boba.chainlit.agent.tools.canvas import (  # noqa: PLC0415
+        build_canvas_tools,
+    )
+
+    return build_canvas_tools(cfg)
+
+
 def _sandbox_path_vars() -> dict[str, str]:
     """Значения {user_id}/{thread_id} для путей профиля на момент вызова."""
     values = {"user_id": current_user_id(), "thread_id": current_thread_id()}
@@ -241,6 +265,18 @@ _PLUGINS: dict[str, ToolPlugin] = {
     "send_file": ToolPlugin(
         section="send_file",
         build=_build_send_file_tools,
+        sandboxed=False,
+    ),
+    "diagram": ToolPlugin(
+        section="diagram",
+        config_model=DiagramToolConfig,
+        build=_build_diagram_tools,
+        sandboxed=False,
+    ),
+    "canvas": ToolPlugin(
+        section="canvas",
+        config_model=CanvasToolConfig,
+        build=_build_canvas_tools,
         sandboxed=False,
     ),
     "pg": ToolPlugin(
@@ -302,18 +338,21 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
         meta = bind(raw_config, f"tool.{name}", PluginMeta)
         if not meta.enable:
             continue
-        cfg = (
-            bind(raw_config, f"tool.{name}", plugin.config_model)
-            if plugin.config_model is not None
-            else None
-        )
+        cfg: ConfigT = None
+        if plugin.config_model is not None:
+            cfg = bind(raw_config, f"tool.{name}", plugin.config_model)
 
         launchers: LauncherFactory = _no_launchers
         if plugin.sandboxed:
             sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
             launchers = _launchers(sandbox)
 
-        built = [t for t in plugin.build(cfg, launchers) if t.name in meta.tools]
+        built: list[BaseTool] = []
+        for tool in plugin.build(cfg, launchers):
+            if tool.name not in meta.tools:
+                continue
+            built.append(tool)
+
         for tool in built:
             roles_by_tool[tool.name] = meta.roles_of(tool.name)
         tools.extend(built)

@@ -1,7 +1,11 @@
 """Клиенты хранилища вложений: локальный диск и ext4-образ пользователя.
 
 Ошибки: StorageError — операция не выполнена; StorageFullError — в образе нет
-места; FileNotFoundError — файла нет в хранилище.
+места; StorageNotFoundError — объекта нет в хранилище. Ничего сверх этого
+списка наружу не выходит: системные и чужие исключения упаковывает
+StorageGuard, через который проходит каждая операция StorageClient. Клиенту
+достаточно ловить StorageError — подклассы разбираются, когда отказ надо
+показать по-разному (404 против сбоя, нет места против прочего).
 """
 
 from __future__ import annotations
@@ -13,15 +17,16 @@ import os
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from types import TracebackType
+from typing import Any, ClassVar, Self
 
 import aiofiles
 import aiofiles.os
 
-from boba.chainlit.chat.data.object_key import ObjectKey
+from boba.chainlit.chat.data.object_key import DirKey, ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.workspace.launcher import (
     LauncherExit,
@@ -41,6 +46,9 @@ __all__ = [
     "StorageError",
     "StorageFactory",
     "StorageFullError",
+    "StorageGuard",
+    "StorageNotFoundError",
+    "StorageOp",
     "StorageUrl",
 ]
 
@@ -48,11 +56,64 @@ logger = logging.getLogger(__name__)
 
 
 class StorageError(RuntimeError):
-    """Хранилище не выполнило операцию."""
+    """Хранилище не выполнило операцию: корень всех ошибок слоя."""
 
 
 class StorageFullError(StorageError):
     """В образе пользователя не осталось места под файл."""
+
+
+class StorageNotFoundError(StorageError):
+    """Объекта с таким ключом в хранилище нет."""
+
+
+class StorageOp(StrEnum):
+    """Операции хранилища: имя уходит в текст ошибки."""
+
+    READ = "read"
+    WRITE = "write"
+    DELETE = "delete"
+    LIST = "list"
+
+
+class StorageGuard:
+    """Граница слоя: наружу выпускает только ошибки хранилища.
+
+    FileNotFoundError — StorageNotFoundError, прочий OSError и любое
+    неожиданное исключение — StorageError; готовая ошибка слоя проходит как
+    есть. Отмена задачи (BaseException) не трогается.
+    """
+
+    def __init__(self, op: StorageOp, object_key: str) -> None:
+        self._op = op
+        self._key = object_key
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if exc is None:
+            return
+
+        if isinstance(exc, StorageError):
+            return
+
+        if isinstance(exc, FileNotFoundError):
+            msg = f"storage: {self._op} target not found: {self._key}"
+            raise StorageNotFoundError(msg) from exc
+
+        if isinstance(exc, OSError):
+            msg = f"storage: {self._op} failed: {self._key}: {exc}"
+            raise StorageError(msg) from exc
+
+        if isinstance(exc, Exception):
+            msg = f"storage: unexpected failure on {self._op}: {self._key}: {exc}"
+            raise StorageError(msg) from exc
 
 
 class StorageUrl(StrEnum):
@@ -69,7 +130,22 @@ class StorageUrl(StrEnum):
 
 
 class StorageClient(BaseStorageClient, ABC):
-    """База клиентов хранилища вложений."""
+    """Фасад хранилища: публичные операции и их граница ошибок.
+
+    Каждая операция идёт через StorageGuard, поэтому наружу выходят только
+    StorageError и его подклассы:
+
+    * upload_file, upload_stream — StorageFullError, когда места нет;
+      StorageError на любом другом отказе записи;
+    * read_file, read_stream — StorageNotFoundError, когда объекта нет;
+      StorageError на отказе чтения;
+    * delete_file — False, когда объекта нет; StorageError на отказе;
+    * list_dir — пустая последовательность, когда каталога нет;
+      StorageError на отказе.
+
+    Реализации пишут операции в защищённых методах и публичные не
+    переопределяют — иначе ошибка уйдёт мимо границы.
+    """
 
     def __init__(self, config: LocalStorageConfig) -> None:
         self._config = config
@@ -93,7 +169,6 @@ class StorageClient(BaseStorageClient, ABC):
     def _uploaded(object_key: str) -> dict[str, Any]:
         return {"object_key": object_key, "url": StorageUrl.TEMPLATE.value}
 
-    @abstractmethod
     async def upload_file(
         self,
         object_key: str,
@@ -101,24 +176,64 @@ class StorageClient(BaseStorageClient, ABC):
         mime: str = "application/octet-stream",
         overwrite: bool = True,
         content_disposition: str | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        with StorageGuard(StorageOp.WRITE, object_key):
+            return await self._upload_file(object_key, data, mime, overwrite)
 
-    @abstractmethod
     async def upload_stream(
         self,
         object_key: str,
         source: AsyncIterator[bytes],
         mime: str = "application/octet-stream",
+    ) -> dict[str, Any]:
+        with StorageGuard(StorageOp.WRITE, object_key):
+            return await self._upload_stream(object_key, source, mime)
+
+    async def read_file(self, object_key: str) -> bytes:
+        with StorageGuard(StorageOp.READ, object_key):
+            return await self._read_file(object_key)
+
+    async def read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
+        with StorageGuard(StorageOp.READ, object_key):
+            async for chunk in self._read_stream(object_key):
+                yield chunk
+
+    async def delete_file(self, object_key: str) -> bool:
+        with StorageGuard(StorageOp.DELETE, object_key):
+            return await self._delete_file(object_key)
+
+    async def list_dir(self, prefix: str) -> Sequence[str]:
+        with StorageGuard(StorageOp.LIST, prefix):
+            return await self._list_dir(prefix)
+
+    @abstractmethod
+    async def _upload_file(
+        self,
+        object_key: str,
+        data: bytes | str,
+        mime: str,
+        overwrite: bool,
     ) -> dict[str, Any]: ...
 
     @abstractmethod
-    async def read_file(self, object_key: str) -> bytes: ...
+    async def _upload_stream(
+        self,
+        object_key: str,
+        source: AsyncIterator[bytes],
+        mime: str,
+    ) -> dict[str, Any]: ...
 
     @abstractmethod
-    def read_stream(self, object_key: str) -> AsyncIterator[bytes]: ...
+    async def _read_file(self, object_key: str) -> bytes: ...
 
     @abstractmethod
-    async def delete_file(self, object_key: str) -> bool: ...
+    def _read_stream(self, object_key: str) -> AsyncIterator[bytes]: ...
+
+    @abstractmethod
+    async def _delete_file(self, object_key: str) -> bool: ...
+
+    @abstractmethod
+    async def _list_dir(self, prefix: str) -> Sequence[str]: ...
 
 
 class StorageFactory:
@@ -140,17 +255,16 @@ class LocalStorageClient(StorageClient):
         path = (base_dir / object_key).resolve()
 
         if not path.is_relative_to(base_dir):
-            raise ValueError(f"object_key outside files_dir: {object_key!r}")
+            raise StorageError(f"storage: object_key outside files_dir: {object_key!r}")
 
         return path
 
-    async def upload_file(
+    async def _upload_file(
         self,
         object_key: str,
         data: bytes | str,
-        mime: str = "application/octet-stream",
-        overwrite: bool = True,
-        content_disposition: str | None = None,
+        mime: str,
+        overwrite: bool,
     ) -> dict[str, Any]:
         path = self._resolve(object_key)
         if path.exists() and not overwrite:
@@ -165,11 +279,11 @@ class LocalStorageClient(StorageClient):
 
         return self._uploaded(object_key)
 
-    async def upload_stream(
+    async def _upload_stream(
         self,
         object_key: str,
         source: AsyncIterator[bytes],
-        mime: str = "application/octet-stream",
+        mime: str,
     ) -> dict[str, Any]:
         """Кладёт файл чанками: содержимое целиком в память не поднимается."""
         path = self._resolve(object_key)
@@ -181,12 +295,12 @@ class LocalStorageClient(StorageClient):
 
         return self._uploaded(object_key)
 
-    async def read_file(self, object_key: str) -> bytes:
+    async def _read_file(self, object_key: str) -> bytes:
         path = self._resolve(object_key)
         async with aiofiles.open(path, "rb") as f:
             return await f.read()
 
-    async def read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
+    async def _read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
         """Отдаёт файл чанками: в памяти живёт один чанк, а не файл."""
         path = self._resolve(object_key)
         size = self._config.launcher.copy_chunk_bytes
@@ -197,13 +311,29 @@ class LocalStorageClient(StorageClient):
                     break
                 yield chunk
 
-    async def delete_file(self, object_key: str) -> bool:
+    async def _delete_file(self, object_key: str) -> bool:
         path = self._resolve(object_key)
         try:
             await aiofiles.os.remove(path)
         except FileNotFoundError:
             return False
+
         return True
+
+    async def _list_dir(self, prefix: str) -> Sequence[str]:
+        path = self._resolve(prefix)
+        try:
+            entries = await aiofiles.os.listdir(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return ()
+
+        names: list[str] = []
+        for entry in sorted(entries):
+            if not await aiofiles.os.path.isfile(path / entry):
+                continue
+            names.append(entry)
+
+        return tuple(names)
 
 
 class OpProgress:
@@ -225,13 +355,12 @@ class ImageStorageClient(StorageClient):
     WATCH_POLL_SEC: ClassVar[float] = 1.0
     """Период проверки простоя идущей операции."""
 
-    async def upload_file(
+    async def _upload_file(
         self,
         object_key: str,
         data: bytes | str,
-        mime: str = "application/octet-stream",
-        overwrite: bool = True,
-        content_disposition: str | None = None,
+        mime: str,
+        overwrite: bool,
     ) -> dict[str, Any]:
         image, rel = self._image_and_rel(object_key)
 
@@ -250,11 +379,11 @@ class ImageStorageClient(StorageClient):
         self._check(rc, err)
         return self._uploaded(object_key)
 
-    async def upload_stream(
+    async def _upload_stream(
         self,
         object_key: str,
         source: AsyncIterator[bytes],
-        mime: str = "application/octet-stream",
+        mime: str,
     ) -> dict[str, Any]:
         """Чанки уходят прямо в stdin лаунчера, а тот пишет их в образ."""
         image, rel = self._image_and_rel(object_key)
@@ -269,15 +398,17 @@ class ImageStorageClient(StorageClient):
         """Готовые байты в виде источника: путь записи в образ один на всех."""
         yield payload
 
-    async def read_file(self, object_key: str) -> bytes:
+    async def _read_file(self, object_key: str) -> bytes:
         image, rel = self._image_and_rel(object_key)
         rc, out, err = await self._op(image, [LauncherMode.READ.value, rel])
         if rc == LauncherExit.NOT_FOUND:
-            raise FileNotFoundError(object_key)
+            raise StorageNotFoundError(f"storage: no such object: {object_key}")
+
         self._check(rc, err)
+
         return out
 
-    async def read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
+    async def _read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
         """Отдаёт файл чанками из stdout лаунчера, не собирая его в памяти.
 
         Первый чанк читается до отдачи наружу: пока он не получен, неизвестно,
@@ -297,7 +428,8 @@ class ImageStorageClient(StorageClient):
             if not head:
                 rc = await proc.wait()
                 if rc == LauncherExit.NOT_FOUND:
-                    raise FileNotFoundError(object_key)
+                    raise StorageNotFoundError(f"storage: no such object: {object_key}")
+
                 self._check(rc, self._drain_launcher_log(await err_task))
                 return
 
@@ -316,13 +448,36 @@ class ImageStorageClient(StorageClient):
                 await proc.wait()
             await asyncio.gather(err_task, return_exceptions=True)
 
-    async def delete_file(self, object_key: str) -> bool:
+    async def _delete_file(self, object_key: str) -> bool:
         image, rel = self._image_and_rel(object_key)
         rc, _, err = await self._op(image, [LauncherMode.DELETE.value, rel])
         if rc == LauncherExit.NOT_FOUND:
             return False
+
         self._check(rc, err)
+
         return True
+
+    async def _list_dir(self, prefix: str) -> Sequence[str]:
+        key = DirKey.parse(prefix)
+        path_vars = {"user_id": key.user_id, "thread_id": key.thread_id}
+        image = render_image_path(self._config.image_path, path_vars)
+
+        op = [LauncherMode.LIST.value, key.in_thread()]
+        rc, out, err = await self._op(image, op)
+        if rc == LauncherExit.NOT_FOUND:
+            return ()
+
+        self._check(rc, err)
+
+        names: list[str] = []
+        for line in out.decode("utf-8").splitlines():
+            name = line.strip()
+            if not name:
+                continue
+            names.append(name)
+
+        return tuple(names)
 
     def _image_and_rel(self, object_key: str) -> tuple[str, str]:
         key = ObjectKey.parse(object_key)

@@ -17,6 +17,7 @@ import asyncio
 import io
 import logging
 import mimetypes
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -32,8 +33,12 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
 from boba.chainlit.chat.data.fields import ElementField, FileField
-from boba.chainlit.chat.data.object_key import ObjectKey
-from boba.chainlit.chat.data.storage import StorageClient, StorageFullError
+from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
+from boba.chainlit.chat.data.storage import (
+    StorageClient,
+    StorageFullError,
+    StorageNotFoundError,
+)
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
 from chainlit.user import PersistedUser, User
@@ -43,7 +48,13 @@ if TYPE_CHECKING:
 
     from fastapi import FastAPI
 
-__all__ = ["AttachmentServing", "MultipartFile", "UploadPolicy", "UploadRoute"]
+__all__ = [
+    "AttachmentServing",
+    "MultipartFile",
+    "SessionFiles",
+    "UploadPolicy",
+    "UploadRoute",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -195,12 +206,47 @@ class UploadPolicy:
     upload_path: str = "/project/file"
     download_path: str = "/project/file/{file_id}"
     no_space_status: int = 507
-    object_key: str = "object_key"
     mib: int = 1024 * 1024
     log_every_bytes: int = 32 * 1024 * 1024
     drain_bytes: int = 8 * 1024 * 1024
     """Потолок вычитывания после отказа: дальше соединение закрывается."""
     drain_seconds: float = 3.0
+
+
+class SessionFiles:
+    """Файлы сессии, которые роут отдаёт прямо из хранилища.
+
+    Ключ object_key — расширение чужого FileDict: по нему download узнаёт, что
+    тело файла лежит в storage, а не на диске chainlit.
+    """
+
+    OBJECT_KEY: ClassVar[str] = "object_key"
+    """Поле записи: тело файла лежит в storage по этому ключу."""
+
+    ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
+    """Префикс подмонтированного приложения; ссылка без него уйдёт в корень домена."""
+
+    @classmethod
+    def register(cls, session: Any, key: ObjectKey, *, mime: str, size: int) -> str:
+        """Регистрирует объект хранилища как файл сессии; отдаёт его id."""
+        file_id = str(uuid.uuid4())
+        suffix = mimetypes.guess_extension(mime) or ""
+        session.files[file_id] = {
+            "id": file_id,
+            # копии на диске нет: путь остаётся лишь именем для потребителей chainlit
+            "path": session.files_dir / f"{file_id}{suffix}",
+            "name": key.name,
+            "type": mime,
+            "size": size,
+            cls.OBJECT_KEY: key.render(),
+        }
+        return file_id
+
+    @classmethod
+    def url_for(cls, session: Any, file_id: str) -> str:
+        """Ссылка на файл сессии — тот же вид, что строит фронт по chainlit_key."""
+        prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
+        return f"{prefix}/project/file/{file_id}?session_id={session.id}"
 
 
 class UploadRoute:
@@ -296,17 +342,17 @@ class UploadRoute:
         session = self._session(session_id, current_user)
 
         record = session.files.get(file_id)
-        if not record or self._policy.object_key not in record:
+        if not record or SessionFiles.OBJECT_KEY not in record:
             raise HTTPException(status_code=404, detail="File not found")
 
         name = quote(str(record[FileField.NAME]))
         logger.info(
             "upload: serving %s from storage (%s)",
             record[FileField.NAME],
-            record[self._policy.object_key],
+            record[SessionFiles.OBJECT_KEY],
         )
         return StreamingResponse(
-            self._storage.read_stream(str(record[self._policy.object_key])),
+            self._storage.read_stream(str(record[SessionFiles.OBJECT_KEY])),
             media_type=str(record[FileField.TYPE]),
             headers={"Content-Disposition": f'inline; filename="{name}"'},
         )
@@ -392,17 +438,9 @@ class UploadRoute:
         written: int,
     ) -> dict[str, Any]:
         """Запись о файле там же, где её ждут emitter и роут скачивания."""
-        file_id = str(uuid.uuid4())
-        suffix = mimetypes.guess_extension(part.content_type) or ""
-        session.files[file_id] = {
-            "id": file_id,
-            # копии на диске нет: путь остаётся лишь именем для потребителей chainlit
-            "path": session.files_dir / f"{file_id}{suffix}",
-            "name": key.name,
-            "type": part.content_type,
-            "size": written,
-            self._policy.object_key: key.render(),
-        }
+        file_id = SessionFiles.register(
+            session, key, mime=part.content_type, size=written
+        )
         return {
             "id": file_id,
             "name": key.name,
@@ -453,6 +491,7 @@ class AttachmentServing:
     async def serve(
         self,
         thread_id: UUID,
+        dir: ThreadDir,
         element_id: UUID,
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
     ) -> Response:
@@ -469,10 +508,11 @@ class AttachmentServing:
             element.get(ElementField.THREAD_ID),
             element.get(ElementField.NAME),
             element.get(ElementField.ID),
+            dir_thread=dir,
         )
         try:
             content = await self._storage.read_file(key.render())
-        except FileNotFoundError as e:
+        except StorageNotFoundError as e:
             raise HTTPException(status_code=404, detail="File not found") from e
 
         mime = element.get(ElementField.MIME)

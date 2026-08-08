@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid5
@@ -15,6 +15,8 @@ from literalai.observability.step import TrueStepType
 from boba.cancellation import StopReason
 from boba.chainlit.rendering.result import (
     ChartRendering,
+    CustomElementRendering,
+    DiagramRendering,
     MarkdownRendering,
     ToolResultView,
 )
@@ -161,6 +163,7 @@ class ChatView:
         self._turn_key: str | None = None
         self._container: Step | None = None
         self._answer: Message | None = None
+        self._answers = 0
         self._tool_names: dict[str, str] = {}
 
     @property
@@ -178,6 +181,7 @@ class ChatView:
         self._turn_key = key
         self._container = None
         self._answer = None
+        self._answers = 0
 
     async def question(self, text: str, step_id: str | None = None) -> Step:
         step = self._step(
@@ -233,13 +237,38 @@ class ChatView:
         self._answer.content = content
         await self._answer.send()
 
+    async def _seal_answer(self) -> None:
+        """Закрывает текущий ответ перед инструментом.
+
+        Иначе текст после инструмента дописывался бы в сообщение, открытое до
+        него, и результат тула вставал бы в ленте ниже всего ответа — а при
+        сборке истории он оказывается между текстами. Здесь live приводится к
+        тому же порядку.
+        """
+        if self._answer is None:
+            return
+
+        await self._answer.send()
+        self._answer = None
+        self._answers += 1
+
     def _open_answer(self, key: str | None = None) -> Message:
         message = Message(
             content="",
-            id=self.derive_id(self._thread_id, key, StepRole.ANSWER),
+            id=self.derive_id(self._thread_id, self._answer_key(key), StepRole.ANSWER),
         )
         message.parent_id = None
         return message
+
+    def _answer_key(self, key: str | None) -> str | None:
+        """Каждый следующий ответ хода — своё сообщение, как в истории."""
+        if key is None:
+            return None
+
+        if not self._answers:
+            return key
+
+        return f"{key}#{self._answers}"
 
     async def container(self) -> Step:
         if self._container is not None:
@@ -271,12 +300,14 @@ class ChatView:
         args: Mapping[str, Any] | None,
         key: str | None = None,
     ) -> Step:
+        await self._seal_answer()
+
         step = await self._child(
             StepStatus.IDLE.title(name), StepKind.TOOL, key, StepRole.TOOL
         )
         self._tool_names[step.id] = name
         if args:
-            step.input = self._render_args(args)
+            step.input, step.show_input = self._render_args(args)
         step.output = StepText.RUNNING
         step.start = utc_now()
         await self._sink.put(step)
@@ -312,7 +343,19 @@ class ChatView:
                 if chart.title:
                     step.output = f"график отрисован: {chart.title}"
                 await self._sink.put(step)
-                await self._chart(chart, tool_call_id)
+                await self._element(chart, tool_call_id)
+            case CustomElementRendering() as custom:
+                step.output = "элемент отрисован"
+                if custom.title:
+                    step.output = f"элемент отрисован: {custom.title}"
+                await self._sink.put(step)
+                await self._element(custom, tool_call_id)
+            case DiagramRendering() as diagram:
+                step.output = "диаграмма отрисована"
+                if diagram.title:
+                    step.output = f"диаграмма отрисована: {diagram.title}"
+                await self._sink.put(step)
+                await self._element(diagram, tool_call_id)
             case MarkdownRendering(markdown=markdown):
                 step.output = markdown
                 step.is_error = failed
@@ -336,23 +379,26 @@ class ChatView:
         step.end = ended
         await self._sink.put(step)
 
-    async def _chart(
+    async def _element(
         self,
-        chart: ChartRendering,
+        rendering: ChartRendering | CustomElementRendering | DiagramRendering,
         tool_call_id: str | None,
     ) -> None:
+        """Шаг-носитель элемента: график и кастомный компонент рисуются одинаково."""
         step = self._step(
             self._assistant_name,
             StepKind.ASSISTANT,
             parent_id=None,
             step_id=self.derive_id(self._thread_id, tool_call_id, StepRole.CHART),
         )
-        title = chart.title
+
+        title = rendering.title
         if not title:
             title = ""
         step.output = title
+
         if self._sink.EMITS_ELEMENTS:
-            element = chart.plotly_element()
+            element = rendering.chat_element()
             element_id = self.derive_id(
                 self._thread_id, tool_call_id, StepRole.ELEMENT
             )
@@ -360,6 +406,7 @@ class ChatView:
                 element_id = element.id
             element.id = str(element_id)
             step.elements = [element]
+
         await self._sink.put(step)
 
     @classmethod
@@ -401,6 +448,42 @@ class ChatView:
             auto_collapse=True,
         )
 
+    @classmethod
+    def _render_args(cls, args: Mapping[str, Any]) -> tuple[str, str | bool]:
+        """Вход тула и его show_input: json, а при многострочных аргументах —
+        markdown-блоки (спека диаграммы, код bash/python читаются как текст)."""
+        multiline = False
+        for value in args.values():
+            if isinstance(value, str) and "\n" in value:
+                multiline = True
+                break
+
+        if not multiline:
+            rendered = json.dumps(dict(args), ensure_ascii=False, indent=2, default=str)
+            return rendered, "json"
+
+        blocks = list(cls._arg_blocks(args))
+        return "\n\n".join(blocks), True
+
+    @classmethod
+    def _arg_blocks(cls, args: Mapping[str, Any]) -> Iterator[str]:
+        for name, value in args.items():
+            if isinstance(value, str) and "\n" in value:
+                fence = cls._fence_for(value)
+                yield f"**{name}:**\n{fence}\n{value}\n{fence}"
+                continue
+
+            if isinstance(value, str):
+                yield f"**{name}:** `{value}`"
+                continue
+
+            rendered = json.dumps(value, ensure_ascii=False, default=str)
+            yield f"**{name}:** `{rendered}`"
+
     @staticmethod
-    def _render_args(args: Mapping[str, Any]) -> str:
-        return json.dumps(dict(args), ensure_ascii=False, indent=2, default=str)
+    def _fence_for(value: str) -> str:
+        """Ограда длиннее любой в тексте: спека с ``` не разорвёт блок."""
+        fence = "```"
+        while fence in value:
+            fence += "`"
+        return fence

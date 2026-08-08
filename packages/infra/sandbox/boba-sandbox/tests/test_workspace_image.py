@@ -6,7 +6,7 @@ import asyncio
 import os
 import shutil
 import subprocess
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -16,8 +16,10 @@ import pytest
 from boba.chainlit.chat.data.storage import (
     ImageStorageClient,
     LocalStorageClient,
+    StorageClient,
     StorageError,
     StorageFactory,
+    StorageNotFoundError,
 )
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.caller import SandboxCaller
@@ -32,6 +34,7 @@ from boba.workspace.launcher import (
 )
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
+
 
 def _storage_cfg(**kw: Any) -> LocalStorageConfig:
     """Тайминги лаунчера обязательны: дефолтов у конфига нет."""
@@ -121,6 +124,7 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
         cwd="/workspace",
         **profile_kw,
     )
+
     def launchers(tool: str):
         return SandboxCaller(
             tool, profile_dto, lambda: {"user_id": "7", "thread_id": thread_id}
@@ -154,6 +158,7 @@ def _storage(
     assert isinstance(client, ImageStorageClient)
     return client
 
+
 def _launcher_options() -> LauncherOptions:
     """Тайминги задаются явно: дефолтов у LauncherOptions нет."""
     return LauncherOptions(
@@ -162,7 +167,6 @@ def _launcher_options() -> LauncherOptions:
         shutdown_wait_sec=5.0,
         copy_chunk_bytes=1 << 20,
     )
-
 
 
 class TestConfig:
@@ -180,7 +184,8 @@ class TestConfig:
 
     def test_factory_picks_image_client(self) -> None:
         cfg = _storage_cfg(
-            kind="image", image_path="/ws/{user_id}.ext4",
+            kind="image",
+            image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
         assert isinstance(StorageFactory.create(cfg), ImageStorageClient)
@@ -198,7 +203,8 @@ class TestObjectKey:
     @staticmethod
     def _client() -> ImageStorageClient:
         cfg = _storage_cfg(
-            kind="image", image_path="/ws/{user_id}.ext4",
+            kind="image",
+            image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
         client = StorageFactory.create(cfg)
@@ -337,6 +343,79 @@ class TestChainArgv:
         assert argv[-2:] == ["write", "upload/x"]
 
 
+class TestErrorBoundary:
+    """Контракт слоя: наружу выходит только StorageError и его подклассы."""
+
+    @staticmethod
+    def _local(tmp_path: Path) -> LocalStorageClient:
+        cfg = _storage_cfg(files_dir=str(tmp_path / "files"))
+        client = StorageFactory.create(cfg)
+        assert isinstance(client, LocalStorageClient)
+        return client
+
+    @staticmethod
+    def _guarded_operations() -> Iterator[str]:
+        """Публичная операция фасада — та, у которой есть парный защищённый метод."""
+        for name in vars(StorageClient):
+            if name.startswith("_"):
+                continue
+
+            if f"_{name}" not in vars(StorageClient):
+                continue
+
+            yield name
+
+    def test_missing_object_reads_as_not_found(self, tmp_path: Path) -> None:
+        storage = self._local(tmp_path)
+
+        with pytest.raises(StorageNotFoundError):
+            asyncio.run(storage.read_file("7/t1/upload/missing"))
+
+    def test_missing_object_streams_as_not_found(self, tmp_path: Path) -> None:
+        storage = self._local(tmp_path)
+
+        async def drain() -> None:
+            async for _ in storage.read_stream("7/t1/upload/missing"):
+                pass
+
+        with pytest.raises(StorageNotFoundError):
+            asyncio.run(drain())
+
+    def test_key_outside_files_dir_is_storage_error(self, tmp_path: Path) -> None:
+        storage = self._local(tmp_path)
+
+        with pytest.raises(StorageError, match="outside files_dir"):
+            asyncio.run(storage.read_file("../../etc/passwd"))
+
+    def test_unusable_files_dir_is_storage_error(self, tmp_path: Path) -> None:
+        """Файл на месте каталога: системная ошибка не должна утечь наружу."""
+        blocker = tmp_path / "files"
+        blocker.write_bytes(b"not a directory")
+        storage = self._local(tmp_path)
+
+        with pytest.raises(StorageError) as failure:
+            asyncio.run(storage.upload_file("7/t1/upload/a.txt", b"x"))
+
+        assert isinstance(failure.value.__cause__, OSError)
+
+    def test_directory_instead_of_object_is_storage_error(self, tmp_path: Path) -> None:
+        storage = self._local(tmp_path)
+        asyncio.run(storage.upload_file("7/t1/upload/a.txt", b"x"))
+
+        with pytest.raises(StorageError) as failure:
+            asyncio.run(storage.read_file("7/t1/upload"))
+
+        assert not isinstance(failure.value, StorageNotFoundError)
+
+    def test_operations_are_not_overridden_past_the_guard(self) -> None:
+        operations = list(self._guarded_operations())
+        assert operations
+
+        for client in (LocalStorageClient, ImageStorageClient):
+            for name in operations:
+                assert name not in vars(client), f"{client.__name__}.{name} мимо guard"
+
+
 @needs_fuse
 class TestLiveImage:
     """Реальные монтирования: bash и storage поверх одного образа."""
@@ -400,17 +479,13 @@ class TestLiveImage:
 
         assert asyncio.run(cycle()) == (True, False)
 
-    def test_storage_read_missing_raises(
-        self, tmp_path: Path, template: Path
-    ) -> None:
+    def test_storage_read_missing_raises(self, tmp_path: Path, template: Path) -> None:
         storage = _storage(tmp_path, template)
         asyncio.run(storage.upload_file("7/t1/upload/seed", b"x"))
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(StorageNotFoundError):
             asyncio.run(storage.read_file("7/t1/upload/missing"))
 
-    def test_storage_waits_for_busy_image(
-        self, tmp_path: Path, template: Path
-    ) -> None:
+    def test_storage_waits_for_busy_image(self, tmp_path: Path, template: Path) -> None:
         """flock блокирующий: storage дожидается занятой песочницы."""
         tool = _bash(tmp_path, template, timeout_sec=30)
         storage = _storage(tmp_path, template)
@@ -461,9 +536,7 @@ class TestLiveImage:
         assert payload["stdout"].split()[1] == "0000000000000000"
 
     def test_userns_creation_blocked(self, tmp_path: Path, template: Path) -> None:
-        payload = _invoke(
-            _bash(tmp_path, template), "unshare -U true 2>&1; echo rc=$?"
-        )
+        payload = _invoke(_bash(tmp_path, template), "unshare -U true 2>&1; echo rc=$?")
         assert "rc=0" not in payload["stdout"]
 
     def test_workspace_shared_between_threads(
@@ -564,6 +637,14 @@ class TestLiveImage:
         tool = _bash(tmp_path, bad)
         with pytest.raises(RuntimeError, match="image not mounted"):
             _invoke(tool, "true")
+
+    def test_broken_template_stays_inside_storage_errors(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.ext4"
+        bad.write_bytes(b"not an ext4 image")
+        storage = _storage(tmp_path, bad)
+
+        with pytest.raises(StorageError, match="image not mounted"):
+            asyncio.run(storage.upload_file("7/t1/upload/x", b"x"))
 
     def test_upload_without_overwrite_keeps_existing(
         self, tmp_path: Path, template: Path

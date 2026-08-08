@@ -1,0 +1,26 @@
+/* Панель канваса.
+
+   В canvas-режиме chainlit сам кладёт кнопку закрытия поверх содержимого и
+   красит её в primary (variant="default") — синий круг накрывает диаграмму.
+   Возвращаем ей вид ghost-кнопки, как у close в диалоге shadcn: прозрачный
+   фон и opacity 0.7.
+
+   Раскладку не трогаем: chainlit даёт шапке px-6 py-4, а кнопке -ml-2, то
+   есть те же 16px от краёв, на которых стоят остальные плавающие кнопки. */
+#side-view-title {
+  pointer-events: none;
+}
+
+#side-view-title button {
+  pointer-events: auto;
+  background-color: transparent;
+  color: var(--muted-foreground);
+  box-shadow: none;
+  opacity: 0.7;
+}
+
+#side-view-title button:hover {
+  background-color: var(--accent);
+  color: var(--accent-foreground);
+  opacity: 1;
+}

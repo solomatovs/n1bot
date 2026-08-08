@@ -48,9 +48,11 @@ dependencies = [
 [project.scripts]
 boba-chainlit = "boba.chainlit.infra.entry:AppEntry.run"
 
+[tool.setuptools.package-data]
+"boba.chainlit.auth" = ["*.js"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]
 namespaces = true
 
-# sql-миграции базы знаний читаются с диска рядом с кодом
