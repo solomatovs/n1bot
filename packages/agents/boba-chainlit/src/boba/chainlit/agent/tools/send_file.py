@@ -104,7 +104,7 @@ class FileAttachment:
     async def _require_file(cls, key: ObjectKey) -> None:
         """Ссылка на несуществующий файл открылась бы у пользователя как 404."""
         try:
-            await cls._layer().storage.read_file(key.render())
+            await cls._layer().storage.stat(key.render())
         except StorageNotFoundError as e:
             raise AttachmentRefusedError(
                 AttachmentErrorKind.FILE_NOT_FOUND,

@@ -1,5 +1,11 @@
 """Клиенты хранилища вложений: локальный диск и ext4-образ пользователя.
 
+Граница ответственности слоя — дать читать потоково и не более того:
+open_stream отдаёт размер объекта до первого байта и тело окном чанков.
+Накапливать содержимое в памяти слой не умеет намеренно — это решает
+вызывающий компонент, потому что только он знает свой предел на объём и что
+делать при его превышении.
+
 Ошибки: StorageError — операция не выполнена; StorageFullError — в образе нет
 места; StorageNotFoundError — объекта нет в хранилище. Ничего сверх этого
 списка наружу не выходит: системные и чужие исключения упаковывает
@@ -14,10 +20,12 @@ import asyncio
 import contextlib
 import logging
 import os
+import stat as stat_module
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -25,6 +33,7 @@ from typing import Any, ClassVar, Self
 
 import aiofiles
 import aiofiles.os
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit.chat.data.object_key import DirKey, ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
@@ -32,6 +41,8 @@ from boba.workspace.launcher import (
     LauncherExit,
     LauncherMarker,
     LauncherMode,
+    ReadHeader,
+    ReadWindow,
     ResourceLimits,
     build_chain_argv,
     render_image_path,
@@ -40,8 +51,10 @@ from boba.workspace.launcher import (
 from chainlit.data.storage_clients.base import BaseStorageClient
 
 __all__ = [
+    "FileStat",
     "ImageStorageClient",
     "LocalStorageClient",
+    "OpenedStream",
     "StorageClient",
     "StorageError",
     "StorageFactory",
@@ -67,10 +80,51 @@ class StorageNotFoundError(StorageError):
     """Объекта с таким ключом в хранилище нет."""
 
 
+class FileStat(BaseModel):
+    """Свойства объекта хранилища без чтения тела."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    size: int = Field(ge=0)
+
+
+@dataclass(frozen=True, slots=True)
+class OpenedStream:
+    """Открытый на чтение объект: размер известен до первого байта тела.
+
+    Держит процесс чтения и его лок на образе, поэтому закрывать обязательно;
+    для этого поток сам является асинхронным контекстом — `async with`.
+    release освобождает ресурсы явно, а не через финализацию генератора:
+    aclose у ни разу не запущенного генератора не исполняет его тело, и
+    процесс чтения остался бы жив вместе со своим локом.
+    """
+
+    stat: FileStat
+    chunks: AsyncGenerator[bytes, None]
+    release: Callable[[], Awaitable[None]]
+
+    async def close(self) -> None:
+        """Бросить поток, не дочитывая: и генератор, и процесс освобождаются."""
+        await self.chunks.aclose()
+        await self.release()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.close()
+
+
 class StorageOp(StrEnum):
     """Операции хранилища: имя уходит в текст ошибки."""
 
     READ = "read"
+    STAT = "stat"
     WRITE = "write"
     DELETE = "delete"
     LIST = "list"
@@ -130,14 +184,14 @@ class StorageUrl(StrEnum):
 
 
 class StorageClient(BaseStorageClient, ABC):
-    """Фасад хранилища: публичные операции и их граница ошибок.
+    """Фасад хранилища: потоковые операции и их граница ошибок.
 
     Каждая операция идёт через StorageGuard, поэтому наружу выходят только
     StorageError и его подклассы:
 
     * upload_file, upload_stream — StorageFullError, когда места нет;
       StorageError на любом другом отказе записи;
-    * read_file, read_stream — StorageNotFoundError, когда объекта нет;
+    * stat, open_stream — StorageNotFoundError, когда объекта нет;
       StorageError на отказе чтения;
     * delete_file — False, когда объекта нет; StorageError на отказе;
     * list_dir — пустая последовательность, когда каталога нет;
@@ -169,6 +223,11 @@ class StorageClient(BaseStorageClient, ABC):
     def _uploaded(object_key: str) -> dict[str, Any]:
         return {"object_key": object_key, "url": StorageUrl.TEMPLATE.value}
 
+    @staticmethod
+    async def _once(payload: bytes) -> AsyncGenerator[bytes, None]:
+        """Готовые байты в виде источника: путь записи один на всех."""
+        yield payload
+
     async def upload_file(
         self,
         object_key: str,
@@ -177,8 +236,17 @@ class StorageClient(BaseStorageClient, ABC):
         overwrite: bool = True,
         content_disposition: str | None = None,
     ) -> dict[str, Any]:
+        """Байты из памяти тем же потоковым путём, что и upload_stream."""
         with StorageGuard(StorageOp.WRITE, object_key):
-            return await self._upload_file(object_key, data, mime, overwrite)
+            keep = False
+            if not overwrite:
+                keep = await self._exists(object_key)
+
+            if keep:
+                return self._uploaded(object_key)
+
+            payload = self._payload_bytes(data)
+            return await self._upload_stream(object_key, self._once(payload), mime)
 
     async def upload_stream(
         self,
@@ -189,13 +257,33 @@ class StorageClient(BaseStorageClient, ABC):
         with StorageGuard(StorageOp.WRITE, object_key):
             return await self._upload_stream(object_key, source, mime)
 
-    async def read_file(self, object_key: str) -> bytes:
-        with StorageGuard(StorageOp.READ, object_key):
-            return await self._read_file(object_key)
+    async def stat(self, object_key: str) -> FileStat:
+        with StorageGuard(StorageOp.STAT, object_key):
+            return await self._stat(object_key)
 
-    async def read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
+    async def open_stream(self, object_key: str, window: ReadWindow) -> OpenedStream:
+        """Открывает объект на чтение: существование и размер — до тела."""
         with StorageGuard(StorageOp.READ, object_key):
-            async for chunk in self._read_stream(object_key):
+            opened = await self._open_stream(object_key, window)
+
+        body = self._guarded_chunks(object_key, opened.chunks)
+        return OpenedStream(stat=opened.stat, chunks=body, release=opened.release)
+
+    @staticmethod
+    async def _no_release() -> None:
+        """Поток без своего процесса: освобождать нечего."""
+        return
+
+    async def disk_source(self, path: str) -> AsyncGenerator[bytes, None]:
+        """Файл локального диска как источник чанков для upload_stream."""
+        chunk_bytes = self._config.launcher.copy_chunk_bytes
+
+        async with aiofiles.open(path, "rb") as f:
+            while True:
+                chunk = await f.read(chunk_bytes)
+                if not chunk:
+                    break
+
                 yield chunk
 
     async def delete_file(self, object_key: str) -> bool:
@@ -206,14 +294,21 @@ class StorageClient(BaseStorageClient, ABC):
         with StorageGuard(StorageOp.LIST, prefix):
             return await self._list_dir(prefix)
 
-    @abstractmethod
-    async def _upload_file(
-        self,
-        object_key: str,
-        data: bytes | str,
-        mime: str,
-        overwrite: bool,
-    ) -> dict[str, Any]: ...
+    async def _exists(self, object_key: str) -> bool:
+        try:
+            await self._stat(object_key)
+        except (StorageNotFoundError, FileNotFoundError):
+            return False
+
+        return True
+
+    async def _guarded_chunks(
+        self, object_key: str, chunks: AsyncGenerator[bytes, None]
+    ) -> AsyncGenerator[bytes, None]:
+        """Тело итерируется после возврата open_stream: границе нужен свой guard."""
+        with StorageGuard(StorageOp.READ, object_key):
+            async for chunk in chunks:
+                yield chunk
 
     @abstractmethod
     async def _upload_stream(
@@ -224,10 +319,12 @@ class StorageClient(BaseStorageClient, ABC):
     ) -> dict[str, Any]: ...
 
     @abstractmethod
-    async def _read_file(self, object_key: str) -> bytes: ...
+    async def _stat(self, object_key: str) -> FileStat: ...
 
     @abstractmethod
-    def _read_stream(self, object_key: str) -> AsyncIterator[bytes]: ...
+    async def _open_stream(
+        self, object_key: str, window: ReadWindow
+    ) -> OpenedStream: ...
 
     @abstractmethod
     async def _delete_file(self, object_key: str) -> bool: ...
@@ -259,26 +356,6 @@ class LocalStorageClient(StorageClient):
 
         return path
 
-    async def _upload_file(
-        self,
-        object_key: str,
-        data: bytes | str,
-        mime: str,
-        overwrite: bool,
-    ) -> dict[str, Any]:
-        path = self._resolve(object_key)
-        if path.exists() and not overwrite:
-            return self._uploaded(object_key)
-
-        await aiofiles.os.makedirs(path.parent, exist_ok=True)
-
-        payload = self._payload_bytes(data)
-
-        async with aiofiles.open(path, "wb") as f:
-            await f.write(payload)
-
-        return self._uploaded(object_key)
-
     async def _upload_stream(
         self,
         object_key: str,
@@ -295,20 +372,44 @@ class LocalStorageClient(StorageClient):
 
         return self._uploaded(object_key)
 
-    async def _read_file(self, object_key: str) -> bytes:
+    async def _stat(self, object_key: str) -> FileStat:
         path = self._resolve(object_key)
-        async with aiofiles.open(path, "rb") as f:
-            return await f.read()
+        return await self._stat_path(path)
 
-    async def _read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
-        """Отдаёт файл чанками: в памяти живёт один чанк, а не файл."""
+    async def _open_stream(
+        self, object_key: str, window: ReadWindow
+    ) -> OpenedStream:
         path = self._resolve(object_key)
-        size = self._config.launcher.copy_chunk_bytes
+
+        stat = await self._stat_path(path)
+        body = self._window_chunks(path, window, stat.size)
+        return OpenedStream(stat=stat, chunks=body, release=self._no_release)
+
+    @staticmethod
+    async def _stat_path(path: Path) -> FileStat:
+        result = await aiofiles.os.stat(path)
+
+        if not stat_module.S_ISREG(result.st_mode):
+            raise StorageError(f"storage: not a regular file: {path.name}")
+
+        return FileStat(size=result.st_size)
+
+    async def _window_chunks(
+        self, path: Path, window: ReadWindow, size: int
+    ) -> AsyncGenerator[bytes, None]:
+        """Отдаёт окно файла чанками: в памяти живёт один чанк, а не файл."""
+        chunk_bytes = self._config.launcher.copy_chunk_bytes
+        remaining = window.resolve_length(size)
+
         async with aiofiles.open(path, "rb") as f:
-            while True:
-                chunk = await f.read(size)
+            await f.seek(window.offset)
+
+            while remaining > 0:
+                chunk = await f.read(min(chunk_bytes, remaining))
                 if not chunk:
                     break
+
+                remaining -= len(chunk)
                 yield chunk
 
     async def _delete_file(self, object_key: str) -> bool:
@@ -349,35 +450,59 @@ class OpProgress:
         return time.monotonic() - self._last
 
 
+class LauncherRead:
+    """Процесс чтения из образа: пока он жив, на образе висит его лок.
+
+    Гасится ровно один раз — из finally генератора тела или из close потока,
+    смотря что случится раньше. Брошенный поток нужно не только убить, но и
+    дочитать его пайпы: wait() у asyncio завершается лишь после того, как
+    закрылись все каналы процесса, а в недочитанном stdout остаётся буфер.
+    """
+
+    DISCARD_CHUNK: ClassVar[int] = 64 * 1024
+    DRAIN_TIMEOUT_SEC: ClassVar[float] = 10.0
+    """Мёртвый процесс оставляет в пайпе не больше его ёмкости: этого хватает."""
+
+    def __init__(
+        self,
+        proc: asyncio.subprocess.Process,
+        stdout: asyncio.StreamReader,
+        stderr: asyncio.Task[bytes],
+    ) -> None:
+        self.proc = proc
+        self.stdout = stdout
+        self.stderr = stderr
+        self._released = False
+
+    async def release(self) -> None:
+        if self._released:
+            return
+
+        self._released = True
+        if self.proc.returncode is None:
+            self.proc.kill()
+
+        try:
+            await asyncio.wait_for(self._drain(), self.DRAIN_TIMEOUT_SEC)
+        except TimeoutError:
+            # процесс уже получил SIGKILL, значит лок на образе отпущен
+            logger.warning("storage: read pipes stayed open after kill")
+
+    async def _drain(self) -> None:
+        while True:
+            chunk = await self.stdout.read(self.DISCARD_CHUNK)
+            if not chunk:
+                break
+
+        await asyncio.gather(self.stderr, return_exceptions=True)
+        await self.proc.wait()
+
+
 class ImageStorageClient(StorageClient):
     """Хранит вложения внутри per-thread ext4-образа: fuse2fs на одну операцию."""
 
     WATCH_POLL_SEC: ClassVar[float] = 1.0
     """Период проверки простоя идущей операции."""
-
-    async def _upload_file(
-        self,
-        object_key: str,
-        data: bytes | str,
-        mime: str,
-        overwrite: bool,
-    ) -> dict[str, Any]:
-        image, rel = self._image_and_rel(object_key)
-
-        keep = False
-        if not overwrite:
-            keep = await self._exists(image, rel)
-
-        if keep:
-            return self._uploaded(object_key)
-
-        payload = self._payload_bytes(data)
-
-        rc, _, err = await self._op(
-            image, [LauncherMode.WRITE.value, rel], source=self._once(payload)
-        )
-        self._check(rc, err)
-        return self._uploaded(object_key)
 
     async def _upload_stream(
         self,
@@ -393,60 +518,96 @@ class ImageStorageClient(StorageClient):
         self._check(rc, err)
         return self._uploaded(object_key)
 
-    @staticmethod
-    async def _once(payload: bytes) -> AsyncIterator[bytes]:
-        """Готовые байты в виде источника: путь записи в образ один на всех."""
-        yield payload
-
-    async def _read_file(self, object_key: str) -> bytes:
+    async def _stat(self, object_key: str) -> FileStat:
         image, rel = self._image_and_rel(object_key)
-        rc, out, err = await self._op(image, [LauncherMode.READ.value, rel])
+
+        rc, out, err = await self._op(image, [LauncherMode.STAT.value, rel])
         if rc == LauncherExit.NOT_FOUND:
             raise StorageNotFoundError(f"storage: no such object: {object_key}")
 
         self._check(rc, err)
 
-        return out
+        size = ReadHeader.parse(self._header_line(out))
+        return FileStat(size=size)
 
-    async def _read_stream(self, object_key: str) -> AsyncGenerator[bytes, None]:
-        """Отдаёт файл чанками из stdout лаунчера, не собирая его в памяти.
-
-        Первый чанк читается до отдачи наружу: пока он не получен, неизвестно,
-        существует ли файл, а отвечать 404 после начала ответа уже поздно.
-        """
+    async def _open_stream(
+        self, object_key: str, window: ReadWindow
+    ) -> OpenedStream:
+        """Заголовок с размером читается до отдачи наружу: пока его нет,
+        неизвестно, существует ли файл, а отвечать 404 после начала тела поздно."""
         image, rel = self._image_and_rel(object_key)
-        size = self._config.launcher.copy_chunk_bytes
-        proc = await self._spawn(
-            image, [LauncherMode.READ.value, rel], with_stdin=False
-        )
-        if proc.stdout is None or proc.stderr is None:
+        op = [LauncherMode.READ.value, rel, *window.to_argv()]
+        proc = await self._spawn(image, op, with_stdin=False)
+
+        stdout = proc.stdout
+        stderr = proc.stderr
+        if stdout is None or stderr is None:
+            proc.kill()
+            await proc.wait()
             raise StorageError("storage: launcher process has no pipes")
 
-        err_task = asyncio.create_task(proc.stderr.read())
+        reader = LauncherRead(proc, stdout, asyncio.create_task(stderr.read()))
         try:
-            head = await proc.stdout.read(size)
-            if not head:
-                rc = await proc.wait()
-                if rc == LauncherExit.NOT_FOUND:
-                    raise StorageNotFoundError(f"storage: no such object: {object_key}")
+            header = await self._read_header(reader, object_key)
+        except BaseException:
+            await reader.release()
+            raise
 
-                self._check(rc, self._drain_launcher_log(await err_task))
-                return
+        stat = FileStat(size=ReadHeader.parse(header))
+        body = self._body_chunks(reader, object_key)
+        return OpenedStream(stat=stat, chunks=body, release=reader.release)
 
-            yield head
+    async def _read_header(self, reader: LauncherRead, object_key: str) -> bytes:
+        timeout = self._config.op_timeout_sec
+
+        try:
+            header = await asyncio.wait_for(reader.stdout.readline(), timeout)
+        except TimeoutError as e:
+            msg = f"storage: open of {object_key} stalled for {timeout}s"
+            raise StorageError(msg) from e
+
+        if header:
+            return header
+
+        # пустой stdout: лаунчер завершился, не дойдя до файла
+        rc = await reader.proc.wait()
+        if rc == LauncherExit.NOT_FOUND:
+            raise StorageNotFoundError(f"storage: no such object: {object_key}")
+
+        self._check(rc, self._drain_launcher_log(await reader.stderr))
+        raise StorageError(f"storage: launcher sent no read header: {object_key}")
+
+    async def _body_chunks(
+        self, reader: LauncherRead, object_key: str
+    ) -> AsyncGenerator[bytes, None]:
+        """Тело окна из stdout лаунчера; простой дольше таймаута — зависание."""
+        chunk_bytes = self._config.launcher.copy_chunk_bytes
+        timeout = self._config.op_timeout_sec
+
+        try:
             while True:
-                chunk = await proc.stdout.read(size)
+                try:
+                    chunk = await asyncio.wait_for(
+                        reader.stdout.read(chunk_bytes), timeout
+                    )
+                except TimeoutError as e:
+                    msg = f"storage: read of {object_key} stalled for {timeout}s"
+                    raise StorageError(msg) from e
+
                 if not chunk:
                     break
+
                 yield chunk
 
-            rc = await proc.wait()
-            self._check(rc, self._drain_launcher_log(await err_task))
+            rc = await reader.proc.wait()
+            self._check(rc, self._drain_launcher_log(await reader.stderr))
         finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
-            await asyncio.gather(err_task, return_exceptions=True)
+            await reader.release()
+
+    @staticmethod
+    def _header_line(out: bytes) -> bytes:
+        line, _, _ = out.partition(b"\n")
+        return line
 
     async def _delete_file(self, object_key: str) -> bool:
         image, rel = self._image_and_rel(object_key)
@@ -487,13 +648,6 @@ class ImageStorageClient(StorageClient):
         )
         # образ общий на пользователя: thread_id остаётся частью пути внутри
         return image, key.in_thread()
-
-    async def _exists(self, image: str, rel: str) -> bool:
-        rc, _, err = await self._op(image, [LauncherMode.READ.value, rel])
-        if rc == LauncherExit.NOT_FOUND:
-            return False
-        self._check(rc, err)
-        return True
 
     async def _spawn(
         self,
@@ -644,7 +798,8 @@ class ImageStorageClient(StorageClient):
         if rc == LauncherExit.MOUNT_ERROR and LauncherMarker.ERROR.value in detail:
             msg = f"storage: image not mounted: {reason}"
             raise StorageError(msg)
-        msg = f"storage: image operation exited with code {rc}: {detail}"
+        # reason вместо detail: в stderr попадает и болтовня fuse2fs
+        msg = f"storage: image operation exited with code {rc}: {reason}"
         raise StorageError(msg)
 
     @staticmethod

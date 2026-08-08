@@ -12,6 +12,7 @@ import resource
 import shlex
 import shutil
 import signal
+import stat as stat_module
 import subprocess
 import sys
 import time
@@ -27,6 +28,7 @@ __all__ = [
     "CapabilityDropper",
     "FileOperations",
     "FuseMounter",
+    "ImagePath",
     "ImageStore",
     "Launcher",
     "LauncherConfig",
@@ -36,6 +38,9 @@ __all__ = [
     "LauncherMode",
     "LauncherOptions",
     "MountError",
+    "NotRegularFileError",
+    "ReadHeader",
+    "ReadWindow",
     "ResourceLimits",
     "SparseCopier",
     "build_chain_argv",
@@ -52,6 +57,7 @@ class LauncherExit(IntEnum):
     MOUNT_ERROR = 2
     NOT_FOUND = 3
     NO_SPACE = 4
+    NOT_REGULAR = 5
 
 
 class LauncherMarker(StrEnum):
@@ -69,6 +75,69 @@ class LauncherMode(StrEnum):
     READ = "read"
     DELETE = "delete"
     LIST = "list"
+    STAT = "stat"
+
+    def is_readonly(self) -> bool:
+        """Читающий режим: образ монтируется ro под разделяемым локом."""
+        readonly = (LauncherMode.READ, LauncherMode.LIST, LauncherMode.STAT)
+        return self in readonly
+
+
+class ReadWindow(BaseModel):
+    """Окно чтения файла: length None — до конца, 0 — только размер."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    UNBOUNDED_ARG: ClassVar[str] = "-1"
+    """Представление length=None в argv: между процессами едут только строки."""
+
+    offset: int = Field(ge=0)
+    length: int | None = Field(ge=0)
+
+    @classmethod
+    def entire(cls) -> ReadWindow:
+        return cls(offset=0, length=None)
+
+    def to_argv(self) -> list[str]:
+        length = self.UNBOUNDED_ARG
+        if self.length is not None:
+            length = str(self.length)
+
+        return [str(self.offset), length]
+
+    @classmethod
+    def from_argv(cls, offset: str, length: str) -> ReadWindow:
+        if length == cls.UNBOUNDED_ARG:
+            return cls(offset=int(offset), length=None)
+
+        return cls(offset=int(offset), length=int(length))
+
+    def resolve_length(self, size: int) -> int:
+        """Сколько байт реально отдать из файла известного размера."""
+        available = max(size - self.offset, 0)
+
+        if self.length is None:
+            return available
+
+        return min(self.length, available)
+
+
+class ReadHeader:
+    """Первая строка stdout читающих операций: полный размер файла."""
+
+    PREFIX: ClassVar[bytes] = b"size="
+
+    @classmethod
+    def render(cls, size: int) -> bytes:
+        return cls.PREFIX + str(size).encode("ascii") + b"\n"
+
+    @classmethod
+    def parse(cls, line: bytes) -> int:
+        if not line.startswith(cls.PREFIX):
+            msg = f"invalid read header: {line!r}"
+            raise ValueError(msg)
+
+        return int(line[len(cls.PREFIX) :].strip())
 
 
 class LauncherEnv(StrEnum):
@@ -86,6 +155,10 @@ def trace(message: str) -> None:
 
 class MountError(RuntimeError):
     """Сбой подготовки или монтирования образа."""
+
+
+class NotRegularFileError(RuntimeError):
+    """По пути в образе лежит не обычный файл: каталог, канал или устройство."""
 
 
 class SparseCopier:
@@ -142,7 +215,7 @@ class ImageStore:
 
     def acquire(self, image: str) -> None:
         started = time.monotonic()
-        self._lock(image)
+        self._lock(image, fcntl.LOCK_EX)
         waited_ms = int((time.monotonic() - started) * 1000)
         trace(f"lock on {image} acquired in {waited_ms}ms")
         if os.path.exists(image):
@@ -150,14 +223,23 @@ class ImageStore:
             return
         self._materialize(image)
 
+    def acquire_shared(self, image: str) -> bool:
+        """Разделяемый лок для чтения; False — образа ещё нет, читать нечего."""
+        started = time.monotonic()
+        self._lock(image, fcntl.LOCK_SH)
+        waited_ms = int((time.monotonic() - started) * 1000)
+        trace(f"shared lock on {image} acquired in {waited_ms}ms")
+
+        return os.path.exists(image)
+
     def release_all(self) -> None:
         for fd in self._lock_fds:
             os.close(fd)
         self._lock_fds.clear()
 
-    def _lock(self, image: str) -> None:
+    def _lock(self, image: str, operation: int) -> None:
         fd = os.open(image + self.LOCK_SUFFIX, os.O_WRONLY | os.O_CREAT, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, operation)
         os.set_inheritable(fd, True)
         self._lock_fds.append(fd)
 
@@ -191,16 +273,26 @@ class FuseMounter:
         self._pass_fds = pass_fds
         self._daemons: list[subprocess.Popen[bytes]] = []
 
-    def mount(self, image: str, mnt: str) -> None:
+    READONLY_OPTIONS: ClassVar[str] = "ro,norecovery"
+    """Чтение под разделяемым локом: replay журнала писал бы в образ."""
+
+    def mount(self, image: str, mnt: str, *, readonly: bool) -> None:
         fuse2fs = shutil.which("fuse2fs")
         if fuse2fs is None:
             msg = "fuse2fs not found in PATH"
             raise MountError(msg)
         os.makedirs(mnt, exist_ok=True)
+
+        argv = [fuse2fs, "-f", image, mnt]
+        if readonly:
+            argv = [fuse2fs, "-f", "-o", self.READONLY_OPTIONS, image, mnt]
+
+        # stdout лаунчера несёт данные операции: предупреждения fuse2fs — в stderr
         daemon = subprocess.Popen(  # noqa: S603
-            [fuse2fs, "-f", image, mnt],
+            argv,
             shell=False,
             stdin=subprocess.DEVNULL,
+            stdout=sys.stderr,
             pass_fds=self._pass_fds,
             preexec_fn=self.set_pdeathsig,  # noqa: PLW1509
         )
@@ -277,11 +369,106 @@ class CapabilityDropper:
             raise OSError(ctypes.get_errno(), "capset")
 
 
-class FileOperations:
-    """write/read/delete по относительному пути внутри mountpoint."""
+class ImagePath:
+    """Путь внутри образа, открываемый без перехода по симлинкам.
+
+    Каждый сегмент открывается отдельно с O_NOFOLLOW, поэтому ни конечный
+    файл, ни промежуточный каталог не выводят за пределы образа: иначе
+    bash-тул подменил бы вложение симлинком на файл хоста. O_NONBLOCK не даёт
+    open зависнуть на именованном канале, а тип проверяется уже по открытому
+    описателю — между проверкой и чтением подменить файл нельзя.
+    """
+
+    DIR_FLAGS: ClassVar[int] = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+    READ_FLAGS: ClassVar[int] = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    WRITE_FLAGS: ClassVar[int] = (
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK
+    )
+    FILE_MODE: ClassVar[int] = 0o600
+    DIR_MODE: ClassVar[int] = 0o700
+
+    REFUSED_ERRNO: ClassVar[frozenset[int]] = frozenset(
+        (errno.ELOOP, errno.ENOTDIR, errno.ENXIO, errno.EISDIR)
+    )
+    """Симлинк, не каталог или не файл на пути: идти дальше нельзя."""
 
     def __init__(self, root: str) -> None:
         self._root = root
+
+    def open_read(self, rel: str) -> int:
+        parent, name = self._parent_and_name(rel, create=False)
+        try:
+            return os.open(name, self.READ_FLAGS, dir_fd=parent)
+        finally:
+            os.close(parent)
+
+    def open_write(self, rel: str) -> int:
+        parent, name = self._parent_and_name(rel, create=True)
+        try:
+            return os.open(name, self.WRITE_FLAGS, self.FILE_MODE, dir_fd=parent)
+        finally:
+            os.close(parent)
+
+    def open_dir(self, rel: str) -> int:
+        segments = self._split(rel)
+        return self._walk(segments, create=False)
+
+    def unlink(self, rel: str) -> None:
+        """Снимает саму запись каталога: символическая ссылка не разыменовывается."""
+        parent, name = self._parent_and_name(rel, create=False)
+        try:
+            os.unlink(name, dir_fd=parent)
+        finally:
+            os.close(parent)
+
+    def _parent_and_name(self, rel: str, *, create: bool) -> tuple[int, str]:
+        segments = self._split(rel)
+        parent = self._walk(segments[:-1], create=create)
+        return parent, segments[-1]
+
+    @staticmethod
+    def _split(rel: str) -> list[str]:
+        norm = os.path.normpath(rel)
+        if norm.startswith(("/", "..")):
+            msg = f"invalid relative path {rel!r}"
+            raise MountError(msg)
+
+        return norm.split(os.sep)
+
+    def _walk(self, segments: Sequence[str], *, create: bool) -> int:
+        """Спускается по каталогам до последнего сегмента; отдаёт его описатель."""
+        fd = os.open(self._root, self.DIR_FLAGS)
+        try:
+            for name in segments:
+                if create:
+                    self._make_dir(fd, name)
+
+                fd = self._step(fd, name)
+        except BaseException:
+            os.close(fd)
+            raise
+
+        return fd
+
+    def _step(self, fd: int, name: str) -> int:
+        nested = os.open(name, self.DIR_FLAGS, dir_fd=fd)
+        os.close(fd)
+        return nested
+
+    @classmethod
+    def _make_dir(cls, fd: int, name: str) -> None:
+        try:
+            os.mkdir(name, cls.DIR_MODE, dir_fd=fd)
+        except FileExistsError:
+            return
+
+
+class FileOperations:
+    """write/read/stat/delete/list по относительному пути внутри mountpoint."""
+
+    def __init__(self, root: str, chunk_bytes: int) -> None:
+        self._path = ImagePath(root)
+        self._chunk_bytes = chunk_bytes
 
     NO_SPACE_ERRNO: ClassVar[frozenset[int]] = frozenset(
         (errno.ENOSPC, errno.EDQUOT, errno.EFBIG)
@@ -289,77 +476,162 @@ class FileOperations:
     """Образ кончился: недописанный файл сносится, чтобы не занимать остаток."""
 
     def write(self, rel: str, src: BinaryIO) -> LauncherExit:
-        path = self._resolve(rel)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
-            with open(path, "wb") as f:
+            fd = self._path.open_write(rel)
+        except OSError as e:
+            return self._refused(rel, e)
+
+        try:
+            self._require_regular(fd)
+        except NotRegularFileError:
+            os.close(fd)
+            return self._not_regular(rel)
+
+        try:
+            with os.fdopen(fd, "wb") as f:
                 shutil.copyfileobj(src, f)
                 f.flush()
                 os.fsync(f.fileno())
         except OSError as e:
             if e.errno not in self.NO_SPACE_ERRNO:
                 raise
-            self._discard(path)
+            self._discard(rel)
             print(  # noqa: T201
                 f"{LauncherMarker.ERROR}no space left in the workspace image "
                 f"for {rel!r}",
                 file=sys.stderr,
             )
             return LauncherExit.NO_SPACE
+
         return LauncherExit.OK
 
-    @staticmethod
-    def _discard(path: str) -> None:
+    def _discard(self, rel: str) -> None:
         try:
-            os.remove(path)
+            self._path.unlink(rel)
         except OSError:
-            trace(f"cannot remove partial file {path}")
+            trace(f"cannot remove partial file {rel!r}")
 
-    def read(self, rel: str, dst: BinaryIO) -> LauncherExit:
+    def read(self, rel: str, window: ReadWindow, dst: BinaryIO) -> LauncherExit:
+        """Заголовок с полным размером, затем тело окна чанками."""
         try:
-            f = open(self._resolve(rel), "rb")  # noqa: SIM115
-        except FileNotFoundError:
-            return LauncherExit.NOT_FOUND
-        with f:
-            shutil.copyfileobj(f, dst)
+            fd, size = self._open_regular(rel)
+        except OSError as e:
+            return self._refused(rel, e)
+        except NotRegularFileError:
+            return self._not_regular(rel)
+
+        with os.fdopen(fd, "rb") as f:
+            dst.write(ReadHeader.render(size))
+
+            f.seek(window.offset)
+            remaining = window.resolve_length(size)
+            while remaining > 0:
+                chunk = f.read(min(self._chunk_bytes, remaining))
+                if not chunk:
+                    break
+                dst.write(chunk)
+                remaining -= len(chunk)
+
         dst.flush()
         return LauncherExit.OK
 
+    def stat(self, rel: str, dst: BinaryIO) -> LauncherExit:
+        """Только заголовок с размером: существование без чтения тела."""
+        try:
+            fd, size = self._open_regular(rel)
+        except OSError as e:
+            return self._refused(rel, e)
+        except NotRegularFileError:
+            return self._not_regular(rel)
+
+        os.close(fd)
+
+        dst.write(ReadHeader.render(size))
+        dst.flush()
+        return LauncherExit.OK
+
+    def _open_regular(self, rel: str) -> tuple[int, int]:
+        """Описатель обычного файла и его размер; тип берётся с уже открытого fd."""
+        fd = self._path.open_read(rel)
+        try:
+            return fd, self._require_regular(fd)
+        except BaseException:
+            os.close(fd)
+            raise
+
+    @staticmethod
+    def _require_regular(fd: int) -> int:
+        """Размер открытого файла; всё, что не обычный файл, — отказ."""
+        info = os.fstat(fd)
+        if not stat_module.S_ISREG(info.st_mode):
+            raise NotRegularFileError
+
+        return info.st_size
+
+    @classmethod
+    def _refused(cls, rel: str, failure: OSError) -> LauncherExit:
+        if failure.errno == errno.ENOENT:
+            return LauncherExit.NOT_FOUND
+
+        if failure.errno in ImagePath.REFUSED_ERRNO:
+            return cls._not_regular(rel)
+
+        raise failure
+
+    @staticmethod
+    def _not_regular(rel: str) -> LauncherExit:
+        print(  # noqa: T201
+            f"{LauncherMarker.ERROR}not a regular file: {rel!r}", file=sys.stderr
+        )
+        return LauncherExit.NOT_REGULAR
+
     def delete(self, rel: str) -> LauncherExit:
         try:
-            os.remove(self._resolve(rel))
-        except FileNotFoundError:
-            return LauncherExit.NOT_FOUND
+            self._path.unlink(rel)
+        except OSError as e:
+            return self._refused(rel, e)
+
         return LauncherExit.OK
 
     def list_dir(self, rel: str, dst: BinaryIO) -> LauncherExit:
         """Имена обычных файлов каталога, по одному в строке, в порядке имён."""
         try:
-            entries = os.listdir(self._resolve(rel))
-        except FileNotFoundError:
-            return LauncherExit.NOT_FOUND
-        except NotADirectoryError:
-            return LauncherExit.NOT_FOUND
+            fd = self._path.open_dir(rel)
+        except OSError as e:
+            return self._listing_refused(e)
 
-        root = self._resolve(rel)
-        names: list[str] = []
-        for entry in sorted(entries):
-            if not os.path.isfile(os.path.join(root, entry)):
-                continue
-            names.append(entry)
-
-        for name in names:
-            dst.write(name.encode("utf-8") + b"\n")
+        try:
+            names = self._regular_names(fd)
+            for name in names:
+                dst.write(name.encode("utf-8") + b"\n")
+        finally:
+            os.close(fd)
 
         dst.flush()
         return LauncherExit.OK
 
-    def _resolve(self, rel: str) -> str:
-        norm = os.path.normpath(rel)
-        if norm.startswith(("/", "..")):
-            msg = f"invalid relative path {rel!r}"
-            raise MountError(msg)
-        return os.path.join(self._root, norm)
+    @staticmethod
+    def _listing_refused(failure: OSError) -> LauncherExit:
+        if failure.errno == errno.ENOENT:
+            return LauncherExit.NOT_FOUND
+
+        if failure.errno in ImagePath.REFUSED_ERRNO:
+            return LauncherExit.NOT_FOUND
+
+        raise failure
+
+    @staticmethod
+    def _regular_names(fd: int) -> list[str]:
+        """Симлинки в листинг не попадают: их содержимое всё равно не отдаётся."""
+        names: list[str] = []
+        for entry in sorted(os.listdir(fd)):
+            info = os.stat(entry, dir_fd=fd, follow_symlinks=False)
+            if not stat_module.S_ISREG(info.st_mode):
+                continue
+
+            names.append(entry)
+
+        return names
 
 
 class Launcher:
@@ -408,14 +680,23 @@ class Launcher:
 
     def run(self, mode: LauncherMode, op_args: list[str]) -> int:
         operation = self._plan(mode, op_args)
+        readonly = mode.is_readonly()
         started = time.monotonic()
         trace(f"operation {mode.value!r}, images: {len(self._images)}")
+
         for image, _ in self._images:
-            self._store.acquire(image)
+            if not readonly:
+                self._store.acquire(image)
+                continue
+
+            if not self._store.acquire_shared(image):
+                trace(f"image {image} does not exist: nothing to read")
+                return LauncherExit.NOT_FOUND
+
         mounter = FuseMounter(self._options, pass_fds=self._store.lock_fds)
         try:
             for image, mnt in self._images:
-                mounter.mount(image, mnt)
+                mounter.mount(image, mnt, readonly=readonly)
             code = operation()
             elapsed_ms = int((time.monotonic() - started) * 1000)
             trace(f"operation {mode.value!r} finished rc={code} in {elapsed_ms}ms")
@@ -430,22 +711,36 @@ class Launcher:
         trace(f"{self.USERNS_SYSCTL}=0: nested user namespaces denied to the command")
 
     def _plan(self, mode: LauncherMode, op_args: list[str]) -> Callable[[], int]:
-        argument = self._single_argument(mode, op_args)
         if mode is LauncherMode.RUN:
+            argument = self._single_argument(mode, op_args)
             argv = shlex.split(argument)
             if not argv:
                 msg = "run: empty command"
                 raise MountError(msg)
             return lambda: self._run_command(argv)
+
+        if mode is LauncherMode.READ:
+            rel, window = self._read_arguments(op_args)
+            return lambda: self._read_operation(rel, window)
+
+        argument = self._single_argument(mode, op_args)
         return lambda: self._file_operation(mode, argument)
 
+    def _operations(self) -> FileOperations:
+        return FileOperations(self._images[0][1], self._options.copy_chunk_bytes)
+
+    def _read_operation(self, rel: str, window: ReadWindow) -> LauncherExit:
+        ops = self._operations()
+        CapabilityDropper().drop_all()
+        return ops.read(rel, window, sys.stdout.buffer)
+
     def _file_operation(self, mode: LauncherMode, argument: str) -> LauncherExit:
-        ops = FileOperations(self._images[0][1])
+        ops = self._operations()
         CapabilityDropper().drop_all()
         if mode is LauncherMode.WRITE:
             return ops.write(argument, sys.stdin.buffer)
-        if mode is LauncherMode.READ:
-            return ops.read(argument, sys.stdout.buffer)
+        if mode is LauncherMode.STAT:
+            return ops.stat(argument, sys.stdout.buffer)
         if mode is LauncherMode.LIST:
             return ops.list_dir(argument, sys.stdout.buffer)
         return ops.delete(argument)
@@ -496,6 +791,23 @@ class Launcher:
             msg = f"{mode}: exactly one argument expected, got {len(op_args)}"
             raise MountError(msg)
         return op_args[0]
+
+    READ_ARGS: ClassVar[int] = 3
+    """Аргументы read: относительный путь, offset, length."""
+
+    @classmethod
+    def _read_arguments(cls, op_args: list[str]) -> tuple[str, ReadWindow]:
+        if len(op_args) != cls.READ_ARGS:
+            msg = f"read: expected <rel> <offset> <length>, got {len(op_args)} args"
+            raise MountError(msg)
+
+        try:
+            window = ReadWindow.from_argv(op_args[1], op_args[2])
+        except ValueError as e:
+            msg = f"read: invalid window: {e}"
+            raise MountError(msg) from e
+
+        return op_args[0], window
 
 
 _LAUNCHER_MODULE = "boba.workspace.launcher"

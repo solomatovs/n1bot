@@ -139,7 +139,7 @@ def _use_file_serving(c: AppConfig) -> None:
             )
         return layer
 
-    serving = AttachmentServing(storage, data_layer)
+    serving = AttachmentServing(storage, data_layer, UploadPolicy())
     chainlit_app.add_api_route(
         f"{route_path}{AttachmentUrl.ROUTE}", serving.serve, methods=["GET"]
     )

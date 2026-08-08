@@ -1,6 +1,7 @@
 """PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import ClassVar
 from uuid import UUID
 
@@ -248,17 +249,38 @@ class PostgresDataLayer(AttachmentDataLayer):
 
         return True
 
-    @staticmethod
-    async def _read_element_content(element: ChainlitElement) -> bytes | str | None:
-        """None значит, что содержимое уже в хранилище: его лил стриминговый роут."""
+    async def _store_element_body(
+        self, element: ChainlitElement, object_key: str, mime: str
+    ) -> None:
+        """content уходит как есть, файл с диска — потоком; нет ни того ни
+        другого — содержимое уже залил в хранилище стриминговый роут."""
         if element.content is not None:
-            return element.content
+            uploaded = await self._storage.upload_file(
+                object_key=object_key,
+                data=element.content,
+                mime=mime,
+                overwrite=True,
+            )
+            self._require_uploaded(uploaded)
+            return
 
-        if element.path and await aiofiles.os.path.exists(element.path):
-            async with aiofiles.open(element.path, "rb") as f:
-                return await f.read()
+        on_disk = False
+        if element.path:
+            on_disk = await aiofiles.os.path.exists(element.path)
 
-        return None
+        if on_disk and element.path:
+            source = self._storage.disk_source(element.path)
+            uploaded = await self._storage.upload_stream(object_key, source, mime)
+            self._require_uploaded(uploaded)
+            return
+
+        logger.info("element %s is already in storage as %s", element.id, object_key)
+
+    @staticmethod
+    def _require_uploaded(uploaded: Mapping[str, object]) -> None:
+        if not uploaded:
+            msg = "Failed to upload file to storage"
+            raise ValueError(msg)
 
     @queue_until_user_message()
     async def create_element(self, element: ChainlitElement) -> None:
@@ -282,7 +304,6 @@ class PostgresDataLayer(AttachmentDataLayer):
             ) from e
 
     async def _create_element(self, element: ChainlitElement) -> None:
-        content = await self._read_element_content(element)
         user_id = self._session_user_id()
 
         mime = element.mime or "application/octet-stream"
@@ -310,22 +331,7 @@ class PostgresDataLayer(AttachmentDataLayer):
         ).render()
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute(query, model.all_params())
-            if content is None:
-                # вложение пользователя: его уже залил в хранилище UploadRoute
-                logger.info(
-                    "element %s is already in storage as %s", element.id, object_key
-                )
-                return
-
-            uploaded = await self._storage.upload_file(
-                object_key=object_key,
-                data=content,
-                mime=mime,
-                overwrite=True,
-            )
-            if not uploaded:
-                msg = "Failed to upload file to storage"
-                raise ValueError(msg)
+            await self._store_element_body(element, object_key, mime)
 
     async def get_element(self, thread_id: str, element_id: str) -> ElementDict | None:
         query = sql.SQL(

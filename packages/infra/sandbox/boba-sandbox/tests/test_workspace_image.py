@@ -28,12 +28,23 @@ from boba.tool.shell.tools import build_bash_tool
 from boba.workspace.launcher import (
     FUSE_DEVICE,
     LauncherOptions,
+    ReadWindow,
     ResourceLimits,
     build_chain_argv,
     render_image_path,
 )
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
+
+
+async def read_all(storage: StorageClient, object_key: str) -> bytes:
+    """Файл целиком: накопление в памяти — забота вызывающего, а не слоя."""
+    async with await storage.open_stream(object_key, ReadWindow.entire()) as body:
+        collected = bytearray()
+        async for chunk in body.chunks:
+            collected.extend(chunk)
+
+    return bytes(collected)
 
 
 def _storage_cfg(**kw: Any) -> LocalStorageConfig:
@@ -369,23 +380,28 @@ class TestErrorBoundary:
         storage = self._local(tmp_path)
 
         with pytest.raises(StorageNotFoundError):
-            asyncio.run(storage.read_file("7/t1/upload/missing"))
+            asyncio.run(read_all(storage, "7/t1/upload/missing"))
 
-    def test_missing_object_streams_as_not_found(self, tmp_path: Path) -> None:
+    def test_missing_object_stats_as_not_found(self, tmp_path: Path) -> None:
         storage = self._local(tmp_path)
 
-        async def drain() -> None:
-            async for _ in storage.read_stream("7/t1/upload/missing"):
-                pass
+        with pytest.raises(StorageNotFoundError):
+            asyncio.run(storage.stat("7/t1/upload/missing"))
+
+    def test_missing_object_opens_as_not_found(self, tmp_path: Path) -> None:
+        storage = self._local(tmp_path)
+
+        async def probe() -> None:
+            await storage.open_stream("7/t1/upload/missing", ReadWindow.entire())
 
         with pytest.raises(StorageNotFoundError):
-            asyncio.run(drain())
+            asyncio.run(probe())
 
     def test_key_outside_files_dir_is_storage_error(self, tmp_path: Path) -> None:
         storage = self._local(tmp_path)
 
         with pytest.raises(StorageError, match="outside files_dir"):
-            asyncio.run(storage.read_file("../../etc/passwd"))
+            asyncio.run(read_all(storage, "../../etc/passwd"))
 
     def test_unusable_files_dir_is_storage_error(self, tmp_path: Path) -> None:
         """Файл на месте каталога: системная ошибка не должна утечь наружу."""
@@ -403,9 +419,37 @@ class TestErrorBoundary:
         asyncio.run(storage.upload_file("7/t1/upload/a.txt", b"x"))
 
         with pytest.raises(StorageError) as failure:
-            asyncio.run(storage.read_file("7/t1/upload"))
+            asyncio.run(read_all(storage, "7/t1/upload"))
 
         assert not isinstance(failure.value, StorageNotFoundError)
+
+    def test_size_is_known_before_the_body(self, tmp_path: Path) -> None:
+        """Потолок на объём ставит вызывающий: слой сообщает размер до тела."""
+        storage = self._local(tmp_path)
+        asyncio.run(storage.upload_file("7/t1/upload/big.bin", b"x" * 64))
+
+        async def opened_size() -> int:
+            async with await storage.open_stream(
+                "7/t1/upload/big.bin", ReadWindow.entire()
+            ) as body:
+                return body.stat.size
+
+        assert asyncio.run(opened_size()) == 64
+
+    def test_window_read_returns_slice(self, tmp_path: Path) -> None:
+        storage = self._local(tmp_path)
+        asyncio.run(storage.upload_file("7/t1/upload/win.bin", b"0123456789"))
+
+        async def window() -> tuple[int, bytes]:
+            opened = await storage.open_stream(
+                "7/t1/upload/win.bin", ReadWindow(offset=2, length=3)
+            )
+            collected = bytearray()
+            async for chunk in opened.chunks:
+                collected.extend(chunk)
+            return opened.stat.size, bytes(collected)
+
+        assert asyncio.run(window()) == (10, b"234")
 
     def test_operations_are_not_overridden_past_the_guard(self) -> None:
         operations = list(self._guarded_operations())
@@ -456,14 +500,14 @@ class TestLiveImage:
         tool = _bash(tmp_path, template)
         _invoke(tool, "mkdir -p t1/upload && echo from-bash > t1/upload/x")
         storage = _storage(tmp_path, template)
-        assert asyncio.run(storage.read_file("7/t1/upload/x")).strip() == b"from-bash"
+        assert asyncio.run(read_all(storage, "7/t1/upload/x")).strip() == b"from-bash"
 
     def test_storage_roundtrip(self, tmp_path: Path, template: Path) -> None:
         storage = _storage(tmp_path, template)
 
         async def cycle() -> bytes:
             await storage.upload_file("7/t1/upload/el-2", "текст")
-            return await storage.read_file("7/t1/upload/el-2")
+            return await read_all(storage, "7/t1/upload/el-2")
 
         assert asyncio.run(cycle()).decode() == "текст"
 
@@ -483,7 +527,126 @@ class TestLiveImage:
         storage = _storage(tmp_path, template)
         asyncio.run(storage.upload_file("7/t1/upload/seed", b"x"))
         with pytest.raises(StorageNotFoundError):
-            asyncio.run(storage.read_file("7/t1/upload/missing"))
+            asyncio.run(read_all(storage, "7/t1/upload/missing"))
+
+    def test_storage_stat_reports_size(self, tmp_path: Path, template: Path) -> None:
+        storage = _storage(tmp_path, template)
+
+        async def cycle() -> int:
+            await storage.upload_file("7/t1/upload/sized.bin", b"x" * 1234)
+            result = await storage.stat("7/t1/upload/sized.bin")
+            return result.size
+
+        assert asyncio.run(cycle()) == 1234
+
+    def test_storage_stat_missing_raises(self, tmp_path: Path, template: Path) -> None:
+        storage = _storage(tmp_path, template)
+        asyncio.run(storage.upload_file("7/t1/upload/seed", b"x"))
+
+        with pytest.raises(StorageNotFoundError):
+            asyncio.run(storage.stat("7/t1/upload/missing"))
+
+    def test_storage_window_read(self, tmp_path: Path, template: Path) -> None:
+        storage = _storage(tmp_path, template)
+
+        async def cycle() -> tuple[int, bytes]:
+            await storage.upload_file("7/t1/upload/win.bin", b"0123456789")
+            opened = await storage.open_stream(
+                "7/t1/upload/win.bin", ReadWindow(offset=4, length=3)
+            )
+            collected = bytearray()
+            async for chunk in opened.chunks:
+                collected.extend(chunk)
+            return opened.stat.size, bytes(collected)
+
+        assert asyncio.run(cycle()) == (10, b"456")
+
+    def test_storage_concurrent_reads(self, tmp_path: Path, template: Path) -> None:
+        """Чтение под разделяемым локом: два окна одного образа идут параллельно."""
+        storage = _storage(tmp_path, template)
+
+        async def cycle() -> tuple[bytes, bytes]:
+            await storage.upload_file("7/t1/upload/a.bin", b"aaa")
+            await storage.upload_file("7/t1/upload/b.bin", b"bbb")
+            first, second = await asyncio.gather(
+                read_all(storage, "7/t1/upload/a.bin"),
+                read_all(storage, "7/t1/upload/b.bin"),
+            )
+            return first, second
+
+        assert asyncio.run(cycle()) == (b"aaa", b"bbb")
+
+    def test_directory_in_image_is_storage_error(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        """Каталог вместо файла — отказ слоя, а не пустое тело и не 404."""
+        storage = _storage(tmp_path, template)
+        asyncio.run(storage.upload_file("7/t1/upload/a.txt", b"x"))
+
+        with pytest.raises(StorageError) as failure:
+            asyncio.run(storage.stat("7/t1/upload"))
+
+        assert not isinstance(failure.value, StorageNotFoundError)
+
+    def test_fifo_in_image_does_not_hang_read(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        """Именованный канал в образе: read отказывает, а не ждёт писателя."""
+        _invoke(_bash(tmp_path, template), "mkdir -p t1/upload && mkfifo t1/upload/pipe")
+        storage = _storage(tmp_path, template, op_timeout_sec=15)
+
+        with pytest.raises(StorageError) as failure:
+            asyncio.run(storage.stat("7/t1/upload/pipe"))
+
+        assert not isinstance(failure.value, StorageNotFoundError)
+
+    def test_symlink_planted_by_bash_leaks_nothing(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        """Содержимое образа пишет bash: ссылка на файл хоста не должна читаться."""
+        secret = tmp_path / "outside.txt"
+        secret.write_bytes(b"host secret")
+
+        _invoke(
+            _bash(tmp_path, template),
+            f"mkdir -p t1/upload && ln -s {secret} t1/upload/leak",
+        )
+        storage = _storage(tmp_path, template)
+
+        with pytest.raises(StorageError) as failure:
+            asyncio.run(read_all(storage, "7/t1/upload/leak"))
+
+        assert "host secret" not in str(failure.value)
+
+    def test_symlinked_dir_planted_by_bash_leaks_nothing(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        """Подмена каталога вложений ссылкой наружу тоже не проходит."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_bytes(b"host secret")
+
+        _invoke(
+            _bash(tmp_path, template),
+            f"mkdir -p t1 && ln -s {outside} t1/upload",
+        )
+        storage = _storage(tmp_path, template)
+
+        with pytest.raises(StorageError) as failure:
+            asyncio.run(read_all(storage, "7/t1/upload/secret.txt"))
+
+        assert "host secret" not in str(failure.value)
+
+    def test_read_does_not_materialize_image(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        """Чтение из несозданного образа — not found, а не копия шаблона."""
+        storage = _storage(tmp_path, template)
+
+        with pytest.raises(StorageNotFoundError):
+            asyncio.run(storage.stat("7/t1/upload/anything"))
+
+        assert not (tmp_path / "ws" / "7.ext4").exists()
 
     def test_storage_waits_for_busy_image(self, tmp_path: Path, template: Path) -> None:
         """flock блокирующий: storage дожидается занятой песочницы."""
@@ -497,7 +660,7 @@ class TestLiveImage:
             await asyncio.sleep(0.5)
             await storage.upload_file("7/t1/upload/after", b"waited")
             await busy
-            return await storage.read_file("7/t1/upload/after")
+            return await read_all(storage, "7/t1/upload/after")
 
         assert asyncio.run(race()) == b"waited"
 
@@ -654,7 +817,7 @@ class TestLiveImage:
         async def cycle() -> bytes:
             await storage.upload_file("7/t1/upload/keep", b"first")
             await storage.upload_file("7/t1/upload/keep", b"second", overwrite=False)
-            return await storage.read_file("7/t1/upload/keep")
+            return await read_all(storage, "7/t1/upload/keep")
 
         assert asyncio.run(cycle()) == b"first"
 
@@ -671,7 +834,7 @@ class TestLiveImage:
 
         async def cycle() -> bytes:
             await storage.upload_stream("7/t1/upload/slow.bin", slow())
-            return await storage.read_file("7/t1/upload/slow.bin")
+            return await read_all(storage, "7/t1/upload/slow.bin")
 
         assert asyncio.run(cycle()) == b"x" * 1024 * 8
 

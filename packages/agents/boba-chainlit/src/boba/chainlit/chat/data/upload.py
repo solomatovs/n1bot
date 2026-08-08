@@ -1,14 +1,15 @@
-"""Загрузка и отдача вложения потоком: тело запроса не оседает ни в памяти, ни в tmp.
+"""Загрузка и отдача вложения потоком: тело не оседает ни в памяти, ни в tmp.
 
 Штатный роут chainlit получает файл уже разобранным: FastAPI собирает multipart
 целиком (до 1 МиБ в памяти, дальше во временный файл), затем `await file.read()`
 поднимает его в память и `persist_file` пишет копию в каталог сессии. Здесь тело
 разбирается по мере поступления и чанками уходит прямо в образ пользователя,
-поэтому единственный предел размера — свободное место в образе.
+поэтому единственный предел размера — свободное место в образе. Отдача тоже
+потоковая: тело идёт окном чанков из хранилища, заголовок Range отвечает 206.
 
 Ошибки: HTTPException 400 — тело без файловой части или файл не прошёл проверку
-chainlit; 401 — сессия чужая; 404 — сессия или родительское сообщение неизвестны;
-507 — в образе не осталось места.
+chainlit; 401 — сессия чужая; 404 — сессия, родительское сообщение или файл
+неизвестны; 416 — диапазон за концом файла; 507 — в образе не осталось места.
 """
 
 from __future__ import annotations
@@ -20,13 +21,14 @@ import mimetypes
 import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar
+from enum import StrEnum
+from typing import Annotated, Any, ClassVar
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.datastructures import UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from python_multipart.multipart import MultipartParser, parse_options_header
@@ -35,23 +37,25 @@ from starlette.datastructures import Headers
 from boba.chainlit.chat.data.fields import ElementField, FileField
 from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
 from boba.chainlit.chat.data.storage import (
+    OpenedStream,
     StorageClient,
     StorageFullError,
     StorageNotFoundError,
 )
+from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
 from chainlit.user import PersistedUser, User
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from fastapi import FastAPI
-
 __all__ = [
     "AttachmentServing",
+    "ByteRange",
+    "FileHeader",
     "MultipartFile",
+    "RangeHeader",
     "SessionFiles",
+    "StreamedFile",
+    "SuffixRange",
     "UploadPolicy",
     "UploadRoute",
 ]
@@ -199,15 +203,356 @@ class MultipartFile:
             self._part_done = True
 
 
+class FileHeader(StrEnum):
+    """HTTP-заголовки отдачи файла."""
+
+    CONTENT_LENGTH = "Content-Length"
+    CONTENT_RANGE = "Content-Range"
+    CONTENT_DISPOSITION = "Content-Disposition"
+    ACCEPT_RANGES = "Accept-Ranges"
+    RANGE = "Range"
+
+
+@dataclass(frozen=True, slots=True)
+class TransferFormat:
+    """Человекочитаемые объём, время и скорость передачи."""
+
+    mib: int
+
+    def volume(self, size: int) -> str:
+        return f"{size / self.mib:.1f} MiB"
+
+    @staticmethod
+    def took(started: float) -> str:
+        return f"{time.monotonic() - started:.1f}s"
+
+    def rate(self, size: int, started: float) -> str:
+        elapsed = time.monotonic() - started
+        if elapsed <= 0:
+            return "instant"
+
+        return f"{size / self.mib / elapsed:.1f} MiB/s"
+
+    @staticmethod
+    def share(done: int, total: int) -> str:
+        if total <= 0:
+            return "unknown"
+
+        return f"{done * 100 // total}%"
+
+
+class TransferProgress:
+    """Ход передачи: считает байты и подсказывает, когда писать отметку в лог."""
+
+    def __init__(self, fmt: TransferFormat, every_bytes: int) -> None:
+        self._fmt = fmt
+        self._every = every_bytes
+        self._started = time.monotonic()
+        self._done = 0
+        self._milestone = every_bytes
+
+    @property
+    def done(self) -> int:
+        return self._done
+
+    def advance(self, size: int) -> bool:
+        """Учитывает чанк; True — пройден очередной рубеж для отметки."""
+        self._done += size
+
+        if self._done < self._milestone:
+            return False
+
+        self._milestone = self._done + self._every
+        return True
+
+    def volume(self) -> str:
+        return self._fmt.volume(self._done)
+
+    def took(self) -> str:
+        return self._fmt.took(self._started)
+
+    def rate(self) -> str:
+        return self._fmt.rate(self._done, self._started)
+
+    def share(self, total: int) -> str:
+        return self._fmt.share(self._done, total)
+
+
+@dataclass(frozen=True, slots=True)
+class ByteRange:
+    """Диапазон bytes=start-end: end включительно, None — до конца файла."""
+
+    start: int
+    end: int | None
+
+    def window(self) -> ReadWindow:
+        if self.end is None:
+            return ReadWindow(offset=self.start, length=None)
+
+        return ReadWindow(offset=self.start, length=self.end - self.start + 1)
+
+
+@dataclass(frozen=True, slots=True)
+class SuffixRange:
+    """Диапазон bytes=-N: последние N байт, окно зависит от размера файла."""
+
+    length: int
+
+    def window(self, size: int) -> ReadWindow:
+        offset = max(size - self.length, 0)
+        return ReadWindow(offset=offset, length=None)
+
+
+class RangeHeader:
+    """Разбор заголовка Range: только одиночный диапазон байтов."""
+
+    UNIT: ClassVar[str] = "bytes="
+
+    @classmethod
+    def parse(cls, header: str) -> ByteRange | SuffixRange | None:
+        """None — заголовок не разобран: RFC 9110 позволяет его игнорировать."""
+        value = header.strip()
+        if not value.startswith(cls.UNIT):
+            return None
+
+        spec = value[len(cls.UNIT) :].strip()
+        if "," in spec:
+            return None
+
+        start_text, sep, end_text = spec.partition("-")
+        if not sep:
+            return None
+
+        start_text = start_text.strip()
+        end_text = end_text.strip()
+
+        if not start_text:
+            return cls._suffix(end_text)
+
+        return cls._bounded(start_text, end_text)
+
+    @staticmethod
+    def _suffix(end_text: str) -> SuffixRange | None:
+        if not end_text.isdigit():
+            return None
+
+        length = int(end_text)
+        if length == 0:
+            return None
+
+        return SuffixRange(length=length)
+
+    @staticmethod
+    def _bounded(start_text: str, end_text: str) -> ByteRange | None:
+        if not start_text.isdigit():
+            return None
+
+        start = int(start_text)
+        if not end_text:
+            return ByteRange(start=start, end=None)
+
+        if not end_text.isdigit():
+            return None
+
+        end = int(end_text)
+        if end < start:
+            return None
+
+        return ByteRange(start=start, end=end)
+
+
+class StreamedFile:
+    """HTTP-ответ телом объекта хранилища: стрим чанков, Content-Length, Range.
+
+    Ход отдачи пишется в лог: строка перед первым байтом, отметки по мере
+    передачи и итог. Обрыв клиента — обычное дело (перемотка видео, закрытая
+    вкладка), поэтому недоотданное тело отмечается отдельно.
+    """
+
+    ACCEPT_RANGES: ClassVar[str] = "bytes"
+
+    def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
+        self._storage = storage
+        self._policy = policy
+        self._format = TransferFormat(policy.mib)
+
+    async def respond(
+        self,
+        object_key: str,
+        *,
+        mime: str,
+        range_header: str,
+        content_disposition: str,
+    ) -> Response:
+        """Ответ 200/206/416; нет объекта — HTTPException 404 до первого байта."""
+        try:
+            return await self._respond(
+                object_key, mime, range_header, content_disposition
+            )
+        except StorageNotFoundError as e:
+            raise HTTPException(status_code=404, detail="File not found") from e
+
+    async def _respond(
+        self,
+        object_key: str,
+        mime: str,
+        range_header: str,
+        content_disposition: str,
+    ) -> Response:
+        parsed = None
+        if range_header:
+            parsed = RangeHeader.parse(range_header)
+
+        if isinstance(parsed, SuffixRange):
+            stat = await self._storage.stat(object_key)
+            window = parsed.window(stat.size)
+            return await self._ranged(object_key, window, mime, content_disposition)
+
+        if isinstance(parsed, ByteRange):
+            window = parsed.window()
+            return await self._ranged(object_key, window, mime, content_disposition)
+
+        opened = await self._storage.open_stream(object_key, ReadWindow.entire())
+        return self._full(object_key, opened, mime, content_disposition)
+
+    async def _ranged(
+        self,
+        object_key: str,
+        window: ReadWindow,
+        mime: str,
+        content_disposition: str,
+    ) -> Response:
+        opened = await self._storage.open_stream(object_key, window)
+
+        if window.offset >= opened.stat.size:
+            await opened.close()
+            headers: dict[str, str] = {
+                FileHeader.CONTENT_RANGE: f"bytes */{opened.stat.size}",
+            }
+            raise HTTPException(
+                status_code=416, detail="Range out of bounds", headers=headers
+            )
+
+        return self._partial(object_key, opened, window, mime, content_disposition)
+
+    def _full(
+        self,
+        object_key: str,
+        opened: OpenedStream,
+        mime: str,
+        content_disposition: str,
+    ) -> Response:
+        headers: dict[str, str] = {
+            FileHeader.CONTENT_LENGTH: str(opened.stat.size),
+            FileHeader.ACCEPT_RANGES: self.ACCEPT_RANGES,
+        }
+        if content_disposition:
+            headers[FileHeader.CONTENT_DISPOSITION] = content_disposition
+
+        body = self._logged(object_key, opened, opened.stat.size, "whole file")
+        return StreamingResponse(body, media_type=mime, headers=headers)
+
+    def _partial(
+        self,
+        object_key: str,
+        opened: OpenedStream,
+        window: ReadWindow,
+        mime: str,
+        content_disposition: str,
+    ) -> Response:
+        size = opened.stat.size
+        length = window.resolve_length(size)
+        last = window.offset + length - 1
+
+        headers: dict[str, str] = {
+            FileHeader.CONTENT_LENGTH: str(length),
+            FileHeader.CONTENT_RANGE: f"bytes {window.offset}-{last}/{size}",
+            FileHeader.ACCEPT_RANGES: self.ACCEPT_RANGES,
+        }
+        if content_disposition:
+            headers[FileHeader.CONTENT_DISPOSITION] = content_disposition
+
+        window_label = f"bytes {window.offset}-{last} of {size}"
+        body = self._logged(object_key, opened, length, window_label)
+        return StreamingResponse(
+            body, status_code=206, media_type=mime, headers=headers
+        )
+
+    async def _logged(
+        self,
+        object_key: str,
+        opened: OpenedStream,
+        total: int,
+        window_label: str,
+    ) -> AsyncIterator[bytes]:
+        """Отдаёт тело, отмечая в логе начало, ход и итог передачи."""
+        progress = TransferProgress(self._format, self._policy.serve_log_every_bytes)
+        logger.info(
+            "serving: %s sending %s (%s)",
+            object_key,
+            self._format.volume(total),
+            window_label,
+        )
+
+        complete = False
+        try:
+            async for chunk in opened.chunks:
+                if progress.advance(len(chunk)):
+                    logger.info(
+                        "serving: %s streaming, %s of %s (%s, %s)",
+                        object_key,
+                        progress.volume(),
+                        self._format.volume(total),
+                        progress.share(total),
+                        progress.rate(),
+                    )
+
+                yield chunk
+
+            complete = True
+        finally:
+            self._finished(object_key, progress, total, complete=complete)
+
+    def _finished(
+        self,
+        object_key: str,
+        progress: TransferProgress,
+        total: int,
+        *,
+        complete: bool,
+    ) -> None:
+        if complete:
+            logger.info(
+                "serving: %s sent, %s in %s (%s)",
+                object_key,
+                progress.volume(),
+                progress.took(),
+                progress.rate(),
+            )
+            return
+
+        logger.warning(
+            "serving: %s aborted by the client, %s of %s sent (%s) in %s",
+            object_key,
+            progress.volume(),
+            self._format.volume(total),
+            progress.share(total),
+            progress.took(),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class UploadPolicy:
-    """Маршруты и пределы потоковой загрузки вложений."""
+    """Маршруты и пределы потоковой передачи вложений в обе стороны."""
 
     upload_path: str = "/project/file"
     download_path: str = "/project/file/{file_id}"
     no_space_status: int = 507
     mib: int = 1024 * 1024
     log_every_bytes: int = 32 * 1024 * 1024
+    """Шаг отметок при заливке: тело идёт от клиента, счёт на десятки МиБ."""
+    serve_log_every_bytes: int = 4 * 1024 * 1024
+    """Шаг отметок при отдаче: вложения мельче, шаг заливки их не показал бы."""
     drain_bytes: int = 8 * 1024 * 1024
     """Потолок вычитывания после отказа: дальше соединение закрывается."""
     drain_seconds: float = 3.0
@@ -258,6 +603,8 @@ class UploadRoute:
     def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
         self._storage = storage
         self._policy = policy
+        self._format = TransferFormat(policy.mib)
+        self._files = StreamedFile(storage, policy)
 
     def install(self, chainlit_app: FastAPI) -> None:
         """Роуты встают перед chainlit-овскими: побеждает первый совпавший."""
@@ -334,11 +681,12 @@ class UploadRoute:
 
     async def download(
         self,
+        request: Request,
         file_id: str,
         session_id: str,
         current_user: Any = CURRENT_USER,
-    ) -> StreamingResponse:
-        """Отдаёт ранее загруженный файл прямо из хранилища."""
+    ) -> Response:
+        """Отдаёт ранее загруженный файл потоком прямо из хранилища."""
         session = self._session(session_id, current_user)
 
         record = session.files.get(file_id)
@@ -351,10 +699,11 @@ class UploadRoute:
             record[FileField.NAME],
             record[SessionFiles.OBJECT_KEY],
         )
-        return StreamingResponse(
-            self._storage.read_stream(str(record[SessionFiles.OBJECT_KEY])),
-            media_type=str(record[FileField.TYPE]),
-            headers={"Content-Disposition": f'inline; filename="{name}"'},
+        return await self._files.respond(
+            str(record[SessionFiles.OBJECT_KEY]),
+            mime=str(record[FileField.TYPE]),
+            range_header=request.headers.get(FileHeader.RANGE, ""),
+            content_disposition=f'inline; filename="{name}"',
         )
 
     async def _store(self, key: ObjectKey, part: MultipartFile) -> int:
@@ -391,17 +740,13 @@ class UploadRoute:
         return written
 
     def _volume(self, written: int) -> str:
-        return f"{written / self._policy.mib:.1f} MiB"
+        return self._format.volume(written)
 
-    @staticmethod
-    def _took(started: float) -> str:
-        return f"{time.monotonic() - started:.1f}s"
+    def _took(self, started: float) -> str:
+        return self._format.took(started)
 
     def _rate(self, written: int, started: float) -> str:
-        elapsed = time.monotonic() - started
-        if elapsed <= 0:
-            return "instant"
-        return f"{written / self._policy.mib / elapsed:.1f} MiB/s"
+        return self._format.rate(written, started)
 
     def _validate(
         self,
@@ -484,12 +829,15 @@ class AttachmentServing:
         self,
         storage: StorageClient,
         layer: Callable[[], BaseDataLayer],
+        policy: UploadPolicy,
     ) -> None:
         self._storage = storage
         self._layer = layer
+        self._files = StreamedFile(storage, policy)
 
     async def serve(
         self,
+        request: Request,
         thread_id: UUID,
         dir: ThreadDir,
         element_id: UUID,
@@ -510,12 +858,14 @@ class AttachmentServing:
             element.get(ElementField.ID),
             dir_thread=dir,
         )
-        try:
-            content = await self._storage.read_file(key.render())
-        except StorageNotFoundError as e:
-            raise HTTPException(status_code=404, detail="File not found") from e
 
         mime = element.get(ElementField.MIME)
         if mime is None:
             mime = self.FALLBACK_MIME
-        return Response(content=content, media_type=mime)
+
+        return await self._files.respond(
+            key.render(),
+            mime=mime,
+            range_header=request.headers.get(FileHeader.RANGE, ""),
+            content_disposition="",
+        )

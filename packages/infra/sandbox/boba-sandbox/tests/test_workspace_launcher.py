@@ -24,6 +24,8 @@ from boba.workspace.launcher import (
     LauncherMarker,
     LauncherOptions,
     MountError,
+    ReadHeader,
+    ReadWindow,
     ResourceLimits,
     SparseCopier,
     build_chain_argv,
@@ -200,31 +202,107 @@ class TestImageStore:
 
 
 class TestFileOperations:
+    @staticmethod
+    def _ops(tmp_path: Path) -> FileOperations:
+        return FileOperations(str(tmp_path), CHUNK)
+
+    @staticmethod
+    def _split(out: io.BytesIO) -> tuple[int, bytes]:
+        header, _, body = out.getvalue().partition(b"\n")
+        return ReadHeader.parse(header), body
+
     def test_write_creates_dirs_and_content(self, tmp_path: Path) -> None:
-        rc = FileOperations(str(tmp_path)).write("a/b/c.txt", io.BytesIO(b"data"))
+        rc = self._ops(tmp_path).write("a/b/c.txt", io.BytesIO(b"data"))
         assert rc == 0
         assert (tmp_path / "a" / "b" / "c.txt").read_bytes() == b"data"
 
     def test_write_overwrites(self, tmp_path: Path) -> None:
-        ops = FileOperations(str(tmp_path))
+        ops = self._ops(tmp_path)
         ops.write("f.txt", io.BytesIO(b"old"))
         ops.write("f.txt", io.BytesIO(b"new"))
         assert (tmp_path / "f.txt").read_bytes() == b"new"
 
-    def test_read_returns_content(self, tmp_path: Path) -> None:
+    def test_read_returns_header_and_content(self, tmp_path: Path) -> None:
         (tmp_path / "f.txt").write_bytes(b"payload")
         out = io.BytesIO()
-        assert FileOperations(str(tmp_path)).read("f.txt", out) == 0
-        assert out.getvalue() == b"payload"
+
+        rc = self._ops(tmp_path).read("f.txt", ReadWindow.entire(), out)
+
+        assert rc == 0
+        assert self._split(out) == (7, b"payload")
+
+    def test_read_window_slices_body(self, tmp_path: Path) -> None:
+        (tmp_path / "f.txt").write_bytes(b"0123456789")
+        out = io.BytesIO()
+
+        window = ReadWindow(offset=3, length=4)
+        rc = self._ops(tmp_path).read("f.txt", window, out)
+
+        assert rc == 0
+        assert self._split(out) == (10, b"3456")
+
+    def test_read_window_past_end_is_empty(self, tmp_path: Path) -> None:
+        (tmp_path / "f.txt").write_bytes(b"abc")
+        out = io.BytesIO()
+
+        window = ReadWindow(offset=10, length=5)
+        rc = self._ops(tmp_path).read("f.txt", window, out)
+
+        assert rc == 0
+        assert self._split(out) == (3, b"")
 
     def test_read_missing_is_not_found(self, tmp_path: Path) -> None:
-        assert FileOperations(str(tmp_path)).read("nope", io.BytesIO()) == (
-            LauncherExit.NOT_FOUND
-        )
+        rc = self._ops(tmp_path).read("nope", ReadWindow.entire(), io.BytesIO())
+        assert rc == LauncherExit.NOT_FOUND
+
+    def test_stat_reports_size_without_body(self, tmp_path: Path) -> None:
+        (tmp_path / "f.txt").write_bytes(b"payload")
+        out = io.BytesIO()
+
+        rc = self._ops(tmp_path).stat("f.txt", out)
+
+        assert rc == 0
+        assert self._split(out) == (7, b"")
+
+    def test_stat_missing_is_not_found(self, tmp_path: Path) -> None:
+        rc = self._ops(tmp_path).stat("nope", io.BytesIO())
+        assert rc == LauncherExit.NOT_FOUND
+
+    def test_stat_rejects_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "sub").mkdir()
+        rc = self._ops(tmp_path).stat("sub", io.BytesIO())
+        assert rc == LauncherExit.NOT_REGULAR
+
+    def test_read_rejects_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "sub").mkdir()
+        rc = self._ops(tmp_path).read("sub", ReadWindow.entire(), io.BytesIO())
+        assert rc == LauncherExit.NOT_REGULAR
+
+    def test_write_rejects_existing_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "sub").mkdir()
+        rc = self._ops(tmp_path).write("sub", io.BytesIO(b"x"))
+        assert rc == LauncherExit.NOT_REGULAR
+
+    def test_read_does_not_block_on_fifo(self, tmp_path: Path) -> None:
+        """stat перед open: именованный канал без писателя не подвешивает read."""
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+
+        rc = self._ops(tmp_path).read("pipe", ReadWindow.entire(), io.BytesIO())
+
+        assert rc == LauncherExit.NOT_REGULAR
+
+    def test_stat_does_not_block_on_fifo(self, tmp_path: Path) -> None:
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+
+        rc = self._ops(tmp_path).stat("pipe", io.BytesIO())
+
+        assert rc == LauncherExit.NOT_REGULAR
 
     def test_delete_then_not_found(self, tmp_path: Path) -> None:
         (tmp_path / "f.txt").write_bytes(b"x")
-        ops = FileOperations(str(tmp_path))
+        ops = self._ops(tmp_path)
         assert ops.delete("f.txt") == 0
         assert not (tmp_path / "f.txt").exists()
         assert ops.delete("f.txt") == LauncherExit.NOT_FOUND
@@ -232,11 +310,91 @@ class TestFileOperations:
     @pytest.mark.parametrize("rel", ["/abs", "../x", "a/../../x"])
     def test_escape_rejected(self, tmp_path: Path, rel: str) -> None:
         with pytest.raises(MountError, match="invalid relative path"):
-            FileOperations(str(tmp_path)).delete(rel)
+            self._ops(tmp_path).delete(rel)
 
     def test_path_normalized_inside_root(self, tmp_path: Path) -> None:
-        FileOperations(str(tmp_path)).write("a/./b/../c.txt", io.BytesIO(b"x"))
+        self._ops(tmp_path).write("a/./b/../c.txt", io.BytesIO(b"x"))
         assert (tmp_path / "a" / "c.txt").exists()
+
+
+class TestSymlinkEscape:
+    """Симлинк внутри образа не должен выводить чтение за его пределы.
+
+    Содержимое образа пишет bash-тул, поэтому ссылка на файл хоста — то, что
+    туда реально может попасть.
+    """
+
+    @staticmethod
+    def _ops(tmp_path: Path) -> FileOperations:
+        root = tmp_path / "root"
+        root.mkdir()
+        return FileOperations(str(root), CHUNK)
+
+    @pytest.fixture
+    def outside(self, tmp_path: Path) -> Path:
+        secret = tmp_path / "outside.txt"
+        secret.write_bytes(b"host secret")
+        return secret
+
+    def test_read_refuses_symlinked_file(self, tmp_path: Path, outside: Path) -> None:
+        ops = self._ops(tmp_path)
+        (tmp_path / "root" / "leak").symlink_to(outside)
+
+        out = io.BytesIO()
+        rc = ops.read("leak", ReadWindow.entire(), out)
+
+        assert rc == LauncherExit.NOT_REGULAR
+        assert b"host secret" not in out.getvalue()
+
+    def test_stat_refuses_symlinked_file(self, tmp_path: Path, outside: Path) -> None:
+        ops = self._ops(tmp_path)
+        (tmp_path / "root" / "leak").symlink_to(outside)
+
+        rc = ops.stat("leak", io.BytesIO())
+
+        assert rc == LauncherExit.NOT_REGULAR
+
+    def test_read_refuses_symlinked_parent(self, tmp_path: Path, outside: Path) -> None:
+        """Промежуточный каталог тоже проверяется, а не только имя файла."""
+        ops = self._ops(tmp_path)
+        (tmp_path / "root" / "upload").symlink_to(outside.parent)
+
+        out = io.BytesIO()
+        rc = ops.read("upload/outside.txt", ReadWindow.entire(), out)
+
+        assert rc == LauncherExit.NOT_REGULAR
+        assert b"host secret" not in out.getvalue()
+
+    def test_write_refuses_symlinked_target(self, tmp_path: Path, outside: Path) -> None:
+        """Иначе запись во вложение перезаписала бы файл хоста."""
+        ops = self._ops(tmp_path)
+        (tmp_path / "root" / "leak").symlink_to(outside)
+
+        rc = ops.write("leak", io.BytesIO(b"overwritten"))
+
+        assert rc == LauncherExit.NOT_REGULAR
+        assert outside.read_bytes() == b"host secret"
+
+    def test_delete_removes_the_link_not_the_target(
+        self, tmp_path: Path, outside: Path
+    ) -> None:
+        ops = self._ops(tmp_path)
+        link = tmp_path / "root" / "leak"
+        link.symlink_to(outside)
+
+        assert ops.delete("leak") == LauncherExit.OK
+        assert not link.is_symlink()
+        assert outside.read_bytes() == b"host secret"
+
+    def test_listing_skips_symlinks(self, tmp_path: Path, outside: Path) -> None:
+        ops = self._ops(tmp_path)
+        (tmp_path / "root" / "real.txt").write_bytes(b"x")
+        (tmp_path / "root" / "leak").symlink_to(outside)
+
+        out = io.BytesIO()
+        assert ops.list_dir(".", out) == LauncherExit.OK
+
+        assert out.getvalue().split() == [b"real.txt"]
 
 
 class TestFuseMounter:
@@ -261,7 +419,7 @@ class TestFuseMounter:
         )
         mounter = FuseMounter(_launcher_options())
         with pytest.raises(MountError, match="fuse2fs"):
-            mounter.mount(str(tmp_path / "img"), str(tmp_path / "mnt"))
+            mounter.mount(str(tmp_path / "img"), str(tmp_path / "mnt"), readonly=False)
 
     def test_dead_daemon_raises_with_exit_code(self, tmp_path: Path) -> None:
         daemon = subprocess.Popen(
