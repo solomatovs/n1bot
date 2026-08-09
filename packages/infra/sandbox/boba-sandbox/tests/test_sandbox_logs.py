@@ -23,10 +23,29 @@ def chainlit_context() -> None:
 class TestRelay:
     """Читатель stderr один — релей; исход операции он не трогает."""
 
+    @staticmethod
+    def _drop(line: str) -> None:
+        """Окно живого вывода в этих тестах не участвует."""
+
+    @classmethod
+    def _relay(cls) -> SandboxLogRelay:
+        return SandboxLogRelay(LABEL, cls._drop)
+
+    def test_tee_gets_human_lines(self, caplog: pytest.LogCaptureFixture) -> None:
+        """В окно живого вывода уходит текст без маркеров протокола."""
+        lines: list[str] = []
+        relay = SandboxLogRelay(LABEL, lines.append)
+        frame = LaunchPayload.encode_log("INFO", "boba.tool.pg", "запрос пошёл")
+        with caplog.at_level(logging.DEBUG):
+            relay.feed(f"{frame}\n".encode())
+            relay.feed(b"raw stderr line\n")
+
+        assert lines == ["boba.tool.pg: запрос пошёл", "raw stderr line"]
+
     def test_log_frame_keeps_level_and_logger(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        relay = SandboxLogRelay(LABEL)
+        relay = self._relay()
         frame = LaunchPayload.encode_log("WARNING", "boba.tool.pg", "долгий запрос")
         with caplog.at_level(logging.DEBUG):
             relay.feed(f"{frame}\n".encode())
@@ -41,7 +60,7 @@ class TestRelay:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Трейсбек в сообщении не должен рвать разбор на части."""
-        relay = SandboxLogRelay(LABEL)
+        relay = self._relay()
         frame = LaunchPayload.encode_log("ERROR", "t", "строка1\nстрока2")
         with caplog.at_level(logging.DEBUG):
             relay.feed(f"{frame}\n".encode())
@@ -53,7 +72,7 @@ class TestRelay:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Границы чтения из пайпа не совпадают с границами строк."""
-        relay = SandboxLogRelay(LABEL)
+        relay = self._relay()
         raw = f"{LaunchPayload.encode_log('INFO', 't', 'привет')}\n".encode()
         with caplog.at_level(logging.DEBUG):
             for start in range(0, len(raw), 5):
@@ -64,7 +83,7 @@ class TestRelay:
 
     def test_raw_stderr_goes_to_debug(self, caplog: pytest.LogCaptureFixture) -> None:
         """Шум библиотек не выдаётся за лог инструмента, но и не теряется."""
-        relay = SandboxLogRelay(LABEL)
+        relay = self._relay()
         with caplog.at_level(logging.DEBUG):
             relay.feed(b"UserWarning: deprecated\n")
 
@@ -75,7 +94,7 @@ class TestRelay:
     def test_broken_frame_is_not_lost(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        relay = SandboxLogRelay(LABEL)
+        relay = self._relay()
         with caplog.at_level(logging.DEBUG):
             relay.feed(f"{LaunchPayload.LOG_MARKER}{{битый\n".encode())
 
@@ -84,7 +103,7 @@ class TestRelay:
     def test_launcher_lines_stay_recognised(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        relay = SandboxLogRelay(LABEL)
+        relay = self._relay()
         with caplog.at_level(logging.DEBUG):
             relay.feed(f"{LauncherMarker.LOG}image mounted\n".encode())
 
@@ -95,7 +114,7 @@ class TestRelay:
     def test_tail_without_newline_is_flushed(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        relay = SandboxLogRelay(LABEL)
+        relay = self._relay()
         with caplog.at_level(logging.DEBUG):
             relay.feed(b"last line without newline")
             assert not caplog.records
@@ -104,7 +123,7 @@ class TestRelay:
         assert "last line" in caplog.records[-1].getMessage()
 
     def test_empty_lines_are_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
-        relay = SandboxLogRelay(LABEL)
+        relay = self._relay()
         with caplog.at_level(logging.DEBUG):
             relay.feed(b"\n   \n")
 

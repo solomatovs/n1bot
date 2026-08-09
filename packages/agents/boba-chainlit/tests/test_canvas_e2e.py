@@ -193,14 +193,12 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
 
         await _upload(session["thread"])
 
-        async def show(name: str) -> Any:
+        async def act(name: str, action_payload: dict[str, str]) -> Any:
             payload = {
                 "sessionId": session["id"],
                 "action": {
-                    "name": "canvas_open",
-                    "payload": {
-                        "path": f"/workspace/{session['thread']}/upload/{name}"
-                    },
+                    "name": name,
+                    "payload": action_payload,
                     "label": "", "tooltip": "", "icon": None,
                     "forId": None, "id": "e2e",
                 },
@@ -213,14 +211,18 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
             await page.wait_for_timeout(3000)
             return page.locator("#side-view-content")
 
-        yield show, reports, session["thread"]
+        async def show(name: str) -> Any:
+            path = f"/workspace/{session['thread']}/upload/{name}"
+            return await act("canvas_open", {"path": path})
+
+        yield show, reports, session["thread"], act
 
         await browser.close()
 
 
 async def test_image_is_rendered(panel: Any) -> None:
     """Картинка от bash/python-тула должна реально загрузиться, а не быть битой."""
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("chart.png")
     image = side.locator("img").first
 
@@ -236,7 +238,7 @@ async def test_image_is_rendered(panel: Any) -> None:
 
 
 async def test_svg_is_rendered(panel: Any) -> None:
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("chart.svg")
 
     await side.page.wait_for_function(
@@ -250,7 +252,7 @@ async def test_svg_is_rendered(panel: Any) -> None:
 
 async def test_diagram_is_drawn_not_shown_as_text(panel: Any) -> None:
     """Спека mermaid превращается в svg, а не показывается текстом файла."""
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("flow.mmd")
     text = await side.inner_text()
 
@@ -262,7 +264,7 @@ async def test_diagram_is_drawn_not_shown_as_text(panel: Any) -> None:
 
 async def test_close_button_does_not_cover_the_diagram(panel: Any) -> None:
     """В canvas-режиме chainlit красит кнопку закрытия в primary; css её гасит."""
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("flow.mmd")
     close = side.page.locator("#side-view-title button").first
 
@@ -276,7 +278,7 @@ async def test_close_button_does_not_cover_the_diagram(panel: Any) -> None:
 
 
 async def test_markdown_is_rendered(panel: Any) -> None:
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("report.md")
 
     assert "Отчёт" in await side.inner_text()
@@ -284,7 +286,7 @@ async def test_markdown_is_rendered(panel: Any) -> None:
 
 async def test_unsupported_format_is_explained(panel: Any) -> None:
     """Неподдерживаемый формат: панель объясняет, а не молчит и не врёт."""
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("data.bin")
     text = await side.inner_text()
 
@@ -294,7 +296,7 @@ async def test_unsupported_format_is_explained(panel: Any) -> None:
 
 async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
     """Ошибку синтаксиса видит только браузер: плашка в панели, вердикт — серверу."""
-    show, reports, _thread = panel
+    show, reports, _thread, _act = panel
     side = await show("broken.mmd")
     text = await side.inner_text()
 
@@ -308,7 +310,7 @@ async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
 
 async def test_diagram_fills_the_panel(panel: Any) -> None:
     """Диаграмма занимает всю панель: mermaid отдаёт svg в своих пикселях."""
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("flow.mmd")
 
     box = await side.bounding_box()
@@ -321,7 +323,7 @@ async def test_diagram_fills_the_panel(panel: Any) -> None:
 
 async def test_wheel_does_not_zoom_in_the_panel(panel: Any) -> None:
     """Колесо в панели листает страницу; зум остаётся полноэкранному режиму."""
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("flow.mmd")
     read = (
         "() => document.querySelector('#side-view-content svg')"
@@ -342,7 +344,7 @@ async def test_wheel_does_not_zoom_in_the_panel(panel: Any) -> None:
 
 async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
     """Открытая панель меняет содержимое сама: анимация открытия не повторяется."""
-    show, _, thread = panel
+    show, _, thread, _act = panel
     other = f"/workspace/{thread}/upload/report.md"
     side = await show("flow.mmd")
     page = side.page
@@ -378,7 +380,7 @@ async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
 
 async def test_controls_share_one_alignment(panel: Any) -> None:
     """Кнопки канваса стоят по стандарту chainlit: 16px от краёв, размер icon."""
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("flow.mmd")
     page = side.page
 
@@ -407,7 +409,7 @@ async def test_controls_share_one_alignment(panel: Any) -> None:
 
 async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
     """В полноэкранном режиме зум стоит на одной линии с кнопкой закрытия."""
-    show, _, _thread = panel
+    show, _, _thread, _act = panel
     side = await show("flow.mmd")
     page = side.page
 
@@ -431,7 +433,7 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
 
 async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     """Сломанная диаграмма не должна запирать панель: следующий файл рисуется."""
-    show, _, thread = panel
+    show, _, thread, _act = panel
     side = await show("broken.mmd")
     page = side.page
 
@@ -447,3 +449,17 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     text = await side.inner_text()
     assert "Доход" in text
     assert "не отрисована" not in text
+
+
+async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
+    """Канал живого вывода доезжает до DOM панели.
+
+    Ход агента в e2e не гоняется, поэтому потока нет — но объяснение
+    «поток недоступен» идёт в панель тем же каналом, каким насос шлёт
+    снапшоты окна: доставка action -> канал -> сокет -> DOM проверяется
+    без инструмента.
+    """
+    _show, _, _thread, act = panel
+    side = await act("canvas_stream", {"call_id": "e2e-нет-такого-вызова"})
+
+    assert "недоступен" in await side.inner_text()

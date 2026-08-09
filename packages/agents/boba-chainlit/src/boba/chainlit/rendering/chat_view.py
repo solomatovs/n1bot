@@ -20,8 +20,10 @@ from boba.chainlit.rendering.result import (
     MarkdownRendering,
     ToolResultView,
 )
+from boba.chainlit.rendering.stream_view import StreamAction, ToolStreams
 from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
+from chainlit.element import CustomElement
 from chainlit.langchain.callbacks import process_content
 from chainlit.message import Message
 from chainlit.step import Step, StepDict
@@ -93,6 +95,7 @@ class StepRole(StrEnum):
     TOOL = "tool"
     CHART = "chart"
     ELEMENT = "element"
+    STREAM = "stream"
 
 
 class ChatSink(ABC):
@@ -165,6 +168,11 @@ class ChatView:
         self._answer: Message | None = None
         self._answers = 0
         self._tool_names: dict[str, str] = {}
+
+    @property
+    def thread_id(self) -> str:
+        """Тред ленты: к нему адресуются потоки инструментов."""
+        return self._thread_id
 
     @property
     def container_step(self) -> Step | None:
@@ -310,8 +318,34 @@ class ChatView:
             step.input, step.show_input = self._render_args(args)
         step.output = StepText.RUNNING
         step.start = utc_now()
+
+        if button := self._stream_button(name, key):
+            step.elements = [button]
+
         await self._sink.put(step)
         return step
+
+    def _stream_button(self, name: str, key: str | None) -> CustomElement | None:
+        """Кнопка живого вывода: только live-лента и только потоковые тулы."""
+        if not self._sink.EMITS_ELEMENTS:
+            return None
+
+        if not key:
+            return None
+
+        if not ToolStreams.streamable(name):
+            return None
+
+        element = CustomElement(
+            name="CanvasStream",
+            props={str(StreamAction.CALL_ID): key, "label": name},
+            thread_id=self._thread_id,
+        )
+        element_id = self.derive_id(self._thread_id, key, StepRole.STREAM)
+        if element_id:
+            element.id = element_id
+
+        return element
 
     async def tool_finished(
         self,

@@ -17,11 +17,13 @@ from boba.chainlit.agent.tools.canvas import CanvasToolConfig
 from boba.chainlit.agent.tools.diagram import DiagramToolConfig
 from boba.chainlit.agent.tools.errors import ToolErrorGuard
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
+from boba.chainlit.agent.tools.stream_tap import ToolStreamTapGuard
 from boba.chainlit.infra.session import (
     current_thread_id,
     current_user_id,
     current_user_roles,
 )
+from boba.chainlit.rendering.stream_view import ToolStreams
 from boba.sandbox import SandboxCaller, SandboxToolConfig, has_bwrap
 from boba.settings import bind
 from boba.tool.ch import ChExecutorConfig, build_ch_tools
@@ -357,8 +359,17 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
             roles_by_tool[tool.name] = meta.roles_of(tool.name)
         tools.extend(built)
 
+        # живой вывод есть только у процессов песочницы: кнопка потока
+        # рисуется на шагах этих инструментов
+        if plugin.sandboxed:
+            streamable: list[str] = []
+            for tool in built:
+                streamable.append(tool.name)
+            ToolStreams.mark_streamable(streamable)
+
     access = ToolAccess(roles_by_tool)
     ToolRunLogger.guard_all(tools)
+    ToolStreamTapGuard.guard_all(tools)
     CancellableTools.guard_all(tools)
     ToolAccessGuard.guard_all(tools, access, current_user_roles)
     ToolErrorGuard.guard_all(tools)
