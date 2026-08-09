@@ -232,25 +232,30 @@ class TestShow:
         http_context: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Смена файла не пересоздаёт элемент во фронте — панель не мигает."""
+        """Смена файла не пересоздаёт элемент во фронте — панель не мигает.
+
+        Панель едет message-элементом с display='side': chainlit держит side
+        view по таким элементам и не закрывает её на каждый новый ход.
+        """
         CanvasRegistry.register(ImageViewer())
         png = b"\x89PNG\r\n\x1a\n" + bytes(8)
         await storage.upload_file(f"{USER}/{THREAD}/upload/a.png", png)
         await storage.upload_file(f"{USER}/{THREAD}/upload/b.png", png)
 
         shown: list[Any] = []
+        titles: list[str] = []
+
+        async def capture(self: Any, for_id: str | None = None) -> None:
+            shown.append(self)
 
         class Sidebar:
             @staticmethod
             async def set_title(title: str) -> None:
-                pass
-
-            @staticmethod
-            async def set_elements(elements: Any, key: Any = None) -> None:
-                shown.extend(elements)
+                titles.append(title)
 
         from boba.chainlit.rendering import canvas as rendering_canvas
 
+        monkeypatch.setattr(rendering_canvas.cl.CustomElement, "send", capture)
         monkeypatch.setattr(rendering_canvas.cl, "ElementSidebar", Sidebar)
 
         await CanvasOpener().show(f"/workspace/{THREAD}/upload/a.png")
@@ -258,8 +263,10 @@ class TestShow:
 
         assert [e.props["label"] for e in shown] == ["a.png", "b.png"]
         assert [e.name for e in shown] == [CanvasPanel.VIEW_ELEMENT] * 2
+        assert [e.display for e in shown] == ["side", "side"]
         assert shown[0].id == CanvasPanel.CONTENT_ID
         assert shown[1].id == CanvasPanel.CONTENT_ID
+        assert titles == [CanvasPanel.TITLE, CanvasPanel.TITLE]
 
 
 class ElementSink:

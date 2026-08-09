@@ -28,6 +28,7 @@ def run_subprocess(  # noqa: PLR0913
     cwd: str,
     env: Mapping[str, str],
     stdout_sink: Callable[[bytes], None] | None,
+    keep_stdout: bool,
     stderr_sink: Callable[[bytes], None] | None = None,
     limits: ResourceLimits | None = None,
     cgroup_dir: str | None = None,
@@ -69,7 +70,7 @@ def run_subprocess(  # noqa: PLR0913
         _feed_stdin(proc, stdin_data)
         out_bytes, err_bytes, trunc_out, trunc_err, timed_out = _pump(
             proc, timeout_sec, max_output_bytes, cancellation,
-            stdout_sink, stderr_sink,
+            stdout_sink, stderr_sink, keep_stdout,
         )
     cancellation.raise_if_cancelled()
     duration_ms = int((time.monotonic() - started) * 1000)
@@ -106,6 +107,7 @@ def _pump(  # noqa: PLR0913
     cancellation: TurnCancellation,
     stdout_sink: Callable[[bytes], None] | None,
     stderr_sink: Callable[[bytes], None] | None,
+    keep_stdout: bool,
 ) -> tuple[bytes, bytes, bool, bool, bool]:
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
@@ -120,7 +122,7 @@ def _pump(  # noqa: PLR0913
         "err": stderr_sink,
     }
     # stderr копится и при живом релее: его хвост объясняет падение процесса
-    keeps = {"out": stdout_sink is None, "err": True}
+    keeps = {"out": keep_stdout, "err": True}
     truncated = {"out": False, "err": False}
     open_fds = set(fds.keys())
 

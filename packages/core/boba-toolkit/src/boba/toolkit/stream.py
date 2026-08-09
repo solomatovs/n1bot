@@ -1,0 +1,147 @@
+"""Живое окно вывода инструмента: кольцевой буфер хвоста и контекстный тап.
+
+Пишущая сторона (поток процесса) складывает байты в окно фиксированного
+размера и будит читателя колбэком; читающая сторона забирает снапшот хвоста.
+Тап передаёт буфер из UI-слоя в исполнителя через contextvar, не связывая
+слои импортами.
+
+Ошибки: наружу ничего не выходит; on_data обязан не поднимать исключений.
+"""
+
+from __future__ import annotations
+
+import threading
+from collections import deque
+from collections.abc import Callable
+from contextvars import ContextVar
+from typing import ClassVar
+
+from pydantic import BaseModel, ConfigDict
+
+from boba.toolkit.launcher import ChunkSink
+
+__all__ = [
+    "StreamWindow",
+    "TeeChunkSink",
+    "ToolStreamBuffer",
+    "ToolStreamTap",
+]
+
+
+class StreamWindow(BaseModel):
+    """Снапшот окна вывода: хвост, объём вытесненного и признак завершения."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    dropped_bytes: int
+    closed: bool
+    note: str
+
+
+class ToolStreamBuffer:
+    """Кольцевое окно байтов вывода: запись из потока инструмента без блокировок.
+
+    feed и close зовут on_data после отпускания замка: колбэк будит читателя
+    и обязан быть быстрым и потокобезопасным.
+    """
+
+    def __init__(self, window_bytes: int, on_data: Callable[[], None]) -> None:
+        if window_bytes <= 0:
+            msg = f"window_bytes must be positive, got {window_bytes}"
+            raise ValueError(msg)
+
+        self._window = window_bytes
+        self._on_data = on_data
+        self._lock = threading.Lock()
+        self._chunks: deque[bytes] = deque()
+        self._size = 0
+        self._dropped = 0
+        self._closed = False
+        self._note = ""
+
+    def feed(self, data: bytes) -> None:
+        """Принять порцию вывода; лишнее вытесняется с головы окна."""
+        if not data:
+            return
+
+        with self._lock:
+            if self._closed:
+                return
+            self._chunks.append(data)
+            self._size += len(data)
+            self._evict()
+
+        self._on_data()
+
+    def feed_text(self, text: str) -> None:
+        self.feed(text.encode("utf-8"))
+
+    def close(self, note: str) -> None:
+        """Завершить поток; повторное закрытие ничего не меняет."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._note = note
+
+        self._on_data()
+
+    def snapshot(self) -> StreamWindow:
+        with self._lock:
+            data = b"".join(self._chunks)
+            dropped = self._dropped
+            closed = self._closed
+            note = self._note
+
+        return StreamWindow(
+            text=data.decode("utf-8", errors="replace"),
+            dropped_bytes=dropped,
+            closed=closed,
+            note=note,
+        )
+
+    def _evict(self) -> None:
+        """Держит окно в лимите; зовётся под замком."""
+        while self._size > self._window:
+            head = self._chunks[0]
+            excess = self._size - self._window
+
+            if len(head) <= excess:
+                self._chunks.popleft()
+                self._size -= len(head)
+                self._dropped += len(head)
+                continue
+
+            self._chunks[0] = head[excess:]
+            self._size -= excess
+            self._dropped += excess
+
+
+class ToolStreamTap:
+    """Буфер живого вывода в текущем контексте выполнения инструмента."""
+
+    _BUFFER: ClassVar[ContextVar[ToolStreamBuffer | None]] = ContextVar(
+        "tool_stream_tap", default=None
+    )
+
+    @classmethod
+    def set(cls, buffer: ToolStreamBuffer | None) -> None:
+        cls._BUFFER.set(buffer)
+
+    @classmethod
+    def get(cls) -> ToolStreamBuffer | None:
+        return cls._BUFFER.get()
+
+
+class TeeChunkSink(ChunkSink):
+    """ChunkSink-обёртка: кадр уходит и потребителю, и в окно вывода."""
+
+    def __init__(self, inner: ChunkSink, buffer: ToolStreamBuffer) -> None:
+        self._inner = inner
+        self._buffer = buffer
+
+    def write(self, chunk: str) -> None:
+        # сперва окно: пользователь видит и кадр, упершийся в лимит потребителя
+        self._buffer.feed_text(chunk)
+        self._inner.write(chunk)

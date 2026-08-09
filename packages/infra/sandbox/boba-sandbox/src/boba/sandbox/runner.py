@@ -21,6 +21,7 @@ from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.launcher import LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
+from boba.toolkit.stream import ToolStreamBuffer, ToolStreamTap
 from boba.workspace.launcher import (
     LauncherExit,
     LauncherMarker,
@@ -60,8 +61,9 @@ class SandboxLogRelay:
     NOISE_LEVEL: ClassVar[int] = logging.DEBUG
     """Уровень для сырых строк stderr: варнинги библиотек, трейсбеки."""
 
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, tee: Callable[[str], None]) -> None:
         self._label = label
+        self._tee = tee
         self._tail = bytearray()
 
     def feed(self, data: bytes) -> None:
@@ -95,23 +97,28 @@ class SandboxLogRelay:
         if line.startswith(LauncherMarker.LOG.value):
             body = line[len(LauncherMarker.LOG) :]
             logger.info("sandbox[%s]: %s", self._label, body)
+            self._tee(body)
             return
         if line.strip():
             logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, line)
+            self._tee(line)
 
     def _log_frame(self, body: str) -> None:
         try:
             frame = json.loads(body)
         except json.JSONDecodeError:
             logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, body)
+            self._tee(body)
             return
         if not isinstance(frame, dict):
             logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, body)
+            self._tee(body)
             return
         level = self._level_of(str(frame.get("lvl") or ""))
         name = str(frame.get("name") or "?")
         message = str(frame.get("msg") or "")
         logger.log(level, "tool[%s] %s: %s", self._label, name, message)
+        self._tee(f"{name}: {message}")
 
     @staticmethod
     def _level_of(name: str) -> int:
@@ -152,8 +159,16 @@ class SandboxRunner:
         argv, runner_limits = self._build_argv(rendered, command, limits)
 
         name = self._label()
-        relay = SandboxLogRelay(name)
+        tap = ToolStreamTap.get()
+        relay = SandboxLogRelay(name, self._stream_tee(tap))
         self._log_start(name, rendered, limits, command)
+
+        # сырой stdout едет в окно живого вывода только у текстового запуска:
+        # у потокового stdout занят кадрами, их окно получает после декодера
+        out_sink = stdout_sink
+        keep_stdout = stdout_sink is None
+        if tap is not None and stdout_sink is None:
+            out_sink = tap.feed
         group = GroupLimits.of_profile(rendered)
         cgroup_dir: str | None = None
         manager: CgroupManager | None = None
@@ -171,7 +186,8 @@ class SandboxRunner:
                 max_output_bytes=rendered.max_output_bytes,
                 cwd="/",
                 env=os.environ,
-                stdout_sink=stdout_sink,
+                stdout_sink=out_sink,
+                keep_stdout=keep_stdout,
                 stderr_sink=relay.feed,
                 limits=runner_limits,
                 cgroup_dir=cgroup_dir,
@@ -197,6 +213,17 @@ class SandboxRunner:
         if call and call != self._tool:
             return f"{self._tool}:{call}"
         return self._tool
+
+    @staticmethod
+    def _stream_tee(tap: ToolStreamBuffer | None) -> Callable[[str], None]:
+        """Строки stderr в окно живого вывода; без тапа — некуда."""
+
+        def tee(line: str) -> None:
+            if tap is None:
+                return
+            tap.feed_text(line + "\n")
+
+        return tee
 
     @staticmethod
     def _env_of(profile: SandboxProfile) -> dict[str, str]:

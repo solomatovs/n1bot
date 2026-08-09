@@ -2,15 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { FileQuestion, Maximize2, Minus, Plus, RotateCcw } from "lucide-react";
+import { FileQuestion, Maximize2, Minus, Plus, RotateCcw, X } from "lucide-react";
 
 const MERMAID_PATH = "/public/vendor/mermaid/mermaid.min.js";
 const SWITCH_EVENT = "boba:canvas";
+// пересохранение файла: открытая панель того же пути перерисовывается на месте,
+// не переоткрываясь и без анимации; несущий свежее содержимое — карточка ленты
+const REFRESH_EVENT = "boba:canvas-refresh";
 
 // Единственный слот custom_js занят SSO-кнопкой, поэтому библиотеку тянет сам
 // компонент: тег переиспользуется всеми диаграммами на странице.
@@ -255,12 +259,19 @@ function Diagram({ content }) {
               </Button>
             </DialogTrigger>
           </Viewport>
-          <DialogContent className="max-w-[90vw] max-h-[85vh] p-0 overflow-hidden">
-            {/* заголовок нужен radix для доступности, но строку он не занимает:
-                иначе кнопки съезжают ниже close диалога */}
+          <DialogContent className="canvas-fullscreen max-w-[90vw] max-h-[85vh] p-0 overflow-hidden">
+            {/* радиксовый close отдельной кнопкой ломает единый ряд управления:
+                прячем его и ставим закрытие в тот же ряд, что +/-/сброс */}
+            <style>{".canvas-fullscreen > button.absolute{display:none!important;}"}</style>
+            {/* заголовок нужен radix для доступности, но строку он не занимает */}
             <DialogTitle className="sr-only">{content.label}</DialogTitle>
-            {/* close диалога стоит на right-4 и занимает 36px — отодвигаем свои */}
-            <Viewport svg={svg} height="80vh" wheelZoom inset={60} />
+            <Viewport svg={svg} height="80vh" wheelZoom>
+              <DialogClose asChild>
+                <Button variant="ghost" size="icon" title="Закрыть" aria-label="Закрыть">
+                  <X />
+                </Button>
+              </DialogClose>
+            </Viewport>
           </DialogContent>
         </Dialog>
       )}
@@ -353,6 +364,60 @@ function Notice({ content }) {
   );
 }
 
+// Живой вывод инструмента: хвост окна без шапки, кнопки размера шрифта
+// поверх — как кнопки зума у диаграммы. Держится за низ, пока пользователь
+// сам не отмотал вверх.
+function StreamTail({ content }) {
+  const boxRef = useRef(null);
+  const stickRef = useRef(true);
+  const [fontPx, setFontPx] = useState(12);
+
+  const onScroll = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    stickRef.current =
+      box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  };
+
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box || !stickRef.current) return;
+    box.scrollTop = box.scrollHeight;
+  }, [content.text, content.nonce]);
+
+  const bigger = () => setFontPx((size) => Math.min(24, size + 2));
+  const smaller = () => setFontPx((size) => Math.max(8, size - 2));
+  const reset = () => setFontPx(12);
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col relative">
+      <div className="absolute z-10 flex gap-1 top-4 right-4">
+        <Button variant="ghost" size="icon" onClick={bigger} title="Крупнее" aria-label="Крупнее">
+          <Plus />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={smaller} title="Мельче" aria-label="Мельче">
+          <Minus />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={reset} title="Сбросить размер" aria-label="Сбросить размер">
+          <RotateCcw />
+        </Button>
+      </div>
+      <div
+        ref={boxRef}
+        onScroll={onScroll}
+        className="flex-1 min-h-0 overflow-auto p-3"
+      >
+        <pre
+          className="font-mono whitespace-pre-wrap break-words"
+          style={{ fontSize: fontPx }}
+        >
+          {content.text || " "}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 function Body({ content }) {
   switch (content.kind) {
     case "mermaid":
@@ -389,6 +454,8 @@ function Body({ content }) {
       );
     case "text":
       return <TextFile content={content} />;
+    case "stream":
+      return <StreamTail content={content} />;
     default:
       return <Notice content={content} />;
   }
@@ -401,6 +468,33 @@ export default function CanvasView() {
   const [content, setContent] = useState(props);
 
   useEffect(() => setContent(props), [props.path, props.nonce]);
+
+  // новая карточка того же файла: сообщает открытой панели свежее содержимое,
+  // чтобы та перерисовалась на месте. Панель закрыта или на другом файле —
+  // событие просто некому поймать
+  useEffect(() => {
+    if (!props.preview) return;
+    window.dispatchEvent(
+      new CustomEvent(REFRESH_EVENT, {
+        detail: { path: content.path, content },
+      })
+    );
+  }, [props.preview, content]);
+
+  // панель слушает те же обновления: тот же путь — меняем содержимое без
+  // переоткрытия, чужой путь или закрытая панель события не касаются
+  useEffect(() => {
+    if (props.preview) return;
+
+    const onRefresh = (event) => {
+      const detail = event.detail || {};
+      if (!detail.content || detail.path !== content.path) return;
+      setContent(detail.content);
+    };
+
+    window.addEventListener(REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(REFRESH_EVENT, onRefresh);
+  }, [content.path, props.preview]);
 
   // карточка в ленте: тот же рендер, но кликом показывает файл в панели
   const openInCanvas = () => {

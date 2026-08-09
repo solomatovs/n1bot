@@ -18,14 +18,13 @@ from enum import StrEnum
 from typing import Annotated, ClassVar, Self
 
 from langchain.tools import tool
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, InjectedToolCallId
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.agent.tools.canvas import CanvasOpener
+import chainlit as cl
 from boba.chainlit.chat.data.data_layer import AttachmentDataLayer
 from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
 from boba.chainlit.chat.data.storage import StorageError, StorageNotFoundError
-from boba.workspace.launcher import ReadWindow
 from boba.chainlit.chat.turn import ChatTurn
 from boba.chainlit.infra.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.canvas import (
@@ -37,18 +36,23 @@ from boba.chainlit.rendering.canvas import (
     CanvasRegistry,
     OpenedCanvas,
     RenderStatus,
+    RenderVerdict,
     RenderVerdicts,
 )
+from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.toolkit.result import (
     DiagramResult,
     ErrorResult,
+    TextResult,
     ToolResult,
     pack_result,
 )
+from boba.workspace.launcher import ReadWindow
 from chainlit.data import get_data_layer
 
 __all__ = [
     "CanvasWatcher",
+    "DiagramCard",
     "DiagramEntry",
     "DiagramErrorKind",
     "DiagramFiles",
@@ -75,6 +79,8 @@ class DiagramErrorKind(StrEnum):
 
     NO_SESSION = "no_session"
     NO_THREAD = "no_thread"
+    NO_TURN = "no_turn"
+    NO_TOOL_CALL = "no_tool_call"
     INVALID_SPEC = "invalid_diagram_spec"
     BAD_PATH = "bad_path"
     FILE_NOT_FOUND = "file_not_found"
@@ -131,6 +137,10 @@ class DiagramPrompt(StrEnum):
         "'subgraph ID[\"Текст\"]', а не 'subgraph ID[ \"Текст\" ]'. "
         "sankey-beta принимает в подписях узлов только латиницу — для русских "
         "подписей бери другой тип (flowchart, xychart-beta)."
+    )
+    SAVED_NOTE = (
+        "the diagram card is shown in the chat; the user opens it in the canvas "
+        "by clicking it. A render failure comes back to you as a tool error."
     )
 
 
@@ -551,10 +561,81 @@ class MermaidViewer:
         )
 
 
+class DiagramCard:
+    """Карточка диаграммы в ленте: сама рисует mermaid и репортит вердикт.
+
+    Панель для проверки спеки не нужна — верификация едет на этой же карточке
+    по nonce, а панель открывается лишь кликом пользователя. Карточка цепляется
+    к шагу ответа, поэтому переживает перезагрузку и остаётся кликабельной.
+    """
+
+    ELEMENT: ClassVar[str] = "CanvasView"
+    VERDICT_TIMEOUT_SEC: ClassVar[float] = 10.0
+
+    def __init__(self, files: DiagramFiles) -> None:
+        self._files = files
+
+    async def publish(self, key: ObjectKey, tool_call_id: str) -> RenderVerdict:
+        """Показать карточку в ленте и дождаться вердикта рендера браузера."""
+        text = await self._files.read(key)
+        for_id, element_id = self._targets(key.thread_id, tool_call_id)
+
+        nonce = str(uuid.uuid4())
+        RenderVerdicts.expect(nonce)
+        await self._emit(key, text, nonce, for_id, element_id)
+
+        return await RenderVerdicts.wait(nonce, self.VERDICT_TIMEOUT_SEC)
+
+    @staticmethod
+    def _targets(thread_id: str, tool_call_id: str) -> tuple[str, str]:
+        turn = ChatTurn.active(thread_id)
+        if turn is None:
+            raise DiagramRefusedError(
+                DiagramErrorKind.NO_TURN, "the turn is already finished"
+            )
+
+        for_id = turn.answer_step_id
+        if not for_id:
+            raise DiagramRefusedError(
+                DiagramErrorKind.NO_TURN, "the turn has no answer step"
+            )
+
+        element_id = ChatView.derive_id(thread_id, tool_call_id, StepRole.ELEMENT)
+        if not element_id:
+            raise DiagramRefusedError(
+                DiagramErrorKind.NO_TOOL_CALL, "tool call without id"
+            )
+
+        return for_id, element_id
+
+    async def _emit(
+        self,
+        key: ObjectKey,
+        text: str,
+        nonce: str,
+        for_id: str,
+        element_id: str,
+    ) -> None:
+        entry = DiagramEntry.of(key, text)
+        content = CanvasContent(
+            kind=CanvasKind.MERMAID,
+            path=entry.path,
+            label=entry.label,
+            text=entry.spec,
+            nonce=nonce,
+        )
+        props = {**content.props(), "preview": True}
+
+        element = cl.CustomElement(name=self.ELEMENT, props=props)
+        element.id = element_id
+        element.thread_id = key.thread_id
+        await element.send(for_id=for_id)
+
+
 def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
     files = DiagramFiles(cfg.max_chars)
-    opener = CanvasOpener()
-    # канвас узнаёт про .mmd отсюда: сам он про типы файлов ничего не знает
+    card = DiagramCard(files)
+    # клик по карточке открывает файл в канвасе: вьювер знает про .mmd отсюда
     CanvasRegistry.register(MermaidViewer(files))
 
     @tool(response_format="content_and_artifact")
@@ -567,24 +648,31 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
             str,
             Field(min_length=1, description=DiagramPrompt.SPEC),
         ],
+        tool_call_id: Annotated[str, InjectedToolCallId],
     ) -> tuple[str, ToolResult]:
-        """Сохранить спеку mermaid файлом в workspace и показать диаграмму:
-        в канвасе у пользователя и карточкой в переписке."""
+        """Сохранить спеку mermaid файлом в workspace и показать её карточкой
+        в переписке; в канвас диаграмму раскрывает пользователь кликом."""
         try:
             key = await files.save(name, spec)
+            verdict = await card.publish(key, tool_call_id)
         except DiagramRefusedError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
 
         path = key.in_workspace()
-        content, result = await opener.open(path)
-
-        if isinstance(result, ErrorResult):
-            message = f"diagram saved: {path}, but {result.message}; "
-            message += "fix the spec and call diagram_save again"
+        if verdict.status is RenderStatus.FAILED:
+            message = (
+                f"diagram saved: {path}, but it does not render in the browser: "
+                f"{verdict.message}; fix the spec and call diagram_save again"
+            )
             return pack_result(
-                ErrorResult(message=message, error_kind=result.error_kind)
+                ErrorResult(message=message, error_kind=CanvasErrorKind.RENDER_FAILED)
             )
 
-        return f"diagram saved: {path}; {content}", result
+        return pack_result(
+            TextResult(
+                text=f"diagram saved: {path}; {DiagramPrompt.SAVED_NOTE}",
+                metadata={"path": path},
+            )
+        )
 
     return [diagram_save]

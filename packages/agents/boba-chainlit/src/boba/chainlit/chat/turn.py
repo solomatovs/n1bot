@@ -31,6 +31,7 @@ from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.infra.session import current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
+from boba.chainlit.rendering.stream_view import ToolStreams
 from chainlit.context import ChainlitContext, context_var, get_context
 from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio
@@ -200,6 +201,7 @@ class ChatTurn:
         finally:
             if self._ACTIVE.get(self._thread_id) is self:
                 del self._ACTIVE[self._thread_id]
+            ToolStreams.drop_thread(self._thread_id)
             elapsed_ms = int((time.monotonic() - started) * 1000)
             logger.info(
                 "turn finished: thread=%s outcome=%s in %dms",

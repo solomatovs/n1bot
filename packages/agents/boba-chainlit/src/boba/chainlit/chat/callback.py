@@ -24,6 +24,11 @@ from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
 from boba.chainlit.infra.session import current_thread_id
 from boba.chainlit.rendering.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
+from boba.chainlit.rendering.stream_view import (
+    StreamAction,
+    StreamScreen,
+    show_stream_action,
+)
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
 from chainlit.types import ThreadDict
@@ -111,6 +116,10 @@ def get_data_layer(
 @chainlit_error_ctx_handler
 async def on_canvas_open(action: cl.Action) -> None:
     """Клик по ссылке в переписке открывает панель без участия агента."""
+    # канвас уходит на файл: насос потока панель больше не трогает
+    if thread_id := current_thread_id():
+        StreamScreen.leave(thread_id)
+
     await open_canvas_action(action)
 
 
@@ -118,7 +127,21 @@ async def on_canvas_open(action: cl.Action) -> None:
 @chainlit_error_ctx_handler
 async def on_canvas_content(action: cl.Action) -> dict[str, Any]:
     """Панель уже открыта: отдаём описание файла, не подменяя элемент."""
+    if thread_id := current_thread_id():
+        StreamScreen.leave(thread_id)
+
     return await canvas_content_action(action)
+
+
+@cl.action_callback(StreamAction.SHOW)
+@chainlit_error_ctx_handler
+async def on_canvas_stream(action: cl.Action) -> None:
+    """Кнопка на шаге инструмента: живой вывод вызова в панель."""
+    thread_id = current_thread_id()
+    if thread_id is None:
+        return
+
+    await show_stream_action(thread_id, action.payload)
 
 
 @cl.action_callback(CanvasAction.STATUS)

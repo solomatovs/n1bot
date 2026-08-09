@@ -9,7 +9,6 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import canvas as canvas_module
 from boba.chainlit.agent.tools import diagram as diagram_module
 from boba.chainlit.agent.tools.diagram import (
     CanvasWatcher,
@@ -25,6 +24,7 @@ from boba.chainlit.agent.tools.diagram import (
 )
 from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
 from boba.chainlit.chat.data.storage import LocalStorageClient
+from boba.chainlit.chat.turn import ChatTurn
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.canvas import (
     CanvasError,
@@ -33,7 +33,7 @@ from boba.chainlit.rendering.canvas import (
     RenderStatus,
     RenderVerdicts,
 )
-from boba.toolkit.result import DiagramResult, ErrorResult
+from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
 from boba.workspace.launcher import LauncherConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -482,34 +482,34 @@ class TestViewerVerdict:
         assert "Parse error on line 5" in str(failure.value)
 
 
+class FakeTurn:
+    """Живой ход под тест: карточке нужен только id шага ответа."""
+
+    answer_step_id = "answer-step"
+
+
 class TestSaveToolEndToEnd:
-    """diagram_save целиком: сохранить, показать в канвасе, отдать LLM исход."""
+    """diagram_save целиком: сохранить, показать карточку, отдать LLM исход.
+
+    Панель тут не открывается — карточка едет в ленту и сама репортит вердикт.
+    """
 
     @pytest.fixture(autouse=True)
-    def canvas_session(
-        self, files: DiagramFiles, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Канвас берёт сессию и storage сам — в тесте они те же, что у тула."""
-        monkeypatch.setattr(canvas_module, "current_user_id", lambda: "7")
-        monkeypatch.setattr(canvas_module, "current_thread_id", lambda: THREAD)
+    def active_turn(self) -> Any:
+        """Карточка цепляется к шагу ответа: без живого хода её некуда деть."""
+        ChatTurn._ACTIVE[THREAD] = cast(Any, FakeTurn())
+        yield
+        ChatTurn._ACTIVE.pop(THREAD, None)
 
     @pytest.fixture
-    def sidebar(self, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
-        """Панель под тест: собирает то, что уехало бы во фронт."""
+    def feed(self, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+        """Лента под тест: собирает карточки, ушедшие бы во фронт."""
         shown: list[Any] = []
 
-        class Sidebar:
-            @staticmethod
-            async def set_title(title: str) -> None:
-                pass
+        async def capture(self: Any, for_id: str | None = None) -> None:
+            shown.append(self)
 
-            @staticmethod
-            async def set_elements(elements: Any, key: Any = None) -> None:
-                shown.extend(elements)
-
-        from boba.chainlit.rendering import canvas as rendering_canvas
-
-        monkeypatch.setattr(rendering_canvas.cl, "ElementSidebar", Sidebar)
+        monkeypatch.setattr(diagram_module.cl.CustomElement, "send", capture)
         return shown
 
     async def _call(self, spec: str, verdict: dict[str, Any], shown: list[Any]) -> Any:
@@ -540,31 +540,33 @@ class TestSaveToolEndToEnd:
         self,
         files: DiagramFiles,
         http_context: None,
-        sidebar: list[Any],
+        feed: list[Any],
     ) -> None:
         """Битую спеку ловит только браузер — LLM обязана узнать об этом."""
-        answer = await self._call(
-            ER_SPEC, {"ok": False, "error": "Parse error on line 5"}, sidebar
+        _, result = await self._call(
+            ER_SPEC, {"ok": False, "error": "Parse error on line 5"}, feed
         )
 
-        result = answer[1]
         assert isinstance(result, ErrorResult)
         assert result.error_kind == CanvasErrorKind.RENDER_FAILED
         assert "Parse error on line 5" in result.message
         assert "diagram saved" in result.message
 
     @pytest.mark.anyio
-    async def test_rendered_diagram_goes_to_the_feed(
+    async def test_rendered_diagram_card_goes_to_the_feed(
         self,
         files: DiagramFiles,
         http_context: None,
-        sidebar: list[Any],
+        feed: list[Any],
     ) -> None:
-        """Успех — карточка диаграммы в переписке, а не строка «diagram saved»."""
-        answer = await self._call(ER_SPEC, {"ok": True, "error": ""}, sidebar)
+        """Успех — кликабельная карточка mermaid в ленте, панель не открывается."""
+        content, result = await self._call(ER_SPEC, {"ok": True, "error": ""}, feed)
 
-        content, result = answer
-        assert isinstance(result, DiagramResult)
-        assert result.spec == ER_SPEC
-        assert result.path == f"/workspace/{THREAD}/mermaid/orders.mmd"
+        assert isinstance(result, TextResult)
         assert "diagram saved" in content
+
+        card = feed[0]
+        assert card.props["kind"] == "mermaid"
+        assert card.props["preview"] is True
+        assert card.props["text"] == ER_SPEC
+        assert card.props["path"] == f"/workspace/{THREAD}/mermaid/orders.mmd"

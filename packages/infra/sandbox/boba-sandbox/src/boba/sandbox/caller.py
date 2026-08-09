@@ -24,6 +24,7 @@ from boba.toolkit.launcher import (
     PayloadFailureError,
     ToolLauncher,
 )
+from boba.toolkit.stream import TeeChunkSink, ToolStreamTap
 
 __all__ = [
     "FailureFrame",
@@ -73,6 +74,12 @@ class SandboxCaller(ToolLauncher):
         if not entry:
             msg = "sandbox: entry must not be empty"
             raise ValueError(msg)
+
+        # окно живого вывода получает кадры уже декодированными: сырой stdout
+        # потокового запуска — протокол, человеку он не читается
+        if tap := ToolStreamTap.get():
+            sink = TeeChunkSink(sink, tap)
+
         decoder = SandboxFrameDecoder(self._tool, sink)
         outcome = self._runner.run(
             shlex.join(entry),

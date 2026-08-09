@@ -11,9 +11,8 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol
@@ -168,6 +167,8 @@ class CanvasKind(StrEnum):
     TEXT = "text"
     VIDEO = "video"
     AUDIO = "audio"
+    STREAM = "stream"
+    """Живой вывод инструмента: хвост окна, панель мотает вниз сама."""
     NOTICE = "notice"
     """Формат показать некому: панель объясняет это вместо содержимого."""
 
@@ -313,8 +314,6 @@ class CanvasPanel:
     """Один id на слот содержимого: React обновляет элемент, а не пересоздаёт —
     панель не мигает при смене файла, а вьюверы не теряют своё состояние."""
 
-    _REVISIONS: ClassVar[Iterator[int]] = itertools.count()
-
     VIEW_ELEMENT: ClassVar[str] = "CanvasView"
     """Единственный компонент панели: рисует любое содержимое по его kind.
 
@@ -337,6 +336,11 @@ class CanvasPanel:
         return await viewer.open(key, cls._push)
 
     @classmethod
+    async def show(cls, content: CanvasContent) -> None:
+        """Показ готового содержимого без вьювера: живой поток инструмента."""
+        await cls._push(content)
+
+    @classmethod
     def notice(cls, key: ObjectKey) -> CanvasContent:
         """Объяснение вместо содержимого: файл показать некому."""
         return CanvasContent(
@@ -356,16 +360,18 @@ class CanvasPanel:
 
     @classmethod
     async def _push(cls, content: CanvasContent) -> None:
-        """Содержимое панели одним событием: два открывали бы её дважды.
+        """Открывает панель message-элементом с display='side'.
 
-        set_sidebar_elements сам заводит состояние панели, а set_sidebar_title
-        до него открыл бы её пустой — отсюда и вторая анимация. Заголовок
-        едет следом и только если он ещё не тот: одинаковый title фронт
-        считает no-op, а панель к этому моменту уже открыта.
+        chainlit сам держит side view по таким элементам: пока элемент цел,
+        MessagesContainer не закрывает панель на каждый новый ход (в отличие от
+        ElementSidebar, который он сбрасывает, когда среди элементов сообщения
+        нет ни одного 'side'). Заголовок 'canvas' выставляется отдельно —
+        MessagesContainer взял бы под него имя компонента, а по 'canvas' фронт
+        включает полноэкранный canvas-режим панели.
         """
-        element = cl.CustomElement(name=cls.VIEW_ELEMENT, props=content.props())
-        element.id = cls.CONTENT_ID
-        await cl.ElementSidebar.set_elements(
-            [element], key=f"canvas#{next(cls._REVISIONS)}"
+        element = cl.CustomElement(
+            name=cls.VIEW_ELEMENT, props=content.props(), display="side"
         )
+        element.id = cls.CONTENT_ID
+        await element.send(for_id="")
         await cl.ElementSidebar.set_title(cls.TITLE)
