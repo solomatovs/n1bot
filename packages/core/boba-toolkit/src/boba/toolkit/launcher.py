@@ -22,6 +22,8 @@ from typing import Any, ClassVar, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
+from boba.toolkit.channels import LogFrame
+
 __all__ = [
     "ChunkSink",
     "CollectorCapacityError",
@@ -83,7 +85,7 @@ class LaunchPayload:
     MARKER: ClassVar[str] = "sandbox-result:"
     CHUNK_MARKER: ClassVar[str] = "sandbox-chunk:"
     ERROR_MARKER: ClassVar[str] = "sandbox-error:"
-    LOG_MARKER: ClassVar[str] = "sandbox-log:"
+    LOG_MARKER: ClassVar[str] = LogFrame.MARKER
     """Кадр лога; едет в stderr — там он никому не мешает и ничего не решает."""
 
     @classmethod
@@ -105,12 +107,10 @@ class LaunchPayload:
 
     @classmethod
     def encode_log(cls, level: str, name: str, message: str) -> str:
-        """Строка лога: многострочное сообщение экранируется в одну строку."""
-        body = json.dumps(
-            {"lvl": level, "name": name, "msg": message},
-            ensure_ascii=False,
-        )
-        return f"{cls.LOG_MARKER}{body}"
+        """Строка лога: кодирование живёт в LogFrame (`toolkit/channels.py`)."""
+        frame = LogFrame(lvl=level, name=name, msg=message)
+
+        return frame.encode()
 
 
 class ChunkSink(Protocol):
