@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from boba.sandbox.process_runner import RunResult
+from boba.toolkit.launcher import RunResult
 from boba.sandbox.profile import SandboxProfile
 
 __all__ = ["SandboxDiagnostics"]

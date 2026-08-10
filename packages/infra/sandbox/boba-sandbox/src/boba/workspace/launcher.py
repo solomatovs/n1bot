@@ -1,4 +1,9 @@
-"""Запуск в workspace-образе: fuse2fs-цепочка, её конфиг и лимиты процесса."""
+"""Запуск в workspace-образе: fuse2fs-цепочка, её конфиг и лимиты процесса.
+
+Ошибки: MountError — предпосылки, подготовка или монтирование образа,
+включая сборку цепочки и рендер путей; NotRegularFileError — по пути в
+образе не обычный файл.
+"""
 
 from __future__ import annotations
 
@@ -23,9 +28,13 @@ from typing import BinaryIO, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.toolkit.channels import Channel
+
 __all__ = [
     "FUSE_DEVICE",
     "CapabilityDropper",
+    "ChainChannelArgv",
+    "ChannelBridge",
     "FileOperations",
     "FuseMounter",
     "ImagePath",
@@ -43,6 +52,7 @@ __all__ = [
     "ReadWindow",
     "ResourceLimits",
     "SparseCopier",
+    "WrapOutput",
     "build_chain_argv",
     "render_image_path",
     "require_fuse",
@@ -148,9 +158,39 @@ class LauncherEnv(StrEnum):
     PYTHONPATH = "PYTHONPATH"
 
 
+class WrapOutput:
+    """Сообщения обвязки: маркерные строки в общем stderr либо чистые wrap-каналы.
+
+    В канальном режиме fd 1/2 лаунчера — это wrap_stdout/wrap_stderr стадии:
+    каналы принадлежат обвязке целиком, маркеры не нужны.
+    """
+
+    _plain: ClassVar[bool] = False
+
+    @classmethod
+    def configure(cls, *, plain: bool) -> None:
+        cls._plain = plain
+
+    @classmethod
+    def trace(cls, message: str) -> None:
+        if cls._plain:
+            print(message, file=sys.stdout, flush=True)  # noqa: T201
+            return
+
+        print(f"{LauncherMarker.LOG}{message}", file=sys.stderr, flush=True)  # noqa: T201
+
+    @classmethod
+    def error(cls, message: str) -> None:
+        if cls._plain:
+            print(message, file=sys.stderr, flush=True)  # noqa: T201
+            return
+
+        print(f"{LauncherMarker.ERROR}{message}", file=sys.stderr, flush=True)  # noqa: T201
+
+
 def trace(message: str) -> None:
-    """Ход монтирования — только в stderr: stdout занят данными операции."""
-    print(f"{LauncherMarker.LOG}{message}", file=sys.stderr, flush=True)  # noqa: T201
+    """Ход монтирования; в старом пути — в stderr: stdout занят данными операции."""
+    WrapOutput.trace(message)
 
 
 class MountError(RuntimeError):
@@ -159,6 +199,53 @@ class MountError(RuntimeError):
 
 class NotRegularFileError(RuntimeError):
     """По пути в образе лежит не обычный файл: каталог, канал или устройство."""
+
+
+class ChannelBridge:
+    """Каналы стадии из окружения лаунчера: дескрипторы для проброса вниз.
+
+    Внешний bwrap проводит переменные `Channel.env_name` через `--setenv`;
+    `pass_fds` сохраняет номера, поэтому номер, сообщённый на верхней ступени
+    цепочки, действителен и во вложенном bwrap.
+    """
+
+    STDIO: ClassVar[frozenset[int]] = frozenset((0, 1, 2))
+    """stdin/stdout/stderr наследуются и так: в pass_fds им не место."""
+
+    def __init__(self, fds: Mapping[Channel, int]) -> None:
+        self._fds = dict(fds)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> ChannelBridge:
+        fds: dict[Channel, int] = {}
+
+        for channel in Channel:
+            raw = env.get(channel.env_name)
+            if raw is None:
+                continue
+
+            try:
+                fds[channel] = int(raw)
+            except ValueError as exc:
+                msg = f"channel {channel.value} fd is not an integer: {raw!r}"
+                raise MountError(msg) from exc
+
+        return cls(fds)
+
+    @property
+    def active(self) -> bool:
+        """Хоть один канал объявлен: лаунчер работает в канальном режиме."""
+        return bool(self._fds)
+
+    @property
+    def pass_fds(self) -> tuple[int, ...]:
+        fds: list[int] = []
+        for fd in sorted(self._fds.values()):
+            if fd in self.STDIO:
+                continue
+            fds.append(fd)
+
+        return tuple(fds)
 
 
 class SparseCopier:
@@ -579,11 +666,7 @@ class FileOperations:
             if e.errno not in self.NO_SPACE_ERRNO:
                 raise
             self._discard(rel)
-            print(  # noqa: T201
-                f"{LauncherMarker.ERROR}no space left in the workspace image "
-                f"for {rel!r}",
-                file=sys.stderr,
-            )
+            WrapOutput.error(f"no space left in the workspace image for {rel!r}")
             return LauncherExit.NO_SPACE
 
         return LauncherExit.OK
@@ -663,9 +746,7 @@ class FileOperations:
 
     @staticmethod
     def _not_regular(rel: str) -> LauncherExit:
-        print(  # noqa: T201
-            f"{LauncherMarker.ERROR}not a regular file: {rel!r}", file=sys.stderr
-        )
+        WrapOutput.error(f"not a regular file: {rel!r}")
         return LauncherExit.NOT_REGULAR
 
     def delete(self, rel: str) -> LauncherExit:
@@ -729,16 +810,26 @@ class Launcher:
         images: list[tuple[str, str]],
         options: LauncherOptions,
         limits: ResourceLimits,
+        channels: ChannelBridge,
     ) -> None:
         self._images = images
         self._options = options
         self._limits = limits
+        self._channels = channels
         self._store = ImageStore(
             template, SparseCopier(options.copy_chunk_bytes), options.lock_wait_sec
         )
 
     @classmethod
     def main(cls, argv: list[str]) -> int:
+        try:
+            channels = ChannelBridge.from_env(os.environ)
+        except MountError as e:
+            WrapOutput.error(str(e))
+            return LauncherExit.MOUNT_ERROR
+
+        WrapOutput.configure(plain=channels.active)
+
         args = cls._parse_args(argv)
         images: list[tuple[str, str]] = []
         for pair in args.image:
@@ -757,11 +848,11 @@ class Launcher:
             max_open_files=args.max_open_files,
             oom_score_adj=args.oom_score_adj,
         )
-        launcher = cls(args.template, images, options, limits)
+        launcher = cls(args.template, images, options, limits, channels)
         try:
             return launcher.run(args.mode, args.args)
         except (MountError, OSError, ValueError) as e:
-            print(f"{LauncherMarker.ERROR}{e}", file=sys.stderr)  # noqa: T201
+            WrapOutput.error(str(e))
             return LauncherExit.MOUNT_ERROR
 
     def run(self, mode: LauncherMode, op_args: list[str]) -> int:
@@ -844,10 +935,13 @@ class Launcher:
             FuseMounter.set_pdeathsig()
             self._limits.apply_to_current_process()
 
+        # каналы стадии едут вниз с теми же номерами: их сообщил env верхней ступени
+        pass_fds = self._store.lock_fds + self._channels.pass_fds
+
         return subprocess.call(  # noqa: S603
             argv,
             shell=False,
-            pass_fds=self._store.lock_fds,
+            pass_fds=pass_fds,
             preexec_fn=prepare_child,
         )
 
@@ -906,13 +1000,201 @@ def require_fuse() -> None:
     """Проверяет предпосылки монтирования образов; падает громко и сразу."""
     if not os.path.exists(FUSE_DEVICE):
         msg = f"workspace: fuse is required, but {FUSE_DEVICE} is missing"
-        raise RuntimeError(msg)
+        raise MountError(msg)
     if shutil.which("fuse2fs") is None:
         msg = "workspace: fuse2fs not found in PATH"
-        raise RuntimeError(msg)
+        raise MountError(msg)
     if shutil.which("bwrap") is None:
         msg = "workspace: bwrap not found in PATH"
-        raise RuntimeError(msg)
+        raise MountError(msg)
+
+
+@dataclass(frozen=True)
+class ChainChannelArgv:
+    """Канальная сборка fuse-цепочки: опции внешнего bwrap уезжают в wrap_args.
+
+    В argv остаётся `bwrap --args FD -- python -m launcher …`: профиль внешней
+    ступени (бинды, setenv, пути образов) не виден в ps и не упирается в
+    MAX_ARG_STRLEN.
+    """
+
+    BWRAP_BIN: ClassVar[str] = "bwrap"
+
+    argv: tuple[str, ...]
+    bwrap_options: tuple[str, ...]
+
+    @classmethod
+    def build(  # noqa: PLR0913
+        cls,
+        *,
+        images: Sequence[tuple[str, str]],
+        template: str,
+        op: Sequence[str],
+        python_bin: str,
+        options: LauncherOptions,
+        limits: ResourceLimits,
+        wrap_args_fd: int,
+        rw_paths: Sequence[str],
+        network: bool,
+        channel_env: Mapping[str, str] | None,
+    ) -> ChainChannelArgv:
+        """channel_env — пары `Channel.env_name` без wrap_args: его вычитывает
+        --args внешнего bwrap, вниз по цепочке канал не передаётся."""
+        bwrap_path = cls._bwrap_path(cls.BWRAP_BIN)
+        pairs = cls._absolute_images(images)
+
+        bwrap_options = cls._bwrap_options(
+            pairs, rw_paths=rw_paths, network=network, channel_env=channel_env
+        )
+        tail = cls._launcher_argv(
+            python_bin=python_bin,
+            template=template,
+            options=options,
+            limits=limits,
+            images=pairs,
+            op=op,
+        )
+
+        argv = (bwrap_path, "--args", str(wrap_args_fd), "--", *tail)
+
+        return cls(argv=argv, bwrap_options=tuple(bwrap_options))
+
+    @staticmethod
+    def _bwrap_path(bwrap_bin: str) -> str:
+        bwrap_path = shutil.which(bwrap_bin)
+        if not bwrap_path:
+            msg = f"workspace: {bwrap_bin!r} not found in PATH"
+            raise MountError(msg)
+
+        return bwrap_path
+
+    @staticmethod
+    def _absolute_images(images: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Корень песочницы read-only: относительные пути приводим к абсолютным."""
+        absolute: list[tuple[str, str]] = []
+        for image, mnt in images:
+            absolute.append((os.path.abspath(image), os.path.abspath(mnt)))
+
+        return absolute
+
+    @staticmethod
+    def _bwrap_options(
+        images: Sequence[tuple[str, str]],
+        *,
+        rw_paths: Sequence[str],
+        network: bool,
+        channel_env: Mapping[str, str] | None,
+    ) -> list[str]:
+        """CAP_SYS_ADMIN только в userns; --disable-userns несовместим с mount fuse.
+
+        channel_env — номера каналов через --setenv: --clearenv стирает окружение.
+        """
+        options = [
+            "--die-with-parent",
+            "--unshare-user",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--cap-add",
+            "CAP_SYS_ADMIN",
+            # CAP_SYS_RESOURCE (в userns) — право обнулить max_user_namespaces
+            "--cap-add",
+            "CAP_SYS_RESOURCE",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup-try",
+            "--hostname",
+            "sandbox",
+            "--new-session",
+            "--ro-bind",
+            "/",
+            "/",
+        ]
+
+        writable: list[str] = []
+        for image, mnt in images:
+            writable.append(os.path.dirname(image))
+            writable.append(os.path.dirname(mnt))
+        for path in rw_paths:
+            writable.append(os.path.abspath(path))
+        for path in dict.fromkeys(writable):
+            options += ["--bind", path, path]
+
+        options += [
+            "--dev",
+            "/dev",
+            "--dev-bind",
+            FUSE_DEVICE,
+            FUSE_DEVICE,
+            "--proc",
+            "/proc",
+            "--clearenv",
+            "--setenv",
+            "PATH",
+            os.environ.get("PATH", "/usr/bin:/bin"),
+        ]
+
+        for name in LauncherEnv:
+            value = os.environ.get(name.value)
+            if not value:
+                continue
+            options += ["--setenv", name.value, value]
+
+        if channel_env:
+            for env_name, env_value in channel_env.items():
+                options += ["--setenv", env_name, env_value]
+
+        if not network:
+            options.append("--unshare-net")
+
+        return options
+
+    @staticmethod
+    def _launcher_argv(  # noqa: PLR0913
+        *,
+        python_bin: str,
+        template: str,
+        options: LauncherOptions,
+        limits: ResourceLimits,
+        images: Sequence[tuple[str, str]],
+        op: Sequence[str],
+    ) -> list[str]:
+        argv = [
+            python_bin,
+            "-m",
+            _LAUNCHER_MODULE,
+            "--template",
+            template,
+            "--mount-wait-sec",
+            str(options.mount_wait_sec),
+            "--mount-poll-sec",
+            str(options.mount_poll_sec),
+            "--shutdown-wait-sec",
+            str(options.shutdown_wait_sec),
+            "--lock-wait-sec",
+            str(options.lock_wait_sec),
+            "--copy-chunk-bytes",
+            str(options.copy_chunk_bytes),
+            "--max-memory-bytes",
+            str(limits.max_memory_bytes),
+            "--max-cpu-sec",
+            str(limits.max_cpu_sec),
+            "--max-file-size-bytes",
+            str(limits.max_file_size_bytes),
+            "--max-open-files",
+            str(limits.max_open_files),
+            "--oom-score-adj",
+            str(limits.oom_score_adj),
+        ]
+
+        for image, mnt in images:
+            argv += ["--image", image, mnt]
+
+        argv += list(op)
+
+        return argv
 
 
 def build_chain_argv(  # noqa: PLR0913
@@ -926,101 +1208,31 @@ def build_chain_argv(  # noqa: PLR0913
     rw_paths: Sequence[str] = (),
     network: bool = False,
     bwrap_bin: str = "bwrap",
+    channel_env: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """images — пары (образ, mountpoint); op — run/write/read/delete + аргумент.
-    CAP_SYS_ADMIN только в userns; --disable-userns несовместим с mount fuse."""
-    bwrap_path = shutil.which(bwrap_bin)
-    if not bwrap_path:
-        msg = f"workspace: {bwrap_bin!r} not found in PATH"
-        raise RuntimeError(msg)
-    # корень песочницы read-only: относительные пути приводим к абсолютным
-    absolute: list[tuple[str, str]] = []
-    for image, mnt in images:
-        absolute.append((os.path.abspath(image), os.path.abspath(mnt)))
-    images = absolute
-    argv = [
-        bwrap_path,
-        "--die-with-parent",
-        "--unshare-user",
-        "--uid",
-        "0",
-        "--gid",
-        "0",
-        "--cap-add",
-        "CAP_SYS_ADMIN",
-        # CAP_SYS_RESOURCE (в userns) — право обнулить max_user_namespaces
-        "--cap-add",
-        "CAP_SYS_RESOURCE",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--unshare-cgroup-try",
-        "--hostname",
-        "sandbox",
-        "--new-session",
-        "--ro-bind",
-        "/",
-        "/",
-    ]
-    writable: list[str] = []
-    for image, mnt in images:
-        writable.append(os.path.dirname(image))
-        writable.append(os.path.dirname(mnt))
-    for path in rw_paths:
-        writable.append(os.path.abspath(path))
-    for path in dict.fromkeys(writable):
-        argv += ["--bind", path, path]
-    argv += [
-        "--dev",
-        "/dev",
-        "--dev-bind",
-        FUSE_DEVICE,
-        FUSE_DEVICE,
-        "--proc",
-        "/proc",
-        "--clearenv",
-        "--setenv",
-        "PATH",
-        os.environ.get("PATH", "/usr/bin:/bin"),
-    ]
-    for name in LauncherEnv:
-        value = os.environ.get(name.value)
-        if not value:
-            continue
-        argv += ["--setenv", name.value, value]
-    if not network:
-        argv.append("--unshare-net")
-    argv += [
-        "--",
-        python_bin,
-        "-m",
-        _LAUNCHER_MODULE,
-        "--template",
-        template,
-        "--mount-wait-sec",
-        str(options.mount_wait_sec),
-        "--mount-poll-sec",
-        str(options.mount_poll_sec),
-        "--shutdown-wait-sec",
-        str(options.shutdown_wait_sec),
-        "--lock-wait-sec",
-        str(options.lock_wait_sec),
-        "--copy-chunk-bytes",
-        str(options.copy_chunk_bytes),
-        "--max-memory-bytes",
-        str(limits.max_memory_bytes),
-        "--max-cpu-sec",
-        str(limits.max_cpu_sec),
-        "--max-file-size-bytes",
-        str(limits.max_file_size_bytes),
-        "--max-open-files",
-        str(limits.max_open_files),
-        "--oom-score-adj",
-        str(limits.oom_score_adj),
-    ]
-    for image, mnt in images:
-        argv += ["--image", image, mnt]
-    argv += list(op)
+    """Старая сборка цепочки: опции внешнего bwrap остаются в argv.
+
+    images — пары (образ, mountpoint); op — run/write/read/delete + аргумент.
+    Умирает вместе с кадровым протоколом на этапе 3; канальный путь собирает
+    `ChainChannelArgv.build`.
+    """
+    bwrap_path = ChainChannelArgv._bwrap_path(bwrap_bin)  # noqa: SLF001
+    pairs = ChainChannelArgv._absolute_images(images)  # noqa: SLF001
+
+    argv = [bwrap_path]
+    argv += ChainChannelArgv._bwrap_options(  # noqa: SLF001
+        pairs, rw_paths=rw_paths, network=network, channel_env=channel_env
+    )
+    argv.append("--")
+    argv += ChainChannelArgv._launcher_argv(  # noqa: SLF001
+        python_bin=python_bin,
+        template=template,
+        options=options,
+        limits=limits,
+        images=pairs,
+        op=op,
+    )
+
     return argv
 
 
@@ -1029,7 +1241,7 @@ def render_image_path(template: str, variables: Mapping[str, str]) -> str:
         return template.format_map(dict(variables))
     except KeyError as e:
         msg = f"workspace: variable {{{e.args[0]}}} in path {template!r} is not defined"
-        raise RuntimeError(msg) from e
+        raise MountError(msg) from e
 
 
 class LauncherConfig(BaseModel):

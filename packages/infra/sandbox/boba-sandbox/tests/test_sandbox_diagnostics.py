@@ -13,7 +13,7 @@ import pytest
 
 from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.diagnostics import SandboxDiagnostics
-from boba.sandbox.process_runner import RunResult
+from boba.toolkit.launcher import RunResult
 from boba.sandbox.profile import SandboxProfile
 from boba.tool.shell.tools import build_bash_tool
 from boba.workspace.launcher import FUSE_DEVICE

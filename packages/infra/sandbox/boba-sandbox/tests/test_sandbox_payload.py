@@ -18,7 +18,7 @@ from boba.sandbox import (
     SandboxProfile,
 )
 from boba.sandbox.caller import SandboxFrameDecoder
-from boba.sandbox.process_runner import RunResult
+from boba.toolkit.launcher import RunResult
 from boba.toolkit.launcher import (
     LauncherError,
     NoChunks,
