@@ -21,7 +21,7 @@ from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.launcher import LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
-from boba.toolkit.stream import ToolStreamBuffer, ToolStreamTap
+from boba.toolkit.stream import StreamSink, ToolStreamTap
 from boba.workspace.launcher import (
     LauncherExit,
     LauncherMarker,
@@ -52,14 +52,18 @@ logger = logging.getLogger(__name__)
 
 
 class SandboxLogRelay:
-    """Логи payload'а из stderr в общий журнал: видно инструмент и уровень.
+    """Кадры `sandbox-log:` из stderr в общий журнал: инструмент и уровень.
+
+    Сырые строки stderr в журнал приложения не идут — их пишет журнал вывода
+    инструмента (tee); здесь остаются только структурные кадры payload'а и
+    лаунчера.
 
     Пользователь в записи попадает сам — его подставляет фабрика записей
     приложения, а релей работает в контексте вызвавшего инструмента.
     """
 
     NOISE_LEVEL: ClassVar[int] = logging.DEBUG
-    """Уровень для сырых строк stderr: варнинги библиотек, трейсбеки."""
+    """Уровень для битых кадров лога: аномалия payload'а, не вывод."""
 
     def __init__(self, label: str, tee: Callable[[str], None]) -> None:
         self._label = label
@@ -100,7 +104,6 @@ class SandboxLogRelay:
             self._tee(body)
             return
         if line.strip():
-            logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, line)
             self._tee(line)
 
     def _log_frame(self, body: str) -> None:
@@ -215,7 +218,7 @@ class SandboxRunner:
         return self._tool
 
     @staticmethod
-    def _stream_tee(tap: ToolStreamBuffer | None) -> Callable[[str], None]:
+    def _stream_tee(tap: StreamSink | None) -> Callable[[str], None]:
         """Строки stderr в окно живого вывода; без тапа — некуда."""
 
         def tee(line: str) -> None:

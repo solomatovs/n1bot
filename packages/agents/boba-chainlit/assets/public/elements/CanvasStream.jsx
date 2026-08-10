@@ -1,35 +1,55 @@
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { ScrollText } from "lucide-react";
+import { useEffect, useRef } from "react";
 
-// Малозаметная иконка у шага инструмента: клик открывает живой вывод этого
-// вызова в панели. После конца хода панель объяснит, что поток недоступен.
+// Иконка scroll-text из lucide: раннер кастом-элементов не отдаёт react-dom,
+// портала нет — кнопка вставляется в заголовок шага готовым DOM-узлом.
+const ICON =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" ' +
+  'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/>' +
+  '<path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>' +
+  "</svg>";
+
+// Малозаметная кнопка живого вывода на строке заголовка шага инструмента:
+// клик открывает поток в панели, не сворачивая шаг. Контент шага при
+// сворачивании размонтируется — кнопка живёт, пока шаг раскрыт.
 export default function CanvasStream() {
-  const [busy, setBusy] = useState(false);
+  const hostRef = useRef(null);
 
-  const open = async () => {
-    setBusy(true);
-    try {
-      await callAction({
-        name: "canvas_stream",
-        payload: { call_id: props.call_id },
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
 
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="h-6 w-6 opacity-50 hover:opacity-100"
-      onClick={open}
-      disabled={busy}
-      title={`Живой вывод: ${props.label || props.call_id}`}
-      aria-label="Показать вывод инструмента"
-    >
-      <ScrollText className="h-4 w-4" />
-    </Button>
-  );
+    const content = host.closest("[data-state]");
+    const item = content && content.parentElement;
+    const trigger = item && item.querySelector('[id^="step-"]');
+    if (!trigger) return;
+
+    const button = document.createElement("span");
+    button.className =
+      "inline-flex items-center justify-center h-6 w-6 rounded-md " +
+      "opacity-50 hover:opacity-100 hover:bg-accent cursor-pointer";
+    button.title = `Живой вывод: ${props.label || props.call_id}`;
+    button.setAttribute("role", "button");
+    button.setAttribute("aria-label", "Показать вывод инструмента");
+    button.innerHTML = ICON;
+
+    const open = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      callAction({ name: "canvas_stream", payload: { call_id: props.call_id } });
+    };
+    const swallow = (event) => event.stopPropagation();
+    button.addEventListener("click", open);
+    button.addEventListener("pointerdown", swallow);
+    trigger.appendChild(button);
+
+    return () => {
+      button.removeEventListener("click", open);
+      button.removeEventListener("pointerdown", swallow);
+      button.remove();
+    };
+  }, []);
+
+  return <span ref={hostRef} className="hidden" />;
 }

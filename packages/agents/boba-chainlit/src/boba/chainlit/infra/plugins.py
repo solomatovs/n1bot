@@ -228,6 +228,17 @@ def _build_canvas_tools(
     return build_canvas_tools(cfg)
 
 
+def _build_stream_logs_tools(
+    cfg: None,
+    launchers: LauncherFactory,
+) -> list[BaseTool]:
+    from boba.chainlit.agent.tools.stream_logs import (  # noqa: PLC0415
+        build_stream_logs_tools,
+    )
+
+    return build_stream_logs_tools(cfg)
+
+
 def _sandbox_path_vars() -> dict[str, str]:
     """Значения {user_id}/{thread_id} для путей профиля на момент вызова."""
     values = {"user_id": current_user_id(), "thread_id": current_thread_id()}
@@ -279,6 +290,11 @@ _PLUGINS: dict[str, ToolPlugin] = {
         section="canvas",
         config_model=CanvasToolConfig,
         build=_build_canvas_tools,
+        sandboxed=False,
+    ),
+    "stream_logs": ToolPlugin(
+        section="stream_logs",
+        build=_build_stream_logs_tools,
         sandboxed=False,
     ),
     "pg": ToolPlugin(

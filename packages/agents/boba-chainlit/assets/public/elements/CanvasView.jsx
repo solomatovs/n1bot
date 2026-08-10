@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
 import {
   Dialog,
@@ -8,7 +8,16 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { FileQuestion, Maximize2, Minus, Plus, RotateCcw, X } from "lucide-react";
+import {
+  ArrowDownToLine,
+  ArrowUpToLine,
+  Download,
+  Maximize2,
+  Minus,
+  Plus,
+  RotateCcw,
+  X,
+} from "lucide-react";
 
 const MERMAID_PATH = "/public/vendor/mermaid/mermaid.min.js";
 const SWITCH_EVENT = "boba:canvas";
@@ -72,16 +81,135 @@ function fitSvg(markup) {
   return markup.replace(opening[0], tag);
 }
 
-// Пан/зум-обёртка над готовым SVG; своё состояние на каждый вьюпорт.
-// wheelZoom включают только там, где колесо не отнимает прокрутку страницы.
-function Viewport({ svg, height, children, wheelZoom, grow, inset }) {
+// ——— Единый набор управления для всех типов канваса ———
+// Один стиль кнопки, один ряд-тулбар, одна обёртка «на весь экран»: любой
+// вьювер собирает свои кнопки из этих кубиков, отступить от общего вида нельзя.
+
+function ToolButton({ onClick, title, children }) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+    >
+      {children}
+    </Button>
+  );
+}
+
+// Единая шапка сцены: один ряд кнопок в панели и на весь экран, закрытие
+// всегда последнее справа. Клики по шапке не всплывают в карточку.
+function StageBar({ full, status, children }) {
+  const stop = (event) => event.stopPropagation();
+  return (
+    <div
+      className="flex-shrink-0 flex items-center gap-1 py-4 px-6 border-b border-border bg-card"
+      onClick={stop}
+      onPointerDown={stop}
+    >
+      <div className="flex-1 min-w-0 truncate text-[11px] text-muted-foreground/80">
+        {status}
+      </div>
+      {children}
+      <TrailButton full={full} />
+    </div>
+  );
+}
+
+// Сцена: шапка сверху, тело занимает остаток и прокручивается само — шапка
+// не уезжает ни в панели, ни на весь экран.
+function Stage({ full, status, bar, children }) {
+  return (
+    <div
+      className={
+        "relative flex flex-col w-full overflow-hidden" +
+        (full ? "" : " flex-1 min-h-0 h-full")
+      }
+      style={{ height: full ? "80vh" : undefined }}
+    >
+      <StageBar full={full} status={status}>
+        {bar}
+      </StageBar>
+      {children}
+    </div>
+  );
+}
+
+// Замыкающие кнопки ряда — как в полноэкранном режиме: закрытие всегда
+// последнее справа. В панели перед ним «на весь экран», а закрывает панель
+// клик по спрятанному родному «назад» chainlit — его состояние живёт там.
+function TrailButton({ full }) {
+  if (full) {
+    return (
+      <DialogClose asChild>
+        <Button variant="ghost" size="icon" title="Закрыть" aria-label="Закрыть">
+          <X />
+        </Button>
+      </DialogClose>
+    );
+  }
+
+  const closePanel = () => {
+    const back = document.querySelector("#side-view-title button");
+    if (back) back.click();
+  };
+
+  return (
+    <>
+      <DialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Во весь экран"
+          aria-label="Во весь экран"
+        >
+          <Maximize2 />
+        </Button>
+      </DialogTrigger>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={closePanel}
+        title="Закрыть"
+        aria-label="Закрыть"
+      >
+        <X />
+      </Button>
+    </>
+  );
+}
+
+// Обёртка «на весь экран» для любого содержимого: панельный и полноэкранный
+// варианты живут в одном Dialog. render(full) отдаёт тело с его тулбаром;
+// полноэкранное тело радикс монтирует только при открытии.
+function Fullscreen({ label, children }) {
+  return (
+    <Dialog>
+      {children(false)}
+      <DialogContent className="canvas-fullscreen max-w-[90vw] max-h-[85vh] p-0 overflow-hidden">
+        {/* радиксовый close отдельной кнопкой ломает единый ряд — прячем его,
+            закрытие стоит в тулбаре тем же стилем, что и остальные кнопки */}
+        <style>{".canvas-fullscreen > button.absolute{display:none!important;}"}</style>
+        <DialogTitle className="sr-only">{label}</DialogTitle>
+        {children(true)}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Пан/зум-сцена для визуального содержимого (svg диаграммы, картинка). В панели
+// колесо листает страницу, на весь экран — зумит. controls — кнопки типа перед
+// общей замыкающей.
+function ZoomStage({ full, controls, children }) {
   const [view, setView] = useState({ k: 1, x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const boxRef = useRef(null);
   const dragRef = useRef(null);
 
   useEffect(() => {
-    if (!wheelZoom) return;
+    if (!full) return;
     const box = boxRef.current;
     if (!box) return;
     const onWheel = (e) => {
@@ -100,7 +228,7 @@ function Viewport({ svg, height, children, wheelZoom, grow, inset }) {
     };
     box.addEventListener("wheel", onWheel, { passive: false });
     return () => box.removeEventListener("wheel", onWheel);
-  }, [wheelZoom]);
+  }, [full]);
 
   const onPointerDown = (e) => {
     if (e.target.closest("button")) return;
@@ -121,42 +249,131 @@ function Viewport({ svg, height, children, wheelZoom, grow, inset }) {
   const zoomOut = () => setView((v) => ({ ...v, k: Math.max(0.25, v.k / 1.25) }));
   const reset = () => setView({ k: 1, x: 0, y: 0 });
 
+  const bar = (
+    <>
+      <ToolButton onClick={zoomIn} title="Приблизить">
+        <Plus />
+      </ToolButton>
+      <ToolButton onClick={zoomOut} title="Отдалить">
+        <Minus />
+      </ToolButton>
+      <ToolButton onClick={reset} title="Сбросить вид">
+        <RotateCcw />
+      </ToolButton>
+      {controls}
+    </>
+  );
+
   return (
-    <div
-      ref={boxRef}
-      className={
-        "relative overflow-hidden select-none touch-none w-full" +
-        (grow ? " flex-1 min-h-0" : "")
-      }
-      style={{ height, cursor: dragging ? "grabbing" : "grab" }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-    >
+    <Stage full={full} bar={bar}>
       <div
-        className="w-full h-full"
-        style={{
-          transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`,
-          transformOrigin: "0 0",
-        }}
-        // единственное исключение: сюда попадает только вывод mermaid.render
-        dangerouslySetInnerHTML={{ __html: svg }}
-      />
-      <div className={"absolute z-10 flex gap-1 top-4 " + (inset ? "" : "right-4")}
-           style={inset ? { right: inset } : undefined}>
-        <Button variant="ghost" size="icon" onClick={zoomIn} title="Приблизить" aria-label="Приблизить">
-          <Plus />
-        </Button>
-        <Button variant="ghost" size="icon" onClick={zoomOut} title="Отдалить" aria-label="Отдалить">
-          <Minus />
-        </Button>
-        <Button variant="ghost" size="icon" onClick={reset} title="Сбросить вид" aria-label="Сбросить вид">
-          <RotateCcw />
-        </Button>
-        {children}
+        ref={boxRef}
+        className="relative overflow-hidden select-none touch-none w-full flex-1 min-h-0"
+        style={{ cursor: dragging ? "grabbing" : "grab" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        <div
+          className="w-full h-full"
+          style={{
+            transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`,
+            transformOrigin: "0 0",
+          }}
+        >
+          {children}
+        </div>
       </div>
-    </div>
+    </Stage>
+  );
+}
+
+// Скролл-сцена для текстового содержимого (лог, поток, markdown): размер шрифта
+// теми же кнопками. stick держит низ при доливе строк — прокрутка правится до
+// кадра (useLayoutEffect), поэтому новая строка не дёргает вьюпорт.
+function ScrollStage({
+  full,
+  stick,
+  deps,
+  render,
+  controls,
+  status,
+  boxRef: outerBoxRef,
+  onEdge,
+}) {
+  const localBoxRef = useRef(null);
+  const boxRef = outerBoxRef || localBoxRef;
+  const stickRef = useRef(true);
+  const [fontPx, setFontPx] = useState(12);
+
+  const onScroll = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    stickRef.current = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+
+    // непрерывная прокрутка: у кромки владелец подтягивает соседнее окно
+    if (!onEdge) return;
+    if (box.scrollTop < 200) {
+      onEdge("top");
+      return;
+    }
+    if (box.scrollHeight - box.scrollTop - box.clientHeight < 200) {
+      onEdge("bottom");
+    }
+  };
+
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    // без прилипания новое содержимое читается с начала окна
+    if (!stick) {
+      box.scrollTop = 0;
+      return;
+    }
+    if (!stickRef.current) return;
+    box.scrollTop = box.scrollHeight;
+  }, [stick, fontPx, ...deps]);
+
+  const bigger = () => setFontPx((size) => Math.min(24, size + 2));
+  const smaller = () => setFontPx((size) => Math.max(8, size - 2));
+  const reset = () => setFontPx(12);
+
+  const bar = (
+    <>
+      <ToolButton onClick={bigger} title="Крупнее">
+        <Plus />
+      </ToolButton>
+      <ToolButton onClick={smaller} title="Мельче">
+        <Minus />
+      </ToolButton>
+      <ToolButton onClick={reset} title="Сбросить размер">
+        <RotateCcw />
+      </ToolButton>
+      {controls}
+    </>
+  );
+
+  return (
+    <Stage full={full} status={status} bar={bar}>
+      <div
+        ref={boxRef}
+        onScroll={stick || onEdge ? onScroll : undefined}
+        className="flex-1 min-h-0 overflow-auto p-3"
+      >
+        {render(fontPx)}
+      </div>
+    </Stage>
+  );
+}
+
+// Родное содержимое (pdf/видео/аудио) со своими контролами: над ним только
+// общая шапка с «на весь экран» / «закрыть».
+function NativeStage({ full, children }) {
+  return (
+    <Stage full={full}>
+      {children}
+    </Stage>
   );
 }
 
@@ -250,32 +467,243 @@ function Diagram({ content }) {
           отрисовка диаграммы…
         </div>
       ) : (
-        <Dialog>
-          {/* панель отдаёт всю высоту; колесо здесь листает страницу */}
-          <Viewport grow wheelZoom={false} svg={svg}>
-            <DialogTrigger asChild>
-              <Button variant="ghost" size="icon" title="Во весь экран" aria-label="Во весь экран">
-                <Maximize2 />
-              </Button>
-            </DialogTrigger>
-          </Viewport>
-          <DialogContent className="canvas-fullscreen max-w-[90vw] max-h-[85vh] p-0 overflow-hidden">
-            {/* радиксовый close отдельной кнопкой ломает единый ряд управления:
-                прячем его и ставим закрытие в тот же ряд, что +/-/сброс */}
-            <style>{".canvas-fullscreen > button.absolute{display:none!important;}"}</style>
-            {/* заголовок нужен radix для доступности, но строку он не занимает */}
-            <DialogTitle className="sr-only">{content.label}</DialogTitle>
-            <Viewport svg={svg} height="80vh" wheelZoom>
-              <DialogClose asChild>
-                <Button variant="ghost" size="icon" title="Закрыть" aria-label="Закрыть">
-                  <X />
-                </Button>
-              </DialogClose>
-            </Viewport>
-          </DialogContent>
-        </Dialog>
+        <Fullscreen label={content.label}>
+          {(full) => (
+            <ZoomStage full={full}>
+              <div
+                className="w-full h-full"
+                // единственное исключение: сюда попадает только вывод mermaid.render
+                dangerouslySetInnerHTML={{ __html: svg }}
+              />
+            </ZoomStage>
+          )}
+        </Fullscreen>
       )}
     </div>
+  );
+}
+
+function ImageView({ content }) {
+  return (
+    <Fullscreen label={content.label}>
+      {(full) => (
+        <ZoomStage full={full}>
+          <img
+            src={content.url}
+            alt={content.label}
+            draggable={false}
+            className="w-full h-full object-contain pointer-events-none"
+          />
+        </ZoomStage>
+      )}
+    </Fullscreen>
+  );
+}
+
+// Поток журнала: сервер пушит хвост окна; кнопка скачивает весь .log тем же
+// файловым роутом. В окно во фронт целиком файл любого размера не попадает.
+// Поток журнала как less: непрерывная прокрутка окнами, файла в DOM целиком
+// нет. Пока держимся низа живого вывода, кадры хвоста шлёт насос (follow);
+// прокрутка вверх переводит в browse — цепочку окон встык, соседние
+// подтягиваются у кромок, дальний край подрезается. Докрутил обратно до
+// конца живого файла — снова follow.
+function StreamTail({ content }) {
+  const MAX_SEGMENTS = 8;
+
+  const [view, setView] = useState(content);
+  const [chain, setChain] = useState(null);
+  const boxRef = useRef(null);
+  const busyRef = useRef(false);
+  const anchorRef = useRef(null);
+
+  // пуш с сервера (открытие, «в начало», «в конец», кадры насоса) задаёт
+  // новую точку отсчёта: накопленная цепочка окон устаревает
+  useEffect(() => {
+    setView(content);
+    setChain(null);
+  }, [content.nonce]);
+
+  const callId = (content.path || "").replace("stream://", "");
+  const pos = view.stream || {
+    offset: 0, end: 0, size: 0, window: 65536, closed: true,
+  };
+  const browsing = chain !== null;
+
+  const current = () => {
+    if (chain) return chain;
+    return {
+      segments: [{ offset: pos.offset, end: pos.end, text: view.text || "" }],
+      size: pos.size,
+      closed: pos.closed,
+    };
+  };
+
+  const segOf = (answer) => ({
+    offset: answer.stream.offset,
+    end: answer.stream.end,
+    text: answer.text || "",
+  });
+
+  const fetchWindow = async (payload) => {
+    const answer = await callAction({
+      name: "canvas_stream_window",
+      payload: { call_id: callId, ...payload },
+    });
+    const next = answer && answer.response;
+    if (!next || !next.stream) return null;
+    return next;
+  };
+
+  const loadBefore = async () => {
+    const cur = current();
+    const first = cur.segments[0];
+    if (first.offset <= 0) return;
+
+    busyRef.current = true;
+    try {
+      const next = await fetchWindow({ before: first.offset });
+      if (!next) return;
+      const box = boxRef.current;
+      anchorRef.current = box ? box.scrollHeight - box.scrollTop : null;
+      setChain({
+        segments: [segOf(next), ...cur.segments],
+        size: next.stream.size,
+        closed: next.stream.closed,
+      });
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
+  const backToLive = () => {
+    setChain(null);
+    callAction({ name: "canvas_stream", payload: { call_id: callId } });
+  };
+
+  const loadAfter = async () => {
+    const cur = current();
+    // не догружает вниз только follow-хвост живого вывода — его шлёт насос;
+    // любое окно не у хвоста (живое или закрытое) листается дальше
+    if (!chain && !pos.closed && pos.end >= pos.size) return;
+    const last = cur.segments[cur.segments.length - 1];
+
+    busyRef.current = true;
+    try {
+      if (last.end >= cur.size) {
+        if (!cur.closed) backToLive();
+        return;
+      }
+      const next = await fetchWindow({ offset: last.end });
+      if (!next || next.stream.end <= last.end) {
+        if (!cur.closed) backToLive();
+        return;
+      }
+      setChain({
+        segments: [...cur.segments, segOf(next)],
+        size: next.stream.size,
+        closed: next.stream.closed,
+      });
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
+  const onEdge = (direction) => {
+    if (busyRef.current) return;
+    if (direction === "top") {
+      loadBefore();
+      return;
+    }
+    loadAfter();
+  };
+
+  // компенсация prepend: контент вырос сверху, позиция держится якорем от низа
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const anchor = anchorRef.current;
+    if (!box || anchor == null) return;
+    anchorRef.current = null;
+    box.scrollTop = box.scrollHeight - anchor;
+  }, [chain]);
+
+  // подрезка дальнего края отдельным тиком: обрезка снизу позицию не трогает,
+  // обрезка сверху компенсируется тем же якорем от низа
+  useEffect(() => {
+    if (!chain || chain.segments.length <= MAX_SEGMENTS) return;
+    const box = boxRef.current;
+    const nearTop = box && box.scrollTop < box.clientHeight;
+    if (nearTop) {
+      setChain({ ...chain, segments: chain.segments.slice(0, MAX_SEGMENTS) });
+      return;
+    }
+    anchorRef.current = box ? box.scrollHeight - box.scrollTop : null;
+    setChain({ ...chain, segments: chain.segments.slice(-MAX_SEGMENTS) });
+  }, [chain]);
+
+  const shown = current();
+  const text = browsing
+    ? shown.segments.map((segment) => segment.text).join("")
+    : view.text || " ";
+  // прилипание к низу — только когда показан хвост живого вывода
+  const live = !browsing && !pos.closed && pos.end >= pos.size;
+
+  // «в начало» и «в конец» — пуши сервера: цепочка окон сбрасывается пушем
+  const toStart = () =>
+    callAction({ name: "canvas_stream", payload: { call_id: callId } });
+  const toEnd = () =>
+    callAction({
+      name: "canvas_stream",
+      payload: { call_id: callId, follow: true },
+    });
+
+  // скачивание — тем же роутом отдачи файлов; сервер шлёт весь .log целиком
+  const download = () => {
+    if (!view.url) return;
+    const link = document.createElement("a");
+    link.href = view.url;
+    link.download = `${view.label || callId || "output"}.log`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  const controls = (
+    <>
+      <ToolButton onClick={toStart} title="В начало файла">
+        <ArrowUpToLine />
+      </ToolButton>
+      <ToolButton onClick={toEnd} title="В конец файла, следить за выводом">
+        <ArrowDownToLine />
+      </ToolButton>
+      {view.url ? (
+        <ToolButton onClick={download} title="Скачать вывод">
+          <Download />
+        </ToolButton>
+      ) : null}
+    </>
+  );
+
+  return (
+    <Fullscreen label={view.label}>
+      {(full) => (
+        <ScrollStage
+          full={full}
+          stick={live}
+          deps={browsing ? [] : [view.text, view.nonce]}
+          boxRef={boxRef}
+          onEdge={onEdge}
+          controls={controls}
+          render={(fontPx) => (
+            <pre
+              className="font-mono whitespace-pre-wrap break-words"
+              style={{ fontSize: fontPx }}
+            >
+              {text}
+            </pre>
+          )}
+        />
+      )}
+    </Fullscreen>
   );
 }
 
@@ -312,11 +740,21 @@ function TextFile({ content }) {
   }
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto p-3">
-      <Markdown allowHtml={false} latex={false}>
-        {text}
-      </Markdown>
-    </div>
+    <Fullscreen label={content.label}>
+      {(full) => (
+        <ScrollStage
+          full={full}
+          deps={[text]}
+          render={(fontPx) => (
+            <div style={{ fontSize: fontPx }}>
+              <Markdown allowHtml={false} latex={false}>
+                {text}
+              </Markdown>
+            </div>
+          )}
+        />
+      )}
+    </Fullscreen>
   );
 }
 
@@ -352,67 +790,13 @@ function SourceLink({ content }) {
 }
 
 
+// Без шапки: иконка с именем налезали бы на кнопку закрытия панели слева
+// сверху. Текст по центру — сам объясняет, почему содержимого нет.
 function Notice({ content }) {
   return (
-    <div className="flex flex-col gap-2 p-3">
-      <div className="flex items-center gap-2 text-sm font-medium">
-        <FileQuestion />
-        <span className="truncate">{content.label}</span>
-      </div>
-      <div className="text-xs text-muted-foreground">{content.note}</div>
-    </div>
-  );
-}
-
-// Живой вывод инструмента: хвост окна без шапки, кнопки размера шрифта
-// поверх — как кнопки зума у диаграммы. Держится за низ, пока пользователь
-// сам не отмотал вверх.
-function StreamTail({ content }) {
-  const boxRef = useRef(null);
-  const stickRef = useRef(true);
-  const [fontPx, setFontPx] = useState(12);
-
-  const onScroll = () => {
-    const box = boxRef.current;
-    if (!box) return;
-    stickRef.current =
-      box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-  };
-
-  useEffect(() => {
-    const box = boxRef.current;
-    if (!box || !stickRef.current) return;
-    box.scrollTop = box.scrollHeight;
-  }, [content.text, content.nonce]);
-
-  const bigger = () => setFontPx((size) => Math.min(24, size + 2));
-  const smaller = () => setFontPx((size) => Math.max(8, size - 2));
-  const reset = () => setFontPx(12);
-
-  return (
-    <div className="flex-1 min-h-0 flex flex-col relative">
-      <div className="absolute z-10 flex gap-1 top-4 right-4">
-        <Button variant="ghost" size="icon" onClick={bigger} title="Крупнее" aria-label="Крупнее">
-          <Plus />
-        </Button>
-        <Button variant="ghost" size="icon" onClick={smaller} title="Мельче" aria-label="Мельче">
-          <Minus />
-        </Button>
-        <Button variant="ghost" size="icon" onClick={reset} title="Сбросить размер" aria-label="Сбросить размер">
-          <RotateCcw />
-        </Button>
-      </div>
-      <div
-        ref={boxRef}
-        onScroll={onScroll}
-        className="flex-1 min-h-0 overflow-auto p-3"
-      >
-        <pre
-          className="font-mono whitespace-pre-wrap break-words"
-          style={{ fontSize: fontPx }}
-        >
-          {content.text || " "}
-        </pre>
+    <div className="flex-1 min-h-0 flex items-center justify-center p-6">
+      <div className="max-w-md text-center text-sm text-muted-foreground">
+        {content.note}
       </div>
     </div>
   );
@@ -423,34 +807,32 @@ function Body({ content }) {
     case "mermaid":
       return <Diagram content={content} />;
     case "image":
-      return (
-        <div className="flex-1 min-h-0 flex items-center justify-center p-2">
-          <img
-            src={content.url}
-            alt={content.label}
-            className="max-w-full max-h-full object-contain"
-          />
-        </div>
-      );
+      return <ImageView content={content} />;
     case "pdf":
       return (
-        <iframe
-          src={content.url}
-          title={content.label}
-          className="flex-1 min-h-0 w-full border-0"
-        />
+        <NativeStage>
+          <iframe
+            src={content.url}
+            title={content.label}
+            className="flex-1 min-h-0 w-full border-0"
+          />
+        </NativeStage>
       );
     case "video":
       return (
-        <div className="flex-1 min-h-0 flex items-center justify-center p-2">
-          <video src={content.url} controls className="max-w-full max-h-full" />
-        </div>
+        <NativeStage>
+          <div className="flex-1 min-h-0 flex items-center justify-center p-2">
+            <video src={content.url} controls className="max-w-full max-h-full" />
+          </div>
+        </NativeStage>
       );
     case "audio":
       return (
-        <div className="p-3">
-          <audio src={content.url} controls className="w-full" />
-        </div>
+        <NativeStage>
+          <div className="p-3">
+            <audio src={content.url} controls className="w-full" />
+          </div>
+        </NativeStage>
       );
     case "text":
       return <TextFile content={content} />;
@@ -551,7 +933,18 @@ export default function CanvasView() {
   }
 
   return (
-    <div className="border border-border rounded-lg bg-card overflow-hidden w-full flex-1 min-h-0 flex flex-col relative">
+    <div className="border border-border rounded-lg bg-card overflow-hidden w-full flex-1 min-h-0 h-full flex flex-col relative">
+      {/* Родной заголовок панели спрятан: закрытие живёт в ряду кнопок
+          шапки, как в полноэкранном режиме (клик пробрасывается его кнопке).
+          min-h-0 в flex-цепочке chainlit запирает прокрутку внутри сцены —
+          шапка не уезжает вместе с содержимым */}
+      <style>{`
+        #side-view-title { display: none; }
+        #side-view-content { min-height: 0; }
+        #side-view-content > div {
+          display: flex; flex-direction: column; flex: 1 1 0%; min-height: 0;
+        }
+      `}</style>
       <Body content={content} />
     </div>
   );

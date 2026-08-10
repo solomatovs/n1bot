@@ -276,7 +276,12 @@ class FuseMounter:
     READONLY_OPTIONS: ClassVar[str] = "ro,norecovery"
     """Чтение под разделяемым локом: replay журнала писал бы в образ."""
 
-    def mount(self, image: str, mnt: str, *, readonly: bool) -> None:
+    FAKEROOT_OPTIONS: ClassVar[str] = "fakeroot"
+    """Запись без userns: права внутри образа проверяются как у root."""
+
+    def mount(
+        self, image: str, mnt: str, *, readonly: bool, fakeroot: bool = False
+    ) -> None:
         fuse2fs = shutil.which("fuse2fs")
         if fuse2fs is None:
             msg = "fuse2fs not found in PATH"
@@ -286,6 +291,8 @@ class FuseMounter:
         argv = [fuse2fs, "-f", image, mnt]
         if readonly:
             argv = [fuse2fs, "-f", "-o", self.READONLY_OPTIONS, image, mnt]
+        if fakeroot:
+            argv = [fuse2fs, "-f", "-o", self.FAKEROOT_OPTIONS, image, mnt]
 
         # stdout лаунчера несёт данные операции: предупреждения fuse2fs — в stderr
         daemon = subprocess.Popen(  # noqa: S603
@@ -331,6 +338,38 @@ class FuseMounter:
                 if line.split()[4] == target:
                     return True
         return False
+
+    @classmethod
+    def reclaim(cls, mnt: str) -> None:
+        """Отцепляет точку, осиротевшую после гибели процесса-владельца.
+
+        Актуально только для маунтов в namespace хоста: SIGKILL валит fuse2fs
+        без размонтирования, точка остаётся в mountinfo битой — stat даёт
+        ENOTCONN, mkdir даёт EEXIST. Приватные namespace лаунчера ядро
+        прибирает само.
+        """
+        stale = False
+        try:
+            os.stat(mnt)
+        except FileNotFoundError:
+            return
+        except OSError:
+            stale = True
+
+        if not stale and not cls.is_mounted(os.path.realpath(mnt)):
+            return
+
+        fusermount = shutil.which("fusermount3")
+        if fusermount is None:
+            fusermount = shutil.which("fusermount")
+        if fusermount is None:
+            trace(f"stale mount at {mnt}: fusermount not found")
+            return
+
+        subprocess.run(  # noqa: S603
+            [fusermount, "-uz", mnt], check=False, capture_output=True
+        )
+        trace(f"stale mount reclaimed: {mnt}")
 
     def _wait_mounted(self, mnt: str, daemon: subprocess.Popen[bytes]) -> None:
         target = os.path.realpath(mnt)

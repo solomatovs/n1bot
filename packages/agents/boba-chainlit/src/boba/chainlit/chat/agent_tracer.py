@@ -46,10 +46,11 @@ def _visible_failure(
 class AgentTracer(AsyncBaseTracer):
     """Трасит один агентский цикл и рисует step-иерархию процесса ответа."""
 
-    def __init__(self, view: ChatView) -> None:
+    def __init__(self, view: ChatView, user_id: str) -> None:
         super().__init__()
         self._context = context_var.get()
         self._view = view
+        self._user_id = user_id
         self._reasoning: dict[str, str] = {}
         self._tool_steps: dict[str, Step] = {}
         self._stream_calls: dict[str, str] = {}
@@ -175,19 +176,27 @@ class AgentTracer(AsyncBaseTracer):
     def _begin_stream(
         self, run_key: str, tool_name: str, call_key: str | None
     ) -> None:
-        """Открывает окно живого вывода вызова.
+        """Открывает журнал живого вывода вызова.
 
-        В тап окно ставит обвязка ToolStreamTapGuard уже в потоке инструмента:
-        колбэки sync-тулов langchain гоняет в чужом event loop'е, и contextvar
-        отсюда до функции тула не доходит.
+        В тап рекордер ставит обвязка ToolStreamTapGuard уже в потоке
+        инструмента: колбэки sync-тулов langchain гоняет в чужом event loop'е,
+        и contextvar отсюда до функции тула не доходит.
         """
         if not call_key:
+            return
+
+        if not self._user_id:
             return
 
         if not ToolStreams.streamable(tool_name):
             return
 
-        ToolStreams.begin(self._view.thread_id, call_key, tool_name)
+        stream = ToolStreams.begin(
+            self._user_id, self._view.thread_id, call_key, tool_name
+        )
+        if stream is None:
+            return
+
         self._stream_calls[run_key] = call_key
 
     def _finish_stream(self, run_key: str, note: StreamNote) -> None:

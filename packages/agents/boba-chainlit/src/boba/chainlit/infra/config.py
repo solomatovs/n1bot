@@ -401,6 +401,86 @@ class LocalStorageConfig(BaseModel):
         return self
 
 
+class StreamJournalConfig(BaseModel):
+    """Журнал живого вывода инструментов: служебный том на пользователя."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enable: bool = Field(
+        default=False,
+        description="Писать вывод каждого вызова инструмента в журнал.",
+    )
+
+    kind: Literal["dir", "image"] = Field(
+        default="dir",
+        description="dir — каталог без квоты; image — ext4-образ с квотой.",
+    )
+
+    dir: str = Field(
+        default="",
+        description="Корень журналов для kind = dir.",
+    )
+
+    image_path: str = Field(
+        default="",
+        description="Шаблон пути образа с {user_id} для kind = image.",
+    )
+
+    image_template: str = Field(
+        default="",
+        description="Шаблонный ext4-образ; его размер — квота пользователя.",
+    )
+
+    mount_dir: str = Field(
+        default="",
+        description="Корень точек монтирования образов журнала.",
+    )
+
+    reserve_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=0,
+        description=(
+            "Резерв места перед новым журналом: старейшие треды вытесняются, "
+            "пока свободного меньше; 0 выключает ротацию."
+        ),
+    )
+
+    launcher: LauncherConfig = Field(
+        default=LauncherConfig(
+            mount_wait_sec=10.0,
+            mount_poll_sec=0.05,
+            shutdown_wait_sec=5.0,
+            copy_chunk_bytes=1 << 20,
+        ),
+        description="Тайминги fuse2fs-монтирования для kind = image.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_kind(self) -> Self:
+        if not self.enable:
+            return self
+
+        if self.kind == "dir":
+            if not self.dir:
+                msg = "stream_journal: kind = dir требует dir"
+                raise ValueError(msg)
+            return self
+
+        missing: list[str] = []
+        for name in ("image_path", "image_template", "mount_dir"):
+            if not getattr(self, name):
+                missing.append(name)
+        if missing:
+            msg = f"stream_journal: kind = image требует {', '.join(missing)}"
+            raise ValueError(msg)
+
+        if "{user_id}" not in self.image_path:
+            msg = "stream_journal: image_path обязан содержать {user_id}"
+            raise ValueError(msg)
+
+        return self
+
+
 class AppConfig(BaseModel):
     """Параметры chainlit-приложения: server + профиль агента."""
 
@@ -451,6 +531,14 @@ class AppConfig(BaseModel):
     storage: Annotated[
         LocalStorageConfig,
         Field(description="Файловое хранилище вложений."),
+    ]
+
+    stream_journal: Annotated[
+        StreamJournalConfig,
+        Field(
+            default_factory=StreamJournalConfig,
+            description="Журнал живого вывода инструментов.",
+        ),
     ]
 
     sandbox: Annotated[

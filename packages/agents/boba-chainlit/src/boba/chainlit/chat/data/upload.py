@@ -37,11 +37,18 @@ from starlette.datastructures import Headers
 from boba.chainlit.chat.data.fields import ElementField, FileField
 from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
 from boba.chainlit.chat.data.storage import (
+    LocalStorageClient,
     OpenedStream,
     StorageClient,
     StorageFullError,
     StorageNotFoundError,
 )
+from boba.chainlit.chat.data.stream_journal import (
+    StreamJournalError,
+    StreamJournalHub,
+    StreamKey,
+)
+from boba.chainlit.infra.config import LocalStorageConfig
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
@@ -54,6 +61,7 @@ __all__ = [
     "MultipartFile",
     "RangeHeader",
     "SessionFiles",
+    "StreamServing",
     "StreamedFile",
     "SuffixRange",
     "UploadPolicy",
@@ -869,3 +877,65 @@ class AttachmentServing:
             range_header=request.headers.get(FileHeader.RANGE, ""),
             content_disposition="",
         )
+
+
+class StreamServing:
+    """Отдаёт .log вызова из тома журнала тем же StreamedFile, что и вложения.
+
+    Журнал лежит в служебном томе (каталог или fuse-монт образа) — обычная ФС,
+    поэтому источником служит LocalStorageClient над корнем тома пользователя.
+    Клиент на том кэшируется: у ImageVault это ещё и разовое монтирование.
+    """
+
+    MIME: ClassVar[str] = "text/plain; charset=utf-8"
+
+    def __init__(self, config: LocalStorageConfig, policy: UploadPolicy) -> None:
+        self._config = config
+        self._policy = policy
+        self._files: dict[str, StreamedFile] = {}
+
+    async def serve(
+        self,
+        request: Request,
+        thread_id: str,
+        call_id: str,
+        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+    ) -> Response:
+        if not isinstance(current_user, PersistedUser):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        journal = StreamJournalHub.get()
+        if journal is None:
+            raise HTTPException(status_code=404, detail="Stream not found")
+
+        try:
+            key = StreamKey(
+                user_id=str(current_user.id), thread_id=thread_id, call_id=call_id
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail="Stream not found") from e
+
+        try:
+            root = journal.vault_root(key.user_id)
+        except StreamJournalError as e:
+            raise HTTPException(
+                status_code=503, detail="Stream vault unavailable"
+            ) from e
+
+        disposition = f'attachment; filename="{key.call_id}.log"'
+        return await self._files_for(root).respond(
+            key.rel_log(),
+            mime=self.MIME,
+            range_header=request.headers.get(FileHeader.RANGE, ""),
+            content_disposition=disposition,
+        )
+
+    def _files_for(self, root: str) -> StreamedFile:
+        files = self._files.get(root)
+        if files is not None:
+            return files
+
+        config = self._config.model_copy(update={"kind": "local", "files_dir": root})
+        files = StreamedFile(LocalStorageClient(config), self._policy)
+        self._files[root] = files
+        return files

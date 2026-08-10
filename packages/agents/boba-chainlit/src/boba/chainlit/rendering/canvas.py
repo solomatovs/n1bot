@@ -37,6 +37,7 @@ __all__ = [
     "RenderStatus",
     "RenderVerdict",
     "RenderVerdicts",
+    "StreamPos",
 ]
 
 
@@ -173,6 +174,19 @@ class CanvasKind(StrEnum):
     """Формат показать некому: панель объясняет это вместо содержимого."""
 
 
+class StreamPos(BaseModel):
+    """Координаты окна потока в журнале: где стоим и сколько всего."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    offset: int
+    end: int
+    """Байт за последним в окне: сюда фронт стыкует следующее окно."""
+    size: int
+    window: int
+    closed: bool
+
+
 class CanvasContent(BaseModel):
     """Описание содержимого панели: что рисовать и откуда взять.
 
@@ -194,6 +208,8 @@ class CanvasContent(BaseModel):
     """Причина для notice: почему файл не показан."""
     nonce: str = ""
     """Метка показа: по ней ждут вердикт рендера mermaid."""
+    stream: StreamPos | None = None
+    """Окно потока: есть только у kind = stream."""
 
     def props(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

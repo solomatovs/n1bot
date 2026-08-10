@@ -23,6 +23,7 @@ __all__ = [
     "ElementProps",
     "KeyField",
     "ObjectKey",
+    "StreamUrl",
     "ThreadDir",
 ]
 
@@ -301,3 +302,19 @@ class AttachmentLinks:
     def url(self, thread_id: object, element_id: object, dir_thread: ThreadDir) -> str:
         path = AttachmentUrl(str(thread_id), dir_thread, str(element_id)).path()
         return self.prefix.rstrip("/") + path
+
+
+class StreamUrl:
+    """Адрес скачивания журнала вызова: тред и call_id; пользователь — из сессии.
+
+    Ссылка несёт префикс подмонтированного приложения, как у файлов сессии,
+    иначе GET ушёл бы в корень домена мимо роута.
+    """
+
+    ROUTE: ClassVar[str] = "/stream/{thread_id}/{call_id}"
+    ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
+
+    @classmethod
+    def path(cls, thread_id: str, call_id: str) -> str:
+        prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
+        return f"{prefix}/stream/{thread_id}/{call_id}"

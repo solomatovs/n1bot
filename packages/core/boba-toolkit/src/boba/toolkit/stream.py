@@ -1,8 +1,8 @@
-"""Живое окно вывода инструмента: кольцевой буфер хвоста и контекстный тап.
+"""Живой вывод инструмента: приёмник байтов, кольцевое окно и контекстный тап.
 
-Пишущая сторона (поток процесса) складывает байты в окно фиксированного
-размера и будит читателя колбэком; читающая сторона забирает снапшот хвоста.
-Тап передаёт буфер из UI-слоя в исполнителя через contextvar, не связывая
+Пишущая сторона (поток процесса) отдаёт байты в StreamSink; куда они едут —
+в кольцевое окно памяти или в файл журнала — решает владелец приёмника.
+Тап передаёт приёмник из UI-слоя в исполнителя через contextvar, не связывая
 слои импортами.
 
 Ошибки: наружу ничего не выходит; on_data обязан не поднимать исключений.
@@ -11,21 +11,33 @@
 from __future__ import annotations
 
 import threading
+from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable
 from contextvars import ContextVar
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
 from boba.toolkit.launcher import ChunkSink
 
 __all__ = [
+    "StreamSink",
     "StreamWindow",
     "TeeChunkSink",
     "ToolStreamBuffer",
     "ToolStreamTap",
 ]
+
+
+class StreamSink(Protocol):
+    """Приёмник живого вывода; запись не блокирует и не поднимает исключений."""
+
+    @abstractmethod
+    def feed(self, data: bytes) -> None: ...
+
+    @abstractmethod
+    def feed_text(self, text: str) -> None: ...
 
 
 class StreamWindow(BaseModel):
@@ -119,29 +131,29 @@ class ToolStreamBuffer:
 
 
 class ToolStreamTap:
-    """Буфер живого вывода в текущем контексте выполнения инструмента."""
+    """Приёмник живого вывода в текущем контексте выполнения инструмента."""
 
-    _BUFFER: ClassVar[ContextVar[ToolStreamBuffer | None]] = ContextVar(
+    _SINK: ClassVar[ContextVar[StreamSink | None]] = ContextVar(
         "tool_stream_tap", default=None
     )
 
     @classmethod
-    def set(cls, buffer: ToolStreamBuffer | None) -> None:
-        cls._BUFFER.set(buffer)
+    def set(cls, sink: StreamSink | None) -> None:
+        cls._SINK.set(sink)
 
     @classmethod
-    def get(cls) -> ToolStreamBuffer | None:
-        return cls._BUFFER.get()
+    def get(cls) -> StreamSink | None:
+        return cls._SINK.get()
 
 
 class TeeChunkSink(ChunkSink):
-    """ChunkSink-обёртка: кадр уходит и потребителю, и в окно вывода."""
+    """ChunkSink-обёртка: кадр уходит и потребителю, и в живой вывод."""
 
-    def __init__(self, inner: ChunkSink, buffer: ToolStreamBuffer) -> None:
+    def __init__(self, inner: ChunkSink, sink: StreamSink) -> None:
         self._inner = inner
-        self._buffer = buffer
+        self._sink = sink
 
     def write(self, chunk: str) -> None:
-        # сперва окно: пользователь видит и кадр, упершийся в лимит потребителя
-        self._buffer.feed_text(chunk)
+        # сперва живой вывод: пользователь видит и кадр, упершийся в лимит
+        self._sink.feed_text(chunk)
         self._inner.write(chunk)
