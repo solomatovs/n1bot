@@ -1,8 +1,9 @@
-"""Запуск в workspace-образе: fuse2fs-цепочка, её конфиг и лимиты процесса.
+"""Запуск в workspace-образе: fuse2fs-цепочка, её конфиг и лимиты процесса;
+супервизор mount-группы — N вложенных bwrap'ов над одним монтированием.
 
 Ошибки: MountError — предпосылки, подготовка или монтирование образа,
-включая сборку цепочки и рендер путей; NotRegularFileError — по пути в
-образе не обычный файл.
+включая сборку цепочки, рендер путей и контракт mount-группы;
+NotRegularFileError — по пути в образе не обычный файл.
 """
 
 from __future__ import annotations
@@ -24,11 +25,12 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
-from typing import BinaryIO, ClassVar
+from types import FrameType, TracebackType
+from typing import BinaryIO, ClassVar, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from boba.toolkit.channels import Channel
+from boba.toolkit.channels import Channel, ShellExit, StageExit
 
 __all__ = [
     "FUSE_DEVICE",
@@ -52,12 +54,19 @@ __all__ = [
     "ReadWindow",
     "ResourceLimits",
     "SparseCopier",
+    "StageEntry",
+    "StageSupervisor",
     "WrapOutput",
+    "WrapResultWriter",
     "build_chain_argv",
     "render_image_path",
     "require_fuse",
     "trace",
 ]
+
+_SignalHandler: TypeAlias = (
+    Callable[[int, FrameType | None], object] | int | signal.Handlers | None
+)
 
 
 class LauncherExit(IntEnum):
@@ -78,9 +87,14 @@ class LauncherMarker(StrEnum):
 
 
 class LauncherMode(StrEnum):
-    """Операции лаунчера над смонтированным образом."""
+    """Операции лаунчера над смонтированным образом.
+
+    `group` — mount-группа: аргументы режима — записи `StageEntry`, по одному
+    вложенному bwrap на стадию; flock и монтирование одни на группу.
+    """
 
     RUN = "run"
+    GROUP = "group"
     WRITE = "write"
     READ = "read"
     DELETE = "delete"
@@ -236,6 +250,10 @@ class ChannelBridge:
     def active(self) -> bool:
         """Хоть один канал объявлен: лаунчер работает в канальном режиме."""
         return bool(self._fds)
+
+    def fd_of(self, channel: Channel) -> int | None:
+        """Номер дескриптора канала; None — канал в окружении не объявлен."""
+        return self._fds.get(channel)
 
     @property
     def pass_fds(self) -> tuple[int, ...]:
@@ -896,6 +914,10 @@ class Launcher:
                 raise MountError(msg)
             return lambda: self._run_command(argv)
 
+        if mode is LauncherMode.GROUP:
+            entries = self._group_entries(op_args)
+            return lambda: self._run_group(entries)
+
         if mode is LauncherMode.READ:
             rel, window = self._read_arguments(op_args)
             return lambda: self._read_operation(rel, window)
@@ -922,6 +944,12 @@ class Launcher:
             return ops.list_dir(argument, sys.stdout.buffer)
         return ops.delete(argument)
 
+    SINGLE_STAGE: ClassVar[str] = "run"
+    """Имя вырожденной стадии одиночного режима в трассировке супервизора."""
+
+    STDIN_INHERITED: ClassVar[int] = 0
+    """Одиночный run: tool_stdin стадии уже стоит нулевым дескриптором лаунчера."""
+
     def _run_command(self, argv: list[str]) -> int:
         self._block_new_userns()
         trace(
@@ -931,19 +959,116 @@ class Launcher:
             f"oom_score_adj={self._limits.oom_score_adj}"
         )
 
-        def prepare_child() -> None:
-            FuseMounter.set_pdeathsig()
-            self._limits.apply_to_current_process()
-
         # каналы стадии едут вниз с теми же номерами: их сообщил env верхней ступени
-        pass_fds = self._store.lock_fds + self._channels.pass_fds
-
-        return subprocess.call(  # noqa: S603
-            argv,
-            shell=False,
-            pass_fds=pass_fds,
-            preexec_fn=prepare_child,
+        plan = _StagePlan(
+            stage=self.SINGLE_STAGE,
+            argv=tuple(argv),
+            stdin_fd=self.STDIN_INHERITED,
+            pass_fds=self._store.lock_fds + self._channels.pass_fds,
+            limits=self._limits,
+            cgroup_dir=None,
         )
+
+        supervisor = StageSupervisor([plan], None, ())
+        return supervisor.run()
+
+    def _group_entries(self, op_args: list[str]) -> list[StageEntry]:
+        """Разбор и проверка записей стадий: падаем до захвата локов."""
+        if not op_args:
+            msg = "group: at least one stage entry expected"
+            raise MountError(msg)
+
+        if self._channels.fd_of(Channel.WRAP_RESULT) is None:
+            msg = "group: wrap_result channel is not declared"
+            raise MountError(msg)
+
+        entries: list[StageEntry] = []
+        for raw in op_args:
+            entries.append(StageEntry.parse(raw))
+
+        self._check_stage_ids(entries)
+        self._check_stage_fds(entries)
+        self._check_stage_cgroups(entries)
+
+        return entries
+
+    def _run_group(self, entries: Sequence[StageEntry]) -> int:
+        self._block_new_userns()
+
+        # огибающая группы (--max-*) душит супервизор и всё, что он породит;
+        # точные значения стадии ставит preexec вложенного bwrap
+        self._limits.apply_to_current_process()
+
+        reporter = self._wrap_result_writer()
+
+        plans: list[_StagePlan] = []
+        close_fds: list[int] = []
+        for entry in entries:
+            plans.append(self._group_plan(entry))
+            close_fds.extend(entry.owned_fds())
+
+        supervisor = StageSupervisor(plans, reporter, close_fds)
+        return supervisor.run()
+
+    def _group_plan(self, entry: StageEntry) -> _StagePlan:
+        return _StagePlan(
+            stage=entry.stage,
+            argv=entry.argv(),
+            stdin_fd=entry.stdin_fd,
+            pass_fds=self._store.lock_fds + entry.pass_fds,
+            limits=entry.limits,
+            cgroup_dir=entry.cgroup_dir,
+        )
+
+    def _wrap_result_writer(self) -> WrapResultWriter:
+        fd = self._channels.fd_of(Channel.WRAP_RESULT)
+
+        if fd is None:
+            msg = "group: wrap_result channel is not declared"
+            raise MountError(msg)
+
+        return WrapResultWriter(fd)
+
+    @staticmethod
+    def _check_stage_ids(entries: Sequence[StageEntry]) -> None:
+        seen: set[str] = set()
+
+        for entry in entries:
+            if entry.stage in seen:
+                msg = f"group: duplicate stage id {entry.stage!r}"
+                raise MountError(msg)
+
+            seen.add(entry.stage)
+
+    def _check_stage_fds(self, entries: Sequence[StageEntry]) -> None:
+        """Каждый fd принадлежит ровно одной стадии и не задевает каналы группы."""
+        seen: set[int] = set()
+
+        for fd in self._channels.pass_fds:
+            seen.add(fd)
+
+        for entry in entries:
+            for fd in entry.owned_fds():
+                if fd in seen:
+                    msg = f"group: stage {entry.stage!r}: fd {fd} is already taken"
+                    raise MountError(msg)
+
+                seen.add(fd)
+
+    @staticmethod
+    def _check_stage_cgroups(entries: Sequence[StageEntry]) -> None:
+        for entry in entries:
+            if entry.cgroup_dir is None:
+                continue
+
+            if os.path.isdir(entry.cgroup_dir):
+                continue
+
+            msg = (
+                f"group: stage {entry.stage!r}: cgroup {entry.cgroup_dir!r} "
+                f"is not a directory"
+            )
+            raise MountError(msg)
 
     @classmethod
     def _parse_args(cls, argv: list[str]) -> argparse.Namespace:
@@ -1101,6 +1226,10 @@ class ChainChannelArgv:
             # CAP_SYS_RESOURCE (в userns) — право обнулить max_user_namespaces
             "--cap-add",
             "CAP_SYS_RESOURCE",
+            # CAP_NET_ADMIN (в userns) — loopback вложенного --unshare-net:
+            # стадия без сети изолируется внутри цепочки per-stage
+            "--cap-add",
+            "CAP_NET_ADMIN",
             "--unshare-pid",
             "--unshare-ipc",
             "--unshare-uts",
@@ -1339,6 +1468,295 @@ class ResourceLimits:
         """Поднять своему/чужому (тот же uid) процессу можно без привилегий."""
         with open(f"/proc/{pid}/oom_score_adj", "w") as f:
             f.write(str(value))
+
+
+class WrapResultWriter:
+    """Отчёт кодов стадий строками wrap_result; обрыв читателя отключает отчёт."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+        self._broken = False
+
+    def report(self, stage: str, returncode: int | None) -> None:
+        if self._broken:
+            return
+
+        report = StageExit(stage=stage, rc=ShellExit.of(returncode))
+
+        try:
+            os.write(self._fd, report.encode_line())
+        except BrokenPipeError:
+            self._broken = True
+            trace(f"wrap_result reader is gone, rc of stage {stage!r} is lost")
+
+
+class StageEntry(BaseModel):
+    """Запись стадии режима group: команда вложенного bwrap, каналы, лимиты, cgroup.
+
+    Формирует приложение: `render` — в аргумент режима group, лаунчер разбирает
+    `parse` на границе. Номера fd действительны внутри внешней песочницы:
+    pass_fds сохраняет их по всей цепочке. Точные rlimit'ы стадии ставит
+    preexec супервизора; `--max-*` самого лаунчера в группе несут огибающую.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    MIN_DYNAMIC_FD: ClassVar[int] = 3
+
+    stage: str = Field(min_length=1)
+    command: str = Field(min_length=1)
+    stdin_fd: int | None = Field(ge=0)
+    pass_fds: tuple[int, ...]
+    limits: ResourceLimits
+    cgroup_dir: str | None
+
+    @field_validator("command")
+    @classmethod
+    def _splittable_command(cls, value: str) -> str:
+        try:
+            parts = shlex.split(value)
+        except ValueError as exc:
+            msg = f"unparsable command: {exc}"
+            raise ValueError(msg) from exc
+
+        if not parts:
+            msg = "empty command"
+            raise ValueError(msg)
+
+        return value
+
+    @field_validator("pass_fds")
+    @classmethod
+    def _dynamic_fds(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        for fd in value:
+            if fd < cls.MIN_DYNAMIC_FD:
+                msg = f"channel fd {fd} clashes with stdio"
+                raise ValueError(msg)
+
+        return value
+
+    @field_validator("stdin_fd")
+    @classmethod
+    def _dynamic_stdin(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+
+        if value < cls.MIN_DYNAMIC_FD:
+            msg = f"stdin fd {value} clashes with stdio"
+            raise ValueError(msg)
+
+        return value
+
+    def render(self) -> str:
+        return self.model_dump_json()
+
+    @classmethod
+    def parse(cls, raw: str) -> StageEntry:
+        try:
+            return cls.model_validate_json(raw)
+        except ValidationError as exc:
+            raise MountError(f"invalid stage entry: {exc}") from exc
+
+    def argv(self) -> tuple[str, ...]:
+        return tuple(shlex.split(self.command))
+
+    def owned_fds(self) -> tuple[int, ...]:
+        """Дескрипторы записи: канальные и stdin; свои копии супервизор закрывает
+        после запуска стадий, иначе EOF каналов не дойдёт до приложения."""
+        fds = list(self.pass_fds)
+
+        if self.stdin_fd is not None:
+            fds.append(self.stdin_fd)
+
+        return tuple(fds)
+
+
+@dataclass(frozen=True)
+class _StagePlan:
+    """Готовый к запуску вложенный bwrap одной стадии."""
+
+    stage: str
+    argv: tuple[str, ...]
+    stdin_fd: int | None
+    pass_fds: tuple[int, ...]
+    limits: ResourceLimits
+    cgroup_dir: str | None
+
+
+class _SignalGuard:
+    """TERM/INT на время супервизора: флаг вместо немедленной смерти процесса."""
+
+    SIGNALS: ClassVar[tuple[int, ...]] = (signal.SIGTERM, signal.SIGINT)
+
+    def __init__(self) -> None:
+        self._received: int | None = None
+        self._previous: list[tuple[int, _SignalHandler]] = []
+
+    @property
+    def received(self) -> int | None:
+        return self._received
+
+    def __enter__(self) -> _SignalGuard:
+        for signum in self.SIGNALS:
+            previous = signal.signal(signum, self._remember)
+            self._previous.append((signum, previous))
+
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        for signum, previous in self._previous:
+            signal.signal(signum, previous)
+
+        self._previous.clear()
+
+    def _remember(self, signum: int, frame: FrameType | None) -> None:
+        self._received = signum
+
+
+class StageSupervisor:
+    """Вложенные bwrap'ы mount-группы: preexec с cgroup и rlimit, отчёт rc, уборка.
+
+    Все стадии стартуют одновременно, порядок работы задают данные в каналах.
+    Смерть стадии группу не валит — решение принимает раннер по wrap_result и
+    убивает внешний процесс целиком; сигнал TERM/INT гасит вложенных и
+    завершает работу ошибкой обвязки.
+    """
+
+    POLL_SEC: ClassVar[float] = 0.05
+
+    def __init__(
+        self,
+        plans: Sequence[_StagePlan],
+        reporter: WrapResultWriter | None,
+        close_after_spawn: Sequence[int],
+    ) -> None:
+        if reporter is None and len(plans) != 1:
+            msg = "supervisor without wrap_result serves exactly one stage"
+            raise MountError(msg)
+
+        self._plans = list(plans)
+        self._reporter = reporter
+        self._close_after_spawn = list(close_after_spawn)
+
+    def run(self) -> int:
+        """Код обвязки; коды стадий с репортёром уезжают строками wrap_result,
+        без репортёра (вырожденный одиночный run) — возвращаются напрямую."""
+        procs: dict[str, subprocess.Popen[bytes]] = {}
+
+        with _SignalGuard() as guard:
+            try:
+                for plan in self._plans:
+                    procs[plan.stage] = self._spawn(plan)
+
+                self._close_inherited()
+
+                finished = self._watch(procs, guard)
+            finally:
+                self._kill_all(procs)
+
+        if self._reporter is not None:
+            return int(LauncherExit.OK)
+
+        return finished[self._plans[0].stage]
+
+    def _spawn(self, plan: _StagePlan) -> subprocess.Popen[bytes]:
+        stdin_fd = subprocess.DEVNULL
+        if plan.stdin_fd is not None:
+            stdin_fd = plan.stdin_fd
+
+        def prepare_child() -> None:
+            FuseMounter.set_pdeathsig()
+
+            if plan.cgroup_dir is not None:
+                self._enter_cgroup(plan.cgroup_dir)
+
+            plan.limits.apply_to_current_process()
+
+        try:
+            proc = subprocess.Popen(  # noqa: S603
+                list(plan.argv),
+                shell=False,
+                stdin=stdin_fd,
+                pass_fds=plan.pass_fds,
+                preexec_fn=prepare_child,  # noqa: PLW1509
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise MountError(f"stage {plan.stage!r} spawn failed: {exc}") from exc
+
+        trace(f"stage {plan.stage!r}: nested bwrap pid {proc.pid}")
+
+        return proc
+
+    @staticmethod
+    def _enter_cgroup(cgroup_dir: str) -> None:
+        """Запись «0» в cgroup.procs: работает и без трансляции pid в userns."""
+        procs_path = os.path.join(cgroup_dir, "cgroup.procs")
+
+        fd = os.open(procs_path, os.O_WRONLY)
+        os.write(fd, b"0")
+        os.close(fd)
+
+    def _close_inherited(self) -> None:
+        """Свои копии fd стадий: пока они открыты, EOF каналов не наступит."""
+        for fd in self._close_after_spawn:
+            os.close(fd)
+
+        self._close_after_spawn.clear()
+
+    def _watch(
+        self, procs: Mapping[str, subprocess.Popen[bytes]], guard: _SignalGuard
+    ) -> dict[str, int]:
+        finished: dict[str, int] = {}
+
+        while len(finished) < len(procs):
+            if guard.received is not None:
+                msg = f"terminated by signal {guard.received}"
+                raise MountError(msg)
+
+            progressed = self._reap_finished(procs, finished)
+            if not progressed:
+                time.sleep(self.POLL_SEC)
+
+        return finished
+
+    def _reap_finished(
+        self,
+        procs: Mapping[str, subprocess.Popen[bytes]],
+        finished: dict[str, int],
+    ) -> bool:
+        progressed = False
+
+        for stage, proc in procs.items():
+            if stage in finished:
+                continue
+
+            returncode = proc.poll()
+            if returncode is None:
+                continue
+
+            rc = ShellExit.of(returncode)
+            finished[stage] = rc
+            progressed = True
+            trace(f"stage {stage!r} exited rc={rc}")
+
+            if self._reporter is not None:
+                self._reporter.report(stage, returncode)
+
+        return progressed
+
+    @staticmethod
+    def _kill_all(procs: Mapping[str, subprocess.Popen[bytes]]) -> None:
+        for proc in procs.values():
+            if proc.poll() is None:
+                proc.kill()
+
+        for proc in procs.values():
+            proc.wait()
 
 
 if __name__ == "__main__":

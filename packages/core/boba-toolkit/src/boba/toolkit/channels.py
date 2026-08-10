@@ -1,5 +1,6 @@
 """Контракт каналов sandbox-запуска: реестр каналов, имена env, кодек лог-кадров,
-конверт tool_result и шелльная форма кодов возврата.
+конверты tool_result и wrap_result, шелльная форма кодов возврата и сводка
+ошибок валидации без эха ввода.
 
 Доменный слой: транспорт и I/O не импортируются, дескрипторы открывает исполнитель.
 
@@ -21,7 +22,9 @@ __all__ = [
     "ResultFailure",
     "ResultSuccess",
     "ShellExit",
+    "StageExit",
     "StreamFormat",
+    "ValidationSummary",
 ]
 
 
@@ -131,6 +134,7 @@ class ShellExit:
     """
 
     KILLED: ClassVar[int] = 137
+    SIGPIPE: ClassVar[int] = 141
     _SIGNAL_BASE: ClassVar[int] = 128
 
     @classmethod
@@ -143,6 +147,55 @@ class ShellExit:
             return cls._SIGNAL_BASE - returncode
 
         return returncode
+
+
+class StageExit(BaseModel):
+    """Строка канала wrap_result: итог одной стадии mount-группы `{stage, rc}`.
+
+    rc уже нормализован к шелльной форме (128+N для сигналов); кодек один на
+    обе стороны канала — пишет лаунчер, читает раннер.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ENCODING: ClassVar[str] = "utf-8"
+
+    stage: str = Field(min_length=1)
+    rc: int = Field(ge=0)
+
+    def encode_line(self) -> bytes:
+        return self.model_dump_json().encode(self.ENCODING) + b"\n"
+
+    @classmethod
+    def decode_line(cls, line: str) -> StageExit:
+        """Разбор строки канала; битая строка — ChannelError."""
+        try:
+            return cls.model_validate_json(line)
+        except ValidationError as exc:
+            raise ChannelError(f"broken wrap_result line: {line[:120]!r}") from exc
+
+
+class ValidationSummary:
+    """Сводка ValidationError без значений полей: вход может нести секреты."""
+
+    ROOT: ClassVar[str] = "<root>"
+
+    @classmethod
+    def of(cls, error: ValidationError) -> str:
+        parts: list[str] = []
+
+        for item in error.errors(include_url=False, include_input=False):
+            segments: list[str] = []
+            for segment in item["loc"]:
+                segments.append(str(segment))
+
+            location = ".".join(segments)
+            if not location:
+                location = cls.ROOT
+
+            parts.append(f"{location}: {item['msg']}")
+
+        return "; ".join(parts)
 
 
 class LogFrame(BaseModel):

@@ -59,7 +59,7 @@ class ChannelArgv:
     wrap_args: bytes
 
     @classmethod
-    def build(
+    def build(  # noqa: PLR0913
         cls,
         profile: SandboxProfile,
         command: str,
@@ -181,6 +181,12 @@ def _isolation_options(profile: SandboxProfile, nested: bool) -> list[str]:
 
     if nested:
         options += ["--cap-drop", "ALL"]
+
+        # сеть внешней ступени mount-группы — OR стадий; стадия без сети
+        # изолируется здесь, вложенным unshare
+        if not profile.network:
+            options.append("--unshare-net")
+
         return options
 
     options.insert(1, "--unshare-user")

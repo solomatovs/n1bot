@@ -15,7 +15,7 @@
 приходят в env по Channel.env_name.
 
 Ошибки канальной стороны: ChannelError — нарушение контракта каналов;
-PayloadOutputClosed — потребитель канала данных закрыл чтение (сигнал
+PayloadOutputClosedError — потребитель канала данных закрыл чтение (сигнал
 остановить продукцию, не отказ); SystemExit(PayloadExit.FAILURE) — битый
 запрос, конверт invalid_request уже записан в tool_result.
 """
@@ -30,7 +30,16 @@ import sys
 from abc import abstractmethod
 from collections.abc import Callable, Coroutine, Mapping
 from enum import IntEnum
-from typing import Any, BinaryIO, ClassVar, NoReturn, Protocol, TypeAlias, TypeVar, overload
+from typing import (
+    Any,
+    BinaryIO,
+    ClassVar,
+    NoReturn,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    overload,
+)
 
 from pydantic import BaseModel, ValidationError
 
@@ -40,6 +49,8 @@ from boba.toolkit.channels import (
     ResultError,
     ResultFailure,
     ResultSuccess,
+    ShellExit,
+    ValidationSummary,
 )
 from boba.toolkit.launcher import LaunchPayload
 
@@ -51,7 +62,7 @@ __all__ = [
     "PayloadExit",
     "PayloadLogging",
     "PayloadOps",
-    "PayloadOutputClosed",
+    "PayloadOutputClosedError",
     "PayloadStream",
 ]
 
@@ -210,14 +221,14 @@ class PayloadEntry:
 
 
 class PayloadExit(IntEnum):
-    """Коды возврата канального payload'а; 141 — шелльная форма SIGPIPE."""
+    """Коды возврата канального payload'а; CONSUMER_GONE — шелльная форма SIGPIPE."""
 
     OK = 0
     FAILURE = 1
-    CONSUMER_GONE = 141
+    CONSUMER_GONE = ShellExit.SIGPIPE
 
 
-class PayloadOutputClosed(Exception):
+class PayloadOutputClosedError(Exception):
     """Потребитель tool_payload закрыл чтение: продукцию нужно прекратить.
 
     Не отказ операции: квитанция пишется в tool_result, процесс завершается
@@ -243,13 +254,15 @@ class PayloadStream:
 
     def write(self, data: bytes) -> int:
         if self._consumer_gone:
-            raise PayloadOutputClosed("payload consumer is gone")
+            raise PayloadOutputClosedError("payload consumer is gone")
 
         try:
             written = self._raw.write(data)
         except BrokenPipeError as exc:
             self._consumer_gone = True
-            raise PayloadOutputClosed("payload consumer closed the stream") from exc
+            raise PayloadOutputClosedError(
+                "payload consumer closed the stream"
+            ) from exc
 
         self._bytes_out += written
 
@@ -263,7 +276,9 @@ class PayloadStream:
             self._raw.flush()
         except BrokenPipeError as exc:
             self._consumer_gone = True
-            raise PayloadOutputClosed("payload consumer closed the stream") from exc
+            raise PayloadOutputClosedError(
+                "payload consumer closed the stream"
+            ) from exc
 
     def close(self) -> None:
         """Закрытие после ухода потребителя не отказ: факт остаётся в флаге."""
@@ -319,7 +334,9 @@ class PayloadChannels:
                 continue
 
             if channel.is_required:
-                raise ChannelError(f"required channel is not declared: {channel.env_name}")
+                raise ChannelError(
+                    f"required channel is not declared: {channel.env_name}"
+                )
 
         cls._instance = cls(fds)
 
@@ -410,7 +427,9 @@ class PayloadChannels:
         fd = self._fds.get(channel)
 
         if fd is None:
-            raise ChannelError(f"channel is not declared for this launch: {channel.env_name}")
+            raise ChannelError(
+                f"channel is not declared for this launch: {channel.env_name}"
+            )
 
         return fd
 
@@ -431,30 +450,15 @@ class PayloadChannels:
         try:
             return schema.model_validate(parsed)
         except ValidationError as exc:
-            summary = self._validation_summary(exc)
+            # текст без значений полей: tool_args несёт секреты, эхо ввода запрещено
+            summary = ValidationSummary.of(exc)
             reason = f"request does not match {schema.__name__}: {summary}"
             self._fail_invalid_request(reason, exc)
 
-    @staticmethod
-    def _validation_summary(error: ValidationError) -> str:
-        """Текст без значений полей: tool_args несёт секреты, эхо ввода запрещено."""
-        parts: list[str] = []
-
-        for item in error.errors(include_url=False, include_input=False):
-            segments: list[str] = []
-            for segment in item["loc"]:
-                segments.append(str(segment))
-
-            location = ".".join(segments)
-            if not location:
-                location = "<root>"
-
-            parts.append(f"{location}: {item['msg']}")
-
-        return "; ".join(parts)
-
     def _fail_invalid_request(self, message: str, cause: Exception) -> NoReturn:
-        """Битый запрос — ожидаемый отказ: конверт в tool_result, выход без трейсбека."""
+        """
+        Битый запрос — ожидаемый отказ: конверт в tool_result, выход без трейсбека
+        """
         self.write_error(self.INVALID_REQUEST, message)
 
         raise SystemExit(int(PayloadExit.FAILURE)) from cause
@@ -463,10 +467,11 @@ class PayloadChannels:
         if self._payload_stream is None:
             return 0
 
-        try:
+        try:  # noqa: SIM105
             self._payload_stream.flush()
-        except PayloadOutputClosed:
-            # потребитель вышел: байты в буфере pipe потеряны законно, факт остаётся в флаге
+        except PayloadOutputClosedError:
+            # потребитель вышел: байты в буфере pipe потеряны законно,
+            # факт остаётся в флаге
             pass
 
         return self._payload_stream.bytes_out
