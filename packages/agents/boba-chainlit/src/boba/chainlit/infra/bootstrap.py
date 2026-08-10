@@ -68,7 +68,11 @@ def run_app(config_path: Path):
         server = uvicorn.Server(uv_config)
         await server.serve()
 
-    asyncio.run(start())
+    try:
+        asyncio.run(start())
+    except KeyboardInterrupt:
+        # uvicorn повторно кидает SIGINT после штатного shutdown — это не ошибка
+        logging.getLogger(__name__).info("stopped by the user")
 
 
 @asynccontextmanager
