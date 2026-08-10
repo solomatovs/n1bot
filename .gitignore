@@ -10,7 +10,9 @@ docs
 CLAUDE.md
 
 /release/
-/compose/
+/compose/*
+!/compose/docker-compose.yml
+!/compose/cgroup-init.sh
 uv.lock
 
 packages/**/build/
