@@ -32,7 +32,7 @@ from test_canvas_e2e import (  # noqa: F401
 
 __all__ = ["anyio_backend", "app_server", "panel"]
 
-from boba.chainlit.chat.data.stream_journal import ImageVault, StreamJournal, StreamKey
+from boba.chainlit.chat.data.stream_journal import DirVault, StreamJournal, StreamKey
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
@@ -140,42 +140,32 @@ async def _seed_thread_and_button(config: AppConfig, thread_id: str) -> None:
 
 
 def _seed_journals(config: AppConfig, thread_id: str) -> None:
-    """Журналы вызовов — в служебный том до старта работы приложения с ним.
-
-    Приложение держит flock тома после первого обращения: сидить журналы
-    позже нельзя — второй ImageVault повиснет на блокировке.
-    """
+    """Журналы вызовов — в служебный том до старта работы приложения с ним."""
     journal_cfg = config.stream_journal
-    vault = ImageVault(
-        image_path=journal_cfg.image_path,
-        template=journal_cfg.image_template,
-        mount_root=journal_cfg.mount_dir,
-        options=journal_cfg.launcher.to_options(),
+    vault = DirVault(journal_cfg.dir)
+    journal = StreamJournal(
+        vault, reserve_bytes=0, quota_bytes=journal_cfg.quota_bytes
     )
-    try:
-        journal = StreamJournal(vault, reserve_bytes=0)
 
-        key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=CALL_ID)
-        recorder = journal.recorder(key, "bash", lambda: None, frozenset())
-        recorder.feed(f"{FIRST_LINE}\n".encode())
-        chunk: list[str] = []
-        for index in range(1, LINES):
-            chunk.append(f"L{index:07d},row\n")
-            if len(chunk) >= 5000:
-                recorder.feed("".join(chunk).encode())
-                chunk.clear()
-        recorder.feed("".join(chunk).encode())
-        recorder.close("rc=0")
+    key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=CALL_ID)
+    recorder = journal.recorder(key, "bash", lambda: None, frozenset())
+    recorder.feed(f"{FIRST_LINE}\n".encode())
+    chunk: list[str] = []
+    for index in range(1, LINES):
+        chunk.append(f"L{index:07d},row\n")
+        if len(chunk) >= 5000:
+            recorder.feed("".join(chunk).encode())
+            chunk.clear()
+    recorder.feed("".join(chunk).encode())
+    recorder.close("rc=0")
 
-        live_key = StreamKey(
-            user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID
-        )
-        live = journal.recorder(live_key, "bash", lambda: None, frozenset())
-        for index in range(LIVE_LINES):
-            live.feed(f"V{index:07d},row\n".encode())
-        # живой журнал не закрывается: вызов «ещё идёт» с точки зрения чтения
-    finally:
-        vault.shutdown()
+    live_key = StreamKey(
+        user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID
+    )
+    live = journal.recorder(live_key, "bash", lambda: None, frozenset())
+    for index in range(LIVE_LINES):
+        live.feed(f"V{index:07d},row\n".encode())
+    # живой журнал не закрывается: вызов «ещё идёт» с точки зрения чтения
 
 
 @pytest.fixture(scope="module")
