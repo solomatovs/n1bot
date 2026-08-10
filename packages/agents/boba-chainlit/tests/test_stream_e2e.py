@@ -143,9 +143,7 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
     """Журналы вызовов — в служебный том до старта работы приложения с ним."""
     journal_cfg = config.stream_journal
     vault = DirVault(journal_cfg.dir)
-    journal = StreamJournal(
-        vault, reserve_bytes=0, quota_bytes=journal_cfg.quota_bytes
-    )
+    journal = StreamJournal(vault, reserve_bytes=0)
 
     key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=CALL_ID)
     recorder = journal.recorder(key, "bash", lambda: None, frozenset())

@@ -289,6 +289,11 @@ class PostgresDataLayer(AttachmentDataLayer):
     @queue_until_user_message()
     async def create_element(self, element: ChainlitElement) -> None:
         if not element.for_id:
+            # панель канваса шлёт непривязанные side-элементы: они живут
+            # только в websocket, их непersистентность — норма, не потеря
+            if element.display == "side":
+                return
+
             logger.warning(
                 "element %s without for_id is not persisted: "
                 "it is not attached to anything",

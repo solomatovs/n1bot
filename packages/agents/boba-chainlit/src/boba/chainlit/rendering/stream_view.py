@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from boba.chainlit.chat.data.object_key import StreamUrl
 from boba.chainlit.chat.data.stream_journal import (
+    JournalFile,
     StreamJournal,
     StreamJournalError,
     StreamJournalHub,
@@ -67,11 +68,11 @@ class StreamAction(StrEnum):
 class StreamNote(StrEnum):
     """Формулировки статусной строки окна потока."""
 
-    RUNNING = "выполняется…"
-    FINISHED = "завершено"
-    FAILED = "ошибка"
-    STOPPED = "остановлено"
-    GONE = "Журнал этого вызова недоступен: журналирование не велось."
+    RUNNING = "running…"
+    FINISHED = "finished"
+    FAILED = "failed"
+    STOPPED = "stopped"
+    GONE = "The log of this call is unavailable: journaling was not active."
 
     @classmethod
     def status_of(cls, piece: StreamSlice) -> str:
@@ -110,7 +111,7 @@ class StreamWindowRequest(BaseModel):
     @model_validator(mode="after")
     def _one_bound(self) -> Self:
         if (self.offset is None) == (self.before is None):
-            msg = "canvas_stream_window: ровно одно из offset и before"
+            msg = "canvas_stream_window: exactly one of offset and before"
             raise ValueError(msg)
 
         return self
@@ -240,7 +241,7 @@ class ToolStreams:
     def _live_log_paths(cls) -> Iterator[str]:
         for thread_id, calls in cls._STREAMS.items():
             for call_id in calls:
-                yield f"{thread_id}/{call_id}.log"
+                yield JournalFile.rel_log(thread_id, call_id)
 
     @classmethod
     def mark_streamable(cls, names: Iterable[str]) -> None:
@@ -376,6 +377,9 @@ class ToolStreams:
 class StreamScreen:
     """Насос показа: один поток на тред, переключение снимает предыдущий."""
 
+    SCHEME: ClassVar[str] = "stream://"
+    """Псевдо-путь панели: по нему фронт отличает поток от файла."""
+
     COALESCE_SEC: ClassVar[float] = 0.3
     """Пауза после пробуждения: болтливый инструмент не заливает сокет."""
 
@@ -406,28 +410,34 @@ class StreamScreen:
         call_id: str,
         piece: StreamSlice,
         channel: CanvasChannel,
+        follow: bool,
     ) -> None:
         """Показ окна записанного журнала: без насоса, один кадр."""
-        await channel.push(cls.content(thread_id, call_id, "", piece))
+        await channel.push(cls.content(thread_id, call_id, "", piece, follow))
 
     @classmethod
     async def gone(cls, call_id: str, channel: CanvasChannel) -> None:
         """Журнала нет: панель объясняет это вместо содержимого."""
         content = CanvasContent(
             kind=CanvasKind.NOTICE,
-            path=f"stream://{call_id}",
-            label="поток инструмента",
+            path=f"{cls.SCHEME}{call_id}",
+            label="tool stream",
             note=str(StreamNote.GONE),
         )
         await channel.push(content)
 
     @classmethod
     def content(
-        cls, thread_id: str, call_id: str, label: str, piece: StreamSlice
+        cls,
+        thread_id: str,
+        call_id: str,
+        label: str,
+        piece: StreamSlice,
+        follow: bool,
     ) -> CanvasContent:
         return CanvasContent(
             kind=CanvasKind.STREAM,
-            path=f"stream://{call_id}",
+            path=f"{cls.SCHEME}{call_id}",
             label=label,
             url=StreamUrl.path(thread_id, call_id),
             text=piece.text,
@@ -439,6 +449,7 @@ class StreamScreen:
                 size=piece.size,
                 window=piece.window,
                 closed=piece.closed,
+                follow=follow,
             ),
         )
 
@@ -462,6 +473,7 @@ class StreamScreen:
                         stream.key.call_id,
                         stream.tool_name,
                         piece,
+                        follow=True,
                     )
                 )
 
@@ -502,7 +514,9 @@ async def show_stream_action(
         await StreamScreen.gone(request.call_id, channel)
         return
 
-    await StreamScreen.recorded(thread_id, request.call_id, piece, channel)
+    await StreamScreen.recorded(
+        thread_id, request.call_id, piece, channel, follow=request.follow
+    )
 
 
 async def window_stream_action(
@@ -528,5 +542,7 @@ async def window_stream_action(
     if piece is None:
         return {}
 
-    content = StreamScreen.content(thread_id, request.call_id, "", piece)
+    content = StreamScreen.content(
+        thread_id, request.call_id, "", piece, follow=False
+    )
     return content.props()

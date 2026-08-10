@@ -483,7 +483,7 @@ async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
     _show, _, _thread, act = panel
     side = await act("canvas_stream", {"call_id": "e2e-нет-такого-вызова"})
 
-    assert "недоступен" in await side.inner_text()
+    assert "unavailable" in await side.inner_text()
 
 
 async def test_panel_close_button_closes_the_panel(panel: Any) -> None:

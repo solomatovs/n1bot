@@ -47,9 +47,9 @@ class StepText(StrEnum):
     """Тексты шагов ленты."""
 
     CONTAINER = "process..."
-    RUNNING = "выполняется"
-    STOPPED = "остановлено пользователем"
-    ABORTED = "остановлено"
+    RUNNING = "running"
+    STOPPED = "stopped by the user"
+    ABORTED = "stopped"
 
     @classmethod
     def for_stop(cls, reason: StopReason | None) -> StepText:
