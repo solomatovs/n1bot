@@ -181,17 +181,44 @@ function TrailButton({ full }) {
   );
 }
 
+// Ключ полноэкранного состояния: панель и карточка ленты различаются, у
+// карточек одного пути ключ разводит nonce — иначе восстановление открыло бы
+// диалог в каждой копии.
+function fullKey(content) {
+  if (!content.preview) {
+    return `panel:${content.path || content.label || ""}`;
+  }
+  return `card:${content.nonce || content.path || content.label || ""}`;
+}
+
 // Обёртка «на весь экран» для любого содержимого: панельный и полноэкранный
 // варианты живут в одном Dialog. render(full) отдаёт тело с его тулбаром;
 // полноэкранное тело радикс монтирует только при открытии.
-function Fullscreen({ label, children }) {
+// Состояние open живёт вне React: каждый серверный пуш (кнопки «в начало» /
+// «в конец», кадры насоса) пересоздаёт компонент, и неуправляемый Dialog
+// сворачивался бы. Анимации открытия выключены — восстановление после пуша
+// не должно мигать.
+function Fullscreen({ label, stateKey, children }) {
+  if (!window.bobaCanvasFullscreen) window.bobaCanvasFullscreen = {};
+  const store = window.bobaCanvasFullscreen;
+  const [open, setOpen] = useState(() => Boolean(store[stateKey]));
+
+  const onOpenChange = (next) => {
+    store[stateKey] = next;
+    setOpen(next);
+  };
+
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       {children(false)}
       <DialogContent className="canvas-fullscreen max-w-[90vw] max-h-[85vh] p-0 overflow-hidden">
         {/* радиксовый close отдельной кнопкой ломает единый ряд — прячем его,
             закрытие стоит в тулбаре тем же стилем, что и остальные кнопки */}
-        <style>{".canvas-fullscreen > button.absolute{display:none!important;}"}</style>
+        <style>{
+          ".canvas-fullscreen > button.absolute{display:none!important;}" +
+          ".canvas-fullscreen{animation:none!important;}" +
+          'body:has(.canvas-fullscreen) [data-state="open"][class*="bg-black"]{animation:none!important;}'
+        }</style>
         <DialogTitle className="sr-only">{label}</DialogTitle>
         {children(true)}
       </DialogContent>
@@ -295,6 +322,7 @@ function ZoomStage({ full, controls, children }) {
 function ScrollStage({
   full,
   stick,
+  followNonce,
   deps,
   render,
   controls,
@@ -334,6 +362,17 @@ function ScrollStage({
     if (!stickRef.current) return;
     box.scrollTop = box.scrollHeight;
   }, [stick, fontPx, ...deps]);
+
+  // follow-пуш («в конец», кадры насоса) ставит низ окна. Эффект живёт в
+  // каждой сцене: содержимое fullscreen radix монтирует отдельным коммитом,
+  // и общий эффект родителя не увидел бы его окна. Объявлен после эффекта
+  // прилипания — при общем коммите низ побеждает верх.
+  useLayoutEffect(() => {
+    if (!followNonce) return;
+    const box = boxRef.current;
+    if (!box) return;
+    box.scrollTop = box.scrollHeight;
+  }, [followNonce]);
 
   const bigger = () => setFontPx((size) => Math.min(24, size + 2));
   const smaller = () => setFontPx((size) => Math.max(8, size - 2));
@@ -467,7 +506,7 @@ function Diagram({ content }) {
           отрисовка диаграммы…
         </div>
       ) : (
-        <Fullscreen label={content.label}>
+        <Fullscreen label={content.label} stateKey={fullKey(content)}>
           {(full) => (
             <ZoomStage full={full}>
               <div
@@ -485,7 +524,7 @@ function Diagram({ content }) {
 
 function ImageView({ content }) {
   return (
-    <Fullscreen label={content.label}>
+    <Fullscreen label={content.label} stateKey={fullKey(content)}>
       {(full) => (
         <ZoomStage full={full}>
           <img
@@ -512,9 +551,18 @@ function StreamTail({ content }) {
 
   const [view, setView] = useState(content);
   const [chain, setChain] = useState(null);
-  const boxRef = useRef(null);
+  const panelBoxRef = useRef(null);
+  const fullBoxRef = useRef(null);
   const busyRef = useRef(false);
   const anchorRef = useRef(null);
+
+  // окна прокрутки панели и fullscreen живут одновременно: эффекты мотают
+  // то, на которое смотрит пользователь — открытый диалог перекрывает панель
+  const activeBox = () => {
+    const full = fullBoxRef.current;
+    if (full && full.isConnected) return full;
+    return panelBoxRef.current;
+  };
 
   // пуш с сервера (открытие, «в начало», «в конец», кадры насоса) задаёт
   // новую точку отсчёта: накопленная цепочка окон устаревает
@@ -563,7 +611,7 @@ function StreamTail({ content }) {
     try {
       const next = await fetchWindow({ before: first.offset });
       if (!next) return;
-      const box = boxRef.current;
+      const box = activeBox();
       anchorRef.current = box ? box.scrollHeight - box.scrollTop : null;
       setChain({
         segments: [segOf(next), ...cur.segments],
@@ -575,9 +623,14 @@ function StreamTail({ content }) {
     }
   };
 
+  // докрутил до конца живого файла — снова хвост с насосом, как «в конец»;
+  // без follow сервер отдал бы head-окно и прокрутка зациклила бы действия
   const backToLive = () => {
     setChain(null);
-    callAction({ name: "canvas_stream", payload: { call_id: callId } });
+    callAction({
+      name: "canvas_stream",
+      payload: { call_id: callId, follow: true },
+    });
   };
 
   const loadAfter = async () => {
@@ -619,7 +672,7 @@ function StreamTail({ content }) {
 
   // компенсация prepend: контент вырос сверху, позиция держится якорем от низа
   useLayoutEffect(() => {
-    const box = boxRef.current;
+    const box = activeBox();
     const anchor = anchorRef.current;
     if (!box || anchor == null) return;
     anchorRef.current = null;
@@ -630,7 +683,7 @@ function StreamTail({ content }) {
   // обрезка сверху компенсируется тем же якорем от низа
   useEffect(() => {
     if (!chain || chain.segments.length <= MAX_SEGMENTS) return;
-    const box = boxRef.current;
+    const box = activeBox();
     const nearTop = box && box.scrollTop < box.clientHeight;
     if (nearTop) {
       setChain({ ...chain, segments: chain.segments.slice(0, MAX_SEGMENTS) });
@@ -644,18 +697,9 @@ function StreamTail({ content }) {
   const text = browsing
     ? shown.segments.map((segment) => segment.text).join("")
     : view.text || " ";
-  // прилипание к низу — только когда показан хвост живого вывода
-  const live = !browsing && !pos.closed && pos.end >= pos.size;
-
-  // follow-пуш («в конец», кадры насоса) должен встать на низ окна: раннер
-  // пересоздаёт компонент на каждый пуш, поэтому интент едет с сервера в
-  // props. Эффект родителя выполняется после ScrollStage и побеждает его верх.
-  useLayoutEffect(() => {
-    if (!pos.follow) return;
-    const box = boxRef.current;
-    if (!box) return;
-    box.scrollTop = box.scrollHeight;
-  }, [view.nonce]);
+  // прилипание к низу — только follow-хвост живого вывода; окно без follow
+  // («в начало», открытие) читается с начала, даже если покрывает весь файл
+  const live = !browsing && !pos.closed && pos.end >= pos.size && pos.follow;
 
   // «в начало» и «в конец» — пуши сервера: цепочка окон сбрасывается пушем
   const toStart = () =>
@@ -694,13 +738,14 @@ function StreamTail({ content }) {
   );
 
   return (
-    <Fullscreen label={view.label}>
+    <Fullscreen label={view.label} stateKey={fullKey(content)}>
       {(full) => (
         <ScrollStage
           full={full}
           stick={live}
+          followNonce={pos.follow && !browsing ? view.nonce : ""}
           deps={browsing ? [] : [view.text, view.nonce]}
-          boxRef={boxRef}
+          boxRef={full ? fullBoxRef : panelBoxRef}
           onEdge={onEdge}
           controls={controls}
           render={(fontPx) => (
@@ -750,7 +795,7 @@ function TextFile({ content }) {
   }
 
   return (
-    <Fullscreen label={content.label}>
+    <Fullscreen label={content.label} stateKey={fullKey(content)}>
       {(full) => (
         <ScrollStage
           full={full}
