@@ -267,15 +267,15 @@
         image_template        = "${env.sandbox}/workspace.ext4"
         tmpfs                 = ["/tmp:512M"]
         network               = false
-        timeout_sec           = 30
+        timeout_sec           = 86400
         max_memory_bytes      = 536870912
-        max_cpu_sec           = 30
+        max_cpu_sec           = 86400
         max_file_size_bytes   = 67108864
         max_open_files        = 1024
         max_processes         = 256
         max_output_bytes      = 262144
         cwd                   = "/workspace"
-        oom_score_adj         = 500
+        oom_score_adj         = 900
         cgroup_base           = "${env.cgroup_base}"
         cgroup_memory_bytes   = 1073741824
         cgroup_cpu_percent    = 100
@@ -320,14 +320,6 @@
         profile = "${sandbox.profiles.base}"
         [tool.doc.sandbox.override]
             ro_binds            = "${sandbox.binds.docs}"
-            timeout_sec         = 120
-            max_memory_bytes    = 17179869184
-            max_cpu_sec         = 120
-            max_output_bytes    = 4194304
-            cgroup_memory_bytes = 4294967296
-            cgroup_pids_max     = 256
-            cgroup_cpu_percent  = 200
-
 
 [tool.chart]
     enable  = false
@@ -340,14 +332,6 @@
             rw_images           = []
             image_template      = ""
             cwd                 = "/tmp"
-            timeout_sec         = 120
-            max_memory_bytes    = 17179869184
-            max_cpu_sec         = 120
-            max_output_bytes    = 16777216
-            cgroup_memory_bytes = 4294967296
-            cgroup_pids_max     = 256
-            cgroup_cpu_percent  = 200
-
 
 [web.public]
     timeout_sec       = 30.0
@@ -377,14 +361,6 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-            timeout_sec         = 120
-            max_memory_bytes    = 4294967296
-            max_cpu_sec         = 120
-            max_output_bytes    = 4194304
-            cgroup_memory_bytes = 2147483648
-            cgroup_pids_max     = 64
-            cgroup_cpu_percent  = 100
-
 
 [tool.confluence]
     enable          = true
@@ -401,14 +377,6 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-            timeout_sec         = 120
-            max_memory_bytes    = 4294967296
-            max_cpu_sec         = 120
-            max_output_bytes    = 4194304
-            cgroup_memory_bytes = 2147483648
-            cgroup_pids_max     = 64
-            cgroup_cpu_percent  = 100
-
 
 [tables.kb]
     pg_schema         = "kb"
@@ -472,13 +440,6 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-            timeout_sec         = 3600
-            max_memory_bytes    = 17179869184
-            max_cpu_sec         = 14400
-            max_output_bytes    = 16777216
-            cgroup_memory_bytes = 8589934592
-            cgroup_pids_max     = 256
-            cgroup_cpu_percent  = 400
     [tool.ingest.tools]
         confluence_index_pages  = []
         confluence_index_cql    = []
@@ -500,15 +461,6 @@
             rw_images           = []
             image_template      = ""
             network             = true
-            cwd                 = "/tmp"
-            timeout_sec         = 300
-            max_memory_bytes    = 17179869184
-            max_cpu_sec         = 300
-            max_output_bytes    = 16777216
-            cgroup_memory_bytes = 8589934592
-            cgroup_pids_max     = 256
-            cgroup_cpu_percent  = 400
-
 
 [tool.pg]
     enable     = true
@@ -526,16 +478,6 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-            timeout_sec         = 60
-            max_memory_bytes    = 1073741824
-            max_cpu_sec         = 60
-            max_open_files      = 256
-            max_processes       = 32
-            max_output_bytes    = 4194304
-            cgroup_memory_bytes = 1073741824
-            cgroup_pids_max     = 32
-            cgroup_cpu_percent  = 100
-
 
 [tool.ch]
     enable     = false
@@ -552,16 +494,6 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-            timeout_sec         = 60
-            max_memory_bytes    = 1073741824
-            max_cpu_sec         = 60
-            max_open_files      = 256
-            max_processes       = 32
-            max_output_bytes    = 4194304
-            cgroup_memory_bytes = 1073741824
-            cgroup_pids_max     = 32
-            cgroup_cpu_percent  = 100
-
 
 [tool.send_file]
     enable = true
