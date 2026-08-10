@@ -179,9 +179,7 @@ def _use_stream_journal(c: AppConfig) -> None:
 
     vault = DirVault(journal_cfg.dir)
 
-    ToolStreams.configure(
-        StreamJournal(vault, journal_cfg.reserve_bytes, journal_cfg.quota_bytes)
-    )
+    ToolStreams.configure(StreamJournal(vault, journal_cfg.reserve_bytes))
 
     serving = StreamServing(c.storage, UploadPolicy())
     chainlit_app.add_api_route(

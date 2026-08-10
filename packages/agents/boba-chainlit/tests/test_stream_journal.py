@@ -1,19 +1,19 @@
-"""Журнал вывода инструментов: файлы, окна, сайдкар и квота кодом."""
+"""Журнал вывода инструментов: файлы, окна, сайдкар и вытеснение."""
 
 from __future__ import annotations
 
+import errno
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
 
 import pytest
 from pydantic import ValidationError
 
+from boba.chainlit.chat.data import stream_journal
 from boba.chainlit.chat.data.stream_journal import (
     DirVault,
     StreamJournal,
-    StreamJournalError,
     StreamKey,
     StreamRecorder,
 )
@@ -31,9 +31,7 @@ def _wake() -> None:
 
 
 def _journal(tmp_path: Path) -> StreamJournal:
-    return StreamJournal(
-        DirVault(str(tmp_path / "vault")), reserve_bytes=0, quota_bytes=0
-    )
+    return StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=0)
 
 
 def _recorder(
@@ -275,7 +273,7 @@ class TestUsageAndPurge:
         отступиться от защищённого лога.
         """
         journal = StreamJournal(
-            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60, quota_bytes=0
+            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60
         )
         self._fill(journal, "t-old", b"a" * 100)
         self._fill(journal, "t-protected", b"b" * 100)
@@ -293,7 +291,7 @@ class TestUsageAndPurge:
     ) -> None:
         """Защищён живой вызов, не весь тред: старый закрытый лог того же треда уходит."""
         journal = StreamJournal(
-            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60, quota_bytes=0
+            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60
         )
         old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
         recorder = journal.recorder(old_key, "bash", _wake, frozenset())
@@ -308,26 +306,27 @@ class TestUsageAndPurge:
         assert (root / "t-1" / "c-new.log").exists()
 
 
-class TestDirQuota:
-    """Квота dir-тома живёт в коде журнала: писатель один — приложение."""
+class TestWriteFailure:
+    """Кончилось место на точке монтирования: журнал гаснет, инструмент живёт.
 
-    QUOTA: ClassVar[int] = 1024
-    RESERVE: ClassVar[int] = 512
+    ENOSPC на tmp_path не воспроизвести без отдельной ФС, поэтому os.write
+    подменяется — интеграционный путь недоступен.
+    """
 
-    def _journal(self, tmp_path: Path, reserve_bytes: int) -> StreamJournal:
-        vault = DirVault(str(tmp_path / "vault"))
-        return StreamJournal(
-            vault, reserve_bytes=reserve_bytes, quota_bytes=self.QUOTA
-        )
-
-    def test_overflow_closes_the_journal_not_the_tool(
-        self, tmp_path: Path
+    def test_enospc_closes_the_journal_not_the_tool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        journal = self._journal(tmp_path, reserve_bytes=0)
+        journal = _journal(tmp_path)
         recorder = journal.recorder(KEY, "bash", _wake, frozenset())
+        recorder.feed(b"head")
 
-        recorder.feed(b"x" * 600)
-        recorder.feed(b"x" * 600)
+        def no_space(fd: int, data: bytes) -> int:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(stream_journal.os, "write", no_space)
+        recorder.feed(b"overflow")
+
+        monkeypatch.undo()
         recorder.feed("после закрытия не падает".encode())
 
         assert recorder.closed is True
@@ -335,40 +334,5 @@ class TestDirQuota:
         piece = journal.slice_at(KEY, -1)
         assert piece is not None
         assert piece.closed is True
-        assert "квота" in piece.note
-        assert piece.size <= self.QUOTA
-
-    def test_eviction_keeps_reserve_for_a_new_call(self, tmp_path: Path) -> None:
-        """Остаток квоты меньше резерва: старый закрытый лог вытесняется."""
-        journal = self._journal(tmp_path, reserve_bytes=self.RESERVE)
-
-        old_key = StreamKey(user_id="7", thread_id="t-old", call_id="c-old")
-        recorder = journal.recorder(old_key, "bash", _wake, frozenset())
-        recorder.feed(b"x" * 600)
-        recorder.close("rc=0")
-
-        fresh = journal.recorder(KEY, "bash", _wake, frozenset())
-        fresh.feed(b"fresh data")
-        fresh.close("rc=0")
-
-        root = tmp_path / "vault" / "7"
-        assert not (root / "t-old" / "c-old.log").exists()
-
-        piece = journal.slice_at(KEY, 0)
-        assert piece is not None
-        assert piece.text == "fresh data"
-
-    def test_exhausted_quota_refuses_new_journal(self, tmp_path: Path) -> None:
-        """Квоту заняли живые логи: вытеснять нечего, открытие отклоняется."""
-        journal = self._journal(tmp_path, reserve_bytes=self.RESERVE)
-
-        live_key = StreamKey(user_id="7", thread_id="t-live", call_id="c-live")
-        recorder = journal.recorder(live_key, "bash", _wake, frozenset())
-        recorder.feed(b"x" * self.QUOTA)
-
-        with pytest.raises(StreamJournalError, match="quota is exhausted"):
-            journal.recorder(
-                KEY, "bash", _wake, frozenset({live_key.rel_log()})
-            )
-
-        recorder.close("rc=0")
+        assert "journal stopped" in piece.note
+        assert piece.text == "head"

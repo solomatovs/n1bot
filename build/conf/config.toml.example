@@ -140,9 +140,8 @@
 
 
 [stream_journal]
-    enable      = true
-    dir         = "${env.data}/tool-logs"
-    quota_bytes = 1073741824
+    enable = true
+    dir    = "${env.data}/tool-logs"
 
 
 # kerberos авторизация; подключается добавлением ${auth.kerberos} в [app].auth

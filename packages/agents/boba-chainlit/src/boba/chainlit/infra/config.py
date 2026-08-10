@@ -413,15 +413,9 @@ class StreamJournalConfig(BaseModel):
 
     dir: str = Field(
         default="",
-        description="Корень журналов: каталог, том на пользователя внутри.",
-    )
-
-    quota_bytes: int = Field(
-        default=0,
-        ge=0,
         description=(
-            "Квота журналов пользователя, байт; держится кодом журнала — "
-            "писатель у тома один, само приложение."
+            "Корень журналов: каталог, том на пользователя внутри; "
+            "переполнение держит отдельная точка монтирования под корнем."
         ),
     )
 
@@ -440,11 +434,7 @@ class StreamJournalConfig(BaseModel):
             return self
 
         if not self.dir:
-            msg = "stream_journal: требуется dir"
-            raise ValueError(msg)
-
-        if not self.quota_bytes:
-            msg = "stream_journal: требуется quota_bytes"
+            msg = "stream_journal: dir is required"
             raise ValueError(msg)
 
         return self

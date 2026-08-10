@@ -2,14 +2,15 @@
 
 Запись идёт по мере работы инструмента и не зависит от его исхода; чтение —
 окнами фиксированного размера по произвольному смещению, целиком файл в
-память не поднимается. Том пользователя — каталог; квоту держит сам журнал
-(quota_bytes): писатель один — само приложение, поэтому лимит в коде не
-обойти. Переполнение закрывает журнал пометкой, не трогая инструмент.
-Место кончилось — старейшие закрытые логи вытесняются, пока новый журнал
-не откроется; логи живых вызовов вытеснение не трогает.
+память не поднимается. Том пользователя — каталог; переполнение держит
+отдельная точка монтирования под корнем журналов: её размер и есть общий
+потолок. Место кончилось — старейшие закрытые логи вытесняются, пока новый
+журнал не откроется; вытеснять нечего — вызов идёт без журнала, причина
+уходит в лог приложения, панель показывает отсутствие файла. Сбой записи
+закрывает журнал пометкой, не трогая инструмент.
 
-Ошибки: StreamJournalError — том недоступен или квота исчерпана; сбои
-записи журнал гасит внутрь, закрывая поток с пометкой причины.
+Ошибки: StreamJournalError — том недоступен, файл не открывается или место
+кончилось; сбои записи журнал гасит внутрь, закрывая поток с пометкой.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import os
 import shutil
 import threading
 from collections.abc import Callable, Iterator
+from enum import StrEnum
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -28,6 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 __all__ = [
     "CallLogUsage",
     "DirVault",
+    "JournalFile",
+    "JournalText",
     "StreamJournal",
     "StreamJournalError",
     "StreamJournalHub",
@@ -43,7 +47,50 @@ logger = logging.getLogger(__name__)
 
 
 class StreamJournalError(Exception):
-    """Том журнала недоступен или квота исчерпана: писать некуда."""
+    """Том журнала недоступен: писать некуда."""
+
+
+class JournalFile(StrEnum):
+    """Суффиксы файлов журнала; сборка и разбор путей — только здесь."""
+
+    LOG = ".log"
+    META = ".meta.json"
+    TMP = ".tmp"
+
+    @classmethod
+    def rel_log(cls, thread_id: str, call_id: str) -> str:
+        return f"{thread_id}/{call_id}{cls.LOG}"
+
+    @classmethod
+    def rel_meta(cls, thread_id: str, call_id: str) -> str:
+        return f"{thread_id}/{call_id}{cls.META}"
+
+    @classmethod
+    def is_log(cls, name: str) -> bool:
+        return name.endswith(cls.LOG)
+
+    @classmethod
+    def call_id_of(cls, log_name: str) -> str:
+        return log_name[: -len(cls.LOG)]
+
+    @classmethod
+    def tmp_of(cls, path: str) -> str:
+        return f"{path}{cls.TMP}.{os.getpid()}"
+
+
+class JournalText(StrEnum):
+    """Текстовый кодек журнала: utf-8, битые байты замещаются при чтении."""
+
+    ENCODING = "utf-8"
+    DECODE_ERRORS = "replace"
+
+    @classmethod
+    def encode(cls, text: str) -> bytes:
+        return text.encode(cls.ENCODING)
+
+    @classmethod
+    def decode(cls, data: bytes) -> str:
+        return data.decode(cls.ENCODING, errors=cls.DECODE_ERRORS)
 
 
 class StreamKey(BaseModel):
@@ -78,10 +125,10 @@ class StreamKey(BaseModel):
         return value
 
     def rel_log(self) -> str:
-        return f"{self.thread_id}/{self.call_id}.log"
+        return JournalFile.rel_log(self.thread_id, self.call_id)
 
     def rel_meta(self) -> str:
-        return f"{self.thread_id}/{self.call_id}.meta.json"
+        return JournalFile.rel_meta(self.thread_id, self.call_id)
 
 
 class StreamMeta(BaseModel):
@@ -142,11 +189,11 @@ class CallLogUsage(BaseModel):
 
     @property
     def rel_log(self) -> str:
-        return f"{self.thread_id}/{self.call_id}.log"
+        return JournalFile.rel_log(self.thread_id, self.call_id)
 
     @property
     def rel_meta(self) -> str:
-        return f"{self.thread_id}/{self.call_id}.meta.json"
+        return JournalFile.rel_meta(self.thread_id, self.call_id)
 
 
 class DirVault:
@@ -164,11 +211,12 @@ class DirVault:
 class StreamRecorder:
     """Писатель журнала одного вызова: append по мере работы инструмента.
 
-    Реализует StreamSink: сбой записи (переполнение тома, отвал fuse) не
+    Реализует StreamSink: сбой записи (кончилось место, недоступен том) не
     выходит наружу — журнал закрывается пометкой, инструмент работает дальше.
-    on_data зовётся после каждой порции и при закрытии. max_bytes — потолок
-    размера файла; 0 — без потолка, квоту даёт файловая система тома.
+    on_data зовётся после каждой порции и при закрытии.
     """
+
+    FILE_MODE: ClassVar[int] = 0o600
 
     def __init__(
         self,
@@ -176,18 +224,16 @@ class StreamRecorder:
         meta_path: str,
         tool_name: str,
         on_data: Callable[[], None],
-        max_bytes: int,
     ) -> None:
         self._log_path = log_path
         self._meta_path = meta_path
         self._on_data = on_data
-        self._max_bytes = max_bytes
         self._lock = threading.Lock()
         self._closed = False
         self._meta = StreamMeta(tool_name=tool_name)
 
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-        self._fd = os.open(log_path, flags, 0o600)
+        self._fd = os.open(log_path, flags, self.FILE_MODE)
         self._size = os.fstat(self._fd).st_size
         self._write_meta()
 
@@ -218,20 +264,19 @@ class StreamRecorder:
 
     def _append(self, data: bytes) -> str:
         """Дописать порцию под локом; непустая строка — причина закрытия."""
-        if self._max_bytes:
-            if self._size + len(data) > self._max_bytes:
-                return "журнал остановлен: квота журналов пользователя исчерпана"
-
         try:
             os.write(self._fd, data)
             self._size += len(data)
         except OSError as exc:
-            return f"журнал остановлен: {exc.strerror or exc}"
+            logger.warning(
+                "stream journal write failed: %s: %s", self._log_path, exc
+            )
+            return f"journal stopped: {exc.strerror or exc}"
 
         return ""
 
     def feed_text(self, text: str) -> None:
-        self.feed(text.encode("utf-8"))
+        self.feed(JournalText.encode(text))
 
     def close(self, note: str) -> None:
         """Идемпотентное закрытие: первый вызов фиксирует итог в сайдкаре."""
@@ -255,10 +300,10 @@ class StreamRecorder:
 
     def _write_meta(self) -> None:
         """Сайдкар атомарно: rename не оставит битого json при падении."""
-        tmp = f"{self._meta_path}.tmp.{os.getpid()}"
+        tmp = JournalFile.tmp_of(self._meta_path)
 
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding=JournalText.ENCODING) as f:
                 json.dump(self._meta.model_dump(), f, ensure_ascii=False)
             os.rename(tmp, self._meta_path)
         except OSError:
@@ -347,7 +392,7 @@ class StreamFileView:
         meta: StreamMeta,
     ) -> StreamSlice:
         return StreamSlice(
-            text=data.decode("utf-8", errors="replace"),
+            text=JournalText.decode(data),
             offset=start,
             end=end,
             size=size,
@@ -362,25 +407,19 @@ class StreamJournal:
 
     Перед открытием нового журнала держится резерв места: старейшие по
     записи треды вытесняются, пока резерв не появится; защищённые треды
-    (текущий и с живыми потоками) ротация не трогает. quota_bytes — потолок
-    суммарного размера журналов пользователя, принудительно в коде: для
-    dir-тома файловая система квоту не даёт; 0 — квоту обеспечивает том.
+    (текущий и с живыми потоками) ротация не трогает. Общий потолок держит
+    точка монтирования под корнем журналов: её размер и есть квота.
     """
 
     WINDOW_BYTES: ClassVar[int] = 64 * 1024
 
-    def __init__(self, vault: DirVault, reserve_bytes: int, quota_bytes: int) -> None:
+    def __init__(self, vault: DirVault, reserve_bytes: int) -> None:
         if reserve_bytes < 0:
             msg = f"reserve_bytes must be >= 0, got {reserve_bytes}"
             raise ValueError(msg)
 
-        if quota_bytes < 0:
-            msg = f"quota_bytes must be >= 0, got {quota_bytes}"
-            raise ValueError(msg)
-
         self._vault = vault
         self._reserve = reserve_bytes
-        self._quota = quota_bytes
 
     def recorder(
         self,
@@ -400,59 +439,12 @@ class StreamJournal:
 
         self._ensure_reserve(root, protected)
 
-        budget = self._quota_budget(root, key, protected)
-
         log_path = os.path.join(root, key.rel_log())
 
         # вместо релея stderr в общий журнал — одна строка о месте записи
         logger.info("tool stream journal: %s -> %s", tool_name, log_path)
 
-        return self._open_recorder(key, root, tool_name, on_data, protected, budget)
-
-    def _quota_budget(
-        self, root: str, key: StreamKey, protected: frozenset[str]
-    ) -> int:
-        """Потолок размера открываемого журнала; 0 — квоту обеспечивает том.
-
-        Пока остаток квоты меньше резерва, старейшие закрытые логи
-        вытесняются; вытеснять нечего — отдаётся остаток, а исчерпанная
-        квота отклоняет открытие.
-        """
-        if not self._quota:
-            return 0
-
-        target = min(self._reserve, self._quota)
-        if target <= 0:
-            target = 1
-
-        while True:
-            used = self._used_bytes(root, key)
-            remaining = self._quota - used
-
-            if remaining >= target:
-                return remaining
-
-            freed = self._evict_oldest(root, protected)
-            if freed >= 0:
-                continue
-
-            if remaining > 0:
-                return remaining
-
-            raise StreamJournalError(
-                f"stream quota is exhausted: {used} bytes used "
-                f"of {self._quota}, nothing to evict"
-            )
-
-    def _used_bytes(self, root: str, key: StreamKey) -> int:
-        """Байты логов пользователя без открываемого вызова: его меряет потолок."""
-        used = 0
-        for entry in self._call_logs(root):
-            if entry.rel_log == key.rel_log():
-                continue
-            used += entry.bytes_used
-
-        return used
+        return self._open_recorder(key, root, tool_name, on_data, protected)
 
     def _open_recorder(
         self,
@@ -461,7 +453,6 @@ class StreamJournal:
         tool_name: str,
         on_data: Callable[[], None],
         protected: frozenset[str],
-        max_bytes: int,
     ) -> StreamRecorder:
         """Открыть рекордер, вытесняя старые логи при ENOSPC до успеха.
 
@@ -474,9 +465,7 @@ class StreamJournal:
         while True:
             try:
                 os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                return StreamRecorder(
-                    log_path, meta_path, tool_name, on_data, max_bytes
-                )
+                return StreamRecorder(log_path, meta_path, tool_name, on_data)
             except OSError as exc:
                 if exc.errno != errno.ENOSPC:
                     raise StreamJournalError(
@@ -601,11 +590,11 @@ class StreamJournal:
                 if not file_entry.is_file(follow_symlinks=False):
                     continue
 
-                if not file_entry.name.endswith(".log"):
+                if not JournalFile.is_log(file_entry.name):
                     continue
 
                 stat = file_entry.stat()
-                call_id = file_entry.name[: -len(".log")]
+                call_id = JournalFile.call_id_of(file_entry.name)
                 yield CallLogUsage(
                     thread_id=thread_entry.name,
                     call_id=call_id,
@@ -633,7 +622,7 @@ class StreamJournal:
                 stat = file_entry.stat()
                 used += stat.st_size
                 last_write = max(last_write, stat.st_mtime)
-                if file_entry.name.endswith(".log"):
+                if JournalFile.is_log(file_entry.name):
                     calls += 1
 
             yield ThreadUsage(
@@ -704,7 +693,7 @@ class StreamJournal:
     def _read_meta(meta_path: str) -> StreamMeta:
         """Сайдкар потерян или бит — журнал считается закрытым без итога."""
         try:
-            with open(meta_path, encoding="utf-8") as f:
+            with open(meta_path, encoding=JournalText.ENCODING) as f:
                 raw = json.load(f)
             return StreamMeta.model_validate(raw)
         except (OSError, ValueError):

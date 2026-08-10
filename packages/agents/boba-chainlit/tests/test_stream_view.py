@@ -48,7 +48,7 @@ def chainlit_context(tmp_path: Path) -> Any:
     token = context_var.set(cast("ChainlitContext", SimpleNamespace(session=session)))
     ToolStreams.reset()
     ToolStreams.configure(
-        StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0, quota_bytes=0)
+        StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
     )
     yield
     ToolStreams.reset()
@@ -402,7 +402,9 @@ class TestShowAction:
         async def scenario() -> None:
             piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=-1)
             assert piece is not None
-            await StreamScreen.recorded(THREAD, CALL_ID, piece, channel)
+            await StreamScreen.recorded(
+                THREAD, CALL_ID, piece, channel, follow=True
+            )
 
         run(scenario())
 
@@ -420,7 +422,7 @@ class TestShowAction:
         run(scenario())
 
         assert channel.contents[0].kind is CanvasKind.NOTICE
-        assert "недоступен" in channel.contents[0].note
+        assert "unavailable" in channel.contents[0].note
 
 
 class ElementSink(ChatSink):

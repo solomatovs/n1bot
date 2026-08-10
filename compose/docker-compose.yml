@@ -21,7 +21,7 @@ services:
       - seccomp=unconfined
       - systempaths=unconfined
     ports:
-      - 127.0.0.1:8503:8501
+      - 127.0.0.1:8501:8501
     restart: unless-stopped
 
 networks:

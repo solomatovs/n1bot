@@ -525,7 +525,7 @@ function StreamTail({ content }) {
 
   const callId = (content.path || "").replace("stream://", "");
   const pos = view.stream || {
-    offset: 0, end: 0, size: 0, window: 65536, closed: true,
+    offset: 0, end: 0, size: 0, window: 65536, closed: true, follow: false,
   };
   const browsing = chain !== null;
 
@@ -646,6 +646,16 @@ function StreamTail({ content }) {
     : view.text || " ";
   // прилипание к низу — только когда показан хвост живого вывода
   const live = !browsing && !pos.closed && pos.end >= pos.size;
+
+  // follow-пуш («в конец», кадры насоса) должен встать на низ окна: раннер
+  // пересоздаёт компонент на каждый пуш, поэтому интент едет с сервера в
+  // props. Эффект родителя выполняется после ScrollStage и побеждает его верх.
+  useLayoutEffect(() => {
+    if (!pos.follow) return;
+    const box = boxRef.current;
+    if (!box) return;
+    box.scrollTop = box.scrollHeight;
+  }, [view.nonce]);
 
   // «в начало» и «в конец» — пуши сервера: цепочка окон сбрасывается пушем
   const toStart = () =>

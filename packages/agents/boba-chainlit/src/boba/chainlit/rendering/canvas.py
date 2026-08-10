@@ -185,6 +185,8 @@ class StreamPos(BaseModel):
     size: int
     window: int
     closed: bool
+    follow: bool
+    """Показ хвоста по запросу или насосом: фронт встаёт на низ окна."""
 
 
 class CanvasContent(BaseModel):
