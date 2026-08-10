@@ -54,6 +54,7 @@ def _storage_cfg(**kw: Any) -> LocalStorageConfig:
             "mount_wait_sec": 10.0,
             "mount_poll_sec": 0.05,
             "shutdown_wait_sec": 5.0,
+            "lock_wait_sec": 10.0,
             "copy_chunk_bytes": 1 << 20,
         },
     }
@@ -105,6 +106,7 @@ _PROFILE_BASE: dict[str, object] = {
         "mount_wait_sec": 10.0,
         "mount_poll_sec": 0.05,
         "shutdown_wait_sec": 5.0,
+        "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
     "tmpfs": (),
@@ -176,6 +178,7 @@ def _launcher_options() -> LauncherOptions:
         mount_wait_sec=10.0,
         mount_poll_sec=0.05,
         shutdown_wait_sec=5.0,
+        lock_wait_sec=10.0,
         copy_chunk_bytes=1 << 20,
     )
 

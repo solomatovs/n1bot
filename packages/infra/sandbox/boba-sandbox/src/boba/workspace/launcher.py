@@ -203,25 +203,35 @@ class ImageStore:
     """Готовит образы: flock сериализует доступ, шаблон копируется однажды."""
 
     LOCK_SUFFIX: ClassVar[str] = ".lock"
+    LOCK_POLL_SEC: ClassVar[float] = 0.05
 
-    def __init__(self, template: str, copier: SparseCopier) -> None:
+    def __init__(
+        self, template: str, copier: SparseCopier, lock_wait_sec: float
+    ) -> None:
         self._template = template
         self._copier = copier
-        self._lock_fds: list[int] = []
+        self._lock_wait_sec = lock_wait_sec
+        self._locks: dict[str, int] = {}
 
     @property
     def lock_fds(self) -> tuple[int, ...]:
-        return tuple(self._lock_fds)
+        return tuple(self._locks.values())
 
     def acquire(self, image: str) -> None:
         started = time.monotonic()
         self._lock(image, fcntl.LOCK_EX)
         waited_ms = int((time.monotonic() - started) * 1000)
         trace(f"lock on {image} acquired in {waited_ms}ms")
+
         if os.path.exists(image):
             trace(f"image {image} already exists ({os.path.getsize(image)} bytes)")
             return
-        self._materialize(image)
+
+        try:
+            self._materialize(image)
+        except BaseException:
+            self.release(image)
+            raise
 
     def acquire_shared(self, image: str) -> bool:
         """Разделяемый лок для чтения; False — образа ещё нет, читать нечего."""
@@ -232,16 +242,50 @@ class ImageStore:
 
         return os.path.exists(image)
 
+    def release(self, image: str) -> None:
+        fd = self._locks.pop(image, None)
+        if fd is None:
+            return
+
+        os.close(fd)
+
     def release_all(self) -> None:
-        for fd in self._lock_fds:
+        for fd in self._locks.values():
             os.close(fd)
-        self._lock_fds.clear()
+        self._locks.clear()
 
     def _lock(self, image: str, operation: int) -> None:
+        if image in self._locks:
+            return
+
         fd = os.open(image + self.LOCK_SUFFIX, os.O_WRONLY | os.O_CREAT, 0o600)
-        fcntl.flock(fd, operation)
+
+        try:
+            self._flock_wait(fd, operation, image)
+        except BaseException:
+            os.close(fd)
+            raise
+
         os.set_inheritable(fd, True)
-        self._lock_fds.append(fd)
+        self._locks[image] = fd
+
+    def _flock_wait(self, fd: int, operation: int, image: str) -> None:
+        """flock с таймаутом: вечное ожидание чужого лока — это зависание."""
+        deadline = time.monotonic() + self._lock_wait_sec
+
+        while True:
+            try:
+                fcntl.flock(fd, operation | fcntl.LOCK_NB)
+                return
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    msg = (
+                        f"lock {image + self.LOCK_SUFFIX} is held by another "
+                        f"process: not acquired within {self._lock_wait_sec}s"
+                    )
+                    raise MountError(msg) from exc
+
+            time.sleep(self.LOCK_POLL_SEC)
 
     def _materialize(self, image: str) -> None:
         if not os.path.exists(self._template):
@@ -689,7 +733,9 @@ class Launcher:
         self._images = images
         self._options = options
         self._limits = limits
-        self._store = ImageStore(template, SparseCopier(options.copy_chunk_bytes))
+        self._store = ImageStore(
+            template, SparseCopier(options.copy_chunk_bytes), options.lock_wait_sec
+        )
 
     @classmethod
     def main(cls, argv: list[str]) -> int:
@@ -701,6 +747,7 @@ class Launcher:
             mount_wait_sec=args.mount_wait_sec,
             mount_poll_sec=args.mount_poll_sec,
             shutdown_wait_sec=args.shutdown_wait_sec,
+            lock_wait_sec=args.lock_wait_sec,
             copy_chunk_bytes=args.copy_chunk_bytes,
         )
         limits = ResourceLimits(
@@ -814,6 +861,7 @@ class Launcher:
         parser.add_argument("--mount-wait-sec", type=float, required=True)
         parser.add_argument("--mount-poll-sec", type=float, required=True)
         parser.add_argument("--shutdown-wait-sec", type=float, required=True)
+        parser.add_argument("--lock-wait-sec", type=float, required=True)
         parser.add_argument("--copy-chunk-bytes", type=int, required=True)
         parser.add_argument("--max-memory-bytes", type=int, required=True)
         parser.add_argument("--max-cpu-sec", type=int, required=True)
@@ -955,6 +1003,8 @@ def build_chain_argv(  # noqa: PLR0913
         str(options.mount_poll_sec),
         "--shutdown-wait-sec",
         str(options.shutdown_wait_sec),
+        "--lock-wait-sec",
+        str(options.lock_wait_sec),
         "--copy-chunk-bytes",
         str(options.copy_chunk_bytes),
         "--max-memory-bytes",
@@ -999,6 +1049,10 @@ class LauncherConfig(BaseModel):
         gt=0,
         description="Сколько ждать штатного выхода fuse2fs после SIGTERM, сек.",
     )
+    lock_wait_sec: float = Field(
+        gt=0,
+        description="Сколько ждать flock на образе, сек.",
+    )
     copy_chunk_bytes: int = Field(
         gt=0,
         description="Размер блока sparse-копирования шаблонного образа, байт.",
@@ -1009,6 +1063,7 @@ class LauncherConfig(BaseModel):
             mount_wait_sec=self.mount_wait_sec,
             mount_poll_sec=self.mount_poll_sec,
             shutdown_wait_sec=self.shutdown_wait_sec,
+            lock_wait_sec=self.lock_wait_sec,
             copy_chunk_bytes=self.copy_chunk_bytes,
         )
 
@@ -1020,6 +1075,7 @@ class LauncherOptions:
     mount_wait_sec: float
     mount_poll_sec: float
     shutdown_wait_sec: float
+    lock_wait_sec: float
     copy_chunk_bytes: int
 
 

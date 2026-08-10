@@ -195,6 +195,7 @@ def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStorageClie
             mount_wait_sec=1.0,
             mount_poll_sec=0.1,
             shutdown_wait_sec=1.0,
+            lock_wait_sec=1.0,
             copy_chunk_bytes=65536,
         ),
     )

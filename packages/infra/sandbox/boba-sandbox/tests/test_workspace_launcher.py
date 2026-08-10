@@ -49,6 +49,7 @@ _REQUIRED_FLAGS = (
     "--mount-wait-sec", "10.0",
     "--mount-poll-sec", "0.05",
     "--shutdown-wait-sec", "5.0",
+    "--lock-wait-sec", "10.0",
     "--copy-chunk-bytes", "1048576",
     "--max-memory-bytes", "0",
     "--max-cpu-sec", "0",
@@ -64,6 +65,7 @@ def _launcher_options(**kw: float) -> LauncherOptions:
         "mount_wait_sec": 10.0,
         "mount_poll_sec": 0.05,
         "shutdown_wait_sec": 5.0,
+        "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     }
     values.update(kw)
@@ -71,6 +73,7 @@ def _launcher_options(**kw: float) -> LauncherOptions:
         mount_wait_sec=values["mount_wait_sec"],
         mount_poll_sec=values["mount_poll_sec"],
         shutdown_wait_sec=values["shutdown_wait_sec"],
+        lock_wait_sec=values["lock_wait_sec"],
         copy_chunk_bytes=int(values["copy_chunk_bytes"]),
     )
 
@@ -115,7 +118,7 @@ class TestSparseCopier:
 class TestImageStore:
     @staticmethod
     def _store(template: Path) -> ImageStore:
-        return ImageStore(str(template), SparseCopier(CHUNK))
+        return ImageStore(str(template), SparseCopier(CHUNK), lock_wait_sec=10.0)
 
     def test_creates_image_from_template(
         self, tmp_path: Path, template: Path
@@ -147,8 +150,38 @@ class TestImageStore:
         finally:
             store.release_all()
 
+    def test_busy_lock_raises_after_timeout(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        image = tmp_path / "img"
+        holder = self._store(template)
+        waiter = ImageStore(str(template), SparseCopier(CHUNK), lock_wait_sec=0.2)
+        try:
+            holder.acquire(str(image))
+            with pytest.raises(MountError, match="held by another"):
+                waiter.acquire(str(image))
+        finally:
+            waiter.release_all()
+            holder.release_all()
+
+    def test_failed_materialize_releases_lock(self, tmp_path: Path) -> None:
+        """Повтор после сбоя не должен упереться в собственный залоченный fd."""
+        store = ImageStore(
+            str(tmp_path / "absent"), SparseCopier(CHUNK), lock_wait_sec=0.2
+        )
+        image = tmp_path / "img"
+        try:
+            with pytest.raises(MountError, match="not found"):
+                store.acquire(str(image))
+            with pytest.raises(MountError, match="not found"):
+                store.acquire(str(image))
+        finally:
+            store.release_all()
+
     def test_missing_template_raises_and_cleans_tmp(self, tmp_path: Path) -> None:
-        store = ImageStore(str(tmp_path / "absent"), SparseCopier(CHUNK))
+        store = ImageStore(
+            str(tmp_path / "absent"), SparseCopier(CHUNK), lock_wait_sec=10.0
+        )
         image = tmp_path / "img"
         try:
             with pytest.raises(MountError, match="not found"):
@@ -566,6 +599,8 @@ class TestLauncherMain:
                 "0.05",
                 "--shutdown-wait-sec",
                 "5.0",
+                "--lock-wait-sec",
+                "2.5",
                 "--max-memory-bytes",
                 "1048576",
                 "--max-cpu-sec",
@@ -581,6 +616,7 @@ class TestLauncherMain:
             ]
         )
         assert args.mount_wait_sec == 1.5
+        assert args.lock_wait_sec == 2.5
         assert args.copy_chunk_bytes == 4096
         assert args.max_memory_bytes == 1048576
         assert args.max_cpu_sec == 7
@@ -614,12 +650,14 @@ class TestChainOptions:
             mount_wait_sec=3.5,
             mount_poll_sec=0.1,
             shutdown_wait_sec=2.0,
+            lock_wait_sec=4.5,
             copy_chunk_bytes=4096,
         )
         argv = self._argv(["read", "x"], options)
         assert argv[argv.index("--mount-wait-sec") + 1] == "3.5"
         assert argv[argv.index("--mount-poll-sec") + 1] == "0.1"
         assert argv[argv.index("--shutdown-wait-sec") + 1] == "2.0"
+        assert argv[argv.index("--lock-wait-sec") + 1] == "4.5"
         assert argv[argv.index("--copy-chunk-bytes") + 1] == "4096"
 
     def test_run_command_shlex_roundtrip(self) -> None:
@@ -636,12 +674,14 @@ class TestChainOptions:
             mount_wait_sec=1.0,
             mount_poll_sec=0.1,
             shutdown_wait_sec=2.0,
+            lock_wait_sec=3.0,
             copy_chunk_bytes=4096,
         )
         assert cfg.to_options() == _launcher_options(
             mount_wait_sec=1.0,
             mount_poll_sec=0.1,
             shutdown_wait_sec=2.0,
+            lock_wait_sec=3.0,
             copy_chunk_bytes=4096,
         )
 

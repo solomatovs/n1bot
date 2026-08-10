@@ -206,7 +206,9 @@ class ImageVault:
         self._options = options
         self._lock = threading.Lock()
         self._mounted: dict[str, str] = {}
-        self._store = ImageStore(template, SparseCopier(options.copy_chunk_bytes))
+        self._store = ImageStore(
+            template, SparseCopier(options.copy_chunk_bytes), options.lock_wait_sec
+        )
         self._mounter = FuseMounter(options)
 
     def root_for(self, user_id: str) -> str:
@@ -221,9 +223,17 @@ class ImageVault:
 
             try:
                 self._store.acquire(image)
+            except (MountError, OSError) as exc:
+                raise StreamJournalError(
+                    f"stream vault is not available: {exc}"
+                ) from exc
+
+            try:
                 # без userns права в образе даёт fakeroot-режим fuse2fs
                 self._mounter.mount(image, mnt, readonly=False, fakeroot=True)
             except (MountError, OSError) as exc:
+                # лок снимается сразу: висящий fd заблокировал бы повтор навсегда
+                self._store.release(image)
                 raise StreamJournalError(
                     f"stream vault is not available: {exc}"
                 ) from exc

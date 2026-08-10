@@ -56,6 +56,7 @@ _PROFILE: dict[str, Any] = {
         "mount_wait_sec": 10.0,
         "mount_poll_sec": 0.05,
         "shutdown_wait_sec": 5.0,
+        "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
     "tmpfs": ("/tmp:64M",),  # noqa: S108

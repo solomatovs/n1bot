@@ -265,12 +265,12 @@ RUN set -eu \
     && cp /tmp/conf/boba.env /tmp/boba.env.tmpl                                                 \
     && APP=${BOBA_DIR}/app/${BOBA_VERSION}/boba-chainlit                                   \
     # .files создаётся заранее: chainlit делает mkdir на импорте, ассеты read-only
-    && mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/data/workspace "$APP"/assets/.files                \
+    && mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/data/workspace ${BOBA_DIR}/tool-streams "$APP"/assets/.files \
     # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
     && sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" "$APP"/bin/*                 \
     # приложение бежит непривилегированным: под root образы пользователей
     # ложились бы в том с чужим uid, а userns песочницы его не мапит
-    && chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/data                                        \
+    && chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/data ${BOBA_DIR}/tool-streams "$APP"/assets/.files \
     && ln -sf eng.traineddata ${BOBA_DIR}/sandbox/third/tessdata/rus+eng.traineddata       \
     && ln -sf rus.traineddata ${BOBA_DIR}/sandbox/third/tessdata/eng+rus.traineddata       \
     && ${BOBA_DIR}/third/bin/bwrap --version                                                    \
