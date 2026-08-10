@@ -164,9 +164,7 @@ def _use_stream_journal(c: AppConfig) -> None:
     from boba.chainlit.chat.data.object_key import StreamUrl  # noqa: PLC0415
     from boba.chainlit.chat.data.stream_journal import (  # noqa: PLC0415
         DirVault,
-        ImageVault,
         StreamJournal,
-        StreamVault,
     )
     from boba.chainlit.chat.data.upload import (  # noqa: PLC0415
         StreamServing,
@@ -179,18 +177,11 @@ def _use_stream_journal(c: AppConfig) -> None:
     if not journal_cfg.enable:
         return
 
-    vault: StreamVault
-    if journal_cfg.kind == "dir":
-        vault = DirVault(journal_cfg.dir)
-    else:
-        vault = ImageVault(
-            journal_cfg.image_path,
-            journal_cfg.image_template,
-            journal_cfg.mount_dir,
-            journal_cfg.launcher.to_options(),
-        )
+    vault = DirVault(journal_cfg.dir)
 
-    ToolStreams.configure(StreamJournal(vault, journal_cfg.reserve_bytes))
+    ToolStreams.configure(
+        StreamJournal(vault, journal_cfg.reserve_bytes, journal_cfg.quota_bytes)
+    )
 
     serving = StreamServing(c.storage, UploadPolicy())
     chainlit_app.add_api_route(

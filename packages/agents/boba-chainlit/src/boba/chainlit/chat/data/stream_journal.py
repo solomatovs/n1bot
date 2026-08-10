@@ -2,13 +2,14 @@
 
 Запись идёт по мере работы инструмента и не зависит от его исхода; чтение —
 окнами фиксированного размера по произвольному смещению, целиком файл в
-память не поднимается. Том пользователя — каталог либо ext4-образ: размер
-образа и есть квота, переполнение закрывает журнал пометкой, не трогая
-инструмент. Место кончилось — старейшие закрытые логи вытесняются, пока
-новый журнал не откроется; логи живых вызовов вытеснение не трогает.
+память не поднимается. Том пользователя — каталог; квоту держит сам журнал
+(quota_bytes): писатель один — само приложение, поэтому лимит в коде не
+обойти. Переполнение закрывает журнал пометкой, не трогая инструмент.
+Место кончилось — старейшие закрытые логи вытесняются, пока новый журнал
+не откроется; логи живых вызовов вытеснение не трогает.
 
-Ошибки: StreamJournalError — том недоступен (нет шаблона, не смонтировался);
-сбои записи журнал гасит внутрь, закрывая поток с пометкой причины.
+Ошибки: StreamJournalError — том недоступен или квота исчерпана; сбои
+записи журнал гасит внутрь, закрывая поток с пометкой причины.
 """
 
 from __future__ import annotations
@@ -20,22 +21,13 @@ import os
 import shutil
 import threading
 from collections.abc import Callable, Iterator
-from typing import ClassVar, Protocol
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from boba.workspace.launcher import (
-    FuseMounter,
-    ImageStore,
-    LauncherOptions,
-    MountError,
-    SparseCopier,
-)
 
 __all__ = [
     "CallLogUsage",
     "DirVault",
-    "ImageVault",
     "StreamJournal",
     "StreamJournalError",
     "StreamJournalHub",
@@ -43,7 +35,6 @@ __all__ = [
     "StreamMeta",
     "StreamRecorder",
     "StreamSlice",
-    "StreamVault",
     "ThreadUsage",
     "VaultUsage",
 ]
@@ -52,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 class StreamJournalError(Exception):
-    """Том журнала недоступен: писать и читать некуда."""
+    """Том журнала недоступен или квота исчерпана: писать некуда."""
 
 
 class StreamKey(BaseModel):
@@ -158,20 +149,8 @@ class CallLogUsage(BaseModel):
         return f"{self.thread_id}/{self.call_id}.meta.json"
 
 
-class StreamVault(Protocol):
-    """Служебный том пользователя: корень для файлов журнала."""
-
-    def root_for(self, user_id: str) -> str:
-        """Каталог тома; создаётся или монтируется при первом обращении."""
-        ...
-
-    def shutdown(self) -> None:
-        """Освободить смонтированные тома при остановке приложения."""
-        ...
-
-
 class DirVault:
-    """Том-каталог: без квоты, для тестов и инсталляций без образов."""
+    """Том-каталог: без монтирований и привилегий, квоту держит журнал."""
 
     def __init__(self, root: str) -> None:
         self._root = root
@@ -181,80 +160,14 @@ class DirVault:
         os.makedirs(path, exist_ok=True)
         return path
 
-    def shutdown(self) -> None:
-        return
-
-
-class ImageVault:
-    """Том-образ: ext4 на пользователя, fuse2fs живёт до остановки приложения.
-
-    Размер образа — квота журналов пользователя: переполнение отдаёт ENOSPC
-    писателю. Образ создаётся из шаблона под flock; демон fuse2fs получает
-    pdeathsig и умирает вместе с приложением.
-    """
-
-    def __init__(
-        self,
-        image_path: str,
-        template: str,
-        mount_root: str,
-        options: LauncherOptions,
-    ) -> None:
-        self._image_path = image_path
-        self._template = template
-        self._mount_root = mount_root
-        self._options = options
-        self._lock = threading.Lock()
-        self._mounted: dict[str, str] = {}
-        self._store = ImageStore(
-            template, SparseCopier(options.copy_chunk_bytes), options.lock_wait_sec
-        )
-        self._mounter = FuseMounter(options)
-
-    def root_for(self, user_id: str) -> str:
-        with self._lock:
-            if mounted := self._mounted.get(user_id):
-                return mounted
-
-            image = self._image_path.format(user_id=user_id)
-            mnt = os.path.join(self._mount_root, user_id)
-            os.makedirs(os.path.dirname(image), exist_ok=True)
-            FuseMounter.reclaim(mnt)
-
-            try:
-                self._store.acquire(image)
-            except (MountError, OSError) as exc:
-                raise StreamJournalError(
-                    f"stream vault is not available: {exc}"
-                ) from exc
-
-            try:
-                # без userns права в образе даёт fakeroot-режим fuse2fs
-                self._mounter.mount(image, mnt, readonly=False, fakeroot=True)
-            except (MountError, OSError) as exc:
-                # лок снимается сразу: висящий fd заблокировал бы повтор навсегда
-                self._store.release(image)
-                raise StreamJournalError(
-                    f"stream vault is not available: {exc}"
-                ) from exc
-
-            logger.info("stream vault mounted: %s at %s", image, mnt)
-            self._mounted[user_id] = mnt
-            return mnt
-
-    def shutdown(self) -> None:
-        with self._lock:
-            self._mounter.shutdown()
-            self._store.release_all()
-            self._mounted.clear()
-
 
 class StreamRecorder:
     """Писатель журнала одного вызова: append по мере работы инструмента.
 
     Реализует StreamSink: сбой записи (переполнение тома, отвал fuse) не
     выходит наружу — журнал закрывается пометкой, инструмент работает дальше.
-    on_data зовётся после каждой порции и при закрытии.
+    on_data зовётся после каждой порции и при закрытии. max_bytes — потолок
+    размера файла; 0 — без потолка, квоту даёт файловая система тома.
     """
 
     def __init__(
@@ -263,10 +176,12 @@ class StreamRecorder:
         meta_path: str,
         tool_name: str,
         on_data: Callable[[], None],
+        max_bytes: int,
     ) -> None:
         self._log_path = log_path
         self._meta_path = meta_path
         self._on_data = on_data
+        self._max_bytes = max_bytes
         self._lock = threading.Lock()
         self._closed = False
         self._meta = StreamMeta(tool_name=tool_name)
@@ -292,17 +207,28 @@ class StreamRecorder:
         with self._lock:
             if self._closed:
                 return
-            try:
-                os.write(self._fd, data)
-                self._size += len(data)
-            except OSError as exc:
-                note = f"журнал остановлен: {exc.strerror or exc}"
+
+            note = self._append(data)
 
         if note:
             self.close(note)
             return
 
         self._on_data()
+
+    def _append(self, data: bytes) -> str:
+        """Дописать порцию под локом; непустая строка — причина закрытия."""
+        if self._max_bytes:
+            if self._size + len(data) > self._max_bytes:
+                return "журнал остановлен: квота журналов пользователя исчерпана"
+
+        try:
+            os.write(self._fd, data)
+            self._size += len(data)
+        except OSError as exc:
+            return f"журнал остановлен: {exc.strerror or exc}"
+
+        return ""
 
     def feed_text(self, text: str) -> None:
         self.feed(text.encode("utf-8"))
@@ -436,18 +362,25 @@ class StreamJournal:
 
     Перед открытием нового журнала держится резерв места: старейшие по
     записи треды вытесняются, пока резерв не появится; защищённые треды
-    (текущий и с живыми потоками) ротация не трогает.
+    (текущий и с живыми потоками) ротация не трогает. quota_bytes — потолок
+    суммарного размера журналов пользователя, принудительно в коде: для
+    dir-тома файловая система квоту не даёт; 0 — квоту обеспечивает том.
     """
 
     WINDOW_BYTES: ClassVar[int] = 64 * 1024
 
-    def __init__(self, vault: StreamVault, reserve_bytes: int) -> None:
+    def __init__(self, vault: DirVault, reserve_bytes: int, quota_bytes: int) -> None:
         if reserve_bytes < 0:
             msg = f"reserve_bytes must be >= 0, got {reserve_bytes}"
             raise ValueError(msg)
 
+        if quota_bytes < 0:
+            msg = f"quota_bytes must be >= 0, got {quota_bytes}"
+            raise ValueError(msg)
+
         self._vault = vault
         self._reserve = reserve_bytes
+        self._quota = quota_bytes
 
     def recorder(
         self,
@@ -467,12 +400,59 @@ class StreamJournal:
 
         self._ensure_reserve(root, protected)
 
+        budget = self._quota_budget(root, key, protected)
+
         log_path = os.path.join(root, key.rel_log())
 
         # вместо релея stderr в общий журнал — одна строка о месте записи
         logger.info("tool stream journal: %s -> %s", tool_name, log_path)
 
-        return self._open_recorder(key, root, tool_name, on_data, protected)
+        return self._open_recorder(key, root, tool_name, on_data, protected, budget)
+
+    def _quota_budget(
+        self, root: str, key: StreamKey, protected: frozenset[str]
+    ) -> int:
+        """Потолок размера открываемого журнала; 0 — квоту обеспечивает том.
+
+        Пока остаток квоты меньше резерва, старейшие закрытые логи
+        вытесняются; вытеснять нечего — отдаётся остаток, а исчерпанная
+        квота отклоняет открытие.
+        """
+        if not self._quota:
+            return 0
+
+        target = min(self._reserve, self._quota)
+        if target <= 0:
+            target = 1
+
+        while True:
+            used = self._used_bytes(root, key)
+            remaining = self._quota - used
+
+            if remaining >= target:
+                return remaining
+
+            freed = self._evict_oldest(root, protected)
+            if freed >= 0:
+                continue
+
+            if remaining > 0:
+                return remaining
+
+            raise StreamJournalError(
+                f"stream quota is exhausted: {used} bytes used "
+                f"of {self._quota}, nothing to evict"
+            )
+
+    def _used_bytes(self, root: str, key: StreamKey) -> int:
+        """Байты логов пользователя без открываемого вызова: его меряет потолок."""
+        used = 0
+        for entry in self._call_logs(root):
+            if entry.rel_log == key.rel_log():
+                continue
+            used += entry.bytes_used
+
+        return used
 
     def _open_recorder(
         self,
@@ -481,6 +461,7 @@ class StreamJournal:
         tool_name: str,
         on_data: Callable[[], None],
         protected: frozenset[str],
+        max_bytes: int,
     ) -> StreamRecorder:
         """Открыть рекордер, вытесняя старые логи при ENOSPC до успеха.
 
@@ -493,7 +474,9 @@ class StreamJournal:
         while True:
             try:
                 os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                return StreamRecorder(log_path, meta_path, tool_name, on_data)
+                return StreamRecorder(
+                    log_path, meta_path, tool_name, on_data, max_bytes
+                )
             except OSError as exc:
                 if exc.errno != errno.ENOSPC:
                     raise StreamJournalError(
@@ -713,12 +696,9 @@ class StreamJournal:
         """Корень тома пользователя: под ним лежат {thread}/{call}.log.
 
         Отдаётся скачиванию журнала — файл течёт из тома тем же StreamedFile,
-        что и вложения; том каталога или fuse-монт образа — обычная ФС.
+        что и вложения.
         """
         return self._vault.root_for(user_id)
-
-    def shutdown(self) -> None:
-        self._vault.shutdown()
 
     @staticmethod
     def _read_meta(meta_path: str) -> StreamMeta:

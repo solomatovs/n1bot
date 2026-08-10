@@ -1,24 +1,22 @@
-"""Журнал вывода инструментов: файлы, окна, сайдкар и квота образом."""
+"""Журнал вывода инструментов: файлы, окна, сайдкар и квота кодом."""
 
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from pydantic import ValidationError
 
 from boba.chainlit.chat.data.stream_journal import (
     DirVault,
-    ImageVault,
     StreamJournal,
+    StreamJournalError,
     StreamKey,
     StreamRecorder,
 )
-from boba.workspace.launcher import FUSE_DEVICE, LauncherOptions
 
 KEY = StreamKey(user_id="7", thread_id="t-1", call_id="call-1")
 
@@ -33,7 +31,9 @@ def _wake() -> None:
 
 
 def _journal(tmp_path: Path) -> StreamJournal:
-    return StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=0)
+    return StreamJournal(
+        DirVault(str(tmp_path / "vault")), reserve_bytes=0, quota_bytes=0
+    )
 
 
 def _recorder(
@@ -275,7 +275,7 @@ class TestUsageAndPurge:
         отступиться от защищённого лога.
         """
         journal = StreamJournal(
-            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60
+            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60, quota_bytes=0
         )
         self._fill(journal, "t-old", b"a" * 100)
         self._fill(journal, "t-protected", b"b" * 100)
@@ -293,7 +293,7 @@ class TestUsageAndPurge:
     ) -> None:
         """Защищён живой вызов, не весь тред: старый закрытый лог того же треда уходит."""
         journal = StreamJournal(
-            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60
+            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60, quota_bytes=0
         )
         old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
         recorder = journal.recorder(old_key, "bash", _wake, frozenset())
@@ -308,160 +308,67 @@ class TestUsageAndPurge:
         assert (root / "t-1" / "c-new.log").exists()
 
 
-@pytest.mark.skipif(
-    shutil.which("fuse2fs") is None
-    or shutil.which("mkfs.ext4") is None
-    or not os.path.exists(FUSE_DEVICE),
-    reason="нужны fuse2fs, mkfs.ext4 и /dev/fuse",
-)
-class TestImageVaultQuota:
-    """Служебный том-образ: размер образа и есть квота журналов пользователя."""
+class TestDirQuota:
+    """Квота dir-тома живёт в коде журнала: писатель один — приложение."""
 
-    IMAGE_BYTES = 8 * 1024 * 1024
+    QUOTA: ClassVar[int] = 1024
+    RESERVE: ClassVar[int] = 512
 
-    @pytest.fixture
-    def vault(self, tmp_path: Path) -> Iterator[ImageVault]:
-        template = tmp_path / "template.ext4"
-        with template.open("wb") as f:
-            f.truncate(self.IMAGE_BYTES)
-        mkfs = shutil.which("mkfs.ext4")
-        assert mkfs is not None
-        subprocess.run(  # noqa: S603
-            [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(template)],
-            check=True,
+    def _journal(self, tmp_path: Path, reserve_bytes: int) -> StreamJournal:
+        vault = DirVault(str(tmp_path / "vault"))
+        return StreamJournal(
+            vault, reserve_bytes=reserve_bytes, quota_bytes=self.QUOTA
         )
-
-        built = ImageVault(
-            image_path=f"{tmp_path}/svc/{{user_id}}.ext4",
-            template=str(template),
-            mount_root=str(tmp_path / "mnt"),
-            options=LauncherOptions(
-                mount_wait_sec=10.0,
-                mount_poll_sec=0.05,
-                shutdown_wait_sec=5.0,
-                lock_wait_sec=10.0,
-                copy_chunk_bytes=1 << 20,
-            ),
-        )
-        yield built
-        built.shutdown()
-
-    def test_journal_lives_in_the_image(self, vault: ImageVault) -> None:
-        journal = StreamJournal(vault, reserve_bytes=0)
-        recorder = journal.recorder(KEY, "bash", _wake, frozenset())
-
-        recorder.feed("вывод в образ".encode())
-        recorder.close("rc=0")
-
-        piece = journal.slice_at(KEY, 0)
-        assert piece is not None
-        assert piece.text == "вывод в образ"
 
     def test_overflow_closes_the_journal_not_the_tool(
-        self, vault: ImageVault
+        self, tmp_path: Path
     ) -> None:
-        """Заливка больше квоты: журнал закрывается пометкой, feed не падает."""
-        journal = StreamJournal(vault, reserve_bytes=0)
+        journal = self._journal(tmp_path, reserve_bytes=0)
         recorder = journal.recorder(KEY, "bash", _wake, frozenset())
 
-        chunk = b"x" * (1 << 20)
-        for _ in range(2 * self.IMAGE_BYTES // len(chunk)):
-            recorder.feed(chunk)
+        recorder.feed(b"x" * 600)
+        recorder.feed(b"x" * 600)
+        recorder.feed("после закрытия не падает".encode())
 
         assert recorder.closed is True
 
         piece = journal.slice_at(KEY, -1)
         assert piece is not None
         assert piece.closed is True
-        assert "журнал остановлен" in piece.note
-        assert 0 < piece.size <= self.IMAGE_BYTES
+        assert "квота" in piece.note
+        assert piece.size <= self.QUOTA
 
-    def test_stale_mount_is_reclaimed_after_a_crash(
-        self, vault: ImageVault, tmp_path: Path
-    ) -> None:
-        """SIGKILL приложения оставляет битую точку: новый том её отвоёвывает."""
-        journal = StreamJournal(vault, reserve_bytes=0)
-        recorder = journal.recorder(KEY, "bash", _wake, frozenset())
-        recorder.feed(b"before crash")
-        recorder.close("rc=0")
+    def test_eviction_keeps_reserve_for_a_new_call(self, tmp_path: Path) -> None:
+        """Остаток квоты меньше резерва: старый закрытый лог вытесняется."""
+        journal = self._journal(tmp_path, reserve_bytes=self.RESERVE)
 
-        # гибель процесса: fuse2fs убит без размонтирования, локи брошены
-        for daemon in vault._mounter._daemons:
-            daemon.kill()
-            daemon.wait()
-        vault._store.release_all()
-
-        second = self._vault_at(tmp_path)
-        try:
-            revived = StreamJournal(second, reserve_bytes=0)
-            piece = revived.slice_at(KEY, 0)
-        finally:
-            second.shutdown()
-
-        assert piece is not None
-        assert piece.text == "before crash"
-
-    def _vault_at(self, tmp_path: Path) -> ImageVault:
-        return ImageVault(
-            image_path=f"{tmp_path}/svc/{{user_id}}.ext4",
-            template=str(tmp_path / "template.ext4"),
-            mount_root=str(tmp_path / "mnt"),
-            options=LauncherOptions(
-                mount_wait_sec=10.0,
-                mount_poll_sec=0.05,
-                shutdown_wait_sec=5.0,
-                lock_wait_sec=10.0,
-                copy_chunk_bytes=1 << 20,
-            ),
-        )
-
-    def test_rotation_frees_the_image_for_a_new_journal(
-        self, vault: ImageVault
-    ) -> None:
-        """Настоящий сценарий квоты: полный образ + резерв = старый тред ушёл."""
-        journal = StreamJournal(vault, reserve_bytes=2 * 1024 * 1024)
-
-        old_key = StreamKey(user_id="7", thread_id="t-old", call_id="c-1")
+        old_key = StreamKey(user_id="7", thread_id="t-old", call_id="c-old")
         recorder = journal.recorder(old_key, "bash", _wake, frozenset())
-        for _ in range(self.IMAGE_BYTES // (1 << 20)):
-            recorder.feed(b"x" * (1 << 20))
+        recorder.feed(b"x" * 600)
         recorder.close("rc=0")
 
         fresh = journal.recorder(KEY, "bash", _wake, frozenset())
         fresh.feed(b"fresh data")
         fresh.close("rc=0")
 
-        assert journal.slice_at(old_key, 0) is None
+        root = tmp_path / "vault" / "7"
+        assert not (root / "t-old" / "c-old.log").exists()
 
         piece = journal.slice_at(KEY, 0)
         assert piece is not None
         assert piece.text == "fresh data"
 
-        usage = journal.usage("7")
-        assert usage.free_bytes >= 1024 * 1024
+    def test_exhausted_quota_refuses_new_journal(self, tmp_path: Path) -> None:
+        """Квоту заняли живые логи: вытеснять нечего, открытие отклоняется."""
+        journal = self._journal(tmp_path, reserve_bytes=self.RESERVE)
 
-    def test_full_image_evicts_old_call_on_next_open(
-        self, vault: ImageVault
-    ) -> None:
-        """Без резерва: полный образ из закрытого лога, новый вызов вытесняет его.
+        live_key = StreamKey(user_id="7", thread_id="t-live", call_id="c-live")
+        recorder = journal.recorder(live_key, "bash", _wake, frozenset())
+        recorder.feed(b"x" * self.QUOTA)
 
-        Настоящий сценарий бага: один runaway-вызов забил образ данными,
-        следующий вызов падал ENOSPC на открытии — теперь старый лог уходит.
-        """
-        journal = StreamJournal(vault, reserve_bytes=0)
+        with pytest.raises(StreamJournalError, match="quota is exhausted"):
+            journal.recorder(
+                KEY, "bash", _wake, frozenset({live_key.rel_log()})
+            )
 
-        big_key = StreamKey(user_id="7", thread_id="t-old", call_id="c-big")
-        recorder = journal.recorder(big_key, "bash", _wake, frozenset())
-        chunk = b"x" * 4096
-        while not recorder.closed:
-            recorder.feed(chunk)
-
-        fresh = journal.recorder(KEY, "bash", _wake, frozenset())
-        fresh.feed(b"fresh data")
-        fresh.close("rc=0")
-
-        assert journal.slice_at(big_key, 0) is None
-
-        piece = journal.slice_at(KEY, 0)
-        assert piece is not None
-        assert piece.text == "fresh data"
+        recorder.close("rc=0")

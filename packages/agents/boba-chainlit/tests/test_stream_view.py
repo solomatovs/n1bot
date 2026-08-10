@@ -48,7 +48,7 @@ def chainlit_context(tmp_path: Path) -> Any:
     token = context_var.set(cast("ChainlitContext", SimpleNamespace(session=session)))
     ToolStreams.reset()
     ToolStreams.configure(
-        StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
+        StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0, quota_bytes=0)
     )
     yield
     ToolStreams.reset()
