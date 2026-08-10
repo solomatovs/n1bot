@@ -40,6 +40,8 @@ def run_app(config_path: Path):
     container = _use_di_container(app, c)
     app.state.container = container
 
+    _use_stream_journal(c)
+
     _use_canvas_viewers()
 
     _use_auth(c, container)
@@ -108,7 +110,18 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
             return await call_next(request)
 
+    class ElementsNoCacheMiddleware(BaseHTTPMiddleware):
+        """Кастом-элементы правятся чаще фронта: браузеру их кэшировать нельзя,
+        иначе после правки .jsx пользователи видят старый компонент."""
+
+        async def dispatch(self, request: Request, call_next):
+            response = await call_next(request)
+            if "/public/elements/" in request.url.path:
+                response.headers["Cache-Control"] = "no-cache"
+            return response
+
     chainlit_app.add_middleware(ChainlitMiddleware)
+    chainlit_app.add_middleware(ElementsNoCacheMiddleware)
 
     app.mount(config.url_prefix, chainlit_app)
 
@@ -142,6 +155,46 @@ def _use_file_serving(c: AppConfig) -> None:
     serving = AttachmentServing(storage, data_layer, UploadPolicy())
     chainlit_app.add_api_route(
         f"{route_path}{AttachmentUrl.ROUTE}", serving.serve, methods=["GET"]
+    )
+    chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+
+
+def _use_stream_journal(c: AppConfig) -> None:
+    """Журнал вывода инструментов; без секции в конфиге потоков нет."""
+    from boba.chainlit.chat.data.object_key import StreamUrl  # noqa: PLC0415
+    from boba.chainlit.chat.data.stream_journal import (  # noqa: PLC0415
+        DirVault,
+        ImageVault,
+        StreamJournal,
+        StreamVault,
+    )
+    from boba.chainlit.chat.data.upload import (  # noqa: PLC0415
+        StreamServing,
+        UploadPolicy,
+    )
+    from boba.chainlit.rendering.stream_view import ToolStreams  # noqa: PLC0415
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    journal_cfg = c.stream_journal
+    if not journal_cfg.enable:
+        return
+
+    vault: StreamVault
+    if journal_cfg.kind == "dir":
+        vault = DirVault(journal_cfg.dir)
+    else:
+        vault = ImageVault(
+            journal_cfg.image_path,
+            journal_cfg.image_template,
+            journal_cfg.mount_dir,
+            journal_cfg.launcher.to_options(),
+        )
+
+    ToolStreams.configure(StreamJournal(vault, journal_cfg.reserve_bytes))
+
+    serving = StreamServing(c.storage, UploadPolicy())
+    chainlit_app.add_api_route(
+        StreamUrl.ROUTE, serving.serve, methods=["GET"], include_in_schema=False
     )
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 

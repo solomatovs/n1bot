@@ -81,15 +81,17 @@ class TestRelay:
         assert len(caplog.records) == 1
         assert "привет" in caplog.records[0].getMessage()
 
-    def test_raw_stderr_goes_to_debug(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Шум библиотек не выдаётся за лог инструмента, но и не теряется."""
-        relay = self._relay()
+    def test_raw_stderr_stays_out_of_the_app_log(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Сырой stderr живёт в журнале вывода инструмента, не в журнале приложения."""
+        lines: list[str] = []
+        relay = SandboxLogRelay(LABEL, lines.append)
         with caplog.at_level(logging.DEBUG):
             relay.feed(b"UserWarning: deprecated\n")
 
-        record = caplog.records[-1]
-        assert record.levelno == SandboxLogRelay.NOISE_LEVEL
-        assert "deprecated" in record.getMessage()
+        assert not caplog.records
+        assert lines == ["UserWarning: deprecated"]
 
     def test_broken_frame_is_not_lost(
         self, caplog: pytest.LogCaptureFixture
@@ -111,16 +113,15 @@ class TestRelay:
         assert record.levelno == logging.INFO
         assert "image mounted" in record.getMessage()
 
-    def test_tail_without_newline_is_flushed(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        relay = self._relay()
-        with caplog.at_level(logging.DEBUG):
-            relay.feed(b"last line without newline")
-            assert not caplog.records
-            relay.flush()
+    def test_tail_without_newline_is_flushed(self) -> None:
+        lines: list[str] = []
+        relay = SandboxLogRelay(LABEL, lines.append)
 
-        assert "last line" in caplog.records[-1].getMessage()
+        relay.feed(b"last line without newline")
+        assert lines == []
+
+        relay.flush()
+        assert lines == ["last line without newline"]
 
     def test_empty_lines_are_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
         relay = self._relay()

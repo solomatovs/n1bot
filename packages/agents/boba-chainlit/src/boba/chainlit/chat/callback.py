@@ -21,13 +21,14 @@ from boba.chainlit.chat.errors import chainlit_error_ctx_handler
 from boba.chainlit.chat.turn import ChatTurn, ThreadRoom
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
-from boba.chainlit.infra.session import current_thread_id
+from boba.chainlit.infra.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.stream_view import (
     StreamAction,
     StreamScreen,
     show_stream_action,
+    window_stream_action,
 )
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
@@ -55,9 +56,13 @@ async def on_message(
         await rewind.apply(msg.id, msg.content)
         await rewind.refresh_view()
 
+    user_id = current_user_id()
+    if user_id is None:
+        user_id = ""
+
     view = ChatView(thread_id, LiveSink())
     view.begin_turn(msg.id)
-    tracer = AgentTracer(view)
+    tracer = AgentTracer(view, str(user_id))
     run_config = RunnableConfig(
         callbacks=[tracer],
         configurable={"thread_id": thread_id},
@@ -136,12 +141,34 @@ async def on_canvas_content(action: cl.Action) -> dict[str, Any]:
 @cl.action_callback(StreamAction.SHOW)
 @chainlit_error_ctx_handler
 async def on_canvas_stream(action: cl.Action) -> None:
-    """Кнопка на шаге инструмента: живой вывод вызова в панель."""
+    """Кнопка на шаге инструмента: живой вызов — насос, старый — из журнала.
+
+    Пользователь и тред берутся из сессии: чужой журнал по payload недостижим.
+    """
     thread_id = current_thread_id()
     if thread_id is None:
         return
 
-    await show_stream_action(thread_id, action.payload)
+    user_id = current_user_id()
+    if user_id is None:
+        return
+
+    await show_stream_action(str(user_id), thread_id, action.payload)
+
+
+@cl.action_callback(StreamAction.WINDOW)
+@chainlit_error_ctx_handler
+async def on_canvas_stream_window(action: cl.Action) -> dict[str, Any]:
+    """Перемотка журнала: окно по смещению, панель не подменяется."""
+    thread_id = current_thread_id()
+    if thread_id is None:
+        return {}
+
+    user_id = current_user_id()
+    if user_id is None:
+        return {}
+
+    return await window_stream_action(str(user_id), thread_id, action.payload)
 
 
 @cl.action_callback(CanvasAction.STATUS)

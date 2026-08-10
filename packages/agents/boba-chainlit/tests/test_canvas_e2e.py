@@ -256,7 +256,7 @@ async def test_diagram_is_drawn_not_shown_as_text(panel: Any) -> None:
     side = await show("flow.mmd")
     text = await side.inner_text()
 
-    assert await side.locator("svg").count() > 0
+    assert await side.locator('div[style*="transform-origin"] svg').count() > 0
     assert "Доход" in text
     # имя файла в панели не дублируем: шапка отнимала бы место у диаграммы
     assert "flow.mmd" not in text
@@ -285,12 +285,15 @@ async def test_markdown_is_rendered(panel: Any) -> None:
 
 
 async def test_unsupported_format_is_explained(panel: Any) -> None:
-    """Неподдерживаемый формат: панель объясняет, а не молчит и не врёт."""
+    """Неподдерживаемый формат: панель объясняет, а не молчит и не врёт.
+
+    Имени файла в панели нет намеренно: шапки у канваса убраны, объяснение
+    живёт по центру пустой панели.
+    """
     show, _, _thread, _act = panel
     side = await show("data.bin")
     text = await side.inner_text()
 
-    assert "data.bin" in text
     assert "показать не умеет" in text
 
 
@@ -314,7 +317,7 @@ async def test_diagram_fills_the_panel(panel: Any) -> None:
     side = await show("flow.mmd")
 
     box = await side.bounding_box()
-    svg = await side.locator("svg").first.bounding_box()
+    svg = await side.locator('div[style*="transform-origin"] svg').first.bounding_box()
 
     assert box and svg
     assert svg["width"] > box["width"] * 0.9
@@ -326,7 +329,7 @@ async def test_wheel_does_not_zoom_in_the_panel(panel: Any) -> None:
     show, _, _thread, _act = panel
     side = await show("flow.mmd")
     read = (
-        "() => document.querySelector('#side-view-content svg')"
+        "() => document.querySelector('#side-view-content div[style*=\"transform-origin\"] svg')"
         ".parentElement.style.transform"
     )
     page = side.page
@@ -379,7 +382,11 @@ async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
 
 
 async def test_controls_share_one_alignment(panel: Any) -> None:
-    """Кнопки канваса стоят по стандарту chainlit: 16px от краёв, размер icon."""
+    """Кнопки шапки — один ряд по стандарту chainlit: 36px, закрытие справа.
+
+    Родной «назад» панели спрятан: закрытие живёт последней кнопкой ряда,
+    как в полноэкранном режиме.
+    """
     show, _, _thread, _act = panel
     side = await show("flow.mmd")
     page = side.page
@@ -387,24 +394,36 @@ async def test_controls_share_one_alignment(panel: Any) -> None:
     geometry = await page.evaluate(
         """() => {
             const panel = document.querySelector('#side-view-content')
-              .closest('[class*="translate-x-"]').getBoundingClientRect();
-            const close = document.querySelector('#side-view-title button')
-              .getBoundingClientRect();
-            const zoom = document.querySelector('#side-view-content button')
-              .getBoundingClientRect();
+              .closest('.bg-card').getBoundingClientRect();
+            const back = document.querySelector('#side-view-title');
+            const buttons = [...document.querySelectorAll(
+              '#side-view-content button[aria-label]'
+            )].map(b => {
+              const r = b.getBoundingClientRect();
+              return {
+                label: b.getAttribute('aria-label'),
+                top: Math.round(r.top - panel.top),
+                right: Math.round(panel.right - r.right),
+                size: Math.round(r.width),
+              };
+            });
             return {
-              closeTop: Math.round(close.top - panel.top),
-              closeLeft: Math.round(close.left - panel.left),
-              zoomTop: Math.round(zoom.top - panel.top),
-              size: Math.round(close.width),
+              backHidden: !back || getComputedStyle(back).display === 'none',
+              buttons,
             };
         }"""
     )
 
-    assert geometry["size"] == 36
-    assert abs(geometry["closeTop"] - 16) <= 2
-    assert abs(geometry["closeLeft"] - 16) <= 2
-    assert abs(geometry["zoomTop"] - geometry["closeTop"]) <= 2
+    assert geometry["backHidden"] is True
+    assert geometry["buttons"]
+    tops = {entry["top"] for entry in geometry["buttons"]}
+    assert max(tops) - min(tops) <= 2
+    for entry in geometry["buttons"]:
+        assert entry["size"] == 36
+
+    last = geometry["buttons"][-1]
+    assert last["label"] == "Закрыть"
+    assert abs(last["right"] - 25) <= 4
 
 
 async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
@@ -420,10 +439,12 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
         """() => {
             const dialog = document.querySelector('[role="dialog"]');
             const box = dialog.getBoundingClientRect();
-            return [...dialog.querySelectorAll('button')].map(b => {
-              const r = b.getBoundingClientRect();
-              return Math.round(r.top - box.top);
-            });
+            return [...dialog.querySelectorAll('button')]
+              .filter(b => getComputedStyle(b).display !== 'none')
+              .map(b => {
+                const r = b.getBoundingClientRect();
+                return Math.round(r.top - box.top);
+              });
         }"""
     )
 
@@ -463,3 +484,52 @@ async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
     side = await act("canvas_stream", {"call_id": "e2e-нет-такого-вызова"})
 
     assert "недоступен" in await side.inner_text()
+
+
+async def test_panel_close_button_closes_the_panel(panel: Any) -> None:
+    """Закрытие в ряду кнопок реально закрывает панель канваса."""
+    show, _, _thread, _act = panel
+    side = await show("report.md")
+    page = side.page
+
+    await side.locator('button[aria-label="Закрыть"]').click()
+    await page.wait_for_timeout(1500)
+
+    assert await page.locator("#side-view-content").count() == 0
+
+
+async def test_bar_survives_scrolling(panel: Any) -> None:
+    """Прокрутка содержимого не уводит шапку: кнопки доступны всегда."""
+    show, _, _thread, _act = panel
+    side = await show("report.md")
+    page = side.page
+
+    before = await page.evaluate(
+        """() => document.querySelector(
+            '#side-view-content button[aria-label]'
+        ).getBoundingClientRect().top"""
+    )
+
+    await page.evaluate(
+        """() => {
+            for (const el of document.querySelectorAll(
+              '#side-view-content div'
+            )) {
+              if (el.scrollHeight > el.clientHeight) el.scrollTop = 99999;
+            }
+        }"""
+    )
+    await page.wait_for_timeout(300)
+
+    after = await page.evaluate(
+        """() => {
+            const button = document.querySelector(
+              '#side-view-content button[aria-label]'
+            );
+            const r = button.getBoundingClientRect();
+            return { top: r.top, height: r.height };
+        }"""
+    )
+
+    assert after["height"] > 0
+    assert abs(after["top"] - before) <= 2

@@ -51,7 +51,7 @@ class ToolStreamTapGuard:
         if stream is None:
             return False
 
-        ToolStreamTap.set(stream.buffer)
+        ToolStreamTap.set(stream.recorder)
         return True
 
     @staticmethod

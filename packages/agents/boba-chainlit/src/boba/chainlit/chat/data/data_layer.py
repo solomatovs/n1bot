@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID
 
 import aiofiles
@@ -28,6 +28,10 @@ from boba.chainlit.chat.data.object_key import (
     ObjectKey,
 )
 from boba.chainlit.chat.data.storage import StorageClient
+from boba.chainlit.chat.data.stream_journal import (
+    StreamJournalError,
+    StreamJournalHub,
+)
 from boba.chainlit.chat.errors import show_error
 from boba.chainlit.chat.transcript import ConversationTranscript, ThreadMessages
 from boba.chainlit.infra.session import current_user_id
@@ -643,15 +647,16 @@ class PostgresDataLayer(AttachmentDataLayer):
         elements_query = sql.SQL(
             "delete from {elements} where thread_id = %(tid)s"
         ).format(elements=Element.get_table_name(self._schema))
-        thread_query = sql.SQL("delete from {threads} where id = %(tid)s").format(
-            threads=Thread.get_table_name(self._schema)
-        )
+        thread_query = sql.SQL(
+            "delete from {threads} where id = %(tid)s returning user_id"
+        ).format(threads=Thread.get_table_name(self._schema))
         params = {"tid": UUID(thread_id)}
         try:
             async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute(feedbacks_query, params)
                 await conn.execute(elements_query, params)
-                await conn.execute(thread_query, params)
+                cursor = await conn.execute(thread_query, params)
+                owner = await cursor.fetchone()
         except Exception as e:
             raise InternalServiceError(
                 internal_detail=(
@@ -659,6 +664,29 @@ class PostgresDataLayer(AttachmentDataLayer):
                 ),
                 user_detail="Not able to delete thread",
             ) from e
+
+        self._purge_stream_journal(owner, thread_id)
+
+    @staticmethod
+    def _purge_stream_journal(owner: tuple[Any, ...] | None, thread_id: str) -> None:
+        """Журналы вывода инструментов умирают вместе с тредом.
+
+        Сбой уборки не отменяет удаление треда — журнал доберёт ротация.
+        """
+        if owner is None or owner[0] is None:
+            return
+
+        journal = StreamJournalHub.get()
+        if journal is None:
+            return
+
+        try:
+            journal.purge_thread(str(owner[0]), thread_id)
+        except StreamJournalError:
+            logger.warning(
+                "stream journal purge failed for thread %s", thread_id,
+                exc_info=True,
+            )
 
     async def list_threads(
         self,

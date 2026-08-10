@@ -11,6 +11,7 @@ from langchain_core.messages import (
     RemoveMessage,
 )
 from langchain_core.runnables import RunnableConfig
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
@@ -98,16 +99,34 @@ class ThreadRewind:
 
         return RewindPlan(remove_ids, element_ids)
 
+    @staticmethod
+    def prefix(
+        messages: Sequence[BaseMessage], message_id: str
+    ) -> list[BaseMessage]:
+        """История до правленого вопроса; вопроса и хвоста в ней нет."""
+        kept: list[BaseMessage] = []
+        for message in messages:
+            if isinstance(message, HumanMessage) and message.id == message_id:
+                return kept
+            kept.append(message)
+
+        return []
+
     async def apply(self, message_id: str, content: str) -> RewindPlan:
-        """Удалить хвост и его вложения, поставить вопросу новый текст."""
-        rewind = self.plan(await self.messages(), message_id, self._thread_id)
+        """Удалить хвост и его вложения, поставить вопросу новый текст.
+
+        Канал переписывается целиком: точечный RemoveMessage падает, когда
+        прерванный ход оставил pending writes — aget_state их показывает,
+        но в канале чекпойнта их нет.
+        """
+        messages = await self.messages()
+        rewind = self.plan(messages, message_id, self._thread_id)
 
         for element_id in rewind.element_ids:
             await self._data_layer.delete_element(element_id, self._thread_id)
 
-        updates: list[BaseMessage] = [
-            RemoveMessage(id=removed) for removed in rewind.remove_ids
-        ]
+        updates: list[BaseMessage] = [RemoveMessage(id=REMOVE_ALL_MESSAGES)]
+        updates.extend(self.prefix(messages, message_id))
         updates.append(HumanMessage(content=content, id=message_id))
         await self._graph.aupdate_state(self._config, {"messages": updates})
         return rewind

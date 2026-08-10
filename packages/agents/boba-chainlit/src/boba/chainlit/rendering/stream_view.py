@@ -1,12 +1,13 @@
-"""Живой вывод инструмента в канвасе: реестр потоков хода и насос показа.
+"""Живой вывод инструмента в канвасе: журнал вызовов, реестр хода и насос.
 
-Поток создаётся на каждый вызов потокового инструмента и живёт до конца хода.
-Показ включает пользователь кнопкой на шаге инструмента; насос забирает
-снапшоты окна по пробуждению от буфера, коалесцирует и пушит их в канал
-канваса. Открытие другого файла в канвасе снимает насос.
+Каждый вызов потокового инструмента пишется в журнал (файл в служебном томе
+пользователя) и живёт после конца хода. Показ включает пользователь кнопкой
+на шаге: живой вызов тянет насос — хвост журнала по пробуждениям; завершённый
+читается из файла. Перемотка ходит по журналу окнами фиксированного размера,
+целиком файл во фронт не поднимается.
 
 Ошибки: наружу ничего не выходит; недоступный поток показывается в панели
-объяснением.
+объяснением, сбой журнала гасится с записью в лог.
 """
 
 from __future__ import annotations
@@ -17,14 +18,27 @@ import logging
 import threading
 from abc import abstractmethod
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from enum import StrEnum
-from typing import ClassVar, Protocol
+from typing import Any, ClassVar, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
-from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind, CanvasPanel
-from boba.toolkit.stream import StreamWindow, ToolStreamBuffer
+from boba.chainlit.chat.data.object_key import StreamUrl
+from boba.chainlit.chat.data.stream_journal import (
+    StreamJournal,
+    StreamJournalError,
+    StreamJournalHub,
+    StreamKey,
+    StreamRecorder,
+    StreamSlice,
+)
+from boba.chainlit.rendering.canvas import (
+    CanvasContent,
+    CanvasKind,
+    CanvasPanel,
+    StreamPos,
+)
 
 __all__ = [
     "CanvasChannel",
@@ -35,16 +49,19 @@ __all__ = [
     "ToolStream",
     "ToolStreams",
     "show_stream_action",
+    "window_stream_action",
 ]
 
 logger = logging.getLogger(__name__)
 
 
 class StreamAction(StrEnum):
-    """Действие фронта для показа потока и поле его payload."""
+    """Действия фронта для потока и поля их payload."""
 
     SHOW = "canvas_stream"
+    WINDOW = "canvas_stream_window"
     CALL_ID = "call_id"
+    OFFSET = "offset"
 
 
 class StreamNote(StrEnum):
@@ -54,26 +71,49 @@ class StreamNote(StrEnum):
     FINISHED = "завершено"
     FAILED = "ошибка"
     STOPPED = "остановлено"
-    GONE = "Поток этого вызова уже недоступен: ход завершён."
+    GONE = "Журнал этого вызова недоступен: журналирование не велось."
 
     @classmethod
-    def status_of(cls, window: StreamWindow) -> str:
-        status = str(cls.RUNNING)
-        if window.closed:
-            status = window.note
+    def status_of(cls, piece: StreamSlice) -> str:
+        if not piece.closed:
+            return str(cls.RUNNING)
 
-        if not window.dropped_bytes:
-            return status
-
-        return f"{status} · вытеснено {window.dropped_bytes} байт"
+        return piece.note
 
 
 class StreamShowRequest(BaseModel):
-    """Payload действия canvas_stream: разбирается на границе."""
+    """Payload действия canvas_stream: вызов и режим показа.
+
+    follow — к концу файла: живой вызов следит за хвостом насосом,
+    завершённый показывает последнее окно. Без follow — окно с начала.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     call_id: str
+    follow: bool = False
+
+
+class StreamWindowRequest(BaseModel):
+    """Payload действия canvas_stream_window: вызов и одна из границ окна.
+
+    offset — окно вперёд от смещения (прокрутка вниз); before — окно,
+    заканчивающееся на смещении (прокрутка вверх). Ровно одно из двух.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    call_id: str
+    offset: int | None = None
+    before: int | None = None
+
+    @model_validator(mode="after")
+    def _one_bound(self) -> Self:
+        if (self.offset is None) == (self.before is None):
+            msg = "canvas_stream_window: ровно одно из offset и before"
+            raise ValueError(msg)
+
+        return self
 
 
 class CanvasChannel(Protocol):
@@ -91,35 +131,43 @@ class SidebarChannel:
 
 
 class ToolStream:
-    """Живой вывод одного вызова инструмента: окно байтов плюс будильник.
+    """Живой вызов инструмента: рекордер журнала плюс будильник насоса.
 
     Создаётся в любом контексте — langchain зовёт колбэки sync-тулов из
     одноразового event loop'а, поэтому свой loop стрим не запоминает.
     Будильник подключает насос из loop'а приложения; вывод, пришедший до
-    подключения, уже лежит в окне.
+    подключения, уже лежит в журнале.
     """
 
-    WINDOW_BYTES: ClassVar[int] = 64 * 1024
-
-    def __init__(self, thread_id: str, call_id: str, tool_name: str) -> None:
-        self._thread_id = thread_id
-        self._call_id = call_id
+    def __init__(
+        self,
+        key: StreamKey,
+        tool_name: str,
+        journal: StreamJournal,
+        protected_logs: frozenset[str],
+    ) -> None:
+        self._key = key
         self._tool_name = tool_name
         self._lock = threading.Lock()
         self._waker: tuple[asyncio.AbstractEventLoop, asyncio.Event] | None = None
-        self._buffer = ToolStreamBuffer(self.WINDOW_BYTES, self._wake)
+        self._recorder = journal.recorder(
+            key, tool_name, self._wake, protected_logs
+        )
 
     @property
-    def call_id(self) -> str:
-        return self._call_id
+    def key(self) -> StreamKey:
+        return self._key
 
     @property
     def tool_name(self) -> str:
         return self._tool_name
 
     @property
-    def buffer(self) -> ToolStreamBuffer:
-        return self._buffer
+    def recorder(self) -> StreamRecorder:
+        return self._recorder
+
+    def tail(self, window: int) -> StreamSlice:
+        return self._recorder.tail(window)
 
     def attach_waker(self) -> asyncio.Event:
         """Событие пробуждения в текущем loop'е; прежний слушатель забывается."""
@@ -142,18 +190,19 @@ class ToolStream:
         try:
             loop.call_soon_threadsafe(event.set)
         except RuntimeError:
-            logger.debug("stream wakeup after loop shutdown: %s", self._call_id)
+            logger.debug("stream wakeup after loop shutdown: %s", self._key.call_id)
 
 
 class ToolStreams:
-    """Реестр потоков: thread_id -> вызовы текущего хода.
+    """Реестр потоков: журнал вызовов плюс живые стримы текущих ходов.
 
     Потоковыми считаются инструменты, отмеченные при сборке реестра тулов, —
-    только они запускают процессы, чей вывод есть смысл показывать.
+    только они запускают процессы, чей вывод есть смысл журналировать; без
+    настроенного журнала потоков нет вовсе.
 
     Стрим создаётся колбэком трейсера до запуска инструмента и ждёт в очереди
     claim по (тред, имя тула): обвязка в потоке инструмента забирает его и
-    ставит тап. Параллельные одноимённые вызовы могут обменяться окнами —
+    ставит тап. Параллельные одноимённые вызовы могут обменяться журналами —
     данные при этом не теряются.
     """
 
@@ -163,16 +212,67 @@ class ToolStreams:
     _STREAMABLE: ClassVar[set[str]] = set()
 
     @classmethod
+    def configure(cls, journal: StreamJournal) -> None:
+        StreamJournalHub.configure(journal)
+
+    @classmethod
+    def active(cls) -> bool:
+        """Журнал настроен: потоки пишутся и кнопки имеют смысл."""
+        return StreamJournalHub.get() is not None
+
+    @classmethod
+    def journal(cls) -> StreamJournal | None:
+        return StreamJournalHub.get()
+
+    @classmethod
+    def live_threads(cls) -> frozenset[str]:
+        """Треды с живыми потоками: их нельзя удалять инструментом уборки."""
+        with cls._LOCK:
+            return frozenset(cls._STREAMS)
+
+    @classmethod
+    def live_logs(cls) -> frozenset[str]:
+        """Rel-пути логов живых вызовов: вытеснять их при нехватке места нельзя."""
+        with cls._LOCK:
+            return frozenset(cls._live_log_paths())
+
+    @classmethod
+    def _live_log_paths(cls) -> Iterator[str]:
+        for thread_id, calls in cls._STREAMS.items():
+            for call_id in calls:
+                yield f"{thread_id}/{call_id}.log"
+
+    @classmethod
     def mark_streamable(cls, names: Iterable[str]) -> None:
         cls._STREAMABLE.update(names)
 
     @classmethod
     def streamable(cls, tool_name: str) -> bool:
+        if not cls.active():
+            return False
+
         return tool_name in cls._STREAMABLE
 
     @classmethod
-    def begin(cls, thread_id: str, call_id: str, tool_name: str) -> ToolStream:
-        stream = ToolStream(thread_id, call_id, tool_name)
+    def begin(
+        cls, user_id: str, thread_id: str, call_id: str, tool_name: str
+    ) -> ToolStream | None:
+        """Открыть журнал вызова; сбой журнала не трогает ход инструмента."""
+        journal = StreamJournalHub.get()
+        if journal is None:
+            return None
+
+        try:
+            key = StreamKey(
+                user_id=user_id, thread_id=thread_id, call_id=call_id
+            )
+            stream = ToolStream(key, tool_name, journal, cls.live_logs())
+        except (StreamJournalError, ValidationError):
+            logger.warning(
+                "stream journal refused call %s of %s", call_id, tool_name,
+                exc_info=True,
+            )
+            return None
 
         with cls._LOCK:
             cls._STREAMS.setdefault(thread_id, {})[call_id] = stream
@@ -201,7 +301,7 @@ class ToolStreams:
             if queue is not None and stream in queue:
                 queue.remove(stream)
 
-        stream.buffer.close(note)
+        stream.recorder.close(note)
 
     @classmethod
     def get(cls, thread_id: str, call_id: str) -> ToolStream | None:
@@ -210,18 +310,63 @@ class ToolStreams:
 
     @classmethod
     def drop_thread(cls, thread_id: str) -> None:
-        """Конец хода: насос снимается, окна вызовов освобождаются."""
+        """Конец хода: насос снимается, живые стримы забываются, журнал остаётся."""
         StreamScreen.leave(thread_id)
 
         with cls._LOCK:
-            cls._STREAMS.pop(thread_id, None)
+            streams = cls._STREAMS.pop(thread_id, {})
             for key in list(cls._PENDING):
                 if key[0] == thread_id:
                     del cls._PENDING[key]
 
+        for stream in streams.values():
+            if not stream.recorder.closed:
+                stream.recorder.close(str(StreamNote.STOPPED))
+
+    @classmethod
+    def recorded_slice(
+        cls, user_id: str, thread_id: str, call_id: str, offset: int
+    ) -> StreamSlice | None:
+        """Окно журнала; любой отказ журнала — «нет данных», не сбой чата."""
+        journal = StreamJournalHub.get()
+        if journal is None:
+            return None
+
+        try:
+            key = StreamKey(
+                user_id=user_id, thread_id=thread_id, call_id=call_id
+            )
+            return journal.slice_at(key, offset)
+        except (StreamJournalError, ValidationError):
+            logger.warning(
+                "stream journal read failed: %s", call_id, exc_info=True
+            )
+            return None
+
+    @classmethod
+    def recorded_slice_before(
+        cls, user_id: str, thread_id: str, call_id: str, end: int
+    ) -> StreamSlice | None:
+        """Окно перед смещением: прокрутка вверх; отказ — «нет данных»."""
+        journal = StreamJournalHub.get()
+        if journal is None:
+            return None
+
+        try:
+            key = StreamKey(
+                user_id=user_id, thread_id=thread_id, call_id=call_id
+            )
+            return journal.slice_before(key, end)
+        except (StreamJournalError, ValidationError):
+            logger.warning(
+                "stream journal read failed: %s", call_id, exc_info=True
+            )
+            return None
+
     @classmethod
     def reset(cls) -> None:
         """Сброс реестра: пользуются тесты, приложению это не нужно."""
+        StreamJournalHub.reset()
         with cls._LOCK:
             cls._STREAMS.clear()
             cls._PENDING.clear()
@@ -255,8 +400,19 @@ class StreamScreen:
             task.cancel()
 
     @classmethod
+    async def recorded(
+        cls,
+        thread_id: str,
+        call_id: str,
+        piece: StreamSlice,
+        channel: CanvasChannel,
+    ) -> None:
+        """Показ окна записанного журнала: без насоса, один кадр."""
+        await channel.push(cls.content(thread_id, call_id, "", piece))
+
+    @classmethod
     async def gone(cls, call_id: str, channel: CanvasChannel) -> None:
-        """Потока нет: панель объясняет это вместо содержимого."""
+        """Журнала нет: панель объясняет это вместо содержимого."""
         content = CanvasContent(
             kind=CanvasKind.NOTICE,
             path=f"stream://{call_id}",
@@ -266,22 +422,50 @@ class StreamScreen:
         await channel.push(content)
 
     @classmethod
+    def content(
+        cls, thread_id: str, call_id: str, label: str, piece: StreamSlice
+    ) -> CanvasContent:
+        return CanvasContent(
+            kind=CanvasKind.STREAM,
+            path=f"stream://{call_id}",
+            label=label,
+            url=StreamUrl.path(thread_id, call_id),
+            text=piece.text,
+            note=StreamNote.status_of(piece),
+            nonce=str(next(cls._REVISIONS)),
+            stream=StreamPos(
+                offset=piece.offset,
+                end=piece.end,
+                size=piece.size,
+                window=piece.window,
+                closed=piece.closed,
+            ),
+        )
+
+    @classmethod
     def _forget(cls, thread_id: str, task: asyncio.Task[None]) -> None:
         if cls._PUMPS.get(thread_id) is task:
             del cls._PUMPS[thread_id]
 
     @classmethod
     async def _pump(cls, stream: ToolStream, channel: CanvasChannel) -> None:
-        """Снапшот на каждое пробуждение; закрытое окно пушится последний раз."""
+        """Хвост журнала на каждое пробуждение; закрытый пушится последний раз."""
         try:
             event = stream.attach_waker()
 
             while True:
                 event.clear()
-                window = stream.buffer.snapshot()
-                await channel.push(cls._content(stream, window))
+                piece = stream.tail(StreamJournal.WINDOW_BYTES)
+                await channel.push(
+                    cls.content(
+                        stream.key.thread_id,
+                        stream.key.call_id,
+                        stream.tool_name,
+                        piece,
+                    )
+                )
 
-                if window.closed:
+                if piece.closed:
                     return
 
                 await event.wait()
@@ -291,26 +475,58 @@ class StreamScreen:
         except Exception:
             logger.warning("stream pump stopped: push failed", exc_info=True)
 
-    @classmethod
-    def _content(cls, stream: ToolStream, window: StreamWindow) -> CanvasContent:
-        return CanvasContent(
-            kind=CanvasKind.STREAM,
-            path=f"stream://{stream.call_id}",
-            label=stream.tool_name,
-            text=window.text,
-            note=StreamNote.status_of(window),
-            nonce=str(next(cls._REVISIONS)),
-        )
 
-
-async def show_stream_action(thread_id: str, payload: Mapping[str, object]) -> None:
-    """Клик по кнопке потока: включить насос либо объяснить его отсутствие."""
+async def show_stream_action(
+    user_id: str, thread_id: str, payload: Mapping[str, object]
+) -> None:
+    """Показ потока: по умолчанию окно с начала файла; follow — к концу,
+    у живого вызова с насосом-слежением за хвостом."""
     request = StreamShowRequest.model_validate(payload)
     channel = SidebarChannel()
 
-    stream = ToolStreams.get(thread_id, request.call_id)
-    if stream is None:
+    if request.follow:
+        if stream := ToolStreams.get(thread_id, request.call_id):
+            await StreamScreen.show(thread_id, stream, channel)
+            return
+
+    StreamScreen.leave(thread_id)
+
+    offset = 0
+    if request.follow:
+        offset = -1
+
+    piece = ToolStreams.recorded_slice(
+        user_id, thread_id, request.call_id, offset=offset
+    )
+    if piece is None:
         await StreamScreen.gone(request.call_id, channel)
         return
 
-    await StreamScreen.show(thread_id, stream, channel)
+    await StreamScreen.recorded(thread_id, request.call_id, piece, channel)
+
+
+async def window_stream_action(
+    user_id: str, thread_id: str, payload: Mapping[str, object]
+) -> dict[str, Any]:
+    """Прокрутка: окно журнала по границе; уход из хвоста снимает насос."""
+    request = StreamWindowRequest.model_validate(payload)
+
+    StreamScreen.leave(thread_id)
+
+    if request.before is not None:
+        piece = ToolStreams.recorded_slice_before(
+            user_id, thread_id, request.call_id, end=request.before
+        )
+    else:
+        offset = request.offset
+        if offset is None:
+            offset = 0
+        piece = ToolStreams.recorded_slice(
+            user_id, thread_id, request.call_id, offset=offset
+        )
+
+    if piece is None:
+        return {}
+
+    content = StreamScreen.content(thread_id, request.call_id, "", piece)
+    return content.props()
