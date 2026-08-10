@@ -45,6 +45,7 @@ from boba.toolkit.channels import (
     ResultFailure,
     ResultSuccess,
     ShellExit,
+    StageExit,
 )
 from boba.toolkit.launcher import (
     LauncherError,
@@ -80,7 +81,10 @@ M = TypeVar("M", bound=BaseModel)
 __all__ = [
     "ChannelPump",
     "ChannelSink",
+    "FanoutSink",
+    "KillCause",
     "LineSplitter",
+    "PipeSink",
     "RelaySink",
     "ResultSink",
     "SandboxChannels",
@@ -92,6 +96,7 @@ __all__ = [
     "StageRunResult",
     "TailSink",
     "ToolCallContext",
+    "WrapResultSink",
     "has_bwrap",
 ]
 
@@ -403,6 +408,68 @@ class ResultSink(ChannelSink, Generic[M]):
             raise LauncherError(msg) from exc
 
 
+class WrapResultSink(ChannelSink):
+    """Итоги стадий mount-группы из wrap_result: JSON-строки `{stage, rc}`.
+
+    Sink пути результата: переполнение фатально для запуска, разбор строк
+    откладывается до опроса итога — как у ResultSink.
+    """
+
+    MAX_BYTES: ClassVar[int] = 1 << 20
+
+    def __init__(self, group: str) -> None:
+        self._group = group
+        self._lines = LineSplitter()
+        self._received: list[str] = []
+        self._size = 0
+
+    def feed(self, data: bytes) -> None:
+        self._size += len(data)
+        if self._size > self.MAX_BYTES:
+            msg = f"{self._group}: wrap_result exceeds {self.MAX_BYTES} bytes"
+            raise LauncherError(msg)
+
+        for line in self._lines.feed(data):
+            self._keep(line)
+
+    def close(self) -> None:
+        for line in self._lines.flush():
+            self._keep(line)
+
+    def exits(self) -> dict[str, int]:
+        """Коды стадий по строкам канала; битая строка или дубль — LauncherError."""
+        exits: dict[str, int] = {}
+        for line in self._received:
+            entry = self._parse(line)
+            if entry.stage in exits:
+                msg = f"{self._group}: duplicate wrap_result for {entry.stage!r}"
+                raise LauncherError(msg)
+            exits[entry.stage] = entry.rc
+
+        return exits
+
+    def rc_of(self, stage: str) -> int:
+        exits = self.exits()
+
+        if stage not in exits:
+            msg = f"{self._group}: no wrap_result line for stage {stage!r}"
+            raise LauncherError(msg)
+
+        return exits[stage]
+
+    def _keep(self, line: str) -> None:
+        if not line.strip():
+            return
+
+        self._received.append(line)
+
+    def _parse(self, line: str) -> StageExit:
+        try:
+            return StageExit.decode_line(line)
+        except ChannelError as exc:
+            raise LauncherError(f"{self._group}: {exc}") from exc
+
+
 @dataclass
 class _PipeEnds:
     """Пара pipe одного канала: конец родителя и конец ребёнка."""
@@ -522,6 +589,19 @@ class SandboxChannels:
         os.close(pair.parent_fd)
         pair.parent_open = False
 
+    def close_reader(self, channel: Channel) -> None:
+        """Чтение канала закрывается до EOF: следующая запись источника — EPIPE."""
+        if channel.writes_in:
+            msg = f"channel {channel} is written by the app, it has no reader"
+            raise LauncherError(msg)
+
+        pair = self._pair(channel)
+        if not pair.parent_open:
+            return
+
+        os.close(pair.parent_fd)
+        pair.parent_open = False
+
     def close_child_side(self) -> None:
         """Без закрытия концов ребёнка у родителя EOF по каналам не придёт."""
         for pair in self._pairs.values():
@@ -536,13 +616,17 @@ class SandboxChannels:
 
         if channel.writes_in:
             pair = _PipeEnds(
-                parent_fd=write_fd, child_fd=read_fd,
-                parent_open=True, child_open=True,
+                parent_fd=write_fd,
+                child_fd=read_fd,
+                parent_open=True,
+                child_open=True,
             )
         else:
             pair = _PipeEnds(
-                parent_fd=read_fd, child_fd=write_fd,
-                parent_open=True, child_open=True,
+                parent_fd=read_fd,
+                child_fd=write_fd,
+                parent_open=True,
+                child_open=True,
             )
 
         os.set_inheritable(pair.child_fd, True)
@@ -564,6 +648,14 @@ class SandboxChannels:
                 pair.parent_open = False
 
 
+class KillCause(StrEnum):
+    """Причина убийства стадии насосом."""
+
+    NONE = "none"
+    TIMEOUT = "timeout"
+    CASCADE = "cascade"
+
+
 @dataclass
 class _PumpStage:
     """Состояние одной стадии в насосе."""
@@ -572,8 +664,12 @@ class _PumpStage:
     proc: subprocess.Popen[bytes]
     channels: SandboxChannels
     on_timeout: Callable[[], None]
+    started: float
+    ended: float | None
     deadline: float
-    timed_out: bool
+    kill_cause: KillCause
+    exit_seen: bool
+    edges: tuple[PipeSink, ...]
     pending: int
     counters: dict[Channel, int]
 
@@ -586,6 +682,7 @@ class _ReadPort:
     channel: Channel
     fd: int
     sink: ChannelSink | None
+    paused: bool
 
 
 @dataclass
@@ -599,23 +696,54 @@ class _WritePort:
     sent: int
 
 
+@dataclass
+class _EdgeState:
+    """Состояние write-конца ребра: ограниченный буфер и судьба доставки."""
+
+    name: str
+    fd: int
+    limit: int
+    buf: bytearray
+    delivered: int
+    fd_open: bool
+    registered: bool
+    eof: bool
+    closed_early: bool
+
+
 class ChannelPump:
     """Двунаправленный насос каналов: selector-цикл, self-pipe отмены, дедлайны.
 
     Контекстный менеджер: уборка (`kill` + `wait` процессов, закрытие своих
-    дескрипторов и незакрытых sink'ов) выполняется при любом исходе, включая
-    BaseException из sink'а. Дедлайн стадии отсчитывается от момента `add`;
-    просроченная стадия убивается, каналы дочитываются до EOF, а не отдавшая
-    EOF после kill (внуки держат pipe) снимается с насоса принудительно.
+    дескрипторов, рёбер и незакрытых sink'ов) выполняется при любом исходе,
+    включая BaseException из sink'а. Дедлайн стадии отсчитывается от момента
+    `add`; просроченная стадия убивается, каналы дочитываются до EOF, а не
+    отдавшая EOF после kill (внуки держат pipe) снимается принудительно.
+
+    Рёбра графа (`add_edge`) — write-концы pipe'ов потребителей: заполненный
+    буфер ребра приостанавливает чтение источника (backpressure), EOF
+    источника закрывает write-конец после долива буфера, а когда все рёбра
+    источника закрылись потребителями — насос закрывает чтение его канала и
+    следующая запись источника получает EPIPE. Стадия с ненулевым кодом
+    возврата валит остальные каскадом; причины убийств (`kill_cause`) и
+    признаки рёбер (`PipeSink.broken`) насос отдаёт вместе с итогами.
+
+    Исключение sink'а пути данных или результата фатально: процессы убиваются
+    уборкой, ошибка идёт наверх; побочные sink'и (релей, журнал) глушат свои
+    ошибки сами и поток стадии не рвут.
     """
 
     READ_BYTES: ClassVar[int] = 65536
     WAIT_SEC: ClassVar[float] = 5.0
     KILL_GRACE_SEC: ClassVar[float] = 5.0
+    EXIT_POLL_SEC: ClassVar[float] = 0.05
+    EDGE_BUFFER_BYTES: ClassVar[int] = 1 << 20
 
     def __init__(self) -> None:
         self._selector = selectors.DefaultSelector()
         self._stages: dict[str, _PumpStage] = {}
+        self._edges: dict[str, _EdgeState] = {}
+        self._paused: list[_ReadPort] = []
         self._open_sinks: list[ChannelSink] = []
         self._shut = False
 
@@ -639,7 +767,7 @@ class ChannelPump:
     ) -> None:
         self._shutdown()
 
-    def add(
+    def add(  # noqa: PLR0913
         self,
         stage: str,
         *,
@@ -650,20 +778,29 @@ class ChannelPump:
         timeout_sec: float,
         on_timeout: Callable[[], None],
     ) -> None:
-        """Регистрирует каналы стадии; момент вызова — старт её дедлайна."""
+        """Регистрирует каналы стадии; момент вызова — старт её дедлайна.
+
+        `on_timeout` — рубильник стадии: насос зовёт его и по дедлайну, и при
+        каскаде от сбоя соседней стадии.
+        """
         if self._shut:
             raise LauncherError("channel pump is already shut down")
 
         if stage in self._stages:
             raise LauncherError(f"stage {stage!r} is already added to the pump")
 
+        now = time.monotonic()
         entry = _PumpStage(
             name=stage,
             proc=proc,
             channels=channels,
             on_timeout=on_timeout,
-            deadline=time.monotonic() + timeout_sec,
-            timed_out=False,
+            started=now,
+            ended=None,
+            deadline=now + timeout_sec,
+            kill_cause=KillCause.NONE,
+            exit_seen=False,
+            edges=self._stage_edges(sinks),
             pending=0,
             counters={},
         )
@@ -684,12 +821,58 @@ class ChannelPump:
         finally:
             self._shutdown()
 
+    def add_edge(self, edge: str, write_fd: int, *, buffer_limit: int) -> PipeSink:
+        """Регистрирует ребро: насос владеет write-концом и закрывает его сам.
+
+        `buffer_limit` — потолок недописанных байт ребра; заполненный буфер
+        приостанавливает чтение источника до долива (backpressure).
+        """
+        if self._shut:
+            raise LauncherError("channel pump is already shut down")
+
+        if edge in self._edges:
+            raise LauncherError(f"edge {edge!r} is already added to the pump")
+
+        if buffer_limit <= 0:
+            raise LauncherError(f"edge {edge!r}: buffer_limit must be positive")
+
+        os.set_blocking(write_fd, False)
+
+        state = _EdgeState(
+            name=edge,
+            fd=write_fd,
+            limit=buffer_limit,
+            buf=bytearray(),
+            delivered=0,
+            fd_open=True,
+            registered=False,
+            eof=False,
+            closed_early=False,
+        )
+        self._edges[edge] = state
+
+        return PipeSink(self, state)
+
+    def kill_cause(self, stage: str) -> KillCause:
+        """Кем убита стадия: дедлайном, каскадом либо не убита вовсе."""
+        return self._stage(stage).kill_cause
+
     def timed_out(self, stage: str) -> bool:
-        return self._stage(stage).timed_out
+        return self._stage(stage).kill_cause is KillCause.TIMEOUT
 
     def bytes_of(self, stage: str, channel: Channel) -> int:
         """Байты, прошедшие через насос по каналу стадии."""
         return self._stage(stage).counters.get(channel, 0)
+
+    def duration_ms(self, stage: str) -> int:
+        """Длительность стадии: от регистрации до увиденного завершения."""
+        entry = self._stage(stage)
+
+        ended = entry.ended
+        if ended is None:
+            ended = time.monotonic()
+
+        return max(0, int((ended - entry.started) * 1000))
 
     @staticmethod
     def reap(proc: subprocess.Popen[bytes]) -> None:
@@ -735,7 +918,7 @@ class ChannelPump:
             self._open_sinks.append(sink)
 
         entry.counters[channel] = 0
-        port = _ReadPort(stage=entry, channel=channel, fd=fd, sink=sink)
+        port = _ReadPort(stage=entry, channel=channel, fd=fd, sink=sink, paused=False)
         self._selector.register(fd, selectors.EVENT_READ, port)
         entry.pending += 1
 
@@ -752,11 +935,15 @@ class ChannelPump:
             for key, _mask in events:
                 self._dispatch(key)
 
+            self._reap_finished()
+
     def _alive(self) -> bool:
+        pending = False
         for entry in self._stages.values():
             if entry.pending > 0:
-                return True
-        return False
+                pending = True
+
+        return pending
 
     def _poll_sec(self) -> float:
         deadlines: list[float] = []
@@ -768,10 +955,22 @@ class ChannelPump:
             return 0.0
 
         wait = min(deadlines) - time.monotonic()
-        if wait < 0.0:
-            return 0.0
+        wait = max(wait, 0.0)
+
+        if self._exit_pending():
+            wait = min(wait, self.EXIT_POLL_SEC)
 
         return wait
+
+    def _exit_pending(self) -> bool:
+        """Есть стадия с EOF по каналам, но не увиденным кодом возврата."""
+        for entry in self._stages.values():
+            if entry.exit_seen:
+                continue
+            if entry.pending <= 0:
+                return True
+
+        return False
 
     def _fire_deadlines(self) -> None:
         now = time.monotonic()
@@ -781,18 +980,83 @@ class ChannelPump:
                 continue
             if now < entry.deadline:
                 continue
-            if not entry.timed_out:
-                entry.timed_out = True
+            if entry.kill_cause is KillCause.NONE:
+                entry.kill_cause = KillCause.TIMEOUT
                 entry.deadline = now + self.KILL_GRACE_SEC
                 entry.on_timeout()
                 continue
             self._abandon(entry)
 
+    def _reap_finished(self) -> None:
+        """Опрос кодов возврата: сбойная стадия каскадом валит остальные."""
+        for entry in list(self._stages.values()):
+            if entry.exit_seen:
+                continue
+
+            self._poll_exit(entry)
+            if not entry.exit_seen:
+                continue
+
+            code = ShellExit.of(entry.proc.returncode)
+            if code == 0:
+                continue
+
+            if entry.kill_cause is KillCause.CASCADE:
+                continue
+
+            benign_sigpipe = False
+            if code == ShellExit.SIGPIPE:
+                benign_sigpipe = self._broken_edge(entry)
+
+            if benign_sigpipe:
+                # обрыв потребителем: судьбу источника решает раннер (rc 141)
+                continue
+
+            self._cascade(entry)
+
+    @staticmethod
+    def _poll_exit(entry: _PumpStage) -> None:
+        if entry.proc.poll() is None:
+            return
+
+        entry.exit_seen = True
+
+        if entry.ended is None:
+            entry.ended = time.monotonic()
+
+    @staticmethod
+    def _broken_edge(entry: _PumpStage) -> bool:
+        broken = False
+        for pipe in entry.edges:
+            if pipe.broken:
+                broken = True
+
+        return broken
+
+    def _cascade(self, origin: _PumpStage) -> None:
+        """Убить живые стадии: их 137 — SIGKILL насоса, не собственный сбой."""
+        now = time.monotonic()
+
+        for entry in self._stages.values():
+            if entry is origin:
+                continue
+            if entry.kill_cause is not KillCause.NONE:
+                continue
+
+            if not entry.exit_seen:
+                self._poll_exit(entry)
+            if entry.exit_seen:
+                continue
+
+            entry.kill_cause = KillCause.CASCADE
+            entry.deadline = now + self.KILL_GRACE_SEC
+            entry.on_timeout()
+
     def _abandon(self, entry: _PumpStage) -> None:
         """Каналы не дали EOF после kill: стадия снимается с насоса принудительно."""
         for key in list(self._selector.get_map().values()):
             port = key.data
-            if port is None:
+            if not isinstance(port, (_ReadPort, _WritePort)):
                 continue
             if port.stage is not entry:
                 continue
@@ -801,6 +1065,13 @@ class ChannelPump:
             if isinstance(port, _WritePort):
                 entry.channels.close_writer(port.channel)
                 continue
+            self._close_sink(port.sink)
+
+        for port in list(self._paused):
+            if port.stage is not entry:
+                continue
+            self._paused.remove(port)
+            port.paused = False
             self._close_sink(port.sink)
 
         entry.pending = 0
@@ -820,7 +1091,11 @@ class ChannelPump:
             self._pump_read(port)
             return
 
-        self._pump_write(port)
+        if isinstance(port, _WritePort):
+            self._pump_write(port)
+            return
+
+        self._pump_edge(port)
 
     def _drain_wake(self) -> None:
         try:
@@ -830,6 +1105,16 @@ class ChannelPump:
             return
 
     def _pump_read(self, port: _ReadPort) -> None:
+        flow = self._flow_of(port.sink)
+
+        exhausted = False
+        if flow is not None:
+            exhausted = flow.exhausted
+
+        if exhausted:
+            self._close_read_early(port)
+            return
+
         try:
             chunk = os.read(port.fd, self.READ_BYTES)
         except BlockingIOError:
@@ -848,6 +1133,157 @@ class ChannelPump:
             return
 
         port.sink.feed(chunk)
+
+        saturated = False
+        if flow is not None:
+            saturated = flow.saturated
+
+        if saturated:
+            self._pause_read(port)
+
+    def _pause_read(self, port: _ReadPort) -> None:
+        """Буфер ребра полон: чтение источника снимается с selector'а до долива."""
+        if port.paused:
+            return
+
+        self._selector.unregister(port.fd)
+        port.paused = True
+        self._paused.append(port)
+
+    def _resume_reads(self) -> None:
+        for port in list(self._paused):
+            flow = self._flow_of(port.sink)
+
+            saturated = False
+            if flow is not None:
+                saturated = flow.saturated
+
+            if saturated:
+                continue
+
+            self._paused.remove(port)
+            port.paused = False
+            self._selector.register(port.fd, selectors.EVENT_READ, port)
+
+    def _check_aborts(self) -> None:
+        """Источники, все рёбра которых закрылись, снимаются с чтения (EPIPE им)."""
+        ports: list[_ReadPort] = []
+        for key in list(self._selector.get_map().values()):
+            if isinstance(key.data, _ReadPort):
+                ports.append(key.data)
+        ports.extend(self._paused)
+
+        for port in ports:
+            flow = self._flow_of(port.sink)
+            if flow is None:
+                continue
+            if not flow.exhausted:
+                continue
+            self._close_read_early(port)
+
+    def _close_read_early(self, port: _ReadPort) -> None:
+        """Потребители ушли: чтение канала закрывается, источник получит EPIPE."""
+        if port.paused:
+            self._paused.remove(port)
+            port.paused = False
+        else:
+            self._selector.unregister(port.fd)
+
+        port.stage.channels.close_reader(port.channel)
+        port.stage.pending -= 1
+        self._close_sink(port.sink)
+
+    def _edge_feed(self, state: _EdgeState, data: bytes) -> None:
+        if not state.fd_open:
+            # потребитель уже ушёл: байты теряются законно (правило rc 141)
+            return
+
+        state.buf.extend(data)
+
+        if state.registered:
+            return
+
+        self._selector.register(state.fd, selectors.EVENT_WRITE, state)
+        state.registered = True
+
+    def _edge_eof(self, state: _EdgeState) -> None:
+        """EOF источника: write-конец закрывается сразу либо после долива буфера."""
+        state.eof = True
+
+        if not state.fd_open:
+            return
+
+        if state.buf:
+            return
+
+        self._edge_close(state)
+
+    def _edge_close(self, state: _EdgeState) -> None:
+        if not state.fd_open:
+            return
+
+        if state.registered:
+            self._selector.unregister(state.fd)
+            state.registered = False
+
+        os.close(state.fd)
+        state.fd_open = False
+
+    def _edge_broken(self, state: _EdgeState) -> None:
+        """Потребитель закрыл чтение до EOF: ребро помечается и закрывается."""
+        state.closed_early = True
+        state.buf.clear()
+        self._edge_close(state)
+
+        self._check_aborts()
+        self._resume_reads()
+
+    def _pump_edge(self, state: _EdgeState) -> None:
+        try:
+            sent = os.write(state.fd, memoryview(state.buf))
+        except BlockingIOError:
+            return
+        except BrokenPipeError:
+            self._edge_broken(state)
+            return
+        except OSError as exc:
+            msg = f"edge {state.name} write failed: {exc}"
+            raise LauncherError(msg) from exc
+
+        state.delivered += sent
+        del state.buf[:sent]
+
+        if state.buf:
+            if len(state.buf) < state.limit:
+                self._resume_reads()
+            return
+
+        self._selector.unregister(state.fd)
+        state.registered = False
+
+        if state.eof:
+            self._edge_close(state)
+
+        self._resume_reads()
+
+    @staticmethod
+    def _flow_of(sink: ChannelSink | None) -> PipeSink | FanoutSink | None:
+        if isinstance(sink, (PipeSink, FanoutSink)):
+            return sink
+
+        return None
+
+    @staticmethod
+    def _stage_edges(sinks: Mapping[Channel, ChannelSink]) -> tuple[PipeSink, ...]:
+        edges: list[PipeSink] = []
+        for sink in sinks.values():
+            if isinstance(sink, PipeSink):
+                edges.append(sink)
+                continue
+            if isinstance(sink, FanoutSink):
+                edges.extend(sink.pipes())
+
+        return tuple(edges)
 
     def _pump_write(self, port: _WritePort) -> None:
         remainder = memoryview(port.data)[port.sent :]
@@ -918,6 +1354,12 @@ class ChannelPump:
         for entry in self._stages.values():
             self.reap(entry.proc)
 
+        # завершение, не увиденное циклом, фиксируется временем уборки
+        now = time.monotonic()
+        for entry in self._stages.values():
+            if entry.ended is None:
+                entry.ended = now
+
         for sink in list(self._open_sinks):
             self._open_sinks.remove(sink)
             try:
@@ -925,12 +1367,130 @@ class ChannelPump:
             except Exception:
                 logger.exception("channel sink close failed during pump shutdown")
 
+        for state in self._edges.values():
+            if not state.fd_open:
+                continue
+            if state.registered:
+                self._selector.unregister(state.fd)
+                state.registered = False
+            os.close(state.fd)
+            state.fd_open = False
+
         with self._wake_lock:
             self._wake_open = False
             os.close(self._wake_write)
 
         self._selector.close()
         os.close(self._wake_read)
+
+
+class PipeSink(ChannelSink):
+    """Ребро графа: байты источника в write-конец pipe'а потребителя.
+
+    Создаётся насосом (`ChannelPump.add_edge`), который владеет дескриптором и
+    пишет через selector с ограниченным буфером. Sink пути данных: его ошибки
+    фатальны для запуска; обрыв потребителем ошибкой не считается и оседает
+    признаком `broken`.
+    """
+
+    def __init__(self, pump: ChannelPump, state: _EdgeState) -> None:
+        self._pump = pump
+        self._state = state
+
+    @property
+    def edge(self) -> str:
+        return self._state.name
+
+    @property
+    def delivered(self) -> int:
+        """Байты, дошедшие до потребителя."""
+        return self._state.delivered
+
+    @property
+    def broken(self) -> bool:
+        """Потребитель закрыл чтение до EOF источника."""
+        return self._state.closed_early
+
+    @property
+    def saturated(self) -> bool:
+        """Буфер полон: чтение источника пора приостановить."""
+        state = self._state
+
+        if not state.fd_open:
+            return False
+
+        return len(state.buf) >= state.limit
+
+    @property
+    def exhausted(self) -> bool:
+        """Кормить ребро больше некого: потребитель ушёл."""
+        return self._state.closed_early
+
+    def feed(self, data: bytes) -> None:
+        self._pump._edge_feed(self._state, data)
+
+    def close(self) -> None:
+        self._pump._edge_eof(self._state)
+
+
+class FanoutSink(ChannelSink):
+    """Веер: копия байтов источника каждому приёмнику.
+
+    Скорость задаёт медленнейший потребитель (backpressure по любому полному
+    буферу), а обрыв источника наступает только когда закрылись все рёбра.
+    Побочные приёмники в составе веера глушат свои ошибки сами.
+    """
+
+    def __init__(self, sinks: Sequence[ChannelSink]) -> None:
+        if not sinks:
+            raise LauncherError("fanout needs at least one sink")
+
+        self._sinks = tuple(sinks)
+
+    def feed(self, data: bytes) -> None:
+        for sink in self._sinks:
+            sink.feed(data)
+
+    def close(self) -> None:
+        for sink in self._sinks:
+            sink.close()
+
+    def pipes(self) -> tuple[PipeSink, ...]:
+        """Все рёбра веера, включая вложенные вееры."""
+        pipes: list[PipeSink] = []
+        for sink in self._sinks:
+            if isinstance(sink, PipeSink):
+                pipes.append(sink)
+                continue
+            if isinstance(sink, FanoutSink):
+                pipes.extend(sink.pipes())
+
+        return tuple(pipes)
+
+    @property
+    def saturated(self) -> bool:
+        """Полный буфер любого ребра тормозит весь веер."""
+        full = False
+        for pipe in self.pipes():
+            if pipe.saturated:
+                full = True
+
+        return full
+
+    @property
+    def exhausted(self) -> bool:
+        """EPIPE источнику — только когда закрылись все рёбра веера."""
+        pipes = self.pipes()
+
+        if not pipes:
+            return False
+
+        gone = True
+        for pipe in pipes:
+            if not pipe.broken:
+                gone = False
+
+        return gone
 
 
 @dataclass(frozen=True)
@@ -1038,8 +1598,13 @@ class ShellRunner:
         with cancellation.abort_with(proc.kill):
             cls._feed_stdin(proc, stdin_data)
             out_bytes, err_bytes, trunc_out, trunc_err, timed_out = cls._pump(
-                proc, timeout_sec, max_output_bytes, cancellation,
-                stdout_sink, stderr_sink, keep_stdout,
+                proc,
+                timeout_sec,
+                max_output_bytes,
+                cancellation,
+                stdout_sink,
+                stderr_sink,
+                keep_stdout,
             )
         cancellation.raise_if_cancelled()
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -1102,8 +1667,15 @@ class ShellRunner:
 
         try:
             timed_out = cls._select_loop(
-                deadline, fds, buffers, sinks, keeps, truncated, open_fds,
-                max_output_bytes, cancellation,
+                deadline,
+                fds,
+                buffers,
+                sinks,
+                keeps,
+                truncated,
+                open_fds,
+                max_output_bytes,
+                cancellation,
             )
         except Exception:
             # потребитель оборвал поток: процесс дальше не нужен
@@ -1157,8 +1729,13 @@ class ShellRunner:
             for fd in ready:
                 tag = fds[fd]
                 more = cls._read_chunk(
-                    fd, buffers[tag], truncated, tag,
-                    max_output_bytes, sinks[tag], keeps[tag],
+                    fd,
+                    buffers[tag],
+                    truncated,
+                    tag,
+                    max_output_bytes,
+                    sinks[tag],
+                    keeps[tag],
                 )
                 if not more:
                     open_fds.discard(fd)
@@ -1276,7 +1853,7 @@ class SandboxRunner:
             logger.warning("sandbox[%s]: %s", name, diagnostic)
         return SandboxOutcome(name, result, diagnostic)
 
-    def run_stage(
+    def run_stage(  # noqa: C901, PLR0912, PLR0913, PLR0915
         self,
         command: str,
         *,
@@ -1524,7 +2101,9 @@ class SandboxRunner:
 
     @staticmethod
     def _image_chain(profile: SandboxProfile) -> _ImageChain:
-        """Пары (образ, mountpoint), rw-пути и inner-профиль со смонтированными точками."""
+        """
+        Пары (образ, mountpoint), rw-пути и inner-профиль со смонтированными точками
+        """
         mounts: list[BindSpec] = []
         images: list[tuple[str, str]] = []
         for spec in profile.rw_images:

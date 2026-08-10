@@ -20,9 +20,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 from boba.toolkit.channels import LogFrame
+from boba.toolkit.workflow import EmptyTrailer
 
 __all__ = [
     "ChunkSink",
@@ -70,12 +71,6 @@ class ErrorKind:
         if isinstance(error, PayloadFailureError):
             return error.kind
         return type(error).__name__
-
-
-class EmptyTrailer(BaseModel):
-    """Трейлер без полей: весь результат операции ушёл кадрами."""
-
-    model_config = ConfigDict(extra="forbid")
 
 
 class LaunchPayload:

@@ -25,6 +25,7 @@ from boba.chainlit.infra.session import (
 )
 from boba.chainlit.rendering.stream_view import ToolStreams
 from boba.sandbox import SandboxCaller, SandboxToolConfig, has_bwrap
+from boba.sandbox.workflow import StageRegistry, WorkflowRunner
 from boba.settings import bind
 from boba.tool.ch import ChExecutorConfig, build_ch_tools
 from boba.tool.chart import build_chart_tools
@@ -46,6 +47,7 @@ from boba.tool.shell import build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
+from boba.toolkit.workflow import AccessPredicate
 
 __all__ = ["PluginMeta", "ToolPlugin", "ToolRegistry", "load_tools"]
 
@@ -239,6 +241,42 @@ def _build_stream_logs_tools(
     return build_stream_logs_tools(cfg)
 
 
+def _load_workflow_tools(
+    raw_config: DictConfig,
+    tools: list[BaseTool],
+    roles_by_tool: dict[str, list[str]],
+    node_access: AccessPredicate,
+) -> None:
+    """Инструмент workflow: граф стадий; боевой реестр узлов пуст до этапа 3."""
+    from boba.chainlit.agent.tools.workflow import (  # noqa: PLC0415
+        build_workflow_tool,
+    )
+
+    meta = bind(raw_config, "tool.workflow", PluginMeta)
+    if not meta.enable:
+        return
+
+    if not has_bwrap():
+        logger.warning(
+            "[tool.workflow] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "workflow was not registered",
+        )
+        return
+
+    runner = WorkflowRunner(
+        registry=StageRegistry.empty(),
+        access=node_access,
+        path_vars=_sandbox_path_vars,
+    )
+
+    built = build_workflow_tool(runner)
+    if built.name not in meta.tools:
+        return
+
+    roles_by_tool[built.name] = meta.roles_of(built.name)
+    tools.append(built)
+
+
 def _sandbox_path_vars() -> dict[str, str]:
     """Значения {user_id}/{thread_id} для путей профиля на момент вызова."""
     values = {"user_id": current_user_id(), "thread_id": current_thread_id()}
@@ -330,6 +368,28 @@ _PLUGINS: dict[str, ToolPlugin] = {
 }
 
 
+class NodeAccess:
+    """Право на узел workflow: карта прав подставляется после сборки реестра.
+
+    Предикат уезжает в WorkflowRunner до того, как ToolAccess построен;
+    вызовы случаются только при исполнении графа — к этому моменту bind
+    обязан состояться, иначе проверка падает явной ошибкой.
+    """
+
+    def __init__(self) -> None:
+        self._access: ToolAccess | None = None
+
+    def bind(self, access: ToolAccess) -> None:
+        self._access = access
+
+    def __call__(self, tool_name: str, /) -> bool:
+        if self._access is None:
+            msg = "workflow node access is checked before the tool registry is built"
+            raise RuntimeError(msg)
+
+        return self._access.allowed(tool_name, current_user_roles())
+
+
 @dataclass(frozen=True)
 class ToolRegistry:
     """Собранные инструменты и права доступа к ним"""
@@ -347,6 +407,18 @@ class ToolRegistry:
             sorted(roles) or "нет",
         )
         return allowed
+
+
+def _mark_streamable(plugin: ToolPlugin, built: list[BaseTool]) -> None:
+    """Живой вывод есть только у процессов песочницы: кнопка потока — на их шагах."""
+    if not plugin.sandboxed:
+        return
+
+    streamable: list[str] = []
+    for tool in built:
+        streamable.append(tool.name)
+
+    ToolStreams.mark_streamable(streamable)
 
 
 def load_tools(raw_config: DictConfig) -> ToolRegistry:
@@ -375,15 +447,13 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
             roles_by_tool[tool.name] = meta.roles_of(tool.name)
         tools.extend(built)
 
-        # живой вывод есть только у процессов песочницы: кнопка потока
-        # рисуется на шагах этих инструментов
-        if plugin.sandboxed:
-            streamable: list[str] = []
-            for tool in built:
-                streamable.append(tool.name)
-            ToolStreams.mark_streamable(streamable)
+        _mark_streamable(plugin, built)
+
+    node_access = NodeAccess()
+    _load_workflow_tools(raw_config, tools, roles_by_tool, node_access)
 
     access = ToolAccess(roles_by_tool)
+    node_access.bind(access)
     ToolRunLogger.guard_all(tools)
     ToolStreamTapGuard.guard_all(tools)
     CancellableTools.guard_all(tools)
