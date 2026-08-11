@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -10,7 +11,7 @@ from boba.tool.web.connection import WebConnection
 from boba.toolkit.launcher import RowCollector
 from boba.toolkit.result import TableResult
 from boba.web.caller import WebCaller
-from boba.web.protocol import WebGrepRequest, WebGrepRow
+from boba.web.protocol import WebGrepArgs, WebGrepRow
 
 __all__ = ["WebGrepConfig", "web_grep"]
 
@@ -34,7 +35,7 @@ class WebGrepNote:
     """Человекочитаемая сводка поиска для LLM."""
 
     @staticmethod
-    def build(url: str, rows: list[dict[str, Any]], *, limit: int) -> str:
+    def build(url: str, rows: Sequence[Mapping[str, Any]], *, limit: int) -> str:
         if not rows:
             return f"url={url}: совпадений не найдено"
         parts = [f"url={url}", f"совпадений: {len(rows)}"]
@@ -76,23 +77,25 @@ def web_grep(  # noqa: PLR0913
     ] = False,
 ) -> TableResult:
     """Найти совпадения pattern в содержимом страницы."""
-    profile = cfg.resolve_profile(url)
-    request = WebGrepRequest(
-        op=WebGrepRequest.OP,
+    args = WebGrepArgs(
         url=url,
-        profile=WebCaller.transport_of(profile),
-        as_markdown=as_markdown,
         pattern=pattern,
+        as_markdown=as_markdown,
         case_insensitive=case_insensitive,
         context=context,
         limit=limit,
         fixed_string=fixed_string,
-        max_text_chars=cfg.max_text_chars,
     )
+
     collector = RowCollector(max_chars=cfg.max_result_chars, limit_rows=limit)
-    caller.grep(request, collector)
+
+    caller.grep(args, collector)
+    collector.close()
+
     rows: list[dict[str, Any]] = []
     for raw in collector.rows():
         rows.append(WebGrepRow.model_validate(raw).model_dump())
+
     note = WebGrepNote.build(url, rows, limit=limit)
+
     return TableResult(rows=rows, note=note, metadata={"url": url})

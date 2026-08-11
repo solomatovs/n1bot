@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pydantic
 import pytest
 
 from boba.chainlit.chat.data.storage import (
@@ -24,6 +25,8 @@ from boba.chainlit.chat.data.storage import (
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.workflow import StageDef, StageRegistry
+from boba.tool.shell import BashStage
 from boba.tool.shell.tools import build_bash_tool
 from boba.workspace.launcher import (
     FUSE_DEVICE,
@@ -35,6 +38,22 @@ from boba.workspace.launcher import (
 )
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
+
+REPO = Path(__file__).resolve().parents[5]
+TOOLKIT_SRC = REPO / "packages" / "core" / "boba-toolkit" / "src"
+SHELL_SRC = REPO / "packages" / "tools" / "boba-tool-shell" / "src"
+SITE_PACKAGES = Path(pydantic.__file__).resolve().parents[1]
+
+PAYLOAD_BINDS: tuple[str, ...] = (
+    f"{TOOLKIT_SRC}:/opt/toolkit",
+    f"{SHELL_SRC}:/opt/shell",
+    f"{SITE_PACKAGES}:/opt/site",
+)
+PAYLOAD_ENV: dict[str, str] = {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "PYTHONPATH": "/opt/toolkit:/opt/shell:/opt/site",
+    "LANG": "C.UTF-8",
+}
 
 
 async def read_all(storage: StorageClient, object_key: str) -> bytes:
@@ -129,21 +148,37 @@ def _profile(**kw: object) -> SandboxProfile:
     return SandboxProfile.model_validate({**_PROFILE_BASE, **kw})
 
 
+class AllowAllNodes:
+    """Права вне сессии: в реестре теста только его собственные узлы."""
+
+    def __call__(self, tool: str, /) -> bool:
+        return True
+
+
 def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
     profile_dto = _profile(
-        ro_binds=HOST_RO_BINDS,
+        ro_binds=HOST_RO_BINDS + PAYLOAD_BINDS,
+        env_set=PAYLOAD_ENV,
         rw_images=(f"{_image_tpl(tmp_path)}:/workspace",),
         image_template=str(template),
         cwd="/workspace",
         **profile_kw,
     )
 
-    def launchers(tool: str):
-        return SandboxCaller(
-            tool, profile_dto, lambda: {"user_id": "7", "thread_id": thread_id}
-        )
+    defs: dict[str, StageDef] = {}
+    for name, node in BashStage.stages().items():
+        defs[name] = StageDef.of(node, profile_dto)
 
-    return build_bash_tool(launchers)
+    caller = SandboxCaller(
+        StageRegistry(defs),
+        AllowAllNodes(),
+        lambda: {"user_id": "7", "thread_id": thread_id},
+    )
+
+    def launchers(tool: str):
+        return caller
+
+    return build_bash_tool(launchers, profile_dto.max_output_bytes)
 
 
 def _invoke(tool, command: str, stdin: str = "") -> dict:
@@ -738,9 +773,11 @@ class TestLiveImage:
         assert payload["stdout"].strip() == "sandbox"
 
     def test_memory_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, max_memory_bytes=64 * 1024 * 1024)
+        # обвязка узла — python: 64 МиБ адресного пространства ей мало на импорты
+        limit_bytes = 512 * 1024 * 1024
+        tool = _bash(tmp_path, template, max_memory_bytes=limit_bytes)
         payload = _invoke(tool, "ulimit -v")
-        assert payload["stdout"].strip() == str(64 * 1024)
+        assert payload["stdout"].strip() == str(limit_bytes // 1024)
 
     def test_cpu_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_cpu_sec=5)
@@ -797,12 +834,15 @@ class TestLiveImage:
         )
         assert "rc=0" not in payload["stdout"]
 
-    def test_broken_template_raises_mount_error(self, tmp_path: Path) -> None:
+    def test_broken_template_reports_mount_error(self, tmp_path: Path) -> None:
+        """Фасад bash отвечает отказом, а не исключением: текст несёт причину."""
         bad = tmp_path / "bad.ext4"
         bad.write_bytes(b"not an ext4 image")
         tool = _bash(tmp_path, bad)
-        with pytest.raises(RuntimeError, match="image not mounted"):
-            _invoke(tool, "true")
+
+        payload = _invoke(tool, "true")
+
+        assert "image not mounted" in payload["message"]
 
     def test_broken_template_stays_inside_storage_errors(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.ext4"

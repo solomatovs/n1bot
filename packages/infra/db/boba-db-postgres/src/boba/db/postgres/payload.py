@@ -1,5 +1,5 @@
 """Postgres для payload'ов; пула нет — каждый вызов свой процесс и соединение.
-Учётные данные приходят через stdin: не видны ни в argv, ни в /proc, ни в логах.
+Учётные данные приходят каналом tool_args: не видны ни в argv, ни в /proc, ни в логах.
 
 Ошибки: PostgresError — до базы не достучаться (сеть, отказ libpq, kerberos)."""
 
@@ -17,12 +17,12 @@ __all__ = ["PayloadPostgres"]
 
 
 class PayloadPostgres:
-    """Подключение по libpq-параметрам запроса и JSON-совместимые строки."""
+    """Подключение по профилю запроса; профиль разобран моделью на границе."""
 
     @staticmethod
-    async def connect(request: dict[str, Any]) -> psycopg.AsyncConnection[Any]:
-        connection = PostgresConfig.model_validate(request["connection"])
-
+    async def connect(
+        connection: PostgresConfig,
+    ) -> psycopg.AsyncConnection[Any]:
         if connection.kerberos is None:
             return await PayloadPostgres._connect(connection)
 

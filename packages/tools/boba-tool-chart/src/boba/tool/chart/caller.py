@@ -1,51 +1,67 @@
-"""Проверка figure-спеки в песочнице."""
+"""Проверка figure-спеки в песочнице: узел visualize и его вызов фасадом.
+
+Узел потоков не имеет — заголовок графика приезжает данными квитанции.
+
+Ошибки: PayloadFailureError — спека не прошла схему plotly; LauncherError и
+WorkflowError — запуск сорвался либо итог не по контракту.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from boba.tool.chart.protocol import (
+    ChartStage,
+    ValidateFigureAnswer,
+    ValidateFigureRequest,
+    ValidateFigureSettings,
+)
+from boba.toolkit.launcher import LauncherFactory, StageRun
+from boba.toolkit.workflow import (
+    StageArgsEnricher,
+    StageContract,
+    StageNode,
+)
 
-from boba.toolkit.launcher import LauncherFactory, NoChunks
-
-__all__ = ["ChartCaller", "ValidateFigureAnswer", "ValidateFigureRequest"]
-
-
-class ValidateFigureRequest(BaseModel):
-    """Проверить Plotly figure-спеку схемой plotly."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    OP: ClassVar[str] = "validate_figure"
-
-    op: str = Field(min_length=1, description="Операция payload'а.")
-    spec: str = Field(min_length=1, description="Figure-спека как JSON-текст.")
-
-    @classmethod
-    def of(cls, spec: str) -> ValidateFigureRequest:
-        return cls(op=cls.OP, spec=spec)
-
-
-class ValidateFigureAnswer(BaseModel):
-    """Заголовок графика; пустая строка — заголовка нет."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    title: str
+__all__ = ["ChartCaller"]
 
 
 class ChartCaller:
-    """Один вызов payload'а на график; спека едет в запросе."""
+    """Один вызов payload'а на график: вырожденный граф из одного узла."""
 
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.chart.payload")
 
+    SPEC_ARG: ClassVar[str] = "spec"
+
     def __init__(self, tool: str, launchers: LauncherFactory) -> None:
-        self._caller = launchers(tool)
+        self._run = StageRun(launchers(tool))
+
+    @classmethod
+    def stages(cls) -> Mapping[str, StageNode]:
+        """Узлы пакета для реестра стадий; профиль подставляет приложение."""
+        contract = StageContract(
+            accepts=frozenset(),
+            out=None,
+            result=ValidateFigureAnswer,
+        )
+        settings = ValidateFigureSettings(op=ValidateFigureRequest.OP)
+
+        node = StageNode(
+            contract=contract,
+            entry=cls.ENTRY,
+            request=ValidateFigureRequest,
+            enrich=StageArgsEnricher(settings),
+        )
+
+        return {ChartStage.VISUALIZE: node}
 
     def validate(self, spec: str) -> str:
-        """Заголовок графика; спека, не прошедшая схему, роняет payload."""
-        request = ValidateFigureRequest.of(spec)
-        answer = self._caller.call_stream(
-            self.ENTRY, request, NoChunks(), ValidateFigureAnswer
+        """Заголовок графика; спека, не прошедшая схему, роняет стадию."""
+        answer = self._run.trailer(
+            ChartStage.VISUALIZE,
+            {self.SPEC_ARG: spec},
+            ValidateFigureAnswer,
         )
+
         return answer.title

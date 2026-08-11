@@ -10,7 +10,7 @@ __all__ = ["DocToolsConfig"]
 
 
 class DocToolsConfig(SandboxParserConfig):
-    """Чтение документов из workspace пользователя; файлы открывает payload в песочнице."""
+    """Чтение документов из workspace: файлы открывает payload в песочнице."""
 
     model_config = ConfigDict(extra="ignore")
 

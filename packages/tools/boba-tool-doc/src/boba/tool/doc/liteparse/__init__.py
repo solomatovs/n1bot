@@ -2,9 +2,11 @@
 
 from boba.tool.doc.liteparse.protocol import (
     ParseBytesAnswer,
+    ParseBytesArgs,
     ParseBytesRequest,
     ParsedPage,
     ParseParams,
+    ParseRequest,
 )
 from boba.tool.doc.liteparse.sandbox import (
     LiteParseCaller,
@@ -15,8 +17,10 @@ from boba.tool.doc.liteparse.sandbox import (
 __all__ = [
     "LiteParseCaller",
     "ParseBytesAnswer",
+    "ParseBytesArgs",
     "ParseBytesRequest",
     "ParseParams",
+    "ParseRequest",
     "ParsedPage",
     "SandboxLiteParseReader",
     "SandboxParserConfig",

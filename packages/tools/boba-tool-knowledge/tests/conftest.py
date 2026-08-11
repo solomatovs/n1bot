@@ -8,10 +8,23 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import pytest
+from pydantic import BaseModel
+
+from boba.sandbox import SandboxCaller, SandboxToolConfig
+from boba.sandbox.workflow import ArgsEnricher, StageDef, StageRegistry
+from boba.toolkit.channels import ChannelSink
+from boba.toolkit.launcher import LauncherFactory, ToolLauncher
+from boba.toolkit.workflow import (
+    StageContract,
+    StageOutcome,
+    WorkflowOutcome,
+    WorkflowSpec,
+)
 
 REPO = Path(__file__).resolve().parents[4]
 SANDBOX = REPO / "build" / "src" / "sandbox"
@@ -134,3 +147,116 @@ def raw_config():
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"
+
+
+class StageParts(Protocol):
+    """Форма узла, которую отдают инструменты: у каждого пакета свой StageNode."""
+
+    @property
+    def contract(self) -> StageContract: ...
+
+    @property
+    def entry(self) -> tuple[str, ...]: ...
+
+    @property
+    def request(self) -> type[BaseModel]: ...
+
+    @property
+    def enrich(self) -> ArgsEnricher: ...
+
+
+class StageTestRegistry:
+    """Реестр стадий тестов: узлы пакета плюс профиль песочницы, как в plugins.py."""
+
+    @staticmethod
+    def of(
+        nodes: Mapping[str, StageParts],
+        profile: dict[str, Any],
+    ) -> StageRegistry:
+        sandbox = SandboxToolConfig.model_validate({"profile": profile, "override": {}})
+        rendered = sandbox.effective()
+
+        defs: dict[str, StageDef] = {}
+        for name, node in nodes.items():
+            defs[name] = StageDef(
+                contract=node.contract,
+                profile=rendered,
+                entry=node.entry,
+                request=node.request,
+                enrich=node.enrich,
+            )
+
+        return StageRegistry(defs)
+
+    @classmethod
+    def caller(
+        cls,
+        nodes: Mapping[str, StageParts],
+        profile: dict[str, Any],
+    ) -> SandboxCaller:
+        """Исполнитель поверх реестра: права в тестах открыты всем узлам."""
+        return SandboxCaller(cls.of(nodes, profile), lambda _tool: True, dict)
+
+    @classmethod
+    def launchers(
+        cls,
+        nodes: Mapping[str, StageParts],
+        profile: dict[str, Any],
+    ) -> LauncherFactory:
+        caller = cls.caller(nodes, profile)
+
+        def factory(_tool: str) -> SandboxCaller:
+            return caller
+
+        return factory
+
+
+class RecordingLauncher(ToolLauncher):
+    """Исполнитель без песочницы: обогащает args узла и запоминает запрос.
+
+    Проверяет путь фасад -> args узла -> обогатитель -> модель запроса, не
+    запуская процессов; продукт узла пуст, квитанция берётся из trailers.
+    """
+
+    def __init__(
+        self,
+        nodes: Mapping[str, StageParts],
+        trailers: Mapping[str, BaseModel],
+    ) -> None:
+        self._nodes = nodes
+        self._trailers = trailers
+        self.requests: list[BaseModel] = []
+        self.args: list[Mapping[str, Any]] = []
+
+    def call(
+        self,
+        spec: WorkflowSpec,
+        sinks: Mapping[str, ChannelSink] | None = None,
+    ) -> WorkflowOutcome:
+        trailers: dict[str, Any] = {}
+        stages: list[StageOutcome] = []
+
+        for node in spec.nodes:
+            definition = self._nodes[node.tool]
+            request = definition.request.model_validate(definition.enrich(node.args))
+
+            self.args.append(node.args)
+            self.requests.append(request)
+
+            trailers[node.id] = self._trailers[node.tool].model_dump(mode="json")
+            stages.append(
+                StageOutcome(
+                    stage=node.id,
+                    exit_code=0,
+                    duration_ms=0,
+                    timed_out=False,
+                    killed_by_runner=False,
+                    diagnostic="",
+                )
+            )
+
+        if sinks:
+            for sink in sinks.values():
+                sink.close()
+
+        return WorkflowOutcome(stages=stages, trailers=trailers)

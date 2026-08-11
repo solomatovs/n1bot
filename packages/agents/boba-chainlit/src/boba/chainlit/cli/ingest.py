@@ -5,6 +5,9 @@ BOBA_CONFIG_PATH, секции [tool.ingest] и [tool.ingest.sandbox], рабо�
 целиком идёт в песочнице. Параметры парсера (OCR) и режим обхода задаются
 аргументами — в конфиге они не дублируются.
 
+Реестр стадий прогона собирается из узлов секции [tool.ingest]: чужих узлов в
+нём нет, поэтому вне сессии права на них не спрашиваются.
+
 Логи прогона едут в тот же журнал, что у приложения: секция logger конфига.
 """
 
@@ -20,12 +23,22 @@ from omegaconf import DictConfig
 
 from boba.chainlit.infra.entry import AppEntry
 from boba.sandbox import SandboxCaller, SandboxToolConfig
+from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.settings import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.confluence.ingest_caller import ConfluenceIngestCaller
+from boba.tool.kb.confluence.ingest_protocol import IngestMode
+from boba.tool.kb.confluence.ingest_stages import ConfluenceIngestStages
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 
-__all__ = ["ConfluenceIngestCli"]
+__all__ = ["CliNodeAccess", "ConfluenceIngestCli"]
+
+
+class CliNodeAccess:
+    """Права вне сессии: реестр собран под сам прогон, чужих узлов в нём нет."""
+
+    def __call__(self, tool: str, /) -> bool:
+        return True
 
 logger = logging.getLogger("boba.chainlit.cli.ingest")
 
@@ -55,17 +68,17 @@ class ConfluenceIngestCli:
         logging.config.dictConfig(app.logger)
         raw = providers.get_raw_config()
 
-        cfg = cls.config(raw, args)
-        caller = ConfluenceIngestCaller(cls.TOOL, cls.launchers(raw))
+        cfg = cls.config(raw)
+        caller = ConfluenceIngestCaller(cls.TOOL, cls.launchers(raw, cfg))
 
         logger.info(
             "ingest start: mode=%s target=%s ocr=%s workers=%d lang=%s "
             "force_update=%s prune_missing=%s collection=%s",
             args.mode,
             args.target,
-            cfg.ocr_enabled,
-            cfg.num_workers,
-            cfg.ocr_language,
+            args.ocr_enabled,
+            args.num_workers,
+            args.ocr_language,
             args.force_update,
             args.prune_missing,
             cfg.collection,
@@ -82,10 +95,12 @@ class ConfluenceIngestCli:
             space_keys = cls.items(args)
 
         stats = caller.ingest(
-            cfg=cfg,
-            mode=args.mode,
+            mode=IngestMode(args.mode),
             prune_missing=args.prune_missing,
             force_update=args.force_update,
+            ocr_enabled=args.ocr_enabled,
+            num_workers=args.num_workers,
+            ocr_language=args.ocr_language,
             page_ids=page_ids,
             cql=cql,
             space_keys=space_keys,
@@ -140,28 +155,27 @@ class ConfluenceIngestCli:
         return parser
 
     @classmethod
-    def config(
-        cls, raw: DictConfig, args: argparse.Namespace
-    ) -> ConfluenceIngestConfig:
-        """Секция [tool.ingest] плюс параметры парсера из аргументов."""
-        cfg = bind(raw, cls.SECTION, ConfluenceIngestConfig)
-        return cfg.model_copy(
-            update={
-                "ocr_enabled": args.ocr_enabled,
-                "num_workers": args.num_workers,
-                "ocr_language": args.ocr_language,
-            }
-        )
+    def config(cls, raw: DictConfig) -> ConfluenceIngestConfig:
+        """Секция [tool.ingest]; параметры парсера едут аргументами прогона."""
+        return bind(raw, cls.SECTION, ConfluenceIngestConfig)
 
     @classmethod
-    def launchers(cls, raw: DictConfig) -> LauncherFactory:
-        """Фабрика исполнителей на профиле [tool.ingest.sandbox]."""
+    def launchers(
+        cls, raw: DictConfig, cfg: ConfluenceIngestConfig
+    ) -> LauncherFactory:
+        """Фабрика исполнителей на узлах [tool.ingest] и её профиле песочницы."""
         sandbox = bind(raw, f"{cls.SECTION}.sandbox", SandboxToolConfig)
         profile = sandbox.effective()
 
+        defs: dict[str, StageDef] = {}
+        for name, node in ConfluenceIngestStages.of(cfg).items():
+            defs[name] = StageDef.of(node, profile)
+
+        # вне chainlit-сессии подстановок {user_id}/{thread_id} нет
+        caller = SandboxCaller(StageRegistry(defs), CliNodeAccess(), dict)
+
         def launcher(tool: str) -> ToolLauncher:
-            # вне chainlit-сессии подстановок {user_id}/{thread_id} нет
-            return SandboxCaller(tool, profile, dict)
+            return caller
 
         return launcher
 

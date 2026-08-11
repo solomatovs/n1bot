@@ -1,35 +1,31 @@
-"""Вызовы confluence-payload'а: сеть и разбор идут внутри песочницы."""
+"""Вызовы узлов Confluence: сеть и разбор идут внутри песочницы."""
 
 from __future__ import annotations
 
 from typing import ClassVar
 
+from pydantic import JsonValue
+
 from boba.tool.kb.confluence.protocol import (
-    ConfluenceAttachmentRequest,
-    ConfluenceGrepRequest,
     ConfluenceGrepRow,
-    ConfluencePageRequest,
+    ConfluenceNode,
     ConfluencePageTrailer,
     ConfluenceSearchHit,
-    ConfluenceSearchRequest,
     ConfluenceSpace,
-    ConfluenceSpacesRequest,
 )
+
 from boba.toolkit.launcher import (
-    EmptyTrailer,
     LauncherFactory,
     RowCollector,
+    StageRun,
     TextCollector,
 )
-from boba.transport.http import HttpProfile
-from boba.web.caller import WebCaller
-from boba.web.protocol import WebProfile
 
 __all__ = ["ConfluenceCaller", "ConfluencePage"]
 
 
 class ConfluencePage:
-    """Материализованная страница: контент из потока плюс заголовок трейлера."""
+    """Материализованная страница: контент из потока плюс заголовок квитанции."""
 
     def __init__(self, text: str, title: str) -> None:
         self.text = text
@@ -37,58 +33,115 @@ class ConfluencePage:
 
 
 class ConfluenceCaller:
-    """Один вызов payload'а на операцию; профиль соединения едет с ним."""
-
-    ENTRY: ClassVar[tuple[str, ...]] = (
-        "python3",
-        "-m",
-        "boba.tool.kb.confluence.payload",
-    )
+    """Один запуск узла на операцию; профиль соединения добавляет реестр."""
 
     MAX_RESULT_CHARS: ClassVar[int] = 10_000_000
     """Транспортный потолок объёма потока; выдачу режут limit'ы самих операций."""
 
     def __init__(self, tool: str, launchers: LauncherFactory) -> None:
-        self._caller = launchers(tool)
+        self._run = StageRun(launchers(tool))
 
-    @staticmethod
-    def transport_of(profile: HttpProfile) -> WebProfile:
-        return WebCaller.transport_of(profile)
-
-    def page(self, request: ConfluencePageRequest) -> ConfluencePage:
+    def page(self, *, page_id: str, as_markdown: bool) -> ConfluencePage:
         collector = self._text_collector()
-        trailer = self._caller.call_stream(
-            self.ENTRY, request, collector, ConfluencePageTrailer
+        args: dict[str, JsonValue] = {
+            "page_id": page_id,
+            "as_markdown": as_markdown,
+        }
+
+        trailer = self._run.trailer(
+            ConfluenceNode.PAGE.value,
+            args,
+            ConfluencePageTrailer,
+            sink=collector,
         )
+
         return ConfluencePage(text=collector.text(), title=trailer.title)
 
-    def grep(self, request: ConfluenceGrepRequest) -> list[ConfluenceGrepRow]:
-        collector = self._row_collector(request.limit)
-        self._caller.call_stream(self.ENTRY, request, collector, EmptyTrailer)
+    def grep(  # noqa: PLR0913 — флаги grep'а независимы
+        self,
+        *,
+        page_id: str,
+        pattern: str,
+        as_markdown: bool,
+        case_insensitive: bool,
+        context: int,
+        limit: int,
+        fixed_string: bool,
+    ) -> list[ConfluenceGrepRow]:
+        collector = RowCollector(max_chars=self.MAX_RESULT_CHARS, limit_rows=limit)
+        args: dict[str, JsonValue] = {
+            "page_id": page_id,
+            "pattern": pattern,
+            "as_markdown": as_markdown,
+            "case_insensitive": case_insensitive,
+            "context": context,
+            "limit": limit,
+            "fixed_string": fixed_string,
+        }
+
+        self._run.call(ConfluenceNode.GREP.value, args, sink=collector)
+
         rows: list[ConfluenceGrepRow] = []
         for raw in collector.rows():
             rows.append(ConfluenceGrepRow.model_validate(raw))
+
         return rows
 
-    def search(self, request: ConfluenceSearchRequest) -> list[ConfluenceSearchHit]:
-        collector = self._row_collector(request.limit)
-        self._caller.call_stream(self.ENTRY, request, collector, EmptyTrailer)
+    def search(
+        self,
+        *,
+        cql: str,
+        limit: int,
+        snippet_chars: int,
+    ) -> list[ConfluenceSearchHit]:
+        collector = RowCollector(max_chars=self.MAX_RESULT_CHARS, limit_rows=limit)
+        args: dict[str, JsonValue] = {
+            "cql": cql,
+            "limit": limit,
+            "snippet_chars": snippet_chars,
+        }
+
+        self._run.call(ConfluenceNode.SEARCH.value, args, sink=collector)
+
         hits: list[ConfluenceSearchHit] = []
         for raw in collector.rows():
             hits.append(ConfluenceSearchHit.model_validate(raw))
+
         return hits
 
-    def spaces(self, request: ConfluenceSpacesRequest) -> list[ConfluenceSpace]:
-        collector = self._row_collector(request.limit)
-        self._caller.call_stream(self.ENTRY, request, collector, EmptyTrailer)
+    def spaces(self, *, space_type: str) -> list[ConfluenceSpace]:
+        """Сколько спейсов запросить у REST, решает конфиг узла, а не вызов."""
+        collector = RowCollector(max_chars=self.MAX_RESULT_CHARS, limit_rows=None)
+        args: dict[str, JsonValue] = {"space_type": space_type}
+
+        self._run.call(ConfluenceNode.SPACES.value, args, sink=collector)
+
         spaces: list[ConfluenceSpace] = []
         for raw in collector.rows():
             spaces.append(ConfluenceSpace.model_validate(raw))
+
         return spaces
 
-    def attachment(self, request: ConfluenceAttachmentRequest) -> str:
+    def attachment(
+        self,
+        *,
+        page_id: str,
+        filename: str,
+        ocr_enabled: bool,
+        num_workers: int,
+        ocr_language: str,
+    ) -> str:
         collector = self._text_collector()
-        self._caller.call_stream(self.ENTRY, request, collector, EmptyTrailer)
+        args: dict[str, JsonValue] = {
+            "page_id": page_id,
+            "filename": filename,
+            "ocr_enabled": ocr_enabled,
+            "num_workers": num_workers,
+            "ocr_language": ocr_language,
+        }
+
+        self._run.call(ConfluenceNode.ATTACHMENT.value, args, sink=collector)
+
         return collector.text()
 
     def _text_collector(self) -> TextCollector:
@@ -97,6 +150,3 @@ class ConfluenceCaller:
             limit_rows=None,
             header_lines=0,
         )
-
-    def _row_collector(self, limit_rows: int) -> RowCollector:
-        return RowCollector(max_chars=self.MAX_RESULT_CHARS, limit_rows=limit_rows)

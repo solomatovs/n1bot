@@ -9,7 +9,7 @@ from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from boba.workspace.launcher import LauncherConfig
+from boba.workspace.launcher import LauncherConfig, ResourceLimits
 
 __all__ = [
     "BindSpec",
@@ -362,6 +362,16 @@ class SandboxProfile(BaseModel):
     @classmethod
     def _validate_cwd(cls, value: str) -> str:
         return BindSpec.check_vars(value)
+
+    def limits(self) -> ResourceLimits:
+        """Rlimit'ы команды по полям профиля: один источник для всех запусков."""
+        return ResourceLimits(
+            max_memory_bytes=self.max_memory_bytes,
+            max_cpu_sec=self.max_cpu_sec,
+            max_file_size_bytes=self.max_file_size_bytes,
+            max_open_files=self.max_open_files,
+            oom_score_adj=self.oom_score_adj,
+        )
 
     def render(self, variables: Mapping[str, str]) -> Self:
         """Профиль с подставленными значениями {user_id}/{thread_id}."""

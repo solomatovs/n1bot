@@ -1,96 +1,52 @@
-"""Вызов ingest-payload'а: индексация целиком идёт в песочнице."""
+"""Вызов узла индексации: прогон целиком идёт в песочнице."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, ClassVar
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import JsonValue
 
-from boba.toolkit.launcher import LauncherFactory, NoChunks
+from boba.tool.kb.confluence.ingest_protocol import IngestAnswer, IngestMode
+from boba.tool.kb.confluence.protocol import ConfluenceNode
 
-__all__ = ["ConfluenceIngestCaller", "IngestAnswer", "IngestRequest"]
+from boba.toolkit.launcher import LauncherFactory, StageRun
 
-
-class IngestRequest(BaseModel):
-    """Конфиг инструмента и способ обхода: остальное payload знает сам."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    OP: ClassVar[str] = "confluence_ingest"
-
-    op: str = Field(min_length=1)
-    config: dict[str, Any]
-    mode: str = Field(min_length=1)
-    page_ids: tuple[str, ...] = ()
-    cql: str = ""
-    space_keys: tuple[str, ...] = ()
-    prune_missing: bool
-    force_update: bool
-
-
-class IngestAnswer(BaseModel):
-    """Статистика прогона: collection/indexed/skipped_unchanged/pruned/failed."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    stats: dict[str, Any]
+__all__ = ["ConfluenceIngestCaller"]
 
 
 class ConfluenceIngestCaller:
-    """Один запуск payload'а на прогон: модель эмбеддера грузится однажды."""
-
-    ENTRY: ClassVar[tuple[str, ...]] = (
-        "python3",
-        "-m",
-        "boba.tool.kb.confluence.ingest_payload",
-    )
+    """Один запуск узла на прогон: модель эмбеддера грузится однажды."""
 
     def __init__(self, tool: str, launchers: LauncherFactory) -> None:
-        self._caller = launchers(tool)
+        self._run = StageRun(launchers(tool))
 
-    @classmethod
-    def config_of(cls, cfg: BaseModel) -> dict[str, Any]:
-        """Секреты раскрываются здесь: SecretStr не сериализуется сам собой."""
-        return cls._reveal(cfg.model_dump(mode="json"), cfg.model_dump())
-
-    @classmethod
-    def _reveal(cls, jsonable: Any, native: Any) -> Any:
-        if isinstance(native, SecretStr):
-            return native.get_secret_value()
-        if isinstance(native, dict):
-            revealed: dict[str, Any] = {}
-            for key, value in native.items():
-                revealed[key] = cls._reveal(jsonable[key], value)
-            return revealed
-        if isinstance(native, (list, tuple)):
-            items: list[Any] = []
-            for index, value in enumerate(native):
-                items.append(cls._reveal(jsonable[index], value))
-            return items
-        return jsonable
-
-    def ingest(  # noqa: PLR0913 — режимы обхода независимы
+    def ingest(  # noqa: PLR0913 — режимы обхода и настройки парсера независимы
         self,
         *,
-        cfg: BaseModel,
-        mode: str,
+        mode: IngestMode,
         prune_missing: bool,
         force_update: bool,
+        ocr_enabled: bool,
+        num_workers: int,
+        ocr_language: str,
         page_ids: Sequence[str] = (),
         cql: str = "",
         space_keys: Sequence[str] = (),
     ) -> dict[str, Any]:
-        request = IngestRequest(
-            op=IngestRequest.OP,
-            config=self.config_of(cfg),
-            mode=mode,
-            page_ids=tuple(page_ids),
-            cql=cql,
-            space_keys=tuple(space_keys),
-            prune_missing=prune_missing,
-            force_update=force_update,
-        )
-        return self._caller.call_stream(
-            self.ENTRY, request, NoChunks(), IngestAnswer
-        ).stats
+        """Итог прогона живёт в квитанции: потока данных у узла нет."""
+        args: dict[str, JsonValue] = {
+            "mode": mode.value,
+            "page_ids": list(page_ids),
+            "cql": cql,
+            "space_keys": list(space_keys),
+            "prune_missing": prune_missing,
+            "force_update": force_update,
+            "ocr_enabled": ocr_enabled,
+            "num_workers": num_workers,
+            "ocr_language": ocr_language,
+        }
+
+        answer = self._run.trailer(ConfluenceNode.INGEST.value, args, IngestAnswer)
+
+        return answer.stats

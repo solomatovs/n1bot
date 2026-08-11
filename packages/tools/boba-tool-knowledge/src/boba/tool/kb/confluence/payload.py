@@ -6,7 +6,8 @@ payload: наружу не уезжает ни сырой ответ, ни ис�
 
 Ошибки: confluence_request_failed — REST недоступен или ответил статусом;
 attachment_not_found — вложения с таким именем на странице нет;
-document_unreadable — вложение скачалось, но не разбирается.
+document_unreadable — вложение скачалось, но не разбирается; ChannelError —
+в tool_args приехал запрос чужой модели.
 """
 
 from __future__ import annotations
@@ -14,15 +15,33 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, ClassVar
 from urllib.parse import quote
 
 import httpx
+from pydantic import BaseModel
 
 from boba.text.document import LiteParseError
-from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
+from boba.tool.kb.confluence.protocol import (
+    ConfluenceAttachmentRequest,
+    ConfluenceCall,
+    ConfluenceContentCall,
+    ConfluenceGrepRequest,
+    ConfluenceGrepRow,
+    ConfluenceNode,
+    ConfluencePageCall,
+    ConfluencePageRequest,
+    ConfluencePageTrailer,
+    ConfluenceSearchHit,
+    ConfluenceSearchRequest,
+    ConfluenceSpace,
+    ConfluenceSpacesRequest,
+)
+from boba.tool.kb.html.payload import PageOps
+from boba.toolkit.channels import ByteText, ChannelError, StreamCodec
+from boba.toolkit.payload import PayloadChannels, PayloadEntry, PayloadError
+from boba.toolkit.workflow import EmptyTrailer
 from boba.web.payload import WebOps
 
 
@@ -47,61 +66,90 @@ class ConfluenceRest:
 
     @staticmethod
     def spaces(space_type: str, limit: int) -> str:
-        type_filter = "" if space_type == "any" else f"&type={space_type}"
+        type_filter = ""
+        if space_type != ConfluenceOps.ANY_SPACE_TYPE:
+            type_filter = f"&type={space_type}"
         return f"/rest/api/space?limit={limit}&start=0{type_filter}"
+
+
+class PageContent:
+    """Материализованная страница: её контент и заголовок."""
+
+    def __init__(self, text: str, title: str) -> None:
+        self.text = text
+        self.title = title
 
 
 class ConfluenceOps:
     """Операции чтения Confluence; вызываются диспетчером payload'а."""
 
-    OPS: ClassVar[tuple[str, ...]] = (
-        "confluence_page",
-        "confluence_grep",
-        "confluence_search",
-        "confluence_spaces",
-        "confluence_attachment",
-    )
+    ANY_SPACE_TYPE: ClassVar[str] = "any"
+    """Значение space_type, при котором REST не фильтруется по типу."""
 
     EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
         LiteParseError: "document_unreadable",
     }
 
+    REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {
+        ConfluenceNode.PAGE: ConfluencePageRequest,
+        ConfluenceNode.GREP: ConfluenceGrepRequest,
+        ConfluenceNode.SEARCH: ConfluenceSearchRequest,
+        ConfluenceNode.SPACES: ConfluenceSpacesRequest,
+        ConfluenceNode.ATTACHMENT: ConfluenceAttachmentRequest,
+    }
+
     @classmethod
     async def dispatch(
-        cls, request: dict[str, Any], emit: ChunkEmitter
-    ) -> dict[str, Any]:
-        """Текст уходит кадрами-кусками, таблицы — кадрами-записями."""
-        op = request["op"]
-        if op == "confluence_page":
-            data = await cls.page(request)
-            PayloadEntry.emit_text(emit, data["text"])
-            return {"title": data["title"]}
-        if op == "confluence_grep":
-            await cls.grep(request, emit)
-            return {}
-        if op == "confluence_search":
-            await cls.search(request, emit)
-            return {}
-        if op == "confluence_spaces":
-            await cls.spaces(request, emit)
-            return {}
-        if op == "confluence_attachment":
-            answer = await cls.attachment(request)
-            PayloadEntry.emit_text(emit, answer["text"])
-            return {}
-        msg = f"unknown confluence op: {op!r}"
-        raise ValueError(msg)
+        cls,
+        request: BaseModel,
+        channels: PayloadChannels,
+    ) -> BaseModel:
+        """Текст уходит байтами, таблицы — строками NDJSON."""
+        if isinstance(request, ConfluencePageRequest):
+            page = await cls.page(request)
+            cls.write_text(channels, page.text)
+            return ConfluencePageTrailer(title=page.title)
+
+        if isinstance(request, ConfluenceGrepRequest):
+            await cls.grep(request, channels)
+            return EmptyTrailer()
+
+        if isinstance(request, ConfluenceSearchRequest):
+            await cls.search(request, channels)
+            return EmptyTrailer()
+
+        if isinstance(request, ConfluenceSpacesRequest):
+            await cls.spaces(request, channels)
+            return EmptyTrailer()
+
+        if isinstance(request, ConfluenceAttachmentRequest):
+            cls.write_text(channels, await cls.attachment(request))
+            return EmptyTrailer()
+
+        msg = f"confluence payload got an unexpected request: {type(request).__name__}"
+        raise ChannelError(msg)
 
     @staticmethod
-    async def get(request: dict[str, Any], path: str) -> bytes:
-        profile = request["profile"]
-        url = request["base_url"].rstrip("/") + path
+    def write_text(channels: PayloadChannels, text: str) -> None:
+        channels.payload().write(text.encode(ByteText.ENCODING))
+
+    @staticmethod
+    def write_rows(channels: PayloadChannels, rows: Iterator[BaseModel]) -> None:
+        stream = channels.payload()
+        for row in rows:
+            stream.write(StreamCodec.encode_row(row.model_dump()))
+
+    @staticmethod
+    async def get(request: ConfluenceCall, path: str) -> bytes:
+        profile = request.profile
+        url = request.base_url.rstrip("/") + path
+
         try:
             async with httpx.AsyncClient(
-                timeout=profile["timeout_sec"],
-                verify=profile["ssl_verify"],
+                timeout=profile.timeout_sec,
+                verify=profile.ssl_verify,
                 follow_redirects=True,
-                auth=WebOps.auth_of(profile["auth"]),
+                auth=profile.auth.httpx_auth(),
             ) as client:
                 response = await client.get(url)
                 response.raise_for_status()
@@ -111,124 +159,191 @@ class ConfluenceOps:
             raise PayloadError("confluence_request_failed", msg) from e
 
     @classmethod
-    async def page_json(cls, request: dict[str, Any]) -> dict[str, Any]:
-        path = ConfluenceRest.page(request["page_id"], request["body_format"])
+    async def page_json(cls, request: ConfluencePageCall) -> dict[str, Any]:
+        path = ConfluenceRest.page(request.page_id, request.body_format)
+
         return json.loads(await cls.get(request, path))
 
     @staticmethod
-    def body_html(data: dict[str, Any], body_format: str) -> str:
+    def body_html(data: Mapping[str, Any], body_format: str) -> str:
         body = data.get("body")
         if not isinstance(body, dict):
             return ""
+
         view = body.get(body_format)
         if not isinstance(view, dict):
             return ""
+
         return str(view.get("value") or "")
 
     @classmethod
-    async def page(cls, request: dict[str, Any]) -> dict[str, Any]:
+    async def page(cls, request: ConfluenceContentCall) -> PageContent:
         data = await cls.page_json(request)
-        html = cls.body_html(data, request["body_format"])
+        html = cls.body_html(data, request.body_format)
         title = str(data.get("title") or "")
-        if not request["as_markdown"]:
-            return {"text": html, "title": title}
-        from boba.tool.kb.html.payload import PageOps  # noqa: PLC0415
 
-        answer = PageOps.to_markdown({"html": html, "heading_style": "ATX"})
-        return {"text": answer["markdown"], "title": title}
+        if not request.as_markdown:
+            return PageContent(text=html, title=title)
+
+        return PageContent(text=PageOps.to_markdown(html), title=title)
 
     @classmethod
-    async def grep(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
+    async def grep(
+        cls,
+        request: ConfluenceGrepRequest,
+        channels: PayloadChannels,
+    ) -> None:
         page = await cls.page(request)
-        text = page["text"]
+
+        cls.write_rows(channels, cls.matches(request, page.text))
+
+    @classmethod
+    def matches(
+        cls,
+        request: ConfluenceGrepRequest,
+        text: str,
+    ) -> Iterator[ConfluenceGrepRow]:
         pattern = WebOps.compile_pattern(
-            request["pattern"],
-            fixed_string=request["fixed_string"],
-            case_insensitive=request["case_insensitive"],
+            request.pattern,
+            fixed_string=request.fixed_string,
+            case_insensitive=request.case_insensitive,
         )
-        matches = WebOps.iter_matches(text, pattern, context=request["context"])
-        for emitted, row in enumerate(matches):
-            if emitted >= request["limit"]:
-                break
-            emit(RowStream.encode(WebOps.clip_row(row, request["max_text_chars"])))
+        found = WebOps.iter_matches(text, pattern, context=request.context)
+
+        for emitted, row in enumerate(found):
+            if emitted >= request.limit:
+                return
+            clipped = WebOps.clip_row(row, request.max_text_chars)
+            yield ConfluenceGrepRow.model_validate(clipped)
 
     @classmethod
-    async def search(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
-        path = ConfluenceRest.search(request["cql"], request["limit"])
+    async def search(
+        cls,
+        request: ConfluenceSearchRequest,
+        channels: PayloadChannels,
+    ) -> None:
+        path = ConfluenceRest.search(request.cql, request.limit)
         data = json.loads(await cls.get(request, path))
-        base = str(data.get("_links", {}).get("base") or request["base_url"])
-        for hit in data.get("results") or []:
-            emit(RowStream.encode(cls.hit(hit, base, request["snippet_chars"])))
+
+        links = data.get("_links")
+        base = request.base_url
+        if isinstance(links, dict) and links.get("base"):
+            base = str(links["base"])
+
+        cls.write_rows(channels, cls.hits(data, base, request.snippet_chars))
 
     @classmethod
-    def hit(cls, hit: dict[str, Any], base: str, snippet_chars: int) -> dict[str, Any]:
-        from boba.tool.kb.html.payload import PageOps  # noqa: PLC0415
+    def hits(
+        cls,
+        data: Mapping[str, Any],
+        base: str,
+        snippet_chars: int,
+    ) -> Iterator[ConfluenceSearchHit]:
+        for hit in data.get("results") or []:
+            yield cls.hit(hit, base, snippet_chars)
 
+    @classmethod
+    def hit(
+        cls,
+        hit: Mapping[str, Any],
+        base: str,
+        snippet_chars: int,
+    ) -> ConfluenceSearchHit:
         html = cls.body_html(hit, "view")
+
         excerpt = ""
         if html:
-            excerpt = PageOps.plain_text({"html": html})["text"]
+            excerpt = PageOps.plain_text(html)
+
         if len(excerpt) > snippet_chars:
             excerpt = excerpt[: snippet_chars - 1].rstrip() + "…"
+
         space = hit.get("space")
         space_key = ""
         if isinstance(space, dict):
             space_key = str(space.get("key") or "")
-        webui = str(hit.get("_links", {}).get("webui") or "")
-        return {
-            "page_id": str(hit.get("id") or ""),
-            "title": str(hit.get("title") or ""),
-            "space_key": space_key,
-            "url": f"{base}{webui}" if webui else base,
-            "excerpt": excerpt,
-        }
 
-    @classmethod
-    async def spaces(cls, request: dict[str, Any], emit: ChunkEmitter) -> None:
-        path = ConfluenceRest.spaces(request["space_type"], request["limit"])
-        data = json.loads(await cls.get(request, path))
-        for space in data.get("results") or []:
-            row = {
-                "key": str(space.get("key") or ""),
-                "name": str(space.get("name") or ""),
-                "type": str(space.get("type") or ""),
-            }
-            emit(RowStream.encode(row))
+        links = hit.get("_links")
+        webui = ""
+        if isinstance(links, dict):
+            webui = str(links.get("webui") or "")
 
-    @classmethod
-    async def attachment(cls, request: dict[str, Any]) -> dict[str, Any]:
-        """Вложение скачивается и парсится здесь же: наружу едет только текст."""
-        data = await cls.page_json(request)
-        filename = request["filename"]
-        link = cls.attachment_link(data, filename)
-        if not link:
-            msg = f"attachment {filename!r} not found on page {request['page_id']!r}"
-            raise PayloadError("attachment_not_found", msg)
-        content = await cls.get(request, link)
-        from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
-        from boba.text.document import LiteParseParams  # noqa: PLC0415
+        url = base
+        if webui:
+            url = f"{base}{webui}"
 
-        params = LiteParseParams.model_validate(request["params"])
-        # парсер нативный и держит GIL: без потока он застопорит loop payload'а
-        result = await asyncio.to_thread(
-            LiteParseEngine.parse_bytes, params, content, filename
+        return ConfluenceSearchHit(
+            page_id=str(hit.get("id") or ""),
+            title=str(hit.get("title") or ""),
+            space_key=space_key,
+            url=url,
+            excerpt=excerpt,
         )
-        return {"text": result.text}
+
+    @classmethod
+    async def spaces(
+        cls,
+        request: ConfluenceSpacesRequest,
+        channels: PayloadChannels,
+    ) -> None:
+        path = ConfluenceRest.spaces(request.space_type, request.limit)
+        data = json.loads(await cls.get(request, path))
+
+        cls.write_rows(channels, cls.space_rows(data))
 
     @staticmethod
-    def attachment_link(data: dict[str, Any], filename: str) -> str:
+    def space_rows(data: Mapping[str, Any]) -> Iterator[ConfluenceSpace]:
+        for space in data.get("results") or []:
+            yield ConfluenceSpace(
+                key=str(space.get("key") or ""),
+                name=str(space.get("name") or ""),
+                type=str(space.get("type") or ""),
+            )
+
+    @classmethod
+    async def attachment(cls, request: ConfluenceAttachmentRequest) -> str:
+        """Вложение скачивается и парсится здесь же: наружу едет только текст."""
+        data = await cls.page_json(request)
+
+        link = cls.attachment_link(data, request.filename)
+        if not link:
+            msg = (
+                f"attachment {request.filename!r} not found "
+                f"on page {request.page_id!r}"
+            )
+            raise PayloadError("attachment_not_found", msg)
+
+        content = await cls.get(request, link)
+
+        from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
+
+        # парсер нативный и держит GIL: без потока он застопорит loop payload'а
+        result = await asyncio.to_thread(
+            LiteParseEngine.parse_bytes,
+            request.parse_params(),
+            content,
+            request.filename,
+        )
+
+        return result.text
+
+    @staticmethod
+    def attachment_link(data: Mapping[str, Any], filename: str) -> str:
         children = data.get("children")
         if not isinstance(children, dict):
             return ""
+
         attachments = children.get("attachment")
         if not isinstance(attachments, dict):
             return ""
+
         for item in attachments.get("results") or []:
             if str(item.get("title") or "") != filename:
                 continue
             links = item.get("_links")
             if isinstance(links, dict):
                 return str(links.get("download") or "")
+
         return ""
 
 

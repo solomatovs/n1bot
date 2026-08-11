@@ -1,17 +1,15 @@
-"""Парсинг вложений в песочнице: контракт parse_bytes и ридер индексации."""
+"""Парсинг вложений: контракт узла parse_bytes и ридер индексации."""
 
 from __future__ import annotations
 
 import base64
-import json
 import subprocess
 import sys
-from collections.abc import Sequence
 from typing import Any
 
 import pydantic
 import pytest
-from pydantic import BaseModel
+from local_stage import LocalStageLauncher
 
 from boba.indexing import (
     ChunkStream,
@@ -23,25 +21,25 @@ from boba.indexing import (
     SourceId,
     TransportKeys,
 )
-from boba.sandbox import SandboxPayload, SandboxPayloadError
 from boba.text.document import DocumentMedia
 from boba.tool.doc.liteparse import (
     LiteParseCaller,
-    ParseBytesAnswer,
-    ParseBytesRequest,
+    ParseBytesArgs,
     ParseParams,
     SandboxLiteParseReader,
     SandboxParserConfig,
 )
-from boba.tool.doc.liteparse.protocol import ParseBytesTrailer, ParsedPage
-from boba.toolkit.launcher import ChunkSink
+from boba.toolkit.launcher import LauncherError, ToolLauncher
 
 pytestmark = pytest.mark.anyio
+
+_TOOL = "confluence"
 
 
 @pytest.fixture(scope="module")
 def anyio_backend() -> str:
     return "asyncio"
+
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -61,120 +59,33 @@ endstream endobj
 trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
-_PROFILE: dict[str, Any] = {
-    "rootfs": "",
-    "ro_binds": (),
-    "rw_binds": (),
-    "rw_images": (),
-    "image_template": "",
-    "launcher": {
-        "mount_wait_sec": 10.0,
-        "mount_poll_sec": 0.05,
-        "shutdown_wait_sec": 5.0,
-        "lock_wait_sec": 10.0,
-        "copy_chunk_bytes": 1 << 20,
-    },
-    "tmpfs": ("/tmp:64M",),  # noqa: S108
-    "network": False,
-    "env_set": {"PATH": "/usr/bin:/bin"},
-    "timeout_sec": 30,
-    "max_memory_bytes": 512 * 1024 * 1024,
-    "max_cpu_sec": 30,
-    "max_file_size_bytes": 64 * 1024 * 1024,
-    "max_open_files": 1024,
-    "max_processes": 256,
-    "max_output_bytes": 16 * 1024 * 1024,
-    "cgroup_base": "",
-    "oom_score_adj": 0,
-    "cwd": "/tmp",  # noqa: S108
-}
-
 _PDF_TYPE = "application/pdf"
 
 
-PAYLOAD_MODULE = "boba.tool.doc.payload"
+class Launchers:
+    """Фабрика порта: один локальный исполнитель узла парсера."""
 
+    def __init__(self, cfg: SandboxParserConfig) -> None:
+        self.launcher = LocalStageLauncher(dict(LiteParseCaller.stages(_TOOL, cfg)))
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
+    def __call__(self, tool: str, /) -> ToolLauncher:
+        return self.launcher
 
 
 def _config(**kw: Any) -> SandboxParserConfig:
-    fields: dict[str, Any] = {
-        "tessdata_path": "/usr/share/tessdata",
-        "sandbox": {
-            "profile": _PROFILE,
-            "override": {},
-        },
-    }
+    fields: dict[str, Any] = {"tessdata_path": "/usr/share/tessdata"}
     fields.update(kw)
     return SandboxParserConfig.model_validate(fields)
 
 
-class _LocalCaller:
-    """Песочница подменена локальным запуском payload'а: контракт тот же."""
-
-    def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
-
-    def call_text(self, command: str, stdin: str) -> Any:
-        raise NotImplementedError("этим инструментам нужен только call_stream")
-
-    def call_stream(
-        self,
-        entry: Sequence[str],
-        request: BaseModel,
-        sink: ChunkSink,
-        trailer: type[BaseModel],
-    ) -> Any:
-        body = json.loads(request.model_dump_json())
-        self.requests.append(body)
-        run = _PayloadRun(json.dumps(body))
-        if run.returncode != 0:
-            raise SandboxPayloadError(run.stderr)
-        for chunk in run.chunks:
-            sink.write(chunk)
-        if run.trailer is None:
-            msg = f"payload не напечатал трейлер: {run.stdout!r}"
-            raise SandboxPayloadError(msg)
-        return trailer.model_validate(run.trailer)
-
-
-class _PayloadRun:
-    """Локальный запуск payload'а: кадры и трейлер по тому же контракту."""
-
-    def __init__(self, stdin: str) -> None:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.returncode = result.returncode
-        self.stderr = result.stderr
-        self.stdout = result.stdout
-        self.chunks: list[str] = []
-        self.trailer: dict[str, Any] | None = None
-        for line in result.stdout.splitlines():
-            if line.startswith(SandboxPayload.CHUNK_MARKER):
-                body = line[len(SandboxPayload.CHUNK_MARKER) :]
-                self.chunks.append(json.loads(body))
-                continue
-            if line.startswith(SandboxPayload.MARKER):
-                self.trailer = json.loads(line[len(SandboxPayload.MARKER) :])
-
-    def rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for chunk in self.chunks:
-            rows.append(json.loads(chunk))
-        return rows
+@pytest.fixture
+def launchers() -> Launchers:
+    return Launchers(_config(ocr_language="eng"))
 
 
 @pytest.fixture
-def caller(monkeypatch: pytest.MonkeyPatch) -> LiteParseCaller:
-    return LiteParseCaller("confluence", _config(), lambda _tool: _LocalCaller())
+def caller(launchers: Launchers) -> LiteParseCaller:
+    return LiteParseCaller(_TOOL, _config(ocr_language="eng"), launchers)
 
 
 def _raw(data: bytes, content_type: str | None) -> RawDocument:
@@ -189,60 +100,51 @@ def _raw(data: bytes, content_type: str | None) -> RawDocument:
 
 
 class TestParseBytesContract:
-    """Документ едет в запросе base64 и парсится настоящим liteparse."""
+    """Документ едет в аргументах base64 и парсится настоящим liteparse."""
 
-    @staticmethod
-    def _run(request: ParseBytesRequest) -> ParseBytesAnswer:
-        run = _PayloadRun(request.model_dump_json())
-        assert run.returncode == 0, run.stderr
-        assert run.trailer is not None
-        pages: list[ParsedPage] = []
-        for row in run.rows():
-            pages.append(ParsedPage.model_validate(row))
-        trailer = ParseBytesTrailer.model_validate(run.trailer)
-        return ParseBytesAnswer(num_pages=trailer.num_pages, pages=tuple(pages))
+    def test_pages_come_back(self, caller: LiteParseCaller) -> None:
+        answer = caller.parse_bytes(_PDF, "report.pdf")
 
-    @staticmethod
-    def _request(data: bytes, filename: str) -> ParseBytesRequest:
-        params = ParseParams(
-            ocr_enabled=False,
-            ocr_language="eng",
-            max_pages=0,
-            tessdata_path="/usr/share/tessdata",
-            num_workers=1,
-        )
-        return ParseBytesRequest.of(data, filename, params)
-
-    def test_pages_come_back(self) -> None:
-        answer = self._run(self._request(_PDF, "report.pdf"))
         assert answer.num_pages == 2
         assert [page.page_num for page in answer.pages] == [1, 2]
         assert "Alpha page one" in answer.pages[0].text
 
-    def test_text_joins_pages(self) -> None:
-        answer = self._run(self._request(_PDF, "report.pdf"))
+    def test_text_joins_pages(self, caller: LiteParseCaller) -> None:
+        answer = caller.parse_bytes(_PDF, "report.pdf")
+
         assert "Alpha page one" in answer.text
         assert "Beta page two" in answer.text
 
-    def test_request_carries_base64(self) -> None:
-        request = self._request(_PDF, "report.pdf")
-        assert base64.b64decode(request.content_b64) == _PDF
+    def test_args_carry_base64(self) -> None:
+        args = ParseBytesArgs.of(_PDF, "report.pdf")
+
+        assert base64.b64decode(args.content_b64) == _PDF
+
+    def test_parser_settings_come_from_config(
+        self, caller: LiteParseCaller, launchers: Launchers
+    ) -> None:
+        """Настройки парсера кладёт обогатитель узла, а не вызывающий."""
+        caller.parse_bytes(_PDF, "report.pdf")
+
+        request = launchers.launcher.requests[0]
+        assert request["op"] == "parse_bytes"
+        assert request["ocr_language"] == "eng"
+        assert request["tessdata_path"] == "/usr/share/tessdata"
+
+    def test_node_name_is_per_tool(self) -> None:
+        """У каждого инструмента свой узел парсера: свой профиль и настройки."""
+        nodes = LiteParseCaller.stages(_TOOL, _config())
+
+        assert list(nodes) == ["confluence_parse_bytes"]
 
     def test_tessdata_path_is_required(self) -> None:
         """Единственное поле без дефолта: без каталога моделей запроса нет."""
         with pytest.raises(pydantic.ValidationError):
             ParseParams.model_validate({"ocr_enabled": False})
 
-    def test_broken_document_fails(self) -> None:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=self._request(b"not a real pdf", "broken.pdf").model_dump_json(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert result.stderr.strip()
+    def test_broken_document_fails(self, caller: LiteParseCaller) -> None:
+        with pytest.raises(LauncherError):
+            caller.parse_bytes(b"not a real pdf", "broken.pdf")
 
 
 class TestSandboxLiteParseReader:
@@ -302,13 +204,13 @@ class TestSandboxLiteParseReader:
         assert set(reader.media_types) == set(DocumentMedia.SUFFIX_BY_MEDIA_TYPE)
 
     async def test_filename_suffix_matches_media_type(
-        self, caller: LiteParseCaller
+        self, caller: LiteParseCaller, launchers: Launchers
     ) -> None:
-        """В payload уезжает имя с расширением, выведенным из content_type."""
+        """В запрос уезжает имя с расширением, выведенным из content_type."""
         stream = SandboxLiteParseReader(caller).read(_raw(_PDF, _PDF_TYPE))
         [item async for item in stream]
-        sandbox: Any = caller._caller
-        assert sandbox.requests[0]["filename"] == "document.pdf"
+
+        assert launchers.launcher.requests[0]["filename"] == "document.pdf"
 
 
 class TestParserStaysInSandbox:

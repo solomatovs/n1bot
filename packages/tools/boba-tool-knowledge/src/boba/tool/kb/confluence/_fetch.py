@@ -1,32 +1,17 @@
-"""Tool confluence_fetch_page: контент одной страницы через payload в песочнице."""
+"""Tool confluence_fetch_page: контент одной страницы через узел в песочнице."""
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from boba.tool.kb.confluence.caller import ConfluenceCaller
-from boba.tool.kb.confluence.protocol import ConfluencePageRequest
-from boba.transport.http import HttpProfile
 
-__all__ = ["ConfluenceFetchPageConfig", "confluence_fetch_page"]
-
-
-class ConfluenceFetchPageConfig(BaseModel):
-    """Self-contained конфиг tool'а confluence_fetch_page."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    confluence: HttpProfile
-    body_format: Literal["view", "export_view", "storage"] = Field(
-        default="view",
-        description="Confluence body-формат: view/export_view/storage.",
-    )
+__all__ = ["confluence_fetch_page"]
 
 
 def confluence_fetch_page(
-    cfg: ConfluenceFetchPageConfig,
     caller: ConfluenceCaller,
     page_id: Annotated[
         str,
@@ -48,12 +33,4 @@ def confluence_fetch_page(
     ] = True,
 ) -> str:
     """Скачивает одну Confluence-страницу и возвращает её контент строкой."""
-    request = ConfluencePageRequest(
-        op=ConfluencePageRequest.OP,
-        base_url=cfg.confluence.base_url or "",
-        profile=ConfluenceCaller.transport_of(cfg.confluence),
-        page_id=page_id,
-        body_format=cfg.body_format,
-        as_markdown=as_markdown,
-    )
-    return caller.page(request).text
+    return caller.page(page_id=page_id, as_markdown=as_markdown).text

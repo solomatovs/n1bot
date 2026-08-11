@@ -54,7 +54,7 @@ class WebTools:
         ) -> tuple[str, ToolResult]:
             """Скачивает URL и возвращает окно строк; total_lines — для пагинации."""
             try:
-                payload = web_fetch(
+                answer = web_fetch(
                     owner._cfg,
                     owner._web,
                     url=url,
@@ -64,7 +64,7 @@ class WebTools:
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
-            return pack_result(JsonResult(payload=payload))
+            return pack_result(JsonResult(payload=answer.model_dump(mode="json")))
 
         return web_fetch_page
 

@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage
 from boba.chainlit.chat.data.object_key import ObjectKey
 from boba.chainlit.infra.providers import build_llm_view
 from boba.sandbox import WORKSPACE_MOUNT
-from boba.sandbox.argv import build_bwrap_argv
+from boba.sandbox.argv import ChannelArgv, WrapArgsCodec
 from boba.sandbox.profile import BindSpec, SandboxProfile
 
 
@@ -17,8 +17,30 @@ def chainlit_context() -> None:
     pass
 
 
-def _rw_mounts(argv: list[str]) -> list[str]:
-    return [argv[i + 1] for i, a in enumerate(argv) if a in ("--bind", "--bind-try")]
+WRAP_ARGS_FD = 3
+REDIRECT_PREFIX = "exec >&4 2>&5"
+
+
+def _options(profile: SandboxProfile) -> tuple[str, ...]:
+    """Опции профиля так, как их прочтёт bwrap из канала wrap_args."""
+    built = ChannelArgv.build(
+        profile,
+        "true",
+        env={},
+        wrap_args_fd=WRAP_ARGS_FD,
+        redirect_prefix=REDIRECT_PREFIX,
+    )
+
+    return WrapArgsCodec.decode(built.wrap_args)
+
+
+def _rw_mounts(options: tuple[str, ...]) -> list[str]:
+    mounts: list[str] = []
+    for index, option in enumerate(options):
+        if option in ("--bind", "--bind-try"):
+            mounts.append(options[index + 1])
+
+    return mounts
 
 
 _PROFILE_BASE: dict[str, object] = {
@@ -59,24 +81,20 @@ class TestOnlyConfiguredMounts:
     WS = "/srv/workspace/7/thread-1"
 
     def test_no_rw_mounts_without_rw_binds(self) -> None:
-        argv = build_bwrap_argv(_profile(ro_binds=()), "true", env={})
-        assert _rw_mounts(argv) == []
+        assert _rw_mounts(_options(_profile(ro_binds=()))) == []
 
     def test_single_rw_mount_from_config(self) -> None:
         profile = _profile(ro_binds=(), rw_binds=(self.WS,))
-        assert _rw_mounts(build_bwrap_argv(profile, "true", env={})) == [self.WS]
+        assert _rw_mounts(_options(profile)) == [self.WS]
 
     def test_project_root_is_not_mounted(self) -> None:
         profile = _profile(ro_binds=(), rw_binds=(self.WS,))
-        argv = build_bwrap_argv(profile, "true", env={})
-        assert "/app/docker/compose/boba" not in _rw_mounts(argv)
+        assert "/app/docker/compose/boba" not in _rw_mounts(_options(profile))
 
     def test_rootfs_stays_read_only(self) -> None:
-        argv = build_bwrap_argv(
-            _profile(rootfs="/srv/rootfs", ro_binds=()), "true", env={},
-        )
-        i = argv.index("--ro-bind")
-        assert argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]
+        options = _options(_profile(rootfs="/srv/rootfs", ro_binds=()))
+        index = options.index("--ro-bind")
+        assert options[index + 1 : index + 3] == ("/srv/rootfs", "/")
 
 
 class TestBindSpec:

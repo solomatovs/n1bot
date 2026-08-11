@@ -11,7 +11,6 @@ from langchain_core.tools import BaseTool
 from pydantic import Field
 
 from boba.tool.kb.confluence._fetch_attachment import (
-    ConfluenceFetchAttachmentConfig,
     confluence_fetch_attachment,
 )
 from boba.tool.kb.confluence._ingest_cql import confluence_ingest_cql
@@ -61,9 +60,9 @@ class ConfluenceIngestTools:
         cfg: ConfluenceIngestConfig,
         launchers: LauncherFactory,
     ) -> None:
-        self._cfg = cfg
+        """Настройки секции живут в узлах реестра стадий, фасадам они не нужны."""
         self._ingest = ConfluenceIngestCaller("ingest", launchers)
-        self._caller = ConfluenceCaller("confluence", launchers)
+        self._caller = ConfluenceCaller("ingest", launchers)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -72,18 +71,6 @@ class ConfluenceIngestTools:
             self._ingest_spaces(),
             self._fetch_attachment(),
         ]
-
-    def _parser_cfg(
-        self, ocr_enabled: bool, num_workers: int, ocr_language: str
-    ) -> ConfluenceIngestConfig:
-        """Конфиг прогона: настройки парсера из вызова поверх [tool.ingest]."""
-        return self._cfg.model_copy(
-            update={
-                "ocr_enabled": ocr_enabled,
-                "num_workers": num_workers,
-                "ocr_language": ocr_language,
-            }
-        )
 
     @staticmethod
     def _failed(error: Exception) -> ErrorResult:
@@ -136,11 +123,13 @@ class ConfluenceIngestTools:
             """Индексирует явный список страниц Confluence по page_id."""
             try:
                 result = confluence_ingest_pages(
-                    owner._parser_cfg(ocr_enabled, num_workers, ocr_language),
                     owner._ingest,
                     page_ids=page_ids,
                     prune_missing=prune_missing,
                     force_update=force_update,
+                    ocr_enabled=ocr_enabled,
+                    num_workers=num_workers,
+                    ocr_language=ocr_language,
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
@@ -180,8 +169,12 @@ class ConfluenceIngestTools:
             """Индексирует страницы Confluence, найденные CQL-запросом."""
             try:
                 summary = confluence_ingest_cql(
-                    owner._parser_cfg(ocr_enabled, num_workers, ocr_language),
-                    owner._ingest, cql=cql, prune_missing=prune_missing
+                    owner._ingest,
+                    cql=cql,
+                    prune_missing=prune_missing,
+                    ocr_enabled=ocr_enabled,
+                    num_workers=num_workers,
+                    ocr_language=ocr_language,
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
@@ -222,11 +215,13 @@ class ConfluenceIngestTools:
             """Индексирует спейсы Confluence целиком."""
             try:
                 result = confluence_ingest_spaces(
-                    owner._parser_cfg(ocr_enabled, num_workers, ocr_language),
                     owner._ingest,
                     space_keys=space_keys,
                     prune_missing=prune_missing,
                     force_update=force_update,
+                    ocr_enabled=ocr_enabled,
+                    num_workers=num_workers,
+                    ocr_language=ocr_language,
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
@@ -236,11 +231,6 @@ class ConfluenceIngestTools:
 
     def _fetch_attachment(self) -> BaseTool:
         owner = self
-        cfg = ConfluenceFetchAttachmentConfig.model_validate(
-            owner._cfg.model_dump(
-                include=set(ConfluenceFetchAttachmentConfig.model_fields)
-            )
-        )
 
         @tool(response_format="content_and_artifact")
         def confluence_attachment(
@@ -263,16 +253,14 @@ class ConfluenceIngestTools:
             ] = "rus+eng",
         ) -> tuple[str, ToolResult]:
             """Читает вложение страницы Confluence и возвращает его текст."""
-            call_cfg = cfg.model_copy(
-                update={
-                    "ocr_enabled": ocr_enabled,
-                    "num_workers": num_workers,
-                    "ocr_language": ocr_language,
-                }
-            )
             try:
                 text = confluence_fetch_attachment(
-                    call_cfg, owner._caller, page_id=page_id, filename=filename
+                    owner._caller,
+                    page_id=page_id,
+                    filename=filename,
+                    ocr_enabled=ocr_enabled,
+                    num_workers=num_workers,
+                    ocr_language=ocr_language,
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))

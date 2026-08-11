@@ -1,71 +1,93 @@
-"""Контракт doc-payload'а: запросы на stdin, ответы маркерной строкой в stdout."""
+"""Контракт doc-узлов: запросы, настроечная часть узла, квитанции и ответы.
+
+Ошибки: pydantic.ValidationError — при разборе моделей контракта.
+"""
 
 from __future__ import annotations
 
-from typing import ClassVar
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.tool.doc.liteparse.protocol import ParseParams
+from boba.tool.doc.liteparse.protocol import ParseRequest
 
 __all__ = [
+    "DocOp",
     "DocOutlineAnswer",
     "DocOutlineRow",
     "DocOutlineTrailer",
     "DocPagesAnswer",
     "DocPagesRequest",
     "DocPagesTrailer",
-    "DocParams",
     "DocPathRequest",
+    "DocReadSettings",
     "DocSearchAnswer",
     "DocSearchRequest",
     "DocSearchRow",
+    "DocSearchSettings",
     "DocSearchTrailer",
+    "DocSettings",
 ]
 
 
-class DocParams(ParseParams):
-    """Настройки парсера плюс лимит выдачи, который есть только у doc."""
+class DocOp(StrEnum):
+    """Операции doc-payload'а; они же имена узлов реестра стадий."""
 
-    max_text_chars: int = Field(ge=1, description="Лимит длины текста в ответе.")
+    READ = "read_document"
+    OUTLINE = "document_outline"
+    SEARCH = "search_document"
 
 
-class DocRequest(BaseModel):
+class DocRequest(ParseRequest):
     """Общая часть запроса: что читаем и с какими настройками парсера."""
 
-    model_config = ConfigDict(extra="forbid")
-
-    op: str = Field(min_length=1, description="Операция payload'а.")
     path: str = Field(min_length=1, description="Путь к файлу внутри песочницы.")
-    params: DocParams = Field(description="Настройки парсера и лимит текста.")
 
 
 class DocPathRequest(DocRequest):
     """Запрос без дополнительных полей: document_outline."""
 
-    OUTLINE: ClassVar[str] = "document_outline"
-
 
 class DocPagesRequest(DocRequest):
     """Запрос текста выбранных страниц."""
 
-    OP: ClassVar[str] = "read_document"
-
     pages: str = Field(min_length=1, description="Страницы 1-based: '1-5,10'.")
+    max_text_chars: int = Field(ge=1, description="Лимит длины текста в ответе.")
 
 
 class DocSearchRequest(DocRequest):
     """Запрос поиска фразы с координатами совпадений."""
-
-    OP: ClassVar[str] = "search_document"
 
     query: str = Field(min_length=1, description="Искомая фраза.")
     context_chars: int = Field(ge=0, description="Контекст вокруг совпадения.")
     max_matches: int = Field(ge=1, description="Максимум совпадений в ответе.")
 
 
+class DocSettings(BaseModel):
+    """Часть запроса doc-узла, которую задаёт конфиг, а не вызывающий."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: str = Field(min_length=1)
+    max_pages: int = Field(ge=0)
+    tessdata_path: str = Field(min_length=1)
+
+
+class DocReadSettings(DocSettings):
+    """Настройки read_document: лимит длины текста берётся из конфига."""
+
+    max_text_chars: int = Field(ge=1)
+
+
+class DocSearchSettings(DocSettings):
+    """Настройки search_document: контекст и потолок числа совпадений."""
+
+    context_chars: int = Field(ge=0)
+    max_matches: int = Field(ge=1)
+
+
 class DocPagesTrailer(BaseModel):
-    """Итог чтения страниц: текст ушёл кадрами, здесь признаки и номера страниц."""
+    """Итог чтения страниц: текст ушёл каналом данных, здесь признаки и номера."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -74,7 +96,7 @@ class DocPagesTrailer(BaseModel):
 
 
 class DocOutlineTrailer(BaseModel):
-    """Итог карты документа: строки ушли кадрами."""
+    """Итог карты документа: строки ушли каналом данных."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -82,7 +104,7 @@ class DocOutlineTrailer(BaseModel):
 
 
 class DocSearchTrailer(BaseModel):
-    """Итог поиска: совпадения ушли кадрами."""
+    """Итог поиска: совпадения ушли каналом данных."""
 
     model_config = ConfigDict(extra="forbid")
 

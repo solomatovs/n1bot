@@ -1,8 +1,7 @@
 """Pure builder: SandboxProfile + command -> argv для запуска bwrap.
 
-Старый путь (`build_bwrap_argv`) кладёт профиль в argv целиком; канальный
-(`ChannelArgv.build`) уводит профиль nul-separated в канал wrap_args
-(`--args FD`), в argv остаётся только команда.
+Профиль уезжает nul-separated в канал wrap_args (`--args FD`), в argv остаётся
+только команда: он не виден в `ps` и не упирается в MAX_ARG_STRLEN.
 
 Ошибки: LauncherError — bwrap отсутствует в PATH или нарушен контракт сборки.
 """
@@ -22,7 +21,6 @@ __all__ = [
     "WORKSPACE_MOUNT",
     "ChannelArgv",
     "WrapArgsCodec",
-    "build_bwrap_argv",
 ]
 
 
@@ -49,6 +47,20 @@ class WrapArgsCodec:
             chunks.append(option.encode(cls.ENCODING))
 
         return cls.SEPARATOR.join(chunks) + cls.SEPARATOR
+
+    @classmethod
+    def decode(cls, data: bytes) -> tuple[str, ...]:
+        """Обратный разбор канала: опции в порядке подачи, хвостовой nul пуст."""
+        if not data:
+            return ()
+
+        options: list[str] = []
+        for chunk in data.split(cls.SEPARATOR):
+            if not chunk:
+                continue
+            options.append(chunk.decode(cls.ENCODING))
+
+        return tuple(options)
 
 
 @dataclass(frozen=True)
@@ -98,23 +110,6 @@ class ChannelArgv:
         )
 
         return cls(argv=argv, wrap_args=WrapArgsCodec.encode(options))
-
-
-def build_bwrap_argv(
-    profile: SandboxProfile,
-    command: str,
-    *,
-    env: Mapping[str, str],
-    nested: bool = False,
-) -> list[str]:
-    """nested — запуск внутри userns лаунчера образов: свой userns недоступен."""
-    argv = [_bwrap_path()]
-    argv += _profile_options(profile, env=env, nested=nested)
-
-    guarded = f"ulimit -u {profile.max_processes} || exit 1; {command}"
-    argv += ["--", "/bin/bash", "-c", guarded]
-
-    return argv
 
 
 def _bwrap_path() -> str:

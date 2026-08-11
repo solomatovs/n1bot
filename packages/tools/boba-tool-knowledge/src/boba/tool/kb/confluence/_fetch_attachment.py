@@ -2,34 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated
 
-from pydantic import ConfigDict, Field
+from pydantic import Field
 
-from boba.tool.doc.liteparse import SandboxParserConfig
 from boba.tool.kb.confluence.caller import ConfluenceCaller
-from boba.tool.kb.confluence.protocol import (
-    ConfluenceAttachmentRequest,
-)
-from boba.transport.http import HttpProfile
 
-__all__ = ["ConfluenceFetchAttachmentConfig", "confluence_fetch_attachment"]
+__all__ = ["confluence_fetch_attachment"]
 
 
-class ConfluenceFetchAttachmentConfig(SandboxParserConfig):
-    """Конфиг tool'а confluence_fetch_attachment: соединение плюс парсер."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    confluence: HttpProfile
-    body_format: Literal["view", "export_view", "storage"] = Field(
-        default="view",
-        description="Confluence body-формат: view/export_view/storage.",
-    )
-
-
-def confluence_fetch_attachment(
-    cfg: ConfluenceFetchAttachmentConfig,
+def confluence_fetch_attachment(  # noqa: PLR0913 — настройки OCR независимы
     caller: ConfluenceCaller,
     page_id: Annotated[
         str,
@@ -51,15 +33,19 @@ def confluence_fetch_attachment(
             ),
         ),
     ],
+    *,
+    ocr_enabled: Annotated[bool, Field(description="Распознавать текст по картинкам.")],
+    num_workers: Annotated[int, Field(ge=1, description="Параллелизм OCR.")],
+    ocr_language: Annotated[
+        str,
+        Field(min_length=1, description="Язык OCR в формате Tesseract."),
+    ],
 ) -> str:
     """Скачивает вложение Confluence по page_id+filename и возвращает его текст."""
-    request = ConfluenceAttachmentRequest(
-        op=ConfluenceAttachmentRequest.OP,
-        base_url=cfg.confluence.base_url or "",
-        profile=ConfluenceCaller.transport_of(cfg.confluence),
+    return caller.attachment(
         page_id=page_id,
-        body_format=cfg.body_format,
         filename=filename,
-        params=cfg.parse_params(),
+        ocr_enabled=ocr_enabled,
+        num_workers=num_workers,
+        ocr_language=ocr_language,
     )
-    return caller.attachment(request)

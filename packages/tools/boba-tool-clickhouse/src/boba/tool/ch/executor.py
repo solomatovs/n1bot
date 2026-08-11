@@ -117,20 +117,26 @@ class ChExecutor:
         query: str,
         *,
         connection_name: str,
-        row_limit: int,
         params: Mapping[str, Any] | None = None,
     ) -> ChResult:
-        effective_limit = min(max(row_limit, 1), self._cfg.max_rows)
+        """Запрос с потолком строк из конфига; профиль разрешает обогатитель узла."""
+        # whitelist проверяется здесь: имя вне списка — отказ фасада, не стадии
+        self.connection_of(connection_name)
+
         collector = RowCollector(
             max_chars=self._cfg.max_bytes,
-            limit_rows=effective_limit,
+            limit_rows=self._cfg.max_rows,
         )
+
+        bound = params
+        if bound is None:
+            bound = {}
+
         try:
             trailer = self._caller.query(
-                connection=self.connection_of(connection_name),
+                connection_name=connection_name,
                 sql=query,
-                params=params or {},
-                row_limit=effective_limit,
+                params=bound,
                 sink=collector,
             )
         except LauncherError as e:

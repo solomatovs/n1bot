@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from boba.krb import KeytabConfig
+from boba.toolkit.sql import ConnectionProfile
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]
 
@@ -64,7 +65,7 @@ class ClickHouseSettingsConfig(BaseModel):
         return settings
 
 
-class ClickHouseConfig(BaseModel):
+class ClickHouseConfig(ConnectionProfile):
     """Параметры clickhouse_connect.AsyncClient (HTTP-интерфейс) + настройки сессии."""
 
     model_config = ConfigDict(extra="ignore")

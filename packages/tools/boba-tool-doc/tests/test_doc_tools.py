@@ -1,32 +1,19 @@
-"""Doc-инструменты: payload в песочнице и разбор его ответа по контракту."""
+"""Doc-узлы: payload на настоящих каналах, обогащение args и фасады для LLM."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import subprocess
-import sys
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar, get_origin
+from typing import Any, ClassVar
 
 import pytest
-from pydantic import BaseModel
+from local_stage import LocalStageLauncher
 
-from boba.sandbox import SandboxPayload
 from boba.tool.doc import DocToolsConfig, build_doc_tools
 from boba.tool.doc.engine import DocEngine
-from boba.tool.doc.protocol import (
-    DocOutlineRow,
-    DocOutlineTrailer,
-    DocPagesTrailer,
-    DocSearchRow,
-    DocSearchTrailer,
-)
-from boba.toolkit.launcher import ChunkSink
-
-_REPO = Path(__file__).resolve().parents[4]
-_TESSDATA = _REPO / "build" / "src" / "sandbox" / "third" / "tessdata"
+from boba.tool.doc.protocol import DocOp
+from boba.toolkit.launcher import LauncherError, PayloadFailureError, ToolLauncher
+from boba.toolkit.workflow import WorkflowError
 
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
@@ -46,120 +33,23 @@ endstream endobj
 trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
-_PROFILE: dict[str, Any] = {
-    "rootfs": "",
-    "ro_binds": ("/usr", "/bin", "/sbin", "/lib", "/lib64"),
-    "rw_binds": (),
-    "rw_images": (),
-    "image_template": "",
-    "launcher": {
-        "mount_wait_sec": 10.0,
-        "mount_poll_sec": 0.05,
-        "shutdown_wait_sec": 5.0,
-        "lock_wait_sec": 10.0,
-        "copy_chunk_bytes": 1 << 20,
-    },
-    "tmpfs": ("/tmp:64M",),  # noqa: S108
-    "network": False,
-    "env_set": {"PATH": "/usr/bin:/bin"},
-    "timeout_sec": 30,
-    "max_memory_bytes": 512 * 1024 * 1024,
-    "max_cpu_sec": 30,
-    "max_file_size_bytes": 64 * 1024 * 1024,
-    "max_open_files": 1024,
-    "max_processes": 256,
-    "max_output_bytes": 256 * 1024,
-    "cgroup_base": "",
-    "oom_score_adj": 0,
-    "cwd": "/tmp",  # noqa: S108
-}
+_TESSDATA = "/usr/share/tessdata"
 
 
-PAYLOAD_MODULE = "boba.tool.doc.payload"
+class Launchers:
+    """Фабрика порта: один локальный исполнитель на все метки инструментов."""
 
+    def __init__(self, cfg: DocToolsConfig) -> None:
+        self.launcher = LocalStageLauncher(dict(DocEngine.stages(cfg)))
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
+    def __call__(self, tool: str, /) -> ToolLauncher:
+        return self.launcher
 
 
 def _config(**kw: Any) -> DocToolsConfig:
-    fields: dict[str, Any] = {
-        "tessdata_path": str(_TESSDATA),
-        "sandbox": {
-            "profile": _PROFILE,
-            "override": {},
-        },
-    }
+    fields: dict[str, Any] = {"tessdata_path": _TESSDATA}
     fields.update(kw)
     return DocToolsConfig.model_validate(fields)
-
-
-class _Caller:
-    """Подменяет песочницу: тот же контракт, но payload запускается локально."""
-
-    def __init__(self, pdf: Path) -> None:
-        self.pdf = pdf
-        self.requests: list[dict[str, Any]] = []
-
-    def call_stream(
-        self,
-        entry: tuple[str, ...],
-        request: BaseModel,
-        sink: ChunkSink,
-        trailer: type[BaseModel],
-    ) -> Any:
-        body = json.loads(request.model_dump_json())
-        self.requests.append(json.loads(request.model_dump_json()))
-        body["path"] = str(self.pdf)
-        run = _PayloadRun(json.dumps(body))
-        if run.returncode != 0:
-            raise RuntimeError(run.stderr)
-        for chunk in run.chunks:
-            sink.write(chunk)
-        if run.trailer is None:
-            msg = f"payload не напечатал трейлер: {run.stdout!r}"
-            raise RuntimeError(msg)
-        return trailer.model_validate(run.trailer)
-
-
-class _PayloadRun:
-    """Локальный запуск payload'а: кадры и трейлер по тому же контракту."""
-
-    def __init__(self, stdin: str) -> None:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.returncode = result.returncode
-        self.stderr = result.stderr
-        self.stdout = result.stdout
-        self.chunks: list[str] = []
-        self.trailer: dict[str, Any] | None = None
-        self.failure: dict[str, Any] | None = None
-        for line in result.stdout.splitlines():
-            if line.startswith(SandboxPayload.CHUNK_MARKER):
-                body = line[len(SandboxPayload.CHUNK_MARKER) :]
-                self.chunks.append(json.loads(body))
-                continue
-            if line.startswith(SandboxPayload.ERROR_MARKER):
-                self.failure = json.loads(line[len(SandboxPayload.ERROR_MARKER) :])
-                continue
-            if line.startswith(SandboxPayload.MARKER):
-                self.trailer = json.loads(line[len(SandboxPayload.MARKER) :])
-
-    @property
-    def text(self) -> str:
-        return "".join(self.chunks)
-
-    def rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for chunk in self.chunks:
-            rows.append(json.loads(chunk))
-        return rows
 
 
 @pytest.fixture
@@ -169,353 +59,316 @@ def pdf(tmp_path: Path) -> Path:
     return path
 
 
-class _Recorder:
-    """Записывает запрос и не исполняет payload: важно что послали, а не ответ."""
+class TestNodeContract:
+    """Узел реально парсит документ и отвечает по контракту каналов."""
 
-    def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
-
-    def call_stream(
-        self,
-        entry: tuple[str, ...],
-        request: BaseModel,
-        sink: ChunkSink,
-        trailer: type[BaseModel],
-    ) -> Any:
-        self.requests.append(json.loads(request.model_dump_json()))
-        return trailer.model_validate(self._empty(trailer))
-
-    @staticmethod
-    def _empty(trailer: type[BaseModel]) -> dict[str, Any]:
-        """Пустой трейлер по схеме: важно, что послали, а не что вернулось."""
-        zeros: dict[Any, Any] = {int: 0, bool: False, str: "", tuple: ()}
-        fields: dict[str, Any] = {}
-        for name, field in trailer.model_fields.items():
-            annotation = field.annotation
-            origin = get_origin(annotation)
-            if origin is not None:
-                annotation = origin
-            fields[name] = zeros[annotation]
-        return fields
-
-
-_LAUNCHER: dict[str, Any] = {}
-
-
-class _Proxy:
-    """Исполнитель разрешается в момент вызова: фикстура ставит его позже."""
-
-    def call_text(self, command: str, stdin: str) -> Any:
-        return _LAUNCHER["current"].call_text(command, stdin)
-
-    def call_stream(self, entry: Any, request: Any, sink: Any, trailer: Any) -> Any:
-        return _LAUNCHER["current"].call_stream(entry, request, sink, trailer)
-
-
-def launchers(_tool: str) -> Any:
-    """Фабрика-заглушка: исполнитель берётся из фикстуры при вызове."""
-    return _Proxy()
-
-
-@pytest.fixture
-def payload_calls() -> Iterator[list[dict[str, Any]]]:
-    """Исполнитель подменён: запросы инструмента складываются сюда."""
-    recorder = _Recorder()
-    _LAUNCHER["current"] = recorder
-    yield recorder.requests
-    _LAUNCHER.clear()
-
-
-@pytest.fixture
-def payload_runs(pdf: Path) -> Iterator[list[dict[str, Any]]]:
-    """Исполнитель запускает payload локально: ответ настоящий."""
-    caller = _Caller(pdf)
-    _LAUNCHER["current"] = caller
-    yield caller.requests
-    _LAUNCHER.clear()
-
-
-class TestPayloadContract:
-    """Payload реально парсит документ и отвечает по контракту."""
-
-    @staticmethod
-    def _run(request: dict[str, Any]) -> _PayloadRun:
-        run = _PayloadRun(json.dumps(request))
-        assert run.returncode == 0, run.stderr
-        assert run.trailer is not None
-        return run
-
-    @staticmethod
-    def _request(pdf: Path, op: str, **kw: Any) -> dict[str, Any]:
-        request: dict[str, Any] = {
-            "op": op,
-            "path": str(pdf),
-            "params": {
-                "ocr_enabled": False,
-                "ocr_language": "eng",
-                "max_pages": 0,
-                "tessdata_path": "/usr/share/tessdata",
-                "num_workers": 1,
-                "max_text_chars": 200_000,
-            },
-        }
-        request.update(kw)
-        return request
+    OCR: ClassVar[dict[str, Any]] = {
+        "ocr_enabled": False,
+        "num_workers": 1,
+        "ocr_language": "eng",
+    }
 
     def test_read_document_returns_all_pages(self, pdf: Path) -> None:
-        run = self._run(self._request(pdf, "read_document", pages="1-2"))
-        trailer = DocPagesTrailer.model_validate(run.trailer)
-        assert trailer.pages == (1, 2)
-        assert "Alpha page one" in run.text
-        assert "Beta page two" in run.text
-        assert trailer.truncated is False
+        cfg = _config()
+        engine = DocEngine(cfg, Launchers(cfg))
+
+        answer = asyncio.run(engine.read_document(str(pdf), "1-2", **self.OCR))
+
+        assert answer.pages == (1, 2)
+        assert "Alpha page one" in answer.text
+        assert "Beta page two" in answer.text
+        assert answer.truncated is False
 
     def test_read_document_selects_subset(self, pdf: Path) -> None:
-        run = self._run(self._request(pdf, "read_document", pages="2"))
-        trailer = DocPagesTrailer.model_validate(run.trailer)
-        assert trailer.pages == (2,)
-        assert "Beta page two" in run.text
-        assert "page one" not in run.text
+        cfg = _config()
+        engine = DocEngine(cfg, Launchers(cfg))
+
+        answer = asyncio.run(engine.read_document(str(pdf), "2", **self.OCR))
+
+        assert answer.pages == (2,)
+        assert "Beta page two" in answer.text
+        assert "page one" not in answer.text
 
     def test_read_document_clips_text(self, pdf: Path) -> None:
-        request = self._request(pdf, "read_document", pages="1-2")
-        request["params"]["max_text_chars"] = 5
-        run = self._run(request)
-        assert DocPagesTrailer.model_validate(run.trailer).truncated is True
-        assert len(run.text) == 5
+        cfg = _config(max_text_chars=5)
+        engine = DocEngine(cfg, Launchers(cfg))
+
+        answer = asyncio.run(engine.read_document(str(pdf), "1-2", **self.OCR))
+
+        assert answer.truncated is True
+        assert len(answer.text) == 5
 
     def test_outline_has_row_per_page(self, pdf: Path) -> None:
-        run = self._run(self._request(pdf, "document_outline"))
-        assert DocOutlineTrailer.model_validate(run.trailer).num_pages == 2
-        rows: list[DocOutlineRow] = []
-        for raw in run.rows():
-            rows.append(DocOutlineRow.model_validate(raw))
-        assert [row.page for row in rows] == [1, 2]
-        assert rows[0].chars > 0
+        cfg = _config()
+        engine = DocEngine(cfg, Launchers(cfg))
+
+        answer = asyncio.run(engine.outline(str(pdf), **self.OCR))
+
+        assert answer.num_pages == 2
+        assert [row.page for row in answer.rows] == [1, 2]
+        assert answer.rows[0].chars > 0
 
     def test_search_returns_coordinates_and_snippet(self, pdf: Path) -> None:
-        run = self._run(self._request(pdf, "search_document", query="Alpha",
-                                      context_chars=5, max_matches=50))
-        rows: list[DocSearchRow] = []
-        for raw in run.rows():
-            rows.append(DocSearchRow.model_validate(raw))
-        assert [row.page for row in rows] == [1, 2]
-        assert "Alpha" in rows[0].snippet
-        assert rows[0].height > 0
-        assert DocSearchTrailer.model_validate(run.trailer).limit_reached is False
+        cfg = _config(search_context_chars=5)
+        engine = DocEngine(cfg, Launchers(cfg))
+
+        answer = asyncio.run(engine.search(str(pdf), "Alpha", **self.OCR))
+
+        assert [row.page for row in answer.rows] == [1, 2]
+        assert "Alpha" in answer.rows[0].snippet
+        assert answer.rows[0].height > 0
+        assert answer.limit_reached is False
 
     def test_search_reports_limit(self, pdf: Path) -> None:
-        run = self._run(self._request(pdf, "search_document", query="Alpha",
-                                      context_chars=5, max_matches=1))
-        assert len(run.rows()) == 1
-        assert DocSearchTrailer.model_validate(run.trailer).limit_reached is True
+        cfg = _config(search_context_chars=5, search_max_matches=1)
+        engine = DocEngine(cfg, Launchers(cfg))
 
-    UNREADABLE_OPS: ClassVar[tuple[tuple[str, dict[str, Any]], ...]] = (
-        ("read_document", {"pages": "1"}),
-        ("document_outline", {}),
-        ("search_document", {"query": "x", "context_chars": 5, "max_matches": 5}),
+        answer = asyncio.run(engine.search(str(pdf), "Alpha", **self.OCR))
+
+        assert len(answer.rows) == 1
+        assert answer.limit_reached is True
+
+    def test_ndjson_rows_travel_as_lines(self, pdf: Path) -> None:
+        """Продукт узла — NDJSON: одна запись на строку канала данных."""
+        cfg = _config()
+        launchers = Launchers(cfg)
+        engine = DocEngine(cfg, launchers)
+
+        asyncio.run(engine.outline(str(pdf), **self.OCR))
+
+        lines = launchers.launcher.payloads[0].splitlines()
+        assert len(lines) == 2
+
+    def test_text_travels_without_protocol(self, pdf: Path) -> None:
+        """Продукт read_document — сырой текст: разметки в канале нет."""
+        cfg = _config()
+        launchers = Launchers(cfg)
+        engine = DocEngine(cfg, launchers)
+
+        asyncio.run(engine.read_document(str(pdf), "1", **self.OCR))
+
+        payload = launchers.launcher.payloads[0].decode("utf-8")
+        assert payload.startswith("Alpha page one")
+
+    UNREADABLE: ClassVar[tuple[str, ...]] = (
+        DocOp.READ,
+        DocOp.OUTLINE,
+        DocOp.SEARCH,
     )
 
-    @pytest.mark.parametrize(("op", "extra"), UNREADABLE_OPS)
+    @pytest.mark.parametrize("op", UNREADABLE)
     def test_unsupported_format_is_a_declared_failure(
-        self, tmp_path: Path, op: str, extra: dict[str, Any]
+        self, tmp_path: Path, op: str
     ) -> None:
-        """Формат, который liteparse не читает: понятный кадр, не трейсбек.
+        """Формат, который liteparse не читает: конверт отказа, не трейсбек.
 
         Нативный парсер (search_document) сообщает об этом иначе, чем публичный,
         поэтому проверяются все операции разом.
         """
         doc = tmp_path / "notes.md"
         doc.write_text("# Заметки", encoding="utf-8")
-        run = _PayloadRun(json.dumps(self._request(doc, op, **extra)))
-        assert run.returncode != 0
-        assert run.failure is not None
-        assert run.failure["kind"] == "document_unreadable"
-        assert ".md" in run.failure["message"]
-        assert "Traceback" not in run.stderr
+        cfg = _config()
+        engine = DocEngine(cfg, Launchers(cfg))
 
-    def test_broken_request_is_a_declared_failure(self, pdf: Path) -> None:
-        """Запрос не по контракту: пользователь видит факт, а не стек."""
-        request = self._request(pdf, "read_document", pages="1")
-        request["params"]["max_text_chars"] = 0
-        run = _PayloadRun(json.dumps(request))
-        assert run.returncode != 0
-        assert run.failure is not None
-        assert run.failure["kind"] == "invalid_request"
-        assert "Traceback" not in run.stderr
+        with pytest.raises(PayloadFailureError) as failure:
+            asyncio.run(self._call(engine, op, str(doc)))
 
-    def test_unknown_op_fails(self, pdf: Path) -> None:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=json.dumps(self._request(pdf, "нет-такой-op")),
-            capture_output=True,
-            text=True,
-            check=False,
+        assert failure.value.kind == "document_unreadable"
+        assert ".md" in str(failure.value)
+
+    def test_broken_args_are_rejected_before_the_stage(self, pdf: Path) -> None:
+        """Аргумент не по модели запроса: отказ на валидации, без запуска."""
+        cfg = _config()
+        engine = DocEngine(cfg, Launchers(cfg))
+
+        with pytest.raises(WorkflowError, match="pages"):
+            asyncio.run(engine.read_document(str(pdf), "", **self.OCR))
+
+    def test_missing_file_has_no_receipt(self, tmp_path: Path) -> None:
+        """Отсутствие файла — не объявленный отказ: стадия падает трейсбеком."""
+        cfg = _config()
+        engine = DocEngine(cfg, Launchers(cfg))
+
+        with pytest.raises(LauncherError):
+            asyncio.run(
+                engine.read_document(str(tmp_path / "нет.pdf"), "1", **self.OCR)
+            )
+
+    @staticmethod
+    async def _call(engine: DocEngine, op: str, path: str) -> Any:
+        if op == DocOp.READ:
+            return await engine.read_document(
+                path, "1", ocr_enabled=False, num_workers=1, ocr_language="eng"
+            )
+        if op == DocOp.SEARCH:
+            return await engine.search(
+                path, "x", ocr_enabled=False, num_workers=1, ocr_language="eng"
+            )
+        return await engine.outline(
+            path, ocr_enabled=False, num_workers=1, ocr_language="eng"
         )
-        assert result.returncode != 0
-        assert "unknown document op" in result.stderr
-
-    def test_missing_file_fails(self, tmp_path: Path) -> None:
-        result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", PAYLOAD_MODULE],
-            input=json.dumps(
-                self._request(tmp_path / "нет.pdf", "read_document", pages="1")
-            ),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert result.stderr.strip()
 
 
-class TestEngineRequests:
-    """Инструмент шлёт payload'у ровно то, что задано конфигом и LLM."""
+class TestStageArgs:
+    """Обогатитель узла собирает запрос из args вызова и настроек конфига."""
 
-    def test_parser_params_travel_in_request(
-        self, payload_calls: list[dict[str, Any]]
-    ) -> None:
-        engine = DocEngine(_config(ocr_enabled=True), launchers)
+    @staticmethod
+    def _requests(cfg: DocToolsConfig) -> tuple[Launchers, DocEngine]:
+        launchers = Launchers(cfg)
+        return launchers, DocEngine(cfg, launchers)
+
+    def test_parser_params_travel_in_request(self, pdf: Path) -> None:
+        launchers, engine = self._requests(_config(ocr_enabled=True))
+
         asyncio.run(
             engine.read_document(
-                "/workspace/t1/upload/doc.pdf", pages="1-2", ocr_enabled=False,
-                num_workers=3, ocr_language="rus"
+                str(pdf), "1-2", ocr_enabled=False, num_workers=3, ocr_language="rus"
             )
         )
-        params = payload_calls[0]["params"]
-        assert params["ocr_enabled"] is False
-        assert params["num_workers"] == 3
-        assert params["ocr_language"] == "rus"
 
-    def test_num_workers_defaults_to_config(
-        self, payload_calls: list[dict[str, Any]]
-    ) -> None:
-        """Настройка, не заданная вызовом, падает на значение из конфига."""
-        engine = DocEngine(_config(num_workers=2), launchers)
+        request = launchers.launcher.requests[0]
+        assert request["ocr_enabled"] is False
+        assert request["num_workers"] == 3
+        assert request["ocr_language"] == "rus"
+
+    def test_config_limits_beat_call_args(self, pdf: Path) -> None:
+        """Лимиты и каталог моделей задаёт конфиг: вызов их не переопределяет."""
+        launchers, engine = self._requests(_config(max_pages=7, max_text_chars=99))
+
         asyncio.run(
             engine.read_document(
-                "/workspace/doc.pdf", pages="1", ocr_enabled=False, num_workers=2,
-                ocr_language="rus+eng"
+                str(pdf), "1", ocr_enabled=False, num_workers=1, ocr_language="eng"
             )
         )
-        assert payload_calls[0]["params"]["num_workers"] == 2
 
-    def test_ocr_language_from_llm_beats_config(
-        self, payload_calls: list[dict[str, Any]]
-    ) -> None:
-        """Язык OCR передаётся вызовом и перекрывает конфиг-значение."""
-        engine = DocEngine(_config(ocr_language="eng"), launchers)
+        request = launchers.launcher.requests[0]
+        assert request["max_pages"] == 7
+        assert request["max_text_chars"] == 99
+        assert request["tessdata_path"] == _TESSDATA
+
+    def test_pages_and_op_travel_in_request(self, pdf: Path) -> None:
+        launchers, engine = self._requests(_config())
+
         asyncio.run(
             engine.read_document(
-                "/workspace/doc.pdf", pages="1", ocr_enabled=True,
-                num_workers=1, ocr_language="rus"
+                str(pdf), "2-3", ocr_enabled=False, num_workers=1, ocr_language="eng"
             )
         )
-        assert payload_calls[0]["params"]["ocr_language"] == "rus"
 
-    def test_pages_travel_in_request(self, payload_calls: list[dict[str, Any]]) -> None:
-        engine = DocEngine(_config(), launchers)
-        asyncio.run(
-            engine.read_document(
-                "/workspace/t1/upload/doc.pdf", pages="2-3", ocr_enabled=False,
-                num_workers=1, ocr_language="rus+eng"
-            )
-        )
-        assert payload_calls[0]["op"] == "read_document"
-        assert payload_calls[0]["pages"] == "2-3"
+        request = launchers.launcher.requests[0]
+        assert request["op"] == DocOp.READ
+        assert request["pages"] == "2-3"
 
-    def test_path_from_llm_goes_as_is(
-        self, payload_calls: list[dict[str, Any]]
-    ) -> None:
+    def test_path_from_llm_goes_as_is(self, pdf: Path) -> None:
         """Приложение путь не переписывает: его разрешает песочница."""
-        engine = DocEngine(_config(), launchers)
+        launchers, engine = self._requests(_config())
+
         asyncio.run(
-            engine.read_document(
-                "/workspace/t1/upload/doc.pdf", pages="1", ocr_enabled=False,
-                num_workers=1, ocr_language="rus+eng"
+            engine.outline(
+                str(pdf), ocr_enabled=False, num_workers=1, ocr_language="eng"
             )
         )
-        assert payload_calls[0]["path"] == "/workspace/t1/upload/doc.pdf"
 
-    def test_search_limits_come_from_config(
-        self, payload_calls: list[dict[str, Any]]
-    ) -> None:
-        engine = DocEngine(
-            _config(search_context_chars=7, search_max_matches=3), launchers
+        request = launchers.launcher.requests[0]
+        assert request["path"] == str(pdf)
+        assert request["op"] == DocOp.OUTLINE
+
+    def test_search_limits_come_from_config(self, pdf: Path) -> None:
+        launchers, engine = self._requests(
+            _config(search_context_chars=7, search_max_matches=3)
         )
+
         asyncio.run(
             engine.search(
-                "/workspace/doc.pdf", "Alpha", ocr_enabled=False,
-                num_workers=1, ocr_language="rus+eng"
+                str(pdf), "Alpha", ocr_enabled=False, num_workers=1, ocr_language="eng"
             )
         )
-        assert payload_calls[0]["context_chars"] == 7
-        assert payload_calls[0]["max_matches"] == 3
 
-    def test_op_matches_method(self, payload_calls: list[dict[str, Any]]) -> None:
-        engine = DocEngine(_config(), launchers)
-        asyncio.run(engine.outline(
-            "/workspace/doc.pdf", ocr_enabled=False,
-            num_workers=1, ocr_language="rus+eng"
-        ))
-        assert payload_calls[0]["op"] == "document_outline"
+        request = launchers.launcher.requests[0]
+        assert request["context_chars"] == 7
+        assert request["max_matches"] == 3
+
+
+class TestStages:
+    """Реестр узлов пакета: контракты потоков и модели запросов."""
+
+    def test_registry_names(self) -> None:
+        nodes = DocEngine.stages(_config())
+        assert sorted(nodes) == [
+            DocOp.OUTLINE,
+            DocOp.READ,
+            DocOp.SEARCH,
+        ]
+
+    def test_nodes_read_nothing_from_stdin(self) -> None:
+        """Источник данных у doc-узла — файл, поэтому входа у него нет."""
+        for node in DocEngine.stages(_config()).values():
+            assert node.contract.accepts == frozenset()
+
+    def test_stream_formats(self) -> None:
+        nodes = DocEngine.stages(_config())
+        assert nodes[DocOp.READ].contract.out == "text/plain"
+        assert nodes[DocOp.OUTLINE].contract.out == "application/x-ndjson"
+        assert nodes[DocOp.SEARCH].contract.out == "application/x-ndjson"
 
 
 class TestTools:
+    """Фасады для LLM: имена, схема аргументов и сборка результата."""
+
     @staticmethod
     def _schema(tool: Any) -> dict[str, Any]:
         """model_json_schema через Any: langchain типизирует схему как v1-модель."""
         return tool.get_input_schema().model_json_schema()
 
+    @staticmethod
+    def _tools(cfg: DocToolsConfig) -> dict[str, Any]:
+        built = build_doc_tools(cfg, Launchers(cfg))
+        return {tool.name: tool for tool in built}
+
     def test_all_tools_registered(self) -> None:
-        names = [t.name for t in build_doc_tools(_config(), launchers)]
-        assert names == [
+        cfg = _config()
+        assert list(self._tools(cfg)) == [
             "read_document",
             "document_outline",
             "search_document",
         ]
 
     def test_read_document_exposes_pages_to_llm(self) -> None:
-        tools = {t.name: t for t in build_doc_tools(_config(), launchers)}
-        schema = self._schema(tools["read_document"])
+        schema = self._schema(self._tools(_config())["read_document"])
         props = schema["properties"]
+
         assert "pages" in props
         assert "pages" in schema["required"]
         assert "path" in schema["required"]
 
-    @pytest.mark.parametrize("name", [
-        "read_document",
-        "document_outline",
-        "search_document",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        ["read_document", "document_outline", "search_document"],
+    )
     def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:
-        tools = {t.name: t for t in build_doc_tools(_config(), launchers)}
-        schema = self._schema(tools[name])
+        schema = self._schema(self._tools(_config())[name])
         props = schema["properties"]
-        assert "ocr_enabled" in props
+
         assert props["ocr_enabled"]["type"] == "boolean"
         assert props["ocr_enabled"]["default"] is False
-        assert "num_workers" in props
         assert props["num_workers"]["maximum"] == 4
         assert props["num_workers"]["default"] == 1
-        assert "ocr_language" in props
         assert props["ocr_language"]["default"] == "rus+eng"
+
         for control in ("ocr_enabled", "num_workers", "ocr_language"):
             assert control not in schema["required"]
 
     @staticmethod
-    def _read(cfg: DocToolsConfig) -> Any:
-        tools = {t.name: t for t in build_doc_tools(cfg, launchers)}
+    def _read(cfg: DocToolsConfig, pdf: Path, **args: Any) -> Any:
+        call: dict[str, Any] = {"path": str(pdf), "pages": "1-2"}
+        call.update(args)
+
+        tools = {tool.name: tool for tool in build_doc_tools(cfg, Launchers(cfg))}
+
         return asyncio.run(
             tools["read_document"].ainvoke(
                 {
-                    "args": {
-                        "path": "/workspace/doc.pdf",
-                        "pages": "1-2",
-                        "ocr_enabled": False,
-                        "num_workers": 1,
-                        "ocr_language": "rus+eng",
-                    },
+                    "args": call,
                     "id": "call-doc",
                     "name": "read_document",
                     "type": "tool_call",
@@ -523,61 +376,35 @@ class TestTools:
             )
         )
 
-    def test_text_carries_metadata(
-        self, payload_runs: list[dict[str, Any]]
-    ) -> None:
-        message = self._read(_config())
+    def test_text_carries_metadata(self, pdf: Path) -> None:
+        message = self._read(_config(), pdf)
+
         assert "Alpha page one" in message.content
         assert message.artifact.metadata["pages"] == "1,2"
 
-    def test_truncation_is_marked_for_llm(
-        self, payload_runs: list[dict[str, Any]]
-    ) -> None:
-        message = self._read(_config(max_text_chars=5))
+    def test_truncation_is_marked_for_llm(self, pdf: Path) -> None:
+        message = self._read(_config(max_text_chars=5), pdf)
+
         assert "[обрезано до 5 символов]" in message.content
 
-    def test_llm_ocr_controls_reach_payload(
-        self, payload_runs: list[dict[str, Any]]
-    ) -> None:
-        built = build_doc_tools(_config(ocr_enabled=True), launchers)
-        tools = {t.name: t for t in built}
-        asyncio.run(
-            tools["read_document"].ainvoke(
-                {
-                    "args": {
-                        "path": "/workspace/doc.pdf",
-                        "pages": "1-2",
-                        "ocr_enabled": True,
-                        "num_workers": 2,
-                        "ocr_language": "rus",
-                    },
-                    "id": "call-doc",
-                    "name": "read_document",
-                    "type": "tool_call",
-                }
-            )
-        )
-        params = payload_runs[0]["params"]
-        assert params["ocr_enabled"] is True
-        assert params["num_workers"] == 2
-        assert params["ocr_language"] == "rus"
+    def test_facade_defaults_reach_the_node(self, pdf: Path) -> None:
+        """Пропущенные вызовом настройки падают на дефолты фасада, а не теряются."""
+        cfg = _config()
+        launchers = Launchers(cfg)
+        tools = {tool.name: tool for tool in build_doc_tools(cfg, launchers)}
 
-    def test_facade_defaults_reach_payload(
-        self, payload_runs: list[dict[str, Any]]
-    ) -> None:
-        """Пропущенные фасадом настройки падают на дефолты, а не теряются."""
-        tools = {t.name: t for t in build_doc_tools(_config(), launchers)}
         asyncio.run(
             tools["read_document"].ainvoke(
                 {
-                    "args": {"path": "/workspace/doc.pdf", "pages": "1-2"},
+                    "args": {"path": str(pdf), "pages": "1-2"},
                     "id": "call-doc",
                     "name": "read_document",
                     "type": "tool_call",
                 }
             )
         )
-        params = payload_runs[0]["params"]
-        assert params["ocr_enabled"] is False
-        assert params["num_workers"] == 1
-        assert params["ocr_language"] == "rus+eng"
+
+        request = launchers.launcher.requests[0]
+        assert request["ocr_enabled"] is False
+        assert request["num_workers"] == 1
+        assert request["ocr_language"] == "rus+eng"

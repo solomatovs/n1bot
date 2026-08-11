@@ -1,5 +1,5 @@
 """ClickHouse для payload'ов; пула нет — каждый вызов свой процесс и клиент.
-Учётные данные приходят через stdin: не видны ни в argv, ни в /proc, ни в логах.
+Учётные данные приходят каналом tool_args: не видны ни в argv, ни в /proc, ни в логах.
 
 Ошибки: ClickHouseError — до базы не достучаться (сеть, TLS, kerberos, отказ
 клиента при инициализации)."""
@@ -67,14 +67,14 @@ class SpnegoHeaders(dict[str, str]):
 
 
 class PayloadClickHouse:
-    """Клиент по параметрам запроса и JSON-совместимые строки результата."""
+    """Клиент по профилю запроса и JSON-совместимые строки результата."""
 
     @staticmethod
     @asynccontextmanager
-    async def opened(request: dict[str, Any]) -> AsyncGenerator[AsyncClient, None]:
+    async def opened(
+        connection: ClickHouseConfig,
+    ) -> AsyncGenerator[AsyncClient, None]:
         """Клиент на время операции; kerberos-окружение держится всё это время."""
-        connection = ClickHouseConfig.model_validate(request["connection"])
-
         if connection.kerberos is None:
             async with PayloadClickHouse._client(connection, None) as client:
                 yield client

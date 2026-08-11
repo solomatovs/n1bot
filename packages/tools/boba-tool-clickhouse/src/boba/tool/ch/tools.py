@@ -147,7 +147,6 @@ class ChTools:
                 result = executor.execute(
                     sql,
                     connection_name=connection_name,
-                    row_limit=executor.max_rows_cap,
                     params=params,
                 )
             except ValueError as e:
@@ -205,7 +204,6 @@ class ChTools:
                 result = executor.execute(
                     sql,
                     connection_name=connection_name,
-                    row_limit=executor.max_rows_cap,
                     params=params,
                 )
             except ValueError as e:
@@ -249,7 +247,6 @@ class ChTools:
                 result = executor.execute(
                     sql,
                     connection_name=connection_name,
-                    row_limit=executor.max_rows_cap,
                 )
             except CollectorCapacityError:
                 return pack_result(owner._too_large(executor))

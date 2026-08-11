@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+from bash_stage import BashStageSetup
 from langchain_core.tools import tool
 
 from boba.cancellation import (
@@ -20,9 +21,8 @@ from boba.cancellation import (
     current_cancellation,
     turn_cancellation,
 )
-from boba.chainlit.agent.tools import build_bash_tool
 from boba.chainlit.agent.tools.cancellation import CancellableTools
-from boba.sandbox import SandboxCaller, SandboxProfile, SandboxToolConfig
+from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.toolkit.result import ErrorResult
 from boba.transport.http import CancellableHttpTransport, HttpProfile, HttpRequest
 
@@ -267,7 +267,7 @@ class TestSubprocessAbort:
 
     def test_cancel_kills_running_process(self) -> None:
         profile = _sandbox_config().effective()
-        tool_ = build_bash_tool(lambda tool: SandboxCaller(tool, profile, dict))
+        tool_ = BashStageSetup.tool(profile, dict)
         with turn_cancellation() as c:
             ctx = copy_context()
             with ThreadPoolExecutor(1) as pool:

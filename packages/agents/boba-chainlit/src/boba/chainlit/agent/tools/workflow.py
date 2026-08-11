@@ -1,6 +1,7 @@
 """Tool workflow: соединение инструментов реестра стадий в граф.
 
-Ошибки: WorkflowError уходит наверх — её показывает ToolErrorGuard.
+Ошибки: WorkflowError разбора спеки и ошибки порта запуска (LauncherError,
+PayloadFailureError) уходят наверх — их показывает ToolErrorGuard.
 """
 
 from __future__ import annotations
@@ -11,15 +12,15 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.sandbox.workflow import WorkflowRunner
+from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.result import JsonResult, ToolResult, pack_result
 from boba.toolkit.workflow import WorkflowOutcome, WorkflowSpec
 
 __all__ = ["build_workflow_tool"]
 
 
-def build_workflow_tool(runner: WorkflowRunner) -> BaseTool:
-    """Фасад графа стадий: спека nodes/edges от LLM, исполнение — WorkflowRunner."""
+def build_workflow_tool(launcher: ToolLauncher) -> BaseTool:
+    """Фасад графа стадий: спека nodes/edges от LLM, исполнение — порт запуска."""
 
     @tool(response_format="content_and_artifact")
     def workflow(
@@ -51,7 +52,7 @@ def build_workflow_tool(runner: WorkflowRunner) -> BaseTool:
         несколько."""
         spec = WorkflowSpec.parse({"nodes": nodes, "edges": edges})
 
-        outcome = runner.run(spec)
+        outcome = launcher.call(spec)
 
         return pack_result(JsonResult(ok=True, payload=_payload_of(outcome)))
 

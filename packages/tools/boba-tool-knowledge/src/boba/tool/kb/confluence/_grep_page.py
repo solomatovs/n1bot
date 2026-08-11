@@ -1,40 +1,18 @@
-"""Tool confluence_grep_page: поиск по контенту страницы через payload в песочнице."""
+"""Tool confluence_grep_page: поиск по контенту страницы через узел в песочнице."""
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from boba.tool.kb.confluence.caller import ConfluenceCaller
-from boba.tool.kb.confluence.protocol import ConfluenceGrepRequest
 from boba.toolkit.result import TableResult
-from boba.transport.http import HttpProfile
 
-__all__ = ["ConfluenceGrepPageConfig", "confluence_grep_page"]
-
-
-class ConfluenceGrepPageConfig(BaseModel):
-    """Self-contained конфиг tool'а confluence_grep_page."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    confluence: HttpProfile
-    body_format: Literal["view", "export_view", "storage"] = Field(
-        default="view",
-        description="Confluence body-формат: view/export_view/storage.",
-    )
-    max_text_chars: int = Field(
-        default=2000,
-        ge=1,
-        description="Потолок длины content/before/after на match.",
-    )
+__all__ = ["confluence_grep_page"]
 
 
-
-
-def confluence_grep_page(  # noqa: PLR0913
-    cfg: ConfluenceGrepPageConfig,
+def confluence_grep_page(  # noqa: PLR0913 — независимые флаги grep'а
     caller: ConfluenceCaller,
     page_id: Annotated[
         str,
@@ -77,25 +55,22 @@ def confluence_grep_page(  # noqa: PLR0913
     ] = False,
 ) -> TableResult:
     """Скачивает Confluence-страницу и ищет в её контенте совпадения pattern."""
-    request = ConfluenceGrepRequest(
-        op=ConfluenceGrepRequest.OP,
-        base_url=cfg.confluence.base_url or "",
-        profile=ConfluenceCaller.transport_of(cfg.confluence),
+    matches = caller.grep(
         page_id=page_id,
-        body_format=cfg.body_format,
-        as_markdown=as_markdown,
         pattern=pattern,
+        as_markdown=as_markdown,
         case_insensitive=case_insensitive,
         context=context,
         limit=limit,
         fixed_string=fixed_string,
-        max_text_chars=cfg.max_text_chars,
     )
+
     rows: list[dict[str, Any]] = []
-    for row in caller.grep(request):
+    for row in matches:
         rows.append(row.model_dump())
+
+    note = f"page_id={page_id}: no matches found"
     if rows:
-        note = f"page_id={page_id}: совпадений {len(rows)}"
-    else:
-        note = f"page_id={page_id}: совпадений не найдено"
+        note = f"page_id={page_id}: {len(rows)} match(es)"
+
     return TableResult(rows=rows, note=note, metadata={"page_id": page_id})

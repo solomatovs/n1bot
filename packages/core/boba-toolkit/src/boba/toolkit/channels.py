@@ -1,6 +1,7 @@
 """Контракт каналов sandbox-запуска: реестр каналов, имена env, кодек лог-кадров,
-конверты tool_result и wrap_result, шелльная форма кодов возврата и сводка
-ошибок валидации без эха ввода.
+форматы потоков с их чтением и записью, конверты tool_result и wrap_result,
+шелльная форма кодов возврата, протокол приёмника байтов, построчный разборщик
+и сводка ошибок валидации без эха ввода.
 
 Доменный слой: транспорт и I/O не импортируются, дескрипторы открывает исполнитель.
 
@@ -9,20 +10,27 @@
 
 from __future__ import annotations
 
+import json
+from abc import abstractmethod
+from collections.abc import Iterator, Mapping
 from enum import StrEnum, nonmember
-from typing import ClassVar
+from typing import Any, BinaryIO, ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 __all__ = [
+    "ByteText",
     "Channel",
     "ChannelError",
+    "ChannelSink",
+    "LineSplitter",
     "LogFrame",
     "ResultError",
     "ResultFailure",
     "ResultSuccess",
     "ShellExit",
     "StageExit",
+    "StreamCodec",
     "StreamFormat",
     "ValidationSummary",
 ]
@@ -92,12 +100,127 @@ class Channel(StrEnum):
 
 
 class StreamFormat(StrEnum):
-    """Формат данных потокового канала (MIME); API чтения и записи — этап 3."""
+    """Формат данных потокового канала (MIME); чтение и запись — StreamCodec."""
 
     CSV = "text/csv"
     NDJSON = "application/x-ndjson"
     TEXT = "text/plain"
     BYTES = "application/octet-stream"
+
+    @property
+    def is_text(self) -> bool:
+        """Формат читается как текст; BYTES — непрозрачные байты."""
+        return self is not StreamFormat.BYTES
+
+
+class ByteText(StrEnum):
+    """Параметры декодирования байтовых каналов в текст."""
+
+    ENCODING = "utf-8"
+    ERRORS = "replace"
+
+
+class StreamCodec:
+    """Чтение и запись форматов канала данных: один кодек на все инструменты.
+
+    Формат объявлен до запуска — `contract.out` у источника, `stdin_format` у
+    приёмника, — поэтому своих парсеров у инструментов нет и нюхать байты
+    некому. Записи строчного потока (NDJSON) — одна запись-словарь на строку.
+    """
+
+    ROWS: ClassVar[StreamFormat] = StreamFormat.NDJSON
+    """Формат строчного потока, который кодируют encode_row/decode_row."""
+
+    LINE_END: ClassVar[str] = "\n"
+
+    @classmethod
+    def encode_text(cls, fmt: StreamFormat, text: str) -> bytes:
+        """Текстовый продукт в байты канала; двоичный формат текстом не пишется."""
+        cls._require_text(fmt)
+
+        return text.encode(ByteText.ENCODING)
+
+    @classmethod
+    def read_text(cls, fmt: StreamFormat, source: BinaryIO) -> str:
+        """Весь входной поток объявленного формата как текст."""
+        cls._require_text(fmt)
+
+        return source.read().decode(ByteText.ENCODING, errors=ByteText.ERRORS)
+
+    @classmethod
+    def encode_row(cls, row: Mapping[str, Any]) -> bytes:
+        """Одна запись строчного потока: JSON плюс перевод строки."""
+        body = json.dumps(row, ensure_ascii=False)
+
+        return (body + cls.LINE_END).encode(ByteText.ENCODING)
+
+    @classmethod
+    def decode_row(cls, line: str) -> dict[str, Any]:
+        """Разбор строки строчного потока; не объект — нарушение контракта."""
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            msg = f"row line is not valid JSON: {exc}"
+            raise ChannelError(msg) from exc
+
+        if not isinstance(row, dict):
+            msg = f"row line must be a JSON object, got {type(row).__name__}"
+            raise ChannelError(msg)
+
+        return row
+
+    @staticmethod
+    def _require_text(fmt: StreamFormat) -> None:
+        if fmt.is_text:
+            return
+
+        raise ChannelError(f"stream format is not text: {fmt}")
+
+
+class ChannelSink(Protocol):
+    """Приёмник байтов одного канала."""
+
+    @abstractmethod
+    def feed(self, data: bytes) -> None:
+        """Принять байты; исключение sink'а пути данных фатально для стадии."""
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Канал закончился (EOF) либо насос завершает работу."""
+        ...
+
+
+class LineSplitter:
+    """Инкрементальное разбиение байтового потока на текстовые строки."""
+
+    def __init__(self) -> None:
+        self._tail = bytearray()
+
+    def feed(self, data: bytes) -> Iterator[str]:
+        """Полные строки из накопленного потока; хвост без \\n остаётся внутри."""
+        self._tail.extend(data)
+
+        lines: list[str] = []
+        while True:
+            index = self._tail.find(b"\n")
+            if index < 0:
+                break
+            raw = bytes(self._tail[:index])
+            del self._tail[: index + 1]
+            lines.append(raw.decode(ByteText.ENCODING, errors=ByteText.ERRORS))
+
+        return iter(lines)
+
+    def flush(self) -> Iterator[str]:
+        """Последняя строка без перевода; после вызова буфер пуст."""
+        if not self._tail:
+            return iter(())
+
+        line = bytes(self._tail).decode(ByteText.ENCODING, errors=ByteText.ERRORS)
+        self._tail.clear()
+
+        return iter((line,))
 
 
 class ResultError(BaseModel):

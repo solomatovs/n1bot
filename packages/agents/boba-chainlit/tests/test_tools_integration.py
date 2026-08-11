@@ -16,13 +16,16 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from bash_stage import AllowAllNodes
 from psycopg import sql
 
+from boba.chainlit.infra.plugins import ToolPlugins
 from boba.sandbox import (
     SandboxCaller,
     SandboxPayloadError,
     SandboxToolConfig,
 )
+from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.settings import bind
 from boba.tool.chart import build_chart_tools
 from boba.tool.doc import DocToolsConfig, build_doc_tools
@@ -121,13 +124,21 @@ class ToolSetup:
         return {"user_id": USER_ID, "thread_id": THREAD_ID}
 
     @staticmethod
-    def launchers(raw: Any, section: str) -> LauncherFactory:
-        """Исполнитель на профиле секции: окружение выбирает вызывающий."""
-        sandbox = bind(raw, path=f"{section}.sandbox", model=SandboxToolConfig)
+    def launchers(raw: Any, section: str, cfg: Any = None) -> LauncherFactory:
+        """Порт запуска на узлах секции: тот же конфиг, что у её фасадов."""
+        sandbox = bind(raw, path=f"tool.{section}.sandbox", model=SandboxToolConfig)
         profile = sandbox.effective()
 
+        defs: dict[str, StageDef] = {}
+        for name, node in ToolPlugins.of(section).nodes(cfg).items():
+            defs[name] = StageDef.of(node, profile)
+
+        caller = SandboxCaller(
+            StageRegistry(defs), AllowAllNodes(), ToolSetup.path_vars
+        )
+
         def launcher(tool: str) -> ToolLauncher:
-            return SandboxCaller(tool, profile, ToolSetup.path_vars)
+            return caller
 
         return launcher
 
@@ -165,26 +176,30 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def bash_tool(raw_config):
-    return build_bash_tool(ToolSetup.launchers(raw_config, "tool.bash"))
+    launchers = ToolSetup.launchers(raw_config, "bash")
+    profile = bind(
+        raw_config, path="tool.bash.sandbox", model=SandboxToolConfig
+    ).effective()
+    return build_bash_tool(launchers, profile.max_output_bytes)
 
 
 @pytest.fixture(scope="module")
 def doc_tools(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.doc", DocToolsConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.doc")
+    launchers = ToolSetup.launchers(raw_config, "doc", cfg)
     return ToolSetup.by_name(build_doc_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
 def chart_tool(raw_config):
-    launchers = ToolSetup.launchers(raw_config, "tool.chart")
+    launchers = ToolSetup.launchers(raw_config, "chart")
     return ToolSetup.by_name(build_chart_tools(launchers))["visualize"]
 
 
 @pytest.fixture(scope="module")
 def web_tools(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.web", WebGrepConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.web")
+    launchers = ToolSetup.launchers(raw_config, "web", cfg)
     return ToolSetup.by_name(build_web_tools(cfg, launchers))
 
 
@@ -200,14 +215,14 @@ def whitelisted_url(raw_config) -> str:
 @pytest.fixture(scope="module")
 def confluence_tools(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.confluence", ConfluenceToolsConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.confluence")
+    launchers = ToolSetup.launchers(raw_config, "confluence", cfg)
     return ToolSetup.by_name(build_confluence_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
 def pg_tools(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.pg", PgExecutorConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.pg")
+    launchers = ToolSetup.launchers(raw_config, "pg", cfg)
     return ToolSetup.by_name(build_pg_tools(cfg, launchers))
 
 
@@ -249,14 +264,14 @@ class KbCleanup:
 def ingest_tools(raw_config, kb_collection: str):
     cfg = ToolSetup.config(raw_config, "tool.ingest", ConfluenceIngestConfig)
     cfg = cfg.model_copy(update={"collection": kb_collection})
-    launchers = ToolSetup.launchers(raw_config, "tool.ingest")
+    launchers = ToolSetup.launchers(raw_config, "ingest", cfg)
     return ToolSetup.by_name(build_confluence_ingest_tools(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
 def kb_tools(raw_config, kb_collection: str):
     cfg = ToolSetup.config(raw_config, "tool.kb", PostgresKnowledgeBaseConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.kb")
+    launchers = ToolSetup.launchers(raw_config, "kb", cfg)
     return ToolSetup.by_name(build_kb_tools(cfg, launchers))
 
 

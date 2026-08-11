@@ -1,26 +1,53 @@
-"""Инструмент visualize в настоящей песочнице: plotly проверяет спеку там."""
+"""Узел visualize в настоящей песочнице: plotly проверяет спеку там."""
 
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 from conftest import needs_sandbox, needs_userns, sandbox_profile
 
 from boba.sandbox import SandboxCaller, SandboxToolConfig
-from boba.tool.chart import build_chart_tools
-from boba.tool.chart.caller import (
-    ChartCaller,
-    ValidateFigureAnswer,
-    ValidateFigureRequest,
-)
-from boba.toolkit.launcher import NoChunks, PayloadFailureError
+from boba.sandbox.workflow import StageDef, StageRegistry
+from boba.tool.chart import ChartCaller, build_chart_tools
+from boba.toolkit.launcher import PayloadFailureError, ToolLauncher
 from boba.toolkit.result import ChartResult
 
 
-def _caller() -> SandboxCaller:
-    sandbox = SandboxToolConfig.model_validate(
-        {"profile": sandbox_profile(), "override": {}}
-    )
-    return SandboxCaller("chart-test", sandbox.effective(), dict)
+class AllowAll:
+    """Предикат прав тестов: узлы реестра разрешены целиком."""
+
+    def __call__(self, tool: str, /) -> bool:
+        return True
+
+
+class Launchers:
+    """Фабрика порта: песочница на профиле тестов, реестр — узлы пакета."""
+
+    def __init__(self) -> None:
+        sandbox = SandboxToolConfig.model_validate(
+            {"profile": sandbox_profile(), "override": {}}
+        )
+        profile = sandbox.effective()
+
+        defs: dict[str, StageDef] = {}
+        for name, node in ChartCaller.stages().items():
+            defs[name] = StageDef(
+                contract=node.contract,
+                profile=profile,
+                entry=node.entry,
+                request=node.request,
+                enrich=node.enrich,
+            )
+
+        self._caller = SandboxCaller(StageRegistry(defs), AllowAll(), dict)
+
+    def __call__(self, tool: str, /) -> ToolLauncher:
+        return self._caller
+
+
+def _caller() -> ChartCaller:
+    return ChartCaller("chart", Launchers())
 
 
 @needs_sandbox
@@ -34,60 +61,49 @@ class TestChartInSandbox:
     )
 
     def test_valid_spec_returns_title(self) -> None:
-        request = ValidateFigureRequest.of(self._SPEC)
-        answer = _caller().call_stream(
-            ChartCaller.ENTRY, request, NoChunks(), ValidateFigureAnswer
-        )
-        assert answer.title == "Продажи"
+        assert _caller().validate(self._SPEC) == "Продажи"
 
     def test_title_may_be_a_plain_string(self) -> None:
         spec = '{"data": [], "layout": {"title": "Отчёт"}}'
-        answer = _caller().call_stream(
-            ChartCaller.ENTRY,
-            ValidateFigureRequest.of(spec),
-            NoChunks(),
-            ValidateFigureAnswer,
-        )
-        assert answer.title == "Отчёт"
+
+        assert _caller().validate(spec) == "Отчёт"
 
     def test_spec_without_title(self) -> None:
         spec = '{"data": [{"type": "bar", "x": ["a"], "y": [1]}]}'
-        answer = _caller().call_stream(
-            ChartCaller.ENTRY,
-            ValidateFigureRequest.of(spec),
-            NoChunks(),
-            ValidateFigureAnswer,
-        )
-        assert answer.title == ""
+
+        assert _caller().validate(spec) == ""
 
     def test_broken_json_is_reported(self) -> None:
         with pytest.raises(PayloadFailureError, match="not valid JSON"):
-            _caller().call_stream(
-                ChartCaller.ENTRY,
-                ValidateFigureRequest.of("{не json"),
-                NoChunks(),
-                ValidateFigureAnswer,
-            )
+            _caller().validate("{не json")
 
     def test_unknown_trace_type_is_reported(self) -> None:
         """Схему держит plotly: выдуманный тип графика должен быть отклонён."""
         spec = '{"data": [{"type": "нет-такого-типа", "x": [1], "y": [2]}]}'
+
         with pytest.raises(PayloadFailureError, match="invalid Plotly figure spec"):
-            _caller().call_stream(
-                ChartCaller.ENTRY,
-                ValidateFigureRequest.of(spec),
-                NoChunks(),
-                ValidateFigureAnswer,
-            )
+            _caller().validate(spec)
 
     def test_non_object_spec_is_reported(self) -> None:
         with pytest.raises(PayloadFailureError, match="must be a JSON figure object"):
-            _caller().call_stream(
-                ChartCaller.ENTRY,
-                ValidateFigureRequest.of("[1, 2, 3]"),
-                NoChunks(),
-                ValidateFigureAnswer,
-            )
+            _caller().validate("[1, 2, 3]")
+
+
+class TestChartStages:
+    """Узел без потоков: рёбер у него быть не может, итог едет квитанцией."""
+
+    def test_node_has_no_streams(self) -> None:
+        node = ChartCaller.stages()["visualize"]
+
+        assert node.contract.accepts == frozenset()
+        assert node.contract.out is None
+
+    def test_enricher_adds_the_op(self) -> None:
+        node = ChartCaller.stages()["visualize"]
+
+        request = node.enrich({"spec": "{}"})
+
+        assert request["op"] == "validate_figure"
 
 
 @needs_sandbox
@@ -96,16 +112,8 @@ class TestChartTool:
     """Инструмент visualize целиком: LLM -> песочница -> ChartResult."""
 
     @staticmethod
-    def _tool():
-        sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile(), "override": {}}
-        )
-        profile = sandbox.effective()
-
-        def launchers(tool: str) -> SandboxCaller:
-            return SandboxCaller(tool, profile, dict)
-
-        return build_chart_tools(launchers)[0]
+    def _tool() -> Any:
+        return build_chart_tools(Launchers())[0]
 
     def test_chart_result_carries_spec_and_title(self) -> None:
         spec = (

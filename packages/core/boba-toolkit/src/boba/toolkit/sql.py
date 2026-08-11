@@ -26,8 +26,8 @@ from pydantic import (
     model_validator,
 )
 
+from boba.toolkit.channels import ChannelSink
 from boba.toolkit.launcher import (
-    ChunkSink,
     CollectorCapacityError,
     CollectorRowLimitError,
     LauncherError,
@@ -36,6 +36,7 @@ from boba.toolkit.launcher import (
 from boba.toolkit.result import ErrorResult
 
 __all__ = [
+    "ConnectionCall",
     "ConnectionProfile",
     "SqlCall",
     "SqlCaller",
@@ -62,11 +63,6 @@ TConn = TypeVar("TConn", bound=ConnectionProfile)
 
 TParams = TypeVar("TParams")
 """Стиль параметров драйвера: позиционный кортеж psycopg, именованный dict ch."""
-
-TConn_contra = TypeVar(
-    "TConn_contra", bound=ConnectionProfile, contravariant=True
-)
-"""То же, что TConn, но для протокола: тип стоит только во входных позициях."""
 
 TParams_contra = TypeVar("TParams_contra", contravariant=True)
 """То же, что TParams, но для протокола."""
@@ -134,8 +130,8 @@ class SqlProfiles(BaseModel, Generic[TConn]):
         return conn
 
 
-class SqlCall(BaseModel, Generic[TConn]):
-    """Общая часть запроса payload'а: куда подключаться и что выполнять."""
+class ConnectionCall(BaseModel, Generic[TConn]):
+    """Общая часть запроса payload'а к БД: операция и профиль подключения."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -146,15 +142,20 @@ class SqlCall(BaseModel, Generic[TConn]):
     connection: TConn = Field(
         description="Профиль подключения целиком: payload подключается по нему сам.",
     )
-    sql: str = Field(min_length=1)
 
     @field_serializer("connection", when_used="json")
     def _dump_connection(self, value: TConn) -> dict[str, Any]:
-        """stdin песочницы — доверенный канал: только здесь пароль едет раскрытым."""
+        """tool_args — доверенный канал: только здесь пароль едет раскрытым."""
         return value.model_dump(
             mode="json",
             context={type(value).REVEAL_SECRETS: True},
         )
+
+
+class SqlCall(ConnectionCall[TConn], Generic[TConn]):
+    """Запрос с нативным SQL: куда подключаться и что выполнять."""
+
+    sql: str = Field(min_length=1)
 
 
 class SqlQueryRequest(SqlCall[TConn], Generic[TConn, TParams]):
@@ -167,7 +168,7 @@ class SqlQueryRequest(SqlCall[TConn], Generic[TConn, TParams]):
 
 
 class SqlQueryTrailer(BaseModel):
-    """Итог запроса: строки ушли кадрами, здесь — что с ними стало."""
+    """Итог запроса: строки ушли потоком данных, здесь — что с ними стало."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -191,20 +192,26 @@ class SqlResult:
     status: str | None
 
 
-class SqlCaller(Protocol, Generic[TConn_contra, TParams_contra]):
-    """Один вызов payload'а на запрос: соединение и SQL уходят в песочницу."""
+class SqlCaller(Protocol, Generic[TParams_contra]):
+    """Один вызов payload'а на запрос: имя подключения и SQL уходят в песочницу.
+
+    Профиль соединения по имени разрешает обогатитель узла на стороне реестра
+    стадий — в спецификацию графа секреты не попадают.
+    """
 
     @abstractmethod
     def query(
         self,
         *,
-        connection: TConn_contra,
+        connection_name: str,
         sql: str,
         params: TParams_contra,
-        row_limit: int,
-        sink: ChunkSink,
+        sink: ChannelSink,
     ) -> SqlQueryTrailer:
-        """Выполнить запрос: строки кадрами в sink, итог — трейлером."""
+        """Выполнить запрос: NDJSON-байты строк в sink, итог — трейлером.
+
+        Исполнитель закрывает sink по концу данных до возврата трейлера.
+        """
         ...
 
 
@@ -215,7 +222,7 @@ class SqlExecutor(Generic[TConn, TParams]):
         self,
         *,
         cfg: SqlProfiles[TConn],
-        caller: SqlCaller[TConn, TParams],
+        caller: SqlCaller[TParams],
     ) -> None:
         self._cfg = cfg
         self._caller = caller
@@ -240,23 +247,23 @@ class SqlExecutor(Generic[TConn, TParams]):
         query: str,
         *,
         connection_name: str,
-        row_limit: int,
         params: TParams,
     ) -> SqlResult:
-        """Запрос с лимитом строк; синхронный вызов песочницы уходит в поток."""
-        effective_limit = min(max(row_limit, 1), self._cfg.max_rows)
+        """Запрос с потолком строк из конфига; вызов песочницы уходит в поток."""
+        # whitelist проверяется здесь: имя вне списка — отказ фасада, не стадии
+        self.connection_of(connection_name)
+
         collector = RowCollector(
             max_chars=self._cfg.max_bytes,
-            limit_rows=effective_limit,
+            limit_rows=self._cfg.max_rows,
         )
-        connection = self.connection_of(connection_name)
+
         try:
             trailer = await asyncio.to_thread(
                 self._caller.query,
-                connection=connection,
+                connection_name=connection_name,
                 sql=query,
                 params=params,
-                row_limit=effective_limit,
                 sink=collector,
             )
         except LauncherError as e:

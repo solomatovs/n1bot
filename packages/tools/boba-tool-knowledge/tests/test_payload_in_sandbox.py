@@ -1,92 +1,40 @@
-"""Payload внутри настоящей песочницы: реальный rootfs, реальный bwrap.
+"""Узлы внутри настоящей песочницы: реальный rootfs, реальный bwrap.
 
-Остальные тесты payload'а гоняют его питоном приложения — там установлено
-всё, поэтому они не видят, чего не хватает в rootfs песочницы. Здесь запуск
-идёт ровно так, как в проде: bwrap + rootfs из build/src + payload,
-смонтированный read-only. Если rootfs собран без нужного модуля, эти тесты
-падают — именно так и должно быть, код требует пересборки rootfs.
+Остальные тесты гоняют payload питоном приложения — там установлено всё,
+поэтому они не видят, чего не хватает в rootfs песочницы. Здесь запуск идёт
+ровно как в проде: bwrap + rootfs из build/src + payload, смонтированный
+read-only. Если rootfs собран без нужного модуля, эти тесты падают — именно
+так и должно быть, код требует пересборки rootfs.
 """
 
 from __future__ import annotations
 
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Mapping
 from io import BytesIO
-from pathlib import Path
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar
 
 import pytest
 from conftest import (
+    StageParts,
+    StageTestRegistry,
     needs_sandbox,
     needs_userns,
     sandbox_profile,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
-from boba.sandbox import (
-    SandboxCaller,
-    SandboxPayloadError,
-    SandboxRunner,
-    SandboxToolConfig,
-)
-from boba.tool.doc.liteparse import (
-    LiteParseCaller,
-    ParseBytesRequest,
-)
-from boba.tool.doc.liteparse.protocol import ParseBytesTrailer, ParseParams
-from boba.tool.doc.protocol import (
-    DocOutlineRow,
-    DocOutlineTrailer,
-    DocPagesRequest,
-    DocPagesTrailer,
-    DocParams,
-    DocPathRequest,
-    DocSearchRequest,
-    DocSearchRow,
-    DocSearchTrailer,
-)
-from boba.tool.kb.html import (
-    ConfluenceSection,
-    ConfluenceSectionsRequest,
-    HtmlToMarkdownRequest,
-    PlainTextRequest,
-)
-from boba.tool.kb.html.caller import HtmlCaller
-from boba.toolkit.launcher import (
+from boba.sandbox import SandboxPayloadError
+from boba.tool.doc.liteparse import LiteParseCaller, SandboxParserConfig
+from boba.toolkit.launcher import PayloadFailureError
+from boba.toolkit.workflow import (
     EmptyTrailer,
-    PayloadFailureError,
-    RowCollector,
-    TextCollector,
+    StageArgsEnricher,
+    StageContract,
+    StageSpec,
+    WorkflowSpec,
 )
-
-_MAX_CHARS = 50_000_000
-
-
-def _text_of(
-    caller: SandboxCaller,
-    entry: Sequence[str],
-    request: BaseModel,
-    trailer: type[M],
-) -> tuple[str, M]:
-    """Текстовый поток payload'а: кадры собираются, трейлер разбирается схемой."""
-    collector = TextCollector(max_chars=_MAX_CHARS, limit_rows=None, header_lines=0)
-    answer = caller.call_stream(entry, request, collector, trailer)
-    return collector.text(), answer
-
-
-def _rows_of(
-    caller: SandboxCaller,
-    entry: Sequence[str],
-    request: BaseModel,
-    trailer: type[M],
-) -> tuple[list[dict[str, Any]], M]:
-    """Строчный поток payload'а: кадры-записи собираются в список."""
-    collector = RowCollector(max_chars=_MAX_CHARS, limit_rows=None)
-    answer = caller.call_stream(entry, request, collector, trailer)
-    return collector.rows(), answer
-
-
-M = TypeVar("M", bound=BaseModel)
+from boba.toolkit.workflow import StageNode as DocStageNode
 
 _TESSDATA = "/usr/share/tessdata"
 
@@ -108,129 +56,124 @@ endstream endobj
 trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
-_CONFLUENCE_HTML = (
-    "<html><body>"
-    '<h1 id="intro">Введение</h1><p>Первый абзац.</p>'
-    "<h2>Детали</h2><p>Второй абзац.</p>"
-    '<ac:structured-macro ac:name="info">служебное</ac:structured-macro>'
-    "</body></html>"
-)
+_PROBE_SCRIPT = """
+import os
+import sys
+from collections.abc import Mapping
+from typing import ClassVar
+
+from pydantic import BaseModel, Field
+
+from boba.toolkit.payload import PayloadChannels, PayloadEntry, PayloadError
+from boba.toolkit.workflow import EmptyTrailer
 
 
-def _caller(docs_dir=None, **kw) -> SandboxCaller:
-    sandbox = SandboxToolConfig.model_validate(
-        {"profile": sandbox_profile(docs_dir, **kw), "override": {}}
+class Request(BaseModel):
+    op: str = Field(min_length=1)
+    module: str = ""
+    path: str = ""
+
+
+class Ops:
+    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {}
+
+    REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {"probe": Request}
+
+    @classmethod
+    async def dispatch(cls, request, channels):
+        assert isinstance(request, Request)
+        if request.module:
+            __import__(request.module)
+        if request.path:
+            entries = os.listdir(request.path)
+            if not entries:
+                raise PayloadError("empty_dir", f"{request.path} is empty")
+        return EmptyTrailer()
+
+
+sys.exit(PayloadEntry.main(Ops))
+"""
+"""Узел-проба: импортирует модуль rootfs и проверяет каталог весов."""
+
+
+class ProbeRequest(BaseModel):
+    """Запрос пробы: что импортировать и какой каталог должен быть непуст."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: str = Field(min_length=1)
+    module: str = ""
+    path: str = ""
+
+
+class ProbeSettings(BaseModel):
+    """Настройка узла-пробы: имя операции payload'а."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: str = Field(min_length=1)
+
+
+def _probe_nodes() -> Mapping[str, StageParts]:
+    node = DocStageNode(
+        contract=StageContract(
+            accepts=frozenset(),
+            out=None,
+            result=EmptyTrailer,
+        ),
+        entry=("python3", "-c", _PROBE_SCRIPT),
+        request=ProbeRequest,
+        enrich=StageArgsEnricher(ProbeSettings(op="probe")),
     )
-    return SandboxCaller("payload-test", sandbox.effective(), dict)
+
+    return {"probe": node}
 
 
-def _params() -> ParseParams:
-    return ParseParams(
-        ocr_enabled=False,
-        ocr_language="eng",
-        max_pages=0,
-        tessdata_path=_TESSDATA,
-        num_workers=1,
-    )
+def _probe(**args: Any) -> None:
+    """Прогон пробы в песочнице; сбой импорта — ошибка запуска стадии."""
+    caller = StageTestRegistry.caller(_probe_nodes(), sandbox_profile())
+
+    spec = WorkflowSpec(nodes=[StageSpec(id="probe", tool="probe", args=args)])
+    caller.call(spec)
 
 
-def _doc_params(**kw: Any) -> DocParams:
-    fields: dict[str, Any] = {**_params().model_dump(), "max_text_chars": 200_000}
+def _parser_config(**kw: Any) -> SandboxParserConfig:
+    fields: dict[str, Any] = {
+        "ocr_enabled": False,
+        "ocr_language": "eng",
+        "max_pages": 0,
+        "tessdata_path": _TESSDATA,
+        "num_workers": 1,
+    }
     fields.update(kw)
-    return DocParams.model_validate(fields)
+
+    return SandboxParserConfig.model_validate(fields)
 
 
-@pytest.fixture
-def docs(tmp_path: Path) -> Path:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "report.pdf").write_bytes(_PDF)
-    return workspace
+def _parser(cfg: SandboxParserConfig, **profile: Any) -> LiteParseCaller:
+    nodes = LiteParseCaller.stages("doc", cfg)
+    launchers = StageTestRegistry.launchers(nodes, sandbox_profile(**profile))
+
+    return LiteParseCaller("doc", cfg, launchers)
 
 
-
+@needs_sandbox
+@needs_userns
 class TestDocumentsInSandbox:
-    """Инструменты doc: файл лежит в песочнице, парсит его liteparse оттуда."""
+    """Парсер вложений работает на настоящем rootfs, а не на питоне приложения."""
 
-    def test_read_document(self, docs: Path) -> None:
-        request = DocPagesRequest(
-            op=DocPagesRequest.OP,
-            path="/workspace/report.pdf",
-            pages="1-2",
-            params=_doc_params(),
-        )
-        text, trailer = _text_of(
-            _caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer
-        )
-        assert trailer.pages == (1, 2)
-        assert "Alpha page one" in text
+    def test_pdf_pages_are_parsed(self) -> None:
+        answer = _parser(_parser_config()).parse_bytes(_PDF, "report.pdf")
+        assert answer.num_pages == 2
+        assert "Alpha page one" in answer.pages[0].text
 
-    def test_document_outline(self, docs: Path) -> None:
-        request = DocPathRequest(
-            op=DocPathRequest.OUTLINE,
-            path="/workspace/report.pdf",
-            params=_doc_params(),
-        )
-        raw, _ = _rows_of(
-            _caller(docs), LiteParseCaller.ENTRY, request, DocOutlineTrailer
-        )
-        rows: list[DocOutlineRow] = []
-        for item in raw:
-            rows.append(DocOutlineRow.model_validate(item))
-        assert [row.page for row in rows] == [1, 2]
-        assert rows[0].chars > 0
-
-    def test_search_document(self, docs: Path) -> None:
-        request = DocSearchRequest(
-            op=DocSearchRequest.OP,
-            path="/workspace/report.pdf",
-            query="Alpha",
-            context_chars=5,
-            max_matches=50,
-            params=_doc_params(),
-        )
-        raw, _ = _rows_of(
-            _caller(docs), LiteParseCaller.ENTRY, request, DocSearchTrailer
-        )
-        rows: list[DocSearchRow] = []
-        for item in raw:
-            rows.append(DocSearchRow.model_validate(item))
-        assert [row.page for row in rows] == [1, 2]
-        assert "Alpha" in rows[0].snippet
-
-    def test_read_document_page_subset(self, docs: Path) -> None:
-        request = DocPagesRequest(
-            op=DocPagesRequest.OP,
-            path="/workspace/report.pdf",
-            pages="2",
-            params=_doc_params(),
-        )
-        text, trailer = _text_of(
-            _caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer
-        )
-        assert trailer.pages == (2,)
-        assert "Beta page two" in text
-
-    def test_parse_bytes(self) -> None:
-        """Вложения приезжают содержимым: файловая система не нужна."""
-        request = ParseBytesRequest.of(_PDF, "report.pdf", _params())
-        rows, trailer = _rows_of(
-            _caller(), LiteParseCaller.ENTRY, request, ParseBytesTrailer
-        )
-        assert trailer.num_pages == 2
-        assert "Alpha page one" in rows[0]["text"]
-
-    def test_small_address_space_is_reported(self, docs: Path) -> None:
+    def test_small_address_space_is_reported(self) -> None:
         """Заниженный RLIMIT_AS ломает pdfium — ошибка должна это показать."""
-        request = DocPagesRequest(
-            op=DocPagesRequest.OP,
-            path="/workspace/report.pdf",
-            pages="1-2",
-            params=_doc_params(),
-        )
-        caller = _caller(docs, max_memory_bytes=1024 * 1024 * 1024)
+        parser = _parser(_parser_config(), max_memory_bytes=1024 * 1024 * 1024)
+
         with pytest.raises(SandboxPayloadError) as failure:
-            _text_of(caller, LiteParseCaller.ENTRY, request, DocPagesTrailer)
+            parser.parse_bytes(_PDF, "report.pdf")
+
         message = str(failure.value)
         assert "pdfium" in message
         assert "RLIMIT_AS" in message, (
@@ -238,29 +181,15 @@ class TestDocumentsInSandbox:
             f"а не паникой rust: {message}"
         )
 
-    def test_ocr_without_tessdata_is_reported(self, docs: Path) -> None:
+    def test_ocr_without_tessdata_is_reported(self) -> None:
         """Без моделей OCR liteparse пошёл бы в сеть; сети в песочнице нет."""
-        params = _doc_params(ocr_enabled=True, tessdata_path="/нет-такого-каталога")
-        request = DocPagesRequest(
-            op=DocPagesRequest.OP,
-            path="/workspace/report.pdf",
-            pages="1-2",
-            params=params,
-        )
+        cfg = _parser_config(ocr_enabled=True, tessdata_path="/нет-такого-каталога")
+
         with pytest.raises(PayloadFailureError, match="каталога моделей") as failure:
-            _text_of(_caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer)
+            _parser(cfg).parse_bytes(_PDF, "report.pdf")
+
         assert failure.value.kind == "document_unreadable"
         assert "Traceback" not in str(failure.value)
-
-    def test_missing_file_is_reported(self, docs: Path) -> None:
-        request = DocPagesRequest(
-            op=DocPagesRequest.OP,
-            path="/workspace/нет-такого.pdf",
-            pages="1",
-            params=_doc_params(),
-        )
-        with pytest.raises(SandboxPayloadError, match="exited with code"):
-            _text_of(_caller(docs), LiteParseCaller.ENTRY, request, DocPagesTrailer)
 
 
 @needs_sandbox
@@ -285,7 +214,7 @@ class TestOfficeNonAsciiNames:
     )
     RELS: ClassVar[str] = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns='
+        "<Relationships xmlns="
         '"http://schemas.openxmlformats.org/package/2006/relationships">'
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org'
         '/officeDocument/2006/relationships/officeDocument" '
@@ -294,7 +223,7 @@ class TestOfficeNonAsciiNames:
     )
     DOCUMENT: ClassVar[str] = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:document xmlns:w='
+        "<w:document xmlns:w="
         '"http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
         "<w:body><w:p><w:r><w:t>Alpha section one</w:t></w:r></w:p></w:body>"
         "</w:document>"
@@ -309,64 +238,15 @@ class TestOfficeNonAsciiNames:
             archive.writestr("word/document.xml", cls.DOCUMENT)
         return buffer.getvalue()
 
-    @pytest.fixture
-    def office_docs(self, tmp_path: Path) -> Path:
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        payload = self._docx()
-        (workspace / self.ASCII_NAME).write_bytes(payload)
-        (workspace / self.CYRILLIC_NAME).write_bytes(payload)
-        return workspace
+    def _read(self, name: str) -> str:
+        answer = _parser(_parser_config()).parse_bytes(self._docx(), name)
+        return answer.pages[0].text
 
-    def _read(self, workspace: Path, name: str) -> tuple[str, DocPagesTrailer]:
-        request = DocPagesRequest(
-            op=DocPagesRequest.OP,
-            path=f"/workspace/{name}",
-            pages="1",
-            params=_doc_params(),
-        )
-        return _text_of(
-            _caller(workspace), LiteParseCaller.ENTRY, request, DocPagesTrailer
-        )
+    def test_ascii_named_docx_is_readable(self) -> None:
+        assert "Alpha section one" in self._read(self.ASCII_NAME)
 
-    def test_ascii_named_docx_is_readable(self, office_docs: Path) -> None:
-        text, trailer = self._read(office_docs, self.ASCII_NAME)
-        assert trailer.pages == (1,)
-        assert "Alpha section one" in text
-
-    def test_cyrillic_named_docx_is_readable(self, office_docs: Path) -> None:
-        text, trailer = self._read(office_docs, self.CYRILLIC_NAME)
-        assert trailer.pages == (1,)
-        assert "Alpha section one" in text
-
-
-@needs_sandbox
-@needs_userns
-class TestPagesInSandbox:
-    """Инструменты web/confluence: HTML разбирается внутри песочницы."""
-
-    def test_to_markdown(self) -> None:
-        html = "<html><body><h1>Заголовок</h1><p>Абзац</p></body></html>"
-        request = HtmlToMarkdownRequest.of(html, "ATX")
-        markdown, _ = _text_of(_caller(), HtmlCaller.ENTRY, request, EmptyTrailer)
-        assert "# Заголовок" in markdown
-
-    def test_plain_text(self) -> None:
-        request = PlainTextRequest.of("<p>Текст <b>жирный</b></p>")
-        text, _ = _text_of(_caller(), HtmlCaller.ENTRY, request, EmptyTrailer)
-        assert text == "Текст жирный"
-
-    def test_confluence_sections(self) -> None:
-        request = ConfluenceSectionsRequest.of(_CONFLUENCE_HTML, "Страница")
-        raw, _ = _rows_of(_caller(), HtmlCaller.ENTRY, request, EmptyTrailer)
-        sections: list[ConfluenceSection] = []
-        for item in raw:
-            sections.append(ConfluenceSection.model_validate(item))
-        assert [s.heading_text for s in sections] == ["Введение", "Детали"]
-        assert sections[0].heading_path == "Страница › Введение"
-        assert sections[0].anchor == "intro"
-        for section in sections:
-            assert "служебное" not in section.content
+    def test_cyrillic_named_docx_is_readable(self) -> None:
+        assert "Alpha section one" in self._read(self.CYRILLIC_NAME)
 
 
 @needs_sandbox
@@ -389,15 +269,7 @@ class TestRootfsContents:
         ],
     )
     def test_module_is_installed(self, module: str) -> None:
-        sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile(), "override": {}}
-        )
-        runner = SandboxRunner("rootfs-test", sandbox.effective(), dict)
-        outcome = runner.run(f"python3 -c 'import {module}'", stdin="")
-        assert outcome.succeeded, (
-            f"в песочнице нет {module}: пересобери — make deps "
-            f"(stderr: {outcome.result.stderr.strip()})"
-        )
+        _probe(module=module)
 
 
 @needs_sandbox
@@ -405,15 +277,7 @@ class TestRootfsContents:
 class TestEmbedderInSandbox:
     """Веса эмбеддера лежат в самом образе, монтировать их не нужно."""
 
-    WEIGHTS: str = "/opt/fastembed"
+    WEIGHTS: ClassVar[str] = "/opt/fastembed"
 
     def test_weights_are_bundled(self) -> None:
-        sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile(), "override": {}}
-        )
-        runner = SandboxRunner("kb-test", sandbox.effective(), dict)
-        outcome = runner.run(f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}", stdin="")
-        assert outcome.succeeded, (
-            f"нет весов {self.WEIGHTS}: пересобери — make deps"
-        )
-        assert outcome.result.stdout.strip()
+        _probe(path=self.WEIGHTS)

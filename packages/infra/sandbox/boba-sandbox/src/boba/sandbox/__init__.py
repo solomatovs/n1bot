@@ -1,13 +1,12 @@
 """Компонент песочницы: профили, сборка argv и запуск команд."""
 
-from boba.sandbox.argv import WORKSPACE_MOUNT, build_bwrap_argv
+from boba.sandbox.argv import WORKSPACE_MOUNT, ChannelArgv, WrapArgsCodec
 from boba.sandbox.caller import (
     SandboxCaller,
-    SandboxPayload,
     SandboxPayloadError,
 )
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
-from boba.sandbox.diagnostics import SandboxDiagnostics
+from boba.sandbox.diagnostics import FailureFacts, SandboxDiagnostics
 from boba.sandbox.profile import (
     BindSpec,
     SandboxConfig,
@@ -16,29 +15,30 @@ from boba.sandbox.profile import (
     TmpfsSpec,
 )
 from boba.sandbox.runner import (
-    SandboxOutcome,
-    SandboxRunner,
     ToolCallContext,
     has_bwrap,
 )
+from boba.sandbox.workflow import StageDef, StageRegistry, WorkflowRunner
 
 __all__ = [
     "WORKSPACE_MOUNT",
     "BindSpec",
     "CgroupError",
     "CgroupManager",
+    "ChannelArgv",
+    "FailureFacts",
     "GroupLimits",
     "SandboxCaller",
     "SandboxConfig",
     "SandboxDiagnostics",
-    "SandboxOutcome",
-    "SandboxPayload",
     "SandboxPayloadError",
     "SandboxProfile",
-    "SandboxRunner",
     "SandboxToolConfig",
+    "StageDef",
+    "StageRegistry",
     "TmpfsSpec",
     "ToolCallContext",
-    "build_bwrap_argv",
+    "WorkflowRunner",
+    "WrapArgsCodec",
     "has_bwrap",
 ]
