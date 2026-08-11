@@ -8,9 +8,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
-from boba.db.postgres import PostgresConfig
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
-from boba.tool.kb.confluence.protocol import ConfluenceNode, SecretDump
+from boba.tool.kb.confluence.protocol import ConfluenceNode
+from boba.toolkit.secrets import SecretDump
 
 __all__ = ["ConfluenceIngestRequest", "IngestAnswer", "IngestMode"]
 
@@ -40,13 +40,7 @@ class ConfluenceIngestRequest(BaseModel):
     @field_serializer("config", when_used="json")
     def _dump_config(self, value: ConfluenceIngestConfig) -> dict[str, Any]:
         """tool_args песочницы — доверенный канал: только здесь секреты раскрыты."""
-        dumped = value.model_dump(
-            mode="json",
-            context={PostgresConfig.REVEAL_SECRETS: True},
-        )
-        dumped["confluence"] = SecretDump.of_profile(value.confluence)
-
-        return dumped
+        return SecretDump.of(value)
 
 
 class IngestAnswer(BaseModel):

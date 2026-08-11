@@ -170,7 +170,7 @@ class TestComponentIsolation:
         """Порядок импорта не должен ломать пакет: цикла быть не может."""
         code = (
             "import boba.sandbox as s\n"
-            "assert s.SandboxRunner and s.SandboxToolConfig\n"
+            "assert s.WorkflowRunner and s.SandboxToolConfig\n"
             "print('ok')\n"
         )
         result = subprocess.run(  # noqa: S603

@@ -34,6 +34,7 @@ from boba.toolkit.launcher import (
     RowCollector,
 )
 from boba.toolkit.result import ErrorResult
+from boba.toolkit.secrets import SecretDump
 
 __all__ = [
     "ConnectionCall",
@@ -54,7 +55,7 @@ __all__ = [
 class ConnectionProfile(BaseModel):
     """Базовый профиль соединения: несёт ключ раскрытия секретов в дампе."""
 
-    REVEAL_SECRETS: ClassVar[str]
+    REVEAL_SECRETS: ClassVar[str] = SecretDump.REVEAL
     """Ключ контекста сериализации, по которому профиль раскрывает секреты."""
 
 
@@ -146,10 +147,7 @@ class ConnectionCall(BaseModel, Generic[TConn]):
     @field_serializer("connection", when_used="json")
     def _dump_connection(self, value: TConn) -> dict[str, Any]:
         """tool_args — доверенный канал: только здесь пароль едет раскрытым."""
-        return value.model_dump(
-            mode="json",
-            context={type(value).REVEAL_SECRETS: True},
-        )
+        return SecretDump.of(value)
 
 
 class SqlCall(ConnectionCall[TConn], Generic[TConn]):
@@ -316,22 +314,22 @@ class SqlErrors:
 
     def too_large(self) -> ErrorResult:
         msg = (
-            f"результат превысил лимит {self._max_bytes} символов; "
-            f"добавьте LIMIT в запрос"
+            f"result exceeded the limit of {self._max_bytes} characters; "
+            f"add LIMIT to the query"
         )
         return ErrorResult(message=msg, error_kind="result_too_large")
 
     def too_many_rows(self) -> ErrorResult:
         msg = (
-            f"запрос вернул больше {self._max_rows} строк; "
-            f"добавьте LIMIT в запрос"
+            f"query returned more than {self._max_rows} rows; "
+            f"add LIMIT to the query"
         )
         return ErrorResult(message=msg, error_kind="too_many_rows")
 
     def note(self, truncated: bool) -> str | None:
         if not truncated:
             return None
-        return f"список усечён до max_rows ({self._max_rows})"
+        return f"list truncated to max_rows ({self._max_rows})"
 
 
 class SqlRows:

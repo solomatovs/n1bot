@@ -229,7 +229,7 @@ class TestProfileSecrets:
         assert Credentials.PASSWORD not in str(dumped)
 
     def test_args_of_the_node_carry_no_secret(self, http_origin: str) -> None:
-        """В спеке графа секретов нет: их добавляет обогатитель узла."""
+        """В спеке графа секретов нет, а обогащённые args держат профиль моделью."""
         cfg = _config(http_origin, guarded=True)
         args = {
             "url": f"{http_origin}/private",
@@ -240,5 +240,8 @@ class TestProfileSecrets:
 
         enriched = WebStages(cfg).fetch(args)
 
+        request = WebFetchRequest.model_validate(enriched)
+
         assert Credentials.PASSWORD not in str(args)
-        assert Credentials.PASSWORD in str(enriched)
+        assert Credentials.PASSWORD not in str(enriched)
+        assert Credentials.PASSWORD in request.model_dump_json()

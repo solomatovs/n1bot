@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.common import StreamContext
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
+from clickhouse_connect.driver.query import QueryResult
 from pydantic import BaseModel
 
 from boba.db.clickhouse import ClickHouseError
@@ -106,11 +107,16 @@ class ClickHouseOps:
         cls, blocks: StreamContext, stream: PayloadStream, limit: int
     ) -> bool:
         """Строка на запись; строка сверх лимита ловит усечение и рвёт поток."""
-        names: Sequence[str] = cast(Any, blocks.source).column_names
+        names = cls._column_names(blocks)
 
         written = 0
         async for block in blocks:
-            for row in cast(Sequence[Sequence[Any]], block):
+            # драйвер объявляет блок потока опциональным: пустого блока не ждём
+            if block is None:
+                continue
+
+            rows: Sequence[Sequence[Any]] = block
+            for row in rows:
                 if written >= limit:
                     return True
 
@@ -119,6 +125,17 @@ class ClickHouseOps:
                 written += 1
 
         return False
+
+    @staticmethod
+    def _column_names(blocks: StreamContext) -> Sequence[str]:
+        """Имена колонок живут в источнике потока; иной источник — не наш контракт."""
+        source = blocks.source
+
+        if not isinstance(source, QueryResult):
+            msg = f"clickhouse block stream source is {type(source).__name__}"
+            raise TypeError(msg)
+
+        return source.column_names
 
     @classmethod
     async def insert(

@@ -18,7 +18,6 @@ from __future__ import annotations
 import codecs
 from abc import abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, JsonValue
@@ -46,7 +45,6 @@ __all__ = [
     "LauncherFactory",
     "PayloadFailureError",
     "RowCollector",
-    "RunResult",
     "StageRun",
     "TextCollector",
     "ToolLauncher",
@@ -222,19 +220,6 @@ class RowCollector:
             return StreamCodec.decode_row(line)
         except ChannelError as exc:
             raise LauncherError(str(exc)) from exc
-
-
-@dataclass(frozen=True)
-class RunResult:
-    """Результат запуска: код возврата, потоки, факт обрезки, таймаут."""
-
-    exit_code: int
-    stdout: str
-    stderr: str
-    truncated_stdout: bool
-    truncated_stderr: bool
-    duration_ms: int
-    timed_out: bool
 
 
 class ToolLauncher(Protocol):
