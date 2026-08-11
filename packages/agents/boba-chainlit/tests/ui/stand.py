@@ -49,7 +49,7 @@ class StandUser(StrEnum):
     """Учётка стенда: она же лежит в [auth.local] рабочего конфига."""
 
     NAME = "admin"
-    PASSWORD = "myPassdfd3"  # noqa: S105
+    PASSWORD = "myPassdfd3"
 
 
 @dataclass

@@ -240,7 +240,9 @@ class RawDocument:
     """Identity документа; выводит и проставляет Transport (Transport.source_id)."""
 
     metadata: Metadata = field(default_factory=Metadata.empty)
-    """Request.metadata + transport-specific keys; Reader/Chunker мержат свои ключи поверх."""
+    """Request.metadata + transport-specific keys; Reader/Chunker мержат свои ключи
+    поверх.
+    """
 
 
 DecoderId = NewType("DecoderId", str)

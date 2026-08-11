@@ -35,8 +35,8 @@ import aiofiles
 import aiofiles.os
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.domain.keys import DirKey, ObjectKey
 from boba.chainlit.domain.config import LocalStorageConfig
+from boba.chainlit.domain.keys import DirKey, ObjectKey
 from boba.workspace.launcher import (
     LauncherExit,
     LauncherMarker,

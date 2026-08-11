@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from boba.chainlit.rendering.result import (
-    ToolResultMarkdown,
     ChartRendering,
     MarkdownRendering,
+    ToolResultMarkdown,
     ToolResultView,
 )
 from boba.toolkit.result import (

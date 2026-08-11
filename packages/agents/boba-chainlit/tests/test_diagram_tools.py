@@ -22,9 +22,9 @@ from boba.chainlit.agent.tools.diagram import (
     MermaidViewer,
     build_diagram_tools,
 )
-from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.chat.turn import ChatTurn
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.canvas import (
     CanvasError,

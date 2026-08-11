@@ -22,10 +22,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
 from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.data.upload import SessionFiles
-from boba.chainlit.rendering.errors import show_error
+from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.canvas import (
     CanvasAction,
@@ -38,6 +37,7 @@ from boba.chainlit.rendering.canvas import (
     CanvasRegistry,
     OpenedCanvas,
 )
+from boba.chainlit.rendering.errors import show_error
 from boba.toolkit.result import (
     CustomElementResult,
     ErrorResult,

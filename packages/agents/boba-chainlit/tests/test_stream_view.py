@@ -17,13 +17,14 @@ from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext, context_var
+from chainlit.step import Step
 from langchain.tools import tool
 from langchain_core.messages import ToolMessage
 
 from boba.chainlit.agent.tools.stream_tap import ToolStreamTapGuard
 from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.domain.stream import JournalWindow
 from boba.chainlit.data.stream_journal import DirVault, StreamJournal
+from boba.chainlit.domain.stream import JournalWindow
 from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -39,7 +40,6 @@ from boba.chainlit.rendering.stream_view import (
     window_stream_action,
 )
 from boba.toolkit.stream import ToolStreamTap
-from chainlit.step import Step
 
 THREAD = "33333333-3333-3333-3333-333333333333"
 USER = "7"
@@ -288,7 +288,7 @@ class TestPump:
 
         final = channel.contents[-1]
         assert final.kind is CanvasKind.STREAM
-        assert ("%06d" % (self.CHUNKS - 1)) in final.text
+        assert f"{self.CHUNKS - 1:06d}" in final.text
         assert str(StreamNote.FINISHED) in final.note
         assert final.stream is not None
         assert final.stream.closed is True
@@ -525,8 +525,8 @@ class TestStreamDownload:
         from chainlit.user import PersistedUser
         from fastapi import FastAPI
 
-        from boba.chainlit.domain.keys import StreamUrl
         from boba.chainlit.data.upload import StreamServing, UploadPolicy
+        from boba.chainlit.domain.keys import StreamUrl
         from boba.chainlit.infra.config import LocalStorageConfig
 
         # files_dir на серве подменяется корнем тома пользователя; здесь нужен

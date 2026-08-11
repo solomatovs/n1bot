@@ -1,4 +1,6 @@
-"""KB-store поверх postgres+pgvector; схему создаёт bootstrap-CLI, runtime DDL не делает."""
+"""KB-store поверх postgres+pgvector; схему создаёт bootstrap-CLI, runtime DDL не
+делает.
+"""
 
 from __future__ import annotations
 

@@ -26,7 +26,7 @@ class CollectionNotFoundError(KeyError):
 
 @dataclass(frozen=True)
 class SearchHit:
-    """Один результат kb_search_*; distance — cosine либо -ts_rank_cd, меньше = ближе."""
+    """Один результат kb_search_*; distance — cosine или -ts_rank_cd, меньше ближе."""
 
     id: str
     distance: float

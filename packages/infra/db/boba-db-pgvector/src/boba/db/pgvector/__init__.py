@@ -1,4 +1,6 @@
-"boba.db.pgvector — KB-store поверх postgres+pgvector: store-адаптеры, миграции и bootstrap схемы"
+"""boba.db.pgvector — KB-store поверх postgres+pgvector: store-адаптеры, миграции и
+bootstrap схемы
+"""
 
 from __future__ import annotations
 

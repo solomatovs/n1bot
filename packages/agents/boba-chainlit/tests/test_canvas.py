@@ -19,9 +19,9 @@ from boba.chainlit.agent.tools.canvas import (
     VideoViewer,
     build_canvas_tools,
 )
-from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.data.upload import SessionFiles
+from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.canvas import (
     CanvasContent,

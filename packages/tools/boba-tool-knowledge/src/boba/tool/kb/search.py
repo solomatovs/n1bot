@@ -1,4 +1,4 @@
-"""KB search tools (vector/fts): дискриминатор коллекции собирает строку из kb_chunks."""
+"""KB search tools (vector/fts): дискриминатор коллекции строит строку kb_chunks."""
 
 from __future__ import annotations
 
@@ -40,7 +40,9 @@ class MetaField:
 
 
 class CollectionSearch:
-    """База дискриминатора: подкласс задаёт COLLECTION и META_FIELDS, строку собирает row()."""
+    """База дискриминатора: подкласс задаёт COLLECTION и META_FIELDS, строку собирает
+    row().
+    """
 
     COLLECTION: ClassVar[str]
     META_FIELDS: ClassVar[tuple[MetaField, ...]]
@@ -59,7 +61,9 @@ class CollectionSearch:
 
 
 class ConfluenceCollection(CollectionSearch):
-    """Коллекция Confluence-страниц: META_FIELDS — ключи, которые пишет confluence-ingest."""
+    """Коллекция Confluence-страниц: META_FIELDS — ключи, которые пишет confluence-
+    ingest.
+    """
 
     COLLECTION = "kb_confluence"
 
@@ -78,7 +82,9 @@ class ConfluenceCollection(CollectionSearch):
 
 
 class KbDocCollection(CollectionSearch):
-    """Коллекция KbDoc-выгрузок из workspace; wire-имена совпадают с confluence-коллекцией."""
+    """Коллекция KbDoc-выгрузок из workspace; wire-имена совпадают с confluence-
+    коллекцией.
+    """
 
     COLLECTION = "kb_confluence_doc"
 

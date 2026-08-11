@@ -19,7 +19,7 @@ from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class ConfluenceHtml:
-    """Confluence-aware разбор через BeautifulSoup: structural-парсеры не берут ac:/ri:."""
+    """Confluence-aware разбор через BeautifulSoup: ac:/ri: остальные не берут."""
 
     HEADING_TAGS: ClassVar[tuple[str, ...]] = ("h1", "h2", "h3", "h4", "h5", "h6")
     HEADING_TAG_NAMES: ClassVar[frozenset[str]] = frozenset(HEADING_TAGS)

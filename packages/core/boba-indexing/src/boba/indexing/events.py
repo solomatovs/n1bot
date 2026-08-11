@@ -67,7 +67,9 @@ class BaseIndexEvent(ABC):
 
 @dataclass(frozen=True)
 class PhaseTransition(BaseIndexEvent, ABC):
-    """Граница фазы run индексации (RunStarted, BatchStarted, CleanupStarted, RunFinished)."""
+    """Граница фазы run индексации (RunStarted, BatchStarted, CleanupStarted,
+    RunFinished).
+    """
 
     @abstractmethod
     def label(self) -> str:
@@ -84,7 +86,9 @@ class PhaseTransition(BaseIndexEvent, ABC):
 
 @dataclass(frozen=True)
 class CompletedItem(BaseIndexEvent, ABC):
-    """Атомарный завершённый item (success или skip-after-error); severity задаёт реализация."""
+    """Атомарный завершённый item (success или skip-after-error); severity задаёт
+    реализация.
+    """
 
     @abstractmethod
     def headline(self) -> str:

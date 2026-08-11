@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from boba.chainlit.chat.data.storage import (
+from boba.chainlit.data.storage import (
     ImageStorageClient,
     LocalStorageClient,
     StorageClient,

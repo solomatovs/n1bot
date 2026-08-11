@@ -26,14 +26,14 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from boba.chainlit.domain.keys import StreamUrl
 from boba.chainlit.domain.stream import (
-    StreamJournalHub,
     JournalFile,
+    JournalWindow,
     StreamJournalError,
+    StreamJournalHub,
     StreamKey,
     StreamRecorderPort,
     StreamSlice,
     StreamStorePort,
-    JournalWindow,
 )
 from boba.chainlit.rendering.canvas import (
     CanvasContent,

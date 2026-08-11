@@ -13,9 +13,9 @@ from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
 
 from boba.chainlit.data.errors import (
-    DataBroken,
-    DataRejected,
-    DataUnavailable,
+    DataBrokenError,
+    DataRejectedError,
+    DataUnavailableError,
     data_boundary,
 )
 from boba.chainlit.data.models import (
@@ -158,7 +158,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                 await cur.execute(query, (identifier,))
                 row = await cur.fetchone()
         except Exception as e:
-            raise DataUnavailable("get_user", str(e)) from e
+            raise DataUnavailableError("get_user", str(e)) from e
 
         if row is None:
             return None
@@ -190,7 +190,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                 await cur.execute(query, model.all_params())
                 row = await cur.fetchone()
         except Exception as e:
-            raise DataUnavailable("create_user", str(e)) from e
+            raise DataUnavailableError("create_user", str(e)) from e
 
         if row is None:
             return None
@@ -218,7 +218,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             async with self._pool.connection() as conn:
                 await conn.execute(query, model.all_params())
         except Exception as e:
-            raise DataUnavailable("upsert_feedback", str(e)) from e
+            raise DataUnavailableError("upsert_feedback", str(e)) from e
 
         return Codec.uuid_str(model.id)
 
@@ -231,7 +231,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             async with self._pool.connection() as conn:
                 await conn.execute(query, {"id": UUID(feedback_id)})
         except Exception as e:
-            raise DataUnavailable("delete_feedback", str(e)) from e
+            raise DataUnavailableError("delete_feedback", str(e)) from e
 
         return True
 
@@ -265,7 +265,7 @@ class PostgresDataLayer(AttachmentDataLayer):
     @staticmethod
     def _require_uploaded(uploaded: Mapping[str, object]) -> None:
         if not uploaded:
-            raise DataUnavailable("create_element", "storage refused the upload")
+            raise DataUnavailableError("create_element", "storage refused the upload")
 
     @queue_until_user_message()
     @data_boundary
@@ -286,7 +286,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             await self._create_element(element)
         except Exception as e:
             # chainlit зовёт create_element фоновой таской и молча гасит исключение
-            raise DataUnavailable("create_element", str(e)) from e
+            raise DataUnavailableError("create_element", str(e)) from e
 
     async def _create_element(self, element: ChainlitElement) -> None:
         user_id = self._session_user_id()
@@ -345,7 +345,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                 )
                 row = await cur.fetchone()
         except Exception as e:
-            raise DataUnavailable("get_element", str(e)) from e
+            raise DataUnavailableError("get_element", str(e)) from e
 
         if row is None:
             return None
@@ -379,7 +379,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                         ).render(),
                     )
         except Exception as e:
-            raise DataUnavailable("delete_element", str(e)) from e
+            raise DataUnavailableError("delete_element", str(e)) from e
 
     @data_boundary
     async def create_step(self, step_dict: StepDict) -> None:
@@ -404,7 +404,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                 await conn.execute(feedbacks_query, params)
                 await conn.execute(elements_query, params)
         except Exception as e:
-            raise DataUnavailable("delete_step", str(e)) from e
+            raise DataUnavailableError("delete_step", str(e)) from e
 
     @data_boundary
     async def get_favorite_steps(self, user_id: str) -> list[StepDict]:
@@ -434,12 +434,14 @@ class PostgresDataLayer(AttachmentDataLayer):
                 await cur.execute(query, {"id": UUID(thread_id)})
                 row = await cur.fetchone()
         except Exception as e:
-            raise DataUnavailable("get_thread_author", str(e)) from e
+            raise DataUnavailableError("get_thread_author", str(e)) from e
 
         if row and row[0] is not None:
             return row[0]
 
-        raise DataRejected("get_thread_author", f"no author for thread {thread_id}")
+        raise DataRejectedError(
+            "get_thread_author", f"no author for thread {thread_id}"
+        )
 
     @data_boundary
     async def get_thread(self, thread_id: str) -> ThreadDict | None:
@@ -513,7 +515,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                     await cur.execute(elements_query, (tid,))
                     element_rows = await cur.fetchall()
         except Exception as e:
-            raise DataUnavailable("get_thread", str(e)) from e
+            raise DataUnavailableError("get_thread", str(e)) from e
 
         steps = list(await self._feed.steps(thread_id, user_identifier))
         feedback_by_step = {
@@ -593,7 +595,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             async with self._pool.connection() as conn:
                 await conn.execute(query, params)
         except Exception as e:
-            raise DataUnavailable("update_thread", str(e)) from e
+            raise DataUnavailableError("update_thread", str(e)) from e
 
     @data_boundary
     async def delete_thread(self, thread_id: str) -> None:
@@ -614,7 +616,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                 cursor = await conn.execute(thread_query, params)
                 owner = await cursor.fetchone()
         except Exception as e:
-            raise DataUnavailable("delete_thread", str(e)) from e
+            raise DataUnavailableError("delete_thread", str(e)) from e
 
         self._purge_stream_journal(owner, thread_id)
 
@@ -647,7 +649,7 @@ class PostgresDataLayer(AttachmentDataLayer):
         filters: ThreadFilter,
     ) -> PaginatedResponse[ThreadDict]:
         if not filters.userId:
-            raise DataRejected("list_threads", "userId is required")
+            raise DataRejectedError("list_threads", "userId is required")
 
         query = sql.SQL(
             """
@@ -684,7 +686,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                     )
                     rows = await cur.fetchall()
         except Exception as e:
-            raise DataUnavailable("list_threads", str(e)) from e
+            raise DataUnavailableError("list_threads", str(e)) from e
 
         user_identifier = None
         if identifier_row is not None:
@@ -720,7 +722,7 @@ class PostgresDataLayer(AttachmentDataLayer):
         """Владелец файлов вложений — пользователь текущей сессии chainlit."""
         user_id = current_user_id()
         if user_id is None:
-            raise DataBroken("_session_user_id", "no chainlit session")
+            raise DataBrokenError("_session_user_id", "no chainlit session")
 
         return str(user_id)
 

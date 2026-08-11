@@ -313,7 +313,7 @@ class CanvasRegistry:
             known.update(viewer.suffixes)
 
         if not known:
-            return "нет ни одного вьювера"
+            return "no viewers registered"
 
         return ", ".join(sorted(known))
 
@@ -363,7 +363,7 @@ class CanvasPanel:
             path=key.in_workspace(),
             label=key.name,
             note=(
-                "Этот формат файла панель показать не умеет. Поддерживаются: "
+                "The panel cannot display this file format. Supported: "
                 f"{CanvasRegistry.suffixes_hint()}"
             ),
         )

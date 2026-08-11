@@ -1,7 +1,7 @@
 """Контракт ошибок слоя данных: наружу выходят только эти типы.
 
-Ошибки: DataUnavailable — хранилище недоступно или ответило некорректно;
-DataRejected — запрос слою данных невозможен на этих данных; DataBroken —
+Ошибки: DataUnavailableError — хранилище недоступно или ответило некорректно;
+DataRejectedError — запрос слою данных невозможен на этих данных; DataBrokenError —
 нарушен инвариант самого слоя.
 
 Всё чужое (psycopg, файловая система, журнал потоков) упаковывается здесь и
@@ -23,10 +23,10 @@ from boba.chainlit.domain.errors import (
 )
 
 __all__ = [
-    "DataBroken",
+    "DataBrokenError",
     "DataLayerError",
-    "DataRejected",
-    "DataUnavailable",
+    "DataRejectedError",
+    "DataUnavailableError",
     "data_boundary",
 ]
 
@@ -55,21 +55,21 @@ class DataLayerError(BaseError):
         return HttpErrorMessage(status_code=self.STATUS, content=str(self))
 
 
-class DataUnavailable(DataLayerError):
+class DataUnavailableError(DataLayerError):
     """Хранилище недоступно или ответило не тем: база, диск, журнал."""
 
     STATUS: int = 503
     USER_TEXT: str = "Storage is not available"
 
 
-class DataRejected(DataLayerError):
+class DataRejectedError(DataLayerError):
     """Операция невозможна на этих данных: нет треда, нет автора, нет ключа."""
 
     STATUS: int = 404
     USER_TEXT: str = "The requested data is not found"
 
 
-class DataBroken(DataLayerError):
+class DataBrokenError(DataLayerError):
     """Слой данных нарушил собственный инвариант — это наша ошибка."""
 
     STATUS: int = 500
@@ -81,7 +81,7 @@ def data_boundary(
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
     """Граница слоя: наружу уходит только DataLayerError.
 
-    Свои ошибки пропускаются как есть, чужие пакуются в DataBroken с
+    Свои ошибки пропускаются как есть, чужие пакуются в DataBrokenError с
     сохранением причины.
     """
 
@@ -92,6 +92,6 @@ def data_boundary(
         except DataLayerError:
             raise
         except Exception as exc:
-            raise DataBroken(fn.__qualname__, str(exc)) from exc
+            raise DataBrokenError(fn.__qualname__, str(exc)) from exc
 
     return wrapper

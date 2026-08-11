@@ -459,21 +459,21 @@ class ChatView:
         step.name = status.title(self._tool_names.get(step.id, step.name))
         match ToolResultView(result).render():
             case ChartRendering() as chart:
-                step.output = "график отрисован"
+                step.output = "chart rendered"
                 if chart.title:
-                    step.output = f"график отрисован: {chart.title}"
+                    step.output = f"chart rendered: {chart.title}"
                 await self._sink.put(step)
                 await self._element(chart, tool_call_id)
             case CustomElementRendering() as custom:
-                step.output = "элемент отрисован"
+                step.output = "element rendered"
                 if custom.title:
-                    step.output = f"элемент отрисован: {custom.title}"
+                    step.output = f"element rendered: {custom.title}"
                 await self._sink.put(step)
                 await self._element(custom, tool_call_id)
             case DiagramRendering() as diagram:
-                step.output = "диаграмма отрисована"
+                step.output = "diagram rendered"
                 if diagram.title:
-                    step.output = f"диаграмма отрисована: {diagram.title}"
+                    step.output = f"diagram rendered: {diagram.title}"
                 await self._sink.put(step)
                 await self._element(diagram, tool_call_id)
             case MarkdownRendering(markdown=markdown):

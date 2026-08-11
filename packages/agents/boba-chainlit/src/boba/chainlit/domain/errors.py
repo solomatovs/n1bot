@@ -148,7 +148,9 @@ class ToolExecutionError(BaseError):
 
 
 class RateLimitError(ExternalServiceError):
-    "Превышен лимит/квота внешнего провайдера (429), частный случай ExternalServiceError"
+    """Превышен лимит/квота внешнего провайдера (429), частный случай
+    ExternalServiceError
+    """
 
 
 class AgentError(InternalServiceError):

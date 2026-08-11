@@ -22,7 +22,7 @@ from typing import Any, ClassVar, Self
 
 import pytest
 
-from boba.chainlit.chat.data.storage import (
+from boba.chainlit.data.storage import (
     ImageStorageClient,
     OpenedStream,
     StorageFactory,

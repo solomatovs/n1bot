@@ -1,4 +1,6 @@
-"""Значения предметной области: местоположение, коллекция, хеш, ключ, метаданные, план формата."""
+"""Значения предметной области: местоположение, коллекция, хеш, ключ, метаданные, план
+формата.
+"""
 
 from __future__ import annotations
 
@@ -29,7 +31,9 @@ __all__ = [
 
 @dataclass(frozen=True)
 class ChunkLocation:
-    """Положение в исходном content: start включительно, end исключительно (полуинтервал)."""
+    """Положение в исходном content: start включительно, end исключительно
+    (полуинтервал).
+    """
 
     start: int
     end: int
@@ -107,7 +111,7 @@ T = TypeVar("T")
 
 @dataclass(frozen=True)
 class MetadataKey(Generic[T]):
-    """Типизированный ключ для Metadata: namespace-prefixed wire-name + encode/decode."""
+    """Типизированный ключ Metadata: wire-name с namespace + encode/decode."""
 
     name: str
     decode: Callable[[str], T]
@@ -200,7 +204,9 @@ class ChunkerKeys:
 
 @dataclass(frozen=True)
 class FormatBlock:
-    """Одна семантическая единица body для chunker'а; is_atomic — «не резать char-split'ом»."""
+    """Одна семантическая единица body для chunker'а; is_atomic — «не резать char-
+    split'ом».
+    """
 
     format_content: str
     raw_content: str
@@ -210,7 +216,9 @@ class FormatBlock:
 
 @dataclass(frozen=True)
 class FormatPlan:
-    """План рендера Section в LLM-формат: blocks + repeat_header/footer + block_glue + breadcrumb-инфо."""
+    """План рендера Section в LLM-формат: blocks + repeat_header/footer + block_glue +
+    breadcrumb-инфо.
+    """
 
     blocks: tuple[FormatBlock, ...] = ()
     repeat_header: str = ""

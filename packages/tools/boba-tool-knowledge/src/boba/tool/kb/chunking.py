@@ -49,7 +49,9 @@ class StructuralChunkerFactory:
 
     @classmethod
     def build(cls, params: ChunkerParams) -> StructuralChunker:
-        """Собирает чанкер: режет по заголовкам, длинные секции добивает overlap-сплиттером."""
+        """Собирает чанкер: режет по заголовкам, длинные секции добивает overlap-
+        сплиттером.
+        """
         return StructuralChunker(
             chunker_id=cls._CHUNKER_ID,
             splitter_factory=cls._make_splitter_factory(

@@ -26,17 +26,17 @@ from ldap3.core.exceptions import (
 from pydantic import BaseModel, Field
 
 import chainlit as cl
-from boba.chainlit.domain.errors import (
-    AuthenticationError,
-    AuthorizationError,
-    ExternalServiceError,
-    InternalServiceError,
-)
 from boba.chainlit.auth.local import (
     LocalExcludeUserProvider,
     LocalUserRolesProvider,
     RoleExcludeConfig,
     RoleMappingConfig,
+)
+from boba.chainlit.domain.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    ExternalServiceError,
+    InternalServiceError,
 )
 from boba.chainlit.domain.session import UserMetadataField
 

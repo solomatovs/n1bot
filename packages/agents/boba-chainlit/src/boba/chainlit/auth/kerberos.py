@@ -21,13 +21,6 @@ from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import chainlit as cl
-from boba.chainlit.domain.errors import (
-    AuthenticationError,
-    AuthorizationError,
-    BaseError,
-    ExternalServiceError,
-    InternalServiceError,
-)
 from boba.chainlit.auth.ldap import (
     ADDirectory,
     ADUserEntry,
@@ -48,6 +41,13 @@ from boba.chainlit.auth.local import (
     LocalUserRolesProvider,
     RoleExcludeConfig,
     RoleMappingConfig,
+)
+from boba.chainlit.domain.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    BaseError,
+    ExternalServiceError,
+    InternalServiceError,
 )
 from boba.chainlit.domain.session import UserMetadataField
 from boba.krb import (

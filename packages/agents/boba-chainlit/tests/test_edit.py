@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, cast
 
 import pytest
+from chainlit.data.base import BaseDataLayer
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
@@ -14,7 +15,6 @@ from langgraph.graph.state import CompiledStateGraph
 
 from boba.chainlit.chat.edit import ThreadRewind
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
-from chainlit.data.base import BaseDataLayer
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 

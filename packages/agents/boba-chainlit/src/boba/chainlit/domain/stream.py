@@ -14,21 +14,22 @@ from collections.abc import Callable
 from enum import IntEnum, StrEnum
 from typing import ClassVar, Protocol
 
-from boba.toolkit.stream import StreamSink
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from boba.toolkit.stream import StreamSink
 
 __all__ = [
     "CallLogUsage",
     "JournalFile",
     "JournalText",
+    "JournalWindow",
     "StreamJournalError",
+    "StreamJournalHub",
     "StreamKey",
     "StreamMeta",
     "StreamRecorderPort",
     "StreamSlice",
-    "StreamJournalHub",
     "StreamStorePort",
-    "JournalWindow",
     "ThreadUsage",
     "VaultUsage",
 ]
