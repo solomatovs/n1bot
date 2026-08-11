@@ -9,8 +9,11 @@
             "console": "integratedTerminal",
             "jinja": true,
             "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+            },
             "justMyCode": false,
             "stopOnEntry": false
         },
@@ -21,8 +24,11 @@
             "module": "boba.chainlit.cli.ingest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+            },
             "justMyCode": false,
             "args": [
                 "--mode", "spaces",
@@ -41,8 +47,11 @@
             "module": "boba.chainlit.cli.ingest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+            },
             "justMyCode": false,
             "args": [
                 "--mode", "pages",
@@ -60,8 +69,11 @@
             "module": "pytest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+            },
             "justMyCode": false,
             "args": [
                 "${file}",
@@ -75,8 +87,11 @@
             "module": "pytest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+            },
             "justMyCode": false,
             "args": [
                 "${workspaceFolder}/packages",
@@ -90,8 +105,11 @@
             "module": "pytest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.vscode/python-delegated.sh",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+            },
             "justMyCode": false,
             "args": [
                 "${workspaceFolder}/packages/agents/boba-chainlit/tests/test_tools_integration.py",

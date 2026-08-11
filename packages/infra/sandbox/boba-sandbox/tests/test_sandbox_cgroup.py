@@ -114,9 +114,7 @@ class TestProfileValidation:
 
 
 _UID = os.getuid()
-_DELEGATED_PARENT = (
-    f"/sys/fs/cgroup/user.slice/user-{_UID}.slice/user@{_UID}.service"
-)
+_DELEGATED_PARENT = f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service"
 
 needs_delegation = pytest.mark.skipif(
     not os.path.isdir(_DELEGATED_PARENT),

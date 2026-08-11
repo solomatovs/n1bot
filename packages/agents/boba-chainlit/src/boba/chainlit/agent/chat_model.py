@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, ClassVar
 
@@ -31,11 +32,12 @@ class ReasoningChatOpenAI(ChatOpenAI):
     )
 
     @staticmethod
-    def _reasoning_of(payload: dict) -> str:
+    def _reasoning_of(payload: Mapping[str, Any]) -> str:
         for field in ReasoningChatOpenAI._REASONING_FIELDS:
             value = payload.get(field.value)
             if value:
                 return str(value)
+
         return ""
 
     @override
@@ -52,14 +54,23 @@ class ReasoningChatOpenAI(ChatOpenAI):
         )
         if generation_chunk is None:
             return None
-        choices = chunk.get(ResponseField.CHOICES.value) or []
-        if choices:
-            delta = choices[0].get(ResponseField.DELTA.value) or {}
-            reasoning = self._reasoning_of(delta)
-            if reasoning:
-                generation_chunk.message.additional_kwargs[
-                    ResponseField.REASONING_CONTENT.value
-                ] = reasoning
+
+        choices = chunk.get(ResponseField.CHOICES.value)
+        if not choices:
+            return generation_chunk
+
+        delta = choices[0].get(ResponseField.DELTA.value)
+        if not delta:
+            return generation_chunk
+
+        reasoning = self._reasoning_of(delta)
+        if not reasoning:
+            return generation_chunk
+
+        generation_chunk.message.additional_kwargs[
+            ResponseField.REASONING_CONTENT.value
+        ] = reasoning
+
         return generation_chunk
 
     @override
@@ -73,12 +84,24 @@ class ReasoningChatOpenAI(ChatOpenAI):
             response_dict = response
         else:
             response_dict = response.model_dump()
-        choices = response_dict.get(ResponseField.CHOICES.value) or []
-        if choices and result.generations:
-            message = choices[0].get(ResponseField.MESSAGE.value) or {}
-            reasoning = self._reasoning_of(message)
-            if reasoning:
-                result.generations[0].message.additional_kwargs[
-                    ResponseField.REASONING_CONTENT.value
-                ] = reasoning
+
+        if not result.generations:
+            return result
+
+        choices = response_dict.get(ResponseField.CHOICES.value)
+        if not choices:
+            return result
+
+        message = choices[0].get(ResponseField.MESSAGE.value)
+        if not message:
+            return result
+
+        reasoning = self._reasoning_of(message)
+        if not reasoning:
+            return result
+
+        result.generations[0].message.additional_kwargs[
+            ResponseField.REASONING_CONTENT.value
+        ] = reasoning
+
         return result

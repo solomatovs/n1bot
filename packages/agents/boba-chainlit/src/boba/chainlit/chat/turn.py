@@ -21,7 +21,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, ClassVar, cast
 
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
@@ -29,6 +29,7 @@ import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped, TurnRegistry
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.data.object_key import ObjectKey
+from boba.chainlit.chat.transcript import TurnMark, TurnRecord
 from boba.chainlit.infra.session import current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.chainlit.rendering.stream_view import ToolStreams
@@ -183,10 +184,16 @@ class ChatTurn:
         steps: list[StepDict] = []
         if container := self._view.container_step:
             steps.append(container.to_dict())
+
+        if thinking := self._view.thinking_step:
+            steps.append(thinking.to_dict())
+
         for step in self._tracer.pending_tool_steps:
             steps.append(step.to_dict())
+
         if answer := self._view.answer_message:
             steps.append(answer.to_dict())
+
         return steps
 
     async def run(
@@ -278,7 +285,7 @@ class ChatTurn:
             content = f"{partial}\n\n{note}"
 
         await self._draw_stop(note_text, content)
-        await self._remember(content, {"stopped": True})
+        await self._remember(content, TurnMark.STOPPED)
 
     async def _draw_stop(self, note_text: str, content: str) -> None:
         """Отрисовка в ленте; при разрыве связи писать уже некому — это не сбой."""
@@ -289,15 +296,20 @@ class ChatTurn:
             logger.warning("stopped turn is not drawn: chat is gone", exc_info=True)
 
     async def _report_failure(self, error: BaseException) -> None:
-        text = f"**сбой:** {error}"
+        text = f"**failed:** {error}"
         await self._view.error(text, self._key)
-        await self._remember(text, {"error": True})
+        await self._remember(text, TurnMark.ERROR)
 
-    async def _remember(self, content: str, marks: dict[str, Any]) -> None:
+    async def _remember(self, content: str, mark: TurnMark) -> None:
         """История обязана пережить остановку: её читает и лента, и сам агент."""
+        record = TurnRecord(
+            content=content,
+            mark=mark,
+            reasoning=self._tracer.pending_reasoning,
+        )
         await self._graph.aupdate_state(
             RunnableConfig(configurable={"thread_id": self._thread_id}),
-            {"messages": [AIMessage(content=content, additional_kwargs=marks)]},
+            {"messages": [record.message()]},
         )
 
     async def _on_chunk(self, chunk: BaseMessage) -> None:

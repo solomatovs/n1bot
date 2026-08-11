@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Protocol, cast
 
 from langchain_core.messages import (
@@ -14,9 +16,62 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from boba.chainlit.rendering.chat_view import ChatView
+from boba.chainlit.agent.chat_model import ResponseField
+from boba.chainlit.rendering.chat_view import ChatView, StepText, TurnDraft
 
-__all__ = ["CheckpointMessages", "ConversationTranscript", "ThreadMessages"]
+__all__ = [
+    "CheckpointMessages",
+    "ConversationTranscript",
+    "PendingCall",
+    "ThreadMessages",
+    "TurnMark",
+    "TurnRecord",
+]
+
+
+@dataclass
+class PendingCall:
+    """Вызов инструмента, ждущий своего ToolMessage при сборке ленты."""
+
+    name: str
+    args: Mapping[str, Any]
+
+    @classmethod
+    def of(cls, call: Mapping[str, Any]) -> PendingCall:
+        """Разбирает tool_call langchain: имя и аргументы могут не приехать."""
+        name = call.get("name")
+        if not name:
+            name = ""
+
+        args = call.get("args")
+        if not isinstance(args, Mapping):
+            args = {}
+
+        return cls(name=str(name), args=cast("Mapping[str, Any]", args))
+
+
+class TurnMark(StrEnum):
+    """Исход хода в additional_kwargs: его читает сборка ленты из истории."""
+
+    STOPPED = "stopped"
+    ERROR = "error"
+
+
+@dataclass
+class TurnRecord:
+    """Запись оборванного хода в историю агента."""
+
+    content: str
+    mark: TurnMark
+    reasoning: str = ""
+
+    def message(self) -> AIMessage:
+        """Сообщение для состояния графа: пометка исхода и рассуждения при них."""
+        extra: dict[str, Any] = {self.mark.value: True}
+        if self.reasoning:
+            extra[ResponseField.REASONING_CONTENT.value] = self.reasoning
+
+        return AIMessage(content=self.content, additional_kwargs=extra)
 
 
 class ThreadMessages(Protocol):
@@ -48,18 +103,20 @@ class ConversationTranscript:
     def __init__(self, messages: Sequence[BaseMessage], view: ChatView) -> None:
         self._messages = messages
         self._view = view
-        self._pending: dict[str, Mapping[str, Any]] = {}
-        self._turn_key: str | None = None
-        self._answers = 0
+        self._pending: dict[str, PendingCall] = {}
+        self._turn = TurnDraft()
 
     async def replay(self) -> None:
         for index, message in enumerate(self._messages):
-            key = message.id or f"#{index}"
+            key = message.id
+            if not key:
+                key = f"#{index}"
+
             match message:
                 case HumanMessage():
                     self._view.begin_turn(message.id)
                     self._pending.clear()
-                    self._turn_key, self._answers = message.id, 0
+                    self._turn = TurnDraft(key=message.id)
                     await self._view.question(self._text(message), message.id)
                 case ToolMessage():
                     await self._tool(message, key)
@@ -70,34 +127,40 @@ class ConversationTranscript:
 
     async def _assistant(self, message: AIMessage, key: str) -> None:
         if self._is_error(message):
-            await self._view.error(self._text(message), self._answer_key() or key)
+            await self._view.error(self._text(message), self._answer_key(key))
             return
 
         if reasoning := self._reasoning(message):
             await self._view.thinking(reasoning, key)
 
-        for call in message.tool_calls or ():
-            if call_id := call.get("id"):
-                self._pending[call_id] = call
+        for call in message.tool_calls:
+            call_id = call.get("id")
+            if not call_id:
+                continue
+
+            self._pending[call_id] = PendingCall.of(call)
 
         if text := self._text(message):
-            await self._view.answer(text, self._answer_key() or key)
+            await self._view.answer(text, self._answer_key(key))
 
     async def _tool(self, message: ToolMessage, key: str) -> None:
         call = self._pending.pop(message.tool_call_id, None)
-        if call is None:
-            call = {}
 
         name = message.name
+        if not name and call is not None:
+            name = call.name
         if not name:
-            name = call.get("name")
-        if not name:
-            name = "tool"
+            name = StepText.TOOL.value
 
-        args = cast("Mapping[str, Any] | None", call.get("args"))
-        step = await self._view.tool_started(
-            str(name), args, message.tool_call_id or key
-        )
+        args: Mapping[str, Any] | None = None
+        if call is not None:
+            args = call.args
+
+        call_key = message.tool_call_id
+        if not call_key:
+            call_key = key
+
+        step = await self._view.tool_started(name, args, call_key)
 
         if message.status == "error":
             await self._view.tool_failed(step, self._text(message))
@@ -108,26 +171,33 @@ class ConversationTranscript:
             artifact = self._text(message)
         await self._view.tool_finished(step, artifact, message.tool_call_id)
 
-    def _answer_key(self) -> str | None:
-        if self._turn_key is None:
-            return None
-        suffix = ""
-        if self._answers:
-            suffix = f"#{self._answers}"
-        key = f"{self._turn_key}{suffix}"
-        self._answers += 1
-        return key
+    def _answer_key(self, key: str) -> str:
+        """Ключ очередного ответа хода; вне хода адресуемся самим сообщением."""
+        turn_key = self._turn.next_answer_key()
+        if turn_key is None:
+            return key
+
+        return turn_key
 
     @staticmethod
     def _is_error(message: AIMessage) -> bool:
-        return bool((message.additional_kwargs or {}).get("error"))
+        extra = message.additional_kwargs
+        if not extra:
+            return False
+
+        return bool(extra.get(TurnMark.ERROR.value))
 
     @staticmethod
     def _reasoning(message: AIMessage) -> str:
-        value = (message.additional_kwargs or {}).get("reasoning_content")
-        if value:
-            return str(value)
-        return ""
+        extra = message.additional_kwargs
+        if not extra:
+            return ""
+
+        value = extra.get(ResponseField.REASONING_CONTENT.value)
+        if not value:
+            return ""
+
+        return str(value)
 
     @staticmethod
     def _text(message: BaseMessage) -> str:
