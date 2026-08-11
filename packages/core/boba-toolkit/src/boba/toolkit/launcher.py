@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 __all__ = [
     "ChunkSink",
+    "ClippedText",
     "CollectorCapacityError",
     "CollectorRowLimitError",
     "EmptyTrailer",
@@ -239,6 +240,37 @@ class RowCollector(ChunkSink):
 
     def rows(self) -> list[dict[str, Any]]:
         return self._rows
+
+
+class ClippedText(BaseModel):
+    """Начало потока в пределах байтового бюджета плюс пометка об усечении."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    total_bytes: int
+    truncated: bool
+
+    ENCODING: ClassVar[str] = "utf-8"
+    NOTICE: ClassVar[str] = "\n…[truncated: {kept} of {total} bytes shown]"
+
+    @classmethod
+    def of(cls, text: str, max_bytes: int) -> ClippedText:
+        if max_bytes <= 0:
+            msg = f"max_bytes must be positive, got {max_bytes}"
+            raise ValueError(msg)
+
+        raw = text.encode(cls.ENCODING)
+        total = len(raw)
+        if total <= max_bytes:
+            return cls(text=text, total_bytes=total, truncated=False)
+
+        # обрезка по байтам рвёт последний символ — его отбрасываем
+        head = raw[:max_bytes].decode(cls.ENCODING, errors="ignore")
+        kept = len(head.encode(cls.ENCODING))
+        notice = cls.NOTICE.format(kept=kept, total=total)
+
+        return cls(text=f"{head}{notice}", total_bytes=total, truncated=True)
 
 
 @dataclass(frozen=True)

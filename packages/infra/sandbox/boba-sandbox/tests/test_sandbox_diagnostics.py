@@ -15,10 +15,12 @@ from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult
 from boba.sandbox.profile import SandboxProfile
-from boba.tool.shell.tools import build_bash_tool
+from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.workspace.launcher import FUSE_DEVICE
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
+
+OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024)
 
 needs_sandbox = pytest.mark.skipif(
     shutil.which("bwrap") is None
@@ -177,7 +179,7 @@ def _launchers(profile: SandboxProfile):
 
 
 def _tool(profile: SandboxProfile):
-    return build_bash_tool(_launchers(profile))
+    return build_bash_tool(OUTPUT_LIMITS, _launchers(profile))
 
 
 def _invoke(tool, command: str, stdin: str = "") -> dict:

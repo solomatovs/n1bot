@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 
 import pytest
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import build_bash_tool
+from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
 from boba.sandbox import SandboxCaller
 from boba.sandbox.argv import build_bwrap_argv
 from boba.sandbox.profile import BindSpec, SandboxProfile, SandboxToolConfig
@@ -209,8 +209,15 @@ class TestBwrapArgv:
 class TestBashTool:
     """Интеграционные: реально запускают bwrap."""
 
-    @staticmethod
-    def _make_tool(workspace_root: Path, profile: SandboxProfile | None = None):
+    LIMITS: ClassVar[BashToolConfig] = BashToolConfig(max_output_bytes=4 * 1024 * 1024)
+
+    @classmethod
+    def _make_tool(
+        cls,
+        workspace_root: Path,
+        profile: SandboxProfile | None = None,
+        limits: BashToolConfig | None = None,
+    ):
         ws = str(workspace_root)
         base = profile or _profile()
         profile_dto = base.model_copy(
@@ -222,7 +229,12 @@ class TestBashTool:
         )
         sandbox = SandboxToolConfig(profile=profile_dto, override={})
         profile = sandbox.effective()
-        return build_bash_tool(lambda tool: SandboxCaller(tool, profile, dict))
+
+        output = limits
+        if output is None:
+            output = cls.LIMITS
+
+        return build_bash_tool(output, lambda tool: SandboxCaller(tool, profile, dict))
 
     @staticmethod
     def _invoke(tool, **args) -> dict:
@@ -318,10 +330,28 @@ class TestBashTool:
         )
         profile = SandboxToolConfig(profile=profile_dto, override={}).effective()
         tool = build_bash_tool(
+            self.LIMITS,
             lambda tool: SandboxCaller(
                 tool, profile, lambda: {"user_id": "7", "thread_id": "t1"}
-            )
+            ),
         )
         payload = self._invoke(tool, command="echo data > out.txt")
         assert payload["exit_code"] == 0
         assert (tmp_path / "7" / "t1" / "out.txt").read_text() == "data\n"
+
+    def test_short_output_is_not_clipped(self, tmp_path: Path) -> None:
+        payload = self._invoke(self._make_tool(tmp_path), command="echo hello")
+        assert not payload["stdout_truncated"]
+        assert payload["stdout_bytes"] == len(b"hello\n")
+
+    def test_large_output_is_clipped_to_budget(self, tmp_path: Path) -> None:
+        limits = BashToolConfig(max_output_bytes=200)
+        tool = self._make_tool(tmp_path, limits=limits)
+
+        payload = self._invoke(tool, command="seq 1 100000")
+
+        assert payload["exit_code"] == 0
+        assert payload["stdout_truncated"]
+        assert payload["stdout_bytes"] > 500_000
+        assert payload["stdout"].startswith("1\n2\n3\n")
+        assert "truncated: 200 of" in payload["stdout"]

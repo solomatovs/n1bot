@@ -25,7 +25,7 @@ from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxMountError
-from boba.tool.shell.tools import build_bash_tool
+from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.toolkit.binaries import TrustedBinaries
 from boba.workspace.launcher import (
     FUSE_DEVICE,
@@ -37,6 +37,8 @@ from boba.workspace.launcher import (
 )
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
+
+OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024)
 
 
 def _bin_dirs() -> list[str]:
@@ -163,7 +165,7 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
             tool, profile_dto, lambda: {"user_id": "7", "thread_id": thread_id}
         )
 
-    return build_bash_tool(launchers)
+    return build_bash_tool(OUTPUT_LIMITS, launchers)
 
 
 def _invoke(tool, command: str, stdin: str = "") -> dict:

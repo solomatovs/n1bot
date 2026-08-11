@@ -273,6 +273,10 @@ RUN set -eu \
     && chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/data "$APP"/assets/.files                 \
     && ln -sf eng.traineddata ${BOBA_DIR}/sandbox/third/tessdata/rus+eng.traineddata       \
     && ln -sf rus.traineddata ${BOBA_DIR}/sandbox/third/tessdata/eng+rus.traineddata       \
+    # bwrap и fuse2fs берутся отсюда: запись группе или посторонним = отказ
+    # TrustedBinaries на старте, поэтому снимаем её и проверяем сразу
+    && chmod -R go-w ${BOBA_DIR}/third ${BOBA_DIR}/sandbox                                      \
+    && [ -z "$(find ${BOBA_DIR}/third/bin -maxdepth 1 -perm /022 -print -quit)" ]               \
     && ${BOBA_DIR}/third/bin/bwrap --version                                                    \
     && ${BOBA_DIR}/third/bin/fuse2fs -V                                                         \
     && BOBA_BASE="${BOBA_DIR}" BOBA_VERSION="${BOBA_VERSION}"                                   \
