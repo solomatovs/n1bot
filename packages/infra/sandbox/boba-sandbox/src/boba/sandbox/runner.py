@@ -1,4 +1,10 @@
-"""Запуск команды в песочнице: одна точка входа для всех инструментов."""
+"""Запуск команды в песочнице: одна точка входа для всех инструментов.
+
+Ошибки: SandboxMountError — образ не смонтирован, команда не запускалась;
+SandboxLaunchError — окружение запуска подготовить не удалось (лимиты, cgroup,
+каталоги, доверенные бинари). Обе — LauncherError, других типов слой наружу
+не выпускает; ToolStopped из остановки хода проходит как есть.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.binaries import SandboxBinary
-from boba.toolkit.launcher import LaunchOutcome, LaunchPayload
+from boba.toolkit.launcher import LauncherError, LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.stream import StreamSink, ToolStreamTap
 from boba.workspace.launcher import (
@@ -41,7 +47,9 @@ SandboxOutcome = LaunchOutcome
 """Историческое имя результата запуска; тип задаёт порт."""
 
 __all__ = [
+    "SandboxLaunchError",
     "SandboxLogRelay",
+    "SandboxMountError",
     "SandboxOutcome",
     "SandboxRunner",
     "ToolCallContext",
@@ -49,6 +57,14 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class SandboxMountError(LauncherError):
+    """Образ не смонтирован: команда не запускалась, результата нет."""
+
+
+class SandboxLaunchError(LauncherError):
+    """Окружение запуска подготовить не удалось: команда не запускалась."""
 
 
 class SandboxLogRelay:
@@ -154,6 +170,21 @@ class SandboxRunner:
         command: str,
         stdin: str,
         stdout_sink: Callable[[bytes], None] | None = None,
+    ) -> SandboxOutcome:
+        """Граница слоя: наружу уходят только ошибки из контракта модуля."""
+        try:
+            return self._run(command, stdin, stdout_sink)
+        except LauncherError:
+            raise
+        except Exception as exc:
+            msg = f"sandbox[{self._label()}]: launch failed: {exc}"
+            raise SandboxLaunchError(msg) from exc
+
+    def _run(
+        self,
+        command: str,
+        stdin: str,
+        stdout_sink: Callable[[bytes], None] | None,
     ) -> SandboxOutcome:
         rendered = self._profile.render(dict(self._path_vars()))
         self._prepare_dirs(rendered)
@@ -377,10 +408,12 @@ class SandboxRunner:
     def _raise_on_mount_error(result: RunResult) -> None:
         if result.exit_code != LauncherExit.MOUNT_ERROR:
             return
+
         if LauncherMarker.ERROR.value not in result.stderr:
             return
+
         msg = f"sandbox: image not mounted: {result.stderr.strip()}"
-        raise RuntimeError(msg)
+        raise SandboxMountError(msg)
 
 
 class ToolCallContext:

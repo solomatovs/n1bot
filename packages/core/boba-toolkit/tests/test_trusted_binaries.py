@@ -83,15 +83,12 @@ class TestResolve:
             binaries.resolve(SandboxBinary.BWRAP)
 
     def test_resolve_any_falls_back_to_the_next_name(self, tmp_path: Path) -> None:
-        _executable(tmp_path, SandboxBinary.FUSERMOUNT.value)
+        _executable(tmp_path, SandboxBinary.FUSE2FS.value)
         binaries = TrustedBinaries(dirs=(str(tmp_path),))
 
-        found = binaries.resolve_any(
-            SandboxBinary.FUSERMOUNT3,
-            SandboxBinary.FUSERMOUNT,
-        )
+        found = binaries.resolve_any(SandboxBinary.BWRAP, SandboxBinary.FUSE2FS)
 
-        assert found == str(tmp_path / "fusermount")
+        assert found == str(tmp_path / SandboxBinary.FUSE2FS.value)
 
     def test_has_reports_availability_without_raising(self, tmp_path: Path) -> None:
         binaries = TrustedBinaries(dirs=(str(tmp_path),))
