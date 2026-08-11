@@ -24,15 +24,16 @@ from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
-from boba.chainlit.chat.data.object_key import StreamUrl
-from boba.chainlit.chat.data.stream_journal import (
-    JournalFile,
-    StreamJournal,
-    StreamJournalError,
+from boba.chainlit.domain.keys import StreamUrl
+from boba.chainlit.domain.stream import (
     StreamJournalHub,
+    JournalFile,
+    StreamJournalError,
     StreamKey,
-    StreamRecorder,
+    StreamRecorderPort,
     StreamSlice,
+    StreamStorePort,
+    JournalWindow,
 )
 from boba.chainlit.rendering.canvas import (
     CanvasContent,
@@ -144,16 +145,14 @@ class ToolStream:
         self,
         key: StreamKey,
         tool_name: str,
-        journal: StreamJournal,
+        journal: StreamStorePort,
         protected_logs: frozenset[str],
     ) -> None:
         self._key = key
         self._tool_name = tool_name
         self._lock = threading.Lock()
         self._waker: tuple[asyncio.AbstractEventLoop, asyncio.Event] | None = None
-        self._recorder = journal.recorder(
-            key, tool_name, self._wake, protected_logs
-        )
+        self._recorder = journal.recorder(key, tool_name, self._wake, protected_logs)
 
     @property
     def key(self) -> StreamKey:
@@ -164,7 +163,7 @@ class ToolStream:
         return self._tool_name
 
     @property
-    def recorder(self) -> StreamRecorder:
+    def recorder(self) -> StreamRecorderPort:
         return self._recorder
 
     def tail(self, window: int) -> StreamSlice:
@@ -213,7 +212,7 @@ class ToolStreams:
     _STREAMABLE: ClassVar[set[str]] = set()
 
     @classmethod
-    def configure(cls, journal: StreamJournal) -> None:
+    def configure(cls, journal: StreamStorePort) -> None:
         StreamJournalHub.configure(journal)
 
     @classmethod
@@ -222,7 +221,7 @@ class ToolStreams:
         return StreamJournalHub.get() is not None
 
     @classmethod
-    def journal(cls) -> StreamJournal | None:
+    def journal(cls) -> StreamStorePort | None:
         return StreamJournalHub.get()
 
     @classmethod
@@ -264,13 +263,13 @@ class ToolStreams:
             return None
 
         try:
-            key = StreamKey(
-                user_id=user_id, thread_id=thread_id, call_id=call_id
-            )
+            key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
             stream = ToolStream(key, tool_name, journal, cls.live_logs())
         except (StreamJournalError, ValidationError):
             logger.warning(
-                "stream journal refused call %s of %s", call_id, tool_name,
+                "stream journal refused call %s of %s",
+                call_id,
+                tool_name,
                 exc_info=True,
             )
             return None
@@ -334,14 +333,10 @@ class ToolStreams:
             return None
 
         try:
-            key = StreamKey(
-                user_id=user_id, thread_id=thread_id, call_id=call_id
-            )
+            key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
             return journal.slice_at(key, offset)
         except (StreamJournalError, ValidationError):
-            logger.warning(
-                "stream journal read failed: %s", call_id, exc_info=True
-            )
+            logger.warning("stream journal read failed: %s", call_id, exc_info=True)
             return None
 
     @classmethod
@@ -354,14 +349,10 @@ class ToolStreams:
             return None
 
         try:
-            key = StreamKey(
-                user_id=user_id, thread_id=thread_id, call_id=call_id
-            )
+            key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
             return journal.slice_before(key, end)
         except (StreamJournalError, ValidationError):
-            logger.warning(
-                "stream journal read failed: %s", call_id, exc_info=True
-            )
+            logger.warning("stream journal read failed: %s", call_id, exc_info=True)
             return None
 
     @classmethod
@@ -466,7 +457,7 @@ class StreamScreen:
 
             while True:
                 event.clear()
-                piece = stream.tail(StreamJournal.WINDOW_BYTES)
+                piece = stream.tail(JournalWindow.BYTES)
                 await channel.push(
                     cls.content(
                         stream.key.thread_id,
@@ -542,7 +533,5 @@ async def window_stream_action(
     if piece is None:
         return {}
 
-    content = StreamScreen.content(
-        thread_id, request.call_id, "", piece, follow=False
-    )
+    content = StreamScreen.content(thread_id, request.call_id, "", piece, follow=False)
     return content.props()

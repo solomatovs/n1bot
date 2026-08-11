@@ -66,7 +66,9 @@ class TestRewindPlan:
     def test_chart_elements_are_collected(self) -> None:
         messages = turn("q1", "a1", call_id="call_1")
         plan = ThreadRewind.plan(messages, "q1", THREAD)
-        assert plan.element_ids == [ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)]
+        assert plan.element_ids == [
+            ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)
+        ]
         assert "a1-tool" in plan.remove_ids
 
     def test_nothing_after_question(self) -> None:
@@ -140,9 +142,7 @@ class TestApplyOnRealGraph:
 
         assert [m.id for m in messages] == ["q1"]
         assert messages[0].content == "новый вопрос"
-        assert deleted == [
-            ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)
-        ]
+        assert deleted == [ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)]
 
     def test_edit_of_a_middle_question_keeps_the_prefix(self) -> None:
         async def scenario() -> list[Any]:

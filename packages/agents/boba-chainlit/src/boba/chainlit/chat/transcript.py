@@ -17,13 +17,20 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from boba.chainlit.agent.chat_model import ResponseField
-from boba.chainlit.rendering.chat_view import ChatView, StepText, TurnDraft
+from boba.chainlit.rendering.chat_view import (
+    ChatView,
+    RecordingSink,
+    StepText,
+    TurnDraft,
+)
+from chainlit.step import StepDict
 
 __all__ = [
     "CheckpointMessages",
     "ConversationTranscript",
     "PendingCall",
     "ThreadMessages",
+    "TranscriptFeed",
     "TurnMark",
     "TurnRecord",
 ]
@@ -78,6 +85,27 @@ class ThreadMessages(Protocol):
     """Источник сообщений треда, из которых собирается лента."""
 
     async def load(self, thread_id: str) -> list[BaseMessage]: ...
+
+
+class TranscriptFeed:
+    """Лента треда для слоя данных: история checkpointer'а разворачивается в шаги.
+
+    Реализует контракт ThreadFeed, объявленный слоем данных: отрисовка знает про
+    хранилище, а не наоборот.
+    """
+
+    def __init__(self, messages: ThreadMessages) -> None:
+        self._messages = messages
+
+    async def steps(self, thread_id: str, user_name: str | None) -> Sequence[StepDict]:
+        messages = await self._messages.load(thread_id)
+        if not messages:
+            return []
+
+        sink = RecordingSink()
+        view = ChatView(thread_id, sink, user_name=user_name)
+        await ConversationTranscript(messages, view).replay()
+        return sink.steps
 
 
 class CheckpointMessages:

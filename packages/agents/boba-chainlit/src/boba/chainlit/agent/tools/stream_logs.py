@@ -17,13 +17,13 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.chainlit.chat.data.stream_journal import (
-    StreamJournal,
-    StreamJournalError,
+from boba.chainlit.domain.stream import (
     StreamJournalHub,
+    StreamStorePort,
     VaultUsage,
 )
-from boba.chainlit.infra.session import current_thread_id, current_user_id
+from boba.chainlit.domain.stream import StreamJournalError
+from boba.chainlit.domain.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.stream_view import ToolStreams
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 
@@ -113,7 +113,7 @@ class UsageReport:
 
 
 def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
-    def context() -> tuple[StreamJournal, str, str]:
+    def context() -> tuple[StreamStorePort, str, str]:
         journal = StreamJournalHub.get()
         if journal is None:
             raise StreamLogsRefusedError(
@@ -145,14 +145,10 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
         except StreamJournalError as e:
             return pack_result(
-                ErrorResult(
-                    message=str(e), error_kind=StreamLogsErrorKind.NO_JOURNAL
-                )
+                ErrorResult(message=str(e), error_kind=StreamLogsErrorKind.NO_JOURNAL)
             )
 
-        return pack_result(
-            TextResult(text=UsageReport(usage, thread_id).render())
-        )
+        return pack_result(TextResult(text=UsageReport(usage, thread_id).render()))
 
     @tool(response_format="content_and_artifact")
     def stream_logs_cleanup(

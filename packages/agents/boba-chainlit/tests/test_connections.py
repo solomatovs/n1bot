@@ -10,7 +10,7 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, Field, SecretStr
 
-from boba.chainlit.chat.data.models import Thread, User
+from boba.chainlit.data.models import Thread, User
 from boba.chainlit.connections import (
     ConnectionKinds,
     ConnectionsConfig,

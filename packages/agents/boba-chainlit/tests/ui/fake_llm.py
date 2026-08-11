@@ -161,7 +161,9 @@ class ScenarioBook:
         )
         return Scenario(
             turns=[
-                TurnScript(reasoning="I will purge a missing thread", tool_calls=[call]),
+                TurnScript(
+                    reasoning="I will purge a missing thread", tool_calls=[call]
+                ),
                 TurnScript(content="The purge failed"),
             ]
         )
@@ -172,7 +174,10 @@ class ScenarioBook:
             call_id="call_diagram",
             name="diagram_save",
             arguments=json.dumps(
-                {"name": "orders.mmd", "spec": "erDiagram\n    USER ||--o{ ORDER : places"}
+                {
+                    "name": "orders.mmd",
+                    "spec": "erDiagram\n    USER ||--o{ ORDER : places",
+                }
             ),
         )
         return Scenario(

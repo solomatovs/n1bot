@@ -595,7 +595,9 @@ class TestLiveImage:
         self, tmp_path: Path, template: Path
     ) -> None:
         """Именованный канал в образе: read отказывает, а не ждёт писателя."""
-        _invoke(_bash(tmp_path, template), "mkdir -p t1/upload && mkfifo t1/upload/pipe")
+        _invoke(
+            _bash(tmp_path, template), "mkdir -p t1/upload && mkfifo t1/upload/pipe"
+        )
         storage = _storage(tmp_path, template, op_timeout_sec=15)
 
         with pytest.raises(StorageError) as failure:

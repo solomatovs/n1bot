@@ -22,178 +22,30 @@ import os
 import shutil
 import threading
 from collections.abc import Callable, Iterator
-from enum import StrEnum
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from boba.chainlit.domain.stream import (
+    CallLogUsage,
+    JournalFile,
+    JournalText,
+    StreamJournalError,
+    StreamKey,
+    StreamMeta,
+    StreamRecorderPort,
+    StreamSlice,
+    StreamStorePort,
+    JournalWindow,
+    ThreadUsage,
+    VaultUsage,
+)
 
 __all__ = [
-    "CallLogUsage",
     "DirVault",
-    "JournalFile",
-    "JournalText",
     "StreamJournal",
-    "StreamJournalError",
-    "StreamJournalHub",
-    "StreamKey",
-    "StreamMeta",
     "StreamRecorder",
-    "StreamSlice",
-    "ThreadUsage",
-    "VaultUsage",
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class StreamJournalError(Exception):
-    """Том журнала недоступен: писать некуда."""
-
-
-class JournalFile(StrEnum):
-    """Суффиксы файлов журнала; сборка и разбор путей — только здесь."""
-
-    LOG = ".log"
-    META = ".meta.json"
-    TMP = ".tmp"
-
-    @classmethod
-    def rel_log(cls, thread_id: str, call_id: str) -> str:
-        return f"{thread_id}/{call_id}{cls.LOG}"
-
-    @classmethod
-    def rel_meta(cls, thread_id: str, call_id: str) -> str:
-        return f"{thread_id}/{call_id}{cls.META}"
-
-    @classmethod
-    def is_log(cls, name: str) -> bool:
-        return name.endswith(cls.LOG)
-
-    @classmethod
-    def call_id_of(cls, log_name: str) -> str:
-        return log_name[: -len(cls.LOG)]
-
-    @classmethod
-    def tmp_of(cls, path: str) -> str:
-        return f"{path}{cls.TMP}.{os.getpid()}"
-
-
-class JournalText(StrEnum):
-    """Текстовый кодек журнала: utf-8, битые байты замещаются при чтении."""
-
-    ENCODING = "utf-8"
-    DECODE_ERRORS = "replace"
-
-    @classmethod
-    def encode(cls, text: str) -> bytes:
-        return text.encode(cls.ENCODING)
-
-    @classmethod
-    def decode(cls, data: bytes) -> str:
-        return data.decode(cls.ENCODING, errors=cls.DECODE_ERRORS)
-
-
-class StreamKey(BaseModel):
-    """Адрес журнала одного вызова: {thread_id}/{call_id} в томе пользователя.
-
-    call_id приходит из протокола LLM-провайдера — в путь допускаются только
-    безопасные символы, всё прочее отвергается на границе.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    SAFE: ClassVar[frozenset[str]] = frozenset(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-    )
-
-    user_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
-    call_id: str = Field(min_length=1, max_length=255)
-
-    @field_validator("user_id", "thread_id", "call_id")
-    @classmethod
-    def _safe_segment(cls, value: str) -> str:
-        unsafe = set(value) - cls.SAFE
-        if unsafe:
-            msg = f"unsafe characters in stream key segment: {sorted(unsafe)}"
-            raise ValueError(msg)
-
-        if value.startswith("."):
-            msg = f"stream key segment must not start with a dot: {value!r}"
-            raise ValueError(msg)
-
-        return value
-
-    def rel_log(self) -> str:
-        return JournalFile.rel_log(self.thread_id, self.call_id)
-
-    def rel_meta(self) -> str:
-        return JournalFile.rel_meta(self.thread_id, self.call_id)
-
-
-class StreamMeta(BaseModel):
-    """Сайдкар журнала: имя инструмента и итог записи."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    tool_name: str
-    closed: bool = False
-    note: str = ""
-
-
-class StreamSlice(BaseModel):
-    """Окно журнала для показа: текст плюс координаты в файле."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    text: str
-    offset: int
-    end: int
-    """Байт за последним в окне: сюда стыкуется следующее окно."""
-    size: int
-    window: int
-    closed: bool
-    note: str
-
-
-class ThreadUsage(BaseModel):
-    """Занятость журналов одного треда."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    thread_id: str
-    bytes_used: int
-    calls: int
-    last_write_at: float
-
-
-class VaultUsage(BaseModel):
-    """Занятость служебного тома пользователя."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    total_bytes: int
-    free_bytes: int
-    threads: tuple[ThreadUsage, ...]
-
-
-class CallLogUsage(BaseModel):
-    """Журнал одного вызова: единица вытеснения при нехватке места."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    thread_id: str
-    call_id: str
-    bytes_used: int
-    last_write_at: float
-
-    @property
-    def rel_log(self) -> str:
-        return JournalFile.rel_log(self.thread_id, self.call_id)
-
-    @property
-    def rel_meta(self) -> str:
-        return JournalFile.rel_meta(self.thread_id, self.call_id)
 
 
 class DirVault:
@@ -208,7 +60,7 @@ class DirVault:
         return path
 
 
-class StreamRecorder:
+class StreamRecorder(StreamRecorderPort):
     """Писатель журнала одного вызова: append по мере работы инструмента.
 
     Реализует StreamSink: сбой записи (кончилось место, недоступен том) не
@@ -268,9 +120,7 @@ class StreamRecorder:
             os.write(self._fd, data)
             self._size += len(data)
         except OSError as exc:
-            logger.warning(
-                "stream journal write failed: %s: %s", self._log_path, exc
-            )
+            logger.warning("stream journal write failed: %s: %s", self._log_path, exc)
             return f"journal stopped: {exc.strerror or exc}"
 
         return ""
@@ -402,7 +252,7 @@ class StreamFileView:
         )
 
 
-class StreamJournal:
+class StreamJournal(StreamStorePort):
     """Журналы вызовов в служебном томе: запись рекордером, чтение окнами.
 
     Перед открытием нового журнала держится резерв места: старейшие по
@@ -410,8 +260,6 @@ class StreamJournal:
     (текущий и с живыми потоками) ротация не трогает. Общий потолок держит
     точка монтирования под корнем журналов: её размер и есть квота.
     """
-
-    WINDOW_BYTES: ClassVar[int] = 64 * 1024
 
     def __init__(self, vault: DirVault, reserve_bytes: int) -> None:
         if reserve_bytes < 0:
@@ -645,8 +493,8 @@ class StreamJournal:
 
         try:
             if offset < 0:
-                return view.slice_before(size, self.WINDOW_BYTES, size, meta)
-            return view.slice_at(offset, self.WINDOW_BYTES, size, meta)
+                return view.slice_before(size, JournalWindow.BYTES, size, meta)
+            return view.slice_at(offset, JournalWindow.BYTES, size, meta)
         except OSError as exc:
             raise StreamJournalError(
                 f"stream log is not readable: {key.rel_log()}: {exc}"
@@ -661,7 +509,7 @@ class StreamJournal:
         view, size, meta = opened
 
         try:
-            return view.slice_before(end, self.WINDOW_BYTES, size, meta)
+            return view.slice_before(end, JournalWindow.BYTES, size, meta)
         except OSError as exc:
             raise StreamJournalError(
                 f"stream log is not readable: {key.rel_log()}: {exc}"
@@ -698,22 +546,3 @@ class StreamJournal:
             return StreamMeta.model_validate(raw)
         except (OSError, ValueError):
             return StreamMeta(tool_name="", closed=True, note="")
-
-
-class StreamJournalHub:
-    """Журнал приложения: одна точка доступа для UI, тулов и data layer."""
-
-    _JOURNAL: ClassVar[StreamJournal | None] = None
-
-    @classmethod
-    def configure(cls, journal: StreamJournal) -> None:
-        cls._JOURNAL = journal
-
-    @classmethod
-    def get(cls) -> StreamJournal | None:
-        return cls._JOURNAL
-
-    @classmethod
-    def reset(cls) -> None:
-        """Сброс: пользуются тесты, приложению это не нужно."""
-        cls._JOURNAL = None

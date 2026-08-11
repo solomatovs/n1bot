@@ -43,6 +43,7 @@ pytestmark = pytest.mark.anyio
 def anyio_backend() -> str:
     return "asyncio"
 
+
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj

@@ -31,8 +31,6 @@ class ConfluenceGrepPageConfig(BaseModel):
     )
 
 
-
-
 def confluence_grep_page(  # noqa: PLR0913
     cfg: ConfluenceGrepPageConfig,
     caller: ConfluenceCaller,

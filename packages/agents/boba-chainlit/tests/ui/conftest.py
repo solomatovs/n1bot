@@ -8,7 +8,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from playwright.sync_api import Browser, Page, sync_playwright
+
+pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
+
+from playwright.sync_api import Browser, Page, sync_playwright  # noqa: E402
 
 from ui.chat_page import ChatPage
 from ui.fake_llm import serve
@@ -68,9 +71,7 @@ def _await_llm(port: int) -> None:
 
 
 @pytest.fixture(scope="session")
-def stand(
-    stand_workdir: Path, llm_port: int, fake_llm: None
-) -> Iterator[StandProcess]:
+def stand(stand_workdir: Path, llm_port: int, fake_llm: None) -> Iterator[StandProcess]:
     config = StandConfig(
         workdir=stand_workdir,
         app_port=free_port(),
@@ -98,7 +99,9 @@ def auth_cookies(stand: StandProcess) -> list[dict[str, object]]:
         timeout=30.0,
     )
     if response.status_code != 200:
-        raise RuntimeError(f"login failed: {response.status_code} {response.text[:200]}")
+        raise RuntimeError(
+            f"login failed: {response.status_code} {response.text[:200]}"
+        )
 
     cookies: list[dict[str, object]] = []
     for name, value in response.cookies.items():

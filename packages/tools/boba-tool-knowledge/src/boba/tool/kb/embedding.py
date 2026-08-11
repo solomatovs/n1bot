@@ -30,6 +30,7 @@ class LocalFastEmbedEmbedder(Embedder[str]):
         from fastembed import (  # noqa: PLC0415 # pyright: ignore[reportMissingImports]
             TextEmbedding,
         )
+
         self._model_name = model_name
         self._model = TextEmbedding(
             model_name=model_name,

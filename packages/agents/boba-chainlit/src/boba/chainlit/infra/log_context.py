@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit.infra.session import current_thread_id, current_user_label
+from boba.chainlit.domain.session import current_thread_id, current_user_label
 
 __all__ = ["RequestUserContext", "RequestUserMiddleware", "UserLogContext"]
 

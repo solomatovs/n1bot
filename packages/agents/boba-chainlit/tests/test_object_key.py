@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.chat.data.object_key import (
+from boba.chainlit.domain.keys import (
     AttachmentLinks,
     AttachmentUrl,
     ObjectKey,

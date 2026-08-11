@@ -50,9 +50,7 @@ class KbOps:
         )
 
         model = request["embedding"]
-        encoder = TextEmbedding(
-            model_name=model["model"], cache_dir=model["cache_dir"]
-        )
+        encoder = TextEmbedding(model_name=model["model"], cache_dir=model["cache_dir"])
         vector = next(iter(encoder.embed([request["query"]])))
         values: list[float] = []
         for item in vector:

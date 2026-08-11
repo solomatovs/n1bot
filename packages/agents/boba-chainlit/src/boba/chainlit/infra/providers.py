@@ -23,12 +23,13 @@ from pydantic import SecretStr
 
 from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.agent.dump import DumpingTransport
-from boba.chainlit.auth.errors import InternalServiceError
-from boba.chainlit.chat.data import PostgresDataLayer
-from boba.chainlit.chat.data.object_key import AttachmentLinks
-from boba.chainlit.chat.data.storage import StorageClient, StorageFactory
-from boba.chainlit.chat.transcript import CheckpointMessages
+from boba.chainlit.chat.transcript import CheckpointMessages, TranscriptFeed
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
+from boba.chainlit.data import PostgresDataLayer
+from boba.chainlit.data.storage import StorageClient, StorageFactory
+from boba.chainlit.domain.errors import InternalServiceError
+from boba.chainlit.domain.keys import AttachmentLinks
+from boba.chainlit.domain.session import current_user_roles
 from boba.chainlit.infra.config import (
     AgentProfile,
     AppConfig,
@@ -39,7 +40,6 @@ from boba.chainlit.infra.config import (
 )
 from boba.chainlit.infra.di import Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
-from boba.chainlit.infra.session import current_user_roles
 from boba.db.pgvector import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox import CgroupManager
@@ -260,7 +260,7 @@ async def chainlit_data_layer(
             pool,
             schema=cfg.db_schema,
             storage=storage,
-            messages=CheckpointMessages(saver),
+            feed=TranscriptFeed(CheckpointMessages(saver)),
             links=AttachmentLinks(storage_cfg.public_prefix),
         )
         await layer.setup()

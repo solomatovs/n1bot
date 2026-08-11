@@ -33,8 +33,7 @@ class ChTools:
     """Собирает langchain-инструменты поверх ChExecutor."""
 
     TABLES_SQL: ClassVar[str] = (
-        "SELECT database, name AS table, engine, total_rows "
-        "FROM system.tables "
+        "SELECT database, name AS table, engine, total_rows FROM system.tables "
     )
     SYSTEM_DATABASES: ClassVar[str] = (
         "('system', 'INFORMATION_SCHEMA', 'information_schema')"

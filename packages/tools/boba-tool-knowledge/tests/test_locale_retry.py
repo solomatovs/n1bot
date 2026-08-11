@@ -78,9 +78,7 @@ class TestLocaleRetry:
             LocaleRetry.parse(parser, "/workspace/a.docx")
         assert "LC_ALL" not in os.environ
 
-    def test_existing_lc_all_is_restored(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_existing_lc_all_is_restored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LC_ALL", "C.UTF-8")
         parser = ParserStub([marker_error(), "parsed"])
         assert LocaleRetry.parse(parser, "/workspace/a.docx") == "parsed"

@@ -35,7 +35,6 @@ async def _astream(
         yield item
 
 
-
 @pytest.fixture(scope="module")
 def anyio_backend() -> str:
     return "asyncio"
@@ -58,7 +57,6 @@ class _IdentitySplitter(Splitter[str]):
 
 def _identity_factory(_extra_overhead: int) -> Splitter[str]:
     return _IdentitySplitter()
-
 
 
 def _chunker(splitter_factory=_identity_factory) -> StructuralChunker:

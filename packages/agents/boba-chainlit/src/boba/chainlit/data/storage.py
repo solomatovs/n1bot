@@ -35,8 +35,8 @@ import aiofiles
 import aiofiles.os
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.chat.data.object_key import DirKey, ObjectKey
-from boba.chainlit.infra.config import LocalStorageConfig
+from boba.chainlit.domain.keys import DirKey, ObjectKey
+from boba.chainlit.domain.config import LocalStorageConfig
 from boba.workspace.launcher import (
     LauncherExit,
     LauncherMarker,
@@ -376,9 +376,7 @@ class LocalStorageClient(StorageClient):
         path = self._resolve(object_key)
         return await self._stat_path(path)
 
-    async def _open_stream(
-        self, object_key: str, window: ReadWindow
-    ) -> OpenedStream:
+    async def _open_stream(self, object_key: str, window: ReadWindow) -> OpenedStream:
         path = self._resolve(object_key)
 
         stat = await self._stat_path(path)
@@ -530,9 +528,7 @@ class ImageStorageClient(StorageClient):
         size = ReadHeader.parse(self._header_line(out))
         return FileStat(size=size)
 
-    async def _open_stream(
-        self, object_key: str, window: ReadWindow
-    ) -> OpenedStream:
+    async def _open_stream(self, object_key: str, window: ReadWindow) -> OpenedStream:
         """Заголовок с размером читается до отдачи наружу: пока его нет,
         неизвестно, существует ли файл, а отвечать 404 после начала тела поздно."""
         image, rel = self._image_and_rel(object_key)

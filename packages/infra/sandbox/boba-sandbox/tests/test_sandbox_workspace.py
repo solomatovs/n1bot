@@ -73,7 +73,9 @@ class TestOnlyConfiguredMounts:
 
     def test_rootfs_stays_read_only(self) -> None:
         argv = build_bwrap_argv(
-            _profile(rootfs="/srv/rootfs", ro_binds=()), "true", env={},
+            _profile(rootfs="/srv/rootfs", ro_binds=()),
+            "true",
+            env={},
         )
         i = argv.index("--ro-bind")
         assert argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]

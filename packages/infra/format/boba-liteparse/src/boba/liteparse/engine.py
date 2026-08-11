@@ -40,9 +40,7 @@ class LocaleRetry:
     """Ретрай под запасными локалями: LibreOffice без UTF-8-локали молча
     (rc=0) не открывает файлы с не-ASCII именем."""
 
-    MARKER: ClassVar[str] = (
-        "LibreOffice conversion succeeded but output PDF not found"
-    )
+    MARKER: ClassVar[str] = "LibreOffice conversion succeeded but output PDF not found"
     RETRYABLE: ClassVar[tuple[type[Exception], ...]] = (ParseError, RuntimeError)
     LOCALES: ClassVar[tuple[str, ...]] = ("ru_RU.UTF-8", "en_US.UTF-8", "C")
 
@@ -103,9 +101,7 @@ class LiteParseEngine:
         return cls._parse_public(params, path, target_pages=None)
 
     @classmethod
-    def parse_pages(
-        cls, params: LiteParseParams, path: str, pages: str
-    ) -> ParseResult:
+    def parse_pages(cls, params: LiteParseParams, path: str, pages: str) -> ParseResult:
         """Распарсить только выбранные страницы, 1-based: '1-5,10'."""
         return cls._parse_public(params, path, target_pages=pages)
 

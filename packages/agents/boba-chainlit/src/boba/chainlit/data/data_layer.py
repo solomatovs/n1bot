@@ -1,8 +1,8 @@
 """PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
-from typing import Any, ClassVar
+from collections.abc import Mapping, Sequence
+from typing import Any, ClassVar, Protocol
 from uuid import UUID
 
 import aiofiles
@@ -12,9 +12,13 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
 
-from boba.chainlit.auth.errors import InternalServiceError
-from boba.chainlit.chat.data.fields import ElementField, StepField, ThreadField
-from boba.chainlit.chat.data.models import (
+from boba.chainlit.data.errors import (
+    DataBroken,
+    DataRejected,
+    DataUnavailable,
+    data_boundary,
+)
+from boba.chainlit.data.models import (
     Codec,
     Element,
     Feedback,
@@ -22,20 +26,15 @@ from boba.chainlit.chat.data.models import (
     Thread,
     User,
 )
-from boba.chainlit.chat.data.object_key import (
+from boba.chainlit.data.storage import StorageClient
+from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
+from boba.chainlit.domain.keys import (
     AttachmentLinks,
     ElementProps,
     ObjectKey,
 )
-from boba.chainlit.chat.data.storage import StorageClient
-from boba.chainlit.chat.data.stream_journal import (
-    StreamJournalError,
-    StreamJournalHub,
-)
-from boba.chainlit.chat.errors import show_error
-from boba.chainlit.chat.transcript import ConversationTranscript, ThreadMessages
-from boba.chainlit.infra.session import current_user_id
-from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
+from boba.chainlit.domain.session import current_user_id
+from boba.chainlit.domain.stream import StreamJournalError, StreamJournalHub
 from boba.db.postgres import AsyncPostgresPool
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
@@ -62,6 +61,18 @@ __all__ = [
 ]
 
 
+class ThreadFeed(Protocol):
+    """Сборщик ленты треда: слой данных знает контракт, но не реализацию.
+
+    Историю разворачивает в шаги слой чата — иначе хранилище зависело бы от
+    отрисовки.
+    """
+
+    async def steps(
+        self, thread_id: str, user_name: str | None
+    ) -> Sequence[StepDict]: ...
+
+
 class AttachmentDataLayer(BaseDataLayer, ABC):
     """Data layer, умеющий адресовать вложения публичными ссылками."""
 
@@ -84,13 +95,13 @@ class PostgresDataLayer(AttachmentDataLayer):
         pool: AsyncPostgresPool,
         schema: str,
         storage: StorageClient,
-        messages: ThreadMessages,
+        feed: ThreadFeed,
         links: AttachmentLinks,
     ) -> None:
         self._pool = pool
         self._schema = schema
         self._storage = storage
-        self._messages = messages
+        self._feed = feed
         self._links = links
 
     @property
@@ -101,20 +112,7 @@ class PostgresDataLayer(AttachmentDataLayer):
     def storage(self) -> StorageClient:
         return self._storage
 
-    async def _transcript_steps(
-        self,
-        thread_id: str,
-        user_identifier: str | None,
-    ) -> list[StepDict]:
-        messages = await self._messages.load(thread_id)
-        if not messages:
-            return []
-
-        sink = RecordingSink()
-        view = ChatView(thread_id, sink, user_name=user_identifier)
-        await ConversationTranscript(messages, view).replay()
-        return sink.steps
-
+    @data_boundary
     async def setup(self) -> None:
         async with self._pool.connection() as conn:
             try:
@@ -134,6 +132,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                     for stmt in model.ddl(self._schema):
                         await conn.execute(stmt)
 
+    @data_boundary
     async def get_user(self, identifier: str) -> PersistedUser | None:
         query = sql.SQL(
             """
@@ -159,17 +158,13 @@ class PostgresDataLayer(AttachmentDataLayer):
                 await cur.execute(query, (identifier,))
                 row = await cur.fetchone()
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.get_user failed with error: {e}"
-                ),
-                user_detail="Not able to get user",
-            ) from e
+            raise DataUnavailable("get_user", str(e)) from e
 
         if row is None:
             return None
         return row.to_persisted()
 
+    @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
         model = User.from_chainlit(user)
         query = sql.SQL(
@@ -195,18 +190,14 @@ class PostgresDataLayer(AttachmentDataLayer):
                 await cur.execute(query, model.all_params())
                 row = await cur.fetchone()
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.create_user failed with error: {e}"
-                ),
-                user_detail="Not able to create user",
-            ) from e
+            raise DataUnavailable("create_user", str(e)) from e
 
         if row is None:
             return None
 
         return row.to_persisted()
 
+    @data_boundary
     async def upsert_feedback(self, feedback: FeedbackPayload) -> str:
         model = Feedback.from_payload(feedback)
         query = sql.SQL(
@@ -227,15 +218,11 @@ class PostgresDataLayer(AttachmentDataLayer):
             async with self._pool.connection() as conn:
                 await conn.execute(query, model.all_params())
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.upsert_feedback failed with error: {e}"
-                ),
-                user_detail="Not able to update feedback",
-            ) from e
+            raise DataUnavailable("upsert_feedback", str(e)) from e
 
         return Codec.uuid_str(model.id)
 
+    @data_boundary
     async def delete_feedback(self, feedback_id: str) -> bool:
         query = sql.SQL("""delete from {feedbacks} where id = %(id)s""").format(
             feedbacks=Feedback.get_table_name(self._schema)
@@ -244,12 +231,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             async with self._pool.connection() as conn:
                 await conn.execute(query, {"id": UUID(feedback_id)})
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.delete_feedback failed with error: {e}"
-                ),
-                user_detail="Not able to delete feedback",
-            ) from e
+            raise DataUnavailable("delete_feedback", str(e)) from e
 
         return True
 
@@ -283,10 +265,10 @@ class PostgresDataLayer(AttachmentDataLayer):
     @staticmethod
     def _require_uploaded(uploaded: Mapping[str, object]) -> None:
         if not uploaded:
-            msg = "Failed to upload file to storage"
-            raise ValueError(msg)
+            raise DataUnavailable("create_element", "storage refused the upload")
 
     @queue_until_user_message()
+    @data_boundary
     async def create_element(self, element: ChainlitElement) -> None:
         if not element.for_id:
             # панель канваса шлёт непривязанные side-элементы: они живут
@@ -304,13 +286,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             await self._create_element(element)
         except Exception as e:
             # chainlit зовёт create_element фоновой таской и молча гасит исключение
-            await show_error(f"Failed to save attachment {element.name!r}: {e}")
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.create_element failed with error: {e}"
-                ),
-                user_detail="Not able to create element",
-            ) from e
+            raise DataUnavailable("create_element", str(e)) from e
 
     async def _create_element(self, element: ChainlitElement) -> None:
         user_id = self._session_user_id()
@@ -342,6 +318,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             await conn.execute(query, model.all_params())
             await self._store_element_body(element, object_key, mime)
 
+    @data_boundary
     async def get_element(self, thread_id: str, element_id: str) -> ElementDict | None:
         query = sql.SQL(
             """
@@ -368,12 +345,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                 )
                 row = await cur.fetchone()
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.get_element failed with error: {e}"
-                ),
-                user_detail="Not able to get element",
-            ) from e
+            raise DataUnavailable("get_element", str(e)) from e
 
         if row is None:
             return None
@@ -383,6 +355,7 @@ class PostgresDataLayer(AttachmentDataLayer):
         return element
 
     @queue_until_user_message()
+    @data_boundary
     async def delete_element(
         self, element_id: str, thread_id: str | None = None
     ) -> None:
@@ -406,22 +379,18 @@ class PostgresDataLayer(AttachmentDataLayer):
                         ).render(),
                     )
         except Exception as e:
-            # вызывается фоновой таской chainlit: raise до пользователя не дойдёт
-            await show_error(f"Failed to delete attachment {element_id}: {e}")
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.delete_element failed with error: {e}"
-                ),
-                user_detail="Not able to delete element",
-            ) from e
+            raise DataUnavailable("delete_element", str(e)) from e
 
+    @data_boundary
     async def create_step(self, step_dict: StepDict) -> None:
         pass
 
+    @data_boundary
     async def update_step(self, step_dict: StepDict) -> None:
         pass
 
     @queue_until_user_message()
+    @data_boundary
     async def delete_step(self, step_id: str) -> None:
         feedbacks_query = sql.SQL("delete from {feedbacks} where for_id = %s").format(
             feedbacks=Feedback.get_table_name(self._schema)
@@ -435,18 +404,13 @@ class PostgresDataLayer(AttachmentDataLayer):
                 await conn.execute(feedbacks_query, params)
                 await conn.execute(elements_query, params)
         except Exception as e:
-            # вызывается фоновой таской chainlit: raise до пользователя не дойдёт
-            await show_error(f"Failed to delete message {step_id}: {e}")
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.delete_step failed with error: {e}"
-                ),
-                user_detail="Not able to delete step",
-            ) from e
+            raise DataUnavailable("delete_step", str(e)) from e
 
+    @data_boundary
     async def get_favorite_steps(self, user_id: str) -> list[StepDict]:
         return []
 
+    @data_boundary
     async def get_thread_author(self, thread_id: str) -> str:
         query = sql.SQL(
             """
@@ -470,19 +434,14 @@ class PostgresDataLayer(AttachmentDataLayer):
                 await cur.execute(query, {"id": UUID(thread_id)})
                 row = await cur.fetchone()
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.get_thread_author "
-                    f"failed with error: {e}"
-                ),
-                user_detail="Not able to get thread author",
-            ) from e
+            raise DataUnavailable("get_thread_author", str(e)) from e
 
         if row and row[0] is not None:
             return row[0]
 
-        raise ValueError(f"Author not found for thread_id {thread_id}")
+        raise DataRejected("get_thread_author", f"no author for thread {thread_id}")
 
+    @data_boundary
     async def get_thread(self, thread_id: str) -> ThreadDict | None:
         thread_query = sql.SQL(
             """
@@ -554,14 +513,9 @@ class PostgresDataLayer(AttachmentDataLayer):
                     await cur.execute(elements_query, (tid,))
                     element_rows = await cur.fetchall()
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.get_thread failed with error: {e}"
-                ),
-                user_detail="Not able to get thread",
-            ) from e
+            raise DataUnavailable("get_thread", str(e)) from e
 
-        steps = await self._transcript_steps(thread_id, user_identifier)
+        steps = list(await self._feed.steps(thread_id, user_identifier))
         feedback_by_step = {
             Codec.uuid_str(f.for_id): f.to_chainlit() for f in feedback_rows
         }
@@ -579,6 +533,7 @@ class PostgresDataLayer(AttachmentDataLayer):
 
         return thread
 
+    @data_boundary
     async def update_thread(
         self,
         thread_id: str,
@@ -638,13 +593,9 @@ class PostgresDataLayer(AttachmentDataLayer):
             async with self._pool.connection() as conn:
                 await conn.execute(query, params)
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.update_thread failed with error: {e}"
-                ),
-                user_detail="Not able to update thread",
-            ) from e
+            raise DataUnavailable("update_thread", str(e)) from e
 
+    @data_boundary
     async def delete_thread(self, thread_id: str) -> None:
         feedbacks_query = sql.SQL(
             "delete from {feedbacks} where thread_id = %(tid)s"
@@ -663,12 +614,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                 cursor = await conn.execute(thread_query, params)
                 owner = await cursor.fetchone()
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.delete_thread failed with error: {e}"
-                ),
-                user_detail="Not able to delete thread",
-            ) from e
+            raise DataUnavailable("delete_thread", str(e)) from e
 
         self._purge_stream_journal(owner, thread_id)
 
@@ -689,17 +635,19 @@ class PostgresDataLayer(AttachmentDataLayer):
             journal.purge_thread(str(owner[0]), thread_id)
         except StreamJournalError:
             logger.warning(
-                "stream journal purge failed for thread %s", thread_id,
+                "stream journal purge failed for thread %s",
+                thread_id,
                 exc_info=True,
             )
 
+    @data_boundary
     async def list_threads(
         self,
         pagination: Pagination,
         filters: ThreadFilter,
     ) -> PaginatedResponse[ThreadDict]:
         if not filters.userId:
-            raise ValueError("userId is required")
+            raise DataRejected("list_threads", "userId is required")
 
         query = sql.SQL(
             """
@@ -736,12 +684,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                     )
                     rows = await cur.fetchall()
         except Exception as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}.list_threads failed with error: {e}"
-                ),
-                user_detail="Not able to list threads",
-            ) from e
+            raise DataUnavailable("list_threads", str(e)) from e
 
         user_identifier = None
         if identifier_row is not None:
@@ -765,9 +708,11 @@ class PostgresDataLayer(AttachmentDataLayer):
             data=page,
         )
 
+    @data_boundary
     async def build_debug_url(self) -> str:
         return ""
 
+    @data_boundary
     async def close(self) -> None:
         await self._storage.close()
 
@@ -775,13 +720,7 @@ class PostgresDataLayer(AttachmentDataLayer):
         """Владелец файлов вложений — пользователь текущей сессии chainlit."""
         user_id = current_user_id()
         if user_id is None:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"{type(self).__qualname__}: no chainlit session, "
-                    f"cannot build the attachment path"
-                ),
-                user_detail="Not able to resolve current user",
-            )
+            raise DataBroken("_session_user_id", "no chainlit session")
 
         return str(user_id)
 

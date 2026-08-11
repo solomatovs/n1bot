@@ -23,15 +23,19 @@ class ConfluencePageScopeCleanup(CleanupStrategy):
     _PAGE_ID_RE: ClassVar[re.Pattern[str]] = re.compile(r"/content/([^/?#]+)$")
 
     async def execute(self, ctx: CleanupContext) -> int:
-        page_ids = sorted({
-            match.group(1)
-            for source in ctx.touched_sources
-            if (match := self._PAGE_ID_RE.search(str(source)))
-        })
+        page_ids = sorted(
+            {
+                match.group(1)
+                for source in ctx.touched_sources
+                if (match := self._PAGE_ID_RE.search(str(source)))
+            }
+        )
         if not page_ids:
             return 0
-        where: Filter = And([
-            In(ConfluenceKeys.PAGE_ID.name, page_ids),
-            Lt(TrackingKeys.UPDATED_AT, ctx.run_start),
-        ])
+        where: Filter = And(
+            [
+                In(ConfluenceKeys.PAGE_ID.name, page_ids),
+                Lt(TrackingKeys.UPDATED_AT, ctx.run_start),
+            ]
+        )
         return await ctx.query.clean(where=where)

@@ -53,9 +53,7 @@ class ClickHouseOps:
                     parameters=params,
                 )
                 async with stream as blocks:
-                    truncated = await cls._emit_rows(
-                        blocks, emit, request["row_limit"]
-                    )
+                    truncated = await cls._emit_rows(blocks, emit, request["row_limit"])
             except DriverError as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
                 raise PayloadError("sql_failed", msg) from e

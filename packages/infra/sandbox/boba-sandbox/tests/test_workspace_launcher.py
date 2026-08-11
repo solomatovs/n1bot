@@ -45,17 +45,28 @@ def template(tmp_path: Path) -> Path:
     path.write_bytes(b"TEMPLATE")
     return path
 
+
 _REQUIRED_FLAGS = (
-    "--mount-wait-sec", "10.0",
-    "--mount-poll-sec", "0.05",
-    "--shutdown-wait-sec", "5.0",
-    "--lock-wait-sec", "10.0",
-    "--copy-chunk-bytes", "1048576",
-    "--max-memory-bytes", "0",
-    "--max-cpu-sec", "0",
-    "--max-file-size-bytes", "0",
-    "--max-open-files", "0",
-    "--oom-score-adj", "0",
+    "--mount-wait-sec",
+    "10.0",
+    "--mount-poll-sec",
+    "0.05",
+    "--shutdown-wait-sec",
+    "5.0",
+    "--lock-wait-sec",
+    "10.0",
+    "--copy-chunk-bytes",
+    "1048576",
+    "--max-memory-bytes",
+    "0",
+    "--max-cpu-sec",
+    "0",
+    "--max-file-size-bytes",
+    "0",
+    "--max-open-files",
+    "0",
+    "--oom-score-adj",
+    "0",
 )
 
 
@@ -76,7 +87,6 @@ def _launcher_options(**kw: float) -> LauncherOptions:
         lock_wait_sec=values["lock_wait_sec"],
         copy_chunk_bytes=int(values["copy_chunk_bytes"]),
     )
-
 
 
 class TestSparseCopier:
@@ -120,9 +130,7 @@ class TestImageStore:
     def _store(template: Path) -> ImageStore:
         return ImageStore(str(template), SparseCopier(CHUNK), lock_wait_sec=10.0)
 
-    def test_creates_image_from_template(
-        self, tmp_path: Path, template: Path
-    ) -> None:
+    def test_creates_image_from_template(self, tmp_path: Path, template: Path) -> None:
         image = tmp_path / "img"
         store = self._store(template)
         try:
@@ -398,7 +406,9 @@ class TestSymlinkEscape:
         assert rc == LauncherExit.NOT_REGULAR
         assert b"host secret" not in out.getvalue()
 
-    def test_write_refuses_symlinked_target(self, tmp_path: Path, outside: Path) -> None:
+    def test_write_refuses_symlinked_target(
+        self, tmp_path: Path, outside: Path
+    ) -> None:
         """Иначе запись во вложение перезаписала бы файл хоста."""
         ops = self._ops(tmp_path)
         (tmp_path / "root" / "leak").symlink_to(outside)
@@ -447,9 +457,7 @@ class TestFuseMounter:
     def test_missing_fuse2fs_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            "boba.workspace.launcher.shutil.which", lambda _: None
-        )
+        monkeypatch.setattr("boba.workspace.launcher.shutil.which", lambda _: None)
         mounter = FuseMounter(_launcher_options())
         with pytest.raises(MountError, match="fuse2fs"):
             mounter.mount(str(tmp_path / "img"), str(tmp_path / "mnt"), readonly=False)

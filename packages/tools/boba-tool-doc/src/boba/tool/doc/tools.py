@@ -25,9 +25,7 @@ _OCR_DESCRIPTION = (
     "false — только текстовый слой. Сканам/фото — true, обычным "
     "pdf/docx — false (OCR дорог: минуты и гигабайты памяти)."
 )
-_WORKERS_DESCRIPTION = (
-    "Параллелизм OCR, 1..4; ~50-100 MiB на воркер"
-)
+_WORKERS_DESCRIPTION = "Параллелизм OCR, 1..4; ~50-100 MiB на воркер"
 _LANGUAGE_DESCRIPTION = (
     "Язык OCR в формате Tesseract: 'rus+eng' для русских документов, "
     "'eng' для английских."
@@ -71,9 +69,7 @@ def build_doc_tools(
                 ),
             ),
         ],
-        ocr_enabled: Annotated[
-            bool, Field(description=_OCR_DESCRIPTION)
-        ] = False,
+        ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
         num_workers: Annotated[
             int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
         ] = 1,
@@ -103,9 +99,7 @@ def build_doc_tools(
     @tool(response_format="content_and_artifact")
     async def document_outline(
         path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
-        ocr_enabled: Annotated[
-            bool, Field(description=_OCR_DESCRIPTION)
-        ] = False,
+        ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
         num_workers: Annotated[
             int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
         ] = 1,
@@ -114,9 +108,7 @@ def build_doc_tools(
         ] = "rus+eng",
     ) -> tuple[str, ToolResult]:
         """Карта документа по страницам: дешёвый обзор перед read_document."""
-        answer = await engine.outline(
-            path, ocr_enabled, num_workers, ocr_language
-        )
+        answer = await engine.outline(path, ocr_enabled, num_workers, ocr_language)
         rows: list[dict[str, Any]] = []
         for row in answer.rows:
             rows.append(row.model_dump())
@@ -134,9 +126,7 @@ def build_doc_tools(
         query: Annotated[
             str, Field(min_length=1, description="Искомая фраза (регистронезависимо).")
         ],
-        ocr_enabled: Annotated[
-            bool, Field(description=_OCR_DESCRIPTION)
-        ] = False,
+        ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
         num_workers: Annotated[
             int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
         ] = 1,

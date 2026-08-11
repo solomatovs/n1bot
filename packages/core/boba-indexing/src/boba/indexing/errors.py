@@ -25,5 +25,3 @@ class IncompatibleContentError(IndexingError):
         self.reader_id = reader_id
         self.canonical_id = canonical_id
         self.reason = reason
-
-

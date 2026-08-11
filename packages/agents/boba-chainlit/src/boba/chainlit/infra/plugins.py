@@ -18,7 +18,7 @@ from boba.chainlit.agent.tools.diagram import DiagramToolConfig
 from boba.chainlit.agent.tools.errors import ToolErrorGuard
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
 from boba.chainlit.agent.tools.stream_tap import ToolStreamTapGuard
-from boba.chainlit.infra.session import (
+from boba.chainlit.domain.session import (
     current_thread_id,
     current_user_id,
     current_user_roles,

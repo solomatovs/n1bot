@@ -109,9 +109,7 @@ class IngestOps:
     @classmethod
     async def ingest(cls, request: dict[str, Any]) -> dict[str, Any]:
         cfg = ConfluenceIngestConfig.model_validate(request["config"])
-        conn = ConfluenceConnection(
-            profile=cfg.confluence, body_format=cfg.body_format
-        )
+        conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
         source = cls.source(request, conn, cfg)
         stats = await ConfluenceIngest.ingest(
             cfg,

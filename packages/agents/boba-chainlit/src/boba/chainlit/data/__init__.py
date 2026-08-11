@@ -1,5 +1,5 @@
-from boba.chainlit.chat.data.data_layer import PostgresDataLayer
-from boba.chainlit.chat.data.models import (
+from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.data.models import (
     Element,
     Feedback,
     Thread,

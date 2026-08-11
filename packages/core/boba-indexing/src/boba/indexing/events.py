@@ -246,9 +246,7 @@ class SourceSkippedUnchanged(CompletedItem):
         return "source.skipped_unchanged"
 
     def headline(self) -> str:
-        return (
-            f"unchanged {self.source_id} ({self.chunks_total} chunks)"
-        )
+        return f"unchanged {self.source_id} ({self.chunks_total} chunks)"
 
     def details(self) -> Mapping[str, str]:
         return {
@@ -293,6 +291,7 @@ class ChunksDeleted(CompletedItem):
 
     def details(self) -> Mapping[str, str]:
         return {"count": str(self.count)}
+
 
 @dataclass(frozen=True)
 class IndexStats:

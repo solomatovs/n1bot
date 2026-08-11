@@ -21,12 +21,12 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
-from boba.chainlit.chat.data.data_layer import AttachmentDataLayer
-from boba.chainlit.chat.data.object_key import ObjectKey
-from boba.chainlit.chat.data.storage import StorageClient
-from boba.chainlit.chat.data.upload import SessionFiles
-from boba.chainlit.chat.errors import show_error
-from boba.chainlit.infra.session import current_thread_id, current_user_id
+from boba.chainlit.data.data_layer import AttachmentDataLayer
+from boba.chainlit.domain.keys import ObjectKey
+from boba.chainlit.data.storage import StorageClient
+from boba.chainlit.data.upload import SessionFiles
+from boba.chainlit.rendering.errors import show_error
+from boba.chainlit.domain.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.canvas import (
     CanvasAction,
     CanvasContent,
@@ -192,9 +192,7 @@ class FileViewer:
         копия на диске chainlit не нужна.
         """
         session = cl.context.session
-        file_id = SessionFiles.register(
-            session, key, mime=self._mime(key.name), size=0
-        )
+        file_id = SessionFiles.register(session, key, mime=self._mime(key.name), size=0)
         return SessionFiles.url_for(session, file_id)
 
     @staticmethod

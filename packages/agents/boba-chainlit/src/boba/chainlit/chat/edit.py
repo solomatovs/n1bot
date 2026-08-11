@@ -100,9 +100,7 @@ class ThreadRewind:
         return RewindPlan(remove_ids, element_ids)
 
     @staticmethod
-    def prefix(
-        messages: Sequence[BaseMessage], message_id: str
-    ) -> list[BaseMessage]:
+    def prefix(messages: Sequence[BaseMessage], message_id: str) -> list[BaseMessage]:
         """История до правленого вопроса; вопроса и хвоста в ней нет."""
         kept: list[BaseMessage] = []
         for message in messages:

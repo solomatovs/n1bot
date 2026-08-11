@@ -26,9 +26,10 @@ pythonpath = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
 ]
-addopts = ["--strict-markers", "-m", "not integration"]
+addopts = ["--strict-markers", "-m", "not integration and not ui"]
 markers = [
     "integration: тест ходит во внешние сервисы (Confluence/Ollama/...). Запускать вручную: `pytest -m integration`. По умолчанию исключаются.",
+    "ui: тест поднимает приложение и браузер (playwright + postgres). Запускать вручную: `pytest -m ui`. По умолчанию исключаются.",
 ]
 
 [tool.pyright]
@@ -133,6 +134,7 @@ dev = [
     "pytest>=9.1.0",
     "ruff>=0.15.17",
     "pyright>=1.1.400",
+    "playwright>=1.40",
     "boba-liteparse",
     "markdownify>=0.11,<1.0",
     "beautifulsoup4>=4.12",

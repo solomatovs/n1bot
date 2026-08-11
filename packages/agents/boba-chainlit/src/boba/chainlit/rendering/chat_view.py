@@ -519,9 +519,7 @@ class ChatView:
 
         if self._sink.EMITS_ELEMENTS:
             element = rendering.chat_element()
-            element_id = self.derive_id(
-                self._thread_id, tool_call_id, StepRole.ELEMENT
-            )
+            element_id = self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
             if not element_id:
                 element_id = element.id
             element.id = str(element_id)

@@ -202,9 +202,7 @@ class TestDiagnosticAppearsLive:
         assert "max_processes=10" in payload["diagnostic"]
 
     def test_file_size(self) -> None:
-        tool = _tool(
-            _profile(max_file_size_bytes=1024 * 1024, tmpfs=("/tmp:64M",))
-        )
+        tool = _tool(_profile(max_file_size_bytes=1024 * 1024, tmpfs=("/tmp:64M",)))
         payload = _invoke(tool, "dd if=/dev/zero of=/tmp/big bs=64k count=64")
         assert payload["exit_code"] != 0
         assert "max_file_size_bytes=1048576" in payload["diagnostic"]

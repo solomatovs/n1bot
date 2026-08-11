@@ -13,7 +13,7 @@ from langchain_core.tracers.base import AsyncBaseTracer
 from typing_extensions import ParamSpec, override
 
 from boba.chainlit.agent.chat_model import ResponseField
-from boba.chainlit.chat.errors import show_error
+from boba.chainlit.rendering.errors import show_error
 from boba.chainlit.rendering.chat_view import ChatView
 from boba.chainlit.rendering.stream_view import StreamNote, ToolStreams
 from chainlit.context import context_var
@@ -216,9 +216,7 @@ class AgentTracer(AsyncBaseTracer):
             **kwargs,
         )
 
-    def _begin_stream(
-        self, run_key: str, tool_name: str, call_key: str | None
-    ) -> None:
+    def _begin_stream(self, run_key: str, tool_name: str, call_key: str | None) -> None:
         """Открывает журнал живого вывода вызова.
 
         В тап рекордер ставит обвязка ToolStreamTapGuard уже в потоке

@@ -193,6 +193,7 @@ class ParagraphSection(Section[str]):
 
     SECTION_TYPE: ClassVar[str] = "paragraph"
 
+
 class AsyncBinaryStream(Protocol):
     """Открытый async-поток тела: итерация чанками либо чтение целиком."""
 
@@ -240,6 +241,7 @@ class RawDocument:
 
     metadata: Metadata = field(default_factory=Metadata.empty)
     """Request.metadata + transport-specific keys; Reader/Chunker мержат свои ключи поверх."""
+
 
 DecoderId = NewType("DecoderId", str)
 """Идентификатор Decoder-реализации."""

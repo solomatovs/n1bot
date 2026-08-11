@@ -25,9 +25,7 @@ class TomlText:
         return "\n".join(lines) + "\n"
 
     @classmethod
-    def _table(
-        cls, data: Mapping[str, object], path: tuple[str, ...]
-    ) -> Iterator[str]:
+    def _table(cls, data: Mapping[str, object], path: tuple[str, ...]) -> Iterator[str]:
         scalars: list[tuple[str, object]] = []
         tables: list[tuple[str, Mapping[str, object]]] = []
         for key, value in data.items():
@@ -78,7 +76,9 @@ class TomlText:
 
     @staticmethod
     def _key(key: str) -> str:
-        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+        allowed = set(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+        )
         if key and set(key) <= allowed:
             return key
 

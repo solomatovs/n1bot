@@ -150,9 +150,7 @@ class TestUnexpectedErrors:
 class TestLogging:
     """Логи инструмента уезжают кадрами в stderr — на исход они не влияют."""
 
-    def test_log_frames_go_to_stderr(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_log_frames_go_to_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
         code, captured = _run({"op": "logs", "size": 3}, capsys)
         frames = _frames(captured.err, LaunchPayload.LOG_MARKER)
         levels = [frame["lvl"] for frame in frames]
@@ -162,9 +160,7 @@ class TestLogging:
         assert frames[0]["name"] == "boba.tool.probe"
         assert "size=3" in frames[0]["msg"]
 
-    def test_logs_do_not_touch_stdout(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_logs_do_not_touch_stdout(self, capsys: pytest.CaptureFixture[str]) -> None:
         """stdout — плоскость данных: лог там сломал бы разбор кадров."""
         _, captured = _run({"op": "logs", "size": 1}, capsys)
         assert LaunchPayload.LOG_MARKER not in captured.out

@@ -13,9 +13,10 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from omegaconf import DictConfig
 from psycopg import sql
 
-from boba.chainlit.chat.data.object_key import AttachmentLinks
-from boba.chainlit.chat.data.data_layer import PostgresDataLayer
-from boba.chainlit.chat.data.storage import LocalStorageClient
+from boba.chainlit.domain.keys import AttachmentLinks
+from boba.chainlit.chat.transcript import TranscriptFeed
+from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
@@ -144,7 +145,7 @@ async def layer(
         pool,
         schema=schema,
         storage=storage,
-        messages=thread_messages,
+        feed=TranscriptFeed(thread_messages),
         links=AttachmentLinks(app_config.storage.public_prefix),
     )
     await data_layer.setup()

@@ -10,8 +10,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from boba.chainlit.chat.data import stream_journal
-from boba.chainlit.chat.data.stream_journal import (
+from boba.chainlit.data import stream_journal
+from boba.chainlit.domain.stream import JournalWindow
+from boba.chainlit.data.stream_journal import (
     DirVault,
     StreamJournal,
     StreamKey,
@@ -52,9 +53,7 @@ class TestKey:
             StreamKey(user_id="7", thread_id=".hidden", call_id="c")
 
     def test_normal_langchain_call_id_passes(self) -> None:
-        key = StreamKey(
-            user_id="7", thread_id="t-1", call_id="call_uKx7pB2qX.0"
-        )
+        key = StreamKey(user_id="7", thread_id="t-1", call_id="call_uKx7pB2qX.0")
         assert key.rel_log() == "t-1/call_uKx7pB2qX.0.log"
 
 
@@ -71,7 +70,7 @@ class TestRecorder:
         piece = journal.slice_at(KEY, 0)
         assert piece is not None
         assert piece.size == 200000
-        assert len(piece.text.encode()) == StreamJournal.WINDOW_BYTES
+        assert len(piece.text.encode()) == JournalWindow.BYTES
 
         middle = journal.slice_at(KEY, 100000)
         assert middle is not None
@@ -80,7 +79,7 @@ class TestRecorder:
 
         tail = journal.slice_at(KEY, -1)
         assert tail is not None
-        assert tail.offset == 200000 - StreamJournal.WINDOW_BYTES
+        assert tail.offset == 200000 - JournalWindow.BYTES
         assert tail.closed is True
         assert tail.note == "rc=0"
 
@@ -112,16 +111,14 @@ class TestRecorder:
         recorder.close("done")
         assert len(wakes) == 2
 
-    def test_live_recorder_is_readable_while_writing(
-        self, tmp_path: Path
-    ) -> None:
+    def test_live_recorder_is_readable_while_writing(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
         recorder = _recorder(journal)
 
         recorder.feed(b"live ")
-        first = recorder.tail(StreamJournal.WINDOW_BYTES)
+        first = recorder.tail(JournalWindow.BYTES)
         recorder.feed(b"tail")
-        second = recorder.tail(StreamJournal.WINDOW_BYTES)
+        second = recorder.tail(JournalWindow.BYTES)
 
         assert first.text == "live "
         assert first.closed is False
@@ -209,18 +206,16 @@ class TestWindowChains:
         assert body[tail.offset - 1 : tail.offset] == b"\n"
         assert tail.end == len(body)
 
-    def test_line_longer_than_the_window_still_flows(
-        self, tmp_path: Path
-    ) -> None:
+    def test_line_longer_than_the_window_still_flows(self, tmp_path: Path) -> None:
         """Строка длиннее окна отдаётся кусками: прогресс важнее выравнивания."""
         journal = _journal(tmp_path)
         recorder = _recorder(journal)
-        recorder.feed(b"x" * (3 * StreamJournal.WINDOW_BYTES))
+        recorder.feed(b"x" * (3 * JournalWindow.BYTES))
         recorder.close("rc=0")
 
         first = journal.slice_at(KEY, 0)
         assert first is not None
-        assert first.end == StreamJournal.WINDOW_BYTES
+        assert first.end == JournalWindow.BYTES
 
         second = journal.slice_at(KEY, first.end)
         assert second is not None
@@ -241,9 +236,7 @@ class TestUsageAndPurge:
     def test_usage_lists_threads_oldest_first(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
         self._fill(journal, "t-old", b"x" * 100)
-        os.utime(
-            tmp_path / "vault" / "7" / "t-old" / "c-1.log", (1000.0, 1000.0)
-        )
+        os.utime(tmp_path / "vault" / "7" / "t-old" / "c-1.log", (1000.0, 1000.0))
         self._fill(journal, "t-new", b"y" * 5000)
 
         usage = journal.usage("7")
@@ -272,9 +265,7 @@ class TestUsageAndPurge:
         заведомо недостижимым: ротация обязана удалить всё незащищённое и
         отступиться от защищённого лога.
         """
-        journal = StreamJournal(
-            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60
-        )
+        journal = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
         self._fill(journal, "t-old", b"a" * 100)
         self._fill(journal, "t-protected", b"b" * 100)
 
@@ -286,13 +277,9 @@ class TestUsageAndPurge:
         assert (root / "t-protected" / "c-1.log").exists()
         assert (root / "t-cur" / "c-2.log").exists()
 
-    def test_closed_call_of_current_thread_is_evictable(
-        self, tmp_path: Path
-    ) -> None:
+    def test_closed_call_of_current_thread_is_evictable(self, tmp_path: Path) -> None:
         """Защищён живой вызов, не весь тред: старый закрытый лог того же треда уходит."""
-        journal = StreamJournal(
-            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60
-        )
+        journal = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
         old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
         recorder = journal.recorder(old_key, "bash", _wake, frozenset())
         recorder.feed(b"a" * 100)

@@ -53,9 +53,7 @@ def _profile(**kw: Any) -> SandboxProfile:
 
 def _tool_config(override: dict[str, Any], **profile_kw: Any) -> SandboxToolConfig:
     profile = _profile(cwd="/workspace", **profile_kw)
-    return SandboxToolConfig.model_validate(
-        {"profile": profile, "override": override}
-    )
+    return SandboxToolConfig.model_validate({"profile": profile, "override": override})
 
 
 class TestProfileRegistry:

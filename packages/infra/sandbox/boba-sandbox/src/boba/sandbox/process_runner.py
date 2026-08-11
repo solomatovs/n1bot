@@ -69,8 +69,13 @@ def run_subprocess(  # noqa: PLR0913
     with cancellation.abort_with(proc.kill):
         _feed_stdin(proc, stdin_data)
         out_bytes, err_bytes, trunc_out, trunc_err, timed_out = _pump(
-            proc, timeout_sec, max_output_bytes, cancellation,
-            stdout_sink, stderr_sink, keep_stdout,
+            proc,
+            timeout_sec,
+            max_output_bytes,
+            cancellation,
+            stdout_sink,
+            stderr_sink,
+            keep_stdout,
         )
     cancellation.raise_if_cancelled()
     duration_ms = int((time.monotonic() - started) * 1000)
@@ -128,8 +133,15 @@ def _pump(  # noqa: PLR0913
 
     try:
         timed_out = _select_loop(
-            deadline, fds, buffers, sinks, keeps, truncated, open_fds,
-            max_output_bytes, cancellation,
+            deadline,
+            fds,
+            buffers,
+            sinks,
+            keeps,
+            truncated,
+            open_fds,
+            max_output_bytes,
+            cancellation,
         )
     except Exception:
         # потребитель оборвал поток: процесс дальше не нужен
@@ -182,8 +194,13 @@ def _select_loop(  # noqa: PLR0913
         for fd in ready:
             tag = fds[fd]
             more = _read_chunk(
-                fd, buffers[tag], truncated, tag,
-                max_output_bytes, sinks[tag], keeps[tag],
+                fd,
+                buffers[tag],
+                truncated,
+                tag,
+                max_output_bytes,
+                sinks[tag],
+                keeps[tag],
             )
             if not more:
                 open_fds.discard(fd)
