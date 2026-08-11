@@ -321,11 +321,12 @@ class TestServedStreaming:
         with caplog.at_level(logging.INFO, logger=UPLOAD_LOGGER):
             async with (
                 LiveServer(app) as server,
-                AsyncClient(base_url=server.base_url) as client,client.stream(
-                "GET",
-                f"/project/file/{file_id}",
-                params={"session_id": session.id},
-            ) as response
+                AsyncClient(base_url=server.base_url) as client,
+                client.stream(
+                    "GET",
+                    f"/project/file/{file_id}",
+                    params={"session_id": session.id},
+                ) as response,
             ):
                 async for _ in response.aiter_bytes(self.CLIENT_CHUNK):
                     break

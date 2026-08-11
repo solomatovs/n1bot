@@ -14,6 +14,20 @@ from boba.sandbox import SandboxCaller, SandboxProfile
 from boba.toolkit.launcher import TextCollector
 from boba.toolkit.stream import ToolStreamBuffer, ToolStreamTap
 
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
     "ro_binds": ("/usr", "/bin", "/sbin", "/lib", "/lib64"),
@@ -27,6 +41,7 @@ _PROFILE_BASE: dict[str, Any] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": ("/tmp:64M",),  # noqa: S108
     "network": False,
     "env_set": {"PATH": "/usr/bin:/bin", "HOME": "/tmp"},  # noqa: S108
@@ -36,7 +51,6 @@ _PROFILE_BASE: dict[str, Any] = {
     "max_file_size_bytes": 64 * 1024 * 1024,
     "max_open_files": 1024,
     "max_processes": 256,
-    "max_output_bytes": 256 * 1024,
     "cgroup_base": "",
     "oom_score_adj": 0,
     "cwd": "/tmp",  # noqa: S108
@@ -108,26 +122,24 @@ class TestCallTextTap:
         assert "одинокий" in outcome.result.stdout
 
     def test_window_stays_bounded_on_huge_output(self) -> None:
-        """Мегабайты вывода не оседают в памяти: окно держит только хвост.
+        """Мегабайты вывода не оседают в окне: оно держит только хвост.
 
-        Результат для LLM обрезается потолком профиля по началу, а окно
-        продолжает ехать до конца процесса — в нём последние строки.
+        Результат отдаётся целиком, а окно продолжает ехать до конца
+        процесса — в нём последние строки.
         """
         window_bytes = 64 * 1024
         buffer = _window(window_bytes)
         ToolStreamTap.set(buffer)
 
         # ~1.6 МБ: 200000 строк по 8 байт
-        outcome = self._caller(max_output_bytes=window_bytes).call_text(
-            "seq -w 1 200000", stdin=""
-        )
+        outcome = self._caller().call_text("seq -w 1 200000", stdin="")
 
         window = buffer.snapshot()
         assert len(window.text.encode()) <= window_bytes
         assert window.dropped_bytes > 1_000_000
         assert "200000" in window.text
-        assert "0000001" not in window.text
-        assert outcome.result.truncated_stdout is True
+        assert "\n000002\n" not in window.text
+        assert outcome.result.stdout.startswith("000001\n")
 
     def test_window_fills_while_the_process_runs(self) -> None:
         """Пробуждения приходят по ходу процесса, а не одним махом в конце."""

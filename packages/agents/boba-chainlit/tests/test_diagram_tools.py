@@ -33,6 +33,7 @@ from boba.chainlit.rendering.canvas import (
     RenderStatus,
     RenderVerdicts,
 )
+from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
 from boba.workspace.launcher import LauncherConfig
 
@@ -176,6 +177,7 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DiagramFiles:
             lock_wait_sec=1.0,
             copy_chunk_bytes=65536,
         ),
+        binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
     )
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)

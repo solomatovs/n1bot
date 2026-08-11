@@ -85,12 +85,20 @@ async def test_database(app_config: AppConfig) -> str:
     try:
         async with maintenance.cursor() as cur:
             await cur.execute(
-                "select 1 from pg_database where datname = %s", (TEST_DB,)
+                """
+                select
+                    1
+                from
+                    pg_database
+                where
+                    datname = %s
+                """,
+                (TEST_DB,),
             )
             exists = await cur.fetchone()
             if not exists:
                 await cur.execute(
-                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(TEST_DB))
+                    sql.SQL("create database {}").format(sql.Identifier(TEST_DB))
                 )
     finally:
         await maintenance.close()

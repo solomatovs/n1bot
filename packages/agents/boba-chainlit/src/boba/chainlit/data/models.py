@@ -118,7 +118,7 @@ class Row:
     @classmethod
     def all_assignments(cls, *, exclude: tuple[str, ...] = ()) -> sql.Composable:
         return sql.SQL(", ").join(
-            sql.SQL("{0} = EXCLUDED.{0}").format(sql.Identifier(f.name))
+            sql.SQL("{0} = excluded.{0}").format(sql.Identifier(f.name))
             for f in fields(cls)
             if f.name not in exclude
         )
@@ -235,7 +235,10 @@ class Thread(Row):
                 """
             ).format(table=table),
             sql.SQL(
-                "create index if not exists idx_threads_user_id on {table} (user_id)"
+                """
+                create index if not exists idx_threads_user_id
+                    on {table} (user_id)
+                """
             ).format(table=table),
         )
 
@@ -300,25 +303,27 @@ class Element(Row):
         return (
             sql.SQL(
                 """
-                CREATE TABLE IF NOT EXISTS {table} (
-                    id uuid PRIMARY KEY,
-                    name text NOT NULL,
-                    type text NOT NULL,
-                    display text NOT NULL,
-                    thread_id uuid,
-                    for_id uuid,
+                create table if not exists {table} (
+                    id           uuid primary key,
+                    name         text not null,
+                    type         text not null,
+                    display      text not null,
+                    thread_id    uuid,
+                    for_id       uuid,
                     chainlit_key text,
-                    size text,
-                    language text,
-                    page integer,
-                    props jsonb,
-                    mime text
+                    size         text,
+                    language     text,
+                    page         integer,
+                    props        jsonb,
+                    mime         text
                 )
                 """
             ).format(table=table),
             sql.SQL(
-                "CREATE INDEX IF NOT EXISTS idx_elements_thread_id "
-                "ON {table} (thread_id)"
+                """
+                create index if not exists idx_elements_thread_id
+                    on {table} (thread_id)
+                """
             ).format(table=table),
         )
 
@@ -361,16 +366,19 @@ class Feedback(Row):
         return (
             sql.SQL(
                 """
-                CREATE TABLE IF NOT EXISTS {table} (
-                    id uuid PRIMARY KEY,
-                    for_id uuid NOT NULL,
-                    value smallint NOT NULL,
+                create table if not exists {table} (
+                    id        uuid primary key,
+                    for_id    uuid not null,
+                    value     smallint not null,
                     thread_id uuid,
-                    comment text
+                    comment   text
                 )
                 """
             ).format(table=table),
             sql.SQL(
-                "CREATE INDEX IF NOT EXISTS idx_feedbacks_for_id ON {table} (for_id)"
+                """
+                create index if not exists idx_feedbacks_for_id
+                    on {table} (for_id)
+                """
             ).format(table=table),
         )

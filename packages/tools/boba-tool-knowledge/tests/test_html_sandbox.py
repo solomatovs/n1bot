@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -30,6 +31,19 @@ _HTML = (
     '<a href="https://example.com">ссылка</a></body></html>'
 )
 
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
 _PROFILE: dict[str, Any] = {
     "rootfs": "",
     "ro_binds": (),
@@ -43,6 +57,7 @@ _PROFILE: dict[str, Any] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": ("/tmp:64M",),  # noqa: S108
     "network": False,
     "env_set": {"PATH": "/usr/bin:/bin"},
@@ -52,7 +67,6 @@ _PROFILE: dict[str, Any] = {
     "max_file_size_bytes": 64 * 1024 * 1024,
     "max_open_files": 1024,
     "max_processes": 256,
-    "max_output_bytes": 4 * 1024 * 1024,
     "cgroup_base": "",
     "oom_score_adj": 0,
     "cwd": "/tmp",  # noqa: S108

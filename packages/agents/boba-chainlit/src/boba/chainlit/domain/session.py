@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Final
+import contextlib
+from collections.abc import Iterator
+from contextvars import ContextVar
+from typing import ClassVar, Final
 
 import chainlit as cl
 from chainlit.context import ChainlitContextException
 
 __all__ = [
+    "LogUserMark",
     "UserMetadataField",
     "current_thread_id",
     "current_user_id",
@@ -21,6 +25,45 @@ class UserMetadataField:
 
     PROVIDER: Final = "provider"
     ROLES: Final = "roles"
+
+
+class LogUserMark:
+    """Явная метка пользователя для строк лога вне контекста сессии chainlit.
+
+    Колбэки инструментов langchain гоняет в чужом event loop'е, где сессии уже
+    нет: метка ставится на время самой записи, а не наследуется из контекста.
+    """
+
+    THREAD_LEN: ClassVar[int] = 8
+
+    _current: ClassVar[ContextVar[str]] = ContextVar("log_user_mark", default="")
+
+    def __init__(self, user: str, thread_id: str) -> None:
+        self._label = self.compose(user, thread_id)
+
+    @classmethod
+    def compose(cls, user: str, thread_id: str) -> str:
+        """Метка строки лога: логин и короткий thread-id."""
+        if not user:
+            return ""
+
+        if not thread_id:
+            return user
+
+        return f"{user} {thread_id[: cls.THREAD_LEN]}"
+
+    @classmethod
+    def current(cls) -> str:
+        """Метка, выставленная на время записи; пустая — метки нет."""
+        return cls._current.get()
+
+    @contextlib.contextmanager
+    def applied(self) -> Iterator[None]:
+        token = self._current.set(self._label)
+        try:
+            yield
+        finally:
+            self._current.reset(token)
 
 
 def _current_user() -> cl.User | cl.PersistedUser | None:

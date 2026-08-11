@@ -16,6 +16,19 @@ from boba.sandbox.profile import SandboxProfile
 from boba.workspace.launcher import ResourceLimits
 
 
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
@@ -73,6 +86,7 @@ class TestProfileValidation:
                 "lock_wait_sec": 10.0,
                 "copy_chunk_bytes": 1048576,
             },
+            "binaries": {"dirs": _bin_dirs()},
             "tmpfs": [],
             "network": False,
             "env_set": {},
@@ -82,7 +96,6 @@ class TestProfileValidation:
             "max_file_size_bytes": 1,
             "max_open_files": 1,
             "max_processes": 1,
-            "max_output_bytes": 1024,
             "cgroup_base": "",
             "oom_score_adj": 0,
             "cwd": "",

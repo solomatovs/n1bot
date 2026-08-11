@@ -24,7 +24,12 @@ from boba.chainlit.domain.session import (
     current_user_roles,
 )
 from boba.chainlit.rendering.stream_view import ToolStreams
-from boba.sandbox import SandboxCaller, SandboxToolConfig, has_bwrap
+from boba.sandbox import (
+    SandboxCaller,
+    SandboxProfile,
+    SandboxToolConfig,
+    has_bwrap,
+)
 from boba.settings import bind
 from boba.tool.ch import ChExecutorConfig, build_ch_tools
 from boba.tool.chart import build_chart_tools
@@ -82,12 +87,6 @@ def _build_sandbox_tools(
     cfg: None,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.bash] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "bash was not registered",
-        )
-        return []
     return [build_bash_tool(launchers)]
 
 
@@ -95,12 +94,6 @@ def _build_doc_tools(
     cfg: DocToolsConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.doc] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "doc tools were not registered",
-        )
-        return []
     return build_doc_tools(cfg, launchers)
 
 
@@ -108,12 +101,6 @@ def _build_ingest_tools(
     cfg: ConfluenceIngestConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.ingest] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "confluence ingest tools were not registered",
-        )
-        return []
     return build_confluence_ingest_tools(cfg, launchers)
 
 
@@ -121,12 +108,6 @@ def _build_confluence_tools(
     cfg: ConfluenceToolsConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.confluence] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "confluence tools were not registered",
-        )
-        return []
     return build_confluence_tools(cfg, launchers)
 
 
@@ -134,12 +115,6 @@ def _build_web_tools(
     cfg: WebGrepConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.web] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "web tools were not registered",
-        )
-        return []
     return build_web_tools(cfg, launchers)
 
 
@@ -147,12 +122,6 @@ def _build_chart_tools(
     cfg: None,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.chart] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "chart tools were not registered",
-        )
-        return []
     return build_chart_tools(launchers)
 
 
@@ -160,12 +129,6 @@ def _build_pg_tools(
     cfg: PgExecutorConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.pg] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "pg tools were not registered",
-        )
-        return []
     return build_pg_tools(cfg, launchers)
 
 
@@ -173,12 +136,6 @@ def _build_ch_tools(
     cfg: ChExecutorConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.ch] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "clickhouse tools were not registered",
-        )
-        return []
     return build_ch_tools(cfg, launchers)
 
 
@@ -186,12 +143,6 @@ def _build_kb_tools(
     cfg: PostgresKnowledgeBaseConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.kb] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "kb tools were not registered",
-        )
-        return []
     return build_kb_tools(cfg, launchers)
 
 
@@ -245,14 +196,47 @@ def _sandbox_path_vars() -> dict[str, str]:
     return {name: str(value) for name, value in values.items() if value}
 
 
-def _launchers(sandbox: SandboxToolConfig) -> LauncherFactory:
+def _launchers(profile: SandboxProfile) -> LauncherFactory:
     """Фабрика исполнителей на профиле инструмента: окружение выбирает приложение."""
-    profile = sandbox.effective()
 
     def launcher(tool: str) -> ToolLauncher:
         return SandboxCaller(tool, profile, _sandbox_path_vars)
 
     return launcher
+
+
+def _enabled_tools(
+    plugin: ToolPlugin,
+    cfg: ConfigT,
+    launchers: LauncherFactory,
+    meta: PluginMeta,
+) -> list[BaseTool]:
+    """Инструменты плагина, перечисленные в [tool.<name>] tools."""
+    built: list[BaseTool] = []
+
+    for tool in plugin.build(cfg, launchers):
+        if tool.name not in meta.tools:
+            continue
+
+        built.append(tool)
+
+    return built
+
+
+def _sandbox_launchers(raw_config: DictConfig, name: str) -> LauncherFactory | None:
+    """None — bwrap недоступен, инструменты плагина регистрировать не на чем."""
+    sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
+    profile = sandbox.effective()
+
+    if not has_bwrap(profile):
+        logger.warning(
+            "[tool.%s] is enabled, but bubblewrap (bwrap) is not in the "
+            "trusted binary directories — its tools were not registered",
+            name,
+        )
+        return None
+
+    return _launchers(profile)
 
 
 def _no_launchers(tool: str) -> ToolLauncher:
@@ -362,14 +346,13 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
 
         launchers: LauncherFactory = _no_launchers
         if plugin.sandboxed:
-            sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
-            launchers = _launchers(sandbox)
-
-        built: list[BaseTool] = []
-        for tool in plugin.build(cfg, launchers):
-            if tool.name not in meta.tools:
+            sandboxed = _sandbox_launchers(raw_config, name)
+            if sandboxed is None:
                 continue
-            built.append(tool)
+
+            launchers = sandboxed
+
+        built = _enabled_tools(plugin, cfg, launchers, meta)
 
         for tool in built:
             roles_by_tool[tool.name] = meta.roles_of(tool.name)

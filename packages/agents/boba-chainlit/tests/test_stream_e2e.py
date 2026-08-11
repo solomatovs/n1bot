@@ -100,17 +100,47 @@ async def _seed_thread_and_button(config: AppConfig, thread_id: str) -> None:
     await pool.open()
     try:
         threads_query = sql.SQL(
-            "insert into {threads} (id, created_at, name, user_id) "
-            "values (%(id)s, now(), %(name)s, %(user_id)s) "
-            "on conflict (id) do nothing"
+            """
+            insert into {threads} (
+                id,
+                created_at,
+                name,
+                user_id
+            )
+            values (
+                %(id)s,
+                now(),
+                %(name)s,
+                %(user_id)s
+            )
+            on conflict (id) do nothing
+            """
         ).format(threads=sql.Identifier(dl.db_schema, "threads"))
 
         elements_query = sql.SQL(
-            "insert into {elements} "
-            "(id, thread_id, for_id, type, name, display, props, mime) "
-            "values (%(id)s, %(thread_id)s, %(for_id)s, 'custom', "
-            "'CanvasStream', 'inline', %(props)s, 'application/json') "
-            "on conflict (id) do nothing"
+            """
+            insert into {elements} (
+                id,
+                thread_id,
+                for_id,
+                type,
+                name,
+                display,
+                props,
+                mime
+            )
+            values (
+                %(id)s,
+                %(thread_id)s,
+                %(for_id)s,
+                'custom',
+                'CanvasStream',
+                'inline',
+                %(props)s,
+                'application/json'
+            )
+            on conflict (id) do nothing
+            """
         ).format(elements=sql.Identifier(dl.db_schema, "elements"))
 
         async with pool.connection() as conn, conn.transaction():

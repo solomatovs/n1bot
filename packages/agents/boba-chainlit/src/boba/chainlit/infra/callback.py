@@ -16,9 +16,15 @@ from boba.chainlit.agent.tools.canvas import (
 )
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.edit import ThreadRewind
+from boba.chainlit.chat.llm_trace import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn, ThreadRoom
 from boba.chainlit.domain.fields import StepField, ThreadField
-from boba.chainlit.domain.session import current_thread_id, current_user_id
+from boba.chainlit.domain.session import (
+    LogUserMark,
+    current_thread_id,
+    current_user_id,
+    current_user_label,
+)
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
 from boba.chainlit.rendering.canvas import CanvasAction, RenderVerdicts
@@ -63,8 +69,9 @@ async def on_message(
     view = ChatView(thread_id, LiveSink())
     view.begin_turn(msg.id)
     tracer = AgentTracer(view, str(user_id))
+    state_log = LlmStateLog(LogUserMark(current_user_label(), thread_id))
     run_config = RunnableConfig(
-        callbacks=[tracer],
+        callbacks=[tracer, state_log],
         configurable={"thread_id": thread_id},
     )
 

@@ -101,8 +101,6 @@ class TestSandboxFailureLog:
             exit_code=rc,
             stdout=stdout,
             stderr=stderr,
-            truncated_stdout=False,
-            truncated_stderr=False,
             duration_ms=42,
             timed_out=timed_out,
         )

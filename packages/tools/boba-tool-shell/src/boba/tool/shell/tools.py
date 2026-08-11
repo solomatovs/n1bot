@@ -54,8 +54,6 @@ def _result_to_payload(outcome: LaunchOutcome) -> dict[str, Any]:
         "stdout": result.stdout,
         "stderr": result.stderr,
         "duration_ms": result.duration_ms,
-        "truncated_stdout": result.truncated_stdout,
-        "truncated_stderr": result.truncated_stderr,
         "timed_out": result.timed_out,
         "diagnostic": outcome.diagnostic,
     }

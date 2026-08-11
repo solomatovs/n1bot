@@ -12,7 +12,7 @@ from langchain_core.outputs import ChatGenerationChunk, GenerationChunk
 from langchain_core.tracers.base import AsyncBaseTracer
 from typing_extensions import ParamSpec, override
 
-from boba.chainlit.agent.chat_model import ResponseField
+from boba.chainlit.agent.chat_model import ReasoningText
 from boba.chainlit.rendering.chat_view import ChatView
 from boba.chainlit.rendering.errors import show_error
 from boba.chainlit.rendering.stream_view import StreamNote, ToolStreams
@@ -78,25 +78,6 @@ class AgentTracer(AsyncBaseTracer):
     def _set_context(self) -> None:
         context_var.set(self._context)
 
-    @staticmethod
-    def _reasoning_of(message: Any) -> str:
-        if message is None:
-            return ""
-
-        value = getattr(message, "reasoning_content", None)
-        if value:
-            return str(value)
-
-        extra = getattr(message, "additional_kwargs", None)
-        if not extra:
-            return ""
-
-        value = extra.get(ResponseField.REASONING_CONTENT.value)
-        if value:
-            return str(value)
-
-        return ""
-
     @override
     @_visible_failure
     async def on_llm_new_token(
@@ -111,7 +92,7 @@ class AgentTracer(AsyncBaseTracer):
         self._set_context()
         message = getattr(chunk, "message", None)
 
-        if reasoning := self._reasoning_of(message):
+        if reasoning := ReasoningText.of(message):
             run_key = str(run_id)
             self._reasoning[run_key] = self._reasoning.get(run_key, "") + reasoning
             await self._view.stream_thinking(reasoning, getattr(message, "id", None))
@@ -144,7 +125,7 @@ class AgentTracer(AsyncBaseTracer):
 
         # рассуждения без стрима приходят разом в итоговом сообщении
         if not streamed:
-            if text := self._reasoning_of(message):
+            if text := ReasoningText.of(message):
                 await self._view.thinking(text, getattr(message, "id", None))
 
         return await super().on_llm_end(
