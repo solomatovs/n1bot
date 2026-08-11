@@ -73,9 +73,6 @@ class ClickHouseConfig(ConnectionProfile):
     # readonly=2: запись и DDL запрещены, менять настройки сессии по-прежнему можно
     READ_ONLY: ClassVar[int] = 2
 
-    # ключ контекста сериализации: пароль раскрывается только в доверенный канал
-    REVEAL_SECRETS: ClassVar[str] = "reveal_secrets"
-
     # не аргументы конструктора клиента: настройки сессии и креды kerberos
     NOT_CLIENT_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"kind", "settings", "kerberos", "krbsrvname"}
@@ -198,13 +195,13 @@ class ClickHouseConfig(ConnectionProfile):
     @model_validator(mode="after")
     def _validate(self) -> Self:
         if not self.host:
-            msg = "clickhouse connection: host обязателен"
+            msg = "clickhouse connection: host is required"
             raise ValueError(msg)
         if not self.port:
-            msg = "clickhouse connection: port обязателен"
+            msg = "clickhouse connection: port is required"
             raise ValueError(msg)
         if not self.interface:
-            msg = "clickhouse connection: interface обязателен (http или https)"
+            msg = "clickhouse connection: interface is required (http or https)"
             raise ValueError(msg)
 
         if self.kerberos is None:
@@ -234,7 +231,7 @@ class ClickHouseConfig(ConnectionProfile):
     def service_name(self) -> str:
         """SPN сервиса в форме hostbased: krbsrvname@<имя сервера>."""
         if not self.krbsrvname:
-            msg = "clickhouse connection: krbsrvname не задан"
+            msg = "clickhouse connection: krbsrvname is not set"
             raise ValueError(msg)
         return f"{self.krbsrvname}@{self.server_host_name or self.host}"
 

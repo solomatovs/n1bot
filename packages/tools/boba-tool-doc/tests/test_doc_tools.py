@@ -385,7 +385,7 @@ class TestTools:
     def test_truncation_is_marked_for_llm(self, pdf: Path) -> None:
         message = self._read(_config(max_text_chars=5), pdf)
 
-        assert "[обрезано до 5 символов]" in message.content
+        assert "[truncated to 5 characters]" in message.content
 
     def test_facade_defaults_reach_the_node(self, pdf: Path) -> None:
         """Пропущенные вызовом настройки падают на дефолты фасада, а не теряются."""

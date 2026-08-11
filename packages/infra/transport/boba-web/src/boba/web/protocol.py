@@ -11,9 +11,9 @@ from enum import StrEnum
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
-from pydantic.types import SecretStr
 
 from boba.toolkit.channels import StreamFormat
+from boba.toolkit.secrets import SecretDump
 from boba.toolkit.workflow import StageContract
 from boba.transport.http import HttpProfile
 from boba.transport.http.auth import WebAuth
@@ -63,14 +63,7 @@ class WebProfile(BaseModel):
     @field_serializer("auth", when_used="json")
     def _dump_auth(self, value: WebAuth) -> dict[str, Any]:
         """Секреты метода авторизации раскрываются только здесь."""
-        dumped = value.model_dump(mode="json")
-
-        for name, field in value:
-            if not isinstance(field, SecretStr):
-                continue
-            dumped[name] = field.get_secret_value()
-
-        return dumped
+        return SecretDump.of(value)
 
 
 class WebFetchArgs(BaseModel):

@@ -9,9 +9,10 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from boba.tool.doc.liteparse.protocol import ParseParams
+from boba.toolkit.secrets import SecretDump
 from boba.transport.http import HttpProfile
 
 __all__ = [
@@ -26,7 +27,6 @@ __all__ = [
     "ConfluenceSearchRequest",
     "ConfluenceSpace",
     "ConfluenceSpacesRequest",
-    "SecretDump",
 ]
 
 
@@ -41,30 +41,6 @@ class ConfluenceNode(StrEnum):
     INGEST = "confluence_ingest"
 
 
-class SecretDump:
-    """Дамп модели с раскрытыми SecretStr; зовётся только из field_serializer."""
-
-    @classmethod
-    def of(cls, model: BaseModel) -> dict[str, Any]:
-        """Плоская модель (auth-метод профиля): секреты полей едут значениями."""
-        dumped = model.model_dump(mode="json")
-
-        for name in type(model).model_fields:
-            value = getattr(model, name)
-            if isinstance(value, SecretStr):
-                dumped[name] = value.get_secret_value()
-
-        return dumped
-
-    @classmethod
-    def of_profile(cls, profile: HttpProfile) -> dict[str, Any]:
-        """Транспортный профиль: секреты живут в auth-методе."""
-        dumped = profile.model_dump(mode="json")
-        dumped["auth"] = cls.of(profile.auth)
-
-        return dumped
-
-
 class ConfluenceCall(BaseModel):
     """Общая часть: куда идти и с каким профилем."""
 
@@ -77,7 +53,7 @@ class ConfluenceCall(BaseModel):
     @field_serializer("profile", when_used="json")
     def _dump_profile(self, value: HttpProfile) -> dict[str, Any]:
         """tool_args песочницы — доверенный канал: только здесь креды раскрыты."""
-        return SecretDump.of_profile(value)
+        return SecretDump.of(value)
 
 
 class ConfluencePageCall(ConfluenceCall):

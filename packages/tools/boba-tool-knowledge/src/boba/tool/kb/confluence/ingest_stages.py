@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
@@ -26,6 +26,7 @@ __all__ = [
     "ConfluenceAttachmentEnricher",
     "ConfluenceIngestEnricher",
     "ConfluenceIngestStages",
+    "ConfluenceParserArgs",
 ]
 
 
@@ -52,6 +53,30 @@ class ConfluenceAttachmentEnricher:
         return enriched
 
 
+class ConfluenceParserArgs(BaseModel):
+    """Ручки парсера, которые вызывающий вправе задать поверх конфига.
+
+    Значения разбираются здесь: model_copy конфига проверок не делает, и без
+    этой границы в валидированный конфиг прогона легло бы значение чужого типа.
+    Дефолты полей не используются — наружу уходят только заданные вызывающим.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    ocr_enabled: bool = False
+    ocr_language: str = Field(default="eng", min_length=1)
+    num_workers: int = Field(default=1, ge=1)
+
+    @classmethod
+    def names(cls) -> frozenset[str]:
+        """Имена ручек: их фасад забирает из args узла в конфиг прогона."""
+        return frozenset(cls.model_fields)
+
+    def overrides(self) -> dict[str, Any]:
+        """Только заданные вызывающим поля: остальное остаётся из конфига."""
+        return self.model_dump(exclude_unset=True)
+
+
 class ConfluenceIngestEnricher:
     """args прогона -> запрос payload'а: конфиг индексации целиком плюс op."""
 
@@ -59,28 +84,27 @@ class ConfluenceIngestEnricher:
         self._cfg = cfg
 
     def __call__(self, args: Mapping[str, JsonValue], /) -> Mapping[str, Any]:
+        parser = ConfluenceParserArgs.model_validate(args)
+
         enriched: dict[str, Any] = {}
         for name, value in args.items():
-            if name in ConfluenceIngestStages.PARSER_ARGS:
+            if name in ConfluenceParserArgs.names():
                 continue
             enriched[name] = value
 
         enriched["op"] = ConfluenceNode.INGEST
-        enriched["config"] = self._config(args)
+        enriched["config"] = self._config(parser)
 
         return enriched
 
-    def _config(self, args: Mapping[str, JsonValue]) -> ConfluenceIngestConfig:
+    def _config(self, parser: ConfluenceParserArgs) -> ConfluenceIngestConfig:
         """Настройки парсера из вызова поверх секции конфига."""
-        update: dict[str, JsonValue] = {}
-        for name in ConfluenceIngestStages.PARSER_ARGS:
-            if name in args:
-                update[name] = args[name]
+        overrides = parser.overrides()
 
-        if not update:
+        if not overrides:
             return self._cfg
 
-        return self._cfg.model_copy(update=update)
+        return self._cfg.model_copy(update=overrides)
 
 
 class ConfluenceIngestStages:
@@ -91,13 +115,6 @@ class ConfluenceIngestStages:
         "-m",
         "boba.tool.kb.confluence.ingest_payload",
     )
-
-    PARSER_ARGS: ClassVar[tuple[str, ...]] = (
-        "ocr_enabled",
-        "num_workers",
-        "ocr_language",
-    )
-    """Настройки парсера, которые вызывающий вправе задать поверх конфига."""
 
     @classmethod
     def of(cls, cfg: ConfluenceIngestConfig) -> dict[str, StageNode]:

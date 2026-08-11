@@ -101,9 +101,6 @@ class PostgresConfig(ConnectionProfile):
     # режимы gssencmode, при которых libpq идёт в KDC и соединению нужен свой TGT
     GSS_MODES: ClassVar[frozenset[str]] = frozenset({"prefer", "require"})
 
-    # ключ контекста сериализации: пароль раскрывается только в доверенный канал
-    REVEAL_SECRETS: ClassVar[str] = "reveal_secrets"
-
     # не connect-параметры: конструктор пула, строка '-c k=v', креды kerberos
     NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"pool", "options", "kind", "kerberos"}
@@ -261,13 +258,13 @@ class PostgresConfig(ConnectionProfile):
     @model_validator(mode="after")
     def _validate(self) -> Self:
         if not self.user:
-            msg = "postgres connection: user обязателен"
+            msg = "postgres connection: user is required"
             raise ValueError(msg)
         if not self.dbname:
-            msg = "postgres connection: dbname обязателен"
+            msg = "postgres connection: dbname is required"
             raise ValueError(msg)
         if not (self.host or self.hostaddr):
-            msg = "postgres connection: host или hostaddr обязателен"
+            msg = "postgres connection: host or hostaddr is required"
             raise ValueError(msg)
         if self.pool.max_size is not None and self.pool.max_size < self.pool.min_size:
             msg = (

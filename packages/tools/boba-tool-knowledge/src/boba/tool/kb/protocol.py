@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from boba.db.postgres import PostgresConfig
+from boba.toolkit.secrets import SecretDump
 
 __all__ = ["EmbeddingRef", "KbNode", "KbSearchRequest"]
 
@@ -53,7 +54,4 @@ class KbSearchRequest(BaseModel):
     @field_serializer("connection", when_used="json")
     def _dump_connection(self, value: PostgresConfig) -> dict[str, Any]:
         """tool_args песочницы — доверенный канал: только здесь пароль раскрыт."""
-        return value.model_dump(
-            mode="json",
-            context={PostgresConfig.REVEAL_SECRETS: True},
-        )
+        return SecretDump.of(value)
