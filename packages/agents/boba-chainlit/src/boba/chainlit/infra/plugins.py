@@ -47,7 +47,7 @@ from boba.tool.kb.confluence.ingest_tools import (
     build_confluence_ingest_tools,
 )
 from boba.tool.pg import PgExecutorConfig, build_pg_tools
-from boba.tool.shell import build_bash_tool
+from boba.tool.shell import BashToolConfig, build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
@@ -84,10 +84,10 @@ class PluginMeta(BaseModel):
 
 
 def _build_sandbox_tools(
-    cfg: None,
+    cfg: BashToolConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return [build_bash_tool(launchers)]
+    return [build_bash_tool(cfg, launchers)]
 
 
 def _build_doc_tools(
@@ -248,6 +248,7 @@ def _no_launchers(tool: str) -> ToolLauncher:
 _PLUGINS: dict[str, ToolPlugin] = {
     "bash": ToolPlugin(
         section="bash",
+        config_model=BashToolConfig,
         build=_build_sandbox_tools,
     ),
     "doc": ToolPlugin(

@@ -108,14 +108,17 @@ class TrustedBinaries(BaseModel):
         """Проверка идёт от файла вверх до объявленного каталога включительно.
 
         Выше root не поднимаемся: этот каталог администратор назвал доверенным
-        сам, а права над ним — часть развёртывания, а не выбора бинаря.
+        сам, а права над ним — часть развёртывания, а не выбора бинаря. Границу
+        сравниваем разыменованной: объявить каталог через симлинк (release/current)
+        — обычное дело, а путь до файла уже разыменован.
         """
         real = os.path.realpath(path)
+        boundary = os.path.realpath(root)
         cls._check_protected(real)
-        cls._check_protected(root)
+        cls._check_protected(boundary)
 
         directory = os.path.dirname(real)
-        while directory != root:
+        while directory != boundary:
             parent = os.path.dirname(directory)
             if parent == directory:
                 return

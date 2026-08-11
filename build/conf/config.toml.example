@@ -326,9 +326,10 @@
 
 
 [tool.bash]
-    enable = true
-    roles  = ["*"]
-    tools  = { bash = [] }
+    enable           = true
+    roles            = ["*"]
+    tools            = { bash = [] }
+    max_output_bytes = 65536
     [tool.bash.sandbox]
         profile  = "${sandbox.profiles.base}"
         override = {  }

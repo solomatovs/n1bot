@@ -40,7 +40,7 @@ from boba.tool.kb.confluence.ingest_tools import (
 )
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg import PgExecutorConfig, build_pg_tools
-from boba.tool.shell import build_bash_tool
+from boba.tool.shell import BashToolConfig, build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.result import (
@@ -165,7 +165,10 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def bash_tool(raw_config):
-    return build_bash_tool(ToolSetup.launchers(raw_config, "tool.bash"))
+    cfg = ToolSetup.config(raw_config, "tool.bash", BashToolConfig)
+    launchers = ToolSetup.launchers(raw_config, "tool.bash")
+
+    return build_bash_tool(cfg, launchers)
 
 
 @pytest.fixture(scope="module")

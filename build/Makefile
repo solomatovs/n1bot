@@ -551,6 +551,11 @@ extract:
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" \
 	    "$(OUT)/app/$(VERSION)/boba-chainlit/bin"/*
 
+	# отсюда берутся bwrap и fuse2fs: групповая или чужая запись на пути до
+	# них — отказ TrustedBinaries, а umask каталога сборки даёт как раз g+w
+	chmod go-w "$(OUT)"
+	chmod -R go-w "$(OUT)/third" "$(OUT)/sandbox"
+
 	# envsubst с явным списком: ${PYTHONHOME} и TOML-интерполяции не трогаются
 	export INSTALL_DIR="$(INSTALL_DIR)"
 	export BOBA_BASE="$(INSTALL_DIR)" BOBA_VERSION="$(VERSION)"
@@ -573,6 +578,13 @@ extract:
 	    exit 1
 	}
 	echo ">>> артефакты песочницы на месте"
+
+	# то же, что проверит TrustedBinaries на старте приложения
+	writable=$$(find "$(OUT)/third/bin" -maxdepth 1 -perm /022 -print -quit)
+	[ -z "$$writable" ] || {
+	    echo "third/bin доступен на запись посторонним ($$writable) — приложение откажется его использовать" >&2
+	    exit 1
+	}
 
 	# стабильный путь для dev.sh и launch.json: они не знают версию
 	ln -sfn "$(RELEASE_NAME)" "$(RELEASE_DIR)/current"

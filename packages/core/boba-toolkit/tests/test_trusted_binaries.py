@@ -138,6 +138,25 @@ class TestWritablePathsRejected:
 
         assert binaries.resolve(SandboxBinary.BWRAP) == str(binary)
 
+    def test_dir_declared_through_a_symlink_keeps_the_boundary(
+        self, tmp_path: Path
+    ) -> None:
+        """Так объявлен release/current: граница — цель ссылки, не её родитель."""
+        release = tmp_path / "boba-1.2.3"
+        directory = release / "third" / "bin"
+        directory.mkdir(parents=True)
+        binary = _executable(directory, SandboxBinary.BWRAP.value)
+        current = tmp_path / "current"
+        current.symlink_to(release)
+        release.chmod(0o775)
+        declared = current / "third" / "bin"
+        binaries = TrustedBinaries(dirs=(str(declared),))
+
+        found = binaries.resolve(SandboxBinary.BWRAP)
+
+        assert found == str(declared / SandboxBinary.BWRAP.value)
+        assert Path(found).resolve() == binary
+
     def test_symlink_to_writable_target_rejected(self, tmp_path: Path) -> None:
         """Проверяется цель симлинка, а не сама ссылка."""
         store = tmp_path / "store"
