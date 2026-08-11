@@ -1,4 +1,4 @@
-"""Bootstrap-миграции KB-схемы (DDL-only, для CLI); каждый SQL обязан быть идемпотентным."""
+"""Bootstrap-миграции KB-схемы для CLI: DDL-only, каждый SQL идемпотентен."""
 
 from __future__ import annotations
 

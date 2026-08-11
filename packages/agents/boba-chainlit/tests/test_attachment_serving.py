@@ -14,14 +14,14 @@ from httpx import ASGITransport, AsyncClient
 
 from boba.chainlit.agent.tools.send_file import WorkspaceFile
 from boba.chainlit.data import data_layer as data_layer_module
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.data.upload import AttachmentServing, UploadPolicy
 from boba.chainlit.domain.keys import (
     AttachmentUrl,
     ElementProps,
     ObjectKey,
     ThreadDir,
 )
-from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.data.upload import AttachmentServing, UploadPolicy
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 
 pytestmark = pytest.mark.anyio

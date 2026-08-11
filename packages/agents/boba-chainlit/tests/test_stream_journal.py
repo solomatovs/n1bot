@@ -11,13 +11,13 @@ import pytest
 from pydantic import ValidationError
 
 from boba.chainlit.data import stream_journal
-from boba.chainlit.domain.stream import JournalWindow
 from boba.chainlit.data.stream_journal import (
     DirVault,
     StreamJournal,
     StreamKey,
     StreamRecorder,
 )
+from boba.chainlit.domain.stream import JournalWindow
 
 KEY = StreamKey(user_id="7", thread_id="t-1", call_id="call-1")
 
@@ -278,7 +278,7 @@ class TestUsageAndPurge:
         assert (root / "t-cur" / "c-2.log").exists()
 
     def test_closed_call_of_current_thread_is_evictable(self, tmp_path: Path) -> None:
-        """Защищён живой вызов, не весь тред: старый закрытый лог того же треда уходит."""
+        """Защищён живой вызов, не тред: старый закрытый лог треда уходит."""
         journal = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
         old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
         recorder = journal.recorder(old_key, "bash", _wake, frozenset())

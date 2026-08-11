@@ -20,9 +20,9 @@ from chainlit.auth import get_current_user
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.data.upload import SessionFiles, UploadPolicy, UploadRoute
+from boba.chainlit.domain.keys import ObjectKey
 
 pytestmark = pytest.mark.anyio
 
@@ -321,15 +321,14 @@ class TestServedStreaming:
         with caplog.at_level(logging.INFO, logger=UPLOAD_LOGGER):
             async with (
                 LiveServer(app) as server,
-                AsyncClient(base_url=server.base_url) as client,
+                AsyncClient(base_url=server.base_url) as client,client.stream(
+                "GET",
+                f"/project/file/{file_id}",
+                params={"session_id": session.id},
+            ) as response
             ):
-                async with client.stream(
-                    "GET",
-                    f"/project/file/{file_id}",
-                    params={"session_id": session.id},
-                ) as response:
-                    async for _ in response.aiter_bytes(self.CLIENT_CHUNK):
-                        break
+                async for _ in response.aiter_bytes(self.CLIENT_CHUNK):
+                    break
 
             await asyncio.sleep(0.2)
 

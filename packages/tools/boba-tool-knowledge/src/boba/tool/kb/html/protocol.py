@@ -66,7 +66,7 @@ class ConfluenceSectionsRequest(BaseModel):
 
 
 class ConfluenceSection(BaseModel):
-    """Кусок страницы: текст и место в дереве заголовков; пустая строка = значения нет."""
+    """Кусок страницы: текст и место в дереве заголовков; пусто = значения нет."""
 
     model_config = ConfigDict(extra="forbid")
 

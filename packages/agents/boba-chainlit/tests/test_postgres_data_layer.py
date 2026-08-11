@@ -13,7 +13,7 @@ from conftest import Seed
 
 from boba.chainlit.data import data_layer as data_layer_module
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.data.errors import DataRejected
+from boba.chainlit.data.errors import DataRejectedError
 from boba.chainlit.domain.keys import ObjectKey
 
 pytestmark = pytest.mark.anyio
@@ -186,7 +186,7 @@ async def test_list_threads(seeded: Seed):
     )
     assert any(t["id"] == seeded.thread_id for t in page.data)
 
-    with pytest.raises(DataRejected, match="userId is required"):
+    with pytest.raises(DataRejectedError, match="userId is required"):
         await layer.list_threads(Pagination(first=10), ThreadFilter())
 
 

@@ -36,11 +36,15 @@ T = TypeVar("T")
 
 
 ChunkId = NewType("ChunkId", str)
-"""Стабильный id чанка для idempotent re-index; wire-формат {digest_prefix}:{chunk_index}."""
+"""Стабильный id чанка для idempotent re-index; wire-формат
+{digest_prefix}:{chunk_index}.
+"""
 
 
 class ChunkKeys:
-    """Стандартные MetadataKey для chunk-level атрибутов; формат пишет их только если может корректно вычислить."""
+    """Стандартные MetadataKey для chunk-level атрибутов; формат пишет их только если
+    может корректно вычислить.
+    """
 
     LOCATION_START: ClassVar[MetadataKey[int]] = MetadataKey(
         name="chunk.location.start",
@@ -80,7 +84,9 @@ class Chunk(Generic[T]):
 
 @dataclass(frozen=True)
 class EmbeddedChunk(Generic[T]):
-    """Insert-ready DTO для ChunkStore.upsert: Chunk[T] + embedding, конструировать через EmbeddedChunk.of."""
+    """Insert-ready DTO для ChunkStore.upsert: Chunk[T] + embedding, конструировать
+    через EmbeddedChunk.of.
+    """
 
     chunk_id: ChunkId
     source_id: SourceId
@@ -114,7 +120,9 @@ class EmbeddedChunk(Generic[T]):
 
 @dataclass(frozen=True)
 class ChunkSummary(Generic[T]):
-    """Лёгкая read-only сводка чанка (snippet вместо content) — результат IndexQuery.find."""
+    """Лёгкая read-only сводка чанка (snippet вместо content) — результат
+    IndexQuery.find.
+    """
 
     chunk_id: ChunkId
     source_id: SourceId

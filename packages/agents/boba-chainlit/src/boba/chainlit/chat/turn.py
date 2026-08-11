@@ -28,10 +28,10 @@ from langgraph.graph.state import CompiledStateGraph
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped, TurnRegistry
 from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.turn import ActiveTurns
 from boba.chainlit.chat.transcript import TurnMark, TurnRecord
+from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import current_user_id
+from boba.chainlit.domain.turn import ActiveTurns
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.chainlit.rendering.stream_view import ToolStreams
 from chainlit.context import ChainlitContext, context_var, get_context

@@ -59,7 +59,7 @@ class ChartRendering:
 
 @dataclass(frozen=True)
 class CustomElementRendering:
-    """Результат показывается кастомным jsx-компонентом public/elements/<element>.jsx."""
+    """Результат показывается jsx-компонентом public/elements/<element>.jsx."""
 
     element: str
     props: Mapping[str, Any]
@@ -150,33 +150,49 @@ class ToolResultMarkdown:
                 return self._copy_text_block(pg_text)
             case AffectedSqlResult(affected_rows=n, status=s):
                 return self._affected_block(n, s)
-            case ChartResult(title=title):
-                if title:
-                    return f"_(график: {title})_"
-                return "_(график)_"
-            case CustomElementResult(title=title):
-                if title:
-                    return f"_(элемент: {title})_"
-                return "_(элемент)_"
-            case DiagramResult(path=path, title=title):
-                if title:
-                    return f"_(диаграмма: {title})_"
-                return f"_(диаграмма: {path})_"
+            case ChartResult() | CustomElementResult() | DiagramResult() as visual:
+                return self._visual_block(visual)
             case ErrorResult(message=m):
-                if "\n" in m:
-                    return f"**Error:**\n\n{m}"
-                return f"**Error:** {m}"
+                return self._error_block(m)
             case _ as never:
                 assert_never(never)
+
+    @staticmethod
+    def _visual_block(
+        result: ChartResult | CustomElementResult | DiagramResult,
+    ) -> str:
+        """Подпись вместо самого элемента: элемент уходит своим rendering."""
+        match result:
+            case ChartResult(title=title):
+                if title:
+                    return f"_(chart: {title})_"
+                return "_(chart)_"
+            case CustomElementResult(title=title):
+                if title:
+                    return f"_(element: {title})_"
+                return "_(element)_"
+            case DiagramResult(path=path, title=title):
+                if title:
+                    return f"_(diagram: {title})_"
+                return f"_(diagram: {path})_"
+            case _ as never:
+                assert_never(never)
+
+    @staticmethod
+    def _error_block(message: str) -> str:
+        if "\n" in message:
+            return f"**Error:**\n\n{message}"
+
+        return f"**Error:** {message}"
 
     @staticmethod
     def _affected_block(affected_rows: int | None, status: str | None) -> str:
         if affected_rows is None:
             if status is None:
-                return "_запрос выполнен_"
+                return "_query executed_"
             return f"_{status}_"
 
-        counted = f"затронуто строк: {affected_rows}"
+        counted = f"rows affected: {affected_rows}"
         if status is None:
             return f"_{counted}_"
         return f"_{counted} ({status})_"

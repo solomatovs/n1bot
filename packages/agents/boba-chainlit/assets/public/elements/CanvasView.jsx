@@ -144,7 +144,7 @@ function TrailButton({ full }) {
   if (full) {
     return (
       <DialogClose asChild>
-        <Button variant="ghost" size="icon" title="Закрыть" aria-label="Закрыть">
+        <Button variant="ghost" size="icon" title="Close" aria-label="Close">
           <X />
         </Button>
       </DialogClose>
@@ -162,8 +162,8 @@ function TrailButton({ full }) {
         <Button
           variant="ghost"
           size="icon"
-          title="Во весь экран"
-          aria-label="Во весь экран"
+          title="Fullscreen"
+          aria-label="Fullscreen"
         >
           <Maximize2 />
         </Button>
@@ -172,8 +172,8 @@ function TrailButton({ full }) {
         variant="ghost"
         size="icon"
         onClick={closePanel}
-        title="Закрыть"
-        aria-label="Закрыть"
+        title="Close"
+        aria-label="Close"
       >
         <X />
       </Button>
@@ -251,13 +251,13 @@ function ZoomStage({ full, controls, children }) {
 
   const bar = (
     <>
-      <ToolButton onClick={zoomIn} title="Приблизить">
+      <ToolButton onClick={zoomIn} title="Zoom in">
         <Plus />
       </ToolButton>
-      <ToolButton onClick={zoomOut} title="Отдалить">
+      <ToolButton onClick={zoomOut} title="Zoom out">
         <Minus />
       </ToolButton>
-      <ToolButton onClick={reset} title="Сбросить вид">
+      <ToolButton onClick={reset} title="Reset view">
         <RotateCcw />
       </ToolButton>
       {controls}
@@ -341,13 +341,13 @@ function ScrollStage({
 
   const bar = (
     <>
-      <ToolButton onClick={bigger} title="Крупнее">
+      <ToolButton onClick={bigger} title="Larger">
         <Plus />
       </ToolButton>
-      <ToolButton onClick={smaller} title="Мельче">
+      <ToolButton onClick={smaller} title="Smaller">
         <Minus />
       </ToolButton>
-      <ToolButton onClick={reset} title="Сбросить размер">
+      <ToolButton onClick={reset} title="Reset size">
         <RotateCcw />
       </ToolButton>
       {controls}
@@ -411,7 +411,7 @@ function Diagram({ content }) {
 
   useEffect(() => {
     if (library === "failed") {
-      setError("mermaid.js не загружен: соберите webassets (make webassets)");
+      setError("mermaid.js is not loaded: build webassets (make webassets)");
       report(false, "mermaid.js is not loaded");
       return;
     }
@@ -458,13 +458,13 @@ function Diagram({ content }) {
       {error ? (
         <div className="px-2 py-1 flex flex-col gap-2 overflow-auto">
           <div className="text-xs text-muted-foreground">
-            диаграмма не отрисована: {error}
+            diagram not rendered: {error}
           </div>
           <pre className="overflow-auto text-xs font-mono">{spec}</pre>
         </div>
       ) : !svg ? (
         <div className="px-2 py-1 text-xs text-muted-foreground">
-          отрисовка диаграммы…
+          rendering the diagram…
         </div>
       ) : (
         <Fullscreen label={content.label}>
@@ -679,14 +679,14 @@ function StreamTail({ content }) {
 
   const controls = (
     <>
-      <ToolButton onClick={toStart} title="В начало файла">
+      <ToolButton onClick={toStart} title="Go to the file start">
         <ArrowUpToLine />
       </ToolButton>
-      <ToolButton onClick={toEnd} title="В конец файла, следить за выводом">
+      <ToolButton onClick={toEnd} title="Go to the file end and follow output">
         <ArrowDownToLine />
       </ToolButton>
       {view.url ? (
-        <ToolButton onClick={download} title="Скачать вывод">
+        <ToolButton onClick={download} title="Download output">
           <Download />
         </ToolButton>
       ) : null}
@@ -744,7 +744,7 @@ function TextFile({ content }) {
   if (failed) {
     return (
       <div className="p-3 text-xs text-muted-foreground">
-        файл не прочитан: {content.label}
+        file is not readable: {content.label}
       </div>
     );
   }
@@ -792,7 +792,7 @@ function SourceLink({ content }) {
       download={name}
       onClick={(event) => event.stopPropagation()}
       className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 truncate w-fit max-w-full"
-      title={`Скачать ${name}`}
+      title={`Download ${name}`}
     >
       {name}
     </a>
@@ -927,7 +927,7 @@ export default function CanvasView() {
           className="border border-border rounded-lg bg-card overflow-hidden w-full cursor-pointer flex flex-col"
           role="button"
           tabIndex={0}
-          aria-label="Показать в канвасе"
+          aria-label="Show in the canvas"
           title={content.path}
           onClick={openInCanvas}
           onKeyDown={(event) => {

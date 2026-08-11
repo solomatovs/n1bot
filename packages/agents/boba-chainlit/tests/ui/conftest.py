@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
 
-from playwright.sync_api import Browser, Page, sync_playwright  # noqa: E402
+from playwright.sync_api import Browser, Page, sync_playwright
 
 from ui.chat_page import ChatPage
 from ui.fake_llm import serve

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import HumanMessage
 
-from boba.chainlit.chat.data.object_key import ObjectKey
+from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.infra.providers import build_llm_view
 from boba.sandbox import WORKSPACE_MOUNT
 from boba.sandbox.argv import build_bwrap_argv

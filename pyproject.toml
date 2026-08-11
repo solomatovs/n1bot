@@ -86,6 +86,7 @@ select = [
 ignore = [
     "RUF001", "RUF002", "RUF003",
     "RET504",
+    "SIM102", "SIM108",
 ]
 
 [tool.ruff.lint.mccabe]

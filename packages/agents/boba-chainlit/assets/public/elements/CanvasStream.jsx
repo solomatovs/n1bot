@@ -29,9 +29,9 @@ export default function CanvasStream() {
     button.className =
       "inline-flex items-center justify-center h-6 w-6 rounded-md " +
       "opacity-50 hover:opacity-100 hover:bg-accent cursor-pointer";
-    button.title = `Живой вывод: ${props.label || props.call_id}`;
+    button.title = `Live output: ${props.label || props.call_id}`;
     button.setAttribute("role", "button");
-    button.setAttribute("aria-label", "Показать вывод инструмента");
+    button.setAttribute("aria-label", "Show tool output");
     button.innerHTML = ICON;
 
     const open = (event) => {

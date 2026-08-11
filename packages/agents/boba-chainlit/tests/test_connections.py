@@ -10,7 +10,6 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, Field, SecretStr
 
-from boba.chainlit.data.models import Thread, User
 from boba.chainlit.connections import (
     ConnectionKinds,
     ConnectionsConfig,
@@ -18,6 +17,7 @@ from boba.chainlit.connections import (
     SecretCipher,
     SecretCryptoError,
 )
+from boba.chainlit.data.models import Thread, User
 from boba.db.postgres import (
     PostgresConfig,
     PostgresOptionsConfig,

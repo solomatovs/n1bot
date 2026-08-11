@@ -22,7 +22,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import START, MessagesState, StateGraph
 from psycopg import sql
 from psycopg.types.json import Jsonb
-from test_canvas_e2e import (  # noqa: F401
+from test_canvas_e2e import (
     BASE,
     USER_ID,
     anyio_backend,
