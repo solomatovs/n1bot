@@ -5,9 +5,10 @@
 liteparse и bs4 здесь и так под рукой. Модель эмбеддера грузится один раз на
 весь прогон, потому что весь ingest — один запуск payload'а.
 
-Ошибки: PostgresError — до хранилища не достучаться; ingest_request_failed —
-Confluence недоступен или ответил статусом. Сбой разбора отдельного документа
-ingest переживает сам, наружу он не выходит.
+Ошибки: PostgresError и PoolTimeout — до хранилища не достучаться;
+ingest_request_failed — Confluence недоступен или ответил статусом;
+ChannelError — в tool_args приехал запрос чужой модели. Сбой разбора
+отдельного документа ingest переживает сам, наружу он не выходит.
 """
 
 from __future__ import annotations
@@ -16,16 +17,20 @@ import asyncio
 import logging
 import sys
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import httpx
+from psycopg_pool import PoolTimeout
+from pydantic import BaseModel
 
 from boba.db.postgres import PostgresError
 from boba.indexing import (
+    Metadata,
     RawDocument,
     Reader,
     ReaderId,
     ReaderKeys,
+    RequestSource,
     Section,
     SectionKeys,
 )
@@ -36,14 +41,23 @@ from boba.tool.kb.confluence.ingest_base import (
     ConfluenceIngest,
     ConfluenceIngestConfig,
 )
+from boba.tool.kb.confluence.ingest_protocol import (
+    ConfluenceIngestRequest,
+    IngestAnswer,
+    IngestMode,
+)
+from boba.tool.kb.confluence.protocol import ConfluenceNode
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceCqlRequestSource,
     ConfluenceMultiSpaceRequestSource,
     ConfluencePagesRequestSource,
+    ConfluenceRequest,
 )
 from boba.tool.kb.html.payload import PageOps
+from boba.tool.kb.html.protocol import ConfluenceSection
 from boba.tool.kb.indexing_log import LoggingReader
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+from boba.toolkit.channels import ByteText, ChannelError
+from boba.toolkit.payload import PayloadChannels, PayloadEntry
 
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
@@ -62,87 +76,102 @@ class LocalConfluenceReader(Reader[str]):
         payload = await value.handle.read()
         if not payload.strip():
             return
-        html = payload.decode("utf-8", errors="replace")
+
+        html = payload.decode(ByteText.ENCODING, errors=ByteText.ERRORS)
         title = value.metadata.get(ReaderKeys.PAGE_TITLE) or ""
-        answer = await asyncio.to_thread(
-            PageOps.confluence_sections,
-            {"html": html, "title": title},
+
+        sections = await asyncio.to_thread(
+            PageOps.confluence_sections, html, title
         )
-        for row in answer["sections"]:
+
+        for section in sections:
             yield Section(
                 source_id=value.source_id,
-                content=row["content"],
-                order=row["order"],
-                metadata=self._meta(value, row),
+                content=section.content,
+                order=section.order,
+                metadata=self._meta(value, section),
             )
 
     @classmethod
-    def _meta(cls, value: RawDocument, row: dict[str, Any]):
+    def _meta(cls, value: RawDocument, section: ConfluenceSection) -> Metadata:
         meta = value.metadata.set(ReaderKeys.DOC_TYPE, cls.DOC_TYPE)
-        if row["heading_path"]:
-            meta = meta.set(SectionKeys.HEADING_PATH, row["heading_path"])
-        if row["anchor"]:
-            meta = meta.set(SectionKeys.ANCHOR, row["anchor"])
+
+        if section.heading_path:
+            meta = meta.set(SectionKeys.HEADING_PATH, section.heading_path)
+
+        if section.anchor:
+            meta = meta.set(SectionKeys.ANCHOR, section.anchor)
+
         return meta
 
 
 class IngestOps:
     """Запуск индексации; вызывается диспетчером payload'а."""
 
-    OPS: ClassVar[tuple[str, ...]] = ("confluence_ingest",)
-
     EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
         PostgresError: "database_unavailable",
+        PoolTimeout: "database_unavailable",
         httpx.HTTPError: "ingest_request_failed",
+    }
+
+    REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {
+        ConfluenceNode.INGEST: ConfluenceIngestRequest,
     }
 
     @classmethod
     async def dispatch(
-        cls, request: dict[str, Any], emit: ChunkEmitter
-    ) -> dict[str, Any]:
-        op = request["op"]
-        if op == "confluence_ingest":
-            return await cls.ingest(request)
-        msg = f"unknown ingest op: {op!r}"
-        raise ValueError(msg)
+        cls,
+        request: BaseModel,
+        channels: PayloadChannels,
+    ) -> BaseModel:
+        """Потока данных у прогона нет: итог целиком живёт в квитанции."""
+        if not isinstance(request, ConfluenceIngestRequest):
+            msg = f"ingest payload got an unexpected request: {type(request).__name__}"
+            raise ChannelError(msg)
+
+        stats = await cls.ingest(request)
+
+        return IngestAnswer(stats=stats)
 
     @classmethod
-    async def ingest(cls, request: dict[str, Any]) -> dict[str, Any]:
-        cfg = ConfluenceIngestConfig.model_validate(request["config"])
+    async def ingest(cls, request: ConfluenceIngestRequest) -> dict[str, object]:
+        cfg = request.config
         conn = ConfluenceConnection(
             profile=cfg.confluence, body_format=cfg.body_format
         )
-        source = cls.source(request, conn, cfg)
-        stats = await ConfluenceIngest.ingest(
+
+        source = cls.source(request, conn)
+
+        return await ConfluenceIngest.ingest(
             cfg,
             source,
-            request["prune_missing"],
-            request["force_update"],
+            request.prune_missing,
+            request.force_update,
             routes=cls.routes(cfg),
         )
-        return {"stats": stats}
 
     @staticmethod
-    def source(request: dict[str, Any], conn: ConfluenceConnection, cfg: Any) -> Any:
-        mode = request["mode"]
-        if mode == "pages":
+    def source(
+        request: ConfluenceIngestRequest,
+        conn: ConfluenceConnection,
+    ) -> RequestSource[ConfluenceRequest]:
+        if request.mode is IngestMode.PAGES:
             return ConfluencePagesRequestSource(
                 base_url=conn.base_url,
-                page_ids=list(request["page_ids"]),
+                page_ids=list(request.page_ids),
                 body_format=conn.body_format,
             )
-        if mode == "cql":
+
+        if request.mode is IngestMode.CQL:
             return ConfluenceCqlRequestSource(
-                conn=conn, cql=request["cql"], body_format=conn.body_format
+                conn=conn, cql=request.cql, body_format=conn.body_format
             )
-        if mode == "spaces":
-            return ConfluenceMultiSpaceRequestSource(
-                conn=conn,
-                space_keys=list(request["space_keys"]),
-                body_format=conn.body_format,
-            )
-        msg = f"unknown discovery mode: {mode!r}"
-        raise ValueError(msg)
+
+        return ConfluenceMultiSpaceRequestSource(
+            conn=conn,
+            space_keys=list(request.space_keys),
+            body_format=conn.body_format,
+        )
 
     @staticmethod
     def routes(cfg: ConfluenceIngestConfig) -> dict[str, Reader[str]]:

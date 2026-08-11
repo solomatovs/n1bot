@@ -1,34 +1,46 @@
-"""Payload-контракт: кадры данных плюс трейлер и жёсткий разбор результата."""
+"""Канальный контракт payload'а: конверт tool_result и вырожденный граф каллера."""
 
 from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import pydantic
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
-from boba.sandbox import (
-    SandboxCaller,
-    SandboxOutcome,
-    SandboxPayload,
-    SandboxPayloadError,
-    SandboxProfile,
-)
-from boba.sandbox.caller import SandboxFrameDecoder
-from boba.toolkit.launcher import RunResult
+from boba.sandbox import SandboxCaller, SandboxPayloadError, SandboxProfile
+from boba.sandbox.runner import ResultSink
+from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.toolkit.launcher import (
     LauncherError,
-    NoChunks,
     PayloadFailureError,
     TextCollector,
+)
+from boba.toolkit.workflow import StageContract, WorkflowSpec
+from boba.toolkit.channels import StreamFormat
+
+REPO = Path(__file__).resolve().parents[5]
+TOOLKIT_SRC = REPO / "packages" / "core" / "boba-toolkit" / "src"
+SITE_PACKAGES = Path(pydantic.__file__).resolve().parents[1]
+
+HOST_RO_BINDS: tuple[str, ...] = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
+
+PAYLOAD_ENTRY: tuple[str, ...] = ("python3.11", "/opt/payload/main.py")
+
+needs_sandbox = pytest.mark.skipif(
+    shutil.which("bwrap") is None, reason="bwrap не установлен"
+)
+needs_userns = pytest.mark.skipif(
+    os.geteuid() == 0, reason="под root userns ведёт себя иначе"
 )
 
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
-    "ro_binds": ("/usr", "/bin", "/sbin", "/lib", "/lib64"),
+    "ro_binds": (),
     "rw_binds": (),
     "rw_images": (),
     "image_template": "",
@@ -41,7 +53,12 @@ _PROFILE_BASE: dict[str, Any] = {
     },
     "tmpfs": ("/tmp:64M",),  # noqa: S108
     "network": False,
-    "env_set": {"PATH": "/usr/bin:/bin", "HOME": "/tmp"},  # noqa: S108
+    "env_set": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PYTHONPATH": "/opt/src:/opt/site",
+        "HOME": "/tmp",  # noqa: S108
+        "LANG": "C.UTF-8",
+    },
     "timeout_sec": 30,
     "max_memory_bytes": 512 * 1024 * 1024,
     "max_cpu_sec": 30,
@@ -56,310 +73,321 @@ _PROFILE_BASE: dict[str, Any] = {
 
 
 class Answer(BaseModel):
-    """Схема трейлера payload'а в тестах."""
+    """Схема data конверта в тестах."""
 
     text: str
     pages: int
 
 
 class Trailer(BaseModel):
-    """Трейлер потокового payload'а: данные уехали кадрами."""
+    """Квитанция потокового payload'а: данные уехали каналом."""
 
     pages: int
 
 
-class Request(BaseModel):
-    """Схема запроса payload'а в тестах."""
+class TestResultSink:
+    """Всё, что отклоняется от контракта конверта, — ошибка, а не частичный итог."""
 
+    @staticmethod
+    def _sink(schema: type[Answer] = Answer) -> ResultSink[Answer]:
+        return ResultSink("doc", schema)
+
+    def test_success_envelope_is_parsed(self) -> None:
+        sink = self._sink()
+        envelope = '{"bytes_out": 0, "data": {"text": "привет", "pages": 2}}\n'
+        sink.feed(envelope.encode("utf-8"))
+
+        answer = sink.data()
+        assert (answer.text, answer.pages) == ("привет", 2)
+
+    def test_envelope_split_across_reads(self) -> None:
+        """Границы чтения из пайпа не совпадают с границами конверта."""
+        sink = self._sink()
+        raw = b'{"bytes_out": 0, "data": {"text": "ok", "pages": 1}}'
+        for start in range(0, len(raw), 7):
+            sink.feed(raw[start : start + 7])
+
+        assert sink.data().pages == 1
+
+    def test_failure_envelope_names_kind_and_message(self) -> None:
+        sink = self._sink()
+        sink.feed(
+            b'{"error": {"kind": "bad_format", "message": "not readable"}}\n'
+        )
+
+        failure = sink.failure()
+        assert failure is not None
+        assert (failure.kind, failure.message) == ("bad_format", "not readable")
+
+    def test_success_over_failure_envelope_is_error(self) -> None:
+        sink = self._sink()
+        sink.feed(b'{"error": {"kind": "k", "message": "m"}}\n')
+
+        with pytest.raises(LauncherError, match="error envelope"):
+            sink.success()
+
+    def test_empty_result_is_error(self) -> None:
+        sink = self._sink()
+
+        assert sink.received is False
+        with pytest.raises(LauncherError, match="empty"):
+            sink.success()
+
+    def test_broken_json_is_error(self) -> None:
+        sink = self._sink()
+        sink.feed(b"{broken\n")
+
+        with pytest.raises(LauncherError, match="not valid JSON"):
+            sink.success()
+
+    def test_two_envelopes_are_error(self) -> None:
+        sink = self._sink()
+        sink.feed(b'{"bytes_out": 0, "data": {}}\n{"bytes_out": 0, "data": {}}\n')
+
+        with pytest.raises(LauncherError, match="not valid JSON"):
+            sink.success()
+
+    def test_non_object_envelope_is_error(self) -> None:
+        sink = self._sink()
+        sink.feed(b'["list"]\n')
+
+        with pytest.raises(LauncherError, match="JSON object"):
+            sink.success()
+
+    def test_envelope_without_contract_fields_is_error(self) -> None:
+        """Голый JSON без bytes_out/error — не конверт."""
+        sink = self._sink()
+        sink.feed(b'{"text": "ok", "pages": 1}\n')
+
+        with pytest.raises(LauncherError, match="does not match contract"):
+            sink.success()
+
+    def test_data_schema_mismatch_is_error(self) -> None:
+        sink = self._sink()
+        sink.feed(b'{"bytes_out": 0, "data": {"text": "ok"}}\n')
+
+        with pytest.raises(LauncherError, match="does not match Answer"):
+            sink.data()
+
+    def test_oversized_result_is_error(self) -> None:
+        sink = self._sink()
+
+        with pytest.raises(LauncherError, match="exceeds"):
+            sink.feed(b"x" * (ResultSink.MAX_BYTES + 1))
+
+
+_STREAM_PAYLOAD = """
+from pathlib import Path
+
+from pydantic import BaseModel
+
+from boba.toolkit.payload import PayloadChannels, PayloadLogging
+
+
+class Request(BaseModel):
     path: str
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
+class Trailer(BaseModel):
+    pages: int
 
 
-def _profile(**kw: Any) -> SandboxProfile:
-    return SandboxProfile.model_validate({**_PROFILE_BASE, **kw})
+PayloadLogging.setup()
+channels = PayloadChannels.open()
+request = channels.args(Request)
 
+text = Path(request.path).read_text(encoding="utf-8")
 
-def _outcome(stdout: str, **kw: Any) -> SandboxOutcome:
-    fields: dict[str, Any] = {
-        "exit_code": 0,
-        "stdout": stdout,
-        "stderr": "",
-        "truncated_stdout": False,
-        "truncated_stderr": False,
-        "duration_ms": 1,
-        "timed_out": False,
-    }
-    fields.update(kw)
-    return SandboxOutcome("doc", RunResult(**fields), kw.pop("diagnostic", ""))
+stream = channels.payload()
+stream.write(text.encode("utf-8"))
+stream.flush()
 
-
-def _decode(stdout: str, schema: type[Answer], **kw: Any) -> Answer:
-    """Разбор готового stdout: декодер кормится теми же байтами, что из процесса."""
-    collector = TextCollector(max_chars=1_000_000, limit_rows=None, header_lines=0)
-    decoder = SandboxFrameDecoder("doc", collector)
-    decoder.feed(stdout.encode("utf-8"))
-    return decoder.finish(_outcome(stdout, **kw), schema)
-
-
-class TestDecode:
-    """Всё, что отклоняется от контракта, — ошибка, а не частичный результат."""
-
-    def test_trailer_line_is_parsed(self) -> None:
-        line = SandboxPayload.encode(Answer(text="привет", pages=2))
-        answer = _decode(line + "\n", Answer)
-        assert (answer.text, answer.pages) == ("привет", 2)
-
-    def test_free_output_around_trailer_is_ignored(self) -> None:
-        line = SandboxPayload.encode(Answer(text="ok", pages=1))
-        stdout = f"загружаю\n{line}\nготово\n"
-        assert _decode(stdout, Answer).pages == 1
-
-    def test_data_chunks_reach_the_sink(self) -> None:
-        """Кадры уходят потребителю, трейлер данных не несёт."""
-        collector = TextCollector(max_chars=1000, limit_rows=None, header_lines=0)
-        decoder = SandboxFrameDecoder("doc", collector)
-        chunks = "".join(
-            [
-                SandboxPayload.encode_chunk("первый ") + "\n",
-                SandboxPayload.encode_chunk("второй") + "\n",
-            ]
-        )
-        stdout = chunks + SandboxPayload.encode(Answer(text="", pages=2)) + "\n"
-        decoder.feed(stdout.encode("utf-8"))
-        answer = decoder.finish(_outcome(stdout), Answer)
-        assert collector.text() == "первый второй"
-        assert answer.pages == 2
-
-    def test_chunks_arrive_split_across_reads(self) -> None:
-        """Границы чтения из пайпа не совпадают с границами строк."""
-        collector = TextCollector(max_chars=1000, limit_rows=None, header_lines=0)
-        decoder = SandboxFrameDecoder("doc", collector)
-        stdout = (
-            SandboxPayload.encode_chunk("данные") + "\n"
-            + SandboxPayload.encode(Answer(text="", pages=1)) + "\n"
-        )
-        raw = stdout.encode("utf-8")
-        for start in range(0, len(raw), 7):
-            decoder.feed(raw[start : start + 7])
-        answer = decoder.finish(_outcome(stdout), Answer)
-        assert collector.text() == "данные"
-        assert answer.pages == 1
-
-    def test_chunk_without_sink_is_error(self) -> None:
-        """Trailer-only вызов не вправе получать кадры данных."""
-        decoder = SandboxFrameDecoder("doc", NoChunks())
-        with pytest.raises(LauncherError, match="unexpected data chunk"):
-            decoder.feed((SandboxPayload.encode_chunk("данные") + "\n").encode())
-
-    def test_declared_failure_has_no_traceback(self) -> None:
-        """Ожидаемый отказ: текст payload'а без хвоста stderr и кода возврата."""
-        stdout = SandboxPayload.encode_error("bad_format", "формат .md не читается")
-        with pytest.raises(PayloadFailureError) as failure:
-            _decode(
-                stdout + "\n",
-                Answer,
-                exit_code=1,
-                stderr="payload-error: bad_format: формат .md не читается",
-            )
-        assert str(failure.value) == "формат .md не читается"
-        assert failure.value.kind == "bad_format"
-
-    def test_declared_failure_keeps_limit_diagnostic(self) -> None:
-        """Объяснение упёршегося лимита не теряется: трейсбека в нём нет."""
-        stdout = SandboxPayload.encode_error("document_unreadable", "не разобрать")
-        outcome = SandboxOutcome(
-            "doc",
-            RunResult(
-                exit_code=1,
-                stdout=stdout,
-                stderr="",
-                truncated_stdout=False,
-                truncated_stderr=False,
-                duration_ms=1,
-                timed_out=False,
-            ),
-            "упёрлись в max_memory_bytes",
-        )
-        collector = TextCollector(max_chars=1000, limit_rows=None, header_lines=0)
-        decoder = SandboxFrameDecoder("doc", collector)
-        decoder.feed((stdout + "\n").encode("utf-8"))
-        with pytest.raises(PayloadFailureError, match="упёрлись в max_memory_bytes"):
-            decoder.finish(outcome, Answer)
-
-    def test_failure_wins_over_exit_code(self) -> None:
-        """Кадр ошибки объясняет отказ лучше, чем «exited with code 1»."""
-        stdout = SandboxPayload.encode_error("unreadable", "файл не открыть")
-        with pytest.raises(PayloadFailureError):
-            _decode(stdout + "\n", Answer, exit_code=1, stderr="Traceback: шум")
-
-    def test_two_failure_frames_are_error(self) -> None:
-        line = SandboxPayload.encode_error("k", "m")
-        with pytest.raises(SandboxPayloadError, match=r"2 .* lines"):
-            _decode(f"{line}\n{line}\n", Answer, exit_code=1)
-
-    def test_broken_failure_frame_is_error(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="error frame is not valid JSON"):
-            _decode("sandbox-error:{битый\n", Answer, exit_code=1)
-
-    def test_failure_frame_without_kind_is_error(self) -> None:
-        stdout = 'sandbox-error:{"message": "текст"}\n'
-        with pytest.raises(
-            SandboxPayloadError, match="error frame does not match contract"
-        ):
-            _decode(stdout, Answer, exit_code=1)
-
-    def test_missing_trailer_is_error(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="no 'sandbox-result:' line"):
-            _decode("просто текст\n", Answer)
-
-    def test_two_trailers_are_error(self) -> None:
-        line = SandboxPayload.encode(Answer(text="ok", pages=1))
-        with pytest.raises(SandboxPayloadError, match=r"2 .* lines"):
-            _decode(f"{line}\n{line}\n", Answer)
-
-    def test_chunk_after_trailer_is_error(self) -> None:
-        """Кадр после трейлера означает, что поток собран не полностью."""
-        stdout = (
-            SandboxPayload.encode(Answer(text="ok", pages=1)) + "\n"
-            + SandboxPayload.encode_chunk("лишнее") + "\n"
-        )
-        with pytest.raises(SandboxPayloadError, match="chunk after trailer"):
-            _decode(stdout, Answer)
-
-    def test_timeout_is_error(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="timed out"):
-            _decode("", Answer, timed_out=True)
-
-    def test_nonzero_exit_is_error(self) -> None:
-        line = SandboxPayload.encode(Answer(text="ok", pages=1))
-        with pytest.raises(SandboxPayloadError, match="exited with code 3"):
-            _decode(line + "\n", Answer, exit_code=3, stderr="упал")
-
-    def test_stderr_is_shown_in_error(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="нет файла"):
-            _decode("", Answer, exit_code=1, stderr="Traceback: нет файла")
-
-    def test_broken_json_is_error(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="not valid JSON"):
-            _decode("sandbox-result:{текст\n", Answer)
-
-    def test_schema_mismatch_is_error(self) -> None:
-        with pytest.raises(SandboxPayloadError, match="does not match Answer"):
-            _decode('sandbox-result:{"text": "ok"}\n', Answer)
-
-    def test_plain_json_without_marker_is_error(self) -> None:
-        """Маркер обязателен: иначе результат не отличить от вывода команды."""
-        with pytest.raises(SandboxPayloadError, match="no 'sandbox-result:' line"):
-            _decode('{"text": "ok", "pages": 1}\n', Answer)
-
-
-_PAYLOAD = """
-import json, sys
-from pathlib import Path
-
-request = json.loads(sys.stdin.read())
-print("payload: работаю", file=sys.stderr)
-text = Path(request["path"]).read_text(encoding="utf-8")
-print("sandbox-chunk:" + json.dumps(text, ensure_ascii=False))
-print("sandbox-result:" + json.dumps({"pages": 1}, ensure_ascii=False))
+channels.write_result(Trailer(pages=1))
+raise SystemExit(int(channels.exit_code()))
 """
 
 
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap не установлен")
-@pytest.mark.skipif(os.geteuid() == 0, reason="под root userns ведёт себя иначе")
-class TestCallStream:
-    """Payload реально исполняется внутри песочницы и стримит результат."""
+_READONLY_PAYLOAD = """
+from pathlib import Path
+
+from pydantic import BaseModel
+
+from boba.toolkit.payload import PayloadChannels, PayloadLogging
+
+
+class Request(BaseModel):
+    path: str
+
+
+class Trailer(BaseModel):
+    pages: int
+
+
+PayloadLogging.setup()
+channels = PayloadChannels.open()
+channels.args(Request)
+
+stream = channels.payload()
+try:
+    Path("/opt/payload/main.py").write_text("взлом")
+    stream.write(b"rewritten")
+except OSError as e:
+    stream.write(type(e).__name__.encode("utf-8"))
+stream.flush()
+
+channels.write_result(Trailer(pages=0))
+raise SystemExit(int(channels.exit_code()))
+"""
+
+
+_FAILURE_PAYLOAD = """
+from pydantic import BaseModel
+
+from boba.toolkit.payload import PayloadChannels, PayloadLogging
+
+
+class Request(BaseModel):
+    path: str
+
+
+PayloadLogging.setup()
+channels = PayloadChannels.open()
+channels.args(Request)
+channels.write_error("bad_format", "формат .md не читается")
+raise SystemExit(1)
+"""
+
+
+_CRASH_PAYLOAD = """
+raise SystemExit('нет такого файла')
+"""
+
+
+_SLEEP_PAYLOAD = """
+import time
+
+time.sleep(30)
+"""
+
+
+class ProbeRequest(BaseModel):
+    """Запрос тестового узла."""
+
+    path: str = ""
+
+
+def _identity_args(args: Mapping[str, JsonValue], /) -> Mapping[str, JsonValue]:
+    return dict(args)
+
+
+def _allow_all(tool: str, /) -> bool:
+    return True
+
+
+def _spec(args: Mapping[str, JsonValue] | None = None) -> WorkflowSpec:
+    if args is None:
+        args = {}
+
+    return WorkflowSpec.model_validate(
+        {"nodes": [{"id": "probe", "tool": "probe", "args": dict(args)}]}
+    )
+
+
+@needs_sandbox
+@needs_userns
+class TestDegenerateGraphCall:
+    """Payload реально исполняется в песочнице; итог собирается из каналов."""
 
     @staticmethod
-    def _caller(tmp_path: Path, script: str, **profile_kw: Any) -> SandboxCaller:
+    def _caller(
+        tmp_path: Path, script: str, **profile_kw: Any
+    ) -> SandboxCaller:
         payload_dir = tmp_path / "payload"
         payload_dir.mkdir(parents=True, exist_ok=True)
         (payload_dir / "main.py").write_text(script, encoding="utf-8")
-        profile = _profile(
-            ro_binds=(*_PROFILE_BASE["ro_binds"], f"{payload_dir}:/opt/payload"),
-            **profile_kw,
-        )
-        return SandboxCaller("doc", profile, dict)
 
-    def test_request_and_stream_travel_through_stdin_stdout(
+        fields = dict(_PROFILE_BASE)
+        binds = list(HOST_RO_BINDS)
+        binds.append(f"{TOOLKIT_SRC}:/opt/src")
+        binds.append(f"{SITE_PACKAGES}:/opt/site")
+        binds.append(f"{payload_dir}:/opt/payload")
+        fields["ro_binds"] = tuple(binds)
+        fields.update(profile_kw)
+
+        definition = StageDef(
+            contract=StageContract(
+                accepts=frozenset(), out=StreamFormat.TEXT, result=Trailer
+            ),
+            profile=SandboxProfile.model_validate(fields),
+            entry=PAYLOAD_ENTRY,
+            request=ProbeRequest,
+            enrich=_identity_args,
+        )
+
+        return SandboxCaller(
+            StageRegistry({"probe": definition}), _allow_all, dict
+        )
+
+    def test_request_and_stream_travel_through_channels(
         self, tmp_path: Path
     ) -> None:
         doc = tmp_path / "payload" / "doc.txt"
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("содержимое", encoding="utf-8")
-        caller = self._caller(tmp_path, _PAYLOAD)
+
+        caller = self._caller(tmp_path, _STREAM_PAYLOAD)
         collector = TextCollector(
             max_chars=1_000_000, limit_rows=None, header_lines=0
         )
-        trailer = caller.call_stream(
-            ["python3", "/opt/payload/main.py"],
-            Request(path="/opt/payload/doc.txt"),
-            collector,
-            Trailer,
+
+        outcome = caller.call(
+            _spec({"path": "/opt/payload/doc.txt"}), sinks={"probe": collector}
         )
+        collector.close()
+
+        trailer = outcome.trailer("probe", Trailer)
         assert (collector.text(), trailer.pages) == ("содержимое", 1)
+        assert outcome.outcome_of("probe").exit_code == 0
 
     def test_payload_is_read_only_inside(self, tmp_path: Path) -> None:
-        script = (
-            "import sys\n"
-            "from pathlib import Path\n"
-            "try:\n"
-            "    Path('/opt/payload/main.py').write_text('взлом')\n"
-            "except OSError as e:\n"
-            "    print('sandbox-result:' + '{\"text\": \"%s\", \"pages\": 0}'"
-            " % type(e).__name__)\n"
-            "    sys.exit(0)\n"
-            "print('sandbox-result:{\"text\": \"перезаписал\", \"pages\": 0}')\n"
+        caller = self._caller(tmp_path, _READONLY_PAYLOAD)
+        collector = TextCollector(
+            max_chars=1_000_000, limit_rows=None, header_lines=0
         )
-        caller = self._caller(tmp_path, script)
-        answer = caller.call_stream(
-            ["python3", "/opt/payload/main.py"], Request(path=""), NoChunks(), Answer
-        )
-        assert answer.text == "OSError"
+
+        caller.call(_spec(), sinks={"probe": collector})
+        collector.close()
+
+        assert collector.text() == "OSError"
+
+    def test_declared_failure_travels_as_error_envelope(
+        self, tmp_path: Path
+    ) -> None:
+        caller = self._caller(tmp_path, _FAILURE_PAYLOAD)
+
+        with pytest.raises(PayloadFailureError) as failure:
+            caller.call(_spec())
+
+        assert failure.value.kind == "bad_format"
+        assert str(failure.value) == "формат .md не читается"
 
     def test_payload_crash_is_reported(self, tmp_path: Path) -> None:
-        script = "raise SystemExit('нет такого файла')\n"
-        caller = self._caller(tmp_path, script)
+        caller = self._caller(tmp_path, _CRASH_PAYLOAD)
+
         with pytest.raises(SandboxPayloadError, match="нет такого файла"):
-            caller.call_stream(
-                ["python3", "/opt/payload/main.py"],
-                Request(path=""),
-                NoChunks(),
-                Answer,
-            )
+            caller.call(_spec())
 
     def test_payload_timeout_is_reported(self, tmp_path: Path) -> None:
-        script = "import time\ntime.sleep(30)\n"
-        caller = self._caller(tmp_path, script, timeout_sec=1)
+        caller = self._caller(tmp_path, _SLEEP_PAYLOAD, timeout_sec=1)
+
         with pytest.raises(SandboxPayloadError, match="timed out"):
-            caller.call_stream(
-                ["python3", "/opt/payload/main.py"],
-                Request(path=""),
-                NoChunks(),
-                Answer,
-            )
+            caller.call(_spec())
 
-    def test_oversized_line_is_reported(self, tmp_path: Path) -> None:
-        """Данные обязаны ехать кадрами: одна гигантская строка — нарушение."""
-        script = (
-            "import json\n"
-            "print('sandbox-result:' + json.dumps("
-            "{'text': 'x' * 8_000_000, 'pages': 1}))\n"
+    def test_unknown_tool_is_reported(self, tmp_path: Path) -> None:
+        caller = self._caller(tmp_path, _STREAM_PAYLOAD)
+        spec = WorkflowSpec.model_validate(
+            {"nodes": [{"id": "x", "tool": "ghost", "args": {}}]}
         )
-        caller = self._caller(tmp_path, script)
-        with pytest.raises(SandboxPayloadError, match="output line exceeds"):
-            caller.call_stream(
-                ["python3", "/opt/payload/main.py"],
-                Request(path=""),
-                NoChunks(),
-                Answer,
-            )
 
-    def test_entry_must_not_be_empty(self, tmp_path: Path) -> None:
-        caller = self._caller(tmp_path, _PAYLOAD)
-        with pytest.raises(ValueError, match="entry must not be empty"):
-            caller.call_stream([], Request(path=""), NoChunks(), Answer)
+        with pytest.raises(SandboxPayloadError, match="unknown workflow tool"):
+            caller.call(spec)

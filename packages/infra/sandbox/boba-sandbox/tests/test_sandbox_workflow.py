@@ -21,7 +21,6 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 from boba.cancellation import ToolStopped, TurnCancellation, turn_cancellation
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.profile import SandboxProfile
-from boba.sandbox.runner import SandboxRunner, TailSink
 from boba.sandbox.workflow import StageDef, StageRegistry, WorkflowRunner
 from boba.toolkit.channels import StreamFormat
 from boba.toolkit.workflow import (
@@ -109,20 +108,24 @@ from boba.toolkit.payload import (
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    chunks: int
+
+
 class Trailer(BaseModel):
     chunks: int
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-request = channels.args()
+request = channels.args(Request)
 
 stream = channels.payload()
 block = b"x" * 65536
 
 done = 0
 try:
-    for _ in range(int(request["chunks"])):
+    for _ in range(request.chunks):
         stream.write(block)
         done += 1
     stream.flush()
@@ -139,6 +142,10 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    stdin_format: str = ""
+
+
 class Trailer(BaseModel):
     got: int
     fmt: str
@@ -146,7 +153,7 @@ class Trailer(BaseModel):
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-request = channels.args()
+request = channels.args(Request)
 
 stream = channels.stdin()
 total = 0
@@ -156,7 +163,7 @@ while True:
         break
     total += len(block)
 
-channels.write_result(Trailer(got=total, fmt=str(request.get("stdin_format"))))
+channels.write_result(Trailer(got=total, fmt=request.stdin_format))
 raise SystemExit(int(channels.exit_code()))
 """
 
@@ -166,13 +173,17 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    stdin_format: str = ""
+
+
 class Trailer(BaseModel):
     got: int
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 
 stream = channels.stdin()
 block = stream.read(65536)
@@ -184,11 +195,18 @@ raise SystemExit(int(channels.exit_code()))
 
 
 _HEAD_FAIL_PAYLOAD = """
+from pydantic import BaseModel
+
 from boba.toolkit.payload import PayloadChannels, PayloadLogging
+
+
+class Request(BaseModel):
+    stdin_format: str = ""
+
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 
 stream = channels.stdin()
 stream.read(65536)
@@ -199,11 +217,18 @@ raise SystemExit(3)
 
 
 _BAD_SINK_PAYLOAD = """
+from pydantic import BaseModel
+
 from boba.toolkit.payload import PayloadChannels, PayloadLogging
+
+
+class Request(BaseModel):
+    stdin_format: str = ""
+
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 channels.stdin().read(4096)
 
 raise SystemExit(2)
@@ -213,12 +238,19 @@ raise SystemExit(2)
 _LIAR_PAYLOAD = """
 import os
 
+from pydantic import BaseModel
+
 from boba.toolkit.channels import Channel
 from boba.toolkit.payload import PayloadChannels, PayloadLogging
 
+
+class Request(BaseModel):
+    pass
+
+
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 
 stream = channels.payload()
 stream.write(b"x" * 65536)
@@ -239,20 +271,26 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    ready_path: str
+    stop_path: str
+    hold_sec: float
+
+
 class Trailer(BaseModel):
     ok: bool
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-request = channels.args()
+request = channels.args(Request)
 
-with open(request["ready_path"], "w", encoding="utf-8") as ready:
+with open(request.ready_path, "w", encoding="utf-8") as ready:
     ready.write("ready")
 
-deadline = time.monotonic() + float(request["hold_sec"])
+deadline = time.monotonic() + request.hold_sec
 while time.monotonic() < deadline:
-    if os.path.exists(request["stop_path"]):
+    if os.path.exists(request.stop_path):
         break
     time.sleep(0.05)
 
@@ -268,19 +306,23 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    chunks: int
+
+
 class Trailer(BaseModel):
     sent: int
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-request = channels.args()
+request = channels.args(Request)
 
 Path("/workspace/marker.txt").write_text("shared-workspace-proof", encoding="utf-8")
 
 stream = channels.payload()
 block = b"y" * 65536
-count = int(request["chunks"])
+count = request.chunks
 for _ in range(count):
     stream.write(block)
 stream.flush()
@@ -297,6 +339,10 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    stdin_format: str = ""
+
+
 class Trailer(BaseModel):
     got: int
     marker: str
@@ -304,7 +350,7 @@ class Trailer(BaseModel):
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 
 stream = channels.stdin()
 total = 0
@@ -328,13 +374,17 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    pass
+
+
 class Trailer(BaseModel):
     ifaces: int
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 
 channels.write_result(Trailer(ifaces=len(socket.if_nameindex())))
 raise SystemExit(int(channels.exit_code()))
@@ -346,13 +396,17 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    pass
+
+
 class Trailer(BaseModel):
     ok: bool
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 
 channels.write_result(Trailer(ok=True))
 raise SystemExit(int(channels.exit_code()))
@@ -366,13 +420,17 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    pass
+
+
 class Trailer(BaseModel):
     ok: bool
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 
 Path("/workspace/single.txt").write_text("single", encoding="utf-8")
 
@@ -386,13 +444,17 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 from pydantic import BaseModel
 
 
+class Request(BaseModel):
+    pass
+
+
 class Trailer(BaseModel):
     ok: bool
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-channels.args()
+channels.args(Request)
 
 hog = []
 for _ in range(192):
@@ -1223,7 +1285,7 @@ class TestMountGroup:
     def test_single_call_serializes_with_group_on_flock(
         self, tmp_path: Path, template: Path
     ) -> None:
-        """Одиночный run_stage на том же образе ждёт flock, пока группа жива."""
+        """Одиночный вызов на том же образе ждёт flock, пока группа жива."""
         sync = tmp_path / "sync"
         sync.mkdir(exist_ok=True)
 
@@ -1246,11 +1308,19 @@ class TestMountGroup:
         )
         runner = _runner(registry)
 
-        single_profile = _profile(
-            _write_payload(tmp_path, "single", _WS_WRITE_PAYLOAD),
-            **self._image_kw(tmp_path, template),
+        single_registry = StageRegistry(
+            {
+                "single": _stage_def(
+                    _write_payload(tmp_path, "single", _WS_WRITE_PAYLOAD),
+                    ok_contract,
+                    **self._image_kw(tmp_path, template),
+                )
+            }
         )
-        single = SandboxRunner("single", single_profile, dict)
+        single_runner = _runner(single_registry)
+        single_spec = WorkflowSpec.parse(
+            {"nodes": [{"id": "single", "tool": "single", "args": {}}]}
+        )
 
         spec = WorkflowSpec.parse(
             {
@@ -1281,14 +1351,7 @@ class TestMountGroup:
 
         def run_single() -> None:
             try:
-                single.run_stage(
-                    "python3.11 /opt/payload/main.py",
-                    args="{}",
-                    stdin=b"",
-                    stdout=TailSink(65536),
-                    payload=None,
-                    schema=OkTrailer,
-                )
+                single_runner.run(single_spec)
                 finish_times["single"] = time.monotonic()
             except BaseException as exc:
                 errors.append(exc)

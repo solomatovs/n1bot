@@ -5,31 +5,13 @@ from __future__ import annotations
 from fnmatch import fnmatchcase
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from boba.tool.kb.confluence.caller import ConfluenceCaller
-from boba.tool.kb.confluence.protocol import (
-    ConfluenceSpace,
-    ConfluenceSpacesRequest,
-)
+from boba.tool.kb.confluence.protocol import ConfluenceSpace
 from boba.toolkit.result import TableResult
-from boba.transport.http import HttpProfile
 
-__all__ = ["ConfluenceListSpacesConfig", "confluence_list_spaces"]
-
-
-class ConfluenceListSpacesConfig(BaseModel):
-    """Self-contained конфиг tool'а confluence_list_spaces."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    confluence: HttpProfile
-    page_size: int = Field(
-        default=500,
-        ge=1,
-        le=1000,
-        description="Сколько спейсов запрашивать у REST за раз.",
-    )
+__all__ = ["confluence_list_spaces"]
 
 
 class SpaceFilter:
@@ -47,7 +29,6 @@ class SpaceFilter:
 
 
 def confluence_list_spaces(
-    cfg: ConfluenceListSpacesConfig,
     caller: ConfluenceCaller,
     pattern: Annotated[
         str | None,
@@ -88,15 +69,8 @@ def confluence_list_spaces(
     ] = 200,
 ) -> TableResult:
     """Список spaces confluence (с опциональным glob-фильтром по key/name)."""
-    request = ConfluenceSpacesRequest(
-        op=ConfluenceSpacesRequest.OP,
-        base_url=cfg.confluence.base_url or "",
-        profile=ConfluenceCaller.transport_of(cfg.confluence),
-        space_type=space_type,
-        limit=cfg.page_size,
-    )
     rows: list[dict[str, Any]] = []
-    for space in caller.spaces(request):
+    for space in caller.spaces(space_type=space_type):
         if not SpaceFilter.matches(space, pattern):
             continue
         rows.append(space.model_dump())
@@ -104,8 +78,10 @@ def confluence_list_spaces(
             break
     filter_note = ""
     if pattern:
-        filter_note = f" по шаблону {pattern!r}"
-    note = f"спейсов: {len(rows)}{filter_note}"
+        filter_note = f" matching {pattern!r}"
+
+    note = f"spaces: {len(rows)}{filter_note}"
     if not rows:
-        note = f"ничего не найдено{filter_note}"
+        note = f"nothing found{filter_note}"
+
     return TableResult(rows=rows, note=note)

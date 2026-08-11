@@ -1,17 +1,33 @@
-"""Перевод сбоя песочницы в объяснение: ядро не говорит, чей это лимит."""
+"""Перевод сбоя песочницы в объяснение: ядро не говорит, чей это лимит.
+
+Вход — процессные факты стадии и хвост stderr, собранный TailSink'ами;
+буферов вывода в памяти нет. Ошибки: наружу ничего не выходит — объяснение
+либо найдено, либо пустая строка.
+"""
 
 from __future__ import annotations
 
 from typing import ClassVar
 
-from boba.toolkit.launcher import RunResult
+from pydantic import BaseModel, ConfigDict
+
 from boba.sandbox.profile import SandboxProfile
 
-__all__ = ["SandboxDiagnostics"]
+__all__ = ["FailureFacts", "SandboxDiagnostics"]
+
+
+class FailureFacts(BaseModel):
+    """Факты сбоя стадии: код возврата, таймаут и хвост stderr из TailSink."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    exit_code: int
+    timed_out: bool
+    stderr_tail: str
 
 
 class SandboxDiagnostics:
-    """Сопоставляет код возврата и stderr с лимитом профиля."""
+    """Сопоставляет код возврата и хвост stderr с лимитом профиля."""
 
     SIGABRT_CODE: ClassVar[int] = 134
     SIGKILL_CODE: ClassVar[int] = 137
@@ -57,7 +73,7 @@ class SandboxDiagnostics:
     )
 
     @classmethod
-    def explain(cls, result: RunResult, profile: SandboxProfile) -> str:
+    def explain(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
         """Пустая строка — сбоя, объяснимого лимитами песочницы, не найдено."""
         checks = (
             cls._timeout,
@@ -69,14 +85,14 @@ class SandboxDiagnostics:
             cls._space,
         )
         for check in checks:
-            message = check(result, profile)
+            message = check(facts, profile)
             if message:
                 return message
-        return cls._network(result, profile)
+        return cls._network(facts, profile)
 
     @classmethod
-    def _timeout(cls, result: RunResult, profile: SandboxProfile) -> str:
-        if not result.timed_out:
+    def _timeout(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
+        if not facts.timed_out:
             return ""
         return (
             f"Command aborted by the profile timeout: timeout_sec="
@@ -85,9 +101,9 @@ class SandboxDiagnostics:
         )
 
     @classmethod
-    def _cpu(cls, result: RunResult, profile: SandboxProfile) -> str:
-        by_signal = result.exit_code == cls.SIGXCPU_CODE
-        by_text = cls._matched(result.stderr, cls.CPU_MARKERS)
+    def _cpu(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
+        by_signal = facts.exit_code == cls.SIGXCPU_CODE
+        by_text = cls._matched(facts.stderr_tail, cls.CPU_MARKERS)
         if not by_signal and not by_text:
             return ""
         return (
@@ -97,9 +113,9 @@ class SandboxDiagnostics:
         )
 
     @classmethod
-    def _file_size(cls, result: RunResult, profile: SandboxProfile) -> str:
-        by_signal = result.exit_code == cls.SIGXFSZ_CODE
-        by_text = cls._matched(result.stderr, cls.FSIZE_MARKERS)
+    def _file_size(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
+        by_signal = facts.exit_code == cls.SIGXFSZ_CODE
+        by_text = cls._matched(facts.stderr_tail, cls.FSIZE_MARKERS)
         if not by_signal and not by_text:
             return ""
         return (
@@ -109,8 +125,8 @@ class SandboxDiagnostics:
         )
 
     @classmethod
-    def _open_files(cls, result: RunResult, profile: SandboxProfile) -> str:
-        if not cls._matched(result.stderr, cls.FD_MARKERS):
+    def _open_files(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
+        if not cls._matched(facts.stderr_tail, cls.FD_MARKERS):
             return ""
         return (
             f"Open file limit reached: max_open_files={profile.max_open_files}. "
@@ -119,8 +135,8 @@ class SandboxDiagnostics:
         )
 
     @classmethod
-    def _processes(cls, result: RunResult, profile: SandboxProfile) -> str:
-        if not cls._matched(result.stderr, cls.PROCESS_MARKERS):
+    def _processes(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
+        if not cls._matched(facts.stderr_tail, cls.PROCESS_MARKERS):
             return ""
         limit = f"max_processes={profile.max_processes}"
         if profile.cgroup_pids_max is not None:
@@ -131,11 +147,11 @@ class SandboxDiagnostics:
         )
 
     @classmethod
-    def _memory(cls, result: RunResult, profile: SandboxProfile) -> str:
+    def _memory(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
         """max_memory_bytes — RLIMIT_AS: парсеры документов резервируют гигабайты
         адресного пространства независимо от размера файла (pdfium ~2.3 ГБ)."""
-        by_signal = result.exit_code in (cls.SIGKILL_CODE, cls.SIGABRT_CODE)
-        by_text = cls._matched(result.stderr, cls.MEMORY_MARKERS)
+        by_signal = facts.exit_code in (cls.SIGKILL_CODE, cls.SIGABRT_CODE)
+        by_text = cls._matched(facts.stderr_tail, cls.MEMORY_MARKERS)
         if not by_signal and not by_text:
             return ""
         limit = (
@@ -155,8 +171,8 @@ class SandboxDiagnostics:
         )
 
     @classmethod
-    def _space(cls, result: RunResult, profile: SandboxProfile) -> str:
-        if not cls._matched(result.stderr, cls.SPACE_MARKERS):
+    def _space(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
+        if not cls._matched(facts.stderr_tail, cls.SPACE_MARKERS):
             return ""
         return (
             f"No space left in the working directory: its size is fixed by the "
@@ -165,10 +181,10 @@ class SandboxDiagnostics:
         )
 
     @classmethod
-    def _network(cls, result: RunResult, profile: SandboxProfile) -> str:
+    def _network(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
         if profile.network:
             return ""
-        if not cls._matched(result.stderr, cls.NETWORK_MARKERS):
+        if not cls._matched(facts.stderr_tail, cls.NETWORK_MARKERS):
             return ""
         return (
             "Network is disabled in this sandbox profile (network=false): DNS "

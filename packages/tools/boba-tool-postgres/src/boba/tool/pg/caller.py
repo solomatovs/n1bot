@@ -1,64 +1,84 @@
-"""Вызов postgres-payload'а: соединение и запрос идут внутри песочницы.
+"""Вызов postgres-узлов: одиночный вызов — вырожденный граф из одного узла.
+
+Профиль соединения в спецификацию не попадает: узел получает имя подключения,
+а профиль с секретами подставляет обогатитель реестра стадий.
 
 Ошибки: LauncherError — исполнитель нарушил контракт; PayloadFailureError —
-payload объявил ожидаемый отказ (СУБД недоступна, запрос отклонён).
+payload объявил ожидаемый отказ (СУБД недоступна, запрос отклонён);
+WorkflowError — спецификация или контракт узла нарушены.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, ClassVar
+from typing import Any, TypeVar
 
-from boba.db.postgres import PostgresConfig
+from pydantic import BaseModel
+
 from boba.tool.pg.protocol import (
-    PgCopyRequest,
+    PgCopyArgs,
+    PgCopyFormat,
     PgCopyTrailer,
-    PgQueryRequest,
+    PgQueryArgs,
+    PgStage,
 )
-from boba.toolkit.launcher import ChunkSink, LauncherFactory
+from boba.toolkit.channels import ChannelSink
+from boba.toolkit.launcher import LauncherFactory, StageRun
 from boba.toolkit.sql import SqlQueryTrailer
 
 __all__ = ["PgCaller"]
+
+M = TypeVar("M", bound=BaseModel)
 
 
 class PgCaller:
     """Один вызов payload'а на запрос; пул не переживает вызов по построению."""
 
-    ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.pg.payload")
-
     def __init__(self, tool: str, launchers: LauncherFactory) -> None:
-        self._caller = launchers(tool)
+        self._run = StageRun(launchers(tool))
 
     def query(
         self,
         *,
-        connection: PostgresConfig,
+        connection_name: str,
         sql: str,
         params: Sequence[Any],
-        row_limit: int,
-        sink: ChunkSink,
+        sink: ChannelSink,
     ) -> SqlQueryTrailer:
-        request = PgQueryRequest(
-            op=PgQueryRequest.OP,
-            connection=connection,
+        args = PgQueryArgs(
+            connection_name=connection_name,
             sql=sql,
-            params=tuple(params),
-            row_limit=row_limit,
+            params=list(params),
         )
-        return self._caller.call_stream(self.ENTRY, request, sink, SqlQueryTrailer)
+
+        return self._stage(PgStage.QUERY, args, sink, SqlQueryTrailer)
 
     def copy(
         self,
         *,
-        connection: PostgresConfig,
+        connection_name: str,
         sql: str,
-        max_bytes: int,
-        sink: ChunkSink,
+        copy_format: PgCopyFormat,
+        sink: ChannelSink,
     ) -> PgCopyTrailer:
-        request = PgCopyRequest(
-            op=PgCopyRequest.OP,
-            connection=connection,
+        args = PgCopyArgs(
+            connection_name=connection_name,
             sql=sql,
-            max_bytes=max_bytes,
+            copy_format=copy_format,
         )
-        return self._caller.call_stream(self.ENTRY, request, sink, PgCopyTrailer)
+
+        return self._stage(PgStage.COPY, args, sink, PgCopyTrailer)
+
+    def _stage(
+        self,
+        stage: PgStage,
+        args: BaseModel,
+        sink: ChannelSink,
+        trailer: type[M],
+    ) -> M:
+        return self._run.trailer(
+            stage.value,
+            args.model_dump(mode="json"),
+            trailer,
+            sink=sink,
+        )

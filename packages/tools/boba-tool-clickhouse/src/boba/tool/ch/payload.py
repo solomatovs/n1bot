@@ -1,6 +1,7 @@
-"""Операции clickhouse: соединение и запрос идут из песочницы.
+"""Операции clickhouse: соединение, запрос и вставка идут из песочницы.
 
-Учётные данные едут через stdin — не видны ни в argv, ни в /proc, ни в логах.
+Учётные данные приезжают каналом tool_args — не видны ни в argv, ни в /proc,
+ни в логах; строки уходят каналом данных, вход вставки читается из tool_stdin.
 
 Ошибки: ClickHouseError — до базы не достучаться, и sql_failed из PayloadError —
 СУБД отклонила запрос; обе объявлены ожидаемыми и едут пользователю текстом.
@@ -12,69 +13,137 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, cast
 
+from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.common import StreamContext
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
+from pydantic import BaseModel
 
 from boba.db.clickhouse import ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
+from boba.tool.ch.protocol import (
+    ChInsertRequest,
+    ChInsertTrailer,
+    ChQueryRequest,
+    ChQueryTrailer,
+    ChStage,
+    ChWireFormat,
+)
+from boba.toolkit.channels import StreamCodec
+from boba.toolkit.payload import (
+    PayloadChannels,
+    PayloadEntry,
+    PayloadError,
+    PayloadOutputClosedError,
+    PayloadStream,
+)
 
 
 class ClickHouseOps:
-    """Исполнение SQL; вызывается диспетчером payload'а по имени операции."""
-
-    OPS: ClassVar[tuple[str, ...]] = ("ch_query",)
+    """Исполнение SQL; операцию выбирает реестр запросов по полю op."""
 
     EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
         ClickHouseError: "database_unavailable",
     }
 
-    @classmethod
-    async def dispatch(
-        cls, request: dict[str, Any], emit: ChunkEmitter
-    ) -> dict[str, Any]:
-        op = request["op"]
-        if op == "ch_query":
-            return await cls.query(request, emit)
-        msg = f"unknown clickhouse op: {op!r}"
-        raise ValueError(msg)
+    REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {
+        ChStage.QUERY: ChQueryRequest,
+        ChStage.INSERT: ChInsertRequest,
+    }
 
     @classmethod
-    async def query(cls, request: dict[str, Any], emit: ChunkEmitter) -> dict[str, Any]:
-        """Запрос с лимитом: блоки строк уходят кадрами по мере прихода с сервера."""
-        params = request["params"]
+    async def dispatch(
+        cls, request: BaseModel, channels: PayloadChannels
+    ) -> BaseModel:
+        if isinstance(request, ChQueryRequest):
+            return await cls.query(request, channels)
+
+        if isinstance(request, ChInsertRequest):
+            return await cls.insert(request, channels)
+
+        msg = f"unsupported clickhouse request: {type(request).__name__}"
+        raise TypeError(msg)
+
+    @classmethod
+    async def query(
+        cls, request: ChQueryRequest, channels: PayloadChannels
+    ) -> ChQueryTrailer:
+        """Запрос с лимитом: блоки строк уходят в канал данных по мере прихода."""
+        params = request.params
         if not params:
             params = None
-        async with PayloadClickHouse.opened(request) as client:
+
+        stream = channels.payload()
+
+        async with PayloadClickHouse.opened(request.connection) as client:
             try:
-                stream = await client.query_row_block_stream(
-                    request["sql"],
-                    parameters=params,
+                truncated = await cls._stream_rows(
+                    client, request, params, stream
                 )
-                async with stream as blocks:
-                    truncated = await cls._emit_rows(
-                        blocks, emit, request["row_limit"]
-                    )
+            except PayloadOutputClosedError:
+                # потребитель закрыл чтение: строки больше не нужны, квитанция едет
+                truncated = True
             except DriverError as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
                 raise PayloadError("sql_failed", msg) from e
-        return {"truncated": truncated}
+
+        return ChQueryTrailer(truncated=truncated)
 
     @classmethod
-    async def _emit_rows(
-        cls, blocks: StreamContext, emit: ChunkEmitter, limit: int
+    async def _stream_rows(
+        cls,
+        client: AsyncClient,
+        request: ChQueryRequest,
+        params: dict[str, Any] | None,
+        stream: PayloadStream,
     ) -> bool:
-        """Кадр на строку; лишняя строка сверх лимита ловит усечение и рвёт поток."""
+        blocks = await client.query_row_block_stream(request.sql, parameters=params)
+
+        async with blocks as source:
+            return await cls._write_rows(source, stream, request.row_limit)
+
+    @classmethod
+    async def _write_rows(
+        cls, blocks: StreamContext, stream: PayloadStream, limit: int
+    ) -> bool:
+        """Строка на запись; строка сверх лимита ловит усечение и рвёт поток."""
         names: Sequence[str] = cast(Any, blocks.source).column_names
-        emitted = 0
+
+        written = 0
         async for block in blocks:
             for row in cast(Sequence[Sequence[Any]], block):
-                if emitted >= limit:
+                if written >= limit:
                     return True
-                emit(RowStream.encode(PayloadClickHouse.jsonable(names, row)))
-                emitted += 1
+
+                jsonable = PayloadClickHouse.jsonable(names, row)
+                stream.write(StreamCodec.encode_row(jsonable))
+                written += 1
+
         return False
+
+    @classmethod
+    async def insert(
+        cls, request: ChInsertRequest, channels: PayloadChannels
+    ) -> ChInsertTrailer:
+        """Вставка входного потока в таблицу; формат объявлен полем запроса."""
+        wire = ChWireFormat.of(request.stdin_format)
+
+        source = channels.stdin()
+
+        async with PayloadClickHouse.opened(request.connection) as client:
+            try:
+                summary = await client.raw_insert(
+                    table=request.table,
+                    insert_block=source,
+                    fmt=wire.value,
+                )
+            except DriverError as e:
+                msg = f"insert failed: {type(e).__name__}: {e}"
+                raise PayloadError("sql_failed", msg) from e
+
+        return ChInsertTrailer(
+            rows=summary.written_rows,
+            bytes_written=summary.written_bytes(),
+        )
 
 
 if __name__ == "__main__":

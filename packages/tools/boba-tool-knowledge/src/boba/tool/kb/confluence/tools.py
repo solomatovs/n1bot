@@ -9,51 +9,19 @@ from typing import Annotated, Literal
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.tool.kb.confluence._fetch import (
-    ConfluenceFetchPageConfig,
-    confluence_fetch_page,
-)
-from boba.tool.kb.confluence._grep_page import (
-    ConfluenceGrepPageConfig,
-    confluence_grep_page,
-)
-from boba.tool.kb.confluence._list_spaces import (
-    ConfluenceListSpacesConfig,
-    confluence_list_spaces,
-)
-from boba.tool.kb.confluence._search_cql import (
-    ConfluenceSearchCqlConfig,
-    confluence_search_cql,
-)
+from boba.tool.kb.confluence._fetch import confluence_fetch_page
+from boba.tool.kb.confluence._grep_page import confluence_grep_page
+from boba.tool.kb.confluence._list_spaces import confluence_list_spaces
+from boba.tool.kb.confluence._search_cql import confluence_search_cql
 from boba.tool.kb.confluence.caller import ConfluenceCaller
+from boba.tool.kb.confluence.tools_config import ConfluenceToolsConfig
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 from boba.toolkit.types import LLMStringList
-from boba.transport.http import HttpProfile
 
 __all__ = ["ConfluenceTools", "ConfluenceToolsConfig", "build_confluence_tools"]
-
-
-class ConfluenceToolsConfig(BaseModel):
-    """Общий конфиг секции [tool.confluence] для всех инструментов чтения."""
-
-    model_config = ConfigDict(extra="ignore")
-
-
-    confluence: HttpProfile = Field(
-        description='Web-профиль Confluence ссылкой `confluence = "${web.<name>}"`.',
-    )
-    body_format: Literal["view", "export_view", "storage"] = Field(
-        default="view",
-        description="Confluence body-формат: view/export_view/storage.",
-    )
-    max_text_chars: int = Field(
-        default=2000,
-        ge=1,
-        description="Потолок длины content/before/after на match в grep.",
-    )
 
 
 class ConfluenceTools:
@@ -64,7 +32,7 @@ class ConfluenceTools:
         cfg: ConfluenceToolsConfig,
         launchers: LauncherFactory,
     ) -> None:
-        self._cfg = cfg
+        """Настройки секции живут в узлах реестра стадий, фасадам они не нужны."""
         self._caller = ConfluenceCaller("confluence", launchers)
 
     def build(self) -> list[BaseTool]:
@@ -81,10 +49,6 @@ class ConfluenceTools:
 
     def _fetch_page(self) -> BaseTool:
         owner = self
-        cfg = ConfluenceFetchPageConfig(
-            confluence=self._cfg.confluence,
-            body_format=self._cfg.body_format,
-        )
 
         @tool(response_format="content_and_artifact")
         def confluence_fetch(
@@ -112,7 +76,7 @@ class ConfluenceTools:
             """Скачивает одну Confluence-страницу и возвращает её контент."""
             try:
                 text = confluence_fetch_page(
-                    cfg, owner._caller, page_id=page_id, as_markdown=as_markdown
+                    owner._caller, page_id=page_id, as_markdown=as_markdown
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
@@ -122,11 +86,6 @@ class ConfluenceTools:
 
     def _grep_page(self) -> BaseTool:
         owner = self
-        cfg = ConfluenceGrepPageConfig(
-            confluence=self._cfg.confluence,
-            body_format=self._cfg.body_format,
-            max_text_chars=self._cfg.max_text_chars,
-        )
 
         @tool(response_format="content_and_artifact")
         def confluence_grep(  # noqa: PLR0913 — независимые флаги grep'а
@@ -179,7 +138,6 @@ class ConfluenceTools:
             """Ищет совпадения по тексту одной Confluence-страницы."""
             try:
                 result = confluence_grep_page(
-                    cfg,
                     owner._caller,
                     page_id=page_id,
                     pattern=pattern,
@@ -197,7 +155,6 @@ class ConfluenceTools:
 
     def _search_cql(self) -> BaseTool:
         owner = self
-        cfg = ConfluenceSearchCqlConfig(confluence=self._cfg.confluence)
 
         @tool(response_format="content_and_artifact")
         def confluence_search(
@@ -226,7 +183,6 @@ class ConfluenceTools:
             """Ищет страницы в Confluence через CQL и возвращает таблицу hits."""
             try:
                 result = confluence_search_cql(
-                    cfg,
                     owner._caller,
                     query=query,
                     spaces=spaces,
@@ -241,7 +197,6 @@ class ConfluenceTools:
 
     def _list_spaces(self) -> BaseTool:
         owner = self
-        cfg = ConfluenceListSpacesConfig(confluence=self._cfg.confluence)
 
         @tool(response_format="content_and_artifact")
         def confluence_spaces(
@@ -266,8 +221,10 @@ class ConfluenceTools:
             """Список spaces Confluence с опциональным glob-фильтром."""
             try:
                 result = confluence_list_spaces(
-                    cfg,
-                    owner._caller, pattern=pattern, space_type=space_type, limit=limit
+                    owner._caller,
+                    pattern=pattern,
+                    space_type=space_type,
+                    limit=limit,
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))

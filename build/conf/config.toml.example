@@ -307,6 +307,11 @@
         profile  = "${sandbox.profiles.base}"
         override = {  }
 
+[tool.workflow]
+    enable = true
+    roles  = ["*"]
+    tools  = { workflow = [] }
+
 [tool.doc]
     enable                  = true
     roles                   = ["*"]
@@ -352,7 +357,6 @@
     roles           = ["*"]
     max_text_chars  = 2000
     profiles        = { "<confluence.example.local>" = "${web.confluence}" }
-    tools           = { web_fetch_page = [], web_grep_page = [] }
     [tool.web.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.web.sandbox.override]
@@ -361,6 +365,11 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
+    [tool.web.tools]
+        web_fetch_page = []
+        web_grep_page  = []
+        web_fetch      = []
+        web_grep       = []
 
 [tool.confluence]
     enable          = true
@@ -368,7 +377,6 @@
     confluence      = "${web.confluence}"
     body_format     = "view"
     max_text_chars  = 2000
-    tools           = { confluence_search = [], confluence_spaces = [], confluence_fetch  = [], confluence_grep   = [] }
     [tool.confluence.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.confluence.sandbox.override]
@@ -377,6 +385,15 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
+    [tool.confluence.tools]
+        confluence_search        = []
+        confluence_spaces        = []
+        confluence_fetch         = []
+        confluence_grep          = []
+        confluence_page          = []
+        html_to_markdown         = []
+        html_plain_text          = []
+        html_confluence_sections = []
 
 [tables.kb]
     pg_schema         = "kb"
@@ -444,6 +461,7 @@
         confluence_index_pages  = []
         confluence_index_cql    = []
         confluence_index_spaces = []
+        confluence_ingest       = []
         confluence_attachment   = []
 
 
@@ -469,7 +487,6 @@
     max_bytes  = 1000000
     profiles   = { main = "${postgres}" }
     connection = "${postgres}"
-    tools      = { pg_list_targets = [], pg_list_tables = [], pg_describe_table = [], pg_query = [], pg_export = [] }
     [tool.pg.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.pg.sandbox.override]
@@ -478,6 +495,13 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
+    [tool.pg.tools]
+        pg_list_targets   = []
+        pg_list_tables    = []
+        pg_describe_table = []
+        pg_query          = []
+        pg_export         = []
+        pg_copy           = []
 
 [tool.ch]
     enable     = false
@@ -485,7 +509,6 @@
     max_rows   = 100
     max_bytes  = 1000000
     profiles   = { main = "${clickhouse}" }
-    tools      = { ch_list_targets = [], ch_list_tables = [], ch_describe_table = [], ch_query = [] }
     [tool.ch.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.ch.sandbox.override]
@@ -494,6 +517,12 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
+    [tool.ch.tools]
+        ch_list_targets   = []
+        ch_list_tables    = []
+        ch_describe_table = []
+        ch_query          = []
+        ch_insert         = []
 
 [tool.send_file]
     enable = true

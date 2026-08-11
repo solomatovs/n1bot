@@ -7,12 +7,11 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from bash_stage import BashStageSetup
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import build_bash_tool
-from boba.sandbox import SandboxCaller
-from boba.sandbox.argv import build_bwrap_argv
+from boba.sandbox.argv import ChannelArgv, WrapArgsCodec
 from boba.sandbox.profile import BindSpec, SandboxProfile, SandboxToolConfig
 from boba.toolkit.result import JsonResult
 
@@ -90,56 +89,90 @@ class TestProfileValidation:
 
 
 class TestBwrapArgv:
-    """Юниты pure-builder'а argv: не требуют установленного bwrap."""
+    """Юниты pure-builder'а argv: не требуют установленного bwrap.
+
+    Профиль едет каналом wrap_args, поэтому проверяются его опции, а не argv.
+    """
 
     _WS = "/srv/workspace"
+    _WRAP_ARGS_FD = 3
+    _REDIRECT_PREFIX = "exec >&4 2>&5"
 
-    def test_starts_with_bwrap_and_unshare_flags(self) -> None:
-        argv = build_bwrap_argv(_profile(), "echo hi", env={})
+    @classmethod
+    def _built(
+        cls,
+        profile: SandboxProfile,
+        command: str,
+        env: dict[str, str],
+    ) -> ChannelArgv:
+        return ChannelArgv.build(
+            profile,
+            command,
+            env=env,
+            wrap_args_fd=cls._WRAP_ARGS_FD,
+            redirect_prefix=cls._REDIRECT_PREFIX,
+        )
+
+    @classmethod
+    def _options(
+        cls,
+        profile: SandboxProfile,
+        command: str = "true",
+        env: dict[str, str] | None = None,
+    ) -> tuple[str, ...]:
+        """Опции профиля так, как их прочтёт bwrap из канала wrap_args."""
+        if env is None:
+            env = {}
+
+        return WrapArgsCodec.decode(cls._built(profile, command, env).wrap_args)
+
+    def test_argv_carries_only_args_fd_and_command(self) -> None:
+        argv = self._built(_profile(), "echo hi", {}).argv
         assert argv[0].endswith("bwrap")
-        assert "--die-with-parent" in argv
-        assert "--unshare-user" in argv
-        assert "--unshare-pid" in argv
-        assert "--new-session" in argv
+        assert argv[1:3] == ("--args", str(self._WRAP_ARGS_FD))
+
+    def test_isolation_flags_travel_in_wrap_args(self) -> None:
+        options = self._options(_profile(), "echo hi")
+        assert "--die-with-parent" in options
+        assert "--unshare-user" in options
+        assert "--unshare-pid" in options
+        assert "--new-session" in options
 
     def test_userns_creation_disabled(self) -> None:
-        argv = build_bwrap_argv(_profile(), "true", env={})
-        assert "--disable-userns" in argv
+        assert "--disable-userns" in self._options(_profile())
 
     def test_neutral_hostname(self) -> None:
-        argv = build_bwrap_argv(_profile(), "true", env={})
-        assert argv[argv.index("--hostname") + 1] == "sandbox"
+        options = self._options(_profile())
+        assert options[options.index("--hostname") + 1] == "sandbox"
 
     def test_network_disabled_adds_unshare_net(self) -> None:
-        argv = build_bwrap_argv(_profile(network=False), "true", env={})
-        assert "--unshare-net" in argv
+        assert "--unshare-net" in self._options(_profile(network=False))
 
     def test_network_enabled_omits_unshare_net(self) -> None:
-        argv = build_bwrap_argv(_profile(network=True), "true", env={})
-        assert "--unshare-net" not in argv
+        assert "--unshare-net" not in self._options(_profile(network=True))
 
     def test_no_implicit_rw_binds(self) -> None:
-        argv = build_bwrap_argv(_profile(), "true", env={})
-        assert "--bind-try" not in argv
-        assert "--bind" not in argv
+        options = self._options(_profile())
+        assert "--bind-try" not in options
+        assert "--bind" not in options
 
     def test_rw_bind_same_path_and_chdir(self) -> None:
         profile = _profile(rw_binds=(self._WS,), cwd=self._WS)
-        argv = build_bwrap_argv(profile, "true", env={})
-        i = argv.index("--bind-try")
-        assert argv[i + 1 : i + 3] == [self._WS, self._WS]
-        assert argv[argv.index("--chdir") + 1] == self._WS
+        options = self._options(profile)
+        index = options.index("--bind-try")
+        assert options[index + 1 : index + 3] == (self._WS, self._WS)
+        assert options[options.index("--chdir") + 1] == self._WS
 
     def test_rw_bind_with_explicit_target(self) -> None:
         profile = _profile(rw_binds=(f"{self._WS}:/workspace",), cwd="/workspace")
-        argv = build_bwrap_argv(profile, "true", env={})
-        i = argv.index("--bind-try")
-        assert argv[i + 1 : i + 3] == [self._WS, "/workspace"]
-        assert argv[argv.index("--chdir") + 1] == "/workspace"
+        options = self._options(profile)
+        index = options.index("--bind-try")
+        assert options[index + 1 : index + 3] == (self._WS, "/workspace")
+        assert options[options.index("--chdir") + 1] == "/workspace"
 
     def test_empty_cwd_means_root(self) -> None:
-        argv = build_bwrap_argv(_profile(), "true", env={})
-        assert argv[argv.index("--chdir") + 1] == "/"
+        options = self._options(_profile())
+        assert options[options.index("--chdir") + 1] == "/"
 
     def test_tmpfs_without_size_rejected(self) -> None:
         """Размер обязателен: неявного «без лимита» больше нет."""
@@ -147,45 +180,38 @@ class TestBwrapArgv:
             _profile(tmpfs=("/tmp",))  # noqa: S108
 
     def test_tmpfs_size_precedes_mount(self) -> None:
-        argv = build_bwrap_argv(_profile(tmpfs=("/tmp:64M",)), "true", env={})  # noqa: S108
-        i = argv.index("--size")
-        assert argv[i + 1] == str(64 * 1024**2)
-        assert argv[i + 2 : i + 4] == ["--tmpfs", "/tmp"]  # noqa: S108
+        options = self._options(_profile(tmpfs=("/tmp:64M",)))  # noqa: S108
+        index = options.index("--size")
+        assert options[index + 1] == str(64 * 1024**2)
+        assert options[index + 2 : index + 4] == ("--tmpfs", "/tmp")  # noqa: S108
 
     def test_tmpfs_bad_size_rejected(self) -> None:
         with pytest.raises(ValueError, match="invalid size"):
             _profile(tmpfs=("/tmp:64X",))  # noqa: S108
 
     def test_rootfs_mounted_as_root_before_proc_dev(self) -> None:
-        argv = build_bwrap_argv(
-            _profile(rootfs="/srv/rootfs", ro_binds=()),
-            "true",
-            env={},
-        )
-        i = argv.index("--ro-bind")
-        assert argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]
-        assert i < argv.index("--proc")
-        assert i < argv.index("--dev")
+        options = self._options(_profile(rootfs="/srv/rootfs", ro_binds=()))
+        index = options.index("--ro-bind")
+        assert options[index + 1 : index + 3] == ("/srv/rootfs", "/")
+        assert index < options.index("--proc")
+        assert index < options.index("--dev")
 
     def test_env_cleared_and_set(self) -> None:
-        argv = build_bwrap_argv(
-            _profile(),
-            "true",
-            env={"PATH": "/usr/bin:/bin"},
-        )
-        assert "--clearenv" in argv
-        i = argv.index("--setenv")
-        assert argv[i + 1 : i + 3] == ["PATH", "/usr/bin:/bin"]
+        options = self._options(_profile(), env={"PATH": "/usr/bin:/bin"})
+        assert "--clearenv" in options
+        index = options.index("--setenv")
+        assert options[index + 1 : index + 3] == ("PATH", "/usr/bin:/bin")
 
     def test_command_goes_after_separator(self) -> None:
-        argv = build_bwrap_argv(_profile(), "echo hi", env={})
+        argv = self._built(_profile(), "echo hi", {}).argv
         sep = argv.index("--")
-        assert argv[sep + 1 : sep + 3] == ["/bin/bash", "-c"]
+        assert argv[sep + 1 : sep + 3] == ("/bin/bash", "-c")
         assert argv[sep + 3].endswith("; echo hi")
 
     def test_process_limit_prefixes_command(self) -> None:
-        argv = build_bwrap_argv(_profile(max_processes=64), "echo hi", env={})
-        assert argv[-1] == "ulimit -u 64 || exit 1; echo hi"
+        argv = self._built(_profile(max_processes=64), "echo hi", {}).argv
+        expected = f"ulimit -u 64 || exit 1; {self._REDIRECT_PREFIX}; echo hi"
+        assert argv[-1] == expected
 
 
 @pytest.mark.skipif(
@@ -208,7 +234,7 @@ class TestBashTool:
         )
         sandbox = SandboxToolConfig(profile=profile_dto, override={})
         profile = sandbox.effective()
-        return build_bash_tool(lambda tool: SandboxCaller(tool, profile, dict))
+        return BashStageSetup.tool(profile, dict)
 
     @staticmethod
     def _invoke(tool, **args) -> dict:
@@ -246,9 +272,9 @@ class TestBashTool:
     def test_ro_bind_write_denied(self, tmp_path: Path) -> None:
         payload = self._invoke(
             self._make_tool(tmp_path),
-            command="echo x > /usr/from-sandbox 2>&1",
+            command="echo x > /usr/from-sandbox 2>&1; echo rc=$?",
         )
-        assert payload["exit_code"] != 0
+        assert "rc=0" not in payload["stdout"]
         assert not Path("/usr/from-sandbox").exists()
 
     def test_network_disabled_by_default(self, tmp_path: Path) -> None:
@@ -259,11 +285,12 @@ class TestBashTool:
         assert "done-2" in payload["stdout"] or "done-1" in payload["stdout"]
 
     def test_timeout_marks_timed_out(self, tmp_path: Path) -> None:
+        """Стадия по дедлайну — отказ: причина едет текстом раннера."""
         payload = self._invoke(
             self._make_tool(tmp_path, _profile(timeout_sec=1)),
             command="sleep 10",
         )
-        assert payload["timed_out"]
+        assert "timed out" in payload["message"]
 
     def test_llm_does_not_choose_profile(self, tmp_path: Path) -> None:
         """Профиль задаёт конфиг: у инструмента нет такого аргумента."""
@@ -279,9 +306,11 @@ class TestBashTool:
         assert int(payload["stdout"].strip()) < 10
 
     def test_memory_limit_applied_without_image(self, tmp_path: Path) -> None:
-        tool = self._make_tool(tmp_path, _profile(max_memory_bytes=64 * 1024 * 1024))
+        # обвязка узла — python: 64 МиБ адресного пространства ей мало на импорты
+        limit_bytes = 512 * 1024 * 1024
+        tool = self._make_tool(tmp_path, _profile(max_memory_bytes=limit_bytes))
         payload = self._invoke(tool, command="ulimit -v")
-        assert payload["stdout"].strip() == str(64 * 1024)
+        assert payload["stdout"].strip() == str(limit_bytes // 1024)
 
     def test_cpu_limit_applied_without_image(self, tmp_path: Path) -> None:
         tool = self._make_tool(tmp_path, _profile(max_cpu_sec=5))
@@ -303,10 +332,8 @@ class TestBashTool:
             cwd=template,
         )
         profile = SandboxToolConfig(profile=profile_dto, override={}).effective()
-        tool = build_bash_tool(
-            lambda tool: SandboxCaller(
-                tool, profile, lambda: {"user_id": "7", "thread_id": "t1"}
-            )
+        tool = BashStageSetup.tool(
+            profile, lambda: {"user_id": "7", "thread_id": "t1"}
         )
         payload = self._invoke(tool, command="echo data > out.txt")
         assert payload["exit_code"] == 0

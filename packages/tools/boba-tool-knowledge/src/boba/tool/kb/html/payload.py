@@ -1,25 +1,51 @@
 """Операции над HTML в песочнице: недоверенную разметку разбирают только здесь.
 
-Ошибки: ожидаемых нет. bs4 и markdownify не отказывают на битой разметке —
-они её восстанавливают, поэтому любая ошибка здесь означает дефект кода.
+Разметка приезжает каналом tool_stdin, продукт уходит в tool_payload: markdown
+и текст — байтами, секции — строками NDJSON.
+
+Ошибки: ChannelError — в tool_args приехал запрос чужой модели. Ожидаемых
+ошибок разбора нет: bs4 и markdownify не отказывают на битой разметке — они
+её восстанавливают, поэтому любая ошибка здесь означает дефект кода.
 """
 
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
-from typing import Any, ClassVar
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import ClassVar
 
 import markdownify
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
+from pydantic import BaseModel
 
-from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+from boba.tool.kb.html.protocol import (
+    ConfluenceSection,
+    HtmlCall,
+    ConfluenceSectionsRequest,
+    HtmlNode,
+    HtmlToMarkdownRequest,
+    PlainTextRequest,
+)
+from boba.toolkit.channels import ChannelError, StreamCodec, StreamFormat
+from boba.toolkit.payload import PayloadChannels, PayloadEntry
+from boba.toolkit.workflow import EmptyTrailer
+
+
+@dataclass(frozen=True)
+class Heading:
+    """Заголовок страницы вместе с его узлом разметки."""
+
+    index: int
+    level: int
+    text: str
+    anchor: str
+    tag: Tag
 
 
 class ConfluenceHtml:
-    """Confluence-aware разбор через BeautifulSoup: structural-парсеры не берут ac:/ri:."""
+    """Confluence-aware разбор: structural-парсеры не берут ac:/ri:-макросы."""
 
     HEADING_TAGS: ClassVar[tuple[str, ...]] = ("h1", "h2", "h3", "h4", "h5", "h6")
     HEADING_TAG_NAMES: ClassVar[frozenset[str]] = frozenset(HEADING_TAGS)
@@ -32,20 +58,21 @@ class ConfluenceHtml:
         return BeautifulSoup(data, "lxml")
 
     @classmethod
-    def collect_headings(cls, soup: BeautifulSoup) -> list[dict[str, Any]]:
+    def collect_headings(cls, soup: BeautifulSoup) -> list[Heading]:
         """Заголовки страницы: index 1-based, anchor или пустая строка."""
-        headings: list[dict[str, Any]] = []
+        headings: list[Heading] = []
+
         for i, tag in enumerate(soup.find_all(list(cls.HEADING_TAGS)), start=1):
-            anchor = cls.heading_anchor(tag)
             headings.append(
-                {
-                    "index": i,
-                    "level": int(tag.name[1]),
-                    "text": cls.heading_text(tag),
-                    "anchor": anchor,
-                    "tag": tag,
-                }
+                Heading(
+                    index=i,
+                    level=int(tag.name[1]),
+                    text=cls.heading_text(tag),
+                    anchor=cls.heading_anchor(tag),
+                    tag=tag,
+                )
             )
+
         return headings
 
     @classmethod
@@ -130,119 +157,164 @@ class ConfluenceHtml:
 
 
 class PageOps:
-    """Операции над HTML; вызываются диспетчером payload'а по имени op."""
+    """Операции над HTML; вызываются диспетчером payload'а по модели запроса."""
 
     BREADCRUMB_SEPARATOR: ClassVar[str] = " › "
     TITLE_LEVEL: ClassVar[int] = 0
 
-    OPS: ClassVar[tuple[str, ...]] = (
-        "to_markdown",
-        "plain_text",
-        "confluence_sections",
-    )
+    HEADING_STYLE: ClassVar[str] = "ATX"
+    """Стиль заголовков markdownify: решение инструмента, а не аргумент вызова."""
 
     EXPECTED: ClassVar[Mapping[type[Exception], str]] = {}
     """Разбор HTML не отказывает: сломался — значит дефект, нужен трейсбек."""
 
+    REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {
+        HtmlNode.MARKDOWN: HtmlToMarkdownRequest,
+        HtmlNode.PLAIN_TEXT: PlainTextRequest,
+        HtmlNode.SECTIONS: ConfluenceSectionsRequest,
+    }
+
     @classmethod
     async def dispatch(
-        cls, request: dict[str, Any], emit: ChunkEmitter
-    ) -> dict[str, Any]:
-        """Текст уходит кадрами-кусками, секции — кадрами-записями."""
-        op = request["op"]
-        if op == "to_markdown":
-            PayloadEntry.emit_text(emit, cls.to_markdown(request)["markdown"])
-            return {}
-        if op == "plain_text":
-            PayloadEntry.emit_text(emit, cls.plain_text(request)["text"])
-            return {}
-        if op == "confluence_sections":
-            for section in cls.confluence_sections(request)["sections"]:
-                emit(RowStream.encode(section))
-            return {}
-        msg = f"unknown page op: {op!r}"
-        raise ValueError(msg)
+        cls,
+        request: BaseModel,
+        channels: PayloadChannels,
+    ) -> BaseModel:
+        """Текст уходит байтами, секции — строками NDJSON."""
+        if not isinstance(request, HtmlCall):
+            msg = f"html payload got an unexpected request: {type(request).__name__}"
+            raise ChannelError(msg)
+
+        html = cls.read_html(request, channels)
+
+        if isinstance(request, HtmlToMarkdownRequest):
+            cls.write_text(channels, cls.to_markdown(html))
+            return EmptyTrailer()
+
+        if isinstance(request, PlainTextRequest):
+            cls.write_text(channels, cls.plain_text(html))
+            return EmptyTrailer()
+
+        if isinstance(request, ConfluenceSectionsRequest):
+            cls.write_sections(channels, cls.confluence_sections(html, request.title))
+            return EmptyTrailer()
+
+        msg = f"html payload got an unexpected request: {type(request).__name__}"
+        raise ChannelError(msg)
 
     @staticmethod
-    def to_markdown(request: dict[str, Any]) -> dict[str, Any]:
-        markdown = markdownify.markdownify(
-            request["html"], heading_style=request["heading_style"]
-        )
-        return {"markdown": markdown}
+    def read_html(request: HtmlCall, channels: PayloadChannels) -> str:
+        """Разметка целиком: heading-aware нарезке нужен весь документ сразу."""
+        return StreamCodec.read_text(request.stdin_format, channels.stdin())
 
     @staticmethod
-    def plain_text(request: dict[str, Any]) -> dict[str, Any]:
-        soup = ConfluenceHtml.parse_html(request["html"])
-        return {"text": ConfluenceHtml.plain_text(soup)}
+    def write_text(channels: PayloadChannels, text: str) -> None:
+        channels.payload().write(StreamCodec.encode_text(StreamFormat.TEXT, text))
+
+    @staticmethod
+    def write_sections(
+        channels: PayloadChannels,
+        sections: Sequence[ConfluenceSection],
+    ) -> None:
+        stream = channels.payload()
+        for section in sections:
+            stream.write(StreamCodec.encode_row(section.model_dump()))
 
     @classmethod
-    def confluence_sections(cls, request: dict[str, Any]) -> dict[str, Any]:
+    def to_markdown(cls, html: str) -> str:
+        return markdownify.markdownify(html, heading_style=cls.HEADING_STYLE)
+
+    @staticmethod
+    def plain_text(html: str) -> str:
+        soup = ConfluenceHtml.parse_html(html)
+
+        return ConfluenceHtml.plain_text(soup)
+
+    @classmethod
+    def confluence_sections(cls, html: str, title: str) -> list[ConfluenceSection]:
         """Heading-aware нарезка страницы; без заголовков — одна секция."""
-        html = request["html"]
-        title = request["title"]
         if not html.strip():
-            return {"sections": []}
+            return []
 
         soup = ConfluenceHtml.parse_html(html)
-        headings: list[dict[str, Any]] = []
+
+        headings: list[Heading] = []
         for heading in ConfluenceHtml.collect_headings(soup):
-            if heading["text"].strip():
+            if heading.text.strip():
                 headings.append(heading)
+
         if not headings:
-            return {"sections": cls._fallback(soup, title)}
+            return cls._fallback(soup, title)
 
         stack: list[tuple[int, str]] = []
         if title:
             stack.append((cls.TITLE_LEVEL, title))
 
-        sections: list[dict[str, Any]] = []
+        sections: list[ConfluenceSection] = []
         for i, heading in enumerate(headings):
-            cls._push(stack, heading["level"], heading["text"])
-            next_tag = None
+            cls._push(stack, heading.level, heading.text)
+
+            next_tag: Tag | None = None
             if i + 1 < len(headings):
-                next_tag = headings[i + 1]["tag"]
-            between = ConfluenceHtml.text_between(heading["tag"], next_tag)
-            text = heading["text"]
-            if between:
-                text = f"{text}\n\n{between}"
-            anchor = heading["anchor"]
-            if not anchor:
-                anchor = f"idx:{heading['index']}"
-            sections.append(
-                {
-                    "order": heading["index"],
-                    "content": text.strip(),
-                    "heading_level": heading["level"],
-                    "heading_text": heading["text"],
-                    "heading_path": cls._path(stack),
-                    "anchor": anchor,
-                }
-            )
-        return {"sections": sections}
+                next_tag = headings[i + 1].tag
+
+            sections.append(cls._section(heading, next_tag, cls._path(stack)))
+
+        return sections
 
     @classmethod
-    def _fallback(cls, soup: BeautifulSoup, title: str) -> list[dict[str, Any]]:
+    def _section(
+        cls,
+        heading: Heading,
+        next_tag: Tag | None,
+        heading_path: str,
+    ) -> ConfluenceSection:
+        between = ConfluenceHtml.text_between(heading.tag, next_tag)
+
+        text = heading.text
+        if between:
+            text = f"{text}\n\n{between}"
+
+        anchor = heading.anchor
+        if not anchor:
+            anchor = f"idx:{heading.index}"
+
+        return ConfluenceSection(
+            order=heading.index,
+            content=text.strip(),
+            heading_level=heading.level,
+            heading_text=heading.text,
+            heading_path=heading_path,
+            anchor=anchor,
+        )
+
+    @classmethod
+    def _fallback(cls, soup: BeautifulSoup, title: str) -> list[ConfluenceSection]:
         """Страница без заголовков: весь текст одной секцией."""
         body = soup.body or soup
         text = ConfluenceHtml.plain_text(body)
+
         if not text and not title:
             return []
+
         composed = text
         if title:
             composed = f"{title}\n\n{text}".strip()
+
         heading_path = ""
         if title:
             heading_path = title
-        return [
-            {
-                "order": 0,
-                "content": composed,
-                "heading_level": 0,
-                "heading_text": title,
-                "heading_path": heading_path,
-                "anchor": "",
-            }
-        ]
+
+        section = ConfluenceSection(
+            order=0,
+            content=composed,
+            heading_level=0,
+            heading_text=title,
+            heading_path=heading_path,
+            anchor="",
+        )
+
+        return [section]
 
     @staticmethod
     def _push(stack: list[tuple[int, str]], level: int, text: str) -> None:
@@ -251,7 +323,7 @@ class PageOps:
         stack.append((level, text))
 
     @classmethod
-    def _path(cls, stack: list[tuple[int, str]]) -> str:
+    def _path(cls, stack: Sequence[tuple[int, str]]) -> str:
         parts: list[str] = []
         for _, text in stack:
             parts.append(text)

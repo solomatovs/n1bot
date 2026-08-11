@@ -1,72 +1,60 @@
-"""Контракт html-payload'а: HTML на вход, markdown на выход."""
+"""Контракт html-payload'а: HTML приходит потоком, продукт уходит потоком."""
 
 from __future__ import annotations
 
-from typing import ClassVar
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.toolkit.channels import StreamFormat
+
 __all__ = [
     "ConfluenceSection",
+    "HtmlCall",
     "ConfluenceSectionsAnswer",
     "ConfluenceSectionsRequest",
+    "HtmlNode",
     "HtmlToMarkdownRequest",
     "PlainTextRequest",
 ]
 
 
-class HtmlToMarkdownRequest(BaseModel):
-    """Конвертировать HTML в markdown."""
+class HtmlNode(StrEnum):
+    """Узлы реестра стадий над HTML; значение — оно же поле op запроса."""
+
+    MARKDOWN = "html_to_markdown"
+    PLAIN_TEXT = "html_plain_text"
+    SECTIONS = "html_confluence_sections"
+
+
+class HtmlCall(BaseModel):
+    """Общая часть: разметка приезжает каналом, формат входа ставит приложение."""
 
     model_config = ConfigDict(extra="forbid")
 
-    OP: ClassVar[str] = "to_markdown"
-
-    op: str = Field(min_length=1, description="Операция payload'а.")
-    html: str = Field(description="Исходный HTML страницы.")
-    heading_style: str = Field(
-        min_length=1,
-        description="Стиль заголовков markdownify: 'ATX'.",
+    op: HtmlNode
+    stdin_format: StreamFormat = Field(
+        default=StreamFormat.TEXT,
+        description="Формат входного потока; узел читает только текст.",
     )
 
-    @classmethod
-    def of(cls, html: str, heading_style: str) -> HtmlToMarkdownRequest:
-        return cls(op=cls.OP, html=html, heading_style=heading_style)
+
+class HtmlToMarkdownRequest(HtmlCall):
+    """Конвертировать HTML в markdown."""
 
 
-class PlainTextRequest(BaseModel):
+class PlainTextRequest(HtmlCall):
     """Достать из HTML только текст, без макросов Confluence."""
 
-    model_config = ConfigDict(extra="forbid")
 
-    OP: ClassVar[str] = "plain_text"
-
-    op: str = Field(min_length=1, description="Операция payload'а.")
-    html: str = Field(description="Исходный HTML.")
-
-    @classmethod
-    def of(cls, html: str) -> PlainTextRequest:
-        return cls(op=cls.OP, html=html)
-
-
-class ConfluenceSectionsRequest(BaseModel):
+class ConfluenceSectionsRequest(HtmlCall):
     """Нарезать Confluence-страницу по заголовкам."""
 
-    model_config = ConfigDict(extra="forbid")
-
-    OP: ClassVar[str] = "confluence_sections"
-
-    op: str = Field(min_length=1, description="Операция payload'а.")
-    html: str = Field(description="Export-HTML страницы.")
     title: str = Field(description="Заголовок страницы; корень breadcrumb'а.")
-
-    @classmethod
-    def of(cls, html: str, title: str) -> ConfluenceSectionsRequest:
-        return cls(op=cls.OP, html=html, title=title)
 
 
 class ConfluenceSection(BaseModel):
-    """Кусок страницы: текст и место в дереве заголовков; пустая строка = значения нет."""
+    """Кусок страницы: текст и место в дереве заголовков; пусто = значения нет."""
 
     model_config = ConfigDict(extra="forbid")
 

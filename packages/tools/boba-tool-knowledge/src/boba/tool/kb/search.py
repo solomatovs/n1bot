@@ -1,7 +1,8 @@
-"""KB search tools (vector/fts): дискриминатор коллекции собирает строку из kb_chunks."""
+"""KB search tools: дискриминатор коллекции собирает строку из kb_chunks."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
@@ -40,7 +41,7 @@ class MetaField:
 
 
 class CollectionSearch:
-    """База дискриминатора: подкласс задаёт COLLECTION и META_FIELDS, строку собирает row()."""
+    """База дискриминатора: подкласс задаёт COLLECTION и META_FIELDS, строку — row()."""
 
     COLLECTION: ClassVar[str]
     META_FIELDS: ClassVar[tuple[MetaField, ...]]
@@ -59,7 +60,7 @@ class CollectionSearch:
 
 
 class ConfluenceCollection(CollectionSearch):
-    """Коллекция Confluence-страниц: META_FIELDS — ключи, которые пишет confluence-ingest."""
+    """Коллекция Confluence-страниц: META_FIELDS — ключи confluence-ingest'а."""
 
     COLLECTION = "kb_confluence"
 
@@ -78,7 +79,7 @@ class ConfluenceCollection(CollectionSearch):
 
 
 class KbDocCollection(CollectionSearch):
-    """Коллекция KbDoc-выгрузок из workspace; wire-имена совпадают с confluence-коллекцией."""
+    """Коллекция KbDoc-выгрузок; wire-имена те же, что у confluence-коллекции."""
 
     COLLECTION = "kb_confluence_doc"
 
@@ -98,56 +99,6 @@ class KbDocCollection(CollectionSearch):
 
 class KbSearch:
     """Единый прогон KB-поиска: method выбирает канал, collection — scope."""
-
-    VECTOR_SQL: ClassVar[str] = """
-select
-    c.chunk_id,
-    c.source_id,
-    c.chunk_index,
-    c.content_hash,
-    c.metadata,
-    c.tags,
-    left(c.format_content, %(snippet_chars)s) AS snippet,
-    (c.embedding::vector({dim})) <=> %(embedding)s::vector AS distance
-from
-    {chunks_table} c
-where 1=1
-    and c.collection = any(%(collections)s)
-    and c.embedding is not null
-order by
-    distance asc
-limit
-    %(top_k)s
-"""
-    """Векторный поиск: format-плейсхолдеры {dim}/{chunks_table}, остальное — bind."""
-
-    FTS_SQL: ClassVar[str] = """
-with q as (
-    select websearch_to_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
-        || websearch_to_tsquery('english', {schema}.immutable_unaccent(%(query)s))
-        as tsq
-)
-select
-    c.chunk_id,
-    c.source_id,
-    c.chunk_index,
-    c.content_hash,
-    c.metadata,
-    c.tags,
-    left(c.format_content, %(snippet_chars)s) as snippet,
-    ts_rank_cd(c.tsv, q.tsq) as rank
-from
-    {chunks_table} c,
-    q
-where 1=1
-    and c.collection = any(%(collections)s)
-    and c.tsv @@ q.tsq
-order by
-    rank desc
-limit
-    %(top_k)s
-"""
-    """FTS-поиск: format-плейсхолдеры {chunks_table}/{schema}, остальное — bind."""
 
     QUERY_DESC_VECTOR: ClassVar[str] = (
         "Поисковый запрос на естественном языке — семантический поиск "
@@ -176,24 +127,41 @@ limit
         snippet_chars: int,
     ) -> ToolResult:
         kb = PostgresKnowledgeBase(cfg=cfg, caller=caller)
+
         try:
-            if method == "vector":
-                hits = kb.vector_search(
-                    collections=[collection.COLLECTION],
-                    query=query,
-                    top_k=top_k,
-                    snippet_chars=snippet_chars,
-                    sql_template=KbSearch.VECTOR_SQL,
-                )
-            else:
-                hits = kb.fts_search(
-                    collections=[collection.COLLECTION],
-                    query=query,
-                    top_k=top_k,
-                    snippet_chars=snippet_chars,
-                    sql_template=KbSearch.FTS_SQL,
-                )
-            rows = [collection.row(h) for h in hits]
+            hits = KbSearch._hits(kb, collection, query, method, top_k, snippet_chars)
+            rows: list[dict[str, Any]] = []
+            for hit in hits:
+                rows.append(collection.row(hit))
         except KnowledgeBaseError as e:
             return ErrorResult(message=str(e), error_kind="kb_search_failed")
-        return TableResult(rows=rows, note=None if rows else "ничего не найдено")
+
+        note = None
+        if not rows:
+            note = "nothing found"
+
+        return TableResult(rows=rows, note=note)
+
+    @staticmethod
+    def _hits(  # noqa: PLR0913
+        kb: PostgresKnowledgeBase,
+        collection: type[CollectionSearch],
+        query: str,
+        method: SearchMethod,
+        top_k: int,
+        snippet_chars: int,
+    ) -> Iterable[SearchHit]:
+        if method == "vector":
+            return kb.vector_search(
+                collections=[collection.COLLECTION],
+                query=query,
+                top_k=top_k,
+                snippet_chars=snippet_chars,
+            )
+
+        return kb.fts_search(
+            collections=[collection.COLLECTION],
+            query=query,
+            top_k=top_k,
+            snippet_chars=snippet_chars,
+        )

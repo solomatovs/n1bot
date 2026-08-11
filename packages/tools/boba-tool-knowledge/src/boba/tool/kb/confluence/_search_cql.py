@@ -4,23 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated, Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from boba.tool.kb.confluence.caller import ConfluenceCaller
-from boba.tool.kb.confluence.protocol import ConfluenceSearchRequest
 from boba.toolkit.result import TableResult
 from boba.toolkit.types import LLMStringList
-from boba.transport.http import HttpProfile
 
-__all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]
-
-
-class ConfluenceSearchCqlConfig(BaseModel):
-    """Self-contained конфиг tool'а confluence_search_cql."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    confluence: HttpProfile
+__all__ = ["confluence_search_cql"]
 
 
 class CqlSearch:
@@ -49,8 +39,7 @@ class CqlSearch:
         return f"({text_block}) and ({space_block})"
 
 
-def confluence_search_cql(  # noqa: PLR0913
-    cfg: ConfluenceSearchCqlConfig,
+def confluence_search_cql(
     caller: ConfluenceCaller,
     query: Annotated[
         str,
@@ -75,18 +64,18 @@ def confluence_search_cql(  # noqa: PLR0913
     ] = CqlSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
     """Полнотекстовый поиск страниц Confluence (online CQL)."""
-    request = ConfluenceSearchRequest(
-        op=ConfluenceSearchRequest.OP,
-        base_url=cfg.confluence.base_url or "",
-        profile=ConfluenceCaller.transport_of(cfg.confluence),
+    hits = caller.search(
         cql=CqlSearch.build_cql(query=query, spaces=spaces),
         limit=limit,
         snippet_chars=snippet_chars,
     )
+
     rows: list[dict[str, Any]] = []
-    for hit in caller.search(request):
+    for hit in hits:
         rows.append(hit.model_dump())
-    note = "ничего не найдено"
+
+    note = "nothing found"
     if rows:
-        note = f"найдено: {len(rows)}"
+        note = f"found: {len(rows)}"
+
     return TableResult(rows=rows, note=note)

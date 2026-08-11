@@ -1,7 +1,10 @@
 """Исполнение графа стадий: реестр узлов, валидация с mount-группами, WorkflowRunner.
 
 Ошибки: WorkflowError — спецификация или контракт нарушены, стадия сорвалась,
-итог не собран; ToolStopped (BaseException остановки хода) проходит насквозь.
+итог не собран; PayloadFailureError — стадия сообщила об ожидаемом отказе
+конвертом tool_result; исключения sink'ов пути данных (коллекторов
+вызывающего) проходят наверх как есть — их контракт задаёт потребитель;
+ToolStopped (BaseException остановки хода) проходит насквозь.
 """
 
 from __future__ import annotations
@@ -12,49 +15,52 @@ import resource
 import shlex
 import subprocess
 import sys
-import time
-from abc import abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Final, Protocol
+from typing import Any, ClassVar, Final
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from boba.cancellation import TurnCancellation, current_cancellation
 from boba.sandbox.argv import ChannelArgv, WrapArgsCodec
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
-from boba.sandbox.diagnostics import SandboxDiagnostics
+from boba.sandbox.diagnostics import FailureFacts, SandboxDiagnostics
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.sandbox.runner import (
     ChannelPump,
-    ChannelSink,
     FanoutSink,
     KillCause,
     PipeSink,
     RelaySink,
     ResultSink,
     SandboxChannels,
-    SandboxRunner,
-    ShellRunner,
     TailSink,
     WrapResultSink,
 )
 from boba.toolkit.channels import (
     Channel,
+    ChannelSink,
     ResultError,
     ShellExit,
-    StreamFormat,
     ValidationSummary,
 )
-from boba.toolkit.launcher import LauncherError, RunResult
+from boba.toolkit.launcher import (
+    CollectorCapacityError,
+    CollectorRowLimitError,
+    LauncherError,
+    PayloadFailureError,
+)
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.workflow import (
     AccessPredicate,
+    ArgsEnricher,
     ContractCheck,
     EdgeSpec,
+    OutResolver,
     StageContract,
+    StageNode,
     StageOutcome,
     StageSpec,
     WorkflowError,
@@ -63,6 +69,7 @@ from boba.toolkit.workflow import (
 )
 from boba.workspace.launcher import (
     ChainChannelArgv,
+    LauncherExit,
     LauncherMode,
     LauncherOptions,
     MountError,
@@ -72,11 +79,9 @@ from boba.workspace.launcher import (
 )
 
 __all__ = [
-    "ArgsEnricher",
     "GroupIds",
     "ImageRef",
     "MountGroupPlan",
-    "OutResolver",
     "StageDef",
     "StagePlan",
     "StageRegistry",
@@ -85,24 +90,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class ArgsEnricher(Protocol):
-    """Обогащение args LLM до полного запроса payload'а: op, соединения, лимиты."""
-
-    @abstractmethod
-    def __call__(self, args: Mapping[str, JsonValue], /) -> Mapping[str, JsonValue]:
-        """Полный словарь запроса; валидируется моделью request узла."""
-        ...
-
-
-class OutResolver(Protocol):
-    """Разрешение формата продукта узла из валидированного запроса."""
-
-    @abstractmethod
-    def __call__(self, request: BaseModel, /) -> StreamFormat | None:
-        """Формат tool_payload; None — потока данных наружу нет."""
-        ...
 
 
 class ToolArgsField:
@@ -126,6 +113,18 @@ class StageDef:
     request: type[BaseModel]
     enrich: ArgsEnricher
     out_of: OutResolver | None = None
+
+    @classmethod
+    def of(cls, node: StageNode, profile: SandboxProfile) -> StageDef:
+        """Узел пакета плюс профиль песочницы инструмента-владельца."""
+        return cls(
+            contract=node.contract,
+            profile=profile,
+            entry=node.entry,
+            request=node.request,
+            enrich=node.enrich,
+            out_of=node.out_of,
+        )
 
     def __post_init__(self) -> None:
         if not self.entry:
@@ -371,6 +370,18 @@ class _GroupRun:
 
 
 @dataclass(frozen=True)
+class _Taps:
+    """Дополнительные приёмники каналов по id узла.
+
+    payload — коллекторы вызывающего и журнал (этап 4); stdout — временный
+    tap живого потока панели (этап 3, умирает вместе с ToolStreamTap).
+    """
+
+    payload: Mapping[str, ChannelSink]
+    stdout: Mapping[str, ChannelSink]
+
+
+@dataclass(frozen=True)
 class _MemberBoot:
     """Отложенная регистрация стадии группы: pump.add после спавна внешнего процесса."""
 
@@ -387,6 +398,12 @@ class WorkflowRunner:
     ENCODING: ClassVar[str] = "utf-8"
     FD_HEADROOM: ClassVar[int] = 32
     FAIL_TAIL_CHARS: ClassVar[int] = 2000
+    TAIL_BYTES: ClassVar[int] = 65536
+    """Потолок хвостов stderr и wrap-каналов: текст для диагностики и ошибок."""
+
+    APP_LOGGER: ClassVar[str] = "boba"
+    """Чей уровень наследует payload: настройка живёт в конфиге приложения."""
+
     GROUP_CHANNELS: ClassVar[tuple[Channel, ...]] = (
         Channel.WRAP_ARGS,
         Channel.WRAP_STDOUT,
@@ -404,20 +421,42 @@ class WorkflowRunner:
         self._access = access
         self._path_vars = path_vars
 
+    @staticmethod
+    def cgroup_preexec(cgroup_dir: str | None) -> Callable[[], None] | None:
+        """Вход в cgroup до exec: всё дерево стадии рождается уже внутри leaf'а."""
+        if cgroup_dir is None:
+            return None
+
+        procs_path = os.path.join(cgroup_dir, "cgroup.procs")
+
+        def enter_cgroup() -> None:
+            fd = os.open(procs_path, os.O_WRONLY)
+            os.write(fd, b"0")
+            os.close(fd)
+
+        return enter_cgroup
+
     def run(
         self,
         spec: WorkflowSpec,
         taps: Mapping[str, ChannelSink] | None = None,
+        stdout_taps: Mapping[str, ChannelSink] | None = None,
     ) -> WorkflowOutcome:
         """Полная валидация до старта, одновременный запуск стадий, сбор итога.
 
-        taps — дополнительные приёмники tool_payload по id узла (журнал —
-        этап 4, тестовые перехватчики — сейчас).
+        taps — дополнительные приёмники tool_payload по id узла (коллекторы
+        вызывающего; журнал — этап 4); stdout_taps — временные приёмники
+        tool_stdout (живой поток панели, этап 3).
         """
         cancellation = current_cancellation()
 
         if taps is None:
             taps = {}
+
+        if stdout_taps is None:
+            stdout_taps = {}
+
+        bundle = _Taps(payload=taps, stdout=stdout_taps)
 
         try:
             plans = self._plan(spec)
@@ -428,8 +467,12 @@ class WorkflowRunner:
 
             self._check_fd_budget(spec, plans, groups)
 
-            return self._execute(spec, plans, groups, taps, cancellation)
+            return self._execute(spec, plans, groups, bundle, cancellation)
         except WorkflowError:
+            raise
+        except PayloadFailureError:
+            raise
+        except (CollectorCapacityError, CollectorRowLimitError):
             raise
         except LauncherError as exc:
             raise WorkflowError(f"workflow execution failed: {exc}") from exc
@@ -472,7 +515,7 @@ class WorkflowRunner:
             contract=contract,
             rendered=rendered,
             request_json=request.model_dump_json(),
-            limits=SandboxRunner.limits_of(rendered),
+            limits=rendered.limits(),
             literal=literal,
         )
 
@@ -482,7 +525,8 @@ class WorkflowRunner:
         node: StageSpec,
         definition: StageDef,
         plans: Mapping[str, StagePlan],
-    ) -> dict[str, JsonValue]:
+    ) -> dict[str, Any]:
+        """Обогащённые args: значения не обязаны быть JSON, профиль остаётся моделью."""
         try:
             enriched = dict(definition.enrich(node.args))
         except Exception as exc:
@@ -505,7 +549,7 @@ class WorkflowRunner:
     def _validated_request(
         node: StageSpec,
         definition: StageDef,
-        enriched: Mapping[str, JsonValue],
+        enriched: Mapping[str, Any],
     ) -> BaseModel:
         try:
             return definition.request.model_validate(enriched)
@@ -748,7 +792,11 @@ class WorkflowRunner:
         member: bool,
         edge_fed: bool,
     ) -> tuple[Channel, ...]:
-        """Фактические pipe-пары стадии; у члена группы wrap-каналы держит группа."""
+        """Фактические pipe-пары стадии; у члена группы wrap-каналы держит группа.
+
+        Вход существует при ребре или литерале: узлу без входа канал tool_stdin
+        не создаётся и в env не объявляется.
+        """
         wanted: list[Channel] = [
             Channel.TOOL_ARGS,
             Channel.TOOL_STDOUT,
@@ -761,7 +809,7 @@ class WorkflowRunner:
             wanted.append(Channel.WRAP_STDOUT)
             wanted.append(Channel.WRAP_STDERR)
 
-        if not edge_fed:
+        if not edge_fed and plan.spec.stdin is not None:
             wanted.append(Channel.TOOL_STDIN)
 
         if member or plan.rendered.rw_images:
@@ -777,10 +825,9 @@ class WorkflowRunner:
         spec: WorkflowSpec,
         plans: Mapping[str, StagePlan],
         groups: Sequence[MountGroupPlan],
-        taps: Mapping[str, ChannelSink],
+        taps: _Taps,
         cancellation: TurnCancellation,
     ) -> WorkflowOutcome:
-        started = time.monotonic()
         logger.info(
             "workflow: %d stage(s), %d edge(s), %d mount group(s)",
             len(spec.nodes),
@@ -795,7 +842,6 @@ class WorkflowRunner:
 
         runs: dict[str, _StageRun] = {}
         group_runs: dict[str, _GroupRun] = {}
-        finished = started
 
         with ExitStack() as stack:
             pump = stack.enter_context(ChannelPump())
@@ -835,13 +881,9 @@ class WorkflowRunner:
 
             pump.run(cancellation)
 
-            finished = time.monotonic()
-
         cancellation.raise_if_cancelled()
 
-        return self._assemble(
-            spec, pump, runs, group_runs, pipes_by_src, started, finished
-        )
+        return self._assemble(spec, pump, runs, group_runs, pipes_by_src)
 
     def _open_edges(
         self,
@@ -883,13 +925,13 @@ class WorkflowRunner:
         plan: StagePlan,
         edge: _EdgeLine | None,
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: Mapping[str, ChannelSink],
+        taps: _Taps,
         pump: ChannelPump,
         stack: ExitStack,
         cancellation: TurnCancellation,
         runs: dict[str, _StageRun],
     ) -> None:
-        """Обычная стадия: свой bwrap либо fuse-цепочка, как run_stage."""
+        """Обычная стадия: свой bwrap либо fuse-цепочка одной стадии."""
         stage_id = plan.spec.id
         edge_fed = edge is not None
 
@@ -908,14 +950,9 @@ class WorkflowRunner:
 
         cgroup_dir = self._acquire_cgroup(plan, stack)
 
-        if edge is not None:
-            stdin_fd = edge.read_fd
-        else:
-            stdin_fd = channels.child_fd(Channel.TOOL_STDIN)
-
         proc = self._spawn(
             launch.argv,
-            stdin_fd=stdin_fd,
+            stdin_fd=self._stdin_fd(channels, edge),
             stdout_fd=channels.child_fd(Channel.WRAP_STDOUT),
             stderr_fd=channels.child_fd(Channel.WRAP_STDERR),
             pass_fds=channels.child_fds(),
@@ -938,10 +975,10 @@ class WorkflowRunner:
         run = _StageRun(
             plan=plan,
             result=ResultSink(plan.label, plan.contract.result),
-            stdout_tail=TailSink(SandboxRunner.TAIL_BYTES),
-            stderr_tail=TailSink(SandboxRunner.TAIL_BYTES),
-            wrap_out_tail=TailSink(SandboxRunner.TAIL_BYTES),
-            wrap_err_tail=TailSink(SandboxRunner.TAIL_BYTES),
+            stdout_tail=TailSink(self.TAIL_BYTES),
+            stderr_tail=TailSink(self.TAIL_BYTES),
+            wrap_out_tail=TailSink(self.TAIL_BYTES),
+            wrap_err_tail=TailSink(self.TAIL_BYTES),
             proc=proc,
             group_id="",
         )
@@ -949,7 +986,7 @@ class WorkflowRunner:
 
         sinks = self._stage_sinks(run, pipes_by_src, taps)
 
-        feeds = self._stage_feeds(plan, launch.wrap_feeds, edge_fed=edge_fed)
+        feeds = self._stage_feeds(plan, launch.wrap_feeds, channels)
 
         pump.add(
             stage_id,
@@ -961,13 +998,38 @@ class WorkflowRunner:
             on_timeout=proc.kill,
         )
 
+    @staticmethod
+    def _stdin_fd(channels: SandboxChannels, edge: _EdgeLine | None) -> int:
+        """Вход стадии: read-конец ребра, литеральный канал либо DEVNULL."""
+        if edge is not None:
+            return edge.read_fd
+
+        if channels.has(Channel.TOOL_STDIN):
+            return channels.child_fd(Channel.TOOL_STDIN)
+
+        return subprocess.DEVNULL
+
+    @staticmethod
+    def _member_stdin_fd(
+        channels: SandboxChannels,
+        edge: _EdgeLine | None,
+    ) -> int | None:
+        """То же для стадии группы: None — супервизор подставит DEVNULL."""
+        if edge is not None:
+            return edge.read_fd
+
+        if channels.has(Channel.TOOL_STDIN):
+            return channels.child_fd(Channel.TOOL_STDIN)
+
+        return None
+
     def _launch_group(  # noqa: PLR0913
         self,
         group: MountGroupPlan,
         plans: Mapping[str, StagePlan],
         edge_in: Mapping[str, _EdgeLine],
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: Mapping[str, ChannelSink],
+        taps: _Taps,
         pump: ChannelPump,
         stack: ExitStack,
         cancellation: TurnCancellation,
@@ -1048,8 +1110,8 @@ class WorkflowRunner:
 
         group_run = _GroupRun(
             plan=group,
-            wrap_out_tail=TailSink(SandboxRunner.TAIL_BYTES),
-            wrap_err_tail=TailSink(SandboxRunner.TAIL_BYTES),
+            wrap_out_tail=TailSink(self.TAIL_BYTES),
+            wrap_err_tail=TailSink(self.TAIL_BYTES),
             watch=watch,
             proc=proc,
         )
@@ -1091,7 +1153,7 @@ class WorkflowRunner:
         plan: StagePlan,
         edge: _EdgeLine | None,
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: Mapping[str, ChannelSink],
+        taps: _Taps,
         stack: ExitStack,
         runs: dict[str, _StageRun],
         group: MountGroupPlan,
@@ -1124,15 +1186,10 @@ class WorkflowRunner:
 
         cgroup_dir = self._acquire_cgroup(plan, stack)
 
-        if edge is not None:
-            stdin_fd = edge.read_fd
-        else:
-            stdin_fd = channels.child_fd(Channel.TOOL_STDIN)
-
         entry = StageEntry(
             stage=stage_id,
             command=shlex.join(built.argv),
-            stdin_fd=stdin_fd,
+            stdin_fd=self._member_stdin_fd(channels, edge),
             pass_fds=channels.child_fds(),
             limits=plan.limits,
             cgroup_dir=cgroup_dir,
@@ -1141,8 +1198,8 @@ class WorkflowRunner:
         run = _StageRun(
             plan=plan,
             result=ResultSink(plan.label, plan.contract.result),
-            stdout_tail=TailSink(SandboxRunner.TAIL_BYTES),
-            stderr_tail=TailSink(SandboxRunner.TAIL_BYTES),
+            stdout_tail=TailSink(self.TAIL_BYTES),
+            stderr_tail=TailSink(self.TAIL_BYTES),
             wrap_out_tail=None,
             wrap_err_tail=None,
             proc=None,
@@ -1154,7 +1211,7 @@ class WorkflowRunner:
 
         feeds: dict[Channel, bytes] = {Channel.WRAP_ARGS_INNER: built.wrap_args}
         feeds[Channel.TOOL_ARGS] = plan.request_json.encode(self.ENCODING)
-        if not edge_fed:
+        if channels.has(Channel.TOOL_STDIN):
             feeds[Channel.TOOL_STDIN] = plan.literal
 
         boot = _MemberBoot(
@@ -1327,7 +1384,7 @@ class WorkflowRunner:
         pass_fds: Sequence[int],
         cgroup_dir: str | None,
     ) -> subprocess.Popen[bytes]:
-        preexec = ShellRunner.cgroup_preexec(cgroup_dir)
+        preexec = WorkflowRunner.cgroup_preexec(cgroup_dir)
 
         try:
             return subprocess.Popen(  # noqa: S603
@@ -1351,7 +1408,7 @@ class WorkflowRunner:
         """env профиля плюс уровень логов payload'а из логгера приложения."""
         env = dict(profile.env_set)
 
-        level = logging.getLogger(SandboxRunner.APP_LOGGER).getEffectiveLevel()
+        level = logging.getLogger(WorkflowRunner.APP_LOGGER).getEffectiveLevel()
         env[PayloadLogging.LEVEL_ENV] = logging.getLevelName(level)
 
         return env
@@ -1360,10 +1417,10 @@ class WorkflowRunner:
         self,
         run: _StageRun,
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: Mapping[str, ChannelSink],
+        taps: _Taps,
     ) -> dict[Channel, ChannelSink]:
         sinks: dict[Channel, ChannelSink] = {
-            Channel.TOOL_STDOUT: run.stdout_tail,
+            Channel.TOOL_STDOUT: self._stdout_sink(run, taps),
             Channel.TOOL_STDERR: RelaySink(run.plan.label, raw=run.stderr_tail),
             Channel.TOOL_RESULT: run.result,
         }
@@ -1384,17 +1441,26 @@ class WorkflowRunner:
         return sinks
 
     @staticmethod
+    def _stdout_sink(run: _StageRun, taps: _Taps) -> ChannelSink:
+        """Хвост tool_stdout; временно (этап 3) — ещё и tap живого потока."""
+        tap = taps.stdout.get(run.plan.spec.id)
+        if tap is None:
+            return run.stdout_tail
+
+        return FanoutSink((run.stdout_tail, tap))
+
+    @staticmethod
     def _payload_sink(
         stage_id: str,
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: Mapping[str, ChannelSink],
+        taps: _Taps,
     ) -> ChannelSink | None:
         """Веер рёбер и tap; None — потребителей нет, байты только считаются."""
         outs: list[ChannelSink] = []
         for pipe in pipes_by_src.get(stage_id, ()):
             outs.append(pipe)
 
-        if tap := taps.get(stage_id):
+        if tap := taps.payload.get(stage_id):
             outs.append(tap)
 
         if not outs:
@@ -1409,27 +1475,25 @@ class WorkflowRunner:
         self,
         plan: StagePlan,
         wrap_feeds: Mapping[Channel, bytes],
-        *,
-        edge_fed: bool,
+        channels: SandboxChannels,
     ) -> dict[Channel, bytes]:
+        """Подача входных каналов: профили обвязки, запрос и литеральный вход."""
         feeds: dict[Channel, bytes] = dict(wrap_feeds)
 
         feeds[Channel.TOOL_ARGS] = plan.request_json.encode(self.ENCODING)
 
-        if not edge_fed:
+        if channels.has(Channel.TOOL_STDIN):
             feeds[Channel.TOOL_STDIN] = plan.literal
 
         return feeds
 
-    def _assemble(  # noqa: PLR0913
+    def _assemble(
         self,
         spec: WorkflowSpec,
         pump: ChannelPump,
         runs: Mapping[str, _StageRun],
         group_runs: Mapping[str, _GroupRun],
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        started: float,
-        finished: float,
     ) -> WorkflowOutcome:
         rc_map: dict[str, int] = {}
         reported: dict[str, bool] = {}
@@ -1444,17 +1508,15 @@ class WorkflowRunner:
             spec, pump, group_runs, verdicts, reported, runs, rc_map, pipes_by_src
         )
         if culprit is not None:
-            self._raise_failure(
-                culprit, pump, runs, group_runs, rc_map, reported,
-                started, finished,
-            )
+            self._raise_failure(culprit, pump, runs, group_runs, rc_map, reported)
 
         outcomes: list[StageOutcome] = []
         trailers: dict[str, JsonValue] = {}
         for node in spec.nodes:
             rc = rc_map[node.id]
-            outcomes.append(self._stage_outcome(node.id, rc, pump))
-            trailers[node.id] = self._stage_trailer(node.id, runs[node.id], rc, pump)
+            run = runs[node.id]
+            outcomes.append(self._stage_outcome(node.id, rc, pump, run, group_runs))
+            trailers[node.id] = self._stage_trailer(node.id, run, rc, pump)
 
         return WorkflowOutcome(
             stages=tuple(outcomes),
@@ -1602,8 +1664,6 @@ class WorkflowRunner:
         group_runs: Mapping[str, _GroupRun],
         rc_map: Mapping[str, int],
         reported: Mapping[str, bool],
-        started: float,
-        finished: float,
     ) -> None:
         if culprit in group_runs:
             self._raise_group_failure(culprit, pump, group_runs)
@@ -1612,26 +1672,17 @@ class WorkflowRunner:
         rc = rc_map[culprit]
         timed = pump.timed_out(culprit)
 
-        stderr_text, truncated = self._failure_tails(run, group_runs)
+        stderr_text = self._failure_tails(run, group_runs)
 
-        duration_ms = max(0, int((finished - started) * 1000))
-        facts = RunResult(
-            exit_code=rc,
-            stdout="",
-            stderr=stderr_text,
-            truncated_stdout=False,
-            truncated_stderr=truncated,
-            duration_ms=duration_ms,
-            timed_out=timed,
-        )
-        diagnostic = SandboxDiagnostics.explain(facts, run.plan.rendered)
+        diagnostic = self._diagnostic(run, group_runs, rc=rc, timed_out=timed)
 
         tail = self._tail(stderr_text)
         context = f"stderr={tail!r}"
         if diagnostic:
             context = f"{context}; {diagnostic}"
 
-        logger.warning("workflow stage %s failed (rc=%s); %s", culprit, rc, context)
+        facts = FailureFacts(exit_code=rc, timed_out=timed, stderr_tail=stderr_text)
+        self._log_failure(culprit, facts, pump.duration_ms(culprit), diagnostic)
 
         if timed:
             raise WorkflowError(f"workflow stage {culprit} timed out; {context}")
@@ -1639,12 +1690,10 @@ class WorkflowRunner:
         # конверт ошибки объясняет отказ сам: он важнее ненулевого кода возврата
         failure = self._declared_failure(run.result, rc)
         if failure is not None:
-            message = (
-                f"workflow stage {culprit} failed: {failure.kind}: {failure.message}"
-            )
+            message = failure.message
             if diagnostic:
                 message = f"{message}; {diagnostic}"
-            raise WorkflowError(message)
+            raise PayloadFailureError(failure.kind, message)
 
         if run.proc is None and not reported[culprit]:
             msg = (
@@ -1653,9 +1702,29 @@ class WorkflowRunner:
             )
             raise WorkflowError(msg)
 
+        wrap_tail = self._joined(self._wrap_tails(run, group_runs))
+        if self._mount_failed(rc, wrap_tail):
+            msg = (
+                f"workflow stage {culprit}: image not mounted; "
+                f"wrap_stderr={self._tail(wrap_tail)!r}"
+            )
+            raise WorkflowError(msg)
+
         raise WorkflowError(
             f"workflow stage {culprit} exited with code {rc}; {context}"
         )
+
+    @staticmethod
+    def _mount_failed(rc: int, wrap_tail: str) -> bool:
+        """Сбой монтирования: код лаунчера плюс его собственный канал ошибок.
+
+        В канальном режиме маркеров в stderr нет — wrap_stderr принадлежит
+        обвязке целиком, поэтому непустой хвост и есть её жалоба.
+        """
+        if rc != LauncherExit.MOUNT_ERROR:
+            return False
+
+        return bool(wrap_tail)
 
     def _raise_group_failure(
         self,
@@ -1674,6 +1743,11 @@ class WorkflowRunner:
                 f"workflow group {group_id} timed out; wrap_stderr={tail!r}"
             )
 
+        if self._mount_failed(rc, tail):
+            raise WorkflowError(
+                f"workflow group {group_id}: image not mounted; wrap_stderr={tail!r}"
+            )
+
         raise WorkflowError(
             f"workflow group {group_id} wrapper failed with code {rc}; "
             f"wrap_stderr={tail!r}"
@@ -1683,9 +1757,21 @@ class WorkflowRunner:
         self,
         run: _StageRun,
         group_runs: Mapping[str, _GroupRun],
-    ) -> tuple[str, bool]:
+    ) -> str:
         """Хвосты stderr стадии и её wrap-каналов (у члена группы — группы)."""
         tails: list[TailSink] = [run.stderr_tail]
+
+        tails.extend(self._wrap_tails(run, group_runs))
+
+        return self._joined(tails)
+
+    @staticmethod
+    def _wrap_tails(
+        run: _StageRun,
+        group_runs: Mapping[str, _GroupRun],
+    ) -> list[TailSink]:
+        """Хвосты wrap_stderr стадии и её группы: там говорит только обвязка."""
+        tails: list[TailSink] = []
 
         if run.wrap_err_tail is not None:
             tails.append(run.wrap_err_tail)
@@ -1693,16 +1779,17 @@ class WorkflowRunner:
         if run.group_id and run.group_id in group_runs:
             tails.append(group_runs[run.group_id].wrap_err_tail)
 
+        return tails
+
+    @staticmethod
+    def _joined(tails: Sequence[TailSink]) -> str:
         parts: list[str] = []
-        truncated = False
         for tail in tails:
             text = tail.text().strip()
             if text:
                 parts.append(text)
-            if tail.truncated:
-                truncated = True
 
-        return "\n".join(parts), truncated
+        return "\n".join(parts)
 
     @staticmethod
     def _declared_failure(
@@ -1721,18 +1808,49 @@ class WorkflowRunner:
             # процесс упал посреди конверта: причину объяснят rc и stderr
             return None
 
-    @staticmethod
-    def _stage_outcome(stage_id: str, rc: int, pump: ChannelPump) -> StageOutcome:
+    def _stage_outcome(
+        self,
+        stage_id: str,
+        rc: int,
+        pump: ChannelPump,
+        run: _StageRun,
+        group_runs: Mapping[str, _GroupRun],
+    ) -> StageOutcome:
         killed = pump.kill_cause(stage_id) is KillCause.CASCADE
+        timed = pump.timed_out(stage_id)
+
+        diagnostic = ""
+        if not killed:
+            diagnostic = self._diagnostic(run, group_runs, rc=rc, timed_out=timed)
 
         return StageOutcome(
             stage=stage_id,
             exit_code=rc,
             duration_ms=pump.duration_ms(stage_id),
-            timed_out=pump.timed_out(stage_id),
+            timed_out=timed,
             killed_by_runner=killed,
-            diagnostic="",
+            diagnostic=diagnostic,
         )
+
+    def _diagnostic(
+        self,
+        run: _StageRun,
+        group_runs: Mapping[str, _GroupRun],
+        *,
+        rc: int,
+        timed_out: bool,
+    ) -> str:
+        """Объяснение лимитов сбойной стадии; убитой каскадом не применяется."""
+        if rc == 0 and not timed_out:
+            return ""
+
+        facts = FailureFacts(
+            exit_code=rc,
+            timed_out=timed_out,
+            stderr_tail=self._failure_tails(run, group_runs),
+        )
+
+        return SandboxDiagnostics.explain(facts, run.plan.rendered)
 
     def _stage_trailer(
         self,
@@ -1747,14 +1865,18 @@ class WorkflowRunner:
 
         try:
             envelope = run.result.success()
-            run.result.data()
         except LauncherError as exc:
             raise WorkflowError(str(exc)) from exc
 
-        # вердикт ok при rc != 0 — только SIGPIPE-исход: байты в буферах pipe
-        # потеряны законно, сверка не выполняется
+        # вердикт ok при rc != 0 — только SIGPIPE-исход: работа оборвана на
+        # середине, квитанция вырожденная, поэтому ни схема, ни байты не сверяются
         if rc != 0:
             return envelope.data
+
+        try:
+            run.result.data()
+        except LauncherError as exc:
+            raise WorkflowError(str(exc)) from exc
 
         moved = pump.bytes_of(stage_id, Channel.TOOL_PAYLOAD)
         if envelope.bytes_out != moved:
@@ -1765,6 +1887,31 @@ class WorkflowRunner:
             raise WorkflowError(msg)
 
         return envelope.data
+
+    @classmethod
+    def _log_failure(
+        cls,
+        stage: str,
+        facts: FailureFacts,
+        duration_ms: int,
+        diagnostic: str,
+    ) -> None:
+        """Причина падения в лог: без неё код возврата не говорит ничего."""
+        if facts.timed_out:
+            reason = f"timed out after {duration_ms}ms"
+        else:
+            reason = f"rc={facts.exit_code}"
+
+        tail = cls._tail(facts.stderr_tail)
+        if not tail:
+            tail = "<no output>"
+
+        if diagnostic:
+            tail = f"{tail}; {diagnostic}"
+
+        logger.warning(
+            "workflow stage %s: failed (%s); output tail: %s", stage, reason, tail
+        )
 
     @classmethod
     def _tail(cls, text: str) -> str:

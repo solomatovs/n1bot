@@ -19,12 +19,9 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.launcher import ChunkSink
-
 __all__ = [
     "StreamSink",
     "StreamWindow",
-    "TeeChunkSink",
     "ToolStreamBuffer",
     "ToolStreamTap",
 ]
@@ -144,16 +141,3 @@ class ToolStreamTap:
     @classmethod
     def get(cls) -> StreamSink | None:
         return cls._SINK.get()
-
-
-class TeeChunkSink(ChunkSink):
-    """ChunkSink-обёртка: кадр уходит и потребителю, и в живой вывод."""
-
-    def __init__(self, inner: ChunkSink, sink: StreamSink) -> None:
-        self._inner = inner
-        self._sink = sink
-
-    def write(self, chunk: str) -> None:
-        # сперва живой вывод: пользователь видит и кадр, упершийся в лимит
-        self._sink.feed_text(chunk)
-        self._inner.write(chunk)

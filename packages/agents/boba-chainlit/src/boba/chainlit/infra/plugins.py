@@ -1,11 +1,20 @@
-"""Реестр tool-плагинов: секция [tool.<name>] -> langchain-инструменты."""
+"""Реестр tool-плагинов: секция [tool.<name>] -> langchain-инструменты и узлы стадий.
+
+Плагин отдаёт два состава: фасады для LLM и узлы реестра стадий с профилем
+песочницы своей секции. Реестр стадий один на приложение, поэтому исполнитель
+(SandboxCaller) тоже один: профиль запуска живёт в узле, а не в фабрике.
+
+Ошибки: RuntimeError — сборка нарушила собственный инвариант (узел плагина
+отсутствует, права проверены до сборки карты); ошибки разбора конфига идут из
+boba.settings.
+"""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
@@ -25,12 +34,14 @@ from boba.chainlit.infra.session import (
 )
 from boba.chainlit.rendering.stream_view import ToolStreams
 from boba.sandbox import SandboxCaller, SandboxToolConfig, has_bwrap
-from boba.sandbox.workflow import StageRegistry, WorkflowRunner
+from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.settings import bind
-from boba.tool.ch import ChExecutorConfig, build_ch_tools
-from boba.tool.chart import build_chart_tools
-from boba.tool.doc import DocToolsConfig, build_doc_tools
+from boba.tool.ch import ChExecutorConfig, ChStages, build_ch_tools
+from boba.tool.chart import ChartCaller, build_chart_tools
+from boba.tool.doc import DocEngine, DocToolsConfig, build_doc_tools
 from boba.tool.kb import (
+    KbStages,
     PostgresKnowledgeBaseConfig,
     build_kb_tools,
 )
@@ -39,17 +50,29 @@ from boba.tool.kb.confluence import (
     build_confluence_tools,
 )
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
+from boba.tool.kb.confluence.ingest_stages import ConfluenceIngestStages
 from boba.tool.kb.confluence.ingest_tools import (
     build_confluence_ingest_tools,
 )
-from boba.tool.pg import PgExecutorConfig, build_pg_tools
-from boba.tool.shell import build_bash_tool
-from boba.tool.web import WebGrepConfig, build_web_tools
+from boba.tool.kb.confluence.stages import ConfluenceStages
+from boba.tool.kb.html.stages import HtmlStages
+from boba.tool.pg import PgExecutorConfig, PgStages, build_pg_tools
+from boba.tool.shell import BashStage, build_bash_tool
+from boba.tool.web import WebGrepConfig, WebStages, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
-from boba.toolkit.workflow import AccessPredicate
+from boba.toolkit.workflow import StageNode
 
-__all__ = ["PluginMeta", "ToolPlugin", "ToolRegistry", "load_tools"]
+__all__ = [
+    "PluginBuild",
+    "PluginMeta",
+    "ToolPlugin",
+    "ToolPlugins",
+    "ToolRegistry",
+    "ToolSection",
+    "ToolSections",
+    "load_tools",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +80,30 @@ ConfigT = Any
 
 
 @dataclass(frozen=True)
+class PluginBuild:
+    """Вход сборки инструментов плагина: конфиг секции, порт запуска и узлы."""
+
+    cfg: ConfigT
+    launchers: LauncherFactory
+    nodes: Mapping[str, StageDef]
+
+    def profile_of(self, node: str) -> SandboxProfile:
+        """Профиль песочницы узла плагина; чужой узел — нарушение инварианта."""
+        definition = self.nodes.get(node)
+        if definition is None:
+            msg = f"plugin build has no stage node {node!r}"
+            raise RuntimeError(msg)
+
+        return definition.profile
+
+
+@dataclass(frozen=True)
 class ToolPlugin:
-    """Один tool-плагин: как собрать инструменты из секции [tool.<name>]."""
+    """Один tool-плагин: как собрать инструменты и узлы секции [tool.<name>]."""
 
     section: str
-    build: Callable[[Any, LauncherFactory], list[BaseTool]]
+    build: Callable[[PluginBuild], list[BaseTool]]
+    nodes: Callable[[ConfigT], Mapping[str, StageNode]]
     config_model: type[BaseModel] | None = None
     sandboxed: bool = True
     """False — инструменты плагина ничего не запускают, секции sandbox у него нет."""
@@ -80,127 +122,146 @@ class PluginMeta(BaseModel):
         return self.tools.get(tool_name) or self.roles
 
 
-def _build_sandbox_tools(
-    cfg: None,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _no_nodes(cfg: ConfigT) -> Mapping[str, StageNode]:
+    """Плагин узлов реестра стадий не даёт: его инструменты вне графа."""
+    return {}
+
+
+def _bash_nodes(cfg: None) -> Mapping[str, StageNode]:
+    return BashStage.stages()
+
+
+def _doc_nodes(cfg: DocToolsConfig) -> Mapping[str, StageNode]:
+    return DocEngine.stages(cfg)
+
+
+def _chart_nodes(cfg: None) -> Mapping[str, StageNode]:
+    return ChartCaller.stages()
+
+
+def _web_nodes(cfg: WebGrepConfig) -> Mapping[str, StageNode]:
+    return WebStages(cfg).stages()
+
+
+def _pg_nodes(cfg: PgExecutorConfig) -> Mapping[str, StageNode]:
+    return PgStages.of(cfg)
+
+
+def _ch_nodes(cfg: ChExecutorConfig) -> Mapping[str, StageNode]:
+    return ChStages.of(cfg)
+
+
+def _kb_nodes(cfg: PostgresKnowledgeBaseConfig) -> Mapping[str, StageNode]:
+    return KbStages.of(cfg)
+
+
+def _confluence_nodes(cfg: ConfluenceToolsConfig) -> Mapping[str, StageNode]:
+    """Чтение Confluence плюс узлы разбора разметки: профиль у них общий."""
+    nodes: dict[str, StageNode] = {}
+    nodes.update(ConfluenceStages.of(cfg))
+    nodes.update(HtmlStages.of())
+
+    return nodes
+
+
+def _ingest_nodes(cfg: ConfluenceIngestConfig) -> Mapping[str, StageNode]:
+    return ConfluenceIngestStages.of(cfg)
+
+
+def _build_sandbox_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.bash] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "bash was not registered",
         )
         return []
-    return [build_bash_tool(launchers)]
+
+    profile = build.profile_of(BashStage.NAME)
+
+    return [build_bash_tool(build.launchers, profile.max_output_bytes)]
 
 
-def _build_doc_tools(
-    cfg: DocToolsConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_doc_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.doc] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "doc tools were not registered",
         )
         return []
-    return build_doc_tools(cfg, launchers)
+    return build_doc_tools(build.cfg, build.launchers)
 
 
-def _build_ingest_tools(
-    cfg: ConfluenceIngestConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_ingest_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.ingest] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "confluence ingest tools were not registered",
         )
         return []
-    return build_confluence_ingest_tools(cfg, launchers)
+    return build_confluence_ingest_tools(build.cfg, build.launchers)
 
 
-def _build_confluence_tools(
-    cfg: ConfluenceToolsConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_confluence_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.confluence] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "confluence tools were not registered",
         )
         return []
-    return build_confluence_tools(cfg, launchers)
+    return build_confluence_tools(build.cfg, build.launchers)
 
 
-def _build_web_tools(
-    cfg: WebGrepConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_web_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.web] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "web tools were not registered",
         )
         return []
-    return build_web_tools(cfg, launchers)
+    return build_web_tools(build.cfg, build.launchers)
 
 
-def _build_chart_tools(
-    cfg: None,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_chart_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.chart] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "chart tools were not registered",
         )
         return []
-    return build_chart_tools(launchers)
+    return build_chart_tools(build.launchers)
 
 
-def _build_pg_tools(
-    cfg: PgExecutorConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_pg_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.pg] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "pg tools were not registered",
         )
         return []
-    return build_pg_tools(cfg, launchers)
+    return build_pg_tools(build.cfg, build.launchers)
 
 
-def _build_ch_tools(
-    cfg: ChExecutorConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_ch_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.ch] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "clickhouse tools were not registered",
         )
         return []
-    return build_ch_tools(cfg, launchers)
+    return build_ch_tools(build.cfg, build.launchers)
 
 
-def _build_kb_tools(
-    cfg: PostgresKnowledgeBaseConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_kb_tools(build: PluginBuild) -> list[BaseTool]:
     if not has_bwrap():
         logger.warning(
             "[tool.kb] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "kb tools were not registered",
         )
         return []
-    return build_kb_tools(cfg, launchers)
+    return build_kb_tools(build.cfg, build.launchers)
 
 
-def _build_send_file_tools(
-    cfg: None,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_send_file_tools(build: PluginBuild) -> list[BaseTool]:
     from boba.chainlit.agent.tools.send_file import (  # noqa: PLC0415
         build_send_file_tool,
     )
@@ -208,73 +269,28 @@ def _build_send_file_tools(
     return [build_send_file_tool()]
 
 
-def _build_diagram_tools(
-    cfg: DiagramToolConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_diagram_tools(build: PluginBuild) -> list[BaseTool]:
     from boba.chainlit.agent.tools.diagram import (  # noqa: PLC0415
         build_diagram_tools,
     )
 
-    return build_diagram_tools(cfg)
+    return build_diagram_tools(build.cfg)
 
 
-def _build_canvas_tools(
-    cfg: CanvasToolConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_canvas_tools(build: PluginBuild) -> list[BaseTool]:
     from boba.chainlit.agent.tools.canvas import (  # noqa: PLC0415
         build_canvas_tools,
     )
 
-    return build_canvas_tools(cfg)
+    return build_canvas_tools(build.cfg)
 
 
-def _build_stream_logs_tools(
-    cfg: None,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
+def _build_stream_logs_tools(build: PluginBuild) -> list[BaseTool]:
     from boba.chainlit.agent.tools.stream_logs import (  # noqa: PLC0415
         build_stream_logs_tools,
     )
 
-    return build_stream_logs_tools(cfg)
-
-
-def _load_workflow_tools(
-    raw_config: DictConfig,
-    tools: list[BaseTool],
-    roles_by_tool: dict[str, list[str]],
-    node_access: AccessPredicate,
-) -> None:
-    """Инструмент workflow: граф стадий; боевой реестр узлов пуст до этапа 3."""
-    from boba.chainlit.agent.tools.workflow import (  # noqa: PLC0415
-        build_workflow_tool,
-    )
-
-    meta = bind(raw_config, "tool.workflow", PluginMeta)
-    if not meta.enable:
-        return
-
-    if not has_bwrap():
-        logger.warning(
-            "[tool.workflow] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "workflow was not registered",
-        )
-        return
-
-    runner = WorkflowRunner(
-        registry=StageRegistry.empty(),
-        access=node_access,
-        path_vars=_sandbox_path_vars,
-    )
-
-    built = build_workflow_tool(runner)
-    if built.name not in meta.tools:
-        return
-
-    roles_by_tool[built.name] = meta.roles_of(built.name)
-    tools.append(built)
+    return build_stream_logs_tools(build.cfg)
 
 
 def _sandbox_path_vars() -> dict[str, str]:
@@ -283,95 +299,213 @@ def _sandbox_path_vars() -> dict[str, str]:
     return {name: str(value) for name, value in values.items() if value}
 
 
-def _launchers(sandbox: SandboxToolConfig) -> LauncherFactory:
-    """Фабрика исполнителей на профиле инструмента: окружение выбирает приложение."""
-    profile = sandbox.effective()
-
-    def launcher(tool: str) -> ToolLauncher:
-        return SandboxCaller(tool, profile, _sandbox_path_vars)
-
-    return launcher
-
-
 def _no_launchers(tool: str) -> ToolLauncher:
     """Плагин объявлен без песочницы: запускать в ней нечего."""
     msg = f"tool {tool!r} is registered without a sandbox profile"
     raise RuntimeError(msg)
 
 
-_PLUGINS: dict[str, ToolPlugin] = {
-    "bash": ToolPlugin(
-        section="bash",
-        build=_build_sandbox_tools,
-    ),
-    "doc": ToolPlugin(
-        section="doc",
-        config_model=DocToolsConfig,
-        build=_build_doc_tools,
-    ),
-    "chart": ToolPlugin(
-        section="chart",
-        build=_build_chart_tools,
-    ),
-    "send_file": ToolPlugin(
-        section="send_file",
-        build=_build_send_file_tools,
-        sandboxed=False,
-    ),
-    "diagram": ToolPlugin(
-        section="diagram",
-        config_model=DiagramToolConfig,
-        build=_build_diagram_tools,
-        sandboxed=False,
-    ),
-    "canvas": ToolPlugin(
-        section="canvas",
-        config_model=CanvasToolConfig,
-        build=_build_canvas_tools,
-        sandboxed=False,
-    ),
-    "stream_logs": ToolPlugin(
-        section="stream_logs",
-        build=_build_stream_logs_tools,
-        sandboxed=False,
-    ),
-    "pg": ToolPlugin(
-        section="pg",
-        config_model=PgExecutorConfig,
-        build=_build_pg_tools,
-    ),
-    "ch": ToolPlugin(
-        section="ch",
-        config_model=ChExecutorConfig,
-        build=_build_ch_tools,
-    ),
-    "kb": ToolPlugin(
-        section="kb",
-        config_model=PostgresKnowledgeBaseConfig,
-        build=_build_kb_tools,
-    ),
-    "confluence": ToolPlugin(
-        section="confluence",
-        config_model=ConfluenceToolsConfig,
-        build=_build_confluence_tools,
-    ),
-    "ingest": ToolPlugin(
-        section="ingest",
-        config_model=ConfluenceIngestConfig,
-        build=_build_ingest_tools,
-    ),
-    "web": ToolPlugin(
-        section="web",
-        config_model=WebGrepConfig,
-        build=_build_web_tools,
-    ),
-}
+class SharedLauncher:
+    """Фабрика порта запуска: исполнитель один, профиль стадии живёт в её узле."""
+
+    def __init__(self, caller: SandboxCaller) -> None:
+        self._caller = caller
+
+    def __call__(self, tool: str, /) -> ToolLauncher:
+        return self._caller
+
+
+class ToolPlugins:
+    """Состав плагинов приложения: секция [tool.<name>] -> описание плагина."""
+
+    ALL: ClassVar[Mapping[str, ToolPlugin]] = {
+        "bash": ToolPlugin(
+            section="bash",
+            build=_build_sandbox_tools,
+            nodes=_bash_nodes,
+        ),
+        "doc": ToolPlugin(
+            section="doc",
+            config_model=DocToolsConfig,
+            build=_build_doc_tools,
+            nodes=_doc_nodes,
+        ),
+        "chart": ToolPlugin(
+            section="chart",
+            build=_build_chart_tools,
+            nodes=_chart_nodes,
+        ),
+        "send_file": ToolPlugin(
+            section="send_file",
+            build=_build_send_file_tools,
+            nodes=_no_nodes,
+            sandboxed=False,
+        ),
+        "diagram": ToolPlugin(
+            section="diagram",
+            config_model=DiagramToolConfig,
+            build=_build_diagram_tools,
+            nodes=_no_nodes,
+            sandboxed=False,
+        ),
+        "canvas": ToolPlugin(
+            section="canvas",
+            config_model=CanvasToolConfig,
+            build=_build_canvas_tools,
+            nodes=_no_nodes,
+            sandboxed=False,
+        ),
+        "stream_logs": ToolPlugin(
+            section="stream_logs",
+            build=_build_stream_logs_tools,
+            nodes=_no_nodes,
+            sandboxed=False,
+        ),
+        "pg": ToolPlugin(
+            section="pg",
+            config_model=PgExecutorConfig,
+            build=_build_pg_tools,
+            nodes=_pg_nodes,
+        ),
+        "ch": ToolPlugin(
+            section="ch",
+            config_model=ChExecutorConfig,
+            build=_build_ch_tools,
+            nodes=_ch_nodes,
+        ),
+        "kb": ToolPlugin(
+            section="kb",
+            config_model=PostgresKnowledgeBaseConfig,
+            build=_build_kb_tools,
+            nodes=_kb_nodes,
+        ),
+        "confluence": ToolPlugin(
+            section="confluence",
+            config_model=ConfluenceToolsConfig,
+            build=_build_confluence_tools,
+            nodes=_confluence_nodes,
+        ),
+        "ingest": ToolPlugin(
+            section="ingest",
+            config_model=ConfluenceIngestConfig,
+            build=_build_ingest_tools,
+            nodes=_ingest_nodes,
+        ),
+        "web": ToolPlugin(
+            section="web",
+            config_model=WebGrepConfig,
+            build=_build_web_tools,
+            nodes=_web_nodes,
+        ),
+    }
+
+    @classmethod
+    def of(cls, section: str) -> ToolPlugin:
+        """Плагин секции; неизвестное имя — нарушение инварианта сборки."""
+        plugin = cls.ALL.get(section)
+        if plugin is None:
+            msg = f"unknown tool plugin section: {section}"
+            raise RuntimeError(msg)
+
+        return plugin
+
+
+@dataclass(frozen=True)
+class ToolSection:
+    """Разобранная секция [tool.<name>]: мета, конфиг и узлы стадий с профилем."""
+
+    name: str
+    plugin: ToolPlugin
+    meta: PluginMeta
+    cfg: ConfigT
+    nodes: Mapping[str, StageDef]
+
+    def launchers(self, shared: LauncherFactory) -> LauncherFactory:
+        """Плагину без песочницы порт запуска не положен."""
+        if not self.plugin.sandboxed:
+            return _no_launchers
+
+        return shared
+
+    def node_roles(self) -> dict[str, list[str]]:
+        """Права узлов секции: объявленные в конфиге рядом с фасадами.
+
+        Узел без записи в tools = {…} прав не получает — deny by default.
+        """
+        roles: dict[str, list[str]] = {}
+        for node in self.nodes:
+            if node not in self.meta.tools:
+                continue
+            roles[node] = self.meta.roles_of(node)
+
+        return roles
+
+
+class ToolSections:
+    """Разбор включённых секций [tool.*] и сборка из них реестра стадий."""
+
+    @classmethod
+    def enabled(
+        cls,
+        raw_config: DictConfig,
+        plugins: Mapping[str, ToolPlugin],
+    ) -> list[ToolSection]:
+        """Секции с enable = true: конфиг плагина и его узлы с профилем секции."""
+        sections: list[ToolSection] = []
+        for name, plugin in plugins.items():
+            meta = bind(raw_config, f"tool.{name}", PluginMeta)
+            if not meta.enable:
+                continue
+
+            cfg: ConfigT = None
+            if plugin.config_model is not None:
+                cfg = bind(raw_config, f"tool.{name}", plugin.config_model)
+
+            sections.append(
+                ToolSection(
+                    name=name,
+                    plugin=plugin,
+                    meta=meta,
+                    cfg=cfg,
+                    nodes=cls._nodes(raw_config, name, plugin, cfg),
+                )
+            )
+
+        return sections
+
+    @staticmethod
+    def registry(sections: Iterable[ToolSection]) -> StageRegistry:
+        """Боевой реестр стадий: узлы всех включённых секций в одном пространстве."""
+        defs: dict[str, StageDef] = {}
+        for section in sections:
+            defs.update(section.nodes)
+
+        return StageRegistry(defs)
+
+    @staticmethod
+    def _nodes(
+        raw_config: DictConfig,
+        name: str,
+        plugin: ToolPlugin,
+        cfg: ConfigT,
+    ) -> dict[str, StageDef]:
+        if not plugin.sandboxed:
+            return {}
+
+        sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
+        profile = sandbox.effective()
+
+        defs: dict[str, StageDef] = {}
+        for node_name, node in plugin.nodes(cfg).items():
+            defs[node_name] = StageDef.of(node, profile)
+
+        return defs
 
 
 class NodeAccess:
     """Право на узел workflow: карта прав подставляется после сборки реестра.
 
-    Предикат уезжает в WorkflowRunner до того, как ToolAccess построен;
+    Предикат уезжает в исполнитель до того, как ToolAccess построен;
     вызовы случаются только при исполнении графа — к этому моменту bind
     обязан состояться, иначе проверка падает явной ошибкой.
     """
@@ -421,36 +555,78 @@ def _mark_streamable(plugin: ToolPlugin, built: list[BaseTool]) -> None:
     ToolStreams.mark_streamable(streamable)
 
 
-def load_tools(raw_config: DictConfig) -> ToolRegistry:
-    tools: list[BaseTool] = []
-    roles_by_tool: dict[str, list[str]] = {}
-    for name, plugin in _PLUGINS.items():
-        meta = bind(raw_config, f"tool.{name}", PluginMeta)
-        if not meta.enable:
+def _build_section(section: ToolSection, shared: LauncherFactory) -> list[BaseTool]:
+    """Инструменты секции, оставленные allowlist'ом tools = {…}."""
+    build = PluginBuild(
+        cfg=section.cfg,
+        launchers=section.launchers(shared),
+        nodes=section.nodes,
+    )
+
+    built: list[BaseTool] = []
+    for tool in section.plugin.build(build):
+        if tool.name not in section.meta.tools:
             continue
-        cfg: ConfigT = None
-        if plugin.config_model is not None:
-            cfg = bind(raw_config, f"tool.{name}", plugin.config_model)
+        built.append(tool)
 
-        launchers: LauncherFactory = _no_launchers
-        if plugin.sandboxed:
-            sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
-            launchers = _launchers(sandbox)
+    return built
 
-        built: list[BaseTool] = []
-        for tool in plugin.build(cfg, launchers):
-            if tool.name not in meta.tools:
-                continue
-            built.append(tool)
 
-        for tool in built:
-            roles_by_tool[tool.name] = meta.roles_of(tool.name)
-        tools.extend(built)
+def _load_workflow_tools(
+    raw_config: DictConfig,
+    tools: list[BaseTool],
+    roles_by_tool: dict[str, list[str]],
+    launcher: ToolLauncher,
+) -> None:
+    """Инструмент workflow: граф стадий поверх боевого реестра узлов."""
+    from boba.chainlit.agent.tools.workflow import (  # noqa: PLC0415
+        build_workflow_tool,
+    )
 
-        _mark_streamable(plugin, built)
+    meta = bind(raw_config, "tool.workflow", PluginMeta)
+    if not meta.enable:
+        return
+
+    if not has_bwrap():
+        logger.warning(
+            "[tool.workflow] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "workflow was not registered",
+        )
+        return
+
+    built = build_workflow_tool(launcher)
+    if built.name not in meta.tools:
+        return
+
+    roles_by_tool[built.name] = meta.roles_of(built.name)
+    tools.append(built)
+
+
+def load_tools(raw_config: DictConfig) -> ToolRegistry:
+    sections = ToolSections.enabled(raw_config, ToolPlugins.ALL)
+
+    registry = ToolSections.registry(sections)
+    logger.info("stage registry: %s", ", ".join(sorted(registry.names())) or "empty")
 
     node_access = NodeAccess()
-    _load_workflow_tools(raw_config, tools, roles_by_tool, node_access)
+    caller = SandboxCaller(registry, node_access, _sandbox_path_vars)
+    shared = SharedLauncher(caller)
+
+    tools: list[BaseTool] = []
+    roles_by_tool: dict[str, list[str]] = {}
+    for section in sections:
+        built = _build_section(section, shared)
+
+        for tool in built:
+            roles_by_tool[tool.name] = section.meta.roles_of(tool.name)
+
+        roles_by_tool.update(section.node_roles())
+
+        tools.extend(built)
+
+        _mark_streamable(section.plugin, built)
+
+    _load_workflow_tools(raw_config, tools, roles_by_tool, caller)
 
     access = ToolAccess(roles_by_tool)
     node_access.bind(access)

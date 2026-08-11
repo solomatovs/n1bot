@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 import pytest
+from conftest import RecordingLauncher
+from pydantic import SecretStr
 
 from boba.sandbox import SandboxToolConfig
 from boba.tool.kb import (
@@ -15,18 +17,30 @@ from boba.tool.kb.confluence import (
     ConfluenceToolsConfig,
     build_confluence_tools,
 )
+from boba.tool.kb.confluence.protocol import (
+    ConfluenceGrepRequest,
+    ConfluenceNode,
+    ConfluencePageRequest,
+    ConfluencePageTrailer,
+    ConfluenceSpacesRequest,
+)
+from boba.tool.kb.confluence.stages import ConfluenceStages
+from boba.tool.kb.protocol import KbNode, KbSearchRequest
+from boba.tool.kb.stages import KbStages
 from boba.tool.pg import (
     PgExecutorConfig,
     build_pg_tools,
 )
 from boba.tool.pg import executor as pg_executor
+from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import (
     ErrorResult,
     TableResult,
     ToolArtifact,
 )
 from boba.toolkit.sql import SqlQueryError
-from boba.transport.http import HttpProfile
+from boba.toolkit.workflow import EmptyTrailer
+from boba.transport.http import BearerAuth, HttpProfile
 
 
 @pytest.fixture(autouse=True)
@@ -34,24 +48,42 @@ def chainlit_context() -> None:
     pass
 
 
-class _NoLauncher:
-    """Исполнитель-заглушка: тесты проверяют обвязку, песочница им не нужна."""
+class _DeadLauncher:
+    """Исполнитель, у которого запуск всегда срывается: проверяется обвязка."""
 
-    def call_text(self, command: str, stdin: str) -> Any:
-        raise AssertionError("песочница не должна вызываться")
-
-    def call_json(self, entry: Any, request: Any, schema: Any) -> Any:
-        raise AssertionError("песочница не должна вызываться")
+    def call(self, spec: Any, sinks: Any = None) -> Any:
+        raise LauncherError("песочница недоступна")
 
 
 def _no_launcher(tool: str) -> Any:
-    return _NoLauncher()
+    return _DeadLauncher()
 
 
 def pg_config() -> PgExecutorConfig:
     return PgExecutorConfig.model_validate(
         {
             "profiles": {"main": {"host": "h", "dbname": "d", "user": "u"}},
+            "sandbox": _SANDBOX,
+        }
+    )
+
+
+def kb_secret_config() -> PostgresKnowledgeBaseConfig:
+    """Тот же конфиг, но с паролем: проверка раскрытия секретов."""
+    return PostgresKnowledgeBaseConfig.model_validate(
+        {
+            "connection": {
+                "host": "h",
+                "dbname": "d",
+                "user": "u",
+                "password": "s3cret",
+            },
+            "tables": {"pg_schema": "kb"},
+            "embedding": {
+                "model": "intfloat/multilingual-e5-small",
+                "dim": 384,
+                "batch_size": 8,
+            },
             "sandbox": _SANDBOX,
         }
     )
@@ -136,6 +168,46 @@ class TestPgTools:
 
 
 class TestKbTools:
+    @staticmethod
+    def _launcher(cfg: PostgresKnowledgeBaseConfig) -> RecordingLauncher:
+        nodes = KbStages.of(cfg)
+        trailers = {
+            KbNode.VECTOR.value: EmptyTrailer(),
+            KbNode.FTS.value: EmptyTrailer(),
+        }
+        return RecordingLauncher(nodes, trailers)
+
+    def test_search_args_become_a_full_request(self) -> None:
+        """LLM даёт запрос и лимиты, обогатитель — соединение, таблицы и модель."""
+        cfg = kb_config()
+        launcher = self._launcher(cfg)
+        tool = build_kb_tools(cfg, lambda _tool: launcher)[0]
+
+        invoke(tool, {"query": "как считается витрина", "top_k": 3})
+
+        request = launcher.requests[0]
+        assert isinstance(request, KbSearchRequest)
+        assert request.op is KbNode.VECTOR
+        assert request.query == "как считается витрина"
+        assert request.top_k == 3
+        assert list(request.collections) == ["kb_confluence"]
+        assert request.chunks_table == "kb_chunks"
+        assert request.connection.dbname == "d"
+        assert request.embedding.model == "intfloat/multilingual-e5-small"
+
+    def test_secrets_are_revealed_only_in_the_request_json(self) -> None:
+        """Пароль соединения виден только в JSON запроса, не в дампе модели."""
+        cfg = kb_secret_config()
+        launcher = self._launcher(cfg)
+        tool = build_kb_tools(cfg, lambda _tool: launcher)[0]
+
+        invoke(tool, {"query": "тест"})
+
+        request = launcher.requests[0]
+        assert isinstance(request, KbSearchRequest)
+        assert "s3cret" not in str(request.model_dump())
+        assert "s3cret" in request.model_dump_json()
+
     def test_all_four_are_built(self) -> None:
         names = [t.name for t in build_kb_tools(kb_config(), _no_launcher)]
         assert names == [
@@ -180,6 +252,74 @@ _SANDBOX = SandboxToolConfig.model_validate({
 })
 
 
+class TestConfluenceRequests:
+    """args фасада плюс конфиг секции складываются в запрос узла."""
+
+    @staticmethod
+    def _cfg() -> ConfluenceToolsConfig:
+        return ConfluenceToolsConfig(
+            confluence=HttpProfile(
+                base_url="https://confluence.example",
+                auth=BearerAuth(method="bearer", token=SecretStr("t0ken")),
+            ),
+            max_text_chars=1500,
+            page_size=400,
+        )
+
+    @classmethod
+    def _launcher(cls) -> RecordingLauncher:
+        nodes = ConfluenceStages.of(cls._cfg())
+        trailers: dict[str, Any] = {
+            ConfluenceNode.PAGE.value: ConfluencePageTrailer(title=""),
+            ConfluenceNode.GREP.value: EmptyTrailer(),
+            ConfluenceNode.SEARCH.value: EmptyTrailer(),
+            ConfluenceNode.SPACES.value: EmptyTrailer(),
+        }
+        return RecordingLauncher(nodes, trailers)
+
+    def _invoke(self, name: str, args: dict[str, Any]) -> RecordingLauncher:
+        launcher = self._launcher()
+        built = build_confluence_tools(self._cfg(), lambda _tool: launcher)
+        tool = next(t for t in built if t.name == name)
+        invoke(tool, args)
+        return launcher
+
+    def test_page_request_carries_connection(self) -> None:
+        launcher = self._invoke("confluence_fetch", {"page_id": "42"})
+
+        request = launcher.requests[0]
+        assert isinstance(request, ConfluencePageRequest)
+        assert request.page_id == "42"
+        assert request.base_url == "https://confluence.example"
+        assert request.body_format == "view"
+        assert request.as_markdown is True
+
+    def test_page_token_is_revealed_only_in_json(self) -> None:
+        launcher = self._invoke("confluence_fetch", {"page_id": "42"})
+
+        request = launcher.requests[0]
+        assert "t0ken" not in str(request.model_dump())
+        assert "t0ken" in request.model_dump_json()
+
+    def test_grep_limits_come_from_the_section(self) -> None:
+        launcher = self._invoke(
+            "confluence_grep", {"page_id": "42", "pattern": "alpha"}
+        )
+
+        request = launcher.requests[0]
+        assert isinstance(request, ConfluenceGrepRequest)
+        assert request.max_text_chars == 1500
+        assert request.pattern == "alpha"
+
+    def test_spaces_page_size_comes_from_the_section(self) -> None:
+        launcher = self._invoke("confluence_spaces", {"space_type": "global"})
+
+        request = launcher.requests[0]
+        assert isinstance(request, ConfluenceSpacesRequest)
+        assert request.limit == 400
+        assert request.space_type == "global"
+
+
 class TestConfluenceTools:
     def test_all_four_are_built(self) -> None:
         cfg = ConfluenceToolsConfig(
@@ -193,7 +333,7 @@ class TestConfluenceTools:
             "confluence_spaces",
         ]
 
-    def test_network_error_becomes_error_result(self) -> None:
+    def test_launch_failure_becomes_error_result(self) -> None:
         cfg = ConfluenceToolsConfig(
             confluence=HttpProfile(base_url="http://127.0.0.1:1"),
         )

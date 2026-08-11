@@ -45,8 +45,11 @@ class _BrokenView:
 
 
 class _Element:
-    def __init__(self, for_id: str | None) -> None:
+    """Слепок chainlit-элемента: display повторяет дефолт настоящей модели."""
+
+    def __init__(self, for_id: str | None, display: str = "inline") -> None:
         self.for_id = for_id
+        self.display = display
         self.id = str(uuid4())
         self.thread_id = str(uuid4())
         self.name = "data.csv"
@@ -115,4 +118,11 @@ class TestDataLayerFailuresVisible:
         layer = self._layer()
         create = PostgresDataLayer.create_element.__wrapped__
         asyncio.run(create(layer, _Element(for_id=None)))
+        assert not shown
+
+    def test_side_element_without_for_id_is_skipped(self, shown: list[str]) -> None:
+        """Панель канваса шлёт side-элементы без привязки — это не потеря."""
+        layer = self._layer()
+        create = PostgresDataLayer.create_element.__wrapped__
+        asyncio.run(create(layer, _Element(for_id=None, display="side")))
         assert not shown

@@ -9,11 +9,12 @@ import pytest
 from langchain_core.tools import StructuredTool
 
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
-from boba.toolkit.launcher import RunResult
-from boba.sandbox.runner import SandboxRunner, ToolCallContext
+from boba.sandbox.diagnostics import FailureFacts
+from boba.sandbox.runner import ToolCallContext
+from boba.sandbox.workflow import WorkflowRunner
 
 LOGGER_NAME = "boba.chainlit.agent.tools.run_log"
-RUNNER_LOGGER_NAME = "boba.sandbox.runner"
+RUNNER_LOGGER_NAME = "boba.sandbox.workflow"
 
 
 @pytest.fixture(autouse=True)
@@ -95,43 +96,41 @@ class TestToolRunLogger:
 
 
 class TestSandboxFailureLog:
+    DURATION_MS = 42
+
     @staticmethod
-    def _result(rc: int, stderr: str, stdout: str = "", timed_out: bool = False):
-        return RunResult(
-            exit_code=rc,
-            stdout=stdout,
-            stderr=stderr,
-            truncated_stdout=False,
-            truncated_stderr=False,
-            duration_ms=42,
-            timed_out=timed_out,
-        )
+    def _facts(rc: int, stderr: str, timed_out: bool = False) -> FailureFacts:
+        return FailureFacts(exit_code=rc, timed_out=timed_out, stderr_tail=stderr)
 
     def test_stderr_tail_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER_NAME):
-            SandboxRunner._log_failure("conf", self._result(1, "Traceback: boom\n"))
+            WorkflowRunner._log_failure(
+                "conf", self._facts(1, "Traceback: boom\n"), self.DURATION_MS, ""
+            )
         message = caplog.records[0].getMessage()
-        assert "sandbox[conf]: failed (rc=1)" in message
+        assert "workflow stage conf: failed (rc=1)" in message
         assert "Traceback: boom" in message
-
-    def test_stdout_used_when_stderr_empty(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER_NAME):
-            SandboxRunner._log_failure("conf", self._result(2, "", "partial out"))
-        assert "partial out" in caplog.records[0].getMessage()
 
     def test_no_output_marker(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER_NAME):
-            SandboxRunner._log_failure("conf", self._result(1, ""))
+            WorkflowRunner._log_failure("conf", self._facts(1, ""), self.DURATION_MS, "")
         assert "<no output>" in caplog.records[0].getMessage()
 
     def test_timed_out_reason(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER_NAME):
-            SandboxRunner._log_failure("conf", self._result(-9, "", timed_out=True))
+            WorkflowRunner._log_failure(
+                "conf", self._facts(-9, "", timed_out=True), self.DURATION_MS, ""
+            )
         assert "timed out after 42ms" in caplog.records[0].getMessage()
 
+    def test_diagnostic_joins_the_tail(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER_NAME):
+            WorkflowRunner._log_failure(
+                "conf", self._facts(137, "killed"), self.DURATION_MS, "memory limit"
+            )
+        assert "memory limit" in caplog.records[0].getMessage()
+
     def test_tail_truncates_long_output(self) -> None:
-        tail = SandboxRunner._tail("x" * (SandboxRunner.FAIL_TAIL_CHARS + 100))
-        assert len(tail) == SandboxRunner.FAIL_TAIL_CHARS + 1
+        tail = WorkflowRunner._tail("x" * (WorkflowRunner.FAIL_TAIL_CHARS + 100))
+        assert len(tail) == WorkflowRunner.FAIL_TAIL_CHARS + 1
         assert tail.startswith("…")

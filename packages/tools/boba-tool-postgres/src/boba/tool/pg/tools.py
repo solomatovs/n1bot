@@ -11,6 +11,7 @@ from pydantic import Field
 from boba.tool.pg.caller import PgCaller
 from boba.tool.pg.catalog import PgCatalog
 from boba.tool.pg.executor import PgExecutor, PgExecutorConfig
+from boba.tool.pg.protocol import PgCopyFormat
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import (
     AffectedSqlResult,
@@ -110,7 +111,6 @@ class PgTools:
                 result = await executor.execute(
                     query.text,
                     connection_name=connection_name,
-                    row_limit=executor.max_rows_cap,
                     params=query.params,
                 )
             except SqlErrors.CATCHES as e:
@@ -154,7 +154,6 @@ class PgTools:
                 result = await executor.execute(
                     query.text,
                     connection_name=connection_name,
-                    row_limit=executor.max_rows_cap,
                     params=query.params,
                 )
             except SqlErrors.CATCHES as e:
@@ -192,7 +191,6 @@ class PgTools:
                 result = await executor.execute(
                     sql,
                     connection_name=connection_name,
-                    row_limit=executor.max_rows_cap,
                     params=(),
                 )
             except SqlErrors.CATCHES as e:
@@ -230,11 +228,25 @@ class PgTools:
                     ),
                 ),
             ],
+            copy_format: Annotated[
+                PgCopyFormat,
+                Field(
+                    description=(
+                        "Формат выгрузки: text — колонки через таб (по "
+                        "умолчанию), csv — запятая с кавычками. Обе формы "
+                        "начинаются со строки заголовка."
+                    ),
+                ),
+            ] = PgCopyFormat.TEXT,
         ) -> tuple[str, ToolResult]:
             """Выгрузить результат SELECT текстом через COPY ... TO STDOUT."""
             executor = owner._executor
             try:
-                text = await executor.execute_copy(sql, connection_name=connection_name)
+                text = await executor.execute_copy(
+                    sql,
+                    connection_name=connection_name,
+                    copy_format=copy_format,
+                )
             except SqlErrors.CATCHES as e:
                 return pack_result(owner._errors.pack(e))
 

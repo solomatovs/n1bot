@@ -2,18 +2,19 @@
 
 Запросы и ответы проходят через те же pydantic-модели, которыми пользуется
 caller-сторона (boba.tool.doc.protocol и doc.liteparse.protocol): контракт
-границы — физически один код с обеих сторон.
+границы — физически один код с обеих сторон. Текст уезжает в канал данных
+сырыми байтами, строки выдачи — NDJSON-строками.
 
 Ошибки: LiteParseError — документ не разобрать (формат, битый файл, нет моделей
-OCR) и pydantic.ValidationError — запрос не по контракту; обе объявлены
-ожидаемыми и уезжают пользователю кадром с готовым текстом. Остальное, включая
-ValueError на неизвестном op, роняет payload трейсбеком: это дефект кода.
+OCR); объявлена ожидаемой и уезжает пользователю конвертом с готовым текстом.
+Остальное, включая несовпадение модели запроса с диспетчером, роняет payload
+трейсбеком: это дефект кода.
 """
 
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -26,6 +27,7 @@ from boba.tool.doc.liteparse.protocol import (
     ParsedPage,
 )
 from boba.tool.doc.protocol import (
+    DocOp,
     DocOutlineRow,
     DocOutlineTrailer,
     DocPagesRequest,
@@ -35,8 +37,8 @@ from boba.tool.doc.protocol import (
     DocSearchRow,
     DocSearchTrailer,
 )
-from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
+from boba.toolkit.channels import ByteText, StreamCodec
+from boba.toolkit.payload import PayloadChannels, PayloadEntry, PayloadStream
 
 
 class TextClip:
@@ -108,100 +110,109 @@ class PageMatchRows:
 
 
 class DocumentOps:
-    """Операции liteparse; вызываются диспетчером payload'а по имени op."""
-
-    OPS: ClassVar[tuple[str, ...]] = (
-        DocPagesRequest.OP,
-        DocPathRequest.OUTLINE,
-        DocSearchRequest.OP,
-        ParseBytesRequest.OP,
-    )
+    """Операции liteparse; вызываются диспетчером payload'а по модели запроса."""
 
     EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
         LiteParseError: "document_unreadable",
     }
 
+    REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {
+        DocOp.READ: DocPagesRequest,
+        DocOp.OUTLINE: DocPathRequest,
+        DocOp.SEARCH: DocSearchRequest,
+        ParseBytesRequest.OP: ParseBytesRequest,
+    }
+
     @classmethod
     async def dispatch(
-        cls, request: dict[str, Any], emit: ChunkEmitter
-    ) -> dict[str, Any]:
-        """Текст уходит кадрами-кусками, строки выдачи — кадрами-записями."""
-        handlers: dict[str, Callable[[dict[str, Any], ChunkEmitter], BaseModel]] = {
-            DocPagesRequest.OP: cls.read_document,
-            DocPathRequest.OUTLINE: cls.document_outline,
-            DocSearchRequest.OP: cls.search_document,
-            ParseBytesRequest.OP: cls.parse_bytes,
-        }
+        cls, request: BaseModel, channels: PayloadChannels
+    ) -> BaseModel:
+        """Текст уходит байтами в канал данных, строки выдачи — NDJSON."""
+        stream = channels.payload()
 
-        op = request["op"]
-        if op not in handlers:
-            msg = f"unknown document op: {op!r}"
-            raise ValueError(msg)
+        if isinstance(request, DocPagesRequest):
+            return cls.read_document(request, stream)
 
-        trailer = handlers[op](request, emit)
-        return trailer.model_dump()
+        if isinstance(request, DocSearchRequest):
+            return cls.search_document(request, stream)
+
+        if isinstance(request, ParseBytesRequest):
+            return cls.parse_bytes(request, stream)
+
+        if isinstance(request, DocPathRequest):
+            return cls.document_outline(request, stream)
+
+        msg = f"unexpected request model: {type(request).__name__}"
+        raise TypeError(msg)
 
     @classmethod
     def read_document(
-        cls, request: dict[str, Any], emit: ChunkEmitter
+        cls, request: DocPagesRequest, stream: PayloadStream
     ) -> DocPagesTrailer:
-        req = DocPagesRequest.model_validate(request)
-        result = LiteParseEngine.parse_pages(req.params, req.path, req.pages)
+        params = request.parse_params()
+        result = LiteParseEngine.parse_pages(params, request.path, request.pages)
 
-        text, truncated = TextClip.clip(result.text, req.params.max_text_chars)
-        PayloadEntry.emit_text(emit, text)
+        text, truncated = TextClip.clip(result.text, request.max_text_chars)
+        stream.write(text.encode(ByteText.ENCODING))
+
         pages = tuple(cls._page_numbers(result))
+
         return DocPagesTrailer(truncated=truncated, pages=pages)
 
     @classmethod
     def document_outline(
-        cls, request: dict[str, Any], emit: ChunkEmitter
+        cls, request: DocPathRequest, stream: PayloadStream
     ) -> DocOutlineTrailer:
-        req = DocPathRequest.model_validate(request)
-        result = LiteParseEngine.parse(req.params, req.path)
+        params = request.parse_params()
+        result = LiteParseEngine.parse(params, request.path)
 
         for row in cls._outline_rows(result):
-            emit(RowStream.encode(row.model_dump()))
+            stream.write(StreamCodec.encode_row(row.model_dump()))
+
         return DocOutlineTrailer(num_pages=result.num_pages)
 
     @classmethod
     def search_document(
-        cls, request: dict[str, Any], emit: ChunkEmitter
+        cls, request: DocSearchRequest, stream: PayloadStream
     ) -> DocSearchTrailer:
-        req = DocSearchRequest.model_validate(request)
-        native = LiteParseEngine.parse_native(req.params, req.path)
+        params = request.parse_params()
+        native = LiteParseEngine.parse_native(params, request.path)
 
         emitted = 0
         for page in native.pages:
-            for row in cls.search_page(page, req):
-                if emitted >= req.max_matches:
+            for row in cls.search_page(page, request):
+                if emitted >= request.max_matches:
                     return DocSearchTrailer(limit_reached=True)
-                emit(RowStream.encode(row.model_dump()))
+                stream.write(StreamCodec.encode_row(row.model_dump()))
                 emitted += 1
 
         return DocSearchTrailer(limit_reached=False)
 
     @classmethod
-    def search_page(cls, page: Any, req: DocSearchRequest) -> list[DocSearchRow]:
+    def search_page(cls, page: Any, request: DocSearchRequest) -> list[DocSearchRow]:
         hits = LiteParseEngine.search_items(
-            page.text_items, req.query, case_sensitive=False
+            page.text_items, request.query, case_sensitive=False
         )
         if not hits:
             return []
 
-        matcher = PageMatchRows(page, req.query, req.context_chars)
+        matcher = PageMatchRows(page, request.query, request.context_chars)
+
         return list(matcher.rows(hits))
 
     @classmethod
     def parse_bytes(
-        cls, request: dict[str, Any], emit: ChunkEmitter
+        cls, request: ParseBytesRequest, stream: PayloadStream
     ) -> ParseBytesTrailer:
         """Разобрать документ, приехавший содержимым в запросе (base64)."""
-        req = ParseBytesRequest.model_validate(request)
-        result = LiteParseEngine.parse_bytes(req.params, req.content(), req.filename)
+        params = request.parse_params()
+        result = LiteParseEngine.parse_bytes(
+            params, request.content(), request.filename
+        )
 
         for page in cls._parsed_pages(result):
-            emit(RowStream.encode(page.model_dump()))
+            stream.write(StreamCodec.encode_row(page.model_dump()))
+
         return ParseBytesTrailer(num_pages=result.num_pages)
 
     @staticmethod

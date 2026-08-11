@@ -15,11 +15,8 @@ from pydantic import Field
 
 from boba.db.postgres import PostgresConfig
 from boba.tool.pg.caller import PgCaller
-from boba.toolkit.launcher import (
-    CollectorCapacityError,
-    LauncherError,
-    TextCollector,
-)
+from boba.tool.pg.protocol import PgCopyFormat
+from boba.toolkit.launcher import LauncherError, TextCollector
 from boba.toolkit.sql import SqlExecutor, SqlProfiles, SqlQueryError
 
 logger = logging.getLogger(__name__)
@@ -66,27 +63,33 @@ class PgExecutor(SqlExecutor[PostgresConfig, PgParams]):
             cfg.max_bytes,
         )
 
-    async def execute_copy(self, query: str, *, connection_name: str) -> str:
-        """COPY ... TO STDOUT: текст собирается целиком, потолок по байтам."""
+    async def execute_copy(
+        self,
+        query: str,
+        *,
+        connection_name: str,
+        copy_format: PgCopyFormat,
+    ) -> str:
+        """COPY ... TO STDOUT: текст собирается целиком, потолок держит коллектор."""
+        # whitelist проверяется здесь: имя вне списка — отказ фасада, не стадии
+        self.connection_of(connection_name)
+
         collector = TextCollector(
             max_chars=self.max_bytes,
             limit_rows=self.max_rows_cap,
             header_lines=1,
         )
-        connection = self.connection_of(connection_name)
+
         try:
-            trailer = await asyncio.to_thread(
+            await asyncio.to_thread(
                 self._pg_caller.copy,
-                connection=connection,
+                connection_name=connection_name,
                 sql=query,
-                max_bytes=self.max_bytes,
+                copy_format=copy_format,
                 sink=collector,
             )
         except LauncherError as e:
             msg = f"SQL copy failed (connection_name={connection_name!r}): {e}"
             raise SqlQueryError(msg) from e
 
-        if trailer.truncated:
-            msg = f"pg copy: stream exceeded max_bytes {self.max_bytes}"
-            raise CollectorCapacityError(msg)
         return collector.text()

@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
-from typing import ClassVar, Protocol, TypeVar
+from typing import Any, ClassVar, Protocol, TypeVar
 
 from pydantic import (
     BaseModel,
@@ -26,15 +27,20 @@ from pydantic import (
     model_validator,
 )
 
-from boba.toolkit.channels import StreamFormat
+from boba.toolkit.channels import StreamFormat, ValidationSummary
 
 __all__ = [
     "AccessPredicate",
+    "ArgsEnricher",
     "ContractCheck",
     "EdgeSpec",
     "EmptyTrailer",
+    "OutResolver",
+    "RequestArgs",
     "SafeId",
+    "StageArgsEnricher",
     "StageContract",
+    "StageNode",
     "StageOutcome",
     "StageSpec",
     "WorkflowError",
@@ -123,7 +129,9 @@ class WorkflowSpec(BaseModel):
         try:
             return cls.model_validate(raw)
         except ValidationError as exc:
-            raise WorkflowError(f"invalid workflow spec: {exc}") from exc
+            # сводка без значений полей: спека несёт args, написанные вызывающим
+            summary = ValidationSummary.of(exc)
+            raise WorkflowError(f"invalid workflow spec: {summary}") from exc
 
     def stage(self, stage_id: str) -> StageSpec:
         """Узел по id; неизвестный id — WorkflowError."""
@@ -219,6 +227,74 @@ class StageContract(BaseModel):
     accepts: frozenset[StreamFormat]
     out: StreamFormat | None
     result: type[BaseModel]
+
+
+class ArgsEnricher(Protocol):
+    """args вызывающего -> полный запрос payload'а: op, соединения, лимиты.
+
+    Обогатитель ничего не проверяет: обогащённый запрос валидируется моделью
+    request узла, и её сводка ошибок точнее, чем тип исключения обогатителя.
+    Значения не обязаны быть JSON-скалярами: профиль соединения остаётся
+    моделью с SecretStr до сериализации запроса в tool_args, где раскрытие
+    делает field_serializer модели запроса.
+    """
+
+    @abstractmethod
+    def __call__(self, args: Mapping[str, JsonValue], /) -> Mapping[str, Any]:
+        """Полный словарь запроса; валидируется моделью request узла."""
+        ...
+
+
+class RequestArgs:
+    """Запрос-модель -> обогащённые args узла: поля остаются моделями.
+
+    Секрет раскрывает только сериализация запроса в tool_args, поэтому
+    обогатитель не имеет права на `model_dump(mode="json")`: он выполнил бы
+    field_serializer профиля и положил пароль строкой в обычный словарь.
+    """
+
+    @classmethod
+    def of(cls, request: BaseModel) -> Mapping[str, Any]:
+        return dict(request)
+
+
+class OutResolver(Protocol):
+    """Разрешение формата продукта узла из валидированного запроса."""
+
+    @abstractmethod
+    def __call__(self, request: BaseModel, /) -> StreamFormat | None:
+        """Формат tool_payload; None — потока данных наружу нет."""
+        ...
+
+
+class StageArgsEnricher:
+    """args вызывающего плюс поля, которые задаёт узел: op, настройки, лимиты."""
+
+    def __init__(self, settings: BaseModel) -> None:
+        self._settings = settings.model_dump(mode="json")
+
+    def __call__(self, args: Mapping[str, JsonValue], /) -> Mapping[str, Any]:
+        request: dict[str, Any] = dict(args)
+        request.update(self._settings)
+
+        return request
+
+
+@dataclass(frozen=True)
+class StageNode:
+    """Узел реестра стадий без профиля песочницы: его подставляет приложение.
+
+    Профиль живёт в конфиге инструмента, поэтому реестр собирает приложение —
+    пакет отдаёт контракт, entry-команду payload'а, модель запроса и
+    обогатитель args. out_of — формат продукта как функция запроса; None —
+    формат константен и объявлен контрактом.
+    """
+
+    contract: StageContract
+    entry: tuple[str, ...]
+    request: type[BaseModel]
+    enrich: ArgsEnricher
+    out_of: OutResolver | None = None
 
 
 class AccessPredicate(Protocol):

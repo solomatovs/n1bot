@@ -1339,21 +1339,21 @@ def build_chain_argv(  # noqa: PLR0913
     bwrap_bin: str = "bwrap",
     channel_env: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Старая сборка цепочки: опции внешнего bwrap остаются в argv.
+    """Цепочка файловых операций над образом: опции внешнего bwrap едут в argv.
 
-    images — пары (образ, mountpoint); op — run/write/read/delete + аргумент.
-    Умирает вместе с кадровым протоколом на этапе 3; канальный путь собирает
-    `ChainChannelArgv.build`.
+    images — пары (образ, mountpoint); op — write/read/delete плюс аргумент.
+    Запуск инструмента собирает `ChainChannelArgv.build`: там профиль уходит
+    каналом wrap_args.
     """
-    bwrap_path = ChainChannelArgv._bwrap_path(bwrap_bin)  # noqa: SLF001
-    pairs = ChainChannelArgv._absolute_images(images)  # noqa: SLF001
+    bwrap_path = ChainChannelArgv._bwrap_path(bwrap_bin)
+    pairs = ChainChannelArgv._absolute_images(images)
 
     argv = [bwrap_path]
-    argv += ChainChannelArgv._bwrap_options(  # noqa: SLF001
+    argv += ChainChannelArgv._bwrap_options(
         pairs, rw_paths=rw_paths, network=network, channel_env=channel_env
     )
     argv.append("--")
-    argv += ChainChannelArgv._launcher_argv(  # noqa: SLF001
+    argv += ChainChannelArgv._launcher_argv(
         python_bin=python_bin,
         template=template,
         options=options,

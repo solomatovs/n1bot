@@ -1,23 +1,21 @@
-"""Точка входа payload'а: запрос со stdin, кадры и трейлер в stdout.
+"""Точка входа payload'а внутри песочницы: каналы вместо кадров.
 
-Логи инструмента едут кадрами в stderr: stdout занят данными, а stderr на
-исход операции не влияет — его читает только релей хоста и сливает в общий
-журнал приложения. Инструменту достаточно обычного logging.getLogger.
+Запрос читается одним JSON из tool_args, входной поток — из tool_stdin, данные
+уходят сырыми байтами в tool_payload, трейлер либо ожидаемая ошибка — конвертом
+в tool_result; номера дескрипторов приходят в env по Channel.env_name. Логи
+инструмента едут кадрами LogFrame в stderr — после преамбулы это tool_stderr,
+поэтому инструменту достаточно обычного logging.getLogger.
 
-Ошибки делятся на два класса. Ожидаемые — объявленные в PayloadOps.EXPECTED
-типы и PayloadError — уходят кадром `sandbox-error:` с готовым для пользователя
-текстом; трейсбек в этом случае не печатается. Всё остальное не ловится и
+Ошибки операции делятся на два класса. Ожидаемые — объявленные в
+PayloadOps.EXPECTED типы и PayloadError — уходят конвертом {error} с готовым
+для пользователя текстом; трейсбек не печатается. Всё остальное не ловится и
 падает штатным трейсбеком интерпретатора: неизвестную ошибку прятать нельзя.
 Код возврата в обоих случаях ненулевой — отказ остаётся отказом.
 
-Канальная сторона (PayloadChannels): запрос из tool_args, данные сырыми
-байтами в tool_payload, конверт результата в tool_result; номера дескрипторов
-приходят в env по Channel.env_name.
-
-Ошибки канальной стороны: ChannelError — нарушение контракта каналов;
-PayloadOutputClosedError — потребитель канала данных закрыл чтение (сигнал
-остановить продукцию, не отказ); SystemExit(PayloadExit.FAILURE) — битый
-запрос, конверт invalid_request уже записан в tool_result.
+Ошибки: ChannelError — нарушение контракта каналов; PayloadOutputClosedError —
+потребитель канала данных закрыл чтение (сигнал остановить продукцию, не
+отказ); SystemExit(PayloadExit.FAILURE) — битый запрос, конверт
+invalid_request уже записан в tool_result.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ import logging
 import os
 import sys
 from abc import abstractmethod
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Coroutine, Mapping
 from enum import IntEnum
 from typing import (
     Any,
@@ -36,9 +34,7 @@ from typing import (
     ClassVar,
     NoReturn,
     Protocol,
-    TypeAlias,
     TypeVar,
-    overload,
 )
 
 from pydantic import BaseModel, ValidationError
@@ -46,16 +42,16 @@ from pydantic import BaseModel, ValidationError
 from boba.toolkit.channels import (
     Channel,
     ChannelError,
+    LogFrame,
     ResultError,
     ResultFailure,
     ResultSuccess,
     ShellExit,
     ValidationSummary,
 )
-from boba.toolkit.launcher import LaunchPayload
+from boba.toolkit.workflow import EmptyTrailer
 
 __all__ = [
-    "ChunkEmitter",
     "PayloadChannels",
     "PayloadEntry",
     "PayloadError",
@@ -68,17 +64,18 @@ __all__ = [
 
 TModel = TypeVar("TModel", bound=BaseModel)
 
-ChunkEmitter: TypeAlias = Callable[[str], None]
-
 
 class PayloadLogFormatter(logging.Formatter):
-    """Запись логера -> кадр `sandbox-log:` одной строкой."""
+    """Запись логера -> лог-кадр LogFrame одной строкой."""
 
     def format(self, record: logging.LogRecord) -> str:
         message = record.getMessage()
         if record.exc_info:
             message = f"{message}\n{self.formatException(record.exc_info)}"
-        return LaunchPayload.encode_log(record.levelname, record.name, message)
+
+        frame = LogFrame(lvl=record.levelname, name=record.name, msg=message)
+
+        return frame.encode()
 
 
 class PayloadLogging:
@@ -119,107 +116,6 @@ class PayloadError(Exception):
         self.message = message
 
 
-class PayloadOps(Protocol):
-    """Контракт payload'а: операции плюс объявленные ожидаемые ошибки.
-
-    EXPECTED перечисляет типы, которые для этого инструмента являются штатным
-    отказом: их текст едет пользователю без трейсбека. Пустая мапа означает,
-    что ожидаемых ошибок у инструмента нет.
-    """
-
-    EXPECTED: ClassVar[Mapping[type[Exception], str]]
-
-    @classmethod
-    @abstractmethod
-    def dispatch(
-        cls,
-        request: dict[str, Any],
-        emit: ChunkEmitter,
-    ) -> Coroutine[Any, Any, dict[str, Any]]:
-        """Выполнить операцию запроса; данные уходят через emit."""
-        ...
-
-
-class PayloadEntry:
-    """Разбор запроса, печать кадров и трейлера; операцию выбирает инструмент."""
-
-    CHUNK_CHARS: ClassVar[int] = 64 * 1024
-
-    FAILURE_CODE: ClassVar[int] = 1
-
-    BUILTIN_EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
-        ValidationError: "invalid_request",
-    }
-    """Ожидаемое для любого payload'а: запрос не по контракту."""
-
-    @staticmethod
-    def emit_text(emit: ChunkEmitter, text: str) -> None:
-        """Материализованный текст уходит кадрами ограниченного размера."""
-        for start in range(0, len(text), PayloadEntry.CHUNK_CHARS):
-            emit(text[start : start + PayloadEntry.CHUNK_CHARS])
-
-    @staticmethod
-    def main(ops: type[PayloadOps]) -> int:
-        PayloadLogging.setup()
-        request = json.loads(sys.stdin.read())
-        try:
-            trailer = asyncio.run(ops.dispatch(request, PayloadEntry.emit))
-        except PayloadError as e:
-            PayloadEntry._write_error(e.kind, e.message)
-            return PayloadEntry.FAILURE_CODE
-        except Exception as e:
-            kind = PayloadEntry._expected_kind(ops, e)
-            if kind is None:
-                raise
-            PayloadEntry._write_error(kind, PayloadEntry._reason(e))
-            return PayloadEntry.FAILURE_CODE
-
-        PayloadEntry._write_trailer(trailer)
-        return 0
-
-    @staticmethod
-    def emit(chunk: str) -> None:
-        """Кадр уходит сразу: flush отдаёт данные хосту, не дожидаясь конца."""
-        sys.stdout.write(LaunchPayload.encode_chunk(chunk))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-
-    @staticmethod
-    def _expected_kind(ops: type[PayloadOps], error: Exception) -> str | None:
-        """Kind объявленного типа; учитываются и подклассы объявленного."""
-        for source in (ops.EXPECTED, PayloadEntry.BUILTIN_EXPECTED):
-            for declared, kind in source.items():
-                if isinstance(error, declared):
-                    return kind
-        return None
-
-    @staticmethod
-    def _reason(error: Exception) -> str:
-        """Текст исключения; у части библиотечных ошибок он пуст — тогда имя типа."""
-        text = str(error).strip()
-        if text:
-            return f"{type(error).__name__}: {text}"
-        return type(error).__name__
-
-    @staticmethod
-    def _write_error(kind: str, message: str) -> None:
-        """Кадр ошибки хосту; в журнал тот же факт уходит обычным логом."""
-        if not message.strip():
-            message = kind
-        sys.stdout.write(LaunchPayload.encode_error(kind, message))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        logging.getLogger(__name__).error("%s: %s", kind, message)
-
-    @staticmethod
-    def _write_trailer(trailer: dict[str, Any]) -> None:
-        body = json.dumps(trailer, ensure_ascii=False)
-        sys.stdout.write(LaunchPayload.MARKER)
-        sys.stdout.write(body)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-
-
 class PayloadExit(IntEnum):
     """Коды возврата канального payload'а; CONSUMER_GONE — шелльная форма SIGPIPE."""
 
@@ -232,8 +128,96 @@ class PayloadOutputClosedError(Exception):
     """Потребитель tool_payload закрыл чтение: продукцию нужно прекратить.
 
     Не отказ операции: квитанция пишется в tool_result, процесс завершается
-    кодом PayloadExit.CONSUMER_GONE.
+    кодом PayloadExit.CONSUMER_GONE. Операция, которой есть что сообщить и
+    после обрыва, ловит исключение сама и отдаёт свой трейлер.
     """
+
+
+class PayloadOps(Protocol):
+    """Контракт payload'а: реестр операций, ожидаемые ошибки, диспетчеризация.
+
+    REQUESTS отображает значение поля op запроса в модель запроса операции —
+    тот же реестр питает валидацию args узла в графе. EXPECTED перечисляет
+    типы, которые для инструмента являются штатным отказом: их текст едет
+    пользователю без трейсбека; пустая мапа — ожидаемых ошибок нет.
+    """
+
+    EXPECTED: ClassVar[Mapping[type[Exception], str]]
+
+    REQUESTS: ClassVar[Mapping[str, type[BaseModel]]]
+
+    @classmethod
+    @abstractmethod
+    def dispatch(
+        cls,
+        request: BaseModel,
+        channels: PayloadChannels,
+    ) -> Coroutine[Any, Any, BaseModel]:
+        """Выполнить операцию валидированного запроса; итог — модель трейлера.
+
+        Данные уходят в channels.payload(), вход читается из channels.stdin().
+        """
+        ...
+
+
+class PayloadEntry:
+    """Разбор запроса из tool_args, диспетчеризация, квитанция в tool_result."""
+
+    BUILTIN_EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
+        ValidationError: "invalid_request",
+    }
+    """Ожидаемое для любого payload'а: данные не по контракту."""
+
+    @staticmethod
+    def main(ops: type[PayloadOps]) -> int:
+        PayloadLogging.setup()
+
+        channels = PayloadChannels.open()
+
+        request = channels.request(ops.REQUESTS)
+
+        try:
+            trailer = asyncio.run(ops.dispatch(request, channels))
+        except PayloadOutputClosedError:
+            # потребитель ушёл на середине: операция не закончена, поэтому
+            # квитанция вырожденная — схему трейлера узла ей взять неоткуда
+            channels.write_result(EmptyTrailer())
+            return int(PayloadExit.CONSUMER_GONE)
+        except PayloadError as e:
+            channels.write_error(e.kind, e.message)
+            return int(PayloadExit.FAILURE)
+        except Exception as e:
+            kind = PayloadEntry._expected_kind(ops, e)
+            if kind is None:
+                raise
+            channels.write_error(kind, PayloadEntry._reason(e))
+            return int(PayloadExit.FAILURE)
+
+        channels.write_result(trailer)
+
+        return int(channels.exit_code())
+
+    @staticmethod
+    def _expected_kind(ops: type[PayloadOps], error: Exception) -> str | None:
+        """Kind объявленного типа; учитываются и подклассы объявленного."""
+        for source in (ops.EXPECTED, PayloadEntry.BUILTIN_EXPECTED):
+            for declared, kind in source.items():
+                if isinstance(error, declared):
+                    return kind
+        return None
+
+    @staticmethod
+    def _reason(error: Exception) -> str:
+        """Текст исключения; ValidationError сжимается сводкой без значений полей."""
+        if isinstance(error, ValidationError):
+            summary = ValidationSummary.of(error)
+            return f"{type(error).__name__}: {summary}"
+
+        text = str(error).strip()
+        if text:
+            return f"{type(error).__name__}: {text}"
+
+        return type(error).__name__
 
 
 class PayloadStream:
@@ -300,6 +284,9 @@ class PayloadChannels:
 
     INVALID_REQUEST: ClassVar[str] = "invalid_request"
 
+    OP_KEY: ClassVar[str] = "op"
+    """Поле запроса, по которому реестр операций выбирает модель."""
+
     _TOOL_SIDE: ClassVar[tuple[Channel, ...]] = (
         Channel.TOOL_ARGS,
         Channel.TOOL_STDIN,
@@ -342,29 +329,36 @@ class PayloadChannels:
 
         return cls._instance
 
-    @overload
-    def args(self, schema: type[TModel]) -> TModel: ...
+    def args(self, schema: type[TModel]) -> TModel:
+        """Один JSON из tool_args, валидированный моделью запроса."""
+        parsed = self._parsed_args()
 
-    @overload
-    def args(self) -> dict[str, Any]: ...
+        return self._validate_args(schema, parsed)
 
-    def args(self, schema: type[TModel] | None = None) -> TModel | dict[str, Any]:
-        """Один JSON из tool_args; без схемы — разобранный dict (до этапа 3)."""
-        raw = self._read_args()
-
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            self._fail_invalid_request(f"tool_args is not valid JSON: {exc}", exc)
-
-        if schema is not None:
-            return self._validate_args(schema, parsed)
+    def request(self, registry: Mapping[str, type[BaseModel]]) -> BaseModel:
+        """Один JSON из tool_args; модель выбирается по полю op из реестра."""
+        parsed = self._parsed_args()
 
         if not isinstance(parsed, dict):
             reason = f"tool_args must be a JSON object, got {type(parsed).__name__}"
             self._fail_invalid_request(reason, ValueError(reason))
 
-        return parsed
+        op = parsed.get(self.OP_KEY)
+        if not isinstance(op, str):
+            reason = f"request field {self.OP_KEY!r} is missing or not a string"
+            self._fail_invalid_request(reason, ValueError(reason))
+
+        schema = registry.get(op)
+        if schema is None:
+            known = ", ".join(sorted(registry))
+            reason = f"unknown op {op!r}; known ops: {known}"
+            self._fail_invalid_request(reason, ValueError(reason))
+
+        return self._validate_args(schema, parsed)
+
+    def has(self, channel: Channel) -> bool:
+        """Канал объявлен для этого запуска: вход есть при ребре или литерале."""
+        return channel in self._fds
 
     def stdin(self) -> BinaryIO:
         """Входной поток инструмента; канал опционален."""
@@ -445,6 +439,14 @@ class PayloadChannels:
                 return stream.read()
         except OSError as exc:
             raise ChannelError("tool_args channel is not readable") from exc
+
+    def _parsed_args(self) -> Any:
+        raw = self._read_args()
+
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._fail_invalid_request(f"tool_args is not valid JSON: {exc}", exc)
 
     def _validate_args(self, schema: type[TModel], parsed: Any) -> TModel:
         try:

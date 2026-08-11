@@ -1,4 +1,4 @@
-"""Согласованность хоста и payload'а: точки входа, alias'ы полей, маска SecretStr."""
+"""Согласованность хоста и payload'а: точки входа узлов, имена полей, секреты."""
 
 from __future__ import annotations
 
@@ -6,20 +6,17 @@ import importlib
 import subprocess
 import sys
 from pathlib import Path
-from typing import ClassVar, Protocol
 
 import pytest
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel
 
+from boba.tool.ch.protocol import ChInsertRequest, ChQueryRequest
+from boba.tool.ch.stages import ChQueryNode
 from boba.tool.chart.caller import ChartCaller
 from boba.tool.doc.engine import DocEngine
 from boba.tool.doc.liteparse import LiteParseCaller
-from boba.tool.kb.caller import KbCaller, KbSearchRequest
-from boba.tool.kb.confluence.caller import ConfluenceCaller
-from boba.tool.kb.confluence.ingest_caller import (
-    ConfluenceIngestCaller,
-    IngestRequest,
-)
+from boba.tool.kb.confluence.ingest_protocol import ConfluenceIngestRequest
+from boba.tool.kb.confluence.ingest_stages import ConfluenceIngestStages
 from boba.tool.kb.confluence.protocol import (
     ConfluenceAttachmentRequest,
     ConfluenceGrepRequest,
@@ -27,35 +24,38 @@ from boba.tool.kb.confluence.protocol import (
     ConfluenceSearchRequest,
     ConfluenceSpacesRequest,
 )
-from boba.tool.kb.html.caller import HtmlCaller
-from boba.tool.pg.caller import PgCaller
-from boba.tool.pg.protocol import PgQueryRequest
-from boba.web.caller import WebCaller
-from boba.web.protocol import WebFetchRequest, WebGrepRequest
+from boba.tool.kb.confluence.stages import ConfluenceStages
+from boba.tool.kb.html.stages import HtmlStages
+from boba.tool.kb.protocol import KbSearchRequest
+from boba.tool.kb.stages import KbStages
+from boba.tool.pg.protocol import PgCopyRequest, PgQueryRequest
+from boba.tool.pg.stages import PgQueryNode
+from boba.tool.shell.protocol import BashRequest, BashStage
+from boba.toolkit.channels import Channel
+from boba.web.protocol import WebFetchRequest, WebGrepRequest, WebNodes
 
-
-class PayloadCaller(Protocol):
-    """Контракт caller'а: точка входа payload'а как аргументы `python3 -m`."""
-
-    ENTRY: ClassVar[tuple[str, ...]]
-
-
-CALLERS: list[type[PayloadCaller]] = [
-    ChartCaller,
-    DocEngine,
-    LiteParseCaller,
-    HtmlCaller,
-    KbCaller,
-    ConfluenceCaller,
-    ConfluenceIngestCaller,
-    PgCaller,
-    WebCaller,
+ENTRIES: list[tuple[str, ...]] = [
+    BashStage.ENTRY,
+    ChartCaller.ENTRY,
+    DocEngine.ENTRY,
+    LiteParseCaller.ENTRY,
+    HtmlStages.ENTRY,
+    KbStages.ENTRY,
+    ConfluenceStages.ENTRY,
+    ConfluenceIngestStages.INGEST_ENTRY,
+    PgQueryNode.ENTRY,
+    ChQueryNode.ENTRY,
+    WebNodes.ENTRY,
 ]
 
-REQUEST_MODELS = [
-    IngestRequest,
+REQUEST_MODELS: list[type[BaseModel]] = [
+    BashRequest,
+    ConfluenceIngestRequest,
     KbSearchRequest,
     PgQueryRequest,
+    PgCopyRequest,
+    ChQueryRequest,
+    ChInsertRequest,
     WebFetchRequest,
     WebGrepRequest,
     ConfluencePageRequest,
@@ -74,39 +74,38 @@ def chainlit_context() -> None:
 class TestEntryPoints:
     """Точка входа — свойство кода инструмента, а не конфига."""
 
-    @pytest.mark.parametrize("caller", CALLERS)
-    def test_entry_is_an_importable_module(self, caller: type[PayloadCaller]) -> None:
-        entry = caller.ENTRY
+    @pytest.mark.parametrize("entry", ENTRIES)
+    def test_entry_is_an_importable_module(self, entry: tuple[str, ...]) -> None:
         assert entry[:2] == ("python3", "-m"), (
-            f"{caller.__name__}.ENTRY={entry} — payload запускается как модуль"
+            f"{entry} — payload запускается как модуль"
         )
         importlib.import_module(entry[2])
 
-    @pytest.mark.parametrize("caller", CALLERS)
-    def test_entry_module_is_runnable(self, caller: type[PayloadCaller]) -> None:
+    @pytest.mark.parametrize("entry", ENTRIES)
+    def test_entry_module_is_runnable(self, entry: tuple[str, ...]) -> None:
         """У модуля должен быть __main__: иначе `python3 -m` ничего не сделает."""
-        module = importlib.import_module(caller.ENTRY[2])
+        module = importlib.import_module(entry[2])
         assert module.__file__ is not None
         source = Path(module.__file__).read_text()
         assert '__name__ == "__main__"' in source, (
-            f"{caller.ENTRY[2]} не запускается как `python3 -m`"
+            f"{entry[2]} не запускается как `python3 -m`"
         )
 
-    def test_unknown_op_is_reported(self) -> None:
-        """Незнакомая операция обязана падать, а не молчать."""
+    def test_payload_without_channels_refuses_to_start(self) -> None:
+        """Запрос приезжает каналом: без каналов payload падает, а не читает stdin."""
         result = subprocess.run(
             [sys.executable, "-m", "boba.tool.chart.payload"],
-            input='{"op": "нет-такой-op"}',
+            input='{"op": "validate_figure", "spec": "{}"}',
             capture_output=True,
             text=True,
             check=False,
         )
         assert result.returncode != 0
-        assert "unknown chart op" in result.stderr
+        assert Channel.TOOL_ARGS.env_name in result.stderr
 
 
 class TestFieldNames:
-    """call_json дампит по именам полей: alias до payload'а не доедет."""
+    """Запрос уезжает в tool_args по именам полей: alias до payload'а не доедет."""
 
     @pytest.mark.parametrize("model", REQUEST_MODELS)
     def test_request_fields_have_no_alias(self, model: type[BaseModel]) -> None:
@@ -116,23 +115,5 @@ class TestFieldNames:
                 aliased.append(f"{name} -> {field.alias}")
         assert not aliased, (
             f"{model.__name__}: alias у полей {aliased} — "
-            "SandboxCaller.call_json сериализует по именам полей"
+            "запрос сериализуется по именам полей"
         )
-
-
-class TestSecrets:
-    """Конфиг едет в песочницу через stdin: секреты должны быть настоящими."""
-
-    def test_config_of_reveals_secret(self) -> None:
-        class Auth(BaseModel):
-            method: str
-            token: SecretStr
-
-        class Cfg(BaseModel):
-            auth: Auth
-            items: list[Auth]
-
-        auth = Auth(method="bearer", token=SecretStr("s3cret"))
-        revealed = ConfluenceIngestCaller.config_of(Cfg(auth=auth, items=[auth]))
-        assert revealed["auth"]["token"] == "s3cret"
-        assert revealed["items"][0]["token"] == "s3cret"

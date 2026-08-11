@@ -6,24 +6,63 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from enum import StrEnum
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer
 
 from boba.tool.doc.liteparse.protocol import ParseParams
-from boba.web.protocol import WebProfile
+from boba.transport.http import HttpProfile
 
 __all__ = [
     "ConfluenceAttachmentRequest",
+    "ConfluenceContentCall",
     "ConfluenceGrepRequest",
     "ConfluenceGrepRow",
+    "ConfluenceNode",
     "ConfluencePageRequest",
     "ConfluencePageTrailer",
     "ConfluenceSearchHit",
     "ConfluenceSearchRequest",
     "ConfluenceSpace",
     "ConfluenceSpacesRequest",
+    "SecretDump",
 ]
+
+
+class ConfluenceNode(StrEnum):
+    """Узлы реестра стадий над Confluence; значение — оно же поле op запроса."""
+
+    PAGE = "confluence_page"
+    GREP = "confluence_grep"
+    SEARCH = "confluence_search"
+    SPACES = "confluence_spaces"
+    ATTACHMENT = "confluence_attachment"
+    INGEST = "confluence_ingest"
+
+
+class SecretDump:
+    """Дамп модели с раскрытыми SecretStr; зовётся только из field_serializer."""
+
+    @classmethod
+    def of(cls, model: BaseModel) -> dict[str, Any]:
+        """Плоская модель (auth-метод профиля): секреты полей едут значениями."""
+        dumped = model.model_dump(mode="json")
+
+        for name in type(model).model_fields:
+            value = getattr(model, name)
+            if isinstance(value, SecretStr):
+                dumped[name] = value.get_secret_value()
+
+        return dumped
+
+    @classmethod
+    def of_profile(cls, profile: HttpProfile) -> dict[str, Any]:
+        """Транспортный профиль: секреты живут в auth-методе."""
+        dumped = profile.model_dump(mode="json")
+        dumped["auth"] = cls.of(profile.auth)
+
+        return dumped
 
 
 class ConfluenceCall(BaseModel):
@@ -31,33 +70,43 @@ class ConfluenceCall(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    op: str = Field(min_length=1)
+    op: ConfluenceNode
     base_url: str = Field(min_length=1)
-    profile: WebProfile
+    profile: HttpProfile
+
+    @field_serializer("profile", when_used="json")
+    def _dump_profile(self, value: HttpProfile) -> dict[str, Any]:
+        """tool_args песочницы — доверенный канал: только здесь креды раскрыты."""
+        return SecretDump.of_profile(value)
 
 
-class ConfluencePageRequest(ConfluenceCall):
-    """Скачать одну страницу."""
-
-    OP: ClassVar[str] = "confluence_page"
+class ConfluencePageCall(ConfluenceCall):
+    """Общая часть операций над одной страницей: её адрес в Confluence."""
 
     page_id: str = Field(min_length=1)
     body_format: str = Field(min_length=1)
+
+
+class ConfluenceContentCall(ConfluencePageCall):
+    """Общая часть операций над контентом страницы."""
+
     as_markdown: bool
 
 
+class ConfluencePageRequest(ConfluenceContentCall):
+    """Скачать одну страницу."""
+
+
 class ConfluencePageTrailer(BaseModel):
-    """Итог страницы: контент ушёл кадрами, здесь её заголовок."""
+    """Итог страницы: контент ушёл потоком, здесь её заголовок."""
 
     model_config = ConfigDict(extra="forbid")
 
     title: str
 
 
-class ConfluenceGrepRequest(ConfluencePageRequest):
+class ConfluenceGrepRequest(ConfluenceContentCall):
     """Поиск по содержимому одной страницы."""
-
-    OP: ClassVar[str] = "confluence_grep"
 
     pattern: str = Field(min_length=1)
     case_insensitive: bool
@@ -81,8 +130,6 @@ class ConfluenceGrepRow(BaseModel):
 class ConfluenceSearchRequest(ConfluenceCall):
     """Поиск страниц по CQL."""
 
-    OP: ClassVar[str] = "confluence_search"
-
     cql: str = Field(min_length=1)
     limit: int = Field(ge=1)
     snippet_chars: int = Field(ge=1)
@@ -103,8 +150,6 @@ class ConfluenceSearchHit(BaseModel):
 class ConfluenceSpacesRequest(ConfluenceCall):
     """Список пространств."""
 
-    OP: ClassVar[str] = "confluence_spaces"
-
     space_type: str = Field(min_length=1)
     limit: int = Field(ge=1)
 
@@ -119,12 +164,32 @@ class ConfluenceSpace(BaseModel):
     type: str
 
 
-class ConfluenceAttachmentRequest(ConfluenceCall):
-    """Скачать вложение страницы и распарсить его."""
+class ConfluenceAttachmentRequest(ConfluencePageCall):
+    """Скачать вложение страницы и распарсить его.
 
-    OP: ClassVar[str] = "confluence_attachment"
+    Настройки парсера лежат полями: их сводка ошибок точнее вложенной модели,
+    а OCR-ручки вызова и значения конфига попадают в запрос одинаково.
+    """
 
-    page_id: str = Field(min_length=1)
-    body_format: str = Field(min_length=1)
     filename: str = Field(min_length=1)
-    params: ParseParams
+    ocr_enabled: bool = Field(description="Распознавать текст по картинкам.")
+    ocr_language: str = Field(
+        min_length=1,
+        description="Язык OCR в формате Tesseract: 'rus+eng', 'eng', 'rus'.",
+    )
+    max_pages: int = Field(ge=0, description="Лимит страниц; 0 — без лимита.")
+    tessdata_path: str = Field(
+        min_length=1,
+        description="Каталог моделей OCR внутри песочницы.",
+    )
+    num_workers: int = Field(ge=1, description="Параллелизм OCR.")
+
+    def parse_params(self) -> ParseParams:
+        """Настройки движка liteparse из полей запроса."""
+        return ParseParams(
+            ocr_enabled=self.ocr_enabled,
+            ocr_language=self.ocr_language,
+            max_pages=self.max_pages,
+            tessdata_path=self.tessdata_path,
+            num_workers=self.num_workers,
+        )

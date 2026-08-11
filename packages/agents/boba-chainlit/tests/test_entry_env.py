@@ -29,6 +29,13 @@ CONFIG = """
 
 
 class TestExportEnv:
+    @pytest.fixture(autouse=True)
+    def _isolated_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """export_env пишет в os.environ: чужим тестам эти значения не нужны."""
+        monkeypatch.delenv(AppEntry.APP_ROOT_ENV, raising=False)
+        monkeypatch.delenv(AppEntry.ROOT_PATH_ENV, raising=False)
+        monkeypatch.delenv(AppEntry.AUTH_SECRET_ENV, raising=False)
+
     @staticmethod
     def _config(tmp_path: Path, root: str) -> Path:
         path = tmp_path / "config.toml"
@@ -38,10 +45,6 @@ class TestExportEnv:
     def test_env_taken_from_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv(AppEntry.APP_ROOT_ENV, raising=False)
-        monkeypatch.delenv(AppEntry.ROOT_PATH_ENV, raising=False)
-        monkeypatch.delenv(AppEntry.AUTH_SECRET_ENV, raising=False)
-
         root = tmp_path / "data"
         AppEntry.export_env(self._config(tmp_path, str(root)))
 

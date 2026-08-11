@@ -41,13 +41,13 @@ class DocText:
     def mark(text: str, truncated: bool, limit: int) -> str:
         if not truncated:
             return text
-        return f"{text}\n\n[обрезано до {limit} символов]"
+        return f"{text}\n\n[truncated to {limit} characters]"
 
     @staticmethod
     def search_note(path: str, matches: int, limit_reached: bool) -> str:
-        note = f"{path}: совпадений {matches}"
+        note = f"{path}: {matches} match(es)"
         if limit_reached:
-            note += " (достигнут лимит search_max_matches)"
+            note += " (search_max_matches limit reached)"
         return note
 
 
@@ -123,7 +123,7 @@ def build_doc_tools(
         return pack_result(
             TableResult(
                 rows=rows,
-                note=f"{path}: страниц {answer.num_pages}",
+                note=f"{path}: {answer.num_pages} page(s)",
                 metadata={"path": path},
             )
         )

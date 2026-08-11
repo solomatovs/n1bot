@@ -12,6 +12,7 @@ from boba.db.pgvector import PostgresStoreConfig
 from boba.tool.kb.caller import KbCaller
 from boba.tool.kb.embedding import EmbeddingModel
 from boba.tool.kb.models import KnowledgeBaseError, SearchHit
+from boba.tool.kb.protocol import KbNode
 from boba.toolkit.launcher import LauncherError, RowCollector
 
 logger = logging.getLogger(__name__)
@@ -23,8 +24,7 @@ __all__ = [
 
 
 class PostgresKnowledgeBaseConfig(PostgresStoreConfig):
-    """Composite-конфиг read-side KB: языки FTS зашиты и в SQL-шаблоны, и в DDL
-    tsv-колонки (migrations/002_multilang_tsv.sql) — оба места должны быть синхронны."""
+    """Composite-конфиг read-side KB: соединение, таблицы, эмбеддер и потолок выдачи."""
 
     embedding: EmbeddingModel
     max_result_chars: int = Field(
@@ -51,48 +51,41 @@ class PostgresKnowledgeBase:
             cfg.tables.chunks_table,
         )
 
-    def _search(  # noqa: PLR0913
+    def _search(
         self,
         *,
-        op: str,
+        node: KbNode,
         collections: list[str],
         query: str,
         top_k: int,
         snippet_chars: int,
-        sql_template: str,
     ) -> Iterable[SearchHit]:
         """Эмбеддинг и SQL исполняет payload; здесь только разбор строк."""
         collector = RowCollector(
             max_chars=self._cfg.max_result_chars,
             limit_rows=top_k,
         )
+
         try:
             self._caller.search(
-                op=op,
-                connection=self._cfg.connection,
-                sql_template=sql_template,
-                schema_name=self._cfg.tables.pg_schema,
-                chunks_table=self._cfg.tables.chunks_table,
+                node=node,
                 collections=collections,
                 query=query,
                 top_k=top_k,
                 snippet_chars=snippet_chars,
-                embedding={
-                    "model": self._cfg.embedding.model,
-                    "cache_dir": self._cfg.embedding.cache_dir,
-                },
                 sink=collector,
             )
         except LauncherError as e:
             raise KnowledgeBaseError(
                 f"kb search failed for collections {collections!r}: {e}",
             ) from e
+
         for row in collector.rows():
-            yield self._hit(row, op=op)
+            yield self._hit(row, node=node)
 
     @classmethod
-    def _hit(cls, row: dict[str, Any], *, op: str) -> SearchHit:
-        if op == KbCaller.VECTOR_OP:
+    def _hit(cls, row: dict[str, Any], *, node: KbNode) -> SearchHit:
+        if node is KbNode.VECTOR:
             distance = float(row["distance"])
         else:
             distance = -float(row["rank"])
@@ -111,15 +104,13 @@ class PostgresKnowledgeBase:
         query: str,
         top_k: int,
         snippet_chars: int,
-        sql_template: str,
     ) -> Iterable[SearchHit]:
         return self._search(
-            op=KbCaller.VECTOR_OP,
+            node=KbNode.VECTOR,
             collections=collections,
             query=query,
             top_k=top_k,
             snippet_chars=snippet_chars,
-            sql_template=sql_template,
         )
 
     def fts_search(
@@ -129,15 +120,13 @@ class PostgresKnowledgeBase:
         query: str,
         top_k: int,
         snippet_chars: int,
-        sql_template: str,
     ) -> Iterable[SearchHit]:
         return self._search(
-            op=KbCaller.FTS_OP,
+            node=KbNode.FTS,
             collections=collections,
             query=query,
             top_k=top_k,
             snippet_chars=snippet_chars,
-            sql_template=sql_template,
         )
 
     @staticmethod
