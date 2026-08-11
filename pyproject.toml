@@ -26,10 +26,11 @@ pythonpath = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
 ]
-addopts = ["--strict-markers", "-m", "not integration and not ui"]
+addopts = ["--strict-markers", "-m", "not integration and not ui and not load"]
 markers = [
     "integration: тест ходит во внешние сервисы (Confluence/Ollama/...). Запускать вручную: `pytest -m integration`. По умолчанию исключаются.",
     "ui: тест поднимает приложение и браузер (playwright + postgres). Запускать вручную: `pytest -m ui`. По умолчанию исключаются.",
+    "load: нагрузка и аварийные завершения песочницы; минуты и десятки процессов. Запускать вручную: `pytest -m load`. По умолчанию исключаются.",
 ]
 
 [tool.pyright]
@@ -100,6 +101,7 @@ known-first-party = ["boba"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251"]
+"build/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
 
 [tool.uv.workspace]
 members = [

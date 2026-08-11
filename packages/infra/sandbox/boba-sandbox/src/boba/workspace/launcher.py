@@ -16,7 +16,7 @@ import stat as stat_module
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import BinaryIO, ClassVar
@@ -45,6 +45,7 @@ __all__ = [
     "LauncherOptions",
     "MountError",
     "NotRegularFileError",
+    "PartialCopy",
     "ReadHeader",
     "ReadWindow",
     "ResourceLimits",
@@ -205,6 +206,54 @@ class SparseCopier:
         return start
 
 
+class PartialCopy:
+    """Имя недокопированного образа: `<image>.tmp.<pid>` владельца копии."""
+
+    SUFFIX: ClassVar[str] = ".tmp."
+    PROC: ClassVar[str] = "/proc"
+
+    @classmethod
+    def render(cls, image: str, pid: int) -> str:
+        return f"{image}{cls.SUFFIX}{pid}"
+
+    @classmethod
+    def owner_of(cls, image: str, path: str) -> int | None:
+        """Pid из имени; None — имя не похоже на частичную копию образа."""
+        prefix = f"{image}{cls.SUFFIX}"
+        if not path.startswith(prefix):
+            return None
+
+        tail = path[len(prefix) :]
+        if not tail.isdigit():
+            return None
+
+        return int(tail)
+
+    @classmethod
+    def abandoned(cls, image: str) -> Iterator[str]:
+        """Копии, чей процесс уже мёртв: их не докопирует никто."""
+        directory = os.path.dirname(image)
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return
+
+        for name in names:
+            path = os.path.join(directory, name)
+            owner = cls.owner_of(image, path)
+            if owner is None:
+                continue
+
+            if cls._alive(owner):
+                continue
+
+            yield path
+
+    @classmethod
+    def _alive(cls, pid: int) -> bool:
+        return os.path.exists(os.path.join(cls.PROC, str(pid)))
+
+
 class ImageStore:
     """Готовит образы: flock сериализует доступ, шаблон копируется однажды."""
 
@@ -228,6 +277,8 @@ class ImageStore:
         self._lock(image, fcntl.LOCK_EX)
         waited_ms = int((time.monotonic() - started) * 1000)
         trace(f"lock on {image} acquired in {waited_ms}ms")
+
+        self._drop_abandoned(image)
 
         if os.path.exists(image):
             trace(f"image {image} already exists ({os.path.getsize(image)} bytes)")
@@ -293,11 +344,23 @@ class ImageStore:
 
             time.sleep(self.LOCK_POLL_SEC)
 
+    def _drop_abandoned(self, image: str) -> None:
+        """Под своим локом чужая частичная копия — только от умершего процесса."""
+        for path in PartialCopy.abandoned(image):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                trace(f"cannot remove abandoned copy {path}: {exc}")
+                continue
+
+            trace(f"abandoned partial copy removed: {path}")
+
     def _materialize(self, image: str) -> None:
         if not os.path.exists(self._template):
             msg = f"template image {self._template!r} not found"
             raise MountError(msg)
-        tmp = f"{image}.tmp.{os.getpid()}"
+
+        tmp = PartialCopy.render(image, os.getpid())
         started = time.monotonic()
         try:
             self._copier.copy(self._template, tmp)
@@ -389,39 +452,6 @@ class FuseMounter:
                 if line.split()[4] == target:
                     return True
         return False
-
-    def reclaim(self, mnt: str) -> None:
-        """Отцепляет точку, осиротевшую после гибели процесса-владельца.
-
-        Актуально только для маунтов в namespace хоста: SIGKILL валит fuse2fs
-        без размонтирования, точка остаётся в mountinfo битой — stat даёт
-        ENOTCONN, mkdir даёт EEXIST. Приватные namespace лаунчера ядро
-        прибирает само.
-        """
-        stale = False
-        try:
-            os.stat(mnt)
-        except FileNotFoundError:
-            return
-        except OSError:
-            stale = True
-
-        if not stale and not self.is_mounted(os.path.realpath(mnt)):
-            return
-
-        try:
-            fusermount = self._binaries.resolve_any(
-                SandboxBinary.FUSERMOUNT3,
-                SandboxBinary.FUSERMOUNT,
-            )
-        except UntrustedBinaryError as exc:
-            trace(f"stale mount at {mnt}: {exc}")
-            return
-
-        subprocess.run(  # noqa: S603
-            [fusermount, "-uz", mnt], check=False, capture_output=True
-        )
-        trace(f"stale mount reclaimed: {mnt}")
 
     def _wait_mounted(self, mnt: str, daemon: subprocess.Popen[bytes]) -> None:
         target = os.path.realpath(mnt)

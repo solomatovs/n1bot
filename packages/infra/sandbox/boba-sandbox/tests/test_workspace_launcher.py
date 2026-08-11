@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -25,6 +26,7 @@ from boba.workspace.launcher import (
     LauncherMarker,
     LauncherOptions,
     MountError,
+    PartialCopy,
     ReadHeader,
     ReadWindow,
     ResourceLimits,
@@ -222,6 +224,50 @@ class TestImageStore:
             if ".tmp." in path.name:
                 leftovers.append(path)
         assert not leftovers
+
+    DEAD_PID: ClassVar[int] = 999_999
+    """Pid, которого нет: владелец частичной копии умер, не докопировав её."""
+
+    LIVE_PID: ClassVar[int] = 1
+    """Заведомо живой владелец; свой pid не годится — его займёт материализация."""
+
+    def test_abandoned_partial_copy_removed_on_acquire(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        image = tmp_path / "img"
+        partial = Path(PartialCopy.render(str(image), self.DEAD_PID))
+        partial.write_bytes(b"half a copy")
+        store = self._store(template)
+
+        try:
+            store.acquire(str(image))
+        finally:
+            store.release_all()
+
+        assert image.exists()
+        assert not partial.exists()
+
+    def test_partial_copy_of_a_live_owner_kept_on_acquire(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        image = tmp_path / "img"
+        partial = Path(PartialCopy.render(str(image), self.LIVE_PID))
+        partial.write_bytes(b"copy in progress")
+        store = self._store(template)
+
+        try:
+            store.acquire(str(image))
+        finally:
+            store.release_all()
+
+        assert partial.exists()
+
+    def test_alien_name_is_not_a_partial_copy(self, tmp_path: Path) -> None:
+        image = str(tmp_path / "img")
+
+        assert PartialCopy.owner_of(image, f"{image}.tmp.notapid") is None
+        assert PartialCopy.owner_of(image, f"{image}.backup") is None
+        assert PartialCopy.owner_of(image, PartialCopy.render(image, 42)) == 42
 
     def test_lock_held_blocks_second_owner(
         self, tmp_path: Path, template: Path

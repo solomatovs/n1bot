@@ -24,6 +24,7 @@ from boba.chainlit.data.storage import (
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.runner import SandboxMountError
 from boba.tool.shell.tools import build_bash_tool
 from boba.toolkit.binaries import TrustedBinaries
 from boba.workspace.launcher import (
@@ -825,7 +826,7 @@ class TestLiveImage:
         bad = tmp_path / "bad.ext4"
         bad.write_bytes(b"not an ext4 image")
         tool = _bash(tmp_path, bad)
-        with pytest.raises(RuntimeError, match="image not mounted"):
+        with pytest.raises(SandboxMountError, match="image not mounted"):
             _invoke(tool, "true")
 
     def test_broken_template_stays_inside_storage_errors(self, tmp_path: Path) -> None:

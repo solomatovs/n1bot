@@ -27,8 +27,6 @@ class SandboxBinary(StrEnum):
 
     BWRAP = "bwrap"
     FUSE2FS = "fuse2fs"
-    FUSERMOUNT3 = "fusermount3"
-    FUSERMOUNT = "fusermount"
 
 
 class TrustedBinaries(BaseModel):
@@ -63,7 +61,7 @@ class TrustedBinaries(BaseModel):
         return self.resolve_any(binary)
 
     def resolve_any(self, *binaries: SandboxBinary) -> str:
-        """Первый найденный из перечисленных: fusermount3, иначе fusermount."""
+        """Первый найденный из перечисленных, в порядке приоритета."""
         if not binaries:
             msg = "trusted binaries: no binary requested"
             raise UntrustedBinaryError(msg)

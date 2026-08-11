@@ -42,7 +42,7 @@ def check(name, fn):
     try:
         fn()
         print(f"  OK   {name}")
-    except Exception as e:  # noqa: BLE001 - тест, ловим всё намеренно
+    except Exception as e:  # тест, ловим всё намеренно
         print(f"  FAIL {name}: {e!r}")
         failures.append(name)
 
@@ -51,7 +51,7 @@ def warn(name, fn):
     try:
         fn()
         print(f"  OK   {name}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"  WARN {name}: {e!r}")
 
 

@@ -16,6 +16,8 @@ from boba.sandbox.profile import (
     TmpfsSpec,
 )
 from boba.sandbox.runner import (
+    SandboxLaunchError,
+    SandboxMountError,
     SandboxOutcome,
     SandboxRunner,
     ToolCallContext,
@@ -31,6 +33,8 @@ __all__ = [
     "SandboxCaller",
     "SandboxConfig",
     "SandboxDiagnostics",
+    "SandboxLaunchError",
+    "SandboxMountError",
     "SandboxOutcome",
     "SandboxPayload",
     "SandboxPayloadError",
