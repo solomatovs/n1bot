@@ -574,6 +574,9 @@ extract:
 	}
 	echo ">>> артефакты песочницы на месте"
 
+	# стабильный путь для dev.sh и launch.json: они не знают версию
+	ln -sfn "$(RELEASE_NAME)" "$(RELEASE_DIR)/current"
+
 	echo ">>> релиз готов: $(OUT)  ($$(du -sh --apparent-size "$(OUT)" 2>/dev/null | cut -f1))"
 	echo "    третья сторона: $$(du -sh --apparent-size "$(OUT)/third" 2>/dev/null | cut -f1)"
 	echo "    песочница:      $$(du -sh --apparent-size "$(OUT)/sandbox" 2>/dev/null | cut -f1)"

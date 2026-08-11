@@ -12,6 +12,7 @@ from langchain_core.outputs import ChatGenerationChunk, GenerationChunk
 from langchain_core.tracers.base import AsyncBaseTracer
 from typing_extensions import ParamSpec, override
 
+from boba.chainlit.agent.chat_model import ResponseField
 from boba.chainlit.chat.errors import show_error
 from boba.chainlit.rendering.chat_view import ChatView
 from boba.chainlit.rendering.stream_view import StreamNote, ToolStreams
@@ -65,6 +66,15 @@ class AgentTracer(AsyncBaseTracer):
         """Шаги инструментов, ещё не завершённые ходом."""
         return list(self._tool_steps.values())
 
+    @property
+    def pending_reasoning(self) -> str:
+        """Рассуждения незавершённых прогонов: их ждёт история после остановки."""
+        parts: list[str] = []
+        for text in self._reasoning.values():
+            parts.append(text)
+
+        return "".join(parts)
+
     def _set_context(self) -> None:
         context_var.set(self._context)
 
@@ -72,11 +82,19 @@ class AgentTracer(AsyncBaseTracer):
     def _reasoning_of(message: Any) -> str:
         if message is None:
             return ""
-        value = getattr(message, "reasoning_content", None) or (
-            getattr(message, "additional_kwargs", None) or {}
-        ).get("reasoning_content")
+
+        value = getattr(message, "reasoning_content", None)
         if value:
             return str(value)
+
+        extra = getattr(message, "additional_kwargs", None)
+        if not extra:
+            return ""
+
+        value = extra.get(ResponseField.REASONING_CONTENT.value)
+        if value:
+            return str(value)
+
         return ""
 
     @override
@@ -91,11 +109,13 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        if reasoning := self._reasoning_of(getattr(chunk, "message", None)):
+        message = getattr(chunk, "message", None)
+
+        if reasoning := self._reasoning_of(message):
             run_key = str(run_id)
-            if run_key not in self._reasoning:
-                await self._view.container()
             self._reasoning[run_key] = self._reasoning.get(run_key, "") + reasoning
+            await self._view.stream_thinking(reasoning, getattr(message, "id", None))
+
         return await super().on_llm_new_token(
             token,
             chunk=chunk,
@@ -115,20 +135,43 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        reasoning = self._reasoning.pop(str(run_id), "")
+        streamed = self._reasoning.pop(str(run_id), "")
+        await self._view.close_thinking()
 
         message: Any = None
         if response.generations and response.generations[0]:
             message = getattr(response.generations[0][0], "message", None)
 
-        if text := (reasoning or self._reasoning_of(message)):
-            message_id = getattr(message, "id", None)
-            await self._view.thinking(text, message_id)
+        # рассуждения без стрима приходят разом в итоговом сообщении
+        if not streamed:
+            if text := self._reasoning_of(message):
+                await self._view.thinking(text, getattr(message, "id", None))
 
         return await super().on_llm_end(
             response,
             run_id=run_id,
             parent_run_id=parent_run_id,
+            **kwargs,
+        )
+
+    @override
+    @_visible_failure
+    async def on_llm_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._set_context()
+        await self._view.close_thinking()
+        return await super().on_llm_error(
+            error,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
             **kwargs,
         )
 
@@ -233,11 +276,18 @@ class AgentTracer(AsyncBaseTracer):
 
     @_visible_failure
     async def stop_pending(self, note: str) -> None:
-        """Закрыть шаги инструментов, оставшиеся в работе после остановки."""
+        """Закрыть рассуждения и шаги инструментов, оставшиеся после остановки.
+
+        Накопленный reasoning тут не чистится: сразу после отрисовки его
+        забирает история хода.
+        """
         self._set_context()
+        await self._view.close_thinking()
+
         while self._stream_calls:
             run_key, _ = next(iter(self._stream_calls.items()))
             self._finish_stream(run_key, StreamNote.STOPPED)
+
         while self._tool_steps:
             _, step = self._tool_steps.popitem()
             await self._view.tool_stopped(step, note)

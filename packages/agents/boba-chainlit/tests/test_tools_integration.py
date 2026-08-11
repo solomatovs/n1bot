@@ -57,14 +57,14 @@ _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS = _REPO / "build" / "src" / "sandbox" / "rootfs"
 
 _UID = os.getuid()
-_DELEGATED = f"/sys/fs/cgroup/user.slice/user-{_UID}.slice/user@{_UID}.service"
+_DELEGATED = f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service"
 
 
 def _inside_delegated_scope() -> bool:
     """Мигрировать в cgroup_base можно только из его же поддерева."""
     with open("/proc/self/cgroup") as f:
         current = f.read().strip().split(":")[-1]
-    return current.startswith(f"/user.slice/user-{_UID}.slice/user@{_UID}.service")
+    return current.startswith(f"/boba.slice/user-{_UID}.slice/user@{_UID}.service")
 
 
 pytestmark = [
