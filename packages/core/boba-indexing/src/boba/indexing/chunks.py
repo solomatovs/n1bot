@@ -123,6 +123,7 @@ class ChunkSummary(Generic[T]):
     metadata: Metadata = field(default_factory=Metadata.empty)
     tags: frozenset[str] = field(default_factory=frozenset)
 
+
 T = TypeVar("T")
 
 
@@ -179,6 +180,7 @@ class SourceBasedChunkId(ChunkIdGenerator[T]):
     ) -> ChunkId:
         """Скомпоновать ChunkId из digest'а и индекса чанка."""
         return ChunkId(f"{digest[:prefix_length]}:{chunk_index}")
+
 
 T = TypeVar("T")
 T_contra = TypeVar("T_contra", contravariant=True)

@@ -38,9 +38,7 @@ class BaseError(Exception):
 class ExternalServiceError(BaseError):
     "Ошибка внешнего сервиса (postgres, ldap...): view/llm/log видят сообщение как есть"
 
-    def __init__(
-        self, service_name: str, message: str
-    ):
+    def __init__(self, service_name: str, message: str):
         super().__init__(message)
         self.message = message
         self.service_name = service_name
@@ -54,6 +52,7 @@ class ExternalServiceError(BaseError):
             status_code=self.status_code,
             content=self.message,
         )
+
 
 class InternalServiceError(BaseError):
     "Внутренняя ошибка (наша вина): пользователю код для поддержки, детали в лог"
@@ -76,6 +75,7 @@ class InternalServiceError(BaseError):
             status_code=self.status_code,
             content=self.internal_detail,
         )
+
 
 def to_domain(e: Exception) -> BaseError:
     "Заворачивает любое НЕ доменное исключение в InternalServiceError"
@@ -137,6 +137,7 @@ class AuthorizationError(BaseError):
             content=self.message,
         )
 
+
 class ToolExecutionError(BaseError):
     "Инструмент агента упал: llm видит и может переиграть, пользователю не показываем"
 
@@ -145,8 +146,10 @@ class ToolExecutionError(BaseError):
         self.message = message
         self.tool_name = tool_name
 
+
 class RateLimitError(ExternalServiceError):
     "Превышен лимит/квота внешнего провайдера (429), частный случай ExternalServiceError"
+
 
 class AgentError(InternalServiceError):
     "Сломался сам граф/модель (не провайдер), частный случай InternalServiceError"

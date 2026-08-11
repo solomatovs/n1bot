@@ -14,13 +14,13 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.chainlit.auth import ChainlitAuthInstaller
-from boba.chainlit.auth.errors import DomainErrorMiddleware
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
     AppConfig,
     ChainlitExtendConfig,
 )
 from boba.chainlit.infra.di import Container
+from boba.chainlit.infra.error_middleware import DomainErrorMiddleware
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
 
 
@@ -96,7 +96,7 @@ def _use_domain_error(app: FastAPI):
 
 
 def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
-    import boba.chainlit.chat.callback  # type: ignore # noqa: F401, PLC0415
+    import boba.chainlit.infra.callback  # type: ignore # noqa: F401, PLC0415
     from chainlit.markdown import init_markdown  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
     from chainlit.server import sio  # noqa: PLC0415
@@ -131,15 +131,15 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
 
 def _use_file_serving(c: AppConfig) -> None:
-    from boba.chainlit.auth.errors import InternalServiceError  # noqa: PLC0415
-    from boba.chainlit.chat.data.data_layer import PostgresDataLayer  # noqa: PLC0415
-    from boba.chainlit.chat.data.object_key import AttachmentUrl  # noqa: PLC0415
-    from boba.chainlit.chat.data.storage import StorageFactory  # noqa: PLC0415
-    from boba.chainlit.chat.data.upload import (  # noqa: PLC0415
+    from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
+    from boba.chainlit.data.storage import StorageFactory  # noqa: PLC0415
+    from boba.chainlit.data.upload import (  # noqa: PLC0415
         AttachmentServing,
         UploadPolicy,
         UploadRoute,
     )
+    from boba.chainlit.domain.errors import InternalServiceError  # noqa: PLC0415
+    from boba.chainlit.domain.keys import AttachmentUrl  # noqa: PLC0415
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
@@ -165,15 +165,15 @@ def _use_file_serving(c: AppConfig) -> None:
 
 def _use_stream_journal(c: AppConfig) -> None:
     """Журнал вывода инструментов; без секции в конфиге потоков нет."""
-    from boba.chainlit.chat.data.object_key import StreamUrl  # noqa: PLC0415
-    from boba.chainlit.chat.data.stream_journal import (  # noqa: PLC0415
+    from boba.chainlit.data.stream_journal import (  # noqa: PLC0415
         DirVault,
         StreamJournal,
     )
-    from boba.chainlit.chat.data.upload import (  # noqa: PLC0415
+    from boba.chainlit.data.upload import (  # noqa: PLC0415
         StreamServing,
         UploadPolicy,
     )
+    from boba.chainlit.domain.keys import StreamUrl  # noqa: PLC0415
     from boba.chainlit.rendering.stream_view import ToolStreams  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 

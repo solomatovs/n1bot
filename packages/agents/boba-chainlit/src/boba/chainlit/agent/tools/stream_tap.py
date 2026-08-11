@@ -14,7 +14,7 @@ from typing import cast
 
 from langchain_core.tools import BaseTool
 
-from boba.chainlit.infra.session import current_thread_id
+from boba.chainlit.domain.session import current_thread_id
 from boba.chainlit.rendering.stream_view import ToolStreams
 from boba.toolkit.stream import ToolStreamTap
 
@@ -35,9 +35,7 @@ class ToolStreamTapGuard:
                 getattr(tool, "coroutine", None),
             )
             if callable(coroutine):
-                tool.coroutine = ToolStreamTapGuard._wrap_async(
-                    coroutine, tool.name
-                )
+                tool.coroutine = ToolStreamTapGuard._wrap_async(coroutine, tool.name)
         return tools
 
     @staticmethod

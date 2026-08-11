@@ -34,21 +34,21 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
-from boba.chainlit.chat.data.fields import ElementField, FileField
-from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
-from boba.chainlit.chat.data.storage import (
+from boba.chainlit.domain.fields import ElementField, FileField
+from boba.chainlit.domain.stream import StreamJournalHub
+from boba.chainlit.domain.keys import ObjectKey, ThreadDir
+from boba.chainlit.data.storage import (
     LocalStorageClient,
     OpenedStream,
     StorageClient,
     StorageFullError,
     StorageNotFoundError,
 )
-from boba.chainlit.chat.data.stream_journal import (
+from boba.chainlit.data.stream_journal import (
     StreamJournalError,
-    StreamJournalHub,
     StreamKey,
 )
-from boba.chainlit.infra.config import LocalStorageConfig
+from boba.chainlit.domain.config import LocalStorageConfig
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer

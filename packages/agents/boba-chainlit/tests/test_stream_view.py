@@ -22,9 +22,15 @@ from langchain_core.messages import ToolMessage
 
 from boba.chainlit.agent.tools.stream_tap import ToolStreamTapGuard
 from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.data.stream_journal import DirVault, StreamJournal
+from boba.chainlit.domain.stream import JournalWindow
+from boba.chainlit.data.stream_journal import DirVault, StreamJournal
 from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind
-from boba.chainlit.rendering.chat_view import ChatSink, ChatView, RecordingSink, StepRole
+from boba.chainlit.rendering.chat_view import (
+    ChatSink,
+    ChatView,
+    RecordingSink,
+    StepRole,
+)
 from boba.chainlit.rendering.stream_view import (
     StreamNote,
     StreamScreen,
@@ -270,7 +276,7 @@ class TestPump:
 
         assert channel.contents
         for content in channel.contents:
-            assert len(content.text.encode()) <= StreamJournal.WINDOW_BYTES
+            assert len(content.text.encode()) <= JournalWindow.BYTES
 
     def test_pushes_are_coalesced(self) -> None:
         channel = run(self._pumped())
@@ -336,14 +342,10 @@ class TestWindowAction:
         self._recorded()
 
         first = run(
-            window_stream_action(
-                USER, THREAD, {"call_id": CALL_ID, "offset": 0}
-            )
+            window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
         )
         middle = run(
-            window_stream_action(
-                USER, THREAD, {"call_id": CALL_ID, "offset": 70000}
-            )
+            window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 70000})
         )
 
         assert first["stream"]["offset"] == 0
@@ -355,9 +357,7 @@ class TestWindowAction:
         self._recorded()
 
         beyond = run(
-            window_stream_action(
-                USER, THREAD, {"call_id": CALL_ID, "offset": 10**9}
-            )
+            window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 10**9})
         )
 
         assert beyond["text"] == ""
@@ -365,9 +365,7 @@ class TestWindowAction:
 
     def test_unknown_call_gives_empty_answer(self) -> None:
         answer = run(
-            window_stream_action(
-                USER, THREAD, {"call_id": "no-such-call", "offset": 0}
-            )
+            window_stream_action(USER, THREAD, {"call_id": "no-such-call", "offset": 0})
         )
 
         assert answer == {}
@@ -378,9 +376,7 @@ class TestWindowAction:
             stream.recorder.feed(b"live data")
             task = await StreamScreen.show(THREAD, stream, RecordingChannel())
 
-            await window_stream_action(
-                USER, THREAD, {"call_id": CALL_ID, "offset": 0}
-            )
+            await window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
             await asyncio.gather(task, return_exceptions=True)
             return task
 
@@ -402,9 +398,7 @@ class TestShowAction:
         async def scenario() -> None:
             piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=-1)
             assert piece is not None
-            await StreamScreen.recorded(
-                THREAD, CALL_ID, piece, channel, follow=True
-            )
+            await StreamScreen.recorded(THREAD, CALL_ID, piece, channel, follow=True)
 
         run(scenario())
 
@@ -531,8 +525,8 @@ class TestStreamDownload:
         from chainlit.user import PersistedUser
         from fastapi import FastAPI
 
-        from boba.chainlit.chat.data.object_key import StreamUrl
-        from boba.chainlit.chat.data.upload import StreamServing, UploadPolicy
+        from boba.chainlit.domain.keys import StreamUrl
+        from boba.chainlit.data.upload import StreamServing, UploadPolicy
         from boba.chainlit.infra.config import LocalStorageConfig
 
         # files_dir на серве подменяется корнем тома пользователя; здесь нужен

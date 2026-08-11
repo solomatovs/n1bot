@@ -33,7 +33,6 @@ async def _astream(
         yield item
 
 
-
 @pytest.fixture(scope="module")
 def anyio_backend() -> str:
     return "asyncio"
@@ -50,7 +49,6 @@ class _StaticIdGenerator(ChunkIdGenerator[str]):
     def compute(self, section: Section[str], chunk_index: int) -> ChunkId:
         del section
         return ChunkId(f"static:{chunk_index}")
-
 
 
 async def test_to_chunk_metadata_is_merged_into_chunk():

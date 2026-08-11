@@ -21,7 +21,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import chainlit as cl
-from boba.chainlit.auth.errors import (
+from boba.chainlit.domain.errors import (
     AuthenticationError,
     AuthorizationError,
     BaseError,
@@ -49,7 +49,7 @@ from boba.chainlit.auth.local import (
     RoleExcludeConfig,
     RoleMappingConfig,
 )
-from boba.chainlit.infra.session import UserMetadataField
+from boba.chainlit.domain.session import UserMetadataField
 from boba.krb import (
     AcceptConfig,
     CcacheRegistry,

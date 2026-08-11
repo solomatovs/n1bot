@@ -158,8 +158,7 @@ class ConfluenceIngestTools:
                 Field(
                     min_length=1,
                     description=(
-                        "CQL-запрос Confluence, например "
-                        '`space = DQ AND type = page`.'
+                        "CQL-запрос Confluence, например `space = DQ AND type = page`."
                     ),
                 ),
             ],
@@ -181,7 +180,9 @@ class ConfluenceIngestTools:
             try:
                 summary = confluence_ingest_cql(
                     owner._parser_cfg(ocr_enabled, num_workers, ocr_language),
-                    owner._ingest, cql=cql, prune_missing=prune_missing
+                    owner._ingest,
+                    cql=cql,
+                    prune_missing=prune_missing,
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))

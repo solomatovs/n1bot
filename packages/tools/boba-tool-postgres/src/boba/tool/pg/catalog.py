@@ -71,9 +71,7 @@ class PgCatalog:
     COLUMNS_ORDER: ClassVar[sql.SQL] = sql.SQL("ORDER BY n.nspname, a.attnum")
 
     @classmethod
-    def tables(
-        cls, pg_schema: str | None, table_pattern: str | None
-    ) -> PgCatalogQuery:
+    def tables(cls, pg_schema: str | None, table_pattern: str | None) -> PgCatalogQuery:
         """Отношения подключения; пустые фильтры не сужают выдачу."""
         conditions: list[sql.Composable] = [sql.SQL("c.relkind = ANY (%s)")]
         params: list[Any] = [list(cls.RELKINDS)]

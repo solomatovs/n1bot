@@ -20,7 +20,7 @@ from typing import Any, ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict
 
 import chainlit as cl
-from boba.chainlit.chat.data.object_key import ObjectKey
+from boba.chainlit.domain.keys import ObjectKey
 from boba.toolkit.result import CustomElementResult, DiagramResult
 
 __all__ = [
@@ -345,10 +345,7 @@ class CanvasPanel:
         if viewer is None:
             await cls._explain(key)
             hint = CanvasRegistry.suffixes_hint()
-            msg = (
-                f"no canvas viewer for {key.in_workspace()}; "
-                f"supported: {hint}"
-            )
+            msg = f"no canvas viewer for {key.in_workspace()}; supported: {hint}"
             raise CanvasError(CanvasErrorKind.NO_VIEWER, msg)
 
         return await viewer.open(key, cls._push)

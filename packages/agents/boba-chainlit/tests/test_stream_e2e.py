@@ -32,7 +32,7 @@ from test_canvas_e2e import (  # noqa: F401
 
 __all__ = ["anyio_backend", "app_server", "panel"]
 
-from boba.chainlit.chat.data.stream_journal import DirVault, StreamJournal, StreamKey
+from boba.chainlit.data.stream_journal import DirVault, StreamJournal, StreamKey
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
@@ -157,9 +157,7 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
     recorder.feed("".join(chunk).encode())
     recorder.close("rc=0")
 
-    live_key = StreamKey(
-        user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID
-    )
+    live_key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID)
     live = journal.recorder(live_key, "bash", lambda: None, frozenset())
     for index in range(LIVE_LINES):
         live.feed(f"V{index:07d},row\n".encode())

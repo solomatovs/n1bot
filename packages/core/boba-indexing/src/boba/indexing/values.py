@@ -26,6 +26,7 @@ __all__ = [
     "TransportKeys",
 ]
 
+
 @dataclass(frozen=True)
 class ChunkLocation:
     """Положение в исходном content: start включительно, end исключительно (полуинтервал)."""
@@ -33,8 +34,10 @@ class ChunkLocation:
     start: int
     end: int
 
+
 CollectionId = NewType("CollectionId", str)
 """Идентификатор коллекции в векторной базе; на один backend — много коллекций."""
+
 
 class ContentHash(ABC):
     """Hash-значение чанка."""
@@ -76,6 +79,7 @@ class StringContentHash(ContentHash):
     def to_wire(self) -> str:
         return self.text
 
+
 T_contra = TypeVar("T_contra", contravariant=True)
 
 
@@ -96,6 +100,7 @@ class Sha256TextEncoder(KeyEncoder[str]):
     def encode(self, content: str) -> ContentHash:
         digest = hashlib.sha256(content.encode(self._ENCODING)).digest()
         return BytesContentHash(raw=digest)
+
 
 T = TypeVar("T")
 
@@ -191,6 +196,7 @@ class ReaderKeys:
 
 class ChunkerKeys:
     """Ключи, проставляемые Chunker-слоем; пока пусто."""
+
 
 @dataclass(frozen=True)
 class FormatBlock:

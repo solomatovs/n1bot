@@ -50,6 +50,7 @@ __all__ = [
     "UnknownConnectionError",
 ]
 
+
 class ConnectionProfile(BaseModel):
     """Базовый профиль соединения: несёт ключ раскрытия секретов в дампе."""
 
@@ -63,9 +64,7 @@ TConn = TypeVar("TConn", bound=ConnectionProfile)
 TParams = TypeVar("TParams")
 """Стиль параметров драйвера: позиционный кортеж psycopg, именованный dict ch."""
 
-TConn_contra = TypeVar(
-    "TConn_contra", bound=ConnectionProfile, contravariant=True
-)
+TConn_contra = TypeVar("TConn_contra", bound=ConnectionProfile, contravariant=True)
 """То же, что TConn, но для протокола: тип стоит только во входных позициях."""
 
 TParams_contra = TypeVar("TParams_contra", contravariant=True)
@@ -315,10 +314,7 @@ class SqlErrors:
         return ErrorResult(message=msg, error_kind="result_too_large")
 
     def too_many_rows(self) -> ErrorResult:
-        msg = (
-            f"запрос вернул больше {self._max_rows} строк; "
-            f"добавьте LIMIT в запрос"
-        )
+        msg = f"запрос вернул больше {self._max_rows} строк; добавьте LIMIT в запрос"
         return ErrorResult(message=msg, error_kind="too_many_rows")
 
     def note(self, truncated: bool) -> str | None:
@@ -339,9 +335,7 @@ class SqlRows:
         return out
 
     @classmethod
-    def of_columns(
-        cls, names: Sequence[str], row: Sequence[Any]
-    ) -> dict[str, Any]:
+    def of_columns(cls, names: Sequence[str], row: Sequence[Any]) -> dict[str, Any]:
         """Строка-кортеж с отдельным списком имён колонок (блоки ClickHouse)."""
         out: dict[str, Any] = {}
         for index, name in enumerate(names):

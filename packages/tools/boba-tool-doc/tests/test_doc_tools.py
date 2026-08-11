@@ -294,8 +294,11 @@ class TestPayloadContract:
         assert rows[0].chars > 0
 
     def test_search_returns_coordinates_and_snippet(self, pdf: Path) -> None:
-        run = self._run(self._request(pdf, "search_document", query="Alpha",
-                                      context_chars=5, max_matches=50))
+        run = self._run(
+            self._request(
+                pdf, "search_document", query="Alpha", context_chars=5, max_matches=50
+            )
+        )
         rows: list[DocSearchRow] = []
         for raw in run.rows():
             rows.append(DocSearchRow.model_validate(raw))
@@ -305,8 +308,11 @@ class TestPayloadContract:
         assert DocSearchTrailer.model_validate(run.trailer).limit_reached is False
 
     def test_search_reports_limit(self, pdf: Path) -> None:
-        run = self._run(self._request(pdf, "search_document", query="Alpha",
-                                      context_chars=5, max_matches=1))
+        run = self._run(
+            self._request(
+                pdf, "search_document", query="Alpha", context_chars=5, max_matches=1
+            )
+        )
         assert len(run.rows()) == 1
         assert DocSearchTrailer.model_validate(run.trailer).limit_reached is True
 
@@ -378,8 +384,11 @@ class TestEngineRequests:
         engine = DocEngine(_config(ocr_enabled=True), launchers)
         asyncio.run(
             engine.read_document(
-                "/workspace/t1/upload/doc.pdf", pages="1-2", ocr_enabled=False,
-                num_workers=3, ocr_language="rus"
+                "/workspace/t1/upload/doc.pdf",
+                pages="1-2",
+                ocr_enabled=False,
+                num_workers=3,
+                ocr_language="rus",
             )
         )
         params = payload_calls[0]["params"]
@@ -394,8 +403,11 @@ class TestEngineRequests:
         engine = DocEngine(_config(num_workers=2), launchers)
         asyncio.run(
             engine.read_document(
-                "/workspace/doc.pdf", pages="1", ocr_enabled=False, num_workers=2,
-                ocr_language="rus+eng"
+                "/workspace/doc.pdf",
+                pages="1",
+                ocr_enabled=False,
+                num_workers=2,
+                ocr_language="rus+eng",
             )
         )
         assert payload_calls[0]["params"]["num_workers"] == 2
@@ -407,8 +419,11 @@ class TestEngineRequests:
         engine = DocEngine(_config(ocr_language="eng"), launchers)
         asyncio.run(
             engine.read_document(
-                "/workspace/doc.pdf", pages="1", ocr_enabled=True,
-                num_workers=1, ocr_language="rus"
+                "/workspace/doc.pdf",
+                pages="1",
+                ocr_enabled=True,
+                num_workers=1,
+                ocr_language="rus",
             )
         )
         assert payload_calls[0]["params"]["ocr_language"] == "rus"
@@ -417,8 +432,11 @@ class TestEngineRequests:
         engine = DocEngine(_config(), launchers)
         asyncio.run(
             engine.read_document(
-                "/workspace/t1/upload/doc.pdf", pages="2-3", ocr_enabled=False,
-                num_workers=1, ocr_language="rus+eng"
+                "/workspace/t1/upload/doc.pdf",
+                pages="2-3",
+                ocr_enabled=False,
+                num_workers=1,
+                ocr_language="rus+eng",
             )
         )
         assert payload_calls[0]["op"] == "read_document"
@@ -431,8 +449,11 @@ class TestEngineRequests:
         engine = DocEngine(_config(), launchers)
         asyncio.run(
             engine.read_document(
-                "/workspace/t1/upload/doc.pdf", pages="1", ocr_enabled=False,
-                num_workers=1, ocr_language="rus+eng"
+                "/workspace/t1/upload/doc.pdf",
+                pages="1",
+                ocr_enabled=False,
+                num_workers=1,
+                ocr_language="rus+eng",
             )
         )
         assert payload_calls[0]["path"] == "/workspace/t1/upload/doc.pdf"
@@ -445,8 +466,11 @@ class TestEngineRequests:
         )
         asyncio.run(
             engine.search(
-                "/workspace/doc.pdf", "Alpha", ocr_enabled=False,
-                num_workers=1, ocr_language="rus+eng"
+                "/workspace/doc.pdf",
+                "Alpha",
+                ocr_enabled=False,
+                num_workers=1,
+                ocr_language="rus+eng",
             )
         )
         assert payload_calls[0]["context_chars"] == 7
@@ -454,10 +478,14 @@ class TestEngineRequests:
 
     def test_op_matches_method(self, payload_calls: list[dict[str, Any]]) -> None:
         engine = DocEngine(_config(), launchers)
-        asyncio.run(engine.outline(
-            "/workspace/doc.pdf", ocr_enabled=False,
-            num_workers=1, ocr_language="rus+eng"
-        ))
+        asyncio.run(
+            engine.outline(
+                "/workspace/doc.pdf",
+                ocr_enabled=False,
+                num_workers=1,
+                ocr_language="rus+eng",
+            )
+        )
         assert payload_calls[0]["op"] == "document_outline"
 
 
@@ -483,11 +511,14 @@ class TestTools:
         assert "pages" in schema["required"]
         assert "path" in schema["required"]
 
-    @pytest.mark.parametrize("name", [
-        "read_document",
-        "document_outline",
-        "search_document",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "read_document",
+            "document_outline",
+            "search_document",
+        ],
+    )
     def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:
         tools = {t.name: t for t in build_doc_tools(_config(), launchers)}
         schema = self._schema(tools[name])
@@ -523,9 +554,7 @@ class TestTools:
             )
         )
 
-    def test_text_carries_metadata(
-        self, payload_runs: list[dict[str, Any]]
-    ) -> None:
+    def test_text_carries_metadata(self, payload_runs: list[dict[str, Any]]) -> None:
         message = self._read(_config())
         assert "Alpha page one" in message.content
         assert message.artifact.metadata["pages"] == "1,2"

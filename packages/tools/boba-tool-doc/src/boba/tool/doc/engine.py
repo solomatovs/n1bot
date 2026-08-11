@@ -128,9 +128,7 @@ class DocEngine:
             max_text_chars=self._cfg.max_text_chars,
         )
 
-    async def _call(
-        self, request: BaseModel, sink: ChunkSink, trailer: type[M]
-    ) -> M:
+    async def _call(self, request: BaseModel, sink: ChunkSink, trailer: type[M]) -> M:
         """Парсинг долгий и синхронный — уходит в отдельный поток."""
         return await asyncio.to_thread(
             self._caller.call_stream, self.ENTRY, request, sink, trailer

@@ -46,13 +46,13 @@ SVG = (
     '<rect width="120" height="40" fill="#4c7cf0"/></svg>'
 ).encode()
 BROKEN_MMD = (
-    'flowchart LR\n'
+    "flowchart LR\n"
     '    A["Доход"] --> B["Вычеты"]\n'
-    '\n'
+    "\n"
     '    subgraph VYCHE[ "Структура вычетов" ]\n'
     '        B1["Стандартный"]\n'
-    '    end\n'
-    '    B1 --> B\n'
+    "    end\n"
+    "    B1 --> B\n"
 )
 """Пробелы внутри скобок подграфа — mermaid такое не принимает (реальный случай)."""
 
@@ -115,7 +115,7 @@ async def _wait_for_server() -> None:
 
 
 async def _upload(thread_id: str) -> None:
-    from boba.chainlit.chat.data.storage import StorageFactory
+    from boba.chainlit.data.storage import StorageFactory
     from boba.chainlit.infra.config import AppConfig
     from boba.settings import bind, build_app_config
 
@@ -199,8 +199,11 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
                 "action": {
                     "name": name,
                     "payload": action_payload,
-                    "label": "", "tooltip": "", "icon": None,
-                    "forId": None, "id": "e2e",
+                    "label": "",
+                    "tooltip": "",
+                    "icon": None,
+                    "forId": None,
+                    "id": "e2e",
                 },
             }
             await page.request.post(
@@ -306,7 +309,9 @@ async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
     assert "не отрисована" in text
     assert "Parse error" in text
 
-    failures = [body for body in reports if '"ok": false' in body or '"ok":false' in body]
+    failures = [
+        body for body in reports if '"ok": false' in body or '"ok":false' in body
+    ]
     assert failures, "браузер не отправил canvas_render_status с ошибкой"
     assert "Parse error" in failures[-1]
 

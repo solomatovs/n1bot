@@ -29,7 +29,6 @@ class SandboxParserConfig(LiteParseParams):
 
     model_config = ConfigDict(extra="ignore")
 
-
     def parse_params(self) -> ParseParams:
         return ParseParams.of(self)
 

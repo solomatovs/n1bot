@@ -88,14 +88,11 @@ class TestCallTextTap:
         profile = SandboxProfile.model_validate({**_PROFILE_BASE, **profile_kw})
         return SandboxCaller("bash", profile, dict)
 
-
     def test_window_gets_both_streams_and_result_is_kept(self) -> None:
         buffer = _window()
         ToolStreamTap.set(buffer)
 
-        outcome = self._caller().call_text(
-            "echo привет; echo беда >&2", stdin=""
-        )
+        outcome = self._caller().call_text("echo привет; echo беда >&2", stdin="")
 
         window = buffer.snapshot()
         assert "привет" in window.text
@@ -175,9 +172,7 @@ class TestCallStreamTap:
     def test_window_gets_chunks_and_stderr_lines(self, tmp_path: Path) -> None:
         buffer = _window()
         ToolStreamTap.set(buffer)
-        collector = TextCollector(
-            max_chars=1_000_000, limit_rows=None, header_lines=0
-        )
+        collector = TextCollector(max_chars=1_000_000, limit_rows=None, header_lines=0)
 
         trailer = self._caller(tmp_path, _STREAM_PAYLOAD).call_stream(
             ["python3", "/opt/payload/main.py"],

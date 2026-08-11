@@ -41,7 +41,6 @@ class ConfluenceToolsConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-
     confluence: HttpProfile = Field(
         description='Web-профиль Confluence ссылкой `confluence = "${web.<name>}"`.',
     )
@@ -135,8 +134,7 @@ class ConfluenceTools:
                 Field(
                     min_length=1,
                     description=(
-                        "ID страницы Confluence "
-                        "(из URL `viewpage.action?pageId=<id>`)."
+                        "ID страницы Confluence (из URL `viewpage.action?pageId=<id>`)."
                     ),
                 ),
             ],
@@ -209,8 +207,7 @@ class ConfluenceTools:
                 LLMStringList | None,
                 Field(
                     description=(
-                        "Ограничить поиск списком space key, "
-                        'например ["DQ", "IPKD"].'
+                        'Ограничить поиск списком space key, например ["DQ", "IPKD"].'
                     ),
                 ),
             ] = None,
@@ -267,7 +264,10 @@ class ConfluenceTools:
             try:
                 result = confluence_list_spaces(
                     cfg,
-                    owner._caller, pattern=pattern, space_type=space_type, limit=limit
+                    owner._caller,
+                    pattern=pattern,
+                    space_type=space_type,
+                    limit=limit,
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))

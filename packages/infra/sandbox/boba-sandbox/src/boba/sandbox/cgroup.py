@@ -126,9 +126,7 @@ class CgroupManager:
     def acquire(self, limits: GroupLimits) -> str:
         """Создаёт leaf под один запуск, пишет лимиты; возвращает путь."""
         self._prepare(limits.controllers)
-        leaf = os.path.join(
-            self._base, f"run-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        )
+        leaf = os.path.join(self._base, f"run-{os.getpid()}-{uuid.uuid4().hex[:8]}")
         try:
             os.mkdir(leaf)
             self._write_limits(leaf, limits)
@@ -243,9 +241,7 @@ class CgroupManager:
             return
         except OSError as e:
             if e.errno != errno.EBUSY:
-                fields = ", ".join(
-                    self.FIELDS_BY_CONTROLLER[c] for c in controllers
-                )
+                fields = ", ".join(self.FIELDS_BY_CONTROLLER[c] for c in controllers)
                 msg = (
                     f"cgroup: controllers {controllers} unavailable in "
                     f"{parent}: {e}; fix the delegation or set {fields} to 0"
@@ -312,9 +308,7 @@ class CgroupManager:
                 leaf, "cpu.weight", str(limits.cpu_weight), "cgroup_cpu_weight"
             )
         if limits.pids_max is not None:
-            self._write_limit(
-                leaf, "pids.max", str(limits.pids_max), "cgroup_pids_max"
-            )
+            self._write_limit(leaf, "pids.max", str(limits.pids_max), "cgroup_pids_max")
 
     def _write_limit(self, leaf: str, knob: str, value: str, field: str) -> None:
         try:

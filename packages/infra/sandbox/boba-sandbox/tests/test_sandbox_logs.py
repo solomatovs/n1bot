@@ -68,9 +68,7 @@ class TestRelay:
         assert len(caplog.records) == 1
         assert "строка1\nстрока2" in caplog.records[0].getMessage()
 
-    def test_frames_split_across_reads(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_frames_split_across_reads(self, caplog: pytest.LogCaptureFixture) -> None:
         """Границы чтения из пайпа не совпадают с границами строк."""
         relay = self._relay()
         raw = f"{LaunchPayload.encode_log('INFO', 't', 'привет')}\n".encode()
@@ -93,9 +91,7 @@ class TestRelay:
         assert not caplog.records
         assert lines == ["UserWarning: deprecated"]
 
-    def test_broken_frame_is_not_lost(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_broken_frame_is_not_lost(self, caplog: pytest.LogCaptureFixture) -> None:
         relay = self._relay()
         with caplog.at_level(logging.DEBUG):
             relay.feed(f"{LaunchPayload.LOG_MARKER}{{битый\n".encode())

@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from boba.chainlit.chat.data.fields import ElementField
+from boba.chainlit.domain.fields import ElementField
 from chainlit.element import (
     ElementDict,
     ElementDisplay,

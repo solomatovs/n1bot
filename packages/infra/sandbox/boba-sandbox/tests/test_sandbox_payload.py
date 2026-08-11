@@ -139,8 +139,10 @@ class TestDecode:
         collector = TextCollector(max_chars=1000, limit_rows=None, header_lines=0)
         decoder = SandboxFrameDecoder("doc", collector)
         stdout = (
-            SandboxPayload.encode_chunk("данные") + "\n"
-            + SandboxPayload.encode(Answer(text="", pages=1)) + "\n"
+            SandboxPayload.encode_chunk("данные")
+            + "\n"
+            + SandboxPayload.encode(Answer(text="", pages=1))
+            + "\n"
         )
         raw = stdout.encode("utf-8")
         for start in range(0, len(raw), 7):
@@ -224,8 +226,10 @@ class TestDecode:
     def test_chunk_after_trailer_is_error(self) -> None:
         """Кадр после трейлера означает, что поток собран не полностью."""
         stdout = (
-            SandboxPayload.encode(Answer(text="ok", pages=1)) + "\n"
-            + SandboxPayload.encode_chunk("лишнее") + "\n"
+            SandboxPayload.encode(Answer(text="ok", pages=1))
+            + "\n"
+            + SandboxPayload.encode_chunk("лишнее")
+            + "\n"
         )
         with pytest.raises(SandboxPayloadError, match="chunk after trailer"):
             _decode(stdout, Answer)
@@ -292,9 +296,7 @@ class TestCallStream:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("содержимое", encoding="utf-8")
         caller = self._caller(tmp_path, _PAYLOAD)
-        collector = TextCollector(
-            max_chars=1_000_000, limit_rows=None, header_lines=0
-        )
+        collector = TextCollector(max_chars=1_000_000, limit_rows=None, header_lines=0)
         trailer = caller.call_stream(
             ["python3", "/opt/payload/main.py"],
             Request(path="/opt/payload/doc.txt"),
@@ -310,10 +312,10 @@ class TestCallStream:
             "try:\n"
             "    Path('/opt/payload/main.py').write_text('взлом')\n"
             "except OSError as e:\n"
-            "    print('sandbox-result:' + '{\"text\": \"%s\", \"pages\": 0}'"
+            '    print(\'sandbox-result:\' + \'{"text": "%s", "pages": 0}\''
             " % type(e).__name__)\n"
             "    sys.exit(0)\n"
-            "print('sandbox-result:{\"text\": \"перезаписал\", \"pages\": 0}')\n"
+            'print(\'sandbox-result:{"text": "перезаписал", "pages": 0}\')\n'
         )
         caller = self._caller(tmp_path, script)
         answer = caller.call_stream(

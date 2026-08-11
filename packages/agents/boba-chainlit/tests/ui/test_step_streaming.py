@@ -7,9 +7,13 @@ DOM: шаг присутствует в дереве под своим типо�
 
 from __future__ import annotations
 
+import pytest
+
 from ui.chat_page import ChatPage, StepKind
 from ui.fake_llm import ScenarioName
 from ui.socket_log import ChatEvent, SocketLog
+
+pytestmark = pytest.mark.ui
 
 MIN_TOKENS = 2
 

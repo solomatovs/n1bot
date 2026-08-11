@@ -73,15 +73,17 @@ def kb_config() -> PostgresKnowledgeBaseConfig:
 
 
 def invoke(tool: Any, args: dict[str, Any]) -> Any:
-    message = tool.invoke({"name": tool.name, "args": args, "id": "c1",
-                           "type": "tool_call"})
+    message = tool.invoke(
+        {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
+    )
     return ToolArtifact.revive(message.artifact)
 
 
 async def ainvoke(tool: Any, args: dict[str, Any]) -> Any:
     """pg-инструменты асинхронные: sync-вызова у них нет по построению."""
-    message = await tool.ainvoke({"name": tool.name, "args": args, "id": "c1",
-                                  "type": "tool_call"})
+    message = await tool.ainvoke(
+        {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
+    )
     return ToolArtifact.revive(message.artifact)
 
 
@@ -148,36 +150,38 @@ class TestKbTools:
         assert set(tool.args) == {"query", "top_k", "snippet_chars"}
 
 
-_SANDBOX = SandboxToolConfig.model_validate({
-    "profile": {
-        "rootfs": "",
-        "ro_binds": (),
-        "rw_binds": (),
-        "rw_images": (),
-        "image_template": "",
-        "launcher": {
-            "mount_wait_sec": 10.0,
-            "mount_poll_sec": 0.05,
-            "shutdown_wait_sec": 5.0,
-            "lock_wait_sec": 10.0,
-            "copy_chunk_bytes": 1 << 20,
+_SANDBOX = SandboxToolConfig.model_validate(
+    {
+        "profile": {
+            "rootfs": "",
+            "ro_binds": (),
+            "rw_binds": (),
+            "rw_images": (),
+            "image_template": "",
+            "launcher": {
+                "mount_wait_sec": 10.0,
+                "mount_poll_sec": 0.05,
+                "shutdown_wait_sec": 5.0,
+                "lock_wait_sec": 10.0,
+                "copy_chunk_bytes": 1 << 20,
+            },
+            "tmpfs": ("/tmp:64M",),  # noqa: S108
+            "network": False,
+            "env_set": {"PATH": "/usr/bin:/bin"},
+            "timeout_sec": 30,
+            "max_memory_bytes": 512 * 1024 * 1024,
+            "max_cpu_sec": 30,
+            "max_file_size_bytes": 64 * 1024 * 1024,
+            "max_open_files": 1024,
+            "max_processes": 256,
+            "max_output_bytes": 4 * 1024 * 1024,
+            "cgroup_base": "",
+            "oom_score_adj": 0,
+            "cwd": "/tmp",  # noqa: S108
         },
-        "tmpfs": ("/tmp:64M",),  # noqa: S108
-        "network": False,
-        "env_set": {"PATH": "/usr/bin:/bin"},
-        "timeout_sec": 30,
-        "max_memory_bytes": 512 * 1024 * 1024,
-        "max_cpu_sec": 30,
-        "max_file_size_bytes": 64 * 1024 * 1024,
-        "max_open_files": 1024,
-        "max_processes": 256,
-        "max_output_bytes": 4 * 1024 * 1024,
-        "cgroup_base": "",
-        "oom_score_adj": 0,
-        "cwd": "/tmp",  # noqa: S108
-    },
-    "override": {},
-})
+        "override": {},
+    }
+)
 
 
 class TestConfluenceTools:

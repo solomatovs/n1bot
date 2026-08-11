@@ -22,11 +22,11 @@ from langchain_core.tools import BaseTool, InjectedToolCallId
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
-from boba.chainlit.chat.data.data_layer import AttachmentDataLayer
-from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
-from boba.chainlit.chat.data.storage import StorageError, StorageNotFoundError
-from boba.chainlit.chat.turn import ChatTurn
-from boba.chainlit.infra.session import current_thread_id, current_user_id
+from boba.chainlit.data.data_layer import AttachmentDataLayer
+from boba.chainlit.domain.keys import ObjectKey, ThreadDir
+from boba.chainlit.data.storage import StorageError, StorageNotFoundError
+from boba.chainlit.domain.turn import ActiveTurns
+from boba.chainlit.domain.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.canvas import (
     CanvasContent,
     CanvasError,
@@ -393,7 +393,7 @@ class DiagramFiles:
     ) -> None:
         """Слежение на время хода; вне хода (клик пользователя) вотчера нет."""
         thread_id = key.thread_id
-        turn = ChatTurn.active(thread_id)
+        turn = ActiveTurns.of(thread_id)
         if turn is None:
             return
 
@@ -401,7 +401,7 @@ class DiagramFiles:
             return await self.read(key)
 
         def alive() -> bool:
-            return ChatTurn.active(thread_id) is turn
+            return ActiveTurns.of(thread_id) is turn
 
         watcher = CanvasWatcher(
             read=read,
@@ -588,7 +588,7 @@ class DiagramCard:
 
     @staticmethod
     def _targets(thread_id: str, tool_call_id: str) -> tuple[str, str]:
-        turn = ChatTurn.active(thread_id)
+        turn = ActiveTurns.of(thread_id)
         if turn is None:
             raise DiagramRefusedError(
                 DiagramErrorKind.NO_TURN, "the turn is already finished"

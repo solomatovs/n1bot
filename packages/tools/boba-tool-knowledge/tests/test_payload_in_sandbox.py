@@ -148,7 +148,6 @@ def docs(tmp_path: Path) -> Path:
     return workspace
 
 
-
 class TestDocumentsInSandbox:
     """Инструменты doc: файл лежит в песочнице, парсит его liteparse оттуда."""
 
@@ -285,7 +284,7 @@ class TestOfficeNonAsciiNames:
     )
     RELS: ClassVar[str] = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns='
+        "<Relationships xmlns="
         '"http://schemas.openxmlformats.org/package/2006/relationships">'
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org'
         '/officeDocument/2006/relationships/officeDocument" '
@@ -294,7 +293,7 @@ class TestOfficeNonAsciiNames:
     )
     DOCUMENT: ClassVar[str] = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:document xmlns:w='
+        "<w:document xmlns:w="
         '"http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
         "<w:body><w:p><w:r><w:t>Alpha section one</w:t></w:r></w:p></w:body>"
         "</w:document>"
@@ -413,7 +412,5 @@ class TestEmbedderInSandbox:
         )
         runner = SandboxRunner("kb-test", sandbox.effective(), dict)
         outcome = runner.run(f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}", stdin="")
-        assert outcome.succeeded, (
-            f"нет весов {self.WEIGHTS}: пересобери — make deps"
-        )
+        assert outcome.succeeded, f"нет весов {self.WEIGHTS}: пересобери — make deps"
         assert outcome.result.stdout.strip()

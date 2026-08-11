@@ -22,6 +22,7 @@ pytestmark = pytest.mark.anyio
 def anyio_backend() -> str:
     return "asyncio"
 
+
 _VALID = (
     "source: https://confl.example.com/pages/viewpage.action?pageId=950276\n"
     "title: Правила именования-v6-20260318_191938\n"
@@ -115,9 +116,7 @@ async def test_no_separator_is_invalid(
 
 
 async def test_empty_body_is_invalid(make_raw_doc: Callable[..., RawDocument]) -> None:
-    text = (
-        "source: https://x\ntitle: T\npage_id: 1\nspace: S\n---\n"
-    )
+    text = "source: https://x\ntitle: T\npage_id: 1\nspace: S\n---\n"
     with pytest.raises(KbDocFormatError):
         [item async for item in KbDocReader().read(make_raw_doc(text))]
 
@@ -125,9 +124,7 @@ async def test_empty_body_is_invalid(make_raw_doc: Callable[..., RawDocument]) -
 async def test_optional_fields_absent_ok(
     make_raw_doc: Callable[..., RawDocument],
 ) -> None:
-    text = (
-        "source: https://x\ntitle: T\npage_id: 1\nspace: S\n---\nbody\n"
-    )
+    text = "source: https://x\ntitle: T\npage_id: 1\nspace: S\n---\nbody\n"
     sections = [item async for item in KbDocReader().read(make_raw_doc(text))]
     assert len(sections) == 1
     assert sections[0].tags == frozenset()
@@ -135,8 +132,7 @@ async def test_optional_fields_absent_ok(
 
 def test_unknown_key_goes_to_custom_prefix() -> None:
     text = (
-        "source: https://x\ntitle: T\npage_id: 1\nspace: S\n"
-        "author: ivan\n---\nbody\n"
+        "source: https://x\ntitle: T\npage_id: 1\nspace: S\nauthor: ivan\n---\nbody\n"
     )
     parsed = KbDocReader.parse(text)
     assert parsed.custom == {"author": "ivan"}

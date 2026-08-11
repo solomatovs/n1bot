@@ -4,8 +4,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 import chainlit as cl
-from boba.chainlit.auth.errors import AuthorizationError
-from boba.chainlit.infra.session import UserMetadataField
+from boba.chainlit.domain.errors import AuthorizationError
+from boba.chainlit.domain.session import UserMetadataField
 
 
 class RoleMappingConfig(RootModel[dict[str, list[str]]]):

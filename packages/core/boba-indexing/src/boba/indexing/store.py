@@ -161,6 +161,7 @@ class CollectionsStore(ABC):
         """Удалить коллекцию целиком."""
         ...
 
+
 T = TypeVar("T")
 
 
@@ -223,6 +224,7 @@ class IndexSink(ABC, Generic[T]):
     ) -> ReconcileSummary:
         """Привести Store в соответствие с чанками (unchanged — только refresh updated_at); force=True — все dirty."""
         ...
+
 
 T = TypeVar("T")
 _E = TypeVar("_E")
@@ -380,6 +382,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         if batch:
             yield batch
 
+
 @dataclass(frozen=True)
 class CleanupContext:
     """Снимок состояния одного прогона Indexer.run; query уже привязан к scope'у."""
@@ -412,13 +415,15 @@ class IncrementalCleanup(CleanupStrategy):
     async def execute(self, ctx: CleanupContext) -> int:
         if not ctx.touched_sources:
             return 0
-        where: Filter = And([
-            Lt(TrackingKeys.UPDATED_AT, ctx.run_start),
-            In(
-                TrackingKeys.SOURCE_ID,
-                list(ctx.touched_sources),
-            ),
-        ])
+        where: Filter = And(
+            [
+                Lt(TrackingKeys.UPDATED_AT, ctx.run_start),
+                In(
+                    TrackingKeys.SOURCE_ID,
+                    list(ctx.touched_sources),
+                ),
+            ]
+        )
         return await ctx.query.clean(where=where)
 
 
