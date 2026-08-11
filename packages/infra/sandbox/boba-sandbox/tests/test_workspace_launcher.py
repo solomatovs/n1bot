@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from boba.toolkit.binaries import TrustedBinaries
 from boba.workspace.launcher import (
     FileOperations,
     FuseMounter,
@@ -67,6 +68,8 @@ _REQUIRED_FLAGS = (
     "0",
     "--oom-score-adj",
     "0",
+    "--trusted-bin-dir",
+    "/usr/bin",
 )
 
 
@@ -87,6 +90,23 @@ def _launcher_options(**kw: float) -> LauncherOptions:
         lock_wait_sec=values["lock_wait_sec"],
         copy_chunk_bytes=int(values["copy_chunk_bytes"]),
     )
+
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
+def _trusted() -> TrustedBinaries:
+    return TrustedBinaries(dirs=tuple(_bin_dirs()))
 
 
 class TestSparseCopier:
@@ -458,7 +478,7 @@ class TestFuseMounter:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("boba.workspace.launcher.shutil.which", lambda _: None)
-        mounter = FuseMounter(_launcher_options())
+        mounter = FuseMounter(_launcher_options(), _trusted())
         with pytest.raises(MountError, match="fuse2fs"):
             mounter.mount(str(tmp_path / "img"), str(tmp_path / "mnt"), readonly=False)
 
@@ -468,14 +488,14 @@ class TestFuseMounter:
             shell=False,
         )
         daemon.wait()
-        mounter = FuseMounter(_launcher_options(mount_wait_sec=1.0))
+        mounter = FuseMounter(_launcher_options(mount_wait_sec=1.0), _trusted())
         with pytest.raises(MountError, match="code 7"):
             mounter._wait_mounted(str(tmp_path), daemon)
 
     def test_wait_timeout_raises(self, tmp_path: Path) -> None:
         daemon = self._sleeper()
         mounter = FuseMounter(
-            _launcher_options(mount_wait_sec=0.2, mount_poll_sec=0.01)
+            _launcher_options(mount_wait_sec=0.2, mount_poll_sec=0.01), _trusted()
         )
         try:
             with pytest.raises(MountError, match="was not mounted"):
@@ -486,7 +506,7 @@ class TestFuseMounter:
 
     def test_shutdown_terminates_daemon(self) -> None:
         daemon = self._sleeper()
-        mounter = FuseMounter(_launcher_options())
+        mounter = FuseMounter(_launcher_options(), _trusted())
         mounter._daemons.append(daemon)
         mounter.shutdown()
         assert daemon.returncode == -signal.SIGTERM
@@ -503,14 +523,14 @@ class TestFuseMounter:
         )
         assert daemon.stdout is not None
         daemon.stdout.readline()
-        mounter = FuseMounter(_launcher_options(shutdown_wait_sec=0.2))
+        mounter = FuseMounter(_launcher_options(shutdown_wait_sec=0.2), _trusted())
         mounter._daemons.append(daemon)
         mounter.shutdown()
         assert daemon.returncode == -signal.SIGKILL
 
     def test_shutdown_is_idempotent(self) -> None:
         daemon = self._sleeper()
-        mounter = FuseMounter(_launcher_options())
+        mounter = FuseMounter(_launcher_options(), _trusted())
         mounter._daemons.append(daemon)
         mounter.shutdown()
         mounter.shutdown()
@@ -619,10 +639,13 @@ class TestLauncherMain:
                 "64",
                 "--oom-score-adj",
                 "800",
+                "--trusted-bin-dir",
+                "/usr/bin",
                 "read",
                 "x",
             ]
         )
+        assert args.trusted_bin_dir == ["/usr/bin"]
         assert args.mount_wait_sec == 1.5
         assert args.lock_wait_sec == 2.5
         assert args.copy_chunk_bytes == 4096
@@ -651,6 +674,7 @@ class TestChainOptions:
             python_bin="/usr/bin/python3",
             options=options,
             limits=ResourceLimits(),
+            binaries=_trusted(),
         )
 
     def test_options_rendered_as_flags(self) -> None:
@@ -706,6 +730,7 @@ class TestChainOptions:
             python_bin="/usr/bin/python3",
             options=_launcher_options(),
             limits=limits,
+            binaries=_trusted(),
         )
         assert argv[argv.index("--max-memory-bytes") + 1] == "1048576"
         assert argv[argv.index("--max-cpu-sec") + 1] == "7"

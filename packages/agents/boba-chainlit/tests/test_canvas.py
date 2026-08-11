@@ -34,6 +34,7 @@ from boba.chainlit.rendering.canvas import (
     CanvasViewer,
     OpenedCanvas,
 )
+from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import CustomElementResult, ErrorResult
 from boba.workspace.launcher import LauncherConfig
 
@@ -198,6 +199,7 @@ def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStorageClie
             lock_wait_sec=1.0,
             copy_chunk_bytes=65536,
         ),
+        binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
     )
     client = LocalStorageClient(config)
     layer = _StorageOnlyLayer(client)

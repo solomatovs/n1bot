@@ -28,6 +28,20 @@ needs_sandbox = pytest.mark.skipif(
     reason="нужны bwrap, fuse2fs, mkfs.ext4 и /dev/fuse",
 )
 
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
 _PROFILE_BASE: dict[str, object] = {
     "rootfs": "",
     "ro_binds": HOST_RO_BINDS,
@@ -41,6 +55,7 @@ _PROFILE_BASE: dict[str, object] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": ("/tmp:64M",),
     "network": False,
     "env_set": {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp"},
@@ -50,7 +65,6 @@ _PROFILE_BASE: dict[str, object] = {
     "max_file_size_bytes": 64 * 1024 * 1024,
     "max_open_files": 1024,
     "max_processes": 256,
-    "max_output_bytes": 262144,
     "cgroup_base": "",
     "oom_score_adj": 0,
     "cwd": "/tmp",
@@ -85,8 +99,6 @@ def _result(**kw: object) -> RunResult:
         "exit_code": 1,
         "stdout": "",
         "stderr": "",
-        "truncated_stdout": False,
-        "truncated_stderr": False,
         "duration_ms": 10,
         "timed_out": False,
     }

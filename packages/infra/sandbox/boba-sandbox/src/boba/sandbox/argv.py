@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-import shutil
 from collections.abc import Mapping
 from typing import TypeVar
 
 from boba.sandbox.profile import BindSpec, SandboxProfile
+from boba.toolkit.binaries import SandboxBinary
 
 __all__ = ["WORKSPACE_MOUNT", "build_bwrap_argv"]
 
@@ -57,9 +57,7 @@ def build_bwrap_argv(
 
 
 def _bwrap_preamble(profile: SandboxProfile, nested: bool) -> list[str]:
-    bwrap_path = shutil.which("bwrap")
-    if not bwrap_path:
-        raise RuntimeError("bwrap not found in PATH")
+    bwrap_path = profile.binaries.resolve(SandboxBinary.BWRAP)
 
     argv = [
         bwrap_path,

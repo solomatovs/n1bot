@@ -12,6 +12,7 @@
     cgroup_base        = "${oc.env:BOBA_CGROUP_BASE}"
     port               = "${oc.env:BOBA_PORT}"
     url_prefix         = "${oc.env:BOBA_URL_PREFIX}"
+    bin                = "${oc.env:BOBA_BIN}"
 
     data               = "${env.runtime}/data"
     krb                = "${env.runtime}/conf/krb"
@@ -131,6 +132,7 @@
     image_template = "${env.sandbox}/workspace.ext4"
     op_timeout_sec = 60
     public_prefix  = "${chainlit.url_prefix}/workspace"
+    binaries       = "${sandbox.binaries}"
     [storage.launcher]
         mount_wait_sec    = 10.0
         mount_poll_sec    = 0.05
@@ -208,6 +210,9 @@
 
 
 [sandbox]
+    [sandbox.binaries]
+        dirs = ["${env.bin}", "/usr/bin", "/usr/sbin", "/bin", "/sbin"]
+
     [sandbox.bind]
         python    = "${env.sandbox}/third/python:/opt/python"
         ## site — третья сторона, code — код инструментов; в релизе это один
@@ -258,7 +263,23 @@
             "${sandbox.bind.krb}"
         ]
 
-    ## единственный профиль; инструменты меняют его через [tool.<name>.sandbox.override]
+    ## профиль в котором запускаются процессы tool
+    ## Для конкретного иснтрумента можно  переопределять параметры через [tool.<name>.sandbox.override]
+    ##
+    ## rlimits: https://man7.org/linux/man-pages/man2/getrlimit.2.html
+    ## max_* ставятся через prlimit(2) на процесс bwra
+    ## все дерево подпроцессов (от bwrap) наследует указанные свойства
+    ## 
+    ## ulimit: https://man7.org/linux/man-pages/man1/ulimit.1p.html
+    ## max_processes — ставит ulimit -u внутри песочницы (снаружи он ломает)
+    ## создает namespace
+    ## 
+    ## fs: https://docs.kernel.org/admin-guide/cgroup-v2.html
+    ## cgroup_* пишутся в файлы cgroup v2 каталога /sys/fs/cgroup/<name>:
+    ## 
+    ## runner считает (не ядро):
+    ## timeout_sec      - кол-во секунд, которые работал процесс
+    ##                    необязателен: без него процесс по времени не ограничен
     [sandbox.profiles.base]
         rootfs                = "${env.sandbox}/rootfs"
         ro_binds              = "${sandbox.binds.core}"
@@ -266,29 +287,34 @@
         rw_images             = ["${env.data}/workspace/{user_id}.ext4:/workspace"]
         image_template        = "${env.sandbox}/workspace.ext4"
         tmpfs                 = ["/tmp:512M"]
-        network               = false
-        timeout_sec           = 86400
-        max_memory_bytes      = 536870912
-        max_cpu_sec           = 86400
-        max_file_size_bytes   = 67108864
-        max_open_files        = 1024
-        max_processes         = 256
-        max_output_bytes      = 262144
+        network               = false       # false - нет сети
+        timeout_sec           = 86400       # wall-clock запуска, сек; сверх — kill
+        max_memory_bytes      = 536870912   # RLIMIT_AS: адресное пространство одного процесса
+        max_cpu_sec           = 86400       # RLIMIT_CPU: CPU-время процесса, сек; сверх — SIGKILL
+        max_file_size_bytes   = 67108864    # RLIMIT_FSIZE: размер одного создаваемого файла
+        max_open_files        = 1024        # RLIMIT_NOFILE: открытых дескрипторов на процесс
+        max_processes         = 256         # RLIMIT_NPROC: процессов на uid, ставится ulimit -u
         cwd                   = "/workspace"
-        oom_score_adj         = 900
+        oom_score_adj         = 900        # 0..1000: приоритет OOM kill. чем выше, тем выше приоритет при запуске oom kill
         cgroup_base           = "${env.cgroup_base}"
-        cgroup_memory_bytes   = 1073741824
-        cgroup_cpu_percent    = 100
-        cgroup_cpu_weight     = 100
-        cgroup_pids_max       = 64
-        cgroup_swap_max_bytes = 0
-        cgroup_oom_kill_all   = true
+        cgroup_memory_bytes   = 1073741824 # memory.max rss память на всю cgroup
+        cgroup_cpu_percent    = 100        # cpu.max потолок в % одного ядра (150 — полтора)
+        cgroup_cpu_weight     = 100        # cpu.weight 1..10000: доля CPU при драке за ядра между cgroup.
+        # 100 по умолчанию, если 200 значит linux отдает вдвое больше времени на IO этой группы процессов.
+        # когда ядра свободны, не ограничивает вовсе
+        cgroup_pids_max       = 64         # pids.max: максимальное кол-во процессов внутри группы
+        cgroup_swap_max_bytes = 0          # memory.swap.max: 0 — своп запрещён
+        cgroup_oom_kill_all   = true       # memory.oom.group: при OOM убить всю группу процессов
+        binaries              = "${sandbox.binaries}"
+        ## тайминги лаунчера ext4-образов (rw_images): образ монтируется fuse2fs
+        ## на время вызова, доступ к нему сериализован flock. эти же поля у
+        ## [storage.launcher] — там тот же лаунчер, но для вложений
         [sandbox.profiles.base.launcher]
-            mount_wait_sec    = 10.0
-            mount_poll_sec    = 0.05
-            shutdown_wait_sec = 5.0
-            lock_wait_sec     = 10.0
-            copy_chunk_bytes  = 1048576
+            mount_wait_sec    = 10.0    # сколько ждать появления монтирования в mountinfo; не успело — ошибка старта
+            mount_poll_sec    = 0.05    # период опроса mountinfo в этом ожидании
+            shutdown_wait_sec = 5.0     # сколько ждать штатного выхода fuse2fs после SIGTERM (он дописывает кеши); не вышел — SIGKILL, часть записей может не дойти до образа
+            lock_wait_sec     = 10.0    # сколько ждать flock образа, занятого другим вызовом; вечно ждать = зависнуть
+            copy_chunk_bytes  = 1048576 # блок sparse-копирования шаблона image_template при первом вызове
         [sandbox.profiles.base.env_set]
             PATH            = "/opt/python/bin:/usr/local/bin:/usr/bin:/bin"
             PYTHONHOME      = "/opt/python"

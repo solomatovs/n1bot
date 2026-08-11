@@ -1,4 +1,4 @@
-"""Subprocess-обёртка: argv + timeout + size-cap, потоки читаются через select."""
+"""Subprocess-обёртка: argv + необязательный timeout, потоки читаются через select."""
 
 from __future__ import annotations
 
@@ -23,8 +23,7 @@ def run_subprocess(  # noqa: PLR0913
     argv: list[str],
     *,
     stdin_data: bytes,
-    timeout_sec: int,
-    max_output_bytes: int,
+    timeout_sec: int | None,
     cwd: str,
     env: Mapping[str, str],
     stdout_sink: Callable[[bytes], None] | None,
@@ -68,10 +67,9 @@ def run_subprocess(  # noqa: PLR0913
     cancellation = current_cancellation()
     with cancellation.abort_with(proc.kill):
         _feed_stdin(proc, stdin_data)
-        out_bytes, err_bytes, trunc_out, trunc_err, timed_out = _pump(
+        out_bytes, err_bytes, timed_out = _pump(
             proc,
             timeout_sec,
-            max_output_bytes,
             cancellation,
             stdout_sink,
             stderr_sink,
@@ -84,8 +82,6 @@ def run_subprocess(  # noqa: PLR0913
         exit_code=exit_code,
         stdout=out_bytes.decode("utf-8", errors="replace"),
         stderr=err_bytes.decode("utf-8", errors="replace"),
-        truncated_stdout=trunc_out,
-        truncated_stderr=trunc_err,
         duration_ms=duration_ms,
         timed_out=timed_out,
     )
@@ -107,19 +103,21 @@ def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
 
 def _pump(  # noqa: PLR0913
     proc: subprocess.Popen[bytes],
-    timeout_sec: int,
-    max_output_bytes: int,
+    timeout_sec: int | None,
     cancellation: TurnCancellation,
     stdout_sink: Callable[[bytes], None] | None,
     stderr_sink: Callable[[bytes], None] | None,
     keep_stdout: bool,
-) -> tuple[bytes, bytes, bool, bool, bool]:
+) -> tuple[bytes, bytes, bool]:
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
             "_pump: proc.stdout and proc.stderr expected (Popen started with PIPE)"
         )
 
-    deadline = time.monotonic() + timeout_sec
+    deadline: float | None = None
+    if timeout_sec is not None:
+        deadline = time.monotonic() + timeout_sec
+
     fds = {proc.stdout.fileno(): "out", proc.stderr.fileno(): "err"}
     buffers = {"out": bytearray(), "err": bytearray()}
     sinks: dict[str, Callable[[bytes], None] | None] = {
@@ -128,7 +126,6 @@ def _pump(  # noqa: PLR0913
     }
     # stderr копится и при живом релее: его хвост объясняет падение процесса
     keeps = {"out": keep_stdout, "err": True}
-    truncated = {"out": False, "err": False}
     open_fds = set(fds.keys())
 
     try:
@@ -138,9 +135,7 @@ def _pump(  # noqa: PLR0913
             buffers,
             sinks,
             keeps,
-            truncated,
             open_fds,
-            max_output_bytes,
             cancellation,
         )
     except Exception:
@@ -161,75 +156,55 @@ def _pump(  # noqa: PLR0913
 
     proc.stdout.close()
     proc.stderr.close()
-    return (
-        bytes(buffers["out"]),
-        bytes(buffers["err"]),
-        truncated["out"],
-        truncated["err"],
-        timed_out,
-    )
+    return bytes(buffers["out"]), bytes(buffers["err"]), timed_out
 
 
 def _select_loop(  # noqa: PLR0913
-    deadline: float,
+    deadline: float | None,
     fds: dict[int, str],
     buffers: dict[str, bytearray],
     sinks: dict[str, Callable[[bytes], None] | None],
     keeps: dict[str, bool],
-    truncated: dict[str, bool],
     open_fds: set[int],
-    max_output_bytes: int,
     cancellation: TurnCancellation,
 ) -> bool:
     """Чтение обоих потоков до EOF; True — упёрлись в дедлайн."""
     while open_fds:
         if cancellation.cancelled:
             return False
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return True
-        ready, _, _ = select.select(list(open_fds), [], [], min(remaining, 1.0))
+
+        wait = 1.0
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            wait = min(remaining, 1.0)
+
+        ready, _, _ = select.select(list(open_fds), [], [], wait)
         if not ready:
             continue
+
         for fd in ready:
             tag = fds[fd]
-            more = _read_chunk(
-                fd,
-                buffers[tag],
-                truncated,
-                tag,
-                max_output_bytes,
-                sinks[tag],
-                keeps[tag],
-            )
+            more = _read_chunk(fd, buffers[tag], sinks[tag], keeps[tag])
             if not more:
                 open_fds.discard(fd)
     return False
 
 
-def _read_chunk(  # noqa: PLR0913
+def _read_chunk(
     fd: int,
     buf: bytearray,
-    truncated: dict[str, bool],
-    tag: str,
-    max_output_bytes: int,
     sink: Callable[[bytes], None] | None,
     keep: bool,
 ) -> bool:
     chunk = os.read(fd, 65536)
     if not chunk:
         return False
+
     if sink is not None:
         sink(chunk)
-    if not keep:
-        return True
-    if truncated[tag]:
-        return True
-    room = max_output_bytes - len(buf)
-    if len(chunk) <= room:
+
+    if keep:
         buf.extend(chunk)
-    else:
-        if room > 0:
-            buf.extend(chunk[:room])
-        truncated[tag] = True
     return True

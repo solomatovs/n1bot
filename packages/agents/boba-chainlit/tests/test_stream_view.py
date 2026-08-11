@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from pathlib import Path
@@ -40,6 +41,20 @@ from boba.chainlit.rendering.stream_view import (
     window_stream_action,
 )
 from boba.toolkit.stream import ToolStreamTap
+
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
 
 THREAD = "33333333-3333-3333-3333-333333333333"
 USER = "7"
@@ -542,6 +557,7 @@ class TestStreamDownload:
                     "lock_wait_sec": 10.0,
                     "copy_chunk_bytes": 65536,
                 },
+                "binaries": {"dirs": _bin_dirs()},
             }
         )
         serving = StreamServing(config, UploadPolicy())

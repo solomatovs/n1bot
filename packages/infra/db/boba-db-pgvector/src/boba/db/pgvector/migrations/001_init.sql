@@ -7,7 +7,7 @@
 -- удвоены до `{{{{}}}}` — это требование psycopg.sql.SQL'овского format'а.
 --
 -- ВАЖНО про идемпотентность: миграция выполняется при каждом запуске
--- bootstrap-CLI. Все DDL — IF NOT EXISTS / IF EXISTS. Структурные
+-- bootstrap-CLI. Все DDL — if not exists / if exists. Структурные
 -- изменения вносятся отдельными 00N_*.sql миграциями (порядок по имени файла).
 --
 -- ВАЖНО про embedding-dim: тип `embedding` — `vector` БЕЗ фиксированной
@@ -15,84 +15,91 @@
 -- (но HNSW-индексу нужна конкретная dim). HNSW-индекс создаётся
 -- `ensure_vector_index(..., dim=N)` отдельно после миграций.
 
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE EXTENSION IF NOT EXISTS unaccent;
+create extension if not exists vector;
+create extension if not exists pg_trgm;
+create extension if not exists unaccent;
 
--- unaccent сам по себе STABLE, а Postgres требует IMMUTABLE-выражение в
--- GENERATED-колонке. Стандартный workaround — IMMUTABLE-обёртка: словарь
+-- unaccent сам по себе stable, а Postgres требует immutable-выражение в
+-- generated-колонке. Стандартный workaround — immutable-обёртка: словарь
 -- зашит в SQL-теле, нельзя поменять снаружи -> expression становится
--- детерминированным для оптимизатора. Без этого `ALTER TABLE ... ADD
--- COLUMN tsv tsvector GENERATED ...` падает с
+-- детерминированным для оптимизатора. Без этого `alter table ... add
+-- column tsv tsvector generated ...` падает с
 -- "generation expression is not immutable".
 --
 -- Функция создаётся в `{schema}`-схеме (schema-qualified имя), чтобы
--- GENERATED-выражение в `{chunks_table}` ссылалось на конкретный экземпляр
--- (search_path при INSERT может оказаться другим, тогда unqualified-имя
+-- generated-выражение в `{chunks_table}` ссылалось на конкретный экземпляр
+-- (search_path при insert может оказаться другим, тогда unqualified-имя
 -- не разрезолвится).
-CREATE OR REPLACE FUNCTION {schema}.immutable_unaccent(text)
-RETURNS text
-LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
-AS $$ SELECT unaccent('unaccent', $1) $$;
+create or replace function {schema}.immutable_unaccent(text)
+returns text
+language sql immutable parallel safe strict
+as $$
+    select
+        unaccent('unaccent', $1)
+$$;
 
 -- Table-level metadata коллекций (description для kb_list_collections).
 -- Логическое существование коллекции — наличие в этом каталоге; чанки
 -- могут отсутствовать (пустая коллекция = ensure_collection прошёл,
 -- ingest ещё нет).
-CREATE TABLE IF NOT EXISTS {collections_table} (
-    name        text PRIMARY KEY,
-    description text NOT NULL DEFAULT '',
-    created_at  timestamptz NOT NULL DEFAULT now()
+create table if not exists {collections_table} (
+    name        text primary key,
+    description text not null default '',
+    created_at  timestamptz not null default now()
 );
 
 -- Чанки всех коллекций живут в одной таблице; коллекция = значение
 -- колонки `collection`. Это упрощает admin (один HNSW + GIN), но
--- требует фильтра `WHERE collection = $1` в каждом запросе.
-CREATE TABLE IF NOT EXISTS {chunks_table} (
-    chunk_id       text PRIMARY KEY,
-    collection     text NOT NULL,
-    source_id      text NOT NULL,
-    chunk_index    int  NOT NULL,
-    content_hash   text NOT NULL,
-    raw_content    text NOT NULL,
-    format_content text NOT NULL,
+-- требует фильтра `where collection = $1` в каждом запросе.
+create table if not exists {chunks_table} (
+    chunk_id       text primary key,
+    collection     text not null,
+    source_id      text not null,
+    chunk_index    int  not null,
+    content_hash   text not null,
+    raw_content    text not null,
+    format_content text not null,
     embedding      vector,
-    metadata       jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-    tags           text[] NOT NULL DEFAULT '{{}}',
-    updated_at     timestamptz NOT NULL DEFAULT now()
+    metadata       jsonb not null default '{{}}'::jsonb,
+    tags           text[] not null default '{{}}',
+    updated_at     timestamptz not null default now()
 );
 
--- FTS-вектор хранимым GENERATED-полем: пересчитывается только при изменении
+-- FTS-вектор хранимым generated-полем: пересчитывается только при изменении
 -- format_content. `unaccent` снимает диакритику до tsvector'а — иначе
 -- `café` и `cafe` не сматчатся. Здесь `russian`-only — multilang (russian
 -- || english) накатывается отдельно в `002_multilang_tsv.sql`.
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = {schema_name_lit}
-          AND table_name = {chunks_name_lit}
-          AND column_name = 'tsv'
-    ) THEN
-        ALTER TABLE {chunks_table}
-            ADD COLUMN tsv tsvector
-            GENERATED ALWAYS AS (
+do $$
+begin
+    if not exists (
+        select
+            1
+        from
+            information_schema.columns
+        where
+            table_schema = {schema_name_lit}
+            and table_name = {chunks_name_lit}
+            and column_name = 'tsv'
+    ) then
+        alter table {chunks_table}
+            add column tsv tsvector
+            generated always as (
                 to_tsvector(
                     'russian',
                     {schema}.immutable_unaccent(coalesce(format_content, ''))
                 )
-            ) STORED;
-    END IF;
-END $$;
+            ) stored;
+    end if;
+end $$;
 
-CREATE INDEX IF NOT EXISTS {chunks_tsv_gin_name}
-    ON {chunks_table} USING gin (tsv);
+create index if not exists {chunks_tsv_gin_name}
+    on {chunks_table} using gin (tsv);
 
-CREATE INDEX IF NOT EXISTS {chunks_collection_idx_name}
-    ON {chunks_table} (collection);
+create index if not exists {chunks_collection_idx_name}
+    on {chunks_table} (collection);
 
-CREATE INDEX IF NOT EXISTS {chunks_collection_source_idx_name}
-    ON {chunks_table} (collection, source_id);
+create index if not exists {chunks_collection_source_idx_name}
+    on {chunks_table} (collection, source_id);
 
 -- HNSW по `embedding` создаётся отдельно для конкретной dim — pgvector
 -- не индексирует `vector` без указания размерности. См. ensure_vector_index

@@ -652,7 +652,7 @@ class ImageStorageClient(StorageClient):
         with_stdin: bool,
     ) -> asyncio.subprocess.Process:
         """Запускает лаунчер на одну операцию над образом."""
-        require_fuse()
+        require_fuse(self._config.binaries)
         await aiofiles.os.makedirs(os.path.dirname(image), exist_ok=True)
         argv = build_chain_argv(
             images=[(image, image + ".mnt")],
@@ -661,6 +661,7 @@ class ImageStorageClient(StorageClient):
             python_bin=sys.executable,
             options=self._config.launcher.to_options(),
             limits=ResourceLimits(),
+            binaries=self._config.binaries,
         )
         stdin = asyncio.subprocess.DEVNULL
         if with_stdin:

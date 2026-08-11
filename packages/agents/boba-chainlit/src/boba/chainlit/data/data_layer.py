@@ -118,7 +118,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             try:
                 async with conn.transaction():
                     await conn.execute(
-                        sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                        sql.SQL("create schema if not exists {}").format(
                             sql.Identifier(self._schema)
                         )
                     )
@@ -169,12 +169,16 @@ class PostgresDataLayer(AttachmentDataLayer):
         model = User.from_chainlit(user)
         query = sql.SQL(
             """
-            insert into {users} ({insert_cols})
-            values ({ph})
-            on conflict (identifier)
-            do update set
+            insert into {users} (
+                {insert_cols}
+            )
+            values (
+                {ph}
+            )
+            on conflict (identifier) do update set
                 meta = excluded.meta
-            returning {cols}
+            returning
+                {cols}
             """
         ).format(
             users=User.get_table_name(self._schema),
@@ -202,10 +206,13 @@ class PostgresDataLayer(AttachmentDataLayer):
         model = Feedback.from_payload(feedback)
         query = sql.SQL(
             """
-            insert into {feedbacks} ({cols})
-            values ({ph})
-            on conflict (id)
-            do update set
+            insert into {feedbacks} (
+                {cols}
+            )
+            values (
+                {ph}
+            )
+            on conflict (id) do update set
                 {asg}
             """
         ).format(
@@ -224,8 +231,15 @@ class PostgresDataLayer(AttachmentDataLayer):
 
     @data_boundary
     async def delete_feedback(self, feedback_id: str) -> bool:
-        query = sql.SQL("""delete from {feedbacks} where id = %(id)s""").format(
-            feedbacks=Feedback.get_table_name(self._schema)
+        query = sql.SQL(
+            """
+            delete from
+                {feedbacks}
+            where
+                id = %(id)s
+            """
+        ).format(
+            feedbacks=Feedback.get_table_name(self._schema),
         )
         try:
             async with self._pool.connection() as conn:
@@ -299,10 +313,13 @@ class PostgresDataLayer(AttachmentDataLayer):
         model = Element.from_chainlit(data)
         query = sql.SQL(
             """
-            insert into {elements} ({cols})
-            values ({ph})
-            on conflict (id)
-            do update set
+            insert into {elements} (
+                {cols}
+            )
+            values (
+                {ph}
+            )
+            on conflict (id) do update set
                 {asg}
             """
         ).format(
@@ -326,8 +343,8 @@ class PostgresDataLayer(AttachmentDataLayer):
                 {cols}
             from
                 {elements}
-            where 1=1
-                and thread_id = %(thread_id)s
+            where
+                thread_id = %(thread_id)s
                 and id = %(id)s
             """
         ).format(
@@ -360,8 +377,18 @@ class PostgresDataLayer(AttachmentDataLayer):
         self, element_id: str, thread_id: str | None = None
     ) -> None:
         query = sql.SQL(
-            "delete from {table} where id = %s returning thread_id, name"
-        ).format(table=Element.get_table_name(self._schema))
+            """
+            delete from
+                {table}
+            where
+                id = %s
+            returning
+                thread_id,
+                name
+            """
+        ).format(
+            table=Element.get_table_name(self._schema),
+        )
 
         try:
             async with (
@@ -392,11 +419,25 @@ class PostgresDataLayer(AttachmentDataLayer):
     @queue_until_user_message()
     @data_boundary
     async def delete_step(self, step_id: str) -> None:
-        feedbacks_query = sql.SQL("delete from {feedbacks} where for_id = %s").format(
-            feedbacks=Feedback.get_table_name(self._schema)
+        feedbacks_query = sql.SQL(
+            """
+            delete from
+                {feedbacks}
+            where
+                for_id = %s
+            """
+        ).format(
+            feedbacks=Feedback.get_table_name(self._schema),
         )
-        elements_query = sql.SQL("delete from {elements} where for_id = %s").format(
-            elements=Element.get_table_name(self._schema)
+        elements_query = sql.SQL(
+            """
+            delete from
+                {elements}
+            where
+                for_id = %s
+            """
+        ).format(
+            elements=Element.get_table_name(self._schema),
         )
         params = (UUID(step_id),)
         try:
@@ -485,8 +526,17 @@ class PostgresDataLayer(AttachmentDataLayer):
             elements=Element.get_table_name(self._schema),
         )
         identifier_query = sql.SQL(
-            "select identifier from {users} where id = %s"
-        ).format(users=User.get_table_name(self._schema))
+            """
+            select
+                identifier
+            from
+                {users}
+            where
+                id = %s
+            """
+        ).format(
+            users=User.get_table_name(self._schema),
+        )
 
         try:
             async with self._pool.connection() as conn, conn.transaction():
@@ -600,14 +650,37 @@ class PostgresDataLayer(AttachmentDataLayer):
     @data_boundary
     async def delete_thread(self, thread_id: str) -> None:
         feedbacks_query = sql.SQL(
-            "delete from {feedbacks} where thread_id = %(tid)s"
-        ).format(feedbacks=Feedback.get_table_name(self._schema))
+            """
+            delete from
+                {feedbacks}
+            where
+                thread_id = %(tid)s
+            """
+        ).format(
+            feedbacks=Feedback.get_table_name(self._schema),
+        )
         elements_query = sql.SQL(
-            "delete from {elements} where thread_id = %(tid)s"
-        ).format(elements=Element.get_table_name(self._schema))
+            """
+            delete from
+                {elements}
+            where
+                thread_id = %(tid)s
+            """
+        ).format(
+            elements=Element.get_table_name(self._schema),
+        )
         thread_query = sql.SQL(
-            "delete from {threads} where id = %(tid)s returning user_id"
-        ).format(threads=Thread.get_table_name(self._schema))
+            """
+            delete from
+                {threads}
+            where
+                id = %(tid)s
+            returning
+                user_id
+            """
+        ).format(
+            threads=Thread.get_table_name(self._schema),
+        )
         params = {"tid": UUID(thread_id)}
         try:
             async with self._pool.connection() as conn, conn.transaction():
@@ -669,8 +742,17 @@ class PostgresDataLayer(AttachmentDataLayer):
             threads=Thread.get_table_name(self._schema),
         )
         identifier_query = sql.SQL(
-            "select identifier from {users} where id = %(user_id)s"
-        ).format(users=User.get_table_name(self._schema))
+            """
+            select
+                identifier
+            from
+                {users}
+            where
+                id = %(user_id)s
+            """
+        ).format(
+            users=User.get_table_name(self._schema),
+        )
 
         user_id = int(filters.userId)
         try:

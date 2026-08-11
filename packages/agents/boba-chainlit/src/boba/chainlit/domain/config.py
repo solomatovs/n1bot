@@ -10,6 +10,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from boba.toolkit.binaries import TrustedBinaries
 from boba.workspace.launcher import LauncherConfig
 
 __all__ = ["LocalStorageConfig"]
@@ -53,6 +54,12 @@ class LocalStorageConfig(BaseModel):
     )
     launcher: LauncherConfig = Field(
         description="kind=image: тайминги и размеры операций лаунчера образов.",
+    )
+    binaries: TrustedBinaries = Field(
+        description=(
+            "kind=image: каталоги, откуда берутся bwrap и fuse2fs; "
+            "$PATH не используется."
+        ),
     )
 
     @field_validator("image_path", "image_template", mode="after")

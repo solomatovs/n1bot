@@ -243,13 +243,11 @@ class RowCollector(ChunkSink):
 
 @dataclass(frozen=True)
 class RunResult:
-    """Результат запуска: код возврата, потоки, факт обрезки, таймаут."""
+    """Результат запуска: код возврата, потоки, длительность, таймаут."""
 
     exit_code: int
     stdout: str
     stderr: str
-    truncated_stdout: bool
-    truncated_stderr: bool
     duration_ms: int
     timed_out: bool
 

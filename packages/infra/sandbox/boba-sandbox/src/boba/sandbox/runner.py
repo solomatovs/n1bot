@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import shlex
-import shutil
 import sys
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar, Token
@@ -19,6 +18,7 @@ from boba.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
+from boba.toolkit.binaries import SandboxBinary
 from boba.toolkit.launcher import LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.stream import StreamSink, ToolStreamTap
@@ -32,9 +32,9 @@ from boba.workspace.launcher import (
 )
 
 
-def has_bwrap() -> bool:
-    """Есть ли bubblewrap в PATH: без него песочницу не поднять."""
-    return shutil.which("bwrap") is not None
+def has_bwrap(profile: SandboxProfile) -> bool:
+    """Есть ли bubblewrap в доверенных каталогах: без него песочницу не поднять."""
+    return profile.binaries.has(SandboxBinary.BWRAP)
 
 
 SandboxOutcome = LaunchOutcome
@@ -186,7 +186,6 @@ class SandboxRunner:
                 argv,
                 stdin_data=stdin.encode("utf-8"),
                 timeout_sec=rendered.timeout_sec,
-                max_output_bytes=rendered.max_output_bytes,
                 cwd="/",
                 env=os.environ,
                 stdout_sink=out_sink,
@@ -264,7 +263,7 @@ class SandboxRunner:
             argv = build_bwrap_argv(profile, command, env=env)
             return argv, limits
 
-        require_fuse()
+        require_fuse(profile.binaries)
         mounts: list[BindSpec] = []
         images: list[tuple[str, str]] = []
         rw_paths: list[str] = []
@@ -286,6 +285,7 @@ class SandboxRunner:
             python_bin=sys.executable,
             options=profile.launcher.to_options(),
             limits=limits,
+            binaries=profile.binaries,
             rw_paths=rw_paths,
             network=profile.network,
         )
@@ -314,7 +314,7 @@ class SandboxRunner:
         )
         logger.info(
             "sandbox[%s]: limits memory=%sB cpu=%ss file=%sB open_files=%s "
-            "processes=%s timeout=%ss output=%sB oom_score_adj=%s group=[%s]",
+            "processes=%s timeout=%ss oom_score_adj=%s group=[%s]",
             profile,
             limits.max_memory_bytes,
             limits.max_cpu_sec,
@@ -322,7 +322,6 @@ class SandboxRunner:
             limits.max_open_files,
             rendered.max_processes,
             rendered.timeout_sec,
-            rendered.max_output_bytes,
             limits.oom_score_adj,
             GroupLimits.of_profile(rendered).describe(),
         )
@@ -331,14 +330,11 @@ class SandboxRunner:
     @staticmethod
     def _log_finish(profile: str, result: RunResult) -> None:
         logger.info(
-            "sandbox[%s]: finished rc=%s in %sms timed_out=%s "
-            "truncated_stdout=%s truncated_stderr=%s",
+            "sandbox[%s]: finished rc=%s in %sms timed_out=%s",
             profile,
             result.exit_code,
             result.duration_ms,
             result.timed_out,
-            result.truncated_stdout,
-            result.truncated_stderr,
         )
 
     @classmethod

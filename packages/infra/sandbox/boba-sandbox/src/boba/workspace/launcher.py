@@ -23,6 +23,12 @@ from typing import BinaryIO, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.toolkit.binaries import (
+    SandboxBinary,
+    TrustedBinaries,
+    UntrustedBinaryError,
+)
+
 __all__ = [
     "FUSE_DEVICE",
     "CapabilityDropper",
@@ -311,9 +317,13 @@ class FuseMounter:
     _PR_SET_PDEATHSIG: ClassVar[int] = 1
 
     def __init__(
-        self, options: LauncherOptions, pass_fds: tuple[int, ...] = ()
+        self,
+        options: LauncherOptions,
+        binaries: TrustedBinaries,
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         self._options = options
+        self._binaries = binaries
         self._pass_fds = pass_fds
         self._daemons: list[subprocess.Popen[bytes]] = []
 
@@ -326,10 +336,7 @@ class FuseMounter:
     def mount(
         self, image: str, mnt: str, *, readonly: bool, fakeroot: bool = False
     ) -> None:
-        fuse2fs = shutil.which("fuse2fs")
-        if fuse2fs is None:
-            msg = "fuse2fs not found in PATH"
-            raise MountError(msg)
+        fuse2fs = self._binaries.resolve(SandboxBinary.FUSE2FS)
         os.makedirs(mnt, exist_ok=True)
 
         argv = [fuse2fs, "-f", image, mnt]
@@ -383,8 +390,7 @@ class FuseMounter:
                     return True
         return False
 
-    @classmethod
-    def reclaim(cls, mnt: str) -> None:
+    def reclaim(self, mnt: str) -> None:
         """Отцепляет точку, осиротевшую после гибели процесса-владельца.
 
         Актуально только для маунтов в namespace хоста: SIGKILL валит fuse2fs
@@ -400,14 +406,16 @@ class FuseMounter:
         except OSError:
             stale = True
 
-        if not stale and not cls.is_mounted(os.path.realpath(mnt)):
+        if not stale and not self.is_mounted(os.path.realpath(mnt)):
             return
 
-        fusermount = shutil.which("fusermount3")
-        if fusermount is None:
-            fusermount = shutil.which("fusermount")
-        if fusermount is None:
-            trace(f"stale mount at {mnt}: fusermount not found")
+        try:
+            fusermount = self._binaries.resolve_any(
+                SandboxBinary.FUSERMOUNT3,
+                SandboxBinary.FUSERMOUNT,
+            )
+        except UntrustedBinaryError as exc:
+            trace(f"stale mount at {mnt}: {exc}")
             return
 
         subprocess.run(  # noqa: S603
@@ -729,10 +737,12 @@ class Launcher:
         images: list[tuple[str, str]],
         options: LauncherOptions,
         limits: ResourceLimits,
+        binaries: TrustedBinaries,
     ) -> None:
         self._images = images
         self._options = options
         self._limits = limits
+        self._binaries = binaries
         self._store = ImageStore(
             template, SparseCopier(options.copy_chunk_bytes), options.lock_wait_sec
         )
@@ -757,10 +767,11 @@ class Launcher:
             max_open_files=args.max_open_files,
             oom_score_adj=args.oom_score_adj,
         )
-        launcher = cls(args.template, images, options, limits)
+        binaries = TrustedBinaries(dirs=tuple(args.trusted_bin_dir))
+        launcher = cls(args.template, images, options, limits, binaries)
         try:
             return launcher.run(args.mode, args.args)
-        except (MountError, OSError, ValueError) as e:
+        except (MountError, UntrustedBinaryError, OSError, ValueError) as e:
             print(f"{LauncherMarker.ERROR}{e}", file=sys.stderr)  # noqa: T201
             return LauncherExit.MOUNT_ERROR
 
@@ -779,7 +790,9 @@ class Launcher:
                 trace(f"image {image} does not exist: nothing to read")
                 return LauncherExit.NOT_FOUND
 
-        mounter = FuseMounter(self._options, pass_fds=self._store.lock_fds)
+        mounter = FuseMounter(
+            self._options, self._binaries, pass_fds=self._store.lock_fds
+        )
         try:
             for image, mnt in self._images:
                 mounter.mount(image, mnt, readonly=readonly)
@@ -868,6 +881,9 @@ class Launcher:
         parser.add_argument("--max-file-size-bytes", type=int, required=True)
         parser.add_argument("--max-open-files", type=int, required=True)
         parser.add_argument("--oom-score-adj", type=int, required=True)
+        parser.add_argument(
+            "--trusted-bin-dir", action="append", metavar="DIR", required=True
+        )
         parser.add_argument("mode", type=LauncherMode, choices=tuple(LauncherMode))
         parser.add_argument("args", nargs=argparse.REMAINDER)
         return parser.parse_args(argv)
@@ -902,17 +918,14 @@ _LAUNCHER_MODULE = "boba.workspace.launcher"
 FUSE_DEVICE = "/dev/fuse"
 
 
-def require_fuse() -> None:
+def require_fuse(binaries: TrustedBinaries) -> None:
     """Проверяет предпосылки монтирования образов; падает громко и сразу."""
     if not os.path.exists(FUSE_DEVICE):
         msg = f"workspace: fuse is required, but {FUSE_DEVICE} is missing"
         raise RuntimeError(msg)
-    if shutil.which("fuse2fs") is None:
-        msg = "workspace: fuse2fs not found in PATH"
-        raise RuntimeError(msg)
-    if shutil.which("bwrap") is None:
-        msg = "workspace: bwrap not found in PATH"
-        raise RuntimeError(msg)
+
+    binaries.resolve(SandboxBinary.FUSE2FS)
+    binaries.resolve(SandboxBinary.BWRAP)
 
 
 def build_chain_argv(  # noqa: PLR0913
@@ -923,16 +936,14 @@ def build_chain_argv(  # noqa: PLR0913
     python_bin: str,
     options: LauncherOptions,
     limits: ResourceLimits,
+    binaries: TrustedBinaries,
     rw_paths: Sequence[str] = (),
     network: bool = False,
-    bwrap_bin: str = "bwrap",
 ) -> list[str]:
     """images — пары (образ, mountpoint); op — run/write/read/delete + аргумент.
     CAP_SYS_ADMIN только в userns; --disable-userns несовместим с mount fuse."""
-    bwrap_path = shutil.which(bwrap_bin)
-    if not bwrap_path:
-        msg = f"workspace: {bwrap_bin!r} not found in PATH"
-        raise RuntimeError(msg)
+    bwrap_path = binaries.resolve(SandboxBinary.BWRAP)
+
     # корень песочницы read-only: относительные пути приводим к абсолютным
     absolute: list[tuple[str, str]] = []
     for image, mnt in images:
@@ -1018,6 +1029,9 @@ def build_chain_argv(  # noqa: PLR0913
         "--oom-score-adj",
         str(limits.oom_score_adj),
     ]
+    for directory in binaries.dirs:
+        argv += ["--trusted-bin-dir", directory]
+
     for image, mnt in images:
         argv += ["--image", image, mnt]
     argv += list(op)

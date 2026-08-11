@@ -36,39 +36,53 @@ class PgCatalog:
     """Таблицы, партиционированные, view, матвью и сторонние — но не индексы."""
 
     TABLES_SELECT: ClassVar[sql.SQL] = sql.SQL("""
-        SELECT n.nspname                                     AS schema,
-               c.relname                                     AS table_name,
-               c.relkind                                     AS kind,
-               c.reltuples::bigint                           AS approx_rows,
-               pg_catalog.pg_get_userbyid(c.relowner)        AS owner,
-               pg_catalog.pg_total_relation_size(c.oid)      AS total_bytes,
-               pg_catalog.obj_description(c.oid, 'pg_class') AS comment
-        FROM pg_catalog.pg_class c
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        select
+            n.nspname                                     as schema,
+            c.relname                                     as table_name,
+            c.relkind                                     as kind,
+            c.reltuples::bigint                           as approx_rows,
+            pg_catalog.pg_get_userbyid(c.relowner)        as owner,
+            pg_catalog.pg_total_relation_size(c.oid)      as total_bytes,
+            pg_catalog.obj_description(c.oid, 'pg_class') as comment
+        from
+            pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     """)
-    TABLES_ORDER: ClassVar[sql.SQL] = sql.SQL("ORDER BY n.nspname, c.relname")
+    TABLES_ORDER: ClassVar[sql.SQL] = sql.SQL("""
+        order by
+            n.nspname,
+            c.relname
+    """)
 
     COLUMNS_SELECT: ClassVar[sql.SQL] = sql.SQL("""
-        SELECT n.nspname                                        AS schema,
-               a.attnum                                         AS position,
-               a.attname                                        AS column_name,
-               pg_catalog.format_type(a.atttypid, a.atttypmod)  AS type,
-               NOT a.attnotnull                                 AS nullable,
-               pg_catalog.pg_get_expr(d.adbin, d.adrelid)       AS default_expression,
-               a.attidentity                                    AS identity,
-               a.attgenerated                                   AS generated,
-               COALESCE(i.indisprimary, false)                  AS primary_key,
-               pg_catalog.col_description(a.attrelid, a.attnum) AS comment
-        FROM pg_catalog.pg_attribute a
-        JOIN pg_catalog.pg_class c     ON c.oid = a.attrelid
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        LEFT JOIN pg_catalog.pg_attrdef d
-               ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-        LEFT JOIN pg_catalog.pg_index i
-               ON i.indrelid = a.attrelid AND i.indisprimary
-              AND a.attnum = ANY (i.indkey)
+        select
+            n.nspname                                        as schema,
+            a.attnum                                         as position,
+            a.attname                                        as column_name,
+            pg_catalog.format_type(a.atttypid, a.atttypmod)  as type,
+            not a.attnotnull                                 as nullable,
+            pg_catalog.pg_get_expr(d.adbin, d.adrelid)       as default_expression,
+            a.attidentity                                    as identity,
+            a.attgenerated                                   as generated,
+            COALESCE(i.indisprimary, false)                  as primary_key,
+            pg_catalog.col_description(a.attrelid, a.attnum) as comment
+        from
+            pg_catalog.pg_attribute a
+            join pg_catalog.pg_class c     on c.oid = a.attrelid
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            left join pg_catalog.pg_attrdef d
+                on d.adrelid = a.attrelid
+                and d.adnum = a.attnum
+            left join pg_catalog.pg_index i
+                on i.indrelid = a.attrelid
+                and i.indisprimary
+                and a.attnum = ANY (i.indkey)
     """)
-    COLUMNS_ORDER: ClassVar[sql.SQL] = sql.SQL("ORDER BY n.nspname, a.attnum")
+    COLUMNS_ORDER: ClassVar[sql.SQL] = sql.SQL("""
+        order by
+            n.nspname,
+            a.attnum
+    """)
 
     @classmethod
     def tables(cls, pg_schema: str | None, table_pattern: str | None) -> PgCatalogQuery:
@@ -81,7 +95,7 @@ class PgCatalog:
             params.append(pg_schema)
 
         if table_pattern:
-            conditions.append(sql.SQL("c.relname LIKE %s"))
+            conditions.append(sql.SQL("c.relname like %s"))
             params.append(table_pattern)
 
         statement = cls._assemble(cls.TABLES_SELECT, conditions, cls.TABLES_ORDER)
@@ -93,7 +107,7 @@ class PgCatalog:
         conditions: list[sql.Composable] = [
             sql.SQL("c.relname = %s"),
             sql.SQL("a.attnum > 0"),
-            sql.SQL("NOT a.attisdropped"),
+            sql.SQL("not a.attisdropped"),
         ]
         params: list[Any] = [table]
 
@@ -111,5 +125,5 @@ class PgCatalog:
         conditions: list[sql.Composable],
         order: sql.SQL,
     ) -> sql.Composed:
-        where = sql.SQL(" AND ").join(conditions)
-        return sql.SQL(" ").join([select, sql.SQL("WHERE"), where, order])
+        where = sql.SQL("\n            and ").join(conditions)
+        return sql.SQL(" ").join([select, sql.SQL("where\n            "), where, order])

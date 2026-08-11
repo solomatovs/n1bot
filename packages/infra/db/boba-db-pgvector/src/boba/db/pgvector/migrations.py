@@ -84,9 +84,11 @@ class Migrations:
         index_name = f"{schema_cfg.chunks_table}_embedding_hnsw_{dim}"
         # vector_cosine_ops = cosine (<=>); для L2 сменить opclass и пересоздать индекс
         stmt = sql.SQL(
-            "CREATE INDEX IF NOT EXISTS {index_name} "
-            "ON {chunks_table} USING hnsw "
-            "((embedding::vector({dim})) vector_cosine_ops)",
+            """
+            create index if not exists {index_name}
+                on {chunks_table} using hnsw
+                ((embedding::vector({dim})) vector_cosine_ops)
+            """,
         ).format(
             index_name=sql.Identifier(index_name),
             chunks_table=schema_cfg.chunks_ident(),

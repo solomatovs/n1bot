@@ -113,12 +113,12 @@ select
     c.content_hash,
     c.metadata,
     c.tags,
-    left(c.format_content, %(snippet_chars)s) AS snippet,
-    (c.embedding::vector({dim})) <=> %(embedding)s::vector AS distance
+    left(c.format_content, %(snippet_chars)s) as snippet,
+    (c.embedding::vector({dim})) <=> %(embedding)s::vector as distance
 from
     {chunks_table} c
-where 1=1
-    and c.collection = any(%(collections)s)
+where
+    c.collection = any(%(collections)s)
     and c.embedding is not null
 order by
     distance asc
@@ -129,7 +129,8 @@ limit
 
     FTS_SQL: ClassVar[str] = """
 with q as (
-    select websearch_to_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
+    select
+        websearch_to_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
         || websearch_to_tsquery('english', {schema}.immutable_unaccent(%(query)s))
         as tsq
 )
@@ -145,8 +146,8 @@ select
 from
     {chunks_table} c,
     q
-where 1=1
-    and c.collection = any(%(collections)s)
+where
+    c.collection = any(%(collections)s)
     and c.tsv @@ q.tsq
 order by
     rank desc

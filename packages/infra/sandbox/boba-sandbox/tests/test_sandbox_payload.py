@@ -26,6 +26,20 @@ from boba.toolkit.launcher import (
     TextCollector,
 )
 
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
     "ro_binds": ("/usr", "/bin", "/sbin", "/lib", "/lib64"),
@@ -39,6 +53,7 @@ _PROFILE_BASE: dict[str, Any] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": ("/tmp:64M",),  # noqa: S108
     "network": False,
     "env_set": {"PATH": "/usr/bin:/bin", "HOME": "/tmp"},  # noqa: S108
@@ -48,7 +63,6 @@ _PROFILE_BASE: dict[str, Any] = {
     "max_file_size_bytes": 64 * 1024 * 1024,
     "max_open_files": 1024,
     "max_processes": 256,
-    "max_output_bytes": 256 * 1024,
     "cgroup_base": "",
     "oom_score_adj": 0,
     "cwd": "/tmp",  # noqa: S108
@@ -88,8 +102,6 @@ def _outcome(stdout: str, **kw: Any) -> SandboxOutcome:
         "exit_code": 0,
         "stdout": stdout,
         "stderr": "",
-        "truncated_stdout": False,
-        "truncated_stderr": False,
         "duration_ms": 1,
         "timed_out": False,
     }
@@ -179,8 +191,6 @@ class TestDecode:
                 exit_code=1,
                 stdout=stdout,
                 stderr="",
-                truncated_stdout=False,
-                truncated_stderr=False,
                 duration_ms=1,
                 timed_out=False,
             ),

@@ -231,10 +231,22 @@ class KbCleanup:
     @staticmethod
     async def drop(cfg: ConfluenceIngestConfig, collection: str) -> None:
         statements = (
-            sql.SQL("delete from {} where collection = %s").format(
-                sql.Identifier(cfg.tables.pg_schema, cfg.tables.chunks_table)
-            ),
-            sql.SQL("delete from {} where name = %s").format(
+            sql.SQL(
+                """
+                delete from
+                    {}
+                where
+                    collection = %s
+                """
+            ).format(sql.Identifier(cfg.tables.pg_schema, cfg.tables.chunks_table)),
+            sql.SQL(
+                """
+                delete from
+                    {}
+                where
+                    name = %s
+                """
+            ).format(
                 sql.Identifier(cfg.tables.pg_schema, cfg.tables.collections_table)
             ),
         )

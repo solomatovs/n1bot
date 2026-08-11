@@ -17,8 +17,8 @@ from enum import StrEnum
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 __all__ = [
     "FakeLlmApp",
@@ -210,12 +210,15 @@ class FakeLlmApp:
             return {"status": "ok"}
 
         @app.post("/v1/chat/completions")
-        async def completions(request: Request) -> StreamingResponse:
+        async def completions(request: Request) -> Response:
             payload = await request.json()
             name = ScenarioName.of(self._last_user_text(payload))
             index = self.turns_done.get(name.value, 0)
             self.turns_done[name.value] = index + 1
             script = ScenarioBook.of(name).turn(index)
+
+            if not payload.get("stream"):
+                return JSONResponse(self._completion(script))
 
             return StreamingResponse(
                 self._stream(script),
@@ -239,6 +242,44 @@ class FakeLlmApp:
                 return content
 
         raise ScenarioError("request has no user message")
+
+    def _completion(self, script: TurnScript) -> dict[str, Any]:
+        """Ответ без стрима: текст, рассуждения и вызовы приходят разом."""
+        message: dict[str, Any] = {"role": "assistant", "content": script.content}
+        if script.reasoning:
+            message["reasoning"] = script.reasoning
+
+        calls: list[dict[str, Any]] = []
+        for index, call in enumerate(script.tool_calls):
+            calls.append(
+                {
+                    "index": index,
+                    "id": call.call_id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+            )
+        if calls:
+            message["tool_calls"] = calls
+
+        return {
+            "id": "chatcmpl-fake",
+            "object": "chat.completion",
+            "created": 1,
+            "model": self.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": script.finish_reason(),
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+            },
+        }
 
     async def _stream(self, script: TurnScript) -> AsyncIterator[bytes]:
         for chunk in self._chunks(script):

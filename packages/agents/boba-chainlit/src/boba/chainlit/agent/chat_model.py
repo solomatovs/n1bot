@@ -10,7 +10,7 @@ from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
 from typing_extensions import override
 
-__all__ = ["ReasoningChatOpenAI", "ResponseField"]
+__all__ = ["ReasoningChatOpenAI", "ReasoningText", "ResponseField"]
 
 
 class ResponseField(StrEnum):
@@ -21,6 +21,29 @@ class ResponseField(StrEnum):
     MESSAGE = "message"
     REASONING_CONTENT = "reasoning_content"
     REASONING = "reasoning"
+
+
+class ReasoningText:
+    """Рассуждения из сообщения langchain: своё поле либо additional_kwargs."""
+
+    @staticmethod
+    def of(message: Any) -> str:
+        if message is None:
+            return ""
+
+        value = getattr(message, ResponseField.REASONING_CONTENT.value, None)
+        if value:
+            return str(value)
+
+        extra = getattr(message, "additional_kwargs", None)
+        if not extra:
+            return ""
+
+        value = extra.get(ResponseField.REASONING_CONTENT.value)
+        if value:
+            return str(value)
+
+        return ""
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
