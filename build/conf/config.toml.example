@@ -17,6 +17,45 @@
     data               = "${env.runtime}/data"
     krb                = "${env.runtime}/conf/krb"
 
+## всё, что меняется от стенда к стенду: адреса, учётки, выбор модели.
+## переезд на другой контур правится здесь, ниже по файлу — только ссылки
+[site]
+    domain          = "<example.local>"
+    realm           = "EXAMPLE.LOCAL"
+    netbios         = "EXAMPLE"
+    base_dn         = "DC=example,DC=local"
+    ldap_url        = "ldaps://<dc1.example.local>:3269"
+    ldap_reader     = 'EXAMPLE\<читающий>'
+
+    service_user    = "<пользователь>"
+    service_keytab  = "${env.krb}/<сервисный>.keytab"
+    krb5_config     = "${env.krb}/krb5.conf"
+
+    pg_host         = "<postgres.example.local>"
+    pg_addr         = "<ip postgres>"
+    pg_port         = 5432
+    pg_database     = "<база>"
+
+    ch_addr         = "<ip clickhouse>"
+    ch_host         = "<ch01.example.local>"
+    ch_port         = 8123
+
+    confluence_url  = "<https://confluence.example.local>"
+    llm_url         = "<https://llm.example.local/v1>"
+    ollama_url      = "http://127.0.0.1:11434/v1"
+
+    llm             = "${openai.main}"
+    llm_model       = "<имя модели у провайдера>"
+
+    ## пароли, токены и ключи стенда
+    llm_api_key          = "<ключ>"
+    ldap_reader_password = "<пароль>"
+    confluence_token     = "<токен>"
+    ## 32 байта в base64: openssl rand -base64 32
+    connections_key      = "<ключ base64>"
+    chainlit_auth_secret = "<32 байта hex: openssl rand -hex 32>"
+    local_password       = "<пароль>"
+
 [app]
     chainlit     = "${chainlit}"
     agent        = "${agent}"
@@ -30,19 +69,19 @@
     ]
 
 [agent]
-    openai                = "${openai.main}"
-    model                 = "<имя модели у провайдера>"
+    openai                = "${site.llm}"
+    model                 = "${site.llm_model}"
     default_system_prompt = "Ты ассистент. Отвечай по найденному контексту."
     history_messages      = 30
 
 [openai.main]
-    base_url   = "<https://llm.example.local/v1>"
-    api_key    = "<ключ>"
+    base_url   = "${site.llm_url}"
+    api_key    = "${site.llm_api_key}"
     ssl_verify = true
     dump       = { enable = false }
 
 [openai.local]
-    base_url   = "http://127.0.0.1:11434/v1"
+    base_url   = "${site.ollama_url}"
     api_key    = "none"
     ssl_verify = false
     dump       = { enable = false }
@@ -52,11 +91,11 @@
 ## (поля по https://www.postgresql.org/docs/current/libpq-connect.html)
 ## сервисы ([checkpointer], [data_layer]) включают его ссылкой ${postgres}
 [postgres]
-    host              = "<postgres.example.local>"
-    hostaddr          = "<ip postgres>"
-    port              = 5432
-    user              = "<пользователь>"
-    dbname            = "<база>"
+    host              = "${site.pg_host}"
+    hostaddr          = "${site.pg_addr}"
+    port              = "${site.pg_port}"
+    user              = "${site.service_user}"
+    dbname            = "${site.pg_database}"
     gssencmode        = "prefer"
     krbsrvname        = "postgres"
     sslmode           = "disable"
@@ -65,10 +104,10 @@
     prepare_threshold = 0
     options           = { statement_timeout = "30s" }
     [postgres.kerberos]
-        keytab      = "${env.krb}/<сервисный>.keytab"
-        principal   = "<пользователь>@EXAMPLE.LOCAL"
+        keytab      = "${site.service_keytab}"
+        principal   = "${site.service_user}@${site.realm}"
         ccache      = "FILE:/tmp/krb5cc_boba_pg"
-        krb5_config = "${env.krb}/krb5.conf"
+        krb5_config = "${site.krb5_config}"
     [postgres.pool]
         timeout           = 5.0
         min_size          = 2
@@ -82,11 +121,11 @@
 
 # настройка подключения к clickhouse
 [clickhouse]
-    host                 = "<ip clickhouse>"
-    port                 = 8123
+    host                 = "${site.ch_addr}"
+    port                 = "${site.ch_port}"
     interface            = "http"
     database             = "default"
-    server_host_name     = "<ch01.example.local>"
+    server_host_name     = "${site.ch_host}"
     krbsrvname           = "HTTP"
     connect_timeout      = 10
     send_receive_timeout = 60
@@ -95,10 +134,10 @@
     client_name          = "boba"
     settings             = { max_execution_time = 30 }
     [clickhouse.kerberos]
-        keytab      = "${env.krb}/<сервисный>.keytab"
+        keytab      = "${site.service_keytab}"
         principal   = "${postgres.kerberos.principal}"
         ccache      = "FILE:/tmp/krb5cc_boba_ch"
-        krb5_config = "${env.krb}/krb5.conf"
+        krb5_config = "${site.krb5_config}"
 
 
 # схема checkpointer (langgraph) — уходит в search_path соединения
@@ -120,9 +159,8 @@
     connection     = "${postgres}"
     db_schema      = "chainlit"
     table          = "connections"
-    ## 32 байта в base64 (openssl rand -base64 32); смена ключа делает
-    ## сохранённые секреты нечитаемыми
-    encryption_key = "<ключ base64>"
+    ## смена ключа делает сохранённые секреты нечитаемыми
+    encryption_key = "${site.connections_key}"
 
 
 # хранилище вложений (upload файлов)
@@ -149,16 +187,16 @@
 # kerberos авторизация; подключается добавлением ${auth.kerberos} в [app].auth
 [auth.kerberos]
     type                = "kerberos"
-    principal_format    = "{username}@EXAMPLE.LOCAL"
+    principal_format    = "{username}@${site.realm}"
     [auth.kerberos.accept]
-        service_name    = 'HTTP/<boba.example.local>@EXAMPLE.LOCAL'
-        keytab          = '${env.krb}/<сервисный>.keytab'
+        service_name    = "HTTP/${site.domain}@${site.realm}"
+        keytab          = "${site.service_keytab}"
     # маппинг ролей через ldap
     [auth.kerberos.ldap_roles]
-        server          = "ldaps://<dc1.example.local>:3269"
-        base_dn         = "DC=example,DC=local"
-        bind_dn         = "EXAMPLE\\<читающий>"
-        bind_password   = "<пароль>"
+        server          = "${site.ldap_url}"
+        base_dn         = "${site.base_dn}"
+        bind_dn         = "${site.ldap_reader}"
+        bind_password   = "${site.ldap_reader_password}"
         [auth.kerberos.ldap_roles.mapping]
             member_of   = "${role.ldap.memberof}"
             dn          = "${role.ldap.dn}"
@@ -167,10 +205,10 @@
 # ldap авторизация; подключается добавлением ${auth.ldap} в [app].auth
 [auth.ldap]
     type                = "ldap"
-    server              = "ldaps://<dc1.example.local>:3269"
-    base_dn             = "DC=example,DC=local"
+    server              = "${site.ldap_url}"
+    base_dn             = "${site.base_dn}"
     user_filter         = "(sAMAccountName={username})"
-    bind_dn_template    = "EXAMPLE\\{username}"
+    bind_dn_template    = '${site.netbios}\{username}'
     # маппинг ролей
     [auth.ldap.roles]
         member_of       = "${role.ldap.memberof}"
@@ -191,7 +229,7 @@
     type          = "local"
     require_roles = true
     [auth.local.users]
-        "<логин>" = "<пароль>"
+        "<логин>" = "${site.local_password}"
     [auth.local.roles]
         "<логин>" = ["ADM", "DEV"]
 
@@ -205,7 +243,7 @@
     # ssl_key       = "./data/certs/private.key"
     # ssl_ca_certs  = "./data/certs/ca-cert.crt"
     root        = "${env.assets}"
-    auth_secret = "<32 байта hex: openssl rand -hex 32>"
+    auth_secret = "${site.chainlit_auth_secret}"
 
 
 
@@ -367,12 +405,12 @@
     retry_backoff_sec = 1.0
 
 [web.confluence]
-    base_url          = "<https://confluence.example.local>"
+    base_url          = "${site.confluence_url}"
     timeout_sec       = 30.0
     ssl_verify        = false
     retry_attempts    = 3
     retry_backoff_sec = 1.0
-    auth              = { method = "bearer", token = "<токен>" }
+    auth              = { method = "bearer", token = "${site.confluence_token}" }
 
 [tool.web]
     enable          = true
