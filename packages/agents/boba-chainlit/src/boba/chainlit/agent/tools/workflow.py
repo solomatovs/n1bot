@@ -6,6 +6,7 @@ PayloadFailureError) уходят наверх — их показывает Too
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Any
 
 from langchain.tools import tool
@@ -19,8 +20,13 @@ from boba.toolkit.workflow import WorkflowOutcome, WorkflowSpec
 __all__ = ["build_workflow_tool"]
 
 
-def build_workflow_tool(launcher: ToolLauncher) -> BaseTool:
-    """Фасад графа стадий: спека nodes/edges от LLM, исполнение — порт запуска."""
+def build_workflow_tool(launcher: ToolLauncher, stages: Sequence[str]) -> BaseTool:
+    """Фасад графа стадий: спека nodes/edges от LLM, исполнение — порт запуска.
+
+    stages — имена узлов реестра: без них модель называет узлом имя фасада
+    (`pg_export` вместо `pg_copy`) и получает отказ на валидации.
+    """
+    known = ", ".join(sorted(stages))
 
     @tool(response_format="content_and_artifact")
     def workflow(
@@ -31,7 +37,9 @@ def build_workflow_tool(launcher: ToolLauncher) -> BaseTool:
                 description=(
                     "Узлы графа: {id, tool, args, stdin?}. id — имя узла в "
                     "графе, tool — узловой инструмент, args — его аргументы, "
-                    "stdin — необязательная строка на вход узла."
+                    "stdin — необязательная строка на вход узла. "
+                    f"Узловые инструменты: {known}. Имена обычных инструментов "
+                    "здесь не работают."
                 ),
             ),
         ],

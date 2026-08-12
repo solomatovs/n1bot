@@ -573,7 +573,7 @@ def _load_workflow_tools(
         )
         return []
 
-    built = build_workflow_tool(launcher)
+    built = build_workflow_tool(launcher, registry.names())
     if built.name not in meta.tools:
         return []
 
