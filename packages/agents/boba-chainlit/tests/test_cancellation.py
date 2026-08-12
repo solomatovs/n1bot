@@ -21,7 +21,7 @@ from boba.cancellation import (
     current_cancellation,
     turn_cancellation,
 )
-from boba.chainlit.agent.tools import build_bash_tool
+from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
 from boba.chainlit.agent.tools.cancellation import CancellableTools
 from boba.sandbox import SandboxCaller, SandboxProfile, SandboxToolConfig
 from boba.toolkit.result import ErrorResult
@@ -261,6 +261,9 @@ class TestSubprocessAbort:
     DURATION = "5931.17"
     """Уникальная длительность sleep: она видна в argv и после exec'а bash."""
 
+    LIMITS = BashToolConfig(max_output_bytes=64 * 1024)
+    """Потолок вывода: команда ничего не печатает, значение роли не играет."""
+
     KILL_DEADLINE_SEC = 2.5
     """Порог отсекает запасной proc.wait(timeout=5) в _pump: без прерывателя
     процесс тоже умирает, но лишь через пять секунд после остановки."""
@@ -281,7 +284,9 @@ class TestSubprocessAbort:
 
     def test_cancel_kills_running_process(self) -> None:
         profile = _sandbox_config().effective()
-        tool_ = build_bash_tool(lambda tool: SandboxCaller(tool, profile, dict))
+        tool_ = build_bash_tool(
+            self.LIMITS, lambda tool: SandboxCaller(tool, profile, dict)
+        )
         with turn_cancellation() as c:
             ctx = copy_context()
             with ThreadPoolExecutor(1) as pool:

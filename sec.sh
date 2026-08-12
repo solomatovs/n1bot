@@ -41,10 +41,10 @@ _run_bandit() {
 
 _run_semgrep() {
   echo "== semgrep =="
-  # правила лежат в репозитории: registry semgrep.dev в offline-контуре
-  # недоступен, обновляются целью sec.sh rules
+  # правила скачиваются в build/src (как остальные артефакты) и в git
+  # не попадают: обновляются через sec.sh rules
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
-    scan --config="$_sec_dir/build/conf/semgrep" --metrics=off \
+    scan --config="$_sec_dir/build/src/semgrep" --metrics=off \
     --exclude=.venv --exclude=build --exclude=release \
     --error "$_sec_dir/packages" || _rc=1
 }
@@ -53,7 +53,7 @@ _update_rules() {
   echo "== semgrep rules =="
   for pack in python secrets; do
     curl -fsS "https://semgrep.dev/c/p/$pack" \
-      -o "$_sec_dir/build/conf/semgrep/$pack.yml" || _rc=1
+      -o "$_sec_dir/build/src/semgrep/$pack.yml" || _rc=1
     echo "$pack.yml updated"
   done
 }
