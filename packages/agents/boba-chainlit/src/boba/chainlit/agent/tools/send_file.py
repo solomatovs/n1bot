@@ -17,11 +17,11 @@ from langchain_core.tools import BaseTool, InjectedToolCallId
 from pydantic import Field
 
 import chainlit as cl
-from boba.chainlit.chat.data.data_layer import AttachmentDataLayer
-from boba.chainlit.chat.data.object_key import ElementProps, ObjectKey
-from boba.chainlit.chat.data.storage import StorageError, StorageNotFoundError
-from boba.chainlit.chat.turn import ChatTurn
-from boba.chainlit.infra.session import current_thread_id, current_user_id
+from boba.chainlit.data.data_layer import AttachmentDataLayer
+from boba.chainlit.data.storage import StorageError, StorageNotFoundError
+from boba.chainlit.domain.keys import ElementProps, ObjectKey
+from boba.chainlit.domain.session import current_thread_id, current_user_id
+from boba.chainlit.domain.turn import ActiveTurns
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 from chainlit.data import get_data_layer
@@ -130,7 +130,7 @@ class FileAttachment:
                 AttachmentErrorKind.NO_THREAD, "no active thread"
             )
 
-        turn = ChatTurn.active(thread_id)
+        turn = ActiveTurns.of(thread_id)
         if turn is None:
             raise AttachmentRefusedError(
                 AttachmentErrorKind.NO_TURN, "the turn is already finished"

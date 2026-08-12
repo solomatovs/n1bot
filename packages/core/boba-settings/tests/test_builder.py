@@ -27,13 +27,7 @@ def test_layer_priority_later_wins(tmp_path: Path) -> None:
     base.write_text("a:\n  port: 1\n")
     secrets = tmp_path / "secrets.yaml"
     secrets.write_text("a:\n  port: 2\n")
-    cfg = (
-        ConfigBuilder()
-        .add_yaml(base)
-        .add_yaml(secrets)
-        .add_cli(["a.port=3"])
-        .build()
-    )
+    cfg = ConfigBuilder().add_yaml(base).add_yaml(secrets).add_cli(["a.port=3"]).build()
     assert cfg.a.port == 3
 
 

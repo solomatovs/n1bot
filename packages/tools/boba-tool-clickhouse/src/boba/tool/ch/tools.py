@@ -32,17 +32,28 @@ __all__ = ["ChTools", "build_ch_tools"]
 class ChTools:
     """Собирает langchain-инструменты поверх ChExecutor."""
 
-    TABLES_SQL: ClassVar[str] = (
-        "SELECT database, name AS table, engine, total_rows "
-        "FROM system.tables "
-    )
+    TABLES_SQL: ClassVar[str] = """
+select
+    database,
+    name as table,
+    engine,
+    total_rows
+from
+    system.tables
+"""
     SYSTEM_DATABASES: ClassVar[str] = (
         "('system', 'INFORMATION_SCHEMA', 'information_schema')"
     )
-    COLUMNS_SQL: ClassVar[str] = (
-        "SELECT name, type, default_kind, default_expression, comment "
-        "FROM system.columns "
-    )
+    COLUMNS_SQL: ClassVar[str] = """
+select
+    name,
+    type,
+    default_kind,
+    default_expression,
+    comment
+from
+    system.columns
+"""
 
     def __init__(
         self,
@@ -134,13 +145,20 @@ class ChTools:
             params: dict[str, Any] = {}
             if ch_database:
                 sql = owner.TABLES_SQL + (
-                    "WHERE database = {db:String} ORDER BY database, name"
+                    "where\n"
+                    "    database = {db:String}\n"
+                    "order by\n"
+                    "    database,\n"
+                    "    name\n"
                 )
                 params = {"db": ch_database}
             else:
                 sql = owner.TABLES_SQL + (
-                    f"WHERE database NOT IN {owner.SYSTEM_DATABASES} "
-                    f"ORDER BY database, name"
+                    "where\n"
+                    f"    database not in {owner.SYSTEM_DATABASES}\n"
+                    "order by\n"
+                    "    database,\n"
+                    "    name\n"
                 )
 
             try:
@@ -190,14 +208,20 @@ class ChTools:
             params: dict[str, Any] = {"table": table}
             if ch_database:
                 sql = owner.COLUMNS_SQL + (
-                    "WHERE database = {db:String} AND table = {table:String} "
-                    "ORDER BY position"
+                    "where\n"
+                    "    database = {db:String}\n"
+                    "    and table = {table:String}\n"
+                    "order by\n"
+                    "    position\n"
                 )
                 params["db"] = ch_database
             else:
                 sql = owner.COLUMNS_SQL + (
-                    "WHERE database = currentDatabase() AND table = {table:String} "
-                    "ORDER BY position"
+                    "where\n"
+                    "    database = currentDatabase()\n"
+                    "    and table = {table:String}\n"
+                    "order by\n"
+                    "    position\n"
                 )
 
             try:

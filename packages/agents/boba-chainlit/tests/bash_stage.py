@@ -18,9 +18,9 @@ import pydantic
 from langchain_core.tools import BaseTool
 
 from boba.sandbox import SandboxCaller
-from boba.stand.journal import CallStand
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.sandbox.workflow import StageDef, StageRegistry
+from boba.stand.journal import CallStand
 from boba.tool.shell import BashStage, build_bash_tool
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 

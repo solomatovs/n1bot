@@ -45,7 +45,8 @@ T = TypeVar("T")
 class HashDiff:
     """План записи после сверки по content_hash: to_upsert / unchanged.
 
-    to_delete отсутствует намеренно — per-run cleanup устаревших чанков делает CleanupStrategy, не per-batch diff.
+    to_delete отсутствует намеренно — per-run cleanup устаревших чанков делает
+    CleanupStrategy, не per-batch diff.
     """
 
     to_upsert: list[ChunkId]
@@ -92,7 +93,9 @@ class ChunkStore(ABC, Generic[T]):
         where: Filter | None,
         limit: int | None = None,
     ) -> Sequence[ChunkSummary[T]]:
-        """Поиск по Filter DSL; where=None — вся коллекция, непереводимый предикат — UnsupportedFilterError."""
+        """Поиск по Filter DSL; where=None — вся коллекция, непереводимый предикат —
+        UnsupportedFilterError.
+        """
         ...
 
     @abstractmethod
@@ -101,7 +104,9 @@ class ChunkStore(ABC, Generic[T]):
         collection: CollectionId,
         candidates: Iterable[tuple[ChunkId, ContentHash]],
     ) -> HashDiff:
-        """Сравнить кандидатов (chunk_id, content_hash) со Store и вернуть план записи HashDiff."""
+        """Сравнить кандидатов (chunk_id, content_hash) со Store и вернуть план записи
+        HashDiff.
+        """
         ...
 
     @abstractmethod
@@ -110,7 +115,9 @@ class ChunkStore(ABC, Generic[T]):
         collection: CollectionId,
         chunks: Iterable[EmbeddedChunk[T]],
     ) -> None:
-        """Bulk-upsert EmbeddedChunk[T]: полная замена записи по chunk_id, включая удаление отсутствующих metadata-ключей."""
+        """Bulk-upsert EmbeddedChunk[T]: полная замена записи по chunk_id, включая
+        удаление отсутствующих metadata-ключей.
+        """
         ...
 
     @abstractmethod
@@ -161,11 +168,14 @@ class CollectionsStore(ABC):
         """Удалить коллекцию целиком."""
         ...
 
+
 T = TypeVar("T")
 
 
 class TrackingKeys:
-    """Wire-имена tracking-полей в metadata-store — единый источник правды для всех backend'ов."""
+    """Wire-имена tracking-полей в metadata-store — единый источник правды для всех
+    backend'ов.
+    """
 
     CONTENT_HASH: ClassVar[str] = "content_hash"
     UPDATED_AT: ClassVar[str] = "updated_at"
@@ -184,7 +194,9 @@ class ReconcileSummary:
 
 
 class IndexQuery(ABC, Generic[T]):
-    """Filter-based view: реализация инжектит scope-фильтр в каждый запрос, чужой scope недостижим."""
+    """Filter-based view: реализация инжектит scope-фильтр в каждый запрос, чужой scope
+    недостижим.
+    """
 
     @abstractmethod
     async def find(
@@ -193,7 +205,9 @@ class IndexQuery(ABC, Generic[T]):
         where: Filter | None = None,
         limit: int | None = None,
     ) -> Sequence[ChunkSummary[T]]:
-        """Scope-aware поиск по фильтру; where=None — только scope-фильтр, limit=None — без лимита."""
+        """Scope-aware поиск по фильтру; where=None — только scope-фильтр, limit=None —
+        без лимита.
+        """
         ...
 
     @abstractmethod
@@ -206,7 +220,9 @@ class IndexQuery(ABC, Generic[T]):
 
     @abstractmethod
     def narrow(self, where: Filter) -> IndexQuery[T]:
-        """Новый IndexQuery с добавленным Filter; каскад narrow(a).narrow(b) ≡ narrow(And([a, b]))."""
+        """Новый IndexQuery с добавленным Filter; каскад narrow(a).narrow(b) ≡
+        narrow(And([a, b])).
+        """
         ...
 
 
@@ -221,15 +237,20 @@ class IndexSink(ABC, Generic[T]):
         time_at_least: float,
         force: bool = False,
     ) -> ReconcileSummary:
-        """Привести Store в соответствие с чанками (unchanged — только refresh updated_at); force=True — все dirty."""
+        """Привести Store в соответствие с чанками (unchanged — только refresh
+        updated_at); force=True — все dirty.
+        """
         ...
+
 
 T = TypeVar("T")
 _E = TypeVar("_E")
 
 
 class CollectionScopedView(IndexQuery[T], IndexSink[T]):
-    """IndexQuery + IndexSink со scope'ом в одну collection Store; сужение — через narrow(...)."""
+    """IndexQuery + IndexSink со scope'ом в одну collection Store; сужение — через
+    narrow(...).
+    """
 
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
 
@@ -278,7 +299,9 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         time_at_least: float,
         force: bool = False,
     ) -> ReconcileSummary:
-        """Привести Store в соответствие с chunk'ами: diff_by_hash -> embed -> upsert + heartbeat unchanged; force=True — весь батч dirty."""
+        """Привести Store в соответствие с chunk'ами: diff_by_hash -> embed -> upsert +
+        heartbeat unchanged; force=True — весь батч dirty.
+        """
         total = 0
         upserted = 0
         unchanged = 0
@@ -380,6 +403,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         if batch:
             yield batch
 
+
 @dataclass(frozen=True)
 class CleanupContext:
     """Снимок состояния одного прогона Indexer.run; query уже привязан к scope'у."""
@@ -407,18 +431,22 @@ class NoneCleanup(CleanupStrategy):
 
 
 class IncrementalCleanup(CleanupStrategy):
-    """Удалить stale-записи только для touched source_id; безопасно при частичных прогонах."""
+    """Удалить stale-записи только для touched source_id; безопасно при частичных
+    прогонах.
+    """
 
     async def execute(self, ctx: CleanupContext) -> int:
         if not ctx.touched_sources:
             return 0
-        where: Filter = And([
-            Lt(TrackingKeys.UPDATED_AT, ctx.run_start),
-            In(
-                TrackingKeys.SOURCE_ID,
-                list(ctx.touched_sources),
-            ),
-        ])
+        where: Filter = And(
+            [
+                Lt(TrackingKeys.UPDATED_AT, ctx.run_start),
+                In(
+                    TrackingKeys.SOURCE_ID,
+                    list(ctx.touched_sources),
+                ),
+            ]
+        )
         return await ctx.query.clean(where=where)
 
 

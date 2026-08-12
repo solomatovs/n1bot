@@ -3,18 +3,19 @@
 Профиль уезжает nul-separated в канал wrap_args (`--args FD`), в argv остаётся
 только команда: он не виден в `ps` и не упирается в MAX_ARG_STRLEN.
 
-Ошибки: LauncherError — bwrap отсутствует в PATH или нарушен контракт сборки.
+Ошибки: LauncherError — bwrap недоступен в доверенных каталогах или нарушен
+контракт сборки.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, TypeVar
 
 from boba.sandbox.profile import BindSpec, SandboxProfile
+from boba.toolkit.binaries import SandboxBinary, UntrustedBinaryError
 from boba.toolkit.launcher import LauncherError
 
 __all__ = [
@@ -100,7 +101,7 @@ class ChannelArgv:
         )
 
         argv = (
-            _bwrap_path(),
+            _bwrap_path(profile),
             "--args",
             str(wrap_args_fd),
             "--",
@@ -112,13 +113,12 @@ class ChannelArgv:
         return cls(argv=argv, wrap_args=WrapArgsCodec.encode(options))
 
 
-def _bwrap_path() -> str:
-    path = shutil.which("bwrap")
-
-    if path is None:
-        raise LauncherError("bwrap not found in PATH")
-
-    return path
+def _bwrap_path(profile: SandboxProfile) -> str:
+    """$PATH не читается: bwrap берётся только из доверенных каталогов профиля."""
+    try:
+        return profile.binaries.resolve(SandboxBinary.BWRAP)
+    except UntrustedBinaryError as exc:
+        raise LauncherError(str(exc)) from exc
 
 
 def _profile_options(

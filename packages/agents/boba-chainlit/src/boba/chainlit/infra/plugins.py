@@ -26,7 +26,7 @@ from boba.chainlit.agent.tools.canvas import CanvasToolConfig
 from boba.chainlit.agent.tools.diagram import DiagramToolConfig
 from boba.chainlit.agent.tools.errors import ToolErrorGuard
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
-from boba.chainlit.infra.session import (
+from boba.chainlit.domain.session import (
     current_thread_id,
     current_user_id,
     current_user_roles,
@@ -169,95 +169,40 @@ def _ingest_nodes(cfg: ConfluenceIngestConfig) -> Mapping[str, StageNode]:
 
 
 def _build_sandbox_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.bash] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "bash was not registered",
-        )
-        return []
-
     profile = build.profile_of(BashStage.NAME)
 
     return [build_bash_tool(build.launchers, profile.max_output_bytes)]
 
 
 def _build_doc_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.doc] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "doc tools were not registered",
-        )
-        return []
     return build_doc_tools(build.cfg, build.launchers)
 
 
 def _build_ingest_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.ingest] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "confluence ingest tools were not registered",
-        )
-        return []
     return build_confluence_ingest_tools(build.cfg, build.launchers)
 
 
 def _build_confluence_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.confluence] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "confluence tools were not registered",
-        )
-        return []
     return build_confluence_tools(build.cfg, build.launchers)
 
 
 def _build_web_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.web] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "web tools were not registered",
-        )
-        return []
     return build_web_tools(build.cfg, build.launchers)
 
 
 def _build_chart_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.chart] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "chart tools were not registered",
-        )
-        return []
     return build_chart_tools(build.launchers)
 
 
 def _build_pg_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.pg] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "pg tools were not registered",
-        )
-        return []
     return build_pg_tools(build.cfg, build.launchers)
 
 
 def _build_ch_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.ch] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "clickhouse tools were not registered",
-        )
-        return []
     return build_ch_tools(build.cfg, build.launchers)
 
 
 def _build_kb_tools(build: PluginBuild) -> list[BaseTool]:
-    if not has_bwrap():
-        logger.warning(
-            "[tool.kb] is enabled, but bubblewrap (bwrap) is not in PATH — "
-            "kb tools were not registered",
-        )
-        return []
     return build_kb_tools(build.cfg, build.launchers)
 
 
@@ -419,6 +364,15 @@ class ToolSection:
     meta: PluginMeta
     cfg: ConfigT
     nodes: Mapping[str, StageDef]
+    profile: SandboxProfile | None
+    """Профиль песочницы секции; None — плагин работает вне песочницы."""
+
+    def sandbox_missing(self) -> bool:
+        """Секции нужна песочница, а bwrap в доверенных каталогах нет."""
+        if self.profile is None:
+            return False
+
+        return not has_bwrap(self.profile)
 
     def launchers(self, shared: LauncherFactory) -> LauncherFactory:
         """Плагину без песочницы порт запуска не положен."""
@@ -461,13 +415,16 @@ class ToolSections:
             if plugin.config_model is not None:
                 cfg = bind(raw_config, f"tool.{name}", plugin.config_model)
 
+            profile = cls._profile(raw_config, name, plugin)
+
             sections.append(
                 ToolSection(
                     name=name,
                     plugin=plugin,
                     meta=meta,
                     cfg=cfg,
-                    nodes=cls._nodes(raw_config, name, plugin, cfg),
+                    nodes=cls._nodes(plugin, cfg, profile),
+                    profile=profile,
                 )
             )
 
@@ -483,17 +440,27 @@ class ToolSections:
         return StageRegistry(defs)
 
     @staticmethod
-    def _nodes(
+    def _profile(
         raw_config: DictConfig,
         name: str,
         plugin: ToolPlugin,
-        cfg: ConfigT,
-    ) -> dict[str, StageDef]:
+    ) -> SandboxProfile | None:
+        """Профиль секции; None — плагин без песочницы, профиля у него нет."""
         if not plugin.sandboxed:
-            return {}
+            return None
 
         sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
-        profile = sandbox.effective()
+
+        return sandbox.effective()
+
+    @staticmethod
+    def _nodes(
+        plugin: ToolPlugin,
+        cfg: ConfigT,
+        profile: SandboxProfile | None,
+    ) -> dict[str, StageDef]:
+        if profile is None:
+            return {}
 
         defs: dict[str, StageDef] = {}
         for node_name, node in plugin.nodes(cfg).items():
@@ -569,6 +536,14 @@ def _bind_panel(registry: StageRegistry, stage_tools: Iterable[str]) -> None:
 
 def _build_section(section: ToolSection, shared: LauncherFactory) -> list[BaseTool]:
     """Инструменты секции, оставленные allowlist'ом tools = {…}."""
+    if section.sandbox_missing():
+        logger.warning(
+            "[tool.%s] is enabled, but bubblewrap (bwrap) is not in the "
+            "trusted binary directories — its tools were not registered",
+            section.name,
+        )
+        return []
+
     build = PluginBuild(
         cfg=section.cfg,
         launchers=section.launchers(shared),
@@ -589,6 +564,7 @@ def _load_workflow_tools(
     tools: list[BaseTool],
     roles_by_tool: dict[str, list[str]],
     launcher: ToolLauncher,
+    registry: StageRegistry,
 ) -> list[str]:
     """Инструмент workflow: граф стадий поверх боевого реестра узлов.
 
@@ -602,9 +578,9 @@ def _load_workflow_tools(
     if not meta.enable:
         return []
 
-    if not has_bwrap():
+    if not registry.names():
         logger.warning(
-            "[tool.workflow] is enabled, but bubblewrap (bwrap) is not in PATH — "
+            "[tool.workflow] is enabled, but the stage registry is empty — "
             "workflow was not registered",
         )
         return []
@@ -646,7 +622,9 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
 
         stage_tools.extend(_stage_tools(section, built))
 
-    stage_tools.extend(_load_workflow_tools(raw_config, tools, roles_by_tool, caller))
+    stage_tools.extend(
+        _load_workflow_tools(raw_config, tools, roles_by_tool, caller, registry)
+    )
 
     _bind_panel(registry, stage_tools)
 

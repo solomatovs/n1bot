@@ -66,9 +66,7 @@ def test_parse_invalid_raises_liteparse_error(params: LiteParseParams):
 
 
 def test_ocr_without_tessdata_raises(pdf_path: str):
-    params = LiteParseParams(
-        ocr_enabled=True, tessdata_path="/нет-такого-каталога"
-    )
+    params = LiteParseParams(ocr_enabled=True, tessdata_path="/нет-такого-каталога")
     with pytest.raises(LiteParseError, match="каталога моделей"):
         LiteParseEngine.parse(params, pdf_path)
 

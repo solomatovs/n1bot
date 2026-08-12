@@ -100,23 +100,39 @@ class PageHandler(BaseHTTPRequestHandler):
 class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site."""
 
+    SITE_PACKAGES: ClassVar[str] = "/usr/local/lib/python3.11/site-packages"
+
     @staticmethod
     def ro_binds() -> list[str]:
         return [
-            f"{SANDBOX / 'third' / 'python'}:/opt/python",
-            f"{SANDBOX / 'site'}:/opt/site",
-            f"{REPO / 'packages'}:/opt/src",
+            f"{SANDBOX / 'third' / 'python'}:/usr/local",
+            f"{SANDBOX / 'site'}:{SandboxLayout.SITE_PACKAGES}",
+            f"{REPO / 'packages'}:/usr/src",
             "/etc/hosts:/etc/hosts",
             "/etc/resolv.conf:/etc/resolv.conf",
         ]
 
     @staticmethod
     def python_path() -> str:
+        """Свой код: интерпретатор и site-packages стоят на штатных местах."""
         parts: list[str] = []
         for name in SRC_PACKAGES:
-            parts.append(f"/opt/src/{name}/src")
-        parts.append("/opt/site")
+            parts.append(f"/usr/src/{name}/src")
+
         return ":".join(parts)
+
+    @staticmethod
+    def bin_dirs() -> list[str]:
+        """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+        dirs: list[str] = []
+
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            if not entry.startswith("/"):
+                continue
+
+            dirs.append(entry)
+
+        return dirs
 
 
 def sandbox_profile(**kw: Any) -> dict[str, Any]:
@@ -134,13 +150,11 @@ def sandbox_profile(**kw: Any) -> dict[str, Any]:
             "lock_wait_sec": 10.0,
             "copy_chunk_bytes": 1 << 20,
         },
+        "binaries": {"dirs": SandboxLayout.bin_dirs()},
         "tmpfs": ("/tmp:256M",),  # noqa: S108
         "network": True,
         "env_set": {
-            "PATH": "/opt/python/bin:/usr/local/bin:/usr/bin:/bin",
-            "PYTHONHOME": "/opt/python",
             "PYTHONPATH": SandboxLayout.python_path(),
-            "LD_LIBRARY_PATH": "/opt/python/lib",
             "HOME": "/tmp",  # noqa: S108
             "LANG": "C.UTF-8",
         },

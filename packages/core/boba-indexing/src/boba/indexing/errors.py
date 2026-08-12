@@ -9,7 +9,9 @@ __all__ = [
 
 
 class IndexingError(Exception):
-    """База ошибок processing-домена (любая стадия Source/Transport/Reader/Decoder/Chunker/Store)."""
+    """База ошибок processing-домена (любая стадия
+    Source/Transport/Reader/Decoder/Chunker/Store).
+    """
 
 
 class IncompatibleContentError(IndexingError):
@@ -25,5 +27,3 @@ class IncompatibleContentError(IndexingError):
         self.reader_id = reader_id
         self.canonical_id = canonical_id
         self.reason = reason
-
-

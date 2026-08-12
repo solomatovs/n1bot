@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from typing import Any
@@ -12,6 +13,20 @@ from omegaconf.errors import InterpolationKeyError
 
 from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
 from boba.settings import bind
+
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
 
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
@@ -26,6 +41,7 @@ _PROFILE_BASE: dict[str, Any] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": (),
     "network": False,
     "env_set": {},
@@ -35,7 +51,7 @@ _PROFILE_BASE: dict[str, Any] = {
     "max_file_size_bytes": 64 * 1024 * 1024,
     "max_open_files": 256,
     "max_processes": 256,
-    "max_output_bytes": 256 * 1024,
+    "max_output_bytes": 4 * 1024 * 1024,
     "cgroup_base": "",
     "oom_score_adj": 0,
     "cwd": "",
@@ -53,9 +69,7 @@ def _profile(**kw: Any) -> SandboxProfile:
 
 def _tool_config(override: dict[str, Any], **profile_kw: Any) -> SandboxToolConfig:
     profile = _profile(cwd="/workspace", **profile_kw)
-    return SandboxToolConfig.model_validate(
-        {"profile": profile, "override": override}
-    )
+    return SandboxToolConfig.model_validate({"profile": profile, "override": override})
 
 
 class TestProfileRegistry:

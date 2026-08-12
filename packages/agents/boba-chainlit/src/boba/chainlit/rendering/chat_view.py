@@ -6,6 +6,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid5
@@ -38,6 +39,7 @@ __all__ = [
     "StepRole",
     "StepStatus",
     "StepText",
+    "TurnDraft",
 ]
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,8 @@ class StepText(StrEnum):
 
     CONTAINER = "process..."
     RUNNING = "running"
+    THINKING = "thinking"
+    TOOL = "tool"
     STOPPED = "stopped by the user"
     ABORTED = "stopped"
 
@@ -98,6 +102,60 @@ class StepRole(StrEnum):
     STREAM = "stream"
 
 
+@dataclass
+class TurnDraft:
+    """Открытый ход: что он уже нарисовал и что ещё стримится.
+
+    Ответ и рассуждения дописываются токенами, поэтому живут здесь до закрытия;
+    ключ хода адресует контейнер и все его ответы.
+    """
+
+    key: str | None = None
+    container: Step | None = None
+    answer: Message | None = None
+    answers: int = 0
+    thinking: Step | None = None
+
+    def answer_key(self, key: str | None = None) -> str | None:
+        """Каждый следующий ответ хода — своё сообщение, как в истории."""
+        turn_key = key
+        if turn_key is None:
+            turn_key = self.key
+
+        if turn_key is None:
+            return None
+
+        if not self.answers:
+            return turn_key
+
+        return f"{turn_key}#{self.answers}"
+
+    def next_answer_key(self) -> str | None:
+        """Ключ очередного ответа хода: следующий вызов даст уже новый."""
+        key = self.answer_key()
+        self.answers += 1
+        return key
+
+    def seal_answer(self) -> Message | None:
+        """Снимает открытый ответ; None — открывать было нечего."""
+        message = self.answer
+        if message is None:
+            return None
+
+        self.answer = None
+        self.answers += 1
+        return message
+
+    def seal_thinking(self) -> Step | None:
+        """Снимает открытый шаг рассуждений; None — модель ничего не надумала."""
+        step = self.thinking
+        if step is None:
+            return None
+
+        self.thinking = None
+        return step
+
+
 class ChatSink(ABC):
     """Куда уходят нарисованные шаги."""
 
@@ -120,6 +178,7 @@ class LiveSink(ChatSink):
         if step.id in self._sent:
             await step.update()
             return
+
         self._sent.add(step.id)
         await step.send()
 
@@ -145,6 +204,9 @@ class ChatView:
     live-отрисовка и повтор из истории давали одинаковую ленту. Ключи:
     контейнер и ответ — id вопроса (turn key), thinking — id AIMessage,
     tool/chart/element — tool_call_id.
+
+    Стримящиеся элементы хода — ответ и рассуждения — живут в TurnDraft: пока
+    ход открыт, их дописывают токен за токеном, и лишь закрытие уходит в sink.
     """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
@@ -163,10 +225,7 @@ class ChatView:
             display_name = "User"
         self._user_name = display_name
         self._assistant_name = chainlit_config.ui.name
-        self._turn_key: str | None = None
-        self._container: Step | None = None
-        self._answer: Message | None = None
-        self._answers = 0
+        self._turn = TurnDraft()
         self._tool_names: dict[str, str] = {}
 
     @property
@@ -177,19 +236,21 @@ class ChatView:
     @property
     def container_step(self) -> Step | None:
         """Открытый контейнер процесса; None — ход шагов ещё не рисовал."""
-        return self._container
+        return self._turn.container
 
     @property
     def answer_message(self) -> Message | None:
         """Стримящийся ответ хода; None — ни одного токена ещё не было."""
-        return self._answer
+        return self._turn.answer
+
+    @property
+    def thinking_step(self) -> Step | None:
+        """Открытый шаг рассуждений; None — модель ещё ничего не надумала."""
+        return self._turn.thinking
 
     def begin_turn(self, key: str | None) -> None:
         """Открывает ход: его ключ адресует контейнер и ответ."""
-        self._turn_key = key
-        self._container = None
-        self._answer = None
-        self._answers = 0
+        self._turn = TurnDraft(key=key)
 
     async def question(self, text: str, step_id: str | None = None) -> Step:
         step = self._step(
@@ -227,23 +288,26 @@ class ChatView:
 
     async def stream_answer(self, token: str, key: str | None = None) -> None:
         """Токен в стримящийся ответ; первое обращение открывает сообщение."""
-        if self._answer is None:
-            self._answer = self._open_answer(key)
-        await self._answer.stream_token(token)
+        if self._turn.answer is None:
+            self._turn.answer = self._open_answer(key)
+
+        await self._turn.answer.stream_token(token)
 
     async def close_answer(self, key: str | None = None) -> None:
         """Финальная отправка ответа; пустой ход тоже получает сообщение."""
-        if self._answer is None:
-            self._answer = self._open_answer(key)
-        await self._answer.send()
+        if self._turn.answer is None:
+            self._turn.answer = self._open_answer(key)
+
+        await self._turn.answer.send()
 
     async def rewrite_answer(self, content: str, key: str | None = None) -> None:
         """Замещает текст ответа целиком: фиксация прерванного стрима."""
-        if self._answer is None:
+        if self._turn.answer is None:
             await self.answer(content, key)
             return
-        self._answer.content = content
-        await self._answer.send()
+
+        self._turn.answer.content = content
+        await self._turn.answer.send()
 
     async def _seal_answer(self) -> None:
         """Закрывает текущий ответ перед инструментом.
@@ -253,53 +317,75 @@ class ChatView:
         сборке истории он оказывается между текстами. Здесь live приводится к
         тому же порядку.
         """
-        if self._answer is None:
+        message = self._turn.seal_answer()
+        if message is None:
             return
 
-        await self._answer.send()
-        self._answer = None
-        self._answers += 1
+        await message.send()
 
     def _open_answer(self, key: str | None = None) -> Message:
+        answer_key = self._turn.answer_key(key)
         message = Message(
             content="",
-            id=self.derive_id(self._thread_id, self._answer_key(key), StepRole.ANSWER),
+            id=self.derive_id(self._thread_id, answer_key, StepRole.ANSWER),
         )
         message.parent_id = None
         return message
 
-    def _answer_key(self, key: str | None) -> str | None:
-        """Каждый следующий ответ хода — своё сообщение, как в истории."""
-        if key is None:
-            return None
-
-        if not self._answers:
-            return key
-
-        return f"{key}#{self._answers}"
-
     async def container(self) -> Step:
-        if self._container is not None:
-            return self._container
+        if self._turn.container is not None:
+            return self._turn.container
+
         step = self._step(
             StepText.CONTAINER,
             StepKind.RUN,
             parent_id=None,
-            step_id=self.derive_id(self._thread_id, self._turn_key, StepRole.PROCESS),
+            step_id=self.derive_id(self._thread_id, self._turn.key, StepRole.PROCESS),
         )
         await self._sink.put(step)
-        self._container = step
+        self._turn.container = step
         return step
 
     async def thinking(self, text: str, key: str | None = None) -> Step:
+        """Готовые рассуждения одним шагом: сборка ленты из истории."""
         step = await self._child(
-            StepStatus.IDLE.title("thinking"), StepKind.LLM, key, StepRole.THINKING
+            StepStatus.IDLE.title(StepText.THINKING),
+            StepKind.LLM,
+            key,
+            StepRole.THINKING,
         )
         step.output = text
         stamp = utc_now()
         step.start = stamp
         step.end = stamp
         await self._sink.put(step)
+        return step
+
+    async def stream_thinking(self, token: str, key: str | None = None) -> None:
+        """Токен рассуждения; первое обращение открывает шаг под контейнером."""
+        if self._turn.thinking is None:
+            self._turn.thinking = await self._open_thinking(key)
+
+        await self._turn.thinking.stream_token(token)
+
+    async def close_thinking(self) -> None:
+        """Закрывает шаг рассуждений; без открытого шага закрывать нечего."""
+        step = self._turn.seal_thinking()
+        if step is None:
+            return
+
+        step.end = utc_now()
+        await self._sink.put(step)
+
+    async def _open_thinking(self, key: str | None) -> Step:
+        """Шаг не уходит в sink сразу: его откроет первый же stream_token."""
+        step = await self._child(
+            StepStatus.IDLE.title(StepText.THINKING),
+            StepKind.LLM,
+            key,
+            StepRole.THINKING,
+        )
+        step.start = utc_now()
         return step
 
     async def tool_started(
@@ -377,21 +463,21 @@ class ChatView:
         step.name = status.title(self._tool_names.get(step.id, step.name))
         match ToolResultView(result).render():
             case ChartRendering() as chart:
-                step.output = "график отрисован"
+                step.output = "chart rendered"
                 if chart.title:
-                    step.output = f"график отрисован: {chart.title}"
+                    step.output = f"chart rendered: {chart.title}"
                 await self._sink.put(step)
                 await self._element(chart, tool_call_id)
             case CustomElementRendering() as custom:
-                step.output = "элемент отрисован"
+                step.output = "element rendered"
                 if custom.title:
-                    step.output = f"элемент отрисован: {custom.title}"
+                    step.output = f"element rendered: {custom.title}"
                 await self._sink.put(step)
                 await self._element(custom, tool_call_id)
             case DiagramRendering() as diagram:
-                step.output = "диаграмма отрисована"
+                step.output = "diagram rendered"
                 if diagram.title:
-                    step.output = f"диаграмма отрисована: {diagram.title}"
+                    step.output = f"diagram rendered: {diagram.title}"
                 await self._sink.put(step)
                 await self._element(diagram, tool_call_id)
             case MarkdownRendering(markdown=markdown):
@@ -437,9 +523,7 @@ class ChatView:
 
         if self._sink.EMITS_ELEMENTS:
             element = rendering.chat_element()
-            element_id = self.derive_id(
-                self._thread_id, tool_call_id, StepRole.ELEMENT
-            )
+            element_id = self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
             if not element_id:
                 element_id = element.id
             element.id = str(element_id)

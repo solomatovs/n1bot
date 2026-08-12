@@ -49,6 +49,7 @@ class Reader(ABC, Generic[T]):
     @abstractmethod
     def read(self, raw: RawDocument) -> AsyncIterator[Section[T]]: ...
 
+
 T = TypeVar("T")
 
 
@@ -68,6 +69,7 @@ class Chunker(ABC, Generic[T]):
 
     @abstractmethod
     def chunk(self, sections: AsyncIterable[Section[T]]) -> AsyncIterator[Chunk[T]]: ...
+
 
 T = TypeVar("T")
 
@@ -97,6 +99,7 @@ class Embedder(ABC, Generic[T]):
         """Размерность embedding-вектора"""
         ...
 
+
 @runtime_checkable
 class Request(Protocol):
     """Контракт Request-DTO — чистый план «что забрать» + исходная metadata.
@@ -123,6 +126,7 @@ class RequestSource(ABC, Generic[ReqT]):
     def requests(self) -> AsyncIterator[ReqT]:
         """Сгенерировать поток ReqT-планов для Transport'а."""
         ...
+
 
 ReqT = TypeVar("ReqT", bound=Request)
 
@@ -200,6 +204,7 @@ class Transport(ABC, Generic[ReqT]):
 
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
+
 
 T = TypeVar("T")
 

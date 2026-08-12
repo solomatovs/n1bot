@@ -16,7 +16,7 @@ import pydantic
 import pytest
 from journal_stand import JournalStand
 
-from boba.chainlit.chat.data.storage import (
+from boba.chainlit.data.storage import (
     ImageStorageClient,
     LocalStorageClient,
     StorageClient,
@@ -30,6 +30,7 @@ from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.tool.shell import BashStage
 from boba.tool.shell.tools import build_bash_tool
+from boba.toolkit.binaries import TrustedBinaries
 from boba.workspace.launcher import (
     FUSE_DEVICE,
     LauncherOptions,
@@ -40,6 +41,23 @@ from boba.workspace.launcher import (
 )
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
+
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
+def _trusted() -> TrustedBinaries:
+    return TrustedBinaries(dirs=tuple(_bin_dirs()))
 
 REPO = Path(__file__).resolve().parents[5]
 TOOLKIT_SRC = REPO / "packages" / "core" / "boba-toolkit" / "src"
@@ -78,6 +96,7 @@ def _storage_cfg(**kw: Any) -> LocalStorageConfig:
             "lock_wait_sec": 10.0,
             "copy_chunk_bytes": 1 << 20,
         },
+        "binaries": {"dirs": _bin_dirs()},
     }
     fields.update(kw)
     return LocalStorageConfig.model_validate(fields)
@@ -130,6 +149,7 @@ _PROFILE_BASE: dict[str, object] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": (),
     "network": False,
     "env_set": {},
@@ -139,7 +159,7 @@ _PROFILE_BASE: dict[str, object] = {
     "max_file_size_bytes": 64 * 1024 * 1024,
     "max_open_files": 256,
     "max_processes": 256,
-    "max_output_bytes": 256 * 1024,
+    "max_output_bytes": 4 * 1024 * 1024,
     "cgroup_base": "",
     "oom_score_adj": 0,
     "cwd": "",
@@ -303,6 +323,7 @@ class TestRelativePaths:
             python_bin="/usr/bin/python3",
             options=_launcher_options(),
             limits=ResourceLimits(),
+            binaries=_trusted(),
             rw_paths=["./shared"],
         )
         binds = []
@@ -325,6 +346,7 @@ class TestChainArgv:
             python_bin="/usr/bin/python3",
             options=_launcher_options(),
             limits=ResourceLimits(),
+            binaries=_trusted(),
             **kw,
         )
 
@@ -337,6 +359,7 @@ class TestChainArgv:
             python_bin="/usr/bin/python3",
             options=_launcher_options(),
             limits=limits,
+            binaries=_trusted(),
         )
         memory = argv[argv.index("--max-memory-bytes") + 1]
         cpu = argv[argv.index("--max-cpu-sec") + 1]
@@ -633,7 +656,9 @@ class TestLiveImage:
         self, tmp_path: Path, template: Path
     ) -> None:
         """Именованный канал в образе: read отказывает, а не ждёт писателя."""
-        _invoke(_bash(tmp_path, template), "mkdir -p t1/upload && mkfifo t1/upload/pipe")
+        _invoke(
+            _bash(tmp_path, template), "mkdir -p t1/upload && mkfifo t1/upload/pipe"
+        )
         storage = _storage(tmp_path, template, op_timeout_sec=15)
 
         with pytest.raises(StorageError) as failure:

@@ -171,9 +171,7 @@ class KerberosDelegation:
 
         await credentials.ensure_async()
 
-        return await asyncio.to_thread(
-            self._init_token, credentials.ccache, target_spn
-        )
+        return await asyncio.to_thread(self._init_token, credentials.ccache, target_spn)
 
     @staticmethod
     def _init_token(ccache: str, target_spn: str) -> bytes:

@@ -1,7 +1,7 @@
 from collections.abc import Awaitable, Callable
 
 import chainlit as cl
-from boba.chainlit.auth.errors import AuthenticationError
+from boba.chainlit.domain.errors import AuthenticationError
 from chainlit.config import config as chainlit_config
 
 UserCallback = Callable[..., Awaitable[cl.User | None]]

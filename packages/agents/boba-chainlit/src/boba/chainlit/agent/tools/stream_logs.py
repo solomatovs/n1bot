@@ -18,7 +18,7 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.chainlit.infra.session import current_thread_id, current_user_id
+from boba.chainlit.domain.session import current_thread_id, current_user_id
 from boba.sandbox.journal import (
     JournalError,
     StreamJournal,

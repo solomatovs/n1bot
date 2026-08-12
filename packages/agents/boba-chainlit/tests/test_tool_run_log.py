@@ -183,7 +183,9 @@ class TestSandboxFailureLog:
 
     def test_no_output_marker(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER_NAME):
-            WorkflowRunner._log_failure("conf", self._facts(1, ""), self.DURATION_MS, "")
+            WorkflowRunner._log_failure(
+                "conf", self._facts(1, ""), self.DURATION_MS, ""
+            )
         assert "<no output>" in caplog.records[0].getMessage()
 
     def test_timed_out_reason(self, caplog: pytest.LogCaptureFixture) -> None:

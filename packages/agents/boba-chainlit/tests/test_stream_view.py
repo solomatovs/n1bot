@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from collections.abc import Iterator
@@ -61,6 +62,19 @@ CONTRACTS = {
     PLAIN_STAGE: StageContract(out=None, result=EmptyTrailer),
     BINARY_STAGE: StageContract(out=StreamFormat.BYTES, result=EmptyTrailer),
 }
+
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
 
 
 @pytest.fixture(autouse=True)
@@ -523,8 +537,8 @@ class TestStreamDownload:
         from chainlit.user import PersistedUser
         from fastapi import FastAPI
 
-        from boba.chainlit.chat.data.object_key import StreamUrl
-        from boba.chainlit.chat.data.upload import StreamServing, UploadPolicy
+        from boba.chainlit.data.upload import StreamServing, UploadPolicy
+        from boba.chainlit.domain.keys import StreamUrl
         from boba.chainlit.infra.config import LocalStorageConfig
 
         # files_dir на серве подменяется корнем тома пользователя; здесь нужен
@@ -540,6 +554,7 @@ class TestStreamDownload:
                     "lock_wait_sec": 10.0,
                     "copy_chunk_bytes": 65536,
                 },
+                "binaries": {"dirs": _bin_dirs()},
             }
         )
         serving = StreamServing(config, UploadPolicy())

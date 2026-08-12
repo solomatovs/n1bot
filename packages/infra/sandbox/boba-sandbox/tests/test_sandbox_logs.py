@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 
@@ -11,6 +12,20 @@ from boba.sandbox.runner import RelaySink
 from boba.sandbox.workflow import WorkflowRunner
 from boba.toolkit.channels import ChannelSink, LogFrame
 from boba.toolkit.payload import PayloadLogging
+
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
 
 LABEL = "doc:read_document"
 
@@ -88,9 +103,7 @@ class TestRelaySink:
         assert len(caplog.records) == 1
         assert "строка1\nстрока2" in caplog.records[0].getMessage()
 
-    def test_frames_split_across_reads(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_frames_split_across_reads(self, caplog: pytest.LogCaptureFixture) -> None:
         """Границы чтения из пайпа не совпадают с границами строк."""
         relay = self._relay(_RawLines())
         raw = _frame("INFO", "t", "привет")
@@ -179,6 +192,7 @@ _PROFILE_BASE: dict[str, object] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": (),
     "network": False,
     "env_set": {"PATH": "/usr/bin:/bin"},
@@ -188,7 +202,7 @@ _PROFILE_BASE: dict[str, object] = {
     "max_file_size_bytes": 64 * 1024 * 1024,
     "max_open_files": 1024,
     "max_processes": 256,
-    "max_output_bytes": 256 * 1024,
+    "max_output_bytes": 4 * 1024 * 1024,
     "cgroup_base": "",
     "oom_score_adj": 0,
     "cwd": "/tmp",  # noqa: S108

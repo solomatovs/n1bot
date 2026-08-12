@@ -11,8 +11,8 @@ from chainlit.context import ChainlitContext
 
 from boba.chainlit.chat import agent_tracer as tracer_module
 from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.data import data_layer as data_layer_module
-from boba.chainlit.chat.data.data_layer import PostgresDataLayer
+from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.data.errors import DataLayerError
 from boba.chainlit.rendering.chat_view import ChatView
 
 
@@ -29,7 +29,6 @@ def shown(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         messages.append(content)
 
     monkeypatch.setattr(tracer_module, "show_error", fake_show)
-    monkeypatch.setattr(data_layer_module, "show_error", fake_show)
     return messages
 
 
@@ -54,6 +53,7 @@ class _Element:
         self.thread_id = str(uuid4())
         self.name = "data.csv"
         self.mime = "text/csv"
+        self.display = "inline"
         self.content = None
         self.path = "/nonexistent/path/data.csv"
 
@@ -98,21 +98,24 @@ class TestTracerFailuresVisible:
         assert shown
 
 
-class TestDataLayerFailuresVisible:
-    """create_element/delete_* chainlit зовёт фоновой таской: raise не виден."""
+class TestDataLayerErrorContract:
+    """Слой данных ничего не рисует: наружу уходит только его собственная ошибка."""
 
     @staticmethod
     def _layer() -> PostgresDataLayer:
         return PostgresDataLayer.__new__(PostgresDataLayer)
 
-    def test_unreadable_attachment_shown(self, shown: list[str]) -> None:
+    def test_unreadable_attachment_becomes_layer_error(self, shown: list[str]) -> None:
         layer = self._layer()
         element = _Element(for_id=str(uuid4()))
+        # __wrapped__ снимает обёртку chainlit, оставляя границу слоя данных
         create = PostgresDataLayer.create_element.__wrapped__
-        with pytest.raises(Exception, match="create_element"):
+
+        with pytest.raises(DataLayerError) as failure:
             asyncio.run(create(layer, element))
-        assert shown
-        assert "data.csv" in shown[0]
+
+        assert "create_element" in str(failure.value)
+        assert not shown
 
     def test_element_without_for_id_is_skipped(self, shown: list[str]) -> None:
         layer = self._layer()

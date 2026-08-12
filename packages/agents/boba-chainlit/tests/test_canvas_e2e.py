@@ -5,7 +5,8 @@ workspace открытого треда и просит панель показ�
 DOM: картинка загрузилась, диаграмма отрисована в svg, текст виден,
 неподдерживаемый формат объяснён.
 
-Запуск: BOBA_CONFIG_PATH=... pytest -m integration packages/agents/boba-chainlit/tests/test_canvas_e2e.py
+Запуск: BOBA_CONFIG_PATH=... pytest -m integration
+packages/agents/boba-chainlit/tests/test_canvas_e2e.py
 Нужны: playwright + chromium, postgres, образ workspace и делегированный
 systemd-scope (иначе песочница не стартует — см. .vscode/python-delegated.sh).
 """
@@ -42,17 +43,17 @@ PNG = bytes.fromhex(
     "8c00e30600002e2c0201f3ba9d5c0000000049454e44ae426082"
 )
 SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40">'
-    '<rect width="120" height="40" fill="#4c7cf0"/></svg>'
-).encode()
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40">'
+    b'<rect width="120" height="40" fill="#4c7cf0"/></svg>'
+)
 BROKEN_MMD = (
-    'flowchart LR\n'
+    "flowchart LR\n"
     '    A["Доход"] --> B["Вычеты"]\n'
-    '\n'
+    "\n"
     '    subgraph VYCHE[ "Структура вычетов" ]\n'
     '        B1["Стандартный"]\n'
-    '    end\n'
-    '    B1 --> B\n'
+    "    end\n"
+    "    B1 --> B\n"
 )
 """Пробелы внутри скобок подграфа — mermaid такое не принимает (реальный случай)."""
 
@@ -115,7 +116,7 @@ async def _wait_for_server() -> None:
 
 
 async def _upload(thread_id: str) -> None:
-    from boba.chainlit.chat.data.storage import StorageFactory
+    from boba.chainlit.data.storage import StorageFactory
     from boba.chainlit.infra.config import AppConfig
     from boba.settings import bind, build_app_config
 
@@ -127,6 +128,49 @@ async def _upload(thread_id: str) -> None:
         await asyncio.wait_for(
             storage.upload_file(f"{USER_ID}/{thread_id}/upload/{name}", blob), 120
         )
+
+
+class _SessionProbe:
+    """Слушатели страницы: sessionId и threadId из трафика, отчёты канваса."""
+
+    def __init__(self) -> None:
+        self.session: dict[str, str] = {}
+        self.reports: list[str] = []
+
+    def watch(self, page: Any) -> None:
+        page.on("request", self._on_request)
+        page.on("websocket", self._on_websocket)
+
+    def _on_request(self, request: Any) -> None:
+        if request.method != "POST":
+            return
+
+        body = request.post_data
+        if not body:
+            return
+
+        if request.url.endswith("/project/action"):
+            if '"canvas_render_status"' in body:
+                self.reports.append(body)
+            return
+
+        if "socket.io" not in request.url:
+            return
+
+        found = re.search(r'"sessionId"\s*:\s*"([^"]+)"', body)
+        if found:
+            self.session["id"] = found.group(1)
+
+    def _on_websocket(self, ws: Any) -> None:
+        ws.on("framereceived", self._on_frame)
+
+    def _on_frame(self, payload: Any) -> None:
+        if isinstance(payload, bytes):
+            return
+
+        found = re.search(r'"threadId"\s*:\s*"([0-9a-f-]{36})"', payload)
+        if found:
+            self.session.setdefault("thread", found.group(1))
 
 
 @pytest.fixture(scope="module")
@@ -141,40 +185,10 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
         context = await browser.new_context(viewport={"width": 1600, "height": 900})
         page = await context.new_page()
 
-        session: dict[str, str] = {}
-        reports: list[str] = []
-
-        def on_request(request: Any) -> None:
-            if request.method != "POST":
-                return
-            body = request.post_data
-            if not body:
-                return
-
-            if request.url.endswith("/project/action"):
-                if '"canvas_render_status"' in body:
-                    reports.append(body)
-                return
-
-            if "socket.io" not in request.url:
-                return
-
-            found = re.search(r'"sessionId"\s*:\s*"([^"]+)"', body)
-            if found:
-                session["id"] = found.group(1)
-
-        def on_websocket(ws: Any) -> None:
-            def on_frame(payload: Any) -> None:
-                if isinstance(payload, bytes):
-                    return
-                found = re.search(r'"threadId"\s*:\s*"([0-9a-f-]{36})"', payload)
-                if found:
-                    session.setdefault("thread", found.group(1))
-
-            ws.on("framereceived", on_frame)
-
-        page.on("request", on_request)
-        page.on("websocket", on_websocket)
+        probe = _SessionProbe()
+        session = probe.session
+        reports = probe.reports
+        probe.watch(page)
 
         await page.goto(BASE + "/login")
         await page.wait_for_selector("input")
@@ -199,8 +213,11 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
                 "action": {
                     "name": name,
                     "payload": action_payload,
-                    "label": "", "tooltip": "", "icon": None,
-                    "forId": None, "id": "e2e",
+                    "label": "",
+                    "tooltip": "",
+                    "icon": None,
+                    "forId": None,
+                    "id": "e2e",
                 },
             }
             await page.request.post(
@@ -294,7 +311,7 @@ async def test_unsupported_format_is_explained(panel: Any) -> None:
     side = await show("data.bin")
     text = await side.inner_text()
 
-    assert "показать не умеет" in text
+    assert "cannot display" in text
 
 
 async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
@@ -303,10 +320,12 @@ async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
     side = await show("broken.mmd")
     text = await side.inner_text()
 
-    assert "не отрисована" in text
+    assert "not rendered" in text
     assert "Parse error" in text
 
-    failures = [body for body in reports if '"ok": false' in body or '"ok":false' in body]
+    failures = [
+        body for body in reports if '"ok": false' in body or '"ok":false' in body
+    ]
     assert failures, "браузер не отправил canvas_render_status с ошибкой"
     assert "Parse error" in failures[-1]
 
@@ -319,7 +338,8 @@ async def test_diagram_fills_the_panel(panel: Any) -> None:
     box = await side.bounding_box()
     svg = await side.locator('div[style*="transform-origin"] svg').first.bounding_box()
 
-    assert box and svg
+    assert box
+    assert svg
     assert svg["width"] > box["width"] * 0.9
     assert svg["height"] > box["height"] * 0.8
 
@@ -329,7 +349,8 @@ async def test_wheel_does_not_zoom_in_the_panel(panel: Any) -> None:
     show, _, _thread, _act = panel
     side = await show("flow.mmd")
     read = (
-        "() => document.querySelector('#side-view-content div[style*=\"transform-origin\"] svg')"
+        "() => document.querySelector("
+        "'#side-view-content div[style*=\"transform-origin\"] svg')"
         ".parentElement.style.transform"
     )
     page = side.page
@@ -458,7 +479,7 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     side = await show("broken.mmd")
     page = side.page
 
-    assert "не отрисована" in await side.inner_text()
+    assert "not rendered" in await side.inner_text()
 
     await page.evaluate(
         """path => window.dispatchEvent(
@@ -469,7 +490,7 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
 
     text = await side.inner_text()
     assert "Доход" in text
-    assert "не отрисована" not in text
+    assert "not rendered" not in text
 
 
 async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:

@@ -71,6 +71,19 @@ needs_delegation = pytest.mark.skipif(
 )
 
 
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
     "ro_binds": (),
@@ -84,6 +97,7 @@ _PROFILE_BASE: dict[str, Any] = {
         "lock_wait_sec": 15.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": ("/tmp:64M",),  # noqa: S108
     "network": False,
     "env_set": {

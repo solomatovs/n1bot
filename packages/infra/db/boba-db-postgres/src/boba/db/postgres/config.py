@@ -278,8 +278,8 @@ class PostgresConfig(ConnectionProfile):
             msg = (
                 f"postgres connection: gssencmode={self.gssencmode!r} требует "
                 f"секцию kerberos (keytab/principal/ccache); задайте её ссылкой "
-                f"kerberos = \"${{kerberos.<name>}}\" или поставьте "
-                f"gssencmode = \"disable\". Режимы, требующие секцию: {modes}"
+                f'kerberos = "${{kerberos.<name>}}" или поставьте '
+                f'gssencmode = "disable". Режимы, требующие секцию: {modes}'
             )
             raise ValueError(msg)
 

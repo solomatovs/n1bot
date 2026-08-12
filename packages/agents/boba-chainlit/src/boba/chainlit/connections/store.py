@@ -274,13 +274,17 @@ class ConnectionStore:
         payload = self._cipher.encrypt(profile)
         query = sql.SQL(
             """
-            insert into {connections}
-                (name, kind, data)
-            values
-                (%(name)s, %(kind)s, %(data)s)
-            on conflict
-                (name)
-            do update set
+            insert into {connections} (
+                name,
+                kind,
+                data
+            )
+            values (
+                %(name)s,
+                %(kind)s,
+                %(data)s
+            )
+            on conflict (name) do update set
                 kind = excluded.kind,
                 data = excluded.data
             returning
@@ -306,7 +310,8 @@ class ConnectionStore:
         query = sql.SQL(
             """
             select
-                kind, data
+                kind,
+                data
             from
                 {connections}
             where
@@ -331,11 +336,18 @@ class ConnectionStore:
     async def load_all(self, kind: str | None = None) -> dict[str, BaseModel]:
         where = sql.SQL("")
         if kind:
-            where = sql.SQL("where kind = %(kind)s")
+            where = sql.SQL(
+                """
+                where
+                    kind = %(kind)s
+                """
+            )
         query = sql.SQL(
             """
             select
-                name, kind, data
+                name,
+                kind,
+                data
             from
                 {connections}
             {where}
@@ -392,7 +404,8 @@ class ConnectionStore:
         query = sql.SQL(
             """
             select
-                role, id
+                role,
+                id
             from
                 {roles}
             order by
@@ -420,13 +433,19 @@ class ConnectionStore:
         GrantKinds.validate_tgt(tgt_kind)
         query = sql.SQL(
             """
-            insert into {grants}
-                (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
-            values
-                (%(src_kind)s, %(src_kind_id)s, %(tgt_kind)s, %(tgt_kind_id)s)
-            on conflict
-                (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
-            do update set
+            insert into {grants} (
+                src_kind,
+                src_kind_id,
+                tgt_kind,
+                tgt_kind_id
+            )
+            values (
+                %(src_kind)s,
+                %(src_kind_id)s,
+                %(tgt_kind)s,
+                %(tgt_kind_id)s
+            )
+            on conflict (src_kind, src_kind_id, tgt_kind, tgt_kind_id) do update set
                 src_kind = excluded.src_kind
             returning
                 id
@@ -493,7 +512,8 @@ class ConnectionStore:
         query = sql.SQL(
             """
             select
-                tgt_kind, tgt_kind_id
+                tgt_kind,
+                tgt_kind_id
             from
                 {grants}
             where
@@ -538,7 +558,9 @@ class ConnectionStore:
         query = sql.SQL(
             """
             select
-                c.name, c.kind, c.data
+                c.name,
+                c.kind,
+                c.data
             from
                 {connections} c
                 inner join {grants} g on

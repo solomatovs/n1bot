@@ -185,7 +185,7 @@ class KbDocReader(Reader[str]):
             )
 
         header_text = text[: match.start()]
-        body = text[match.end():].lstrip("\n")
+        body = text[match.end() :].lstrip("\n")
 
         fields = cls._extract_kv(header_text)
         return ParsedKbDocHeader(
@@ -196,18 +196,19 @@ class KbDocReader(Reader[str]):
             tags=cls._parse_tags(fields.get(_KEY_TAGS)),
             anchor=fields.get(_KEY_ANCHOR),
             version=fields.get(_KEY_VERSION),
-            custom={
-                k: v
-                for k, v in fields.items()
-                if k not in cls._KNOWN_KEYS
-            },
+            custom={k: v for k, v in fields.items() if k not in cls._KNOWN_KEYS},
             body=body,
         )
 
     _KNOWN_KEYS: ClassVar[frozenset[str]] = frozenset(
         {
-            _KEY_TAGS, _KEY_SOURCE, _KEY_TITLE, _KEY_PAGE_ID,
-            _KEY_SPACE, _KEY_ANCHOR, _KEY_VERSION,
+            _KEY_TAGS,
+            _KEY_SOURCE,
+            _KEY_TITLE,
+            _KEY_PAGE_ID,
+            _KEY_SPACE,
+            _KEY_ANCHOR,
+            _KEY_VERSION,
         }
     )
 
@@ -253,8 +254,7 @@ class KbDocReader(Reader[str]):
                 meta = meta.set(KbDocKeys.SOURCE_URL, f"{src}#{parsed.anchor}")
         if parsed.custom:
             extras = {
-                f"{KbDocKeys.CUSTOM_PREFIX}{k}": v
-                for k, v in parsed.custom.items()
+                f"{KbDocKeys.CUSTOM_PREFIX}{k}": v for k, v in parsed.custom.items()
             }
             meta = meta.merge(Metadata.from_wire(extras))
         return meta

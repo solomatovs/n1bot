@@ -51,7 +51,7 @@ SRC_PACKAGES = (
     "tools/boba-tool-postgres",
     "tools/boba-tool-knowledge",
 )
-"""Код пакетов монтируется одним каталогом: точку /opt/src несёт rootfs."""
+"""Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
 
 ADDRESS_SPACE = 16 * 1024 * 1024 * 1024
 """RLIMIT_AS профиля парсера: pdfium резервирует ~2.3G независимо от документа."""
@@ -65,28 +65,43 @@ needs_userns = pytest.mark.skipif(
 )
 
 
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
 class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site."""
 
     @staticmethod
     def ro_binds(docs_dir: Path | None) -> list[str]:
+        site_packages = "/usr/local/lib/python3.11/site-packages"
         binds = [
-            f"{SANDBOX / 'third' / 'python'}:/opt/python",
-            f"{SANDBOX / 'site'}:/opt/site",
-            f"{SANDBOX / 'third' / 'fastembed'}:/opt/fastembed",
+            f"{SANDBOX / 'third' / 'python'}:/usr/local",
+            f"{SANDBOX / 'site'}:{site_packages}",
+            f"{SANDBOX / 'third' / 'fastembed'}:/var/cache/fastembed",
             f"{SANDBOX / 'third' / 'tessdata'}:/usr/share/tessdata",
         ]
-        binds.append(f"{REPO / 'packages'}:/opt/src")
+        binds.append(f"{REPO / 'packages'}:/usr/src")
         if docs_dir is not None:
             binds.append(f"{docs_dir}:/workspace")
         return binds
 
     @staticmethod
     def python_path() -> str:
+        """Свой код: интерпретатор и site-packages стоят на штатных местах."""
         parts = []
         for name in SRC_PACKAGES:
-            parts.append(f"/opt/src/{name}/src")
-        parts.append("/opt/site")
+            parts.append(f"/usr/src/{name}/src")
+
         return ":".join(parts)
 
 
@@ -105,13 +120,11 @@ def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
             "lock_wait_sec": 10.0,
             "copy_chunk_bytes": 1 << 20,
         },
+        "binaries": {"dirs": _bin_dirs()},
         "tmpfs": ("/tmp:256M",),  # noqa: S108
         "network": False,
         "env_set": {
-            "PATH": "/opt/python/bin:/usr/local/bin:/usr/bin:/bin",
-            "PYTHONHOME": "/opt/python",
             "PYTHONPATH": SandboxLayout.python_path(),
-            "LD_LIBRARY_PATH": "/opt/python/lib",
             "HOME": "/tmp",  # noqa: S108
             "LANG": "C.UTF-8",
         },

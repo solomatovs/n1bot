@@ -55,6 +55,7 @@ from boba.sandbox.runner import (
     ToolCallContext,
     WrapResultSink,
 )
+from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.channels import (
     Channel,
     ChannelSink,
@@ -236,9 +237,19 @@ class MountGroupPlan:
     images: tuple[tuple[str, str], ...]
     template: str
     options: LauncherOptions
+    binaries: TrustedBinaries
     envelope: ResourceLimits
     network: bool
     rw_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _GroupChain:
+    """Настройки внешней ступени mount-группы: они у стадий группы одни."""
+
+    template: str
+    options: LauncherOptions
+    binaries: TrustedBinaries
 
 
 class _UnionFind:
@@ -376,7 +387,7 @@ class _MemberBoot:
     channels: SandboxChannels
     sinks: Mapping[Channel, ChannelSink]
     feeds: Mapping[Channel, bytes]
-    timeout_sec: float
+    timeout_sec: float | None
 
 
 class WorkflowRunner:
@@ -650,22 +661,7 @@ class WorkflowRunner:
         members: tuple[str, ...],
         plans: Mapping[str, StagePlan],
     ) -> MountGroupPlan:
-        templates: set[str] = set()
-        options: set[LauncherOptions] = set()
-        for stage_id in members:
-            templates.add(plans[stage_id].rendered.image_template)
-            options.add(plans[stage_id].rendered.launcher.to_options())
-
-        if len(templates) != 1:
-            msg = (
-                f"mount group {group_id}: stages must share image_template, "
-                f"got {sorted(templates)}"
-            )
-            raise WorkflowError(msg)
-
-        if len(options) != 1:
-            msg = f"mount group {group_id}: stages must share launcher options"
-            raise WorkflowError(msg)
+        chain = self._group_chain(group_id, members, plans)
 
         images: dict[str, tuple[str, str]] = {}
         for stage_id in members:
@@ -693,12 +689,75 @@ class WorkflowRunner:
             group_id=group_id,
             stage_ids=members,
             images=tuple(images.values()),
-            template=next(iter(templates)),
-            options=next(iter(options)),
+            template=chain.template,
+            options=chain.options,
+            binaries=chain.binaries,
             envelope=self._envelope_limits(member_limits),
             network=network,
             rw_paths=tuple(rw_paths),
         )
+
+    @staticmethod
+    def _group_chain(
+        group_id: str,
+        members: tuple[str, ...],
+        plans: Mapping[str, StagePlan],
+    ) -> _GroupChain:
+        """Общее на группу: цепочка лаунчера у неё одна, значит и её настройки.
+
+        Шаблон образа, тайминги лаунчера и доверенные каталоги задают внешнюю
+        ступень; разойтись у стадий группы они не могут.
+        """
+        templates: set[str] = set()
+        options: set[LauncherOptions] = set()
+        binaries: set[TrustedBinaries] = set()
+        for stage_id in members:
+            rendered = plans[stage_id].rendered
+            templates.add(rendered.image_template)
+            options.add(rendered.launcher.to_options())
+            binaries.add(rendered.binaries)
+
+        if len(templates) != 1:
+            msg = (
+                f"mount group {group_id}: stages must share image_template, "
+                f"got {sorted(templates)}"
+            )
+            raise WorkflowError(msg)
+
+        if len(options) != 1:
+            msg = f"mount group {group_id}: stages must share launcher options"
+            raise WorkflowError(msg)
+
+        if len(binaries) != 1:
+            msg = f"mount group {group_id}: stages must share trusted binary dirs"
+            raise WorkflowError(msg)
+
+        return _GroupChain(
+            template=next(iter(templates)),
+            options=next(iter(options)),
+            binaries=next(iter(binaries)),
+        )
+
+    @staticmethod
+    def _stage_timeout(plan: StagePlan) -> float | None:
+        """Дедлайн стадии из профиля; None — профиль её по времени не ограничил."""
+        timeout = plan.rendered.timeout_sec
+        if timeout is None:
+            return None
+
+        return float(timeout)
+
+    @staticmethod
+    def _group_timeout(boots: Sequence[_MemberBoot]) -> float | None:
+        """Огибающая дедлайнов группы: неограниченная стадия снимает дедлайн со всех."""
+        envelope = 0.0
+        for boot in boots:
+            if boot.timeout_sec is None:
+                return None
+
+            envelope = max(envelope, boot.timeout_sec)
+
+        return envelope
 
     @staticmethod
     def _envelope_limits(items: Sequence[ResourceLimits]) -> ResourceLimits:
@@ -969,7 +1028,7 @@ class WorkflowRunner:
             channels=channels,
             sinks=sinks,
             feeds=feeds,
-            timeout_sec=float(plan.rendered.timeout_sec),
+            timeout_sec=self._stage_timeout(plan),
             on_timeout=proc.kill,
         )
 
@@ -1046,7 +1105,7 @@ class WorkflowRunner:
         rw_paths.extend(cgroup_leaves)
 
         try:
-            require_fuse()
+            require_fuse(group.binaries)
             chain = ChainChannelArgv.build(
                 images=group.images,
                 template=group.template,
@@ -1054,6 +1113,7 @@ class WorkflowRunner:
                 python_bin=sys.executable,
                 options=group.options,
                 limits=group.envelope,
+                binaries=group.binaries,
                 wrap_args_fd=group_channels.child_fd(Channel.WRAP_ARGS),
                 rw_paths=rw_paths,
                 network=group.network,
@@ -1103,9 +1163,7 @@ class WorkflowRunner:
             group.group_id, group_channels.present, wrap_base, wiring.journal
         )
 
-        group_timeout = 0.0
-        for boot in boots:
-            group_timeout = max(group_timeout, boot.timeout_sec)
+        group_timeout = self._group_timeout(boots)
 
         pump.add(
             group.group_id,
@@ -1199,7 +1257,7 @@ class WorkflowRunner:
             channels=channels,
             sinks=sinks,
             feeds=feeds,
-            timeout_sec=float(plan.rendered.timeout_sec),
+            timeout_sec=self._stage_timeout(plan),
         )
 
         return boot, entry
@@ -1292,7 +1350,7 @@ class WorkflowRunner:
         outer_env.pop(Channel.WRAP_ARGS.env_name, None)
 
         try:
-            require_fuse()
+            require_fuse(plan.rendered.binaries)
             chain = ChainChannelArgv.build(
                 images=images,
                 template=plan.rendered.image_template,
@@ -1300,6 +1358,7 @@ class WorkflowRunner:
                 python_bin=sys.executable,
                 options=plan.rendered.launcher.to_options(),
                 limits=plan.limits,
+                binaries=plan.rendered.binaries,
                 wrap_args_fd=channels.child_fd(Channel.WRAP_ARGS),
                 rw_paths=rw_paths,
                 network=plan.rendered.network,

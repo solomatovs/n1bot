@@ -161,9 +161,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         attachments = parent.metadata.get(ConfluenceKeys.ATTACHMENTS)
         if not attachments:
             return
-        logger.info(
-            "page %s: %d attachments", parent.source_id, len(attachments)
-        )
+        logger.info("page %s: %d attachments", parent.source_id, len(attachments))
         flt = att_filter or AttachmentFilter()
         for att in attachments:
             if not flt.matches(att):

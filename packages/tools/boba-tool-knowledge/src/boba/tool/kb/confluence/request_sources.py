@@ -159,7 +159,8 @@ class ConfluenceRest:
             meta = meta.set(ConfluenceKeys.PARENT_URL, parent_url)
         base = base_url.rstrip("/")
         att_url = (
-            f"{base}{attachment.webui}" if attachment.webui
+            f"{base}{attachment.webui}"
+            if attachment.webui
             else f"{base}{attachment.download_path}"
         )
         meta = meta.set(ConfluenceKeys.SOURCE_URL, att_url)
@@ -207,22 +208,28 @@ class ConfluencePaginator:
 
     @classmethod
     async def discover_spaces(
-        cls, conn: ConfluenceConnection, space_type: str,
+        cls,
+        conn: ConfluenceConnection,
+        space_type: str,
     ) -> AsyncIterator[str]:
         async with cls(conn) as paginator:
             async for item in paginator(
-                ConfluenceRest.space_list_path(space_type), ConfluenceSpaceItem,
+                ConfluenceRest.space_list_path(space_type),
+                ConfluenceSpaceItem,
             ):
                 if item.key:
                     yield item.key
 
     @classmethod
     async def discover_space_pages(
-        cls, conn: ConfluenceConnection, space_key: str,
+        cls,
+        conn: ConfluenceConnection,
+        space_key: str,
     ) -> AsyncIterator[str]:
         async with cls(conn) as paginator:
             async for item in paginator(
-                ConfluenceRest.space_pages_path(space_key), ConfluencePageItem,
+                ConfluenceRest.space_pages_path(space_key),
+                ConfluencePageItem,
             ):
                 page_id = item.id.strip()
                 if page_id:
@@ -230,11 +237,14 @@ class ConfluencePaginator:
 
     @classmethod
     async def discover_pages_by_cql(
-        cls, conn: ConfluenceConnection, cql: str,
+        cls,
+        conn: ConfluenceConnection,
+        cql: str,
     ) -> AsyncIterator[str]:
         async with cls(conn) as paginator:
             async for item in paginator(
-                ConfluenceRest.cql_search_path(cql), ConfluencePageItem,
+                ConfluenceRest.cql_search_path(cql),
+                ConfluencePageItem,
             ):
                 page_id = item.id.strip()
                 if page_id:
@@ -309,7 +319,8 @@ class ConfluenceSpaceRequestSource(RequestSource[ConfluenceRequest]):
 
     async def requests(self) -> AsyncIterator[ConfluenceRequest]:
         pages = ConfluencePaginator.discover_space_pages(
-            self._conn, self._space_key,
+            self._conn,
+            self._space_key,
         )
         async for page_id in pages:
             yield ConfluenceRest.make_page_request(

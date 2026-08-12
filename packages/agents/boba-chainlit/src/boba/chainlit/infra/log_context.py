@@ -9,7 +9,11 @@ from typing import Any, ClassVar
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit.infra.session import current_thread_id, current_user_label
+from boba.chainlit.domain.session import (
+    LogUserMark,
+    current_thread_id,
+    current_user_label,
+)
 
 __all__ = ["RequestUserContext", "RequestUserMiddleware", "UserLogContext"]
 
@@ -103,20 +107,22 @@ class UserLogContext:
 
     @classmethod
     def _label(cls) -> str:
+        if mark := LogUserMark.current():
+            return mark
+
         # логирование не имеет права падать из-за отсутствия контекста
         try:
             label = current_user_label()
         except Exception:
             label = ""
+
         if not label:
             label = RequestUserContext.get()
+
         if not label:
             return cls.UNKNOWN
 
-        thread = cls._thread()
-        if thread:
-            return f"{label} {thread}"
-        return label
+        return LogUserMark.compose(label, cls._thread())
 
     @classmethod
     def _thread(cls) -> str:

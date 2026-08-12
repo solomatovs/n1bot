@@ -9,6 +9,7 @@ from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from boba.toolkit.binaries import TrustedBinaries
 from boba.workspace.launcher import LauncherConfig, ResourceLimits
 
 __all__ = [
@@ -165,6 +166,11 @@ class SandboxProfile(BaseModel):
     launcher: LauncherConfig = Field(
         description="Тайминги и размеры операций лаунчера образов (rw_images).",
     )
+    binaries: TrustedBinaries = Field(
+        description=(
+            "Каталоги, откуда берутся bwrap и fuse2fs; $PATH не используется."
+        ),
+    )
     tmpfs: tuple[TmpfsSpec, ...] = Field(
         description=(
             "Mountpoints под tmpfs (in-memory), формат `dest:size`, "
@@ -180,9 +186,13 @@ class SandboxProfile(BaseModel):
             "утилит обычно нужен 'PATH'."
         ),
     )
-    timeout_sec: int = Field(
+    timeout_sec: int | None = Field(
+        default=None,
         ge=1,
-        description="Жёсткий таймаут выполнения процесса, сек; обязателен.",
+        description=(
+            "Жёсткий таймаут выполнения процесса, сек. Отсутствие — "
+            "процесс не ограничен по времени."
+        ),
     )
     max_memory_bytes: int = Field(
         gt=0,

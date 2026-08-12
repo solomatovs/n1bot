@@ -9,40 +9,45 @@
 -- body-hit. С weighted-tsv ts_rank_cd(tsv, q) автоматически даёт более
 -- высокий score за match в title/heading.
 --
--- Идемпотентность: проверяем GENERATED-выражение колонки `tsv` на
+-- Идемпотентность: проверяем generated-выражение колонки `tsv` на
 -- маркер `'setweight'`. Если есть — миграция уже применена, выходим.
--- Иначе DROP COLUMN (зависимый GIN-индекс падает каскадом) + ADD COLUMN
--- с новым выражением + CREATE INDEX заново.
+-- Иначе drop column (зависимый GIN-индекс падает каскадом) + add column
+-- с новым выражением + create index заново.
 --
--- ВНИМАНИЕ: DROP+ADD STORED-колонки на непустой таблице запускает
+-- ВНИМАНИЕ: drop+add stored-колонки на непустой таблице запускает
 -- полный rewrite — может быть долгим на большом KB.
 
-DO $$
-DECLARE
+do $$
+declare
     expr_text text;
-BEGIN
-    SELECT pg_get_expr(ad.adbin, ad.adrelid)
-      INTO expr_text
-      FROM pg_attribute a
-      JOIN pg_class     c  ON c.oid  = a.attrelid
-      JOIN pg_namespace n  ON n.oid  = c.relnamespace
-      LEFT JOIN pg_attrdef ad
-             ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
-     WHERE a.attname = 'tsv'
-       AND c.relname = {chunks_name_lit}
-       AND n.nspname = {schema_name_lit};
+begin
+    select
+        pg_get_expr(ad.adbin, ad.adrelid)
+    into
+        expr_text
+    from
+        pg_attribute a
+        join pg_class     c on c.oid = a.attrelid
+        join pg_namespace n on n.oid = c.relnamespace
+        left join pg_attrdef ad
+            on ad.adrelid = a.attrelid
+            and ad.adnum = a.attnum
+    where
+        a.attname = 'tsv'
+        and c.relname = {chunks_name_lit}
+        and n.nspname = {schema_name_lit};
 
     -- Уже мигрировано — выходим
-    IF expr_text IS NOT NULL AND expr_text LIKE '%setweight%' THEN
-        RETURN;
-    END IF;
+    if expr_text is not null and expr_text like '%setweight%' then
+        return;
+    end if;
 
-    -- DROP COLUMN автоматически роняет зависимый GIN-индекс
-    ALTER TABLE {chunks_table} DROP COLUMN IF EXISTS tsv;
+    -- drop column автоматически роняет зависимый GIN-индекс
+    alter table {chunks_table} drop column if exists tsv;
 
-    ALTER TABLE {chunks_table}
-        ADD COLUMN tsv tsvector
-        GENERATED ALWAYS AS (
+    alter table {chunks_table}
+        add column tsv tsvector
+        generated always as (
             setweight(
                 to_tsvector(
                     'russian',
@@ -87,8 +92,8 @@ BEGIN
                     {schema}.immutable_unaccent(coalesce(format_content, ''))
                 ), 'D'
             )
-        ) STORED;
+        ) stored;
 
-    CREATE INDEX IF NOT EXISTS {chunks_tsv_gin_name}
-        ON {chunks_table} USING gin (tsv);
-END $$;
+    create index if not exists {chunks_tsv_gin_name}
+        on {chunks_table} using gin (tsv);
+end $$;

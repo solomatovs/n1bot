@@ -61,8 +61,12 @@ PAYLOAD_COMMAND = shlex.join(PAYLOAD_ENTRY)
 STAGE_TOOL = "smoke"
 STAGE_ID = "smoke"
 
-needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap не установлен")
-needs_userns = pytest.mark.skipif(os.geteuid() == 0, reason="под root userns ведёт себя иначе")
+needs_bwrap = pytest.mark.skipif(
+    shutil.which("bwrap") is None, reason="bwrap не установлен"
+)
+needs_userns = pytest.mark.skipif(
+    os.geteuid() == 0, reason="под root userns ведёт себя иначе"
+)
 needs_fuse = pytest.mark.skipif(
     shutil.which("bwrap") is None
     or shutil.which("fuse2fs") is None
@@ -81,6 +85,19 @@ class Marker(StrEnum):
     TIMEOUT = "timeout-marker-90cd15"
 
 
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
 _PROFILE_BASE: dict[str, Any] = {
     "rootfs": "",
     "ro_binds": (),
@@ -94,6 +111,7 @@ _PROFILE_BASE: dict[str, Any] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": ("/tmp:64M",),  # noqa: S108
     "network": False,
     "env_set": {

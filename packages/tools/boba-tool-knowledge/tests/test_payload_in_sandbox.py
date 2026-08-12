@@ -276,7 +276,7 @@ class TestRootfsContents:
 class TestEmbedderInSandbox:
     """Веса эмбеддера лежат в самом образе, монтировать их не нужно."""
 
-    WEIGHTS: ClassVar[str] = "/opt/fastembed"
+    WEIGHTS: ClassVar[str] = "/var/cache/fastembed"
 
     def test_weights_are_bundled(self) -> None:
         _probe(path=self.WEIGHTS)

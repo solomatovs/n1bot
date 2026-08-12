@@ -1,4 +1,4 @@
-"""ConfluenceConnection — endpoint Confluence поверх web-профиля (base_url в профиле)."""
+"""ConfluenceConnection — endpoint Confluence поверх web-профиля."""
 
 from __future__ import annotations
 

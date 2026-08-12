@@ -67,7 +67,9 @@ class BaseIndexEvent(ABC):
 
 @dataclass(frozen=True)
 class PhaseTransition(BaseIndexEvent, ABC):
-    """Граница фазы run индексации (RunStarted, BatchStarted, CleanupStarted, RunFinished)."""
+    """Граница фазы run индексации (RunStarted, BatchStarted, CleanupStarted,
+    RunFinished).
+    """
 
     @abstractmethod
     def label(self) -> str:
@@ -84,7 +86,9 @@ class PhaseTransition(BaseIndexEvent, ABC):
 
 @dataclass(frozen=True)
 class CompletedItem(BaseIndexEvent, ABC):
-    """Атомарный завершённый item (success или skip-after-error); severity задаёт реализация."""
+    """Атомарный завершённый item (success или skip-after-error); severity задаёт
+    реализация.
+    """
 
     @abstractmethod
     def headline(self) -> str:
@@ -246,9 +250,7 @@ class SourceSkippedUnchanged(CompletedItem):
         return "source.skipped_unchanged"
 
     def headline(self) -> str:
-        return (
-            f"unchanged {self.source_id} ({self.chunks_total} chunks)"
-        )
+        return f"unchanged {self.source_id} ({self.chunks_total} chunks)"
 
     def details(self) -> Mapping[str, str]:
         return {
@@ -293,6 +295,7 @@ class ChunksDeleted(CompletedItem):
 
     def details(self) -> Mapping[str, str]:
         return {"count": str(self.count)}
+
 
 @dataclass(frozen=True)
 class IndexStats:

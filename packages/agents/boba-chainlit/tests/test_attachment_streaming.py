@@ -20,16 +20,16 @@ from chainlit.auth import get_current_user
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from boba.chainlit.chat.data.object_key import ObjectKey
-from boba.chainlit.chat.data.storage import LocalStorageClient
-from boba.chainlit.chat.data.upload import SessionFiles, UploadPolicy, UploadRoute
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.data.upload import SessionFiles, UploadPolicy, UploadRoute
+from boba.chainlit.domain.keys import ObjectKey
 
 pytestmark = pytest.mark.anyio
 
 THREAD_ID = "1f000000-0000-4000-8000-000000000abc"
 USER_ID = 7
 FILE_NAME = "big.bin"
-UPLOAD_LOGGER = "boba.chainlit.chat.data.upload"
+UPLOAD_LOGGER = "boba.chainlit.data.upload"
 
 
 class PatternPayload:
@@ -196,9 +196,10 @@ class TestServedStreaming:
         """64 МиБ через реальный сокет: хеш сходится, память остаётся малой."""
         app, session, file_id = served
 
-        async with LiveServer(app) as server, AsyncClient(
-            base_url=server.base_url
-        ) as client:
+        async with (
+            LiveServer(app) as server,
+            AsyncClient(base_url=server.base_url) as client,
+        ):
             with MemoryProbe() as probe:
                 state = hashlib.sha256()
                 received = 0
@@ -232,9 +233,10 @@ class TestServedStreaming:
         length = 8192
         last = offset + length - 1
 
-        async with LiveServer(app) as server, AsyncClient(
-            base_url=server.base_url
-        ) as client:
+        async with (
+            LiveServer(app) as server,
+            AsyncClient(base_url=server.base_url) as client,
+        ):
             with MemoryProbe() as probe:
                 response = await client.get(
                     f"/project/file/{file_id}",
@@ -243,7 +245,9 @@ class TestServedStreaming:
                 )
 
         assert response.status_code == 206
-        assert response.headers["content-range"] == f"bytes {offset}-{last}/{payload.size}"
+        assert (
+            response.headers["content-range"] == f"bytes {offset}-{last}/{payload.size}"
+        )
         assert response.headers["content-length"] == str(length)
         assert response.content == PatternPayload.slice_at(offset, length)
         assert probe.peak_bytes < self.PEAK_LIMIT
@@ -256,9 +260,10 @@ class TestServedStreaming:
         """Клиент ушёл после первых байт: сервер не досылает остальное."""
         app, session, file_id = served
 
-        async with LiveServer(app) as server, AsyncClient(
-            base_url=server.base_url
-        ) as client:
+        async with (
+            LiveServer(app) as server,
+            AsyncClient(base_url=server.base_url) as client,
+        ):
             received = 0
             async with client.stream(
                 "GET",
@@ -282,9 +287,10 @@ class TestServedStreaming:
         app, session, file_id = served
 
         with caplog.at_level(logging.INFO, logger=UPLOAD_LOGGER):
-            async with LiveServer(app) as server, AsyncClient(
-                base_url=server.base_url
-            ) as client:
+            async with (
+                LiveServer(app) as server,
+                AsyncClient(base_url=server.base_url) as client,
+            ):
                 async with client.stream(
                     "GET",
                     f"/project/file/{file_id}",
@@ -313,16 +319,17 @@ class TestServedStreaming:
         app, session, file_id = served
 
         with caplog.at_level(logging.INFO, logger=UPLOAD_LOGGER):
-            async with LiveServer(app) as server, AsyncClient(
-                base_url=server.base_url
-            ) as client:
-                async with client.stream(
+            async with (
+                LiveServer(app) as server,
+                AsyncClient(base_url=server.base_url) as client,
+                client.stream(
                     "GET",
                     f"/project/file/{file_id}",
                     params={"session_id": session.id},
-                ) as response:
-                    async for _ in response.aiter_bytes(self.CLIENT_CHUNK):
-                        break
+                ) as response,
+            ):
+                async for _ in response.aiter_bytes(self.CLIENT_CHUNK):
+                    break
 
             await asyncio.sleep(0.2)
 
@@ -347,9 +354,10 @@ class TestServedStreaming:
             7 * PatternPayload.BLOCK_BYTES + 3,
         ]
 
-        async with LiveServer(app) as server, AsyncClient(
-            base_url=server.base_url
-        ) as client:
+        async with (
+            LiveServer(app) as server,
+            AsyncClient(base_url=server.base_url) as client,
+        ):
             for offset in offsets:
                 last = offset + length - 1
                 response = await client.get(

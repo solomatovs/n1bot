@@ -1,4 +1,4 @@
-"""Filter — backend-agnostic DSL (sealed union предикатов) для запросов по полям чанка."""
+"""Filter — backend-agnostic DSL предикатов для запросов по полям чанка."""
 
 from __future__ import annotations
 

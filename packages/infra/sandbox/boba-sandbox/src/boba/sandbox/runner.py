@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import selectors
-import shutil
 import subprocess
 import threading
 import time
@@ -29,6 +28,8 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from boba.cancellation import TurnCancellation
+from boba.sandbox.profile import SandboxProfile
+from boba.toolkit.binaries import SandboxBinary
 from boba.toolkit.channels import (
     ByteText,
     Channel,
@@ -47,9 +48,9 @@ from boba.toolkit.channels import (
 from boba.toolkit.launcher import LauncherError
 
 
-def has_bwrap() -> bool:
-    """Есть ли bubblewrap в PATH: без него песочницу не поднять."""
-    return shutil.which("bwrap") is not None
+def has_bwrap(profile: SandboxProfile) -> bool:
+    """Есть ли bubblewrap в доверенных каталогах: без него песочницу не поднять."""
+    return profile.binaries.has(SandboxBinary.BWRAP)
 
 
 M = TypeVar("M", bound=BaseModel)
@@ -515,7 +516,8 @@ class _PumpStage:
     on_timeout: Callable[[], None]
     started: float
     ended: float | None
-    deadline: float
+    deadline: float | None
+    """None — стадия без таймаута; после kill сюда встаёт срок добивания."""
     kill_cause: KillCause
     exit_seen: bool
     edges: tuple[PipeSink, ...]
@@ -624,10 +626,13 @@ class ChannelPump:
         channels: SandboxChannels,
         sinks: Mapping[Channel, ChannelSink],
         feeds: Mapping[Channel, bytes],
-        timeout_sec: float,
+        timeout_sec: float | None,
         on_timeout: Callable[[], None],
     ) -> None:
         """Регистрирует каналы стадии; момент вызова — старт её дедлайна.
+
+        `timeout_sec` None — профиль стадии не ограничивает её по времени;
+        дедлайн появляется только на добивание после kill.
 
         `on_timeout` — рубильник стадии: насос зовёт его и по дедлайну, и при
         каскаде от сбоя соседней стадии.
@@ -639,6 +644,11 @@ class ChannelPump:
             raise LauncherError(f"stage {stage!r} is already added to the pump")
 
         now = time.monotonic()
+
+        deadline: float | None = None
+        if timeout_sec is not None:
+            deadline = now + timeout_sec
+
         entry = _PumpStage(
             name=stage,
             proc=proc,
@@ -646,7 +656,7 @@ class ChannelPump:
             on_timeout=on_timeout,
             started=now,
             ended=None,
-            deadline=now + timeout_sec,
+            deadline=deadline,
             kill_cause=KillCause.NONE,
             exit_seen=False,
             edges=self._stage_edges(sinks),
@@ -794,14 +804,22 @@ class ChannelPump:
 
         return pending
 
-    def _poll_sec(self) -> float:
+    def _poll_sec(self) -> float | None:
+        """None — ждать событий бессрочно: ни одна живая стадия не ограничена."""
         deadlines: list[float] = []
         for entry in self._stages.values():
-            if entry.pending > 0:
-                deadlines.append(entry.deadline)
+            if entry.pending <= 0:
+                continue
+            if entry.deadline is None:
+                continue
+
+            deadlines.append(entry.deadline)
 
         if not deadlines:
-            return 0.0
+            if self._exit_pending():
+                return self.EXIT_POLL_SEC
+
+            return None
 
         wait = min(deadlines) - time.monotonic()
         wait = max(wait, 0.0)
@@ -826,6 +844,8 @@ class ChannelPump:
 
         for entry in self._stages.values():
             if entry.pending <= 0:
+                continue
+            if entry.deadline is None:
                 continue
             if now < entry.deadline:
                 continue

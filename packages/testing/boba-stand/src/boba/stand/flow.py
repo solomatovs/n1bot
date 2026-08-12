@@ -17,7 +17,6 @@ CollectorRowLimitError — потолки коллектора вызывающ�
 from __future__ import annotations
 
 import os
-import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +30,7 @@ from boba.sandbox.journal import DirVault, StreamJournal
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import ToolCallContext
 from boba.sandbox.workflow import StageDef, StageRegistry, WorkflowRunner
+from boba.toolkit.binaries import SandboxBinary, TrustedBinaries
 from boba.toolkit.channels import ByteText, StreamCodec
 from boba.toolkit.launcher import WorkflowPayloadError
 from boba.toolkit.workflow import (
@@ -54,9 +54,9 @@ class StandPaths:
     ROOTFS: ClassVar[Path] = SANDBOX / "rootfs"
     PACKAGES: ClassVar[Path] = REPO / "packages"
 
-    GUEST_PYTHON: ClassVar[str] = "/opt/python"
-    GUEST_SITE: ClassVar[str] = "/opt/site"
-    GUEST_SRC: ClassVar[str] = "/opt/src"
+    GUEST_PYTHON: ClassVar[str] = "/usr/local"
+    GUEST_SITE: ClassVar[str] = "/usr/local/lib/python3.11/site-packages"
+    GUEST_SRC: ClassVar[str] = "/usr/src"
 
     @classmethod
     def third(cls, name: str) -> Path:
@@ -74,9 +74,22 @@ class StandPaths:
         return f"{workspace}:{WORKSPACE_MOUNT}"
 
     @classmethod
+    def bin_dirs(cls) -> tuple[str, ...]:
+        """В стенде доверенные каталоги берутся из PATH; в проде — из конфига."""
+        dirs: list[str] = []
+
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            if not entry.startswith("/"):
+                continue
+
+            dirs.append(entry)
+
+        return tuple(dirs)
+
+    @classmethod
     def artifacts_missing(cls) -> bool:
         """Нет bwrap либо не собран rootfs: запускать стадии нечем."""
-        if shutil.which("bwrap") is None:
+        if not TrustedBinaries(dirs=cls.bin_dirs()).has(SandboxBinary.BWRAP):
             return True
 
         shell = cls.ROOTFS / "bin" / "sh"
@@ -122,12 +135,10 @@ class StandSandbox(BaseModel):
     )
 
     def python_path(self) -> str:
-        """PYTHONPATH стадии: src нужных пакетов, следом собранный site."""
+        """PYTHONPATH стадии: только src пакетов — site стоит на штатном месте."""
         parts: list[str] = []
         for name in self.packages:
             parts.append(f"{StandPaths.GUEST_SRC}/{name}/src")
-
-        parts.append(StandPaths.GUEST_SITE)
 
         return ":".join(parts)
 
@@ -146,13 +157,11 @@ class StandSandbox(BaseModel):
                 "lock_wait_sec": 10.0,
                 "copy_chunk_bytes": 1 << 20,
             },
+            "binaries": {"dirs": StandPaths.bin_dirs()},
             "tmpfs": ("/tmp:256M",),  # noqa: S108
             "network": self.network,
             "env_set": {
-                "PATH": f"{StandPaths.GUEST_PYTHON}/bin:/usr/local/bin:/usr/bin:/bin",
-                "PYTHONHOME": StandPaths.GUEST_PYTHON,
                 "PYTHONPATH": self.python_path(),
-                "LD_LIBRARY_PATH": f"{StandPaths.GUEST_PYTHON}/lib",
                 "HOME": "/tmp",  # noqa: S108
                 "LANG": "C.UTF-8",
             },

@@ -134,9 +134,7 @@ class PayloadClickHouse:
             raise ClickHouseError(msg) from e
 
     @classmethod
-    def jsonable(
-        cls, names: Sequence[str], row: Sequence[Any]
-    ) -> dict[str, Any]:
+    def jsonable(cls, names: Sequence[str], row: Sequence[Any]) -> dict[str, Any]:
         """Строка-кортеж ClickHouse -> словарь с JSON-совместимыми значениями."""
         out: dict[str, Any] = {}
         for index, name in enumerate(names):
