@@ -16,6 +16,10 @@ class AppEntry:
 
     CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
 
+    BASE_ENV: ClassVar[str] = "BOBA_BASE"
+
+    CONFIG_IN_BASE: ClassVar[str] = "conf/config.toml"
+
     SECTION: ClassVar[str] = "app.chainlit"
 
     APP_ROOT_ENV: ClassVar[str] = "CHAINLIT_APP_ROOT"
@@ -36,11 +40,16 @@ class AppEntry:
 
     @classmethod
     def config_path(cls) -> Path:
-        config_path = os.environ.get(cls.CONFIG_ENV)
-        if not config_path:
-            msg = f"{cls.CONFIG_ENV} не задан — укажи конфиг приложения"
+        """Путь конфига: явный BOBA_CONFIG_PATH либо conf/config.toml в BOBA_BASE."""
+        if config_path := os.environ.get(cls.CONFIG_ENV):
+            return Path(config_path)
+
+        base = os.environ.get(cls.BASE_ENV)
+        if not base:
+            msg = f"не задан ни {cls.CONFIG_ENV}, ни {cls.BASE_ENV}"
             raise ValueError(msg)
-        return Path(config_path)
+
+        return Path(base) / cls.CONFIG_IN_BASE
 
     @classmethod
     def export_env(cls, config_path: Path) -> None:

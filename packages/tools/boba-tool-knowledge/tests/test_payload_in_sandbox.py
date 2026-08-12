@@ -404,7 +404,7 @@ class TestRootfsContents:
 class TestEmbedderInSandbox:
     """Веса эмбеддера лежат в самом образе, монтировать их не нужно."""
 
-    WEIGHTS: str = "/opt/fastembed"
+    WEIGHTS: str = "/var/cache/fastembed"
 
     def test_weights_are_bundled(self) -> None:
         sandbox = SandboxToolConfig.model_validate(

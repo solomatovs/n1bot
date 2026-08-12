@@ -11,6 +11,6 @@ from pathlib import Path
 
 _APP_ROOT_ENV = "CHAINLIT_APP_ROOT"
 
-_DEFAULT_APP_ROOT = Path(__file__).resolve().parents[1] / "compose" / "chainlit"
+_DEFAULT_APP_ROOT = Path(__file__).resolve().parents[1] / "compose" / "app_root"
 
 os.environ.setdefault(_APP_ROOT_ENV, str(_DEFAULT_APP_ROOT))

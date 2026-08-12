@@ -61,7 +61,7 @@ def fake_fastembed(monkeypatch: pytest.MonkeyPatch):
 def _config(batch_size: int) -> EmbeddingModel:
     return EmbeddingModel(
         model="intfloat/multilingual-e5-small",
-        cache_dir="/opt/fastembed",
+        cache_dir="/var/cache/fastembed",
         dim=384,
         batch_size=batch_size,
     )
