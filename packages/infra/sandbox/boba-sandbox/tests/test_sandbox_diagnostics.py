@@ -257,7 +257,7 @@ def _run_probe(root: Path, body: str, **profile_kw: Any) -> None:
     payload_dir = _write_payload(root, body)
 
     definition = StageDef(
-        contract=StageContract(accepts=frozenset(), out=None, result=EmptyTrailer),
+        contract=StageContract(out=None, result=EmptyTrailer),
         profile=_stage_profile(payload_dir, **profile_kw),
         entry=PAYLOAD_ENTRY,
         request=_NoArgs,

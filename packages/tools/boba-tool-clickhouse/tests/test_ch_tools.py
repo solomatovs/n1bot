@@ -221,7 +221,13 @@ class TestChNodes:
     def test_insert_enricher_keeps_writable_session(self) -> None:
         enrich = ChInsertNode.enricher(self._config())
 
-        enriched = enrich({"connection_name": "main", "table": "events"})
+        enriched = enrich(
+            {
+                "connection_name": "main",
+                "table": "events",
+                "stdin_format": StreamFormat.NDJSON.value,
+            }
+        )
         request = ChInsertRequest.model_validate(enriched)
 
         assert request.table == "events"
@@ -234,8 +240,7 @@ class TestChNodes:
         with pytest.raises(ValueError, match="whitelist"):
             enrich({"connection_name": "нет-такого", "sql": "select 1"})
 
-    def test_insert_accepts_only_row_formats(self) -> None:
-        assert ChInsertNode.CONTRACT.accepts == ChInsertRequest.ACCEPTS
+    def test_insert_declares_no_product_and_takes_row_formats(self) -> None:
         assert ChInsertNode.CONTRACT.out is None
 
         with pytest.raises(ValidationError, match="not insertable"):
@@ -253,7 +258,7 @@ class TestChNodes:
                 }
             )
 
-    def test_wire_format_follows_the_edge(self) -> None:
+    def test_wire_format_follows_the_declared_input(self) -> None:
         assert ChWireFormat.of(StreamFormat.NDJSON) is ChWireFormat.JSON_EACH_ROW
         assert ChWireFormat.of(StreamFormat.CSV) is ChWireFormat.CSV_WITH_NAMES
 

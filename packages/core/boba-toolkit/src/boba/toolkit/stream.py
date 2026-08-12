@@ -19,6 +19,8 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from boba.toolkit.channels import ByteText
+
 __all__ = [
     "StreamSink",
     "StreamWindow",
@@ -84,7 +86,7 @@ class ToolStreamBuffer:
         self._on_data()
 
     def feed_text(self, text: str) -> None:
-        self.feed(text.encode("utf-8"))
+        self.feed(text.encode(ByteText.ENCODING))
 
     def close(self, note: str) -> None:
         """Завершить поток; повторное закрытие ничего не меняет."""
@@ -104,7 +106,7 @@ class ToolStreamBuffer:
             note = self._note
 
         return StreamWindow(
-            text=data.decode("utf-8", errors="replace"),
+            text=data.decode(ByteText.ENCODING, errors=ByteText.ERRORS),
             dropped_bytes=dropped,
             closed=closed,
             note=note,

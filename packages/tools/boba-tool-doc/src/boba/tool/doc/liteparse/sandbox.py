@@ -88,7 +88,6 @@ class LiteParseCaller:
         """Узел парсера инструмента; профиль подставляет приложение."""
         settings = ParseRequest.settings_of(ParseBytesRequest.OP, cfg)
         contract = StageContract(
-            accepts=frozenset(),
             out=StreamFormat.NDJSON,
             result=ParseBytesTrailer,
         )

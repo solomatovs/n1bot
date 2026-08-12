@@ -130,7 +130,6 @@ class ConfluenceIngestStages:
 
         nodes[ConfluenceNode.INGEST.value] = StageNode(
             contract=StageContract(
-                accepts=frozenset(),
                 out=None,
                 result=IngestAnswer,
             ),
@@ -141,7 +140,6 @@ class ConfluenceIngestStages:
 
         nodes[ConfluenceNode.ATTACHMENT.value] = StageNode(
             contract=StageContract(
-                accepts=frozenset(),
                 out=StreamFormat.TEXT,
                 result=EmptyTrailer,
             ),

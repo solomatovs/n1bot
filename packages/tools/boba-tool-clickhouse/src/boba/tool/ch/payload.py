@@ -3,8 +3,9 @@
 Учётные данные приезжают каналом tool_args — не видны ни в argv, ни в /proc,
 ни в логах; строки уходят каналом данных, вход вставки читается из tool_stdin.
 
-Ошибки: ClickHouseError — до базы не достучаться, и sql_failed из PayloadError —
-СУБД отклонила запрос; обе объявлены ожидаемыми и едут пользователю текстом.
+Ошибки: ClickHouseError — до базы не достучаться; PayloadError видов
+FailureKind (sql_failed — СУБД отклонила запрос, no_input — вставке не подали
+поток); все объявлены ожидаемыми и едут пользователю текстом.
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ from boba.tool.ch.protocol import (
     ChStage,
     ChWireFormat,
 )
-from boba.toolkit.channels import StreamCodec
+from boba.toolkit.channels import Channel, StreamCodec
 from boba.toolkit.payload import (
+    FailureKind,
     PayloadChannels,
     PayloadEntry,
     PayloadError,
@@ -43,7 +45,7 @@ class ClickHouseOps:
     """Исполнение SQL; операцию выбирает реестр запросов по полю op."""
 
     EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
-        ClickHouseError: "database_unavailable",
+        ClickHouseError: FailureKind.UNAVAILABLE,
     }
 
     REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {
@@ -85,7 +87,7 @@ class ClickHouseOps:
                 truncated = True
             except DriverError as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
-                raise PayloadError("sql_failed", msg) from e
+                raise PayloadError(FailureKind.SQL_FAILED, msg) from e
 
         return ChQueryTrailer(truncated=truncated)
 
@@ -142,6 +144,11 @@ class ClickHouseOps:
         cls, request: ChInsertRequest, channels: PayloadChannels
     ) -> ChInsertTrailer:
         """Вставка входного потока в таблицу; формат объявлен полем запроса."""
+        if not channels.has(Channel.TOOL_STDIN):
+            raise PayloadError(
+                FailureKind.NO_INPUT, "insert source is not fed to the stage"
+            )
+
         wire = ChWireFormat.of(request.stdin_format)
 
         source = channels.stdin()
@@ -155,7 +162,7 @@ class ClickHouseOps:
                 )
             except DriverError as e:
                 msg = f"insert failed: {type(e).__name__}: {e}"
-                raise PayloadError("sql_failed", msg) from e
+                raise PayloadError(FailureKind.SQL_FAILED, msg) from e
 
         return ChInsertTrailer(
             rows=summary.written_rows,

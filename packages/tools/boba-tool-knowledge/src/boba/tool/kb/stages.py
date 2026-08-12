@@ -44,11 +44,10 @@ class KbStages:
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.kb.payload")
 
     CONTRACT: ClassVar[StageContract] = StageContract(
-        accepts=frozenset(),
         out=StreamFormat.NDJSON,
         result=EmptyTrailer,
     )
-    """Строки выдачи — NDJSON; входа у поиска нет, квитанция пуста."""
+    """Строки выдачи — NDJSON, квитанция пуста."""
 
     @classmethod
     def of(cls, cfg: PostgresKnowledgeBaseConfig) -> dict[str, StageNode]:

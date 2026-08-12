@@ -18,7 +18,7 @@ import subprocess
 import sys
 from typing import IO, BinaryIO, ClassVar
 
-from boba.tool.shell.protocol import BashFailure, BashRequest
+from boba.tool.shell.protocol import BashArgs, BashFailure
 from boba.toolkit.channels import Channel, ShellExit
 from boba.toolkit.payload import (
     PayloadChannels,
@@ -45,7 +45,7 @@ class BashPayload:
 
         channels = PayloadChannels.open()
 
-        request = channels.args(BashRequest)
+        request = channels.args(BashArgs)
 
         try:
             rc = cls._run(request, channels)
@@ -61,7 +61,7 @@ class BashPayload:
         return int(channels.exit_code())
 
     @classmethod
-    def _run(cls, request: BashRequest, channels: PayloadChannels) -> int:
+    def _run(cls, request: BashArgs, channels: PayloadChannels) -> int:
         stream = channels.payload()
 
         proc = cls._spawn(request.command, cls._stdin_of(channels))

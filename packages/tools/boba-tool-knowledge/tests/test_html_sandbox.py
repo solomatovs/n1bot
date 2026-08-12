@@ -24,6 +24,7 @@ from boba.tool.kb.html import (
     HtmlStages,
 )
 from boba.toolkit.channels import Channel
+from boba.toolkit.payload import PayloadExit
 
 _HTML = (
     "<html><body><h1>Заголовок</h1><p>Абзац с <b>жирным</b>.</p>"
@@ -39,6 +40,23 @@ _CONFLUENCE_HTML = (
 )
 
 PAYLOAD_MODULE = "boba.tool.kb.html.payload"
+
+
+class StageInput(BaseModel):
+    """Вход прогона: канал tool_stdin объявлен и несёт байты либо не объявлен."""
+
+    model_config = ConfigDict(frozen=True)
+
+    declared: bool
+    data: bytes = b""
+
+    @classmethod
+    def fed(cls, data: bytes) -> StageInput:
+        return cls(declared=True, data=data)
+
+    @classmethod
+    def absent(cls) -> StageInput:
+        return cls(declared=False)
 
 
 class PayloadRun(BaseModel):
@@ -79,40 +97,49 @@ def _read_all(fd: int) -> bytes:
     return bytes(data)
 
 
-def _run(request: Mapping[str, Any], html: str) -> PayloadRun:
+def _run(request: Mapping[str, Any], stdin: StageInput) -> PayloadRun:
     """Прогон payload'а отдельным процессом на реальных pipe-каналах."""
     args_r, args_w = os.pipe()
-    stdin_r, stdin_w = os.pipe()
     result_r, result_w = os.pipe()
     payload_r, payload_w = os.pipe()
 
     env = dict(os.environ)
     channels = {
         Channel.TOOL_ARGS: str(args_r),
-        Channel.TOOL_STDIN: str(stdin_r),
         Channel.TOOL_RESULT: str(result_w),
         Channel.TOOL_PAYLOAD: str(payload_w),
         Channel.TOOL_STDOUT: "1",
         Channel.TOOL_STDERR: "2",
     }
+    passed = [args_r, result_w, payload_w]
+    feeders: list[int] = []
+
+    if stdin.declared:
+        stdin_r, stdin_w = os.pipe()
+        channels[Channel.TOOL_STDIN] = str(stdin_r)
+        passed.append(stdin_r)
+        feeders.append(stdin_w)
+
     for channel, value in channels.items():
         env[channel.env_name] = value
 
     proc = subprocess.Popen(  # noqa: S603
         [sys.executable, "-m", PAYLOAD_MODULE],
-        pass_fds=(args_r, stdin_r, result_w, payload_w),
+        pass_fds=tuple(passed),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
     )
 
-    for fd in (args_r, stdin_r, result_w, payload_w):
+    for fd in passed:
         os.close(fd)
 
     os.write(args_w, json.dumps(request, ensure_ascii=False).encode("utf-8"))
     os.close(args_w)
-    os.write(stdin_w, html.encode("utf-8"))
-    os.close(stdin_w)
+
+    for fd in feeders:
+        os.write(fd, stdin.data)
+        os.close(fd)
 
     _, stderr = proc.communicate(timeout=60)
 
@@ -132,7 +159,7 @@ def _run(request: Mapping[str, Any], html: str) -> PayloadRun:
 
 
 def _ok(node: HtmlNode, html: str, **args: Any) -> PayloadRun:
-    run = _run({"op": node.value, **args}, html)
+    run = _run({"op": node.value, **args}, StageInput.fed(html.encode("utf-8")))
     assert run.code == 0, run.stderr
     assert "error" not in run.envelope
     return run
@@ -157,8 +184,16 @@ class TestPayloadContract:
         run = _ok(HtmlNode.MARKDOWN, _HTML)
         assert run.envelope["bytes_out"] == len(run.payload)
 
+    def test_stage_without_input_refuses_by_the_envelope(self) -> None:
+        """Разметку узлу не подали: отказ едет конвертом, а не трейсбеком."""
+        run = _run({"op": HtmlNode.MARKDOWN.value}, StageInput.absent())
+
+        assert run.code == PayloadExit.FAILURE
+        assert run.envelope["error"]["kind"] == "no_input"
+        assert run.payload == b""
+
     def test_unknown_op_is_an_invalid_request(self) -> None:
-        run = _run({"op": "нет-такой-op"}, _HTML)
+        run = _run({"op": "нет-такой-op"}, StageInput.fed(_HTML.encode("utf-8")))
         assert run.code != 0
         error = run.envelope["error"]
         assert error["kind"] == "invalid_request"
@@ -166,7 +201,10 @@ class TestPayloadContract:
 
     def test_missing_title_is_reported_by_field(self) -> None:
         """Сводка ошибки называет поле, но не печатает содержимое запроса."""
-        run = _run({"op": HtmlNode.SECTIONS.value}, _HTML)
+        run = _run(
+            {"op": HtmlNode.SECTIONS.value},
+            StageInput.fed(_HTML.encode("utf-8")),
+        )
         assert run.code != 0
         assert "title" in run.envelope["error"]["message"]
 

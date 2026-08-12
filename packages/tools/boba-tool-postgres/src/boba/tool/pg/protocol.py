@@ -13,11 +13,11 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from boba.db.postgres import PostgresConfig
-from boba.toolkit.channels import StreamFormat
 from boba.toolkit.sql import SqlCall, SqlQueryRequest
 
 __all__ = [
     "PgCopyArgs",
+    "PgCopyDirection",
     "PgCopyFormat",
     "PgCopyRequest",
     "PgCopyTrailer",
@@ -34,19 +34,18 @@ class PgStage(StrEnum):
     COPY = "pg_copy"
 
 
+class PgCopyDirection(StrEnum):
+    """Куда течёт COPY: оператор наполняет канал данных либо читает вход узла."""
+
+    TO_STDOUT = "to_stdout"
+    FROM_STDIN = "from_stdin"
+
+
 class PgCopyFormat(StrEnum):
-    """Формат выгрузки COPY: он же формат продукта узла в tool_payload."""
+    """Формат данных COPY: он же формат продукта узла в tool_payload."""
 
     TEXT = "text"
     CSV = "csv"
-
-    @property
-    def stream(self) -> StreamFormat:
-        """Формат канала данных, объявляемый контрактом узла."""
-        if self is PgCopyFormat.TEXT:
-            return StreamFormat.TEXT
-
-        return StreamFormat.CSV
 
     def statement(self, sql: str) -> str:
         """COPY ... TO STDOUT нужного формата; заголовок несут оба формата."""
@@ -54,6 +53,23 @@ class PgCopyFormat(StrEnum):
             return f"COPY ({sql}) TO STDOUT WITH (FORMAT TEXT, HEADER)"
 
         return f"COPY ({sql}) TO STDOUT WITH (FORMAT CSV, HEADER)"
+
+    @classmethod
+    def of(cls, name: str) -> PgCopyFormat:
+        """Имя формата из опций; неизвестное и binary — ValueError."""
+        wanted = name.lower()
+
+        for member in cls:
+            if member.value == wanted:
+                return member
+
+        names: list[str] = []
+        for member in cls:
+            names.append(member.value)
+
+        supported = ", ".join(names)
+
+        raise ValueError(f"unsupported COPY format: {wanted}; supported: {supported}")
 
 
 class PgQueryArgs(BaseModel):
@@ -67,13 +83,25 @@ class PgQueryArgs(BaseModel):
 
 
 class PgCopyArgs(BaseModel):
-    """Args узла pg_copy: запрос и формат выгрузки."""
+    """Args узла pg_copy: оператор COPY и направление, объявленное вызывающим."""
 
     model_config = ConfigDict(extra="forbid")
 
     connection_name: str = Field(min_length=1)
-    sql: str = Field(min_length=1)
-    copy_format: PgCopyFormat = PgCopyFormat.TEXT
+    direction: PgCopyDirection = Field(
+        description=(
+            "to_stdout — the statement fills the data channel; "
+            "from_stdin — the statement loads the node input into a table."
+        ),
+    )
+    sql: str = Field(
+        min_length=1,
+        description=(
+            "Whole COPY statement, e.g. `COPY (SELECT ...) TO STDOUT WITH "
+            "(FORMAT CSV, HEADER)` or `COPY table (col, ...) FROM STDIN WITH "
+            "(FORMAT CSV)`. It must match the declared direction."
+        ),
+    )
 
 
 class PgQueryRequest(SqlQueryRequest[PostgresConfig, tuple[Any, ...]]):
@@ -83,16 +111,21 @@ class PgQueryRequest(SqlQueryRequest[PostgresConfig, tuple[Any, ...]]):
 
 
 class PgCopyRequest(SqlCall[PostgresConfig]):
-    """Выгрузка COPY ... TO STDOUT; потолок объёма держит читатель потока."""
+    """COPY каналами: to_stdout наполняет канал данных, from_stdin читает вход.
+
+    Оператор уходит в СУБД как есть: расхождение с объявленным направлением —
+    отказ postgres в рантайме, разбирать SQL на стороне payload'а незачем.
+    """
 
     OP: ClassVar[str] = PgStage.COPY
 
-    copy_format: PgCopyFormat
+    direction: PgCopyDirection
 
 
 class PgCopyTrailer(BaseModel):
-    """Итог выгрузки: байты ушли каналом данных, здесь — число строк."""
+    """Итог COPY: байты прошли каналом, здесь — направление и число строк."""
 
     model_config = ConfigDict(extra="forbid")
 
+    direction: PgCopyDirection
     rows: int = Field(ge=0)

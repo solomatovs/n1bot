@@ -3,9 +3,10 @@
 Разметка приезжает каналом tool_stdin, продукт уходит в tool_payload: markdown
 и текст — байтами, секции — строками NDJSON.
 
-Ошибки: ChannelError — в tool_args приехал запрос чужой модели. Ожидаемых
-ошибок разбора нет: bs4 и markdownify не отказывают на битой разметке — они
-её восстанавливают, поэтому любая ошибка здесь означает дефект кода.
+Ошибки: PayloadError (no_input) — узлу не подали разметку; ChannelError — в
+tool_args приехал запрос чужой модели. Ожидаемых ошибок разбора нет: bs4 и
+markdownify не отказывают на битой разметке — они её восстанавливают, поэтому
+любая ошибка здесь означает дефект кода.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ from boba.tool.kb.html.protocol import (
     HtmlToMarkdownRequest,
     PlainTextRequest,
 )
-from boba.toolkit.channels import ChannelError, StreamCodec, StreamFormat
-from boba.toolkit.payload import PayloadChannels, PayloadEntry
+from boba.toolkit.channels import Channel, ChannelError, StreamCodec
+from boba.toolkit.payload import PayloadChannels, PayloadEntry, PayloadError
 from boba.toolkit.workflow import EmptyTrailer
 
 
@@ -168,6 +169,9 @@ class PageOps:
     EXPECTED: ClassVar[Mapping[type[Exception], str]] = {}
     """Разбор HTML не отказывает: сломался — значит дефект, нужен трейсбек."""
 
+    NO_INPUT: ClassVar[str] = "no_input"
+    """kind отказа: узлу не подали разметку — ни ребром, ни литералом."""
+
     REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {
         HtmlNode.MARKDOWN: HtmlToMarkdownRequest,
         HtmlNode.PLAIN_TEXT: PlainTextRequest,
@@ -185,7 +189,7 @@ class PageOps:
             msg = f"html payload got an unexpected request: {type(request).__name__}"
             raise ChannelError(msg)
 
-        html = cls.read_html(request, channels)
+        html = cls.read_html(channels)
 
         if isinstance(request, HtmlToMarkdownRequest):
             cls.write_text(channels, cls.to_markdown(html))
@@ -202,14 +206,17 @@ class PageOps:
         msg = f"html payload got an unexpected request: {type(request).__name__}"
         raise ChannelError(msg)
 
-    @staticmethod
-    def read_html(request: HtmlCall, channels: PayloadChannels) -> str:
+    @classmethod
+    def read_html(cls, channels: PayloadChannels) -> str:
         """Разметка целиком: heading-aware нарезке нужен весь документ сразу."""
-        return StreamCodec.read_text(request.stdin_format, channels.stdin())
+        if not channels.has(Channel.TOOL_STDIN):
+            raise PayloadError(cls.NO_INPUT, "html markup is not fed to the stage")
+
+        return StreamCodec.read_text(channels.stdin())
 
     @staticmethod
     def write_text(channels: PayloadChannels, text: str) -> None:
-        channels.payload().write(StreamCodec.encode_text(StreamFormat.TEXT, text))
+        channels.payload().write(StreamCodec.encode_text(text))
 
     @staticmethod
     def write_sections(

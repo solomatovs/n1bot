@@ -143,17 +143,16 @@ from pydantic import BaseModel
 
 
 class Request(BaseModel):
-    stdin_format: str = ""
+    pass
 
 
 class Trailer(BaseModel):
     got: int
-    fmt: str
 
 
 PayloadLogging.setup()
 channels = PayloadChannels.open()
-request = channels.args(Request)
+channels.args(Request)
 
 stream = channels.stdin()
 total = 0
@@ -163,7 +162,7 @@ while True:
         break
     total += len(block)
 
-channels.write_result(Trailer(got=total, fmt=request.stdin_format))
+channels.write_result(Trailer(got=total))
 raise SystemExit(int(channels.exit_code()))
 """
 
@@ -174,7 +173,7 @@ from pydantic import BaseModel
 
 
 class Request(BaseModel):
-    stdin_format: str = ""
+    pass
 
 
 class Trailer(BaseModel):
@@ -201,7 +200,7 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 
 
 class Request(BaseModel):
-    stdin_format: str = ""
+    pass
 
 
 PayloadLogging.setup()
@@ -223,7 +222,7 @@ from boba.toolkit.payload import PayloadChannels, PayloadLogging
 
 
 class Request(BaseModel):
-    stdin_format: str = ""
+    pass
 
 
 PayloadLogging.setup()
@@ -232,6 +231,126 @@ channels.args(Request)
 channels.stdin().read(4096)
 
 raise SystemExit(2)
+"""
+
+
+_BINARY_SRC_PAYLOAD = """
+import hashlib
+
+from boba.toolkit.payload import PayloadChannels, PayloadLogging
+from pydantic import BaseModel
+
+
+class Request(BaseModel):
+    frames: int
+
+
+class Trailer(BaseModel):
+    digest: str
+    size: int
+
+
+PayloadLogging.setup()
+channels = PayloadChannels.open()
+request = channels.args(Request)
+
+# каждый кадр на байт короче предыдущего: многобайтовая последовательность
+# гуляет по фазе и рвётся на границе порции насоса (READ_BYTES = 65536)
+emoji = "\\U0001F600".encode("utf-8")
+filler = bytes(range(256))
+
+stream = channels.payload()
+digest = hashlib.sha256()
+size = 0
+
+for index in range(request.frames):
+    head = (filler * 256)[: 65534 - index]
+    frame = head + emoji
+    stream.write(frame)
+    digest.update(frame)
+    size += len(frame)
+
+stream.flush()
+
+channels.write_result(Trailer(digest=digest.hexdigest(), size=size))
+raise SystemExit(int(channels.exit_code()))
+"""
+
+
+_BINARY_SINK_PAYLOAD = """
+import hashlib
+
+from boba.toolkit.payload import PayloadChannels, PayloadLogging
+from pydantic import BaseModel
+
+
+class Request(BaseModel):
+    pass
+
+
+class Trailer(BaseModel):
+    digest: str
+    size: int
+    utf8: bool
+
+
+PayloadLogging.setup()
+channels = PayloadChannels.open()
+channels.args(Request)
+
+stream = channels.stdin()
+digest = hashlib.sha256()
+body = bytearray()
+
+while True:
+    block = stream.read(65536)
+    if not block:
+        break
+    digest.update(block)
+    body += block
+
+utf8 = True
+try:
+    bytes(body).decode("utf-8")
+except UnicodeDecodeError:
+    utf8 = False
+
+channels.write_result(
+    Trailer(digest=digest.hexdigest(), size=len(body), utf8=utf8)
+)
+raise SystemExit(int(channels.exit_code()))
+"""
+
+
+_JSON_SINK_PAYLOAD = """
+import json
+
+from boba.toolkit.payload import PayloadChannels, PayloadLogging
+from pydantic import BaseModel
+
+
+class Request(BaseModel):
+    pass
+
+
+PayloadLogging.setup()
+channels = PayloadChannels.open()
+channels.args(Request)
+
+stream = channels.stdin()
+body = bytearray()
+while True:
+    block = stream.read(65536)
+    if not block:
+        break
+    body += block
+
+try:
+    json.loads(bytes(body))
+except (UnicodeDecodeError, ValueError):
+    raise SystemExit(4)
+
+raise SystemExit(0)
 """
 
 
@@ -340,7 +459,7 @@ from pydantic import BaseModel
 
 
 class Request(BaseModel):
-    stdin_format: str = ""
+    pass
 
 
 class Trailer(BaseModel):
@@ -472,10 +591,9 @@ class SrcTrailer(BaseModel):
 
 
 class SinkTrailer(BaseModel):
-    """Квитанция приёмника: объём входа и объявленный формат."""
+    """Квитанция приёмника: объём прочитанного входа."""
 
     got: int
-    fmt: str
 
 
 class HeadTrailer(BaseModel):
@@ -488,6 +606,21 @@ class OkTrailer(BaseModel):
     """Квитанция стадии без данных: только факт успеха."""
 
     ok: bool
+
+
+class BinarySrcTrailer(BaseModel):
+    """Квитанция бинарного источника: отпечаток и объём отданного потока."""
+
+    digest: str
+    size: int
+
+
+class BinarySinkTrailer(BaseModel):
+    """Квитанция бинарного приёмника: отпечаток входа и его декодируемость."""
+
+    digest: str
+    size: int
+    utf8: bool
 
 
 class SentTrailer(BaseModel):
@@ -564,21 +697,24 @@ def _stage_def(
 
 
 def _src_def(root: Path, **profile_kw: Any) -> StageDef:
-    contract = StageContract(
-        accepts=frozenset(), out=StreamFormat.TEXT, result=SrcTrailer
-    )
+    contract = StageContract(out=StreamFormat.TEXT, result=SrcTrailer)
 
     return _stage_def(_write_payload(root, "src", _SRC_PAYLOAD), contract, **profile_kw)
 
 
 def _sink_def(root: Path, **profile_kw: Any) -> StageDef:
-    contract = StageContract(
-        accepts=frozenset({StreamFormat.TEXT}), out=None, result=SinkTrailer
-    )
+    contract = StageContract(out=None, result=SinkTrailer)
 
     return _stage_def(
         _write_payload(root, "sink", _SINK_PAYLOAD), contract, **profile_kw
     )
+
+
+def _ok_def(root: Path, **profile_kw: Any) -> StageDef:
+    """Узел, который вход не читает вовсе: ни stdin(), ни payload()."""
+    contract = StageContract(out=None, result=OkTrailer)
+
+    return _stage_def(_write_payload(root, "ok", _OK_PAYLOAD), contract, **profile_kw)
 
 
 def _runner(registry: StageRegistry) -> WorkflowRunner:
@@ -723,52 +859,6 @@ class TestWorkflowValidation:
         with pytest.raises(WorkflowError, match="not allowed"):
             runner.run(spec)
 
-    def test_edge_from_stage_without_stream_rejected(self, tmp_path: Path) -> None:
-        registry = StageRegistry(
-            {"src": _src_def(tmp_path), "sink": _sink_def(tmp_path)}
-        )
-        runner = _runner(registry)
-
-        spec = WorkflowSpec.parse(
-            {
-                "nodes": [
-                    {"id": "a", "tool": "sink", "args": {}},
-                    {"id": "b", "tool": "sink", "args": {}},
-                ],
-                "edges": [{"src": "a", "dst": "b"}],
-            }
-        )
-
-        with pytest.raises(WorkflowError, match="produces no stream"):
-            runner.run(spec)
-
-    def test_edge_format_mismatch_rejected(self, tmp_path: Path) -> None:
-        """src.out вне dst.accepts — несовместимое ребро."""
-        bytes_contract = StageContract(
-            accepts=frozenset(), out=StreamFormat.BYTES, result=SrcTrailer
-        )
-        payload_dir = _write_payload(tmp_path, "bytes_src", _SRC_PAYLOAD)
-        registry = StageRegistry(
-            {
-                "bytes_src": _stage_def(payload_dir, bytes_contract),
-                "sink": _sink_def(tmp_path),
-            }
-        )
-        runner = _runner(registry)
-
-        spec = WorkflowSpec.parse(
-            {
-                "nodes": [
-                    {"id": "a", "tool": "bytes_src", "args": {"chunks": 1}},
-                    {"id": "b", "tool": "sink", "args": {}},
-                ],
-                "edges": [{"src": "a", "dst": "b"}],
-            }
-        )
-
-        with pytest.raises(WorkflowError, match="not accepted by destination"):
-            runner.run(spec)
-
     def test_fd_budget_checked_before_pipes(self, tmp_path: Path) -> None:
         """Нехватка RLIMIT_NOFILE — внятная ошибка валидации, не сбой os.pipe()."""
         registry = StageRegistry(
@@ -827,13 +917,86 @@ class TestChainAndFanout:
 
         assert a.chunks == 128
         assert b.got == 128 * CHUNK
-        assert b.fmt == StreamFormat.TEXT.value
 
         assert outcome.outcome_of("a").exit_code == 0
         assert outcome.outcome_of("b").exit_code == 0
 
         # промежуточный поток в итог не попадает: только квитанции стадий
         assert set(outcome.trailers) == {"a", "b"}
+
+        _assert_fds_restored(baseline)
+
+    def test_edge_from_stage_without_product_is_empty(self, tmp_path: Path) -> None:
+        """Узел без объявленного продукта тоже кормит ребро: приёмник видит EOF."""
+        registry = StageRegistry({"sink": _sink_def(tmp_path)})
+        runner = _runner(registry)
+
+        baseline = _open_fd_count()
+
+        spec = WorkflowSpec.parse(
+            {
+                "nodes": [
+                    {"id": "a", "tool": "sink", "args": {}, "stdin": "seed"},
+                    {"id": "b", "tool": "sink", "args": {}},
+                ],
+                "edges": [{"src": "a", "dst": "b"}],
+            }
+        )
+        outcome = runner.run(spec)
+
+        assert outcome.trailer("a", SinkTrailer).got == len("seed")
+        assert outcome.trailer("b", SinkTrailer).got == 0
+
+        assert outcome.outcome_of("a").exit_code == 0
+        assert outcome.outcome_of("b").exit_code == 0
+
+        _assert_fds_restored(baseline)
+
+    def test_edge_into_stage_that_never_reads_is_a_success(
+        self, tmp_path: Path
+    ) -> None:
+        """Ребро ведёт в любой узел: непрочитанный вход — не сбой графа.
+
+        Источник упирается в буфер ребра и уходит по SIGPIPE; здоровый
+        потребитель делает rc 141 успехом по общему правилу.
+        """
+        registry = StageRegistry({"src": _src_def(tmp_path), "ok": _ok_def(tmp_path)})
+        runner = _runner(registry)
+
+        baseline = _open_fd_count()
+
+        spec = WorkflowSpec.parse(
+            {
+                "nodes": [
+                    {"id": "a", "tool": "src", "args": {"chunks": 128}},
+                    {"id": "b", "tool": "ok", "args": {}},
+                ],
+                "edges": [{"src": "a", "dst": "b"}],
+            }
+        )
+        outcome = runner.run(spec)
+
+        assert outcome.trailer("b", OkTrailer).ok is True
+
+        assert outcome.outcome_of("a").exit_code == 141
+        assert outcome.outcome_of("b").exit_code == 0
+
+        _assert_fds_restored(baseline)
+
+    def test_stdin_literal_is_allowed_for_any_stage(self, tmp_path: Path) -> None:
+        """Литерал stdin подаётся и узлу, который поток не читает."""
+        registry = StageRegistry({"ok": _ok_def(tmp_path)})
+        runner = _runner(registry)
+
+        baseline = _open_fd_count()
+
+        spec = WorkflowSpec.parse(
+            {"nodes": [{"id": "a", "tool": "ok", "args": {}, "stdin": "seed"}]}
+        )
+        outcome = runner.run(spec)
+
+        assert outcome.trailer("a", OkTrailer).ok is True
+        assert outcome.outcome_of("a").exit_code == 0
 
         _assert_fds_restored(baseline)
 
@@ -868,9 +1031,7 @@ class TestChainAndFanout:
         _assert_fds_restored(baseline)
 
     def test_failing_consumer_fails_graph(self, tmp_path: Path) -> None:
-        bad_contract = StageContract(
-            accepts=frozenset({StreamFormat.TEXT}), out=None, result=EmptyTrailer
-        )
+        bad_contract = StageContract(out=None, result=EmptyTrailer)
         bad_dir = _write_payload(tmp_path, "bad_sink", _BAD_SINK_PAYLOAD)
         registry = StageRegistry(
             {
@@ -906,9 +1067,7 @@ class TestChainAndFanout:
     def test_fanout_survives_one_departed_consumer(self, tmp_path: Path) -> None:
         """EPIPE источнику — только после ухода всех потребителей веера: второй
         потребитель дочитывает весь поток, источник заканчивает rc 0."""
-        head_contract = StageContract(
-            accepts=frozenset({StreamFormat.TEXT}), out=None, result=HeadTrailer
-        )
+        head_contract = StageContract(out=None, result=HeadTrailer)
         head_dir = _write_payload(tmp_path, "head", _HEAD_PAYLOAD)
         registry = StageRegistry(
             {
@@ -945,9 +1104,7 @@ class TestChainAndFanout:
 
     def test_bytes_out_mismatch_fails_stage(self, tmp_path: Path) -> None:
         """Конверт врёт про bytes_out при rc 0 — сверка с насосом валит граф."""
-        liar_contract = StageContract(
-            accepts=frozenset(), out=StreamFormat.TEXT, result=SrcTrailer
-        )
+        liar_contract = StageContract(out=StreamFormat.TEXT, result=SrcTrailer)
         liar_dir = _write_payload(tmp_path, "liar", _LIAR_PAYLOAD)
         registry = StageRegistry(
             {
@@ -978,14 +1135,93 @@ class TestChainAndFanout:
 
 @needs_bwrap
 @needs_userns
+class TestByteTransparency:
+    """По ребру текут сырые байты: путь данных ничего не декодирует."""
+
+    @staticmethod
+    def _binary_src(tmp_path: Path) -> StageDef:
+        contract = StageContract(out=StreamFormat.BYTES, result=BinarySrcTrailer)
+        payload_dir = _write_payload(tmp_path, "bin_src", _BINARY_SRC_PAYLOAD)
+
+        return _stage_def(payload_dir, contract)
+
+    def test_binary_stream_survives_the_edge_byte_for_byte(
+        self, tmp_path: Path
+    ) -> None:
+        """Поток с 0x80..0xFF и рваным utf-8 приходит с тем же sha256."""
+        sink_contract = StageContract(out=None, result=BinarySinkTrailer)
+        sink_dir = _write_payload(tmp_path, "bin_sink", _BINARY_SINK_PAYLOAD)
+        registry = StageRegistry(
+            {
+                "bin_src": self._binary_src(tmp_path),
+                "bin_sink": _stage_def(sink_dir, sink_contract),
+            }
+        )
+        runner = _runner(registry)
+
+        baseline = _open_fd_count()
+
+        spec = WorkflowSpec.parse(
+            {
+                "nodes": [
+                    {"id": "a", "tool": "bin_src", "args": {"frames": 32}},
+                    {"id": "b", "tool": "bin_sink", "args": {}},
+                ],
+                "edges": [{"src": "a", "dst": "b"}],
+            }
+        )
+        outcome = runner.run(spec)
+
+        sent = outcome.trailer("a", BinarySrcTrailer)
+        got = outcome.trailer("b", BinarySinkTrailer)
+
+        assert got.size == sent.size
+        assert got.digest == sent.digest
+
+        # данные заведомо ломаются любым decode: поток дошёл сырым
+        assert got.utf8 is False
+
+        _assert_fds_restored(baseline)
+
+    def test_garbage_format_fails_the_stage_and_the_graph(self, tmp_path: Path) -> None:
+        """Мусорный для приёмника поток отвергается рантаймом, а не валидацией."""
+        json_contract = StageContract(out=None, result=EmptyTrailer)
+        json_dir = _write_payload(tmp_path, "json_sink", _JSON_SINK_PAYLOAD)
+        registry = StageRegistry(
+            {
+                "bin_src": self._binary_src(tmp_path),
+                "json_sink": _stage_def(json_dir, json_contract),
+            }
+        )
+        runner = _runner(registry)
+
+        baseline = _open_fd_count()
+
+        spec = WorkflowSpec.parse(
+            {
+                "nodes": [
+                    {"id": "a", "tool": "bin_src", "args": {"frames": 2}},
+                    {"id": "b", "tool": "json_sink", "args": {}},
+                ],
+                "edges": [{"src": "a", "dst": "b"}],
+            }
+        )
+
+        with pytest.raises(WorkflowError, match="stage b exited with code 4"):
+            runner.run(spec)
+
+        _assert_stages_gone()
+        _assert_fds_restored(baseline)
+
+
+@needs_bwrap
+@needs_userns
 class TestSigpipeRule:
     """rc 141 источника: успех при ушедшем здоровом потребителе, иначе ошибка."""
 
     @staticmethod
     def _head_registry(tmp_path: Path, script: str, name: str) -> StageRegistry:
-        contract = StageContract(
-            accepts=frozenset({StreamFormat.TEXT}), out=None, result=HeadTrailer
-        )
+        contract = StageContract(out=None, result=HeadTrailer)
         payload_dir = _write_payload(tmp_path, name, script)
 
         return StageRegistry(
@@ -1055,7 +1291,7 @@ class TestGraphShutdown:
 
     @staticmethod
     def _nap_registry(tmp_path: Path, sync: Path) -> StageRegistry:
-        contract = StageContract(accepts=frozenset(), out=None, result=OkTrailer)
+        contract = StageContract(out=None, result=OkTrailer)
         payload_dir = _write_payload(tmp_path, "nap", _NAP_PAYLOAD)
         binds = (f"{sync}:/sync",)
 
@@ -1196,10 +1432,10 @@ class TestMountGroup:
         """4 MiB между стадиями группы текут ребром одновременно на одном
         монтировании: сериализация на flock дала бы дедлок, не результат."""
         writer_contract = StageContract(
-            accepts=frozenset(), out=StreamFormat.TEXT, result=SentTrailer
+            out=StreamFormat.TEXT, result=SentTrailer
         )
         reader_contract = StageContract(
-            accepts=frozenset({StreamFormat.TEXT}), out=None, result=GotMarkerTrailer
+            out=None, result=GotMarkerTrailer
         )
         image_kw = self._image_kw(tmp_path, template)
         registry = StageRegistry(
@@ -1248,7 +1484,7 @@ class TestMountGroup:
     ) -> None:
         """Сеть группы — OR стадий, изоляция остаётся per-stage: безсетевой
         стадии вложенный bwrap добавляет --unshare-net."""
-        contract = StageContract(accepts=frozenset(), out=None, result=IfaceTrailer)
+        contract = StageContract(out=None, result=IfaceTrailer)
         payload_dir = _write_payload(tmp_path, "iface", _IFACE_PAYLOAD)
         registry = StageRegistry(
             {
@@ -1289,8 +1525,8 @@ class TestMountGroup:
         sync = tmp_path / "sync"
         sync.mkdir(exist_ok=True)
 
-        nap_contract = StageContract(accepts=frozenset(), out=None, result=OkTrailer)
-        ok_contract = StageContract(accepts=frozenset(), out=None, result=OkTrailer)
+        nap_contract = StageContract(out=None, result=OkTrailer)
+        ok_contract = StageContract(out=None, result=OkTrailer)
         image_kw = self._image_kw(tmp_path, template, rw_binds=(f"{sync}:/sync",))
         registry = StageRegistry(
             {
@@ -1423,7 +1659,7 @@ class TestMountGroupCgroup:
         sync = tmp_path / "sync"
         sync.mkdir(exist_ok=True)
 
-        contract = StageContract(accepts=frozenset(), out=None, result=OkTrailer)
+        contract = StageContract(out=None, result=OkTrailer)
         image_kw: dict[str, Any] = {
             "rw_images": (f"{tmp_path}/ws/shared.ext4:/workspace",),
             "image_template": str(template),

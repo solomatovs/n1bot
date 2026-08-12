@@ -27,7 +27,7 @@ import os
 import sys
 from abc import abstractmethod
 from collections.abc import Coroutine, Mapping
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from typing import (
     Any,
     BinaryIO,
@@ -52,6 +52,7 @@ from boba.toolkit.channels import (
 from boba.toolkit.workflow import EmptyTrailer
 
 __all__ = [
+    "FailureKind",
     "PayloadChannels",
     "PayloadEntry",
     "PayloadError",
@@ -63,6 +64,15 @@ __all__ = [
 ]
 
 TModel = TypeVar("TModel", bound=BaseModel)
+
+
+class FailureKind(StrEnum):
+    """Виды отказов конверта tool_result: словарь kind'ов общий для инструментов."""
+
+    INVALID_REQUEST = "invalid_request"
+    UNAVAILABLE = "database_unavailable"
+    SQL_FAILED = "sql_failed"
+    NO_INPUT = "no_input"
 
 
 class PayloadLogFormatter(logging.Formatter):
@@ -164,7 +174,7 @@ class PayloadEntry:
     """Разбор запроса из tool_args, диспетчеризация, квитанция в tool_result."""
 
     BUILTIN_EXPECTED: ClassVar[Mapping[type[Exception], str]] = {
-        ValidationError: "invalid_request",
+        ValidationError: FailureKind.INVALID_REQUEST,
     }
     """Ожидаемое для любого payload'а: данные не по контракту."""
 
@@ -281,8 +291,6 @@ class PayloadChannels:
     """
 
     ENCODING: ClassVar[str] = "utf-8"
-
-    INVALID_REQUEST: ClassVar[str] = "invalid_request"
 
     OP_KEY: ClassVar[str] = "op"
     """Поле запроса, по которому реестр операций выбирает модель."""
@@ -461,7 +469,7 @@ class PayloadChannels:
         """
         Битый запрос — ожидаемый отказ: конверт в tool_result, выход без трейсбека
         """
-        self.write_error(self.INVALID_REQUEST, message)
+        self.write_error(FailureKind.INVALID_REQUEST, message)
 
         raise SystemExit(int(PayloadExit.FAILURE)) from cause
 

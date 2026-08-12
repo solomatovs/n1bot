@@ -315,9 +315,7 @@ class TestDegenerateGraphCall:
         fields.update(profile_kw)
 
         definition = StageDef(
-            contract=StageContract(
-                accepts=frozenset(), out=StreamFormat.TEXT, result=Trailer
-            ),
+            contract=StageContract(out=StreamFormat.TEXT, result=Trailer),
             profile=SandboxProfile.model_validate(fields),
             entry=PAYLOAD_ENTRY,
             request=ProbeRequest,

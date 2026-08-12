@@ -30,7 +30,6 @@ from boba.toolkit.workflow import RequestArgs, StageContract, StageNode
 __all__ = [
     "PgCopyEnricher",
     "PgCopyNode",
-    "PgCopyOut",
     "PgQueryEnricher",
     "PgQueryNode",
     "PgStages",
@@ -75,22 +74,11 @@ class PgCopyEnricher:
         request = PgCopyRequest(
             op=PgCopyRequest.OP,
             connection=connection,
+            direction=node_args.direction,
             sql=node_args.sql,
-            copy_format=node_args.copy_format,
         )
 
         return RequestArgs.of(request)
-
-
-class PgCopyOut:
-    """Формат продукта pg_copy — функция валидированного запроса узла."""
-
-    def __call__(self, request: BaseModel) -> StreamFormat | None:
-        if not isinstance(request, PgCopyRequest):
-            msg = f"pg_copy out resolver got {type(request).__name__}"
-            raise TypeError(msg)
-
-        return request.copy_format.stream
 
 
 class PgQueryNode:
@@ -100,7 +88,6 @@ class PgQueryNode:
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.pg.payload")
     REQUEST: ClassVar[type[BaseModel]] = PgQueryRequest
     CONTRACT: ClassVar[StageContract] = StageContract(
-        accepts=frozenset(),
         out=StreamFormat.NDJSON,
         result=SqlQueryTrailer,
     )
@@ -111,25 +98,20 @@ class PgQueryNode:
 
 
 class PgCopyNode:
-    """Узел pg_copy: выгрузка COPY в канал данных, формат — аргумент узла."""
+    """Узел pg_copy: COPY в обе стороны, направление объявлено в args узла."""
 
     NAME: ClassVar[str] = PgStage.COPY
     ENTRY: ClassVar[tuple[str, ...]] = PgQueryNode.ENTRY
     REQUEST: ClassVar[type[BaseModel]] = PgCopyRequest
     CONTRACT: ClassVar[StageContract] = StageContract(
-        accepts=frozenset(),
-        out=StreamFormat.TEXT,
+        out=StreamFormat.BYTES,
         result=PgCopyTrailer,
     )
-    """out — значение по умолчанию: реальный формат разрешает PgCopyOut."""
+    """out — декларация: содержимое канала задаёт оператор, его не разбирают."""
 
     @staticmethod
     def enricher(cfg: PgExecutorConfig) -> PgCopyEnricher:
         return PgCopyEnricher(cfg)
-
-    @staticmethod
-    def out_of() -> PgCopyOut:
-        return PgCopyOut()
 
 
 class PgStages:
@@ -151,7 +133,6 @@ class PgStages:
             entry=PgCopyNode.ENTRY,
             request=PgCopyNode.REQUEST,
             enrich=PgCopyNode.enricher(cfg),
-            out_of=PgCopyNode.out_of(),
         )
 
         return nodes

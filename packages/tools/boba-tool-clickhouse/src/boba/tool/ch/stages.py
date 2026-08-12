@@ -86,7 +86,6 @@ class ChQueryNode:
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.ch.payload")
     REQUEST: ClassVar[type[BaseModel]] = ChQueryRequest
     CONTRACT: ClassVar[StageContract] = StageContract(
-        accepts=frozenset(),
         out=StreamFormat.NDJSON,
         result=ChQueryTrailer,
     )
@@ -103,7 +102,6 @@ class ChInsertNode:
     ENTRY: ClassVar[tuple[str, ...]] = ChQueryNode.ENTRY
     REQUEST: ClassVar[type[BaseModel]] = ChInsertRequest
     CONTRACT: ClassVar[StageContract] = StageContract(
-        accepts=ChInsertRequest.ACCEPTS,
         out=None,
         result=ChInsertTrailer,
     )

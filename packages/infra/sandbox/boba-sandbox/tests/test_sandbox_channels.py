@@ -394,9 +394,8 @@ def _contract(
     *,
     out: StreamFormat | None,
     result: type[BaseModel],
-    accepts: frozenset[StreamFormat] = frozenset(),
 ) -> StageContract:
-    return StageContract(accepts=accepts, out=out, result=result)
+    return StageContract(out=out, result=result)
 
 
 def _run_stage(  # noqa: PLR0913
@@ -521,11 +520,7 @@ class TestChannelSeparation:
         with caplog.at_level(logging.WARNING, logger="boba.sandbox.runner"):
             outcome = _run_stage(
                 profile,
-                contract=_contract(
-                    out=StreamFormat.TEXT,
-                    result=SmokeTrailer,
-                    accepts=frozenset({StreamFormat.TEXT}),
-                ),
+                contract=_contract(out=StreamFormat.TEXT, result=SmokeTrailer),
                 args={"note": "hello"},
                 stdin="12345",
                 stdout=stdout_sink,
@@ -957,7 +952,8 @@ class TestStageShutdown:
         elapsed = time.monotonic() - started
 
         assert not thread.is_alive()
-        assert elapsed < 5.0, f"cancel must wake the pump immediately, took {elapsed:.2f}s"
+        woken = f"cancel must wake the pump immediately, took {elapsed:.2f}s"
+        assert elapsed < 5.0, woken
 
         assert len(errors) == 1
         assert isinstance(errors[0], ToolStopped)
@@ -986,7 +982,8 @@ class TestStageShutdown:
             )
 
         elapsed = time.monotonic() - started
-        assert elapsed < 20.0, f"deadline must fire around timeout_sec, took {elapsed:.2f}s"
+        fired = f"deadline must fire around timeout_sec, took {elapsed:.2f}s"
+        assert elapsed < 20.0, fired
 
         _assert_stage_gone(Marker.TIMEOUT.encode())
         _assert_fds_restored(baseline)

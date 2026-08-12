@@ -176,9 +176,7 @@ class TestLiveStreamTap:
         fields["ro_binds"] = tuple(binds)
 
         definition = StageDef(
-            contract=StageContract(
-                accepts=frozenset(), out=StreamFormat.TEXT, result=Trailer
-            ),
+            contract=StageContract(out=StreamFormat.TEXT, result=Trailer),
             profile=SandboxProfile.model_validate(fields),
             entry=PAYLOAD_ENTRY,
             request=ProbeRequest,

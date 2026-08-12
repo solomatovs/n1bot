@@ -41,7 +41,6 @@ class ChartCaller:
     def stages(cls) -> Mapping[str, StageNode]:
         """Узлы пакета для реестра стадий; профиль подставляет приложение."""
         contract = StageContract(
-            accepts=frozenset(),
             out=None,
             result=ValidateFigureAnswer,
         )
