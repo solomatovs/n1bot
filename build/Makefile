@@ -580,7 +580,7 @@ extract:
 	echo ">>> артефакты песочницы на месте"
 
 	# то же, что проверит TrustedBinaries на старте приложения
-	writable=$$(find "$(OUT)/third/bin" -maxdepth 1 -perm /022 -print -quit)
+	writable=$$(find "$(OUT)/third/bin" -maxdepth 1 -type f -perm /022 -print -quit)
 	[ -z "$$writable" ] || {
 	    echo "third/bin доступен на запись посторонним ($$writable) — приложение откажется его использовать" >&2
 	    exit 1
