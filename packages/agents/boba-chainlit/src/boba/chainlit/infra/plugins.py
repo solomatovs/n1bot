@@ -31,7 +31,7 @@ from boba.chainlit.domain.session import (
     current_user_id,
     current_user_roles,
 )
-from boba.chainlit.rendering.stream_view import StageTools
+from boba.chainlit.domain.stages import StageTools
 from boba.sandbox import SandboxCaller, SandboxToolConfig, has_bwrap
 from boba.sandbox.journal import StreamJournalHub
 from boba.sandbox.profile import SandboxProfile
@@ -61,7 +61,7 @@ from boba.tool.shell import BashStage, build_bash_tool
 from boba.tool.web import WebGrepConfig, WebStages, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
-from boba.toolkit.workflow import StageContract, StageNode
+from boba.toolkit.workflow import StageNode
 
 __all__ = [
     "PluginBuild",
@@ -522,18 +522,6 @@ def _stage_tools(section: ToolSection, built: list[BaseTool]) -> list[str]:
     return names
 
 
-def _bind_panel(registry: StageRegistry, stage_tools: Iterable[str]) -> None:
-    """Контракты узлов и инструменты со стадиями — панели.
-
-    По ним панель выбирает канал журнала и ставит кнопку вывода на шаг.
-    """
-    contracts: dict[str, StageContract] = {}
-    for name in registry.names():
-        contracts[name] = registry.def_of(name).contract
-
-    StageTools.configure(stage_tools, contracts)
-
-
 def _build_section(section: ToolSection, shared: LauncherFactory) -> list[BaseTool]:
     """Инструменты секции, оставленные allowlist'ом tools = {…}."""
     if section.sandbox_missing():
@@ -626,7 +614,8 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
         _load_workflow_tools(raw_config, tools, roles_by_tool, caller, registry)
     )
 
-    _bind_panel(registry, stage_tools)
+    # панель ставит кнопку вывода на шаги этих инструментов
+    StageTools.configure(stage_tools)
 
     access = ToolAccess(roles_by_tool)
     node_access.bind(access)

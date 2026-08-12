@@ -12,7 +12,7 @@ from chainlit.user import PersistedUser
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, StructuredTool
 
-from boba.chainlit.agent.tools.run_log import ToolRunLogger
+from boba.chainlit.agent.tools.run_log import ToolRunError, ToolRunLogger
 from boba.sandbox.diagnostics import FailureFacts
 from boba.sandbox.runner import ToolCallContext
 from boba.sandbox.workflow import WorkflowRunner
@@ -123,6 +123,34 @@ class TestToolRunLogger:
         self._in_session(lambda: tool.invoke(self._call({"query": "q"})))
 
         assert seen == [CALL_ID]
+
+    def test_unaddressable_call_id_is_refused(self) -> None:
+        """Id вызова из протокола провайдера едет в имя файла журнала."""
+        seen: list[str] = []
+
+        def probe(query: str) -> str:
+            seen.append("ran")
+            return "ok"
+
+        tool = self._tool(probe)
+        ToolRunLogger.guard_all([tool])
+
+        dotted = self._call({"query": "q"}, call_id="call_uKx7pB2qX.0")
+
+        with pytest.raises(ToolRunError):
+            self._in_session(lambda: tool.invoke(dotted))
+
+        assert seen == []
+
+    def test_call_without_an_id_is_refused(self) -> None:
+        tool = self._tool(lambda query: "done")
+        ToolRunLogger.guard_all([tool])
+
+        func = tool.func
+        assert func is not None
+
+        with pytest.raises(ToolRunError):
+            self._in_session(lambda: func(query="q"))
 
     def test_call_outside_session_keeps_caller_address(self) -> None:
         seen: list[str] = []

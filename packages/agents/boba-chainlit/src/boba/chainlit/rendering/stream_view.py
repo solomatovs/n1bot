@@ -2,10 +2,11 @@
 
 Исходящие каналы стадий пишет журнал песочницы; панель их только читает —
 окнами по ходу вызова и после него, целиком файл во фронт не поднимается.
-Какой канал показать, решает объявленный формат продукта узла: текстовый
-продукт читается из журнала tool_payload, узел без продукта — из tool_stdout,
-бинарный отдаётся скачиванием. Живой вызов тянет насос: журнал будит
-подписчика по мере записи, остальные каналы доступны скачиванием.
+Какой канал показать, решает объявленный формат продукта узла — его пишет в
+журнал сама стадия: текстовый продукт читается из журнала tool_payload, узел
+без продукта — из tool_stdout, бинарный отдаётся скачиванием. Живой вызов
+тянет насос: журнал будит подписчика по мере записи, остальные каналы
+доступны скачиванием.
 
 Ошибки: наружу ничего не выходит; недоступный журнал показывается в панели
 объяснением, сбой чтения гасится с записью в лог.
@@ -17,13 +18,14 @@ import asyncio
 import itertools
 import logging
 from abc import abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from boba.chainlit.domain.keys import StreamUrl
+from boba.chainlit.domain.stages import StageView
 from boba.chainlit.rendering.canvas import (
     CanvasContent,
     CanvasKind,
@@ -37,14 +39,11 @@ from boba.sandbox.journal import (
     StreamJournalHub,
     StreamSlice,
 )
-from boba.toolkit.channels import Channel, StreamFormat, StreamKey
-from boba.toolkit.workflow import StageContract
+from boba.toolkit.channels import Channel, StreamKey
 
 __all__ = [
     "CanvasChannel",
     "SidebarChannel",
-    "StageTools",
-    "StageView",
     "StreamAction",
     "StreamNote",
     "StreamScreen",
@@ -91,79 +90,6 @@ class StreamNote(StrEnum):
             return piece.note
 
         return str(cls.FINISHED)
-
-
-class StageView(StrEnum):
-    """Как панель показывает продукт узла: канал журнала и способ показа."""
-
-    PAYLOAD = "payload"
-    """Текстовый продукт: журнал канала данных."""
-    STDOUT = "stdout"
-    """Продукта нет: общий вывод стадии."""
-    DOWNLOAD = "download"
-    """Бинарный продукт: показывать нечем, файл отдаётся скачиванием."""
-
-    @property
-    def channel(self) -> Channel:
-        """Канал журнала, который открывает панель."""
-        if self is StageView.STDOUT:
-            return Channel.TOOL_STDOUT
-
-        return Channel.TOOL_PAYLOAD
-
-    @classmethod
-    def of(cls, out: StreamFormat | None) -> StageView:
-        """Объявленный формат продукта узла -> способ показа."""
-        if out is None:
-            return cls.STDOUT
-
-        if out is StreamFormat.BYTES:
-            return cls.DOWNLOAD
-
-        return cls.PAYLOAD
-
-
-class StageTools:
-    """Инструменты со стадиями песочницы и способ показа продукта их узлов.
-
-    Реестр стадий связывается с лентой при сборке инструментов: у шага
-    инструмента со стадиями есть журнал, а контракт узла говорит, какой канал
-    показывать. Стадия вне реестра — узел графа workflow или mount-группа —
-    показывается общим выводом стадии.
-    """
-
-    _TOOLS: ClassVar[frozenset[str]] = frozenset()
-    _VIEWS: ClassVar[Mapping[str, StageView]] = {}
-
-    @classmethod
-    def configure(
-        cls, tools: Iterable[str], contracts: Mapping[str, StageContract]
-    ) -> None:
-        views: dict[str, StageView] = {}
-        for stage, contract in contracts.items():
-            views[stage] = StageView.of(contract.out)
-
-        cls._TOOLS = frozenset(tools)
-        cls._VIEWS = views
-
-    @classmethod
-    def journalled(cls, tool_name: str) -> bool:
-        """Вызов инструмента идёт стадиями песочницы: у его шага есть журнал."""
-        return tool_name in cls._TOOLS
-
-    @classmethod
-    def view_of(cls, stage: str) -> StageView:
-        view = cls._VIEWS.get(stage)
-        if view is None:
-            return StageView.STDOUT
-
-        return view
-
-    @classmethod
-    def reset(cls) -> None:
-        """Сброс: пользуются тесты, приложению это не нужно."""
-        cls._TOOLS = frozenset()
-        cls._VIEWS = {}
 
 
 class StreamTarget(BaseModel):
@@ -312,7 +238,26 @@ class ToolStreams:
         if key is None:
             return None
 
-        return StreamTarget(key=key, view=StageTools.view_of(key.stage))
+        return StreamTarget(key=key, view=cls.view_of(key))
+
+    @classmethod
+    def view_of(cls, key: StreamKey) -> StageView:
+        """Способ показа канала: формат продукта стадии записан в её журнале.
+
+        Реестр узлов тут не годится: у графа стадия — это id узла из спеки
+        вызывающего, а не имя инструмента реестра.
+        """
+        journal = cls._journal()
+        if journal is None:
+            return StageView.STDOUT
+
+        try:
+            out = journal.out_of(key)
+        except JournalError:
+            logger.warning("stream journal meta read failed: %s", key.rel_meta())
+            return StageView.STDOUT
+
+        return StageView.of(out)
 
     @classmethod
     def live_call(
@@ -397,7 +342,7 @@ class ToolStreams:
 
         target: StreamTarget | None = None
         for key in keys:
-            view = StageTools.view_of(key.stage)
+            view = cls.view_of(key)
             if key.channel is not view.channel:
                 continue
 
@@ -437,6 +382,56 @@ class StreamScreen:
     _PUMPS: ClassVar[dict[str, asyncio.Task[None]]] = {}
     _REVISIONS: ClassVar[itertools.count[int]] = itertools.count(1)
     """Сквозной номер показа: едет в nonce, по нему фронт видит смену props."""
+
+    @classmethod
+    async def open(
+        cls,
+        user_id: str,
+        thread_id: str,
+        request: StreamShowRequest,
+        channel: CanvasChannel,
+    ) -> None:
+        """Показ канала вызова: живой — насосом с хвоста, записанный — окном.
+
+        Кнопка шага адрес не присылает и про follow ничего не знает:
+        работающий вызов она открывает слежением за хвостом, законченный —
+        окном с начала файла. Панель адрес присылает и решает сама: «в
+        начало» приходит без follow и насос не поднимает даже на живом
+        вызове.
+        """
+        target = ToolStreams.target(user_id, thread_id, request)
+        if target is None:
+            cls.leave(thread_id)
+            await cls.gone(request.call_id, channel)
+            return
+
+        if target.view is StageView.DOWNLOAD:
+            cls.leave(thread_id)
+            await cls.binary(target.key, channel)
+            return
+
+        live = ToolStreams.live_call(user_id, thread_id, request.call_id)
+
+        follow = request.follow
+        if not request.stage:
+            follow = live is not None
+
+        if follow and live is not None:
+            await cls.show(thread_id, target, channel)
+            return
+
+        cls.leave(thread_id)
+
+        offset = 0
+        if follow:
+            offset = ToolStreams.TAIL
+
+        piece = ToolStreams.slice_at(target.key, offset)
+        if piece is None:
+            await cls.gone(request.call_id, channel)
+            return
+
+        await cls.recorded(target.key, piece, channel, follow=follow)
 
     @classmethod
     async def show(
@@ -579,40 +574,10 @@ class StreamScreen:
 async def show_stream_action(
     user_id: str, thread_id: str, payload: Mapping[str, object]
 ) -> None:
-    """Показ канала вызова: по умолчанию окно с начала файла; follow — к концу,
-    у живого вызова с насосом-слежением за хвостом."""
+    """Действие фронта: показать канал вызова в боковой панели канваса."""
     request = StreamShowRequest.model_validate(payload)
-    channel = SidebarChannel()
 
-    target = ToolStreams.target(user_id, thread_id, request)
-    if target is None:
-        StreamScreen.leave(thread_id)
-        await StreamScreen.gone(request.call_id, channel)
-        return
-
-    if target.view is StageView.DOWNLOAD:
-        StreamScreen.leave(thread_id)
-        await StreamScreen.binary(target.key, channel)
-        return
-
-    if request.follow:
-        live = ToolStreams.live_call(user_id, thread_id, request.call_id)
-        if live is not None:
-            await StreamScreen.show(thread_id, target, channel)
-            return
-
-    StreamScreen.leave(thread_id)
-
-    offset = 0
-    if request.follow:
-        offset = ToolStreams.TAIL
-
-    piece = ToolStreams.slice_at(target.key, offset)
-    if piece is None:
-        await StreamScreen.gone(request.call_id, channel)
-        return
-
-    await StreamScreen.recorded(target.key, piece, channel, follow=request.follow)
+    await StreamScreen.open(user_id, thread_id, request, SidebarChannel())
 
 
 async def window_stream_action(

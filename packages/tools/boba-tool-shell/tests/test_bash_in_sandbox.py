@@ -110,6 +110,25 @@ class TestBashFacade:
 
         assert _payload(result)["stdout"] == "данные\n"
 
+    def test_stderr_reaches_the_model_from_its_own_journal(self) -> None:
+        """Ответ собирается из голов двух каналов: продукта и tool_stderr."""
+        run = BashRun(_caller(), MAX_HEAD)
+
+        result = run.run("echo данные; echo шум >&2", "")
+
+        payload = _payload(result)
+        assert payload["stderr"] == "шум\n"
+        assert payload["truncated_stderr"] is False
+
+    def test_a_failed_command_reports_its_stderr(self) -> None:
+        run = BashRun(_caller(), MAX_HEAD)
+
+        result = run.run("echo причина >&2; exit 4", "")
+
+        payload = _payload(result)
+        assert result.ok is False
+        assert payload["stderr"] == "причина\n"
+
 
 @SandboxMarks.NEEDS_SANDBOX
 @SandboxMarks.NEEDS_USERNS

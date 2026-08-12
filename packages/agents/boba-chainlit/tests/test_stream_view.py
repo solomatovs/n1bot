@@ -2,9 +2,10 @@
 
 Журнал настоящий: файлы пишет writer-поток песочницы, панель их читает — как
 в приложении, только вместо стадии в канал пишет тест. Ключевые инварианты:
-канал показа выбирается по контракту узла, живой вызов будит насос из потока
-журнала, окна остаются фиксированного размера, а чужой пользователь не читает
-ни окно, ни файл.
+канал показа выбирается по формату продукта, объявленному самой стадией,
+живой вызов будит насос из потока журнала кадрами по ходу записи, окна
+остаются фиксированного размера, а чужой пользователь не читает ни окно, ни
+файл.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
 
+from boba.chainlit.domain.stages import StageTools, StageView
 from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -30,8 +32,6 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
 )
 from boba.chainlit.rendering.stream_view import (
-    StageTools,
-    StageView,
     StreamNote,
     StreamScreen,
     StreamShowRequest,
@@ -47,7 +47,6 @@ from boba.sandbox.journal import (
 )
 from boba.sandbox.runner import ToolCallContext
 from boba.toolkit.channels import Channel, StreamFormat
-from boba.toolkit.workflow import EmptyTrailer, StageContract
 
 THREAD = "33333333-3333-3333-3333-333333333333"
 USER = "7"
@@ -56,12 +55,11 @@ TOOL_NAME = "fake_bash"
 TEXT_STAGE = "fake_bash"
 PLAIN_STAGE = "fake_save"
 BINARY_STAGE = "fake_export"
+GRAPH_STAGE = "n1"
+"""id узла графа: реестру инструментов он неизвестен по устройству."""
 
-CONTRACTS = {
-    TEXT_STAGE: StageContract(out=StreamFormat.CSV, result=EmptyTrailer),
-    PLAIN_STAGE: StageContract(out=None, result=EmptyTrailer),
-    BINARY_STAGE: StageContract(out=StreamFormat.BYTES, result=EmptyTrailer),
-}
+TEXT_OUT = StreamFormat.CSV
+BINARY_OUT = StreamFormat.BYTES
 
 
 def _bin_dirs() -> list[str]:
@@ -86,7 +84,7 @@ def chainlit_context(tmp_path: Path) -> Iterator[None]:
     StreamJournalHub.configure(
         StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
     )
-    StageTools.configure([TOOL_NAME], CONTRACTS)
+    StageTools.configure([TOOL_NAME])
 
     yield
 
@@ -112,10 +110,14 @@ def opened(call_id: str = CALL_ID) -> CallJournal:
 
 
 def written(
-    call: CallJournal, stage: str, channel: Channel, data: bytes
+    call: CallJournal,
+    stage: str,
+    channel: Channel,
+    data: bytes,
+    out: StreamFormat | None,
 ) -> None:
     """Канал стадии, записанный целиком: sink закрывается своим EOF."""
-    sink = call.sink(stage, channel)
+    sink = call.sink(stage, channel, out)
     sink.feed(data)
     sink.close()
 
@@ -125,10 +127,11 @@ def recorded(
     channel: Channel = Channel.TOOL_PAYLOAD,
     body: bytes = b"output line\n",
     call_id: str = CALL_ID,
+    out: StreamFormat | None = TEXT_OUT,
 ) -> None:
     """Завершённый вызов: файлы дописаны, writer-поток остановлен."""
     call = opened(call_id)
-    written(call, stage, channel, body)
+    written(call, stage, channel, body, out)
     call.close("")
 
 
@@ -155,8 +158,8 @@ class TestChannelChoice:
 
     def test_stage_without_a_product_is_shown_from_stdout(self) -> None:
         call = opened()
-        written(call, PLAIN_STAGE, Channel.TOOL_STDOUT, b"saved\n")
-        written(call, PLAIN_STAGE, Channel.TOOL_PAYLOAD, b"")
+        written(call, PLAIN_STAGE, Channel.TOOL_STDOUT, b"saved\n", None)
+        written(call, PLAIN_STAGE, Channel.TOOL_PAYLOAD, b"", None)
         call.close("")
 
         target = target_of()
@@ -165,19 +168,43 @@ class TestChannelChoice:
         assert target.key.stage == PLAIN_STAGE
         assert target.key.channel is Channel.TOOL_STDOUT
 
-    def test_unknown_stage_falls_back_to_stdout(self) -> None:
+    def test_a_graph_node_shows_its_declared_product(self) -> None:
+        """id узла графа реестру неизвестен: формат приходит из журнала стадии."""
         call = opened()
-        written(call, "n1", Channel.TOOL_STDOUT, b"graph node\n")
-        written(call, "n1", Channel.TOOL_PAYLOAD, b"payload\n")
+        written(call, GRAPH_STAGE, Channel.TOOL_STDOUT, b"node log\n", TEXT_OUT)
+        written(call, GRAPH_STAGE, Channel.TOOL_PAYLOAD, b"a,b\n1,2\n", TEXT_OUT)
         call.close("")
 
         target = target_of()
 
         assert target is not None
-        assert target.key.channel is Channel.TOOL_STDOUT
+        assert target.key.stage == GRAPH_STAGE
+        assert target.key.channel is Channel.TOOL_PAYLOAD
+
+    def test_the_last_written_product_wins(self) -> None:
+        """Панель открывает продукт последней стадии, а не первой попавшейся."""
+        call = opened()
+        written(call, GRAPH_STAGE, Channel.TOOL_PAYLOAD, b"first,node\n", TEXT_OUT)
+        written(call, "n2", Channel.TOOL_PAYLOAD, b"second,node\n", TEXT_OUT)
+        call.close("")
+
+        target = target_of()
+
+        assert target is not None
+        assert target.key.stage == "n2"
+
+        piece = ToolStreams.slice_at(target.key, 0)
+
+        assert piece is not None
+        assert piece.text == "second,node\n"
 
     def test_binary_product_is_offered_for_download(self) -> None:
-        recorded(stage=BINARY_STAGE, channel=Channel.TOOL_PAYLOAD, body=b"\x00\x01")
+        recorded(
+            stage=BINARY_STAGE,
+            channel=Channel.TOOL_PAYLOAD,
+            body=b"\x00\x01",
+            out=BINARY_OUT,
+        )
 
         target = target_of()
         assert target is not None
@@ -197,6 +224,52 @@ class TestChannelChoice:
         assert target_of("no-such-call") is None
 
 
+class TestMountGroupJournal:
+    """Wrap-каналы mount-группы идут под id группы и открываются как обычные."""
+
+    GROUP: ClassVar[str] = "g1"
+    NOISE: ClassVar[bytes] = b"bwrap: mount ok\n"
+
+    def _recorded(self) -> None:
+        call = opened()
+        written(call, TEXT_STAGE, Channel.TOOL_PAYLOAD, b"a,b\n1,2\n", TEXT_OUT)
+        written(call, self.GROUP, Channel.WRAP_STDERR, self.NOISE, None)
+        call.close("")
+
+    def test_group_channel_is_addressable(self) -> None:
+        self._recorded()
+
+        request = StreamShowRequest.model_validate(
+            {
+                "call_id": CALL_ID,
+                "stage": self.GROUP,
+                "channel": Channel.WRAP_STDERR.value,
+            }
+        )
+        target = ToolStreams.target(USER, THREAD, request)
+
+        assert target is not None
+        assert target.key.stage == self.GROUP
+        assert target.key.channel is Channel.WRAP_STDERR
+        # группы в реестре узлов нет: показывается общим выводом, не скачиванием
+        assert target.view is StageView.STDOUT
+
+        piece = ToolStreams.slice_at(target.key, 0)
+
+        assert piece is not None
+        assert piece.text == self.NOISE.decode()
+
+    def test_the_button_opens_the_product_not_the_group(self) -> None:
+        """Кнопка шага знает только вызов: она открывает продукт узла."""
+        self._recorded()
+
+        target = target_of()
+
+        assert target is not None
+        assert target.key.stage == TEXT_STAGE
+        assert target.key.channel is Channel.TOOL_PAYLOAD
+
+
 class RecordingChannel:
     """Канал в тестах: копит снапшоты вместо доставки в панель."""
 
@@ -205,6 +278,25 @@ class RecordingChannel:
 
     async def push(self, content: CanvasContent) -> None:
         self.contents.append(content)
+
+
+class GatedChannel(RecordingChannel):
+    """Канал с воротами: открывает их на первом кадре с ожидаемой меткой.
+
+    Писатель ждёт ворот, прежде чем дописать хвост, поэтому кадр «всё разом в
+    конце» тест не проходит: до конца записи ворота никто не откроет.
+    """
+
+    def __init__(self, mark: str) -> None:
+        super().__init__()
+        self._mark = mark
+        self.gate = asyncio.Event()
+
+    async def push(self, content: CanvasContent) -> None:
+        await super().push(content)
+
+        if self._mark in content.text:
+            self.gate.set()
 
 
 class TestJournalOutlivesTheTurn:
@@ -242,7 +334,7 @@ class TestPump:
     CHUNK = b"x" * 1024
 
     def _writer(self, call: CallJournal) -> threading.Thread:
-        sink = call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD)
+        sink = call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD, TEXT_OUT)
 
         def write_all() -> None:
             for index in range(self.CHUNKS):
@@ -268,6 +360,43 @@ class TestPump:
         await asyncio.wait_for(task, timeout=10)
 
         return channel
+
+    HEAD: ClassVar[bytes] = b"HEAD-MARK,1\n"
+    TAIL: ClassVar[bytes] = b"TAIL-MARK,2\n"
+    GATE_SEC: ClassVar[float] = 10.0
+
+    def test_the_tail_is_pushed_while_the_channel_is_open(self) -> None:
+        """Кадр по ходу вызова: писатель дописывает хвост только после него."""
+
+        async def scenario() -> GatedChannel:
+            call = opened()
+            sink = call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD, TEXT_OUT)
+            sink.feed(self.HEAD)
+
+            target = target_of()
+            assert target is not None
+
+            channel = GatedChannel("HEAD-MARK")
+            task = await StreamScreen.show(THREAD, target, channel)
+
+            await asyncio.wait_for(channel.gate.wait(), timeout=self.GATE_SEC)
+            head_frames = len(channel.contents)
+
+            sink.feed(self.TAIL)
+            sink.close()
+            call.close("")
+            await asyncio.wait_for(task, timeout=self.GATE_SEC)
+
+            assert head_frames >= 1
+            for content in channel.contents[:head_frames]:
+                assert "TAIL-MARK" not in content.text
+
+            return channel
+
+        channel = run(scenario())
+
+        assert len(channel.contents) > 1
+        assert "TAIL-MARK" in channel.contents[-1].text
 
     def test_snapshots_stay_within_the_window(self) -> None:
         channel = run(self._pumped())
@@ -297,9 +426,9 @@ class TestPump:
     def test_show_replaces_the_previous_pump(self) -> None:
         async def scenario() -> tuple[asyncio.Task[None], asyncio.Task[None]]:
             first = opened("call-a")
-            written(first, TEXT_STAGE, Channel.TOOL_PAYLOAD, b"a")
+            written(first, TEXT_STAGE, Channel.TOOL_PAYLOAD, b"a", TEXT_OUT)
             second = opened("call-b")
-            second_sink = second.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD)
+            second_sink = second.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD, TEXT_OUT)
             second_sink.feed(b"b")
 
             first_target = target_of("call-a")
@@ -325,7 +454,7 @@ class TestPump:
     def test_leave_stops_the_pump(self) -> None:
         async def scenario() -> asyncio.Task[None]:
             call = opened()
-            call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD).feed(b"live")
+            call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD, TEXT_OUT).feed(b"live")
             target = target_of()
             assert target is not None
 
@@ -400,7 +529,7 @@ class TestWindowAction:
     def test_window_request_stops_the_pump(self) -> None:
         async def scenario() -> asyncio.Task[None]:
             call = opened()
-            call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD).feed(b"live data")
+            call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD, TEXT_OUT).feed(b"live data")
             target = target_of()
             assert target is not None
 
@@ -416,6 +545,53 @@ class TestWindowAction:
 
 class TestShowAction:
     """Кнопка вывода: живой вызов — насос, завершённый — окно из журнала."""
+
+    STEP_BUTTON: ClassVar[dict[str, Any]] = {"call_id": CALL_ID}
+    """Payload кнопки шага: адреса канала и follow в нём нет."""
+
+    @staticmethod
+    def _shown(payload: dict[str, Any], channel: RecordingChannel) -> Any:
+        request = StreamShowRequest.model_validate(payload)
+
+        return StreamScreen.open(USER, THREAD, request, channel)
+
+    def test_the_step_button_follows_a_live_call(self) -> None:
+        """Кнопка шага follow не присылает: живой вызов всё равно идёт насосом."""
+
+        async def scenario() -> GatedChannel:
+            call = opened()
+            sink = call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD, TEXT_OUT)
+            sink.feed(b"first,line\n")
+
+            channel = GatedChannel("second,line")
+            await self._shown(self.STEP_BUTTON, channel)
+
+            # кадр с дописанным хвостом приходит, только если поднялся насос
+            sink.feed(b"second,line\n")
+            await asyncio.wait_for(channel.gate.wait(), timeout=TestPump.GATE_SEC)
+
+            StreamScreen.leave(THREAD)
+            sink.close()
+            call.close("")
+
+            return channel
+
+        channel = run(scenario())
+
+        assert len(channel.contents) > 1
+
+    def test_the_step_button_opens_a_finished_call_from_the_start(self) -> None:
+        """Завершённый вызов насоса не поднимает: окно с начала файла."""
+        recorded(body=b"line-1\n" * 10)
+
+        channel = RecordingChannel()
+        run(self._shown(self.STEP_BUTTON, channel))
+
+        assert len(channel.contents) == 1
+        shown = channel.contents[0]
+        assert shown.stream is not None
+        assert shown.stream.offset == 0
+        assert shown.stream.follow is False
 
     def test_recorded_stream_is_shown_from_the_journal(self) -> None:
         recorded(body="сохранённый вывод".encode())
@@ -439,7 +615,7 @@ class TestShowAction:
 
     def test_live_call_is_marked_running(self) -> None:
         call = opened()
-        call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD).feed(b"in progress")
+        call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD, TEXT_OUT).feed(b"in progress")
 
         channel = RecordingChannel()
 
@@ -457,7 +633,7 @@ class TestShowAction:
 
     def test_live_call_of_another_user_is_not_live(self) -> None:
         call = opened()
-        call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD).feed(b"mine")
+        call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD, TEXT_OUT).feed(b"mine")
 
         assert ToolStreams.live_call(USER, THREAD, CALL_ID) is not None
         assert ToolStreams.live_call("999", THREAD, CALL_ID) is None
@@ -608,6 +784,57 @@ class TestStreamDownload:
 
         assert missing.status_code == 404
         assert unknown.status_code == 404
+
+        # тип берётся из контракта узла: продукт этой стадии объявлен csv
+        assert whole.headers["content-type"] == "text/csv; charset=utf-8"
+
+    def test_binary_product_downloads_as_bytes(self, tmp_path: Path) -> None:
+        """Единственный путь к бинарю — скачивание: текстом он не притворяется."""
+        body = bytes(range(256))
+        recorded(
+            stage=BINARY_STAGE,
+            channel=Channel.TOOL_PAYLOAD,
+            body=body,
+            out=BINARY_OUT,
+        )
+
+        from httpx import ASGITransport, AsyncClient
+
+        app = self._app(USER, str(tmp_path))
+        route = f"/stream/{THREAD}/{CALL_ID}/{BINARY_STAGE}/tool_payload"
+
+        async def scenario() -> Any:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://t") as client:
+                return await client.get(route)
+
+        response = run(scenario())
+
+        assert response.status_code == 200
+        assert response.content == body
+        assert response.headers["content-type"] == StreamFormat.BYTES.value
+
+    def test_group_channel_downloads_as_text(self, tmp_path: Path) -> None:
+        """Wrap-канал группы формата не объявляет: он человеческий текст."""
+        call = opened()
+        written(call, "g1", Channel.WRAP_STDERR, "шум обвязки\n".encode(), None)
+        call.close("")
+
+        from httpx import ASGITransport, AsyncClient
+
+        app = self._app(USER, str(tmp_path))
+        route = f"/stream/{THREAD}/{CALL_ID}/g1/wrap_stderr"
+
+        async def scenario() -> Any:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://t") as client:
+                return await client.get(route)
+
+        response = run(scenario())
+
+        assert response.status_code == 200
+        assert response.content == "шум обвязки\n".encode()
+        assert response.headers["content-type"] == "text/plain; charset=utf-8"
 
     def test_foreign_user_gets_no_log(self, tmp_path: Path) -> None:
         recorded(body=b"secret output")
