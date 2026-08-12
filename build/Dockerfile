@@ -276,7 +276,7 @@ RUN set -eu \
     # bwrap и fuse2fs берутся отсюда: запись группе или посторонним = отказ
     # TrustedBinaries на старте, поэтому снимаем её и проверяем сразу
     && chmod -R go-w ${BOBA_DIR}/third ${BOBA_DIR}/sandbox                                      \
-    && [ -z "$(find ${BOBA_DIR}/third/bin -maxdepth 1 -perm /022 -print -quit)" ]               \
+    && [ -z "$(find ${BOBA_DIR}/third/bin -maxdepth 1 -type f -perm /022 -print -quit)" ]       \
     && ${BOBA_DIR}/third/bin/bwrap --version                                                    \
     && ${BOBA_DIR}/third/bin/fuse2fs -V                                                         \
     && BOBA_BASE="${BOBA_DIR}" BOBA_VERSION="${BOBA_VERSION}"                                   \
