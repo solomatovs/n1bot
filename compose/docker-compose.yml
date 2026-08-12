@@ -2,21 +2,16 @@ services:
   chainlit:
     image: boba:${BOBA_TAG}
     hostname: chainlit
-    user: "${BOBA_UID:-1000}:${BOBA_GID:-984}"
     container_name: chainlit
     init: true
-    environment:
-      - KRB5_CONFIG=/app/boba/conf/krb/krb5.conf
-      - KRB5_CLIENT_KTNAME=/app/boba/conf/krb/krb5.keytab
-      - KRB5CCNAME=FILE:/tmp/krb5cc
-      - PGGSSENCMODE=prefer
+    user: "${BOBA_UID}:${BOBA_GID}"
+    env_file: ./conf/boba.env
     cgroup_parent: boba.slice
-    cgroup: host
     volumes:
-      - ./conf/config.toml:/app/boba/conf/config.toml:ro
-      - ./conf/krb:/app/boba/conf/krb:ro
+      - ./conf:/app/boba/conf:ro
       - ./data:/app/boba/data:rw
-      - /sys/fs/cgroup/boba.slice/boba-sandbox:/sys/fs/cgroup/boba.slice/boba-sandbox:rw
+      - ./app_root:/app/boba/app_root:rw
+      - /sys/fs/cgroup/boba.slice:/cgroup:rw
     devices:
       - /dev/fuse
     security_opt:
