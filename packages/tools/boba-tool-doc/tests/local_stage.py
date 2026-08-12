@@ -22,9 +22,15 @@ from boba.toolkit.channels import (
     ChannelSink,
     ResultFailure,
     ResultSuccess,
+    StreamKey,
     ValidationSummary,
 )
-from boba.toolkit.launcher import LauncherError, PayloadFailureError, ToolLauncher
+from boba.toolkit.launcher import (
+    ChannelHead,
+    LauncherError,
+    PayloadFailureError,
+    ToolLauncher,
+)
 from boba.toolkit.workflow import (
     StageNode,
     StageOutcome,
@@ -134,6 +140,10 @@ class LocalStageLauncher(ToolLauncher):
             )
 
         return WorkflowOutcome(stages=stages, trailers=trailers)
+
+    def head(self, key: StreamKey, max_bytes: int) -> ChannelHead:
+        """Журнала у тестового исполнителя нет: голова канала пуста."""
+        return ChannelHead.empty()
 
     def _request(self, definition: StageNode, args: Mapping[str, Any]) -> BaseModel:
         """Обогащение и валидация до запуска — как в WorkflowRunner._plan_stage."""

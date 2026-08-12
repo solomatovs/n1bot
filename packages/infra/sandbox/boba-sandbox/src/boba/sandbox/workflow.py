@@ -1,5 +1,8 @@
 """Исполнение графа стадий: реестр узлов, валидация с mount-группами, WorkflowRunner.
 
+Журнал вызова открывается на весь граф: каждый исходящий канал каждой стадии
+безусловно пишется в свой файл, wrap-каналы mount-группы — под её служебным id.
+
 Ошибки:
 WorkflowError — спецификация или контракт нарушены, итог не собран.
 WorkflowStageError (WorkflowError) — стадия сорвалась, к сообщению приложены
@@ -8,6 +11,7 @@ WorkflowPayloadError (PayloadFailureError) — стадия сообщила о�
     отказе конвертом tool_result, итоги стадий приложены; исключения sink'ов
     пути данных (коллекторов вызывающего) проходят наверх как есть — их
     контракт задаёт потребитель.
+JournalError упаковывается в WorkflowError на границе открытия журнала.
 ToolStopped (BaseException остановки хода) проходит насквозь.
 """
 
@@ -31,6 +35,13 @@ from boba.cancellation import TurnCancellation, current_cancellation
 from boba.sandbox.argv import ChannelArgv, WrapArgsCodec
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import FailureFacts, SandboxDiagnostics
+from boba.sandbox.journal import (
+    CallJournal,
+    JournalError,
+    JournalNote,
+    StageJournalSinks,
+    StreamJournal,
+)
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.sandbox.runner import (
     ChannelPump,
@@ -41,6 +52,7 @@ from boba.sandbox.runner import (
     ResultSink,
     SandboxChannels,
     TailSink,
+    ToolCallContext,
     WrapResultSink,
 )
 from boba.toolkit.channels import (
@@ -349,15 +361,11 @@ class _GroupRun:
 
 
 @dataclass(frozen=True)
-class _Taps:
-    """Дополнительные приёмники каналов по id узла.
+class _CallWiring:
+    """Обвязка вызова: коллекторы продукта по id узла и журнал вызова."""
 
-    payload — коллекторы вызывающего и журнал (этап 4); stdout — временный
-    tap живого потока панели (этап 3, умирает вместе с ToolStreamTap).
-    """
-
-    payload: Mapping[str, ChannelSink]
-    stdout: Mapping[str, ChannelSink]
+    collectors: Mapping[str, ChannelSink]
+    journal: CallJournal
 
 
 @dataclass(frozen=True)
@@ -395,10 +403,12 @@ class WorkflowRunner:
         registry: StageRegistry,
         access: AccessPredicate,
         path_vars: Callable[[], Mapping[str, str]],
+        journal: StreamJournal,
     ) -> None:
         self._registry = registry
         self._access = access
         self._path_vars = path_vars
+        self._journal = journal
 
     @staticmethod
     def cgroup_preexec(cgroup_dir: str | None) -> Callable[[], None] | None:
@@ -418,24 +428,27 @@ class WorkflowRunner:
     def run(
         self,
         spec: WorkflowSpec,
-        taps: Mapping[str, ChannelSink] | None = None,
-        stdout_taps: Mapping[str, ChannelSink] | None = None,
+        call: ToolCallContext,
+        sinks: Mapping[str, ChannelSink] | None = None,
     ) -> WorkflowOutcome:
         """Полная валидация до старта, одновременный запуск стадий, сбор итога.
 
-        taps — дополнительные приёмники tool_payload по id узла (коллекторы
-        вызывающего; журнал — этап 4); stdout_taps — временные приёмники
-        tool_stdout (живой поток панели, этап 3).
+        call — контекст вызова: по нему открывается журнал графа. sinks —
+        коллекторы продукта вызывающего по id узла; журнал стоит на всех
+        исходящих каналах стадий сам и в них не участвует.
         """
         cancellation = current_cancellation()
 
-        if taps is None:
-            taps = {}
+        collectors: Mapping[str, ChannelSink] = {}
+        if sinks is not None:
+            collectors = sinks
 
-        if stdout_taps is None:
-            stdout_taps = {}
+        try:
+            journal = self._journal.open(call)
+        except JournalError as exc:
+            raise WorkflowError(f"call journal is not available: {exc}") from exc
 
-        bundle = _Taps(payload=taps, stdout=stdout_taps)
+        bundle = _CallWiring(collectors=collectors, journal=journal)
 
         try:
             plans = self._plan(spec)
@@ -457,6 +470,9 @@ class WorkflowRunner:
             raise WorkflowError(f"workflow execution failed: {exc}") from exc
         except Exception as exc:
             raise WorkflowError(f"workflow internal failure: {exc}") from exc
+        finally:
+            # журнал закрывается до возврата итога: файлы читаются целиком
+            journal.close(JournalNote.ABORTED.value)
 
     def _plan(self, spec: WorkflowSpec) -> dict[str, StagePlan]:
         """Стадии в топологическом порядке: обогащение, валидация, рендер профиля."""
@@ -782,7 +798,7 @@ class WorkflowRunner:
         spec: WorkflowSpec,
         plans: Mapping[str, StagePlan],
         groups: Sequence[MountGroupPlan],
-        taps: _Taps,
+        wiring: _CallWiring,
         cancellation: TurnCancellation,
     ) -> WorkflowOutcome:
         logger.info(
@@ -818,7 +834,7 @@ class WorkflowRunner:
                 if group is None:
                     self._launch_single(
                         plans[stage_id], edge_in.get(stage_id), pipes_by_src,
-                        taps, pump, stack, cancellation, runs,
+                        wiring, pump, stack, cancellation, runs,
                     )
                     continue
 
@@ -827,7 +843,7 @@ class WorkflowRunner:
 
                 launched_groups.add(group.group_id)
                 self._launch_group(
-                    group, plans, edge_in, pipes_by_src, taps,
+                    group, plans, edge_in, pipes_by_src, wiring,
                     pump, stack, cancellation, runs, group_runs,
                 )
 
@@ -840,7 +856,9 @@ class WorkflowRunner:
 
         cancellation.raise_if_cancelled()
 
-        return self._assemble(spec, pump, runs, group_runs, pipes_by_src)
+        return self._assemble(
+            spec, pump, runs, group_runs, pipes_by_src, wiring.journal
+        )
 
     def _open_edges(
         self,
@@ -882,7 +900,7 @@ class WorkflowRunner:
         plan: StagePlan,
         edge: _EdgeLine | None,
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: _Taps,
+        wiring: _CallWiring,
         pump: ChannelPump,
         stack: ExitStack,
         cancellation: TurnCancellation,
@@ -941,7 +959,7 @@ class WorkflowRunner:
         )
         runs[stage_id] = run
 
-        sinks = self._stage_sinks(run, pipes_by_src, taps)
+        sinks = self._stage_sinks(run, channels.present, pipes_by_src, wiring)
 
         feeds = self._stage_feeds(plan, launch.wrap_feeds, channels)
 
@@ -986,7 +1004,7 @@ class WorkflowRunner:
         plans: Mapping[str, StagePlan],
         edge_in: Mapping[str, _EdgeLine],
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: _Taps,
+        wiring: _CallWiring,
         pump: ChannelPump,
         stack: ExitStack,
         cancellation: TurnCancellation,
@@ -1004,7 +1022,7 @@ class WorkflowRunner:
         for stage_id in group.stage_ids:
             boot, entry = self._member_boot(
                 plans[stage_id], edge_in.get(stage_id), pipes_by_src,
-                taps, stack, runs, group,
+                wiring, stack, runs, group,
             )
             boots.append(boot)
             entries.append(entry)
@@ -1074,11 +1092,16 @@ class WorkflowRunner:
         )
         group_runs[group.group_id] = group_run
 
-        wrap_sinks: dict[Channel, ChannelSink] = {
+        wrap_base: dict[Channel, ChannelSink] = {
             Channel.WRAP_STDOUT: group_run.wrap_out_tail,
             Channel.WRAP_STDERR: group_run.wrap_err_tail,
             Channel.WRAP_RESULT: watch,
         }
+
+        # wrap-каналы стадиям не принадлежат: журнал группы идёт под её id
+        wrap_sinks = self._journalled(
+            group.group_id, group_channels.present, wrap_base, wiring.journal
+        )
 
         group_timeout = 0.0
         for boot in boots:
@@ -1110,7 +1133,7 @@ class WorkflowRunner:
         plan: StagePlan,
         edge: _EdgeLine | None,
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: _Taps,
+        wiring: _CallWiring,
         stack: ExitStack,
         runs: dict[str, _StageRun],
         group: MountGroupPlan,
@@ -1164,7 +1187,7 @@ class WorkflowRunner:
         )
         runs[stage_id] = run
 
-        sinks = self._stage_sinks(run, pipes_by_src, taps)
+        sinks = self._stage_sinks(run, channels.present, pipes_by_src, wiring)
 
         feeds: dict[Channel, bytes] = {Channel.WRAP_ARGS_INNER: built.wrap_args}
         feeds[Channel.TOOL_ARGS] = plan.request_json.encode(self.ENCODING)
@@ -1373,11 +1396,15 @@ class WorkflowRunner:
     def _stage_sinks(
         self,
         run: _StageRun,
+        present: Sequence[Channel],
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: _Taps,
+        wiring: _CallWiring,
     ) -> dict[Channel, ChannelSink]:
+        """Приёмники стадии: хвосты, квитанция, рёбра и коллекторы плюс журнал."""
+        stage_id = run.plan.spec.id
+
         sinks: dict[Channel, ChannelSink] = {
-            Channel.TOOL_STDOUT: self._stdout_sink(run, taps),
+            Channel.TOOL_STDOUT: run.stdout_tail,
             Channel.TOOL_STDERR: RelaySink(run.plan.label, raw=run.stderr_tail),
             Channel.TOOL_RESULT: run.result,
         }
@@ -1388,34 +1415,49 @@ class WorkflowRunner:
         if run.wrap_err_tail is not None:
             sinks[Channel.WRAP_STDERR] = run.wrap_err_tail
 
-        payload = self._payload_sink(run.plan.spec.id, pipes_by_src, taps)
+        payload = self._payload_sink(stage_id, pipes_by_src, wiring)
         if payload is not None:
             sinks[Channel.TOOL_PAYLOAD] = payload
 
-        return sinks
+        return self._journalled(stage_id, present, sinks, wiring.journal)
 
     @staticmethod
-    def _stdout_sink(run: _StageRun, taps: _Taps) -> ChannelSink:
-        """Хвост tool_stdout; временно (этап 3) — ещё и tap живого потока."""
-        tap = taps.stdout.get(run.plan.spec.id)
-        if tap is None:
-            return run.stdout_tail
+    def _journalled(
+        stage_id: str,
+        present: Sequence[Channel],
+        sinks: Mapping[Channel, ChannelSink],
+        journal: CallJournal,
+    ) -> dict[Channel, ChannelSink]:
+        """Журнал на каждом исходящем канале стадии — безусловно, первым в веере.
 
-        return FanoutSink((run.stdout_tail, tap))
+        Первым, чтобы файл получил и те байты, на которых коллектор вызывающего
+        упрётся в свой лимит.
+        """
+        journalled: dict[Channel, ChannelSink] = {}
+
+        for channel, entry in StageJournalSinks.of(journal, stage_id, present).items():
+            base = sinks.get(channel)
+            if base is None:
+                journalled[channel] = entry
+                continue
+
+            journalled[channel] = FanoutSink((entry, base))
+
+        return journalled
 
     @staticmethod
     def _payload_sink(
         stage_id: str,
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
-        taps: _Taps,
+        wiring: _CallWiring,
     ) -> ChannelSink | None:
-        """Веер рёбер и tap; None — потребителей нет, байты только считаются."""
+        """Веер рёбер и коллектора; None — потребителей продукта нет."""
         outs: list[ChannelSink] = []
         for pipe in pipes_by_src.get(stage_id, ()):
             outs.append(pipe)
 
-        if tap := taps.payload.get(stage_id):
-            outs.append(tap)
+        if collector := wiring.collectors.get(stage_id):
+            outs.append(collector)
 
         if not outs:
             return None
@@ -1441,13 +1483,14 @@ class WorkflowRunner:
 
         return feeds
 
-    def _assemble(
+    def _assemble(  # noqa: PLR0913
         self,
         spec: WorkflowSpec,
         pump: ChannelPump,
         runs: Mapping[str, _StageRun],
         group_runs: Mapping[str, _GroupRun],
         pipes_by_src: Mapping[str, Sequence[PipeSink]],
+        journal: CallJournal,
     ) -> WorkflowOutcome:
         rc_map: dict[str, int] = {}
         reported: dict[str, bool] = {}
@@ -1463,10 +1506,12 @@ class WorkflowRunner:
         )
         if culprit is not None:
             self._raise_failure(
-                culprit, spec, pump, runs, group_runs, rc_map, reported
+                culprit, spec, pump, runs, group_runs, rc_map, reported, journal
             )
 
-        outcome = self._process_outcome(spec, rc_map, pump, runs, group_runs)
+        outcome = self._process_outcome(
+            spec, rc_map, pump, runs, group_runs, journal
+        )
 
         trailers: dict[str, JsonValue] = {}
         for node in spec.nodes:
@@ -1477,18 +1522,23 @@ class WorkflowRunner:
         return WorkflowOutcome(
             stages=outcome.stages,
             trailers=trailers,
-            journals=(),
+            journals=journal.journals(),
         )
 
-    def _process_outcome(
+    def _process_outcome(  # noqa: PLR0913
         self,
         spec: WorkflowSpec,
         rc_map: Mapping[str, int],
         pump: ChannelPump,
         runs: Mapping[str, _StageRun],
         group_runs: Mapping[str, _GroupRun],
+        journal: CallJournal,
     ) -> WorkflowOutcome:
-        """Процессные итоги стадий без квитанций: сорванный граф трейлеров не даёт."""
+        """Процессные итоги стадий без квитанций: сорванный граф трейлеров не даёт.
+
+        Адреса журналов остаются и здесь: у сорвавшегося вызова голова канала
+        нужна фасаду ровно так же, как у успешного.
+        """
         outcomes: list[StageOutcome] = []
         for node in spec.nodes:
             outcomes.append(
@@ -1497,7 +1547,11 @@ class WorkflowRunner:
                 )
             )
 
-        return WorkflowOutcome(stages=tuple(outcomes), trailers={})
+        return WorkflowOutcome(
+            stages=tuple(outcomes),
+            trailers={},
+            journals=journal.journals(),
+        )
 
     @staticmethod
     def _final_rc(
@@ -1640,8 +1694,11 @@ class WorkflowRunner:
         group_runs: Mapping[str, _GroupRun],
         rc_map: Mapping[str, int],
         reported: Mapping[str, bool],
+        journal: CallJournal,
     ) -> None:
-        outcome = self._process_outcome(spec, rc_map, pump, runs, group_runs)
+        outcome = self._process_outcome(
+            spec, rc_map, pump, runs, group_runs, journal
+        )
 
         if culprit in group_runs:
             self._raise_group_failure(culprit, pump, group_runs, outcome)

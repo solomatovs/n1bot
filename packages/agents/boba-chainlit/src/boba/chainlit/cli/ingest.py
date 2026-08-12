@@ -8,6 +8,10 @@ BOBA_CONFIG_PATH, секции [tool.ingest] и [tool.ingest.sandbox], рабо�
 Реестр стадий прогона собирается из узлов секции [tool.ingest]: чужих узлов в
 нём нет, поэтому вне сессии права на них не спрашиваются.
 
+Вне сессии чата адрес вызова ставит сам прогон: пользователь `cli`, тред —
+метка запуска, call_id — порядковый номер вызова. Журнал вывода обязателен и
+здесь: том берётся из секции [stream_journal].
+
 Логи прогона едут в тот же журнал, что у приложения: секция logger конфига.
 """
 
@@ -16,22 +20,37 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.config
+import os
 import sys
-from typing import ClassVar
+import time
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, ClassVar
 
 from omegaconf import DictConfig
 
 from boba.chainlit.infra.entry import AppEntry
 from boba.sandbox import SandboxCaller, SandboxToolConfig
+from boba.sandbox.journal import DirVault, StreamJournal
+from boba.sandbox.runner import ToolCallContext
 from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.settings import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.confluence.ingest_caller import ConfluenceIngestCaller
 from boba.tool.kb.confluence.ingest_protocol import IngestMode
 from boba.tool.kb.confluence.ingest_stages import ConfluenceIngestStages
-from boba.toolkit.launcher import LauncherFactory, ToolLauncher
+from boba.toolkit.channels import ChannelSink, StreamKey
+from boba.toolkit.launcher import (
+    ChannelHead,
+    LauncherFactory,
+    ToolLauncher,
+)
+from boba.toolkit.workflow import WorkflowOutcome, WorkflowSpec
 
-__all__ = ["CliNodeAccess", "ConfluenceIngestCli"]
+if TYPE_CHECKING:
+    # конфиг приложения тянет chainlit: на импорте модуля его быть не должно
+    from boba.chainlit.infra.config import StreamJournalConfig
+
+__all__ = ["CliNodeAccess", "CliRunLauncher", "ConfluenceIngestCli"]
 
 
 class CliNodeAccess:
@@ -39,6 +58,52 @@ class CliNodeAccess:
 
     def __call__(self, tool: str, /) -> bool:
         return True
+
+
+class CliRunLauncher(ToolLauncher):
+    """Адрес вызова для прогона вне сессии: нумерует вызовы прогона.
+
+    Сессии чата нет, контекст ставить некому — его ставит запуск: журнал
+    каждого вызова уезжает под своим номером в тред прогона.
+    """
+
+    USER: ClassVar[str] = "cli"
+
+    def __init__(self, inner: ToolLauncher, tool: str, thread_id: str) -> None:
+        self._inner = inner
+        self._tool = tool
+        self._thread_id = thread_id
+        self._calls = 0
+
+    @classmethod
+    def run_mark(cls, tool: str) -> str:
+        """Метка запуска вместо треда: время старта и pid — прогоны не смешиваются."""
+        started = time.strftime("%Y%m%d-%H%M%S")
+
+        return f"{tool}-{started}-{os.getpid()}"
+
+    def call(
+        self,
+        spec: WorkflowSpec,
+        sinks: Mapping[str, ChannelSink] | None = None,
+    ) -> WorkflowOutcome:
+        self._calls += 1
+        context = ToolCallContext(
+            user_id=self.USER,
+            thread_id=self._thread_id,
+            call_id=f"call{self._calls}",
+            tool=self._tool,
+        )
+
+        token = ToolCallContext.set(context)
+        try:
+            return self._inner.call(spec, sinks)
+        finally:
+            ToolCallContext.reset(token)
+
+    def head(self, key: StreamKey, max_bytes: int) -> ChannelHead:
+        return self._inner.head(key, max_bytes)
+
 
 logger = logging.getLogger("boba.chainlit.cli.ingest")
 
@@ -69,7 +134,9 @@ class ConfluenceIngestCli:
         raw = providers.get_raw_config()
 
         cfg = cls.config(raw)
-        caller = ConfluenceIngestCaller(cls.TOOL, cls.launchers(raw, cfg))
+        caller = ConfluenceIngestCaller(
+            cls.TOOL, cls.launchers(raw, cfg, app.stream_journal)
+        )
 
         logger.info(
             "ingest start: mode=%s target=%s ocr=%s workers=%d lang=%s "
@@ -161,7 +228,10 @@ class ConfluenceIngestCli:
 
     @classmethod
     def launchers(
-        cls, raw: DictConfig, cfg: ConfluenceIngestConfig
+        cls,
+        raw: DictConfig,
+        cfg: ConfluenceIngestConfig,
+        journal_cfg: StreamJournalConfig,
     ) -> LauncherFactory:
         """Фабрика исполнителей на узлах [tool.ingest] и её профиле песочницы."""
         sandbox = bind(raw, f"{cls.SECTION}.sandbox", SandboxToolConfig)
@@ -171,11 +241,17 @@ class ConfluenceIngestCli:
         for name, node in ConfluenceIngestStages.of(cfg).items():
             defs[name] = StageDef.of(node, profile)
 
+        vault = DirVault(journal_cfg.dir)
+        vault.ensure_root()
+
+        journal = StreamJournal(vault, journal_cfg.reserve_bytes)
+
         # вне chainlit-сессии подстановок {user_id}/{thread_id} нет
-        caller = SandboxCaller(StageRegistry(defs), CliNodeAccess(), dict)
+        caller = SandboxCaller(StageRegistry(defs), CliNodeAccess(), dict, journal)
+        runs = CliRunLauncher(caller, cls.TOOL, CliRunLauncher.run_mark(cls.TOOL))
 
         def launcher(tool: str) -> ToolLauncher:
-            return caller
+            return runs
 
         return launcher
 

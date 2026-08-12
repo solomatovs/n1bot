@@ -1,9 +1,10 @@
 """Порт запуска инструмента: чем инструмент пользуется, не зная про песочницу.
 
-Инструменты зависят только от этого модуля: порт ToolLauncher с единственным
-call(spec) и коллекторы байтовых каналов. Реализация порта (bwrap, cgroup,
-WorkflowRunner) подставляется снаружи; фасад строит вырожденный WorkflowSpec
-из одного узла и читает трейлер из WorkflowOutcome.
+Инструменты зависят только от этого модуля: порт ToolLauncher (запуск графа и
+чтение головы журнала канала) и коллекторы байтовых каналов. Реализация порта
+(bwrap, cgroup, WorkflowRunner) подставляется снаружи; фасад строит вырожденный
+WorkflowSpec из одного узла и читает трейлер из WorkflowOutcome. Полный поток
+канала живёт в журнале; в ответ модели едет только его голова.
 
 Ошибки:
 LauncherError — исполнитель нарушил контракт, результату доверять нельзя.
@@ -11,6 +12,8 @@ PayloadFailureError — стадия сообщила об ожидаемой о
     готов для пользователя.
 WorkflowError (boba.toolkit.workflow) — спецификация графа невалидна либо
     правило графа нарушено.
+StageFailureError — запуск сорвался, и к сообщению приложены итоги стадий с
+    адресами журналов.
 WorkflowStageError и WorkflowPayloadError — граф сорвался, и к сообщению
     виновника приложены процессные итоги стадий.
 CollectorCapacityError/CollectorRowLimitError — потребитель остановил поток по
@@ -22,16 +25,18 @@ from __future__ import annotations
 import codecs
 from abc import abstractmethod
 from collections.abc import Mapping
-from typing import Any, Protocol, TypeVar
+from typing import Any, ClassVar, Protocol, TypeVar
 
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from boba.toolkit.channels import (
     ByteText,
+    Channel,
     ChannelError,
     ChannelSink,
     LineSplitter,
     StreamCodec,
+    StreamKey,
 )
 from boba.toolkit.workflow import (
     EmptyTrailer,
@@ -42,6 +47,7 @@ from boba.toolkit.workflow import (
 )
 
 __all__ = [
+    "ChannelHead",
     "CollectorCapacityError",
     "CollectorRowLimitError",
     "EmptyTrailer",
@@ -50,6 +56,8 @@ __all__ = [
     "LauncherFactory",
     "PayloadFailureError",
     "RowCollector",
+    "StageFailure",
+    "StageFailureError",
     "StageRun",
     "TextCollector",
     "ToolLauncher",
@@ -75,6 +83,19 @@ class PayloadFailureError(LauncherError):
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+class StageFailureError(LauncherError):
+    """Запуск сорвался, и к сообщению приложены итоги стадий с адресами журналов.
+
+    Пустой итог означает, что стадии до запуска не дошли: читать нечего.
+    """
+
+    EMPTY: ClassVar[WorkflowOutcome] = WorkflowOutcome(stages=(), trailers={})
+
+    def __init__(self, message: str, outcome: WorkflowOutcome = EMPTY) -> None:
+        super().__init__(message)
+        self.outcome = outcome
 
 
 class WorkflowStageError(WorkflowError):
@@ -105,6 +126,27 @@ class ErrorKind:
         if isinstance(error, PayloadFailureError):
             return error.kind
         return type(error).__name__
+
+
+class StageFailure:
+    """Итоги стадий, приложенные к ошибке запуска: их несут не все ошибки.
+
+    По адресам журналов из итога фасад читает голову канала сорвавшегося
+    вызова — команда могла успеть напечатать вывод до отказа.
+    """
+
+    @staticmethod
+    def outcome_of(error: Exception) -> WorkflowOutcome:
+        if isinstance(error, StageFailureError):
+            return error.outcome
+
+        if isinstance(error, WorkflowStageError):
+            return error.outcome
+
+        if isinstance(error, WorkflowPayloadError):
+            return error.outcome
+
+        return StageFailureError.EMPTY
 
 
 class CollectorCapacityError(RuntimeError):
@@ -249,6 +291,20 @@ class RowCollector:
             raise LauncherError(str(exc)) from exc
 
 
+class ChannelHead(BaseModel):
+    """Голова канала из журнала: текст для модели и признак обрезки."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    truncated: bool
+
+    @classmethod
+    def empty(cls) -> ChannelHead:
+        """Журнала канала нет: читать нечего, обрезки тоже нет."""
+        return cls(text="", truncated=False)
+
+
 class ToolLauncher(Protocol):
     """Запуск инструмента в изолированном окружении.
 
@@ -266,6 +322,14 @@ class ToolLauncher(Protocol):
 
         sinks — приёмники tool_payload по id узла: коллекторы фасада читают
         продукт стадии по мере исполнения.
+        """
+        ...
+
+    @abstractmethod
+    def head(self, key: StreamKey, max_bytes: int) -> ChannelHead:
+        """Голова журнала канала: max_bytes — потолок чтения, не записи.
+
+        Адрес берётся из WorkflowOutcome.journals; файла нет — пустая голова.
         """
         ...
 
@@ -312,6 +376,21 @@ class StageRun:
         outcome = self.call(node, args, sink=sink, stdin=stdin)
 
         return outcome.trailer(node, schema)
+
+    def head(
+        self,
+        outcome: WorkflowOutcome,
+        node: str,
+        channel: Channel,
+        max_bytes: int,
+    ) -> ChannelHead:
+        """Голова журнала канала узла: столько его потока уезжает в модель."""
+        key = outcome.journal_of(node, channel)
+
+        if key is None:
+            return ChannelHead.empty()
+
+        return self._launcher.head(key, max_bytes)
 
 
 class LauncherFactory(Protocol):

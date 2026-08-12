@@ -28,15 +28,12 @@ from boba.chainlit.chat.data.object_key import (
     ObjectKey,
 )
 from boba.chainlit.chat.data.storage import StorageClient
-from boba.chainlit.chat.data.stream_journal import (
-    StreamJournalError,
-    StreamJournalHub,
-)
 from boba.chainlit.chat.errors import show_error
 from boba.chainlit.chat.transcript import ConversationTranscript, ThreadMessages
 from boba.chainlit.infra.session import current_user_id
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
 from boba.db.postgres import AsyncPostgresPool
+from boba.sandbox.journal import JournalError, StreamJournalHub
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
 from chainlit.element import Element as ChainlitElement
@@ -678,16 +675,16 @@ class PostgresDataLayer(AttachmentDataLayer):
 
         Сбой уборки не отменяет удаление треда — журнал доберёт ротация.
         """
-        if owner is None or owner[0] is None:
+        if owner is None:
             return
 
-        journal = StreamJournalHub.get()
-        if journal is None:
+        if owner[0] is None:
             return
 
         try:
+            journal = StreamJournalHub.get()
             journal.purge_thread(str(owner[0]), thread_id)
-        except StreamJournalError:
+        except JournalError:
             logger.warning(
                 "stream journal purge failed for thread %s", thread_id,
                 exc_info=True,

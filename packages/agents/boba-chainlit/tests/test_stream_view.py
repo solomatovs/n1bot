@@ -1,8 +1,10 @@
-"""Живой вывод инструмента: журнал, тап через реальный langchain-вызов, насос.
+"""Вывод инструмента в панели: выбор канала, насос, перемотка и скачивание.
 
-Ключевые инварианты: вывод пишется в файл журнала и переживает конец хода;
-фронт получает окна фиксированного размера, сколько бы инструмент ни
-напечатал; тап доезжает до функции тула через обвязку в его потоке.
+Журнал настоящий: файлы пишет writer-поток песочницы, панель их читает — как
+в приложении, только вместо стадии в канал пишет тест. Ключевые инварианты:
+канал показа выбирается по контракту узла, живой вызов будит насос из потока
+журнала, окна остаются фиксированного размера, а чужой пользователь не читает
+ни окно, ни файл.
 """
 
 from __future__ import annotations
@@ -10,49 +12,72 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
-from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext, context_var
-from langchain.tools import tool
-from langchain_core.messages import ToolMessage
+from chainlit.step import Step
 
-from boba.chainlit.agent.tools.stream_tap import ToolStreamTapGuard
-from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.data.stream_journal import DirVault, StreamJournal
 from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind
-from boba.chainlit.rendering.chat_view import ChatSink, ChatView, RecordingSink, StepRole
+from boba.chainlit.rendering.chat_view import (
+    ChatSink,
+    ChatView,
+    RecordingSink,
+    StepRole,
+)
 from boba.chainlit.rendering.stream_view import (
+    StageTools,
+    StageView,
     StreamNote,
     StreamScreen,
-    ToolStream,
+    StreamShowRequest,
+    StreamTarget,
     ToolStreams,
     window_stream_action,
 )
-from boba.toolkit.stream import ToolStreamTap
-from chainlit.step import Step
+from boba.sandbox.journal import (
+    CallJournal,
+    DirVault,
+    StreamJournal,
+    StreamJournalHub,
+)
+from boba.sandbox.runner import ToolCallContext
+from boba.toolkit.channels import Channel, StreamFormat
+from boba.toolkit.workflow import EmptyTrailer, StageContract
 
 THREAD = "33333333-3333-3333-3333-333333333333"
 USER = "7"
 CALL_ID = "call-stream-1"
 TOOL_NAME = "fake_bash"
+TEXT_STAGE = "fake_bash"
+PLAIN_STAGE = "fake_save"
+BINARY_STAGE = "fake_export"
+
+CONTRACTS = {
+    TEXT_STAGE: StageContract(out=StreamFormat.CSV, result=EmptyTrailer),
+    PLAIN_STAGE: StageContract(out=None, result=EmptyTrailer),
+    BINARY_STAGE: StageContract(out=StreamFormat.BYTES, result=EmptyTrailer),
+}
 
 
 @pytest.fixture(autouse=True)
-def chainlit_context(tmp_path: Path) -> Any:
-    """Контекст с thread_id сессии и журнал в каталоге на время теста."""
+def chainlit_context(tmp_path: Path) -> Iterator[None]:
+    """Контекст с thread_id сессии, журнал в каталоге и реестр стадий панели."""
     session = SimpleNamespace(thread_id=THREAD)
     token = context_var.set(cast("ChainlitContext", SimpleNamespace(session=session)))
-    ToolStreams.reset()
-    ToolStreams.configure(
+
+    StreamJournalHub.configure(
         StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
     )
+    StageTools.configure([TOOL_NAME], CONTRACTS)
+
     yield
-    ToolStreams.reset()
-    ToolStreamTap.set(None)
+
+    StreamJournalHub.reset()
+    StageTools.reset()
     # контекст сбрасывается за собой: иначе сессия утечёт в тесты без неё
     context_var.reset(token)
 
@@ -61,170 +86,101 @@ def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def begin_stream(call_id: str = CALL_ID) -> ToolStream:
-    ToolStreams.mark_streamable([TOOL_NAME])
-    stream = ToolStreams.begin(USER, THREAD, call_id, TOOL_NAME)
-    assert stream is not None
-    return stream
+def context_of(call_id: str = CALL_ID, tool: str = TOOL_NAME) -> ToolCallContext:
+    return ToolCallContext(
+        user_id=USER, thread_id=THREAD, call_id=call_id, tool=tool
+    )
 
 
-class TestTapThroughLangchain:
-    """Журнал вызова доезжает до sync-функции инструмента.
+def opened(call_id: str = CALL_ID) -> CallJournal:
+    """Журнал вызова, открытый как это делает песочница."""
+    return StreamJournalHub.get().open(context_of(call_id))
 
-    Инструмент вызывается как его зовёт ToolNode — ainvoke с ToolCall и
-    callbacks; sync-функция едет в executor-поток, где обвязка тапа обязана
-    отдать рекордер этого вызова.
-    """
 
-    @staticmethod
-    def _tool_and_seen() -> tuple[Any, list[object]]:
-        seen: list[object] = []
+def written(
+    call: CallJournal, stage: str, channel: Channel, data: bytes
+) -> None:
+    """Канал стадии, записанный целиком: sink закрывается своим EOF."""
+    sink = call.sink(stage, channel)
+    sink.feed(data)
+    sink.close()
 
-        @tool
-        def fake_bash(command: str) -> str:
-            """Пишет в журнал то, что видит в тапе."""
-            sink = ToolStreamTap.get()
-            seen.append(sink)
-            if sink is not None:
-                sink.feed(f"ran: {command}".encode())
-            return "done"
 
-        ToolStreamTapGuard.guard_all([fake_bash])
-        return fake_bash, seen
+def recorded(
+    stage: str = TEXT_STAGE,
+    channel: Channel = Channel.TOOL_PAYLOAD,
+    body: bytes = b"output line\n",
+    call_id: str = CALL_ID,
+) -> None:
+    """Завершённый вызов: файлы дописаны, writer-поток остановлен."""
+    call = opened(call_id)
+    written(call, stage, channel, body)
+    call.close("")
 
-    async def _invoke(self, *, streamable: bool = True) -> list[object]:
-        if streamable:
-            ToolStreams.mark_streamable([TOOL_NAME])
-        view = ChatView(THREAD, RecordingSink(), user_name="tester")
-        view.begin_turn("turn-1")
-        tracer = AgentTracer(view, USER)
 
-        fake_bash, seen = self._tool_and_seen()
-        await fake_bash.ainvoke(
-            {
-                "name": TOOL_NAME,
-                "args": {"command": "echo hi"},
-                "id": CALL_ID,
-                "type": "tool_call",
-            },
-            config={"callbacks": [tracer]},
+def target_of(
+    call_id: str = CALL_ID, user_id: str = USER
+) -> StreamTarget | None:
+    """Цель показа, как её выбирает действие кнопки: адрес сервер решает сам."""
+    request = StreamShowRequest.model_validate({"call_id": call_id})
+
+    return ToolStreams.target(user_id, THREAD, request)
+
+
+class TestChannelChoice:
+    """Канал показа выбирается по объявленному формату продукта узла."""
+
+    def test_text_product_is_shown_from_the_payload_journal(self) -> None:
+        recorded(stage=TEXT_STAGE, channel=Channel.TOOL_PAYLOAD, body=b"a,b\n1,2\n")
+
+        target = target_of()
+
+        assert target is not None
+        assert target.key.stage == TEXT_STAGE
+        assert target.key.channel is Channel.TOOL_PAYLOAD
+
+    def test_stage_without_a_product_is_shown_from_stdout(self) -> None:
+        call = opened()
+        written(call, PLAIN_STAGE, Channel.TOOL_STDOUT, b"saved\n")
+        written(call, PLAIN_STAGE, Channel.TOOL_PAYLOAD, b"")
+        call.close("")
+
+        target = target_of()
+
+        assert target is not None
+        assert target.key.stage == PLAIN_STAGE
+        assert target.key.channel is Channel.TOOL_STDOUT
+
+    def test_unknown_stage_falls_back_to_stdout(self) -> None:
+        call = opened()
+        written(call, "n1", Channel.TOOL_STDOUT, b"graph node\n")
+        written(call, "n1", Channel.TOOL_PAYLOAD, b"payload\n")
+        call.close("")
+
+        target = target_of()
+
+        assert target is not None
+        assert target.key.channel is Channel.TOOL_STDOUT
+
+    def test_binary_product_is_offered_for_download(self) -> None:
+        recorded(stage=BINARY_STAGE, channel=Channel.TOOL_PAYLOAD, body=b"\x00\x01")
+
+        target = target_of()
+        assert target is not None
+        assert target.view is StageView.DOWNLOAD
+
+        channel = RecordingChannel()
+        run(StreamScreen.binary(target.key, channel))
+
+        shown = channel.contents[0]
+        assert shown.kind is CanvasKind.NOTICE
+        assert shown.note == str(StreamNote.BINARY)
+        assert shown.url.endswith(
+            f"/stream/{THREAD}/{CALL_ID}/{BINARY_STAGE}/tool_payload"
         )
-        return seen
 
-    def test_sync_tool_sees_its_recorder(self) -> None:
-        seen = run(self._invoke())
-
-        assert len(seen) == 1
-        assert seen[0] is not None
-
-    def test_tool_output_lands_in_the_journal(self) -> None:
-        run(self._invoke())
-
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
-        assert piece is not None
-        assert "ran: echo hi" in piece.text
-
-    def test_journal_is_closed_after_the_call(self) -> None:
-        run(self._invoke())
-
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
-        assert piece is not None
-        assert piece.closed is True
-        assert piece.note == str(StreamNote.FINISHED)
-
-    def test_not_streamable_tool_gets_no_recorder(self) -> None:
-        seen = run(self._invoke(streamable=False))
-
-        assert seen == [None]
-        assert ToolStreams.get(THREAD, CALL_ID) is None
-
-    def test_stop_pending_closes_open_journals(self) -> None:
-        async def scenario() -> None:
-            ToolStreams.mark_streamable([TOOL_NAME])
-            view = ChatView(THREAD, RecordingSink(), user_name="tester")
-            view.begin_turn("turn-1")
-            tracer = AgentTracer(view, USER)
-
-            await tracer.on_tool_start(
-                {"name": TOOL_NAME},
-                "{}",
-                run_id=uuid4(),
-                inputs={},
-                tool_call_id=CALL_ID,
-            )
-            await tracer.stop_pending("остановлено пользователем")
-
-        run(scenario())
-
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
-        assert piece is not None
-        assert piece.closed is True
-        assert piece.note == str(StreamNote.STOPPED)
-
-
-class TestJournalOutlivesTheTurn:
-    """Журнал переживает конец хода: история открывает поток заново."""
-
-    def test_slice_after_drop_thread(self) -> None:
-        stream = begin_stream()
-        stream.recorder.feed("прошлый ход".encode())
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
-        ToolStreams.drop_thread(THREAD)
-
-        assert ToolStreams.get(THREAD, CALL_ID) is None
-
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
-        assert piece is not None
-        assert piece.text == "прошлый ход"
-        assert piece.closed is True
-
-    def test_drop_thread_closes_abandoned_recorder(self) -> None:
-        stream = begin_stream()
-        stream.recorder.feed(b"data")
-
-        ToolStreams.drop_thread(THREAD)
-
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
-        assert piece is not None
-        assert piece.closed is True
-        assert piece.note == str(StreamNote.STOPPED)
-
-    def test_foreign_user_cannot_read_the_journal(self) -> None:
-        stream = begin_stream()
-        stream.recorder.feed(b"secret")
-        ToolStreams.drop_thread(THREAD)
-
-        piece = ToolStreams.recorded_slice("999", THREAD, CALL_ID, offset=0)
-        assert piece is None
-
-
-class TestPendingSlots:
-    """Очередь claim не отдаёт чужие и завершённые слоты."""
-
-    def test_finished_slot_is_not_claimable(self) -> None:
-        begin_stream()
-
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FAILED))
-
-        assert ToolStreams.claim(THREAD, TOOL_NAME) is None
-
-    def test_claim_is_per_thread_and_name(self) -> None:
-        begin_stream()
-
-        assert ToolStreams.claim("другой-тред", TOOL_NAME) is None
-        assert ToolStreams.claim(THREAD, "другой-тул") is None
-
-        stream = ToolStreams.claim(THREAD, TOOL_NAME)
-        assert stream is not None
-        assert stream.key.call_id == CALL_ID
-        assert ToolStreams.claim(THREAD, TOOL_NAME) is None
-
-    def test_unsafe_call_id_is_refused(self) -> None:
-        ToolStreams.mark_streamable([TOOL_NAME])
-
-        stream = ToolStreams.begin(USER, THREAD, "../../etc/passwd", TOOL_NAME)
-
-        assert stream is None
+    def test_call_without_journals_is_explained(self) -> None:
+        assert target_of("no-such-call") is None
 
 
 class RecordingChannel:
@@ -237,32 +193,66 @@ class RecordingChannel:
         self.contents.append(content)
 
 
+class TestJournalOutlivesTheTurn:
+    """Журнал переживает конец хода: история открывает канал заново."""
+
+    def test_window_after_drop_thread(self) -> None:
+        recorded(body="прошлый ход".encode())
+
+        ToolStreams.drop_thread(THREAD)
+
+        target = target_of()
+        assert target is not None
+        piece = ToolStreams.slice_at(target.key, 0)
+        assert piece is not None
+        assert piece.text == "прошлый ход"
+        assert piece.closed is True
+
+    def test_foreign_user_sees_no_journal(self) -> None:
+        recorded(body=b"secret")
+
+        assert target_of(user_id="999") is None
+
+    def test_unsafe_call_id_is_refused(self) -> None:
+        key = ToolStreams.key_of(
+            USER, THREAD, "../../etc/passwd", TEXT_STAGE, Channel.TOOL_PAYLOAD
+        )
+
+        assert key is None
+
+
 class TestPump:
     """Насос переносит хвост журнала по пробуждениям, не накапливая вывод."""
 
     CHUNKS = 300
     CHUNK = b"x" * 1024
 
-    async def _stream_with_writer(self) -> tuple[ToolStream, threading.Thread]:
-        stream = begin_stream()
+    def _writer(self, call: CallJournal) -> threading.Thread:
+        sink = call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD)
 
         def write_all() -> None:
             for index in range(self.CHUNKS):
-                stream.recorder.feed(b"%06d " % index + self.CHUNK)
+                sink.feed(f"{index:06d} ".encode() + self.CHUNK)
                 time.sleep(0.002)
-            stream.recorder.close(str(StreamNote.FINISHED))
+            sink.close()
+            call.close("")
 
-        return stream, threading.Thread(target=write_all)
+        return threading.Thread(target=write_all)
 
     async def _pumped(self) -> RecordingChannel:
-        """Писатель работает в своём потоке параллельно насосу — как инструмент."""
-        stream, writer = await self._stream_with_writer()
+        """Писатель работает в своём потоке параллельно насосу — как стадия."""
+        call = opened()
+        writer = self._writer(call)
         channel = RecordingChannel()
 
-        task = await StreamScreen.show(THREAD, stream, channel)
+        target = target_of()
+        assert target is not None
+
+        task = await StreamScreen.show(THREAD, target, channel)
         writer.start()
         await asyncio.get_running_loop().run_in_executor(None, writer.join)
-        await asyncio.wait_for(task, timeout=5)
+        await asyncio.wait_for(task, timeout=10)
+
         return channel
 
     def test_snapshots_stay_within_the_window(self) -> None:
@@ -282,24 +272,35 @@ class TestPump:
 
         final = channel.contents[-1]
         assert final.kind is CanvasKind.STREAM
-        assert ("%06d" % (self.CHUNKS - 1)) in final.text
-        assert str(StreamNote.FINISHED) in final.note
+        assert f"{self.CHUNKS - 1:06d}" in final.text
         assert final.stream is not None
         assert final.stream.closed is True
         assert final.stream.size == self.CHUNKS * (len(self.CHUNK) + 7)
         assert final.stream.offset + final.stream.window >= final.stream.size
+        assert final.stream.stage == TEXT_STAGE
+        assert final.stream.channel is Channel.TOOL_PAYLOAD
 
     def test_show_replaces_the_previous_pump(self) -> None:
         async def scenario() -> tuple[asyncio.Task[None], asyncio.Task[None]]:
-            first = begin_stream("call-a")
-            second = begin_stream("call-b")
+            first = opened("call-a")
+            written(first, TEXT_STAGE, Channel.TOOL_PAYLOAD, b"a")
+            second = opened("call-b")
+            second_sink = second.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD)
+            second_sink.feed(b"b")
+
+            first_target = target_of("call-a")
+            second_target = target_of("call-b")
+            assert first_target is not None
+            assert second_target is not None
+
             channel = RecordingChannel()
+            first_task = await StreamScreen.show(THREAD, first_target, channel)
+            second_task = await StreamScreen.show(THREAD, second_target, channel)
 
-            first_task = await StreamScreen.show(THREAD, first, channel)
-            second_task = await StreamScreen.show(THREAD, second, channel)
-
-            second.recorder.close("done")
-            await asyncio.wait_for(second_task, timeout=5)
+            second_sink.close()
+            second.close("")
+            await asyncio.wait_for(second_task, timeout=10)
+            first.close("")
             return first_task, second_task
 
         first_task, second_task = run(scenario())
@@ -309,11 +310,16 @@ class TestPump:
 
     def test_leave_stops_the_pump(self) -> None:
         async def scenario() -> asyncio.Task[None]:
-            stream = begin_stream()
-            task = await StreamScreen.show(THREAD, stream, RecordingChannel())
+            call = opened()
+            call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD).feed(b"live")
+            target = target_of()
+            assert target is not None
+
+            task = await StreamScreen.show(THREAD, target, RecordingChannel())
 
             StreamScreen.leave(THREAD)
             await asyncio.gather(task, return_exceptions=True)
+            call.close("")
             return task
 
         task = run(scenario())
@@ -326,62 +332,68 @@ class TestWindowAction:
     BODY = ("0123456789" * 20000).encode()
     """200 КБ: больше трёх окон журнала."""
 
-    def _recorded(self) -> None:
-        stream = begin_stream()
-        stream.recorder.feed(self.BODY)
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
-        ToolStreams.drop_thread(THREAD)
+    def _address(self, offset: int) -> dict[str, Any]:
+        return {
+            "call_id": CALL_ID,
+            "stage": TEXT_STAGE,
+            "channel": Channel.TOOL_PAYLOAD.value,
+            "offset": offset,
+        }
 
     def test_windows_walk_the_journal(self) -> None:
-        self._recorded()
+        recorded(body=self.BODY)
 
-        first = run(
-            window_stream_action(
-                USER, THREAD, {"call_id": CALL_ID, "offset": 0}
-            )
-        )
-        middle = run(
-            window_stream_action(
-                USER, THREAD, {"call_id": CALL_ID, "offset": 70000}
-            )
-        )
+        first = run(window_stream_action(USER, THREAD, self._address(0)))
+        middle = run(window_stream_action(USER, THREAD, self._address(70000)))
 
         assert first["stream"]["offset"] == 0
         assert first["stream"]["size"] == len(self.BODY)
         assert middle["stream"]["offset"] == 70000
         assert len(middle["text"].encode()) == first["stream"]["window"]
 
-    def test_offset_beyond_the_file_gives_empty_window(self) -> None:
-        self._recorded()
+    def test_window_carries_the_channel_address(self) -> None:
+        recorded(body=self.BODY)
 
-        beyond = run(
-            window_stream_action(
-                USER, THREAD, {"call_id": CALL_ID, "offset": 10**9}
-            )
-        )
+        first = run(window_stream_action(USER, THREAD, self._address(0)))
+
+        assert first["stream"]["call_id"] == CALL_ID
+        assert first["stream"]["stage"] == TEXT_STAGE
+        assert first["stream"]["channel"] == Channel.TOOL_PAYLOAD.value
+
+    def test_offset_beyond_the_file_gives_empty_window(self) -> None:
+        recorded(body=self.BODY)
+
+        beyond = run(window_stream_action(USER, THREAD, self._address(10**9)))
 
         assert beyond["text"] == ""
         assert beyond["stream"]["offset"] == len(self.BODY)
 
     def test_unknown_call_gives_empty_answer(self) -> None:
-        answer = run(
-            window_stream_action(
-                USER, THREAD, {"call_id": "no-such-call", "offset": 0}
-            )
-        )
+        payload = self._address(0)
+        payload["call_id"] = "no-such-call"
+
+        answer = run(window_stream_action(USER, THREAD, payload))
+
+        assert answer == {}
+
+    def test_foreign_user_gets_empty_answer(self) -> None:
+        recorded(body=self.BODY)
+
+        answer = run(window_stream_action("999", THREAD, self._address(0)))
 
         assert answer == {}
 
     def test_window_request_stops_the_pump(self) -> None:
         async def scenario() -> asyncio.Task[None]:
-            stream = begin_stream()
-            stream.recorder.feed(b"live data")
-            task = await StreamScreen.show(THREAD, stream, RecordingChannel())
+            call = opened()
+            call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD).feed(b"live data")
+            target = target_of()
+            assert target is not None
 
-            await window_stream_action(
-                USER, THREAD, {"call_id": CALL_ID, "offset": 0}
-            )
+            task = await StreamScreen.show(THREAD, target, RecordingChannel())
+            await window_stream_action(USER, THREAD, self._address(0))
             await asyncio.gather(task, return_exceptions=True)
+            call.close("")
             return task
 
         task = run(scenario())
@@ -389,22 +401,19 @@ class TestWindowAction:
 
 
 class TestShowAction:
-    """Кнопка потока: живой вызов — насос, завершённый — окно из журнала."""
+    """Кнопка вывода: живой вызов — насос, завершённый — окно из журнала."""
 
     def test_recorded_stream_is_shown_from_the_journal(self) -> None:
-        stream = begin_stream()
-        stream.recorder.feed("сохранённый вывод".encode())
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
-        ToolStreams.drop_thread(THREAD)
+        recorded(body="сохранённый вывод".encode())
 
         channel = RecordingChannel()
 
         async def scenario() -> None:
-            piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=-1)
+            target = target_of()
+            assert target is not None
+            piece = ToolStreams.slice_at(target.key, 0)
             assert piece is not None
-            await StreamScreen.recorded(
-                THREAD, CALL_ID, piece, channel, follow=True
-            )
+            await StreamScreen.recorded(target.key, piece, channel, follow=False)
 
         run(scenario())
 
@@ -412,6 +421,34 @@ class TestShowAction:
         shown = channel.contents[0]
         assert shown.kind is CanvasKind.STREAM
         assert "сохранённый вывод" in shown.text
+        assert shown.note == str(StreamNote.FINISHED)
+
+    def test_live_call_is_marked_running(self) -> None:
+        call = opened()
+        call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD).feed(b"in progress")
+
+        channel = RecordingChannel()
+
+        async def scenario() -> None:
+            target = target_of()
+            assert target is not None
+            piece = ToolStreams.slice_at(target.key, 0)
+            assert piece is not None
+            await StreamScreen.recorded(target.key, piece, channel, follow=False)
+
+        run(scenario())
+        call.close("")
+
+        assert channel.contents[0].note == str(StreamNote.RUNNING)
+
+    def test_live_call_of_another_user_is_not_live(self) -> None:
+        call = opened()
+        call.sink(TEXT_STAGE, Channel.TOOL_PAYLOAD).feed(b"mine")
+
+        assert ToolStreams.live_call(USER, THREAD, CALL_ID) is not None
+        assert ToolStreams.live_call("999", THREAD, CALL_ID) is None
+
+        call.close("")
 
     def test_unknown_stream_is_explained(self) -> None:
         channel = RecordingChannel()
@@ -422,7 +459,7 @@ class TestShowAction:
         run(scenario())
 
         assert channel.contents[0].kind is CanvasKind.NOTICE
-        assert "unavailable" in channel.contents[0].note
+        assert channel.contents[0].note == str(StreamNote.GONE)
 
 
 class ElementSink(ChatSink):
@@ -438,15 +475,14 @@ class ElementSink(ChatSink):
 
 
 class TestStreamButton:
-    """Кнопка потока живёт на шаге потокового тула и адресуется по call_id."""
+    """Кнопка вывода живёт на шаге инструмента со стадиями и адресуется вызовом."""
 
     async def _tool_step(self, sink: ChatSink, name: str) -> Step:
         view = ChatView(THREAD, sink, user_name="tester")
         view.begin_turn("turn-1")
         return await view.tool_started(name, {"command": "ls"}, CALL_ID)
 
-    def test_streamable_tool_gets_the_button(self) -> None:
-        ToolStreams.mark_streamable([TOOL_NAME])
+    def test_stage_tool_gets_the_button(self) -> None:
         sink = ElementSink()
 
         step = run(self._tool_step(sink, TOOL_NAME))
@@ -458,32 +494,18 @@ class TestStreamButton:
         assert getattr(element, "props", {}).get("call_id") == CALL_ID
         assert element.id == ChatView.derive_id(THREAD, CALL_ID, StepRole.STREAM)
 
-    def test_no_journal_means_no_button(self) -> None:
-        ToolStreams.reset()
-        ToolStreams.mark_streamable([TOOL_NAME])
-
-        step = run(self._tool_step(ElementSink(), TOOL_NAME))
-
-        assert not step.elements
-
-    def test_other_tools_stay_clean(self) -> None:
-        sink = ElementSink()
-
-        step = run(self._tool_step(sink, "diagram_save"))
+    def test_tool_without_stages_stays_clean(self) -> None:
+        step = run(self._tool_step(ElementSink(), "diagram_save"))
 
         assert not step.elements
 
     def test_replay_sink_never_emits_the_button(self) -> None:
-        ToolStreams.mark_streamable([TOOL_NAME])
-
         step = run(self._tool_step(RecordingSink(), TOOL_NAME))
 
         assert not step.elements
 
     def test_replayed_step_dict_matches_live(self) -> None:
         """Кнопка не должна ломать контракт шагов: сравниваются StepDict."""
-        ToolStreams.mark_streamable([TOOL_NAME])
-
         live = run(self._tool_step(ElementSink(), TOOL_NAME)).to_dict()
         replay = run(self._tool_step(RecordingSink(), TOOL_NAME)).to_dict()
 
@@ -492,38 +514,8 @@ class TestStreamButton:
         assert live["parentId"] == replay["parentId"]
 
 
-class TestToolMessageFlow:
-    """on_tool_end закрывает журнал и на пути реального ToolMessage."""
-
-    def test_tool_end_closes_by_run_id(self) -> None:
-        async def scenario() -> None:
-            ToolStreams.mark_streamable([TOOL_NAME])
-            view = ChatView(THREAD, RecordingSink(), user_name="tester")
-            view.begin_turn("turn-1")
-            tracer = AgentTracer(view, USER)
-
-            tool_run = uuid4()
-            await tracer.on_tool_start(
-                {"name": TOOL_NAME},
-                "{}",
-                run_id=tool_run,
-                inputs={},
-                tool_call_id=CALL_ID,
-            )
-            await tracer.on_tool_end(
-                ToolMessage(content="ok", tool_call_id=CALL_ID, id="tool-msg"),
-                run_id=tool_run,
-            )
-
-        run(scenario())
-
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
-        assert piece is not None
-        assert piece.closed is True
-
-
 class TestStreamDownload:
-    """Скачивание журнала вызова: тот же StreamedFile, что отдаёт вложения."""
+    """Скачивание журнала канала: тот же StreamedFile, что отдаёт вложения."""
 
     @staticmethod
     def _app(user_id: str, base_dir: str) -> Any:
@@ -560,11 +552,11 @@ class TestStreamDownload:
         app.dependency_overrides[get_current_user] = lambda: user
         return app
 
+    ROUTE: ClassVar[str] = f"/stream/{THREAD}/{CALL_ID}/{TEXT_STAGE}/tool_payload"
+
     def test_log_downloads_whole_and_by_range(self, tmp_path: Path) -> None:
-        stream = begin_stream()
         body = "строка вывода\n" * 20
-        stream.recorder.feed(body.encode())
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
+        recorded(body=body.encode())
 
         from httpx import ASGITransport, AsyncClient
 
@@ -573,30 +565,37 @@ class TestStreamDownload:
         async def scenario() -> Any:
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://t") as client:
-                whole = await client.get(f"/stream/{THREAD}/{CALL_ID}")
+                whole = await client.get(self.ROUTE)
                 part = await client.get(
-                    f"/stream/{THREAD}/{CALL_ID}", headers={"Range": "bytes=0-9"}
+                    self.ROUTE, headers={"Range": "bytes=0-9"}
                 )
-                missing = await client.get(f"/stream/{THREAD}/absent-call")
-            return whole, part, missing
+                missing = await client.get(
+                    f"/stream/{THREAD}/absent-call/{TEXT_STAGE}/tool_payload"
+                )
+                unknown = await client.get(
+                    f"/stream/{THREAD}/{CALL_ID}/{TEXT_STAGE}/no_such_channel"
+                )
+            return whole, part, missing, unknown
 
-        whole, part, missing = run(scenario())
+        whole, part, missing, unknown = run(scenario())
 
         assert whole.status_code == 200
         assert whole.content == body.encode()
         assert whole.headers["content-length"] == str(len(body.encode()))
         assert "attachment" in whole.headers["content-disposition"]
-        assert f"{CALL_ID}.log" in whole.headers["content-disposition"]
+        assert (
+            f"{CALL_ID}.{TEXT_STAGE}.tool_payload.log"
+            in whole.headers["content-disposition"]
+        )
 
         assert part.status_code == 206
         assert part.content == body.encode()[:10]
 
         assert missing.status_code == 404
+        assert unknown.status_code == 404
 
     def test_foreign_user_gets_no_log(self, tmp_path: Path) -> None:
-        stream = begin_stream()
-        stream.recorder.feed(b"secret output")
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
+        recorded(body=b"secret output")
 
         from httpx import ASGITransport, AsyncClient
 
@@ -605,7 +604,7 @@ class TestStreamDownload:
         async def scenario() -> Any:
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://t") as client:
-                return await client.get(f"/stream/{THREAD}/{CALL_ID}")
+                return await client.get(self.ROUTE)
 
         response = run(scenario())
         assert response.status_code == 404

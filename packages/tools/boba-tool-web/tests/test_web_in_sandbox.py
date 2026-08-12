@@ -19,6 +19,7 @@ from web_sandbox import (
 from boba.sandbox import SandboxProfile
 from boba.sandbox.caller import SandboxCaller, SandboxPayloadError
 from boba.sandbox.workflow import StageDef, StageRegistry
+from boba.stand.journal import CallStand
 from boba.tool.web._fetch import web_fetch
 from boba.tool.web._grep import WebGrepConfig, web_grep
 from boba.tool.web.stages import WebStages
@@ -78,7 +79,9 @@ def _launchers(cfg: WebGrepConfig) -> LauncherFactory:
         ),
     }
 
-    caller = SandboxCaller(StageRegistry(defs), _allow_all, dict)
+    caller = SandboxCaller(
+        StageRegistry(defs), _allow_all, dict, CallStand.journal()
+    )
 
     def factory(tool: str, /) -> ToolLauncher:
         return caller

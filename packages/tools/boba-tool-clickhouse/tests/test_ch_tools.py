@@ -20,7 +20,8 @@ from boba.tool.ch.protocol import (
     ChWireFormat,
 )
 from boba.tool.ch.stages import ChInsertNode, ChQueryNode
-from boba.toolkit.channels import ChannelSink, StreamCodec, StreamFormat
+from boba.toolkit.channels import ChannelSink, StreamCodec, StreamFormat, StreamKey
+from boba.toolkit.launcher import ChannelHead
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolkit.workflow import WorkflowOutcome, WorkflowSpec
 
@@ -66,6 +67,10 @@ class _RowsLauncher:
             stages=(),
             trailers={stage: {"truncated": self._truncated}},
         )
+
+    def head(self, key: StreamKey, max_bytes: int) -> ChannelHead:
+        """Журнала у тестового исполнителя нет: голова канала пуста."""
+        return ChannelHead.empty()
 
 
 def ch_config() -> ChExecutorConfig:

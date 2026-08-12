@@ -7,6 +7,15 @@ from boba.sandbox.caller import (
 )
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import FailureFacts, SandboxDiagnostics
+from boba.sandbox.journal import (
+    CallJournal,
+    DirVault,
+    JournalError,
+    JournalListener,
+    StreamJournal,
+    StreamJournalHub,
+    StreamSlice,
+)
 from boba.sandbox.profile import (
     BindSpec,
     SandboxConfig,
@@ -23,11 +32,15 @@ from boba.sandbox.workflow import StageDef, StageRegistry, WorkflowRunner
 __all__ = [
     "WORKSPACE_MOUNT",
     "BindSpec",
+    "CallJournal",
     "CgroupError",
     "CgroupManager",
     "ChannelArgv",
+    "DirVault",
     "FailureFacts",
     "GroupLimits",
+    "JournalError",
+    "JournalListener",
     "SandboxCaller",
     "SandboxConfig",
     "SandboxDiagnostics",
@@ -36,6 +49,9 @@ __all__ = [
     "SandboxToolConfig",
     "StageDef",
     "StageRegistry",
+    "StreamJournal",
+    "StreamJournalHub",
+    "StreamSlice",
     "TmpfsSpec",
     "ToolCallContext",
     "WorkflowRunner",

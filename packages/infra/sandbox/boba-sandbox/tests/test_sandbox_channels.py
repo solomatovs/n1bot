@@ -22,8 +22,15 @@ from typing import Any
 
 import pydantic
 import pytest
+from journal_stand import JournalStand
+from pydantic import BaseModel, ConfigDict, JsonValue
 
-from boba.cancellation import ToolStopped, TurnCancellation, current_cancellation, turn_cancellation
+from boba.cancellation import (
+    ToolStopped,
+    TurnCancellation,
+    current_cancellation,
+    turn_cancellation,
+)
 from boba.sandbox.argv import ChannelArgv
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import (
@@ -42,7 +49,6 @@ from boba.toolkit.workflow import (
     WorkflowSpec,
 )
 from boba.workspace.launcher import FUSE_DEVICE
-from pydantic import BaseModel, ConfigDict, JsonValue
 
 REPO = Path(__file__).resolve().parents[5]
 TOOLKIT_SRC = REPO / "packages" / "core" / "boba-toolkit" / "src"
@@ -404,7 +410,6 @@ def _run_stage(  # noqa: PLR0913
     contract: StageContract,
     args: Mapping[str, JsonValue],
     stdin: str | None,
-    stdout: ChannelSink | None,
     payload: ChannelSink | None,
     entry: tuple[str, ...] = PAYLOAD_ENTRY,
     path_vars: Callable[[], Mapping[str, str]] = dict,
@@ -418,21 +423,17 @@ def _run_stage(  # noqa: PLR0913
         enrich=_identity_args,
     )
     registry = StageRegistry({STAGE_TOOL: definition})
-    runner = WorkflowRunner(registry, _allow_all, path_vars)
+    runner = WorkflowRunner(registry, _allow_all, path_vars, JournalStand.journal())
 
     spec = WorkflowSpec(
         nodes=[StageSpec(id=STAGE_ID, tool=STAGE_TOOL, args=args, stdin=stdin)]
     )
 
-    taps: dict[str, ChannelSink] = {}
+    collectors: dict[str, ChannelSink] = {}
     if payload is not None:
-        taps[STAGE_ID] = payload
+        collectors[STAGE_ID] = payload
 
-    stdout_taps: dict[str, ChannelSink] = {}
-    if stdout is not None:
-        stdout_taps[STAGE_ID] = stdout
-
-    return runner.run(spec, taps, stdout_taps)
+    return runner.run(spec, JournalStand.context(), collectors)
 
 
 def _proc_files(name: str) -> Iterator[bytes]:
@@ -514,7 +515,6 @@ class TestChannelSeparation:
         payload_dir = _write_payload(tmp_path, _SMOKE_PAYLOAD)
         profile = _profile(payload_dir)
 
-        stdout_sink = _CollectSink()
         payload_sink = _CollectSink()
 
         with caplog.at_level(logging.WARNING, logger="boba.sandbox.runner"):
@@ -523,12 +523,13 @@ class TestChannelSeparation:
                 contract=_contract(out=StreamFormat.TEXT, result=SmokeTrailer),
                 args={"note": "hello"},
                 stdin="12345",
-                stdout=stdout_sink,
                 payload=payload_sink,
             )
 
+        stdout_text = JournalStand.text_of(outcome, STAGE_ID, Channel.TOOL_STDOUT)
+
         assert bytes(payload_sink.data) == b"line-1\nline-2\n"
-        assert stdout_sink.text() == "human note\n"
+        assert stdout_text == "human note\n"
 
         trailer = outcome.trailer(STAGE_ID, SmokeTrailer)
         assert trailer == SmokeTrailer(stdin_text="12345", note="hello")
@@ -540,13 +541,12 @@ class TestChannelSeparation:
 
         assert relayed, "log frame must reach the app logger via relay"
 
-        assert "log frame message" not in stdout_sink.text()
-        assert "raw stderr line" not in stdout_sink.text()
-        assert "sandbox-log:" not in stdout_sink.text()
+        assert "log frame message" not in stdout_text
+        assert "raw stderr line" not in stdout_text
+        assert "sandbox-log:" not in stdout_text
         assert b"log frame message" not in bytes(payload_sink.data)
         assert b"raw stderr line" not in bytes(payload_sink.data)
 
-        assert stdout_sink.closed
         assert payload_sink.closed
 
     def test_expected_failure_travels_as_error_envelope(self, tmp_path: Path) -> None:
@@ -559,7 +559,6 @@ class TestChannelSeparation:
                 contract=_contract(out=None, result=EmptyTrailer),
                 args={},
                 stdin=None,
-                stdout=_CollectSink(),
                 payload=None,
             )
 
@@ -577,7 +576,6 @@ class TestChannelSeparation:
                 contract=_contract(out=None, result=EchoTrailer),
                 args={},
                 stdin=None,
-                stdout=_CollectSink(),
                 payload=None,
             )
 
@@ -595,7 +593,6 @@ class TestChannelSeparation:
             contract=_contract(out=None, result=EchoTrailer),
             args={"note": "no-stream"},
             stdin=None,
-            stdout=_CollectSink(),
             payload=None,
         )
 
@@ -764,7 +761,6 @@ class TestArgsFdAndSecrets:
                     contract=_contract(out=None, result=WaitTrailer),
                     args=args,
                     stdin=None,
-                    stdout=_CollectSink(),
                     payload=None,
                 )
                 results.append(outcome.trailer(STAGE_ID, WaitTrailer))
@@ -851,7 +847,6 @@ class TestImageChain:
                     contract=_contract(out=StreamFormat.TEXT, result=ImageTrailer),
                     args=args,
                     stdin=None,
-                    stdout=_CollectSink(),
                     payload=payload_sink,
                     path_vars=_image_path_vars,
                 )
@@ -898,7 +893,6 @@ class TestImageChain:
                 contract=_contract(out=None, result=EchoTrailer),
                 args={"note": "never"},
                 stdin=None,
-                stdout=_CollectSink(),
                 payload=None,
                 path_vars=_image_path_vars,
             )
@@ -934,7 +928,6 @@ class TestStageShutdown:
                         contract=_contract(out=None, result=EmptyTrailer),
                         args={},
                         stdin=None,
-                        stdout=_CollectSink(),
                         payload=None,
                         entry=entry,
                     )
@@ -976,7 +969,6 @@ class TestStageShutdown:
                 contract=_contract(out=None, result=EmptyTrailer),
                 args={},
                 stdin=None,
-                stdout=_CollectSink(),
                 payload=None,
                 entry=entry,
             )

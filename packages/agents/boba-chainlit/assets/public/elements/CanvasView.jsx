@@ -571,10 +571,13 @@ function StreamTail({ content }) {
     setChain(null);
   }, [content.nonce]);
 
-  const callId = (content.path || "").replace("stream://", "");
   const pos = view.stream || {
+    call_id: "", stage: "", channel: "",
     offset: 0, end: 0, size: 0, window: 65536, closed: true, follow: false,
   };
+  // адрес канала журнала сервер прислал в окне: действия его возвращают,
+  // иначе перемотка ушла бы в канал, выбранный сервером заново
+  const addr = { call_id: pos.call_id, stage: pos.stage, channel: pos.channel };
   const browsing = chain !== null;
 
   const current = () => {
@@ -595,7 +598,7 @@ function StreamTail({ content }) {
   const fetchWindow = async (payload) => {
     const answer = await callAction({
       name: "canvas_stream_window",
-      payload: { call_id: callId, ...payload },
+      payload: { ...addr, ...payload },
     });
     const next = answer && answer.response;
     if (!next || !next.stream) return null;
@@ -629,7 +632,7 @@ function StreamTail({ content }) {
     setChain(null);
     callAction({
       name: "canvas_stream",
-      payload: { call_id: callId, follow: true },
+      payload: { ...addr, follow: true },
     });
   };
 
@@ -703,11 +706,11 @@ function StreamTail({ content }) {
 
   // «в начало» и «в конец» — пуши сервера: цепочка окон сбрасывается пушем
   const toStart = () =>
-    callAction({ name: "canvas_stream", payload: { call_id: callId } });
+    callAction({ name: "canvas_stream", payload: { ...addr } });
   const toEnd = () =>
     callAction({
       name: "canvas_stream",
-      payload: { call_id: callId, follow: true },
+      payload: { ...addr, follow: true },
     });
 
   // скачивание — тем же роутом отдачи файлов; сервер шлёт весь .log целиком
@@ -715,7 +718,7 @@ function StreamTail({ content }) {
     if (!view.url) return;
     const link = document.createElement("a");
     link.href = view.url;
-    link.download = `${view.label || callId || "output"}.log`;
+    link.download = `${view.label || addr.call_id || "output"}.log`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -847,11 +850,22 @@ function SourceLink({ content }) {
 
 // Без шапки: иконка с именем налезали бы на кнопку закрытия панели слева
 // сверху. Текст по центру — сам объясняет, почему содержимого нет.
+// Ссылка рядом с объяснением — когда файл есть, но показать его нечем:
+// бинарный продукт стадии панель отдаёт только скачиванием.
 function Notice({ content }) {
   return (
     <div className="flex-1 min-h-0 flex items-center justify-center p-6">
       <div className="max-w-md text-center text-sm text-muted-foreground">
-        {content.note}
+        <div>{content.note}</div>
+        {content.url ? (
+          <a
+            href={content.url}
+            download={`${content.label || "output"}.log`}
+            className="mt-3 inline-block underline hover:text-foreground"
+          >
+            Скачать файл
+          </a>
+        ) : null}
       </div>
     </div>
   );

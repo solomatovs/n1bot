@@ -1,25 +1,34 @@
-"""Логи вокруг вызова инструмента и причина падения песочницы."""
+"""Логи вокруг вызова инструмента, адрес вызова и причина падения песочницы."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Annotated, Any
 
 import pytest
-from langchain_core.tools import StructuredTool
+from chainlit.context import init_http_context
+from chainlit.user import PersistedUser
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import InjectedToolCallId, StructuredTool
 
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
 from boba.sandbox.diagnostics import FailureFacts
 from boba.sandbox.runner import ToolCallContext
 from boba.sandbox.workflow import WorkflowRunner
+from boba.stand.journal import CallStand
 
 LOGGER_NAME = "boba.chainlit.agent.tools.run_log"
 RUNNER_LOGGER_NAME = "boba.sandbox.workflow"
 
+USER_ID = "7"
+THREAD_ID = "th-run-log"
+CALL_ID = "call_probe_1"
+
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
-    pass
+    """Сессии по умолчанию нет: её заводят тесты адреса вызова."""
 
 
 class TestToolRunLogger:
@@ -28,6 +37,24 @@ class TestToolRunLogger:
         return StructuredTool.from_function(
             func=func, coroutine=coroutine, name="probe", description="probe"
         )
+
+    @staticmethod
+    def _call(args: dict[str, Any], call_id: str = CALL_ID) -> dict[str, Any]:
+        """Полный tool call: id вызова доезжает до обвязки только с ним."""
+        return {"name": "probe", "args": args, "id": call_id, "type": "tool_call"}
+
+    @staticmethod
+    def _in_session(action) -> Any:
+        """Действие внутри сессии chainlit: контекст живёт в её event loop."""
+
+        async def run() -> Any:
+            user = PersistedUser(
+                id=USER_ID, identifier="tester", createdAt="2026-01-01T00:00:00Z"
+            )
+            init_http_context(user=user, thread_id=THREAD_ID)
+            return action()
+
+        return asyncio.run(run())
 
     def test_success_logs_start_and_ok(self, caplog: pytest.LogCaptureFixture) -> None:
         tool = self._tool(lambda query: "done")
@@ -58,34 +85,77 @@ class TestToolRunLogger:
         assert "tool[probe]: failed in" in warning[0].getMessage()
         assert "RuntimeError: нет соединения" in warning[0].getMessage()
 
-    def test_context_set_inside_and_reset_after(self) -> None:
-        seen: list[str] = []
+    def test_call_address_set_inside_and_reset_after(self) -> None:
+        seen: list[ToolCallContext] = []
 
         def probe(query: str) -> str:
-            seen.append(ToolCallContext.get())
+            seen.append(ToolCallContext.current())
             return "ok"
 
         tool = self._tool(probe)
         ToolRunLogger.guard_all([tool])
-        assert tool.func is not None
-        tool.func(query="q")
-        assert seen == ["probe"]
-        assert ToolCallContext.get() == ""
+        self._in_session(lambda: tool.invoke(self._call({"query": "q"})))
+
+        assert len(seen) == 1
+        assert seen[0].user_id == USER_ID
+        assert seen[0].thread_id == THREAD_ID
+        assert seen[0].call_id == CALL_ID
+        assert seen[0].tool == "probe"
+        # адрес снят: снаружи снова контекст стенда из conftest
+        assert ToolCallContext.current().tool == CallStand.TOOL
+
+    def test_call_id_hidden_from_model(self) -> None:
+        tool = self._tool(lambda query: "done")
+        ToolRunLogger.guard_all([tool])
+
+        # id вызова доезжает до обвязки (соседние тесты), а модель его не видит
+        assert "tool_call_id" not in tool.args
+
+    def test_own_call_id_field_left_to_the_tool(self) -> None:
+        seen: list[str] = []
+
+        def probe(query: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+            seen.append(tool_call_id)
+            return "ok"
+
+        tool = self._tool(probe)
+        ToolRunLogger.guard_all([tool])
+        self._in_session(lambda: tool.invoke(self._call({"query": "q"})))
+
+        assert seen == [CALL_ID]
+
+    def test_call_outside_session_keeps_caller_address(self) -> None:
+        seen: list[str] = []
+
+        def probe(query: str) -> str:
+            seen.append(ToolCallContext.current().tool)
+            return "ok"
+
+        tool = self._tool(probe)
+        ToolRunLogger.guard_all([tool])
+        tool.invoke(self._call({"query": "q"}))
+
+        assert seen == [CallStand.TOOL]
 
     def test_async_tool_wrapped(self, caplog: pytest.LogCaptureFixture) -> None:
         async def probe(query: str) -> str:
-            return ToolCallContext.get()
+            return ToolCallContext.current().call_id
 
         tool = self._tool(lambda query: "sync", probe)
         ToolRunLogger.guard_all([tool])
 
         async def invoke() -> object:
-            assert tool.coroutine is not None
-            return await tool.coroutine(query="q")
+            user = PersistedUser(
+                id=USER_ID, identifier="tester", createdAt="2026-01-01T00:00:00Z"
+            )
+            init_http_context(user=user, thread_id=THREAD_ID)
+            return await tool.ainvoke(self._call({"query": "q"}))
 
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-            result = asyncio.run(invoke())
-        assert result == "probe"
+            message = asyncio.run(invoke())
+
+        assert isinstance(message, ToolMessage)
+        assert message.content == CALL_ID
         messages = [r.getMessage() for r in caplog.records]
         assert any(m.startswith("tool[probe]: ok in ") for m in messages)
 

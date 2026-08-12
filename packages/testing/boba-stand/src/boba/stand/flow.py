@@ -27,7 +27,9 @@ import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.sandbox.argv import WORKSPACE_MOUNT
+from boba.sandbox.journal import DirVault, StreamJournal
 from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.runner import ToolCallContext
 from boba.sandbox.workflow import StageDef, StageRegistry, WorkflowRunner
 from boba.toolkit.channels import ByteText, StreamCodec
 from boba.toolkit.launcher import WorkflowPayloadError
@@ -271,6 +273,39 @@ class FlowFailure(BaseModel):
         return self.outcome.outcome_of(stage).exit_code
 
 
+class StandJournal:
+    """Журнал стенда: том рядом с /workspace и контекст вызова под него.
+
+    Прогон идёт вне сессии чата, поэтому пользователь и тред — метки стенда,
+    а вызов — порядковый номер прогона в процессе.
+    """
+
+    USER: ClassVar[str] = "stand"
+    THREAD: ClassVar[str] = "flow"
+    VAULT_DIR: ClassVar[str] = "journal"
+
+    _RUNS: ClassVar[int] = 0
+
+    @classmethod
+    def at(cls, workspace: Path) -> StreamJournal:
+        """Том журнала рядом с /workspace: стадии его не видят."""
+        root = workspace.parent / cls.VAULT_DIR
+        root.mkdir(parents=True, exist_ok=True)
+
+        return StreamJournal(DirVault(str(root)), 0)
+
+    @classmethod
+    def context(cls, tool: str) -> ToolCallContext:
+        cls._RUNS += 1
+
+        return ToolCallContext(
+            user_id=cls.USER,
+            thread_id=cls.THREAD,
+            call_id=f"run{cls._RUNS}",
+            tool=tool,
+        )
+
+
 class FlowStand:
     """Прогон сценарного графа: узлы и рёбра на вход, байты листьев на выход.
 
@@ -278,6 +313,8 @@ class FlowStand:
     продукт графа виден тесту, а побочные эффекты — через стенды инструментов
     и файлы /workspace.
     """
+
+    TOOL: ClassVar[str] = "flow"
 
     def __init__(self, runner: WorkflowRunner, workspace: Path) -> None:
         self._runner = runner
@@ -295,7 +332,12 @@ class FlowStand:
             for name, node in contribution.nodes.items():
                 defs[name] = StageDef.of(node, contribution.profile)
 
-        runner = WorkflowRunner(StageRegistry(defs), AllowAllNodes(), NoPathVars())
+        runner = WorkflowRunner(
+            StageRegistry(defs),
+            AllowAllNodes(),
+            NoPathVars(),
+            StandJournal.at(workspace),
+        )
 
         return cls(runner, workspace)
 
@@ -311,7 +353,9 @@ class FlowStand:
         for stage_id in self._leaves(spec):
             collectors[stage_id] = BytesCollector()
 
-        outcome = self._runner.run(spec, collectors)
+        call = StandJournal.context(self.TOOL)
+
+        outcome = self._runner.run(spec, call, collectors)
 
         data: dict[str, bytes] = {}
         for stage_id, collector in collectors.items():

@@ -26,14 +26,14 @@ from boba.chainlit.agent.tools.canvas import CanvasToolConfig
 from boba.chainlit.agent.tools.diagram import DiagramToolConfig
 from boba.chainlit.agent.tools.errors import ToolErrorGuard
 from boba.chainlit.agent.tools.run_log import ToolRunLogger
-from boba.chainlit.agent.tools.stream_tap import ToolStreamTapGuard
 from boba.chainlit.infra.session import (
     current_thread_id,
     current_user_id,
     current_user_roles,
 )
-from boba.chainlit.rendering.stream_view import ToolStreams
+from boba.chainlit.rendering.stream_view import StageTools
 from boba.sandbox import SandboxCaller, SandboxToolConfig, has_bwrap
+from boba.sandbox.journal import StreamJournalHub
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.settings import bind
@@ -61,7 +61,7 @@ from boba.tool.shell import BashStage, build_bash_tool
 from boba.tool.web import WebGrepConfig, WebStages, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
-from boba.toolkit.workflow import StageNode
+from boba.toolkit.workflow import StageContract, StageNode
 
 __all__ = [
     "PluginBuild",
@@ -543,16 +543,28 @@ class ToolRegistry:
         return allowed
 
 
-def _mark_streamable(plugin: ToolPlugin, built: list[BaseTool]) -> None:
-    """Живой вывод есть только у процессов песочницы: кнопка потока — на их шагах."""
-    if not plugin.sandboxed:
-        return
+def _stage_tools(section: ToolSection, built: list[BaseTool]) -> list[str]:
+    """Инструменты секции с узлами: их вызовы идут стадиями и пишут журнал."""
+    if not section.nodes:
+        return []
 
-    streamable: list[str] = []
+    names: list[str] = []
     for tool in built:
-        streamable.append(tool.name)
+        names.append(tool.name)
 
-    ToolStreams.mark_streamable(streamable)
+    return names
+
+
+def _bind_panel(registry: StageRegistry, stage_tools: Iterable[str]) -> None:
+    """Контракты узлов и инструменты со стадиями — панели.
+
+    По ним панель выбирает канал журнала и ставит кнопку вывода на шаг.
+    """
+    contracts: dict[str, StageContract] = {}
+    for name in registry.names():
+        contracts[name] = registry.def_of(name).contract
+
+    StageTools.configure(stage_tools, contracts)
 
 
 def _build_section(section: ToolSection, shared: LauncherFactory) -> list[BaseTool]:
@@ -577,29 +589,34 @@ def _load_workflow_tools(
     tools: list[BaseTool],
     roles_by_tool: dict[str, list[str]],
     launcher: ToolLauncher,
-) -> None:
-    """Инструмент workflow: граф стадий поверх боевого реестра узлов."""
+) -> list[str]:
+    """Инструмент workflow: граф стадий поверх боевого реестра узлов.
+
+    Возвращает имена зарегистрированных инструментов: их вызовы идут стадиями.
+    """
     from boba.chainlit.agent.tools.workflow import (  # noqa: PLC0415
         build_workflow_tool,
     )
 
     meta = bind(raw_config, "tool.workflow", PluginMeta)
     if not meta.enable:
-        return
+        return []
 
     if not has_bwrap():
         logger.warning(
             "[tool.workflow] is enabled, but bubblewrap (bwrap) is not in PATH — "
             "workflow was not registered",
         )
-        return
+        return []
 
     built = build_workflow_tool(launcher)
     if built.name not in meta.tools:
-        return
+        return []
 
     roles_by_tool[built.name] = meta.roles_of(built.name)
     tools.append(built)
+
+    return [built.name]
 
 
 def load_tools(raw_config: DictConfig) -> ToolRegistry:
@@ -609,10 +626,13 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
     logger.info("stage registry: %s", ", ".join(sorted(registry.names())) or "empty")
 
     node_access = NodeAccess()
-    caller = SandboxCaller(registry, node_access, _sandbox_path_vars)
+    caller = SandboxCaller(
+        registry, node_access, _sandbox_path_vars, StreamJournalHub.get()
+    )
     shared = SharedLauncher(caller)
 
     tools: list[BaseTool] = []
+    stage_tools: list[str] = []
     roles_by_tool: dict[str, list[str]] = {}
     for section in sections:
         built = _build_section(section, shared)
@@ -624,14 +644,15 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
 
         tools.extend(built)
 
-        _mark_streamable(section.plugin, built)
+        stage_tools.extend(_stage_tools(section, built))
 
-    _load_workflow_tools(raw_config, tools, roles_by_tool, caller)
+    stage_tools.extend(_load_workflow_tools(raw_config, tools, roles_by_tool, caller))
+
+    _bind_panel(registry, stage_tools)
 
     access = ToolAccess(roles_by_tool)
     node_access.bind(access)
     ToolRunLogger.guard_all(tools)
-    ToolStreamTapGuard.guard_all(tools)
     CancellableTools.guard_all(tools)
     ToolAccessGuard.guard_all(tools, access, current_user_roles)
     ToolErrorGuard.guard_all(tools)

@@ -1,13 +1,12 @@
 """Tool bash: команда пользователя одним узлом графа стадий.
 
 Фасад строит вырожденный WorkflowSpec из узла bash, отдаёт его порту запуска и
-собирает ответ из головы канала данных и процессных фактов стадии. Полный
-поток команды живёт в журнале стадии; в ленту едет только голова.
+собирает ответ из головы журнала канала данных и процессных фактов стадии.
+Полный поток команды живёт в журнале стадии; в ленту едет только голова.
 """
 
 from __future__ import annotations
 
-import codecs
 from typing import Annotated, ClassVar
 
 from langchain.tools import tool
@@ -15,60 +14,20 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.tool.shell.protocol import BashArgs, BashStage
-from boba.toolkit.channels import ByteText, ChannelSink
+from boba.toolkit.channels import Channel
 from boba.toolkit.launcher import (
+    ChannelHead,
     ErrorKind,
     LauncherError,
     LauncherFactory,
+    StageFailure,
     StageRun,
     ToolLauncher,
 )
 from boba.toolkit.result import JsonResult, ToolResult, pack_result
-from boba.toolkit.workflow import WorkflowError
+from boba.toolkit.workflow import WorkflowError, WorkflowOutcome
 
-__all__ = ["BashRun", "StdoutHead", "build_bash_tool"]
-
-
-class StdoutHead(ChannelSink):
-    """Голова байтового потока в текст: хвост за потолком отмечается, но не хранится."""
-
-    def __init__(self, max_bytes: int) -> None:
-        if max_bytes <= 0:
-            msg = f"max_bytes must be positive, got {max_bytes}"
-            raise ValueError(msg)
-
-        self._max_bytes = max_bytes
-        self._decoder = codecs.getincrementaldecoder(ByteText.ENCODING)(
-            ByteText.ERRORS
-        )
-        self._parts: list[str] = []
-        self._taken = 0
-        self._truncated = False
-
-    @property
-    def truncated(self) -> bool:
-        return self._truncated
-
-    def feed(self, data: bytes) -> None:
-        room = self._max_bytes - self._taken
-
-        if room <= 0:
-            self._truncated = True
-            return
-
-        head = data[:room]
-
-        if len(head) < len(data):
-            self._truncated = True
-
-        self._taken += len(head)
-        self._parts.append(self._decoder.decode(head))
-
-    def close(self) -> None:
-        self._parts.append(self._decoder.decode(b"", final=True))
-
-    def text(self) -> str:
-        return "".join(self._parts)
+__all__ = ["BashRun", "build_bash_tool"]
 
 
 class BashAnswer(BaseModel):
@@ -107,8 +66,6 @@ class BashRun:
         self._max_output_bytes = max_output_bytes
 
     def run(self, command: str, stdin: str) -> ToolResult:
-        head = StdoutHead(self._max_output_bytes)
-
         literal: str | None = None
         if stdin:
             literal = stdin
@@ -119,19 +76,18 @@ class BashRun:
             outcome = self._run.call(
                 self.STAGE,
                 args.model_dump(mode="json"),
-                sink=head,
                 stdin=literal,
             )
         except (LauncherError, WorkflowError) as exc:
-            head.close()
+            head = self._head(StageFailure.outcome_of(exc))
             return JsonResult(ok=False, payload=self._failed(head, exc))
 
-        head.close()
+        head = self._head(outcome)
 
         stage = outcome.outcome_of(self.STAGE)
         answer = BashAnswer(
             exit_code=stage.exit_code,
-            stdout=head.text(),
+            stdout=head.text,
             truncated_stdout=head.truncated,
             duration_ms=stage.duration_ms,
             timed_out=stage.timed_out,
@@ -140,11 +96,20 @@ class BashRun:
 
         return JsonResult(ok=True, payload=answer.model_dump(mode="json"))
 
+    def _head(self, outcome: WorkflowOutcome) -> ChannelHead:
+        """Голова журнала продукта: stdout команды течёт в tool_payload."""
+        return self._run.head(
+            outcome,
+            self.STAGE,
+            Channel.TOOL_PAYLOAD,
+            self._max_output_bytes,
+        )
+
     @staticmethod
-    def _failed(head: StdoutHead, error: Exception) -> dict[str, object]:
+    def _failed(head: ChannelHead, error: Exception) -> dict[str, object]:
         """Голова вывода остаётся в ответе: команда успела что-то напечатать."""
         answer = BashFailureAnswer(
-            stdout=head.text(),
+            stdout=head.text,
             truncated_stdout=head.truncated,
             error_kind=ErrorKind.of(error),
             message=str(error),

@@ -213,7 +213,11 @@ class SandboxProfile(BaseModel):
     )
     max_output_bytes: int = Field(
         ge=1024,
-        description="Лимит stdout И stderr по отдельности; сверх — обрезка.",
+        description=(
+            "Голова журнала канала, уезжающая в ответ модели, байт. "
+            "Записи не касается: в файл канала пишется весь поток, "
+            "границей служит квота тома журналов."
+        ),
     )
     cgroup_base: str = Field(
         description=(

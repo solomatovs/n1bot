@@ -402,17 +402,16 @@ class LocalStorageConfig(BaseModel):
 
 
 class StreamJournalConfig(BaseModel):
-    """Журнал живого вывода инструментов: служебный том на пользователя."""
+    """Журнал вывода инструментов: служебный том на пользователя.
+
+    Том обязателен: вывод каждой стадии пишется в файл, читать панели и
+    модели больше неоткуда.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    enable: bool = Field(
-        default=False,
-        description="Писать вывод каждого вызова инструмента в журнал.",
-    )
-
     dir: str = Field(
-        default="",
+        min_length=1,
         description=(
             "Корень журналов: каталог, том на пользователя внутри; "
             "переполнение держит отдельная точка монтирования под корнем."
@@ -427,17 +426,6 @@ class StreamJournalConfig(BaseModel):
             "пока свободного меньше; 0 выключает ротацию."
         ),
     )
-
-    @model_validator(mode="after")
-    def _validate_enabled(self) -> Self:
-        if not self.enable:
-            return self
-
-        if not self.dir:
-            msg = "stream_journal: dir is required"
-            raise ValueError(msg)
-
-        return self
 
 
 class AppConfig(BaseModel):
@@ -494,10 +482,7 @@ class AppConfig(BaseModel):
 
     stream_journal: Annotated[
         StreamJournalConfig,
-        Field(
-            default_factory=StreamJournalConfig,
-            description="Журнал живого вывода инструментов.",
-        ),
+        Field(description="Журнал вывода инструментов: том обязателен."),
     ]
 
     sandbox: Annotated[

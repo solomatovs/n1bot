@@ -19,7 +19,8 @@ from boba.tool.pg.protocol import (
     PgStage,
 )
 from boba.tool.pg.stages import PgCopyNode, PgQueryNode
-from boba.toolkit.channels import ChannelSink, StreamCodec
+from boba.toolkit.channels import ChannelSink, StreamCodec, StreamKey
+from boba.toolkit.launcher import ChannelHead
 from boba.toolkit.result import ErrorResult, PgCopyTextResult, TableResult, ToolArtifact
 from boba.toolkit.sql import UnknownConnectionError
 from boba.toolkit.workflow import WorkflowOutcome, WorkflowSpec
@@ -61,6 +62,10 @@ class _StageLauncher:
             sink.close()
 
         return WorkflowOutcome(stages=(), trailers={stage: dict(self._trailer)})
+
+    def head(self, key: StreamKey, max_bytes: int) -> ChannelHead:
+        """Журнала у тестового исполнителя нет: голова канала пуста."""
+        return ChannelHead.empty()
 
 
 def _rows_trailer(truncated: bool) -> dict[str, Any]:

@@ -8,11 +8,13 @@ import shutil
 import subprocess
 from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any
 
 import pydantic
 import pytest
+from journal_stand import JournalStand
 
 from boba.chainlit.chat.data.storage import (
     ImageStorageClient,
@@ -173,6 +175,7 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
         StageRegistry(defs),
         AllowAllNodes(),
         lambda: {"user_id": "7", "thread_id": thread_id},
+        JournalStand.journal(),
     )
 
     def launchers(tool: str):
@@ -724,7 +727,13 @@ class TestLiveImage:
         futures = []
         with ThreadPoolExecutor(max_workers=2) as pool:
             for i in range(2):
-                futures.append(pool.submit(_invoke, tool, f"echo {i} > par-{i}.txt"))
+                # контекст вызова в чужой поток едет копией, как у langchain
+                context = copy_context()
+                futures.append(
+                    pool.submit(
+                        context.run, _invoke, tool, f"echo {i} > par-{i}.txt"
+                    )
+                )
         for future in futures:
             assert future.result()["exit_code"] == 0
         both = _invoke(tool, "cat par-0.txt par-1.txt")

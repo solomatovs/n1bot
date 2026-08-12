@@ -43,12 +43,9 @@ from boba.chainlit.chat.data.storage import (
     StorageFullError,
     StorageNotFoundError,
 )
-from boba.chainlit.chat.data.stream_journal import (
-    StreamJournalError,
-    StreamJournalHub,
-    StreamKey,
-)
 from boba.chainlit.infra.config import LocalStorageConfig
+from boba.sandbox.journal import JournalError, StreamJournalHub
+from boba.toolkit.channels import Channel, StreamKey
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
@@ -880,11 +877,12 @@ class AttachmentServing:
 
 
 class StreamServing:
-    """Отдаёт .log вызова из тома журнала тем же StreamedFile, что и вложения.
+    """Отдаёт .log канала из тома журнала тем же StreamedFile, что и вложения.
 
     Журнал лежит в каталоге служебного тома — обычная ФС, поэтому источником
     служит LocalStorageClient над корнем тома пользователя; клиент на том
-    кэшируется.
+    кэшируется. Пользователя даёт сессия, а не адрес: чужой журнал по ссылке
+    не читается.
     """
 
     MIME: ClassVar[str] = "text/plain; charset=utf-8"
@@ -894,41 +892,51 @@ class StreamServing:
         self._policy = policy
         self._files: dict[str, StreamedFile] = {}
 
-    async def serve(
+    async def serve(  # noqa: PLR0913
         self,
         request: Request,
         thread_id: str,
         call_id: str,
+        stage: str,
+        channel: str,
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
     ) -> Response:
         if not isinstance(current_user, PersistedUser):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-        journal = StreamJournalHub.get()
-        if journal is None:
-            raise HTTPException(status_code=404, detail="Stream not found")
+        key = self._key(str(current_user.id), thread_id, call_id, stage, channel)
 
         try:
-            key = StreamKey(
-                user_id=str(current_user.id), thread_id=thread_id, call_id=call_id
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail="Stream not found") from e
-
-        try:
+            journal = StreamJournalHub.get()
             root = journal.vault_root(key.user_id)
-        except StreamJournalError as e:
+        except JournalError as e:
             raise HTTPException(
                 status_code=503, detail="Stream vault unavailable"
             ) from e
 
-        disposition = f'attachment; filename="{key.call_id}.log"'
+        disposition = f'attachment; filename="{os.path.basename(key.rel_log())}"'
         return await self._files_for(root).respond(
             key.rel_log(),
             mime=self.MIME,
             range_header=request.headers.get(FileHeader.RANGE, ""),
             content_disposition=disposition,
         )
+
+    @staticmethod
+    def _key(
+        user_id: str, thread_id: str, call_id: str, stage: str, channel: str
+    ) -> StreamKey:
+        """Адрес журнала из пути запроса; неразбираемый адрес — 404."""
+        try:
+            return StreamKey(
+                user_id=user_id,
+                thread_id=thread_id,
+                call_id=call_id,
+                stage=stage,
+                channel=Channel(channel),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail="Stream not found") from e
 
     def _files_for(self, root: str) -> StreamedFile:
         files = self._files.get(root)
