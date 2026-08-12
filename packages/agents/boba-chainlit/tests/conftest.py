@@ -1,7 +1,7 @@
 """Общие фикстуры для тестов PostgresDataLayer."""
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +19,8 @@ from boba.chainlit.chat.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
+from boba.sandbox.runner import ToolCallContext
+from boba.stand.journal import CallStand
 from boba.settings import bind, build_app_config
 
 TEST_DB = "boba_chainlit_test"
@@ -205,3 +207,10 @@ async def seeded(
         messages=messages,
         answer_step_id=answer_step_id,
     )
+
+
+@pytest.fixture(autouse=True)
+def tool_call_context() -> Iterator[ToolCallContext]:
+    """Адрес вызова для журнала: песочница без контекста не запускается."""
+    with CallStand.bound() as context:
+        yield context

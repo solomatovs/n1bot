@@ -32,15 +32,19 @@ from test_canvas_e2e import (  # noqa: F401
 
 __all__ = ["anyio_backend", "app_server", "panel"]
 
-from boba.chainlit.chat.data.stream_journal import DirVault, StreamJournal, StreamKey
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
+from boba.sandbox.journal import DirVault, StreamJournal
+from boba.sandbox.runner import ToolCallContext
 from boba.settings import bind, build_app_config
+from boba.toolkit.channels import Channel
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 CALL_ID = "call_e2e_stream0001"
+STAGE = "bash"
+"""Узел стадии одиночного вызова bash: его id и есть имя инструмента."""
 LIVE_CALL_ID = "call_e2e_live0001"
 LINES = 200000
 LIVE_LINES = 15000
@@ -141,28 +145,33 @@ async def _seed_thread_and_button(config: AppConfig, thread_id: str) -> None:
 
 def _seed_journals(config: AppConfig, thread_id: str) -> None:
     """Журналы вызовов — в служебный том до старта работы приложения с ним."""
-    journal_cfg = config.stream_journal
-    vault = DirVault(journal_cfg.dir)
-    journal = StreamJournal(vault, reserve_bytes=0)
+    journal = StreamJournal(DirVault(config.stream_journal.dir), reserve_bytes=0)
 
-    key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=CALL_ID)
-    recorder = journal.recorder(key, "bash", lambda: None, frozenset())
-    recorder.feed(f"{FIRST_LINE}\n".encode())
+    done = journal.open(
+        ToolCallContext(
+            user_id=USER_ID, thread_id=thread_id, call_id=CALL_ID, tool="bash"
+        )
+    )
+    sink = done.sink(STAGE, Channel.TOOL_PAYLOAD)
+    sink.feed(f"{FIRST_LINE}\n".encode())
     chunk: list[str] = []
     for index in range(1, LINES):
         chunk.append(f"L{index:07d},row\n")
         if len(chunk) >= 5000:
-            recorder.feed("".join(chunk).encode())
+            sink.feed("".join(chunk).encode())
             chunk.clear()
-    recorder.feed("".join(chunk).encode())
-    recorder.close("rc=0")
+    sink.feed("".join(chunk).encode())
+    sink.close()
+    done.close("")
 
-    live_key = StreamKey(
-        user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID
+    live = journal.open(
+        ToolCallContext(
+            user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID, tool="bash"
+        )
     )
-    live = journal.recorder(live_key, "bash", lambda: None, frozenset())
+    live_sink = live.sink(STAGE, Channel.TOOL_PAYLOAD)
     for index in range(LIVE_LINES):
-        live.feed(f"V{index:07d},row\n".encode())
+        live_sink.feed(f"V{index:07d},row\n".encode())
     # живой журнал не закрывается: вызов «ещё идёт» с точки зрения чтения
 
 

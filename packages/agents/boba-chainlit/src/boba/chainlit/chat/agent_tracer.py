@@ -14,7 +14,6 @@ from typing_extensions import ParamSpec, override
 
 from boba.chainlit.chat.errors import show_error
 from boba.chainlit.rendering.chat_view import ChatView
-from boba.chainlit.rendering.stream_view import StreamNote, ToolStreams
 from chainlit.context import context_var
 from chainlit.step import Step
 
@@ -46,14 +45,12 @@ def _visible_failure(
 class AgentTracer(AsyncBaseTracer):
     """Трасит один агентский цикл и рисует step-иерархию процесса ответа."""
 
-    def __init__(self, view: ChatView, user_id: str) -> None:
+    def __init__(self, view: ChatView) -> None:
         super().__init__()
         self._context = context_var.get()
         self._view = view
-        self._user_id = user_id
         self._reasoning: dict[str, str] = {}
         self._tool_steps: dict[str, Step] = {}
-        self._stream_calls: dict[str, str] = {}
 
     @property
     def view(self) -> ChatView:
@@ -160,7 +157,6 @@ class AgentTracer(AsyncBaseTracer):
         self._tool_steps[str(run_id)] = await self._view.tool_started(
             tool_name, inputs, call_key
         )
-        self._begin_stream(str(run_id), tool_name, call_key)
         return await super().on_tool_start(
             serialized,
             input_str,
@@ -173,39 +169,6 @@ class AgentTracer(AsyncBaseTracer):
             **kwargs,
         )
 
-    def _begin_stream(
-        self, run_key: str, tool_name: str, call_key: str | None
-    ) -> None:
-        """Открывает журнал живого вывода вызова.
-
-        В тап рекордер ставит обвязка ToolStreamTapGuard уже в потоке
-        инструмента: колбэки sync-тулов langchain гоняет в чужом event loop'е,
-        и contextvar отсюда до функции тула не доходит.
-        """
-        if not call_key:
-            return
-
-        if not self._user_id:
-            return
-
-        if not ToolStreams.streamable(tool_name):
-            return
-
-        stream = ToolStreams.begin(
-            self._user_id, self._view.thread_id, call_key, tool_name
-        )
-        if stream is None:
-            return
-
-        self._stream_calls[run_key] = call_key
-
-    def _finish_stream(self, run_key: str, note: StreamNote) -> None:
-        call_id = self._stream_calls.pop(run_key, None)
-        if call_id is None:
-            return
-
-        ToolStreams.finish(self._view.thread_id, call_id, str(note))
-
     @override
     @_visible_failure
     async def on_tool_end(
@@ -216,7 +179,6 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        self._finish_stream(str(run_id), StreamNote.FINISHED)
         if step := self._tool_steps.pop(str(run_id), None):
             if getattr(output, "status", None) == "error":
                 await self._view.tool_failed(step, getattr(output, "content", output))
@@ -235,9 +197,6 @@ class AgentTracer(AsyncBaseTracer):
     async def stop_pending(self, note: str) -> None:
         """Закрыть шаги инструментов, оставшиеся в работе после остановки."""
         self._set_context()
-        while self._stream_calls:
-            run_key, _ = next(iter(self._stream_calls.items()))
-            self._finish_stream(run_key, StreamNote.STOPPED)
         while self._tool_steps:
             _, step = self._tool_steps.popitem()
             await self._view.tool_stopped(step, note)
@@ -254,7 +213,6 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        self._finish_stream(str(run_id), StreamNote.FAILED)
         if step := self._tool_steps.pop(str(run_id), None):
             await self._view.tool_failed(step, error)
         return await super().on_tool_error(

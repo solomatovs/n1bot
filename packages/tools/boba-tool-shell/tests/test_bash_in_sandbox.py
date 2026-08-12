@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from boba.sandbox.caller import SandboxCaller
+from boba.sandbox.runner import ToolCallContext
 from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.stand.flow import SandboxMarks, StandSandbox
+from boba.stand.journal import CallStand
 from boba.stand.shell import BashNodes
 from boba.tool.shell.protocol import BashArgs, BashStage
-from boba.tool.shell.tools import BashRun, StdoutHead
+from boba.tool.shell.tools import BashRun
+from boba.toolkit.channels import Channel
 from boba.toolkit.launcher import TextCollector
 from boba.toolkit.result import JsonResult, ToolResult
 from boba.toolkit.workflow import EdgeSpec, StageSpec, WorkflowSpec
@@ -35,7 +36,10 @@ def _caller() -> SandboxCaller:
     )
 
     return SandboxCaller(
-        StageRegistry({BashStage.NAME: definition}), _allow_all, dict
+        StageRegistry({BashStage.NAME: definition}),
+        _allow_all,
+        dict,
+        CallStand.journal(),
     )
 
 
@@ -87,6 +91,18 @@ class TestBashFacade:
         assert payload["truncated_stdout"] is True
         assert payload["stdout"] == "x" * 16
 
+    def test_the_ceiling_does_not_cut_the_journal(self) -> None:
+        """Потолок — лимит чтения для модели; в файл канала пишется всё."""
+        run = BashRun(_caller(), 16)
+
+        run.run("printf 'x%.0s' $(seq 1 4096)", "")
+
+        key = ToolCallContext.current().key(BashStage.NAME, Channel.TOOL_PAYLOAD)
+        window = CallStand.journal().slice_at(key, 0)
+
+        assert window is not None
+        assert window.size == 4096
+
     def test_stderr_of_the_command_does_not_pollute_the_stream(self) -> None:
         run = BashRun(_caller(), MAX_HEAD)
 
@@ -134,12 +150,12 @@ class TestBashInGraph:
             ),
             edges=(EdgeSpec(src="src", dst="dst"),),
         )
-        head = StdoutHead(MAX_HEAD)
+        collector = TextCollector(max_chars=MAX_HEAD, limit_rows=None, header_lines=0)
 
-        outcome = caller.call(spec, {"dst": head})
-        head.close()
+        outcome = caller.call(spec, {"dst": collector})
+        collector.close()
 
-        assert head.text() == "1\n"
+        assert collector.text() == "1\n"
         assert outcome.outcome_of("dst").exit_code == 0
 
     def test_consumer_that_never_reads_is_not_a_failure(self) -> None:
@@ -156,28 +172,11 @@ class TestBashInGraph:
             ),
             edges=(EdgeSpec(src="src", dst="dst"),),
         )
-        head = StdoutHead(MAX_HEAD)
+        collector = TextCollector(max_chars=MAX_HEAD, limit_rows=None, header_lines=0)
 
-        outcome = caller.call(spec, {"dst": head})
-        head.close()
+        outcome = caller.call(spec, {"dst": collector})
+        collector.close()
 
-        assert head.text() == "ok\n"
+        assert collector.text() == "ok\n"
         assert outcome.outcome_of("dst").exit_code == 0
 
-
-class TestStdoutHead:
-    """Голова потока: хвост за потолком отмечается, но не хранится."""
-
-    def test_multibyte_boundary_is_decoded(self) -> None:
-        head = StdoutHead(1024)
-
-        raw = "жёлтый".encode()
-        head.feed(raw[:3])
-        head.feed(raw[3:])
-        head.close()
-
-        assert (head.text(), head.truncated) == ("жёлтый", False)
-
-    def test_zero_ceiling_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="max_bytes"):
-            StdoutHead(0)

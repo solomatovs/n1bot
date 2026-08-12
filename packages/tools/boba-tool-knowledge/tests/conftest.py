@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -16,9 +16,11 @@ import pytest
 from pydantic import BaseModel
 
 from boba.sandbox import SandboxCaller, SandboxToolConfig
+from boba.sandbox.runner import ToolCallContext
 from boba.sandbox.workflow import ArgsEnricher, StageDef, StageRegistry
-from boba.toolkit.channels import ChannelSink
-from boba.toolkit.launcher import LauncherFactory, ToolLauncher
+from boba.stand.journal import CallStand
+from boba.toolkit.channels import ChannelSink, StreamKey
+from boba.toolkit.launcher import ChannelHead, LauncherFactory, ToolLauncher
 from boba.toolkit.workflow import (
     StageContract,
     StageOutcome,
@@ -195,7 +197,12 @@ class StageTestRegistry:
         profile: dict[str, Any],
     ) -> SandboxCaller:
         """Исполнитель поверх реестра: права в тестах открыты всем узлам."""
-        return SandboxCaller(cls.of(nodes, profile), lambda _tool: True, dict)
+        return SandboxCaller(
+            cls.of(nodes, profile),
+            lambda _tool: True,
+            dict,
+            CallStand.journal(),
+        )
 
     @classmethod
     def launchers(
@@ -260,3 +267,14 @@ class RecordingLauncher(ToolLauncher):
                 sink.close()
 
         return WorkflowOutcome(stages=stages, trailers=trailers)
+
+    def head(self, key: StreamKey, max_bytes: int) -> ChannelHead:
+        """Журнала у тестового исполнителя нет: голова канала пуста."""
+        return ChannelHead.empty()
+
+
+@pytest.fixture(autouse=True)
+def tool_call_context() -> Iterator[ToolCallContext]:
+    """Адрес вызова для журнала: песочница без контекста не запускается."""
+    with CallStand.bound() as context:
+        yield context

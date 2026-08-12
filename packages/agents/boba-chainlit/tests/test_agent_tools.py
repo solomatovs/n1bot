@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 from typing import cast
 
 import pytest
 from bash_stage import BashStageSetup
+from chainlit.context import init_http_context
+from chainlit.user import PersistedUser
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
+from boba.chainlit.agent.tools.run_log import ToolRunLogger
 from boba.sandbox.argv import ChannelArgv, WrapArgsCodec
 from boba.sandbox.profile import BindSpec, SandboxProfile, SandboxToolConfig
+from boba.stand.journal import CallStand
+from boba.tool.shell import BashStage
+from boba.toolkit.channels import Channel, StreamKey
 from boba.toolkit.result import JsonResult
 
 
@@ -338,3 +346,61 @@ class TestBashTool:
         payload = self._invoke(tool, command="echo data > out.txt")
         assert payload["exit_code"] == 0
         assert (tmp_path / "7" / "t1" / "out.txt").read_text() == "data\n"
+
+
+@pytest.mark.skipif(
+    shutil.which("bwrap") is None,
+    reason="требуется bubblewrap (`apt install bubblewrap`)",
+)
+class TestBashJournalAddress:
+    """Адрес журнала собирается из сессии и id вызова langchain.
+
+    Стык обвязки и песочницы: id вызова доезжает до ToolCallContext полем
+    InjectedToolCallId, а песочница называет им файлы каналов.
+    """
+
+    USER_ID = "7"
+    THREAD_ID = "th-journal-address"
+    CALL_ID = "call-bash"
+    """id из _tool_call: langchain отдаёт его инструменту вместе с аргументами."""
+
+    def _in_session(self, tool: BaseTool, command: str) -> None:
+        async def scenario() -> None:
+            user = PersistedUser(
+                id=self.USER_ID,
+                identifier="tester",
+                createdAt="2026-01-01T00:00:00Z",
+            )
+            init_http_context(user=user, thread_id=self.THREAD_ID)
+            tool.invoke(_tool_call("bash", {"command": command, "stdin": ""}))
+
+        asyncio.run(scenario())
+
+    def _key(self, channel: Channel) -> StreamKey:
+        return StreamKey(
+            user_id=self.USER_ID,
+            thread_id=self.THREAD_ID,
+            call_id=self.CALL_ID,
+            stage=BashStage.NAME,
+            channel=channel,
+        )
+
+    def test_the_call_id_of_the_llm_names_the_files(self, tmp_path: Path) -> None:
+        tool = TestBashTool._make_tool(tmp_path)
+        ToolRunLogger.guard_all([tool])
+
+        self._in_session(tool, "echo привет; echo шум >&2")
+
+        journal = CallStand.journal()
+
+        payload = journal.slice_at(self._key(Channel.TOOL_PAYLOAD), 0)
+        assert payload is not None
+        assert payload.text == "привет\n"
+        assert payload.closed is True
+
+        stderr = journal.slice_at(self._key(Channel.TOOL_STDERR), 0)
+        assert stderr is not None
+        assert "шум" in stderr.text
+
+        root = Path(journal.vault_root(self.USER_ID)) / self.THREAD_ID
+        assert (root / f"{self.CALL_ID}.{BashStage.NAME}.tool_payload.log").exists()

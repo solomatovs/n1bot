@@ -36,6 +36,7 @@ from boba.chainlit.infra.config import (
     DataLayerConfig,
     LocalStorageConfig,
     OpenAiConfig,
+    StreamJournalConfig,
 )
 from boba.chainlit.infra.di import Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
@@ -43,6 +44,7 @@ from boba.chainlit.infra.session import current_user_roles
 from boba.db.pgvector import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox import CgroupManager
+from boba.sandbox.journal import DirVault, StreamJournal, StreamJournalHub
 from boba.settings import bind, build_app_config
 from boba.tool.kb import PostgresKnowledgeBaseConfig
 
@@ -82,6 +84,29 @@ def get_local_storage_config(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ) -> LocalStorageConfig:
     return app_config.storage
+
+
+def get_stream_journal_config(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> StreamJournalConfig:
+    return app_config.stream_journal
+
+
+def stream_journal(
+    cfg: Annotated[StreamJournalConfig, Depends(get_stream_journal_config)],
+) -> StreamJournal:
+    """Журнал вывода инструментов: том проверяется на старте, не при вызове.
+
+    Журнал один на приложение, и его адресуют слои без DI (раздача файлов,
+    tools уборки тома), поэтому он же кладётся в StreamJournalHub.
+    """
+    vault = DirVault(cfg.dir)
+    vault.ensure_root()
+
+    journal = StreamJournal(vault, cfg.reserve_bytes)
+    StreamJournalHub.configure(journal)
+
+    return journal
 
 
 def storage_provider(

@@ -37,10 +37,11 @@ def run_app(config_path: Path):
 
     _use_file_serving(c)
 
+    # журнал — до сборки инструментов: без тома песочнице некуда писать
+    _use_stream_journal(c)
+
     container = _use_di_container(app, c)
     app.state.container = container
-
-    _use_stream_journal(c)
 
     _use_canvas_viewers()
 
@@ -164,26 +165,19 @@ def _use_file_serving(c: AppConfig) -> None:
 
 
 def _use_stream_journal(c: AppConfig) -> None:
-    """Журнал вывода инструментов; без секции в конфиге потоков нет."""
+    """Журнал вывода инструментов: том приложения и раздача файлов каналов.
+
+    Журнал обязателен — без тома приложение не стартует; на события журнала
+    панель подписывается сама, пока показывает канал.
+    """
     from boba.chainlit.chat.data.object_key import StreamUrl  # noqa: PLC0415
-    from boba.chainlit.chat.data.stream_journal import (  # noqa: PLC0415
-        DirVault,
-        StreamJournal,
-    )
     from boba.chainlit.chat.data.upload import (  # noqa: PLC0415
         StreamServing,
         UploadPolicy,
     )
-    from boba.chainlit.rendering.stream_view import ToolStreams  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    journal_cfg = c.stream_journal
-    if not journal_cfg.enable:
-        return
-
-    vault = DirVault(journal_cfg.dir)
-
-    ToolStreams.configure(StreamJournal(vault, journal_cfg.reserve_bytes))
+    providers.stream_journal(c.stream_journal)
 
     serving = StreamServing(c.storage, UploadPolicy())
     chainlit_app.add_api_route(

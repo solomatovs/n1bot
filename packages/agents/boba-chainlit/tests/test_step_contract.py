@@ -8,6 +8,7 @@ tool/chart — tool_call_id. Любое расхождение id ломает r
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from typing import Any, cast
 from uuid import uuid4
 
@@ -29,9 +30,14 @@ ANSWER_ID = "ai-msg-2"
 
 
 @pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Трасеру нужен контекст только чтобы восстановить его в коллбэках."""
-    context_var.set(cast("ChainlitContext", object()))
+def chainlit_context() -> Iterator[None]:
+    """Трасеру нужен контекст только чтобы восстановить его в коллбэках.
+
+    Заглушка снимается за собой: в чужих тестах она ломает разбор сессии.
+    """
+    token = context_var.set(cast("ChainlitContext", object()))
+    yield
+    context_var.reset(token)
 
 
 def run(coro: Any) -> Any:
@@ -48,7 +54,7 @@ class TestStepContract:
         sink = RecordingSink()
         view = ChatView(THREAD, sink, user_name="tester")
         view.begin_turn(TURN_KEY)
-        tracer = AgentTracer(view, "1")
+        tracer = AgentTracer(view)
 
         llm_run = uuid4()
         await tracer.on_llm_start({}, [""], run_id=llm_run)

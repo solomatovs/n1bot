@@ -18,6 +18,7 @@ import pydantic
 from langchain_core.tools import BaseTool
 
 from boba.sandbox import SandboxCaller
+from boba.stand.journal import CallStand
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.tool.shell import BashStage, build_bash_tool
@@ -78,7 +79,12 @@ class BashStageSetup:
         profile: SandboxProfile,
         path_vars: Callable[[], Mapping[str, str]],
     ) -> LauncherFactory:
-        caller = SandboxCaller(cls.registry(profile), AllowAllNodes(), path_vars)
+        caller = SandboxCaller(
+            cls.registry(profile),
+            AllowAllNodes(),
+            path_vars,
+            CallStand.journal(),
+        )
 
         def launcher(tool: str) -> ToolLauncher:
             return caller

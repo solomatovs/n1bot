@@ -1,7 +1,8 @@
 """Реализация порта запуска: любой вызов — граф стадий в WorkflowRunner.
 
 Одиночный вызов фасада — вырожденный граф из одного узла; отдельного пути
-исполнения нет.
+исполнения нет. Контекст вызова (адресат журнала) берётся здесь: ниже по
+стеку он едет явным параметром.
 
 Ошибки:
 SandboxPayloadError — исполнение сорвалось либо контракт каналов нарушен.
@@ -14,11 +15,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
-from boba.sandbox.runner import FanoutSink
+from boba.sandbox.journal import JournalError, StreamJournal
+from boba.sandbox.runner import ToolCallContext
 from boba.sandbox.workflow import StageRegistry, WorkflowRunner
-from boba.toolkit.channels import ChannelSink
-from boba.toolkit.launcher import LauncherError, PayloadFailureError, ToolLauncher
-from boba.toolkit.stream import StreamSink, ToolStreamTap
+from boba.toolkit.channels import ChannelSink, StreamKey
+from boba.toolkit.launcher import (
+    ChannelHead,
+    PayloadFailureError,
+    StageFailureError,
+    ToolLauncher,
+    WorkflowStageError,
+)
 from boba.toolkit.workflow import (
     AccessPredicate,
     WorkflowError,
@@ -29,29 +36,15 @@ from boba.toolkit.workflow import (
 __all__ = [
     "SandboxCaller",
     "SandboxPayloadError",
-    "TapChannelSink",
 ]
 
 
-class SandboxPayloadError(LauncherError):
-    """Исполнение сорвалось или стадия нарушила контракт: итогу доверять нельзя."""
+class SandboxPayloadError(StageFailureError):
+    """Исполнение сорвалось или стадия нарушила контракт: итогу доверять нельзя.
 
-
-class TapChannelSink(ChannelSink):
-    """ВРЕМЕННЫЙ адаптер: байты канала — в ToolStreamTap панели и журнала.
-
-    Умирает на этапе 4 вместе с ToolStreamTap: рекордер журнала будет
-    открывать сам исполнитель по контексту вызова.
+    Итоги стадий с адресами журналов приложены, когда стадии успели стартовать:
+    по ним фасад читает голову канала сорвавшегося вызова.
     """
-
-    def __init__(self, tap: StreamSink) -> None:
-        self._tap = tap
-
-    def feed(self, data: bytes) -> None:
-        self._tap.feed(data)
-
-    def close(self) -> None:
-        """Тап живёт дольше вызова: его закрывает владелец рекордера."""
 
 
 class SandboxCaller(ToolLauncher):
@@ -66,8 +59,10 @@ class SandboxCaller(ToolLauncher):
         registry: StageRegistry,
         access: AccessPredicate,
         path_vars: Callable[[], Mapping[str, str]],
+        journal: StreamJournal,
     ) -> None:
-        self._runner = WorkflowRunner(registry, access, path_vars)
+        self._journal = journal
+        self._runner = WorkflowRunner(registry, access, path_vars, journal)
 
     def call(
         self,
@@ -79,52 +74,29 @@ class SandboxCaller(ToolLauncher):
         Коллекторы фасада читают продукт стадии по мере исполнения; трейлер
         фасад берёт из WorkflowOutcome по схеме реестра стадий.
         """
-        taps = self._payload_taps(spec, sinks)
-        stdout_taps = self._stdout_taps(spec)
+        call = ToolCallContext.current()
 
         try:
-            return self._runner.run(spec, taps, stdout_taps)
+            return self._runner.run(spec, call, sinks)
         except PayloadFailureError:
             raise
+        except WorkflowStageError as exc:
+            raise SandboxPayloadError(str(exc), exc.outcome) from exc
         except WorkflowError as exc:
             raise SandboxPayloadError(str(exc)) from exc
 
-    def _payload_taps(
-        self,
-        spec: WorkflowSpec,
-        sinks: Mapping[str, ChannelSink] | None,
-    ) -> dict[str, ChannelSink]:
-        """Sink'и фасада плюс временный tap живого потока (см. TapChannelSink)."""
-        taps: dict[str, ChannelSink] = {}
-        if sinks:
-            taps.update(sinks)
+    def head(self, key: StreamKey, max_bytes: int) -> ChannelHead:
+        """Голова журнала канала; журнал вызова к этому моменту дописан."""
+        try:
+            window = self._journal.head(key, max_bytes)
+        except JournalError as exc:
+            raise SandboxPayloadError(
+                f"journal of {key.rel_log()} is not readable: {exc}"
+            ) from exc
 
-        tap = ToolStreamTap.get()
-        if tap is None:
-            return taps
+        if window is None:
+            return ChannelHead.empty()
 
-        for node in spec.nodes:
-            adapter = TapChannelSink(tap)
+        truncated = window.end < window.size
 
-            base = taps.get(node.id)
-            if base is None:
-                taps[node.id] = adapter
-                continue
-
-            # живой вывод первым: пользователь видит и байты, упёршиеся в лимит
-            taps[node.id] = FanoutSink((adapter, base))
-
-        return taps
-
-    @staticmethod
-    def _stdout_taps(spec: WorkflowSpec) -> dict[str, ChannelSink]:
-        """Временный tap на tool_stdout каждого узла (этап 3, см. TapChannelSink)."""
-        tap = ToolStreamTap.get()
-        if tap is None:
-            return {}
-
-        taps: dict[str, ChannelSink] = {}
-        for node in spec.nodes:
-            taps[node.id] = TapChannelSink(tap)
-
-        return taps
+        return ChannelHead(text=window.text, truncated=truncated)

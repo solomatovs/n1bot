@@ -20,6 +20,7 @@ from bash_stage import AllowAllNodes
 from psycopg import sql
 
 from boba.chainlit.infra.plugins import ToolPlugins
+from boba.stand.journal import CallStand
 from boba.sandbox import (
     SandboxCaller,
     SandboxPayloadError,
@@ -134,7 +135,10 @@ class ToolSetup:
             defs[name] = StageDef.of(node, profile)
 
         caller = SandboxCaller(
-            StageRegistry(defs), AllowAllNodes(), ToolSetup.path_vars
+            StageRegistry(defs),
+            AllowAllNodes(),
+            ToolSetup.path_vars,
+            CallStand.journal(),
         )
 
         def launcher(tool: str) -> ToolLauncher:

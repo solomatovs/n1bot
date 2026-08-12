@@ -16,13 +16,19 @@ from typing import Any
 
 import pydantic
 import pytest
+from journal_stand import JournalStand
 from pydantic import BaseModel, ConfigDict, JsonValue
 
 from boba.cancellation import ToolStopped, TurnCancellation, turn_cancellation
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.profile import SandboxProfile
-from boba.sandbox.workflow import StageDef, StageRegistry, WorkflowRunner
-from boba.toolkit.channels import StreamFormat
+from boba.sandbox.workflow import (
+    GroupIds,
+    StageDef,
+    StageRegistry,
+    WorkflowRunner,
+)
+from boba.toolkit.channels import Channel, StreamFormat
 from boba.toolkit.workflow import (
     EmptyTrailer,
     StageContract,
@@ -718,7 +724,7 @@ def _ok_def(root: Path, **profile_kw: Any) -> StageDef:
 
 
 def _runner(registry: StageRegistry) -> WorkflowRunner:
-    return WorkflowRunner(registry, _allow_all, dict)
+    return WorkflowRunner(registry, _allow_all, dict, JournalStand.journal())
 
 
 def _proc_files(name: str) -> list[bytes]:
@@ -845,19 +851,19 @@ class TestWorkflowValidation:
         )
 
         with pytest.raises(WorkflowError, match="unknown workflow tool"):
-            runner.run(spec)
+            runner.run(spec, JournalStand.context())
 
     def test_denied_tool_rejected(self, tmp_path: Path) -> None:
         """Deny by default: без права на инструмент граф не стартует."""
         registry = StageRegistry({"src": _src_def(tmp_path)})
-        runner = WorkflowRunner(registry, _deny_all, dict)
+        runner = WorkflowRunner(registry, _deny_all, dict, JournalStand.journal())
 
         spec = WorkflowSpec.parse(
             {"nodes": [{"id": "a", "tool": "src", "args": {"chunks": 1}}]}
         )
 
         with pytest.raises(WorkflowError, match="not allowed"):
-            runner.run(spec)
+            runner.run(spec, JournalStand.context())
 
     def test_fd_budget_checked_before_pipes(self, tmp_path: Path) -> None:
         """Нехватка RLIMIT_NOFILE — внятная ошибка валидации, не сбой os.pipe()."""
@@ -882,7 +888,7 @@ class TestWorkflowValidation:
         resource.setrlimit(resource.RLIMIT_NOFILE, (cap, hard))
         try:
             with pytest.raises(WorkflowError, match="RLIMIT_NOFILE"):
-                runner.run(spec)
+                runner.run(spec, JournalStand.context())
         finally:
             resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
@@ -910,7 +916,7 @@ class TestChainAndFanout:
                 "edges": [{"src": "a", "dst": "b"}],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         a = outcome.trailer("a", SrcTrailer)
         b = outcome.trailer("b", SinkTrailer)
@@ -942,7 +948,7 @@ class TestChainAndFanout:
                 "edges": [{"src": "a", "dst": "b"}],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         assert outcome.trailer("a", SinkTrailer).got == len("seed")
         assert outcome.trailer("b", SinkTrailer).got == 0
@@ -974,7 +980,7 @@ class TestChainAndFanout:
                 "edges": [{"src": "a", "dst": "b"}],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         assert outcome.trailer("b", OkTrailer).ok is True
 
@@ -993,7 +999,7 @@ class TestChainAndFanout:
         spec = WorkflowSpec.parse(
             {"nodes": [{"id": "a", "tool": "ok", "args": {}, "stdin": "seed"}]}
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         assert outcome.trailer("a", OkTrailer).ok is True
         assert outcome.outcome_of("a").exit_code == 0
@@ -1021,7 +1027,7 @@ class TestChainAndFanout:
                 ],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         # источник отработал один раз: одна квитанция на весь веер
         assert outcome.trailer("a", SrcTrailer).chunks == 32
@@ -1059,7 +1065,7 @@ class TestChainAndFanout:
         )
 
         with pytest.raises(WorkflowError, match="stage c exited with code 2"):
-            runner.run(spec)
+            runner.run(spec, JournalStand.context())
 
         _assert_stages_gone()
         _assert_fds_restored(baseline)
@@ -1093,7 +1099,7 @@ class TestChainAndFanout:
                 ],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         assert outcome.outcome_of("a").exit_code == 0
         assert outcome.trailer("a", SrcTrailer).chunks == 64
@@ -1127,7 +1133,7 @@ class TestChainAndFanout:
         )
 
         with pytest.raises(WorkflowError, match="bytes_out mismatch"):
-            runner.run(spec)
+            runner.run(spec, JournalStand.context())
 
         _assert_stages_gone()
         _assert_fds_restored(baseline)
@@ -1170,7 +1176,7 @@ class TestByteTransparency:
                 "edges": [{"src": "a", "dst": "b"}],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         sent = outcome.trailer("a", BinarySrcTrailer)
         got = outcome.trailer("b", BinarySinkTrailer)
@@ -1208,7 +1214,7 @@ class TestByteTransparency:
         )
 
         with pytest.raises(WorkflowError, match="stage b exited with code 4"):
-            runner.run(spec)
+            runner.run(spec, JournalStand.context())
 
         _assert_stages_gone()
         _assert_fds_restored(baseline)
@@ -1246,7 +1252,7 @@ class TestSigpipeRule:
                 "edges": [{"src": "a", "dst": "h"}],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         assert outcome.outcome_of("a").exit_code == 141
         assert outcome.outcome_of("h").exit_code == 0
@@ -1278,7 +1284,7 @@ class TestSigpipeRule:
         )
 
         with pytest.raises(WorkflowError, match=r"stage hf exited with code 3"):
-            runner.run(spec)
+            runner.run(spec, JournalStand.context())
 
         _assert_stages_gone()
         _assert_fds_restored(baseline)
@@ -1341,7 +1347,7 @@ class TestGraphShutdown:
         )
 
         with pytest.raises(WorkflowError) as failure:
-            runner.run(spec)
+            runner.run(spec, JournalStand.context())
 
         elapsed = time.monotonic() - started
         assert elapsed < 30.0, f"deadline must fire in about 1s, took {elapsed:.2f}s"
@@ -1385,7 +1391,7 @@ class TestGraphShutdown:
             with turn_cancellation() as cancellation:
                 cancels.append(cancellation)
                 try:
-                    runner.run(spec)
+                    runner.run(spec, JournalStand.context())
                 except BaseException as exc:
                     errors.append(exc)
 
@@ -1465,7 +1471,7 @@ class TestMountGroup:
                 "edges": [{"src": "w", "dst": "r"}],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         # rc обеих стадий приехали строками wrap_result, иначе итог не собрался бы
         assert outcome.outcome_of("w").exit_code == 0
@@ -1476,6 +1482,18 @@ class TestMountGroup:
         reader = outcome.trailer("r", GotMarkerTrailer)
         assert reader.got == 64 * CHUNK
         assert reader.marker == "shared-workspace-proof"
+
+        # wrap-каналы группы стадиям не принадлежат: их журнал идёт под id группы
+        group_channels: set[Channel] = set()
+        stages: set[str] = set()
+        for key in outcome.journals:
+            stages.add(key.stage)
+            if key.stage.startswith(GroupIds.PREFIX):
+                group_channels.add(key.channel)
+
+        assert stages == {"w", "r", "g1"}
+        assert Channel.WRAP_RESULT in group_channels
+        assert Channel.WRAP_STDERR in group_channels
 
         _assert_fds_restored(baseline)
 
@@ -1510,7 +1528,7 @@ class TestMountGroup:
                 ],
             }
         )
-        outcome = runner.run(spec)
+        outcome = runner.run(spec, JournalStand.context())
 
         dark = outcome.trailer("dark", IfaceTrailer)
         net = outcome.trailer("net", IfaceTrailer)
@@ -1580,14 +1598,14 @@ class TestMountGroup:
 
         def run_group() -> None:
             try:
-                runner.run(spec)
+                runner.run(spec, JournalStand.context())
                 finish_times["group"] = time.monotonic()
             except BaseException as exc:
                 errors.append(exc)
 
         def run_single() -> None:
             try:
-                single_runner.run(single_spec)
+                single_runner.run(single_spec, JournalStand.context())
                 finish_times["single"] = time.monotonic()
             except BaseException as exc:
                 errors.append(exc)
@@ -1706,7 +1724,7 @@ class TestMountGroupCgroup:
         )
 
         with pytest.raises(WorkflowError) as failure:
-            runner.run(spec)
+            runner.run(spec, JournalStand.context())
 
         message = str(failure.value)
         assert "workflow stage oom exited with code 137" in message

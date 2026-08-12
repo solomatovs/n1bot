@@ -1,10 +1,11 @@
 """Tools stream_logs: занятость тома журналов вывода и уборка тредов.
 
-Журналы пишутся автоматически на каждый потоковый вызов инструмента; здесь
+Журналы пишутся автоматически на каждый вызов инструмента песочницы; здесь
 LLM смотрит, чем занят том пользователя, и освобождает место осознанно —
 вместо слепого LRU-вытеснения.
 
-Ошибки: ErrorResult — нет сессии или журнала, тред занят или не найден;
+Ошибки:
+ErrorResult — нет сессии или журнала, тред занят или не найден;
 остальное упаковывает ToolErrorGuard.
 """
 
@@ -17,14 +18,13 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.chainlit.chat.data.stream_journal import (
+from boba.chainlit.infra.session import current_thread_id, current_user_id
+from boba.sandbox.journal import (
+    JournalError,
     StreamJournal,
-    StreamJournalError,
     StreamJournalHub,
     VaultUsage,
 )
-from boba.chainlit.infra.session import current_thread_id, current_user_id
-from boba.chainlit.rendering.stream_view import ToolStreams
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 
 __all__ = [
@@ -115,11 +115,6 @@ class UsageReport:
 def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
     def context() -> tuple[StreamJournal, str, str]:
         journal = StreamJournalHub.get()
-        if journal is None:
-            raise StreamLogsRefusedError(
-                StreamLogsErrorKind.NO_JOURNAL,
-                "stream journal is disabled in the app config",
-            )
 
         user_id = current_user_id()
         if user_id is None:
@@ -143,7 +138,7 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
             usage = journal.usage(user_id)
         except StreamLogsRefusedError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
-        except StreamJournalError as e:
+        except JournalError as e:
             return pack_result(
                 ErrorResult(
                     message=str(e), error_kind=StreamLogsErrorKind.NO_JOURNAL
@@ -171,7 +166,7 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
                     "the current thread cannot be purged",
                 )
 
-            if thread_id in ToolStreams.live_threads():
+            if thread_id in journal.registry.live_threads():
                 raise StreamLogsRefusedError(
                     StreamLogsErrorKind.LIVE_THREAD,
                     f"thread {thread_id} has running tools, try later",
@@ -180,7 +175,7 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
             freed = journal.purge_thread(user_id, thread_id)
         except StreamLogsRefusedError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
-        except StreamJournalError as e:
+        except JournalError as e:
             return pack_result(
                 ErrorResult(
                     message=str(e),

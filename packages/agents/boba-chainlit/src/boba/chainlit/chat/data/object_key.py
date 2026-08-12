@@ -15,6 +15,7 @@ from typing import ClassVar, Self
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from boba.sandbox import WORKSPACE_MOUNT
+from boba.toolkit.channels import StreamKey
 
 __all__ = [
     "AttachmentLinks",
@@ -305,16 +306,24 @@ class AttachmentLinks:
 
 
 class StreamUrl:
-    """Адрес скачивания журнала вызова: тред и call_id; пользователь — из сессии.
+    """Адрес скачивания журнала канала: тред, вызов, стадия и канал.
 
-    Ссылка несёт префикс подмонтированного приложения, как у файлов сессии,
-    иначе GET ушёл бы в корень домена мимо роута.
+    Пользователь в адрес не входит — его даёт сессия, поэтому чужой том по
+    ссылке недостижим. Ссылка несёт префикс подмонтированного приложения, как
+    у файлов сессии, иначе GET ушёл бы в корень домена мимо роута.
     """
 
-    ROUTE: ClassVar[str] = "/stream/{thread_id}/{call_id}"
+    ROUTE: ClassVar[str] = "/stream/{thread_id}/{call_id}/{stage}/{channel}"
     ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
 
     @classmethod
-    def path(cls, thread_id: str, call_id: str) -> str:
+    def path(cls, key: StreamKey) -> str:
         prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
-        return f"{prefix}/stream/{thread_id}/{call_id}"
+        route = cls.ROUTE.format(
+            thread_id=key.thread_id,
+            call_id=key.call_id,
+            stage=key.stage,
+            channel=key.channel.value,
+        )
+
+        return f"{prefix}{route}"

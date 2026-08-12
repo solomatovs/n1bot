@@ -56,13 +56,9 @@ async def on_message(
         await rewind.apply(msg.id, msg.content)
         await rewind.refresh_view()
 
-    user_id = current_user_id()
-    if user_id is None:
-        user_id = ""
-
     view = ChatView(thread_id, LiveSink())
     view.begin_turn(msg.id)
-    tracer = AgentTracer(view, str(user_id))
+    tracer = AgentTracer(view)
     run_config = RunnableConfig(
         callbacks=[tracer],
         configurable={"thread_id": thread_id},

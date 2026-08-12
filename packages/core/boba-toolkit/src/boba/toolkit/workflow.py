@@ -15,7 +15,7 @@ from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
-from typing import Any, ClassVar, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from pydantic import (
     BaseModel,
@@ -27,7 +27,13 @@ from pydantic import (
     model_validator,
 )
 
-from boba.toolkit.channels import StreamFormat, ValidationSummary
+from boba.toolkit.channels import (
+    Channel,
+    SafeSegment,
+    StreamFormat,
+    StreamKey,
+    ValidationSummary,
+)
 
 __all__ = [
     "AccessPredicate",
@@ -37,7 +43,6 @@ __all__ = [
     "EmptyTrailer",
     "OutResolver",
     "RequestArgs",
-    "SafeId",
     "StageArgsEnricher",
     "StageContract",
     "StageNode",
@@ -53,26 +58,6 @@ M = TypeVar("M", bound=BaseModel)
 
 class WorkflowError(RuntimeError):
     """Спецификация графа невалидна либо итог не содержит запрошенного."""
-
-
-class SafeId:
-    """Безопасный алфавит id узла: id едет в имена файлов журнала.
-
-    Точка запрещена — имя файла журнала разбирается по точкам на сегменты.
-    """
-
-    SAFE: ClassVar[frozenset[str]] = frozenset(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-    )
-
-    @classmethod
-    def check(cls, value: str) -> str:
-        """Значение с символами вне алфавита отвергается ValueError."""
-        unsafe = set(value) - cls.SAFE
-        if unsafe:
-            raise ValueError(f"unsafe characters in stage id: {sorted(unsafe)}")
-
-        return value
 
 
 class EmptyTrailer(BaseModel):
@@ -98,7 +83,8 @@ class StageSpec(BaseModel):
     @field_validator("id")
     @classmethod
     def _safe_id(cls, value: str) -> str:
-        return SafeId.check(value)
+        """id узла едет в имя файла журнала: алфавит сегмента имени."""
+        return SafeSegment.name(value)
 
 
 class EdgeSpec(BaseModel):
@@ -361,7 +347,7 @@ class WorkflowOutcome(BaseModel):
 
     stages: Sequence[StageOutcome]
     trailers: Mapping[str, JsonValue]
-    journals: Sequence[str] = ()
+    journals: Sequence[StreamKey] = ()
 
     def outcome_of(self, stage: str) -> StageOutcome:
         """Итог стадии по id; отсутствие — WorkflowError."""
@@ -370,6 +356,19 @@ class WorkflowOutcome(BaseModel):
                 return item
 
         raise WorkflowError(f"no outcome for stage: {stage}")
+
+    def journal_of(self, stage: str, channel: Channel) -> StreamKey | None:
+        """Адрес журнала канала стадии; None — журнал этого канала не открылся."""
+        for key in self.journals:
+            if key.stage != stage:
+                continue
+
+            if key.channel is not channel:
+                continue
+
+            return key
+
+        return None
 
     def trailer(self, stage: str, schema: type[M]) -> M:
         """Типизированный трейлер стадии; отсутствие или чужая схема — WorkflowError."""

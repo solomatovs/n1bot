@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict
 
 import chainlit as cl
 from boba.chainlit.chat.data.object_key import ObjectKey
+from boba.toolkit.channels import Channel
 from boba.toolkit.result import CustomElementResult, DiagramResult
 
 __all__ = [
@@ -175,10 +176,17 @@ class CanvasKind(StrEnum):
 
 
 class StreamPos(BaseModel):
-    """Координаты окна потока в журнале: где стоим и сколько всего."""
+    """Адрес канала журнала и координаты окна в нём: где стоим и сколько всего.
+
+    Адрес фронт возвращает в действиях перемотки: сервер не угадывает, какой
+    канал сейчас на экране.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    call_id: str
+    stage: str
+    channel: Channel
     offset: int
     end: int
     """Байт за последним в окне: сюда фронт стыкует следующее окно."""

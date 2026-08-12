@@ -20,7 +20,7 @@ from boba.chainlit.rendering.result import (
     MarkdownRendering,
     ToolResultView,
 )
-from boba.chainlit.rendering.stream_view import StreamAction, ToolStreams
+from boba.chainlit.rendering.stream_view import StageTools, StreamAction
 from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
 from chainlit.element import CustomElement
@@ -326,14 +326,18 @@ class ChatView:
         return step
 
     def _stream_button(self, name: str, key: str | None) -> CustomElement | None:
-        """Кнопка живого вывода: только live-лента и только потоковые тулы."""
+        """Кнопка вывода: только live-лента и только инструменты со стадиями.
+
+        Стадия песочницы пишет журнал по факту запуска, поэтому признак кнопки
+        — связь инструмента с реестром стадий, а не отдельный список потоковых.
+        """
         if not self._sink.EMITS_ELEMENTS:
             return None
 
         if not key:
             return None
 
-        if not ToolStreams.streamable(name):
+        if not StageTools.journalled(name):
             return None
 
         element = CustomElement(

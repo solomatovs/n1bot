@@ -9,6 +9,7 @@ from conftest import needs_sandbox, needs_userns, sandbox_profile
 
 from boba.sandbox import SandboxCaller, SandboxToolConfig
 from boba.sandbox.workflow import StageDef, StageRegistry
+from boba.stand.journal import CallStand
 from boba.tool.chart import ChartCaller, build_chart_tools
 from boba.toolkit.launcher import PayloadFailureError, ToolLauncher
 from boba.toolkit.result import ChartResult
@@ -40,7 +41,9 @@ class Launchers:
                 enrich=node.enrich,
             )
 
-        self._caller = SandboxCaller(StageRegistry(defs), AllowAll(), dict)
+        self._caller = SandboxCaller(
+            StageRegistry(defs), AllowAll(), dict, CallStand.journal()
+        )
 
     def __call__(self, tool: str, /) -> ToolLauncher:
         return self._caller

@@ -12,6 +12,7 @@ from typing import Any
 
 import pydantic
 import pytest
+from journal_stand import JournalStand
 from pydantic import BaseModel, JsonValue
 
 from boba.sandbox.diagnostics import FailureFacts, SandboxDiagnostics
@@ -263,12 +264,17 @@ def _run_probe(root: Path, body: str, **profile_kw: Any) -> None:
         request=_NoArgs,
         enrich=_identity_args,
     )
-    runner = WorkflowRunner(StageRegistry({"probe": definition}), _allow_all, dict)
+    runner = WorkflowRunner(
+        StageRegistry({"probe": definition}),
+        _allow_all,
+        dict,
+        JournalStand.journal(),
+    )
 
     spec = WorkflowSpec.model_validate(
         {"nodes": [{"id": "probe", "tool": "probe", "args": {}}]}
     )
-    runner.run(spec)
+    runner.run(spec, JournalStand.context())
 
 
 @needs_sandbox

@@ -1,4 +1,8 @@
-"""Каналы одного запуска, насос и приёмники байтов; исполнение живёт в workflow.py.
+"""Каналы одного запуска, насос, приёмники байтов и контекст вызова.
+
+Исполнение живёт в workflow.py, журнал — в journal.py; контекст вызова
+(адресат журнала) стоит здесь, потому что его ставит обвязка инструмента, а
+не исполнитель графа.
 
 Ошибки: LauncherError и наследники (PayloadFailureError); исключения sink'ов
 пути данных и результата проходят наверх как есть — их контракт задаёт
@@ -22,7 +26,7 @@ from enum import StrEnum
 from types import TracebackType
 from typing import ClassVar, Generic, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from boba.cancellation import TurnCancellation
 from boba.toolkit.channels import (
@@ -35,8 +39,10 @@ from boba.toolkit.channels import (
     ResultError,
     ResultFailure,
     ResultSuccess,
+    SafeSegment,
     ShellExit,
     StageExit,
+    StreamKey,
 )
 from boba.toolkit.launcher import LauncherError
 
@@ -1336,19 +1342,60 @@ class FanoutSink(ChannelSink):
         return gone
 
 
-class ToolCallContext:
-    """Имя langchain-инструмента в текущем контексте выполнения."""
+class ToolCallContext(BaseModel):
+    """Контекст вызова инструмента: адресат журнала и метка вызова в логах.
 
-    _name: ClassVar[ContextVar[str]] = ContextVar("tool_call_name", default="")
+    Ставится обвязкой на входе вызова и доезжает копией контекста в поток
+    инструмента; ниже по стеку его читает реализация порта запуска. Сегменты
+    проверяются здесь же: адрес журнала собирается из них без доработки.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    _CURRENT: ClassVar[ContextVar[ToolCallContext]] = ContextVar("tool_call_context")
+
+    user_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    call_id: str = Field(min_length=1, max_length=255)
+    tool: str = Field(min_length=1)
+
+    @field_validator("user_id", "thread_id")
+    @classmethod
+    def _path_segment(cls, value: str) -> str:
+        return SafeSegment.path(value)
+
+    @field_validator("call_id")
+    @classmethod
+    def _name_segment(cls, value: str) -> str:
+        return SafeSegment.name(value)
 
     @classmethod
-    def set(cls, name: str) -> Token[str]:
-        return cls._name.set(name)
+    def set(cls, context: ToolCallContext) -> Token[ToolCallContext]:
+        return cls._CURRENT.set(context)
 
     @classmethod
-    def reset(cls, token: Token[str]) -> None:
-        cls._name.reset(token)
+    def reset(cls, token: Token[ToolCallContext]) -> None:
+        cls._CURRENT.reset(token)
 
     @classmethod
-    def get(cls) -> str:
-        return cls._name.get()
+    def current(cls) -> ToolCallContext:
+        """Контекст текущего вызова; не поставлен — LauncherError."""
+        try:
+            return cls._CURRENT.get()
+        except LookupError as exc:
+            raise LauncherError("tool call context is not set") from exc
+
+    def key(self, stage: str, channel: Channel) -> StreamKey:
+        """Адрес журнала канала стадии этого вызова."""
+        return StreamKey(
+            user_id=self.user_id,
+            thread_id=self.thread_id,
+            call_id=self.call_id,
+            stage=stage,
+            channel=channel,
+        )
+
+    @property
+    def prefix(self) -> str:
+        """Префикс файлов вызова в томе: единица учёта и защиты."""
+        return StreamKey.prefix_of(self.thread_id, self.call_id)

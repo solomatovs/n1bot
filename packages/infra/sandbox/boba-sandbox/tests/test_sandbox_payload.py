@@ -10,18 +10,19 @@ from typing import Any
 
 import pydantic
 import pytest
+from journal_stand import JournalStand
 from pydantic import BaseModel, JsonValue
 
 from boba.sandbox import SandboxCaller, SandboxPayloadError, SandboxProfile
 from boba.sandbox.runner import ResultSink
 from boba.sandbox.workflow import StageDef, StageRegistry
+from boba.toolkit.channels import StreamFormat
 from boba.toolkit.launcher import (
     LauncherError,
     PayloadFailureError,
     TextCollector,
 )
 from boba.toolkit.workflow import StageContract, WorkflowSpec
-from boba.toolkit.channels import StreamFormat
 
 REPO = Path(__file__).resolve().parents[5]
 TOOLKIT_SRC = REPO / "packages" / "core" / "boba-toolkit" / "src"
@@ -323,7 +324,10 @@ class TestDegenerateGraphCall:
         )
 
         return SandboxCaller(
-            StageRegistry({"probe": definition}), _allow_all, dict
+            StageRegistry({"probe": definition}),
+            _allow_all,
+            dict,
+            JournalStand.journal(),
         )
 
     def test_request_and_stream_travel_through_channels(
