@@ -3,10 +3,11 @@
 Разметка приезжает каналом tool_stdin, продукт уходит в tool_payload: markdown
 и текст — байтами, секции — строками NDJSON.
 
-Ошибки: PayloadError (no_input) — узлу не подали разметку; ChannelError — в
-tool_args приехал запрос чужой модели. Ожидаемых ошибок разбора нет: bs4 и
-markdownify не отказывают на битой разметке — они её восстанавливают, поэтому
-любая ошибка здесь означает дефект кода.
+Ошибки:
+PayloadError (no_input) — узлу не подали разметку.
+ChannelError — в tool_args приехал запрос чужой модели. Ожидаемых ошибок
+    разбора нет: bs4 и markdownify не отказывают на битой разметке — они её
+    восстанавливают, поэтому любая ошибка здесь означает дефект кода.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ from pydantic import BaseModel
 
 from boba.tool.kb.html.protocol import (
     ConfluenceSection,
-    HtmlCall,
     ConfluenceSectionsRequest,
+    HtmlCall,
     HtmlNode,
     HtmlToMarkdownRequest,
     PlainTextRequest,

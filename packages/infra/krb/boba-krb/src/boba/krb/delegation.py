@@ -1,9 +1,10 @@
 """SPNEGO-accept по keytab сервиса и получение тикета к бэкенду от имени пользователя.
 
-Ошибки: KeytabError — keytab/SPN сервиса непригодны;
-InvalidTokenError — токен клиента битый, просроченный или неполный;
-CredentialsExpiredError — тикет пользователя истёк;
-DelegationNotPermittedError — делегирование запрещено политикой AD;
+Ошибки:
+KeytabError — keytab/SPN сервиса непригодны.
+InvalidTokenError — токен клиента битый, просроченный или неполный.
+CredentialsExpiredError — тикет пользователя истёк.
+DelegationNotPermittedError — делегирование запрещено политикой AD.
 KerberosError — прочие сбои GSSAPI.
 """
 

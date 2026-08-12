@@ -1,9 +1,11 @@
 """Исполнение liteparse в песочнице: конфиг, узел parse_bytes, ридер индексации.
 
-Ошибки: LauncherError и WorkflowError — сбой запуска или итог не по контракту;
-PayloadFailureError — документ не разобрать; IncompatibleContentError — из
-SandboxLiteParseReader (база PagedDocumentReader); pydantic.ValidationError —
-при разборе конфига и строк выдачи.
+Ошибки:
+LauncherError и WorkflowError — сбой запуска или итог не по контракту.
+PayloadFailureError — документ не разобрать.
+IncompatibleContentError — из SandboxLiteParseReader (база
+    PagedDocumentReader); pydantic.ValidationError — при разборе конфига и
+    строк выдачи.
 """
 
 from __future__ import annotations

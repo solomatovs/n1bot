@@ -1,8 +1,8 @@
 """Kerberos-креды процесса: TGT из keytab в свой ccache и переключение KRB5*-окружения.
 
 Ошибки:
-KeytabError — keytab недоступен или не содержит принципала;
-CredentialsExpiredError — тикет истёк и не продлевается;
+KeytabError — keytab недоступен или не содержит принципала.
+CredentialsExpiredError — тикет истёк и не продлевается.
 KerberosError — прочие сбои GSSAPI/krb5.
 """
 

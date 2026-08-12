@@ -1,8 +1,9 @@
 """PgExecutorConfig + PgExecutor: postgres поверх общего SQL-слоя.
 
-Ошибки: SqlQueryError — запрос не выполнен; UnknownConnectionError — имя
-подключения вне whitelist'а; CollectorCapacityError — выгрузка переросла
-max_bytes.
+Ошибки:
+SqlQueryError — запрос не выполнен.
+UnknownConnectionError — имя подключения вне whitelist'а.
+CollectorCapacityError — выгрузка переросла max_bytes.
 """
 
 from __future__ import annotations

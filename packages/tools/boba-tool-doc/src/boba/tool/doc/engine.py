@@ -1,9 +1,10 @@
 """Вызов doc-узлов: сборка вырожденного графа, сбор продукта и квитанции.
 
-Ошибки: PayloadFailureError — документ не читается (ожидаемый отказ стадии);
-LauncherError и WorkflowError — запуск сорвался либо итог не по контракту;
-CollectorCapacityError/CollectorRowLimitError — продукт стадии превысил
-потолок вызывающего; pydantic.ValidationError — строка выдачи не по контракту.
+Ошибки:
+PayloadFailureError — документ не читается (ожидаемый отказ стадии).
+LauncherError и WorkflowError — запуск сорвался либо итог не по контракту.
+CollectorCapacityError/CollectorRowLimitError — продукт стадии превысил потолок
+    вызывающего; pydantic.ValidationError — строка выдачи не по контракту.
 """
 
 from __future__ import annotations

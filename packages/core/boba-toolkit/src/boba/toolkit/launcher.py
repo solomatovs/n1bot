@@ -5,12 +5,16 @@ call(spec) и коллекторы байтовых каналов. Реализ
 WorkflowRunner) подставляется снаружи; фасад строит вырожденный WorkflowSpec
 из одного узла и читает трейлер из WorkflowOutcome.
 
-Ошибки: LauncherError — исполнитель нарушил контракт, результату доверять
-нельзя; PayloadFailureError — стадия сообщила об ожидаемой ошибке конвертом,
-текст готов для пользователя; WorkflowError (boba.toolkit.workflow) —
-спецификация графа невалидна либо правило графа нарушено;
-CollectorCapacityError/CollectorRowLimitError — потребитель остановил поток
-по своему лимиту.
+Ошибки:
+LauncherError — исполнитель нарушил контракт, результату доверять нельзя.
+PayloadFailureError — стадия сообщила об ожидаемой ошибке конвертом, текст
+    готов для пользователя.
+WorkflowError (boba.toolkit.workflow) — спецификация графа невалидна либо
+    правило графа нарушено.
+WorkflowStageError и WorkflowPayloadError — граф сорвался, и к сообщению
+    виновника приложены процессные итоги стадий.
+CollectorCapacityError/CollectorRowLimitError — потребитель остановил поток по
+    своему лимиту.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from boba.toolkit.channels import (
 from boba.toolkit.workflow import (
     EmptyTrailer,
     StageSpec,
+    WorkflowError,
     WorkflowOutcome,
     WorkflowSpec,
 )
@@ -48,6 +53,8 @@ __all__ = [
     "StageRun",
     "TextCollector",
     "ToolLauncher",
+    "WorkflowPayloadError",
+    "WorkflowStageError",
 ]
 
 
@@ -68,6 +75,26 @@ class PayloadFailureError(LauncherError):
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+class WorkflowStageError(WorkflowError):
+    """Граф сорвался: сообщение виновника плюс процессные итоги всех стадий.
+
+    Квитанций в outcome нет — граф не доработал, трейлеры стадий не собраны;
+    итоги стадий говорят, кто упал сам, а кого снял раннер каскадом.
+    """
+
+    def __init__(self, message: str, outcome: WorkflowOutcome) -> None:
+        super().__init__(message)
+        self.outcome = outcome
+
+
+class WorkflowPayloadError(PayloadFailureError):
+    """Ожидаемый отказ стадии графа: конверт виновника и итоги всех стадий."""
+
+    def __init__(self, kind: str, message: str, outcome: WorkflowOutcome) -> None:
+        super().__init__(kind, message)
+        self.outcome = outcome
 
 
 class ErrorKind:

@@ -2,8 +2,9 @@
 
 Узел потоков не имеет — заголовок графика приезжает данными квитанции.
 
-Ошибки: PayloadFailureError — спека не прошла схему plotly; LauncherError и
-WorkflowError — запуск сорвался либо итог не по контракту.
+Ошибки:
+PayloadFailureError — спека не прошла схему plotly.
+LauncherError и WorkflowError — запуск сорвался либо итог не по контракту.
 """
 
 from __future__ import annotations

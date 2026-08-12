@@ -1,9 +1,13 @@
 """Исполнение графа стадий: реестр узлов, валидация с mount-группами, WorkflowRunner.
 
-Ошибки: WorkflowError — спецификация или контракт нарушены, стадия сорвалась,
-итог не собран; PayloadFailureError — стадия сообщила об ожидаемом отказе
-конвертом tool_result; исключения sink'ов пути данных (коллекторов
-вызывающего) проходят наверх как есть — их контракт задаёт потребитель;
+Ошибки:
+WorkflowError — спецификация или контракт нарушены, итог не собран.
+WorkflowStageError (WorkflowError) — стадия сорвалась, к сообщению приложены
+    процессные итоги стадий.
+WorkflowPayloadError (PayloadFailureError) — стадия сообщила об ожидаемом
+    отказе конвертом tool_result, итоги стадий приложены; исключения sink'ов
+    пути данных (коллекторов вызывающего) проходят наверх как есть — их
+    контракт задаёт потребитель.
 ToolStopped (BaseException остановки хода) проходит насквозь.
 """
 
@@ -51,6 +55,8 @@ from boba.toolkit.launcher import (
     CollectorRowLimitError,
     LauncherError,
     PayloadFailureError,
+    WorkflowPayloadError,
+    WorkflowStageError,
 )
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.workflow import (
@@ -1456,21 +1462,42 @@ class WorkflowRunner:
             spec, pump, group_runs, verdicts, reported, runs, rc_map, pipes_by_src
         )
         if culprit is not None:
-            self._raise_failure(culprit, pump, runs, group_runs, rc_map, reported)
+            self._raise_failure(
+                culprit, spec, pump, runs, group_runs, rc_map, reported
+            )
 
-        outcomes: list[StageOutcome] = []
+        outcome = self._process_outcome(spec, rc_map, pump, runs, group_runs)
+
         trailers: dict[str, JsonValue] = {}
         for node in spec.nodes:
-            rc = rc_map[node.id]
-            run = runs[node.id]
-            outcomes.append(self._stage_outcome(node.id, rc, pump, run, group_runs))
-            trailers[node.id] = self._stage_trailer(node.id, run, rc, pump)
+            trailers[node.id] = self._stage_trailer(
+                node.id, runs[node.id], rc_map[node.id], pump
+            )
 
         return WorkflowOutcome(
-            stages=tuple(outcomes),
+            stages=outcome.stages,
             trailers=trailers,
             journals=(),
         )
+
+    def _process_outcome(
+        self,
+        spec: WorkflowSpec,
+        rc_map: Mapping[str, int],
+        pump: ChannelPump,
+        runs: Mapping[str, _StageRun],
+        group_runs: Mapping[str, _GroupRun],
+    ) -> WorkflowOutcome:
+        """Процессные итоги стадий без квитанций: сорванный граф трейлеров не даёт."""
+        outcomes: list[StageOutcome] = []
+        for node in spec.nodes:
+            outcomes.append(
+                self._stage_outcome(
+                    node.id, rc_map[node.id], pump, runs[node.id], group_runs
+                )
+            )
+
+        return WorkflowOutcome(stages=tuple(outcomes), trailers={})
 
     @staticmethod
     def _final_rc(
@@ -1607,14 +1634,17 @@ class WorkflowRunner:
     def _raise_failure(  # noqa: PLR0913
         self,
         culprit: str,
+        spec: WorkflowSpec,
         pump: ChannelPump,
         runs: Mapping[str, _StageRun],
         group_runs: Mapping[str, _GroupRun],
         rc_map: Mapping[str, int],
         reported: Mapping[str, bool],
     ) -> None:
+        outcome = self._process_outcome(spec, rc_map, pump, runs, group_runs)
+
         if culprit in group_runs:
-            self._raise_group_failure(culprit, pump, group_runs)
+            self._raise_group_failure(culprit, pump, group_runs, outcome)
 
         run = runs[culprit]
         rc = rc_map[culprit]
@@ -1633,7 +1663,9 @@ class WorkflowRunner:
         self._log_failure(culprit, facts, pump.duration_ms(culprit), diagnostic)
 
         if timed:
-            raise WorkflowError(f"workflow stage {culprit} timed out; {context}")
+            raise WorkflowStageError(
+                f"workflow stage {culprit} timed out; {context}", outcome
+            )
 
         # конверт ошибки объясняет отказ сам: он важнее ненулевого кода возврата
         failure = self._declared_failure(run.result, rc)
@@ -1641,14 +1673,14 @@ class WorkflowRunner:
             message = failure.message
             if diagnostic:
                 message = f"{message}; {diagnostic}"
-            raise PayloadFailureError(failure.kind, message)
+            raise WorkflowPayloadError(failure.kind, message, outcome)
 
         if run.proc is None and not reported[culprit]:
             msg = (
                 f"workflow stage {culprit}: mount group finished without "
                 f"its rc report; {context}"
             )
-            raise WorkflowError(msg)
+            raise WorkflowStageError(msg, outcome)
 
         wrap_tail = self._joined(self._wrap_tails(run, group_runs))
         if self._mount_failed(rc, wrap_tail):
@@ -1656,10 +1688,10 @@ class WorkflowRunner:
                 f"workflow stage {culprit}: image not mounted; "
                 f"wrap_stderr={self._tail(wrap_tail)!r}"
             )
-            raise WorkflowError(msg)
+            raise WorkflowStageError(msg, outcome)
 
-        raise WorkflowError(
-            f"workflow stage {culprit} exited with code {rc}; {context}"
+        raise WorkflowStageError(
+            f"workflow stage {culprit} exited with code {rc}; {context}", outcome
         )
 
     @staticmethod
@@ -1679,6 +1711,7 @@ class WorkflowRunner:
         group_id: str,
         pump: ChannelPump,
         group_runs: Mapping[str, _GroupRun],
+        outcome: WorkflowOutcome,
     ) -> None:
         group_run = group_runs[group_id]
 
@@ -1687,18 +1720,21 @@ class WorkflowRunner:
         tail = self._tail(group_run.wrap_err_tail.text())
 
         if pump.timed_out(group_id):
-            raise WorkflowError(
-                f"workflow group {group_id} timed out; wrap_stderr={tail!r}"
+            raise WorkflowStageError(
+                f"workflow group {group_id} timed out; wrap_stderr={tail!r}", outcome
             )
 
         if self._mount_failed(rc, tail):
-            raise WorkflowError(
-                f"workflow group {group_id}: image not mounted; wrap_stderr={tail!r}"
+            raise WorkflowStageError(
+                f"workflow group {group_id}: image not mounted; "
+                f"wrap_stderr={tail!r}",
+                outcome,
             )
 
-        raise WorkflowError(
+        raise WorkflowStageError(
             f"workflow group {group_id} wrapper failed with code {rc}; "
-            f"wrap_stderr={tail!r}"
+            f"wrap_stderr={tail!r}",
+            outcome,
         )
 
     def _failure_tails(
