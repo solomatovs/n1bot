@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-text"
-version = "0.0.11.dev5"
+version = "0.0.11.dev6"
 description = "Boba text-pipeline: PlainTextReader, OverlapCharSplitter, SectionChunker — concrete text-impl'ы доменных контрактов из boba-indexing."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-indexing==0.0.11.dev5",
+    "boba-indexing==0.0.11.dev6",
 ]
 
 [tool.setuptools.packages.find]
