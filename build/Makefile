@@ -1,142 +1,145 @@
 # от каталога Makefile, а не от cwd: make -f build/Makefile из корня искал бы
 # test/ и conf/ рядом с собой
-BASE_DIR      	?= $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
-SRC_DIR       	?= $(abspath $(BASE_DIR)/..)
+BASE_DIR        ?= $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+SRC_DIR         ?= $(abspath $(BASE_DIR)/..)
 # вложенные вызовы: make -f build/Makefile не подставляет его в $(MAKE)
-MAKEFILE      	:= $(BASE_DIR)/Makefile
-BUILD_CONTEXT 	?= $(SRC_DIR)
-TEST_DIR      	?= $(BASE_DIR)/test
+MAKEFILE        := $(BASE_DIR)/Makefile
+BUILD_CONTEXT   ?= $(SRC_DIR)
+TEST_DIR        ?= $(BASE_DIR)/test
 # шаблоны для сборки (make extract, Dockerfile COPY) живут в build/conf
-CONF_DIR      	:= $(BASE_DIR)/conf
+CONF_DIR        := $(BASE_DIR)/conf
 
 # артефакты для сборки: tarball'ы, uv, tessdata, fastembed, webassets, wheels, sandbox
-DEPS_DIR      	?= $(BASE_DIR)/src
+DEPS_DIR        ?= $(BASE_DIR)/src
 # результаты make extract — в корне репо
-RELEASE_DIR   	:= $(SRC_DIR)/release
+RELEASE_DIR     := $(SRC_DIR)/release
 
 
 .DEFAULT_GOAL := help
 
 # рецепт целиком в одном shell: без -e упавшая команда в середине не свалит цель
 .ONESHELL:
-SHELL       := /bin/bash
+SHELL           := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 
 # версия у всех пакетов одна, лежит в их pyproject.toml (менять: make version-set)
-VERSION_FILE := $(SRC_DIR)/packages/core/boba-toolkit/pyproject.toml
-VERSION      := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(VERSION_FILE))
-BOBA_TAG     ?= $(VERSION)
-REQUIRES_PY  := $(shell sed -n 's/^requires-python = ">=\([0-9]*\.[0-9]*\).*/\1/p' $(VERSION_FILE))
+VERSION_FILE    := $(SRC_DIR)/packages/core/boba-toolkit/pyproject.toml
+VERSION         := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(VERSION_FILE))
+BOBA_TAG        ?= $(VERSION)
+REQUIRES_PY     := $(shell sed -n 's/^requires-python = ">=\([0-9]*\.[0-9]*\).*/\1/p' $(VERSION_FILE))
 
 # релиз для make extract
-RELEASE_NAME  := boba-$(VERSION)
+RELEASE_NAME    := boba-$(VERSION)
 # корень установки на сервере: в него уедет дерево из make extract
-INSTALL_DIR   ?= /srv/boba
+INSTALL_DIR     ?= /srv/boba
 # тот же корень внутри образа; версия живёт в app/<version>, не в нём
-DEST_DIR      ?= /app/boba
+DEST_DIR        ?= /app/boba
 
 # финальный runtime-образ
-IMAGE         := boba:$(BOBA_TAG)
+IMAGE           := boba:$(BOBA_TAG)
 # из какого образа make extract достаёт портативную папку и куда её кладёт
-RELEASE_IMAGE ?= $(IMAGE)
-OUT           ?= $(RELEASE_DIR)/$(RELEASE_NAME)
+RELEASE_IMAGE   ?= $(IMAGE)
+OUT             ?= $(RELEASE_DIR)/$(RELEASE_NAME)
 
-PYTHON_VERSION	?= 3.11
+# режим sec.sh: all, sast, sca или rules
+MODE            ?= all
+
+PYTHON_VERSION  ?= 3.11
 # чистая рантайм-база (только glibc), от неё строится финальный образ runtime
-GLIBC_IMAGE  	?= dmp/glibc:2.28
+GLIBC_IMAGE     ?= dmp/glibc:2.28
 # среда сборки: glibc 2.28 + gcc + python-дистрибутив
-GCC_IMAGE    	?= dmp/gcc:8.5.0
-PYTHON_IMAGE 	?= dmp/python:$(PYTHON_VERSION)-dist
+GCC_IMAGE       ?= dmp/gcc:8.5.0
+PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
 # базовый rootfs песочницы: стадия sandbox-rootfs (glibc + office + точки)
-ROOTFS_IMAGE	:= boba-sandbox-rootfs:$(PYTHON_VERSION)
+ROOTFS_IMAGE    := boba-sandbox-rootfs:$(PYTHON_VERSION)
 # site-packages песочницы одним каталогом: стадия sandbox-site
-SITE_IMAGE		:= boba-sandbox-site:$(PYTHON_VERSION)
+SITE_IMAGE      := boba-sandbox-site:$(PYTHON_VERSION)
 # шаблон workspace и fuse2fs: стадия fuse2fs-build
-FUSE_IMAGE		:= boba-fuse2fs:$(PYTHON_VERSION)
+FUSE_IMAGE      := boba-fuse2fs:$(PYTHON_VERSION)
 # bwrap: стадия bwrap-build
-BWRAP_IMAGE		:= boba-bwrap:$(PYTHON_VERSION)
+BWRAP_IMAGE     := boba-bwrap:$(PYTHON_VERSION)
 # артефакты песочницы: rootfs, python, site и данные подключаются профилями
-SANDBOX_DIR		:= $(DEPS_DIR)/sandbox
+SANDBOX_DIR     := $(DEPS_DIR)/sandbox
 # нативное окружение liteparse: office/растр/pdf он конвертирует этими
 # программами. Убрать libreoffice — doc перестанет читать docx/xlsx/pptx
-LITEPARSE_PACKAGES	?= imagemagick libreoffice-writer libreoffice-calc libreoffice-impress ghostscript fonts-dejavu-core
+LITEPARSE_PACKAGES?= imagemagick libreoffice-writer libreoffice-calc libreoffice-impress ghostscript fonts-dejavu-core
 # тег с версией python: иначе deps соберутся на boba-base от прошлой сборки
-BASE_IMAGE    := boba-base:$(PYTHON_VERSION)
+BASE_IMAGE      := boba-base:$(PYTHON_VERSION)
 
 # OCR-модели tesseract
-TESS_LANGS    	?= eng rus osd
-TESSDATA_REPO 	?= https://github.com/tesseract-ocr/tessdata_best/raw/main
+TESS_LANGS      ?= eng rus osd
+TESSDATA_REPO   ?= https://github.com/tesseract-ocr/tessdata_best/raw/main
 # embedding-веса fastembed
-EMBED_MODELS  	?= intfloat/multilingual-e5-large
+EMBED_MODELS    ?= intfloat/multilingual-e5-large
 
 # фронт chainlit тянет шрифт и стили формул с CDN; в закрытом контуре их
 # кладут в data/public/vendor, а ссылки в index.html переписывает Dockerfile
-WEBASSETS_DIR 	:= $(DEPS_DIR)/webassets
+WEBASSETS_DIR   := $(DEPS_DIR)/webassets
 # ассеты фронта в дереве исходников: отсюда их берут и образ, и make dev
-ASSETS_DIR    	:= $(SRC_DIR)/packages/agents/boba-chainlit/assets
-ASSETS_VENDOR 	:= $(ASSETS_DIR)/public/vendor
-KATEX_VERSION 	?= 0.16.22
-KATEX_URL     	?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
-INTER_VERSION 	?= 5.3.0
-INTER_URL     	?= https://registry.npmjs.org/@fontsource/inter/-/inter-$(INTER_VERSION).tgz
+ASSETS_DIR      := $(SRC_DIR)/packages/agents/boba-chainlit/assets
+ASSETS_VENDOR   := $(ASSETS_DIR)/public/vendor
+KATEX_VERSION   ?= 0.16.22
+KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
+INTER_VERSION   ?= 5.3.0
+INTER_URL       ?= https://registry.npmjs.org/@fontsource/inter/-/inter-$(INTER_VERSION).tgz
 # начертания Inter, которые запрашивает фронт
-INTER_WEIGHTS 	?= 400 500 700
-MERMAID_VERSION	?= 11.16.1
-MERMAID_URL   	?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
+INTER_WEIGHTS   ?= 400 500 700
+MERMAID_VERSION ?= 11.16.1
+MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
 
 # готовый бинарь; для внутреннего mirror переопредели UV_URL
-UV_VERSION  	?= 0.11.21
-UV_PLATFORM 	?= x86_64-unknown-linux-musl
-UV_URL      	?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(UV_PLATFORM).tar.gz
+UV_VERSION      ?= 0.11.21
+UV_PLATFORM     ?= x86_64-unknown-linux-musl
+UV_URL          ?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(UV_PLATFORM).tar.gz
 
 # bubblewrap: собирается стадией bwrap-build
-BWRAP_VERSION	?= 0.11.2
-BWRAP_URL     	?= https://github.com/containers/bubblewrap/releases/download/v$(BWRAP_VERSION)/bubblewrap-$(BWRAP_VERSION).tar.xz
-BWRAP_TARBALL 	:= $(DEPS_DIR)/bubblewrap-$(BWRAP_VERSION).tar.xz
+BWRAP_VERSION   ?= 0.11.2
+BWRAP_URL       ?= https://github.com/containers/bubblewrap/releases/download/v$(BWRAP_VERSION)/bubblewrap-$(BWRAP_VERSION).tar.xz
+BWRAP_TARBALL   := $(DEPS_DIR)/bubblewrap-$(BWRAP_VERSION).tar.xz
 
 # fuse2fs + libfuse: собираются стадией fuse2fs-build.
 # 3.12.0 — последний релиз, которому хватает meson 0.49 из apt Astra 2.12
 # (3.13+ требуют >= 0.50); релизы до 3.15 включительно выложены как .tar.xz
-LIBFUSE_VERSION   ?= 3.12.0
-LIBFUSE_URL       ?= https://github.com/libfuse/libfuse/releases/download/fuse-$(LIBFUSE_VERSION)/fuse-$(LIBFUSE_VERSION).tar.xz
-LIBFUSE_TARBALL   := $(DEPS_DIR)/fuse-$(LIBFUSE_VERSION).tar.xz
-E2FSPROGS_VERSION ?= 1.47.2
-E2FSPROGS_URL     ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$(E2FSPROGS_VERSION)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
-E2FSPROGS_TARBALL := $(DEPS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
+LIBFUSE_VERSION ?= 3.12.0
+LIBFUSE_URL     ?= https://github.com/libfuse/libfuse/releases/download/fuse-$(LIBFUSE_VERSION)/fuse-$(LIBFUSE_VERSION).tar.xz
+LIBFUSE_TARBALL := $(DEPS_DIR)/fuse-$(LIBFUSE_VERSION).tar.xz
+E2FSPROGS_VERSION?= 1.47.2
+E2FSPROGS_URL   ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$(E2FSPROGS_VERSION)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
+E2FSPROGS_TARBALL:= $(DEPS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
 # размер шаблонного workspace-образа: лимит диска на тред
-SANDBOX_WS_SIZE   ?= 1G
+SANDBOX_WS_SIZE ?= 1G
 
 # сбросить ли кэш сборки: docker build --no-cache
-NO_CACHE		?= 0
-NO_CACHE_OPT	:= $(if $(filter 1,$(NO_CACHE)),--no-cache,)
+NO_CACHE        ?= 0
+NO_CACHE_OPT    := $(if $(filter 1,$(NO_CACHE)),--no-cache,)
 
 # --progress есть только у buildkit; на старом docker флага нет — не подставляем
-PROGRESS      ?= $(shell docker build --help 2>/dev/null | grep -q -- '--progress' && echo '--progress plain')
+PROGRESS        ?= $(shell docker build --help 2>/dev/null | grep -q -- '--progress' && echo '--progress plain')
 
 # закрытый контур: CA внутреннего TLS (nexus). Кладётся в conf/ рядом с pip.conf и uv.toml
-CA_CHAIN := $(firstword $(wildcard $(CONF_DIR)/ca-chain.crt) $(wildcard $(BASE_DIR)/ca-chain.crt))
+CA_CHAIN        := $(firstword $(wildcard $(CONF_DIR)/ca-chain.crt) $(wildcard $(BASE_DIR)/ca-chain.crt))
 # curl на хосте: прокси берёт из env, CA — отсюда
-CURL_OPTS := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
+CURL_OPTS       := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
 
 # nexus в docker run: каталогом, поштучный bind-mount ломается о /etc/pip.conf,
 # который стадия base уже создала. CA берётся из conf/, как и в Dockerfile
-CONF_OPTS := -v "$(CONF_DIR)":/tmp/conf:ro                                                    \
-             $(if $(wildcard $(CONF_DIR)/pip.conf),-e PIP_CONFIG_FILE=/tmp/conf/pip.conf)     \
-             $(if $(wildcard $(CONF_DIR)/uv.toml),-e UV_CONFIG_FILE=/tmp/conf/uv.toml)        \
-             $(if $(wildcard $(CONF_DIR)/ca-chain.crt),-e REQUESTS_CA_BUNDLE=/tmp/conf/ca-chain.crt \
-                 -e CURL_CA_BUNDLE=/tmp/conf/ca-chain.crt)
+CONF_OPTS       := -v "$(CONF_DIR)":/tmp/conf:ro                                             \
+    $(if $(wildcard $(CONF_DIR)/pip.conf),-e PIP_CONFIG_FILE=/tmp/conf/pip.conf)             \
+    $(if $(wildcard $(CONF_DIR)/uv.toml),-e UV_CONFIG_FILE=/tmp/conf/uv.toml)                \
+    $(if $(wildcard $(CONF_DIR)/ca-chain.crt),-e REQUESTS_CA_BUNDLE=/tmp/conf/ca-chain.crt   \
+    -e CURL_CA_BUNDLE=/tmp/conf/ca-chain.crt)
 
 # прокси в docker build: apt/pip/uv внутри стадий ходят в nexus через него
-PROXY_VARS := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
-PROXY_ARGS := $(foreach v,$(PROXY_VARS),$(if $($(v)),--build-arg $(v)="$($(v))"))
+PROXY_VARS      := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
+PROXY_ARGS      := $(foreach v,$(PROXY_VARS),$(if $($(v)),--build-arg $(v)="$($(v))"))
 
 # сборка одной стадии: $(1) — стадия, $(2) — тег, $(3) — дополнительные аргументы
 define docker-stage
-docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) \
-    $(DOCKER_ARGS) $(PROXY_ARGS) $(3)                  \
-    --target $(1)                                      \
-    --tag $(2)                                         \
+docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT)   \
+    $(DOCKER_ARGS) $(PROXY_ARGS) $(3)                    \
+    --target $(1)                                        \
+    --tag $(2)                                           \
     $(PROGRESS) $(BUILD_CONTEXT)
 endef
 
@@ -148,15 +151,15 @@ docker rm "$$cid" > /dev/null
 endef
 
 # общие build-arg: образы тулчейна и версии
-DOCKER_ARGS = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)             \
-              --build-arg GCC_IMAGE=$(GCC_IMAGE)                 \
-              --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE)           \
-              --build-arg PYTHON_VERSION=$(PYTHON_VERSION)       \
-              --build-arg BWRAP_VERSION=$(BWRAP_VERSION)         \
-              --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)     \
-              --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) \
-              --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)     \
-              --build-arg LITEPARSE_PACKAGES="$(LITEPARSE_PACKAGES)"
+DOCKER_ARGS     = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)   \
+    --build-arg GCC_IMAGE=$(GCC_IMAGE)                     \
+    --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE)               \
+    --build-arg PYTHON_VERSION=$(PYTHON_VERSION)           \
+    --build-arg BWRAP_VERSION=$(BWRAP_VERSION)             \
+    --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)         \
+    --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)     \
+    --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)         \
+    --build-arg LITEPARSE_PACKAGES="$(LITEPARSE_PACKAGES)"
 
 
 .PHONY: help
@@ -179,6 +182,7 @@ help:
 	echo "                 RELEASE_IMAGE=$(RELEASE_IMAGE), OUT=$(OUT)"
 	echo "                 {conf,data,app_root,code/{app,sandbox},deps/{app,sandbox},"
 	echo "                  sandbox,third}, ставится в INSTALL_DIR=$(INSTALL_DIR)"
+	echo "  make sec       ruff, bandit, semgrep и pip-audit (MODE=all|sast|sca|rules)"
 	echo "  make clean     удалить исходники, deps и собранную папку (кроме fastembed)"
 	echo ""
 	echo "  make all       sources + deps + build + test"
@@ -205,10 +209,10 @@ help:
 
 
 # значения, по которым отлаживают сборку: печатаются при вызове цели
-DEBUG_VARS := BASE_DIR SRC_DIR CONF_DIR DEPS_DIR RELEASE_DIR TEST_DIR \
-	VERSION RELEASE_NAME IMAGE RELEASE_IMAGE OUT DEST_DIR INSTALL_DIR \
-	BASE_IMAGE GLIBC_IMAGE GCC_IMAGE PYTHON_IMAGE REQUIRES_PY NO_CACHE \
-	UV_URL CA_CHAIN
+DEBUG_VARS      := BASE_DIR SRC_DIR CONF_DIR DEPS_DIR RELEASE_DIR TEST_DIR   \
+    VERSION RELEASE_NAME IMAGE RELEASE_IMAGE OUT DEST_DIR INSTALL_DIR        \
+    BASE_IMAGE GLIBC_IMAGE GCC_IMAGE PYTHON_IMAGE REQUIRES_PY NO_CACHE       \
+    UV_URL CA_CHAIN
 
 .PHONY: debug
 debug:
@@ -216,7 +220,7 @@ debug:
 
 
 # Все pyproject.toml пакетов; packages/<pkg>/build/ — артефакты сборки, не пакеты.
-PYPROJECTS = $(shell find $(SRC_DIR)/packages -name pyproject.toml -not -path '*/build/*')
+PYPROJECTS      = $(shell find $(SRC_DIR)/packages -name pyproject.toml -not -path '*/build/*')
 
 
 .PHONY: version
@@ -235,7 +239,7 @@ version-set:
 	    echo "версия должна быть X.Y.Z или X.Y.Z.devN, а не '$(VER)'" >&2
 	    exit 1
 	fi
-	sed -i -e 's/^version = "$(VERSION)"$$/version = "$(VER)"/' \
+	sed -i -e 's/^version = "$(VERSION)"$$/version = "$(VER)"/'   \
 	       -e 's/"\(boba-[a-z0-9-]*\(\[[a-z0-9,_-]*\]\)\?\)==$(VERSION)"/"\1==$(VER)"/g' $(PYPROJECTS)
 	echo ">>> $(VERSION) -> $(VER) в $(words $(PYPROJECTS)) пакетах"
 	$(MAKE) -f $(MAKEFILE) --no-print-directory version-check VERSION=$(VER)
@@ -250,7 +254,7 @@ version-check:
 	    echo "$$bad" >&2
 	    exit 1
 	fi
-	bad=$$(grep -hoE '^[[:space:]]+"boba-[a-z0-9-]+[^"]*"' $(PYPROJECTS) | tr -d '[:blank:]' \
+	bad=$$(grep -hoE '^[[:space:]]+"boba-[a-z0-9-]+[^"]*"' $(PYPROJECTS) | tr -d '[:blank:]'   \
 	       | grep -v '^"boba-[a-z0-9-]*\(\[[a-z0-9,_-]*\]\)\?==$(VERSION)"$$' | sort -u || true)
 	if [ -n "$$bad" ]; then
 	    echo "внутренние зависимости не запинены на $(VERSION):" >&2
@@ -273,7 +277,7 @@ sources:
 
 
 .PHONY: deps
-deps: uv tessdata fastembed webassets sandbox-rootfs sandbox-site sandbox-python \
+deps: uv tessdata fastembed webassets sandbox-rootfs sandbox-site sandbox-python   \
       sandbox-bin sandbox-data sandbox-workspace
 	@du -sh $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(SANDBOX_DIR)/*
 
@@ -317,7 +321,7 @@ webassets:
 	    tmp=$$(mktemp -d)
 	    curl -fSL $(CURL_OPTS) -o "$$tmp/katex.tar.gz" "$(KATEX_URL)"
 	    # ttf и woff не нужны: woff2 стоит в src первым и его понимают все браузеры
-	    tar -xzf "$$tmp/katex.tar.gz" -C "$$tmp" --wildcards \
+	    tar -xzf "$$tmp/katex.tar.gz" -C "$$tmp" --wildcards   \
 	        katex/katex.min.css 'katex/fonts/*.woff2'
 	    cp "$$tmp/katex/katex.min.css" "$(WEBASSETS_DIR)/katex/"
 	    cp "$$tmp"/katex/fonts/*.woff2 "$(WEBASSETS_DIR)/katex/fonts/"
@@ -379,7 +383,7 @@ sandbox-rootfs:
 # site-packages песочницы одним каталогом: его монтируют профили в /opt/site.
 # version-check первым: иначе разъехавшиеся версии всплывут отказом резолвера uv
 .PHONY: sandbox-site
-sandbox-site: version-check
+sandbox-site: version-check sandbox-names
 	@dest="$(SANDBOX_DIR)/site"
 	echo "== site-packages песочницы =="
 	$(call docker-stage,sandbox-site,$(SITE_IMAGE))
@@ -402,6 +406,30 @@ sandbox-python: base
 	# поэтому свежий libstdc++ едет вместе с ним: onnxruntime требует CXXABI 1.3.11
 	mkdir -p "$$dest/lib64"
 	$(call image-copy,$(BASE_IMAGE),/usr/local/lib64/.,$$dest/lib64/)
+
+
+# состав песочницы объявляют сами пакеты: у кого есть extra payload, тот и едет
+# внутрь вместе с ним (парсеры, эмбеддер, plotly)
+.PHONY: sandbox-names
+sandbox-names:
+	@dest="$(DEPS_DIR)/names-sandbox.txt"
+	echo "== пакеты песочницы =="
+	mkdir -p "$(DEPS_DIR)"
+	: > "$$dest"
+
+	for project in $(PYPROJECTS); do
+	    extras=$$(sed -n '/^\[project.optional-dependencies\]/,/^\[/p' "$$project")
+
+	    if ! echo "$$extras" | grep -q '^payload'; then
+	        continue
+	    fi
+
+	    name=$$(sed -n 's/^name = "\(.*\)"/\1/p' "$$project" | head -1)
+	    echo "$$name[payload]" >> "$$dest"
+	done
+
+	sort -o "$$dest" "$$dest"
+	sed 's/^/    /' "$$dest"
 
 
 # bwrap и fuse2fs рядом с остальными артефактами: без них dev-дерево
@@ -448,12 +476,12 @@ sandbox-workspace:
 fastembed: base
 	@mkdir -p $(DEPS_DIR)/fastembed
 	echo "== веса fastembed: $(EMBED_MODELS) =="
-	docker run --rm \
-	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)" \
-	  -e EMBED_MODELS="$(EMBED_MODELS)" \
-	  -e HTTP_PROXY -e HTTPS_PROXY -e NO_PROXY -e http_proxy -e https_proxy -e no_proxy \
-	  $(CONF_OPTS) \
-	  -v "$(DEPS_DIR)/fastembed":/fastembed \
+	docker run --rm                                                                       \
+	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                     \
+	  -e EMBED_MODELS="$(EMBED_MODELS)"                                                   \
+	  -e HTTP_PROXY -e HTTPS_PROXY -e NO_PROXY -e http_proxy -e https_proxy -e no_proxy   \
+	  $(CONF_OPTS)                                                                        \
+	  -v "$(DEPS_DIR)/fastembed":/fastembed                                               \
 	  --entrypoint sh $(BASE_IMAGE) -c '
 	    set -e
 	    pip3 install --no-cache-dir fastembed
@@ -461,7 +489,7 @@ fastembed: base
 	      echo ">>> fastembed: $$m"
 	      python3 -c "import sys; from fastembed import TextEmbedding;
 	        e=TextEmbedding(model_name=sys.argv[1], cache_dir=\"/fastembed\");
-	        list(e.embed([\"probe\"]))" "$$m" \
+	        list(e.embed([\"probe\"]))" "$$m"   \
 	      || echo "!! $$m не скачан — не поддерживается этой версией fastembed"
 	    done
 	    chown -R "$$HOST_UID:$$HOST_GID" /fastembed'
@@ -477,15 +505,16 @@ base: uv
 
 
 # что должно лежать в build/src до сборки образа: путь:цель, которая его кладёт
-BUILD_INPUTS := \
-	$(BWRAP_TARBALL):sources \
-	$(LIBFUSE_TARBALL):sources \
-	$(E2FSPROGS_TARBALL):sources \
-	$(DEPS_DIR)/uv/uv:deps \
-	$(DEPS_DIR)/tessdata/eng.traineddata:deps \
-	$(DEPS_DIR)/fastembed:deps \
-	$(WEBASSETS_DIR)/katex/katex.min.css:webassets \
-	$(WEBASSETS_DIR)/inter/inter.css:webassets
+BUILD_INPUTS    :=                                   \
+    $(BWRAP_TARBALL):sources                         \
+    $(LIBFUSE_TARBALL):sources                       \
+    $(E2FSPROGS_TARBALL):sources                     \
+    $(DEPS_DIR)/uv/uv:deps                           \
+    $(DEPS_DIR)/tessdata/eng.traineddata:deps        \
+    $(DEPS_DIR)/fastembed:deps                       \
+    $(WEBASSETS_DIR)/katex/katex.min.css:webassets   \
+    $(WEBASSETS_DIR)/inter/inter.css:webassets       \
+    $(DEPS_DIR)/names-sandbox.txt:sandbox-names
 
 .PHONY: check-artifacts
 check-artifacts:
@@ -508,7 +537,7 @@ check-artifacts:
 .PHONY: build
 build: version-check check-artifacts
 	@echo ">>> образ $(IMAGE), релиз внутри него лежит в $(DEST_DIR)"
-	$(call docker-stage,runtime,$(IMAGE),--tag boba:latest \
+	$(call docker-stage,runtime,$(IMAGE),--tag boba:latest   \
 	    --build-arg BOBA_DIR="$(DEST_DIR)" --build-arg BOBA_VERSION="$(VERSION)")
 
 
@@ -524,28 +553,28 @@ test: build
 	env_file=$$(mktemp)
 	trap 'rm -f "$$env_file"' EXIT
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)"
-	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' < "$(CONF_DIR)/boba.env" \
+	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' < "$(CONF_DIR)/boba.env"   \
 	    | grep -v '^$$' > "$$env_file"
 
-	docker run --rm -i --env-file "$$env_file" \
+	docker run --rm -i --env-file "$$env_file"   \
 	  --entrypoint sh $(IMAGE) -c '
 	    "$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/deps/app/packages.txt"
 	  ' < "$(TEST_DIR)/bobacheck.py"
 
 # что обязано лежать в дереве установки: путь:цель, которая его кладёт
-RELEASE_PARTS := \
-	sandbox/rootfs/bin/sh:deps \
-	sandbox/third/python/bin/python3:deps \
-	sandbox/third/fastembed:deps \
-	sandbox/third/tessdata/eng.traineddata:deps \
-	sandbox/workspace.ext4:deps \
-	third/bin/bwrap:deps \
-	third/bin/fuse2fs:deps \
-	code/app/bin:build \
-	code/sandbox/boba:build \
-	deps/app:build \
-	deps/sandbox:build \
-	app_root/public:build
+RELEASE_PARTS   :=                                \
+    sandbox/rootfs/bin/sh:deps                    \
+    sandbox/third/python/bin/python3:deps         \
+    sandbox/third/fastembed:deps                  \
+    sandbox/third/tessdata/eng.traineddata:deps   \
+    sandbox/workspace.ext4:deps                   \
+    third/bin/bwrap:deps                          \
+    third/bin/fuse2fs:deps                        \
+    code/app/bin:build                            \
+    code/sandbox/boba:build                       \
+    deps/app:build                                \
+    deps/sandbox:build                            \
+    app_root/public:build
 
 .PHONY: release
 release:
@@ -608,7 +637,7 @@ dev: check-artifacts
 
 	# окружение процесса в контейнере: пути внутри него, а не на хосте
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)"
-	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' \
+	envsubst '$${BOBA_BASE} $${BOBA_VERSION}'   \
 	    < "$(CONF_DIR)/boba.env" > "$$out/conf/boba.env"
 	sed -i 's|^BOBA_CGROUP_BASE=.*|BOBA_CGROUP_BASE=/cgroup/boba-sandbox|' "$$out/conf/boba.env"
 
@@ -664,9 +693,9 @@ install-tree:
 
 	# envsubst с явным списком: $${PYTHONHOME} и TOML-интерполяции не трогаются
 	export BOBA_BASE="$(BASE)" BOBA_VERSION="$(VERSION)" INSTALL_DIR="$(BASE)"
-	envsubst '$${INSTALL_DIR}' \
+	envsubst '$${INSTALL_DIR}'   \
 	    < "$(CONF_DIR)/boba-chainlit.service" > "$(OUT)/boba-chainlit.service"
-	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' \
+	envsubst '$${BOBA_BASE} $${BOBA_VERSION}'   \
 	    < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
 
 	if [ ! -f "$(OUT)/conf/config.toml" ]; then
@@ -702,9 +731,16 @@ tree-check:
 # fastembed и wheels не трогаем: веса качаются долго, колеса — кэш
 .PHONY: clean
 clean:
-	rm -rf $(RELEASE_DIR) \
-	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
+	rm -rf $(RELEASE_DIR)                                                        \
+	       $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR)   \
 	       $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL)
+
+
+# SAST и SCA: сканеры ставятся изолированно через uvx, правила semgrep лежат
+# в conf/semgrep (обновляются sec.sh rules)
+.PHONY: sec
+sec:
+	@"$(SRC_DIR)/sec.sh" $(MODE)
 
 
 .PHONY: print-tag
