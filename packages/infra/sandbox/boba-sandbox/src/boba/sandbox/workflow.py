@@ -157,10 +157,15 @@ class StageRegistry:
         return tuple(self._defs)
 
     def def_of(self, tool: str) -> StageDef:
-        """Описание узла; неизвестное имя — WorkflowError."""
+        """Описание узла; неизвестное имя — WorkflowError со списком узловых.
+
+        Вызывающий знает имена фасадов (`pg_export`), а графу нужны имена
+        узлов (`pg_copy`), поэтому отказ перечисляет доступное.
+        """
         definition = self._defs.get(tool)
         if definition is None:
-            raise WorkflowError(f"unknown workflow tool: {tool}")
+            known = ", ".join(sorted(self._defs))
+            raise WorkflowError(f"unknown workflow tool: {tool}; known: {known}")
 
         return definition
 
