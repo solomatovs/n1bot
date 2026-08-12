@@ -1,44 +1,73 @@
 #!/bin/bash
+# окружение разработчика: .venv, uv, репозитории nexus и BOBA_*
+# запускать через: source dev.sh
 
-_dev_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE:-$0}")" 2>/dev/null && pwd)
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF="$DIR/build/conf"
 
-# чужой PYTHONHOME (например от airflow) уводит stdlib любого запускаемого
-# python в чужой префикс: сборочный интерпретатор uv падает на encodings
-if [ -n "${PYTHONHOME:-}" ] || [ -n "${PYTHONPATH:-}" ]; then
-  echo "dev: снимаю PYTHONHOME=${PYTHONHOME:-} PYTHONPATH=${PYTHONPATH:-}" >&2
-  unset PYTHONHOME PYTHONPATH
+unset PYTHONHOME
+unset PYTHONPATH
+
+if [ -f "$CONF/pip.conf" ]; then
+  export PIP_CONFIG_FILE="$CONF/pip.conf"
+  echo "dev: pip.conf = $PIP_CONFIG_FILE"
 fi
 
-# если в PATH уже есть uv, то не добавляем его туда
-case ":$PATH:" in
-  *":$_dev_dir/build/src/uv:"*) ;;
-  *) PATH="$_dev_dir/build/src/uv:$PATH"; export PATH ;;
-esac
+if [ -f "$CONF/uv.toml" ]; then
+  export UV_CONFIG_FILE="$CONF/uv.toml"
+  echo "dev: uv.toml = $UV_CONFIG_FILE"
+fi
 
-if ( set -eu; cd -- "$_dev_dir"; \
-     [ -d .venv ] || uv venv --python 3.11 --clear --no-managed-python; uv sync -v --system-certs ); then
-  . "$_dev_dir/.venv/bin/activate"
-  # после source .venv/bin/activate сбрасывается переменная PATH, поэтому заново добавляю туда uv
-  # third/bin строго после .venv/bin: там лежит свой python3, который без PYTHONHOME не стартует
-  PATH="$_dev_dir/build/src/uv:$_dev_dir/.venv/bin:$_dev_dir/release/current/third/bin:$PATH"
-  export PATH
+if [ -f "$CONF/ca-chain.crt" ]; then
+  export REQUESTS_CA_BUNDLE="$CONF/ca-chain.crt"
+  export CURL_CA_BUNDLE="$CONF/ca-chain.crt"
+  export SSL_CERT_FILE="$CONF/ca-chain.crt"
+  export PIP_CERT="$CONF/ca-chain.crt"
+  export GIT_SSL_CAINFO="$CONF/ca-chain.crt"
+  echo "dev: ca-chain = $CONF/ca-chain.crt"
+fi
+
+PACKAGES="make gcc python3-dev libkrb5-dev curl tar xz-utils gettext-base ca-certificates"
+
+NEED_PACKAGES=""
+for CMD in make gcc curl tar xz envsubst krb5-config; do
+  if ! command -v "$CMD" > /dev/null; then
+    NEED_PACKAGES="yes"
+  fi
+done
+
+if [ -z "$NEED_PACKAGES" ]; then
+  echo "dev: пакеты сборки уже стоят"
+elif ! command -v apt-get > /dev/null; then
+  echo "dev: apt-get нет, поставь сам: $PACKAGES" >&2
+else
+  SUDO="sudo"
+  if [ "$(id -u)" = "0" ]; then
+    SUDO=""
+  fi
+
+  echo "dev: ставлю пакеты сборки: $PACKAGES"
+  $SUDO apt-get update
+  $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y $PACKAGES
+fi
+
+export PATH="$DIR/build/src/uv:$PATH"
+
+if [ ! -d "$DIR/.venv" ]; then
+  (cd "$DIR" && uv venv --python 3.11 --clear --no-managed-python)
+fi
+
+(cd "$DIR" && uv sync -v --system-certs)
+OK=$?
+
+if [ $OK -eq 0 ]; then
+  source "$DIR/.venv/bin/activate"
+  # activate перезаписывает PATH, поэтому uv возвращаем обратно
+  export PATH="$DIR/build/src/uv:$PATH"
   echo "dev: окружение .venv активировано"
 else
   echo "dev: ошибка подготовки окружения (.venv не активировано)" >&2
 fi
 
-if [ ! -d "$_dev_dir/release/current/third/bin" ]; then
-  echo "dev: нет release/current/third/bin — bwrap и fuse2fs возьмутся системные (make -C build extract)" >&2
-fi
-
-# тот же env, что launch.json отдаёт отладчику: конфиг один, и терминальный
-# pytest должен видеть его так же, как IDE
-_dev_env="$_dev_dir/.vscode/boba-debug.env"
-if [ -f "$_dev_env" ]; then
-  set -a
-  . "$_dev_env"
-  set +a
-  echo "dev: BOBA_* из $(basename -- "$_dev_env"); конфиг $BOBA_CONFIG_PATH"
-else
-  echo "dev: нет $_dev_env — BOBA_* не выставлены" >&2
-fi
+# BOBA_* сюда не тянем: их подключает launch.json через envFile.
+# в терминале при нужде: set -a; source .vscode/boba-debug.env; set +a

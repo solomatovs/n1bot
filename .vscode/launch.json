@@ -8,59 +8,18 @@
             "program": "${workspaceFolder}/packages/agents/boba-chainlit/src/boba/chainlit/main.py",
             "console": "integratedTerminal",
             "jinja": true,
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/compose",
             "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
+                "KRB5_CONFIG": "${workspaceFolder}/compose/conf/krb/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/compose/conf/krb/krb5.keytab"
             },
             "justMyCode": false,
             "stopOnEntry": false
-        },
-        {
-            "name": "Ingest: Confluence целиком (OCR, полное пересоздание)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.chainlit.cli.ingest",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
-            "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
-            },
-            "justMyCode": false,
-            "args": [
-                "--mode", "spaces",
-                "--target", "IPKD,DQ,PIXBI,TMETA,PHDD2",
-                "--ocr-enabled",
-                "--ocr-language", "rus+eng",
-                "--num-workers", "2",
-                "--force-update",
-                "--prune-missing"
-            ]
-        },
-        {
-            "name": "Ingest: одна страница (OCR, без prune)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.chainlit.cli.ingest",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
-            "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
-            },
-            "justMyCode": false,
-            "args": [
-                "--mode", "pages",
-                "--target", "983049",
-                "--ocr-enabled",
-                "--ocr-language", "rus+eng",
-                "--num-workers", "2",
-                "--force-update"
-            ]
         },
         {
             "name": "pytest: текущий файл",
@@ -68,11 +27,15 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/compose",
             "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
+                "KRB5_CONFIG": "${workspaceFolder}/compose/conf/krb/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/compose/conf/krb/krb5.keytab"
             },
             "justMyCode": false,
             "args": [
@@ -86,11 +49,15 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/compose",
             "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
+                "KRB5_CONFIG": "${workspaceFolder}/compose/conf/krb/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/compose/conf/krb/krb5.keytab"
             },
             "justMyCode": false,
             "args": [
@@ -104,11 +71,15 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/compose",
             "python": "${workspaceFolder}/.venv/bin/python",
             "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}"
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
+                "KRB5_CONFIG": "${workspaceFolder}/compose/conf/krb/krb5.conf",
+                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/compose/conf/krb/krb5.keytab"
             },
             "justMyCode": false,
             "args": [
@@ -117,16 +88,6 @@
                 "integration",
                 "-v"
             ]
-        },
-        {
-            "name": "Python: current file",
-            "type": "debugpy",
-            "request": "launch",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "program": "${file}"
         }
     ]
 }
