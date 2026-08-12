@@ -9,7 +9,6 @@ from pydantic import JsonValue
 
 from boba.tool.kb.confluence.ingest_protocol import IngestAnswer, IngestMode
 from boba.tool.kb.confluence.protocol import ConfluenceNode
-
 from boba.toolkit.launcher import LauncherFactory, StageRun
 
 __all__ = ["ConfluenceIngestCaller"]

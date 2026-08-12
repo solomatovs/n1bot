@@ -23,7 +23,7 @@ from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from boba.chainlit.chat.data.object_key import StreamUrl
+from boba.chainlit.domain.keys import StreamUrl
 from boba.chainlit.rendering.canvas import (
     CanvasContent,
     CanvasKind,

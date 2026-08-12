@@ -94,6 +94,10 @@ class SandboxDiagnostics:
     def _timeout(cls, facts: FailureFacts, profile: SandboxProfile) -> str:
         if not facts.timed_out:
             return ""
+
+        if profile.timeout_sec is None:
+            return ""
+
         return (
             f"Command aborted by the profile timeout: timeout_sec="
             f"{profile.timeout_sec}s. Split the work into smaller steps or ask "

@@ -10,6 +10,7 @@
 Список имён пакетов берётся из стадии deps (boba/names.txt); если его нет —
 сканируются исходники (--packages).
 """
+
 import argparse
 import importlib.util
 import os
@@ -21,10 +22,14 @@ import sys
 os.environ.setdefault("CHAINLIT_APP_ROOT", "/tmp")
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--names", default=None,
-                    help="файл со списком имён пакетов boba (строка = имя)")
-parser.add_argument("--packages", default="/app/packages",
-                    help="каталог с исходниками boba (если нет --names)")
+parser.add_argument(
+    "--names", default=None, help="файл со списком имён пакетов boba (строка = имя)"
+)
+parser.add_argument(
+    "--packages",
+    default="/app/packages",
+    help="каталог с исходниками boba (если нет --names)",
+)
 args = parser.parse_args()
 
 PACKAGES_DIR = args.packages
@@ -37,7 +42,7 @@ def check(name, fn):
     try:
         fn()
         print(f"  OK   {name}")
-    except Exception as e:  # noqa: BLE001 - тест, ловим всё намеренно
+    except Exception as e:  # тест, ловим всё намеренно
         print(f"  FAIL {name}: {e!r}")
         failures.append(name)
 
@@ -46,7 +51,7 @@ def warn(name, fn):
     try:
         fn()
         print(f"  OK   {name}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"  WARN {name}: {e!r}")
 
 
@@ -96,10 +101,16 @@ def package_names():
 required = package_names()
 installed = {d.metadata["Name"].lower() for d in md.distributions()}
 source = NAMES_FILE or PACKAGES_DIR
-print(f"  пакетов boba: {len(required)}, "
-      f"установлено boba-*: {sum(1 for n in installed if n.startswith('boba-'))}")
-check(f"список пакетов из {source}", lambda: (_ for _ in ()).throw(
-    RuntimeError("список пуст")) if not required else None)
+print(
+    f"  пакетов boba: {len(required)}, "
+    f"установлено boba-*: {sum(1 for n in installed if n.startswith('boba-'))}"
+)
+check(
+    f"список пакетов из {source}",
+    lambda: (
+        (_ for _ in ()).throw(RuntimeError("список пуст")) if not required else None
+    ),
+)
 for dist in required:
     check(f"dist {dist}", lambda dist=dist: md.version(dist))
 
@@ -114,9 +125,14 @@ scripts = sorted(
 )
 print(f"  объявлено в пакетах: {len(scripts)}")
 for script in scripts:
-    check(f"which {script}", lambda script=script:
-          (_ for _ in ()).throw(RuntimeError("not found"))
-          if shutil.which(script) is None else None)
+    check(
+        f"which {script}",
+        lambda script=script: (
+            (_ for _ in ()).throw(RuntimeError("not found"))
+            if shutil.which(script) is None
+            else None
+        ),
+    )
 
 # 5) парсеры в окружении приложения: разбор идёт в песочнице, приложению
 # они не нужны. Пока app-site и sandbox-site ставят один список пакетов,

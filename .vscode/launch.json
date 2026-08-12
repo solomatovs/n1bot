@@ -10,13 +10,13 @@
             "jinja": true,
             "cwd": "${workspaceFolder}/compose",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}",
-                "BOBA_BASE": "${workspaceFolder}",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
-                "KRB5_CONFIG": "${workspaceFolder}/compose/conf/krb/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/compose/conf/krb/krb5.keytab"
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_APP": "${workspaceFolder}/packages",
+                "BOBA_PORT": "8601",
+                "BOBA_URL_PREFIX": "/boba-debug",
+                "BOBA_CGROUP_BASE": "/cgroup/boba-sandbox"
             },
             "justMyCode": false,
             "stopOnEntry": false
@@ -29,13 +29,13 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/compose",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}",
-                "BOBA_BASE": "${workspaceFolder}",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
-                "KRB5_CONFIG": "${workspaceFolder}/compose/conf/krb/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/compose/conf/krb/krb5.keytab"
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_APP": "${workspaceFolder}/packages",
+                "BOBA_PORT": "8601",
+                "BOBA_URL_PREFIX": "/boba-debug",
+                "BOBA_CGROUP_BASE": "/cgroup/boba-sandbox"
             },
             "justMyCode": false,
             "args": [
@@ -51,13 +51,13 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/compose",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}",
-                "BOBA_BASE": "${workspaceFolder}",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
-                "KRB5_CONFIG": "${workspaceFolder}/compose/conf/krb/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/compose/conf/krb/krb5.keytab"
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_APP": "${workspaceFolder}/packages",
+                "BOBA_PORT": "8601",
+                "BOBA_URL_PREFIX": "/boba-debug",
+                "BOBA_CGROUP_BASE": "/cgroup/boba-sandbox"
             },
             "justMyCode": false,
             "args": [
@@ -73,13 +73,13 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/compose",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "envFile": "${workspaceFolder}/.vscode/boba-debug.env",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/release/current/third/bin:${env:PATH}",
-                "BOBA_BASE": "${workspaceFolder}",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
-                "KRB5_CONFIG": "${workspaceFolder}/compose/conf/krb/krb5.conf",
-                "KRB5_CLIENT_KTNAME": "${workspaceFolder}/compose/conf/krb/krb5.keytab"
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_APP": "${workspaceFolder}/packages",
+                "BOBA_PORT": "8601",
+                "BOBA_URL_PREFIX": "/boba-debug",
+                "BOBA_CGROUP_BASE": "/cgroup/boba-sandbox"
             },
             "justMyCode": false,
             "args": [

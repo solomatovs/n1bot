@@ -1,4 +1,6 @@
-"""Значения предметной области: местоположение, коллекция, хеш, ключ, метаданные, план формата."""
+"""Значения предметной области: местоположение, коллекция, хеш, ключ, метаданные, план
+формата.
+"""
 
 from __future__ import annotations
 
@@ -26,15 +28,20 @@ __all__ = [
     "TransportKeys",
 ]
 
+
 @dataclass(frozen=True)
 class ChunkLocation:
-    """Положение в исходном content: start включительно, end исключительно (полуинтервал)."""
+    """Положение в исходном content: start включительно, end исключительно
+    (полуинтервал).
+    """
 
     start: int
     end: int
 
+
 CollectionId = NewType("CollectionId", str)
 """Идентификатор коллекции в векторной базе; на один backend — много коллекций."""
+
 
 class ContentHash(ABC):
     """Hash-значение чанка."""
@@ -76,6 +83,7 @@ class StringContentHash(ContentHash):
     def to_wire(self) -> str:
         return self.text
 
+
 T_contra = TypeVar("T_contra", contravariant=True)
 
 
@@ -97,12 +105,13 @@ class Sha256TextEncoder(KeyEncoder[str]):
         digest = hashlib.sha256(content.encode(self._ENCODING)).digest()
         return BytesContentHash(raw=digest)
 
+
 T = TypeVar("T")
 
 
 @dataclass(frozen=True)
 class MetadataKey(Generic[T]):
-    """Типизированный ключ для Metadata: namespace-prefixed wire-name + encode/decode."""
+    """Типизированный ключ Metadata: wire-name с namespace + encode/decode."""
 
     name: str
     decode: Callable[[str], T]
@@ -192,9 +201,12 @@ class ReaderKeys:
 class ChunkerKeys:
     """Ключи, проставляемые Chunker-слоем; пока пусто."""
 
+
 @dataclass(frozen=True)
 class FormatBlock:
-    """Одна семантическая единица body для chunker'а; is_atomic — «не резать char-split'ом»."""
+    """Одна семантическая единица body для chunker'а; is_atomic — «не резать char-
+    split'ом».
+    """
 
     format_content: str
     raw_content: str
@@ -204,7 +216,9 @@ class FormatBlock:
 
 @dataclass(frozen=True)
 class FormatPlan:
-    """План рендера Section в LLM-формат: blocks + repeat_header/footer + block_glue + breadcrumb-инфо."""
+    """План рендера Section в LLM-формат: blocks + repeat_header/footer + block_glue +
+    breadcrumb-инфо.
+    """
 
     blocks: tuple[FormatBlock, ...] = ()
     repeat_header: str = ""

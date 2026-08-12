@@ -7,7 +7,6 @@ from collections.abc import Sequence
 from pydantic import JsonValue
 
 from boba.tool.kb.protocol import KbNode
-
 from boba.toolkit.channels import ChannelSink
 from boba.toolkit.launcher import LauncherFactory, StageRun
 

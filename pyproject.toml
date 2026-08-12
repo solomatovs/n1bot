@@ -27,9 +27,11 @@ pythonpath = [
     "packages/tools/boba-tool-knowledge/src",
     "packages/testing/boba-stand/src",
 ]
-addopts = ["--strict-markers", "-m", "not integration"]
+addopts = ["--strict-markers", "-m", "not integration and not ui and not load"]
 markers = [
     "integration: тест ходит во внешние сервисы (Confluence/Ollama/...). Запускать вручную: `pytest -m integration`. По умолчанию исключаются.",
+    "ui: тест поднимает приложение и браузер (playwright + postgres). Запускать вручную: `pytest -m ui`. По умолчанию исключаются.",
+    "load: нагрузка и аварийные завершения песочницы; минуты и десятки процессов. Запускать вручную: `pytest -m load`. По умолчанию исключаются.",
 ]
 
 [tool.pyright]
@@ -82,11 +84,12 @@ line-length = 88
 [tool.ruff.lint]
 select = [
     "F", "E", "W", "I", "B", "UP", "SIM", "C90", "N", "S",
-    "A", "C4", "T20", "PT", "RET", "PIE", "PL", "RUF",
+    "A", "C4", "T20", "PT", "RET", "PIE", "PL", "RUF", "TID",
 ]
 ignore = [
     "RUF001", "RUF002", "RUF003",
     "RET504",
+    "SIM102", "SIM108",
 ]
 
 [tool.ruff.lint.mccabe]
@@ -95,8 +98,12 @@ max-complexity = 10
 [tool.ruff.lint.isort]
 known-first-party = ["boba"]
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"shutil.which".msg = "PATH is attacker-controlled: use boba.toolkit.binaries.TrustedBinaries"
+
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415"]
+"**/tests/**" = ["S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251"]
+"build/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
 
 [tool.uv.workspace]
 members = [
@@ -135,6 +142,7 @@ dev = [
     "pytest>=9.1.0",
     "ruff>=0.15.17",
     "pyright>=1.1.400",
+    "playwright>=1.40",
     "boba-liteparse",
     "markdownify>=0.11,<1.0",
     "beautifulsoup4>=4.12",

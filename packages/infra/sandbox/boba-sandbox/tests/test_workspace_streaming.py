@@ -22,7 +22,7 @@ from typing import Any, ClassVar, Self
 
 import pytest
 
-from boba.chainlit.chat.data.storage import (
+from boba.chainlit.data.storage import (
     ImageStorageClient,
     OpenedStream,
     StorageFactory,
@@ -39,6 +39,19 @@ needs_fuse = pytest.mark.skipif(
 )
 
 KEY = "7/t1/upload/big.bin"
+
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
 
 
 class PatternPayload:
@@ -153,6 +166,7 @@ def storage(
             "lock_wait_sec": 10.0,
             "copy_chunk_bytes": 1 << 20,
         },
+        "binaries": {"dirs": _bin_dirs()},
     }
     client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
     assert isinstance(client, ImageStorageClient)
@@ -214,6 +228,7 @@ class TestStreamingReads:
                 "lock_wait_sec": 10.0,
                 "copy_chunk_bytes": 1 << 20,
             },
+            "binaries": {"dirs": _bin_dirs()},
         }
         client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
 
@@ -384,6 +399,7 @@ class TestStreamingReads:
                 "lock_wait_sec": 10.0,
                 "copy_chunk_bytes": 1 << 20,
             },
+            "binaries": {"dirs": _bin_dirs()},
         }
         client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
 

@@ -26,19 +26,19 @@ from ldap3.core.exceptions import (
 from pydantic import BaseModel, Field
 
 import chainlit as cl
-from boba.chainlit.auth.errors import (
-    AuthenticationError,
-    AuthorizationError,
-    ExternalServiceError,
-    InternalServiceError,
-)
 from boba.chainlit.auth.local import (
     LocalExcludeUserProvider,
     LocalUserRolesProvider,
     RoleExcludeConfig,
     RoleMappingConfig,
 )
-from boba.chainlit.infra.session import UserMetadataField
+from boba.chainlit.domain.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    ExternalServiceError,
+    InternalServiceError,
+)
+from boba.chainlit.domain.session import UserMetadataField
 
 
 class LDAPError(Exception):
@@ -415,9 +415,7 @@ class LdapAuth:
 
             requires_roles = self._config.require_roles
             if requires_roles and not roles:
-                self._logger.warning(
-                    "access denied for %s (no roles mapped)", username
-                )
+                self._logger.warning("access denied for %s (no roles mapped)", username)
                 raise AuthorizationError("Access denied")
 
             if roles:

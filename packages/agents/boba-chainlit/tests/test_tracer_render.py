@@ -86,7 +86,7 @@ class TestToolFinished:
 
     def test_chart_adds_top_level_step(self) -> None:
         step, sink = self._finish(ChartResult(spec={"data": []}, title="T"))
-        assert step.output == "график отрисован: T"
+        assert step.output == "chart rendered: T"
         chart = [s for s in sink.steps if s.get("type") == "assistant_message"]
         assert len(chart) == 1
         assert chart[0].get("output") == "T"

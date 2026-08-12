@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.auth.errors import AuthorizationError
 from boba.chainlit.auth.kerberos import (
     KerberosRolesInLdapConfig,
     KerberosRolesInLdapMappingConfig,
     KerberosRolesInLdapProvider,
-    SidsHeader,
     SidExcludeUserProvider,
+    SidsHeader,
     SidUserRolesProvider,
 )
 from boba.chainlit.auth.ldap import ADUserEntry
@@ -24,7 +23,8 @@ from boba.chainlit.auth.local import (
     RoleExcludeConfig,
     RoleMappingConfig,
 )
-from boba.chainlit.infra.session import UserMetadataField
+from boba.chainlit.domain.errors import AuthorizationError
+from boba.chainlit.domain.session import UserMetadataField
 
 pytestmark = pytest.mark.anyio
 

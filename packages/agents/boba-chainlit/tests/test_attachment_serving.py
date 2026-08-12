@@ -13,15 +13,15 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from boba.chainlit.agent.tools.send_file import WorkspaceFile
-from boba.chainlit.chat.data import data_layer as data_layer_module
-from boba.chainlit.chat.data.object_key import (
+from boba.chainlit.data import data_layer as data_layer_module
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.data.upload import AttachmentServing, UploadPolicy
+from boba.chainlit.domain.keys import (
     AttachmentUrl,
     ElementProps,
     ObjectKey,
     ThreadDir,
 )
-from boba.chainlit.chat.data.storage import LocalStorageClient
-from boba.chainlit.chat.data.upload import AttachmentServing, UploadPolicy
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 
 pytestmark = pytest.mark.anyio
@@ -85,7 +85,9 @@ async def test_persisted_plotly_chart_is_served_as_json(
     assert stored_url is not None
     assert stored_url.endswith(url.path())
 
-    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user)
+    app = build_serving_app(
+        AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         response = await client.get(url.path())
@@ -143,7 +145,9 @@ async def test_bot_file_is_shown_without_copying(
     assert stored_url is not None
     assert stored_url.endswith(url.path())
 
-    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user)
+    app = build_serving_app(
+        AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         response = await client.get(url.path())
@@ -187,7 +191,9 @@ async def test_attachment_range_is_served_partially(
         dir=ThreadDir.UPLOAD,
         element_id=element_id,
     )
-    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user)
+    app = build_serving_app(
+        AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         partial = await client.get(url.path(), headers={"Range": "bytes=0-8"})
@@ -213,7 +219,9 @@ async def test_foreign_user_gets_no_file(
     stranger = PersistedUser(
         id="999", identifier="stranger", createdAt=seeded.user.createdAt
     )
-    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), stranger)
+    app = build_serving_app(
+        AttachmentServing(storage, lambda: layer, UploadPolicy()), stranger
+    )
     url = AttachmentUrl(
         thread_id=seeded.thread_id,
         dir=ThreadDir.UPLOAD,
@@ -268,7 +276,9 @@ async def test_diagram_from_mermaid_dir_is_served(
     assert stored_url is not None
     assert stored_url.endswith(f"/attachment/{seeded.thread_id}/mermaid/{element_id}")
 
-    app = build_serving_app(AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user)
+    app = build_serving_app(
+        AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://boba") as client:
         response = await client.get(

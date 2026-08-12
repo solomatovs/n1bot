@@ -94,8 +94,7 @@ class ConfluenceTools:
                 Field(
                     min_length=1,
                     description=(
-                        "ID страницы Confluence "
-                        "(из URL `viewpage.action?pageId=<id>`)."
+                        "ID страницы Confluence (из URL `viewpage.action?pageId=<id>`)."
                     ),
                 ),
             ],
@@ -166,8 +165,7 @@ class ConfluenceTools:
                 LLMStringList | None,
                 Field(
                     description=(
-                        "Ограничить поиск списком space key, "
-                        'например ["DQ", "IPKD"].'
+                        'Ограничить поиск списком space key, например ["DQ", "IPKD"].'
                     ),
                 ),
             ] = None,

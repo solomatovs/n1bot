@@ -20,7 +20,6 @@ from bash_stage import AllowAllNodes
 from psycopg import sql
 
 from boba.chainlit.infra.plugins import ToolPlugins
-from boba.stand.journal import CallStand
 from boba.sandbox import (
     SandboxCaller,
     SandboxPayloadError,
@@ -28,6 +27,7 @@ from boba.sandbox import (
 )
 from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.settings import bind
+from boba.stand.journal import CallStand
 from boba.tool.chart import build_chart_tools
 from boba.tool.doc import DocToolsConfig, build_doc_tools
 from boba.tool.kb import (
@@ -61,14 +61,14 @@ _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS = _REPO / "build" / "src" / "sandbox" / "rootfs"
 
 _UID = os.getuid()
-_DELEGATED = f"/sys/fs/cgroup/user.slice/user-{_UID}.slice/user@{_UID}.service"
+_DELEGATED = f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service"
 
 
 def _inside_delegated_scope() -> bool:
     """Мигрировать в cgroup_base можно только из его же поддерева."""
     with open("/proc/self/cgroup") as f:
         current = f.read().strip().split(":")[-1]
-    return current.startswith(f"/user.slice/user-{_UID}.slice/user@{_UID}.service")
+    return current.startswith(f"/boba.slice/user-{_UID}.slice/user@{_UID}.service")
 
 
 pytestmark = [
@@ -250,10 +250,22 @@ class KbCleanup:
     @staticmethod
     async def drop(cfg: ConfluenceIngestConfig, collection: str) -> None:
         statements = (
-            sql.SQL("delete from {} where collection = %s").format(
-                sql.Identifier(cfg.tables.pg_schema, cfg.tables.chunks_table)
-            ),
-            sql.SQL("delete from {} where name = %s").format(
+            sql.SQL(
+                """
+                delete from
+                    {}
+                where
+                    collection = %s
+                """
+            ).format(sql.Identifier(cfg.tables.pg_schema, cfg.tables.chunks_table)),
+            sql.SQL(
+                """
+                delete from
+                    {}
+                where
+                    name = %s
+                """
+            ).format(
                 sql.Identifier(cfg.tables.pg_schema, cfg.tables.collections_table)
             ),
         )

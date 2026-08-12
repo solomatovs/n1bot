@@ -13,15 +13,16 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from omegaconf import DictConfig
 from psycopg import sql
 
-from boba.chainlit.chat.data.object_key import AttachmentLinks
-from boba.chainlit.chat.data.data_layer import PostgresDataLayer
-from boba.chainlit.chat.data.storage import LocalStorageClient
+from boba.chainlit.chat.transcript import TranscriptFeed
+from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox.runner import ToolCallContext
-from boba.stand.journal import CallStand
 from boba.settings import bind, build_app_config
+from boba.stand.journal import CallStand
 
 TEST_DB = "boba_chainlit_test"
 AUTH_USER = "test-user"
@@ -86,12 +87,20 @@ async def test_database(app_config: AppConfig) -> str:
     try:
         async with maintenance.cursor() as cur:
             await cur.execute(
-                "select 1 from pg_database where datname = %s", (TEST_DB,)
+                """
+                select
+                    1
+                from
+                    pg_database
+                where
+                    datname = %s
+                """,
+                (TEST_DB,),
             )
             exists = await cur.fetchone()
             if not exists:
                 await cur.execute(
-                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(TEST_DB))
+                    sql.SQL("create database {}").format(sql.Identifier(TEST_DB))
                 )
     finally:
         await maintenance.close()
@@ -146,7 +155,7 @@ async def layer(
         pool,
         schema=schema,
         storage=storage,
-        messages=thread_messages,
+        feed=TranscriptFeed(thread_messages),
         links=AttachmentLinks(app_config.storage.public_prefix),
     )
     await data_layer.setup()

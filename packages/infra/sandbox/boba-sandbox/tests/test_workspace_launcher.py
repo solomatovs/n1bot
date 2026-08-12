@@ -11,9 +11,11 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
+from boba.toolkit.binaries import TrustedBinaries
 from boba.workspace.launcher import (
     FileOperations,
     FuseMounter,
@@ -24,6 +26,7 @@ from boba.workspace.launcher import (
     LauncherMarker,
     LauncherOptions,
     MountError,
+    PartialCopy,
     ReadHeader,
     ReadWindow,
     ResourceLimits,
@@ -45,17 +48,30 @@ def template(tmp_path: Path) -> Path:
     path.write_bytes(b"TEMPLATE")
     return path
 
+
 _REQUIRED_FLAGS = (
-    "--mount-wait-sec", "10.0",
-    "--mount-poll-sec", "0.05",
-    "--shutdown-wait-sec", "5.0",
-    "--lock-wait-sec", "10.0",
-    "--copy-chunk-bytes", "1048576",
-    "--max-memory-bytes", "0",
-    "--max-cpu-sec", "0",
-    "--max-file-size-bytes", "0",
-    "--max-open-files", "0",
-    "--oom-score-adj", "0",
+    "--mount-wait-sec",
+    "10.0",
+    "--mount-poll-sec",
+    "0.05",
+    "--shutdown-wait-sec",
+    "5.0",
+    "--lock-wait-sec",
+    "10.0",
+    "--copy-chunk-bytes",
+    "1048576",
+    "--max-memory-bytes",
+    "0",
+    "--max-cpu-sec",
+    "0",
+    "--max-file-size-bytes",
+    "0",
+    "--max-open-files",
+    "0",
+    "--oom-score-adj",
+    "0",
+    "--trusted-bin-dir",
+    "/usr/bin",
 )
 
 
@@ -77,6 +93,22 @@ def _launcher_options(**kw: float) -> LauncherOptions:
         copy_chunk_bytes=int(values["copy_chunk_bytes"]),
     )
 
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
+
+
+def _trusted() -> TrustedBinaries:
+    return TrustedBinaries(dirs=tuple(_bin_dirs()))
 
 
 class TestSparseCopier:
@@ -120,9 +152,7 @@ class TestImageStore:
     def _store(template: Path) -> ImageStore:
         return ImageStore(str(template), SparseCopier(CHUNK), lock_wait_sec=10.0)
 
-    def test_creates_image_from_template(
-        self, tmp_path: Path, template: Path
-    ) -> None:
+    def test_creates_image_from_template(self, tmp_path: Path, template: Path) -> None:
         image = tmp_path / "img"
         store = self._store(template)
         try:
@@ -194,6 +224,50 @@ class TestImageStore:
             if ".tmp." in path.name:
                 leftovers.append(path)
         assert not leftovers
+
+    DEAD_PID: ClassVar[int] = 999_999
+    """Pid, которого нет: владелец частичной копии умер, не докопировав её."""
+
+    LIVE_PID: ClassVar[int] = 1
+    """Заведомо живой владелец; свой pid не годится — его займёт материализация."""
+
+    def test_abandoned_partial_copy_removed_on_acquire(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        image = tmp_path / "img"
+        partial = Path(PartialCopy.render(str(image), self.DEAD_PID))
+        partial.write_bytes(b"half a copy")
+        store = self._store(template)
+
+        try:
+            store.acquire(str(image))
+        finally:
+            store.release_all()
+
+        assert image.exists()
+        assert not partial.exists()
+
+    def test_partial_copy_of_a_live_owner_kept_on_acquire(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        image = tmp_path / "img"
+        partial = Path(PartialCopy.render(str(image), self.LIVE_PID))
+        partial.write_bytes(b"copy in progress")
+        store = self._store(template)
+
+        try:
+            store.acquire(str(image))
+        finally:
+            store.release_all()
+
+        assert partial.exists()
+
+    def test_alien_name_is_not_a_partial_copy(self, tmp_path: Path) -> None:
+        image = str(tmp_path / "img")
+
+        assert PartialCopy.owner_of(image, f"{image}.tmp.notapid") is None
+        assert PartialCopy.owner_of(image, f"{image}.backup") is None
+        assert PartialCopy.owner_of(image, PartialCopy.render(image, 42)) == 42
 
     def test_lock_held_blocks_second_owner(
         self, tmp_path: Path, template: Path
@@ -398,7 +472,9 @@ class TestSymlinkEscape:
         assert rc == LauncherExit.NOT_REGULAR
         assert b"host secret" not in out.getvalue()
 
-    def test_write_refuses_symlinked_target(self, tmp_path: Path, outside: Path) -> None:
+    def test_write_refuses_symlinked_target(
+        self, tmp_path: Path, outside: Path
+    ) -> None:
         """Иначе запись во вложение перезаписала бы файл хоста."""
         ops = self._ops(tmp_path)
         (tmp_path / "root" / "leak").symlink_to(outside)
@@ -447,10 +523,8 @@ class TestFuseMounter:
     def test_missing_fuse2fs_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            "boba.workspace.launcher.shutil.which", lambda _: None
-        )
-        mounter = FuseMounter(_launcher_options())
+        monkeypatch.setattr("boba.workspace.launcher.shutil.which", lambda _: None)
+        mounter = FuseMounter(_launcher_options(), _trusted())
         with pytest.raises(MountError, match="fuse2fs"):
             mounter.mount(str(tmp_path / "img"), str(tmp_path / "mnt"), readonly=False)
 
@@ -460,14 +534,14 @@ class TestFuseMounter:
             shell=False,
         )
         daemon.wait()
-        mounter = FuseMounter(_launcher_options(mount_wait_sec=1.0))
+        mounter = FuseMounter(_launcher_options(mount_wait_sec=1.0), _trusted())
         with pytest.raises(MountError, match="code 7"):
             mounter._wait_mounted(str(tmp_path), daemon)
 
     def test_wait_timeout_raises(self, tmp_path: Path) -> None:
         daemon = self._sleeper()
         mounter = FuseMounter(
-            _launcher_options(mount_wait_sec=0.2, mount_poll_sec=0.01)
+            _launcher_options(mount_wait_sec=0.2, mount_poll_sec=0.01), _trusted()
         )
         try:
             with pytest.raises(MountError, match="was not mounted"):
@@ -478,7 +552,7 @@ class TestFuseMounter:
 
     def test_shutdown_terminates_daemon(self) -> None:
         daemon = self._sleeper()
-        mounter = FuseMounter(_launcher_options())
+        mounter = FuseMounter(_launcher_options(), _trusted())
         mounter._daemons.append(daemon)
         mounter.shutdown()
         assert daemon.returncode == -signal.SIGTERM
@@ -495,14 +569,14 @@ class TestFuseMounter:
         )
         assert daemon.stdout is not None
         daemon.stdout.readline()
-        mounter = FuseMounter(_launcher_options(shutdown_wait_sec=0.2))
+        mounter = FuseMounter(_launcher_options(shutdown_wait_sec=0.2), _trusted())
         mounter._daemons.append(daemon)
         mounter.shutdown()
         assert daemon.returncode == -signal.SIGKILL
 
     def test_shutdown_is_idempotent(self) -> None:
         daemon = self._sleeper()
-        mounter = FuseMounter(_launcher_options())
+        mounter = FuseMounter(_launcher_options(), _trusted())
         mounter._daemons.append(daemon)
         mounter.shutdown()
         mounter.shutdown()
@@ -611,10 +685,13 @@ class TestLauncherMain:
                 "64",
                 "--oom-score-adj",
                 "800",
+                "--trusted-bin-dir",
+                "/usr/bin",
                 "read",
                 "x",
             ]
         )
+        assert args.trusted_bin_dir == ["/usr/bin"]
         assert args.mount_wait_sec == 1.5
         assert args.lock_wait_sec == 2.5
         assert args.copy_chunk_bytes == 4096
@@ -643,6 +720,7 @@ class TestChainOptions:
             python_bin="/usr/bin/python3",
             options=options,
             limits=ResourceLimits(),
+            binaries=_trusted(),
         )
 
     def test_options_rendered_as_flags(self) -> None:
@@ -698,6 +776,7 @@ class TestChainOptions:
             python_bin="/usr/bin/python3",
             options=_launcher_options(),
             limits=limits,
+            binaries=_trusted(),
         )
         assert argv[argv.index("--max-memory-bytes") + 1] == "1048576"
         assert argv[argv.index("--max-cpu-sec") + 1] == "7"

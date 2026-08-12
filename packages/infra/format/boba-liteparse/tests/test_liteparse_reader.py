@@ -24,6 +24,7 @@ pytestmark = pytest.mark.anyio
 def anyio_backend() -> str:
     return "asyncio"
 
+
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two".
 _PDF = b"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
@@ -62,10 +63,7 @@ def _raw(data: bytes, content_type: str | None) -> RawDocument:
 
 
 async def test_pdf_one_section_per_page_with_locus() -> None:
-    secs = [
-        item
-        async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, _PDF_TYPE))
-    ]
+    secs = [item async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, _PDF_TYPE))]
     assert [s.order for s in secs] == [1, 2]
     assert [s.metadata.get(SectionKeys.PAGE_NUMBER) for s in secs] == [1, 2]
     assert all(s.metadata.get(ReaderKeys.DOC_TYPE) == "pdf" for s in secs)
@@ -75,8 +73,7 @@ async def test_pdf_one_section_per_page_with_locus() -> None:
 
 async def test_passes_through_source_metadata() -> None:
     [first, *_] = [
-        item
-        async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, _PDF_TYPE))
+        item async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, _PDF_TYPE))
     ]
     assert first.source_id == SourceId(_SOURCE)
     # имя файла (page_title), выставленное upstream, доезжает до Section

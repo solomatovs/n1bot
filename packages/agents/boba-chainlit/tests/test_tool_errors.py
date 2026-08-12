@@ -21,7 +21,7 @@ def chainlit_context() -> None:
     """независимость от сессии chainlit"""
 
 
-class _Boom(Exception):
+class _BoomError(Exception):
     """исключение инструмента, которое должно превратиться в ErrorResult"""
 
 

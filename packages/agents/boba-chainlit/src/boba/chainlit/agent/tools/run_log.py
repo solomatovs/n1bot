@@ -27,7 +27,7 @@ from typing import Annotated, ClassVar, cast
 from langchain_core.tools import BaseTool, InjectedToolCallId
 from pydantic import BaseModel, ValidationError, create_model
 
-from boba.chainlit.infra.session import current_thread_id, current_user_id
+from boba.chainlit.domain.session import current_thread_id, current_user_id
 from boba.sandbox.runner import ToolCallContext
 from boba.toolkit.result import ToolResult, ToolResultBase, render_for_llm
 

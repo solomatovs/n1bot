@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from langchain_core.messages import HumanMessage
 
-from boba.chainlit.chat.data.object_key import ObjectKey
+from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.infra.providers import build_llm_view
 from boba.sandbox import WORKSPACE_MOUNT
 from boba.sandbox.argv import ChannelArgv, WrapArgsCodec
 from boba.sandbox.profile import BindSpec, SandboxProfile
+
+
+def _bin_dirs() -> list[str]:
+    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
+    dirs: list[str] = []
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.startswith("/"):
+            continue
+
+        dirs.append(entry)
+
+    return dirs
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +71,7 @@ _PROFILE_BASE: dict[str, object] = {
         "lock_wait_sec": 10.0,
         "copy_chunk_bytes": 1 << 20,
     },
+    "binaries": {"dirs": _bin_dirs()},
     "tmpfs": (),
     "network": False,
     "env_set": {},
@@ -65,7 +81,7 @@ _PROFILE_BASE: dict[str, object] = {
     "max_file_size_bytes": 64 * 1024 * 1024,
     "max_open_files": 256,
     "max_processes": 256,
-    "max_output_bytes": 256 * 1024,
+    "max_output_bytes": 4 * 1024 * 1024,
     "cgroup_base": "",
     "oom_score_adj": 0,
     "cwd": "",

@@ -313,9 +313,7 @@ class TestClickHouseConfig:
 
     def test_kerberos_requires_krbsrvname(self) -> None:
         with pytest.raises(ValidationError, match="krbsrvname"):
-            ClickHouseConfig.model_validate(
-                {**self._BASE, "kerberos": self._KERBEROS}
-            )
+            ClickHouseConfig.model_validate({**self._BASE, "kerberos": self._KERBEROS})
 
     def test_kerberos_and_password_are_exclusive(self) -> None:
         with pytest.raises(ValidationError, match="взаимоисключающи"):

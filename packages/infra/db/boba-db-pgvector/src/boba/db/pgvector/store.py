@@ -1,4 +1,6 @@
-"""KB-store поверх postgres+pgvector; схему создаёт bootstrap-CLI, runtime DDL не делает."""
+"""KB-store поверх postgres+pgvector; схему создаёт bootstrap-CLI, runtime DDL не
+делает.
+"""
 
 from __future__ import annotations
 
@@ -163,7 +165,7 @@ class PostgresChunkStore(ChunkStore[str]):
 
         query = sql.SQL(
             """
-            SELECT
+            select
                 chunk_id,
                 source_id,
                 chunk_index,
@@ -172,11 +174,11 @@ class PostgresChunkStore(ChunkStore[str]):
                 format_content,
                 metadata,
                 tags
-            FROM
+            from
                 {chunks_table}
-            WHERE
+            where
                 collection = %s
-            AND chunk_id = ANY(%s)
+                and chunk_id = ANY(%s)
             """,
         ).format(chunks_table=self._tables.chunks_ident())
 
@@ -202,24 +204,44 @@ class PostgresChunkStore(ChunkStore[str]):
             if source_id is None:
                 query = sql.SQL(
                     """
-                    SELECT chunk_id, source_id, chunk_index,
-                           format_content AS snippet, metadata, tags
-                    FROM {chunks_table}
-                    WHERE collection = %s
-                    ORDER BY source_id, chunk_index
-                    LIMIT %s
+                    select
+                        chunk_id,
+                        source_id,
+                        chunk_index,
+                        format_content as snippet,
+                        metadata,
+                        tags
+                    from
+                        {chunks_table}
+                    where
+                        collection = %s
+                    order by
+                        source_id,
+                        chunk_index
+                    limit
+                        %s
                     """,
                 ).format(chunks_table=self._tables.chunks_ident())
                 await cur.execute(query, (str(collection), limit))
             else:
                 query = sql.SQL(
                     """
-                    SELECT chunk_id, source_id, chunk_index,
-                           format_content AS snippet, metadata, tags
-                    FROM {chunks_table}
-                    WHERE collection = %s AND source_id = %s
-                    ORDER BY chunk_index
-                    LIMIT %s
+                    select
+                        chunk_id,
+                        source_id,
+                        chunk_index,
+                        format_content as snippet,
+                        metadata,
+                        tags
+                    from
+                        {chunks_table}
+                    where
+                        collection = %s
+                        and source_id = %s
+                    order by
+                        chunk_index
+                    limit
+                        %s
                     """,
                 ).format(chunks_table=self._tables.chunks_ident())
                 await cur.execute(query, (str(collection), str(source_id), limit))
@@ -241,28 +263,28 @@ class PostgresChunkStore(ChunkStore[str]):
         if where_sql is not None:
             clauses.append(where_sql)
             bind_params.extend(params)
-        where_clause = sql.SQL(" AND ").join(clauses)
+        where_clause = sql.SQL(" and ").join(clauses)
         query = sql.SQL(
             """
-            SELECT
+            select
                 chunk_id,
                 source_id,
                 chunk_index,
-                format_content AS snippet,
+                format_content as snippet,
                 metadata,
                 tags
-            FROM
+            from
                 {chunks_table}
-            WHERE
+            where
                 {where}
-            ORDER BY
+            order by
                 source_id,
                 chunk_index
             """,
         ).format(chunks_table=self._tables.chunks_ident(), where=where_clause)
 
         if limit is not None:
-            query = sql.SQL("{q} LIMIT {lim}").format(
+            query = sql.SQL("{q} limit {lim}").format(
                 q=query,
                 lim=sql.Literal(limit),
             )
@@ -286,9 +308,14 @@ class PostgresChunkStore(ChunkStore[str]):
         ids = [str(cid) for cid, _ in items]
         query = sql.SQL(
             """
-            SELECT chunk_id, content_hash
-            FROM {chunks_table}
-            WHERE collection = %s AND chunk_id = ANY(%s)
+            select
+                chunk_id,
+                content_hash
+            from
+                {chunks_table}
+            where
+                collection = %s
+                and chunk_id = ANY(%s)
             """,
         ).format(chunks_table=self._tables.chunks_ident())
         pool = await self._pool()
@@ -323,25 +350,42 @@ class PostgresChunkStore(ChunkStore[str]):
     ) -> None:
         upsert_sql = sql.SQL(
             """
-            INSERT INTO {chunks_table} (
-                chunk_id, collection, source_id, chunk_index,
-                content_hash, raw_content, format_content,
-                embedding, metadata, tags, updated_at
+            insert into {chunks_table} (
+                chunk_id,
+                collection,
+                source_id,
+                chunk_index,
+                content_hash,
+                raw_content,
+                format_content,
+                embedding,
+                metadata,
+                tags,
+                updated_at
             )
-            VALUES (
-                %s, %s, %s, %s, %s, %s, %s,
-                %s::vector, %s::jsonb, %s, now()
+            values (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s::vector,
+                %s::jsonb,
+                %s,
+                now()
             )
-            ON CONFLICT (chunk_id) DO UPDATE SET
-                collection     = EXCLUDED.collection,
-                source_id      = EXCLUDED.source_id,
-                chunk_index    = EXCLUDED.chunk_index,
-                content_hash   = EXCLUDED.content_hash,
-                raw_content    = EXCLUDED.raw_content,
-                format_content = EXCLUDED.format_content,
-                embedding      = EXCLUDED.embedding,
-                metadata       = EXCLUDED.metadata,
-                tags           = EXCLUDED.tags,
+            on conflict (chunk_id) do update set
+                collection     = excluded.collection,
+                source_id      = excluded.source_id,
+                chunk_index    = excluded.chunk_index,
+                content_hash   = excluded.content_hash,
+                raw_content    = excluded.raw_content,
+                format_content = excluded.format_content,
+                embedding      = excluded.embedding,
+                metadata       = excluded.metadata,
+                tags           = excluded.tags,
                 updated_at     = now()
             """,
         ).format(chunks_table=self._tables.chunks_ident())
@@ -376,7 +420,13 @@ class PostgresChunkStore(ChunkStore[str]):
         if not ids:
             return
         query = sql.SQL(
-            "DELETE FROM {chunks_table} WHERE collection = %s AND chunk_id = ANY(%s)",
+            """
+            delete from
+                {chunks_table}
+            where
+                collection = %s
+                and chunk_id = ANY(%s)
+            """,
         ).format(chunks_table=self._tables.chunks_ident())
         pool = await self._pool()
         async with pool.cursor() as cur:
@@ -394,10 +444,12 @@ class PostgresChunkStore(ChunkStore[str]):
         wire_patch = {k: str(v) for k, v in patch.items()}
         query = sql.SQL(
             """
-            UPDATE {chunks_table}
-            SET metadata = metadata || %s::jsonb,
+            update {chunks_table} set
+                metadata = metadata || %s::jsonb,
                 updated_at = now()
-            WHERE collection = %s AND chunk_id = ANY(%s)
+            where
+                collection = %s
+                and chunk_id = ANY(%s)
             """,
         ).format(chunks_table=self._tables.chunks_ident())
         pool = await self._pool()
@@ -514,17 +566,17 @@ class PostgresChunkStore(ChunkStore[str]):
             if len(f.filters) == 1:
                 return cls._filter_to_sql(f.filters[0], params)
             parts = [cls._filter_to_sql(s, params) for s in f.filters]
-            return sql.SQL("(") + sql.SQL(" AND ").join(parts) + sql.SQL(")")
+            return sql.SQL("(") + sql.SQL(" and ").join(parts) + sql.SQL(")")
         if isinstance(f, Or):
             if not f.filters:
                 raise UnsupportedFilterError(f, "postgres", "empty Or")
             if len(f.filters) == 1:
                 return cls._filter_to_sql(f.filters[0], params)
             parts = [cls._filter_to_sql(s, params) for s in f.filters]
-            return sql.SQL("(") + sql.SQL(" OR ").join(parts) + sql.SQL(")")
+            return sql.SQL("(") + sql.SQL(" or ").join(parts) + sql.SQL(")")
         if isinstance(f, Not):
             inner = cls._filter_to_sql(f.filter, params)
-            return sql.SQL("(NOT ") + inner + sql.SQL(")")
+            return sql.SQL("(not ") + inner + sql.SQL(")")
         raise UnsupportedFilterError(
             f,
             "postgres",
@@ -586,11 +638,19 @@ class PostgresChunkStore(ChunkStore[str]):
         invert: bool,
         params: list[Any],
     ) -> sql.Composable:
+        if not values and invert:
+            return sql.SQL("true")
+
         if not values:
-            return sql.SQL("FALSE") if not invert else sql.SQL("TRUE")
+            return sql.SQL("false")
+
         expr = cls._field_expr(field)
         params.append(values)
-        op = sql.SQL("<> ALL") if invert else sql.SQL("= ANY")
+
+        op = sql.SQL("= any")
+        if invert:
+            op = sql.SQL("<> all")
+
         return sql.SQL("(") + expr + sql.SQL(" ") + op + sql.SQL("(%s))")
 
 
@@ -615,16 +675,23 @@ class PostgresCollectionsStore(CollectionsStore):
     async def list_collections(self) -> Sequence[CollectionInfo]:
         query = sql.SQL(
             """
-            SELECT c.name,
-                   c.description,
-                   COALESCE(cnt.count, 0) AS count
-            FROM {collections_table} c
-            LEFT JOIN (
-                SELECT collection, count(*)::int AS count
-                FROM {chunks_table}
-                GROUP BY collection
-            ) cnt ON cnt.collection = c.name
-            ORDER BY c.name
+            select
+                c.name,
+                c.description,
+                COALESCE(cnt.count, 0) as count
+            from
+                {collections_table} c
+                left join (
+                    select
+                        collection,
+                        count(*)::int as count
+                    from
+                        {chunks_table}
+                    group by
+                        collection
+                ) cnt on cnt.collection = c.name
+            order by
+                c.name
             """,
         ).format(
             collections_table=self._tables.collections_ident(),
@@ -649,11 +716,21 @@ class PostgresCollectionsStore(CollectionsStore):
     async def collection_info(self, name: CollectionId) -> CollectionInfo:
         query = sql.SQL(
             """
-            SELECT c.name, c.description,
-                   (SELECT count(*)::int FROM {chunks_table}
-                    WHERE collection = c.name) AS count
-            FROM {collections_table} c
-            WHERE c.name = %s
+            select
+                c.name,
+                c.description,
+                (
+                    select
+                        count(*)::int
+                    from
+                        {chunks_table}
+                    where
+                        collection = c.name
+                ) as count
+            from
+                {collections_table} c
+            where
+                c.name = %s
             """,
         ).format(
             chunks_table=self._tables.chunks_ident(),
@@ -683,9 +760,15 @@ class PostgresCollectionsStore(CollectionsStore):
     ) -> None:
         query = sql.SQL(
             """
-            INSERT INTO {collections_table} (name, description)
-            VALUES (%s, %s)
-            ON CONFLICT (name) DO NOTHING
+            insert into {collections_table} (
+                name,
+                description
+            )
+            values (
+                %s,
+                %s
+            )
+            on conflict (name) do nothing
             """,
         ).format(collections_table=self._tables.collections_ident())
         pool = await self._pool()
@@ -693,15 +776,26 @@ class PostgresCollectionsStore(CollectionsStore):
             await cur.execute(query, (str(name), description or ""))
 
     async def delete_collection(self, name: CollectionId) -> None:
+        chunks_query = sql.SQL(
+            """
+            delete from
+                {chunks_table}
+            where
+                collection = %s
+            """,
+        ).format(chunks_table=self._tables.chunks_ident())
+        collection_query = sql.SQL(
+            """
+            delete from
+                {collections_table}
+            where
+                name = %s
+            """,
+        ).format(collections_table=self._tables.collections_ident())
+
+        params = (str(name),)
+
         pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(
-                sql.SQL(
-                    """DELETE FROM {chunks_table} WHERE collection = %s;
-            DELETE FROM {collections_table} WHERE name = %s""",
-                ).format(
-                    chunks_table=self._tables.chunks_ident(),
-                    collections_table=self._tables.collections_ident(),
-                ),
-                (str(name),),
-            )
+        async with pool.connection() as conn, conn.transaction():
+            await conn.execute(chunks_query, params)
+            await conn.execute(collection_query, params)

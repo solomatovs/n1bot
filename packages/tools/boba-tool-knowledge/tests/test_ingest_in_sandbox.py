@@ -34,7 +34,7 @@ def _config() -> ConfluenceIngestConfig:
             "tables": {},
             "embedding": {
                 "model": "intfloat/multilingual-e5-large",
-                "cache_dir": "/opt/fastembed",
+                "cache_dir": "/var/cache/fastembed",
                 "dim": 1024,
                 "batch_size": 4,
             },

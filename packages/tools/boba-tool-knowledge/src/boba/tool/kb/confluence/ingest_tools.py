@@ -147,8 +147,7 @@ class ConfluenceIngestTools:
                 Field(
                     min_length=1,
                     description=(
-                        "CQL-запрос Confluence, например "
-                        '`space = DQ AND type = page`.'
+                        "CQL-запрос Confluence, например `space = DQ AND type = page`."
                     ),
                 ),
             ],

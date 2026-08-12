@@ -23,7 +23,7 @@ import stat as stat_module
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from types import FrameType, TracebackType
@@ -31,6 +31,11 @@ from typing import BinaryIO, ClassVar, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from boba.toolkit.binaries import (
+    SandboxBinary,
+    TrustedBinaries,
+    UntrustedBinaryError,
+)
 from boba.toolkit.channels import Channel, ShellExit, StageExit
 
 __all__ = [
@@ -51,6 +56,7 @@ __all__ = [
     "LauncherOptions",
     "MountError",
     "NotRegularFileError",
+    "PartialCopy",
     "ReadHeader",
     "ReadWindow",
     "ResourceLimits",
@@ -305,6 +311,54 @@ class SparseCopier:
         return start
 
 
+class PartialCopy:
+    """Имя недокопированного образа: `<image>.tmp.<pid>` владельца копии."""
+
+    SUFFIX: ClassVar[str] = ".tmp."
+    PROC: ClassVar[str] = "/proc"
+
+    @classmethod
+    def render(cls, image: str, pid: int) -> str:
+        return f"{image}{cls.SUFFIX}{pid}"
+
+    @classmethod
+    def owner_of(cls, image: str, path: str) -> int | None:
+        """Pid из имени; None — имя не похоже на частичную копию образа."""
+        prefix = f"{image}{cls.SUFFIX}"
+        if not path.startswith(prefix):
+            return None
+
+        tail = path[len(prefix) :]
+        if not tail.isdigit():
+            return None
+
+        return int(tail)
+
+    @classmethod
+    def abandoned(cls, image: str) -> Iterator[str]:
+        """Копии, чей процесс уже мёртв: их не докопирует никто."""
+        directory = os.path.dirname(image)
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return
+
+        for name in names:
+            path = os.path.join(directory, name)
+            owner = cls.owner_of(image, path)
+            if owner is None:
+                continue
+
+            if cls._alive(owner):
+                continue
+
+            yield path
+
+    @classmethod
+    def _alive(cls, pid: int) -> bool:
+        return os.path.exists(os.path.join(cls.PROC, str(pid)))
+
+
 class ImageStore:
     """Готовит образы: flock сериализует доступ, шаблон копируется однажды."""
 
@@ -328,6 +382,8 @@ class ImageStore:
         self._lock(image, fcntl.LOCK_EX)
         waited_ms = int((time.monotonic() - started) * 1000)
         trace(f"lock on {image} acquired in {waited_ms}ms")
+
+        self._drop_abandoned(image)
 
         if os.path.exists(image):
             trace(f"image {image} already exists ({os.path.getsize(image)} bytes)")
@@ -393,11 +449,23 @@ class ImageStore:
 
             time.sleep(self.LOCK_POLL_SEC)
 
+    def _drop_abandoned(self, image: str) -> None:
+        """Под своим локом чужая частичная копия — только от умершего процесса."""
+        for path in PartialCopy.abandoned(image):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                trace(f"cannot remove abandoned copy {path}: {exc}")
+                continue
+
+            trace(f"abandoned partial copy removed: {path}")
+
     def _materialize(self, image: str) -> None:
         if not os.path.exists(self._template):
             msg = f"template image {self._template!r} not found"
             raise MountError(msg)
-        tmp = f"{image}.tmp.{os.getpid()}"
+
+        tmp = PartialCopy.render(image, os.getpid())
         started = time.monotonic()
         try:
             self._copier.copy(self._template, tmp)
@@ -417,9 +485,13 @@ class FuseMounter:
     _PR_SET_PDEATHSIG: ClassVar[int] = 1
 
     def __init__(
-        self, options: LauncherOptions, pass_fds: tuple[int, ...] = ()
+        self,
+        options: LauncherOptions,
+        binaries: TrustedBinaries,
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         self._options = options
+        self._binaries = binaries
         self._pass_fds = pass_fds
         self._daemons: list[subprocess.Popen[bytes]] = []
 
@@ -432,10 +504,7 @@ class FuseMounter:
     def mount(
         self, image: str, mnt: str, *, readonly: bool, fakeroot: bool = False
     ) -> None:
-        fuse2fs = shutil.which("fuse2fs")
-        if fuse2fs is None:
-            msg = "fuse2fs not found in PATH"
-            raise MountError(msg)
+        fuse2fs = self._binaries.resolve(SandboxBinary.FUSE2FS)
         os.makedirs(mnt, exist_ok=True)
 
         argv = [fuse2fs, "-f", image, mnt]
@@ -488,38 +557,6 @@ class FuseMounter:
                 if line.split()[4] == target:
                     return True
         return False
-
-    @classmethod
-    def reclaim(cls, mnt: str) -> None:
-        """Отцепляет точку, осиротевшую после гибели процесса-владельца.
-
-        Актуально только для маунтов в namespace хоста: SIGKILL валит fuse2fs
-        без размонтирования, точка остаётся в mountinfo битой — stat даёт
-        ENOTCONN, mkdir даёт EEXIST. Приватные namespace лаунчера ядро
-        прибирает само.
-        """
-        stale = False
-        try:
-            os.stat(mnt)
-        except FileNotFoundError:
-            return
-        except OSError:
-            stale = True
-
-        if not stale and not cls.is_mounted(os.path.realpath(mnt)):
-            return
-
-        fusermount = shutil.which("fusermount3")
-        if fusermount is None:
-            fusermount = shutil.which("fusermount")
-        if fusermount is None:
-            trace(f"stale mount at {mnt}: fusermount not found")
-            return
-
-        subprocess.run(  # noqa: S603
-            [fusermount, "-uz", mnt], check=False, capture_output=True
-        )
-        trace(f"stale mount reclaimed: {mnt}")
 
     def _wait_mounted(self, mnt: str, daemon: subprocess.Popen[bytes]) -> None:
         target = os.path.realpath(mnt)
@@ -823,17 +860,19 @@ class Launcher:
     USERNS_SYSCTL: ClassVar[str] = "/proc/sys/user/max_user_namespaces"
     """bwrap --disable-userns несовместим с mount fuse, поэтому sysctl после mount."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         template: str,
         images: list[tuple[str, str]],
         options: LauncherOptions,
         limits: ResourceLimits,
+        binaries: TrustedBinaries,
         channels: ChannelBridge,
     ) -> None:
         self._images = images
         self._options = options
         self._limits = limits
+        self._binaries = binaries
         self._channels = channels
         self._store = ImageStore(
             template, SparseCopier(options.copy_chunk_bytes), options.lock_wait_sec
@@ -867,10 +906,11 @@ class Launcher:
             max_open_files=args.max_open_files,
             oom_score_adj=args.oom_score_adj,
         )
-        launcher = cls(args.template, images, options, limits, channels)
+        binaries = TrustedBinaries(dirs=tuple(args.trusted_bin_dir))
+        launcher = cls(args.template, images, options, limits, binaries, channels)
         try:
             return launcher.run(args.mode, args.args)
-        except (MountError, OSError, ValueError) as e:
+        except (MountError, UntrustedBinaryError, OSError, ValueError) as e:
             WrapOutput.error(str(e))
             return LauncherExit.MOUNT_ERROR
 
@@ -889,7 +929,9 @@ class Launcher:
                 trace(f"image {image} does not exist: nothing to read")
                 return LauncherExit.NOT_FOUND
 
-        mounter = FuseMounter(self._options, pass_fds=self._store.lock_fds)
+        mounter = FuseMounter(
+            self._options, self._binaries, pass_fds=self._store.lock_fds
+        )
         try:
             for image, mnt in self._images:
                 mounter.mount(image, mnt, readonly=readonly)
@@ -1088,6 +1130,9 @@ class Launcher:
         parser.add_argument("--max-file-size-bytes", type=int, required=True)
         parser.add_argument("--max-open-files", type=int, required=True)
         parser.add_argument("--oom-score-adj", type=int, required=True)
+        parser.add_argument(
+            "--trusted-bin-dir", action="append", metavar="DIR", required=True
+        )
         parser.add_argument("mode", type=LauncherMode, choices=tuple(LauncherMode))
         parser.add_argument("args", nargs=argparse.REMAINDER)
         return parser.parse_args(argv)
@@ -1122,17 +1167,17 @@ _LAUNCHER_MODULE = "boba.workspace.launcher"
 FUSE_DEVICE = "/dev/fuse"
 
 
-def require_fuse() -> None:
+def require_fuse(binaries: TrustedBinaries) -> None:
     """Проверяет предпосылки монтирования образов; падает громко и сразу."""
     if not os.path.exists(FUSE_DEVICE):
         msg = f"workspace: fuse is required, but {FUSE_DEVICE} is missing"
         raise MountError(msg)
-    if shutil.which("fuse2fs") is None:
-        msg = "workspace: fuse2fs not found in PATH"
-        raise MountError(msg)
-    if shutil.which("bwrap") is None:
-        msg = "workspace: bwrap not found in PATH"
-        raise MountError(msg)
+
+    try:
+        binaries.resolve(SandboxBinary.FUSE2FS)
+        binaries.resolve(SandboxBinary.BWRAP)
+    except UntrustedBinaryError as exc:
+        raise MountError(f"workspace: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -1143,8 +1188,6 @@ class ChainChannelArgv:
     ступени (бинды, setenv, пути образов) не виден в ps и не упирается в
     MAX_ARG_STRLEN.
     """
-
-    BWRAP_BIN: ClassVar[str] = "bwrap"
 
     argv: tuple[str, ...]
     bwrap_options: tuple[str, ...]
@@ -1159,6 +1202,7 @@ class ChainChannelArgv:
         python_bin: str,
         options: LauncherOptions,
         limits: ResourceLimits,
+        binaries: TrustedBinaries,
         wrap_args_fd: int,
         rw_paths: Sequence[str],
         network: bool,
@@ -1166,7 +1210,7 @@ class ChainChannelArgv:
     ) -> ChainChannelArgv:
         """channel_env — пары `Channel.env_name` без wrap_args: его вычитывает
         --args внешнего bwrap, вниз по цепочке канал не передаётся."""
-        bwrap_path = cls._bwrap_path(cls.BWRAP_BIN)
+        bwrap_path = cls._bwrap_path(binaries)
         pairs = cls._absolute_images(images)
 
         bwrap_options = cls._bwrap_options(
@@ -1177,6 +1221,7 @@ class ChainChannelArgv:
             template=template,
             options=options,
             limits=limits,
+            binaries=binaries,
             images=pairs,
             op=op,
         )
@@ -1186,13 +1231,12 @@ class ChainChannelArgv:
         return cls(argv=argv, bwrap_options=tuple(bwrap_options))
 
     @staticmethod
-    def _bwrap_path(bwrap_bin: str) -> str:
-        bwrap_path = shutil.which(bwrap_bin)
-        if not bwrap_path:
-            msg = f"workspace: {bwrap_bin!r} not found in PATH"
-            raise MountError(msg)
-
-        return bwrap_path
+    def _bwrap_path(binaries: TrustedBinaries) -> str:
+        """$PATH не читается: bwrap берётся только из доверенных каталогов."""
+        try:
+            return binaries.resolve(SandboxBinary.BWRAP)
+        except UntrustedBinaryError as exc:
+            raise MountError(f"workspace: {exc}") from exc
 
     @staticmethod
     def _absolute_images(images: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -1288,6 +1332,7 @@ class ChainChannelArgv:
         template: str,
         options: LauncherOptions,
         limits: ResourceLimits,
+        binaries: TrustedBinaries,
         images: Sequence[tuple[str, str]],
         op: Sequence[str],
     ) -> list[str]:
@@ -1319,6 +1364,9 @@ class ChainChannelArgv:
             str(limits.oom_score_adj),
         ]
 
+        for directory in binaries.dirs:
+            argv += ["--trusted-bin-dir", directory]
+
         for image, mnt in images:
             argv += ["--image", image, mnt]
 
@@ -1335,9 +1383,9 @@ def build_chain_argv(  # noqa: PLR0913
     python_bin: str,
     options: LauncherOptions,
     limits: ResourceLimits,
+    binaries: TrustedBinaries,
     rw_paths: Sequence[str] = (),
     network: bool = False,
-    bwrap_bin: str = "bwrap",
     channel_env: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Цепочка файловых операций над образом: опции внешнего bwrap едут в argv.
@@ -1346,7 +1394,7 @@ def build_chain_argv(  # noqa: PLR0913
     Запуск инструмента собирает `ChainChannelArgv.build`: там профиль уходит
     каналом wrap_args.
     """
-    bwrap_path = ChainChannelArgv._bwrap_path(bwrap_bin)
+    bwrap_path = ChainChannelArgv._bwrap_path(binaries)
     pairs = ChainChannelArgv._absolute_images(images)
 
     argv = [bwrap_path]
@@ -1359,6 +1407,7 @@ def build_chain_argv(  # noqa: PLR0913
         template=template,
         options=options,
         limits=limits,
+        binaries=binaries,
         images=pairs,
         op=op,
     )

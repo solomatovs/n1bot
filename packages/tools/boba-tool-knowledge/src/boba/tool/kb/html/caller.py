@@ -9,7 +9,6 @@ from boba.tool.kb.html.protocol import (
     ConfluenceSectionsAnswer,
     HtmlNode,
 )
-
 from boba.toolkit.launcher import (
     LauncherFactory,
     RowCollector,

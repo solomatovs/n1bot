@@ -15,15 +15,21 @@ from boba.chainlit.agent.tools.canvas import (
     open_canvas_action,
 )
 from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.data.fields import StepField, ThreadField
 from boba.chainlit.chat.edit import ThreadRewind
-from boba.chainlit.chat.errors import chainlit_error_ctx_handler
+from boba.chainlit.chat.llm_trace import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn, ThreadRoom
+from boba.chainlit.domain.fields import StepField, ThreadField
+from boba.chainlit.domain.session import (
+    LogUserMark,
+    current_thread_id,
+    current_user_id,
+    current_user_label,
+)
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
-from boba.chainlit.infra.session import current_thread_id, current_user_id
 from boba.chainlit.rendering.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
+from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
 from boba.chainlit.rendering.stream_view import (
     StreamAction,
     StreamScreen,
@@ -59,8 +65,9 @@ async def on_message(
     view = ChatView(thread_id, LiveSink())
     view.begin_turn(msg.id)
     tracer = AgentTracer(view)
+    state_log = LlmStateLog(LogUserMark(current_user_label(), thread_id))
     run_config = RunnableConfig(
-        callbacks=[tracer],
+        callbacks=[tracer, state_log],
         configurable={"thread_id": thread_id},
     )
 
@@ -84,9 +91,7 @@ chainlit_config.code.on_message = wrap_user_function(on_message)
 @di_inject
 async def on_chat_start():
     session = cl.context.session
-    logger.info(
-        "chat start: session=%s, thread=%s", session.id, session.thread_id
-    )
+    logger.info("chat start: session=%s, thread=%s", session.id, session.thread_id)
 
 
 @cl.on_logout

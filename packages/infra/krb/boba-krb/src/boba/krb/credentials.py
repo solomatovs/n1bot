@@ -210,9 +210,7 @@ class KeytabCredentials(KerberosCredentials):
 
             options = krb5.get_init_creds_opt_alloc(context)
             krb5.get_init_creds_opt_set_forwardable(options, True)
-            krb5.get_init_creds_opt_set_renew_life(
-                options, self._config.renew_lifetime
-            )
+            krb5.get_init_creds_opt_set_renew_life(options, self._config.renew_lifetime)
 
             creds = krb5.get_init_creds_keytab(context, principal, options, keytab)
 

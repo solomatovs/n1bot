@@ -20,7 +20,7 @@ from typing import Any, ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict
 
 import chainlit as cl
-from boba.chainlit.chat.data.object_key import ObjectKey
+from boba.chainlit.domain.keys import ObjectKey
 from boba.toolkit.channels import Channel
 from boba.toolkit.result import CustomElementResult, DiagramResult
 
@@ -321,7 +321,7 @@ class CanvasRegistry:
             known.update(viewer.suffixes)
 
         if not known:
-            return "нет ни одного вьювера"
+            return "no viewers registered"
 
         return ", ".join(sorted(known))
 
@@ -353,10 +353,7 @@ class CanvasPanel:
         if viewer is None:
             await cls._explain(key)
             hint = CanvasRegistry.suffixes_hint()
-            msg = (
-                f"no canvas viewer for {key.in_workspace()}; "
-                f"supported: {hint}"
-            )
+            msg = f"no canvas viewer for {key.in_workspace()}; supported: {hint}"
             raise CanvasError(CanvasErrorKind.NO_VIEWER, msg)
 
         return await viewer.open(key, cls._push)
@@ -374,7 +371,7 @@ class CanvasPanel:
             path=key.in_workspace(),
             label=key.name,
             note=(
-                "Этот формат файла панель показать не умеет. Поддерживаются: "
+                "The panel cannot display this file format. Supported: "
                 f"{CanvasRegistry.suffixes_hint()}"
             ),
         )

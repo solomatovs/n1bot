@@ -4,25 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-chainlit"
-version = "0.0.11.dev3"
+version = "0.0.11.dev6"
 description = "Chainlit2 web UI app for the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-settings==0.0.11.dev3",
-    "boba-toolkit==0.0.11.dev3",
-    "boba-cancellation==0.0.11.dev3",
-    "boba-tool-shell==0.0.11.dev3",
-    "boba-tool-chart==0.0.11.dev3",
-    "boba-tool-web==0.0.11.dev3",
-    "boba-tool-doc==0.0.11.dev3",
-    "boba-tool-postgres==0.0.11.dev3",
-    "boba-tool-clickhouse==0.0.11.dev3",
-    "boba-tool-knowledge==0.0.11.dev3",
-    "boba-db-postgres==0.0.11.dev3",
-    "boba-db-pgvector==0.0.11.dev3",
-    "boba-sandbox==0.0.11.dev3",
-    "boba-transport-http==0.0.11.dev3",
-    "boba-krb==0.0.11.dev3",
+    "boba-settings==0.0.11.dev6",
+    "boba-toolkit==0.0.11.dev6",
+    "boba-cancellation==0.0.11.dev6",
+    "boba-tool-shell==0.0.11.dev6",
+    "boba-tool-chart==0.0.11.dev6",
+    "boba-tool-web==0.0.11.dev6",
+    "boba-tool-doc==0.0.11.dev6",
+    "boba-tool-postgres==0.0.11.dev6",
+    "boba-tool-clickhouse==0.0.11.dev6",
+    "boba-tool-knowledge==0.0.11.dev6",
+    "boba-db-postgres==0.0.11.dev6",
+    "boba-db-pgvector==0.0.11.dev6",
+    "boba-sandbox==0.0.11.dev6",
+    "boba-transport-http==0.0.11.dev6",
+    "boba-krb==0.0.11.dev6",
     "ldap3",
     "cryptography>=42,<51",
     "omegaconf>=2.3,<3",

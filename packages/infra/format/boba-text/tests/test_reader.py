@@ -21,6 +21,7 @@ pytestmark = pytest.mark.anyio
 def anyio_backend() -> str:
     return "asyncio"
 
+
 _SOURCE = "https://confl/download/attachments/42/notes.md"
 
 

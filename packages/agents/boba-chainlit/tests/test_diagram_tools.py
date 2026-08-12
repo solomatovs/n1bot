@@ -22,9 +22,9 @@ from boba.chainlit.agent.tools.diagram import (
     MermaidViewer,
     build_diagram_tools,
 )
-from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
-from boba.chainlit.chat.data.storage import LocalStorageClient
 from boba.chainlit.chat.turn import ChatTurn
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.canvas import (
     CanvasError,
@@ -33,6 +33,7 @@ from boba.chainlit.rendering.canvas import (
     RenderStatus,
     RenderVerdicts,
 )
+from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
 from boba.workspace.launcher import LauncherConfig
 
@@ -176,6 +177,7 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DiagramFiles:
             lock_wait_sec=1.0,
             copy_chunk_bytes=65536,
         ),
+        binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
     )
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)
@@ -248,7 +250,9 @@ class TestSaveAndView:
         async def push(content: Any) -> None:
             shown.append(content)
 
-        key = ObjectKey.build("7", THREAD, "mine.mmd", "el-1", dir_thread=ThreadDir.UPLOAD)
+        key = ObjectKey.build(
+            "7", THREAD, "mine.mmd", "el-1", dir_thread=ThreadDir.UPLOAD
+        )
         await MermaidViewer(files).open(key, push)
 
         assert shown[0].text == ER_SPEC
@@ -261,7 +265,9 @@ class TestSaveAndView:
 
     @pytest.mark.anyio
     async def test_read_missing_file(self, files: DiagramFiles) -> None:
-        key = ObjectKey.build("7", THREAD, "no.mmd", "el-1", dir_thread=ThreadDir.MERMAID)
+        key = ObjectKey.build(
+            "7", THREAD, "no.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        )
 
         with pytest.raises(DiagramRefusedError) as failure:
             await files.read(key)
@@ -276,7 +282,9 @@ class TestEntry:
 
     def test_entry_of_unparsed_spec_keeps_text(self) -> None:
         """Файл не mermaid: текст едет как есть, метаданных нет, подпись — имя."""
-        key = ObjectKey.build("7", THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID)
+        key = ObjectKey.build(
+            "7", THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        )
 
         entry = DiagramEntry.of(key, "не диаграмма вовсе")
 
@@ -286,7 +294,9 @@ class TestEntry:
 
     def test_entry_of_broken_body_keeps_type(self) -> None:
         """Заголовок разобран — тип известен; синтаксис тела проверяет браузер."""
-        key = ObjectKey.build("7", THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID)
+        key = ObjectKey.build(
+            "7", THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        )
 
         entry = DiagramEntry.of(key, "erDiagram\n  A ||--")
 
@@ -302,7 +312,9 @@ class TestEntry:
             mime="application/octet-stream",
         )
 
-        key = ObjectKey.build("7", THREAD, "bin.mmd", "el-1", dir_thread=ThreadDir.MERMAID)
+        key = ObjectKey.build(
+            "7", THREAD, "bin.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        )
 
         with pytest.raises(DiagramRefusedError) as failure:
             await files.read(key)
@@ -474,7 +486,9 @@ class TestViewerVerdict:
             await asyncio.sleep(0.01)
 
         nonce = shown[0].nonce
-        RenderVerdicts.report({"nonce": nonce, "ok": False, "error": "Parse error on line 5"})
+        RenderVerdicts.report(
+            {"nonce": nonce, "ok": False, "error": "Parse error on line 5"}
+        )
 
         with pytest.raises(CanvasError) as failure:
             await opening

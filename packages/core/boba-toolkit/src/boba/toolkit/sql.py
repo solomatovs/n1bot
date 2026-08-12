@@ -54,6 +54,7 @@ __all__ = [
     "UnknownConnectionError",
 ]
 
+
 class ConnectionProfile(BaseModel):
     """Базовый профиль соединения: несёт ключ раскрытия секретов в дампе."""
 
@@ -346,9 +347,7 @@ class SqlRows:
         return out
 
     @classmethod
-    def of_columns(
-        cls, names: Sequence[str], row: Sequence[Any]
-    ) -> dict[str, Any]:
+    def of_columns(cls, names: Sequence[str], row: Sequence[Any]) -> dict[str, Any]:
         """Строка-кортеж с отдельным списком имён колонок (блоки ClickHouse)."""
         out: dict[str, Any] = {}
         for index, name in enumerate(names):

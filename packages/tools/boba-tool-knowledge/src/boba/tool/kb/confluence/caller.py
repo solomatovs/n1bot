@@ -13,7 +13,6 @@ from boba.tool.kb.confluence.protocol import (
     ConfluenceSearchHit,
     ConfluenceSpace,
 )
-
 from boba.toolkit.launcher import (
     LauncherFactory,
     RowCollector,

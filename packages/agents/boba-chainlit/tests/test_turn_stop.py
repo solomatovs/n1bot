@@ -50,9 +50,7 @@ class TestRegistry:
     def test_stop_without_turn_is_reported(self, registry: TurnRegistry) -> None:
         assert registry.stop(THREAD, StopReason.USER_STOP) is False
 
-    def test_stop_reaches_the_context_of_the_turn(
-        self, registry: TurnRegistry
-    ) -> None:
+    def test_stop_reaches_the_context_of_the_turn(self, registry: TurnRegistry) -> None:
         """Инструменты читают отмену из контекста: снаружи и изнутри один объект."""
         with registry.open(THREAD):
             registry.stop(THREAD, StopReason.USER_STOP)

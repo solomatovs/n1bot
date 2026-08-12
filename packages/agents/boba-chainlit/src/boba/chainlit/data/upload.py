@@ -34,16 +34,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
-from boba.chainlit.chat.data.fields import ElementField, FileField
-from boba.chainlit.chat.data.object_key import ObjectKey, ThreadDir
-from boba.chainlit.chat.data.storage import (
+from boba.chainlit.data.storage import (
     LocalStorageClient,
     OpenedStream,
     StorageClient,
     StorageFullError,
     StorageNotFoundError,
 )
-from boba.chainlit.infra.config import LocalStorageConfig
+from boba.chainlit.domain.config import LocalStorageConfig
+from boba.chainlit.domain.fields import ElementField, FileField
+from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.sandbox.journal import JournalError, StreamJournalHub
 from boba.toolkit.channels import Channel, StreamKey
 from boba.workspace.launcher import ReadWindow
@@ -844,7 +844,7 @@ class AttachmentServing:
         self,
         request: Request,
         thread_id: UUID,
-        dir: ThreadDir,
+        dir: ThreadDir,  # noqa: A002
         element_id: UUID,
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
     ) -> Response:

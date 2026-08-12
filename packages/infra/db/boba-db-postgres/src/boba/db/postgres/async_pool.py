@@ -29,6 +29,7 @@ __all__ = [
     "PostgresPoolClosedError",
 ]
 
+
 class PostgresError(Exception):
     """Базовая ошибка PG-инфры (pool/connection/timeout)."""
 
