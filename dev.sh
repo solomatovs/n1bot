@@ -41,14 +41,9 @@ if [ -z "$NEED_PACKAGES" ]; then
 elif ! command -v apt-get > /dev/null; then
   echo "dev: apt-get нет, поставь сам: $PACKAGES" >&2
 else
-  SUDO="sudo"
-  if [ "$(id -u)" = "0" ]; then
-    SUDO=""
-  fi
-
   echo "dev: ставлю пакеты сборки: $PACKAGES"
-  $SUDO apt-get update
-  $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y $PACKAGES
+  apt-get update
+  apt-get install -y $PACKAGES
 fi
 
 export PATH="$DIR/build/src/uv:$PATH"
