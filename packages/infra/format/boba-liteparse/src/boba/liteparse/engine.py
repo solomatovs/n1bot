@@ -4,9 +4,10 @@
 песочницы. App-safe часть пакета живёт в `boba.liteparse` и
 `boba.liteparse.sections`.
 
-Ошибки: LiteParseError — парсинг не удался или нет каталога tessdata; сбой
-нативного парсера тоже приводится к нему; IncompatibleContentError — из
-LiteParseReader через базу PagedDocumentReader.
+Ошибки:
+LiteParseError — парсинг не удался или нет каталога tessdata; сбой нативного
+    парсера тоже приводится к нему.
+IncompatibleContentError — из LiteParseReader через базу PagedDocumentReader.
 """
 
 from __future__ import annotations

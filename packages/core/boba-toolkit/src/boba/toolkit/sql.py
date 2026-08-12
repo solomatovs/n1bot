@@ -4,10 +4,12 @@
 профиля соединения и стилем параметров драйвера, а сам оставляет себе только
 нативный SQL, вызов payload'а и фасады @tool.
 
-Ошибки: SqlQueryError — запрос не выполнен; UnknownConnectionError — имя
-подключения вне whitelist'а; CollectorCapacityError/CollectorRowLimitError
-(boba.toolkit.launcher) — выдача переросла max_bytes/max_rows потребителя.
-Текст всех готов для пользователя.
+Ошибки:
+SqlQueryError — запрос не выполнен.
+UnknownConnectionError — имя подключения вне whitelist'а.
+CollectorCapacityError/CollectorRowLimitError (boba.toolkit.launcher) — выдача
+    переросла max_bytes/max_rows потребителя. Текст всех готов для
+    пользователя.
 """
 
 from __future__ import annotations

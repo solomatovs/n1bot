@@ -6,8 +6,10 @@ tool_payload через PayloadChannels — bytes_out считает тот же
 остальных инструментов. Квитанция пустая: процессные факты стадии собирает
 раннер. Код возврата обвязки — код команды в шелльной форме.
 
-Ошибки: PayloadError (command_not_started, command_output_unavailable) — уходит
-конвертом в tool_result; ChannelError — контракт каналов нарушен.
+Ошибки:
+PayloadError (command_not_started, command_output_unavailable) — уходит
+    конвертом в tool_result.
+ChannelError — контракт каналов нарушен.
 """
 
 from __future__ import annotations

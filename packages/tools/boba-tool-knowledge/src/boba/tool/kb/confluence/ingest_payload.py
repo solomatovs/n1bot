@@ -5,10 +5,11 @@
 liteparse и bs4 здесь и так под рукой. Модель эмбеддера грузится один раз на
 весь прогон, потому что весь ingest — один запуск payload'а.
 
-Ошибки: PostgresError и PoolTimeout — до хранилища не достучаться;
-ingest_request_failed — Confluence недоступен или ответил статусом;
-ChannelError — в tool_args приехал запрос чужой модели. Сбой разбора
-отдельного документа ingest переживает сам, наружу он не выходит.
+Ошибки:
+PostgresError и PoolTimeout — до хранилища не достучаться;
+    ingest_request_failed — Confluence недоступен или ответил статусом.
+ChannelError — в tool_args приехал запрос чужой модели. Сбой разбора отдельного
+    документа ingest переживает сам, наружу он не выходит.
 """
 
 from __future__ import annotations

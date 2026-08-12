@@ -1,9 +1,10 @@
 """Ошибки kerberos-слоя.
 
-Ошибки: KeytabError — keytab недоступен, повреждён или не содержит принципала;
-CredentialsExpiredError — тикет истёк и не продлевается;
-DelegationNotPermittedError — делегирование запрещено политикой AD;
-InvalidTokenError — клиент прислал непригодный SPNEGO-токен;
+Ошибки:
+KeytabError — keytab недоступен, повреждён или не содержит принципала.
+CredentialsExpiredError — тикет истёк и не продлевается.
+DelegationNotPermittedError — делегирование запрещено политикой AD.
+InvalidTokenError — клиент прислал непригодный SPNEGO-токен.
 KerberosError — прочие сбои GSSAPI/krb5.
 """
 

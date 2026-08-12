@@ -4,10 +4,11 @@
 уже готовый текст или строки таблицы. Пагинацию, разбор JSON и HTML делает
 payload: наружу не уезжает ни сырой ответ, ни исходная разметка страницы.
 
-Ошибки: confluence_request_failed — REST недоступен или ответил статусом;
-attachment_not_found — вложения с таким именем на странице нет;
-document_unreadable — вложение скачалось, но не разбирается; ChannelError —
-в tool_args приехал запрос чужой модели.
+Ошибки:
+confluence_request_failed — REST недоступен или ответил статусом;
+    attachment_not_found — вложения с таким именем на странице нет;
+    document_unreadable — вложение скачалось, но не разбирается.
+ChannelError — в tool_args приехал запрос чужой модели.
 """
 
 from __future__ import annotations

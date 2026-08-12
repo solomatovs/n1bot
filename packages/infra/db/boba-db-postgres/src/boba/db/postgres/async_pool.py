@@ -1,6 +1,7 @@
 """AsyncPostgresPool: async-обёртка над psycopg_pool.AsyncConnectionPool.
 
-Ошибки: PostgresPoolClosedError — обращение к закрытому пулу;
+Ошибки:
+PostgresPoolClosedError — обращение к закрытому пулу.
 KeytabError/KerberosError — соединению не выдан TGT из keytab.
 """
 

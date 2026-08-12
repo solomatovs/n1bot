@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from shell_sandbox import needs_sandbox, needs_userns, sandbox_profile
 
-from boba.sandbox import SandboxProfile
 from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.workflow import StageDef, StageRegistry
+from boba.stand.flow import SandboxMarks, StandSandbox
+from boba.stand.shell import BashNodes
 from boba.tool.shell.protocol import BashArgs, BashStage
 from boba.tool.shell.tools import BashRun, StdoutHead
 from boba.toolkit.launcher import TextCollector
@@ -23,10 +23,12 @@ def _allow_all(tool: str, /) -> bool:
     return True
 
 
-def _caller(**profile_kw: Any) -> SandboxCaller:
+def _caller() -> SandboxCaller:
+    sandbox = StandSandbox(packages=BashNodes.PACKAGES)
+
     definition = StageDef(
         contract=BashStage.CONTRACT,
-        profile=SandboxProfile.model_validate(sandbox_profile(**profile_kw)),
+        profile=sandbox.profile(),
         entry=BashStage.ENTRY,
         request=BashArgs,
         enrich=BashStage.enrich,
@@ -43,8 +45,8 @@ def _payload(result: ToolResult) -> dict[str, Any]:
     return result.payload
 
 
-@needs_sandbox
-@needs_userns
+@SandboxMarks.NEEDS_SANDBOX
+@SandboxMarks.NEEDS_USERNS
 class TestBashFacade:
     """Фасад строит граф из одного узла и собирает ответ из каналов стадии."""
 
@@ -93,8 +95,8 @@ class TestBashFacade:
         assert _payload(result)["stdout"] == "данные\n"
 
 
-@needs_sandbox
-@needs_userns
+@SandboxMarks.NEEDS_SANDBOX
+@SandboxMarks.NEEDS_USERNS
 class TestBashInGraph:
     """bash — узел-адаптер: его stdout течёт по ребру на stdin соседа."""
 

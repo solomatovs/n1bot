@@ -12,10 +12,12 @@ PayloadOps.EXPECTED типы и PayloadError — уходят конвертом
 падает штатным трейсбеком интерпретатора: неизвестную ошибку прятать нельзя.
 Код возврата в обоих случаях ненулевой — отказ остаётся отказом.
 
-Ошибки: ChannelError — нарушение контракта каналов; PayloadOutputClosedError —
-потребитель канала данных закрыл чтение (сигнал остановить продукцию, не
-отказ); SystemExit(PayloadExit.FAILURE) — битый запрос, конверт
-invalid_request уже записан в tool_result.
+Ошибки:
+ChannelError — нарушение контракта каналов.
+PayloadOutputClosedError — потребитель канала данных закрыл чтение (сигнал
+    остановить продукцию, не отказ).
+SystemExit(PayloadExit.FAILURE) — битый запрос, конверт invalid_request уже
+    записан в tool_result.
 """
 
 from __future__ import annotations

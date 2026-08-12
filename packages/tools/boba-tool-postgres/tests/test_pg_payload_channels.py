@@ -2,7 +2,8 @@
 
 Payload запускается настоящим процессом на реальных pipe-каналах. Отказы
 проверяются на заведомо недоступной базе; двунаправленный COPY — на живом
-стенде, адрес которого приходит переменной окружения PgStand.DSN_ENV.
+стенде boba.stand.pg, адрес которого приходит переменной окружения
+PgStand.DSN_ENV.
 """
 
 from __future__ import annotations
@@ -11,15 +12,12 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar
+from collections.abc import Mapping
+from typing import Any
 
-import psycopg
-import pytest
-from psycopg import sql
-from psycopg.conninfo import conninfo_to_dict
 from pydantic import BaseModel, ConfigDict
 
+from boba.stand.pg import PgStand, StandCsv, StandRow, StandTable
 from boba.toolkit.channels import Channel
 from boba.toolkit.payload import PayloadExit
 
@@ -227,155 +225,83 @@ class TestPgCopyIn:
         assert run.payload == b""
 
 
-class PgStand:
-    """Живой postgres для проверки COPY; адрес приходит переменной окружения."""
-
-    DSN_ENV: ClassVar[str] = "BOBA_TEST_PG_DSN"
-
-    TABLE: ClassVar[str] = "boba_copy_stand"
-
-    KEYS: ClassVar[tuple[str, ...]] = ("host", "port", "dbname", "user", "password")
-
-    @classmethod
-    def dsn(cls) -> str:
-        """DSN стенда; без переменной окружения тест пропускается."""
-        dsn = os.environ.get(cls.DSN_ENV)
-        if not dsn:
-            pytest.skip(f"{cls.DSN_ENV} is not set: live postgres stand is absent")
-
-        return dsn
-
-    @classmethod
-    def connection(cls) -> dict[str, Any]:
-        """Профиль подключения стенда для tool_args payload'а."""
-        parsed = conninfo_to_dict(cls.dsn())
-
-        profile: dict[str, Any] = {"connect_timeout": 5}
-        for key in cls.KEYS:
-            value = parsed.get(key)
-            if value is None:
-                continue
-
-            profile[key] = value
-
-        return profile
-
-    @classmethod
-    def load_sql(cls) -> str:
-        return f"COPY {cls.TABLE} (id, name) FROM STDIN WITH (FORMAT CSV)"
-
-    @classmethod
-    def dump_sql(cls) -> str:
-        query = f"SELECT id, name FROM {cls.TABLE} ORDER BY id"  # noqa: S608
-
-        return f"COPY ({query}) TO STDOUT WITH (FORMAT CSV)"
-
-    @classmethod
-    def reset(cls) -> None:
-        """Пустая таблица стенда: имя одно, прогоны не наследуют строки."""
-        drop = sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(cls.TABLE))
-        create = sql.SQL("CREATE TABLE {} (id int, name text)").format(
-            sql.Identifier(cls.TABLE)
-        )
-
-        with psycopg.connect(cls.dsn()) as conn:
-            conn.execute(drop)
-            conn.execute(create)
-
-    @classmethod
-    def rows(cls) -> Sequence[tuple[Any, ...]]:
-        select = sql.SQL("SELECT id, name FROM {} ORDER BY id").format(
-            sql.Identifier(cls.TABLE)
-        )
-
-        with psycopg.connect(cls.dsn()) as conn:
-            cursor = conn.execute(select)
-
-            return cursor.fetchall()
-
-
 class TestPgCopyStand:
     """Двунаправленный COPY на живой базе: один узел заливает и выгружает."""
 
+    SEED = (StandRow(id=1, name="Ivan"), StandRow(id=2, name="Анна"))
+
     def test_copy_from_stdin_loads_the_input(self) -> None:
-        connection = PgStand.connection()
-        PgStand.reset()
+        stand = PgStand.required()
+        stand.reset()
 
         run = _run_fed(
             {
                 "op": "pg_copy",
-                "connection": connection,
+                "connection": dict(stand.connection()),
                 "direction": "from_stdin",
-                "sql": PgStand.load_sql(),
+                "sql": StandTable.SOURCE.copy_from_stdin(),
             },
-            "1,Ivan\n2,Анна\n".encode(),
+            StandCsv.render(self.SEED),
         )
 
         assert run.code == PayloadExit.OK
-        assert run.data() == {"direction": "from_stdin", "rows": 2}
+        assert run.data() == {"direction": "from_stdin", "rows": len(self.SEED)}
         assert run.payload == b""
-        assert list(PgStand.rows()) == [(1, "Ivan"), (2, "Анна")]
+        assert list(stand.rows(StandTable.SOURCE)) == list(self.SEED)
 
     def test_broken_input_leaves_the_table_empty(self) -> None:
         """Заливка транзакционна: битая строка посреди потока не оставляет следа."""
-        connection = PgStand.connection()
-        PgStand.reset()
+        stand = PgStand.required()
+        stand.reset()
 
         run = _run_fed(
             {
                 "op": "pg_copy",
-                "connection": connection,
+                "connection": dict(stand.connection()),
                 "direction": "from_stdin",
-                "sql": PgStand.load_sql(),
+                "sql": StandTable.SOURCE.copy_from_stdin(),
             },
             b"1,Ivan\n2,Anna\nnot-a-number,Boris\n",
         )
 
         assert run.code == PayloadExit.FAILURE
         assert run.error()["kind"] == "sql_failed"
-        assert list(PgStand.rows()) == []
+        assert list(stand.rows(StandTable.SOURCE)) == []
 
     def test_copy_to_stdout_streams_the_loaded_rows(self) -> None:
-        connection = PgStand.connection()
-        PgStand.reset()
+        stand = PgStand.required()
+        stand.reset()
 
-        _run_fed(
-            {
-                "op": "pg_copy",
-                "connection": connection,
-                "direction": "from_stdin",
-                "sql": PgStand.load_sql(),
-            },
-            b"7,Sergey\n",
-        )
+        loaded = (StandRow(id=7, name="Sergey"),)
+        stand.fill(StandTable.SOURCE, loaded)
 
         run = _run(
             {
                 "op": "pg_copy",
-                "connection": connection,
+                "connection": dict(stand.connection()),
                 "direction": "to_stdout",
-                "sql": PgStand.dump_sql(),
+                "sql": StandTable.SOURCE.copy_to_stdout(),
             }
         )
 
         assert run.code == PayloadExit.OK
-        assert run.data() == {"direction": "to_stdout", "rows": 1}
-        assert run.payload == b"7,Sergey\n"
+        assert run.data() == {"direction": "to_stdout", "rows": len(loaded)}
+        assert run.payload == StandCsv.render(loaded)
 
     def test_copy_of_a_broken_row_is_a_declared_failure(self) -> None:
-        connection = PgStand.connection()
-        PgStand.reset()
+        stand = PgStand.required()
+        stand.reset()
 
         run = _run_fed(
             {
                 "op": "pg_copy",
-                "connection": connection,
+                "connection": dict(stand.connection()),
                 "direction": "from_stdin",
-                "sql": PgStand.load_sql(),
+                "sql": StandTable.SOURCE.copy_from_stdin(),
             },
             b"not-a-number,Ivan\n",
         )
 
         assert run.code == PayloadExit.FAILURE
         assert run.error()["kind"] == "sql_failed"
-        assert list(PgStand.rows()) == []
+        assert list(stand.rows(StandTable.SOURCE)) == []

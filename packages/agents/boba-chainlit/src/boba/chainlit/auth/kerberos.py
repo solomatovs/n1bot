@@ -1,7 +1,8 @@
 """SSO через Kerberos/SPNEGO для chainlit.
 
-Ошибки: AuthenticationError, AuthorizationError — отказ входа;
-ExternalServiceError — недоступен внешний сервис (KDC, LDAP);
+Ошибки:
+AuthenticationError, AuthorizationError — отказ входа.
+ExternalServiceError — недоступен внешний сервис (KDC, LDAP).
 InternalServiceError — keytab/SPN/конфиг непригодны.
 """
 
