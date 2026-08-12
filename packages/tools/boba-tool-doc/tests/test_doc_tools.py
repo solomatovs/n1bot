@@ -300,11 +300,6 @@ class TestStages:
             DocOp.SEARCH,
         ]
 
-    def test_nodes_read_nothing_from_stdin(self) -> None:
-        """Источник данных у doc-узла — файл, поэтому входа у него нет."""
-        for node in DocEngine.stages(_config()).values():
-            assert node.contract.accepts == frozenset()
-
     def test_stream_formats(self) -> None:
         nodes = DocEngine.stages(_config())
         assert nodes[DocOp.READ].contract.out == "text/plain"

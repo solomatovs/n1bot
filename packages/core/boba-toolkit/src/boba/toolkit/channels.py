@@ -1,7 +1,10 @@
 """Контракт каналов sandbox-запуска: реестр каналов, имена env, кодек лог-кадров,
-форматы потоков с их чтением и записью, конверты tool_result и wrap_result,
-шелльная форма кодов возврата, протокол приёмника байтов, построчный разборщик
-и сводка ошибок валидации без эха ввода.
+объявление формата продукта и кодек границы payload'а, конверты tool_result и
+wrap_result, шелльная форма кодов возврата, протокол приёмника байтов,
+построчный разборщик и сводка ошибок валидации без эха ввода.
+
+По каналам текут байты: декодирование в текст живёт только на границах — у
+payload'а, у коллекторов вызывающего и в разборе лог-кадров tool_stderr.
 
 Доменный слой: транспорт и I/O не импортируются, дескрипторы открывает исполнитель.
 
@@ -85,7 +88,7 @@ class Channel(StrEnum):
 
     @classmethod
     def required(cls) -> frozenset[Channel]:
-        """Обязательный минимум любого узла: остальное выводится из контракта стадии."""
+        """Обязательный минимум любого узла: остальные каналы объявляет исполнитель."""
         members = (
             cls.WRAP_ARGS,
             cls.TOOL_ARGS,
@@ -100,17 +103,15 @@ class Channel(StrEnum):
 
 
 class StreamFormat(StrEnum):
-    """Формат данных потокового канала (MIME); чтение и запись — StreamCodec."""
+    """Объявленный формат продукта узла (MIME): декларация для панели и человека.
+
+    Каналом текут байты: формат ничего не валидирует и путь данных не меняет.
+    """
 
     CSV = "text/csv"
     NDJSON = "application/x-ndjson"
     TEXT = "text/plain"
     BYTES = "application/octet-stream"
-
-    @property
-    def is_text(self) -> bool:
-        """Формат читается как текст; BYTES — непрозрачные байты."""
-        return self is not StreamFormat.BYTES
 
 
 class ByteText(StrEnum):
@@ -121,11 +122,11 @@ class ByteText(StrEnum):
 
 
 class StreamCodec:
-    """Чтение и запись форматов канала данных: один кодек на все инструменты.
+    """Кодек границы payload'а: текст и строчные записи в байты канала и обратно.
 
-    Формат объявлен до запуска — `contract.out` у источника, `stdin_format` у
-    приёмника, — поэтому своих парсеров у инструментов нет и нюхать байты
-    некому. Записи строчного потока (NDJSON) — одна запись-словарь на строку.
+    Путь данных байтовый — кодек зовёт сам инструмент, когда его собственный
+    контракт говорит трактовать байты текстом. Записи строчного потока
+    (NDJSON) — одна запись-словарь на строку.
     """
 
     ROWS: ClassVar[StreamFormat] = StreamFormat.NDJSON
@@ -134,17 +135,13 @@ class StreamCodec:
     LINE_END: ClassVar[str] = "\n"
 
     @classmethod
-    def encode_text(cls, fmt: StreamFormat, text: str) -> bytes:
-        """Текстовый продукт в байты канала; двоичный формат текстом не пишется."""
-        cls._require_text(fmt)
-
+    def encode_text(cls, text: str) -> bytes:
+        """Текст инструмента в байты канала."""
         return text.encode(ByteText.ENCODING)
 
     @classmethod
-    def read_text(cls, fmt: StreamFormat, source: BinaryIO) -> str:
-        """Весь входной поток объявленного формата как текст."""
-        cls._require_text(fmt)
-
+    def read_text(cls, source: BinaryIO) -> str:
+        """Весь входной поток как текст."""
         return source.read().decode(ByteText.ENCODING, errors=ByteText.ERRORS)
 
     @classmethod
@@ -168,13 +165,6 @@ class StreamCodec:
             raise ChannelError(msg)
 
         return row
-
-    @staticmethod
-    def _require_text(fmt: StreamFormat) -> None:
-        if fmt.is_text:
-            return
-
-        raise ChannelError(f"stream format is not text: {fmt}")
 
 
 class ChannelSink(Protocol):

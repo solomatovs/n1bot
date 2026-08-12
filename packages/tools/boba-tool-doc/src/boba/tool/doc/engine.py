@@ -189,7 +189,6 @@ class DocEngine:
             max_text_chars=cfg.max_text_chars,
         )
         contract = StageContract(
-            accepts=frozenset(),
             out=StreamFormat.TEXT,
             result=DocPagesTrailer,
         )
@@ -209,7 +208,6 @@ class DocEngine:
             tessdata_path=cfg.tessdata_path,
         )
         contract = StageContract(
-            accepts=frozenset(),
             out=StreamFormat.NDJSON,
             result=DocOutlineTrailer,
         )
@@ -231,7 +229,6 @@ class DocEngine:
             max_matches=cfg.search_max_matches,
         )
         contract = StageContract(
-            accepts=frozenset(),
             out=StreamFormat.NDJSON,
             result=DocSearchTrailer,
         )

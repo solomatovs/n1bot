@@ -90,12 +90,11 @@ class TestChartInSandbox:
 
 
 class TestChartStages:
-    """Узел без потоков: рёбер у него быть не может, итог едет квитанцией."""
+    """Узел без продукта: канал данных он не наполняет, итог едет квитанцией."""
 
-    def test_node_has_no_streams(self) -> None:
+    def test_node_declares_no_product(self) -> None:
         node = ChartCaller.stages()["visualize"]
 
-        assert node.contract.accepts == frozenset()
         assert node.contract.out is None
 
     def test_enricher_adds_the_op(self) -> None:

@@ -64,17 +64,17 @@ class ChQueryArgs(BaseModel):
 
 
 class ChInsertArgs(BaseModel):
-    """Args узла ch_insert: куда вставлять и в каком формате читать вход.
+    """Args узла ch_insert: куда вставлять и как трактовать байты входа.
 
-    У узла с входящим ребром формат ставит раннер по контракту источника —
-    значение из args в этом случае не используется.
+    Формат входа объявляет вызывающий: по каналу текут байты, и подставить
+    трактовку за него некому.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     connection_name: str = Field(min_length=1)
     table: str = Field(min_length=1)
-    stdin_format: StreamFormat = StreamFormat.NDJSON
+    stdin_format: StreamFormat
 
 
 class ChQueryRequest(SqlQueryRequest[ClickHouseConfig, dict[str, Any]]):
@@ -84,14 +84,14 @@ class ChQueryRequest(SqlQueryRequest[ClickHouseConfig, dict[str, Any]]):
 
 
 class ChInsertRequest(ConnectionCall[ClickHouseConfig]):
-    """Вставка потока в таблицу; формат входа кладёт приложение полем stdin_format."""
+    """Вставка входного потока в таблицу; трактовку байтов несёт stdin_format."""
 
     OP: ClassVar[str] = ChStage.INSERT
 
-    ACCEPTS: ClassVar[frozenset[StreamFormat]] = frozenset(
+    INSERTABLE: ClassVar[frozenset[StreamFormat]] = frozenset(
         {StreamFormat.NDJSON, StreamFormat.CSV}
     )
-    """Форматы входа узла: они же попадают в контракт стадии."""
+    """Форматы, которые ClickHouse принимает на вставку; проверка своих args."""
 
     table: str = Field(min_length=1)
     stdin_format: StreamFormat
@@ -99,7 +99,7 @@ class ChInsertRequest(ConnectionCall[ClickHouseConfig]):
     @field_validator("stdin_format")
     @classmethod
     def _insertable(cls, value: StreamFormat) -> StreamFormat:
-        if value not in ChInsertRequest.ACCEPTS:
+        if value not in ChInsertRequest.INSERTABLE:
             raise ValueError(f"input format is not insertable: {value}")
 
         return value

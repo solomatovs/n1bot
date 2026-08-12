@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
@@ -85,17 +85,10 @@ __all__ = [
     "StageDef",
     "StagePlan",
     "StageRegistry",
-    "ToolArgsField",
     "WorkflowRunner",
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class ToolArgsField:
-    """Ключи, которые раннер добавляет в tool_args поверх обогащения."""
-
-    STDIN_FORMAT: Final = "stdin_format"
 
 
 @dataclass(frozen=True)
@@ -103,8 +96,6 @@ class StageDef:
     """Описание узла реестра стадий: всё, что нужно раннеру для запуска.
 
     out_of — формат продукта как функция запроса; None — константа contract.out.
-    Модель запроса читающего узла обязана проносить поле stdin_format: иначе
-    инжект раннера молча выпал бы из model_dump_json при extra='ignore'.
     """
 
     contract: StageContract
@@ -129,24 +120,6 @@ class StageDef:
     def __post_init__(self) -> None:
         if not self.entry:
             raise WorkflowError("stage definition has an empty entry command")
-
-        if not self.contract.accepts:
-            return
-
-        if self._carries_stdin_format():
-            return
-
-        msg = (
-            f"request model {self.request.__name__} of a consuming stage "
-            f"must carry the {ToolArgsField.STDIN_FORMAT!r} field"
-        )
-        raise WorkflowError(msg)
-
-    def _carries_stdin_format(self) -> bool:
-        if ToolArgsField.STDIN_FORMAT in self.request.model_fields:
-            return True
-
-        return self.request.model_config.get("extra") == "allow"
 
 
 class StageRegistry:
@@ -485,19 +458,14 @@ class WorkflowRunner:
 
         for stage_id in spec.order():
             node = spec.stage(stage_id)
-            plans[stage_id] = self._plan_stage(spec, node, plans)
+            plans[stage_id] = self._plan_stage(node)
 
         return plans
 
-    def _plan_stage(
-        self,
-        spec: WorkflowSpec,
-        node: StageSpec,
-        plans: Mapping[str, StagePlan],
-    ) -> StagePlan:
+    def _plan_stage(self, node: StageSpec) -> StagePlan:
         definition = self._registry.def_of(node.tool)
 
-        enriched = self._enriched_args(spec, node, definition, plans)
+        enriched = self._enriched_args(node, definition)
 
         request = self._validated_request(node, definition, enriched)
 
@@ -519,31 +487,15 @@ class WorkflowRunner:
             literal=literal,
         )
 
-    def _enriched_args(
-        self,
-        spec: WorkflowSpec,
-        node: StageSpec,
-        definition: StageDef,
-        plans: Mapping[str, StagePlan],
-    ) -> dict[str, Any]:
+    @staticmethod
+    def _enriched_args(node: StageSpec, definition: StageDef) -> dict[str, Any]:
         """Обогащённые args: значения не обязаны быть JSON, профиль остаётся моделью."""
         try:
-            enriched = dict(definition.enrich(node.args))
+            return dict(definition.enrich(node.args))
         except Exception as exc:
             # текст чужой ошибки может нести значения args (секреты): наружу тип
             msg = f"stage {node.id}: args enrichment failed: {type(exc).__name__}"
             raise WorkflowError(msg) from exc
-
-        source = spec.source_of(node.id)
-        if source is None:
-            return enriched
-
-        # формат входа приёмнику кладёт приложение: payload не нюхает байты
-        src_out = plans[source].contract.out
-        if src_out is not None:
-            enriched[ToolArgsField.STDIN_FORMAT] = src_out.value
-
-        return enriched
 
     @staticmethod
     def _validated_request(
@@ -795,13 +747,15 @@ class WorkflowRunner:
         """Фактические pipe-пары стадии; у члена группы wrap-каналы держит группа.
 
         Вход существует при ребре или литерале: узлу без входа канал tool_stdin
-        не создаётся и в env не объявляется.
+        не создаётся и в env не объявляется. Канал данных есть у любого узла —
+        ненаполненный tool_payload законен и даёт нулевой bytes_out.
         """
         wanted: list[Channel] = [
             Channel.TOOL_ARGS,
             Channel.TOOL_STDOUT,
             Channel.TOOL_STDERR,
             Channel.TOOL_RESULT,
+            Channel.TOOL_PAYLOAD,
         ]
 
         if not member:
@@ -814,9 +768,6 @@ class WorkflowRunner:
 
         if member or plan.rendered.rw_images:
             wanted.append(Channel.WRAP_ARGS_INNER)
-
-        if plan.contract.out is not None:
-            wanted.append(Channel.TOOL_PAYLOAD)
 
         return tuple(wanted)
 
@@ -1430,9 +1381,6 @@ class WorkflowRunner:
 
         if run.wrap_err_tail is not None:
             sinks[Channel.WRAP_STDERR] = run.wrap_err_tail
-
-        if run.plan.contract.out is None:
-            return sinks
 
         payload = self._payload_sink(run.plan.spec.id, pipes_by_src, taps)
         if payload is not None:

@@ -6,8 +6,6 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.channels import StreamFormat
-
 __all__ = [
     "ConfluenceSection",
     "HtmlCall",
@@ -28,15 +26,11 @@ class HtmlNode(StrEnum):
 
 
 class HtmlCall(BaseModel):
-    """Общая часть: разметка приезжает каналом, формат входа ставит приложение."""
+    """Общая часть: разметка приезжает каналом tool_stdin и читается текстом."""
 
     model_config = ConfigDict(extra="forbid")
 
     op: HtmlNode
-    stdin_format: StreamFormat = Field(
-        default=StreamFormat.TEXT,
-        description="Формат входного потока; узел читает только текст.",
-    )
 
 
 class HtmlToMarkdownRequest(HtmlCall):

@@ -141,14 +141,6 @@ class WorkflowSpec(BaseModel):
 
         raise WorkflowError(f"unknown stage: {stage_id}")
 
-    def source_of(self, stage_id: str) -> str | None:
-        """Источник входа узла; None — входящего ребра нет."""
-        for edge in self.edges:
-            if edge.dst == stage_id:
-                return edge.src
-
-        return None
-
     def consumers_of(self, stage_id: str) -> tuple[str, ...]:
         """Приёмники продукта узла в порядке объявления рёбер."""
         consumers: list[str] = []
@@ -215,16 +207,15 @@ class WorkflowSpec(BaseModel):
 
 
 class StageContract(BaseModel):
-    """Способности потоков узла: что читает со stdin, что отдаёт, схема квитанции.
+    """Декларация продукта узла и схема его квитанции.
 
-    out здесь всегда разрешён до конкретного формата: если в реестре стадий
-    формат продукта зависит от args узла, реестр разрешает его до проверки.
-    Пустой accepts — входа нет; out None — потока данных наружу нет.
+    out — объявленный формат канала данных для панели и человека; рёбра он не
+    валидирует, по ним текут байты. None — узел канал данных не наполняет.
+    result — схема трейлера квитанции.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    accepts: frozenset[StreamFormat]
     out: StreamFormat | None
     result: type[BaseModel]
 
@@ -307,12 +298,11 @@ class AccessPredicate(Protocol):
 
 
 class ContractCheck:
-    """Проверки спеки, требующие реестра: контракты узлов и права.
+    """Проверки спеки, требующие реестра: разрешённый контракт узла и права.
 
     Контракты приходят разрешёнными, ключ — id узла; права проверяются
-    предикатом по имени инструмента. Правила рёбер: у источника есть out,
-    у приёмника непустой accepts и out источника входит в accepts приёмника;
-    литерал stdin требует непустого accepts — та же проверка, что у ребра.
+    предикатом по имени инструмента. Форматной проверки рёбер нет: по ребру
+    текут байты, и годность потока выясняется исполнением стадии.
     """
 
     def __init__(
@@ -332,48 +322,16 @@ class ContractCheck:
         return contract
 
     def check(self, spec: WorkflowSpec) -> None:
-        """Полная контрактная проверка спеки; нарушение — WorkflowError."""
+        """Право на инструмент и контракт узла; нарушение — WorkflowError."""
         for node in spec.nodes:
             self._check_node(node)
-
-        for edge in spec.edges:
-            self._check_edge(edge)
 
     def _check_node(self, node: StageSpec) -> None:
         allowed = self._access(node.tool)
         if not allowed:
             raise WorkflowError(f"tool is not allowed: {node.tool}")
 
-        contract = self.contract_of(node.id)
-
-        if node.stdin is None:
-            return
-
-        if not contract.accepts:
-            raise WorkflowError(
-                f"stage accepts no input, stdin literal is not allowed: {node.id}"
-            )
-
-    def _check_edge(self, edge: EdgeSpec) -> None:
-        src = self.contract_of(edge.src)
-
-        dst = self.contract_of(edge.dst)
-
-        if src.out is None:
-            raise WorkflowError(
-                f"edge {edge.src} -> {edge.dst}: source stage produces no stream"
-            )
-
-        if not dst.accepts:
-            raise WorkflowError(
-                f"edge {edge.src} -> {edge.dst}: destination stage accepts no input"
-            )
-
-        if src.out not in dst.accepts:
-            raise WorkflowError(
-                f"edge {edge.src} -> {edge.dst}: "
-                f"format {src.out} is not accepted by destination"
-            )
+        self.contract_of(node.id)
 
 
 class StageOutcome(BaseModel):

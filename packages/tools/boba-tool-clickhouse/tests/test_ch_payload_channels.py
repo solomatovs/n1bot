@@ -32,6 +32,23 @@ DEAD_CONNECTION: dict[str, Any] = {
 ENTRY: tuple[str, ...] = ("-m", "boba.tool.ch.payload")
 
 
+class StageInput(BaseModel):
+    """Вход прогона: канал tool_stdin объявлен и несёт байты либо не объявлен."""
+
+    model_config = ConfigDict(frozen=True)
+
+    declared: bool
+    data: bytes = b""
+
+    @classmethod
+    def fed(cls, data: bytes) -> StageInput:
+        return cls(declared=True, data=data)
+
+    @classmethod
+    def absent(cls) -> StageInput:
+        return cls(declared=False)
+
+
 class PayloadRun(BaseModel):
     """Итог прогона payload'а: код возврата, конверт, данные и stderr."""
 
@@ -62,39 +79,45 @@ def _read_all(fd: int) -> bytes:
     return bytes(data)
 
 
-def _run(request: Mapping[str, Any], stdin: bytes) -> PayloadRun:
+def _run(request: Mapping[str, Any], stdin: StageInput) -> PayloadRun:
     args_r, args_w = os.pipe()
     result_r, result_w = os.pipe()
     payload_r, payload_w = os.pipe()
-    stdin_r, stdin_w = os.pipe()
 
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(sys.path)
     env[Channel.TOOL_ARGS.env_name] = str(args_r)
     env[Channel.TOOL_RESULT.env_name] = str(result_w)
     env[Channel.TOOL_PAYLOAD.env_name] = str(payload_w)
-    env[Channel.TOOL_STDIN.env_name] = str(stdin_r)
     env[Channel.TOOL_STDOUT.env_name] = "1"
     env[Channel.TOOL_STDERR.env_name] = "2"
 
+    passed = [args_r, result_w, payload_w]
+    feeders: list[int] = []
+
+    if stdin.declared:
+        stdin_r, stdin_w = os.pipe()
+        env[Channel.TOOL_STDIN.env_name] = str(stdin_r)
+        passed.append(stdin_r)
+        feeders.append(stdin_w)
+
     proc = subprocess.Popen(  # noqa: S603
         [sys.executable, *ENTRY],
-        pass_fds=(args_r, result_w, payload_w, stdin_r),
+        pass_fds=tuple(passed),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
     )
 
-    os.close(args_r)
-    os.close(result_w)
-    os.close(payload_w)
-    os.close(stdin_r)
+    for fd in passed:
+        os.close(fd)
 
     os.write(args_w, json.dumps(request, ensure_ascii=False).encode("utf-8"))
     os.close(args_w)
 
-    os.write(stdin_w, stdin)
-    os.close(stdin_w)
+    for fd in feeders:
+        os.write(fd, stdin.data)
+        os.close(fd)
 
     _, stderr = proc.communicate(timeout=60)
 
@@ -119,7 +142,7 @@ class TestChPayloadChannels:
                 "params": {},
                 "row_limit": 10,
             },
-            b"",
+            StageInput.fed(b""),
         )
 
         assert run.code == PayloadExit.FAILURE
@@ -134,11 +157,26 @@ class TestChPayloadChannels:
                 "table": "events",
                 "stdin_format": StreamFormat.NDJSON,
             },
-            b'{"a": 1}\n',
+            StageInput.fed(b'{"a": 1}\n'),
         )
 
         assert run.code == PayloadExit.FAILURE
         assert run.error()["kind"] == "database_unavailable"
+
+    def test_insert_without_input_refuses_by_the_envelope(self) -> None:
+        """Потока вставке не подали: отказ едет конвертом, а не трейсбеком."""
+        run = _run(
+            {
+                "op": "ch_insert",
+                "connection": DEAD_CONNECTION,
+                "table": "events",
+                "stdin_format": StreamFormat.NDJSON,
+            },
+            StageInput.absent(),
+        )
+
+        assert run.code == PayloadExit.FAILURE
+        assert run.error()["kind"] == "no_input"
 
     def test_uninsertable_input_format_is_rejected_by_the_model(self) -> None:
         run = _run(
@@ -148,7 +186,7 @@ class TestChPayloadChannels:
                 "table": "events",
                 "stdin_format": StreamFormat.TEXT,
             },
-            b"plain\n",
+            StageInput.fed(b"plain\n"),
         )
 
         assert run.code == PayloadExit.FAILURE

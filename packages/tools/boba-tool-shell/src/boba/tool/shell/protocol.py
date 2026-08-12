@@ -24,7 +24,6 @@ from boba.toolkit.workflow import (
 __all__ = [
     "BashArgs",
     "BashFailure",
-    "BashRequest",
     "BashStage",
 ]
 
@@ -45,21 +44,11 @@ class BashArgs(BaseModel):
     command: str = Field(min_length=1, max_length=MAX_COMMAND)
 
 
-class BashRequest(BashArgs):
-    """Запрос обвязки: команда плюс формат входного потока от источника.
-
-    Формат объявлен закрытым enum'ом: при ребре его ставит раннер, у узла без
-    входа остаётся значение по умолчанию — байты команде отдаются как есть.
-    """
-
-    stdin_format: StreamFormat = StreamFormat.TEXT
-
-
 class BashStage:
     """Описание узла bash для реестра стадий: контракт, entry и обогатитель.
 
-    bash — универсальный узел-адаптер: читает текстовые форматы, отдаёт stdout
-    команды как text/plain. Профиль песочницы к узлу добавляет приложение.
+    bash — универсальный узел-адаптер: вход команды отдаётся байтами как есть,
+    её stdout объявлен как text/plain. Профиль песочницы добавляет приложение.
     """
 
     NAME: ClassVar[str] = "bash"
@@ -67,16 +56,13 @@ class BashStage:
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.shell.payload")
 
     CONTRACT: ClassVar[StageContract] = StageContract(
-        accepts=frozenset(
-            {StreamFormat.CSV, StreamFormat.NDJSON, StreamFormat.TEXT}
-        ),
         out=StreamFormat.TEXT,
         result=EmptyTrailer,
     )
 
     @staticmethod
     def enrich(args: Mapping[str, JsonValue], /) -> Mapping[str, Any]:
-        """Args узла -> запрос обвязки; stdin_format добавляет раннер по ребру."""
+        """Args узла -> запрос обвязки: у команды других полей нет."""
         call = BashArgs.model_validate(args)
 
         return RequestArgs.of(call)
@@ -87,7 +73,7 @@ class BashStage:
         node = StageNode(
             contract=cls.CONTRACT,
             entry=cls.ENTRY,
-            request=BashRequest,
+            request=BashArgs,
             enrich=cls.enrich,
         )
 

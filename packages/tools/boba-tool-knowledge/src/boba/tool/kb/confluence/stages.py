@@ -70,7 +70,6 @@ class ConfluenceStages:
 
         nodes[ConfluenceNode.PAGE.value] = StageNode(
             contract=StageContract(
-                accepts=frozenset(),
                 out=StreamFormat.TEXT,
                 result=ConfluencePageTrailer,
             ),
@@ -111,7 +110,6 @@ class ConfluenceStages:
     @staticmethod
     def _rows_contract() -> StageContract:
         return StageContract(
-            accepts=frozenset(),
             out=StreamFormat.NDJSON,
             result=EmptyTrailer,
         )

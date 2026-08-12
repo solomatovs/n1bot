@@ -10,7 +10,7 @@ from shell_sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.sandbox import SandboxProfile
 from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.workflow import StageDef, StageRegistry
-from boba.tool.shell.protocol import BashRequest, BashStage
+from boba.tool.shell.protocol import BashArgs, BashStage
 from boba.tool.shell.tools import BashRun, StdoutHead
 from boba.toolkit.launcher import TextCollector
 from boba.toolkit.result import JsonResult, ToolResult
@@ -28,7 +28,7 @@ def _caller(**profile_kw: Any) -> SandboxCaller:
         contract=BashStage.CONTRACT,
         profile=SandboxProfile.model_validate(sandbox_profile(**profile_kw)),
         entry=BashStage.ENTRY,
-        request=BashRequest,
+        request=BashArgs,
         enrich=BashStage.enrich,
     )
 
@@ -138,6 +138,28 @@ class TestBashInGraph:
         head.close()
 
         assert head.text() == "1\n"
+        assert outcome.outcome_of("dst").exit_code == 0
+
+    def test_consumer_that_never_reads_is_not_a_failure(self) -> None:
+        """Вход подан узлу, которому он не нужен: лишние байты просто не читаются."""
+        caller = _caller()
+        spec = WorkflowSpec(
+            nodes=(
+                StageSpec(
+                    id="src",
+                    tool=BashStage.NAME,
+                    args={"command": "seq 1 200000"},
+                ),
+                StageSpec(id="dst", tool=BashStage.NAME, args={"command": "echo ok"}),
+            ),
+            edges=(EdgeSpec(src="src", dst="dst"),),
+        )
+        head = StdoutHead(MAX_HEAD)
+
+        outcome = caller.call(spec, {"dst": head})
+        head.close()
+
+        assert head.text() == "ok\n"
         assert outcome.outcome_of("dst").exit_code == 0
 
 

@@ -145,13 +145,11 @@ class WebNodes:
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.web.payload")
 
     FETCH: ClassVar[StageContract] = StageContract(
-        accepts=frozenset(),
         out=StreamFormat.TEXT,
         result=WebFetchTrailer,
     )
 
     GREP: ClassVar[StageContract] = StageContract(
-        accepts=frozenset(),
         out=StreamFormat.NDJSON,
         result=WebGrepTrailer,
     )

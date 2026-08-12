@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from boba.tool.pg.protocol import (
     PgCopyArgs,
+    PgCopyDirection,
     PgCopyFormat,
     PgCopyTrailer,
     PgQueryArgs,
@@ -61,10 +62,11 @@ class PgCaller:
         copy_format: PgCopyFormat,
         sink: ChannelSink,
     ) -> PgCopyTrailer:
+        """Выгрузка фасада: запрос вызывающего оборачивается в COPY ... TO STDOUT."""
         args = PgCopyArgs(
             connection_name=connection_name,
-            sql=sql,
-            copy_format=copy_format,
+            direction=PgCopyDirection.TO_STDOUT,
+            sql=copy_format.statement(sql),
         )
 
         return self._stage(PgStage.COPY, args, sink, PgCopyTrailer)

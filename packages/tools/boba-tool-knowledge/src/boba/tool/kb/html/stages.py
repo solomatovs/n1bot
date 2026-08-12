@@ -41,9 +41,6 @@ class HtmlStages:
         "boba.tool.kb.html.payload",
     )
 
-    ACCEPTS: ClassVar[frozenset[StreamFormat]] = frozenset({StreamFormat.TEXT})
-    """Вход узла — разметка страницы: текстовый поток."""
-
     REQUESTS: ClassVar[Mapping[HtmlNode, type[BaseModel]]] = {
         HtmlNode.MARKDOWN: HtmlToMarkdownRequest,
         HtmlNode.PLAIN_TEXT: PlainTextRequest,
@@ -62,7 +59,6 @@ class HtmlStages:
 
         for node, request in cls.REQUESTS.items():
             contract = StageContract(
-                accepts=cls.ACCEPTS,
                 out=cls.OUT[node],
                 result=EmptyTrailer,
             )

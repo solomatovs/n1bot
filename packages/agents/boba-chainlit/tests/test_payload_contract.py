@@ -30,7 +30,7 @@ from boba.tool.kb.protocol import KbSearchRequest
 from boba.tool.kb.stages import KbStages
 from boba.tool.pg.protocol import PgCopyRequest, PgQueryRequest
 from boba.tool.pg.stages import PgQueryNode
-from boba.tool.shell.protocol import BashRequest, BashStage
+from boba.tool.shell.protocol import BashArgs, BashStage
 from boba.toolkit.channels import Channel
 from boba.web.protocol import WebFetchRequest, WebGrepRequest, WebNodes
 
@@ -49,7 +49,7 @@ ENTRIES: list[tuple[str, ...]] = [
 ]
 
 REQUEST_MODELS: list[type[BaseModel]] = [
-    BashRequest,
+    BashArgs,
     ConfluenceIngestRequest,
     KbSearchRequest,
     PgQueryRequest,

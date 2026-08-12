@@ -117,7 +117,6 @@ class ProbeSettings(BaseModel):
 def _probe_nodes() -> Mapping[str, StageParts]:
     node = DocStageNode(
         contract=StageContract(
-            accepts=frozenset(),
             out=None,
             result=EmptyTrailer,
         ),
