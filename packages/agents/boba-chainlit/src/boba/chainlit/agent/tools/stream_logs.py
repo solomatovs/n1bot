@@ -2,15 +2,16 @@
 
 Журналы пишутся автоматически на каждый вызов инструмента песочницы; здесь
 LLM смотрит, чем занят том пользователя, и освобождает место осознанно —
-вместо слепого LRU-вытеснения.
+вместо слепого LRU-вытеснения. Отказ операции уходит в ленту результатом;
+всё, что не перечислено, упаковывает ToolErrorGuard.
 
 Ошибки:
-ErrorResult — нет сессии или журнала, тред занят или не найден;
-остальное упаковывает ToolErrorGuard.
+ErrorResult — нет сессии либо журнала, тред текущий, занят или не найден.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated
 
@@ -28,7 +29,9 @@ from boba.sandbox.journal import (
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 
 __all__ = [
+    "JournalSession",
     "StreamLogsErrorKind",
+    "StreamLogsOps",
     "StreamLogsPrompt",
     "StreamLogsRefusedError",
     "UsageReport",
@@ -112,8 +115,60 @@ class UsageReport:
         return f"{value / 1073741824:.2f} GiB"
 
 
-def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
-    def context() -> tuple[StreamJournal, str, str]:
+@dataclass(frozen=True)
+class JournalSession:
+    """Журнал приложения и адрес сессии, из которой пришёл вызов."""
+
+    journal: StreamJournal
+    user_id: str
+    thread_id: str
+
+
+class StreamLogsOps:
+    """Операции над томом журналов: отчёт о занятости и уборка треда.
+
+    Отказ операции — результат для ленты, а не исключение: LLM читает причину
+    и решает сама.
+    """
+
+    @classmethod
+    def usage(cls) -> ToolResult:
+        try:
+            session = cls.session()
+            usage = session.journal.usage(session.user_id)
+        except StreamLogsRefusedError as exc:
+            return ErrorResult(message=str(exc), error_kind=exc.kind)
+        except JournalError as exc:
+            return ErrorResult(
+                message=str(exc), error_kind=StreamLogsErrorKind.NO_JOURNAL
+            )
+
+        return TextResult(text=UsageReport(usage, session.thread_id).render())
+
+    @classmethod
+    def cleanup(cls, thread_id: str) -> ToolResult:
+        try:
+            freed = cls._purge(thread_id)
+        except StreamLogsRefusedError as exc:
+            return ErrorResult(message=str(exc), error_kind=exc.kind)
+        except JournalError as exc:
+            return ErrorResult(
+                message=str(exc), error_kind=StreamLogsErrorKind.PURGE_FAILED
+            )
+
+        if freed == 0:
+            return ErrorResult(
+                message=f"no journals found for thread {thread_id}",
+                error_kind=StreamLogsErrorKind.NOT_FOUND,
+            )
+
+        return TextResult(
+            text=f"journals of thread {thread_id} deleted, freed {freed} bytes"
+        )
+
+    @classmethod
+    def session(cls) -> JournalSession:
+        """Журнал и сессия вызова; вне сессии чата операция невозможна."""
         journal = StreamJournalHub.get()
 
         user_id = current_user_id()
@@ -128,26 +183,34 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
                 StreamLogsErrorKind.NO_SESSION, "no thread session"
             )
 
-        return journal, str(user_id), thread_id
+        return JournalSession(
+            journal=journal, user_id=str(user_id), thread_id=thread_id
+        )
 
+    @classmethod
+    def _purge(cls, thread_id: str) -> int:
+        session = cls.session()
+
+        if thread_id == session.thread_id:
+            raise StreamLogsRefusedError(
+                StreamLogsErrorKind.CURRENT_THREAD,
+                "the current thread cannot be purged",
+            )
+
+        if thread_id in session.journal.registry.live_threads():
+            raise StreamLogsRefusedError(
+                StreamLogsErrorKind.LIVE_THREAD,
+                f"thread {thread_id} has running tools, try later",
+            )
+
+        return session.journal.purge_thread(session.user_id, thread_id)
+
+
+def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
     @tool(response_format="content_and_artifact")
     def stream_logs_usage() -> tuple[str, ToolResult]:
         """Показать занятость тома журналов вывода инструментов."""
-        try:
-            journal, user_id, thread_id = context()
-            usage = journal.usage(user_id)
-        except StreamLogsRefusedError as e:
-            return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
-        except JournalError as e:
-            return pack_result(
-                ErrorResult(
-                    message=str(e), error_kind=StreamLogsErrorKind.NO_JOURNAL
-                )
-            )
-
-        return pack_result(
-            TextResult(text=UsageReport(usage, thread_id).render())
-        )
+        return pack_result(StreamLogsOps.usage())
 
     @tool(response_format="content_and_artifact")
     def stream_logs_cleanup(
@@ -157,42 +220,7 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
         ],
     ) -> tuple[str, ToolResult]:
         """Удалить журналы вывода инструментов одного треда."""
-        try:
-            journal, user_id, current = context()
-
-            if thread_id == current:
-                raise StreamLogsRefusedError(
-                    StreamLogsErrorKind.CURRENT_THREAD,
-                    "the current thread cannot be purged",
-                )
-
-            if thread_id in journal.registry.live_threads():
-                raise StreamLogsRefusedError(
-                    StreamLogsErrorKind.LIVE_THREAD,
-                    f"thread {thread_id} has running tools, try later",
-                )
-
-            freed = journal.purge_thread(user_id, thread_id)
-        except StreamLogsRefusedError as e:
-            return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
-        except JournalError as e:
-            return pack_result(
-                ErrorResult(
-                    message=str(e),
-                    error_kind=StreamLogsErrorKind.PURGE_FAILED,
-                )
-            )
-
-        if freed == 0:
-            return pack_result(
-                ErrorResult(
-                    message=f"no journals found for thread {thread_id}",
-                    error_kind=StreamLogsErrorKind.NOT_FOUND,
-                )
-            )
-
-        text = f"journals of thread {thread_id} deleted, freed {freed} bytes"
-        return pack_result(TextResult(text=text))
+        return pack_result(StreamLogsOps.cleanup(thread_id))
 
     stream_logs_usage.description = str(StreamLogsPrompt.USAGE)
     stream_logs_cleanup.description = str(StreamLogsPrompt.CLEANUP)

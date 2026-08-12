@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import errno
 import os
+import stat
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from pydantic import ValidationError
@@ -16,12 +18,22 @@ from boba.sandbox import journal as journal_module
 from boba.sandbox.journal import (
     CallJournal,
     DirVault,
+    JournalError,
     JournalNote,
+    JournalRecord,
     JournalWriter,
+    StageJournalSinks,
     StreamJournal,
+    VaultMode,
 )
 from boba.sandbox.runner import ToolCallContext
-from boba.toolkit.channels import Channel, ChannelError, StreamKey
+from boba.toolkit.channels import (
+    Channel,
+    ChannelError,
+    JournalFile,
+    StreamFormat,
+    StreamKey,
+)
 
 CONTEXT = ToolCallContext(
     user_id="7", thread_id="t-1", call_id="call-1", tool="bash"
@@ -49,8 +61,15 @@ def _await(check: Callable[[], bool]) -> None:
     raise AssertionError("journal writer did not reach the expected state")
 
 
-def _written(call: CallJournal, stage: str, channel: Channel, body: bytes) -> None:
-    sink = call.sink(stage, channel)
+def _written(
+    call: CallJournal,
+    stage: str,
+    channel: Channel,
+    body: bytes,
+    out: StreamFormat | None = None,
+) -> None:
+    """Канал стадии, записанный целиком; out — формат продукта её узла."""
+    sink = call.sink(stage, channel, out)
     sink.feed(body)
     sink.close()
 
@@ -158,7 +177,7 @@ class TestCallJournal:
         journal = _journal(tmp_path)
         call = journal.open(CONTEXT)
 
-        sink = call.sink("bash", Channel.TOOL_PAYLOAD)
+        sink = call.sink("bash", Channel.TOOL_PAYLOAD, None)
         sink.feed(b"half")
 
         call.close(JournalNote.ABORTED.value)
@@ -179,7 +198,7 @@ class TestCallJournal:
         journal = _journal(tmp_path)
         call = journal.open(CONTEXT)
 
-        sink = call.sink("bash", Channel.TOOL_PAYLOAD)
+        sink = call.sink("bash", Channel.TOOL_PAYLOAD, None)
         sink.feed(b"until")
         sink.close()
         sink.feed(b" after")
@@ -221,6 +240,160 @@ class TestCallJournal:
         assert head.size == 110
 
 
+class TestJournalledChannels:
+    """Журналируются все исходящие каналы стадии и только они."""
+
+    OUTGOING: ClassVar[tuple[str, ...]] = (
+        "call-1.bash.tool_payload.log",
+        "call-1.bash.tool_result.log",
+        "call-1.bash.tool_stderr.log",
+        "call-1.bash.tool_stdout.log",
+        "call-1.bash.wrap_result.log",
+        "call-1.bash.wrap_stderr.log",
+        "call-1.bash.wrap_stdout.log",
+    )
+
+    def test_incoming_channels_never_reach_the_disk(self, tmp_path: Path) -> None:
+        """В tool_args едут креды: их файла в томе быть не должно."""
+        journal = _journal(tmp_path)
+        call = journal.open(CONTEXT)
+
+        sinks = StageJournalSinks.of(call, "bash", list(Channel), StreamFormat.CSV)
+        for channel, sink in sinks.items():
+            sink.feed(f"{channel.value} body".encode())
+            sink.close()
+
+        call.close(JournalNote.ABORTED.value)
+
+        root = tmp_path / "vault" / "7" / "t-1"
+        logs: list[str] = []
+        for entry in root.iterdir():
+            if not entry.name.endswith(".log"):
+                continue
+
+            logs.append(entry.name)
+
+        assert sorted(logs) == list(self.OUTGOING)
+
+        journalled: list[str] = []
+        for channel in sinks:
+            journalled.append(channel.value)
+
+        assert Channel.TOOL_ARGS.value not in journalled
+        assert Channel.WRAP_ARGS.value not in journalled
+        assert Channel.WRAP_ARGS_INNER.value not in journalled
+        assert Channel.TOOL_STDIN.value not in journalled
+
+
+class TestVanishingFiles:
+    """Обход тома идёт по живому каталогу: снесённый файл не валит учёт."""
+
+    def test_a_file_removed_mid_listing_is_skipped(self, tmp_path: Path) -> None:
+        """Вытеснение сносит файлы прямо во время обхода — учёт это переживает."""
+        journal = _journal(tmp_path)
+        call = journal.open(CONTEXT)
+
+        _written(call, "bash", Channel.TOOL_STDOUT, b"x" * 10)
+        _written(call, "bash", Channel.TOOL_PAYLOAD, b"y" * 20)
+        _written(call, "bash", Channel.TOOL_RESULT, b"{}")
+
+        call.close(JournalNote.ABORTED.value)
+
+        root = tmp_path / "vault" / "7"
+        path = str(root / "t-1")
+
+        files = journal._journal_files("7", "t-1", path)
+        first = next(files)
+
+        survivor = os.path.join(root, first.rel)
+        for entry in os.listdir(path):
+            name = os.path.join(path, entry)
+            if name == survivor:
+                continue
+
+            os.remove(name)
+
+        seen: list[str] = []
+        for entry in files:
+            seen.append(entry.rel)
+
+        assert seen == []
+        assert journal.usage("7").threads[0].bytes_used == os.stat(survivor).st_size
+
+    CALLS: ClassVar[int] = 60
+    """Столько вызовов в треде: обход успевает застать уборку соседей."""
+
+    def test_usage_survives_files_vanishing_under_it(self, tmp_path: Path) -> None:
+        """Учёт и листинг идут по живому тому: уборка соседей их не валит."""
+        journal = _journal(tmp_path)
+
+        for index in range(self.CALLS):
+            context = ToolCallContext(
+                user_id="7", thread_id="t-1", call_id=f"c-{index}", tool="bash"
+            )
+            call = journal.open(context)
+            _written(call, "bash", Channel.TOOL_PAYLOAD, b"z" * 64)
+            _written(call, "bash", Channel.TOOL_STDOUT, b"z" * 64)
+            call.close(JournalNote.ABORTED.value)
+
+        path = tmp_path / "vault" / "7" / "t-1"
+        stopped = threading.Event()
+
+        def sweep() -> None:
+            for entry in sorted(path.iterdir()):
+                if stopped.is_set():
+                    return
+
+                try:
+                    entry.unlink()
+                except FileNotFoundError:
+                    continue
+
+        sweeper = threading.Thread(target=sweep, name="sweeper", daemon=True)
+        sweeper.start()
+
+        while sweeper.is_alive():
+            journal.usage("7")
+            journal.keys_of("7", "t-1", "c-0")
+
+        stopped.set()
+        sweeper.join(WAIT_SEC)
+
+        assert journal.usage("7").threads[0].bytes_used == 0
+
+    def test_a_sidecar_draft_is_counted_and_evicted(self, tmp_path: Path) -> None:
+        """Черновик сайдкара после падения процесса — часть вызова, не мусор."""
+        journal = _journal(tmp_path, reserve_bytes=2**60)
+
+        old = ToolCallContext(
+            user_id="7", thread_id="t-1", call_id="c-old", tool="bash"
+        )
+        call = journal.open(old)
+        _written(call, "bash", Channel.TOOL_PAYLOAD, b"data")
+        call.close(JournalNote.ABORTED.value)
+
+        root = tmp_path / "vault" / "7"
+        old_meta = old.key("bash", Channel.TOOL_PAYLOAD).rel_meta()
+        draft = Path(JournalFile.tmp_of(str(root / old_meta), 4242))
+        draft.write_bytes(b"{}" * 8)
+
+        calls = tuple(journal._thread_calls("7", "t-1"))
+
+        on_disk = 0
+        for entry in (root / "t-1").iterdir():
+            on_disk += entry.stat().st_size
+
+        assert len(calls) == 1
+        assert f"t-1/{draft.name}" in calls[0].files
+        assert calls[0].bytes_used == on_disk
+
+        fresh = journal.open(CONTEXT)
+
+        assert not draft.exists()
+
+        fresh.close(JournalNote.ABORTED.value)
+
+
 class TestLiveWriting:
     """Файл читается по ходу вызова, а подписчик узнаёт о каждой порции."""
 
@@ -249,7 +422,7 @@ class TestLiveWriting:
         journal.registry.subscribe(listener)
 
         call = journal.open(CONTEXT)
-        sink = call.sink("bash", Channel.TOOL_PAYLOAD)
+        sink = call.sink("bash", Channel.TOOL_PAYLOAD, None)
         sink.feed(b"first chunk\n")
 
         assert listener.wake.wait(WAIT_SEC)
@@ -294,7 +467,7 @@ class TestWriterThread:
         """Медленный диск: приёмник возвращается сразу, файл дописывается потом."""
         journal = _journal(tmp_path)
         call = journal.open(CONTEXT)
-        sink = call.sink("bash", Channel.TOOL_PAYLOAD)
+        sink = call.sink("bash", Channel.TOOL_PAYLOAD, None)
 
         real_write = os.write
 
@@ -321,13 +494,68 @@ class TestWriterThread:
         assert window is not None
         assert window.size == self.CHUNKS * len(self.CHUNK)
 
+    PROBE_SEC: ClassVar[float] = 1.0
+    """Сколько ждём ответа свойства: заведомо меньше зависшей записи."""
+
+    def test_the_close_flag_is_readable_while_a_write_is_stuck(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Диск завис: закрытие вызова опрашивает каналы, а не ждёт запись."""
+        journal = _journal(tmp_path)
+        root = journal.vault_root("7")
+        DirVault.make(os.path.join(root, "t-1"))
+
+        record = JournalRecord(
+            KEY,
+            os.path.join(root, KEY.rel_log()),
+            os.path.join(root, KEY.rel_meta()),
+            None,
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+        real_write = os.write
+
+        def stuck_write(fd: int, data: bytes) -> int:
+            entered.set()
+            release.wait(WAIT_SEC)
+
+            return real_write(fd, data)
+
+        monkeypatch.setattr(journal_module.os, "write", stuck_write)
+
+        writer = threading.Thread(
+            target=record.write, args=(b"data",), name="stuck-write", daemon=True
+        )
+        writer.start()
+
+        assert entered.wait(WAIT_SEC)
+
+        answered = threading.Event()
+
+        def probe() -> None:
+            assert record.closed is False
+            answered.set()
+
+        threading.Thread(target=probe, name="probe", daemon=True).start()
+
+        assert answered.wait(self.PROBE_SEC), "опрос закрытия ждёт зависшую запись"
+
+        release.set()
+        writer.join(WAIT_SEC)
+        monkeypatch.undo()
+
+        record.finish(JournalNote.DONE.value)
+
+        assert record.closed is True
+
     def test_a_short_write_is_finished(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Ядро приняло байт из порции: хвост дописывается, размер не врёт."""
         journal = _journal(tmp_path)
         call = journal.open(CONTEXT)
-        sink = call.sink("bash", Channel.TOOL_PAYLOAD)
+        sink = call.sink("bash", Channel.TOOL_PAYLOAD, None)
 
         real_write = os.write
 
@@ -429,6 +657,12 @@ class TestWindowChains:
 class TestUsageAndEviction:
     """Единица учёта и вытеснения — вызов целиком, со всеми каналами."""
 
+    BULK_BYTES: ClassVar[int] = 4 * 1024 * 1024
+    """Журнал заметного для statvfs размера: меньше блока учёта не видно."""
+
+    MARGIN_BYTES: ClassVar[int] = 2 * 1024 * 1024
+    """Нехватка резерва: её закрывает вытеснение ровно одного вызова."""
+
     @staticmethod
     def _fill(journal: StreamJournal, thread_id: str, call_id: str) -> None:
         context = ToolCallContext(
@@ -437,6 +671,16 @@ class TestUsageAndEviction:
         call = journal.open(context)
         _written(call, "bash", Channel.TOOL_STDOUT, b"x" * 100)
         _written(call, "bash", Channel.TOOL_PAYLOAD, b"y" * 200)
+        call.close(JournalNote.ABORTED.value)
+
+    @classmethod
+    def _bulk(cls, journal: StreamJournal, call_id: str) -> None:
+        """Закрытый вызов треда CONTEXT, чей журнал виден свободному месту."""
+        context = ToolCallContext(
+            user_id="7", thread_id="t-1", call_id=call_id, tool="bash"
+        )
+        call = journal.open(context)
+        _written(call, "bash", Channel.TOOL_PAYLOAD, b"y" * cls.BULK_BYTES)
         call.close(JournalNote.ABORTED.value)
 
     def test_usage_counts_a_call_once(self, tmp_path: Path) -> None:
@@ -450,6 +694,18 @@ class TestUsageAndEviction:
         assert usage.threads[0].calls == 2
         assert usage.threads[0].bytes_used > 600
 
+    def test_usage_lists_threads_oldest_first(self, tmp_path: Path) -> None:
+        """Порядок отчёта — порядок уборки: старейший тред идёт первым."""
+        journal = _journal(tmp_path)
+        self._fill(journal, "t-old", "c-1")
+        self._fill(journal, "t-new", "c-2")
+
+        listed: list[str] = []
+        for entry in journal.usage("7").threads:
+            listed.append(entry.thread_id)
+
+        assert listed == ["t-old", "t-new"]
+
     def test_purge_removes_the_thread(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
         self._fill(journal, "t-1", "c-1")
@@ -458,6 +714,50 @@ class TestUsageAndEviction:
 
         assert freed > 300
         assert journal.purge_thread("7", "t-1") == 0
+
+    def test_the_oldest_call_is_evicted_first(self, tmp_path: Path) -> None:
+        """Резерв закрывается одним вытеснением: уходит старейший, свежий цел."""
+        filler = _journal(tmp_path)
+        self._bulk(filler, "c-old")
+        self._bulk(filler, "c-new")
+
+        root = tmp_path / "vault" / "7"
+        space = os.statvfs(root)
+        reserve = space.f_bavail * space.f_frsize + self.MARGIN_BYTES
+
+        journal = StreamJournal(DirVault(str(tmp_path / "vault")), reserve)
+        call = journal.open(CONTEXT)
+        call.close(JournalNote.ABORTED.value)
+
+        assert not (root / "t-1" / "c-old.bash.tool_payload.log").exists()
+        assert (root / "t-1" / "c-new.bash.tool_payload.log").exists()
+
+    def test_an_unremovable_call_gives_up_instead_of_looping(
+        self, tmp_path: Path
+    ) -> None:
+        """Файлы жертвы не снимаются: резерв сдаётся, вызов идёт без журнала."""
+        journal = _journal(tmp_path, reserve_bytes=2**60)
+        self._fill(journal, "t-locked", "c-locked")
+
+        locked = tmp_path / "vault" / "7" / "t-locked"
+        os.chmod(locked, 0o500)
+
+        opened: list[CallJournal] = []
+        done = threading.Event()
+
+        def open_call() -> None:
+            opened.append(journal.open(CONTEXT))
+            done.set()
+
+        worker = threading.Thread(target=open_call, name="open-call", daemon=True)
+        worker.start()
+        returned = done.wait(WAIT_SEC)
+        os.chmod(locked, 0o700)
+
+        assert returned, "открытие журнала не вернулось: цикл вытеснения зациклен"
+        assert (locked / "c-locked.bash.tool_stdout.log").exists()
+
+        opened[0].close(JournalNote.ABORTED.value)
 
     def test_eviction_takes_all_channels_of_a_call(self, tmp_path: Path) -> None:
         """Резерв недостижим: незащищённый вызов уходит целиком, живой остаётся."""
@@ -525,6 +825,122 @@ class TestUsageAndEviction:
         call.close(JournalNote.ABORTED.value)
 
 
+class TestVaultBoundary:
+    """Путь тома собирается только из проверенных сегментов.
+
+    Тред для уборки называет модель, поэтому сегмент вне алфавита обязан
+    падать на границе журнала, а не превращаться в путь за корнем.
+    """
+
+    OUTSIDE: ClassVar[str] = "precious"
+
+    def _stand(self, tmp_path: Path) -> tuple[StreamJournal, Path]:
+        journal = _journal(tmp_path)
+        TestUsageAndEviction._fill(journal, "t-1", "c-1")
+
+        outside = tmp_path / self.OUTSIDE
+        outside.mkdir()
+        (outside / "file").write_bytes(b"keep me")
+
+        return journal, outside
+
+    def test_purge_refuses_a_relative_escape(self, tmp_path: Path) -> None:
+        journal, outside = self._stand(tmp_path)
+
+        with pytest.raises(JournalError):
+            journal.purge_thread("7", f"../../{self.OUTSIDE}")
+
+        assert (outside / "file").exists()
+
+    def test_purge_refuses_an_absolute_path(self, tmp_path: Path) -> None:
+        journal, outside = self._stand(tmp_path)
+
+        with pytest.raises(JournalError):
+            journal.purge_thread("7", str(outside))
+
+        assert (outside / "file").exists()
+
+    def test_purge_refuses_a_neighbour_thread_of_another_user(
+        self, tmp_path: Path
+    ) -> None:
+        """`../8` увёл бы удаление в том соседа, а не за корень."""
+        journal, _outside = self._stand(tmp_path)
+        TestUsageAndEviction._fill(journal, "t-2", "c-2")
+
+        with pytest.raises(JournalError):
+            journal.purge_thread("7", "../7/t-2")
+
+        assert (tmp_path / "vault" / "7" / "t-2").exists()
+
+    def test_listing_refuses_an_escape(self, tmp_path: Path) -> None:
+        journal, _outside = self._stand(tmp_path)
+
+        with pytest.raises(JournalError):
+            journal.keys_of("7", f"../../{self.OUTSIDE}", "c-1")
+
+        with pytest.raises(JournalError):
+            journal.usage("../7")
+
+
+class TestVaultPermissions:
+    """Имена файлов несут id тредов и вызовов: том закрыт от соседей."""
+
+    def test_files_and_dirs_belong_to_the_owner_alone(self, tmp_path: Path) -> None:
+        journal = _journal(tmp_path)
+        call = journal.open(CONTEXT)
+        _written(call, "bash", Channel.TOOL_PAYLOAD, b"secret", StreamFormat.CSV)
+        call.close(JournalNote.ABORTED.value)
+
+        root = tmp_path / "vault" / "7"
+
+        paths = [
+            root,
+            root / "t-1",
+            root / KEY.rel_log(),
+            root / KEY.rel_meta(),
+        ]
+
+        modes: list[int] = []
+        for path in paths:
+            modes.append(stat.S_IMODE(path.stat().st_mode))
+
+        assert modes == [
+            VaultMode.DIR,
+            VaultMode.DIR,
+            VaultMode.FILE,
+            VaultMode.FILE,
+        ]
+
+
+class TestDeclaredProduct:
+    """Формат продукта узла объявляет стадия, и он переживает вызов."""
+
+    def test_the_format_is_readable_after_the_call(self, tmp_path: Path) -> None:
+        journal = _journal(tmp_path)
+        call = journal.open(CONTEXT)
+        _written(call, "bash", Channel.TOOL_PAYLOAD, b"a,b\n", StreamFormat.CSV)
+        _written(call, "bash", Channel.TOOL_STDOUT, b"note\n", StreamFormat.CSV)
+        _written(call, "g1", Channel.WRAP_STDERR, b"bwrap\n", None)
+        call.close(JournalNote.ABORTED.value)
+
+        stdout_key = CONTEXT.key("bash", Channel.TOOL_STDOUT)
+        group_key = CONTEXT.key("g1", Channel.WRAP_STDERR)
+
+        assert journal.out_of(KEY) is StreamFormat.CSV
+        assert journal.out_of(stdout_key) is StreamFormat.CSV
+        assert journal.out_of(group_key) is None
+
+    def test_the_format_is_readable_while_the_call_runs(self, tmp_path: Path) -> None:
+        """Сайдкар пишется на открытии: панель знает формат до конца вызова."""
+        journal = _journal(tmp_path)
+        call = journal.open(CONTEXT)
+        call.sink("bash", Channel.TOOL_PAYLOAD, StreamFormat.NDJSON)
+
+        assert journal.out_of(KEY) is StreamFormat.NDJSON
+
+        call.close(JournalNote.ABORTED.value)
+
+
 class TestJournalFailure:
     """Сбой журнала гасится внутрь: приёмник отключается, стадия работает."""
 
@@ -532,7 +948,7 @@ class TestJournalFailure:
         journal = _journal(tmp_path)
         call = journal.open(CONTEXT)
 
-        sink = call.sink("bash", Channel.TOOL_PAYLOAD)
+        sink = call.sink("bash", Channel.TOOL_PAYLOAD, None)
         sink.feed(b"head\n")
         sink.feed(b"z" * (JournalWriter.BUFFER_BYTES + 1))
         sink.feed(b"after the overflow\n")
@@ -552,19 +968,27 @@ class TestJournalFailure:
         journal = _journal(tmp_path)
         call = journal.open(CONTEXT)
 
-        sink = call.sink("bash", Channel.TOOL_PAYLOAD)
+        sink = call.sink("bash", Channel.TOOL_PAYLOAD, None)
         sink.feed(b"head")
 
-        record = call.record_of(KEY)
-        assert record is not None
-        _await(lambda: record.size == 4)
+        def written() -> bool:
+            window = journal.slice_at(KEY, 0)
+
+            return window is not None and window.size == 4
+
+        _await(written)
 
         def no_space(fd: int, data: bytes) -> int:
             raise OSError(errno.ENOSPC, "No space left on device")
 
+        def closed() -> bool:
+            window = journal.slice_at(KEY, 0)
+
+            return window is not None and window.closed
+
         monkeypatch.setattr(journal_module.os, "write", no_space)
         sink.feed(b"overflow")
-        _await(lambda: record.closed)
+        _await(closed)
         monkeypatch.undo()
 
         sink.feed("после сбоя стадия пишет дальше".encode())
@@ -587,7 +1011,7 @@ class TestJournalFailure:
         journal = _journal(tmp_path)
         call = journal.open(CONTEXT)
 
-        sink = call.sink("bash", Channel.TOOL_PAYLOAD)
+        sink = call.sink("bash", Channel.TOOL_PAYLOAD, None)
         sink.feed(b"nothing lands")
         sink.close()
         call.close(JournalNote.ABORTED.value)

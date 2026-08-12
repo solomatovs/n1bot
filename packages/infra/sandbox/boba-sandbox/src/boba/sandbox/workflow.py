@@ -61,6 +61,7 @@ from boba.toolkit.channels import (
     ChannelSink,
     ResultError,
     ShellExit,
+    StreamFormat,
     ValidationSummary,
 )
 from boba.toolkit.launcher import (
@@ -380,6 +381,14 @@ class _CallWiring:
 
 
 @dataclass(frozen=True)
+class _CheckedCall:
+    """Спека после всех проверок: планы стадий и mount-группы вызова."""
+
+    plans: Mapping[str, StagePlan]
+    groups: Sequence[MountGroupPlan]
+
+
+@dataclass(frozen=True)
 class _MemberBoot:
     """Отложенная регистрация стадии группы: pump.add после спавна внешнего процесса."""
 
@@ -444,15 +453,19 @@ class WorkflowRunner:
     ) -> WorkflowOutcome:
         """Полная валидация до старта, одновременный запуск стадий, сбор итога.
 
-        call — контекст вызова: по нему открывается журнал графа. sinks —
-        коллекторы продукта вызывающего по id узла; журнал стоит на всех
-        исходящих каналах стадий сам и в них не участвует.
+        call — контекст вызова: по нему открывается журнал графа. Журнал
+        открывается после проверки спеки: невалидный граф не съедает резерв
+        тома и не светится в реестре живых вызовов. sinks — коллекторы
+        продукта вызывающего по id узла; журнал стоит на всех исходящих
+        каналах стадий сам и в них не участвует.
         """
         cancellation = current_cancellation()
 
         collectors: Mapping[str, ChannelSink] = {}
         if sinks is not None:
             collectors = sinks
+
+        checked = self._checked(spec)
 
         try:
             journal = self._journal.open(call)
@@ -462,15 +475,9 @@ class WorkflowRunner:
         bundle = _CallWiring(collectors=collectors, journal=journal)
 
         try:
-            plans = self._plan(spec)
-
-            self._check_contracts(spec, plans)
-
-            groups = self._grouped(spec, plans)
-
-            self._check_fd_budget(spec, plans, groups)
-
-            return self._execute(spec, plans, groups, bundle, cancellation)
+            return self._execute(
+                spec, checked.plans, checked.groups, bundle, cancellation
+            )
         except WorkflowError:
             raise
         except PayloadFailureError:
@@ -484,6 +491,29 @@ class WorkflowRunner:
         finally:
             # журнал закрывается до возврата итога: файлы читаются целиком
             journal.close(JournalNote.ABORTED.value)
+
+    def _checked(self, spec: WorkflowSpec) -> _CheckedCall:
+        """Спека, прошедшая все проверки: планы стадий и mount-группы.
+
+        Отдельным шагом до журнала: контракт слоя один и тут — наружу выходит
+        WorkflowError, а не ValidationError разбора аргументов узла.
+        """
+        try:
+            plans = self._plan(spec)
+
+            self._check_contracts(spec, plans)
+
+            groups = self._grouped(spec, plans)
+
+            self._check_fd_budget(spec, plans, groups)
+        except WorkflowError:
+            raise
+        except LauncherError as exc:
+            raise WorkflowError(f"workflow spec is not runnable: {exc}") from exc
+        except Exception as exc:
+            raise WorkflowError(f"workflow internal failure: {exc}") from exc
+
+        return _CheckedCall(plans=plans, groups=groups)
 
     def _plan(self, spec: WorkflowSpec) -> dict[str, StagePlan]:
         """Стадии в топологическом порядке: обогащение, валидация, рендер профиля."""
@@ -1160,7 +1190,11 @@ class WorkflowRunner:
 
         # wrap-каналы стадиям не принадлежат: журнал группы идёт под её id
         wrap_sinks = self._journalled(
-            group.group_id, group_channels.present, wrap_base, wiring.journal
+            group.group_id,
+            group_channels.present,
+            wrap_base,
+            wiring.journal,
+            out=None,
         )
 
         group_timeout = self._group_timeout(boots)
@@ -1478,7 +1512,9 @@ class WorkflowRunner:
         if payload is not None:
             sinks[Channel.TOOL_PAYLOAD] = payload
 
-        return self._journalled(stage_id, present, sinks, wiring.journal)
+        return self._journalled(
+            stage_id, present, sinks, wiring.journal, out=run.plan.contract.out
+        )
 
     @staticmethod
     def _journalled(
@@ -1486,15 +1522,20 @@ class WorkflowRunner:
         present: Sequence[Channel],
         sinks: Mapping[Channel, ChannelSink],
         journal: CallJournal,
+        *,
+        out: StreamFormat | None,
     ) -> dict[Channel, ChannelSink]:
         """Журнал на каждом исходящем канале стадии — безусловно, первым в веере.
 
         Первым, чтобы файл получил и те байты, на которых коллектор вызывающего
-        упрётся в свой лимит.
+        упрётся в свой лимит. out — объявленный формат продукта стадии: он
+        уезжает в сайдкары её каналов, у mount-группы продукта нет.
         """
         journalled: dict[Channel, ChannelSink] = {}
 
-        for channel, entry in StageJournalSinks.of(journal, stage_id, present).items():
+        entries = StageJournalSinks.of(journal, stage_id, present, out)
+
+        for channel, entry in entries.items():
             base = sinks.get(channel)
             if base is None:
                 journalled[channel] = entry

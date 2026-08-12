@@ -14,6 +14,7 @@ from uuid import UUID, uuid5
 from literalai.observability.step import TrueStepType
 
 from boba.cancellation import StopReason
+from boba.chainlit.domain.stages import StageTools
 from boba.chainlit.rendering.result import (
     ChartRendering,
     CustomElementRendering,
@@ -21,7 +22,7 @@ from boba.chainlit.rendering.result import (
     MarkdownRendering,
     ToolResultView,
 )
-from boba.chainlit.rendering.stream_view import StageTools, StreamAction
+from boba.chainlit.rendering.stream_view import StreamAction
 from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
 from chainlit.element import CustomElement

@@ -222,10 +222,8 @@ class JournalFile(StrEnum):
     TMP = "tmp"
 
     SEP = nonmember(".")
-
-    @classmethod
-    def is_log(cls, file_name: str) -> bool:
-        return file_name.endswith(f"{cls.SEP}{cls.LOG}")
+    DRAFT_SEGMENTS = nonmember(2)
+    """Сегментов хвоста черновика сайдкара: `tmp` и pid."""
 
     @classmethod
     def tmp_of(cls, path: str, pid: int) -> str:
@@ -235,7 +233,7 @@ class JournalFile(StrEnum):
     @classmethod
     def body_of(cls, file_name: str) -> tuple[str, ...]:
         """Сегменты имени без расширения; чужое имя — ChannelError."""
-        segments = tuple(file_name.split(cls.SEP))
+        segments = cls._without_draft(tuple(file_name.split(cls.SEP)))
 
         for suffix in (cls.LOG, cls.META):
             tail = tuple(suffix.split(cls.SEP))
@@ -243,6 +241,24 @@ class JournalFile(StrEnum):
                 return segments[: -len(tail)]
 
         raise ChannelError(f"not a journal file name: {file_name!r}")
+
+    @classmethod
+    def _without_draft(cls, segments: tuple[str, ...]) -> tuple[str, ...]:
+        """Хвост `.tmp.{pid}` снимается: брошенный черновик адресуется сайдкаром.
+
+        Иначе оставшийся после падения процесса черновик не попал бы ни в
+        учёт тома, ни в вытеснение вызова и остался бы в томе навсегда.
+        """
+        if len(segments) <= cls.DRAFT_SEGMENTS:
+            return segments
+
+        if segments[-cls.DRAFT_SEGMENTS] != cls.TMP:
+            return segments
+
+        if not segments[-1].isdigit():
+            return segments
+
+        return segments[: -cls.DRAFT_SEGMENTS]
 
 
 class StreamKey(BaseModel):

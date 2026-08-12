@@ -333,6 +333,34 @@ class TestLiveJournal:
         assert trailer.pages == 1
         assert "кусок данных: старт" in collector.text()
 
+    def test_incoming_channels_are_never_journalled(self, tmp_path: Path) -> None:
+        """В tool_args едут креды вызова: их файла в томе быть не должно."""
+        journal = JournalStand.journal()
+        context = ToolCallContext.current()
+
+        self._caller(tmp_path, _STREAM_PAYLOAD, journal).call(_spec())
+
+        thread_dir = JournalStand.root() / JournalStand.USER / context.thread_id
+        logs: list[str] = []
+        for entry in thread_dir.iterdir():
+            if not entry.name.startswith(f"{context.call_id}."):
+                continue
+
+            if not entry.name.endswith(".log"):
+                continue
+
+            logs.append(entry.name)
+
+        call = context.call_id
+        assert sorted(logs) == [
+            f"{call}.probe.tool_payload.log",
+            f"{call}.probe.tool_result.log",
+            f"{call}.probe.tool_stderr.log",
+            f"{call}.probe.tool_stdout.log",
+            f"{call}.probe.wrap_stderr.log",
+            f"{call}.probe.wrap_stdout.log",
+        ]
+
     def test_a_finished_call_leaves_no_channel_hanging(self, tmp_path: Path) -> None:
         """Каждый канал закрыт своим EOF: пометки о срыве в панели быть не должно."""
         journal = JournalStand.journal()

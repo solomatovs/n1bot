@@ -44,6 +44,7 @@ from boba.chainlit.data.storage import (
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chainlit.domain.fields import ElementField, FileField
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
+from boba.chainlit.domain.stages import StageView
 from boba.sandbox.journal import JournalError, StreamJournalHub
 from boba.toolkit.channels import Channel, StreamKey
 from boba.workspace.launcher import ReadWindow
@@ -882,10 +883,9 @@ class StreamServing:
     Журнал лежит в каталоге служебного тома — обычная ФС, поэтому источником
     служит LocalStorageClient над корнем тома пользователя; клиент на том
     кэшируется. Пользователя даёт сессия, а не адрес: чужой журнал по ссылке
-    не читается.
+    не читается. Тип содержимого берётся из контракта узла: бинарный продукт
+    (единственный путь к нему — это скачивание) текстом не притворяется.
     """
-
-    MIME: ClassVar[str] = "text/plain; charset=utf-8"
 
     def __init__(self, config: LocalStorageConfig, policy: UploadPolicy) -> None:
         self._config = config
@@ -914,10 +914,12 @@ class StreamServing:
                 status_code=503, detail="Stream vault unavailable"
             ) from e
 
+        out = journal.out_of(key)
+
         disposition = f'attachment; filename="{os.path.basename(key.rel_log())}"'
         return await self._files_for(root).respond(
             key.rel_log(),
-            mime=self.MIME,
+            mime=StageView.mime_of(key.channel, out),
             range_header=request.headers.get(FileHeader.RANGE, ""),
             content_disposition=disposition,
         )

@@ -38,7 +38,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox.journal import DirVault, StreamJournal
 from boba.sandbox.runner import ToolCallContext
 from boba.settings import bind, build_app_config
-from boba.toolkit.channels import Channel
+from boba.toolkit.channels import Channel, StreamFormat
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -182,7 +182,7 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
             user_id=USER_ID, thread_id=thread_id, call_id=CALL_ID, tool="bash"
         )
     )
-    sink = done.sink(STAGE, Channel.TOOL_PAYLOAD)
+    sink = done.sink(STAGE, Channel.TOOL_PAYLOAD, StreamFormat.CSV)
     sink.feed(f"{FIRST_LINE}\n".encode())
     chunk: list[str] = []
     for index in range(1, LINES):
@@ -199,7 +199,7 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
             user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID, tool="bash"
         )
     )
-    live_sink = live.sink(STAGE, Channel.TOOL_PAYLOAD)
+    live_sink = live.sink(STAGE, Channel.TOOL_PAYLOAD, StreamFormat.CSV)
     for index in range(LIVE_LINES):
         live_sink.feed(f"V{index:07d},row\n".encode())
     # живой журнал не закрывается: вызов «ещё идёт» с точки зрения чтения
@@ -244,6 +244,16 @@ async def _open_step(page: Any) -> Any:
     return trigger
 
 
+async def _opened_stream(page: Any) -> Any:
+    """Панель с открытым журналом: тест не зависит от порядка соседей."""
+    trigger = await _open_step(page)
+
+    await trigger.locator('[aria-label="Показать вывод инструмента"]').click()
+    await page.wait_for_timeout(3000)
+
+    return page.locator("#side-view-content")
+
+
 async def test_stream_button_lives_in_the_step_header(stream_thread: Any) -> None:
     """Кнопка потока — внутри строки заголовка шага, а не в его содержимом."""
     page, _thread_id = stream_thread
@@ -256,12 +266,9 @@ async def test_stream_button_lives_in_the_step_header(stream_thread: Any) -> Non
 async def test_click_opens_the_journal_from_the_start(stream_thread: Any) -> None:
     """Открытие потока — окно с offset 0: первая строка файла на экране."""
     page, _thread_id = stream_thread
-    trigger = await _open_step(page)
+    side = await _opened_stream(page)
 
-    await trigger.locator('[aria-label="Показать вывод инструмента"]').click()
-    await page.wait_for_timeout(3000)
-
-    text = await page.locator("#side-view-content").inner_text()
+    text = await side.inner_text()
     assert FIRST_LINE in text
     assert LAST_LINE not in text
 
@@ -269,7 +276,7 @@ async def test_click_opens_the_journal_from_the_start(stream_thread: Any) -> Non
 async def test_jump_to_end_and_back(stream_thread: Any) -> None:
     """«В конец файла» показывает хвост, «в начало файла» возвращает к нулю."""
     page, _thread_id = stream_thread
-    side = page.locator("#side-view-content")
+    side = await _opened_stream(page)
 
     await side.locator('button[aria-label*="В конец файла"]').click()
     await page.wait_for_timeout(2000)
@@ -288,7 +295,7 @@ async def test_panel_and_fullscreen_share_the_button_set(
 ) -> None:
     """Набор кнопок совпадает; различие — только замыкающая (развернуть/закрыть)."""
     page, _thread_id = stream_thread
-    side = page.locator("#side-view-content")
+    side = await _opened_stream(page)
 
     labels = await page.evaluate(
         """() => [...document.querySelectorAll(
@@ -329,11 +336,8 @@ async def _scroll_to_bottom(page: Any) -> None:
 async def test_scrolling_down_loads_next_windows(stream_thread: Any) -> None:
     """Непрерывная прокрутка: у нижней кромки подгружается следующее окно."""
     page, _thread_id = stream_thread
-    trigger = await _open_step(page)
-    await trigger.locator('[aria-label="Показать вывод инструмента"]').click()
-    await page.wait_for_timeout(3000)
+    side = await _opened_stream(page)
 
-    side = page.locator("#side-view-content")
     assert FIRST_LINE in await side.inner_text()
 
     seen_l5000 = False

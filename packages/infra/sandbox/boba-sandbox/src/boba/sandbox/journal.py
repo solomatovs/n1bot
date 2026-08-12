@@ -7,11 +7,15 @@
 пользователя — каталог; общий потолок держит точка монтирования под корнем
 журналов. Место кончилось — старейшие закрытые вызовы вытесняются целиком,
 пока новый журнал не откроется; вытеснять нечего — канал идёт без журнала,
-причина уходит в лог приложения. Сбой журнала (переполнение буфера, ошибка
-записи) закрывает файл пометкой и отключает приёмник, поток стадии не рвётся.
+причина уходит в лог приложения. Вытеснение пробуется только при открытии
+файла. Сбой журнала (переполнение буфера, ошибка записи, кончившееся на
+середине записи место) закрывает файл пометкой и отключает приёмник, поток
+стадии не рвётся.
 
 Реестр живых вызовов ведёт журнал: он защищает их файлы от вытеснения и
-раздаёт события подписчикам (панель UI), не зная о них ничего.
+раздаёт события подписчикам (панель UI), не зная о них ничего. Сайдкар канала
+несёт объявленный формат продукта стадии: после вызова это единственное место,
+где декларация узла доступна показу.
 
 Ошибки:
 JournalError — том недоступен, файл журнала не открывается или не читается.
@@ -28,7 +32,7 @@ import threading
 from abc import abstractmethod
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -40,6 +44,8 @@ from boba.toolkit.channels import (
     ChannelError,
     ChannelSink,
     JournalFile,
+    SafeSegment,
+    StreamFormat,
     StreamKey,
 )
 
@@ -55,12 +61,14 @@ __all__ = [
     "JournalSink",
     "JournalWriter",
     "NoJournalSink",
+    "StageJournalSinks",
     "StreamFileView",
     "StreamJournal",
     "StreamJournalHub",
     "StreamMeta",
     "StreamSlice",
     "ThreadUsage",
+    "VaultMode",
     "VaultUsage",
 ]
 
@@ -69,6 +77,17 @@ logger = logging.getLogger(__name__)
 
 class JournalError(RuntimeError):
     """Том журнала недоступен: писать или читать некуда."""
+
+
+class VaultMode(IntEnum):
+    """Права файлов и каталогов тома: журнал виден только своему процессу.
+
+    Имена файлов несут id тредов, вызовов и стадий пользователя, поэтому
+    закрывается и каталог, а не только сам журнал.
+    """
+
+    FILE = 0o600
+    DIR = 0o700
 
 
 class WriteAck(StrEnum):
@@ -106,12 +125,19 @@ class JournalNote(StrEnum):
 
 
 class StreamMeta(BaseModel):
-    """Сайдкар журнала канала: итог записи; адрес несёт имя файла."""
+    """Сайдкар журнала канала: формат продукта стадии и итог записи.
+
+    out — объявленный формат канала данных того узла, чьи каналы пишет вызов:
+    единственное место, где декларация переживает вызов, и по ней панель
+    выбирает канал показа и тип файла. None — узел канал данных не наполняет.
+    Адрес несёт имя файла.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     closed: bool = False
     note: str = ""
+    out: StreamFormat | None = None
 
 
 class StreamSlice(BaseModel):
@@ -159,6 +185,21 @@ class _CallTotals:
     files: list[str]
 
 
+@dataclass(frozen=True)
+class _JournalEntry:
+    """Файл журнала в томе: адрес канала, rel-путь и факты файла.
+
+    rel — то, что лежит на диске: и файл канала, и сайдкар, и его черновик.
+    Адрес у всех троих один, поэтому учёт и вытеснение идут по rel, а не по
+    собранному из адреса имени.
+    """
+
+    key: StreamKey
+    rel: str
+    size: int
+    written_at: float
+
+
 class CallLogUsage(BaseModel):
     """Журналы одного вызова целиком: единица учёта и вытеснения.
 
@@ -182,7 +223,12 @@ class CallLogUsage(BaseModel):
 
 
 class DirVault:
-    """Том-каталог: без монтирований и привилегий, квоту держит точка монтирования."""
+    """Том-каталог: без монтирований и привилегий, квоту держит точка монтирования.
+
+    Единственное место, где собираются пути тома: сегменты (пользователь, тред)
+    проверяются здесь, поэтому наружу отдаются только пути под корнем. Сегмент
+    приходит и из чужих рук — id треда для уборки называет модель.
+    """
 
     def __init__(self, root: str) -> None:
         self._root = root
@@ -190,7 +236,7 @@ class DirVault:
     def ensure_root(self) -> str:
         """Корень тома на старте: журнал обязателен, некуда писать — не стартуем."""
         try:
-            os.makedirs(self._root, exist_ok=True)
+            self.make(self._root)
         except OSError as exc:
             raise JournalError(
                 f"stream vault is not writable: {self._root}: {exc}"
@@ -199,14 +245,43 @@ class DirVault:
         return self._root
 
     def root_for(self, user_id: str) -> str:
-        path = os.path.join(self._root, user_id)
+        """Корень пользователя; чужой сегмент или отказ тома — JournalError."""
+        path = self.user_path(user_id)
 
         try:
-            os.makedirs(path, exist_ok=True)
+            self.make(path)
         except OSError as exc:
             raise JournalError(f"stream vault is not writable: {path}: {exc}") from exc
 
         return path
+
+    def user_path(self, user_id: str) -> str:
+        return os.path.join(self._root, self._segment(user_id))
+
+    def thread_path(self, user_id: str, thread_id: str) -> str:
+        """Каталог треда в томе; создание — за вызывающим."""
+        return os.path.join(self.user_path(user_id), self._segment(thread_id))
+
+    @staticmethod
+    def make(path: str) -> None:
+        """Каталог тома правами владельца; OSError разбирает вызывающий.
+
+        Уже существующий каталог не переоформляется: право на него — факт
+        тома, а не решение журнала.
+        """
+        if os.path.isdir(path):
+            return
+
+        os.makedirs(path, exist_ok=True)
+        os.chmod(path, VaultMode.DIR)
+
+    @staticmethod
+    def _segment(value: str) -> str:
+        """Сегмент пути тома; чужой алфавит увёл бы путь за корень."""
+        try:
+            return SafeSegment.path(value)
+        except ValueError as exc:
+            raise JournalError(f"unsafe vault segment: {value!r}") from exc
 
 
 class StreamFileView:
@@ -305,21 +380,27 @@ class JournalRecord:
     """Файл одного канала стадии: дескриптор, размер и сайдкар.
 
     Пишет только writer-поток вызова; чтение размера и итога идёт из чужих
-    потоков, поэтому состояние держит лок.
+    потоков, поэтому состояние держит лок. Признак закрытия живёт событием, а
+    не под этим локом: закрытие вызова опрашивает его, пока запись висит на
+    медленном диске.
     """
 
-    FILE_MODE: ClassVar[int] = 0o600
-
-    def __init__(self, key: StreamKey, log_path: str, meta_path: str) -> None:
+    def __init__(
+        self,
+        key: StreamKey,
+        log_path: str,
+        meta_path: str,
+        out: StreamFormat | None,
+    ) -> None:
         self._key = key
         self._log_path = log_path
         self._meta_path = meta_path
         self._lock = threading.Lock()
-        self._meta = StreamMeta()
-        self._closed = False
+        self._done = threading.Event()
+        self._meta = StreamMeta(out=out)
 
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-        self._fd = os.open(log_path, flags, self.FILE_MODE)
+        self._fd = os.open(log_path, flags, VaultMode.FILE)
         self._size = os.fstat(self._fd).st_size
         self._write_meta()
 
@@ -333,8 +414,7 @@ class JournalRecord:
 
     @property
     def closed(self) -> bool:
-        with self._lock:
-            return self._closed
+        return self._done.is_set()
 
     @property
     def size(self) -> int:
@@ -348,7 +428,7 @@ class JournalRecord:
         места иначе потерял бы хвост и разошёлся с учтённым размером.
         """
         with self._lock:
-            if self._closed:
+            if self._done.is_set():
                 return
 
             view = memoryview(data)
@@ -362,32 +442,24 @@ class JournalRecord:
     def finish(self, note: str) -> None:
         """Идемпотентное закрытие: первый вызов фиксирует итог в сайдкаре."""
         with self._lock:
-            if self._closed:
+            if self._done.is_set():
                 return
 
-            self._closed = True
-            self._meta = StreamMeta(closed=True, note=note)
+            self._done.set()
+            self._meta = self._meta.model_copy(update={"closed": True, "note": note})
             os.close(self._fd)
 
         self._write_meta()
 
-    def tail(self, window: int) -> StreamSlice:
-        """Хвост записанного: показ живого канала идёт из файла, не из fd."""
-        with self._lock:
-            meta = self._meta
-            size = self._size
-
-        view = StreamFileView(self._log_path)
-
-        return view.slice_before(size, window, size, meta)
-
     def _write_meta(self) -> None:
         """Сайдкар атомарно: rename не оставит битого json при падении."""
         tmp = JournalFile.tmp_of(self._meta_path, os.getpid())
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
 
         try:
-            with open(tmp, "w", encoding=ByteText.ENCODING) as f:
-                json.dump(self._meta.model_dump(), f, ensure_ascii=False)
+            fd = os.open(tmp, flags, VaultMode.FILE)
+            with os.fdopen(fd, "w", encoding=ByteText.ENCODING) as f:
+                json.dump(self._meta.model_dump(mode="json"), f, ensure_ascii=False)
             os.rename(tmp, self._meta_path)
         except OSError:
             # сайдкар побочен: без него журнал читается как закрытый без итога
@@ -726,8 +798,14 @@ class CallJournal:
 
         return tuple(keys)
 
-    def sink(self, stage: str, channel: Channel) -> ChannelSink:
-        """Приёмник журнала канала стадии; том не принял — байты в никуда."""
+    def sink(
+        self, stage: str, channel: Channel, out: StreamFormat | None
+    ) -> ChannelSink:
+        """Приёмник журнала канала стадии; том не принял — байты в никуда.
+
+        out — объявленный формат продукта стадии: он уходит в сайдкар и живёт
+        столько же, сколько файл.
+        """
         key = self._context.key(stage, channel)
 
         with self._lock:
@@ -735,7 +813,7 @@ class CallJournal:
                 raise JournalError(f"call journal is closed: {key.rel_log()}")
 
         try:
-            record = self._journal.open_record(key)
+            record = self._journal.open_record(key, out)
         except JournalError as exc:
             logger.warning("journal is unavailable for %s: %s", key.rel_log(), exc)
             return NoJournalSink()
@@ -744,11 +822,6 @@ class CallJournal:
             self._records[key.rel_log()] = record
 
         return JournalSink(record, self._writer)
-
-    def record_of(self, key: StreamKey) -> JournalRecord | None:
-        """Открытый рекорд канала; None — такого канала у вызова нет."""
-        with self._lock:
-            return self._records.get(key.rel_log())
 
     def close(self, note: str) -> None:
         """Дозакрыть каналы пометкой, остановить поток, сняться с реестра."""
@@ -783,7 +856,7 @@ class StreamJournal:
     def __init__(self, vault: DirVault, reserve_bytes: int) -> None:
         if reserve_bytes < 0:
             msg = f"reserve_bytes must be >= 0, got {reserve_bytes}"
-            raise ValueError(msg)
+            raise JournalError(msg)
 
         self._vault = vault
         self._reserve = reserve_bytes
@@ -797,7 +870,7 @@ class StreamJournal:
         """Открыть журнал вызова: резерв тома, writer-поток, запись в реестр."""
         root = self._vault.root_for(context.user_id)
 
-        self._ensure_reserve(context.user_id, self._protected(context.prefix))
+        self._ensure_reserve(context.user_id, context.prefix)
 
         call = CallJournal(self, context)
         self._registry.begin(call)
@@ -808,27 +881,30 @@ class StreamJournal:
 
         return call
 
-    def open_record(self, key: StreamKey) -> JournalRecord:
+    def open_record(self, key: StreamKey, out: StreamFormat | None) -> JournalRecord:
         """Файл канала на запись; ENOSPC вытесняет старые вызовы до успеха.
 
         Каталог треда создаётся в цикле: вытеснение могло снести опустевший
-        каталог того же треда, куда пишем.
+        каталог того же треда, куда пишем. Живые вызовы опрашиваются каждый
+        раз: начавшийся по ходу цикла вызов защищён так же, как этот.
         """
         root = self._vault.root_for(key.user_id)
-        protected = self._protected(key.call_prefix)
+        thread_dir = self._vault.thread_path(key.user_id, key.thread_id)
 
         log_path = os.path.join(root, key.rel_log())
         meta_path = os.path.join(root, key.rel_meta())
 
         while True:
             try:
-                os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                return JournalRecord(key, log_path, meta_path)
+                DirVault.make(thread_dir)
+                return JournalRecord(key, log_path, meta_path, out)
             except OSError as exc:
                 if exc.errno != errno.ENOSPC:
                     raise JournalError(
                         f"stream log is not writable: {log_path}: {exc}"
                     ) from exc
+
+                protected = self._protected(key.call_prefix)
 
                 freed = self._evict_oldest(key.user_id, root, protected)
                 if freed < 0:
@@ -848,20 +924,19 @@ class StreamJournal:
         Порядок по времени записи: у графа продукт последней стадии
         дописывается позже остальных, и панель открывает именно его.
         """
-        root = self._vault.root_for(user_id)
-        path = os.path.join(root, thread_id)
+        path = self._vault.thread_path(user_id, thread_id)
 
         written: dict[str, float] = {}
         found: dict[str, StreamKey] = {}
 
-        for key, stat in self._journal_files(user_id, thread_id, path):
-            if key.call_id != call_id:
+        for entry in self._journal_files(user_id, thread_id, path):
+            if entry.key.call_id != call_id:
                 continue
 
-            rel = key.rel_log()
+            rel = entry.key.rel_log()
             known = written.get(rel, 0.0)
-            written[rel] = max(known, stat.st_mtime)
-            found[rel] = key
+            written[rel] = max(known, entry.written_at)
+            found[rel] = entry.key
 
         order = sorted(found, key=lambda rel: written[rel])
 
@@ -891,17 +966,23 @@ class StreamJournal:
         )
 
     def purge_thread(self, user_id: str, thread_id: str) -> int:
-        """Удалить журналы треда; возвращает освобождённые байты."""
+        """Удалить журналы треда; возвращает освобождённые байты.
+
+        Тред называет модель, поэтому путь собирает том: сегмент вне алфавита
+        увёл бы удаление за корень.
+        """
         root = self._vault.root_for(user_id)
-        path = os.path.join(root, thread_id)
+        path = self._vault.thread_path(user_id, thread_id)
+
+        if not os.path.isdir(path):
+            return 0
 
         freed = 0
         for entry in self._thread_usages(user_id, root):
-            if entry.thread_id == thread_id:
-                freed = entry.bytes_used
+            if entry.thread_id != thread_id:
+                continue
 
-        if freed == 0 and not os.path.isdir(path):
-            return 0
+            freed = entry.bytes_used
 
         try:
             shutil.rmtree(path)
@@ -949,7 +1030,7 @@ class StreamJournal:
     def head(self, key: StreamKey, max_bytes: int) -> StreamSlice | None:
         """Голова файла до max_bytes: столько канала уезжает в модель."""
         if max_bytes <= 0:
-            raise ValueError(f"max_bytes must be positive, got {max_bytes}")
+            raise JournalError(f"max_bytes must be positive, got {max_bytes}")
 
         opened = self._open_view(key)
         if opened is None:
@@ -964,6 +1045,16 @@ class StreamJournal:
                 f"stream log is not readable: {key.rel_log()}: {exc}"
             ) from exc
 
+    def out_of(self, key: StreamKey) -> StreamFormat | None:
+        """Объявленный формат продукта стадии; None — узел его не объявлял.
+
+        Декларацию узла кладёт в сайдкар запись канала: после вызова другого
+        источника нет — реестр стадий знает имена узлов, а не id из спеки.
+        """
+        root = self._vault.root_for(key.user_id)
+
+        return self._read_meta(os.path.join(root, key.rel_meta())).out
+
     def vault_root(self, user_id: str) -> str:
         """Корень тома пользователя: под ним лежат файлы каналов по тредам.
 
@@ -976,14 +1067,20 @@ class StreamJournal:
         """Живые вызовы плюс свой: их файлы вытеснению не подлежат."""
         return self._registry.live_prefixes() | {own_prefix}
 
-    def _ensure_reserve(self, user_id: str, protected: frozenset[str]) -> None:
-        """LRU-вытеснение вызовов до резерва; нечего вытеснять — предупредить."""
+    def _ensure_reserve(self, user_id: str, own_prefix: str) -> None:
+        """LRU-вытеснение вызовов до резерва; нечего вытеснять — предупредить.
+
+        Живые вызовы опрашиваются на каждом шаге: снимок на входе не увидел бы
+        вызова, начавшегося по ходу вытеснения, и снёс бы файлы из-под него.
+        """
         if not self._reserve:
             return
 
         root = self._vault.root_for(user_id)
 
         while self._free_bytes(root) < self._reserve:
+            protected = self._protected(own_prefix)
+
             freed = self._evict_oldest(user_id, root, protected)
             if freed < 0:
                 logger.warning(
@@ -996,25 +1093,32 @@ class StreamJournal:
     def _evict_oldest(
         self, user_id: str, root: str, protected: frozenset[str]
     ) -> int:
-        """Удалить старейший незащищённый вызов; -1 — вытеснять нечего."""
-        victim = min(
+        """Удалить старейший снимаемый вызов; -1 — вытеснять нечего.
+
+        Вызов, чьи файлы том не отдаёт (чужой владелец, ro-ремонтирование),
+        пропускается: иначе он оставался бы старейшим и цикл резерва выбирал
+        бы его бесконечно.
+        """
+        victims = sorted(
             self._evictable(user_id, root, protected),
-            default=None,
             key=lambda entry: entry.last_write_at,
         )
-        if victim is None:
-            return -1
 
-        self._remove_call(root, victim)
+        for victim in victims:
+            removed = self._remove_call(root, victim)
+            if not removed:
+                continue
 
-        logger.info(
-            "journal evicted call %s of thread %s (%d bytes)",
-            victim.call_id,
-            victim.thread_id,
-            victim.bytes_used,
-        )
+            logger.info(
+                "journal evicted call %s of thread %s (%d bytes)",
+                victim.call_id,
+                victim.thread_id,
+                victim.bytes_used,
+            )
 
-        return victim.bytes_used
+            return victim.bytes_used
+
+        return -1
 
     def _evictable(
         self, user_id: str, root: str, protected: frozenset[str]
@@ -1026,8 +1130,10 @@ class StreamJournal:
             yield entry
 
     @staticmethod
-    def _remove_call(root: str, entry: CallLogUsage) -> None:
-        """Снести все файлы вызова; опустевший каталог треда убрать."""
+    def _remove_call(root: str, entry: CallLogUsage) -> bool:
+        """Снести все файлы вызова; False — хоть один остался на месте."""
+        removed = True
+
         for rel in entry.files:
             try:
                 os.remove(os.path.join(root, rel))
@@ -1035,11 +1141,15 @@ class StreamJournal:
                 continue
             except OSError:
                 logger.warning("journal eviction failed on %s", rel, exc_info=True)
+                removed = False
 
         try:
             os.rmdir(os.path.join(root, entry.thread_id))
         except OSError:
-            return
+            # каталог треда занят другими вызовами: это не отказ вытеснения
+            return removed
+
+        return removed
 
     def _call_logs(self, user_id: str, root: str) -> Iterator[CallLogUsage]:
         for thread_entry in self._thread_dirs(root):
@@ -1047,29 +1157,27 @@ class StreamJournal:
 
     def _thread_calls(self, user_id: str, thread_id: str) -> Iterator[CallLogUsage]:
         """Файлы треда, сгруппированные по вызову: вызов — единица учёта."""
-        root = self._vault.root_for(user_id)
-        path = os.path.join(root, thread_id)
+        path = self._vault.thread_path(user_id, thread_id)
 
         totals: dict[str, _CallTotals] = {}
 
-        for key, stat in self._journal_files(user_id, thread_id, path):
-            entry = totals.get(key.call_id)
-            if entry is None:
-                entry = _CallTotals(bytes_used=0, last_write_at=0.0, files=[])
-                totals[key.call_id] = entry
+        for entry in self._journal_files(user_id, thread_id, path):
+            found = totals.get(entry.key.call_id)
+            if found is None:
+                found = _CallTotals(bytes_used=0, last_write_at=0.0, files=[])
+                totals[entry.key.call_id] = found
 
-            entry.bytes_used += stat.st_size
-            entry.last_write_at = max(entry.last_write_at, stat.st_mtime)
-            entry.files.append(key.rel_log())
-            entry.files.append(key.rel_meta())
+            found.bytes_used += entry.size
+            found.last_write_at = max(found.last_write_at, entry.written_at)
+            found.files.append(entry.rel)
 
-        for call_id, entry in totals.items():
+        for call_id, found in totals.items():
             yield CallLogUsage(
                 thread_id=thread_id,
                 call_id=call_id,
-                bytes_used=entry.bytes_used,
-                last_write_at=entry.last_write_at,
-                files=tuple(dict.fromkeys(entry.files)),
+                bytes_used=found.bytes_used,
+                last_write_at=found.last_write_at,
+                files=tuple(dict.fromkeys(found.files)),
             )
 
     def _thread_usages(self, user_id: str, root: str) -> Iterator[ThreadUsage]:
@@ -1105,8 +1213,12 @@ class StreamJournal:
     @staticmethod
     def _journal_files(
         user_id: str, thread_id: str, path: str
-    ) -> Iterator[tuple[StreamKey, os.stat_result]]:
-        """Файлы журнала треда с их адресами; посторонние имена пропускаются."""
+    ) -> Iterator[_JournalEntry]:
+        """Файлы журнала треда с их адресами; посторонние имена пропускаются.
+
+        Файл, снесённый вытеснением или уборкой между обходом каталога и
+        опросом, в учёт не попадает: обход идёт по живому тому.
+        """
         try:
             entries = list(os.scandir(path))
         except FileNotFoundError:
@@ -1124,11 +1236,28 @@ class StreamJournal:
                 logger.debug("journal: foreign file in the vault: %s", entry.path)
                 continue
 
-            yield key, entry.stat()
+            try:
+                stat = entry.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise JournalError(
+                    f"journal file is not readable: {entry.path}: {exc}"
+                ) from exc
+
+            yield _JournalEntry(
+                key=key,
+                rel=f"{thread_id}/{entry.name}",
+                size=stat.st_size,
+                written_at=stat.st_mtime,
+            )
 
     @staticmethod
     def _free_bytes(root: str) -> int:
-        space = os.statvfs(root)
+        try:
+            space = os.statvfs(root)
+        except OSError as exc:
+            raise JournalError(f"stream vault is not readable: {root}: {exc}") from exc
 
         return space.f_bavail * space.f_frsize
 
@@ -1194,6 +1323,8 @@ class StageJournalSinks:
 
     Единственное место, где решается, что журналируется: все исходящие каналы
     стадии без исключений, включая tool_result и wrap-каналы mount-группы.
+    Объявленный формат продукта узла едет в сайдкар каждого его канала: панель
+    выбирает канал показа по стадии, а не по одному файлу.
     """
 
     @classmethod
@@ -1202,6 +1333,7 @@ class StageJournalSinks:
         call: CallJournal,
         stage: str,
         channels: Sequence[Channel],
+        out: StreamFormat | None,
     ) -> dict[Channel, ChannelSink]:
         sinks: dict[Channel, ChannelSink] = {}
 
@@ -1209,6 +1341,6 @@ class StageJournalSinks:
             if channel.writes_in:
                 continue
 
-            sinks[channel] = call.sink(stage, channel)
+            sinks[channel] = call.sink(stage, channel, out)
 
         return sinks

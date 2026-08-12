@@ -1,8 +1,9 @@
 """Tool bash: команда пользователя одним узлом графа стадий.
 
 Фасад строит вырожденный WorkflowSpec из узла bash, отдаёт его порту запуска и
-собирает ответ из головы журнала канала данных и процессных фактов стадии.
-Полный поток команды живёт в журнале стадии; в ленту едет только голова.
+собирает ответ из голов журналов канала данных и tool_stderr плюс процессных
+фактов стадии. Полный поток команды живёт в журнале стадии; в ленту едет
+только голова.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ class BashAnswer(BaseModel):
     exit_code: int
     stdout: str
     truncated_stdout: bool
+    stderr: str
+    truncated_stderr: bool
     duration_ms: int
     timed_out: bool
     diagnostic: str
@@ -50,6 +53,8 @@ class BashFailureAnswer(BaseModel):
 
     stdout: str
     truncated_stdout: bool
+    stderr: str
+    truncated_stderr: bool
     error_kind: str
     message: str
 
@@ -79,16 +84,19 @@ class BashRun:
                 stdin=literal,
             )
         except (LauncherError, WorkflowError) as exc:
-            head = self._head(StageFailure.outcome_of(exc))
-            return JsonResult(ok=False, payload=self._failed(head, exc))
+            failed = StageFailure.outcome_of(exc)
+            return JsonResult(ok=False, payload=self._failed(failed, exc))
 
-        head = self._head(outcome)
+        out = self._head(outcome, Channel.TOOL_PAYLOAD)
+        err = self._head(outcome, Channel.TOOL_STDERR)
 
         stage = outcome.outcome_of(self.STAGE)
         answer = BashAnswer(
             exit_code=stage.exit_code,
-            stdout=head.text,
-            truncated_stdout=head.truncated,
+            stdout=out.text,
+            truncated_stdout=out.truncated,
+            stderr=err.text,
+            truncated_stderr=err.truncated,
             duration_ms=stage.duration_ms,
             timed_out=stage.timed_out,
             diagnostic=stage.diagnostic,
@@ -96,21 +104,25 @@ class BashRun:
 
         return JsonResult(ok=True, payload=answer.model_dump(mode="json"))
 
-    def _head(self, outcome: WorkflowOutcome) -> ChannelHead:
-        """Голова журнала продукта: stdout команды течёт в tool_payload."""
+    def _head(self, outcome: WorkflowOutcome, channel: Channel) -> ChannelHead:
+        """Голова журнала канала стадии: stdout команды течёт в tool_payload."""
         return self._run.head(
             outcome,
             self.STAGE,
-            Channel.TOOL_PAYLOAD,
+            channel,
             self._max_output_bytes,
         )
 
-    @staticmethod
-    def _failed(head: ChannelHead, error: Exception) -> dict[str, object]:
-        """Голова вывода остаётся в ответе: команда успела что-то напечатать."""
+    def _failed(self, outcome: WorkflowOutcome, error: Exception) -> dict[str, object]:
+        """Головы каналов остаются в ответе: команда успела что-то напечатать."""
+        out = self._head(outcome, Channel.TOOL_PAYLOAD)
+        err = self._head(outcome, Channel.TOOL_STDERR)
+
         answer = BashFailureAnswer(
-            stdout=head.text,
-            truncated_stdout=head.truncated,
+            stdout=out.text,
+            truncated_stdout=out.truncated,
+            stderr=err.text,
+            truncated_stderr=err.truncated,
             error_kind=ErrorKind.of(error),
             message=str(error),
         )
