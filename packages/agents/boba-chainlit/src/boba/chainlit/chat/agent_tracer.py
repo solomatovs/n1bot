@@ -8,11 +8,12 @@ from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
 from uuid import UUID
 
-from langchain_core.outputs import ChatGenerationChunk, GenerationChunk
+from langchain_core.messages import ToolMessage
+from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResult
 from langchain_core.tracers.base import AsyncBaseTracer
 from typing_extensions import ParamSpec, override
 
-from boba.chainlit.agent.chat_model import ReasoningText
+from boba.chainlit.agent.chat_model import GeneratedMessage, ReasoningText
 from boba.chainlit.rendering.chat_view import ChatView
 from boba.chainlit.rendering.errors import show_error
 from boba.chainlit.rendering.stream_view import StreamNote, ToolStreams
@@ -45,7 +46,13 @@ def _visible_failure(
 
 
 class AgentTracer(AsyncBaseTracer):
-    """Трасит один агентский цикл и рисует step-иерархию процесса ответа."""
+    """Трасит один агентский цикл и рисует step-иерархию процесса ответа.
+
+    Каждый колбэк сперва отдаёт событие базовому трасеру и только потом рисует:
+    учёт прогонов langchain обязан вестись, даже когда лента недоступна. Иначе
+    упавшая отрисовка старта уносит с собой индекс прогона, и закрытие падает
+    с TracerException «No indexed run ID» — второй ошибкой без своей причины.
+    """
 
     def __init__(self, view: ChatView, user_id: str) -> None:
         super().__init__()
@@ -90,14 +97,7 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        message = getattr(chunk, "message", None)
-
-        if reasoning := ReasoningText.of(message):
-            run_key = str(run_id)
-            self._reasoning[run_key] = self._reasoning.get(run_key, "") + reasoning
-            await self._view.stream_thinking(reasoning, getattr(message, "id", None))
-
-        return await super().on_llm_new_token(
+        traced = await super().on_llm_new_token(
             token,
             chunk=chunk,
             run_id=run_id,
@@ -105,35 +105,56 @@ class AgentTracer(AsyncBaseTracer):
             **kwargs,
         )
 
+        message = GeneratedMessage.of_chunk(chunk)
+        if message is None:
+            return traced
+
+        reasoning = ReasoningText.of(message)
+        if not reasoning:
+            return traced
+
+        run_key = str(run_id)
+        self._reasoning[run_key] = self._reasoning.get(run_key, "") + reasoning
+        await self._view.stream_thinking(reasoning, message.id)
+
+        return traced
+
     @override
     @_visible_failure
     async def on_llm_end(
         self,
-        response: Any,
+        response: LLMResult,
         *,
         run_id: UUID,
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        streamed = self._reasoning.pop(str(run_id), "")
-        await self._view.close_thinking()
-
-        message: Any = None
-        if response.generations and response.generations[0]:
-            message = getattr(response.generations[0][0], "message", None)
-
-        # рассуждения без стрима приходят разом в итоговом сообщении
-        if not streamed:
-            if text := ReasoningText.of(message):
-                await self._view.thinking(text, getattr(message, "id", None))
-
-        return await super().on_llm_end(
+        traced = await super().on_llm_end(
             response,
             run_id=run_id,
             parent_run_id=parent_run_id,
             **kwargs,
         )
+
+        streamed = self._reasoning.pop(str(run_id), "")
+        await self._view.close_thinking()
+
+        # рассуждения без стрима приходят разом в итоговом сообщении
+        if streamed:
+            return traced
+
+        message = GeneratedMessage.of_result(response)
+        if message is None:
+            return traced
+
+        text = ReasoningText.of(message)
+        if not text:
+            return traced
+
+        await self._view.thinking(text, message.id)
+
+        return traced
 
     @override
     @_visible_failure
@@ -147,14 +168,17 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        await self._view.close_thinking()
-        return await super().on_llm_error(
+        traced = await super().on_llm_error(
             error,
             run_id=run_id,
             parent_run_id=parent_run_id,
             tags=tags,
             **kwargs,
         )
+
+        await self._view.close_thinking()
+
+        return traced
 
     @override
     @_visible_failure
@@ -172,20 +196,7 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        tool_name = name
-        if not tool_name and serialized:
-            tool_name = serialized.get("name")
-        if not tool_name:
-            tool_name = "tool"
-        call_id = kwargs.get("tool_call_id")
-        call_key: str | None = None
-        if call_id:
-            call_key = str(call_id)
-        self._tool_steps[str(run_id)] = await self._view.tool_started(
-            tool_name, inputs, call_key
-        )
-        self._begin_stream(str(run_id), tool_name, call_key)
-        return await super().on_tool_start(
+        traced = await super().on_tool_start(
             serialized,
             input_str,
             run_id=run_id,
@@ -196,6 +207,25 @@ class AgentTracer(AsyncBaseTracer):
             inputs=inputs,
             **kwargs,
         )
+
+        tool_name = name
+        if not tool_name and serialized:
+            tool_name = serialized.get("name")
+
+        if not tool_name:
+            tool_name = "tool"
+
+        call_id = kwargs.get("tool_call_id")
+        call_key: str | None = None
+        if call_id:
+            call_key = str(call_id)
+
+        self._tool_steps[str(run_id)] = await self._view.tool_started(
+            tool_name, inputs, call_key
+        )
+        self._begin_stream(str(run_id), tool_name, call_key)
+
+        return traced
 
     def _begin_stream(self, run_key: str, tool_name: str, call_key: str | None) -> None:
         """Открывает журнал живого вывода вызова.
@@ -238,20 +268,30 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
+        traced = await super().on_tool_end(output, run_id=run_id, **kwargs)
+
         self._finish_stream(str(run_id), StreamNote.FINISHED)
-        if step := self._tool_steps.pop(str(run_id), None):
-            if getattr(output, "status", None) == "error":
-                await self._view.tool_failed(step, getattr(output, "content", output))
-            else:
-                artifact = getattr(output, "artifact", None)
-                if artifact is None:
-                    artifact = output
-                await self._view.tool_finished(
-                    step,
-                    artifact,
-                    getattr(output, "tool_call_id", None),
-                )
-        return await super().on_tool_end(output, run_id=run_id, **kwargs)
+
+        step = self._tool_steps.pop(str(run_id), None)
+        if step is None:
+            return traced
+
+        # результат без конверта tool_call рисуется как есть: он и есть артефакт
+        if not isinstance(output, ToolMessage):
+            await self._view.tool_finished(step, output)
+            return traced
+
+        if output.status == "error":
+            await self._view.tool_failed(step, output.content)
+            return traced
+
+        artifact = output.artifact
+        if artifact is None:
+            artifact = output
+
+        await self._view.tool_finished(step, artifact, output.tool_call_id)
+
+        return traced
 
     @_visible_failure
     async def stop_pending(self, note: str) -> None:
@@ -283,16 +323,20 @@ class AgentTracer(AsyncBaseTracer):
         **kwargs: Any,
     ) -> None:
         self._set_context()
-        self._finish_stream(str(run_id), StreamNote.FAILED)
-        if step := self._tool_steps.pop(str(run_id), None):
-            await self._view.tool_failed(step, error)
-        return await super().on_tool_error(
+        traced = await super().on_tool_error(
             error,
             run_id=run_id,
             parent_run_id=parent_run_id,
             tags=tags,
             **kwargs,
         )
+
+        self._finish_stream(str(run_id), StreamNote.FAILED)
+
+        if step := self._tool_steps.pop(str(run_id), None):
+            await self._view.tool_failed(step, error)
+
+        return traced
 
     @override
     async def _persist_run(self, run: Any) -> None:

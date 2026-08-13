@@ -1,6 +1,8 @@
 .venv
 __pycache__
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/settings.json
 *.pyc
 *.pyo
 *.pyd

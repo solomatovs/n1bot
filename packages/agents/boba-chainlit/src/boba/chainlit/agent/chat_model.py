@@ -6,11 +6,23 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from langchain_core.outputs import ChatGenerationChunk, ChatResult
+from langchain_core.messages import BaseMessage
+from langchain_core.outputs import (
+    ChatGeneration,
+    ChatGenerationChunk,
+    ChatResult,
+    GenerationChunk,
+    LLMResult,
+)
 from langchain_openai import ChatOpenAI
 from typing_extensions import override
 
-__all__ = ["ReasoningChatOpenAI", "ReasoningText", "ResponseField"]
+__all__ = [
+    "GeneratedMessage",
+    "ReasoningChatOpenAI",
+    "ReasoningText",
+    "ResponseField",
+]
 
 
 class ResponseField(StrEnum):
@@ -23,27 +35,47 @@ class ResponseField(StrEnum):
     REASONING = "reasoning"
 
 
-class ReasoningText:
-    """Рассуждения из сообщения langchain: своё поле либо additional_kwargs."""
+class GeneratedMessage:
+    """Сообщение langchain из результата генерации; у текстовых чанков его нет."""
 
     @staticmethod
-    def of(message: Any) -> str:
+    def of_chunk(
+        chunk: GenerationChunk | ChatGenerationChunk | None,
+    ) -> BaseMessage | None:
+        if not isinstance(chunk, ChatGenerationChunk):
+            return None
+
+        return chunk.message
+
+    @staticmethod
+    def of_result(response: LLMResult) -> BaseMessage | None:
+        if not response.generations:
+            return None
+
+        first = response.generations[0]
+        if not first:
+            return None
+
+        generation = first[0]
+        if not isinstance(generation, ChatGeneration):
+            return None
+
+        return generation.message
+
+
+class ReasoningText:
+    """Рассуждения сообщения: провайдер нормализует их в additional_kwargs."""
+
+    @staticmethod
+    def of(message: BaseMessage | None) -> str:
         if message is None:
             return ""
 
-        value = getattr(message, ResponseField.REASONING_CONTENT.value, None)
-        if value:
-            return str(value)
-
-        extra = getattr(message, "additional_kwargs", None)
-        if not extra:
+        value = message.additional_kwargs.get(ResponseField.REASONING_CONTENT.value)
+        if not value:
             return ""
 
-        value = extra.get(ResponseField.REASONING_CONTENT.value)
-        if value:
-            return str(value)
-
-        return ""
+        return str(value)
 
 
 class ReasoningChatOpenAI(ChatOpenAI):

@@ -8,12 +8,12 @@ sync-инструментов едут в чужом потоке и перед�
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Sequence
 from functools import wraps
-from typing import cast
 
 from langchain_core.tools import BaseTool
 
+from boba.chainlit.agent.tools.wrapping import AsyncCall, SyncCall, ToolBody
 from boba.chainlit.domain.session import current_thread_id
 from boba.chainlit.rendering.stream_view import ToolStreams
 from boba.toolkit.stream import ToolStreamTap
@@ -25,18 +25,10 @@ class ToolStreamTapGuard:
     """Ставит окно живого вывода в контекст каждого вызова инструмента."""
 
     @staticmethod
-    def guard_all(tools: list[BaseTool]) -> list[BaseTool]:
-        for tool in tools:
-            func = getattr(tool, "func", None)
-            if callable(func):
-                tool.func = ToolStreamTapGuard._wrap(func, tool.name)
-            coroutine = cast(
-                "Callable[..., Awaitable[object]] | None",
-                getattr(tool, "coroutine", None),
-            )
-            if callable(coroutine):
-                tool.coroutine = ToolStreamTapGuard._wrap_async(coroutine, tool.name)
-        return tools
+    def guard_all(tools: Sequence[BaseTool]) -> list[BaseTool]:
+        return ToolBody.wrap_all(
+            tools, ToolStreamTapGuard._wrap, ToolStreamTapGuard._wrap_async
+        )
 
     @staticmethod
     def _claim(name: str) -> bool:
@@ -53,12 +45,12 @@ class ToolStreamTapGuard:
         return True
 
     @staticmethod
-    def _wrap(func: Callable[..., object], name: str) -> Callable[..., object]:
-        @wraps(func)
+    def _wrap(call: SyncCall, name: str) -> SyncCall:
+        @wraps(call)
         def wrapped(*args: object, **kwargs: object) -> object:
             claimed = ToolStreamTapGuard._claim(name)
             try:
-                return func(*args, **kwargs)
+                return call(*args, **kwargs)
             finally:
                 if claimed:
                     ToolStreamTap.set(None)
@@ -66,15 +58,12 @@ class ToolStreamTapGuard:
         return wrapped
 
     @staticmethod
-    def _wrap_async(
-        coroutine: Callable[..., Awaitable[object]],
-        name: str,
-    ) -> Callable[..., Awaitable[object]]:
-        @wraps(coroutine)
+    def _wrap_async(call: AsyncCall, name: str) -> AsyncCall:
+        @wraps(call)
         async def wrapped(*args: object, **kwargs: object) -> object:
             claimed = ToolStreamTapGuard._claim(name)
             try:
-                return await coroutine(*args, **kwargs)
+                return await call(*args, **kwargs)
             finally:
                 if claimed:
                     ToolStreamTap.set(None)

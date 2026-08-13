@@ -14,15 +14,16 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResult
 from pydantic import BaseModel, ConfigDict
 from typing_extensions import override
 
-from boba.chainlit.agent.chat_model import ReasoningText
+from boba.chainlit.agent.chat_model import GeneratedMessage, ReasoningText
 from boba.chainlit.domain.session import LogUserMark
 
 __all__ = ["LlmStage", "LlmStageEvent", "LlmStateLog"]
@@ -57,6 +58,19 @@ class CallField(StrEnum):
     INVOCATION_PARAMS = "invocation_params"
 
 
+class ToolCallField:
+    """Ключи langchain-ToolCall: у TypedDict pyright принимает только литерал."""
+
+    NAME: Final = "name"
+
+
+class UsageField:
+    """Ключи langchain-UsageMetadata: тот же контракт TypedDict."""
+
+    INPUT: Final = "input_tokens"
+    OUTPUT: Final = "output_tokens"
+
+
 class InvocationParams(BaseModel):
     """Параметры вызова, которые langchain кладёт в колбэк старта прогона."""
 
@@ -83,12 +97,19 @@ class LlmUsage(BaseModel):
     output_tokens: int = 0
 
     @classmethod
-    def of(cls, message: Any) -> LlmUsage:
-        raw = getattr(message, "usage_metadata", None)
-        if not isinstance(raw, Mapping):
+    def of(cls, message: BaseMessage | None) -> LlmUsage:
+        """Расход знает только ответ модели; у остальных сообщений его нет."""
+        if not isinstance(message, AIMessage):
             return cls()
 
-        return cls.model_validate(raw)
+        usage = message.usage_metadata
+        if usage is None:
+            return cls()
+
+        return cls(
+            input_tokens=usage[UsageField.INPUT],
+            output_tokens=usage[UsageField.OUTPUT],
+        )
 
 
 @dataclass
@@ -207,7 +228,7 @@ class LlmStateLog(AsyncCallbackHandler):
             run.first_token = now
             self._say("llm first token: run=%s in %dms", run.label, run.elapsed_ms(now))
 
-        message = getattr(chunk, "message", None)
+        message = GeneratedMessage.of_chunk(chunk)
         if reasoning := ReasoningText.of(message):
             self._advance(run, LlmStage.THINKING, reasoning, now)
             return
@@ -280,7 +301,7 @@ class LlmStateLog(AsyncCallbackHandler):
         if run.stage is not None:
             self._finish_stage(run, run.stage, now)
 
-        message = self._message_of(response)
+        message = GeneratedMessage.of_result(response)
         if not run.first_token:
             self._complete_stages(run, message)
 
@@ -296,7 +317,7 @@ class LlmStateLog(AsyncCallbackHandler):
             run.elapsed_ms(now),
         )
 
-    def _complete_stages(self, run: RunProgress, message: Any) -> None:
+    def _complete_stages(self, run: RunProgress, message: BaseMessage | None) -> None:
         """Ответ без стрима: стадий не было, текст пришёл разом в сообщении."""
         if reasoning := ReasoningText.of(message):
             self._say(
@@ -320,37 +341,25 @@ class LlmStateLog(AsyncCallbackHandler):
         )
 
     @staticmethod
-    def _message_of(response: LLMResult) -> Any:
-        if not response.generations:
-            return None
+    def _content_of(message: BaseMessage | None) -> str:
+        if message is None:
+            return ""
 
-        first = response.generations[0]
-        if not first:
-            return None
-
-        return getattr(first[0], "message", None)
-
-    @staticmethod
-    def _content_of(message: Any) -> str:
-        content = getattr(message, "content", "")
+        content = message.content
         if isinstance(content, str):
             return content
 
         return str(content)
 
     @staticmethod
-    def _tool_names_of(message: Any) -> list[str]:
-        calls = getattr(message, "tool_calls", None)
-        if not calls:
+    def _tool_names_of(message: BaseMessage | None) -> list[str]:
+        """Инструменты зовёт только ответ модели: у прочих сообщений вызовов нет."""
+        if not isinstance(message, AIMessage):
             return []
 
         names: list[str] = []
-        for call in calls:
-            if isinstance(call, Mapping):
-                names.append(str(call.get(CallField.NAME.value, "")))
-                continue
-
-            names.append(str(getattr(call, CallField.NAME.value, "")))
+        for call in message.tool_calls:
+            names.append(call[ToolCallField.NAME])
 
         return names
 

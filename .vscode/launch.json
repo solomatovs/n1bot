@@ -16,7 +16,7 @@
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/cgroup/boba-sandbox"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "stopOnEntry": false
@@ -35,7 +35,7 @@
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/cgroup/boba-sandbox"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "args": [
@@ -57,7 +57,7 @@
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/cgroup/boba-sandbox"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "args": [
@@ -79,7 +79,7 @@
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/cgroup/boba-sandbox"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "args": [

@@ -8,12 +8,13 @@ ToolMessage уходит в историю, LLM видит текст ошибк
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Sequence
 from functools import wraps
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 
+from boba.chainlit.agent.tools.wrapping import AsyncCall, SyncCall, ToolBody
 from boba.toolkit.launcher import ErrorKind
 from boba.toolkit.result import ErrorResult, ToolResult, pack_result
 
@@ -31,39 +32,28 @@ class ToolErrorGuard:
     PREFIX: ClassVar[str] = "tool failed"
 
     @staticmethod
-    def guard_all(tools: list[BaseTool]) -> list[BaseTool]:
-        for tool in tools:
-            func = getattr(tool, "func", None)
-            if callable(func):
-                tool.func = ToolErrorGuard._wrap(func, tool.name)
-            coroutine = cast(
-                "Callable[..., Awaitable[object]] | None",
-                getattr(tool, "coroutine", None),
-            )
-            if callable(coroutine):
-                tool.coroutine = ToolErrorGuard._wrap_async(coroutine, tool.name)
-        return tools
+    def guard_all(tools: Sequence[BaseTool]) -> list[BaseTool]:
+        return ToolBody.wrap_all(
+            tools, ToolErrorGuard._wrap, ToolErrorGuard._wrap_async
+        )
 
     @staticmethod
-    def _wrap(func: Callable[..., object], name: str) -> Callable[..., object]:
-        @wraps(func)
+    def _wrap(call: SyncCall, name: str) -> SyncCall:
+        @wraps(call)
         def wrapped(*args: object, **kwargs: object) -> object:
             try:
-                return func(*args, **kwargs)
+                return call(*args, **kwargs)
             except Exception as e:
                 return ToolErrorGuard._failure(name, e)
 
         return wrapped
 
     @staticmethod
-    def _wrap_async(
-        coroutine: Callable[..., Awaitable[object]],
-        name: str,
-    ) -> Callable[..., Awaitable[object]]:
-        @wraps(coroutine)
+    def _wrap_async(call: AsyncCall, name: str) -> AsyncCall:
+        @wraps(call)
         async def wrapped(*args: object, **kwargs: object) -> object:
             try:
-                return await coroutine(*args, **kwargs)
+                return await call(*args, **kwargs)
             except Exception as e:
                 return ToolErrorGuard._failure(name, e)
 
