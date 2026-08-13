@@ -21,7 +21,11 @@ from boba.indexing import (
     SourceId,
 )
 from boba.indexing.values import StringContentHash
-from boba.tool.kb.indexing_log import LoggingChunker, LoggingReader
+from boba.tool.kb.indexing_log import (
+    IngestProgress,
+    LoggingChunker,
+    LoggingReader,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -95,6 +99,10 @@ class _CountingChunker(Chunker[str]):
             index += 1
 
 
+def _progress() -> IngestProgress:
+    return IngestProgress(logging.getLogger("test"))
+
+
 def _raw() -> RawDocument:
     return RawDocument(
         handle=ChunkStream.of(b""),
@@ -138,7 +146,7 @@ class TestLoggingReader:
 class TestLoggingChunker:
     async def test_stays_lazy(self) -> None:
         inner = _CountingChunker()
-        chunker = LoggingChunker(inner, logging.getLogger("test"))
+        chunker = LoggingChunker(inner, logging.getLogger("test"), _progress())
         stream = chunker.chunk(_sections(10))
         await anext(stream)
         assert inner.emitted == 1
@@ -147,7 +155,9 @@ class TestLoggingChunker:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        chunker = LoggingChunker(_CountingChunker(), logging.getLogger("test"))
+        chunker = LoggingChunker(
+            _CountingChunker(), logging.getLogger("test"), _progress()
+        )
         with caplog.at_level(logging.INFO, logger="test"):
             produced = [
                 item
@@ -161,5 +171,5 @@ class TestLoggingChunker:
 
     def test_keeps_inner_chunker_id(self) -> None:
         inner = _CountingChunker()
-        chunker = LoggingChunker(inner, logging.getLogger("test"))
+        chunker = LoggingChunker(inner, logging.getLogger("test"), _progress())
         assert chunker.chunker_id() == inner.chunker_id()
