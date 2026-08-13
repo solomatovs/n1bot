@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext
+from langchain_core.outputs import LLMResult
+from langchain_core.tracers.base import AsyncBaseTracer
 
 from boba.chainlit.chat import agent_tracer as tracer_module
 from boba.chainlit.chat.agent_tracer import AgentTracer
@@ -60,10 +62,13 @@ class _Element:
 
 def _tracer() -> AgentTracer:
     tracer = AgentTracer.__new__(AgentTracer)
+    AsyncBaseTracer.__init__(tracer)
     tracer._context = cast(ChainlitContext, None)
     tracer._view = cast(ChatView, _BrokenView())
+    tracer._user_id = ""
     tracer._reasoning = {}
     tracer._tool_steps = {}
+    tracer._stream_calls = {}
     return tracer
 
 
@@ -81,10 +86,11 @@ class TestTracerFailuresVisible:
         run_id = uuid4()
         tracer._reasoning[str(run_id)] = "мысли"
 
-        class _Response:
-            generations: ClassVar[list[list[Any]]] = []
+        async def _run() -> None:
+            await tracer.on_llm_start({}, [""], run_id=run_id)
+            await tracer.on_llm_end(LLMResult(generations=[]), run_id=run_id)
 
-        asyncio.run(tracer.on_llm_end(_Response(), run_id=run_id))
+        asyncio.run(_run())
         assert shown
         assert "on_llm_end" in shown[0]
 

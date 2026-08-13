@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Iterable, Mapping
-from functools import wraps
-from typing import ClassVar, cast
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from functools import partial, wraps
+from typing import ClassVar
 
 from langchain_core.tools import BaseTool
+
+from boba.chainlit.agent.tools.wrapping import AsyncCall, SyncCall, ToolBody
 
 logger = logging.getLogger(__name__)
 
@@ -47,31 +49,18 @@ class ToolAccessGuard:
 
     @staticmethod
     def guard_all(
-        tools: list[BaseTool],
+        tools: Sequence[BaseTool],
         access: ToolAccess,
         roles_source: Callable[[], Iterable[str]],
     ) -> list[BaseTool]:
-        for tool in tools:
-            func = getattr(tool, "func", None)
-            if callable(func):
-                tool.func = ToolAccessGuard._guard(
-                    func,
-                    tool.name,
-                    access,
-                    roles_source,
-                )
-            coroutine = cast(
-                "Callable[..., Awaitable[object]] | None",
-                getattr(tool, "coroutine", None),
-            )
-            if callable(coroutine):
-                tool.coroutine = ToolAccessGuard._guard_async(
-                    coroutine,
-                    tool.name,
-                    access,
-                    roles_source,
-                )
-        return tools
+        guard = partial(
+            ToolAccessGuard._guard, access=access, roles_source=roles_source
+        )
+        guard_async = partial(
+            ToolAccessGuard._guard_async, access=access, roles_source=roles_source
+        )
+
+        return ToolBody.wrap_all(tools, guard, guard_async)
 
     @staticmethod
     def _check(
@@ -91,28 +80,28 @@ class ToolAccessGuard:
 
     @staticmethod
     def _guard(
-        func: Callable[..., object],
+        call: SyncCall,
         name: str,
         access: ToolAccess,
         roles_source: Callable[[], Iterable[str]],
-    ) -> Callable[..., object]:
-        @wraps(func)
+    ) -> SyncCall:
+        @wraps(call)
         def guarded(*args: object, **kwargs: object) -> object:
             ToolAccessGuard._check(name, access, roles_source)
-            return func(*args, **kwargs)
+            return call(*args, **kwargs)
 
         return guarded
 
     @staticmethod
     def _guard_async(
-        coroutine: Callable[..., Awaitable[object]],
+        call: AsyncCall,
         name: str,
         access: ToolAccess,
         roles_source: Callable[[], Iterable[str]],
-    ) -> Callable[..., Awaitable[object]]:
-        @wraps(coroutine)
+    ) -> AsyncCall:
+        @wraps(call)
         async def guarded(*args: object, **kwargs: object) -> object:
             ToolAccessGuard._check(name, access, roles_source)
-            return await coroutine(*args, **kwargs)
+            return await call(*args, **kwargs)
 
         return guarded

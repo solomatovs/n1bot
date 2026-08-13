@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Sequence
 from functools import wraps
 from typing import ClassVar, cast
 
 from langchain_core.tools import BaseTool
 
+from boba.chainlit.agent.tools.wrapping import AsyncCall, SyncCall, ToolBody
 from boba.sandbox.runner import ToolCallContext
 from boba.toolkit.result import ToolResult, ToolResultBase, render_for_llm
 
@@ -27,28 +28,20 @@ class ToolRunLogger:
     """Длина кортежа (content, artifact) у tool'ов с content_and_artifact."""
 
     @staticmethod
-    def guard_all(tools: list[BaseTool]) -> list[BaseTool]:
-        for tool in tools:
-            func = getattr(tool, "func", None)
-            if callable(func):
-                tool.func = ToolRunLogger._wrap(func, tool.name)
-            coroutine = cast(
-                "Callable[..., Awaitable[object]] | None",
-                getattr(tool, "coroutine", None),
-            )
-            if callable(coroutine):
-                tool.coroutine = ToolRunLogger._wrap_async(coroutine, tool.name)
-        return tools
+    def guard_all(tools: Sequence[BaseTool]) -> list[BaseTool]:
+        return ToolBody.wrap_all(
+            tools, ToolRunLogger._wrap, ToolRunLogger._wrap_async
+        )
 
     @staticmethod
-    def _wrap(func: Callable[..., object], name: str) -> Callable[..., object]:
-        @wraps(func)
+    def _wrap(call: SyncCall, name: str) -> SyncCall:
+        @wraps(call)
         def wrapped(*args: object, **kwargs: object) -> object:
             ToolRunLogger._log_start(name, args, kwargs)
             started = time.monotonic()
             token = ToolCallContext.set(name)
             try:
-                result = func(*args, **kwargs)
+                result = call(*args, **kwargs)
             except Exception as e:
                 ToolRunLogger._log_failure(name, started, e)
                 raise
@@ -60,17 +53,14 @@ class ToolRunLogger:
         return wrapped
 
     @staticmethod
-    def _wrap_async(
-        coroutine: Callable[..., Awaitable[object]],
-        name: str,
-    ) -> Callable[..., Awaitable[object]]:
-        @wraps(coroutine)
+    def _wrap_async(call: AsyncCall, name: str) -> AsyncCall:
+        @wraps(call)
         async def wrapped(*args: object, **kwargs: object) -> object:
             ToolRunLogger._log_start(name, args, kwargs)
             started = time.monotonic()
             token = ToolCallContext.set(name)
             try:
-                result = await coroutine(*args, **kwargs)
+                result = await call(*args, **kwargs)
             except Exception as e:
                 ToolRunLogger._log_failure(name, started, e)
                 raise

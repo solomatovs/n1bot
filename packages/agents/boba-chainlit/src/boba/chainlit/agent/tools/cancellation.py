@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Sequence
 from functools import wraps
-from typing import cast
 
 from langchain_core.tools import BaseTool
 
 from boba.cancellation import current_cancellation
+from boba.chainlit.agent.tools.wrapping import AsyncCall, SyncCall, ToolBody
 
 __all__ = ["CancellableTools"]
 
@@ -17,40 +17,30 @@ class CancellableTools:
     """Не даёт инструменту стартовать после остановки и вернуть результат."""
 
     @staticmethod
-    def guard_all(tools: list[BaseTool]) -> list[BaseTool]:
-        for tool in tools:
-            func = getattr(tool, "func", None)
-            if callable(func):
-                tool.func = CancellableTools._guard(func)
-            coroutine = cast(
-                "Callable[..., Awaitable[object]] | None",
-                getattr(tool, "coroutine", None),
-            )
-            if callable(coroutine):
-                tool.coroutine = CancellableTools._guard_async(coroutine)
-        return tools
+    def guard_all(tools: Sequence[BaseTool]) -> list[BaseTool]:
+        return ToolBody.wrap_all(
+            tools, CancellableTools._guard, CancellableTools._guard_async
+        )
 
     @staticmethod
-    def _guard(func: Callable[..., object]) -> Callable[..., object]:
-        @wraps(func)
+    def _guard(call: SyncCall, _name: str) -> SyncCall:
+        @wraps(call)
         def guarded(*args: object, **kwargs: object) -> object:
             cancellation = current_cancellation()
             cancellation.raise_if_cancelled()
-            result = func(*args, **kwargs)
+            result = call(*args, **kwargs)
             cancellation.raise_if_cancelled()
             return result
 
         return guarded
 
     @staticmethod
-    def _guard_async(
-        coroutine: Callable[..., Awaitable[object]],
-    ) -> Callable[..., Awaitable[object]]:
-        @wraps(coroutine)
+    def _guard_async(call: AsyncCall, _name: str) -> AsyncCall:
+        @wraps(call)
         async def guarded(*args: object, **kwargs: object) -> object:
             cancellation = current_cancellation()
             cancellation.raise_if_cancelled()
-            result = await coroutine(*args, **kwargs)
+            result = await call(*args, **kwargs)
             cancellation.raise_if_cancelled()
             return result
 
