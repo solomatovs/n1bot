@@ -26,8 +26,9 @@ pythonpath = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
 ]
-addopts = ["--strict-markers", "-m", "not integration and not ui and not load"]
+addopts = ["--strict-markers", "-m", "not integration and not ui and not load and not run"]
 markers = [
+    "run: ручной прогон инструмента с аргументами из файла теста. Запускать вручную: `pytest -m run` (или F5 на файле). По умолчанию исключаются.",
     "integration: тест ходит во внешние сервисы (Confluence/Ollama/...). Запускать вручную: `pytest -m integration`. По умолчанию исключаются.",
     "ui: тест поднимает приложение и браузер (playwright + postgres). Запускать вручную: `pytest -m ui`. По умолчанию исключаются.",
     "load: нагрузка и аварийные завершения песочницы; минуты и десятки процессов. Запускать вручную: `pytest -m load`. По умолчанию исключаются.",
@@ -106,7 +107,7 @@ known-first-party = ["boba"]
 "shutil.which".msg = "PATH is attacker-controlled: use boba.toolkit.binaries.TrustedBinaries"
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251"]
+"**/tests/**" = ["S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251", "T201"]
 "build/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
 
 [tool.uv.workspace]
@@ -152,6 +153,7 @@ dev = [
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "clickhouse-connect[async]>=1.6,<2",
+    "fastembed>=0.4,<1",
 ]
 
 [tool.uv]

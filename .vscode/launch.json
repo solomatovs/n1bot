@@ -22,6 +22,32 @@
             "stopOnEntry": false
         },
         {
+            "name": "tool: текущий файл",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/compose",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_APP": "${workspaceFolder}/packages",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
+                "BOBA_PORT": "8601",
+                "BOBA_URL_PREFIX": "/boba-debug",
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
+            },
+            "justMyCode": false,
+            "args": [
+                "${file}",
+                "-m",
+                "run",
+                "-s",
+                "-v"
+            ]
+        },
+        {
             "name": "pytest: текущий файл",
             "type": "debugpy",
             "request": "launch",
