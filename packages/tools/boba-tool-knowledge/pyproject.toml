@@ -4,19 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-knowledge"
-version = "0.0.11.dev6"
+version = "0.0.11.dev7"
 description = "Документы и база знаний: чтение файлов, Confluence, индексация и поиск — всё в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.11.dev6",
-    "boba-tool-doc==0.0.11.dev6",
-    "boba-web==0.0.11.dev6",
-    "boba-db-postgres==0.0.11.dev6",
-    "boba-db-pgvector==0.0.11.dev6",
-    "boba-indexing==0.0.11.dev6",
-    "boba-kbdoc==0.0.11.dev6",
-    "boba-text==0.0.11.dev6",
-    "boba-transport-http==0.0.11.dev6",
+    "boba-toolkit==0.0.11.dev7",
+    "boba-tool-doc==0.0.11.dev7",
+    "boba-web==0.0.11.dev7",
+    "boba-db-postgres==0.0.11.dev7",
+    "boba-db-pgvector==0.0.11.dev7",
+    "boba-indexing==0.0.11.dev7",
+    "boba-kbdoc==0.0.11.dev7",
+    "boba-text==0.0.11.dev7",
+    "boba-transport-http==0.0.11.dev7",
     "langchain",
     "langchain-core",
     "httpx[http2]>=0.28,<1",
@@ -29,7 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 payload = [
     "lxml>=5.0",
-    "boba-liteparse==0.0.11.dev6",
+    "boba-liteparse==0.0.11.dev7",
     "fastembed>=0.4,<1",
     "liteparse>=2,<3",
     "beautifulsoup4>=4.12",
