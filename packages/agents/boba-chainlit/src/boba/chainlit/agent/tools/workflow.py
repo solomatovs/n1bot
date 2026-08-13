@@ -23,8 +23,8 @@ __all__ = ["build_workflow_tool"]
 def build_workflow_tool(launcher: ToolLauncher, stages: Sequence[str]) -> BaseTool:
     """Фасад графа стадий: спека nodes/edges от LLM, исполнение — порт запуска.
 
-    stages — имена узлов реестра: без них модель называет узлом имя фасада
-    (`pg_export` вместо `pg_copy`) и получает отказ на валидации.
+    stages — имена узлов реестра: без них модель называет узлом имя, которого
+    в реестре нет, и получает отказ на валидации.
     """
     known = ", ".join(sorted(stages))
 

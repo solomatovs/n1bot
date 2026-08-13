@@ -2,11 +2,12 @@
 не идёт в процессе приложения, ценой перезагрузки модели на каждый вызов.
 
 Ошибки:
-PostgresError — до базы знаний не достучаться; kb_query_failed — СУБД отклонила
-    поисковый запрос.
-ChannelError — в tool_args приехал запрос чужой модели. Отсутствие весов
-    эмбеддера ожидаемым не считается: это дефект сборки rootfs, и трейсбек там
-    по делу.
+PostgresError — до базы знаний не достучаться.
+kb_query_failed — СУБД отклонила поисковый запрос.
+ChannelError — в tool_args приехал запрос чужой модели.
+
+Отсутствие весов эмбеддера ожидаемым не считается: это дефект сборки rootfs,
+и трейсбек там по делу.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel
 
 from boba.db.postgres import PayloadPostgres, PostgresError
-from boba.tool.kb.protocol import KbNode, KbSearchRequest
+from boba.tool.kb.protocol import KbNode, KbSearchMethod, KbSearchRequest
 from boba.toolkit.channels import ChannelError, StreamCodec
 from boba.toolkit.payload import PayloadChannels, PayloadEntry, PayloadError
 from boba.toolkit.sql import SqlRows
@@ -99,8 +100,7 @@ limit
     }
 
     REQUESTS: ClassVar[Mapping[str, type[BaseModel]]] = {
-        KbNode.VECTOR: KbSearchRequest,
-        KbNode.FTS: KbSearchRequest,
+        KbNode.SEARCH: KbSearchRequest,
     }
 
     @classmethod
@@ -121,7 +121,7 @@ limit
 
     @classmethod
     def query_of(cls, request: KbSearchRequest) -> KbQuery:
-        if request.op is KbNode.VECTOR:
+        if request.method is KbSearchMethod.VECTOR:
             return cls.vector_query(request)
 
         return cls.fts_query(request)

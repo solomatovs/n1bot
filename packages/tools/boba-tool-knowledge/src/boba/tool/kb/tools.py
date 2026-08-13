@@ -1,4 +1,4 @@
-"""Инструменты поиска по KB; канал (vector/fts) и коллекция зашиты в сам инструмент."""
+"""Инструмент поиска по KB; коллекция зашита, канал (vector/fts) — аргумент."""
 
 from typing import Annotated
 
@@ -8,11 +8,11 @@ from pydantic import Field
 
 from boba.tool.kb.caller import KbCaller
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
+from boba.tool.kb.protocol import KbSearchMethod
 from boba.tool.kb.search import (
     CollectionSearch,
     ConfluenceCollection,
     KbSearch,
-    SearchMethod,
 )
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import ToolResult, pack_result
@@ -32,44 +32,25 @@ class KbTools:
         self._caller = KbCaller("kb", launchers)
 
     def build(self) -> list[BaseTool]:
-        return [
-            self._search(
-                "kb_vector_search",
-                ConfluenceCollection,
-                "vector",
-                "Семантический (vector) поиск по коллекции Confluence-страниц.",
-            ),
-            self._search(
-                "kb_fts_search",
-                ConfluenceCollection,
-                "fts",
-                "Полнотекстовый (fts) поиск по коллекции Confluence-страниц.",
-            ),
-        ]
+        return [self._search(ConfluenceCollection)]
 
-    def _search(
-        self,
-        name: str,
-        collection: type[CollectionSearch],
-        method: SearchMethod,
-        summary: str,
-    ) -> BaseTool:
+    def _search(self, collection: type[CollectionSearch]) -> BaseTool:
         cfg = self._cfg
         caller = self._caller
-        query_desc = (
-            KbSearch.QUERY_DESC_VECTOR
-            if method == "vector"
-            else KbSearch.QUERY_DESC_FTS
-        )
 
-        description = (
-            f"{summary}\n\nВозвращает таблицу hits с колонками id/distance/"
-            "link/snippet и метаданными, по релевантности."
+        @tool(
+            description=KbSearch.TOOL_DESC,
+            response_format="content_and_artifact",
         )
-
-        @tool(name, description=description, response_format="content_and_artifact")
-        def search(
-            query: Annotated[str, Field(min_length=1, description=query_desc)],
+        def kb_search(
+            query: Annotated[
+                str,
+                Field(min_length=1, description=KbSearch.QUERY_DESC),
+            ],
+            method: Annotated[
+                KbSearchMethod,
+                Field(description=KbSearch.METHOD_DESC),
+            ] = KbSearchMethod.VECTOR,
             top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
             snippet_chars: Annotated[
                 int,
@@ -82,7 +63,7 @@ class KbTools:
                 )
             )
 
-        return search
+        return kb_search
 
 
 def build_kb_tools(

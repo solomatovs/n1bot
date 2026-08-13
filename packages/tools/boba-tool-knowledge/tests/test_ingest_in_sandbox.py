@@ -14,7 +14,7 @@ from conftest import StageTestRegistry, needs_sandbox, needs_userns, sandbox_pro
 
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.confluence.ingest_caller import ConfluenceIngestCaller
-from boba.tool.kb.confluence.ingest_protocol import IngestMode
+from boba.tool.kb.confluence.ingest_protocol import IngestMode, IngestSource
 from boba.tool.kb.confluence.ingest_stages import ConfluenceIngestStages
 from boba.toolkit.launcher import PayloadFailureError
 
@@ -53,9 +53,10 @@ def _caller() -> ConfluenceIngestCaller:
 
 
 def _ingest() -> dict[str, Any]:
+    source = IngestSource(mode=IngestMode.PAGES, page_ids=["1"])
+
     return _caller().ingest(
-        mode=IngestMode.PAGES,
-        page_ids=["1"],
+        source=source,
         prune_missing=False,
         force_update=False,
         ocr_enabled=False,

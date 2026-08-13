@@ -61,8 +61,9 @@ class TestIngestOcrParams:
         return request
 
     def test_llm_params_override_config(self, launcher: RecordingLauncher) -> None:
-        _tools(launcher)["confluence_index_pages"].invoke(
+        _tools(launcher)["confluence_ingest"].invoke(
             {
+                "mode": "pages",
                 "page_ids": ["1"],
                 "ocr_enabled": True,
                 "num_workers": 3,
@@ -76,7 +77,9 @@ class TestIngestOcrParams:
         assert cfg.ocr_language == "rus"
 
     def test_facade_defaults_apply(self, launcher: RecordingLauncher) -> None:
-        _tools(launcher)["confluence_index_cql"].invoke({"cql": "space = DQ"})
+        _tools(launcher)["confluence_ingest"].invoke(
+            {"mode": "cql", "cql": "space = DQ"}
+        )
 
         cfg = self._ingest_request(launcher).config
         assert cfg.ocr_enabled is False
@@ -88,7 +91,9 @@ class TestIngestOcrParams:
         launcher: RecordingLauncher,
     ) -> None:
         """Ручки парсера живут в конфиге прогона, отдельными полями их нет."""
-        _tools(launcher)["confluence_index_spaces"].invoke({"space_keys": ["DQ"]})
+        _tools(launcher)["confluence_ingest"].invoke(
+            {"mode": "spaces", "space_keys": ["DQ"]}
+        )
 
         request = self._ingest_request(launcher)
         assert "ocr_enabled" not in request.model_dump()
@@ -114,9 +119,7 @@ class TestIngestOcrParams:
     @pytest.mark.parametrize(
         "name",
         [
-            "confluence_index_pages",
-            "confluence_index_cql",
-            "confluence_index_spaces",
+            "confluence_ingest",
             "confluence_attachment",
         ],
     )

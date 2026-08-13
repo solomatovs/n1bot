@@ -6,8 +6,8 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.tool.web._fetch import web_fetch
-from boba.tool.web._grep import WebGrepConfig, web_grep
+from boba.tool.web import _fetch, _grep
+from boba.tool.web._grep import WebGrepConfig
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import ErrorResult, JsonResult, ToolResult, pack_result
 from boba.web.caller import WebCaller
@@ -37,7 +37,7 @@ class WebTools:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def web_fetch_page(
+        def web_fetch(
             url: Annotated[str, Field(min_length=1, description="URL для скачивания")],
             as_markdown: Annotated[
                 bool,
@@ -54,7 +54,7 @@ class WebTools:
         ) -> tuple[str, ToolResult]:
             """Скачивает URL и возвращает окно строк; total_lines — для пагинации."""
             try:
-                answer = web_fetch(
+                answer = _fetch.web_fetch(
                     owner._cfg,
                     owner._web,
                     url=url,
@@ -66,13 +66,13 @@ class WebTools:
                 return pack_result(owner._failed(e))
             return pack_result(JsonResult(payload=answer.model_dump(mode="json")))
 
-        return web_fetch_page
+        return web_fetch
 
     def _grep(self) -> BaseTool:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def web_grep_page(  # noqa: PLR0913
+        def web_grep(  # noqa: PLR0913
             url: Annotated[str, Field(min_length=1, description="URL для скачивания.")],
             pattern: Annotated[
                 str,
@@ -104,7 +104,7 @@ class WebTools:
         ) -> tuple[str, ToolResult]:
             """Скачивает страницу и ищет в её содержимом совпадения pattern."""
             try:
-                result = web_grep(
+                result = _grep.web_grep(
                     owner._cfg,
                     owner._web,
                     url=url,
@@ -119,7 +119,7 @@ class WebTools:
                 return pack_result(owner._failed(e))
             return pack_result(result)
 
-        return web_grep_page
+        return web_grep
 
 
 def build_web_tools(

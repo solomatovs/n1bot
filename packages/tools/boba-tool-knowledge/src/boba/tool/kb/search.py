@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 
 from boba.indexing import MetadataKey, ReaderKeys, SectionKeys
 from boba.kbdoc import KbDocKeys
@@ -15,6 +14,7 @@ from boba.tool.kb.kb import (
     PostgresKnowledgeBaseConfig,
 )
 from boba.tool.kb.models import KnowledgeBaseError, SearchHit
+from boba.tool.kb.protocol import KbSearchMethod
 from boba.toolkit.result import (
     ErrorResult,
     TableResult,
@@ -28,8 +28,6 @@ __all__ = [
     "KbSearch",
     "MetaField",
 ]
-
-SearchMethod = Literal["vector", "fts"]
 
 
 @dataclass(frozen=True)
@@ -100,20 +98,26 @@ class KbDocCollection(CollectionSearch):
 class KbSearch:
     """Единый прогон KB-поиска: method выбирает канал, collection — scope."""
 
-    QUERY_DESC_VECTOR: ClassVar[str] = (
-        "Поисковый запрос на естественном языке — семантический поиск "
-        "(cosine-эмбеддинги: ловит синонимы и перефразировки, хорош для "
-        "длинных/размытых формулировок)."
+    TOOL_DESC: ClassVar[str] = (
+        "Search the Confluence collection of the knowledge base; the method "
+        "argument picks the search channel.\n\nReturns a hits table with "
+        "id/distance/link/snippet columns and metadata, ordered by relevance."
     )
-    QUERY_DESC_FTS: ClassVar[str] = (
-        "Поисковый запрос в websearch-синтаксисе — лексический поиск "
-        "(`ts_rank_cd`, точные слова/имена/идентификаторы): пробел = AND, "
-        '`OR` = альтернативы, `"фраза"` = фраза целиком, `-слово` = исключить.'
+    METHOD_DESC: ClassVar[str] = (
+        "Search channel. vector — semantic search over cosine embeddings: it "
+        "catches synonyms and paraphrases, use it for long or vague wording "
+        "(default). fts — lexical search over the text index (`ts_rank_cd`): "
+        "it matches exact words, names and identifiers."
     )
-    TOPK_DESC: ClassVar[str] = "Сколько hits вернуть. По умолчанию 5."
+    QUERY_DESC: ClassVar[str] = (
+        "Search query. With method=vector write it as plain natural language. "
+        "With method=fts write it in websearch syntax: space = AND, `OR` = "
+        'alternatives, `"phrase"` = the whole phrase, `-word` = exclude.'
+    )
+    TOPK_DESC: ClassVar[str] = "How many hits to return. Defaults to 5."
     SNIPPET_DEFAULT: ClassVar[int] = 3000
     SNIPPET_DESC: ClassVar[str] = (
-        "Максимальная длина сниппета документа в hits (символов). По умолчанию 3000."
+        "Maximum snippet length of a hit, in characters. Defaults to 3000."
     )
 
     @staticmethod
@@ -122,14 +126,21 @@ class KbSearch:
         caller: KbCaller,
         collection: type[CollectionSearch],
         query: str,
-        method: SearchMethod,
+        method: KbSearchMethod,
         top_k: int,
         snippet_chars: int,
     ) -> ToolResult:
         kb = PostgresKnowledgeBase(cfg=cfg, caller=caller)
 
         try:
-            hits = KbSearch._hits(kb, collection, query, method, top_k, snippet_chars)
+            hits = kb.search(
+                method=method,
+                collections=[collection.COLLECTION],
+                query=query,
+                top_k=top_k,
+                snippet_chars=snippet_chars,
+            )
+
             rows: list[dict[str, Any]] = []
             for hit in hits:
                 rows.append(collection.row(hit))
@@ -141,27 +152,3 @@ class KbSearch:
             note = "nothing found"
 
         return TableResult(rows=rows, note=note)
-
-    @staticmethod
-    def _hits(  # noqa: PLR0913
-        kb: PostgresKnowledgeBase,
-        collection: type[CollectionSearch],
-        query: str,
-        method: SearchMethod,
-        top_k: int,
-        snippet_chars: int,
-    ) -> Iterable[SearchHit]:
-        if method == "vector":
-            return kb.vector_search(
-                collections=[collection.COLLECTION],
-                query=query,
-                top_k=top_k,
-                snippet_chars=snippet_chars,
-            )
-
-        return kb.fts_search(
-            collections=[collection.COLLECTION],
-            query=query,
-            top_k=top_k,
-            snippet_chars=snippet_chars,
-        )

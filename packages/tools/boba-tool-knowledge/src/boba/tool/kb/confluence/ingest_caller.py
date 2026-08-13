@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
 from pydantic import JsonValue
 
-from boba.tool.kb.confluence.ingest_protocol import IngestAnswer, IngestMode
+from boba.tool.kb.confluence.ingest_protocol import IngestAnswer, IngestSource
 from boba.tool.kb.confluence.protocol import ConfluenceNode
 from boba.toolkit.launcher import LauncherFactory, StageRun
 
@@ -20,25 +19,19 @@ class ConfluenceIngestCaller:
     def __init__(self, tool: str, launchers: LauncherFactory) -> None:
         self._run = StageRun(launchers(tool))
 
-    def ingest(  # noqa: PLR0913 — режимы обхода и настройки парсера независимы
+    def ingest(  # noqa: PLR0913 — настройки прогона и парсера независимы
         self,
         *,
-        mode: IngestMode,
+        source: IngestSource,
         prune_missing: bool,
         force_update: bool,
         ocr_enabled: bool,
         num_workers: int,
         ocr_language: str,
-        page_ids: Sequence[str] = (),
-        cql: str = "",
-        space_keys: Sequence[str] = (),
     ) -> dict[str, Any]:
         """Итог прогона живёт в квитанции: потока данных у узла нет."""
         args: dict[str, JsonValue] = {
-            "mode": mode.value,
-            "page_ids": list(page_ids),
-            "cql": cql,
-            "space_keys": list(space_keys),
+            "source": source.model_dump(mode="json"),
             "prune_missing": prune_missing,
             "force_update": force_update,
             "ocr_enabled": ocr_enabled,

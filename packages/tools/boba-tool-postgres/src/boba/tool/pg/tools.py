@@ -43,7 +43,7 @@ class PgTools:
             self._list_tables(),
             self._describe_table(),
             self._query(),
-            self._export(),
+            self._copy(),
         ]
 
     @property
@@ -207,11 +207,11 @@ class PgTools:
 
         return pg_query
 
-    def _export(self) -> BaseTool:
+    def _copy(self) -> BaseTool:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        async def pg_export(
+        async def pg_copy(
             connection_name: Annotated[
                 str,
                 Field(min_length=1, description="Имя подключения"),
@@ -252,7 +252,7 @@ class PgTools:
 
             return pack_result(PgCopyTextResult(text=text))
 
-        return pg_export
+        return pg_copy
 
 
 def build_pg_tools(

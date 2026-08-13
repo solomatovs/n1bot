@@ -159,8 +159,8 @@ class StageRegistry:
     def def_of(self, tool: str) -> StageDef:
         """Описание узла; неизвестное имя — WorkflowError со списком узловых.
 
-        Вызывающий знает имена фасадов (`pg_export`), а графу нужны имена
-        узлов (`pg_copy`), поэтому отказ перечисляет доступное.
+        Граф исполняет только узлы реестра, поэтому отказ перечисляет
+        доступные имена.
         """
         definition = self._defs.get(tool)
         if definition is None:
