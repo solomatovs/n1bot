@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 import pytest
 from conftest import RecordingLauncher
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from boba.sandbox import SandboxToolConfig
 from boba.tool.kb import (
@@ -26,8 +26,9 @@ from boba.tool.kb.confluence.protocol import (
     ConfluenceSpacesRequest,
 )
 from boba.tool.kb.confluence.stages import ConfluenceStages
-from boba.tool.kb.protocol import KbNode, KbSearchRequest
-from boba.tool.kb.stages import KbStages
+from boba.tool.kb.payload import KbOps
+from boba.tool.kb.protocol import KbNode, KbSearchMethod, KbSearchRequest
+from boba.tool.kb.stages import KbSearchEnricher, KbStages
 from boba.tool.pg import (
     PgExecutorConfig,
     build_pg_tools,
@@ -128,7 +129,7 @@ class TestPgTools:
         "pg_list_tables",
         "pg_describe_table",
         "pg_query",
-        "pg_export",
+        "pg_copy",
     ]
 
     def test_all_five_are_built(self) -> None:
@@ -144,13 +145,13 @@ class TestPgTools:
 
     async def test_unknown_target_becomes_error_result(self) -> None:
         """Профиль не в whitelist — ошибка инструмента, а не падение хода."""
-        for name in ("pg_list_tables", "pg_describe_table", "pg_query", "pg_export"):
+        for name in ("pg_list_tables", "pg_describe_table", "pg_query", "pg_copy"):
             built = build_pg_tools(pg_config(), _no_launcher)
             tool = next(t for t in built if t.name == name)
             args: dict[str, Any] = {"connection_name": "нет-такого"}
             if name == "pg_describe_table":
                 args["table"] = "t"
-            if name in ("pg_query", "pg_export"):
+            if name in ("pg_query", "pg_copy"):
                 args["sql"] = "select 1"
             result = await ainvoke(tool, args)
             assert isinstance(result, ErrorResult), name
@@ -174,10 +175,7 @@ class TestKbTools:
     @staticmethod
     def _launcher(cfg: PostgresKnowledgeBaseConfig) -> RecordingLauncher:
         nodes = KbStages.of(cfg)
-        trailers = {
-            KbNode.VECTOR.value: EmptyTrailer(),
-            KbNode.FTS.value: EmptyTrailer(),
-        }
+        trailers = {KbNode.SEARCH.value: EmptyTrailer()}
         return RecordingLauncher(nodes, trailers)
 
     def test_search_args_become_a_full_request(self) -> None:
@@ -190,7 +188,8 @@ class TestKbTools:
 
         request = launcher.requests[0]
         assert isinstance(request, KbSearchRequest)
-        assert request.op is KbNode.VECTOR
+        assert request.op is KbNode.SEARCH
+        assert request.method is KbSearchMethod.VECTOR
         assert request.query == "как считается витрина"
         assert request.top_k == 3
         assert list(request.collections) == ["kb_confluence"]
@@ -211,16 +210,73 @@ class TestKbTools:
         assert "s3cret" not in str(request.model_dump())
         assert "s3cret" in request.model_dump_json()
 
-    def test_all_four_are_built(self) -> None:
+    def test_fts_method_reaches_the_request(self) -> None:
+        """Режим — аргумент фасада: узел один, ветку выбирает поле method."""
+        cfg = kb_config()
+        launcher = self._launcher(cfg)
+        tool = build_kb_tools(cfg, lambda _tool: launcher)[0]
+
+        invoke(tool, {"query": "витрина", "method": "fts"})
+
+        request = launcher.requests[0]
+        assert isinstance(request, KbSearchRequest)
+        assert request.op is KbNode.SEARCH
+        assert request.method is KbSearchMethod.FTS
+
+    def test_unknown_method_is_rejected(self) -> None:
+        """Режим закрыт enum'ом: чужое значение до узла не доходит."""
+        cfg = kb_config()
+        launcher = self._launcher(cfg)
+        tool = build_kb_tools(cfg, lambda _tool: launcher)[0]
+
+        with pytest.raises(ValidationError):
+            invoke(tool, {"query": "витрина", "method": "hybrid"})
+
+    def test_the_only_tool_is_named_after_the_node(self) -> None:
         names = [t.name for t in build_kb_tools(kb_config(), _no_launcher)]
-        assert names == [
-            "kb_vector_search",
-            "kb_fts_search",
-        ]
+        assert names == [KbNode.SEARCH.value]
+
+    def test_the_node_registry_holds_one_search(self) -> None:
+        assert list(KbStages.of(kb_config())) == [KbNode.SEARCH.value]
 
     def test_search_arguments(self) -> None:
         tool = build_kb_tools(kb_config(), _no_launcher)[0]
-        assert set(tool.args) == {"query", "top_k", "snippet_chars"}
+        assert set(tool.args) == {"query", "method", "top_k", "snippet_chars"}
+
+
+class TestKbPayloadQuery:
+    """Внутри песочницы ветка SQL выбирается по method разобранного запроса."""
+
+    @staticmethod
+    def _request(method: KbSearchMethod) -> KbSearchRequest:
+        cfg = kb_config()
+        enrich = KbSearchEnricher(cfg)
+        args: dict[str, Any] = {
+            "method": method.value,
+            "collections": ["kb_confluence"],
+            "query": "витрина продаж",
+            "top_k": 3,
+            "snippet_chars": 100,
+        }
+
+        return KbSearchRequest.model_validate(dict(enrich(args)))
+
+    def test_fts_request_builds_the_text_query(self) -> None:
+        query = KbOps.query_of(self._request(KbSearchMethod.FTS))
+
+        statement = query.statement.as_string()
+        assert "ts_rank_cd" in statement
+        assert '"kb"."kb_chunks"' in statement
+        assert query.params["query"] == "витрина продаж"
+        assert query.params["top_k"] == 3
+
+    def test_vector_request_needs_the_embedder(self) -> None:
+        """Векторная ветка идёт через fastembed — он живёт только в rootfs."""
+        pytest.importorskip("fastembed")
+
+        query = KbOps.query_of(self._request(KbSearchMethod.VECTOR))
+
+        assert "<=>" in query.statement.as_string()
 
 
 def _bin_dirs() -> list[str]:
@@ -304,7 +360,7 @@ class TestConfluenceRequests:
         return launcher
 
     def test_page_request_carries_connection(self) -> None:
-        launcher = self._invoke("confluence_fetch", {"page_id": "42"})
+        launcher = self._invoke("confluence_page", {"page_id": "42"})
 
         request = launcher.requests[0]
         assert isinstance(request, ConfluencePageRequest)
@@ -314,7 +370,7 @@ class TestConfluenceRequests:
         assert request.as_markdown is True
 
     def test_page_token_is_revealed_only_in_json(self) -> None:
-        launcher = self._invoke("confluence_fetch", {"page_id": "42"})
+        launcher = self._invoke("confluence_page", {"page_id": "42"})
 
         request = launcher.requests[0]
         assert "t0ken" not in str(request.model_dump())
@@ -346,7 +402,7 @@ class TestConfluenceTools:
         )
         names = [t.name for t in build_confluence_tools(cfg, _no_launcher)]
         assert names == [
-            "confluence_fetch",
+            "confluence_page",
             "confluence_grep",
             "confluence_search",
             "confluence_spaces",
@@ -359,7 +415,7 @@ class TestConfluenceTools:
         tool = next(
             t
             for t in build_confluence_tools(cfg, _no_launcher)
-            if t.name == "confluence_fetch"
+            if t.name == "confluence_page"
         )
         result = invoke(tool, {"page_id": "1"})
         assert isinstance(result, ErrorResult)

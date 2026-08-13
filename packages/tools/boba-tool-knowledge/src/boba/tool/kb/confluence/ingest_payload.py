@@ -5,11 +5,13 @@
 liteparse и bs4 здесь и так под рукой. Модель эмбеддера грузится один раз на
 весь прогон, потому что весь ingest — один запуск payload'а.
 
+Сбой разбора отдельного документа прогон переживает сам, наружу он не выходит.
+
 Ошибки:
-PostgresError и PoolTimeout — до хранилища не достучаться;
-    ingest_request_failed — Confluence недоступен или ответил статусом.
-ChannelError — в tool_args приехал запрос чужой модели. Сбой разбора отдельного
-    документа ingest переживает сам, наружу он не выходит.
+PostgresError — до хранилища не достучаться.
+PoolTimeout — пул соединений не выдал соединение в срок.
+httpx.HTTPError — Confluence недоступен или ответил статусом.
+ChannelError — в tool_args приехал запрос чужой модели.
 """
 
 from __future__ import annotations
@@ -156,21 +158,23 @@ class IngestOps:
         request: ConfluenceIngestRequest,
         conn: ConfluenceConnection,
     ) -> RequestSource[ConfluenceRequest]:
-        if request.mode is IngestMode.PAGES:
+        source = request.source
+
+        if source.mode is IngestMode.PAGES:
             return ConfluencePagesRequestSource(
                 base_url=conn.base_url,
-                page_ids=list(request.page_ids),
+                page_ids=list(source.page_ids),
                 body_format=conn.body_format,
             )
 
-        if request.mode is IngestMode.CQL:
+        if source.mode is IngestMode.CQL:
             return ConfluenceCqlRequestSource(
-                conn=conn, cql=request.cql, body_format=conn.body_format
+                conn=conn, cql=source.cql, body_format=conn.body_format
             )
 
         return ConfluenceMultiSpaceRequestSource(
             conn=conn,
-            space_keys=list(request.space_keys),
+            space_keys=list(source.space_keys),
             body_format=conn.body_format,
         )
 

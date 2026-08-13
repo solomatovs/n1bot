@@ -243,10 +243,10 @@ class TestPgFacades:
         assert isinstance(result, TableResult)
         assert list(result.rows) == [{"a": 1}, {"a": 2}]
 
-    def test_export_asks_for_the_requested_format(self) -> None:
+    def test_copy_asks_for_the_requested_format(self) -> None:
         launcher = _StageLauncher(b"id,name\n1,Ivan\n", _copy_trailer(1))
         built = build_pg_tools(pg_config(), lambda tool: launcher)
-        tool = next(t for t in built if t.name == "pg_export")
+        tool = next(t for t in built if t.name == "pg_copy")
 
         result = invoke(
             tool,
@@ -260,11 +260,11 @@ class TestPgFacades:
         assert spec is not None
         assert "FORMAT CSV" in str(spec.nodes[0].args["sql"])
 
-    def test_export_over_max_bytes_becomes_error_result(self) -> None:
+    def test_copy_over_max_bytes_becomes_error_result(self) -> None:
         oversized = b"x" * 2000
         launcher = _StageLauncher(oversized, _copy_trailer(1))
         built = build_pg_tools(pg_config(), lambda tool: launcher)
-        tool = next(t for t in built if t.name == "pg_export")
+        tool = next(t for t in built if t.name == "pg_copy")
 
         result = invoke(tool, {"connection_name": "main", "sql": "select 1"})
 

@@ -1,4 +1,4 @@
-"""Общая база Confluence-ingest: конфиг и сборка pipeline'а для confluence_ingest_*."""
+"""Общая база Confluence-ingest: конфиг и сборка pipeline'а узла confluence_ingest."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
 class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, SandboxParserConfig):
-    """Self-contained конфиг семейства tool'ов confluence_ingest_*."""
+    """Self-contained конфиг прогона confluence_ingest."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -134,7 +134,7 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, SandboxParserCo
 
 
 class ConfluenceIngest:
-    """Сборка Confluence-ingest pipeline — общий хвост для confluence_ingest_*."""
+    """Сборка Confluence-ingest pipeline — общий хвост режимов обхода."""
 
     HTML_CONTENT_TYPES: ClassVar[tuple[str, ...]] = ("text/html",)
     """CONTENT_TYPE-значения от ConfluenceJsonDecoder, уходящие в HTML-Reader."""

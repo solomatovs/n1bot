@@ -1,30 +1,26 @@
 """Индексация Confluence в базу знаний и чтение вложений.
 
 Пишет чанки в kb_chunks: страницы по списку id, по CQL-запросу или по
-спейсам целиком. Логика в приватных модулях, здесь обёртки langchain.
+спейсам целиком — режим выбирает вызывающий. Логика прогона в узле стадии,
+здесь обёртки langchain.
 """
 
 from typing import Annotated, ClassVar
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from boba.tool.kb.confluence._fetch_attachment import (
     confluence_fetch_attachment,
-)
-from boba.tool.kb.confluence._ingest_cql import confluence_ingest_cql
-from boba.tool.kb.confluence._ingest_pages import (
-    confluence_ingest_pages,
-)
-from boba.tool.kb.confluence._ingest_spaces import (
-    confluence_ingest_spaces,
 )
 from boba.tool.kb.confluence.caller import ConfluenceCaller
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.confluence.ingest_caller import (
     ConfluenceIngestCaller,
 )
+from boba.tool.kb.confluence.ingest_protocol import IngestMode, IngestSource
+from boba.toolkit.channels import ValidationSummary
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import (
     ErrorResult,
@@ -61,14 +57,12 @@ class ConfluenceIngestTools:
         launchers: LauncherFactory,
     ) -> None:
         """Настройки секции живут в узлах реестра стадий, фасадам они не нужны."""
-        self._ingest = ConfluenceIngestCaller("ingest", launchers)
+        self._ingest_caller = ConfluenceIngestCaller("ingest", launchers)
         self._caller = ConfluenceCaller("ingest", launchers)
 
     def build(self) -> list[BaseTool]:
         return [
-            self._ingest_pages(),
-            self._ingest_cql(),
-            self._ingest_spaces(),
+            self._ingest(),
             self._fetch_attachment(),
         ]
 
@@ -76,22 +70,59 @@ class ConfluenceIngestTools:
     def _failed(error: Exception) -> ErrorResult:
         return ErrorResult(message=str(error), error_kind="confluence_ingest_failed")
 
-    def _ingest_pages(self) -> BaseTool:
+    @staticmethod
+    def _invalid_source(error: ValidationError) -> ErrorResult:
+        """Сводка вместо трейсбека: LLM правит вызов по тексту отказа."""
+        return ErrorResult(
+            message=ValidationSummary.of(error),
+            error_kind="confluence_ingest_invalid_source",
+        )
+
+    def _ingest(self) -> BaseTool:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, параметры независимы
-            page_ids: Annotated[
-                LLMStringList,
+        def confluence_ingest(  # noqa: PLR0913 — фасад LLM, параметры независимы
+            mode: Annotated[
+                IngestMode,
                 Field(
-                    min_length=1,
                     description=(
-                        "Список page_id страниц Confluence для индексации, "
-                        'например ["950276", "950278"]. Каждый id — строка '
-                        "из URL `viewpage.action?pageId=<id>`."
+                        "Which field lists the pages of this run: "
+                        "'pages' takes page_ids, 'cql' takes cql, "
+                        "'spaces' takes space_keys. Fields of the other "
+                        "modes must stay empty."
                     ),
                 ),
             ],
+            page_ids: Annotated[  # noqa: B006 — схема фасада ждёт список по умолчанию
+                LLMStringList,
+                Field(
+                    description=(
+                        "Список page_id страниц Confluence для индексации, "
+                        'например ["950276", "950278"]. Каждый id — строка '
+                        "из URL `viewpage.action?pageId=<id>`. Только при "
+                        "mode=pages."
+                    ),
+                ),
+            ] = [],
+            cql: Annotated[
+                str,
+                Field(
+                    description=(
+                        "CQL-запрос Confluence, например `space = DQ AND "
+                        "type = page`. Только при mode=cql."
+                    ),
+                ),
+            ] = "",
+            space_keys: Annotated[  # noqa: B006 — схема фасада ждёт список по умолчанию
+                LLMStringList,
+                Field(
+                    description=(
+                        'Ключи спейсов целиком, например ["DQ", "IPKD"]. '
+                        "Только при mode=spaces."
+                    ),
+                ),
+            ] = [],
             prune_missing: Annotated[
                 bool,
                 Field(
@@ -120,102 +151,20 @@ class ConfluenceIngestTools:
                 str, Field(min_length=1, description=owner.LANGUAGE_DESCRIPTION)
             ] = "rus+eng",
         ) -> tuple[str, ToolResult]:
-            """Индексирует явный список страниц Confluence по page_id."""
+            """Индексирует страницы Confluence в базу знаний."""
             try:
-                result = confluence_ingest_pages(
-                    owner._ingest,
-                    page_ids=page_ids,
-                    prune_missing=prune_missing,
-                    force_update=force_update,
-                    ocr_enabled=ocr_enabled,
-                    num_workers=num_workers,
-                    ocr_language=ocr_language,
-                )
-            except Exception as e:
-                return pack_result(owner._failed(e))
-            return pack_result(result)
-
-        return confluence_index_pages
-
-    def _ingest_cql(self) -> BaseTool:
-        owner = self
-
-        @tool(response_format="content_and_artifact")
-        def confluence_index_cql(
-            cql: Annotated[
-                str,
-                Field(
-                    min_length=1,
-                    description=(
-                        "CQL-запрос Confluence, например `space = DQ AND type = page`."
-                    ),
-                ),
-            ],
-            prune_missing: Annotated[
-                bool,
-                Field(description="Удалить чанки, не попавшие в выборку."),
-            ] = False,
-            ocr_enabled: Annotated[
-                bool, Field(description=owner.OCR_DESCRIPTION)
-            ] = False,
-            num_workers: Annotated[
-                int, Field(ge=1, le=4, description=owner.WORKERS_DESCRIPTION)
-            ] = 1,
-            ocr_language: Annotated[
-                str, Field(min_length=1, description=owner.LANGUAGE_DESCRIPTION)
-            ] = "rus+eng",
-        ) -> tuple[str, ToolResult]:
-            """Индексирует страницы Confluence, найденные CQL-запросом."""
-            try:
-                summary = confluence_ingest_cql(
-                    owner._ingest,
+                source = IngestSource(
+                    mode=mode,
+                    page_ids=list(page_ids),
                     cql=cql,
-                    prune_missing=prune_missing,
-                    ocr_enabled=ocr_enabled,
-                    num_workers=num_workers,
-                    ocr_language=ocr_language,
+                    space_keys=list(space_keys),
                 )
-            except Exception as e:
-                return pack_result(owner._failed(e))
-            return pack_result(TableResult(rows=[summary]))
+            except ValidationError as e:
+                return pack_result(owner._invalid_source(e))
 
-        return confluence_index_cql
-
-    def _ingest_spaces(self) -> BaseTool:
-        owner = self
-
-        @tool(response_format="content_and_artifact")
-        def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, параметры независимы
-            space_keys: Annotated[
-                LLMStringList,
-                Field(
-                    min_length=1,
-                    description='Ключи спейсов целиком, например ["DQ", "IPKD"].',
-                ),
-            ],
-            prune_missing: Annotated[
-                bool,
-                Field(description="Удалить чанки, не попавшие в выборку."),
-            ] = False,
-            force_update: Annotated[
-                bool,
-                Field(description="Переиндексировать страницы целиком."),
-            ] = False,
-            ocr_enabled: Annotated[
-                bool, Field(description=owner.OCR_DESCRIPTION)
-            ] = False,
-            num_workers: Annotated[
-                int, Field(ge=1, le=4, description=owner.WORKERS_DESCRIPTION)
-            ] = 1,
-            ocr_language: Annotated[
-                str, Field(min_length=1, description=owner.LANGUAGE_DESCRIPTION)
-            ] = "rus+eng",
-        ) -> tuple[str, ToolResult]:
-            """Индексирует спейсы Confluence целиком."""
             try:
-                result = confluence_ingest_spaces(
-                    owner._ingest,
-                    space_keys=space_keys,
+                stats = owner._ingest_caller.ingest(
+                    source=source,
                     prune_missing=prune_missing,
                     force_update=force_update,
                     ocr_enabled=ocr_enabled,
@@ -224,9 +173,10 @@ class ConfluenceIngestTools:
                 )
             except Exception as e:
                 return pack_result(owner._failed(e))
-            return pack_result(result)
 
-        return confluence_index_spaces
+            return pack_result(TableResult(rows=[stats], note=source.note()))
+
+        return confluence_ingest
 
     def _fetch_attachment(self) -> BaseTool:
         owner = self

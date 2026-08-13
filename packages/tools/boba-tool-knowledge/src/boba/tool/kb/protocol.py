@@ -11,14 +11,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from boba.db.postgres import PostgresConfig
 from boba.toolkit.secrets import SecretDump
 
-__all__ = ["EmbeddingRef", "KbNode", "KbSearchRequest"]
+__all__ = ["EmbeddingRef", "KbNode", "KbSearchMethod", "KbSearchRequest"]
 
 
 class KbNode(StrEnum):
-    """Узлы реестра стадий kb; значение — оно же поле op запроса payload'а."""
+    """Узел реестра стадий kb; значение — оно же поле op запроса payload'а."""
 
-    VECTOR = "kb_vector_search"
-    FTS = "kb_fts_search"
+    SEARCH = "kb_search"
+
+
+class KbSearchMethod(StrEnum):
+    """Канал поиска: по нему payload выбирает SQL-ветку, имя узла одно."""
+
+    VECTOR = "vector"
+    FTS = "fts"
 
 
 class EmbeddingRef(BaseModel):
@@ -38,6 +44,7 @@ class KbSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     op: KbNode
+    method: KbSearchMethod
     connection: PostgresConfig = Field(
         description=(
             "Профиль подключения целиком: payload сам получает по нему TGT из keytab."

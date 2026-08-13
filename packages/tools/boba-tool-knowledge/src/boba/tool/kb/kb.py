@@ -1,9 +1,10 @@
-"""Read-only KB над postgres+pgvector: vector_search и fts_search для search-tools."""
+"""Read-only KB над postgres+pgvector: поиск по чанкам для kb_search."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from enum import StrEnum
 from typing import Any
 
 from pydantic import Field
@@ -12,7 +13,7 @@ from boba.db.pgvector import PostgresStoreConfig
 from boba.tool.kb.caller import KbCaller
 from boba.tool.kb.embedding import EmbeddingModel
 from boba.tool.kb.models import KnowledgeBaseError, SearchHit
-from boba.tool.kb.protocol import KbNode
+from boba.tool.kb.protocol import KbSearchMethod
 from boba.toolkit.launcher import LauncherError, RowCollector
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,16 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PostgresKnowledgeBase",
     "PostgresKnowledgeBaseConfig",
+    "RowKey",
 ]
+
+
+class RowKey(StrEnum):
+    """Колонки строки выдачи, которыми дополняется metadata чанка."""
+
+    SOURCE_ID = "source_id"
+    CHUNK_INDEX = "chunk_index"
+    CONTENT_HASH = "content_hash"
 
 
 class PostgresKnowledgeBaseConfig(PostgresStoreConfig):
@@ -51,10 +61,10 @@ class PostgresKnowledgeBase:
             cfg.tables.chunks_table,
         )
 
-    def _search(
+    def search(
         self,
         *,
-        node: KbNode,
+        method: KbSearchMethod,
         collections: list[str],
         query: str,
         top_k: int,
@@ -68,7 +78,7 @@ class PostgresKnowledgeBase:
 
         try:
             self._caller.search(
-                node=node,
+                method=method,
                 collections=collections,
                 query=query,
                 top_k=top_k,
@@ -81,14 +91,16 @@ class PostgresKnowledgeBase:
             ) from e
 
         for row in collector.rows():
-            yield self._hit(row, node=node)
+            yield self._hit(row, method=method)
 
     @classmethod
-    def _hit(cls, row: dict[str, Any], *, node: KbNode) -> SearchHit:
-        if node is KbNode.VECTOR:
+    def _hit(cls, row: dict[str, Any], *, method: KbSearchMethod) -> SearchHit:
+        """Ранг FTS растёт с релевантностью — знак приводит его к дистанции."""
+        if method is KbSearchMethod.VECTOR:
             distance = float(row["distance"])
         else:
             distance = -float(row["rank"])
+
         return SearchHit(
             id=row["chunk_id"],
             distance=distance,
@@ -97,48 +109,24 @@ class PostgresKnowledgeBase:
             tags=tuple(row.get("tags") or ()),
         )
 
-    def vector_search(
-        self,
-        *,
-        collections: list[str],
-        query: str,
-        top_k: int,
-        snippet_chars: int,
-    ) -> Iterable[SearchHit]:
-        return self._search(
-            node=KbNode.VECTOR,
-            collections=collections,
-            query=query,
-            top_k=top_k,
-            snippet_chars=snippet_chars,
-        )
-
-    def fts_search(
-        self,
-        *,
-        collections: list[str],
-        query: str,
-        top_k: int,
-        snippet_chars: int,
-    ) -> Iterable[SearchHit]:
-        return self._search(
-            node=KbNode.FTS,
-            collections=collections,
-            query=query,
-            top_k=top_k,
-            snippet_chars=snippet_chars,
-        )
-
     @staticmethod
     def _row_metadata(row: dict[str, Any]) -> dict[str, str]:
-        raw = row.get("metadata") or {}
-        out: dict[str, str] = (
-            {str(k): str(v) for k, v in raw.items() if v is not None}
-            if isinstance(raw, dict)
-            else {}
-        )
-        for key in ("source_id", "chunk_index", "content_hash"):
-            value = row.get(key)
-            if value is not None:
-                out.setdefault(key, str(value))
+        raw: object = row.get("metadata")
+
+        out: dict[str, str] = {}
+        if isinstance(raw, dict):
+            fields: dict[Any, Any] = raw
+            for key, value in fields.items():
+                if value is None:
+                    continue
+
+                out[str(key)] = str(value)
+
+        for key in RowKey:
+            value = row.get(key.value)
+            if value is None:
+                continue
+
+            out.setdefault(key.value, str(value))
+
         return out

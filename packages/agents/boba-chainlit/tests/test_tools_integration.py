@@ -475,7 +475,7 @@ class TestWebTools:
 
     async def test_fetch_page(self, web_tools, whitelisted_url) -> None:
         result = await Call.ok(
-            web_tools["web_fetch_page"],
+            web_tools["web_fetch"],
             url=whitelisted_url,
             as_markdown=True,
             line_offset=0,
@@ -487,7 +487,7 @@ class TestWebTools:
 
     async def test_grep_page(self, web_tools, whitelisted_url) -> None:
         result = await Call.ok(
-            web_tools["web_grep_page"],
+            web_tools["web_grep"],
             url=whitelisted_url,
             pattern="Confluence",
             limit=3,
@@ -498,7 +498,7 @@ class TestWebTools:
 
     async def test_host_outside_whitelist(self, web_tools) -> None:
         result = await Call.result(
-            web_tools["web_fetch_page"],
+            web_tools["web_fetch"],
             url="https://example.com/",
             as_markdown=True,
             line_offset=0,
@@ -631,7 +631,7 @@ class TestPgTools:
 
     async def test_export_returns_copy_text(self, pg_tools) -> None:
         result = await Call.ok(
-            pg_tools["pg_export"],
+            pg_tools["pg_copy"],
             connection_name="main",
             sql="select 1 as one, 'два' as two",
         )
@@ -724,7 +724,10 @@ class TestKbTools:
             force_update=False,
         )
         result = await Call.ok(
-            kb_tools["kb_fts_search"], query=confluence_page["title"], top_k=20
+            kb_tools["kb_search"],
+            query=confluence_page["title"],
+            method="fts",
+            top_k=20,
         )
         assert isinstance(result, TableResult)
         assert result.rows
@@ -743,7 +746,10 @@ class TestKbTools:
             force_update=False,
         )
         result = await Call.ok(
-            kb_tools["kb_vector_search"], query=confluence_page["title"], top_k=5
+            kb_tools["kb_search"],
+            query=confluence_page["title"],
+            method="vector",
+            top_k=5,
         )
         assert result.rows
         assert set(result.rows[0]) >= {"id", "distance", "snippet"}

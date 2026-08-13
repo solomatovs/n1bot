@@ -37,7 +37,7 @@ class ConfluenceTools:
 
     def build(self) -> list[BaseTool]:
         return [
-            self._fetch_page(),
+            self._page(),
             self._grep_page(),
             self._search_cql(),
             self._list_spaces(),
@@ -47,11 +47,11 @@ class ConfluenceTools:
     def _failed(error: Exception) -> ErrorResult:
         return ErrorResult(message=str(error), error_kind="confluence_failed")
 
-    def _fetch_page(self) -> BaseTool:
+    def _page(self) -> BaseTool:
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def confluence_fetch(
+        def confluence_page(
             page_id: Annotated[
                 str,
                 Field(
@@ -82,7 +82,7 @@ class ConfluenceTools:
                 return pack_result(owner._failed(e))
             return pack_result(TextResult(text=text))
 
-        return confluence_fetch
+        return confluence_page
 
     def _grep_page(self) -> BaseTool:
         owner = self

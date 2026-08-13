@@ -1,6 +1,6 @@
 """Индексация Confluence из терминала на конфиге приложения.
 
-Тот же прогон, что у tool'ов confluence_index_*: конфиг берётся из
+Тот же прогон, что у tool'а confluence_ingest: конфиг берётся из
 BOBA_CONFIG_PATH, секции [tool.ingest] и [tool.ingest.sandbox], работа
 целиком идёт в песочнице. Параметры парсера (OCR) и режим обхода задаются
 аргументами — в конфиге они не дублируются.
@@ -36,7 +36,7 @@ from boba.sandbox.workflow import StageDef, StageRegistry
 from boba.settings import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.confluence.ingest_caller import ConfluenceIngestCaller
-from boba.tool.kb.confluence.ingest_protocol import IngestMode
+from boba.tool.kb.confluence.ingest_protocol import IngestMode, IngestSource
 from boba.tool.kb.confluence.ingest_stages import ConfluenceIngestStages
 from boba.toolkit.channels import ChannelSink, StreamKey
 from boba.toolkit.launcher import (
@@ -151,26 +151,15 @@ class ConfluenceIngestCli:
             cfg.collection,
         )
 
-        page_ids: tuple[str, ...] = ()
-        if args.mode == "pages":
-            page_ids = cls.items(args)
-        cql = ""
-        if args.mode == "cql":
-            cql = args.target
-        space_keys: tuple[str, ...] = ()
-        if args.mode == "spaces":
-            space_keys = cls.items(args)
+        source = IngestSource.of(IngestMode(args.mode), args.target)
 
         stats = caller.ingest(
-            mode=IngestMode(args.mode),
+            source=source,
             prune_missing=args.prune_missing,
             force_update=args.force_update,
             ocr_enabled=args.ocr_enabled,
             num_workers=args.num_workers,
             ocr_language=args.ocr_language,
-            page_ids=page_ids,
-            cql=cql,
-            space_keys=space_keys,
         )
         logger.info("ingest done: %s", stats)
         return 0
@@ -254,16 +243,6 @@ class ConfluenceIngestCli:
             return runs
 
         return launcher
-
-    @staticmethod
-    def items(args: argparse.Namespace) -> tuple[str, ...]:
-        """Список через запятую -> кортеж непустых значений."""
-        values: list[str] = []
-        for raw_item in args.target.split(","):
-            item = raw_item.strip()
-            if item:
-                values.append(item)
-        return tuple(values)
 
 
 if __name__ == "__main__":

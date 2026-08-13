@@ -18,9 +18,8 @@ __all__ = ["KbSearchEnricher", "KbStages"]
 class KbSearchEnricher:
     """args поиска -> запрос payload'а: соединение, таблицы и эмбеддер из конфига."""
 
-    def __init__(self, cfg: PostgresKnowledgeBaseConfig, node: KbNode) -> None:
+    def __init__(self, cfg: PostgresKnowledgeBaseConfig) -> None:
         self._cfg = cfg
-        self._node = node
 
     def __call__(self, args: Mapping[str, JsonValue], /) -> Mapping[str, Any]:
         embedding = EmbeddingRef(
@@ -29,7 +28,7 @@ class KbSearchEnricher:
         )
 
         enriched: dict[str, Any] = dict(args)
-        enriched["op"] = self._node
+        enriched["op"] = KbNode.SEARCH
         enriched["connection"] = self._cfg.connection
         enriched["schema_name"] = self._cfg.tables.pg_schema
         enriched["chunks_table"] = self._cfg.tables.chunks_table
@@ -51,14 +50,11 @@ class KbStages:
 
     @classmethod
     def of(cls, cfg: PostgresKnowledgeBaseConfig) -> dict[str, StageNode]:
-        builds: dict[str, StageNode] = {}
+        search = StageNode(
+            contract=cls.CONTRACT,
+            entry=cls.ENTRY,
+            request=KbSearchRequest,
+            enrich=KbSearchEnricher(cfg),
+        )
 
-        for node in (KbNode.VECTOR, KbNode.FTS):
-            builds[node.value] = StageNode(
-                contract=cls.CONTRACT,
-                entry=cls.ENTRY,
-                request=KbSearchRequest,
-                enrich=KbSearchEnricher(cfg, node),
-            )
-
-        return builds
+        return {KbNode.SEARCH.value: search}
