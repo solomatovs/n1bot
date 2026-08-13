@@ -41,6 +41,7 @@ from boba.indexing import (
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import (
     AttachmentFilter,
+    AttachmentInfo,
     ConfluenceKeys,
     HttpKeys,
 )
@@ -49,6 +50,7 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceRequest,
     ConfluenceRest,
 )
+from boba.tool.kb.indexing_log import Elapsed, IngestProgress
 from boba.transport.http import (
     CancellableHttpTransport,
     HttpResponse,
@@ -113,12 +115,14 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         inner: Transport[ConfluenceRequest],
         body_format: str,
         base_url: str,
+        progress: IngestProgress,
         attachment_filter: AttachmentFilter | None = None,
     ) -> None:
         self._inner = inner
         self._decoder = ConfluenceJsonDecoder(body_format=body_format)
         self._base_url = base_url
         self._attachment_filter = attachment_filter or AttachmentFilter()
+        self._progress = progress
 
     async def close(self) -> None:
         await self._inner.close()
@@ -129,23 +133,33 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
     async def fetch(self, request: ConfluenceRequest) -> AsyncIterator[RawDocument]:
         if att := request.metadata.get(ConfluenceKeys.ATTACHMENT_INFO):
             logger.info(
-                "fetch attachment: %s [%s] %d bytes",
+                "fetch attachment start: %s [%s] %d bytes",
                 att.title,
                 att.media_type,
                 att.file_size,
             )
+            elapsed = Elapsed()
             async for raw in self._inner.fetch(request):
                 yield raw
+
+            logger.info(
+                "fetch attachment done: %s in %dms", att.title, elapsed.ms()
+            )
             return
-        logger.info("fetch page: %s", self._inner.source_id(request))
+
+        source_id = self._inner.source_id(request)
+        logger.info("fetch page start: %s", source_id)
+        elapsed = Elapsed()
         async for raw in self._inner.fetch(request):
             decoded = await self._decoder.decode(raw)
+            logger.info("fetch page done: %s in %dms", source_id, elapsed.ms())
             yield decoded
             attachments = self._iter_attachments(
                 parent=decoded,
                 base_url=self._base_url,
                 transport=self._inner,
                 att_filter=self._attachment_filter,
+                progress=self._progress,
             )
             async for attachment in attachments:
                 yield attachment
@@ -156,13 +170,15 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         parent: RawDocument,
         base_url: str,
         transport: Transport[ConfluenceRequest],
+        progress: IngestProgress,
         att_filter: AttachmentFilter | None = None,
     ) -> AsyncIterator[RawDocument]:
         attachments = parent.metadata.get(ConfluenceKeys.ATTACHMENTS)
         if not attachments:
             return
-        logger.info("page %s: %d attachments", parent.source_id, len(attachments))
+
         flt = att_filter or AttachmentFilter()
+        planned: list[AttachmentInfo] = []
         for att in attachments:
             if not flt.matches(att):
                 logger.debug(
@@ -172,25 +188,49 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
                     att.media_type,
                 )
                 continue
+
+            planned.append(att)
+
+        logger.info(
+            "page %s: %d attachments, %d after filter",
+            parent.source_id,
+            len(attachments),
+            len(planned),
+        )
+        progress.attachments_found(len(planned))
+
+        for att in planned:
             req = ConfluenceRest.make_attachment_request(
                 base_url=base_url,
                 parent_metadata=parent.metadata,
                 attachment=att,
             )
+            logger.info(
+                "fetch attachment start: %s [%s] %d bytes",
+                att.title,
+                att.media_type,
+                att.file_size,
+            )
+            elapsed = Elapsed()
             async for raw in transport.fetch(req):
                 yield raw
+
+            logger.info("fetch attachment done: %s in %dms", att.title, elapsed.ms())
+            progress.attachment_done()
 
     @classmethod
     def from_connection(
         cls,
         conn: ConfluenceConnection,
         *,
+        progress: IngestProgress,
         attachment_filter: AttachmentFilter | None = None,
     ) -> ConfluenceContentTransport:
         return cls(
             inner=ConfluenceHttpTransport(CancellableHttpTransport(conn.profile)),
             body_format=conn.body_format,
             base_url=conn.base_url,
+            progress=progress,
             attachment_filter=attachment_filter,
         )
 
@@ -200,9 +240,12 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         *,
         request_source: RequestSource[ConfluenceRequest],
         conn: ConfluenceConnection,
+        progress: IngestProgress,
         attachment_filter: AttachmentFilter | None = None,
     ) -> AsyncIterator[RawDocument]:
-        transport = cls.from_connection(conn, attachment_filter=attachment_filter)
+        transport = cls.from_connection(
+            conn, progress=progress, attachment_filter=attachment_filter
+        )
         try:
             async for request in request_source.requests():
                 async for raw in transport.fetch(request):

@@ -16,6 +16,7 @@ from boba.db.pgvector import (
     PostgresStoreConfig,
 )
 from boba.indexing import (
+    ChunkStore,
     CleanupStrategy,
     CollectionScopedView,
     DispatchReader,
@@ -44,8 +45,11 @@ from boba.tool.kb.embedding import (
     LocalFastEmbedEmbedderFactory,
 )
 from boba.tool.kb.indexing_log import (
+    Elapsed,
+    IngestProgress,
     LoggedIndexRun,
     LoggingChunker,
+    LoggingChunkStore,
     LoggingEmbedder,
 )
 from boba.toolkit.types import StringList
@@ -144,13 +148,14 @@ class ConfluenceIngest:
         *,
         request_source: RequestSource[ConfluenceRequest],
         conn: ConfluenceConnection,
-        chunk_store: PostgresChunkStore,
+        chunk_store: ChunkStore[str],
         collections_store: PostgresCollectionsStore,
         embedder: Embedder[str],
         chunker: Chunker[str],
         collection: str,
         prune_missing: bool,
         workers: int,
+        progress: IngestProgress,
         force_update: bool = False,
         attachment_filter: AttachmentFilter | None = None,
         routes: Mapping[str, Reader[str]],
@@ -164,7 +169,12 @@ class ConfluenceIngest:
         )
 
         collection_id = CollectionId(collection)
+        logger.info("db ensure_collection start: %s", collection_id)
+        elapsed = Elapsed()
         await collections_store.ensure_collection(collection_id, description=None)
+        logger.info(
+            "db ensure_collection done: %s in %dms", collection_id, elapsed.ms()
+        )
 
         view: CollectionScopedView[str] = CollectionScopedView(
             store=chunk_store,
@@ -173,6 +183,7 @@ class ConfluenceIngest:
         )
         transport = ConfluenceContentTransport.from_connection(
             conn,
+            progress=progress,
             attachment_filter=attachment_filter,
         )
 
@@ -204,6 +215,7 @@ class ConfluenceIngest:
                     config=config,
                 ),
                 logger,
+                progress,
             )
         finally:
             await transport.close()
@@ -230,21 +242,24 @@ class ConfluenceIngest:
         asyncio.get_running_loop().set_default_executor(pool)
 
     @staticmethod
-    async def ingest(
+    async def ingest(  # noqa: PLR0913 — режимы обхода и наблюдение независимы
         cfg: ConfluenceIngestConfig,
         request_source: RequestSource[ConfluenceRequest],
         prune_missing: bool,
         force_update: bool = False,
         *,
+        progress: IngestProgress,
         routes: Mapping[str, Reader[str]],
     ) -> dict[str, Any]:
         """Собрать stores/embedder/chunker/filter из cfg и вызвать run."""
-        chunk_store = PostgresChunkStore(cfg=cfg)
+        chunk_store = LoggingChunkStore(PostgresChunkStore(cfg=cfg), logger)
         collections_store = PostgresCollectionsStore(cfg=cfg)
         embedder = LoggingEmbedder(
             LocalFastEmbedEmbedderFactory.build(cfg.embedding), logger
         )
-        chunker = LoggingChunker(StructuralChunkerFactory.build(cfg), logger)
+        chunker = LoggingChunker(
+            StructuralChunkerFactory.build(cfg), logger, progress
+        )
         att_filter = AttachmentFilter.from_lists(
             media_types=cfg.attachment_media_types,
             titles=cfg.attachment_titles,
@@ -263,6 +278,7 @@ class ConfluenceIngest:
             collection=cfg.collection,
             prune_missing=prune_missing,
             workers=cfg.page_workers,
+            progress=progress,
             force_update=force_update,
             attachment_filter=att_filter,
             routes=routes,

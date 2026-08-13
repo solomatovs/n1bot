@@ -33,6 +33,7 @@ from boba.tool.kb.confluence.models import (
     ConfluenceSpaceItem,
 )
 from boba.tool.kb.confluence.parsing import ConfluenceJson
+from boba.tool.kb.indexing_log import Elapsed, IngestProgress
 from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 __all__ = [
@@ -191,14 +192,26 @@ class ConfluencePaginator:
         next_path: str | None = path
         while next_path:
             data = await self._get_json(next_path)
-            for raw in ConfluenceJson.results(data):
+            results = ConfluenceJson.results(data)
+            next_path = ConfluenceJson.next_link(data)
+            logger.info(
+                "discovery page: %d items, next=%s",
+                len(results),
+                bool(next_path),
+            )
+            for raw in results:
                 yield item.model_validate(raw)
 
-            next_path = ConfluenceJson.next_link(data)
-
     async def _get_json(self, path: str) -> dict[str, Any]:
+        logger.info("discovery request: GET %s", path)
+        elapsed = Elapsed()
         async with self._http.fetch(HttpRequest(url=path)) as resp:
-            return json.loads(await resp.stream.read())
+            payload = await resp.stream.read()
+
+        logger.info(
+            "discovery response: %d bytes in %dms", len(payload), elapsed.ms()
+        )
+        return json.loads(payload)
 
     async def __aenter__(self):
         return self
@@ -262,21 +275,27 @@ class ConfluenceCqlRequestSource(RequestSource[ConfluenceRequest]):
         *,
         conn: ConfluenceConnection,
         cql: str,
+        progress: IngestProgress,
         body_format: str = "export_view",
     ) -> None:
         self._conn = conn
         self._cql = cql
         self._body_format = body_format
         self._host = ConfluenceRest.extract_host(conn.base_url)
+        self._progress = progress
 
     async def requests(self) -> AsyncIterator[ConfluenceRequest]:
+        logger.info("discovery start: cql %s", self._cql)
         pages = ConfluencePaginator.discover_pages_by_cql(self._conn, self._cql)
         async for page_id in pages:
+            self._progress.pages_found(1)
             yield ConfluenceRest.make_page_request(
                 host=self._host,
                 page_id=page_id,
                 body_format=self._body_format,
             )
+
+        self._progress.pages_closed()
 
 
 class ConfluencePagesRequestSource(RequestSource[ConfluenceRequest]):
@@ -288,12 +307,18 @@ class ConfluencePagesRequestSource(RequestSource[ConfluenceRequest]):
         base_url: str,
         page_ids: Sequence[str],
         body_format: str,
+        progress: IngestProgress,
     ) -> None:
         self._host = ConfluenceRest.extract_host(base_url)
         self._page_ids = list(page_ids)
         self._body_format = body_format
+        self._progress = progress
 
     async def requests(self) -> AsyncIterator[ConfluenceRequest]:
+        """Список задан целиком: обнаружение закончено ещё до первого запроса."""
+        self._progress.pages_found(len(self._page_ids))
+        self._progress.pages_closed()
+
         for page_id in self._page_ids:
             yield ConfluenceRest.make_page_request(
                 host=self._host,
@@ -311,18 +336,27 @@ class ConfluenceSpaceRequestSource(RequestSource[ConfluenceRequest]):
         conn: ConfluenceConnection,
         space_key: str,
         body_format: str,
+        progress: IngestProgress,
     ) -> None:
         self._conn = conn
         self._space_key = space_key
         self._body_format = body_format
         self._host = ConfluenceRest.extract_host(conn.base_url)
+        self._progress = progress
+
+    @property
+    def space_key(self) -> str:
+        return self._space_key
 
     async def requests(self) -> AsyncIterator[ConfluenceRequest]:
+        """Закрытие обнаружения — за владельцем обхода: space'ов может быть много."""
+        logger.info("discovery start: space %s", self._space_key)
         pages = ConfluencePaginator.discover_space_pages(
             self._conn,
             self._space_key,
         )
         async for page_id in pages:
+            self._progress.pages_found(1)
             yield ConfluenceRest.make_page_request(
                 host=self._host,
                 page_id=page_id,
@@ -345,21 +379,33 @@ class ConfluenceMultiSpaceRequestSource(RequestSource[ConfluenceRequest]):
         conn: ConfluenceConnection,
         space_keys: Sequence[str],
         body_format: str,
+        progress: IngestProgress,
     ) -> None:
         if not space_keys:
             raise ValueError("space_keys is empty")
-        self._inner = [
-            ConfluenceSpaceRequestSource(
-                conn=conn,
-                space_key=k,
-                body_format=body_format,
+
+        self._inner: list[ConfluenceSpaceRequestSource] = []
+        for key in space_keys:
+            self._inner.append(
+                ConfluenceSpaceRequestSource(
+                    conn=conn,
+                    space_key=key,
+                    body_format=body_format,
+                    progress=progress,
+                )
             )
-            for k in space_keys
-        ]
+
         self._space_keys = tuple(space_keys)
         self._host = ConfluenceRest.extract_host(conn.base_url)
+        self._progress = progress
+        progress.spaces_found(len(self._space_keys))
 
     async def requests(self) -> AsyncIterator[ConfluenceRequest]:
+        """Space'ы идут подряд; страницы обнаружены полностью после последнего."""
         for src in self._inner:
             async for request in src.requests():
                 yield request
+
+            self._progress.space_done(src.space_key)
+
+        self._progress.pages_closed()

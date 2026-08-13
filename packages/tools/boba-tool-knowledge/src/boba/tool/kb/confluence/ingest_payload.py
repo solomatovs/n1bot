@@ -26,6 +26,7 @@ from boba.indexing import (
     Reader,
     ReaderId,
     ReaderKeys,
+    RequestSource,
     Section,
     SectionKeys,
 )
@@ -40,9 +41,10 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceCqlRequestSource,
     ConfluenceMultiSpaceRequestSource,
     ConfluencePagesRequestSource,
+    ConfluenceRequest,
 )
 from boba.tool.kb.html.payload import PageOps
-from boba.tool.kb.indexing_log import LoggingReader
+from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
 from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
@@ -110,34 +112,46 @@ class IngestOps:
     async def ingest(cls, request: dict[str, Any]) -> dict[str, Any]:
         cfg = ConfluenceIngestConfig.model_validate(request["config"])
         conn = ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
-        source = cls.source(request, conn, cfg)
+        progress = IngestProgress(logger)
+        source = cls.source(request, conn, progress)
         stats = await ConfluenceIngest.ingest(
             cfg,
             source,
             request["prune_missing"],
             request["force_update"],
+            progress=progress,
             routes=cls.routes(cfg),
         )
+        progress.say()
         return {"stats": stats}
 
     @staticmethod
-    def source(request: dict[str, Any], conn: ConfluenceConnection, cfg: Any) -> Any:
+    def source(
+        request: dict[str, Any],
+        conn: ConfluenceConnection,
+        progress: IngestProgress,
+    ) -> RequestSource[ConfluenceRequest]:
         mode = request["mode"]
         if mode == "pages":
             return ConfluencePagesRequestSource(
                 base_url=conn.base_url,
                 page_ids=list(request["page_ids"]),
                 body_format=conn.body_format,
+                progress=progress,
             )
         if mode == "cql":
             return ConfluenceCqlRequestSource(
-                conn=conn, cql=request["cql"], body_format=conn.body_format
+                conn=conn,
+                cql=request["cql"],
+                body_format=conn.body_format,
+                progress=progress,
             )
         if mode == "spaces":
             return ConfluenceMultiSpaceRequestSource(
                 conn=conn,
                 space_keys=list(request["space_keys"]),
                 body_format=conn.body_format,
+                progress=progress,
             )
         msg = f"unknown discovery mode: {mode!r}"
         raise ValueError(msg)
