@@ -10,23 +10,12 @@ from typing import Any, ClassVar
 
 from psycopg import sql
 
-__all__ = ["PgCatalog", "PgCatalogQuery"]
+from boba.toolkit.sql import CatalogQuery
 
+__all__ = ["PgCatalog"]
 
-class PgCatalogQuery:
-    """Готовый каталожный запрос: текст для payload'а и его параметры."""
-
-    def __init__(self, statement: sql.Composed, params: tuple[Any, ...]) -> None:
-        self._statement = statement
-        self._params = params
-
-    @property
-    def text(self) -> str:
-        return self._statement.as_string()
-
-    @property
-    def params(self) -> tuple[Any, ...]:
-        return self._params
+PgCatalogQuery = CatalogQuery[tuple[Any, ...]]
+"""Каталожный запрос postgres: текст плюс позиционные параметры psycopg."""
 
 
 class PgCatalog:
@@ -99,7 +88,8 @@ class PgCatalog:
             params.append(table_pattern)
 
         statement = cls._assemble(cls.TABLES_SELECT, conditions, cls.TABLES_ORDER)
-        return PgCatalogQuery(statement, tuple(params))
+
+        return PgCatalogQuery(text=statement.as_string(), params=tuple(params))
 
     @classmethod
     def columns(cls, table: str, pg_schema: str | None) -> PgCatalogQuery:
@@ -116,7 +106,8 @@ class PgCatalog:
             params.append(pg_schema)
 
         statement = cls._assemble(cls.COLUMNS_SELECT, conditions, cls.COLUMNS_ORDER)
-        return PgCatalogQuery(statement, tuple(params))
+
+        return PgCatalogQuery(text=statement.as_string(), params=tuple(params))
 
     @classmethod
     def _assemble(

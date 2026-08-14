@@ -13,13 +13,11 @@ from boba.tool.pg.catalog import PgCatalog
 from boba.tool.pg.executor import PgExecutor, PgExecutorConfig
 from boba.toolkit.launcher import LauncherFactory
 from boba.toolkit.result import (
-    AffectedSqlResult,
     PgCopyTextResult,
-    TableResult,
     ToolResult,
     pack_result,
 )
-from boba.toolkit.sql import SqlErrors, SqlResult
+from boba.toolkit.sql import SqlErrors, SqlPack
 
 __all__ = ["PgTools", "build_pg_tools"]
 
@@ -49,22 +47,13 @@ class PgTools:
     def _executor(self) -> PgExecutor:
         return PgExecutor(cfg=self._cfg, caller=self._caller)
 
-    def _rows(self, result: SqlResult) -> tuple[str, ToolResult]:
-        return pack_result(
-            TableResult(rows=result.rows, note=self._errors.note(result.truncated))
-        )
-
     def _list_targets(self) -> BaseTool:
         cfg = self._cfg
 
         @tool(response_format="content_and_artifact")
         async def pg_list_targets() -> tuple[str, ToolResult]:
             """Список доступных значений connection_name для postgres-инструментов."""
-            rows: list[dict[str, str]] = []
-            for target in cfg.targets():
-                rows.append({"connection_name": target})
-
-            return pack_result(TableResult(rows=rows))
+            return pack_result(SqlPack.targets(cfg))
 
         return pg_list_targets
 
@@ -116,7 +105,7 @@ class PgTools:
             except SqlErrors.CATCHES as e:
                 return pack_result(owner._errors.pack(e))
 
-            return owner._rows(result)
+            return pack_result(SqlPack.result(result, owner._errors))
 
         return pg_list_tables
 
@@ -160,7 +149,7 @@ class PgTools:
             except SqlErrors.CATCHES as e:
                 return pack_result(owner._errors.pack(e))
 
-            return owner._rows(result)
+            return pack_result(SqlPack.result(result, owner._errors))
 
         return pg_describe_table
 
@@ -198,14 +187,7 @@ class PgTools:
             except SqlErrors.CATCHES as e:
                 return pack_result(owner._errors.pack(e))
 
-            if not result.returns_rows:
-                return pack_result(
-                    AffectedSqlResult(
-                        affected_rows=result.rowcount,
-                        status=result.status,
-                    )
-                )
-            return owner._rows(result)
+            return pack_result(SqlPack.result(result, owner._errors))
 
         return pg_query
 

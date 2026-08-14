@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, ClassVar, cast
 
 from clickhouse_connect.driver.common import StreamContext
@@ -17,8 +17,8 @@ from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 
 from boba.db.clickhouse import ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.toolkit.launcher import RowStream
 from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
+from boba.toolkit.sql import SqlEmit, SqlQueryTrailer, SqlRows
 
 
 class ClickHouseOps:
@@ -46,6 +46,7 @@ class ClickHouseOps:
         params = request["params"]
         if not params:
             params = None
+
         async with PayloadClickHouse.opened(request) as client:
             try:
                 stream = await client.query_row_block_stream(
@@ -53,26 +54,38 @@ class ClickHouseOps:
                     parameters=params,
                 )
                 async with stream as blocks:
-                    truncated = await cls._emit_rows(blocks, emit, request["row_limit"])
+                    names: Sequence[str] = cast(Any, blocks.source).column_names
+                    rows = cls._rows(blocks, names)
+                    truncated = await SqlEmit.rows(rows, emit, request["row_limit"])
             except DriverError as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
                 raise PayloadError("sql_failed", msg) from e
-        return {"truncated": truncated}
+
+        return cls._trailer(truncated).model_dump()
 
     @classmethod
-    async def _emit_rows(
-        cls, blocks: StreamContext, emit: ChunkEmitter, limit: int
-    ) -> bool:
-        """Кадр на строку; лишняя строка сверх лимита ловит усечение и рвёт поток."""
-        names: Sequence[str] = cast(Any, blocks.source).column_names
-        emitted = 0
+    async def _rows(
+        cls, blocks: StreamContext, names: Sequence[str]
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Блоки кортежей -> записи-словари с JSON-совместимыми значениями."""
         async for block in blocks:
             for row in cast(Sequence[Sequence[Any]], block):
-                if emitted >= limit:
-                    return True
-                emit(RowStream.encode(PayloadClickHouse.jsonable(names, row)))
-                emitted += 1
-        return False
+                yield SqlRows.of_columns(names, row)
+
+    @classmethod
+    def _trailer(cls, truncated: bool) -> SqlQueryTrailer:
+        """Итог запроса: у этой операции всегда выборка, счётчика и статуса нет.
+
+        По колонкам о выборке судить нельзя: пустой результат приходит без
+        схемы. Счётчика тоже нет — summary отдаёт result_rows на момент старта
+        стрима, а не итог чтения.
+        """
+        return SqlQueryTrailer(
+            truncated=truncated,
+            returns_rows=True,
+            rowcount=None,
+            status=None,
+        )
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from boba.tool.kb.confluence.protocol import (
     ConfluenceSearchRequest,
     ConfluenceSpacesRequest,
 )
+from boba.tool.ch import ChCaller, ChQueryRequest
 from boba.tool.kb.html.caller import HtmlCaller
 from boba.tool.pg.caller import PgCaller
 from boba.tool.pg.protocol import PgQueryRequest
@@ -49,6 +50,7 @@ CALLERS: list[type[PayloadCaller]] = [
     ConfluenceCaller,
     ConfluenceIngestCaller,
     PgCaller,
+    ChCaller,
     WebCaller,
 ]
 
@@ -56,6 +58,7 @@ REQUEST_MODELS = [
     IngestRequest,
     KbSearchRequest,
     PgQueryRequest,
+    ChQueryRequest,
     WebFetchRequest,
     WebGrepRequest,
     ConfluencePageRequest,

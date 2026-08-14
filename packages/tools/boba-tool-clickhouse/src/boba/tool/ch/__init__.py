@@ -1,18 +1,19 @@
-"""ClickHouse-инструменты только на чтение поверх собственного ChExecutor."""
+"""ClickHouse-инструменты поверх общего SQL-слоя boba.toolkit.sql."""
 
-from boba.tool.ch.executor import (
-    ChExecutor,
+from boba.tool.ch.tools import (
+    ChCaller,
+    ChCatalog,
     ChExecutorConfig,
-    ChQueryError,
-    ChResult,
+    ChQueryRequest,
+    ChTools,
+    build_ch_tools,
 )
-from boba.tool.ch.tools import ChTools, build_ch_tools
 
 __all__ = [
-    "ChExecutor",
+    "ChCaller",
+    "ChCatalog",
     "ChExecutorConfig",
-    "ChQueryError",
-    "ChResult",
+    "ChQueryRequest",
     "ChTools",
     "build_ch_tools",
 ]

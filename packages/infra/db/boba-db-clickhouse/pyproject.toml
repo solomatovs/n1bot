@@ -8,12 +8,11 @@ version = "0.0.11.dev7"
 description = "Boba ClickHouse: ClickHouseConfig + подключение payload'а по HTTP, пароль или Kerberos SPNEGO на каждый запрос."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-toolkit==0.0.11.dev7",
     "boba-krb==0.0.11.dev7",
     "pydantic>=2.10,<2.11",
 ]
 
-# зависимости payload'а: нужны только внутри песочницы,
-# в окружении приложения их быть не должно
 [project.optional-dependencies]
 payload = [
     "clickhouse-connect[async]>=1.6,<2",

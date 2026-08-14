@@ -8,21 +8,18 @@ max_bytes.
 from __future__ import annotations
 
 import asyncio
-import logging
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
 from boba.db.postgres import PostgresConfig
-from boba.tool.pg.caller import PgCaller
+from boba.tool.pg.caller import PgCaller, PgParams
 from boba.toolkit.launcher import (
     CollectorCapacityError,
     LauncherError,
     TextCollector,
 )
 from boba.toolkit.sql import SqlExecutor, SqlProfiles, SqlQueryError
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "PgExecutor",
@@ -45,12 +42,8 @@ class PgExecutorConfig(SqlProfiles[PostgresConfig]):
     )
 
 
-PgParams = tuple[Any, ...]
-"""Позиционные параметры psycopg под плейсхолдеры %s."""
-
-
 class PgExecutor(SqlExecutor[PostgresConfig, PgParams]):
-    """Исполняет SQL в песочнице; каждый вызов — отдельный процесс и соединение.
+    """Добавляет к общему исполнителю выгрузку COPY.
 
     Режим сессии берётся из профиля: read-only задаётся параметром
     default_transaction_read_only в [postgres.<name>.options].
@@ -59,12 +52,6 @@ class PgExecutor(SqlExecutor[PostgresConfig, PgParams]):
     def __init__(self, *, cfg: PgExecutorConfig, caller: PgCaller) -> None:
         super().__init__(cfg=cfg, caller=caller)
         self._pg_caller = caller
-        logger.info(
-            "PgExecutor opened: targets=%s max_rows=%d max_bytes=%d",
-            cfg.targets(),
-            cfg.max_rows,
-            cfg.max_bytes,
-        )
 
     async def execute_copy(self, query: str, *, connection_name: str) -> str:
         """COPY ... TO STDOUT: текст собирается целиком, потолок по байтам."""

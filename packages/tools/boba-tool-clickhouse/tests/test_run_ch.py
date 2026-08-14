@@ -11,9 +11,8 @@ from typing import ClassVar
 import pytest
 
 from boba.settings import bind
-from boba.tool.ch import ChExecutorConfig
+from boba.tool.ch import ChExecutorConfig, ChQueryRequest
 from boba.tool.ch.payload import ClickHouseOps
-from boba.tool.ch.protocol import ChQueryRequest
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 

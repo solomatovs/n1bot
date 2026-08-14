@@ -13,8 +13,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Generic, Protocol, Self, TypeVar
 
@@ -31,16 +32,28 @@ from boba.toolkit.launcher import (
     CollectorCapacityError,
     CollectorRowLimitError,
     LauncherError,
+    LauncherFactory,
     RowCollector,
+    RowStream,
 )
-from boba.toolkit.result import ErrorResult
+from boba.toolkit.payload import ChunkEmitter
+from boba.toolkit.result import (
+    AffectedSqlResult,
+    ErrorResult,
+    TableResult,
+    ToolResult,
+)
 
 __all__ = [
+    "CatalogQuery",
     "ConnectionProfile",
     "SqlCall",
     "SqlCaller",
+    "SqlEmit",
     "SqlErrors",
     "SqlExecutor",
+    "SqlPack",
+    "SqlPayloadCaller",
     "SqlProfiles",
     "SqlQueryError",
     "SqlQueryRequest",
@@ -49,6 +62,8 @@ __all__ = [
     "SqlRows",
     "UnknownConnectionError",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionProfile(BaseModel):
@@ -170,7 +185,8 @@ class SqlQueryTrailer(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    truncated: bool
+    truncated: bool = False
+    """Выдача обрезана лимитом строк; без выборки усечения не бывает."""
     returns_rows: bool
     """False — набора строк не было (DML/DDL); тогда смысл несёт rowcount."""
     rowcount: int | None
@@ -207,6 +223,43 @@ class SqlCaller(Protocol, Generic[TConn_contra, TParams_contra]):
         ...
 
 
+class SqlPayloadCaller(Generic[TConn, TParams]):
+    """Один вызов payload'а на запрос; пул не переживает вызов по построению.
+
+    Подкласс задаёт точку входа и модель запроса своего коннектора.
+    """
+
+    ENTRY: ClassVar[tuple[str, ...]]
+    """Команда payload'а: `python3 -m <module>`."""
+
+    REQUEST: ClassVar[type[SqlQueryRequest[Any, Any]]]
+    """Модель запроса коннектора; её OP едет в поле op."""
+
+    def __init__(self, tool: str, launchers: LauncherFactory) -> None:
+        self._caller = launchers(tool)
+
+    def query(
+        self,
+        *,
+        connection: TConn,
+        sql: str,
+        params: TParams,
+        row_limit: int,
+        sink: ChunkSink,
+    ) -> SqlQueryTrailer:
+        request = type(self).REQUEST(
+            op=type(self).REQUEST.OP,
+            connection=connection,
+            sql=sql,
+            params=params,
+            row_limit=row_limit,
+        )
+
+        return self._caller.call_stream(
+            type(self).ENTRY, request, sink, SqlQueryTrailer
+        )
+
+
 class SqlExecutor(Generic[TConn, TParams]):
     """Исполняет SQL в песочнице; каждый вызов — отдельный процесс и соединение."""
 
@@ -218,6 +271,13 @@ class SqlExecutor(Generic[TConn, TParams]):
     ) -> None:
         self._cfg = cfg
         self._caller = caller
+        logger.info(
+            "%s opened: targets=%s max_rows=%d max_bytes=%d",
+            type(self).__name__,
+            cfg.targets(),
+            cfg.max_rows,
+            cfg.max_bytes,
+        )
 
     @property
     def max_rows_cap(self) -> int:
@@ -321,6 +381,62 @@ class SqlErrors:
         if not truncated:
             return None
         return f"список усечён до max_rows ({self._max_rows})"
+
+
+class SqlPack:
+    """Результат tool"""
+
+    TARGET_COLUMN: ClassVar[str] = "connection_name"
+    """Колонка выдачи list_targets: её значение LLM подставляет в вызов."""
+
+    @classmethod
+    def targets(cls, cfg: SqlProfiles[Any]) -> ToolResult:
+        """Whitelist подключений таблицей."""
+        rows: list[dict[str, Any]] = []
+        for target in cfg.targets():
+            rows.append({cls.TARGET_COLUMN: target})
+
+        return TableResult(rows=rows)
+
+    @staticmethod
+    def result(result: SqlResult, errors: SqlErrors) -> ToolResult:
+        """Строки таблицей; запрос без выборки — счётчиком затронутых."""
+        if not result.returns_rows:
+            return AffectedSqlResult(
+                affected_rows=result.rowcount,
+                status=result.status,
+            )
+
+        return TableResult(rows=result.rows, note=errors.note(result.truncated))
+
+
+class SqlEmit:
+    """Выдача строк payload'ом: кадр на строку, лимит рвёт поток."""
+
+    @staticmethod
+    async def rows(
+        rows: AsyncIterator[Mapping[str, Any]],
+        emit: ChunkEmitter,
+        limit: int,
+    ) -> bool:
+        """True — строк было больше лимита, выдача усечена."""
+        emitted = 0
+        async for row in rows:
+            if emitted >= limit:
+                return True
+
+            emit(RowStream.encode(row))
+            emitted += 1
+
+        return False
+
+
+@dataclass(frozen=True)
+class CatalogQuery(Generic[TParams]):
+    """Каталожный запрос: текст плюс параметры в стиле драйвера."""
+
+    text: str
+    params: TParams
 
 
 class SqlRows:

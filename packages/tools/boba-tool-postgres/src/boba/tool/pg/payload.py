@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import codecs
 import sys
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any, ClassVar
 
 import psycopg
 from psycopg.rows import DictRow, dict_row
 
 from boba.db.postgres import PayloadPostgres, PostgresError
-from boba.toolkit.launcher import RowStream
 from boba.toolkit.payload import ChunkEmitter, PayloadEntry, PayloadError
-from boba.toolkit.sql import SqlQueryTrailer, SqlRows
+from boba.toolkit.sql import SqlEmit, SqlQueryTrailer, SqlRows
 
 
 class PostgresOps:
@@ -57,7 +56,7 @@ class PostgresOps:
                 await cur.execute(request["sql"], params)
                 if cur.description is None:
                     return cls._affected(cur).model_dump()
-                truncated = await cls._emit_rows(cur, emit, limit)
+                truncated = await SqlEmit.rows(cls._rows(cur), emit, limit)
             except psycopg.Error as e:
                 msg = f"query failed: {type(e).__name__}: {e}"
                 raise PayloadError("sql_failed", msg) from e
@@ -71,17 +70,12 @@ class PostgresOps:
         return trailer.model_dump()
 
     @classmethod
-    async def _emit_rows(
-        cls, cur: psycopg.AsyncCursor[DictRow], emit: ChunkEmitter, limit: int
-    ) -> bool:
-        """Кадр на строку; лишняя строка сверх лимита ловит усечение и рвёт поток."""
-        emitted = 0
+    async def _rows(
+        cls, cur: psycopg.AsyncCursor[DictRow]
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Строки курсора -> записи с JSON-совместимыми значениями."""
         async for row in cur:
-            if emitted >= limit:
-                return True
-            emit(RowStream.encode(SqlRows.of_mapping(row)))
-            emitted += 1
-        return False
+            yield SqlRows.of_mapping(row)
 
     @classmethod
     def _affected(cls, cur: psycopg.AsyncCursor[DictRow]) -> SqlQueryTrailer:

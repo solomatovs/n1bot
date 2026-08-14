@@ -1,4 +1,4 @@
-"""ClickHouse-инструменты только на чтение: профили, таблицы, схема, запрос."""
+"""ClickHouse-инструменты: профили, таблицы, схема, запрос — на общем SQL-слое."""
 
 from __future__ import annotations
 
@@ -8,31 +8,69 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.tool.ch.caller import ChCaller
-from boba.tool.ch.executor import (
-    ChExecutor,
-    ChExecutorConfig,
-    ChQueryError,
-)
-from boba.toolkit.launcher import (
-    CollectorCapacityError,
-    CollectorRowLimitError,
-    LauncherFactory,
-)
-from boba.toolkit.result import (
-    ErrorResult,
-    TableResult,
-    ToolResult,
-    pack_result,
+from boba.db.clickhouse import ClickHouseConfig
+from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.result import ToolResult, pack_result
+from boba.toolkit.sql import (
+    CatalogQuery,
+    SqlErrors,
+    SqlExecutor,
+    SqlPack,
+    SqlPayloadCaller,
+    SqlProfiles,
+    SqlQueryRequest,
 )
 
-__all__ = ["ChTools", "build_ch_tools"]
+__all__ = [
+    "ChCaller",
+    "ChCatalog",
+    "ChExecutorConfig",
+    "ChQueryRequest",
+    "ChTools",
+    "build_ch_tools",
+]
+
+ChParams = dict[str, Any]
+"""Именованные параметры ClickHouse под подстановку {name:Type}."""
 
 
-class ChTools:
-    """Собирает langchain-инструменты поверх ChExecutor."""
+class ChExecutorConfig(SqlProfiles[ClickHouseConfig]):
+    """Конфиг секции [tool.ch]."""
 
-    TABLES_SQL: ClassVar[str] = """
+    SECTION: ClassVar[str] = "tool.ch"
+
+    profiles: dict[str, ClickHouseConfig] = Field(
+        default_factory=dict,
+        description=(
+            "dict[connection_name, clickhouse-профиль ссылкой]: "
+            '`[tool.ch.profiles] main = "${clickhouse.main}"`. '
+            "Ключ — значение tool-arg `connection_name` (LLM выбирает БД по нему)."
+        ),
+    )
+
+
+class ChQueryRequest(SqlQueryRequest[ClickHouseConfig, ChParams]):
+    """Запрос строк с лимитом; параметры именованные, под {name:Type}."""
+
+    OP: ClassVar[str] = "ch_query"
+
+
+class ChCaller(SqlPayloadCaller[ClickHouseConfig, ChParams]):
+    """Вызов clickhouse-payload'а."""
+
+    ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.ch.payload")
+
+    REQUEST: ClassVar[type[SqlQueryRequest[Any, Any]]] = ChQueryRequest
+
+
+class ChCatalog:
+    """Каталожные запросы ClickHouse: фильтры уезжают именованными параметрами."""
+
+    SYSTEM_DATABASES: ClassVar[str] = (
+        "('system', 'INFORMATION_SCHEMA', 'information_schema')"
+    )
+
+    TABLES_SELECT: ClassVar[str] = """
 select
     database,
     name as table,
@@ -41,10 +79,12 @@ select
 from
     system.tables
 """
-    SYSTEM_DATABASES: ClassVar[str] = (
-        "('system', 'INFORMATION_SCHEMA', 'information_schema')"
-    )
-    COLUMNS_SQL: ClassVar[str] = """
+    TABLES_ORDER: ClassVar[str] = """
+order by
+    database,
+    name
+"""
+    COLUMNS_SELECT: ClassVar[str] = """
 select
     name,
     type,
@@ -54,6 +94,51 @@ select
 from
     system.columns
 """
+    COLUMNS_ORDER: ClassVar[str] = """
+order by
+    position
+"""
+
+    @classmethod
+    def tables(cls, ch_database: str | None) -> CatalogQuery[ChParams]:
+        """Таблицы и view; без фильтра системные базы исключаются."""
+        params: ChParams = {}
+
+        if ch_database:
+            condition = "database = {db:String}"
+            params["db"] = ch_database
+        else:
+            condition = f"database not in {cls.SYSTEM_DATABASES}"
+
+        text = cls._assemble(cls.TABLES_SELECT, [condition], cls.TABLES_ORDER)
+
+        return CatalogQuery(text=text, params=params)
+
+    @classmethod
+    def columns(cls, table: str, ch_database: str | None) -> CatalogQuery[ChParams]:
+        """Колонки таблицы; без базы берётся база по умолчанию у подключения."""
+        params: ChParams = {"table": table}
+        conditions = ["table = {table:String}"]
+
+        if ch_database:
+            conditions.append("database = {db:String}")
+            params["db"] = ch_database
+        else:
+            conditions.append("database = currentDatabase()")
+
+        text = cls._assemble(cls.COLUMNS_SELECT, conditions, cls.COLUMNS_ORDER)
+
+        return CatalogQuery(text=text, params=params)
+
+    @classmethod
+    def _assemble(cls, select: str, conditions: list[str], order: str) -> str:
+        where = "\n    and ".join(conditions)
+
+        return f"{select}where\n    {where}\n{order}"
+
+
+class ChTools:
+    """Собирает langchain-инструменты поверх общего SqlExecutor."""
 
     def __init__(
         self,
@@ -62,6 +147,7 @@ from
     ) -> None:
         self._caller = ChCaller("ch", launchers)
         self._cfg = cfg
+        self._errors = SqlErrors(max_rows=cfg.max_rows, max_bytes=cfg.max_bytes)
 
     def build(self) -> list[BaseTool]:
         return [
@@ -72,51 +158,35 @@ from
         ]
 
     @property
-    def _executor(self) -> ChExecutor:
-        return ChExecutor(cfg=self._cfg, caller=self._caller)
+    def _executor(self) -> SqlExecutor[ClickHouseConfig, ChParams]:
+        return SqlExecutor(cfg=self._cfg, caller=self._caller)
 
-    @staticmethod
-    def _note(executor: ChExecutor, truncated: bool) -> str | None:
-        if not truncated:
-            return None
-        return f"список усечён до max_rows ({executor.max_rows_cap})"
+    async def _catalog(
+        self,
+        query: CatalogQuery[ChParams],
+        connection_name: str,
+    ) -> ToolResult:
+        """Каталожный запрос: отказ упаковывается тем же пакером, что и данные."""
+        executor = self._executor
+        try:
+            result = await executor.execute(
+                query.text,
+                connection_name=connection_name,
+                row_limit=executor.max_rows_cap,
+                params=query.params,
+            )
+        except SqlErrors.CATCHES as e:
+            return self._errors.pack(e)
 
-    @staticmethod
-    def _failed(error: ChQueryError) -> ErrorResult:
-        return ErrorResult(message=str(error), error_kind="sql_failed")
-
-    @staticmethod
-    def _unknown_target(error: ValueError) -> ErrorResult:
-        return ErrorResult(message=str(error), error_kind="unknown_target")
-
-    @staticmethod
-    def _too_large(executor: ChExecutor) -> ErrorResult:
-        return ErrorResult(
-            message=(
-                f"результат превысил лимит {executor.max_bytes} символов; "
-                f"добавьте LIMIT в запрос"
-            ),
-            error_kind="result_too_large",
-        )
-
-    @staticmethod
-    def _too_many_rows(executor: ChExecutor) -> ErrorResult:
-        return ErrorResult(
-            message=(
-                f"запрос вернул больше {executor.max_rows_cap} строк; "
-                f"добавьте LIMIT в запрос"
-            ),
-            error_kind="too_many_rows",
-        )
+        return SqlPack.result(result, self._errors)
 
     def _list_targets(self) -> BaseTool:
         cfg = self._cfg
 
         @tool(response_format="content_and_artifact")
-        def ch_list_targets() -> tuple[str, ToolResult]:
+        async def ch_list_targets() -> tuple[str, ToolResult]:
             """Список доступных значений connection_name для ClickHouse-инструментов."""
-            rows = [{"connection_name": target} for target in cfg.targets()]
-            return pack_result(TableResult(rows=rows))
+            return pack_result(SqlPack.targets(cfg))
 
         return ch_list_targets
 
@@ -124,7 +194,7 @@ from
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def ch_list_tables(
+        async def ch_list_tables(
             connection_name: Annotated[
                 str,
                 Field(min_length=1, description="Имя подключения"),
@@ -141,44 +211,9 @@ from
             ] = None,
         ) -> tuple[str, ToolResult]:
             """Список таблиц/view подключения. Колонки: database, table, engine."""
-            executor = owner._executor
-            params: dict[str, Any] = {}
-            if ch_database:
-                sql = owner.TABLES_SQL + (
-                    "where\n"
-                    "    database = {db:String}\n"
-                    "order by\n"
-                    "    database,\n"
-                    "    name\n"
-                )
-                params = {"db": ch_database}
-            else:
-                sql = owner.TABLES_SQL + (
-                    "where\n"
-                    f"    database not in {owner.SYSTEM_DATABASES}\n"
-                    "order by\n"
-                    "    database,\n"
-                    "    name\n"
-                )
+            query = ChCatalog.tables(ch_database)
 
-            try:
-                result = executor.execute(
-                    sql,
-                    connection_name=connection_name,
-                    row_limit=executor.max_rows_cap,
-                    params=params,
-                )
-            except ValueError as e:
-                return pack_result(owner._unknown_target(e))
-            except ChQueryError as e:
-                return pack_result(owner._failed(e))
-
-            return pack_result(
-                TableResult(
-                    rows=result.rows,
-                    note=owner._note(executor, result.truncated),
-                )
-            )
+            return pack_result(await owner._catalog(query, connection_name))
 
         return ch_list_tables
 
@@ -186,7 +221,7 @@ from
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def ch_describe_table(
+        async def ch_describe_table(
             connection_name: Annotated[
                 str,
                 Field(min_length=1, description="Имя коннекшина БД"),
@@ -205,44 +240,9 @@ from
             ] = None,
         ) -> tuple[str, ToolResult]:
             """Схема таблицы: колонки, типы, default-выражения, комментарии."""
-            executor = owner._executor
-            params: dict[str, Any] = {"table": table}
-            if ch_database:
-                sql = owner.COLUMNS_SQL + (
-                    "where\n"
-                    "    database = {db:String}\n"
-                    "    and table = {table:String}\n"
-                    "order by\n"
-                    "    position\n"
-                )
-                params["db"] = ch_database
-            else:
-                sql = owner.COLUMNS_SQL + (
-                    "where\n"
-                    "    database = currentDatabase()\n"
-                    "    and table = {table:String}\n"
-                    "order by\n"
-                    "    position\n"
-                )
+            query = ChCatalog.columns(table, ch_database)
 
-            try:
-                result = executor.execute(
-                    sql,
-                    connection_name=connection_name,
-                    row_limit=executor.max_rows_cap,
-                    params=params,
-                )
-            except ValueError as e:
-                return pack_result(owner._unknown_target(e))
-            except ChQueryError as e:
-                return pack_result(owner._failed(e))
-
-            return pack_result(
-                TableResult(
-                    rows=result.rows,
-                    note=owner._note(executor, result.truncated),
-                )
-            )
+            return pack_result(await owner._catalog(query, connection_name))
 
         return ch_describe_table
 
@@ -250,15 +250,14 @@ from
         owner = self
 
         @tool(response_format="content_and_artifact")
-        def ch_query(
+        async def ch_query(
             sql: Annotated[
                 str,
                 Field(
                     min_length=1,
                     description=(
-                        "Произвольный read-only SQL ClickHouse. Сессия открыта "
-                        "с readonly, запись и DDL отклоняются сервером. Если "
-                        "строк больше лимита — добавьте LIMIT в сам запрос."
+                        "Произвольный SQL ClickHouse. Если строк больше лимита "
+                        "— добавьте LIMIT в сам запрос."
                     ),
                 ),
             ],
@@ -267,29 +266,19 @@ from
                 Field(min_length=1, description="Имя подключения"),
             ],
         ) -> tuple[str, ToolResult]:
-            """Выполнить read-only SQL на подключении connection_name."""
+            """Выполнить SQL на подключении connection_name."""
             executor = owner._executor
             try:
-                result = executor.execute(
+                result = await executor.execute(
                     sql,
                     connection_name=connection_name,
                     row_limit=executor.max_rows_cap,
+                    params={},
                 )
-            except CollectorCapacityError:
-                return pack_result(owner._too_large(executor))
-            except CollectorRowLimitError:
-                return pack_result(owner._too_many_rows(executor))
-            except ValueError as e:
-                return pack_result(owner._unknown_target(e))
-            except ChQueryError as e:
-                return pack_result(owner._failed(e))
+            except SqlErrors.CATCHES as e:
+                return pack_result(owner._errors.pack(e))
 
-            return pack_result(
-                TableResult(
-                    rows=result.rows,
-                    note=owner._note(executor, result.truncated),
-                )
-            )
+            return pack_result(SqlPack.result(result, owner._errors))
 
         return ch_query
 

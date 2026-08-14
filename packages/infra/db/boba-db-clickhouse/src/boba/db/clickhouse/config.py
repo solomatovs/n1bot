@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from boba.krb import KeytabConfig
+from boba.toolkit.sql import ConnectionProfile
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]
 
@@ -64,13 +65,10 @@ class ClickHouseSettingsConfig(BaseModel):
         return settings
 
 
-class ClickHouseConfig(BaseModel):
+class ClickHouseConfig(ConnectionProfile):
     """Параметры clickhouse_connect.AsyncClient (HTTP-интерфейс) + настройки сессии."""
 
     model_config = ConfigDict(extra="ignore")
-
-    # readonly=2: запись и DDL запрещены, менять настройки сессии по-прежнему можно
-    READ_ONLY: ClassVar[int] = 2
 
     # ключ контекста сериализации: пароль раскрывается только в доверенный канал
     REVEAL_SECRETS: ClassVar[str] = "reveal_secrets"
@@ -257,11 +255,6 @@ class ClickHouseConfig(BaseModel):
 
         client["settings"] = self.settings.to_settings()
         return client
-
-    def read_only(self) -> ClickHouseConfig:
-        """Копия профиля с сессией только на чтение."""
-        settings = self.settings.model_copy(update={"readonly": self.READ_ONLY})
-        return self.model_copy(update={"settings": settings})
 
     def with_database(self, database: str) -> ClickHouseConfig:
         """Копия профиля с другой базой по умолчанию."""
