@@ -20,7 +20,6 @@ from boba.sandbox.runner import (
     SandboxMountError,
     SandboxOutcome,
     SandboxRunner,
-    ToolCallContext,
     has_bwrap,
 )
 
@@ -42,7 +41,6 @@ __all__ = [
     "SandboxRunner",
     "SandboxToolConfig",
     "TmpfsSpec",
-    "ToolCallContext",
     "build_bwrap_argv",
     "has_bwrap",
 ]

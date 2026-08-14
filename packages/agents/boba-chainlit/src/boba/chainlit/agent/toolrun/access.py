@@ -9,7 +9,7 @@ from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 
-from boba.chainlit.agent.tools.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
 
 logger = logging.getLogger(__name__)
 

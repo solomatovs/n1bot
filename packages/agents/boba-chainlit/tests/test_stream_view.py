@@ -22,10 +22,11 @@ from chainlit.step import Step
 from langchain.tools import tool
 from langchain_core.messages import ToolMessage
 
-from boba.chainlit.agent.tools.stream_tap import ToolStreamTapGuard
+from boba.chainlit.agent.toolrun.stream_tap import ToolStreamTapGuard
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.data.stream_journal import DirVault, StreamJournal
 from boba.chainlit.domain.stream import JournalWindow
+from boba.chainlit.infra.plugins import tap_source
 from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -110,7 +111,7 @@ class TestTapThroughLangchain:
                 sink.feed(f"ran: {command}".encode())
             return "done"
 
-        ToolStreamTapGuard.guard_all([fake_bash])
+        ToolStreamTapGuard.guard_all([fake_bash], tap_source)
         return fake_bash, seen
 
     async def _invoke(self, *, streamable: bool = True) -> list[object]:

@@ -14,7 +14,6 @@ import os
 import shlex
 import sys
 from collections.abc import Callable, Mapping
-from contextvars import ContextVar, Token
 from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
@@ -27,7 +26,7 @@ from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.binaries import SandboxBinary
 from boba.toolkit.launcher import LauncherError, LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
-from boba.toolkit.stream import StreamSink, ToolStreamTap
+from boba.toolkit.stream import StreamSink, ToolCallContext, ToolStreamTap
 from boba.workspace.launcher import (
     LauncherExit,
     LauncherMarker,
@@ -52,7 +51,6 @@ __all__ = [
     "SandboxMountError",
     "SandboxOutcome",
     "SandboxRunner",
-    "ToolCallContext",
     "has_bwrap",
 ]
 
@@ -415,20 +413,3 @@ class SandboxRunner:
         msg = f"sandbox: image not mounted: {result.stderr.strip()}"
         raise SandboxMountError(msg)
 
-
-class ToolCallContext:
-    """Имя langchain-инструмента в текущем контексте выполнения."""
-
-    _name: ClassVar[ContextVar[str]] = ContextVar("tool_call_name", default="")
-
-    @classmethod
-    def set(cls, name: str) -> Token[str]:
-        return cls._name.set(name)
-
-    @classmethod
-    def reset(cls, token: Token[str]) -> None:
-        cls._name.reset(token)
-
-    @classmethod
-    def get(cls) -> str:
-        return cls._name.get()
