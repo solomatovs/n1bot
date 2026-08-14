@@ -6,7 +6,6 @@ payload объявил ожидаемый отказ (СУБД недоступ�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from boba.db.postgres import PostgresConfig
@@ -15,37 +14,21 @@ from boba.tool.pg.protocol import (
     PgCopyTrailer,
     PgQueryRequest,
 )
-from boba.toolkit.launcher import ChunkSink, LauncherFactory
-from boba.toolkit.sql import SqlQueryTrailer
+from boba.toolkit.launcher import ChunkSink
+from boba.toolkit.sql import SqlPayloadCaller, SqlQueryRequest
 
-__all__ = ["PgCaller"]
+__all__ = ["PgCaller", "PgParams"]
+
+PgParams = tuple[Any, ...]
+"""Позиционные параметры psycopg под плейсхолдеры %s."""
 
 
-class PgCaller:
-    """Один вызов payload'а на запрос; пул не переживает вызов по построению."""
+class PgCaller(SqlPayloadCaller[PostgresConfig, PgParams]):
+    """Запрос строк общим вызовом плюс своя выгрузка COPY."""
 
     ENTRY: ClassVar[tuple[str, ...]] = ("python3", "-m", "boba.tool.pg.payload")
 
-    def __init__(self, tool: str, launchers: LauncherFactory) -> None:
-        self._caller = launchers(tool)
-
-    def query(
-        self,
-        *,
-        connection: PostgresConfig,
-        sql: str,
-        params: Sequence[Any],
-        row_limit: int,
-        sink: ChunkSink,
-    ) -> SqlQueryTrailer:
-        request = PgQueryRequest(
-            op=PgQueryRequest.OP,
-            connection=connection,
-            sql=sql,
-            params=tuple(params),
-            row_limit=row_limit,
-        )
-        return self._caller.call_stream(self.ENTRY, request, sink, SqlQueryTrailer)
+    REQUEST: ClassVar[type[SqlQueryRequest[Any, Any]]] = PgQueryRequest
 
     def copy(
         self,
@@ -61,4 +44,5 @@ class PgCaller:
             sql=sql,
             max_bytes=max_bytes,
         )
-        return self._caller.call_stream(self.ENTRY, request, sink, PgCopyTrailer)
+
+        return self._caller.call_stream(type(self).ENTRY, request, sink, PgCopyTrailer)

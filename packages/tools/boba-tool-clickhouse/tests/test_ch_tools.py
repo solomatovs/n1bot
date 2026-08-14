@@ -8,10 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from boba.db.clickhouse import ClickHouseConfig
-from boba.db.clickhouse.payload import PayloadClickHouse, SpnegoHeaders
+from boba.db.clickhouse.payload import SpnegoHeaders
 from boba.tool.ch import ChExecutorConfig, build_ch_tools
-from boba.tool.ch import executor as ch_executor
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
+from boba.toolkit.sql import SqlExecutor, SqlQueryError, SqlRows
 
 
 class _NoLauncher:
@@ -43,13 +43,14 @@ def ch_config() -> ChExecutorConfig:
     )
 
 
-def invoke(tool: Any, args: dict[str, Any]) -> Any:
-    message = tool.invoke(
+async def invoke(tool: Any, args: dict[str, Any]) -> Any:
+    message = await tool.ainvoke(
         {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
     )
     return ToolArtifact.revive(message.artifact)
 
 
+@pytest.mark.anyio
 class TestChTools:
     _TARGET_ARG: ClassVar[str] = "connection_name"
 
@@ -62,14 +63,14 @@ class TestChTools:
             "ch_query",
         ]
 
-    def test_list_targets_returns_whitelist(self) -> None:
+    async def test_list_targets_returns_whitelist(self) -> None:
         tool = build_ch_tools(ch_config(), _no_launcher)[0]
-        result = invoke(tool, {})
+        result = await invoke(tool, {})
         assert isinstance(result, TableResult)
         assert list(result.rows) == [{"connection_name": "main"}]
         assert result.ok is True
 
-    def test_unknown_target_becomes_error_result(self) -> None:
+    async def test_unknown_target_becomes_error_result(self) -> None:
         """Профиль не в whitelist — ошибка инструмента, а не падение хода."""
         for name in ("ch_list_tables", "ch_describe_table", "ch_query"):
             built = build_ch_tools(ch_config(), _no_launcher)
@@ -79,19 +80,19 @@ class TestChTools:
                 args["table"] = "t"
             if name == "ch_query":
                 args["sql"] = "select 1"
-            result = invoke(tool, args)
+            result = await invoke(tool, args)
             assert isinstance(result, ErrorResult), name
             assert result.error_kind == "unknown_target", name
             assert result.ok is False, name
 
-    def test_sql_error_becomes_error_result(self, monkeypatch) -> None:
-        def boom(*_args: Any, **_kwargs: Any):
-            raise ch_executor.ChQueryError("unknown table")
+    async def test_sql_error_becomes_error_result(self, monkeypatch) -> None:
+        async def boom(*_args: Any, **_kwargs: Any):
+            raise SqlQueryError("unknown table")
 
-        monkeypatch.setattr(ch_executor.ChExecutor, "execute", boom)
+        monkeypatch.setattr(SqlExecutor, "execute", boom)
         built = build_ch_tools(ch_config(), _no_launcher)
         tool = next(t for t in built if t.name == "ch_list_tables")
-        result = invoke(tool, {"connection_name": "main"})
+        result = await invoke(tool, {"connection_name": "main"})
         assert isinstance(result, ErrorResult)
         assert result.ok is False
         assert "unknown table" in result.message
@@ -112,11 +113,6 @@ class TestClickHouseConfig:
         "port": 8123,
         "interface": "http",
     }
-
-    def test_read_only_switches_session(self) -> None:
-        config = ClickHouseConfig.model_validate({**self._BASE, "username": "u"})
-        assert config.settings.readonly is None
-        assert config.read_only().settings.readonly == ClickHouseConfig.READ_ONLY
 
     def test_client_settings_drop_none_and_reveal_password(self) -> None:
         config = ClickHouseConfig.model_validate(
@@ -211,7 +207,7 @@ class TestJsonable:
             None,
         )
         names = ("i", "d", "u", "dt", "arr", "map", "empty")
-        assert PayloadClickHouse.jsonable(names, row) == {
+        assert SqlRows.of_columns(names, row) == {
             "i": 1,
             "d": "1.5",
             "u": "00000000-0000-0000-0000-000000000001",

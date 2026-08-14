@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 
@@ -67,7 +67,7 @@ class SpnegoHeaders(dict[str, str]):
 
 
 class PayloadClickHouse:
-    """Клиент по параметрам запроса и JSON-совместимые строки результата."""
+    """Клиент по параметрам запроса; строки приводит SqlRows вызывающей стороны."""
 
     @staticmethod
     @asynccontextmanager
@@ -132,29 +132,3 @@ class PayloadClickHouse:
         except (DriverError, OSError) as e:
             msg = f"connect failed: {type(e).__name__}: {e}"
             raise ClickHouseError(msg) from e
-
-    @classmethod
-    def jsonable(cls, names: Sequence[str], row: Sequence[Any]) -> dict[str, Any]:
-        """Строка-кортеж ClickHouse -> словарь с JSON-совместимыми значениями."""
-        out: dict[str, Any] = {}
-        for index, name in enumerate(names):
-            out[name] = cls.scalar(row[index])
-        return out
-
-    @classmethod
-    def scalar(cls, value: Any) -> Any:
-        if value is None or isinstance(value, (bool, int, float, str)):
-            return value
-        if isinstance(value, (list, tuple, set)):
-            items: list[Any] = []
-            for item in value:
-                items.append(cls.scalar(item))
-            return items
-        if isinstance(value, dict):
-            mapping: dict[str, Any] = {}
-            for key, item in value.items():
-                mapping[str(key)] = cls.scalar(item)
-            return mapping
-        if isinstance(value, (bytes, bytearray, memoryview)):
-            return bytes(value).decode("utf-8", errors="replace")
-        return str(value)
