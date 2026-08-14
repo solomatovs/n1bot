@@ -10,9 +10,9 @@ from typing import ClassVar, cast
 
 from langchain_core.tools import BaseTool
 
-from boba.chainlit.agent.tools.wrapping import AsyncCall, SyncCall, ToolBody
-from boba.sandbox.runner import ToolCallContext
+from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
 from boba.toolkit.result import ToolResult, ToolResultBase, render_for_llm
+from boba.toolkit.stream import ToolCallContext
 
 __all__ = ["ToolRunLogger"]
 

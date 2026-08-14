@@ -14,7 +14,7 @@ import threading
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -25,6 +25,7 @@ __all__ = [
     "StreamSink",
     "StreamWindow",
     "TeeChunkSink",
+    "ToolCallContext",
     "ToolStreamBuffer",
     "ToolStreamTap",
 ]
@@ -144,6 +145,27 @@ class ToolStreamTap:
     @classmethod
     def get(cls) -> StreamSink | None:
         return cls._SINK.get()
+
+
+class ToolCallContext:
+    """Имя инструмента в текущем контексте выполнения.
+
+    Ставит обвязка вызова, читает исполнитель — метка идёт в его логи.
+    """
+
+    _NAME: ClassVar[ContextVar[str]] = ContextVar("tool_call_name", default="")
+
+    @classmethod
+    def set(cls, name: str) -> Token[str]:
+        return cls._NAME.set(name)
+
+    @classmethod
+    def reset(cls, token: Token[str]) -> None:
+        cls._NAME.reset(token)
+
+    @classmethod
+    def get(cls) -> str:
+        return cls._NAME.get()
 
 
 class TeeChunkSink(ChunkSink):

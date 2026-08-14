@@ -8,7 +8,7 @@ from functools import wraps
 from langchain_core.tools import BaseTool
 
 from boba.cancellation import current_cancellation
-from boba.chainlit.agent.tools.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
 
 __all__ = ["CancellableTools"]
 

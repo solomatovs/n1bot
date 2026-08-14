@@ -11,6 +11,7 @@ from typing import ClassVar, Protocol
 import pytest
 from pydantic import BaseModel, SecretStr
 
+from boba.tool.ch import ChCaller, ChQueryRequest
 from boba.tool.chart.caller import ChartCaller
 from boba.tool.doc.engine import DocEngine
 from boba.tool.doc.liteparse import LiteParseCaller
@@ -27,7 +28,6 @@ from boba.tool.kb.confluence.protocol import (
     ConfluenceSearchRequest,
     ConfluenceSpacesRequest,
 )
-from boba.tool.ch import ChCaller, ChQueryRequest
 from boba.tool.kb.html.caller import HtmlCaller
 from boba.tool.pg.caller import PgCaller
 from boba.tool.pg.protocol import PgQueryRequest

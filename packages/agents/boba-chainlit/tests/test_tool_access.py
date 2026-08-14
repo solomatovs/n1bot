@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from boba.chainlit.agent.tools.access import (
+from boba.chainlit.agent.toolrun.access import (
     ToolAccess,
     ToolAccessDeniedError,
     ToolAccessGuard,

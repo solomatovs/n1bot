@@ -21,8 +21,8 @@ from boba.cancellation import (
     current_cancellation,
     turn_cancellation,
 )
+from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
-from boba.chainlit.agent.tools.cancellation import CancellableTools
 from boba.sandbox import SandboxCaller, SandboxProfile, SandboxToolConfig
 from boba.toolkit.result import ErrorResult
 from boba.transport.http import CancellableHttpTransport, HttpProfile, HttpRequest

@@ -11,13 +11,13 @@ from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict
 
-from boba.chainlit.agent.tools.access import ToolAccess, ToolAccessGuard
-from boba.chainlit.agent.tools.cancellation import CancellableTools
+from boba.chainlit.agent.toolrun.access import ToolAccess, ToolAccessGuard
+from boba.chainlit.agent.toolrun.cancellation import CancellableTools
+from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
+from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
+from boba.chainlit.agent.toolrun.stream_tap import ToolStreamTapGuard
 from boba.chainlit.agent.tools.canvas import CanvasToolConfig
 from boba.chainlit.agent.tools.diagram import DiagramToolConfig
-from boba.chainlit.agent.tools.errors import ToolErrorGuard
-from boba.chainlit.agent.tools.run_log import ToolRunLogger
-from boba.chainlit.agent.tools.stream_tap import ToolStreamTapGuard
 from boba.chainlit.domain.session import (
     current_thread_id,
     current_user_id,
@@ -50,9 +50,10 @@ from boba.tool.pg import PgExecutorConfig, build_pg_tools
 from boba.tool.shell import BashToolConfig, build_bash_tool
 from boba.tool.web import WebGrepConfig, build_web_tools
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
+from boba.toolkit.stream import StreamSink
 from boba.toolkit.types import StringList
 
-__all__ = ["PluginMeta", "ToolPlugin", "ToolRegistry", "load_tools"]
+__all__ = ["PluginMeta", "ToolPlugin", "ToolRegistry", "load_tools", "tap_source"]
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,19 @@ def _build_stream_logs_tools(
     )
 
     return build_stream_logs_tools(cfg)
+
+
+def tap_source(tool: str) -> StreamSink | None:
+    """Приёмник живого вывода вызова: окно из реестра текущего треда."""
+    thread_id = current_thread_id()
+    if thread_id is None:
+        return None
+
+    stream = ToolStreams.claim(thread_id, tool)
+    if stream is None:
+        return None
+
+    return stream.recorder
 
 
 def _sandbox_path_vars() -> dict[str, str]:
@@ -369,7 +383,7 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
 
     access = ToolAccess(roles_by_tool)
     ToolRunLogger.guard_all(tools)
-    ToolStreamTapGuard.guard_all(tools)
+    ToolStreamTapGuard.guard_all(tools, tap_source)
     CancellableTools.guard_all(tools)
     ToolAccessGuard.guard_all(tools, access, current_user_roles)
     ToolErrorGuard.guard_all(tools)
