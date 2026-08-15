@@ -1,4 +1,4 @@
-"""Обвязка ClickHouse-инструментов: имена, whitelist, ошибки, конфиг, SPNEGO."""
+"""ClickHouse-инструменты новой модели: состав, whitelist, ошибки, SPNEGO."""
 
 from __future__ import annotations
 
@@ -9,27 +9,15 @@ from pydantic import ValidationError
 
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.clickhouse.payload import SpnegoHeaders
-from boba.tool.ch import ChExecutorConfig, build_ch_tools
-from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
-from boba.toolkit.sql import SqlExecutor, SqlQueryError, SqlRows
+from boba.tool.ch.tools import TOOLS as CH_TOOLS
+from boba.tool.ch.tools import ChToolConfig, ch_list_targets, ch_query
+from boba.toolkit.entry import ExpectedErrors, ToolMain
+from boba.toolkit.result import TableResult
+from boba.toolkit.sql import UnknownConnectionError
 
 
-class _NoLauncher:
-    """Исполнитель-заглушка: тесты проверяют обвязку, песочница им не нужна."""
-
-    def call_text(self, command: str, stdin: str) -> Any:
-        raise AssertionError("песочница не должна вызываться")
-
-    def call_stream(self, entry: Any, request: Any, sink: Any, trailer: Any) -> Any:
-        raise AssertionError("песочница не должна вызываться")
-
-
-def _no_launcher(tool: str) -> Any:
-    return _NoLauncher()
-
-
-def ch_config() -> ChExecutorConfig:
-    return ChExecutorConfig.model_validate(
+def ch_config() -> ChToolConfig:
+    return ChToolConfig.model_validate(
         {
             "profiles": {
                 "main": {
@@ -43,63 +31,43 @@ def ch_config() -> ChExecutorConfig:
     )
 
 
-async def invoke(tool: Any, args: dict[str, Any]) -> Any:
-    message = await tool.ainvoke(
-        {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
-    )
-    return ToolArtifact.revive(message.artifact)
-
-
 @pytest.mark.anyio
 class TestChTools:
-    _TARGET_ARG: ClassVar[str] = "connection_name"
+    _NAMES: ClassVar[list[str]] = [
+        "ch_list_targets",
+        "ch_list_tables",
+        "ch_describe_table",
+        "ch_query",
+    ]
 
-    def test_all_four_are_built(self) -> None:
-        names = [t.name for t in build_ch_tools(ch_config(), _no_launcher)]
-        assert names == [
-            "ch_list_targets",
-            "ch_list_tables",
-            "ch_describe_table",
-            "ch_query",
-        ]
+    def test_module_declares_the_toolset(self) -> None:
+        names = [t.name for t in CH_TOOLS]
+        assert names == self._NAMES
 
     async def test_list_targets_returns_whitelist(self) -> None:
-        tool = build_ch_tools(ch_config(), _no_launcher)[0]
-        result = await invoke(tool, {})
-        assert isinstance(result, TableResult)
-        assert list(result.rows) == [{"connection_name": "main"}]
-        assert result.ok is True
+        body = ToolMain.toolset(ch_list_targets)[0].coroutine
+        assert body is not None
+        _content, artifact = await body(cfg=ch_config())
 
-    async def test_unknown_target_becomes_error_result(self) -> None:
-        """Профиль не в whitelist — ошибка инструмента, а не падение хода."""
-        for name in ("ch_list_tables", "ch_describe_table", "ch_query"):
-            built = build_ch_tools(ch_config(), _no_launcher)
-            tool = next(t for t in built if t.name == name)
-            args: dict[str, Any] = {self._TARGET_ARG: "нет-такого"}
-            if name == "ch_describe_table":
-                args["table"] = "t"
-            if name == "ch_query":
-                args["sql"] = "select 1"
-            result = await invoke(tool, args)
-            assert isinstance(result, ErrorResult), name
-            assert result.error_kind == "unknown_target", name
-            assert result.ok is False, name
+        assert isinstance(artifact, TableResult)
+        assert list(artifact.rows) == [{"connection_name": "main"}]
+        assert artifact.ok is True
 
-    async def test_sql_error_becomes_error_result(self, monkeypatch) -> None:
-        async def boom(*_args: Any, **_kwargs: Any):
-            raise SqlQueryError("unknown table")
+    async def test_unknown_target_raises_domain_error(self) -> None:
+        """Профиль не в whitelist — доменное исключение с kind в EXPECTED."""
+        from boba.tool.ch.tools import EXPECTED
 
-        monkeypatch.setattr(SqlExecutor, "execute", boom)
-        built = build_ch_tools(ch_config(), _no_launcher)
-        tool = next(t for t in built if t.name == "ch_list_tables")
-        result = await invoke(tool, {"connection_name": "main"})
-        assert isinstance(result, ErrorResult)
-        assert result.ok is False
-        assert "unknown table" in result.message
+        body = ToolMain.toolset(ch_query)[0].coroutine
+        assert body is not None
+        with pytest.raises(UnknownConnectionError) as caught:
+            await body(sql="select 1", connection_name="нет-такого", cfg=ch_config())
+
+        kind = ExpectedErrors.kind_of(caught.value, dict(EXPECTED))
+        assert kind == "unknown_target"
 
     def test_profiles_are_required(self) -> None:
         with pytest.raises(ValidationError, match="no profiles configured"):
-            ChExecutorConfig.model_validate({"profiles": {}})
+            ChToolConfig.model_validate({"profiles": {}})
 
 
 class TestClickHouseConfig:
@@ -197,17 +165,18 @@ class TestJsonable:
         from decimal import Decimal
         from uuid import UUID
 
-        row = (
-            1,
-            Decimal("1.5"),
-            UUID("00000000-0000-0000-0000-000000000001"),
-            date(2026, 1, 2),
-            (1, 2),
-            {"k": b"v"},
-            None,
-        )
-        names = ("i", "d", "u", "dt", "arr", "map", "empty")
-        assert SqlRows.of_columns(names, row) == {
+        from boba.toolkit.launcher import RowStream
+
+        row = {
+            "i": 1,
+            "d": Decimal("1.5"),
+            "u": UUID("00000000-0000-0000-0000-000000000001"),
+            "dt": date(2026, 1, 2),
+            "arr": (1, 2),
+            "map": {"k": b"v"},
+            "empty": None,
+        }
+        assert RowStream.plain(row) == {
             "i": 1,
             "d": "1.5",
             "u": "00000000-0000-0000-0000-000000000001",

@@ -1,92 +1,233 @@
-"""Инструменты поиска по KB; канал (vector/fts) и коллекция зашиты в сам инструмент."""
+"""KB-поиск: функции уровня модуля, модуль — обычная программа.
 
-from typing import Annotated
+Эмбеддинг (fastembed/ONNX) и SQL исполняются в теле — потому оно живёт в
+песочнице: инференс над недоверенным текстом не идёт в процессе приложения.
 
-from langchain.tools import tool
-from langchain_core.tools import BaseTool
+Ошибки:
+PostgresError — до базы знаний не достучаться (сеть, libpq, kerberos).
+psycopg.Error — СУБД отклонила поисковый запрос.
+Отсутствие весов эмбеддера ожидаемым не считается: это дефект сборки
+rootfs, и трейсбек там по делу.
+"""
+
+from __future__ import annotations
+
+import sys
+from collections.abc import Mapping
+from enum import StrEnum
+from typing import Annotated, Any, ClassVar, Final
+
+import psycopg
+from langchain_core.tools import InjectedToolArg, tool
+from psycopg import sql
+from psycopg.rows import dict_row
 from pydantic import Field
 
-from boba.tool.kb.caller import KbCaller
+from boba.db.postgres import PayloadPostgres, PostgresConfig, PostgresError
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
+from boba.tool.kb.models import SearchHit
 from boba.tool.kb.search import (
     CollectionSearch,
     ConfluenceCollection,
     KbSearch,
-    SearchMethod,
 )
-from boba.toolkit.launcher import LauncherFactory
-from boba.toolkit.result import ToolResult, pack_result
-
-__all__ = ["KbTools", "build_kb_tools"]
+from boba.toolkit.entry import ToolMain
+from boba.toolkit.result import TableResult, ToolResult, render_for_llm
 
 
-class KbTools:
-    """Собирает langchain-инструменты поиска поверх KbSearch."""
+class KbToolConfig(PostgresKnowledgeBaseConfig):
+    """Конфиг kb-поиска: подключение, таблицы, эмбеддер; секция [tool.kb]."""
 
-    def __init__(
-        self,
-        cfg: PostgresKnowledgeBaseConfig,
-        launchers: LauncherFactory,
-    ) -> None:
-        self._cfg = cfg
-        self._caller = KbCaller("kb", launchers)
+    SECTION: ClassVar[str] = "tool.kb"
 
-    def build(self) -> list[BaseTool]:
-        return [
-            self._search(
-                "kb_vector_search",
-                ConfluenceCollection,
-                "vector",
-                "Семантический (vector) поиск по коллекции Confluence-страниц.",
-            ),
-            self._search(
-                "kb_fts_search",
-                ConfluenceCollection,
-                "fts",
-                "Полнотекстовый (fts) поиск по коллекции Confluence-страниц.",
-            ),
-        ]
+    def revealed(self) -> dict[str, object]:
+        """JSON-совместимый дамп с раскрытым паролем подключения.
 
-    def _search(
-        self,
-        name: str,
-        collection: type[CollectionSearch],
-        method: SearchMethod,
-        summary: str,
-    ) -> BaseTool:
-        cfg = self._cfg
-        caller = self._caller
-        query_desc = (
-            KbSearch.QUERY_DESC_VECTOR
-            if method == "vector"
-            else KbSearch.QUERY_DESC_FTS
+        Едет только в tool_stdin песочного вызова; обязан собираться обратно
+        в тот же тип — SecretStr оживает из открытой строки.
+        """
+        return self.model_dump(
+            mode="json",
+            context={PostgresConfig.REVEAL_SECRETS: True},
         )
 
-        description = (
-            f"{summary}\n\nВозвращает таблицу hits с колонками id/distance/"
-            "link/snippet и метаданными, по релевантности."
+
+class KbErrorKind(StrEnum):
+    """Ожидаемые отказы kb-поиска."""
+
+    DATABASE_UNAVAILABLE = "database_unavailable"
+    QUERY_FAILED = "kb_query_failed"
+
+
+class KbRows:
+    """Строка выдачи SQL -> SearchHit -> строка таблицы коллекции."""
+
+    @classmethod
+    def hit(cls, row: dict[str, Any], *, vector: bool) -> SearchHit:
+        if vector:
+            distance = float(row["distance"])
+        else:
+            distance = -float(row["rank"])
+
+        return SearchHit(
+            id=row["chunk_id"],
+            distance=distance,
+            metadata=cls._metadata(row),
+            snippet=row["snippet"] or "",
+            tags=tuple(row.get("tags") or ()),
         )
 
-        @tool(name, description=description, response_format="content_and_artifact")
-        def search(
-            query: Annotated[str, Field(min_length=1, description=query_desc)],
-            top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
-            snippet_chars: Annotated[
-                int,
-                Field(ge=1, description=KbSearch.SNIPPET_DESC),
-            ] = KbSearch.SNIPPET_DEFAULT,
-        ) -> tuple[str, ToolResult]:
-            return pack_result(
-                KbSearch.run(
-                    cfg, caller, collection, query, method, top_k, snippet_chars
-                )
-            )
+    @staticmethod
+    def _metadata(row: dict[str, Any]) -> dict[str, str]:
+        raw = row.get("metadata") or {}
+        out: dict[str, str] = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                if value is not None:
+                    out[str(key)] = str(value)
 
-        return search
+        for key in ("source_id", "chunk_index", "content_hash"):
+            value = row.get(key)
+            if value is not None:
+                out.setdefault(key, str(value))
+
+        return out
 
 
-def build_kb_tools(
-    cfg: PostgresKnowledgeBaseConfig,
-    launchers: LauncherFactory,
-) -> list[BaseTool]:
-    return KbTools(cfg, launchers).build()
+def _embed(cfg: KbToolConfig, query: str) -> tuple[list[float], int]:
+    """Вектор запроса и его размерность — их ждёт SQL-шаблон."""
+    from fastembed import (  # noqa: PLC0415 # pyright: ignore[reportMissingImports]
+        TextEmbedding,
+    )
+
+    encoder = TextEmbedding(
+        model_name=cfg.embedding.model, cache_dir=cfg.embedding.cache_dir
+    )
+    vector = next(iter(encoder.embed([query])))
+
+    values: list[float] = []
+    for item in vector:
+        values.append(float(item))
+
+    return values, len(values)
+
+
+async def _select(
+    cfg: KbToolConfig,
+    statement: sql.Composed,
+    params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    conn = await PayloadPostgres.connect_config(cfg.connection)
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(statement, params)
+        return await cur.fetchall()
+
+
+def _table_of(cfg: KbToolConfig) -> sql.Identifier:
+    return sql.Identifier(cfg.tables.pg_schema, cfg.tables.chunks_table)
+
+
+async def _search(  # noqa: PLR0913
+    cfg: KbToolConfig,
+    collection: type[CollectionSearch],
+    query: str,
+    top_k: int,
+    snippet_chars: int,
+    *,
+    vector: bool,
+) -> tuple[str, ToolResult]:
+    if vector:
+        embedding, dim = _embed(cfg, query)
+        statement = sql.SQL(KbSearch.VECTOR_SQL).format(
+            dim=sql.Literal(dim),
+            chunks_table=_table_of(cfg),
+        )
+        params: dict[str, Any] = {
+            "collections": [collection.COLLECTION],
+            "embedding": embedding,
+            "snippet_chars": snippet_chars,
+            "top_k": top_k,
+        }
+    else:
+        statement = sql.SQL(KbSearch.FTS_SQL).format(
+            chunks_table=_table_of(cfg),
+            schema=sql.Identifier(cfg.tables.pg_schema),
+        )
+        params = {
+            "collections": [collection.COLLECTION],
+            "query": query,
+            "snippet_chars": snippet_chars,
+            "top_k": top_k,
+        }
+
+    raw_rows = await _select(cfg, statement, params)
+
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        rows.append(collection.row(KbRows.hit(raw, vector=vector)))
+
+    note = None
+    if not rows:
+        note = "nothing found"
+
+    table = TableResult(rows=rows, note=note)
+    return render_for_llm(table), table
+
+
+@tool(response_format="content_and_artifact")
+async def kb_vector_search(
+    query: Annotated[
+        str,
+        Field(min_length=1, description=KbSearch.QUERY_DESC_VECTOR),
+    ],
+    top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
+    snippet_chars: Annotated[
+        int,
+        Field(ge=1, description=KbSearch.SNIPPET_DESC),
+    ] = KbSearch.SNIPPET_DEFAULT,
+    *,
+    cfg: Annotated[KbToolConfig, InjectedToolArg],
+) -> tuple[str, ToolResult]:
+    """Семантический (vector) поиск по коллекции Confluence-страниц.
+
+    Возвращает таблицу hits с колонками id/distance/link/snippet и
+    метаданными, по релевантности.
+    """
+    return await _search(
+        cfg, ConfluenceCollection, query, top_k, snippet_chars, vector=True
+    )
+
+
+@tool(response_format="content_and_artifact")
+async def kb_fts_search(
+    query: Annotated[
+        str,
+        Field(min_length=1, description=KbSearch.QUERY_DESC_FTS),
+    ],
+    top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
+    snippet_chars: Annotated[
+        int,
+        Field(ge=1, description=KbSearch.SNIPPET_DESC),
+    ] = KbSearch.SNIPPET_DEFAULT,
+    *,
+    cfg: Annotated[KbToolConfig, InjectedToolArg],
+) -> tuple[str, ToolResult]:
+    """Полнотекстовый (fts) поиск по коллекции Confluence-страниц.
+
+    Возвращает таблицу hits с колонками id/distance/link/snippet и
+    метаданными, по релевантности.
+    """
+    return await _search(
+        cfg, ConfluenceCollection, query, top_k, snippet_chars, vector=False
+    )
+
+
+EXPECTED: Mapping[type[Exception], KbErrorKind] = {
+    PostgresError: KbErrorKind.DATABASE_UNAVAILABLE,
+    psycopg.Error: KbErrorKind.QUERY_FAILED,
+}
+
+TOOLS: Final = ToolMain.toolset(kb_vector_search, kb_fts_search)
+
+if __name__ == "__main__":
+    sys.exit(ToolMain.run(TOOLS))

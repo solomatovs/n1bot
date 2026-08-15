@@ -65,10 +65,8 @@ def _tracer() -> AgentTracer:
     AsyncBaseTracer.__init__(tracer)
     tracer._context = cast(ChainlitContext, None)
     tracer._view = cast(ChatView, _BrokenView())
-    tracer._user_id = ""
     tracer._reasoning = {}
     tracer._tool_steps = {}
-    tracer._stream_calls = {}
     return tracer
 
 

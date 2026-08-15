@@ -114,7 +114,7 @@ class TestTracerRunIndex:
         view = ChatView(THREAD, LiveSink(), user_name="tester")
         view.begin_turn("turn-1")
 
-        return AgentTracer(view, USER)
+        return AgentTracer(view)
 
     async def _turn(
         self, provider: httpx.AsyncClient, scenario: ScenarioName

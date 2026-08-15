@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from typing import Annotated, Literal
+from collections.abc import Generator, Mapping
+from typing import Annotated, ClassVar, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializationInfo,
+    field_serializer,
+)
 
 __all__ = [
     "BasicAuth",
@@ -37,8 +44,23 @@ class _AuthBase(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    REVEAL_SECRETS: ClassVar[str] = "reveal_secrets"
+    """Ключ контекста сериализации: секрет раскрывается только с ним."""
+
     def httpx_auth(self) -> httpx.Auth | None:
         raise NotImplementedError
+
+    @classmethod
+    def _reveal(cls, value: SecretStr, info: SerializationInfo) -> str | None:
+        """Секрет уходит в дамп только с REVEAL_SECRETS в контексте."""
+        context = info.context
+        if not isinstance(context, Mapping):
+            return None
+
+        if not context.get(cls.REVEAL_SECRETS):
+            return None
+
+        return value.get_secret_value()
 
 
 class NoneAuth(_AuthBase):
@@ -60,6 +82,12 @@ class BasicAuth(_AuthBase):
     def httpx_auth(self) -> httpx.Auth:
         return httpx.BasicAuth(self.user, self.password.get_secret_value())
 
+    @field_serializer("password", when_used="json")
+    def _dump_password(
+        self, value: SecretStr, info: SerializationInfo
+    ) -> str | None:
+        return self._reveal(value, info)
+
 
 class BearerAuth(_AuthBase):
     """Authorization: Bearer <token> через HttpxBearerAuth."""
@@ -69,6 +97,10 @@ class BearerAuth(_AuthBase):
 
     def httpx_auth(self) -> httpx.Auth:
         return HttpxBearerAuth(self.token.get_secret_value())
+
+    @field_serializer("token", when_used="json")
+    def _dump_token(self, value: SecretStr, info: SerializationInfo) -> str | None:
+        return self._reveal(value, info)
 
 
 class DigestAuth(_AuthBase):
@@ -80,6 +112,12 @@ class DigestAuth(_AuthBase):
 
     def httpx_auth(self) -> httpx.Auth:
         return httpx.DigestAuth(self.user, self.password.get_secret_value())
+
+    @field_serializer("password", when_used="json")
+    def _dump_password(
+        self, value: SecretStr, info: SerializationInfo
+    ) -> str | None:
+        return self._reveal(value, info)
 
 
 WebAuth = Annotated[

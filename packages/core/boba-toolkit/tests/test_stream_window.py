@@ -1,11 +1,10 @@
-"""Окно живого вывода: вытеснение, закрытие, пробуждения и tee кадров."""
+"""Окно живого вывода: вытеснение, закрытие, пробуждения."""
 
 from __future__ import annotations
 
 import pytest
 
-from boba.toolkit.launcher import ChunkSink, CollectorCapacityError
-from boba.toolkit.stream import TeeChunkSink, ToolStreamBuffer
+from boba.toolkit.stream import ToolStreamBuffer
 
 
 class TestWindow:
@@ -75,47 +74,3 @@ class TestWindow:
     def test_window_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="window_bytes must be positive"):
             self._buffer(0, [])
-
-
-class _Explosive(ChunkSink):
-    """Потребитель с потолком: первый же кадр — отказ."""
-
-    def write(self, chunk: str) -> None:
-        raise CollectorCapacityError(chunk)
-
-
-class _Collecting(ChunkSink):
-    def __init__(self) -> None:
-        self.chunks: list[str] = []
-
-    def write(self, chunk: str) -> None:
-        self.chunks.append(chunk)
-
-
-class TestTee:
-    """Кадр уходит и потребителю, и в окно — даже если потребитель отказал."""
-
-    @staticmethod
-    def _buffer() -> ToolStreamBuffer:
-        def wake() -> None:
-            pass
-
-        return ToolStreamBuffer(1024, wake)
-
-    def test_both_sides_get_the_chunk(self) -> None:
-        inner = _Collecting()
-        buffer = self._buffer()
-
-        TeeChunkSink(inner, buffer).write("кадр")
-
-        assert inner.chunks == ["кадр"]
-        assert buffer.snapshot().text == "кадр"
-
-    def test_window_is_fed_before_consumer_limit(self) -> None:
-        buffer = self._buffer()
-        tee = TeeChunkSink(_Explosive(), buffer)
-
-        with pytest.raises(CollectorCapacityError):
-            tee.write("последний кадр")
-
-        assert buffer.snapshot().text == "последний кадр"

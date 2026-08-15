@@ -714,6 +714,7 @@ class TestChainOptions:
     @staticmethod
     def _argv(op: list[str], options: LauncherOptions) -> list[str]:
         return build_chain_argv(
+            extra_env={},
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             template="/t.ext4",
             op=op,
@@ -770,6 +771,7 @@ class TestChainOptions:
             max_file_size_bytes=2048,
         )
         argv = build_chain_argv(
+            extra_env={},
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             template="/t.ext4",
             op=["read", "x"],

@@ -10,7 +10,6 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.11.dev7",
     "boba-tool-doc==0.0.11.dev7",
-    "boba-web==0.0.11.dev7",
     "boba-db-postgres==0.0.11.dev7",
     "boba-db-pgvector==0.0.11.dev7",
     "boba-indexing==0.0.11.dev7",

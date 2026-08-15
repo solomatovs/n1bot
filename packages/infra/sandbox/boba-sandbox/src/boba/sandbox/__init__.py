@@ -3,7 +3,6 @@
 from boba.sandbox.argv import WORKSPACE_MOUNT, build_bwrap_argv
 from boba.sandbox.caller import (
     SandboxCaller,
-    SandboxPayload,
     SandboxPayloadError,
 )
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
@@ -35,7 +34,6 @@ __all__ = [
     "SandboxLaunchError",
     "SandboxMountError",
     "SandboxOutcome",
-    "SandboxPayload",
     "SandboxPayloadError",
     "SandboxProfile",
     "SandboxRunner",

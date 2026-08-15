@@ -1,4 +1,7 @@
-"""Операции над HTML в песочнице: недоверенную разметку разбирают только здесь.
+"""Разбор HTML для тел инструментов: недоверенную разметку разбирают только здесь.
+
+Модуль импортируется телами инструментов, работающими в песочнице; в процесс
+приложения bs4/markdownify не попадают.
 
 Ошибки: ожидаемых нет. bs4 и markdownify не отказывают на битой разметке —
 они её восстанавливают, поэтому любая ошибка здесь означает дефект кода.
@@ -6,16 +9,11 @@
 
 from __future__ import annotations
 
-import sys
-from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import markdownify
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
-
-from boba.toolkit.launcher import RowStream
-from boba.toolkit.payload import ChunkEmitter, PayloadEntry
 
 
 class ConfluenceHtml:
@@ -130,38 +128,10 @@ class ConfluenceHtml:
 
 
 class PageOps:
-    """Операции над HTML; вызываются диспетчером payload'а по имени op."""
+    """Операции над HTML; вызываются телами инструментов напрямую."""
 
     BREADCRUMB_SEPARATOR: ClassVar[str] = " › "
     TITLE_LEVEL: ClassVar[int] = 0
-
-    OPS: ClassVar[tuple[str, ...]] = (
-        "to_markdown",
-        "plain_text",
-        "confluence_sections",
-    )
-
-    EXPECTED: ClassVar[Mapping[type[Exception], str]] = {}
-    """Разбор HTML не отказывает: сломался — значит дефект, нужен трейсбек."""
-
-    @classmethod
-    async def dispatch(
-        cls, request: dict[str, Any], emit: ChunkEmitter
-    ) -> dict[str, Any]:
-        """Текст уходит кадрами-кусками, секции — кадрами-записями."""
-        op = request["op"]
-        if op == "to_markdown":
-            PayloadEntry.emit_text(emit, cls.to_markdown(request)["markdown"])
-            return {}
-        if op == "plain_text":
-            PayloadEntry.emit_text(emit, cls.plain_text(request)["text"])
-            return {}
-        if op == "confluence_sections":
-            for section in cls.confluence_sections(request)["sections"]:
-                emit(RowStream.encode(section))
-            return {}
-        msg = f"unknown page op: {op!r}"
-        raise ValueError(msg)
 
     @staticmethod
     def to_markdown(request: dict[str, Any]) -> dict[str, Any]:
@@ -256,7 +226,3 @@ class PageOps:
         for _, text in stack:
             parts.append(text)
         return cls.BREADCRUMB_SEPARATOR.join(parts)
-
-
-if __name__ == "__main__":
-    sys.exit(PayloadEntry.main(PageOps))

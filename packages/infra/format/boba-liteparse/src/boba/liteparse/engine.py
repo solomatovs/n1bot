@@ -175,13 +175,14 @@ class LiteParseEngine:
         """Единственная граница парсера: наружу выходит только LiteParseError.
 
         Нативный парсер сообщает о неподдержанном формате обычным RuntimeError,
-        поэтому одного ParseError мало.
+        поэтому одного ParseError мало; отсутствие или недоступность файла
+        приходит OSError и для вызывающего значит то же — документ не прочитать.
         """
         try:
             return LocaleRetry.parse(parser, path)
         except LiteParseError:
             raise
-        except (ParseError, RuntimeError) as e:
+        except (ParseError, RuntimeError, OSError) as e:
             raise LiteParseError(str(e)) from e
 
     @staticmethod

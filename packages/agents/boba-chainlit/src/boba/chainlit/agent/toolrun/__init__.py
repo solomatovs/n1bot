@@ -5,22 +5,29 @@ from boba.chainlit.agent.toolrun.access import (
     ToolAccessDeniedError,
     ToolAccessGuard,
 )
+from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.agent.toolrun.stream_tap import ToolStreamTapGuard
+from boba.chainlit.agent.toolrun.run_log import (
+    CallNote,
+    CallStream,
+    StreamSource,
+    ToolRunLogger,
+)
 from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
 
 __all__ = [
     "AsyncCall",
+    "CallNote",
+    "CallStream",
     "CancellableTools",
-    "SyncCall",
+    "StreamSource",
     "SyncCall",
     "ToolAccess",
     "ToolAccessDeniedError",
     "ToolAccessGuard",
     "ToolBody",
+    "ToolCallIdField",
     "ToolErrorGuard",
     "ToolRunLogger",
-    "ToolStreamTapGuard",
 ]

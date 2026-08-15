@@ -49,6 +49,7 @@ from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chainlit.domain.fields import ElementField, FileField
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.domain.stream import StreamJournalHub
+from boba.toolkit.channels import ToolChannel
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
@@ -900,6 +901,7 @@ class StreamServing:
         thread_id: str,
         call_id: str,
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+        channel: str = ToolChannel.STDOUT.value,
     ) -> Response:
         if not isinstance(current_user, PersistedUser):
             raise HTTPException(status_code=401, detail="Unauthorized")
@@ -912,6 +914,7 @@ class StreamServing:
             key = StreamKey(
                 user_id=str(current_user.id), thread_id=thread_id, call_id=call_id
             )
+            log_channel = ToolChannel(channel)
         except ValueError as e:
             raise HTTPException(status_code=404, detail="Stream not found") from e
 
@@ -922,9 +925,13 @@ class StreamServing:
                 status_code=503, detail="Stream vault unavailable"
             ) from e
 
-        disposition = f'attachment; filename="{key.call_id}.log"'
+        rel_log = journal.log_rel_path(key, log_channel)
+        if rel_log is None:
+            raise HTTPException(status_code=404, detail="Stream not found")
+
+        disposition = f'attachment; filename="{key.call_id}.{log_channel}.log"'
         return await self._files_for(root).respond(
-            key.rel_log(),
+            rel_log,
             mime=self.MIME,
             range_header=request.headers.get(FileHeader.RANGE, ""),
             content_disposition=disposition,

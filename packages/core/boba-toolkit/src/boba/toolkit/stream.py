@@ -19,13 +19,15 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.launcher import ChunkSink
+from boba.toolkit.channels import ToolChannel
 
 __all__ = [
+    "ChannelSinks",
     "StreamSink",
     "StreamWindow",
-    "TeeChunkSink",
     "ToolCallContext",
+    "ToolCallInfo",
+    "ToolChannelsTap",
     "ToolStreamBuffer",
     "ToolStreamTap",
 ]
@@ -147,35 +149,66 @@ class ToolStreamTap:
         return cls._SINK.get()
 
 
+class ChannelSinks(Protocol):
+    """Приёмники журнала каналов одного вызова."""
+
+    @abstractmethod
+    def sink_of(self, channel: ToolChannel) -> StreamSink: ...
+
+
+class ToolChannelsTap:
+    """Приёмники каналов текущего вызова: обвязка ставит, исполнитель читает."""
+
+    _SINKS: ClassVar[ContextVar[ChannelSinks | None]] = ContextVar(
+        "tool_channels_tap", default=None
+    )
+
+    @classmethod
+    def set(cls, sinks: ChannelSinks | None) -> None:
+        cls._SINKS.set(sinks)
+
+    @classmethod
+    def get(cls) -> ChannelSinks | None:
+        return cls._SINKS.get()
+
+
+class ToolCallInfo(BaseModel):
+    """Вызов инструмента: имя и идентификатор из протокола LLM-провайдера."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    call_id: str = ""
+    """Пустая строка — вызов пришёл без tool_call_id (прямой вызов, тест)."""
+
+
 class ToolCallContext:
-    """Имя инструмента в текущем контексте выполнения.
+    """Текущий вызов инструмента в контексте выполнения.
 
     Ставит обвязка вызова, читает исполнитель — метка идёт в его логи.
     """
 
-    _NAME: ClassVar[ContextVar[str]] = ContextVar("tool_call_name", default="")
+    _CALL: ClassVar[ContextVar[ToolCallInfo | None]] = ContextVar(
+        "tool_call_info", default=None
+    )
 
     @classmethod
-    def set(cls, name: str) -> Token[str]:
-        return cls._NAME.set(name)
+    def set(cls, call: ToolCallInfo) -> Token[ToolCallInfo | None]:
+        return cls._CALL.set(call)
 
     @classmethod
-    def reset(cls, token: Token[str]) -> None:
-        cls._NAME.reset(token)
+    def reset(cls, token: Token[ToolCallInfo | None]) -> None:
+        cls._CALL.reset(token)
 
     @classmethod
-    def get(cls) -> str:
-        return cls._NAME.get()
+    def get(cls) -> ToolCallInfo | None:
+        return cls._CALL.get()
 
+    @classmethod
+    def name(cls) -> str:
+        """Имя текущего вызова; пустая строка — вызова в контексте нет."""
+        call = cls._CALL.get()
+        if call is None:
+            return ""
 
-class TeeChunkSink(ChunkSink):
-    """ChunkSink-обёртка: кадр уходит и потребителю, и в живой вывод."""
-
-    def __init__(self, inner: ChunkSink, sink: StreamSink) -> None:
-        self._inner = inner
-        self._sink = sink
-
-    def write(self, chunk: str) -> None:
-        # сперва живой вывод: пользователь видит и кадр, упершийся в лимит
-        self._sink.feed_text(chunk)
-        self._inner.write(chunk)
+        return call.name

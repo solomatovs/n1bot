@@ -1,88 +1,54 @@
-"""Ручной прогон web-операций: WebOps вызывается напрямую.
+"""Ручной прогон web-инструментов: функции вызываются напрямую с явным cfg.
 
-Профиль соединения берётся из [tool.web.profiles] по хосту URL, аргументы
-вызова задаются в RunArgs.
+Хост берётся из whitelist'а [tool.web] конфига приложения.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
-
 import pytest
 
 from boba.settings import bind
-from boba.tool.web import WebGrepConfig
-from boba.web.caller import WebCaller
-from boba.web.payload import WebOps
-from boba.web.protocol import WebFetchRequest, WebGrepRequest
+from boba.tool.web.tools import WebGrepConfig, web_fetch_page, web_grep_page
+from boba.toolkit.entry import ToolMain
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
 
-class RunArgs:
-    """Аргументы прогона: правятся перед запуском."""
-
-    HOST: ClassVar[str] = "confl.loshara.com"
-
-    URL: ClassVar[str] = "https://confl.loshara.com/"
-
-    PATTERN: ClassVar[str] = "confluence"
-
-    AS_MARKDOWN: ClassVar[bool] = True
-
-    LINE_OFFSET: ClassVar[int] = 0
-
-    LINE_COUNT: ClassVar[int] = 40
-
-    CASE_INSENSITIVE: ClassVar[bool] = True
-
-    CONTEXT: ClassVar[int] = 2
-
-    LIMIT: ClassVar[int] = 20
-
-    FIXED_STRING: ClassVar[bool] = True
-
-    MAX_TEXT_CHARS: ClassVar[int] = 2000
+@pytest.fixture(scope="module")
+def web_cfg(raw_config) -> WebGrepConfig:
+    return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
 
 @pytest.fixture(scope="module")
-def web_profile(raw_config):
-    cfg = bind(raw_config, path="tool.web", model=WebGrepConfig)
+def whitelisted_url(web_cfg: WebGrepConfig) -> str:
+    hosts = sorted(web_cfg.profiles)
+    assert hosts, "[tool.web.profiles] пуст — web-инструментам некуда ходить"
+    return f"https://{hosts[0]}/"
 
-    return WebCaller.transport_of(cfg.profiles[RunArgs.HOST])
 
+async def test_run_web_fetch(web_cfg: WebGrepConfig, whitelisted_url: str) -> None:
+    body = ToolMain.toolset(web_fetch_page)[0].coroutine
+    assert body is not None
 
-async def test_run_web_fetch(web_profile, payload, chunks) -> None:
-    request = WebFetchRequest(
-        op=WebFetchRequest.OP,
-        url=RunArgs.URL,
-        profile=web_profile,
-        as_markdown=RunArgs.AS_MARKDOWN,
-        line_offset=RunArgs.LINE_OFFSET,
-        line_count=RunArgs.LINE_COUNT,
+    content, _artifact = await body(
+        url=whitelisted_url,
+        as_markdown=True,
+        line_offset=0,
+        line_count=20,
+        cfg=web_cfg,
     )
 
-    trailer = await WebOps.web_fetch(payload.of(request), chunks.write)
-
-    print(chunks.text())
-    print(trailer)
+    print(content)
 
 
-async def test_run_web_grep(web_profile, payload, chunks) -> None:
-    request = WebGrepRequest(
-        op=WebGrepRequest.OP,
-        url=RunArgs.URL,
-        profile=web_profile,
-        as_markdown=RunArgs.AS_MARKDOWN,
-        pattern=RunArgs.PATTERN,
-        case_insensitive=RunArgs.CASE_INSENSITIVE,
-        context=RunArgs.CONTEXT,
-        limit=RunArgs.LIMIT,
-        fixed_string=RunArgs.FIXED_STRING,
-        max_text_chars=RunArgs.MAX_TEXT_CHARS,
+async def test_run_web_grep(web_cfg: WebGrepConfig, whitelisted_url: str) -> None:
+    body = ToolMain.toolset(web_grep_page)[0].coroutine
+    assert body is not None
+
+    content, _artifact = await body(
+        url=whitelisted_url,
+        pattern=".",
+        cfg=web_cfg,
     )
 
-    trailer = await WebOps.web_grep(payload.of(request), chunks.write)
-
-    print(chunks.rows())
-    print(trailer)
+    print(content)

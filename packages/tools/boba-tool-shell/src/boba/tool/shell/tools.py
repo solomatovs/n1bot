@@ -5,8 +5,7 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import Annotated
 
-from langchain.tools import tool
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.launcher import ClippedText, LauncherFactory, LaunchOutcome

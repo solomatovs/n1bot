@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import gssapi
 from clickhouse_connect.driver.asyncclient import AsyncClient
@@ -71,10 +71,10 @@ class PayloadClickHouse:
 
     @staticmethod
     @asynccontextmanager
-    async def opened(request: dict[str, Any]) -> AsyncGenerator[AsyncClient, None]:
+    async def opened_config(
+        connection: ClickHouseConfig,
+    ) -> AsyncGenerator[AsyncClient, None]:
         """Клиент на время операции; kerberos-окружение держится всё это время."""
-        connection = ClickHouseConfig.model_validate(request["connection"])
-
         if connection.kerberos is None:
             async with PayloadClickHouse._client(connection, None) as client:
                 yield client

@@ -1,25 +1,16 @@
-"""Ingest-payload внутри песочницы: там его и запускает инструмент.
+"""Ingest-модуль внутри песочницы: там его и запускает инструмент.
 
 Прогон целиком требует Confluence и postgres, поэтому проверяется граница —
 что модуль догружается в песочнице со всеми зависимостями конвейера и отвечает
-по контракту, а не падает импортом.
+по контракту запуска, а не падает импортом.
 """
 
 from __future__ import annotations
 
-import pytest
 from conftest import needs_sandbox, needs_userns, sandbox_profile
-from pydantic import BaseModel
 
 from boba.sandbox import SandboxCaller, SandboxToolConfig
-from boba.tool.kb.confluence.ingest_caller import IngestRequest
-from boba.toolkit.launcher import LauncherError, NoChunks
-
-ENTRY = ("python3", "-m", "boba.tool.kb.confluence.ingest_payload")
-
-
-class _Answer(BaseModel):
-    stats: dict
+from boba.toolkit.entry import ReplyError, ToolCommand
 
 
 def _caller() -> SandboxCaller:
@@ -31,21 +22,26 @@ def _caller() -> SandboxCaller:
 
 @needs_sandbox
 @needs_userns
-def test_payload_loads_and_validates_config() -> None:
-    """Пустой конфиг: важно, что ответ — про поля запроса, а не про импорт."""
-    request = IngestRequest(
-        op=IngestRequest.OP,
-        config={},
-        mode="pages",
-        prune_missing=False,
-        force_update=False,
+def test_module_loads_and_validates_config() -> None:
+    """Пустой конфиг: важно, что ответ — про поля конфига, а не про импорт."""
+    command = ToolCommand(
+        argv=(
+            "python3",
+            "-m",
+            "boba.tool.kb.confluence.ingest_tools",
+            "confluence_index_pages",
+            "--page-ids",
+            '["1"]',
+        ),
+        stdin=b'{"cfg": {}}',
     )
 
-    with pytest.raises(LauncherError, match="ValidationError") as exc:
-        _caller().call_stream(ENTRY, request, NoChunks(), _Answer)
+    outcome = _caller().run_tool(command)
 
-    reason = str(exc.value)
-    assert "ModuleNotFoundError" not in reason
-    assert "ImportError" not in reason
+    reply = outcome.reply
+    assert isinstance(reply, ReplyError)
+    assert reply.kind == "invalid_request"
+    assert "ModuleNotFoundError" not in reply.message
+    assert "ImportError" not in reply.message
     # параллелизм страниц задаётся явно — без него конфиг невалиден
-    assert "page_workers" in reason
+    assert "page_workers" in reply.message

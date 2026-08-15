@@ -37,6 +37,7 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.settings import bind, build_app_config
+from boba.toolkit.channels import ToolChannel
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -176,7 +177,9 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
     journal = StreamJournal(vault, reserve_bytes=0)
 
     key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=CALL_ID)
-    recorder = journal.recorder(key, "bash", lambda: None, frozenset())
+    recorder = journal.recorder(
+        key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
+    )
     recorder.feed(f"{FIRST_LINE}\n".encode())
     chunk: list[str] = []
     for index in range(1, LINES):
@@ -188,7 +191,9 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
     recorder.close("rc=0")
 
     live_key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID)
-    live = journal.recorder(live_key, "bash", lambda: None, frozenset())
+    live = journal.recorder(
+        live_key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
+    )
     for index in range(LIVE_LINES):
         live.feed(f"V{index:07d},row\n".encode())
     # живой журнал не закрывается: вызов «ещё идёт» с точки зрения чтения

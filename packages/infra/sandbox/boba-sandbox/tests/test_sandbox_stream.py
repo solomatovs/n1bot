@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import os
 import shutil
-from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
 
 from boba.sandbox import SandboxCaller, SandboxProfile
-from boba.toolkit.launcher import TextCollector
 from boba.toolkit.stream import ToolStreamBuffer, ToolStreamTap
 
 
@@ -55,28 +52,6 @@ _PROFILE_BASE: dict[str, Any] = {
     "oom_score_adj": 0,
     "cwd": "/tmp",  # noqa: S108
 }
-
-
-class Request(BaseModel):
-    """Запрос payload'а в тестах."""
-
-    path: str
-
-
-class Trailer(BaseModel):
-    """Схема трейлера payload'а в тестах."""
-
-    pages: int
-
-
-_STREAM_PAYLOAD = """
-import json, sys
-
-request = json.loads(sys.stdin.read())
-print("payload: работаю", file=sys.stderr)
-print("sandbox-chunk:" + json.dumps("кусок данных", ensure_ascii=False))
-print("sandbox-result:" + json.dumps({"pages": 1}, ensure_ascii=False))
-"""
 
 
 @pytest.fixture(autouse=True)
@@ -158,43 +133,3 @@ class TestCallTextTap:
         assert len(sizes) >= 2
         assert sizes == sorted(sizes)
         assert sizes[0] < sizes[-1]
-
-
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap не установлен")
-@pytest.mark.skipif(os.geteuid() == 0, reason="под root userns ведёт себя иначе")
-class TestCallStreamTap:
-    """Потоковый запуск: окно видит декодированные кадры, а не протокол."""
-
-    @staticmethod
-    def _caller(tmp_path: Path, script: str) -> SandboxCaller:
-        payload_dir = tmp_path / "payload"
-        payload_dir.mkdir(parents=True, exist_ok=True)
-        (payload_dir / "main.py").write_text(script, encoding="utf-8")
-        profile = SandboxProfile.model_validate(
-            {
-                **_PROFILE_BASE,
-                "ro_binds": (
-                    *_PROFILE_BASE["ro_binds"],
-                    f"{payload_dir}:/opt/payload",
-                ),
-            }
-        )
-        return SandboxCaller("doc", profile, dict)
-
-    def test_window_gets_chunks_and_stderr_lines(self, tmp_path: Path) -> None:
-        buffer = _window()
-        ToolStreamTap.set(buffer)
-        collector = TextCollector(max_chars=1_000_000, limit_rows=None, header_lines=0)
-
-        trailer = self._caller(tmp_path, _STREAM_PAYLOAD).call_stream(
-            ["python3", "/opt/payload/main.py"],
-            Request(path=""),
-            collector,
-            Trailer,
-        )
-
-        window = buffer.snapshot()
-        assert "кусок данных" in window.text
-        assert "payload: работаю" in window.text
-        assert "sandbox-chunk" not in window.text
-        assert (collector.text(), trailer.pages) == ("кусок данных", 1)

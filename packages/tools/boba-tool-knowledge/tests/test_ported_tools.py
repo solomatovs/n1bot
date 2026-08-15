@@ -8,25 +8,20 @@ from typing import Any, ClassVar
 import pytest
 
 from boba.sandbox import SandboxToolConfig
-from boba.tool.kb import (
-    PostgresKnowledgeBaseConfig,
-    build_kb_tools,
-)
-from boba.tool.kb.confluence import (
+from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS
+from boba.tool.kb.confluence.tools import (
+    ConfluenceRequestError,
     ConfluenceToolsConfig,
-    build_confluence_tools,
 )
-from boba.tool.pg import (
-    PgExecutorConfig,
-    build_pg_tools,
-)
-from boba.tool.pg import executor as pg_executor
+from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
+from boba.tool.kb.tools import TOOLS as KB_TOOLS
+from boba.tool.pg.tools import TOOLS as PG_TOOLS
+from boba.tool.pg.tools import PgToolConfig, pg_list_targets
+from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
-    ErrorResult,
     TableResult,
     ToolArtifact,
 )
-from boba.toolkit.sql import SqlQueryError
 from boba.transport.http import HttpProfile
 
 
@@ -49,8 +44,8 @@ def _no_launcher(tool: str) -> Any:
     return _NoLauncher()
 
 
-def pg_config() -> PgExecutorConfig:
-    return PgExecutorConfig.model_validate(
+def pg_config() -> PgToolConfig:
+    return PgToolConfig.model_validate(
         {
             "profiles": {"main": {"host": "h", "dbname": "d", "user": "u"}},
             "sandbox": _SANDBOX,
@@ -96,59 +91,49 @@ class TestPgTools:
         "pg_list_tables",
         "pg_describe_table",
         "pg_query",
-        "pg_export",
+        "pg_copy",
     ]
 
-    def test_all_five_are_built(self) -> None:
-        names = [t.name for t in build_pg_tools(pg_config(), _no_launcher)]
+    def test_module_declares_the_toolset(self) -> None:
+        names = [t.name for t in PG_TOOLS]
         assert names == self._NAMES
 
     async def test_list_targets_returns_whitelist(self) -> None:
-        tool = build_pg_tools(pg_config(), _no_launcher)[0]
-        result = await ainvoke(tool, {})
-        assert isinstance(result, TableResult)
-        assert list(result.rows) == [{"connection_name": "main"}]
-        assert result.ok is True
+        body = ToolMain.toolset(pg_list_targets)[0].coroutine
+        assert body is not None
+        _content, artifact = await body(cfg=pg_config())
 
-    async def test_unknown_target_becomes_error_result(self) -> None:
-        """Профиль не в whitelist — ошибка инструмента, а не падение хода."""
-        for name in ("pg_list_tables", "pg_describe_table", "pg_query", "pg_export"):
-            built = build_pg_tools(pg_config(), _no_launcher)
-            tool = next(t for t in built if t.name == name)
-            args: dict[str, Any] = {"connection_name": "нет-такого"}
-            if name == "pg_describe_table":
-                args["table"] = "t"
-            if name in ("pg_query", "pg_export"):
-                args["sql"] = "select 1"
-            result = await ainvoke(tool, args)
-            assert isinstance(result, ErrorResult), name
-            assert result.error_kind == "unknown_target", name
-            assert result.ok is False, name
+        assert isinstance(artifact, TableResult)
+        assert list(artifact.rows) == [{"connection_name": "main"}]
+        assert artifact.ok is True
 
-    async def test_sql_error_becomes_error_result(self, monkeypatch) -> None:
-        async def boom(*_args: Any, **_kwargs: Any):
-            raise SqlQueryError("relation does not exist")
+    async def test_unknown_target_raises_domain_error(self) -> None:
+        """Профиль не в whitelist — доменное исключение с kind в EXPECTED."""
+        from boba.tool.pg.tools import EXPECTED, pg_query
+        from boba.toolkit.entry import ExpectedErrors
+        from boba.toolkit.sql import UnknownConnectionError
 
-        monkeypatch.setattr(pg_executor.PgExecutor, "execute", boom)
-        built = build_pg_tools(pg_config(), _no_launcher)
-        tool = next(t for t in built if t.name == "pg_list_tables")
-        result = await ainvoke(tool, {"connection_name": "main"})
-        assert isinstance(result, ErrorResult)
-        assert result.ok is False
-        assert "relation does not exist" in result.message
+        body = ToolMain.toolset(pg_query)[0].coroutine
+        assert body is not None
+        with pytest.raises(UnknownConnectionError) as caught:
+            await body(connection_name="нет-такого", sql="select 1", cfg=pg_config())
+
+        kind = ExpectedErrors.kind_of(caught.value, dict(EXPECTED))
+        assert kind == "unknown_target"
 
 
 class TestKbTools:
-    def test_all_four_are_built(self) -> None:
-        names = [t.name for t in build_kb_tools(kb_config(), _no_launcher)]
+    def test_module_declares_the_toolset(self) -> None:
+        names = [t.name for t in KB_TOOLS]
         assert names == [
             "kb_vector_search",
             "kb_fts_search",
         ]
 
-    def test_search_arguments(self) -> None:
-        tool = build_kb_tools(kb_config(), _no_launcher)[0]
-        assert set(tool.args) == {"query", "top_k", "snippet_chars"}
+    def test_search_arguments_hide_injected(self) -> None:
+        tool = KB_TOOLS[0]
+        llm_fields = set(tool.args_schema.model_fields) - {"cfg"}
+        assert llm_fields == {"query", "top_k", "snippet_chars"}
 
 
 def _bin_dirs() -> list[str]:
@@ -199,11 +184,10 @@ _SANDBOX = SandboxToolConfig.model_validate(
 
 
 class TestConfluenceTools:
-    def test_all_four_are_built(self) -> None:
-        cfg = ConfluenceToolsConfig(
-            confluence=HttpProfile(base_url="https://confluence.example"),
-        )
-        names = [t.name for t in build_confluence_tools(cfg, _no_launcher)]
+    pytestmark = pytest.mark.anyio
+
+    def test_module_declares_the_toolset(self) -> None:
+        names = [t.name for t in CONFLUENCE_TOOLS]
         assert names == [
             "confluence_fetch",
             "confluence_grep",
@@ -211,15 +195,14 @@ class TestConfluenceTools:
             "confluence_spaces",
         ]
 
-    def test_network_error_becomes_error_result(self) -> None:
+    async def test_network_error_raises_domain_error(self) -> None:
+        from boba.tool.kb.confluence.tools import confluence_fetch
+
         cfg = ConfluenceToolsConfig(
             confluence=HttpProfile(base_url="http://127.0.0.1:1"),
         )
-        tool = next(
-            t
-            for t in build_confluence_tools(cfg, _no_launcher)
-            if t.name == "confluence_fetch"
-        )
-        result = invoke(tool, {"page_id": "1"})
-        assert isinstance(result, ErrorResult)
-        assert result.ok is False
+
+        body = ToolMain.toolset(confluence_fetch)[0].coroutine
+        assert body is not None
+        with pytest.raises(ConfluenceRequestError):
+            await body(page_id="1", cfg=cfg)

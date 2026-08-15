@@ -17,8 +17,7 @@ from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Annotated, ClassVar, Self
 
-from langchain.tools import tool
-from langchain_core.tools import BaseTool, InjectedToolCallId
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl

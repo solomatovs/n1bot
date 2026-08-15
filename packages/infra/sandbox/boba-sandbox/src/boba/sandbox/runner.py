@@ -13,13 +13,14 @@ import logging
 import os
 import shlex
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 
 from boba.sandbox.argv import build_bwrap_argv
 from boba.sandbox.cgroup import CgroupManager, GroupLimits
+from boba.sandbox.channels import ChannelSet
 from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
@@ -28,6 +29,7 @@ from boba.toolkit.launcher import LauncherError, LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.stream import StreamSink, ToolCallContext, ToolStreamTap
 from boba.workspace.launcher import (
+    Launcher,
     LauncherExit,
     LauncherMarker,
     LauncherMode,
@@ -178,6 +180,144 @@ class SandboxRunner:
             msg = f"sandbox[{self._label()}]: launch failed: {exc}"
             raise SandboxLaunchError(msg) from exc
 
+    def run_with_channels(
+        self,
+        argv_tail: Sequence[str],
+        stdin_data: bytes,
+        channels: ChannelSet,
+    ) -> SandboxOutcome:
+        """Канальный запуск: команда под преамбулой редиректа, fd — насосу.
+
+        Профиль с rw_images исполняется цепочкой лаунчера: дескрипторы
+        каналов проезжают её насквозь — их номера едут лаунчеру env-списком
+        (Launcher.PASS_FDS_ENV), и он передаёт их вложенному bwrap как есть.
+        """
+        try:
+            return self._run_with_channels(argv_tail, stdin_data, channels)
+        except LauncherError:
+            raise
+        except Exception as exc:
+            msg = f"sandbox[{self._label()}]: launch failed: {exc}"
+            raise SandboxLaunchError(msg) from exc
+
+    def _channel_argv(
+        self,
+        rendered: SandboxProfile,
+        argv_tail: Sequence[str],
+        channels: ChannelSet,
+        limits: ResourceLimits,
+    ) -> tuple[list[str], ResourceLimits | None]:
+        """Команда канального запуска: прямой bwrap либо цепочка лаунчера."""
+        env = self._env_of(rendered)
+        env.update(channels.env())
+
+        inner = f"{channels.redirect()}; exec {shlex.join(argv_tail)}"
+
+        if not rendered.rw_images:
+            return build_bwrap_argv(rendered, inner, env=env), limits
+
+        require_fuse(rendered.binaries)
+
+        mounts: list[BindSpec] = []
+        images: list[tuple[str, str]] = []
+        rw_paths: list[str] = []
+        for spec in rendered.rw_images:
+            mnt = f"{spec.host}.mnt"
+            images.append((spec.host, mnt))
+            mounts.append(BindSpec(host=mnt, target=spec.target))
+        for spec in rendered.rw_binds:
+            rw_paths.append(spec.host)
+
+        inner_profile = rendered.model_copy(
+            update={"rw_binds": rendered.rw_binds + tuple(mounts)},
+        )
+        inner_argv = build_bwrap_argv(inner_profile, inner, env=env, nested=True)
+
+        pass_fds = ",".join(str(fd) for fd in channels.child_fds.values())
+        argv = build_chain_argv(
+            images=images,
+            template=rendered.image_template,
+            op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
+            python_bin=sys.executable,
+            options=rendered.launcher.to_options(),
+            limits=limits,
+            binaries=rendered.binaries,
+            extra_env={Launcher.PASS_FDS_ENV: pass_fds},
+            rw_paths=rw_paths,
+            network=rendered.network,
+        )
+        # лимиты применяет лаунчер к самой команде; обвязку не душим
+        return argv, None
+
+    def _run_with_channels(
+        self,
+        argv_tail: Sequence[str],
+        stdin_data: bytes,
+        channels: ChannelSet,
+    ) -> SandboxOutcome:
+        rendered = self._profile.render(dict(self._path_vars()))
+
+        self._prepare_dirs(rendered)
+        limits = self.limits_of(rendered)
+
+        argv, runner_limits = self._channel_argv(
+            rendered, argv_tail, channels, limits
+        )
+
+        name = self._label()
+        self._log_start(name, rendered, limits, shlex.join(argv_tail))
+
+        group = GroupLimits.of_profile(rendered)
+        cgroup_dir: str | None = None
+        manager: CgroupManager | None = None
+        if group.requested:
+            manager = CgroupManager(rendered.cgroup_base)
+            cgroup_dir = manager.acquire(group)
+            logger.info(
+                "sandbox[%s]: cgroup %s (%s)", name, cgroup_dir, group.describe()
+            )
+
+        try:
+            result = run_subprocess(
+                argv,
+                stdin_data=stdin_data,
+                timeout_sec=rendered.timeout_sec,
+                cwd="/",
+                env=os.environ,
+                stdout_sink=None,
+                keep_stdout=True,
+                limits=runner_limits,
+                cgroup_dir=cgroup_dir,
+                pass_fds=tuple(channels.child_fds.values()),
+                channel_sinks=channels.sinks(),
+                on_spawn=channels.close_child_ends,
+            )
+        finally:
+            channels.close()
+            if manager is not None and cgroup_dir is not None:
+                manager.release(cgroup_dir)
+
+        self._log_finish(name, result)
+        if result.timed_out or result.exit_code != 0:
+            self._log_failure(name, result)
+
+        diagnostic = SandboxDiagnostics.explain(result, rendered)
+        if diagnostic:
+            logger.warning("sandbox[%s]: %s", name, diagnostic)
+        return SandboxOutcome(name, result, diagnostic)
+
+    def diagnose(self, result: RunResult, tool_stderr: str) -> str:
+        """Объяснение сбоя лимитами; в разборе участвует и хвост tool_stderr.
+
+        У канального запуска stderr инструмента едет отдельным каналом и в
+        result.stderr не попадает — без него маркеры памяти/лимитов не видны.
+        """
+        rendered = self._profile.render(dict(self._path_vars()))
+
+        merged = replace(result, stderr=f"{result.stderr}\n{tool_stderr}")
+
+        return SandboxDiagnostics.explain(merged, rendered)
+
     def _run(
         self,
         command: str,
@@ -240,7 +380,7 @@ class SandboxRunner:
 
     def _label(self) -> str:
         """Профиль плюс имя инструмента: sandbox[confluence:confluence_search]."""
-        call = ToolCallContext.get()
+        call = ToolCallContext.name()
         if call and call != self._tool:
             return f"{self._tool}:{call}"
         return self._tool
@@ -308,6 +448,7 @@ class SandboxRunner:
         )
         inner_argv = build_bwrap_argv(inner, command, env=env, nested=True)
         argv = build_chain_argv(
+            extra_env={},
             images=images,
             template=profile.image_template,
             op=[LauncherMode.RUN.value, shlex.join(inner_argv)],

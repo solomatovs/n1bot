@@ -9,7 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from boba.transport.http import HttpProfile
 
-__all__ = ["WebConnection"]
+__all__ = ["UnknownHostError", "WebConnection"]
+
+
+class UnknownHostError(Exception):
+    """Хост URL не значится в whitelist'е; текст готов для пользователя."""
 
 
 class WebConnection(BaseModel):
@@ -51,5 +55,5 @@ class WebConnection(BaseModel):
                 f"web: host {host!r} is not in the whitelist "
                 f"(allowed={allowed}). URL={url!r}"
             )
-            raise ValueError(msg)
+            raise UnknownHostError(msg)
         return profile

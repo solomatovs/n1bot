@@ -16,8 +16,7 @@ import mimetypes
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar
 
-from langchain.tools import tool
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl

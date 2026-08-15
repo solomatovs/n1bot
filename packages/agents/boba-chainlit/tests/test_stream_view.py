@@ -1,8 +1,8 @@
-"""Живой вывод инструмента: журнал, тап через реальный langchain-вызов, насос.
+"""Живой вывод инструмента: журнал, доставка call_id через обвязку, насос.
 
 Ключевые инварианты: вывод пишется в файл журнала и переживает конец хода;
 фронт получает окна фиксированного размера, сколько бы инструмент ни
-напечатал; тап доезжает до функции тула через обвязку в его потоке.
+напечатал; журнал открывает обвязка по tool_call_id из ToolCall-конверта.
 """
 
 from __future__ import annotations
@@ -14,19 +14,17 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
-from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
-from langchain.tools import tool
-from langchain_core.messages import ToolMessage
+from langchain_core.tools import tool
 
-from boba.chainlit.agent.toolrun.stream_tap import ToolStreamTapGuard
-from boba.chainlit.chat.agent_tracer import AgentTracer
+from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
+from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.data.stream_journal import DirVault, StreamJournal
 from boba.chainlit.domain.stream import JournalWindow
-from boba.chainlit.infra.plugins import tap_source
+from boba.chainlit.infra.plugins import stream_source
 from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -41,7 +39,10 @@ from boba.chainlit.rendering.stream_view import (
     ToolStreams,
     window_stream_action,
 )
+from boba.toolkit.channels import ToolChannel
 from boba.toolkit.stream import ToolStreamTap
+
+STDOUT = ToolChannel.STDOUT
 
 
 def _bin_dirs() -> list[str]:
@@ -65,8 +66,16 @@ TOOL_NAME = "fake_bash"
 
 @pytest.fixture(autouse=True)
 def chainlit_context(tmp_path: Path) -> Any:
-    """Контекст с thread_id сессии и журнал в каталоге на время теста."""
-    session = SimpleNamespace(thread_id=THREAD)
+    """Контекст с thread_id и user сессии, журнал в каталоге на время теста."""
+    session = SimpleNamespace(
+        id="session-1",
+        thread_id=THREAD,
+        user=SimpleNamespace(id=USER),
+        user_env={},
+        chat_settings={},
+        chat_profile=None,
+        client_type="webapp",
+    )
     token = context_var.set(cast("ChainlitContext", SimpleNamespace(session=session)))
     ToolStreams.reset()
     ToolStreams.configure(
@@ -90,12 +99,12 @@ def begin_stream(call_id: str = CALL_ID) -> ToolStream:
     return stream
 
 
-class TestTapThroughLangchain:
-    """Журнал вызова доезжает до sync-функции инструмента.
+class TestJournalThroughWrapper:
+    """Журнал вызова открывает обвязка и доводит тап до функции инструмента.
 
-    Инструмент вызывается как его зовёт ToolNode — ainvoke с ToolCall и
-    callbacks; sync-функция едет в executor-поток, где обвязка тапа обязана
-    отдать рекордер этого вызова.
+    Инструмент вызывается как его зовёт ToolNode — ainvoke с ToolCall:
+    call_id приезжает синтетическим полем схемы, sync-функция едет в
+    executor-поток, где тап обязан отдать приёмник именно этого вызова.
     """
 
     @staticmethod
@@ -111,15 +120,13 @@ class TestTapThroughLangchain:
                 sink.feed(f"ran: {command}".encode())
             return "done"
 
-        ToolStreamTapGuard.guard_all([fake_bash], tap_source)
+        ToolCallIdField.attach_all([fake_bash])
+        ToolRunLogger.guard_all([fake_bash], stream_source)
         return fake_bash, seen
 
     async def _invoke(self, *, streamable: bool = True) -> list[object]:
         if streamable:
             ToolStreams.mark_streamable([TOOL_NAME])
-        view = ChatView(THREAD, RecordingSink(), user_name="tester")
-        view.begin_turn("turn-1")
-        tracer = AgentTracer(view, USER)
 
         fake_bash, seen = self._tool_and_seen()
         await fake_bash.ainvoke(
@@ -128,8 +135,7 @@ class TestTapThroughLangchain:
                 "args": {"command": "echo hi"},
                 "id": CALL_ID,
                 "type": "tool_call",
-            },
-            config={"callbacks": [tracer]},
+            }
         )
         return seen
 
@@ -142,14 +148,18 @@ class TestTapThroughLangchain:
     def test_tool_output_lands_in_the_journal(self) -> None:
         run(self._invoke())
 
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
+        piece = ToolStreams.recorded_slice(
+            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
+        )
         assert piece is not None
         assert "ran: echo hi" in piece.text
 
     def test_journal_is_closed_after_the_call(self) -> None:
         run(self._invoke())
 
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
+        piece = ToolStreams.recorded_slice(
+            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
+        )
         assert piece is not None
         assert piece.closed is True
         assert piece.note == str(StreamNote.FINISHED)
@@ -160,28 +170,88 @@ class TestTapThroughLangchain:
         assert seen == [None]
         assert ToolStreams.get(THREAD, CALL_ID) is None
 
-    def test_stop_pending_closes_open_journals(self) -> None:
-        async def scenario() -> None:
-            ToolStreams.mark_streamable([TOOL_NAME])
-            view = ChatView(THREAD, RecordingSink(), user_name="tester")
-            view.begin_turn("turn-1")
-            tracer = AgentTracer(view, USER)
+    def test_failed_call_closes_with_failure_note(self) -> None:
+        ToolStreams.mark_streamable([TOOL_NAME])
 
-            await tracer.on_tool_start(
-                {"name": TOOL_NAME},
-                "{}",
-                run_id=uuid4(),
-                inputs={},
-                tool_call_id=CALL_ID,
-            )
-            await tracer.stop_pending("остановлено пользователем")
+        @tool
+        def fake_bash(command: str) -> str:
+            """Падает после записи в журнал."""
+            sink = ToolStreamTap.get()
+            assert sink is not None
+            sink.feed(b"partial")
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        ToolCallIdField.attach_all([fake_bash])
+        ToolRunLogger.guard_all([fake_bash], stream_source)
+
+        async def scenario() -> None:
+            with pytest.raises(RuntimeError):
+                await fake_bash.ainvoke(
+                    {
+                        "name": TOOL_NAME,
+                        "args": {"command": "x"},
+                        "id": CALL_ID,
+                        "type": "tool_call",
+                    }
+                )
 
         run(scenario())
 
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
+        piece = ToolStreams.recorded_slice(
+            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
+        )
         assert piece is not None
         assert piece.closed is True
-        assert piece.note == str(StreamNote.STOPPED)
+        assert piece.note == str(StreamNote.FAILED)
+        assert piece.text == "partial"
+
+    def test_parallel_same_name_calls_keep_own_journals(self) -> None:
+        """Два одноимённых вызова: каждый пишет в файл своего call_id."""
+        ToolStreams.mark_streamable([TOOL_NAME])
+
+        @tool
+        def fake_bash(command: str) -> str:
+            """Пишет свою команду в свой журнал."""
+            sink = ToolStreamTap.get()
+            assert sink is not None
+            sink.feed(f"cmd: {command}".encode())
+            return "done"
+
+        ToolCallIdField.attach_all([fake_bash])
+        ToolRunLogger.guard_all([fake_bash], stream_source)
+
+        async def scenario() -> None:
+            first = fake_bash.ainvoke(
+                {
+                    "name": TOOL_NAME,
+                    "args": {"command": "alpha"},
+                    "id": "call-a",
+                    "type": "tool_call",
+                }
+            )
+            second = fake_bash.ainvoke(
+                {
+                    "name": TOOL_NAME,
+                    "args": {"command": "beta"},
+                    "id": "call-b",
+                    "type": "tool_call",
+                }
+            )
+            await asyncio.gather(first, second)
+
+        run(scenario())
+
+        alpha = ToolStreams.recorded_slice(
+            USER, THREAD, "call-a", offset=0, channel=STDOUT
+        )
+        beta = ToolStreams.recorded_slice(
+            USER, THREAD, "call-b", offset=0, channel=STDOUT
+        )
+        assert alpha is not None
+        assert beta is not None
+        assert alpha.text == "cmd: alpha"
+        assert beta.text == "cmd: beta"
 
 
 class TestJournalOutlivesTheTurn:
@@ -189,62 +259,57 @@ class TestJournalOutlivesTheTurn:
 
     def test_slice_after_drop_thread(self) -> None:
         stream = begin_stream()
-        stream.recorder.feed("прошлый ход".encode())
+        stream.sink_of(STDOUT).feed("прошлый ход".encode())
         ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
         ToolStreams.drop_thread(THREAD)
 
         assert ToolStreams.get(THREAD, CALL_ID) is None
 
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
+        piece = ToolStreams.recorded_slice(
+            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
+        )
         assert piece is not None
         assert piece.text == "прошлый ход"
         assert piece.closed is True
 
     def test_drop_thread_closes_abandoned_recorder(self) -> None:
         stream = begin_stream()
-        stream.recorder.feed(b"data")
+        stream.sink_of(STDOUT).feed(b"data")
 
         ToolStreams.drop_thread(THREAD)
 
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
+        piece = ToolStreams.recorded_slice(
+            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
+        )
         assert piece is not None
         assert piece.closed is True
         assert piece.note == str(StreamNote.STOPPED)
 
     def test_foreign_user_cannot_read_the_journal(self) -> None:
         stream = begin_stream()
-        stream.recorder.feed(b"secret")
+        stream.sink_of(STDOUT).feed(b"secret")
         ToolStreams.drop_thread(THREAD)
 
-        piece = ToolStreams.recorded_slice("999", THREAD, CALL_ID, offset=0)
+        piece = ToolStreams.recorded_slice(
+            "999", THREAD, CALL_ID, offset=0, channel=STDOUT
+        )
         assert piece is None
 
 
-class TestPendingSlots:
-    """Очередь claim не отдаёт чужие и завершённые слоты."""
-
-    def test_finished_slot_is_not_claimable(self) -> None:
-        begin_stream()
-
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FAILED))
-
-        assert ToolStreams.claim(THREAD, TOOL_NAME) is None
-
-    def test_claim_is_per_thread_and_name(self) -> None:
-        begin_stream()
-
-        assert ToolStreams.claim("другой-тред", TOOL_NAME) is None
-        assert ToolStreams.claim(THREAD, "другой-тул") is None
-
-        stream = ToolStreams.claim(THREAD, TOOL_NAME)
-        assert stream is not None
-        assert stream.key.call_id == CALL_ID
-        assert ToolStreams.claim(THREAD, TOOL_NAME) is None
+class TestBegin:
+    """Регистрация живого вызова отвергает небезопасные идентификаторы."""
 
     def test_unsafe_call_id_is_refused(self) -> None:
         ToolStreams.mark_streamable([TOOL_NAME])
 
         stream = ToolStreams.begin(USER, THREAD, "../../etc/passwd", TOOL_NAME)
+
+        assert stream is None
+
+    def test_dotted_call_id_is_refused(self) -> None:
+        ToolStreams.mark_streamable([TOOL_NAME])
+
+        stream = ToolStreams.begin(USER, THREAD, "call.0", TOOL_NAME)
 
         assert stream is None
 
@@ -269,10 +334,11 @@ class TestPump:
         stream = begin_stream()
 
         def write_all() -> None:
+            sink = stream.sink_of(STDOUT)
             for index in range(self.CHUNKS):
-                stream.recorder.feed(b"%06d " % index + self.CHUNK)
+                sink.feed(b"%06d " % index + self.CHUNK)
                 time.sleep(0.002)
-            stream.recorder.close(str(StreamNote.FINISHED))
+            stream.close(str(StreamNote.FINISHED))
 
         return stream, threading.Thread(target=write_all)
 
@@ -320,7 +386,7 @@ class TestPump:
             first_task = await StreamScreen.show(THREAD, first, channel)
             second_task = await StreamScreen.show(THREAD, second, channel)
 
-            second.recorder.close("done")
+            second.close("done")
             await asyncio.wait_for(second_task, timeout=5)
             return first_task, second_task
 
@@ -350,7 +416,7 @@ class TestWindowAction:
 
     def _recorded(self) -> None:
         stream = begin_stream()
-        stream.recorder.feed(self.BODY)
+        stream.sink_of(STDOUT).feed(self.BODY)
         ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
         ToolStreams.drop_thread(THREAD)
 
@@ -389,7 +455,7 @@ class TestWindowAction:
     def test_window_request_stops_the_pump(self) -> None:
         async def scenario() -> asyncio.Task[None]:
             stream = begin_stream()
-            stream.recorder.feed(b"live data")
+            stream.sink_of(STDOUT).feed(b"live data")
             task = await StreamScreen.show(THREAD, stream, RecordingChannel())
 
             await window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
@@ -405,14 +471,16 @@ class TestShowAction:
 
     def test_recorded_stream_is_shown_from_the_journal(self) -> None:
         stream = begin_stream()
-        stream.recorder.feed("сохранённый вывод".encode())
+        stream.sink_of(STDOUT).feed("сохранённый вывод".encode())
         ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
         ToolStreams.drop_thread(THREAD)
 
         channel = RecordingChannel()
 
         async def scenario() -> None:
-            piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=-1)
+            piece = ToolStreams.recorded_slice(
+                USER, THREAD, CALL_ID, offset=-1, channel=STDOUT
+            )
             assert piece is not None
             await StreamScreen.recorded(THREAD, CALL_ID, piece, channel, follow=True)
 
@@ -502,36 +570,6 @@ class TestStreamButton:
         assert live["parentId"] == replay["parentId"]
 
 
-class TestToolMessageFlow:
-    """on_tool_end закрывает журнал и на пути реального ToolMessage."""
-
-    def test_tool_end_closes_by_run_id(self) -> None:
-        async def scenario() -> None:
-            ToolStreams.mark_streamable([TOOL_NAME])
-            view = ChatView(THREAD, RecordingSink(), user_name="tester")
-            view.begin_turn("turn-1")
-            tracer = AgentTracer(view, USER)
-
-            tool_run = uuid4()
-            await tracer.on_tool_start(
-                {"name": TOOL_NAME},
-                "{}",
-                run_id=tool_run,
-                inputs={},
-                tool_call_id=CALL_ID,
-            )
-            await tracer.on_tool_end(
-                ToolMessage(content="ok", tool_call_id=CALL_ID, id="tool-msg"),
-                run_id=tool_run,
-            )
-
-        run(scenario())
-
-        piece = ToolStreams.recorded_slice(USER, THREAD, CALL_ID, offset=0)
-        assert piece is not None
-        assert piece.closed is True
-
-
 class TestStreamDownload:
     """Скачивание журнала вызова: тот же StreamedFile, что отдаёт вложения."""
 
@@ -574,7 +612,7 @@ class TestStreamDownload:
     def test_log_downloads_whole_and_by_range(self, tmp_path: Path) -> None:
         stream = begin_stream()
         body = "строка вывода\n" * 20
-        stream.recorder.feed(body.encode())
+        stream.sink_of(STDOUT).feed(body.encode())
         ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
 
         from httpx import ASGITransport, AsyncClient
@@ -597,7 +635,7 @@ class TestStreamDownload:
         assert whole.content == body.encode()
         assert whole.headers["content-length"] == str(len(body.encode()))
         assert "attachment" in whole.headers["content-disposition"]
-        assert f"{CALL_ID}.log" in whole.headers["content-disposition"]
+        assert f"{CALL_ID}.tool_stdout.log" in whole.headers["content-disposition"]
 
         assert part.status_code == 206
         assert part.content == body.encode()[:10]
@@ -606,7 +644,7 @@ class TestStreamDownload:
 
     def test_foreign_user_gets_no_log(self, tmp_path: Path) -> None:
         stream = begin_stream()
-        stream.recorder.feed(b"secret output")
+        stream.sink_of(STDOUT).feed(b"secret output")
         ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
 
         from httpx import ASGITransport, AsyncClient

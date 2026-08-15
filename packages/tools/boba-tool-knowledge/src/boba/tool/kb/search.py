@@ -3,22 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, LiteralString
 
 from boba.indexing import MetadataKey, ReaderKeys, SectionKeys
 from boba.kbdoc import KbDocKeys
-from boba.tool.kb.caller import KbCaller
 from boba.tool.kb.confluence.models import ConfluenceKeys
-from boba.tool.kb.kb import (
-    PostgresKnowledgeBase,
-    PostgresKnowledgeBaseConfig,
-)
-from boba.tool.kb.models import KnowledgeBaseError, SearchHit
-from boba.toolkit.result import (
-    ErrorResult,
-    TableResult,
-    ToolResult,
-)
+from boba.tool.kb.models import SearchHit
 
 __all__ = [
     "CollectionSearch",
@@ -105,7 +95,7 @@ class KbDocCollection(CollectionSearch):
 class KbSearch:
     """Единый прогон KB-поиска: method выбирает канал, collection — scope."""
 
-    VECTOR_SQL: ClassVar[str] = """
+    VECTOR_SQL: ClassVar[LiteralString] = """
 select
     c.chunk_id,
     c.source_id,
@@ -127,7 +117,7 @@ limit
 """
     """Векторный поиск: format-плейсхолдеры {dim}/{chunks_table}, остальное — bind."""
 
-    FTS_SQL: ClassVar[str] = """
+    FTS_SQL: ClassVar[LiteralString] = """
 with q as (
     select
         websearch_to_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
@@ -171,36 +161,3 @@ limit
     SNIPPET_DESC: ClassVar[str] = (
         "Максимальная длина сниппета документа в hits (символов). По умолчанию 3000."
     )
-
-    @staticmethod
-    def run(  # noqa: PLR0913
-        cfg: PostgresKnowledgeBaseConfig,
-        caller: KbCaller,
-        collection: type[CollectionSearch],
-        query: str,
-        method: SearchMethod,
-        top_k: int,
-        snippet_chars: int,
-    ) -> ToolResult:
-        kb = PostgresKnowledgeBase(cfg=cfg, caller=caller)
-        try:
-            if method == "vector":
-                hits = kb.vector_search(
-                    collections=[collection.COLLECTION],
-                    query=query,
-                    top_k=top_k,
-                    snippet_chars=snippet_chars,
-                    sql_template=KbSearch.VECTOR_SQL,
-                )
-            else:
-                hits = kb.fts_search(
-                    collections=[collection.COLLECTION],
-                    query=query,
-                    top_k=top_k,
-                    snippet_chars=snippet_chars,
-                    sql_template=KbSearch.FTS_SQL,
-                )
-            rows = [collection.row(h) for h in hits]
-        except KnowledgeBaseError as e:
-            return ErrorResult(message=str(e), error_kind="kb_search_failed")
-        return TableResult(rows=rows, note=None if rows else "ничего не найдено")
