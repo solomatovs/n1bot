@@ -44,7 +44,7 @@ from boba.db.pgvector import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
-from boba.tool.kb import PostgresKnowledgeBaseConfig
+from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 
 _RAW_CONFIG: dict[str, DictConfig] = {}
 

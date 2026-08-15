@@ -1,6 +1,6 @@
-"""Ручной прогон операций postgres: PostgresOps вызывается напрямую.
+"""Ручной прогон pg-инструментов: функции вызываются напрямую с явным cfg.
 
-Соединение берётся из [tool.pg.profiles] конфига приложения, аргументы вызова
+Соединение берётся из [tool.pg] конфига приложения, аргументы прогона
 задаются в RunArgs.
 """
 
@@ -11,9 +11,8 @@ from typing import ClassVar
 import pytest
 
 from boba.settings import bind
-from boba.tool.pg import PgExecutorConfig
-from boba.tool.pg.payload import PostgresOps
-from boba.tool.pg.protocol import PgCopyRequest, PgQueryRequest
+from boba.tool.pg.tools import PgToolConfig, pg_copy, pg_list_tables, pg_query
+from boba.toolkit.entry import ToolMain
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -25,42 +24,44 @@ class RunArgs:
 
     SQL: ClassVar[str] = "select 1 as answer"
 
-    ROW_LIMIT: ClassVar[int] = 100
-
-    MAX_BYTES: ClassVar[int] = 1_000_000
-
 
 @pytest.fixture(scope="module")
-def pg_connection(raw_config):
-    cfg = bind(raw_config, path="tool.pg", model=PgExecutorConfig)
-
-    return cfg.profiles[RunArgs.CONNECTION]
+def pg_cfg(raw_config) -> PgToolConfig:
+    return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
 
-async def test_run_pg_query(pg_connection, payload, chunks) -> None:
-    request = PgQueryRequest(
-        op=PgQueryRequest.OP,
-        connection=pg_connection,
-        sql=RunArgs.SQL,
-        params=(),
-        row_limit=RunArgs.ROW_LIMIT,
+async def test_run_pg_query(pg_cfg: PgToolConfig) -> None:
+    body = ToolMain.toolset(pg_query)[0].coroutine
+    assert body is not None
+
+    content, artifact = await body(
+        connection_name=RunArgs.CONNECTION, sql=RunArgs.SQL, cfg=pg_cfg
     )
 
-    trailer = await PostgresOps.query(payload.of(request), chunks.write)
-
-    print(chunks.rows())
-    print(trailer)
+    print(content)
+    print(artifact)
 
 
-async def test_run_pg_copy(pg_connection, payload, chunks) -> None:
-    request = PgCopyRequest(
-        op=PgCopyRequest.OP,
-        connection=pg_connection,
-        sql=RunArgs.SQL,
-        max_bytes=RunArgs.MAX_BYTES,
+async def test_run_pg_list_tables(pg_cfg: PgToolConfig) -> None:
+    body = ToolMain.toolset(pg_list_tables)[0].coroutine
+    assert body is not None
+
+    content, _artifact = await body(
+        connection_name=RunArgs.CONNECTION,
+        pg_schema="public",
+        table_pattern=None,
+        cfg=pg_cfg,
     )
 
-    trailer = await PostgresOps.copy(payload.of(request), chunks.write)
+    print(content)
 
-    print(chunks.text())
-    print(trailer)
+
+async def test_run_pg_copy(pg_cfg: PgToolConfig) -> None:
+    body = ToolMain.toolset(pg_copy)[0].coroutine
+    assert body is not None
+
+    content, _artifact = await body(
+        connection_name=RunArgs.CONNECTION, sql=RunArgs.SQL, cfg=pg_cfg
+    )
+
+    print(content)

@@ -655,6 +655,7 @@ class ImageStorageClient(StorageClient):
         require_fuse(self._config.binaries)
         await aiofiles.os.makedirs(os.path.dirname(image), exist_ok=True)
         argv = build_chain_argv(
+            extra_env={},
             images=[(image, image + ".mnt")],
             template=self._config.image_template,
             op=op,

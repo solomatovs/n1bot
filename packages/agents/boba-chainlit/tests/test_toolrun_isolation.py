@@ -19,6 +19,11 @@ TOOLRUN = Path(__file__).resolve().parents[1] / "src/boba/chainlit/agent/toolrun
 MODULES = sorted(p for p in TOOLRUN.glob("*.py") if p.name != "__init__.py")
 
 
+@pytest.fixture(autouse=True)
+def chainlit_context() -> None:
+    """Проверка читает исходники: сессия приложения этому тесту не нужна."""
+
+
 class TestToolrunIsolation:
     ALLOWED_PREFIXES: ClassVar[tuple[str, ...]] = (
         "boba.chainlit.agent.toolrun",

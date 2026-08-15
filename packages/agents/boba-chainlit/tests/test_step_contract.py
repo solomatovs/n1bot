@@ -48,7 +48,7 @@ class TestStepContract:
         sink = RecordingSink()
         view = ChatView(THREAD, sink, user_name="tester")
         view.begin_turn(TURN_KEY)
-        tracer = AgentTracer(view, "1")
+        tracer = AgentTracer(view)
 
         llm_run = uuid4()
         await tracer.on_llm_start({}, [""], run_id=llm_run)

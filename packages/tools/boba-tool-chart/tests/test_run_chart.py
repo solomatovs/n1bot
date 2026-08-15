@@ -1,4 +1,4 @@
-"""Ручной прогон операции chart: ChartOps проверяет спеку через plotly."""
+"""Ручной прогон visualize: функция вызывается напрямую, спека — в RunArgs."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.tool.chart.caller import ValidateFigureRequest
-from boba.tool.chart.payload import ChartOps
+from boba.tool.chart.tools import visualize
+from boba.toolkit.entry import ToolMain
 
-pytestmark = [pytest.mark.run]
+pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
 
 class RunArgs:
@@ -26,9 +26,11 @@ class RunArgs:
         return json.dumps(cls.FIGURE, ensure_ascii=False)
 
 
-def test_run_validate_figure(payload) -> None:
-    request = ValidateFigureRequest.of(RunArgs.spec())
+async def test_run_visualize() -> None:
+    body = ToolMain.toolset(visualize)[0].coroutine
+    assert body is not None
 
-    trailer = ChartOps.validate_figure(payload.of(request))
+    content, artifact = await body(spec=RunArgs.spec())
 
-    print(trailer)
+    print(content)
+    print(artifact)

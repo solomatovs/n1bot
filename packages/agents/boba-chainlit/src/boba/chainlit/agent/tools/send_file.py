@@ -12,8 +12,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar
 
-from langchain.tools import tool
-from langchain_core.tools import BaseTool, InjectedToolCallId
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from pydantic import Field
 
 import chainlit as cl

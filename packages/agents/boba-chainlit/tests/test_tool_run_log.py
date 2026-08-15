@@ -8,13 +8,20 @@ import logging
 import pytest
 from langchain_core.tools import StructuredTool
 
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
+from boba.chainlit.agent.toolrun.run_log import StreamSource, ToolRunLogger
 from boba.sandbox.process_runner import RunResult
 from boba.sandbox.runner import SandboxRunner
 from boba.toolkit.stream import ToolCallContext
 
 LOGGER_NAME = "boba.chainlit.agent.toolrun.run_log"
 RUNNER_LOGGER_NAME = "boba.sandbox.runner"
+
+
+def no_streams(tool: str, call_id: str) -> None:
+    return None
+
+
+NO_STREAMS: StreamSource = no_streams
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +38,7 @@ class TestToolRunLogger:
 
     def test_success_logs_start_and_ok(self, caplog: pytest.LogCaptureFixture) -> None:
         tool = self._tool(lambda query: "done")
-        ToolRunLogger.guard_all([tool])
+        ToolRunLogger.guard_all([tool], NO_STREAMS)
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             assert tool.func is not None
             tool.func(query="звук")
@@ -48,7 +55,7 @@ class TestToolRunLogger:
             raise RuntimeError(msg)
 
         tool = self._tool(boom)
-        ToolRunLogger.guard_all([tool])
+        ToolRunLogger.guard_all([tool], NO_STREAMS)
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             assert tool.func is not None
             with pytest.raises(RuntimeError):
@@ -62,22 +69,22 @@ class TestToolRunLogger:
         seen: list[str] = []
 
         def probe(query: str) -> str:
-            seen.append(ToolCallContext.get())
+            seen.append(ToolCallContext.name())
             return "ok"
 
         tool = self._tool(probe)
-        ToolRunLogger.guard_all([tool])
+        ToolRunLogger.guard_all([tool], NO_STREAMS)
         assert tool.func is not None
         tool.func(query="q")
         assert seen == ["probe"]
-        assert ToolCallContext.get() == ""
+        assert ToolCallContext.get() is None
 
     def test_async_tool_wrapped(self, caplog: pytest.LogCaptureFixture) -> None:
         async def probe(query: str) -> str:
-            return ToolCallContext.get()
+            return ToolCallContext.name()
 
         tool = self._tool(lambda query: "sync", probe)
-        ToolRunLogger.guard_all([tool])
+        ToolRunLogger.guard_all([tool], NO_STREAMS)
 
         async def invoke() -> object:
             assert tool.coroutine is not None

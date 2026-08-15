@@ -1,4 +1,4 @@
-"""Ручной прогон операций doc: DocumentOps вызывается напрямую.
+"""Ручной прогон doc-инструментов: функции вызываются напрямую с явным cfg.
 
 Путь к документу — хостовый: файл читается процессом теста, каталога
 /workspace песочницы здесь нет. Лимиты парсера берутся из [tool.doc].
@@ -11,16 +11,15 @@ from typing import ClassVar
 import pytest
 
 from boba.settings import bind
-from boba.tool.doc import DocToolsConfig
-from boba.tool.doc.payload import DocumentOps
-from boba.tool.doc.protocol import (
-    DocPagesRequest,
-    DocParams,
-    DocPathRequest,
-    DocSearchRequest,
+from boba.tool.doc.tools import (
+    DocToolSection,
+    document_outline,
+    read_document,
+    search_document,
 )
+from boba.toolkit.entry import ToolMain
 
-pytestmark = [pytest.mark.run]
+pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
 
 class RunArgs:
@@ -32,70 +31,38 @@ class RunArgs:
 
     QUERY: ClassVar[str] = "alpha"
 
-    OCR_ENABLED: ClassVar[bool] = False
-
-    NUM_WORKERS: ClassVar[int] = 1
-
-    OCR_LANGUAGE: ClassVar[str] = "rus+eng"
-
 
 @pytest.fixture(scope="module")
-def doc_params(raw_config):
-    cfg = bind(raw_config, path="tool.doc", model=DocToolsConfig)
+def doc_cfg(raw_config) -> DocToolSection:
+    return bind(raw_config, path="tool.doc", model=DocToolSection)
 
-    return DocParams(
-        ocr_enabled=RunArgs.OCR_ENABLED,
-        ocr_language=RunArgs.OCR_LANGUAGE,
-        max_pages=cfg.max_pages,
-        tessdata_path=cfg.tessdata_path,
-        num_workers=RunArgs.NUM_WORKERS,
-        max_text_chars=cfg.max_text_chars,
+
+async def test_run_read_document(doc_cfg: DocToolSection) -> None:
+    body = ToolMain.toolset(read_document)[0].coroutine
+    assert body is not None
+
+    content, _artifact = await body(
+        path=RunArgs.PATH, pages=RunArgs.PAGES, cfg=doc_cfg
     )
 
-
-@pytest.fixture(scope="module")
-def doc_config(raw_config):
-    return bind(raw_config, path="tool.doc", model=DocToolsConfig)
+    print(content)
 
 
-def test_run_read_document(doc_params, payload, chunks) -> None:
-    request = DocPagesRequest(
-        op=DocPagesRequest.OP,
-        path=RunArgs.PATH,
-        pages=RunArgs.PAGES,
-        params=doc_params,
+async def test_run_document_outline(doc_cfg: DocToolSection) -> None:
+    body = ToolMain.toolset(document_outline)[0].coroutine
+    assert body is not None
+
+    content, _artifact = await body(path=RunArgs.PATH, cfg=doc_cfg)
+
+    print(content)
+
+
+async def test_run_search_document(doc_cfg: DocToolSection) -> None:
+    body = ToolMain.toolset(search_document)[0].coroutine
+    assert body is not None
+
+    content, _artifact = await body(
+        path=RunArgs.PATH, query=RunArgs.QUERY, cfg=doc_cfg
     )
 
-    trailer = DocumentOps.read_document(payload.of(request), chunks.write)
-
-    print(chunks.text())
-    print(trailer)
-
-
-def test_run_document_outline(doc_params, payload, chunks) -> None:
-    request = DocPathRequest(
-        op=DocPathRequest.OUTLINE,
-        path=RunArgs.PATH,
-        params=doc_params,
-    )
-
-    trailer = DocumentOps.document_outline(payload.of(request), chunks.write)
-
-    print(chunks.rows())
-    print(trailer)
-
-
-def test_run_search_document(doc_config, doc_params, payload, chunks) -> None:
-    request = DocSearchRequest(
-        op=DocSearchRequest.OP,
-        path=RunArgs.PATH,
-        query=RunArgs.QUERY,
-        context_chars=doc_config.search_context_chars,
-        max_matches=doc_config.search_max_matches,
-        params=doc_params,
-    )
-
-    trailer = DocumentOps.search_document(payload.of(request), chunks.write)
-
-    print(chunks.rows())
-    print(trailer)
+    print(content)

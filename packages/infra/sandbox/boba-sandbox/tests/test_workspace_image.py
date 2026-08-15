@@ -281,6 +281,7 @@ class TestRelativePaths:
 
     def test_relative_image_bound_by_absolute_path(self) -> None:
         argv = build_chain_argv(
+            extra_env={},
             images=[("./ws/a.ext4", "./ws/a.ext4.mnt")],
             template="./t.ext4",
             op=["write", "upload/x"],
@@ -304,6 +305,7 @@ class TestChainArgv:
     @staticmethod
     def _argv(**kw) -> list[str]:
         return build_chain_argv(
+            extra_env={},
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             template="/t.ext4",
             op=["write", "upload/x"],
@@ -317,6 +319,7 @@ class TestChainArgv:
     def test_limits_rendered_as_flags(self) -> None:
         limits = ResourceLimits(max_memory_bytes=64 * 1024 * 1024, max_cpu_sec=5)
         argv = build_chain_argv(
+            extra_env={},
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             template="/t.ext4",
             op=["write", "upload/x"],

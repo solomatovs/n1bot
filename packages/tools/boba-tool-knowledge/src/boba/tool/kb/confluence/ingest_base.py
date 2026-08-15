@@ -30,7 +30,7 @@ from boba.indexing import (
 )
 from boba.indexing.ports import Chunker, Embedder, ReaderId
 from boba.indexing.values import CollectionId
-from boba.tool.doc.liteparse import SandboxParserConfig
+from boba.tool.doc.config import SandboxParserConfig
 from boba.tool.kb.chunking import (
     ChunkerParams,
     StructuralChunkerFactory,

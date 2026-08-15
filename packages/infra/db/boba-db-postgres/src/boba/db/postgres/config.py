@@ -16,7 +16,6 @@ from pydantic import (
 )
 
 from boba.krb import KeytabConfig
-from boba.toolkit.sql import ConnectionProfile
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 
@@ -93,7 +92,7 @@ class PostgresOptionsConfig(BaseModel):
         return " ".join(parts)
 
 
-class PostgresConfig(ConnectionProfile):
+class PostgresConfig(BaseModel):
     """libpq connection keywords + поведение connect() psycopg; см. PostgreSQL docs."""
 
     model_config = ConfigDict(extra="ignore")

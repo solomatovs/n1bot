@@ -1,7 +1,8 @@
-"""Журнал вывода инструментов: файл на вызов в служебном томе пользователя.
+"""Журнал вывода инструментов: файл на канал вызова в томе пользователя.
 
-Вызов пишет {thread}/{call}.log и meta файл с итогом в директорию
-чтение файлов производится окнами по смещению в файле
+Вызов пишет {thread}/{call_id}.{tool}.{channel}.log по файлу на канал и один
+сайдкар {call_id}.meta.json с итогом; чтение — окнами по смещению в файле.
+Единица учёта и вытеснения — вызов целиком: все его файлы вместе.
 
 Ошибки: StreamJournalError — журнал не открылся, окно не читается, журналы
 треда не удаляются; сбои записи гасятся внутрь, закрывая поток пометкой.
@@ -32,6 +33,7 @@ from boba.chainlit.domain.stream import (
     ThreadUsage,
     VaultUsage,
 )
+from boba.toolkit.channels import ToolChannel
 
 __all__ = [
     "DirVault",
@@ -267,41 +269,43 @@ class StreamJournal(StreamStorePort):
         self,
         key: StreamKey,
         tool_name: str,
+        channel: ToolChannel,
         on_data: Callable[[], None],
-        protected_logs: frozenset[str],
+        protected_prefixes: frozenset[str],
     ) -> StreamRecorder:
-        """Открыть журнал вызова на запись; каталог треда создаётся здесь.
+        """Открыть журнал канала на запись; каталог треда создаётся здесь.
 
-        protected_logs — rel-пути логов живых вызовов, вытеснять их нельзя;
-        открываемый вызов защищён всегда. Место кончилось — старейшие закрытые
-        логи вытесняются, пока журнал не откроется.
+        protected_prefixes — префиксы {thread}/{call_id}. живых вызовов,
+        вытеснять их файлы нельзя; открываемый вызов защищён всегда. Место
+        кончилось — старейшие закрытые вызовы вытесняются до успеха.
         """
         root = self._vault.root_for(key.user_id)
-        protected = protected_logs | {key.rel_log()}
+        protected = protected_prefixes | {key.call_prefix()}
 
         self._ensure_reserve(root, protected)
 
-        log_path = os.path.join(root, key.rel_log())
+        log_path = os.path.join(root, key.rel_log(tool_name, channel))
 
         # вместо релея stderr в общий журнал — одна строка о месте записи
         logger.info("tool stream journal: %s -> %s", tool_name, log_path)
 
-        return self._open_recorder(key, root, tool_name, on_data, protected)
+        return self._open_recorder(key, root, tool_name, channel, on_data, protected)
 
-    def _open_recorder(
+    def _open_recorder(  # noqa: PLR0913
         self,
         key: StreamKey,
         root: str,
         tool_name: str,
+        channel: ToolChannel,
         on_data: Callable[[], None],
         protected: frozenset[str],
     ) -> StreamRecorder:
-        """Открыть рекордер, вытесняя старые логи при ENOSPC до успеха.
+        """Открыть рекордер, вытесняя старые вызовы при ENOSPC до успеха.
 
         Каталог треда создаётся в цикле: вытеснение могло снести опустевший
         каталог того же треда, куда пишем.
         """
-        log_path = os.path.join(root, key.rel_log())
+        log_path = os.path.join(root, key.rel_log(tool_name, channel))
         meta_path = os.path.join(root, key.rel_meta())
 
         while True:
@@ -400,14 +404,14 @@ class StreamJournal(StreamStorePort):
         self, root: str, protected: frozenset[str]
     ) -> Iterator[CallLogUsage]:
         for entry in self._call_logs(root):
-            if entry.rel_log in protected:
+            if entry.prefix in protected:
                 continue
 
             yield entry
 
     def _remove_call(self, root: str, entry: CallLogUsage) -> None:
-        """Снести лог и его сайдкар; опустевший каталог треда убрать."""
-        for rel in (entry.rel_log, entry.rel_meta):
+        """Снести все файлы вызова; опустевший каталог треда убрать."""
+        for rel in entry.rel_files:
             try:
                 os.remove(os.path.join(root, rel))
             except FileNotFoundError:
@@ -423,25 +427,46 @@ class StreamJournal(StreamStorePort):
             return
 
     @staticmethod
-    def _call_logs(root: str) -> Iterator[CallLogUsage]:
+    def _call_files(thread_path: str) -> Iterator[tuple[str, str, os.stat_result]]:
+        """Файлы каталога треда: (call_id, имя, stat); чужие имена — мимо."""
+        for file_entry in os.scandir(thread_path):
+            if not file_entry.is_file(follow_symlinks=False):
+                continue
+
+            name = file_entry.name
+            if JournalFile.is_log(name):
+                yield JournalFile.parse_log(name).call_id, name, file_entry.stat()
+                continue
+
+            if JournalFile.is_meta(name):
+                yield JournalFile.call_id_of_meta(name), name, file_entry.stat()
+
+    @classmethod
+    def _call_logs(cls, root: str) -> Iterator[CallLogUsage]:
+        """Файлы каждого вызова одной записью: единица учёта — вызов."""
         for thread_entry in os.scandir(root):
             if not thread_entry.is_dir(follow_symlinks=False):
                 continue
 
-            for file_entry in os.scandir(thread_entry.path):
-                if not file_entry.is_file(follow_symlinks=False):
-                    continue
+            grouped: dict[str, list[tuple[str, os.stat_result]]] = {}
+            for call_id, name, stat in cls._call_files(thread_entry.path):
+                grouped.setdefault(call_id, []).append((name, stat))
 
-                if not JournalFile.is_log(file_entry.name):
-                    continue
+            for call_id, files in grouped.items():
+                rel_files: list[str] = []
+                used = 0
+                last_write = 0.0
+                for name, stat in files:
+                    rel_files.append(f"{thread_entry.name}/{name}")
+                    used += stat.st_size
+                    last_write = max(last_write, stat.st_mtime)
 
-                stat = file_entry.stat()
-                call_id = JournalFile.call_id_of(file_entry.name)
                 yield CallLogUsage(
                     thread_id=thread_entry.name,
                     call_id=call_id,
-                    bytes_used=stat.st_size,
-                    last_write_at=stat.st_mtime,
+                    rel_files=tuple(sorted(rel_files)),
+                    bytes_used=used,
+                    last_write_at=last_write,
                 )
 
     @staticmethod
@@ -456,7 +481,7 @@ class StreamJournal(StreamStorePort):
                 continue
 
             used = 0
-            calls = 0
+            call_ids: set[str] = set()
             last_write = 0.0
             for file_entry in os.scandir(thread_entry.path):
                 if not file_entry.is_file(follow_symlinks=False):
@@ -465,7 +490,8 @@ class StreamJournal(StreamStorePort):
                 used += stat.st_size
                 last_write = max(last_write, stat.st_mtime)
                 if JournalFile.is_log(file_entry.name):
-                    calls += 1
+                    call_ids.add(JournalFile.parse_log(file_entry.name).call_id)
+            calls = len(call_ids)
 
             yield ThreadUsage(
                 thread_id=thread_entry.name,
@@ -474,12 +500,14 @@ class StreamJournal(StreamStorePort):
                 last_write_at=last_write,
             )
 
-    def slice_at(self, key: StreamKey, offset: int) -> StreamSlice | None:
+    def slice_at(
+        self, key: StreamKey, offset: int, channel: ToolChannel
+    ) -> StreamSlice | None:
         """Окно записанного журнала вперёд; None — журнала такого вызова нет.
 
         offset меньше нуля — хвост файла.
         """
-        opened = self._open_view(key)
+        opened = self._open_view(key, channel)
         if opened is None:
             return None
 
@@ -491,12 +519,14 @@ class StreamJournal(StreamStorePort):
             return view.slice_at(offset, JournalWindow.BYTES, size, meta)
         except OSError as exc:
             raise StreamJournalError(
-                f"stream log is not readable: {key.rel_log()}: {exc}"
+                f"stream log is not readable: {key.call_id}/{channel}: {exc}"
             ) from exc
 
-    def slice_before(self, key: StreamKey, end: int) -> StreamSlice | None:
+    def slice_before(
+        self, key: StreamKey, end: int, channel: ToolChannel
+    ) -> StreamSlice | None:
         """Окно, заканчивающееся на end: прокрутка вверх стыкуется встык."""
-        opened = self._open_view(key)
+        opened = self._open_view(key, channel)
         if opened is None:
             return None
 
@@ -506,25 +536,45 @@ class StreamJournal(StreamStorePort):
             return view.slice_before(end, JournalWindow.BYTES, size, meta)
         except OSError as exc:
             raise StreamJournalError(
-                f"stream log is not readable: {key.rel_log()}: {exc}"
+                f"stream log is not readable: {key.call_id}/{channel}: {exc}"
             ) from exc
 
+    def log_rel_path(self, key: StreamKey, channel: ToolChannel) -> str | None:
+        """Rel-путь лога канала; имя инструмента берётся из сайдкара вызова.
+
+        None — вызов не журналировался (нет сайдкара) либо файла канала нет.
+        """
+        root = self._vault.root_for(key.user_id)
+        meta = self._read_meta(os.path.join(root, key.rel_meta()))
+        if not meta.tool_name:
+            return None
+
+        rel = key.rel_log(meta.tool_name, channel)
+        if not os.path.isfile(os.path.join(root, rel)):
+            return None
+
+        return rel
+
     def _open_view(
-        self, key: StreamKey
+        self, key: StreamKey, channel: ToolChannel
     ) -> tuple[StreamFileView, int, StreamMeta] | None:
         root = self._vault.root_for(key.user_id)
-        log_path = os.path.join(root, key.rel_log())
+
+        meta = self._read_meta(os.path.join(root, key.rel_meta()))
+        if not meta.tool_name:
+            return None
+
+        log_path = os.path.join(root, key.rel_log(meta.tool_name, channel))
 
         try:
             size = os.stat(log_path).st_size
         except FileNotFoundError:
             return None
 
-        meta = self._read_meta(os.path.join(root, key.rel_meta()))
         return StreamFileView(log_path), size, meta
 
     def vault_root(self, user_id: str) -> str:
-        """Корень тома пользователя: под ним лежат {thread}/{call}.log.
+        """Корень тома пользователя: под ним лежат файлы каналов вызовов.
 
         Отдаётся скачиванию журнала — файл течёт из тома тем же StreamedFile,
         что и вложения.

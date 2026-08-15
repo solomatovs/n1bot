@@ -16,33 +16,21 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from langchain_core.tools import BaseTool
 from psycopg import sql
 
+from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.sandbox import (
     SandboxCaller,
     SandboxPayloadError,
     SandboxToolConfig,
 )
 from boba.settings import bind
-from boba.tool.chart import build_chart_tools
-from boba.tool.doc import DocToolsConfig, build_doc_tools
-from boba.tool.kb import (
-    PostgresKnowledgeBaseConfig,
-    build_kb_tools,
-)
-from boba.tool.kb.confluence import (
-    ConfluenceToolsConfig,
-    build_confluence_tools,
-)
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
-from boba.tool.kb.confluence.ingest_tools import (
-    build_confluence_ingest_tools,
-)
 from boba.tool.kb.search import ConfluenceCollection
-from boba.tool.pg import PgExecutorConfig, build_pg_tools
-from boba.tool.shell import BashToolConfig, build_bash_tool
-from boba.tool.web import WebGrepConfig, build_web_tools
-from boba.toolkit.launcher import LauncherFactory, ToolLauncher
+from boba.tool.shell.tools import BashToolConfig, build_bash_tool
+from boba.tool.web.tools import WebGrepConfig
+from boba.toolkit.launcher import LauncherFactory, PayloadFailureError, ToolLauncher
 from boba.toolkit.result import (
     AffectedSqlResult,
     ChartResult,
@@ -52,6 +40,7 @@ from boba.toolkit.result import (
     TextResult,
     ToolArtifact,
 )
+from boba.toolkit.wrap import ToolProcessWrap
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS = _REPO / "build" / "src" / "sandbox" / "rootfs"
@@ -173,22 +162,64 @@ def bash_tool(raw_config):
 
 @pytest.fixture(scope="module")
 def doc_tools(raw_config):
-    cfg = ToolSetup.config(raw_config, "tool.doc", DocToolsConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.doc")
-    return ToolSetup.by_name(build_doc_tools(cfg, launchers))
+    """doc-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
+    from importlib import reload
+
+    import boba.tool.doc.tools as doc_module
+
+    module = reload(doc_module)
+
+    sandbox = bind(raw_config, path="tool.doc.sandbox", model=SandboxToolConfig)
+    launcher = SandboxCaller("doc", sandbox.effective(), ToolSetup.path_vars)
+
+    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
+    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+
+    def resolve(name: str, annotation: Any) -> object:
+        return bind(raw_config, path=annotation.SECTION, model=annotation)
+
+    InjectedConfig.bind_all(functions, resolve)
+
+    return ToolSetup.by_name(functions)
 
 
 @pytest.fixture(scope="module")
 def chart_tool(raw_config):
-    launchers = ToolSetup.launchers(raw_config, "tool.chart")
-    return ToolSetup.by_name(build_chart_tools(launchers))["visualize"]
+    """visualize новой модели: обёртка запуска на профиле секции."""
+    from importlib import reload
+
+    import boba.tool.chart.tools as chart_module
+
+    module = reload(chart_module)
+
+    sandbox = bind(raw_config, path="tool.chart.sandbox", model=SandboxToolConfig)
+    launcher = SandboxCaller("chart", sandbox.effective(), ToolSetup.path_vars)
+
+    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+    return module.visualize
 
 
 @pytest.fixture(scope="module")
 def web_tools(raw_config):
-    cfg = ToolSetup.config(raw_config, "tool.web", WebGrepConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.web")
-    return ToolSetup.by_name(build_web_tools(cfg, launchers))
+    """web-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
+    from importlib import reload
+
+    import boba.tool.web.tools as web_module
+
+    module = reload(web_module)
+
+    sandbox = bind(raw_config, path="tool.web.sandbox", model=SandboxToolConfig)
+    launcher = SandboxCaller("web", sandbox.effective(), ToolSetup.path_vars)
+
+    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
+    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+
+    def resolve(name: str, annotation: Any) -> object:
+        return bind(raw_config, path=annotation.SECTION, model=annotation)
+
+    InjectedConfig.bind_all(functions, resolve)
+
+    return ToolSetup.by_name(functions)
 
 
 @pytest.fixture(scope="module")
@@ -202,16 +233,50 @@ def whitelisted_url(raw_config) -> str:
 
 @pytest.fixture(scope="module")
 def confluence_tools(raw_config):
-    cfg = ToolSetup.config(raw_config, "tool.confluence", ConfluenceToolsConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.confluence")
-    return ToolSetup.by_name(build_confluence_tools(cfg, launchers))
+    """confluence-функции новой модели: обёртка запуска + конфиг."""
+    from importlib import reload
+
+    import boba.tool.kb.confluence.tools as confluence_module
+
+    module = reload(confluence_module)
+
+    sandbox = bind(
+        raw_config, path="tool.confluence.sandbox", model=SandboxToolConfig
+    )
+    launcher = SandboxCaller("confluence", sandbox.effective(), ToolSetup.path_vars)
+
+    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
+    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+
+    def resolve(name: str, annotation: Any) -> object:
+        return bind(raw_config, path=annotation.SECTION, model=annotation)
+
+    InjectedConfig.bind_all(functions, resolve)
+
+    return ToolSetup.by_name(functions)
 
 
 @pytest.fixture(scope="module")
 def pg_tools(raw_config):
-    cfg = ToolSetup.config(raw_config, "tool.pg", PgExecutorConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.pg")
-    return ToolSetup.by_name(build_pg_tools(cfg, launchers))
+    """pg-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
+    from importlib import reload
+
+    import boba.tool.pg.tools as pg_module
+
+    module = reload(pg_module)
+
+    sandbox = bind(raw_config, path="tool.pg.sandbox", model=SandboxToolConfig)
+    launcher = SandboxCaller("pg", sandbox.effective(), ToolSetup.path_vars)
+
+    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
+    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+
+    def resolve(name: str, annotation: Any) -> object:
+        return bind(raw_config, path=annotation.SECTION, model=annotation)
+
+    InjectedConfig.bind_all(functions, resolve)
+
+    return ToolSetup.by_name(functions)
 
 
 @pytest.fixture(scope="module")
@@ -262,17 +327,49 @@ class KbCleanup:
 
 @pytest.fixture(scope="module")
 def ingest_tools(raw_config, kb_collection: str):
-    cfg = ToolSetup.config(raw_config, "tool.ingest", ConfluenceIngestConfig)
-    cfg = cfg.model_copy(update={"collection": kb_collection})
-    launchers = ToolSetup.launchers(raw_config, "tool.ingest")
-    return ToolSetup.by_name(build_confluence_ingest_tools(cfg, launchers))
+    """ingest-функции новой модели: обёртка запуска + конфиг прогона."""
+    from importlib import reload
+
+    import boba.tool.kb.confluence.ingest_tools as ingest_module
+
+    module = reload(ingest_module)
+
+    sandbox = bind(raw_config, path="tool.ingest.sandbox", model=SandboxToolConfig)
+    launcher = SandboxCaller("ingest", sandbox.effective(), ToolSetup.path_vars)
+
+    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
+    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+
+    def resolve(name: str, annotation: Any) -> object:
+        cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
+        return cfg.model_copy(update={"collection": kb_collection})
+
+    InjectedConfig.bind_all(functions, resolve)
+
+    return ToolSetup.by_name(functions)
 
 
 @pytest.fixture(scope="module")
 def kb_tools(raw_config, kb_collection: str):
-    cfg = ToolSetup.config(raw_config, "tool.kb", PostgresKnowledgeBaseConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.kb")
-    return ToolSetup.by_name(build_kb_tools(cfg, launchers))
+    """kb-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
+    from importlib import reload
+
+    import boba.tool.kb.tools as kb_module
+
+    module = reload(kb_module)
+
+    sandbox = bind(raw_config, path="tool.kb.sandbox", model=SandboxToolConfig)
+    launcher = SandboxCaller("kb", sandbox.effective(), ToolSetup.path_vars)
+
+    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
+    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+
+    def resolve(name: str, annotation: Any) -> object:
+        return bind(raw_config, path=annotation.SECTION, model=annotation)
+
+    InjectedConfig.bind_all(functions, resolve)
+
+    return ToolSetup.by_name(functions)
 
 
 @pytest.fixture(scope="module")
@@ -450,8 +547,10 @@ class TestChartTool:
         assert result.spec["data"][0]["type"] == "bar"
 
     async def test_broken_spec_fails_loudly(self, chart_tool) -> None:
-        with pytest.raises(SandboxPayloadError):
+        with pytest.raises(PayloadFailureError) as caught:
             await Call.result(chart_tool, spec="не json")
+
+        assert caught.value.kind == "invalid_figure_spec"
 
 
 class TestWebTools:
@@ -481,15 +580,18 @@ class TestWebTools:
         assert "Confluence" in result.rows[0]["content"]
 
     async def test_host_outside_whitelist(self, web_tools) -> None:
-        result = await Call.result(
-            web_tools["web_fetch_page"],
-            url="https://example.com/",
-            as_markdown=True,
-            line_offset=0,
-            line_count=5,
-        )
-        assert isinstance(result, ErrorResult)
-        assert "whitelist" in result.message
+        """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""
+        with pytest.raises(PayloadFailureError) as caught:
+            await Call.result(
+                web_tools["web_fetch_page"],
+                url="https://example.com/",
+                as_markdown=True,
+                line_offset=0,
+                line_count=5,
+            )
+
+        assert caught.value.kind == "unknown_host"
+        assert "whitelist" in str(caught.value)
 
 
 class TestConfluenceTools:
@@ -613,9 +715,9 @@ class TestPgTools:
         assert isinstance(result, AffectedSqlResult)
         assert result.status == "CREATE TABLE"
 
-    async def test_export_returns_copy_text(self, pg_tools) -> None:
+    async def test_copy_returns_copy_text(self, pg_tools) -> None:
         result = await Call.ok(
-            pg_tools["pg_export"],
+            pg_tools["pg_copy"],
             connection_name="main",
             sql="select 1 as one, 'два' as two",
         )
@@ -623,10 +725,13 @@ class TestPgTools:
         assert "два" in result.text
 
     async def test_unknown_target_is_rejected(self, pg_tools) -> None:
-        result = await Call.result(
-            pg_tools["pg_query"], connection_name="нет-такого", sql="select 1"
-        )
-        assert isinstance(result, ErrorResult)
+        """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""
+        with pytest.raises(PayloadFailureError) as caught:
+            await Call.result(
+                pg_tools["pg_query"], connection_name="нет-такого", sql="select 1"
+            )
+
+        assert caught.value.kind == "unknown_target"
 
 
 class TestIngestTools:

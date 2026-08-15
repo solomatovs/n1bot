@@ -761,6 +761,11 @@ class Launcher:
     USERNS_SYSCTL: ClassVar[str] = "/proc/sys/user/max_user_namespaces"
     """bwrap --disable-userns несовместим с mount fuse, поэтому sysctl после mount."""
 
+    PASS_FDS_ENV: ClassVar[str] = "BOBA_PASS_FDS"  # noqa: S105 — имя env, не секрет
+    """Номера дескрипторов каналов инструмента через запятую: их выставляет
+    приложение на внешнем bwrap, а лаунчер передаёт вложенному bwrap как есть —
+    иначе subprocess закрыл бы их и каналы не доехали бы до тела."""
+
     def __init__(
         self,
         template: str,
@@ -883,6 +888,10 @@ class Launcher:
             f"oom_score_adj={self._limits.oom_score_adj}"
         )
 
+        channel_fds = self._channel_fds()
+        if channel_fds:
+            trace(f"passing channel fds through: {channel_fds}")
+
         def prepare_child() -> None:
             FuseMounter.set_pdeathsig()
             self._limits.apply_to_current_process()
@@ -890,9 +899,30 @@ class Launcher:
         return subprocess.call(  # noqa: S603
             argv,
             shell=False,
-            pass_fds=self._store.lock_fds,
+            pass_fds=self._store.lock_fds + channel_fds,
             preexec_fn=prepare_child,
         )
+
+    @classmethod
+    def _channel_fds(cls) -> tuple[int, ...]:
+        """Дескрипторы каналов из env; их номера pass_fds сохраняет как есть."""
+        raw = os.environ.get(cls.PASS_FDS_ENV, "")
+        if not raw:
+            return ()
+
+        fds: list[int] = []
+        for item in raw.split(","):
+            value = item.strip()
+            if not value:
+                continue
+
+            try:
+                fds.append(int(value))
+            except ValueError as e:
+                msg = f"{cls.PASS_FDS_ENV}: invalid fd {value!r}"
+                raise MountError(msg) from e
+
+        return tuple(fds)
 
     @classmethod
     def _parse_args(cls, argv: list[str]) -> argparse.Namespace:
@@ -958,7 +988,7 @@ def require_fuse(binaries: TrustedBinaries) -> None:
     binaries.resolve(SandboxBinary.BWRAP)
 
 
-def build_chain_argv(  # noqa: PLR0913
+def build_chain_argv(  # noqa: PLR0913, C901 — линейная сборка argv
     *,
     images: Sequence[tuple[str, str]],
     template: str,
@@ -967,6 +997,7 @@ def build_chain_argv(  # noqa: PLR0913
     options: LauncherOptions,
     limits: ResourceLimits,
     binaries: TrustedBinaries,
+    extra_env: Mapping[str, str],
     rw_paths: Sequence[str] = (),
     network: bool = False,
 ) -> list[str]:
@@ -1029,6 +1060,8 @@ def build_chain_argv(  # noqa: PLR0913
         if not value:
             continue
         argv += ["--setenv", name.value, value]
+    for env_name, env_value in extra_env.items():
+        argv += ["--setenv", env_name, env_value]
     if not network:
         argv.append("--unshare-net")
     argv += [

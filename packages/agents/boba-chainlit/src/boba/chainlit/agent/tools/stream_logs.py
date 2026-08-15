@@ -14,8 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated
 
-from langchain.tools import tool
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
 from boba.chainlit.domain.session import current_thread_id, current_user_id

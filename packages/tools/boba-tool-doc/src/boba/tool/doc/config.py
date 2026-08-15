@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from pydantic import ConfigDict, Field
 
-from boba.tool.doc.liteparse import SandboxParserConfig
+from boba.text.document import LiteParseParams
 
-__all__ = ["DocToolsConfig"]
+__all__ = ["DocToolsConfig", "SandboxParserConfig"]
+
+
+class SandboxParserConfig(LiteParseParams):
+    """Настройки парсера плюс песочница, в которой он исполняется."""
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class DocToolsConfig(SandboxParserConfig):

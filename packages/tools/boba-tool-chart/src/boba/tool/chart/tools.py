@@ -1,45 +1,109 @@
-"""Tool visualize: интерактивный Plotly-график из figure-spec."""
+"""Инструмент visualize: функция уровня модуля, модуль — обычная программа.
+
+Запуск: `python -m boba.tool.chart.tools visualize --spec ...`. Спеку пишет
+LLM, схему проверяет plotly — потому тело исполняется в песочнице.
+
+Ошибки:
+InvalidFigureSpecError — спека не разбирается или не проходит схему plotly;
+    это ответ LLM на её же спеку, текст едет без трейсбека.
+"""
 
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any
+import sys
+from collections.abc import Mapping
+from enum import StrEnum
+from typing import Annotated, Any, Final
 
-from langchain.tools import tool
-from langchain_core.tools import BaseTool
+from langchain_core.tools import tool
 from pydantic import Field
 
-from boba.tool.chart.caller import ChartCaller
-from boba.toolkit.launcher import LauncherFactory
-from boba.toolkit.result import ChartResult, ToolResult, pack_result
-
-__all__ = ["build_chart_tools"]
+from boba.toolkit.entry import ToolMain
+from boba.toolkit.result import ChartResult, ToolResult, render_for_llm
 
 
-def build_chart_tools(launchers: LauncherFactory) -> list[BaseTool]:
-    caller = ChartCaller("chart", launchers)
+class InvalidFigureSpecError(Exception):
+    """Спека не прошла разбор или схему plotly; текст готов для пользователя."""
 
-    @tool(response_format="content_and_artifact")
-    def visualize(
-        spec: Annotated[
-            str,
-            Field(
-                min_length=1,
-                description=(
-                    "Plotly figure как JSON-объект: "
-                    '{"data": [...], "layout": {...}}.'
-                    "Бери данные из уже полученных результатов (SQL/файлы);"
-                    "крупные выборки агрегируй заранее."
-                    "Тип графика, оси, подписи и легенду "
-                    "выбираешь сам через trace-объекты и layout. Заголовок "
-                    "указывай в layout.title — он попадёт в подпись и в сводку."
-                ),
+
+class ChartErrorKind(StrEnum):
+    """Ожидаемые отказы chart-инструмента."""
+
+    INVALID_FIGURE_SPEC = "invalid_figure_spec"
+
+
+class FigureSpec:
+    """Разбор и проверка figure-спеки схемой plotly."""
+
+    @classmethod
+    def parsed(cls, spec: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(spec)
+        except json.JSONDecodeError as exc:
+            msg = f"spec is not valid JSON: {exc}"
+            raise InvalidFigureSpecError(msg) from exc
+
+        if not isinstance(parsed, dict):
+            msg = f"spec must be a JSON figure object, got {type(parsed).__name__}"
+            raise InvalidFigureSpecError(msg)
+
+        # plotly тяжёлый — потому тело и живёт в песочнице
+        from plotly import graph_objects as go  # noqa: PLC0415
+
+        try:
+            go.Figure(parsed)
+        except (ValueError, TypeError) as exc:
+            msg = f"invalid Plotly figure spec: {exc}"
+            raise InvalidFigureSpecError(msg) from exc
+
+        return parsed
+
+    @staticmethod
+    def title_of(parsed: dict[str, Any]) -> str:
+        """layout.title бывает и строкой, и объектом с полем text."""
+        layout = parsed.get("layout")
+        if not isinstance(layout, dict):
+            return ""
+        raw = layout.get("title")
+        if isinstance(raw, dict):
+            raw = raw.get("text")
+        if not raw:
+            return ""
+        return str(raw)
+
+
+@tool(response_format="content_and_artifact")
+async def visualize(
+    spec: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Plotly figure как JSON-объект: "
+                '{"data": [...], "layout": {...}}.'
+                "Бери данные из уже полученных результатов (SQL/файлы);"
+                "крупные выборки агрегируй заранее."
+                "Тип графика, оси, подписи и легенду "
+                "выбираешь сам через trace-объекты и layout. Заголовок "
+                "указывай в layout.title — он попадёт в подпись и в сводку."
             ),
-        ],
-    ) -> tuple[str, ToolResult]:
-        """Отрисовать интерактивный график по Plotly figure-спецификации."""
-        title = caller.validate(spec)
-        parsed: Any = json.loads(spec)
-        return pack_result(ChartResult(spec=parsed, title=title or None))
+        ),
+    ],
+) -> tuple[str, ToolResult]:
+    """Отрисовать интерактивный график по Plotly figure-спецификации."""
+    parsed = FigureSpec.parsed(spec)
+    title = FigureSpec.title_of(parsed)
 
-    return [visualize]
+    artifact = ChartResult(spec=parsed, title=title or None)
+    return render_for_llm(artifact), artifact
+
+
+EXPECTED: Mapping[type[Exception], ChartErrorKind] = {
+    InvalidFigureSpecError: ChartErrorKind.INVALID_FIGURE_SPEC,
+}
+
+TOOLS: Final = ToolMain.toolset(visualize)
+
+if __name__ == "__main__":
+    sys.exit(ToolMain.run(TOOLS))

@@ -16,6 +16,7 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from boba.toolkit.channels import ToolChannel
 from boba.toolkit.stream import StreamSink
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "JournalFile",
     "JournalText",
     "JournalWindow",
+    "LogName",
     "StreamJournalError",
     "StreamJournalHub",
     "StreamKey",
@@ -39,28 +41,83 @@ class StreamJournalError(Exception):
     """Том журнала недоступен: писать некуда."""
 
 
+class LogName(BaseModel):
+    """Разобранное имя файла журнала: вызов, инструмент, канал.
+
+    Имя чужого формата не отвергается: весь стем считается call_id, чтобы
+    учёт места видел и мог вытеснить любой файл тома.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    SEGMENTS: ClassVar[int] = 3
+    """Сегментов в стеме: call_id, tool, channel."""
+
+    call_id: str
+    tool: str = ""
+    channel: str = ""
+
+    @classmethod
+    def parse(cls, stem: str) -> LogName:
+        """Разбор по сегментам с конца."""
+        segments = stem.split(".")
+        if len(segments) < cls.SEGMENTS:
+            return cls(call_id=stem)
+
+        return cls(
+            call_id=segments[0],
+            tool=".".join(segments[1:-1]),
+            channel=segments[-1],
+        )
+
+
 class JournalFile(StrEnum):
-    """Суффиксы файлов журнала; сборка и разбор путей — только здесь."""
+    """Суффиксы файлов журнала; сборка и разбор путей — только здесь.
+
+    Лог вызова: {thread}/{call_id}.{tool}.{channel}.log — файл на канал.
+    Сайдкар с итогом один на вызов: {thread}/{call_id}.meta.json. Разбор
+    имени идёт по сегментам с конца; срезом суффикса call_id не берётся.
+    """
 
     LOG = ".log"
     META = ".meta.json"
     TMP = ".tmp"
 
     @classmethod
-    def rel_log(cls, thread_id: str, call_id: str) -> str:
-        return f"{thread_id}/{call_id}{cls.LOG}"
+    def rel_log(
+        cls, thread_id: str, call_id: str, tool: str, channel: ToolChannel
+    ) -> str:
+        if "." in call_id or "." in tool:
+            msg = f"log name segments must not contain dots: {call_id!r}, {tool!r}"
+            raise ValueError(msg)
+
+        return f"{thread_id}/{call_id}.{tool}.{channel.value}{cls.LOG}"
 
     @classmethod
     def rel_meta(cls, thread_id: str, call_id: str) -> str:
         return f"{thread_id}/{call_id}{cls.META}"
 
     @classmethod
+    def call_prefix(cls, thread_id: str, call_id: str) -> str:
+        """Префикс всех файлов вызова: единица защиты и вытеснения."""
+        return f"{thread_id}/{call_id}."
+
+    @classmethod
     def is_log(cls, name: str) -> bool:
         return name.endswith(cls.LOG)
 
     @classmethod
-    def call_id_of(cls, log_name: str) -> str:
-        return log_name[: -len(cls.LOG)]
+    def is_meta(cls, name: str) -> bool:
+        return name.endswith(cls.META)
+
+    @classmethod
+    def parse_log(cls, log_name: str) -> LogName:
+        """Имя лога: стем без суффикса разбирает LogName по сегментам."""
+        return LogName.parse(log_name[: -len(cls.LOG)])
+
+    @classmethod
+    def call_id_of_meta(cls, meta_name: str) -> str:
+        return meta_name[: -len(cls.META)]
 
     @classmethod
     def tmp_of(cls, path: str) -> str:
@@ -86,7 +143,9 @@ class StreamKey(BaseModel):
     """Адрес журнала одного вызова: {thread_id}/{call_id} в томе пользователя.
 
     call_id приходит из протокола LLM-провайдера — в путь допускаются только
-    безопасные символы, всё прочее отвергается на границе.
+    безопасные символы, всё прочее отвергается на границе. Точка в call_id
+    запрещена: имя файла {call_id}.{tool}.{channel}.log разбирается по
+    сегментам, и точка внутри сделала бы его неразложимым.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -113,11 +172,23 @@ class StreamKey(BaseModel):
 
         return value
 
-    def rel_log(self) -> str:
-        return JournalFile.rel_log(self.thread_id, self.call_id)
+    @field_validator("call_id")
+    @classmethod
+    def _no_dots(cls, value: str) -> str:
+        if "." in value:
+            msg = f"call_id must not contain dots: {value!r}"
+            raise ValueError(msg)
+
+        return value
+
+    def rel_log(self, tool: str, channel: ToolChannel) -> str:
+        return JournalFile.rel_log(self.thread_id, self.call_id, tool, channel)
 
     def rel_meta(self) -> str:
         return JournalFile.rel_meta(self.thread_id, self.call_id)
+
+    def call_prefix(self) -> str:
+        return JournalFile.call_prefix(self.thread_id, self.call_id)
 
 
 class StreamMeta(BaseModel):
@@ -167,22 +238,23 @@ class VaultUsage(BaseModel):
 
 
 class CallLogUsage(BaseModel):
-    """Журнал одного вызова: единица вытеснения при нехватке места."""
+    """Файлы одного вызова: единица учёта и вытеснения при нехватке места.
+
+    Вызов пишет несколько файлов — лог на канал плюс сайдкар; вытесняются
+    они только вместе, иначе LRU оставил бы вызов без части каналов.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     thread_id: str
     call_id: str
+    rel_files: tuple[str, ...]
     bytes_used: int
     last_write_at: float
 
     @property
-    def rel_log(self) -> str:
-        return JournalFile.rel_log(self.thread_id, self.call_id)
-
-    @property
-    def rel_meta(self) -> str:
-        return JournalFile.rel_meta(self.thread_id, self.call_id)
+    def prefix(self) -> str:
+        return JournalFile.call_prefix(self.thread_id, self.call_id)
 
 
 class JournalWindow(IntEnum):
@@ -203,19 +275,26 @@ class StreamRecorderPort(StreamSink, Protocol):
 
 
 class StreamStorePort(Protocol):
-    """Журнал приложения: открыть писателя и прочитать окно."""
+    """Журнал приложения: открыть писателя канала и прочитать окно."""
 
     def recorder(
         self,
         key: StreamKey,
         tool_name: str,
+        channel: ToolChannel,
         on_data: Callable[[], None],
-        protected_logs: frozenset[str],
+        protected_prefixes: frozenset[str],
     ) -> StreamRecorderPort: ...
 
-    def slice_at(self, key: StreamKey, offset: int) -> StreamSlice | None: ...
+    def slice_at(
+        self, key: StreamKey, offset: int, channel: ToolChannel
+    ) -> StreamSlice | None: ...
 
-    def slice_before(self, key: StreamKey, end: int) -> StreamSlice | None: ...
+    def slice_before(
+        self, key: StreamKey, end: int, channel: ToolChannel
+    ) -> StreamSlice | None: ...
+
+    def log_rel_path(self, key: StreamKey, channel: ToolChannel) -> str | None: ...
 
     def usage(self, user_id: str) -> VaultUsage: ...
 

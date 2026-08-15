@@ -1,4 +1,4 @@
-"""Журнал вывода инструментов: файлы, окна, сайдкар и вытеснение."""
+"""Журнал вывода инструментов: файлы каналов, окна, сайдкар и вытеснение."""
 
 from __future__ import annotations
 
@@ -17,9 +17,13 @@ from boba.chainlit.data.stream_journal import (
     StreamKey,
     StreamRecorder,
 )
-from boba.chainlit.domain.stream import JournalWindow
+from boba.chainlit.domain.stream import JournalFile, JournalWindow, LogName
+from boba.toolkit.channels import ToolChannel
 
 KEY = StreamKey(user_id="7", thread_id="t-1", call_id="call-1")
+
+STDOUT = ToolChannel.STDOUT
+STDERR = ToolChannel.STDERR
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +42,7 @@ def _journal(tmp_path: Path) -> StreamJournal:
 def _recorder(
     journal: StreamJournal, on_data: Callable[[], None] = _wake
 ) -> StreamRecorder:
-    return journal.recorder(KEY, "bash", on_data, frozenset())
+    return journal.recorder(KEY, "bash", STDOUT, on_data, frozenset())
 
 
 class TestKey:
@@ -52,9 +56,37 @@ class TestKey:
         with pytest.raises(ValidationError):
             StreamKey(user_id="7", thread_id=".hidden", call_id="c")
 
-    def test_normal_langchain_call_id_passes(self) -> None:
-        key = StreamKey(user_id="7", thread_id="t-1", call_id="call_uKx7pB2qX.0")
-        assert key.rel_log() == "t-1/call_uKx7pB2qX.0.log"
+    def test_dot_inside_call_id_is_refused(self) -> None:
+        """Точка внутри call_id сделала бы имя файла неразложимым."""
+        with pytest.raises(ValidationError):
+            StreamKey(user_id="7", thread_id="t-1", call_id="call_uKx7pB2qX.0")
+
+    def test_rel_log_carries_tool_and_channel(self) -> None:
+        key = StreamKey(user_id="7", thread_id="t-1", call_id="call_uKx7pB2qX0")
+        assert key.rel_log("bash", STDOUT) == (
+            "t-1/call_uKx7pB2qX0.bash.tool_stdout.log"
+        )
+
+
+class TestLogName:
+    """Имя файла разбирается по сегментам с конца, не срезом суффикса."""
+
+    def test_roundtrip(self) -> None:
+        rel = JournalFile.rel_log("t-1", "c-1", "pg_query", STDERR)
+        name = rel.split("/")[1]
+        parsed = JournalFile.parse_log(name)
+        assert parsed == LogName(
+            call_id="c-1", tool="pg_query", channel="tool_stderr"
+        )
+
+    def test_foreign_name_groups_as_whole_stem(self) -> None:
+        parsed = JournalFile.parse_log("legacy-call.log")
+        assert parsed.call_id == "legacy-call"
+        assert parsed.tool == ""
+
+    def test_dots_in_segments_are_refused_at_render(self) -> None:
+        with pytest.raises(ValueError, match="dots"):
+            JournalFile.rel_log("t-1", "c.1", "bash", STDOUT)
 
 
 class TestRecorder:
@@ -67,21 +99,38 @@ class TestRecorder:
         recorder.feed(b"0123456789" * 20000)
         recorder.close("rc=0")
 
-        piece = journal.slice_at(KEY, 0)
+        piece = journal.slice_at(KEY, 0, STDOUT)
         assert piece is not None
         assert piece.size == 200000
         assert len(piece.text.encode()) == JournalWindow.BYTES
 
-        middle = journal.slice_at(KEY, 100000)
+        middle = journal.slice_at(KEY, 100000, STDOUT)
         assert middle is not None
         assert middle.offset == 100000
         assert middle.text.startswith("0123456789")
 
-        tail = journal.slice_at(KEY, -1)
+        tail = journal.slice_at(KEY, -1, STDOUT)
         assert tail is not None
         assert tail.offset == 200000 - JournalWindow.BYTES
         assert tail.closed is True
         assert tail.note == "rc=0"
+
+    def test_channels_are_separate_files(self, tmp_path: Path) -> None:
+        journal = _journal(tmp_path)
+        out = journal.recorder(KEY, "bash", STDOUT, _wake, frozenset())
+        err = journal.recorder(KEY, "bash", STDERR, _wake, frozenset())
+
+        out.feed(b"body")
+        err.feed(b"trace")
+        out.close("rc=0")
+        err.close("rc=0")
+
+        stdout_piece = journal.slice_at(KEY, 0, STDOUT)
+        stderr_piece = journal.slice_at(KEY, 0, STDERR)
+        assert stdout_piece is not None
+        assert stderr_piece is not None
+        assert stdout_piece.text == "body"
+        assert stderr_piece.text == "trace"
 
     def test_feed_after_close_is_ignored(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
@@ -92,7 +141,7 @@ class TestRecorder:
         recorder.feed(b" after")
         recorder.close("другая причина")
 
-        piece = journal.slice_at(KEY, 0)
+        piece = journal.slice_at(KEY, 0, STDOUT)
         assert piece is not None
         assert piece.text == "until"
         assert piece.note == "done"
@@ -127,9 +176,10 @@ class TestRecorder:
     def test_missing_journal_is_none(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
 
-        assert journal.slice_at(KEY, 0) is None
+        assert journal.slice_at(KEY, 0, STDOUT) is None
 
-    def test_lost_meta_reads_as_closed(self, tmp_path: Path) -> None:
+    def test_lost_meta_reads_as_missing(self, tmp_path: Path) -> None:
+        """Без сайдкара имя инструмента не восстановить — файла канала «нет»."""
         journal = _journal(tmp_path)
         recorder = _recorder(journal)
         recorder.feed(b"data")
@@ -138,10 +188,7 @@ class TestRecorder:
         root = DirVault(str(tmp_path / "vault")).root_for(KEY.user_id)
         os.remove(os.path.join(root, KEY.rel_meta()))
 
-        piece = journal.slice_at(KEY, 0)
-        assert piece is not None
-        assert piece.closed is True
-        assert piece.note == ""
+        assert journal.slice_at(KEY, 0, STDOUT) is None
 
 
 class TestWindowChains:
@@ -170,7 +217,7 @@ class TestWindowChains:
         rebuilt = b""
         offset = 0
         while offset < len(body):
-            piece = journal.slice_at(KEY, offset)
+            piece = journal.slice_at(KEY, offset, STDOUT)
             assert piece is not None
             assert piece.offset == offset
             rebuilt += piece.text.encode()
@@ -184,7 +231,7 @@ class TestWindowChains:
         rebuilt = b""
         end = len(body)
         while end > 0:
-            piece = journal.slice_before(KEY, end)
+            piece = journal.slice_before(KEY, end, STDOUT)
             assert piece is not None
             assert piece.end == end
             rebuilt = piece.text.encode() + rebuilt
@@ -195,13 +242,13 @@ class TestWindowChains:
     def test_windows_start_at_line_boundaries(self, tmp_path: Path) -> None:
         journal, body = self._written(tmp_path)
 
-        middle = journal.slice_before(KEY, len(body) // 2)
+        middle = journal.slice_before(KEY, len(body) // 2, STDOUT)
         assert middle is not None
         assert middle.offset > 0
         assert body[middle.offset - 1 : middle.offset] == b"\n"
         assert not middle.text.startswith("\n")
 
-        tail = journal.slice_at(KEY, -1)
+        tail = journal.slice_at(KEY, -1, STDOUT)
         assert tail is not None
         assert body[tail.offset - 1 : tail.offset] == b"\n"
         assert tail.end == len(body)
@@ -213,11 +260,11 @@ class TestWindowChains:
         recorder.feed(b"x" * (3 * JournalWindow.BYTES))
         recorder.close("rc=0")
 
-        first = journal.slice_at(KEY, 0)
+        first = journal.slice_at(KEY, 0, STDOUT)
         assert first is not None
         assert first.end == JournalWindow.BYTES
 
-        second = journal.slice_at(KEY, first.end)
+        second = journal.slice_at(KEY, first.end, STDOUT)
         assert second is not None
         assert second.offset == first.end
         assert second.end > second.offset
@@ -229,14 +276,15 @@ class TestUsageAndPurge:
     @staticmethod
     def _fill(journal: StreamJournal, thread_id: str, body: bytes) -> None:
         key = StreamKey(user_id="7", thread_id=thread_id, call_id="c-1")
-        recorder = journal.recorder(key, "bash", _wake, frozenset())
+        recorder = journal.recorder(key, "bash", STDOUT, _wake, frozenset())
         recorder.feed(body)
         recorder.close("rc=0")
 
     def test_usage_lists_threads_oldest_first(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
         self._fill(journal, "t-old", b"x" * 100)
-        os.utime(tmp_path / "vault" / "7" / "t-old" / "c-1.log", (1000.0, 1000.0))
+        old_log = tmp_path / "vault" / "7" / "t-old" / "c-1.bash.tool_stdout.log"
+        os.utime(old_log, (1000.0, 1000.0))
         self._fill(journal, "t-new", b"y" * 5000)
 
         usage = journal.usage("7")
@@ -248,6 +296,19 @@ class TestUsageAndPurge:
         assert by_name["t-new"].bytes_used > 5000
         assert by_name["t-new"].calls == 1
 
+    def test_channels_of_one_call_count_as_one(self, tmp_path: Path) -> None:
+        """Три файла каналов одного вызова — один вызов в учёте треда."""
+        journal = _journal(tmp_path)
+        for channel in (STDOUT, STDERR, ToolChannel.RESULT):
+            recorder = journal.recorder(KEY, "bash", channel, _wake, frozenset())
+            recorder.feed(b"x")
+            recorder.close("rc=0")
+
+        usage = journal.usage("7")
+
+        by_name = {entry.thread_id: entry for entry in usage.threads}
+        assert by_name["t-1"].calls == 1
+
     def test_purge_removes_the_thread(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
         self._fill(journal, "t-1", b"z" * 3000)
@@ -255,7 +316,7 @@ class TestUsageAndPurge:
         freed = journal.purge_thread("7", "t-1")
 
         assert freed > 3000
-        assert journal.slice_at(KEY, 0) is None
+        assert journal.slice_at(KEY, 0, STDOUT) is None
         assert journal.purge_thread("7", "t-1") == 0
 
     def test_rotation_evicts_oldest_unprotected(self, tmp_path: Path) -> None:
@@ -263,34 +324,55 @@ class TestUsageAndPurge:
 
         Каталог-том резерв считает по диску хоста, поэтому резерв задаётся
         заведомо недостижимым: ротация обязана удалить всё незащищённое и
-        отступиться от защищённого лога.
+        отступиться от защищённого вызова.
         """
         journal = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
         self._fill(journal, "t-old", b"a" * 100)
         self._fill(journal, "t-protected", b"b" * 100)
 
         key = StreamKey(user_id="7", thread_id="t-cur", call_id="c-2")
-        journal.recorder(key, "bash", _wake, frozenset({"t-protected/c-1.log"}))
+        journal.recorder(key, "bash", STDOUT, _wake, frozenset({"t-protected/c-1."}))
 
         root = tmp_path / "vault" / "7"
         assert not (root / "t-old").exists()
-        assert (root / "t-protected" / "c-1.log").exists()
-        assert (root / "t-cur" / "c-2.log").exists()
+        assert (root / "t-protected" / "c-1.bash.tool_stdout.log").exists()
+        assert (root / "t-cur" / "c-2.bash.tool_stdout.log").exists()
+
+    def test_eviction_takes_the_call_with_all_channels(self, tmp_path: Path) -> None:
+        """Вызов вытесняется целиком: все каналы и сайдкар, не один файл."""
+        journal = _journal(tmp_path)
+        old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
+        for channel in (STDOUT, STDERR):
+            recorder = journal.recorder(old_key, "bash", channel, _wake, frozenset())
+            recorder.feed(b"a" * 100)
+            recorder.close("rc=0")
+
+        rotating = StreamJournal(
+            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60
+        )
+        fresh_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-new")
+        rotating.recorder(fresh_key, "bash", STDOUT, _wake, frozenset())
+
+        root = tmp_path / "vault" / "7" / "t-1"
+        assert not (root / "c-old.bash.tool_stdout.log").exists()
+        assert not (root / "c-old.bash.tool_stderr.log").exists()
+        assert not (root / "c-old.meta.json").exists()
+        assert (root / "c-new.bash.tool_stdout.log").exists()
 
     def test_closed_call_of_current_thread_is_evictable(self, tmp_path: Path) -> None:
         """Защищён живой вызов, не тред: старый закрытый лог треда уходит."""
         journal = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
         old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
-        recorder = journal.recorder(old_key, "bash", _wake, frozenset())
+        recorder = journal.recorder(old_key, "bash", STDOUT, _wake, frozenset())
         recorder.feed(b"a" * 100)
         recorder.close("rc=0")
 
         fresh_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-new")
-        journal.recorder(fresh_key, "bash", _wake, frozenset())
+        journal.recorder(fresh_key, "bash", STDOUT, _wake, frozenset())
 
         root = tmp_path / "vault" / "7"
-        assert not (root / "t-1" / "c-old.log").exists()
-        assert (root / "t-1" / "c-new.log").exists()
+        assert not (root / "t-1" / "c-old.bash.tool_stdout.log").exists()
+        assert (root / "t-1" / "c-new.bash.tool_stdout.log").exists()
 
 
 class TestWriteFailure:
@@ -304,7 +386,7 @@ class TestWriteFailure:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         journal = _journal(tmp_path)
-        recorder = journal.recorder(KEY, "bash", _wake, frozenset())
+        recorder = journal.recorder(KEY, "bash", STDOUT, _wake, frozenset())
         recorder.feed(b"head")
 
         def no_space(fd: int, data: bytes) -> int:
@@ -318,7 +400,7 @@ class TestWriteFailure:
 
         assert recorder.closed is True
 
-        piece = journal.slice_at(KEY, -1)
+        piece = journal.slice_at(KEY, -1, STDOUT)
         assert piece is not None
         assert piece.closed is True
         assert "journal stopped" in piece.note

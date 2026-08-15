@@ -22,7 +22,13 @@ class PayloadPostgres:
     @staticmethod
     async def connect(request: dict[str, Any]) -> psycopg.AsyncConnection[Any]:
         connection = PostgresConfig.model_validate(request["connection"])
+        return await PayloadPostgres.connect_config(connection)
 
+    @staticmethod
+    async def connect_config(
+        connection: PostgresConfig,
+    ) -> psycopg.AsyncConnection[Any]:
+        """Соединение по модели профиля; kerberos-профиль получает свой TGT."""
         if connection.kerberos is None:
             return await PayloadPostgres._connect(connection)
 

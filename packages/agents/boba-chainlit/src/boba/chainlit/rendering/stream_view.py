@@ -17,7 +17,6 @@ import itertools
 import logging
 import threading
 from abc import abstractmethod
-from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, Self
@@ -41,6 +40,8 @@ from boba.chainlit.rendering.canvas import (
     CanvasPanel,
     StreamPos,
 )
+from boba.toolkit.channels import ToolChannel
+from boba.toolkit.stream import StreamSink
 
 __all__ = [
     "CanvasChannel",
@@ -84,16 +85,18 @@ class StreamNote(StrEnum):
 
 
 class StreamShowRequest(BaseModel):
-    """Payload действия canvas_stream: вызов и режим показа.
+    """Payload действия canvas_stream: вызов, канал и режим показа.
 
     follow — к концу файла: живой вызов следит за хвостом насосом,
     завершённый показывает последнее окно. Без follow — окно с начала.
+    Канал по умолчанию — stdout тела: его пишет каждый песочный вызов.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     call_id: str
     follow: bool = False
+    channel: ToolChannel = ToolChannel.STDOUT
 
 
 class StreamWindowRequest(BaseModel):
@@ -108,6 +111,7 @@ class StreamWindowRequest(BaseModel):
     call_id: str
     offset: int | None = None
     before: int | None = None
+    channel: ToolChannel = ToolChannel.STDOUT
 
     @model_validator(mode="after")
     def _one_bound(self) -> Self:
@@ -133,12 +137,12 @@ class SidebarChannel:
 
 
 class ToolStream:
-    """Живой вызов инструмента: рекордер журнала плюс будильник насоса.
+    """Живой вызов инструмента: рекордеры каналов плюс будильник насоса.
 
-    Создаётся в любом контексте — langchain зовёт колбэки sync-тулов из
-    одноразового event loop'а, поэтому свой loop стрим не запоминает.
-    Будильник подключает насос из loop'а приложения; вывод, пришедший до
-    подключения, уже лежит в журнале.
+    Создаётся в потоке исполнения инструмента; свой event loop стрим не
+    запоминает. Будильник подключает насос из loop'а приложения; вывод,
+    пришедший до подключения, уже лежит в журнале. Канал stdout открывается
+    сразу — панель находит файл до первого байта; остальные — по обращению.
     """
 
     def __init__(
@@ -146,13 +150,16 @@ class ToolStream:
         key: StreamKey,
         tool_name: str,
         journal: StreamStorePort,
-        protected_logs: frozenset[str],
+        protected_prefixes: frozenset[str],
     ) -> None:
         self._key = key
         self._tool_name = tool_name
+        self._journal = journal
+        self._protected = protected_prefixes | {key.call_prefix()}
         self._lock = threading.Lock()
         self._waker: tuple[asyncio.AbstractEventLoop, asyncio.Event] | None = None
-        self._recorder = journal.recorder(key, tool_name, self._wake, protected_logs)
+        self._recorders: dict[ToolChannel, StreamRecorderPort] = {}
+        self._open(ToolChannel.STDOUT)
 
     @property
     def key(self) -> StreamKey:
@@ -163,11 +170,38 @@ class ToolStream:
         return self._tool_name
 
     @property
-    def recorder(self) -> StreamRecorderPort:
-        return self._recorder
+    def closed(self) -> bool:
+        with self._lock:
+            recorders = list(self._recorders.values())
+
+        return all(recorder.closed for recorder in recorders)
+
+    def sink_of(self, channel: ToolChannel) -> StreamSink:
+        """Приёмник канала; рекордер открывается при первом обращении."""
+        return self._open(channel)
+
+    def close(self, note: str) -> None:
+        """Закрыть все каналы вызова одной пометкой; повтор безвреден."""
+        with self._lock:
+            recorders = list(self._recorders.values())
+
+        for recorder in recorders:
+            recorder.close(note)
 
     def tail(self, window: int) -> StreamSlice:
-        return self._recorder.tail(window)
+        return self._open(ToolChannel.STDOUT).tail(window)
+
+    def _open(self, channel: ToolChannel) -> StreamRecorderPort:
+        with self._lock:
+            recorder = self._recorders.get(channel)
+            if recorder is not None:
+                return recorder
+
+            recorder = self._journal.recorder(
+                self._key, self._tool_name, channel, self._wake, self._protected
+            )
+            self._recorders[channel] = recorder
+            return recorder
 
     def attach_waker(self) -> asyncio.Event:
         """Событие пробуждения в текущем loop'е; прежний слушатель забывается."""
@@ -200,15 +234,13 @@ class ToolStreams:
     только они запускают процессы, чей вывод есть смысл журналировать; без
     настроенного журнала потоков нет вовсе.
 
-    Стрим создаётся колбэком трейсера до запуска инструмента и ждёт в очереди
-    claim по (тред, имя тула): обвязка в потоке инструмента забирает его и
-    ставит тап. Параллельные одноимённые вызовы могут обменяться журналами —
-    данные при этом не теряются.
+    Стрим открывает обвязка ToolRunLogger в потоке инструмента: call_id
+    приезжает синтетическим полем схемы, очереди и обмена журналами между
+    параллельными вызовами нет.
     """
 
     _LOCK: ClassVar[threading.Lock] = threading.Lock()
     _STREAMS: ClassVar[dict[str, dict[str, ToolStream]]] = {}
-    _PENDING: ClassVar[dict[tuple[str, str], deque[ToolStream]]] = {}
     _STREAMABLE: ClassVar[set[str]] = set()
 
     @classmethod
@@ -231,16 +263,16 @@ class ToolStreams:
             return frozenset(cls._STREAMS)
 
     @classmethod
-    def live_logs(cls) -> frozenset[str]:
-        """Rel-пути логов живых вызовов: вытеснять их при нехватке места нельзя."""
+    def live_prefixes(cls) -> frozenset[str]:
+        """Префиксы файлов живых вызовов: вытеснять их нельзя."""
         with cls._LOCK:
-            return frozenset(cls._live_log_paths())
+            return frozenset(cls._live_call_prefixes())
 
     @classmethod
-    def _live_log_paths(cls) -> Iterator[str]:
+    def _live_call_prefixes(cls) -> Iterator[str]:
         for thread_id, calls in cls._STREAMS.items():
             for call_id in calls:
-                yield JournalFile.rel_log(thread_id, call_id)
+                yield JournalFile.call_prefix(thread_id, call_id)
 
     @classmethod
     def mark_streamable(cls, names: Iterable[str]) -> None:
@@ -264,7 +296,7 @@ class ToolStreams:
 
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            stream = ToolStream(key, tool_name, journal, cls.live_logs())
+            stream = ToolStream(key, tool_name, journal, cls.live_prefixes())
         except (StreamJournalError, ValidationError):
             logger.warning(
                 "stream journal refused call %s of %s",
@@ -276,18 +308,8 @@ class ToolStreams:
 
         with cls._LOCK:
             cls._STREAMS.setdefault(thread_id, {})[call_id] = stream
-            cls._PENDING.setdefault((thread_id, tool_name), deque()).append(stream)
 
         return stream
-
-    @classmethod
-    def claim(cls, thread_id: str, tool_name: str) -> ToolStream | None:
-        """Забрать стрим своего вызова; None — вызов не потоковый."""
-        with cls._LOCK:
-            queue = cls._PENDING.get((thread_id, tool_name))
-            if not queue:
-                return None
-            return queue.popleft()
 
     @classmethod
     def finish(cls, thread_id: str, call_id: str, note: str) -> None:
@@ -295,13 +317,7 @@ class ToolStreams:
         if stream is None:
             return
 
-        # незаклеймленный слот упавшего вызова не должен достаться следующему
-        with cls._LOCK:
-            queue = cls._PENDING.get((thread_id, stream.tool_name))
-            if queue is not None and stream in queue:
-                queue.remove(stream)
-
-        stream.recorder.close(note)
+        stream.close(note)
 
     @classmethod
     def get(cls, thread_id: str, call_id: str) -> ToolStream | None:
@@ -315,17 +331,19 @@ class ToolStreams:
 
         with cls._LOCK:
             streams = cls._STREAMS.pop(thread_id, {})
-            for key in list(cls._PENDING):
-                if key[0] == thread_id:
-                    del cls._PENDING[key]
 
         for stream in streams.values():
-            if not stream.recorder.closed:
-                stream.recorder.close(str(StreamNote.STOPPED))
+            if not stream.closed:
+                stream.close(str(StreamNote.STOPPED))
 
     @classmethod
     def recorded_slice(
-        cls, user_id: str, thread_id: str, call_id: str, offset: int
+        cls,
+        user_id: str,
+        thread_id: str,
+        call_id: str,
+        offset: int,
+        channel: ToolChannel,
     ) -> StreamSlice | None:
         """Окно журнала; любой отказ журнала — «нет данных», не сбой чата."""
         journal = StreamJournalHub.get()
@@ -334,14 +352,19 @@ class ToolStreams:
 
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            return journal.slice_at(key, offset)
+            return journal.slice_at(key, offset, channel)
         except (StreamJournalError, ValidationError):
             logger.warning("stream journal read failed: %s", call_id, exc_info=True)
             return None
 
     @classmethod
     def recorded_slice_before(
-        cls, user_id: str, thread_id: str, call_id: str, end: int
+        cls,
+        user_id: str,
+        thread_id: str,
+        call_id: str,
+        end: int,
+        channel: ToolChannel,
     ) -> StreamSlice | None:
         """Окно перед смещением: прокрутка вверх; отказ — «нет данных»."""
         journal = StreamJournalHub.get()
@@ -350,7 +373,7 @@ class ToolStreams:
 
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            return journal.slice_before(key, end)
+            return journal.slice_before(key, end, channel)
         except (StreamJournalError, ValidationError):
             logger.warning("stream journal read failed: %s", call_id, exc_info=True)
             return None
@@ -361,7 +384,6 @@ class ToolStreams:
         StreamJournalHub.reset()
         with cls._LOCK:
             cls._STREAMS.clear()
-            cls._PENDING.clear()
             cls._STREAMABLE.clear()
 
 
@@ -499,7 +521,7 @@ async def show_stream_action(
         offset = -1
 
     piece = ToolStreams.recorded_slice(
-        user_id, thread_id, request.call_id, offset=offset
+        user_id, thread_id, request.call_id, offset=offset, channel=request.channel
     )
     if piece is None:
         await StreamScreen.gone(request.call_id, channel)
@@ -520,14 +542,22 @@ async def window_stream_action(
 
     if request.before is not None:
         piece = ToolStreams.recorded_slice_before(
-            user_id, thread_id, request.call_id, end=request.before
+            user_id,
+            thread_id,
+            request.call_id,
+            end=request.before,
+            channel=request.channel,
         )
     else:
         offset = request.offset
         if offset is None:
             offset = 0
         piece = ToolStreams.recorded_slice(
-            user_id, thread_id, request.call_id, offset=offset
+            user_id,
+            thread_id,
+            request.call_id,
+            offset=offset,
+            channel=request.channel,
         )
 
     if piece is None:
