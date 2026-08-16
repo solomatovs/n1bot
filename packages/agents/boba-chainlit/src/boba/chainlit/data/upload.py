@@ -31,6 +31,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.datastructures import UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
@@ -58,6 +59,7 @@ from chainlit.user import PersistedUser, User
 __all__ = [
     "AttachmentServing",
     "ByteRange",
+    "CanvasServing",
     "FileHeader",
     "MultipartFile",
     "RangeHeader",
@@ -870,6 +872,52 @@ class AttachmentServing:
 
         mime = element.get(ElementField.MIME)
         if mime is None:
+            mime = self.FALLBACK_MIME
+
+        return await self._files.respond(
+            key.render(),
+            mime=mime,
+            range_header=request.headers.get(FileHeader.RANGE, ""),
+            content_disposition="",
+        )
+
+
+class CanvasServing:
+    """Отдаёт файл панели по треду, каталогу и имени; сессия здесь ни при чём.
+
+    Содержимое панели переживает и переподключение вкладки, и перезапуск
+    приложения, поэтому ссылка адресует файл его местом в workspace, а
+    пользователя берёт из токена — как это делает отдача журналов.
+    """
+
+    FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
+
+    def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
+        self._files = StreamedFile(storage, policy)
+
+    async def serve(
+        self,
+        request: Request,
+        thread_id: str,
+        dir: ThreadDir,  # noqa: A002
+        name: str,
+        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+    ) -> Response:
+        if not isinstance(current_user, PersistedUser):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        try:
+            key = ObjectKey(
+                user_id=str(current_user.id),
+                thread_id=thread_id,
+                name=name,
+                dir=dir,
+            )
+        except ValidationError as e:
+            raise HTTPException(status_code=404, detail="File not found") from e
+
+        mime = mimetypes.guess_type(key.name)[0]
+        if not mime:
             mime = self.FALLBACK_MIME
 
         return await self._files.respond(

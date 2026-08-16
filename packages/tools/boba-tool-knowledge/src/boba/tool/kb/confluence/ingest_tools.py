@@ -24,7 +24,7 @@ import httpx
 from langchain_core.tools import InjectedToolArg, tool
 from pydantic import Field
 
-from boba.db.postgres import PostgresConfig, PostgresError
+from boba.db.postgres import PostgresError
 from boba.indexing import (
     RawDocument,
     Reader,
@@ -46,11 +46,11 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluencePagesRequestSource,
     ConfluenceRequest,
 )
-from boba.tool.kb.confluence.tools import ConfluenceRest, ConfluenceToolsConfig
+from boba.tool.kb.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.result import TableResult, TextResult, ToolResult, render_for_llm
-from boba.toolkit.types import LLMStringList
+from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
+from boba.toolkit.types import LLMStringList, SecretRevealing
 
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
@@ -82,34 +82,10 @@ class IngestErrorKind(StrEnum):
     DOCUMENT_UNREADABLE = "document_unreadable"
 
 
-class IngestToolConfig(ConfluenceIngestConfig):
+class IngestToolConfig(SecretRevealing, ConfluenceIngestConfig):
     """Конфиг ingest-инструментов; секция [tool.ingest]."""
 
     SECTION: ClassVar[str] = "tool.ingest"
-
-    def revealed(self) -> dict[str, object]:
-        """JSON-совместимый дамп с раскрытыми секретами подключений.
-
-        Едет только в tool_stdin песочного вызова; обязан собираться обратно
-        в тот же тип — SecretStr оживает из открытой строки.
-        """
-        return self.model_dump(
-            mode="json",
-            context={PostgresConfig.REVEAL_SECRETS: True},
-        )
-
-    def with_parser(
-        self, *, ocr_enabled: bool, num_workers: int, ocr_language: str
-    ) -> IngestToolConfig:
-        """Конфиг прогона: настройки парсера из вызова поверх секции."""
-        return self.model_copy(
-            update={
-                "ocr_enabled": ocr_enabled,
-                "num_workers": num_workers,
-                "ocr_language": ocr_language,
-            }
-        )
-
 
 class LocalConfluenceReader(Reader[str]):
     """HTML-страница -> секции по заголовкам; bs4 работает прямо здесь."""
@@ -270,7 +246,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
 
     note = f"page_ids ({len(page_ids)}): {', '.join(page_ids)}"
     table = TableResult(rows=[stats], note=note)
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 @tool(response_format="content_and_artifact")
@@ -317,7 +293,7 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
     )
 
     table = TableResult(rows=[stats])
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 @tool(response_format="content_and_artifact")
@@ -368,7 +344,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
 
     note = f"space_keys ({len(space_keys)}): {', '.join(space_keys)}"
     table = TableResult(rows=[stats], note=note)
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 @tool(response_format="content_and_artifact")
@@ -399,14 +375,14 @@ async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, парам
     rest_cfg = ConfluenceToolsConfig(
         confluence=run_cfg.confluence, body_format=run_cfg.body_format
     )
-    data = await ConfluenceRest.page_json(rest_cfg, page_id)
+    data = await ConfluenceHttp.page_json(rest_cfg, page_id)
 
     link = _attachment_link(data, filename)
     if not link:
         msg = f"attachment {filename!r} not found on page {page_id!r}"
         raise AttachmentNotFoundError(msg)
 
-    content = await ConfluenceRest.get(rest_cfg, link)
+    content = await ConfluenceHttp.get(rest_cfg, link)
 
     from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
 
@@ -419,7 +395,7 @@ async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, парам
     )
 
     artifact = TextResult(text=result.text)
-    return render_for_llm(artifact), artifact
+    return pack_result(artifact)
 
 
 def _attachment_link(data: dict[str, Any], filename: str) -> str:

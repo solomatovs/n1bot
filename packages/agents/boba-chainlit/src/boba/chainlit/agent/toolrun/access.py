@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from functools import partial, wraps
 from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 
-from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
 
 logger = logging.getLogger(__name__)
 
@@ -47,29 +46,25 @@ class ToolAccess:
 class ToolAccessGuard:
     """Проверка прав в момент вызова инструмента."""
 
-    @staticmethod
-    def guard_all(
-        tools: Sequence[BaseTool],
-        access: ToolAccess,
-        roles_source: Callable[[], Iterable[str]],
-    ) -> list[BaseTool]:
-        guard = partial(
-            ToolAccessGuard._guard, access=access, roles_source=roles_source
-        )
-        guard_async = partial(
-            ToolAccessGuard._guard_async, access=access, roles_source=roles_source
-        )
+    class _Hooks(CallHooks):
+        def __init__(
+            self,
+            access: ToolAccess,
+            roles_source: Callable[[], Iterable[str]],
+        ) -> None:
+            self._access = access
+            self._roles_source = roles_source
 
-        return ToolBody.wrap_all(tools, guard, guard_async)
+        def before(
+            self,
+            name: str,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> object:
+            roles = self._roles_source()
+            if self._access.allowed(name, roles):
+                return None
 
-    @staticmethod
-    def _check(
-        name: str,
-        access: ToolAccess,
-        roles_source: Callable[[], Iterable[str]],
-    ) -> None:
-        roles = roles_source()
-        if not access.allowed(name, roles):
             logger.warning(
                 "access denied to tool %r (user roles: %s)",
                 name,
@@ -78,30 +73,11 @@ class ToolAccessGuard:
             msg = f"tool {name!r} is not available for your role"
             raise ToolAccessDeniedError(msg)
 
-    @staticmethod
-    def _guard(
-        call: SyncCall,
-        name: str,
+    @classmethod
+    def guard_all(
+        cls,
+        tools: Sequence[BaseTool],
         access: ToolAccess,
         roles_source: Callable[[], Iterable[str]],
-    ) -> SyncCall:
-        @wraps(call)
-        def guarded(*args: object, **kwargs: object) -> object:
-            ToolAccessGuard._check(name, access, roles_source)
-            return call(*args, **kwargs)
-
-        return guarded
-
-    @staticmethod
-    def _guard_async(
-        call: AsyncCall,
-        name: str,
-        access: ToolAccess,
-        roles_source: Callable[[], Iterable[str]],
-    ) -> AsyncCall:
-        @wraps(call)
-        async def guarded(*args: object, **kwargs: object) -> object:
-            ToolAccessGuard._check(name, access, roles_source)
-            return await call(*args, **kwargs)
-
-        return guarded
+    ) -> list[BaseTool]:
+        return ToolBody.hook_all(tools, cls._Hooks(access, roles_source))

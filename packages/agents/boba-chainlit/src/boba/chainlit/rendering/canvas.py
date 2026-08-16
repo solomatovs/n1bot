@@ -21,6 +21,7 @@ from typing import Any, ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict
 
 import chainlit as cl
+from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey
 from boba.toolkit.result import CustomElementResult, DiagramResult
 
@@ -47,8 +48,6 @@ logger = logging.getLogger(__name__)
 class CanvasErrorKind(StrEnum):
     """Коды отказов панели: уезжают в ErrorResult.error_kind."""
 
-    NO_SESSION = "no_session"
-    NO_THREAD = "no_thread"
     BAD_PATH = "bad_path"
     NO_VIEWER = "no_canvas_viewer"
     FILE_NOT_FOUND = "file_not_found"
@@ -57,16 +56,12 @@ class CanvasErrorKind(StrEnum):
     RENDER_FAILED = "render_failed"
 
 
-class CanvasError(Exception):
+class CanvasError(RefusalError):
     """Панель не показала файл; kind — код причины, текст готов для LLM.
 
     kind шире собственного enum панели: вьювер поднимает сюда свои коды
     (file_not_found и подобные) как есть.
     """
-
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
 
 
 class CanvasAction(StrEnum):

@@ -8,9 +8,19 @@ from __future__ import annotations
 import re
 from collections import deque
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 __all__ = ["TextGrep"]
+
+
+@dataclass(frozen=True)
+class GrepLimits:
+    """Лимиты grep-выдачи: контекст, строки и длина полей."""
+
+    context: int
+    limit: int
+    clip_chars: int
 
 
 class TextGrep:
@@ -74,6 +84,24 @@ class TextGrep:
             "before": before,
             "after": after,
         }
+
+    @classmethod
+    def matched_rows(
+        cls,
+        text: str,
+        compiled: re.Pattern[str],
+        limits: GrepLimits,
+        source: str,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Совпадения таблицей под лимитом строк плюс note об источнике."""
+        rows: list[dict[str, Any]] = []
+        for row in cls.iter_matches(text, compiled, context=limits.context):
+            if len(rows) >= limits.limit:
+                break
+
+            rows.append(cls.clip_row(row, limits.clip_chars))
+
+        return rows, cls.note(source, rows, limit=limits.limit)
 
     @staticmethod
     def note(source: str, rows: list[dict[str, Any]], *, limit: int) -> str:

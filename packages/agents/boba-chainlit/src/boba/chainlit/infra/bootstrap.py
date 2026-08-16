@@ -135,11 +135,15 @@ def _use_file_serving(c: AppConfig) -> None:
     from boba.chainlit.data.storage import StorageFactory  # noqa: PLC0415
     from boba.chainlit.data.upload import (  # noqa: PLC0415
         AttachmentServing,
+        CanvasServing,
         UploadPolicy,
         UploadRoute,
     )
     from boba.chainlit.domain.errors import InternalServiceError  # noqa: PLC0415
-    from boba.chainlit.domain.keys import AttachmentUrl  # noqa: PLC0415
+    from boba.chainlit.domain.keys import (  # noqa: PLC0415
+        AttachmentUrl,
+        CanvasFileUrl,
+    )
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
@@ -159,6 +163,12 @@ def _use_file_serving(c: AppConfig) -> None:
     serving = AttachmentServing(storage, data_layer, UploadPolicy())
     chainlit_app.add_api_route(
         f"{route_path}{AttachmentUrl.ROUTE}", serving.serve, methods=["GET"]
+    )
+    chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+
+    canvas = CanvasServing(storage, UploadPolicy())
+    chainlit_app.add_api_route(
+        CanvasFileUrl.ROUTE, canvas.serve, methods=["GET"], include_in_schema=False
     )
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 

@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
-from pydantic import BeforeValidator
+from pydantic import BaseModel, BeforeValidator
 
-__all__ = ["LLMStringList", "StringList"]
+__all__ = ["LLMStringList", "SecretRevealing", "StringList"]
+
+
+class SecretRevealing(BaseModel):
+    """Конфиг инструмента, умеющий дамп с раскрытыми секретами.
+
+    Дамп едет только в tool_stdin песочного вызова; обязан собираться обратно
+    в тот же тип — SecretStr оживает из открытой строки. Ключ контекста един
+    с REVEAL_SECRETS db/http-конфигов: их сериализаторы читают его же.
+    """
+
+    REVEAL_CONTEXT: ClassVar[str] = "reveal_secrets"
+
+    def revealed(self) -> dict[str, object]:
+        return self.model_dump(mode="json", context={self.REVEAL_CONTEXT: True})
 
 
 def _csv_to_list(v: Any) -> Any:

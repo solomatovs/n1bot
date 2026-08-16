@@ -5,9 +5,12 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from contextvars import ContextVar
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import ClassVar, Final
 
 import chainlit as cl
+from boba.chainlit.domain.errors import RefusalError
 from chainlit.context import ChainlitContextException
 
 __all__ = [
@@ -112,3 +115,32 @@ def current_thread_id() -> str | None:
         return cl.context.session.thread_id
     except ChainlitContextException:
         return None
+
+class SessionKind(StrEnum):
+    """Отказы требований сессии: операции нужны пользователь и тред."""
+
+    NO_SESSION = "no_session"
+    NO_THREAD = "no_thread"
+
+
+@dataclass(frozen=True)
+class RequiredSession:
+    """Пользователь и тред текущей сессии; без них операция отказывает.
+
+    Ошибки: RefusalError с kind из SessionKind.
+    """
+
+    user_id: str
+    thread_id: str
+
+    @classmethod
+    def of(cls) -> RequiredSession:
+        user_id = current_user_id()
+        if not user_id:
+            raise RefusalError(SessionKind.NO_SESSION, "no chainlit user session")
+
+        thread_id = current_thread_id()
+        if not thread_id:
+            raise RefusalError(SessionKind.NO_THREAD, "no active thread")
+
+        return cls(user_id=str(user_id), thread_id=thread_id)

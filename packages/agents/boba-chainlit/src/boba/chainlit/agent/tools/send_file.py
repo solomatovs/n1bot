@@ -18,8 +18,9 @@ from pydantic import Field
 import chainlit as cl
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageError, StorageNotFoundError
+from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ElementProps, ObjectKey
-from boba.chainlit.domain.session import current_thread_id, current_user_id
+from boba.chainlit.domain.session import RequiredSession
 from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
@@ -37,8 +38,6 @@ __all__ = [
 class AttachmentErrorKind(StrEnum):
     """Коды отказов send_file: уезжают в ErrorResult.error_kind."""
 
-    NO_SESSION = "no_session"
-    NO_THREAD = "no_thread"
     NO_TURN = "no_turn"
     NO_TOOL_CALL = "no_tool_call"
     BAD_PATH = "bad_path"
@@ -46,12 +45,8 @@ class AttachmentErrorKind(StrEnum):
     STORAGE_ERROR = "storage_error"
 
 
-class AttachmentRefusedError(Exception):
+class AttachmentRefusedError(RefusalError):
     """Файл отправить нельзя; текст причины готов для LLM."""
-
-    def __init__(self, kind: AttachmentErrorKind, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
 
 
 @dataclass
@@ -90,7 +85,7 @@ class FileAttachment:
         try:
             target = cls._resolve(path, tool_call_id)
             await cls._require_file(target.key)
-        except AttachmentRefusedError as e:
+        except RefusalError as e:
             return ErrorResult(message=str(e), error_kind=e.kind)
 
         await cls._send(target)
@@ -117,17 +112,9 @@ class FileAttachment:
 
     @classmethod
     def _resolve(cls, path: str, tool_call_id: str) -> AttachmentTarget:
-        user_id = current_user_id()
-        if not user_id:
-            raise AttachmentRefusedError(
-                AttachmentErrorKind.NO_SESSION, "no chainlit user session"
-            )
-
-        thread_id = current_thread_id()
-        if not thread_id:
-            raise AttachmentRefusedError(
-                AttachmentErrorKind.NO_THREAD, "no active thread"
-            )
+        session = RequiredSession.of()
+        user_id = session.user_id
+        thread_id = session.thread_id
 
         turn = TurnContext.turn_of(thread_id)
         if turn is None:

@@ -30,7 +30,7 @@ from boba.indexing import (
 )
 from boba.indexing.ports import Chunker, Embedder, ReaderId
 from boba.indexing.values import CollectionId
-from boba.tool.doc.config import SandboxParserConfig
+from boba.text.document import LiteParseParams
 from boba.tool.kb.chunking import (
     ChunkerParams,
     StructuralChunkerFactory,
@@ -60,7 +60,7 @@ __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
-class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, SandboxParserConfig):
+class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams):
     """Self-contained конфиг семейства tool'ов confluence_ingest_*."""
 
     model_config = ConfigDict(extra="ignore")

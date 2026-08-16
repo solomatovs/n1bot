@@ -23,8 +23,9 @@ from pydantic import BaseModel, ConfigDict, Field
 import chainlit as cl
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageError, StorageNotFoundError
+from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.session import current_thread_id, current_user_id
+from boba.chainlit.domain.session import RequiredSession
 from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.canvas import (
     CanvasContent,
@@ -76,8 +77,6 @@ class DiagramSpecError(ValueError):
 class DiagramErrorKind(StrEnum):
     """Коды отказов тулов диаграмм: уезжают в ErrorResult.error_kind."""
 
-    NO_SESSION = "no_session"
-    NO_THREAD = "no_thread"
     NO_TURN = "no_turn"
     NO_TOOL_CALL = "no_tool_call"
     INVALID_SPEC = "invalid_diagram_spec"
@@ -87,12 +86,8 @@ class DiagramErrorKind(StrEnum):
     BAD_FILE = "bad_file"
 
 
-class DiagramRefusedError(Exception):
+class DiagramRefusedError(RefusalError):
     """Тул отработать не может; текст причины готов для LLM."""
-
-    def __init__(self, kind: DiagramErrorKind, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
 
 
 class DiagramToolConfig(BaseModel):
@@ -340,7 +335,7 @@ class CanvasWatcher:
 
             try:
                 text = await self._read()
-            except DiagramRefusedError:
+            except RefusalError:
                 continue
 
             if text == last:
@@ -424,17 +419,8 @@ class DiagramFiles:
 
     @staticmethod
     def _session() -> tuple[str, str]:
-        user_id = current_user_id()
-        if not user_id:
-            raise DiagramRefusedError(
-                DiagramErrorKind.NO_SESSION, "no chainlit user session"
-            )
-
-        thread_id = current_thread_id()
-        if not thread_id:
-            raise DiagramRefusedError(DiagramErrorKind.NO_THREAD, "no active thread")
-
-        return str(user_id), str(thread_id)
+        session = RequiredSession.of()
+        return session.user_id, session.thread_id
 
     @staticmethod
     def _key(user_id: str, thread_id: str, path: str) -> ObjectKey:
@@ -544,7 +530,7 @@ class MermaidViewer:
     async def _read(self, key: ObjectKey) -> str:
         try:
             return await self._files.read(key)
-        except DiagramRefusedError as e:
+        except RefusalError as e:
             raise CanvasError(e.kind, str(e)) from e
 
     @staticmethod
@@ -656,7 +642,7 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
         """
         try:
             key = await files.save(name, spec)
-        except DiagramRefusedError as e:
+        except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
 
         path = key.in_workspace()
@@ -672,7 +658,7 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
 
         try:
             await card.publish(key, tool_call_id)
-        except DiagramRefusedError as e:
+        except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
 
         return pack_result(

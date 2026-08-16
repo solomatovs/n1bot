@@ -2,8 +2,8 @@
 
 Обвязка знает вызов целиком: имя, tool_call_id из синтетического поля схемы
 (ToolCallIdField), исход и длительность. Поэтому она же открывает журнал
-живого вывода через переданный stream_source, ставит приёмник канала stdout
-в тап исполнителя и закрывает журнал по исходу вызова.
+живого вывода через переданный stream_source, ставит приёмники каналов в тапы
+исполнителя и закрывает журнал по исходу вызова.
 
 Ошибки: своих не выпускает; исключение тела проходит наверх как есть.
 """
@@ -14,13 +14,14 @@ import logging
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Sequence
-from functools import partial, wraps
+from contextvars import Token
+from dataclasses import dataclass
 from typing import ClassVar, Protocol, TypeAlias, cast
 
 from langchain_core.tools import BaseTool
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
 from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolResult, ToolResultBase, render_for_llm
@@ -51,6 +52,17 @@ StreamSource: TypeAlias = Callable[[str, str], "CallStream | None"]
 """(имя инструмента, call_id) -> журнал вызова; None — вызов не потоковый."""
 
 
+@dataclass
+class _CallScope:
+    """Контекст одного вызова: журнал, таймер и исход для закрытия журнала."""
+
+    name: str
+    started: float
+    token: Token[ToolCallInfo | None]
+    stream: CallStream | None
+    note: str
+
+
 class ToolRunLogger:
     """Пишет start/ok/failed вокруг вызова и ведёт журнал живого вывода."""
 
@@ -59,15 +71,62 @@ class ToolRunLogger:
     PACKED_RESULT: ClassVar[int] = 2
     """Длина кортежа (content, artifact) у tool'ов с content_and_artifact."""
 
-    @staticmethod
+    class _Hooks(CallHooks):
+        def __init__(self, stream_source: StreamSource) -> None:
+            self._stream_source = stream_source
+
+        def before(
+            self,
+            name: str,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> object:
+            call_id = ToolCallIdField.pop(kwargs)
+            ToolRunLogger._log_start(name, args, kwargs)
+
+            token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
+            stream = ToolRunLogger._open_stream(name, call_id, self._stream_source)
+            if stream is not None:
+                # оба тапа: текстовый запуск читает stdout-приёмник, канальный
+                # берёт приёмники всех каналов из ToolChannelsTap
+                ToolStreamTap.set(stream.sink_of(ToolChannel.STDOUT))
+                ToolChannelsTap.set(stream)
+
+            return _CallScope(
+                name=name,
+                started=time.monotonic(),
+                token=token,
+                stream=stream,
+                note=str(CallOutcome.FAILED),
+            )
+
+        def after(self, ctx: object, result: object) -> object:
+            scope = cast("_CallScope", ctx)
+            scope.note = str(CallOutcome.FINISHED)
+            ToolRunLogger._log_outcome(scope.name, scope.started, result)
+            return result
+
+        def on_error(self, ctx: object, error: Exception) -> object:
+            scope = cast("_CallScope", ctx)
+            ToolRunLogger._log_failure(scope.name, scope.started, error)
+            raise error
+
+        def cleanup(self, ctx: object) -> None:
+            scope = cast("_CallScope", ctx)
+            if scope.stream is not None:
+                ToolStreamTap.set(None)
+                ToolChannelsTap.set(None)
+                scope.stream.close(scope.note)
+
+            ToolCallContext.reset(scope.token)
+
+    @classmethod
     def guard_all(
+        cls,
         tools: Sequence[BaseTool],
         stream_source: StreamSource,
     ) -> list[BaseTool]:
-        wrap = partial(ToolRunLogger._wrap, stream_source=stream_source)
-        wrap_async = partial(ToolRunLogger._wrap_async, stream_source=stream_source)
-
-        return ToolBody.wrap_all(tools, wrap, wrap_async)
+        return ToolBody.hook_all(tools, cls._Hooks(stream_source))
 
     @staticmethod
     def _open_stream(
@@ -78,78 +137,6 @@ class ToolRunLogger:
             return None
 
         return stream_source(name, call_id)
-
-    @staticmethod
-    def _wrap(call: SyncCall, name: str, stream_source: StreamSource) -> SyncCall:
-        @wraps(call)
-        def wrapped(*args: object, **kwargs: object) -> object:
-            call_id = ToolCallIdField.pop(kwargs)
-            ToolRunLogger._log_start(name, args, kwargs)
-
-            started = time.monotonic()
-            token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
-            stream = ToolRunLogger._open_stream(name, call_id, stream_source)
-            if stream is not None:
-                # оба тапа: текстовый запуск читает stdout-приёмник, канальный
-                # берёт приёмники всех каналов из ToolChannelsTap
-                ToolStreamTap.set(stream.sink_of(ToolChannel.STDOUT))
-                ToolChannelsTap.set(stream)
-
-            note = CallOutcome.FAILED
-            try:
-                result = call(*args, **kwargs)
-                note = CallOutcome.FINISHED
-            except Exception as e:
-                ToolRunLogger._log_failure(name, started, e)
-                raise
-            finally:
-                if stream is not None:
-                    ToolStreamTap.set(None)
-                    ToolChannelsTap.set(None)
-                    stream.close(str(note))
-                ToolCallContext.reset(token)
-
-            ToolRunLogger._log_outcome(name, started, result)
-            return result
-
-        return wrapped
-
-    @staticmethod
-    def _wrap_async(
-        call: AsyncCall, name: str, stream_source: StreamSource
-    ) -> AsyncCall:
-        @wraps(call)
-        async def wrapped(*args: object, **kwargs: object) -> object:
-            call_id = ToolCallIdField.pop(kwargs)
-            ToolRunLogger._log_start(name, args, kwargs)
-
-            started = time.monotonic()
-            token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
-            stream = ToolRunLogger._open_stream(name, call_id, stream_source)
-            if stream is not None:
-                # оба тапа: текстовый запуск читает stdout-приёмник, канальный
-                # берёт приёмники всех каналов из ToolChannelsTap
-                ToolStreamTap.set(stream.sink_of(ToolChannel.STDOUT))
-                ToolChannelsTap.set(stream)
-
-            note = CallOutcome.FAILED
-            try:
-                result = await call(*args, **kwargs)
-                note = CallOutcome.FINISHED
-            except Exception as e:
-                ToolRunLogger._log_failure(name, started, e)
-                raise
-            finally:
-                if stream is not None:
-                    ToolStreamTap.set(None)
-                    ToolChannelsTap.set(None)
-                    stream.close(str(note))
-                ToolCallContext.reset(token)
-
-            ToolRunLogger._log_outcome(name, started, result)
-            return result
-
-        return wrapped
 
     @classmethod
     def _log_start(

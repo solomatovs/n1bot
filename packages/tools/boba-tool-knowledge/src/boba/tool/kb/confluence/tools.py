@@ -15,16 +15,17 @@ import sys
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final, Literal
-from urllib.parse import quote
 
 import httpx
 from langchain_core.tools import InjectedToolArg, tool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
-from boba.text.grep import TextGrep
+from boba.text.grep import GrepLimits, TextGrep
+from boba.tool.kb.confluence.parsing import ConfluenceJson
+from boba.tool.kb.confluence.request_sources import ConfluenceRest
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.result import TableResult, TextResult, ToolResult, render_for_llm
-from boba.toolkit.types import LLMStringList
+from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
+from boba.toolkit.types import LLMStringList, SecretRevealing
 from boba.transport.http import HttpProfile
 
 _PAGE_ID_DESCRIPTION = (
@@ -42,7 +43,7 @@ class ConfluenceErrorKind(StrEnum):
     REQUEST_FAILED = "confluence_request_failed"
 
 
-class ConfluenceToolsConfig(BaseModel):
+class ConfluenceToolsConfig(SecretRevealing):
     """Конфиг инструментов чтения Confluence; секция [tool.confluence]."""
 
     model_config = ConfigDict(extra="ignore")
@@ -62,41 +63,9 @@ class ConfluenceToolsConfig(BaseModel):
         description="Потолок длины content/before/after на match в grep.",
     )
 
-    def revealed(self) -> dict[str, object]:
-        """JSON-совместимый дамп с раскрытыми кредами профиля.
 
-        Едет только в tool_stdin песочного вызова; обязан собираться обратно
-        в тот же тип — SecretStr оживает из открытой строки.
-        """
-        return self.model_dump(
-            mode="json",
-            context={"reveal_secrets": True},
-        )
-
-
-class ConfluenceRest:
+class ConfluenceHttp:
     """Пути и запросы REST Confluence."""
-
-    @staticmethod
-    def page_path(page_id: str, body_format: str) -> str:
-        expand = (
-            f"body.{body_format},version,ancestors,space,metadata.labels,"
-            "children.attachment.version,children.attachment.extensions"
-        )
-        return f"/rest/api/content/{page_id}?expand={expand}"
-
-    @staticmethod
-    def search_path(cql: str, limit: int) -> str:
-        expand = "body.view,version,space"
-        return (
-            f"/rest/api/content/search?cql={quote(cql, safe='')}"
-            f"&limit={limit}&expand={expand}"
-        )
-
-    @staticmethod
-    def spaces_path(space_type: str, limit: int) -> str:
-        type_filter = "" if space_type == "any" else f"&type={space_type}"
-        return f"/rest/api/space?limit={limit}&start=0{type_filter}"
 
     @staticmethod
     async def get(cfg: ConfluenceToolsConfig, path: str) -> bytes:
@@ -120,7 +89,7 @@ class ConfluenceRest:
     async def page_json(
         cls, cfg: ConfluenceToolsConfig, page_id: str
     ) -> dict[str, Any]:
-        path = cls.page_path(page_id, cfg.body_format)
+        path = ConfluenceRest.page_fetch_path(page_id, body_format=cfg.body_format)
         return json.loads(await cls.get(cfg, path))
 
 
@@ -129,22 +98,12 @@ class ConfluencePageText:
 
     HEADING_STYLE: ClassVar[str] = "ATX"
 
-    @staticmethod
-    def body_html(data: dict[str, Any], body_format: str) -> str:
-        body = data.get("body")
-        if not isinstance(body, dict):
-            return ""
-        view = body.get(body_format)
-        if not isinstance(view, dict):
-            return ""
-        return str(view.get("value") or "")
-
     @classmethod
     async def of_page(
         cls, cfg: ConfluenceToolsConfig, page_id: str, *, as_markdown: bool
     ) -> str:
-        data = await ConfluenceRest.page_json(cfg, page_id)
-        html = cls.body_html(data, cfg.body_format)
+        data = await ConfluenceHttp.page_json(cfg, page_id)
+        html = ConfluenceJson.body_html(data, cfg.body_format)
         if not as_markdown:
             return html
 
@@ -194,7 +153,7 @@ class CqlSearch:
     def hit_row(
         hit: dict[str, Any], base: str, snippet_chars: int
     ) -> dict[str, Any]:
-        html = ConfluencePageText.body_html(hit, "view")
+        html = ConfluenceJson.body_html(hit, "view")
         excerpt = ConfluencePageText.excerpt_of(html, snippet_chars)
 
         space = hit.get("space")
@@ -241,7 +200,7 @@ async def confluence_fetch(
     text = await ConfluencePageText.of_page(cfg, page_id, as_markdown=as_markdown)
 
     artifact = TextResult(text=text)
-    return render_for_llm(artifact), artifact
+    return pack_result(artifact)
 
 
 @tool(response_format="content_and_artifact")
@@ -289,17 +248,11 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
         pattern, fixed_string=fixed_string, case_insensitive=case_insensitive
     )
 
-    rows: list[dict[str, Any]] = []
-    for row in TextGrep.iter_matches(text, compiled, context=context):
-        if len(rows) >= limit:
-            break
-
-        rows.append(TextGrep.clip_row(row, cfg.max_text_chars))
-
-    note = TextGrep.note(f"page_id={page_id}", rows, limit=limit)
+    limits = GrepLimits(context=context, limit=limit, clip_chars=cfg.max_text_chars)
+    rows, note = TextGrep.matched_rows(text, compiled, limits, f"page_id={page_id}")
 
     table = TableResult(rows=rows, note=note, metadata={"page_id": page_id})
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 @tool(response_format="content_and_artifact")
@@ -330,12 +283,14 @@ async def confluence_search(
 ) -> tuple[str, ToolResult]:
     """Ищет страницы в Confluence через CQL и возвращает таблицу hits."""
     cql = CqlSearch.build_cql(query=query, spaces=spaces)
-    path = ConfluenceRest.search_path(cql, limit)
-
-    data = json.loads(await ConfluenceRest.get(cfg, path))
-    base = str(
-        data.get("_links", {}).get("base") or (cfg.confluence.base_url or "")
+    path = ConfluenceRest.cql_search_path(
+        cql, limit=limit, expand="body.view,version,space"
     )
+
+    data = json.loads(await ConfluenceHttp.get(cfg, path))
+    base = ConfluenceJson.response_base(data)
+    if not base:
+        base = str(cfg.confluence.base_url or "").rstrip("/")
 
     rows: list[dict[str, Any]] = []
     for hit in data.get("results") or []:
@@ -346,7 +301,7 @@ async def confluence_search(
         note = "nothing found"
 
     table = TableResult(rows=rows, note=note)
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 @tool(response_format="content_and_artifact")
@@ -372,8 +327,8 @@ async def confluence_spaces(
     cfg: Annotated[ConfluenceToolsConfig, InjectedToolArg],
 ) -> tuple[str, ToolResult]:
     """Список spaces Confluence с опциональным glob-фильтром."""
-    path = ConfluenceRest.spaces_path(space_type, limit)
-    data = json.loads(await ConfluenceRest.get(cfg, path))
+    path = ConfluenceRest.space_list_path(space_type, limit=limit)
+    data = json.loads(await ConfluenceHttp.get(cfg, path))
 
     rows: list[dict[str, Any]] = []
     for space in data.get("results") or []:
@@ -393,7 +348,7 @@ async def confluence_spaces(
         rows.append(row)
 
     table = TableResult(rows=rows)
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 EXPECTED: Mapping[type[Exception], ConfluenceErrorKind] = {

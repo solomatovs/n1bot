@@ -9,12 +9,11 @@ ToolMessage уходит в историю, LLM видит текст ошибк
 from __future__ import annotations
 
 from collections.abc import Sequence
-from functools import wraps
 from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 
-from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
 from boba.toolkit.failure import FailureText
 from boba.toolkit.launcher import ErrorKind
 from boba.toolkit.result import ErrorResult, ToolResult, pack_result
@@ -32,33 +31,21 @@ class ToolErrorGuard:
 
     PREFIX: ClassVar[str] = "tool failed"
 
-    @staticmethod
-    def guard_all(tools: Sequence[BaseTool]) -> list[BaseTool]:
-        return ToolBody.wrap_all(
-            tools, ToolErrorGuard._wrap, ToolErrorGuard._wrap_async
-        )
+    class _Hooks(CallHooks):
+        def before(
+            self,
+            name: str,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> object:
+            return name
 
-    @staticmethod
-    def _wrap(call: SyncCall, name: str) -> SyncCall:
-        @wraps(call)
-        def wrapped(*args: object, **kwargs: object) -> object:
-            try:
-                return call(*args, **kwargs)
-            except Exception as e:
-                return ToolErrorGuard._failure(name, e)
+        def on_error(self, ctx: object, error: Exception) -> object:
+            return ToolErrorGuard._failure(str(ctx), error)
 
-        return wrapped
-
-    @staticmethod
-    def _wrap_async(call: AsyncCall, name: str) -> AsyncCall:
-        @wraps(call)
-        async def wrapped(*args: object, **kwargs: object) -> object:
-            try:
-                return await call(*args, **kwargs)
-            except Exception as e:
-                return ToolErrorGuard._failure(name, e)
-
-        return wrapped
+    @classmethod
+    def guard_all(cls, tools: Sequence[BaseTool]) -> list[BaseTool]:
+        return ToolBody.hook_all(tools, cls._Hooks())
 
     @classmethod
     def _failure(cls, name: str, error: Exception) -> tuple[str, ToolResult]:
