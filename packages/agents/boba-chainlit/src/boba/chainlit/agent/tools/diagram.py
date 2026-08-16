@@ -31,11 +31,11 @@ from boba.chainlit.rendering.canvas import (
     CanvasError,
     CanvasErrorKind,
     CanvasKind,
+    CanvasPanel,
     CanvasPush,
     CanvasRegistry,
     OpenedCanvas,
     RenderStatus,
-    RenderVerdict,
     RenderVerdicts,
 )
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
@@ -138,8 +138,8 @@ class DiagramPrompt(StrEnum):
         "подписей бери другой тип (flowchart, xychart-beta)."
     )
     SAVED_NOTE = (
-        "the diagram card is shown in the chat; the user opens it in the canvas "
-        "by clicking it. A render failure comes back to you as a tool error."
+        "the diagram is rendered in the canvas panel and its card is shown "
+        "in the chat. A render failure comes back to you as a tool error."
     )
 
 
@@ -561,29 +561,25 @@ class MermaidViewer:
 
 
 class DiagramCard:
-    """Карточка диаграммы в ленте: сама рисует mermaid и репортит вердикт.
+    """Карточка диаграммы в ленте: кликабельная ссылка на файл у шага ответа.
 
-    Панель для проверки спеки не нужна — верификация едет на этой же карточке
-    по nonce, а панель открывается лишь кликом пользователя. Карточка цепляется
-    к шагу ответа, поэтому переживает перезагрузку и остаётся кликабельной.
+    Вердикт рендера с карточки не собирается: сообщение шага ответа появляется
+    в DOM только с финальным ответом хода — во время инструмента карточке не на
+    чем смонтироваться. Верификацию спеки делает показ в панели (diagram_save),
+    поэтому карточка уходит без nonce и браузер по ней не отчитывается.
     """
 
     ELEMENT: ClassVar[str] = "CanvasView"
-    VERDICT_TIMEOUT_SEC: ClassVar[float] = 10.0
 
     def __init__(self, files: DiagramFiles) -> None:
         self._files = files
 
-    async def publish(self, key: ObjectKey, tool_call_id: str) -> RenderVerdict:
-        """Показать карточку в ленте и дождаться вердикта рендера браузера."""
+    async def publish(self, key: ObjectKey, tool_call_id: str) -> None:
+        """Показать карточку в ленте; переживает перезагрузку треда."""
         text = await self._files.read(key)
         for_id, element_id = self._targets(key.thread_id, tool_call_id)
 
-        nonce = str(uuid.uuid4())
-        RenderVerdicts.expect(nonce)
-        await self._emit(key, text, nonce, for_id, element_id)
-
-        return await RenderVerdicts.wait(nonce, self.VERDICT_TIMEOUT_SEC)
+        await self._emit(key, text, for_id, element_id)
 
     @staticmethod
     def _targets(thread_id: str, tool_call_id: str) -> tuple[str, str]:
@@ -611,7 +607,6 @@ class DiagramCard:
         self,
         key: ObjectKey,
         text: str,
-        nonce: str,
         for_id: str,
         element_id: str,
     ) -> None:
@@ -621,7 +616,6 @@ class DiagramCard:
             path=entry.path,
             label=entry.label,
             text=entry.spec,
-            nonce=nonce,
         )
         props = {**content.props(), "preview": True}
 
@@ -649,23 +643,37 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
         ],
         tool_call_id: Annotated[str, InjectedToolCallId],
     ) -> tuple[str, ToolResult]:
-        """Сохранить спеку mermaid файлом в workspace и показать её карточкой
-        в переписке; в канвас диаграмму раскрывает пользователь кликом."""
+        """Сохранить спеку mermaid файлом в workspace, показать её в панели
+        канваса и оставить карточку в переписке.
+
+        Спеку проверяет только mermaid.js в браузере, а во время хода
+        смонтирована лишь панель — поэтому показ в ней и есть верификация:
+        её вердикт возвращается LLM ошибкой инструмента.
+
+        Карточка вешается на ответ только после удачного показа: неудачную
+        LLM правит следующим вызовом, и в переписке ей места нет — попытка
+        видна шагом инструмента внутри хода.
+        """
         try:
             key = await files.save(name, spec)
-            verdict = await card.publish(key, tool_call_id)
         except DiagramRefusedError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
 
         path = key.in_workspace()
-        if verdict.status is RenderStatus.FAILED:
+
+        try:
+            await CanvasPanel.open(key)
+        except CanvasError as e:
             message = (
-                f"diagram saved: {path}, but it does not render in the browser: "
-                f"{verdict.message}; fix the spec and call diagram_save again"
+                f"diagram saved: {path}, but {e}; "
+                "fix the spec and call diagram_save again"
             )
-            return pack_result(
-                ErrorResult(message=message, error_kind=CanvasErrorKind.RENDER_FAILED)
-            )
+            return pack_result(ErrorResult(message=message, error_kind=e.kind))
+
+        try:
+            await card.publish(key, tool_call_id)
+        except DiagramRefusedError as e:
+            return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
 
         return pack_result(
             TextResult(

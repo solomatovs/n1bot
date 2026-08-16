@@ -524,6 +524,14 @@ async def show_stream_action(
         user_id, thread_id, request.call_id, offset=offset, channel=request.channel
     )
     if piece is None:
+        logger.info(
+            "stream show: no journal (hub=%s) user=%s thread=%s call=%s channel=%s",
+            StreamJournalHub.get() is not None,
+            user_id,
+            thread_id,
+            request.call_id,
+            request.channel,
+        )
         await StreamScreen.gone(request.call_id, channel)
         return
 

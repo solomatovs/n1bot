@@ -339,13 +339,18 @@ def _module_tools(
     profile: SandboxProfile | None,
     raw_config: DictConfig,
 ) -> list[BaseTool]:
-    """Функции модуля новой модели: обёртка запуска + partial конфига."""
+    """Функции модуля новой модели: обёртка запуска + partial конфига.
+
+    Обвязки ставятся на копии: load_tools зовётся не один раз (bootstrap,
+    DI-провайдер), а модульные TOOLS — синглтоны процесса, и повторная
+    обёртка поверх уже обёрнутого ломала бы адрес тела и схему.
+    """
     functions: list[BaseTool] = []
     for tool in plugin.module_tools:
         if tool.name not in meta.tools:
             continue
 
-        functions.append(tool)
+        functions.append(tool.model_copy())
 
     if not functions:
         return []

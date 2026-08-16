@@ -171,12 +171,27 @@ class TestToolMainAsProgram:
         )
 
         assert proc.returncode == 0
-        assert proc.stdout == b""
+        assert b'"status"' not in proc.stdout, "конверт не должен попасть в stdout"
 
         reply = REPLY.validate_json(envelope)
         assert isinstance(reply, ReplyOk)
         assert "ping|s3cret-token" in reply.content
         assert reply.artifact.kind == "text"
+
+    def test_body_logs_land_on_stdout(self) -> None:
+        """Логи тела — живой вывод: журнал и панель читают stdout процесса."""
+        proc, envelope = run_module(
+            ["fake_echo", "--text", "ping", "--repeat", "1"],
+            stdin=self.STDIN,
+            result_fd=True,
+        )
+
+        assert proc.returncode == 0
+
+        stdout = proc.stdout.decode()
+        assert "echo progress: ping" in stdout
+        assert "INFO fake.tool" in stdout
+        assert b"echo progress" not in envelope
 
     def test_expected_error_becomes_error_envelope(self) -> None:
         proc, envelope = run_module(

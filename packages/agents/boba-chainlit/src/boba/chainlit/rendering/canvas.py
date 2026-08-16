@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -39,6 +40,8 @@ __all__ = [
     "RenderVerdicts",
     "StreamPos",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class CanvasErrorKind(StrEnum):
@@ -137,6 +140,11 @@ class RenderVerdicts:
 
         waiter = cls._WAITERS.get(parsed.nonce)
         if waiter is None:
+            logger.debug(
+                "render verdict dropped: nobody waits for nonce %s (ok=%s)",
+                parsed.nonce,
+                parsed.ok,
+            )
             return
 
         if waiter.done():

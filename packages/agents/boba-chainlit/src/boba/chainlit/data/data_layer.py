@@ -38,8 +38,8 @@ from boba.chainlit.domain.stream import StreamJournalError, StreamJournalHub
 from boba.db.postgres import AsyncPostgresPool
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
+from chainlit.element import CustomElement, ElementDict
 from chainlit.element import Element as ChainlitElement
-from chainlit.element import ElementDict
 from chainlit.logger import logger
 from chainlit.step import StepDict
 from chainlit.types import (
@@ -254,6 +254,9 @@ class PostgresDataLayer(AttachmentDataLayer):
     ) -> None:
         """content уходит как есть, файл с диска — потоком; нет ни того ни
         другого — содержимое уже залил в хранилище стриминговый роут."""
+        if self._props_only(element):
+            return
+
         if element.content is not None:
             uploaded = await self._storage.upload_file(
                 object_key=object_key,
@@ -275,6 +278,19 @@ class PostgresDataLayer(AttachmentDataLayer):
             return
 
         logger.info("element %s is already in storage as %s", element.id, object_key)
+
+    @staticmethod
+    def _props_only(element: ChainlitElement) -> bool:
+        """Кастом-элемент несёт только props: тело в хранилище ему не нужно.
+
+        chainlit кладёт в content те же props json-строкой, а лента берёт их
+        из колонки props — копия в образе никем не читается, зато каждая
+        стоит монтирования fuse-образа пользователя.
+        """
+        if not isinstance(element, CustomElement):
+            return False
+
+        return not element.path
 
     @staticmethod
     def _require_uploaded(uploaded: Mapping[str, object]) -> None:

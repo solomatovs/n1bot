@@ -8,7 +8,7 @@ DOM: картинка загрузилась, диаграмма отрисов�
 Запуск: BOBA_CONFIG_PATH=... pytest -m integration
 packages/agents/boba-chainlit/tests/test_canvas_e2e.py
 Нужны: playwright + chromium, postgres, образ workspace и делегированный
-systemd-scope (иначе песочница не стартует — см. .vscode/python-delegated.sh).
+cgroup base (иначе песочница не стартует — boba-cgroup.service).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 REPO = Path(__file__).resolve().parents[4]
-LAUNCHER = REPO / ".vscode/python-delegated.sh"
+LAUNCHER = REPO / ".venv/bin/python"
 ENTRY = REPO / "packages/agents/boba-chainlit/src/boba/chainlit/main.py"
 PORT = int(os.environ.get("BOBA_E2E_PORT", "8601"))
 BASE = f"http://127.0.0.1:{PORT}/boba-debug"
@@ -443,7 +443,7 @@ async def test_controls_share_one_alignment(panel: Any) -> None:
         assert entry["size"] == 36
 
     last = geometry["buttons"][-1]
-    assert last["label"] == "Закрыть"
+    assert last["label"] == "Close"
     assert abs(last["right"] - 25) <= 4
 
 
@@ -453,7 +453,7 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
     side = await show("flow.mmd")
     page = side.page
 
-    await side.locator('button[aria-label="Во весь экран"]').click()
+    await side.locator('button[aria-label="Fullscreen"]').click()
     await page.wait_for_timeout(1000)
 
     rows = await page.evaluate(
@@ -513,7 +513,7 @@ async def test_panel_close_button_closes_the_panel(panel: Any) -> None:
     side = await show("report.md")
     page = side.page
 
-    await side.locator('button[aria-label="Закрыть"]').click()
+    await side.locator('button[aria-label="Close"]').click()
     await page.wait_for_timeout(1500)
 
     assert await page.locator("#side-view-content").count() == 0

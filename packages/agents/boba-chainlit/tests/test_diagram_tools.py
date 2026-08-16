@@ -29,6 +29,7 @@ from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.canvas import (
     CanvasError,
     CanvasErrorKind,
+    CanvasPanel,
     CanvasRegistry,
     RenderStatus,
     RenderVerdicts,
@@ -504,9 +505,10 @@ class FakeTurn:
 
 
 class TestSaveToolEndToEnd:
-    """diagram_save целиком: сохранить, показать карточку, отдать LLM исход.
+    """diagram_save целиком: сохранить, карточку в ленту, вердикт — с панели.
 
-    Панель тут не открывается — карточка едет в ленту и сама репортит вердикт.
+    Во время хода смонтирована только панель, поэтому показ в ней и есть
+    верификация спеки; карточка уходит без nonce и вердикт не репортит.
     """
 
     @pytest.fixture(autouse=True)
@@ -527,7 +529,20 @@ class TestSaveToolEndToEnd:
         monkeypatch.setattr(diagram_module.cl.CustomElement, "send", capture)
         return shown
 
-    async def _call(self, spec: str, verdict: dict[str, Any], shown: list[Any]) -> Any:
+    @pytest.fixture
+    def panel(self, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+        """Панель под тест: собирает содержимое, ушедшее бы в side view."""
+        pushed: list[Any] = []
+
+        async def capture(cls: Any, content: Any) -> None:
+            pushed.append(content)
+
+        monkeypatch.setattr(CanvasPanel, "_push", classmethod(capture))
+        return pushed
+
+    async def _call(
+        self, spec: str, verdict: dict[str, Any], panel: list[Any]
+    ) -> Any:
         """Зовёт тул как агент — tool_call, иначе artifact до вызывающего не дойдёт."""
         save = build_diagram_tools(DiagramToolConfig(max_chars=32000))[0]
         request = {
@@ -538,16 +553,16 @@ class TestSaveToolEndToEnd:
         }
         call = asyncio.ensure_future(save.ainvoke(request))
 
-        await asyncio.wait_for(self._await_element(shown), 5)
+        await asyncio.wait_for(self._await_push(panel), 5)
 
-        RenderVerdicts.report({"nonce": shown[0].props["nonce"], **verdict})
+        RenderVerdicts.report({"nonce": panel[0].nonce, **verdict})
         message = await asyncio.wait_for(call, 5)
 
         return message.content, message.artifact
 
     @staticmethod
-    async def _await_element(shown: list[Any]) -> None:
-        while not shown:
+    async def _await_push(pushed: list[Any]) -> None:
+        while not pushed:
             await asyncio.sleep(0.01)
 
     @pytest.mark.anyio
@@ -556,10 +571,11 @@ class TestSaveToolEndToEnd:
         files: DiagramFiles,
         http_context: None,
         feed: list[Any],
+        panel: list[Any],
     ) -> None:
         """Битую спеку ловит только браузер — LLM обязана узнать об этом."""
         _, result = await self._call(
-            ER_SPEC, {"ok": False, "error": "Parse error on line 5"}, feed
+            ER_SPEC, {"ok": False, "error": "Parse error on line 5"}, panel
         )
 
         assert isinstance(result, ErrorResult)
@@ -568,20 +584,39 @@ class TestSaveToolEndToEnd:
         assert "diagram saved" in result.message
 
     @pytest.mark.anyio
+    async def test_failed_diagram_leaves_no_card_in_the_feed(
+        self,
+        files: DiagramFiles,
+        http_context: None,
+        feed: list[Any],
+        panel: list[Any],
+    ) -> None:
+        """Неотрисованная спека в переписке не остаётся: её правят следующим
+        вызовом, а попытка видна шагом инструмента внутри хода."""
+        await self._call(ER_SPEC, {"ok": False, "error": "Parse error"}, panel)
+
+        assert feed == []
+
+    @pytest.mark.anyio
     async def test_rendered_diagram_card_goes_to_the_feed(
         self,
         files: DiagramFiles,
         http_context: None,
         feed: list[Any],
+        panel: list[Any],
     ) -> None:
-        """Успех — кликабельная карточка mermaid в ленте, панель не открывается."""
-        content, result = await self._call(ER_SPEC, {"ok": True, "error": ""}, feed)
+        """Успех — диаграмма в панели плюс кликабельная карточка в ленте."""
+        content, result = await self._call(ER_SPEC, {"ok": True, "error": ""}, panel)
 
         assert isinstance(result, TextResult)
         assert "diagram saved" in content
+
+        assert panel[0].kind == "mermaid"
+        assert panel[0].text == ER_SPEC
 
         card = feed[0]
         assert card.props["kind"] == "mermaid"
         assert card.props["preview"] is True
         assert card.props["text"] == ER_SPEC
+        assert not card.props.get("nonce"), "карточка не участвует в верификации"
         assert card.props["path"] == f"/workspace/{THREAD}/mermaid/orders.mmd"

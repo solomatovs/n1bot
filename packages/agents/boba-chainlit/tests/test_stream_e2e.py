@@ -243,7 +243,7 @@ async def test_stream_button_lives_in_the_step_header(stream_thread: Any) -> Non
     page, _thread_id = stream_thread
     trigger = await _open_step(page)
 
-    button = trigger.locator('[aria-label="Показать вывод инструмента"]')
+    button = trigger.locator('[aria-label="Show tool output"]')
     assert await button.count() == 1
 
 
@@ -252,7 +252,7 @@ async def test_click_opens_the_journal_from_the_start(stream_thread: Any) -> Non
     page, _thread_id = stream_thread
     trigger = await _open_step(page)
 
-    await trigger.locator('[aria-label="Показать вывод инструмента"]').click()
+    await trigger.locator('[aria-label="Show tool output"]').click()
     await page.wait_for_timeout(3000)
 
     text = await page.locator("#side-view-content").inner_text()
@@ -265,13 +265,13 @@ async def test_jump_to_end_and_back(stream_thread: Any) -> None:
     page, _thread_id = stream_thread
     side = page.locator("#side-view-content")
 
-    await side.locator('button[aria-label*="В конец файла"]').click()
+    await side.locator('button[aria-label*="Go to the file end"]').click()
     await page.wait_for_timeout(2000)
     tail = await side.inner_text()
     assert LAST_LINE in tail
     assert FIRST_LINE not in tail
 
-    await side.locator('button[aria-label="В начало файла"]').click()
+    await side.locator('button[aria-label="Go to the file start"]').click()
     await page.wait_for_timeout(2000)
     head = await side.inner_text()
     assert FIRST_LINE in head
@@ -290,7 +290,7 @@ async def test_panel_and_fullscreen_share_the_button_set(
         )].map(b => b.getAttribute('aria-label'))"""
     )
 
-    await side.locator('button[aria-label="Во весь экран"]').click()
+    await side.locator('button[aria-label="Fullscreen"]').click()
     await page.wait_for_timeout(1000)
 
     full_labels = await page.evaluate(
@@ -302,8 +302,8 @@ async def test_panel_and_fullscreen_share_the_button_set(
     await page.keyboard.press("Escape")
 
     # панель = полноэкранный набор плюс «Во весь экран»; «Закрыть» есть в обоих
-    assert set(labels) - {"Во весь экран"} == set(full_labels)
-    assert "Закрыть" in set(full_labels)
+    assert set(labels) - {"Fullscreen"} == set(full_labels)
+    assert "Close" in set(full_labels)
 
 
 async def _scroll_box(page: Any) -> Any:
@@ -324,7 +324,7 @@ async def test_scrolling_down_loads_next_windows(stream_thread: Any) -> None:
     """Непрерывная прокрутка: у нижней кромки подгружается следующее окно."""
     page, _thread_id = stream_thread
     trigger = await _open_step(page)
-    await trigger.locator('[aria-label="Показать вывод инструмента"]').click()
+    await trigger.locator('[aria-label="Show tool output"]').click()
     await page.wait_for_timeout(3000)
 
     side = page.locator("#side-view-content")
@@ -387,7 +387,7 @@ async def test_dom_stays_bounded_on_a_long_scroll(stream_thread: Any) -> None:
     """
     page, _thread_id = stream_thread
     trigger = await _open_step(page)
-    await trigger.locator('[aria-label="Показать вывод инструмента"]').click()
+    await trigger.locator('[aria-label="Show tool output"]').click()
     await page.wait_for_timeout(3000)
 
     side = page.locator("#side-view-content")
