@@ -133,10 +133,19 @@ class SandboxProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     rootfs: str = Field(
+        default="",
         description=(
             "Каталог, монтируемый read-only как / песочницы; ro_binds "
-            "ложатся поверх. Пустая строка — корень не монтируется. "
-            "Собирается целью make sandbox-rootfs."
+            "ложатся поверх. Пустая строка — корень берётся из rootfs_image "
+            "либо не монтируется вовсе."
+        ),
+    )
+    rootfs_image: str = Field(
+        default="",
+        description=(
+            "Ext4-образ корня, монтируемый read-only на время вызова; "
+            "внутри него уже лежат python, site-packages и код инструментов. "
+            "Собирается целью make sandbox-rootfs. Взаимоисключим с rootfs."
         ),
     )
     ro_binds: tuple[BindSpec, ...] = Field(
@@ -305,6 +314,13 @@ class SandboxProfile(BaseModel):
             return value
         return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
 
+    @field_validator("rootfs_image", mode="after")
+    @classmethod
+    def _canonicalize_rootfs_image(cls, value: str) -> str:
+        if not value:
+            return value
+        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
     @field_validator("image_template", mode="after")
     @classmethod
     def _canonicalize_template(cls, value: str) -> str:
@@ -314,6 +330,10 @@ class SandboxProfile(BaseModel):
 
     @model_validator(mode="after")
     def _validate_images(self) -> Self:
+        if self.rootfs and self.rootfs_image:
+            msg = "sandbox: rootfs and rootfs_image are mutually exclusive"
+            raise ValueError(msg)
+
         if self.rw_images and not self.image_template:
             msg = "sandbox: rw_images is set, but image_template is empty"
             raise ValueError(msg)

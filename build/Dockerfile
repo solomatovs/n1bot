@@ -186,9 +186,9 @@ RUN set -eu;                                                                    
     sed -i 's#</policymap>#  <policy domain="coder" rights="read|write" pattern="PDF"/>\n</policymap>#'   \
         /etc/ImageMagick-6/policy.xml
 
-# точки монтирования: bwrap не создаёт их в read-only корне.
-# python приходит в /usr/local (он собран с этим prefix), его site-packages —
-# штатные, поэтому PYTHONHOME и PYTHONPATH внутри не нужны
+# каталоги под содержимое образа песочницы и точки монтирования: bwrap не
+# создаёт их в read-only корне. python лежит в /usr/local (он собран с этим
+# prefix), site-packages штатные — PYTHONHOME и PYTHONPATH внутри не нужны
 RUN mkdir -p /usr/local/lib/python${PYTHON_VERSION}/site-packages   \
              /usr/src /usr/share/tessdata /var/cache/fastembed      \
              /workspace /mnt/pgsock
@@ -268,8 +268,8 @@ RUN set -eu;                                                             \
 
 RUN PYTHONPATH=/opt/site python3 -c "import liteparse, markdownify, bs4, lxml, plotly, httpx, psycopg, clickhouse_connect, aiohttp, fastembed, gssapi, krb5; print('site ok')"
 
-# код инструментов уезжает отдельно: в песочнице он монтируется в /usr/src,
-# а сюда его добавляет boba-src.pth — тот же путь и у дерева исходников
+# код инструментов уезжает отдельно: он запекается в /usr/src образа песочницы,
+# а sys.path сюда добавляет boba-src.pth рядом с site-packages
 RUN set -eu;                                            \
     mkdir -p /opt/code-sandbox/boba;                    \
     mv /opt/site/boba/* /opt/code-sandbox/boba/;        \
@@ -277,6 +277,41 @@ RUN set -eu;                                            \
     mv /opt/site/boba_*.dist-info /opt/code-sandbox/;   \
     echo /usr/src > /opt/site/boba-src.pth;             \
     PYTHONPATH=/opt/code-sandbox:/opt/site python3 -c "import boba.tool; print('code-sandbox ok')"
+
+
+# образ корня песочницы: собранное дерево одним ext4-файлом. Тем же mke2fs,
+# что делает шаблон workspace, иначе это были бы два разных образа.
+FROM fuse2fs-build AS sandbox-image
+
+ARG PYTHON_VERSION=3.11
+ARG BOBA_DIR=/app/boba
+ARG SANDBOX_DEV_KRB=/app/boba/conf/krb
+
+COPY --from=sandbox-rootfs /                   /tree/
+COPY --from=python-dist /opt/python/usr/local  /tree/usr/local/
+COPY --from=base /usr/local/lib64/.            /tree/usr/local/lib64/
+COPY --from=sandbox-site /opt/site             /tree/usr/local/lib/python${PYTHON_VERSION}/site-packages/
+COPY --from=sandbox-site /opt/code-sandbox     /tree/usr/src/
+COPY build/src/tessdata/                       /tree/usr/share/tessdata/
+COPY build/src/fastembed/                      /tree/var/cache/fastembed/
+
+# точки монтирования на read-only корне bwrap не создаёт: и путь релиза,
+# и путь дерева исходников заводим заранее
+RUN set -eu;                                                      \
+    mkdir -p "/tree${BOBA_DIR}/conf/krb" "/tree${SANDBOX_DEV_KRB}";   \
+    cd /tree/usr/share/tessdata;                                  \
+    ln -sf eng.traineddata rus+eng.traineddata;                   \
+    ln -sf rus.traineddata eng+rus.traineddata;                   \
+    cd /tmp/e2fs-src;                                             \
+    used_mb=$(du -sm /tree | cut -f1);                            \
+    size_mb=$(( used_mb + used_mb / 5 + 512 ));                   \
+    inodes=$(find /tree | wc -l);                                 \
+    truncate -s ${size_mb}M /out/sandbox-rootfs.ext4;             \
+    MKE2FS_CONFIG=/tmp/e2fs-src/misc/mke2fs.conf                  \
+        ./misc/mke2fs -F -q -t ext4 -O ^has_journal -m 0          \
+        -L rootfs -N $(( inodes + inodes / 5 + 1000 ))            \
+        -d /tree /out/sandbox-rootfs.ext4;                        \
+    ls -lh /out/sandbox-rootfs.ext4
 
 
 # runtime image for docker-compose
@@ -303,17 +338,12 @@ COPY --from=base /usr/local/lib64/libstdc++.so.6.0.25  ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/local/bin/uv                     ${BOBA_DIR}/third/bin/uv
 COPY --from=bwrap-build /out/bwrap                     ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs                 ${BOBA_DIR}/third/bin/fuse2fs
-COPY --from=sandbox-rootfs /                           ${BOBA_DIR}/sandbox/rootfs/
-COPY --from=python-dist /opt/python/usr/local          ${BOBA_DIR}/sandbox/third/python/
+COPY --from=sandbox-image /out/sandbox-rootfs.ext4      ${BOBA_DIR}/sandbox/rootfs.ext4
 COPY --from=fuse2fs-build /out/sandbox-workspace.ext4  ${BOBA_DIR}/sandbox/workspace.ext4
-COPY build/src/tessdata/                               ${BOBA_DIR}/sandbox/third/tessdata/
-COPY build/src/fastembed/                              ${BOBA_DIR}/sandbox/third/fastembed/
 COPY build/conf/                                       /tmp/conf/
 
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/deps/app/
 COPY --from=app-site /opt/code-app          ${BOBA_DIR}/code/app/
-COPY --from=sandbox-site /opt/site          ${BOBA_DIR}/deps/sandbox/
-COPY --from=sandbox-site /opt/code-sandbox  ${BOBA_DIR}/code/sandbox/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/deps/app/packages.txt
 
 COPY packages/agents/boba-chainlit/assets/chainlit/config.toml    ${BOBA_DIR}/app_root/.chainlit/
@@ -330,24 +360,16 @@ RUN set -eu;                                                       \
     cp /tmp/conf/ca-chain.crt /usr/local/share/ca-certificates/;   \
     update-ca-certificates
 
-# .files создаётся заранее: chainlit делает mkdir на импорте, ассеты read-only
-RUN mkdir -p ${BOBA_DIR}/conf             \
-             ${BOBA_DIR}/data/workspace   \
-             ${BOBA_DIR}/data/tool-logs   \
+# .files создаётся заранее: chainlit делает mkdir на импорте, ассеты read-only.
+# Каталога data в образе нет: данные переживают релизы и лежат в BOBA_DATA
+RUN mkdir -p ${BOBA_DIR}/conf   \
              ${BOBA_DIR}/app_root/.files
 
 # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
 RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|"   \
         ${BOBA_DIR}/code/app/bin/*
 
-RUN chown -R ${BOBA_UID}:${BOBA_GID}   \
-        ${BOBA_DIR}/data               \
-        ${BOBA_DIR}/app_root
-
-RUN set -eu;                                      \
-    cd ${BOBA_DIR}/sandbox/third/tessdata;        \
-    ln -sf eng.traineddata rus+eng.traineddata;   \
-    ln -sf rus.traineddata eng+rus.traineddata
+RUN chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root
 
 RUN set -eu;                                                                              \
     chmod -R go-w ${BOBA_DIR}/third ${BOBA_DIR}/sandbox;                                  \

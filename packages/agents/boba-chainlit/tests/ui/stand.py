@@ -38,7 +38,6 @@ class StandPaths(StrEnum):
     BASE_CONFIG = "compose/conf/config.toml"
     ASSETS = "compose/chainlit"
     SANDBOX = "build/src/sandbox"
-    TOOLS = "build/src/sandbox/site"
     PACKAGES = "packages"
 
     def under(self, root: Path) -> Path:
@@ -107,7 +106,6 @@ class StandConfig:
         env["BOBA_CONFIG_PATH"] = str(self.config_path)
         env["BOBA_RUNTIME"] = str(self.workdir)
         env["BOBA_SANDBOX"] = str(StandPaths.SANDBOX.under(REPO_ROOT))
-        env["BOBA_TOOLS"] = str(StandPaths.TOOLS.under(REPO_ROOT))
         env["BOBA_ASSETS"] = str(StandPaths.ASSETS.under(REPO_ROOT))
         env["BOBA_BIND_CODE"] = f"{StandPaths.PACKAGES.under(REPO_ROOT)}:/opt/src"
         env["BOBA_SANDBOX_PYTHONPATH"] = "/opt/site"

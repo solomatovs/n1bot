@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=simple
 
 EnvironmentFile=${INSTALL_DIR}/conf/boba.env
-WorkingDirectory=${INSTALL_DIR}/data
+WorkingDirectory=${BOBA_DATA}
+ExecStartPre=/bin/mkdir -p ${BOBA_DATA}/workspace ${BOBA_DATA}/tool-logs ${BOBA_DATA}/dump
 ExecStart=${INSTALL_DIR}/third/bin/python3 -m boba.chainlit.main
 
 Restart=always

@@ -253,8 +253,9 @@ class CgroupManager:
             msg = (
                 f"cgroup: cannot move a child into {leaf}: {e}; the "
                 f"application itself must run inside the delegated subtree "
-                f"(host: systemd-run --user --scope; docker: private cgroup "
-                f"namespace), otherwise remove the cgroup_* limits"
+                f"(host: systemd-run --user --scope; docker: cgroup: host "
+                f"plus cgroup_parent of the delegated slice), otherwise "
+                f"remove the cgroup_* limits"
             )
             raise CgroupError(msg) from e
 

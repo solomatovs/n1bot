@@ -32,7 +32,10 @@ REQUIRES_PY     := $(shell sed -n 's/^requires-python = ">=\([0-9]*\.[0-9]*\).*/
 # релиз для make extract
 RELEASE_NAME    := boba-$(VERSION)
 # корень установки на сервере: в него уедет дерево из make extract
-INSTALL_DIR     ?= /srv/boba
+INSTALL_DIR     ?= /app/boba
+# данные, переживающие релизы: workspace пользователей, дампы, журналы.
+# Лежат рядом с деревом версии, а не внутри — иначе терялись бы при обновлении
+DATA_DIR        ?= /app/boba/data
 # тот же корень внутри образа; версия живёт в app/<version>, не в нём
 DEST_DIR        ?= /app/boba
 
@@ -51,10 +54,8 @@ GLIBC_IMAGE     ?= dmp/glibc:2.28
 # среда сборки: glibc 2.28 + gcc + python-дистрибутив
 GCC_IMAGE       ?= dmp/gcc:8.5.0
 PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
-# базовый rootfs песочницы: стадия sandbox-rootfs (glibc + office + точки)
-ROOTFS_IMAGE    := boba-sandbox-rootfs:$(PYTHON_VERSION)
-# site-packages песочницы одним каталогом: стадия sandbox-site
-SITE_IMAGE      := boba-sandbox-site:$(PYTHON_VERSION)
+# корень песочницы одним ext4-файлом: стадия sandbox-image
+ROOTFS_EXT4_IMAGE := boba-sandbox-image:$(PYTHON_VERSION)
 # шаблон workspace и fuse2fs: стадия fuse2fs-build
 FUSE_IMAGE      := boba-fuse2fs:$(PYTHON_VERSION)
 # bwrap: стадия bwrap-build
@@ -159,6 +160,7 @@ DOCKER_ARGS     = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)   \
     --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)         \
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)     \
     --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)         \
+    --build-arg SANDBOX_DEV_KRB=$(SRC_DIR)/compose/conf/krb   \
     --build-arg LITEPARSE_PACKAGES="$(LITEPARSE_PACKAGES)"
 
 
@@ -169,19 +171,17 @@ help:
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(DEPS_DIR)"
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
 	echo "                 {uv,tessdata,fastembed,webassets,"
-	echo "                  sandbox/{rootfs,site,workspace.ext4,"
-	echo "                           third/{python,tessdata,fastembed}}}"
+	echo "                  sandbox/{rootfs.ext4,workspace.ext4},third/bin}"
 	echo "                 цели по отдельности: uv, tessdata, fastembed,"
-	echo "                 webassets, sandbox-rootfs, sandbox-site, sandbox-python,"
-	echo "                 sandbox-bin, sandbox-data, sandbox-workspace"
+	echo "                 webassets, sandbox-bin, sandbox-image, sandbox-workspace"
 	echo "  make build     собрать образ $(IMAGE)"
 	echo "  make test      проверить релиз внутри образа"
 	echo "  make dev       рантайм в $(SRC_DIR)/compose: то же дерево из build/src,"
 	echo "                 без образа — им пользуются и отладка, и docker compose"
 	echo "  make release   дерево установки из готового образа:"
 	echo "                 RELEASE_IMAGE=$(RELEASE_IMAGE), OUT=$(OUT)"
-	echo "                 {conf,data,app_root,code/{app,sandbox},deps/{app,sandbox},"
-	echo "                  sandbox,third}, ставится в INSTALL_DIR=$(INSTALL_DIR)"
+	echo "                 {conf,app_root,code/app,deps/app,sandbox,third},"
+	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR), данные — в DATA_DIR=$(DATA_DIR)"
 	echo "  make sec       ruff, bandit, semgrep и pip-audit (MODE=all|sast|sca|rules)"
 	echo "  make clean     удалить исходники, deps и собранную папку (кроме fastembed)"
 	echo ""
@@ -277,8 +277,7 @@ sources:
 
 
 .PHONY: deps
-deps: uv tessdata fastembed webassets sandbox-rootfs sandbox-site sandbox-python   \
-      sandbox-bin sandbox-data sandbox-workspace
+deps: uv tessdata fastembed webassets sandbox-bin sandbox-workspace sandbox-image
 	@du -sh $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(SANDBOX_DIR)/*
 
 
@@ -362,76 +361,6 @@ webassets:
 	du -sh $(WEBASSETS_DIR)/*
 
 
-# базовый rootfs песочницы: glibc + office-конвертеры + точки монтирования
-.PHONY: sandbox-rootfs
-sandbox-rootfs:
-	@dest="$(SANDBOX_DIR)/rootfs"
-	echo "== rootfs песочницы из $(GLIBC_IMAGE) + утилиты =="
-	$(call docker-stage,sandbox-rootfs,$(ROOTFS_IMAGE))
-	rm -rf "$$dest"
-	mkdir -p "$$dest"
-	cid=$$(docker create $(ROOTFS_IMAGE) /bin/true)
-	docker export "$$cid" | tar -x -C "$$dest"
-	docker rm "$$cid" >/dev/null
-	mkdir -p "$$dest/workspace"
-	# в образе krb монтируется в свой же путь ($(DEST_DIR)/conf/krb) — точка есть
-	# в rootfs. При запуске из IDE путь хостовый, точку под него создаём здесь:
-	# bwrap не заводит её сам на read-only корне
-	mkdir -p "$$dest$(SRC_DIR)/compose/conf/krb"
-
-
-# site-packages песочницы одним каталогом: его монтируют профили в /opt/site.
-# version-check первым: иначе разъехавшиеся версии всплывут отказом резолвера uv
-.PHONY: sandbox-site
-sandbox-site: version-check sandbox-names
-	@dest="$(SANDBOX_DIR)/site"
-	echo "== site-packages песочницы =="
-	$(call docker-stage,sandbox-site,$(SITE_IMAGE))
-	rm -rf "$$dest"
-	mkdir -p "$$dest"
-	$(call image-copy,$(SITE_IMAGE),/opt/site/.,$$dest/)
-
-
-# python-дистрибутив песочницы: тот же, что у приложения (стадия python-dist),
-# лежит в third/ как монтируемый артефакт наравне с tessdata и fastembed
-.PHONY: sandbox-python
-sandbox-python: base
-	@dest="$(SANDBOX_DIR)/third/python"
-	echo "== python-дистрибутив песочницы =="
-	rm -rf "$$dest"
-	mkdir -p "$$dest"
-	$(call image-copy,$(PYTHON_IMAGE),/opt/python/usr/local/.,$$dest/)
-
-	# артефакт монтируется в /usr/local и перекрывает lib64 из rootfs,
-	# поэтому свежий libstdc++ едет вместе с ним: onnxruntime требует CXXABI 1.3.11
-	mkdir -p "$$dest/lib64"
-	$(call image-copy,$(BASE_IMAGE),/usr/local/lib64/.,$$dest/lib64/)
-
-
-# состав песочницы объявляют сами пакеты: у кого есть extra payload, тот и едет
-# внутрь вместе с ним (парсеры, эмбеддер, plotly)
-.PHONY: sandbox-names
-sandbox-names:
-	@dest="$(DEPS_DIR)/names-sandbox.txt"
-	echo "== пакеты песочницы =="
-	mkdir -p "$(DEPS_DIR)"
-	: > "$$dest"
-
-	for project in $(PYPROJECTS); do
-	    extras=$$(sed -n '/^\[project.optional-dependencies\]/,/^\[/p' "$$project")
-
-	    if ! echo "$$extras" | grep -q '^payload'; then
-	        continue
-	    fi
-
-	    name=$$(sed -n 's/^name = "\(.*\)"/\1/p' "$$project" | head -1)
-	    echo "$$name[payload]" >> "$$dest"
-	done
-
-	sort -o "$$dest" "$$dest"
-	sed 's/^/    /' "$$dest"
-
-
 # bwrap и fuse2fs рядом с остальными артефактами: без них dev-дерево
 # пришлось бы доставать из релизного образа
 .PHONY: sandbox-bin
@@ -448,16 +377,17 @@ sandbox-bin:
 	"$$dest/fuse2fs" -V
 
 
-# артефакты песочницы: python, веса эмбеддера и модели OCR в одном third/
-.PHONY: sandbox-data
-sandbox-data: tessdata fastembed
-	@mkdir -p "$(SANDBOX_DIR)/third"
-	echo "== данные песочницы: tessdata + fastembed =="
-	rm -rf "$(SANDBOX_DIR)/third/tessdata" "$(SANDBOX_DIR)/third/fastembed"
-	cp -a "$(DEPS_DIR)/tessdata" "$(SANDBOX_DIR)/third/tessdata"
-	cp -a "$(DEPS_DIR)/fastembed" "$(SANDBOX_DIR)/third/fastembed"
-	ln -sf eng.traineddata "$(SANDBOX_DIR)/third/tessdata/rus+eng.traineddata"
-	ln -sf rus.traineddata "$(SANDBOX_DIR)/third/tessdata/eng+rus.traineddata"
+# корень песочницы одним ext4-файлом: python, site-packages, код инструментов,
+# tessdata и веса уже внутри, в рантайме монтируется read-only
+.PHONY: sandbox-image
+sandbox-image: version-check sandbox-names tessdata fastembed
+	@dest="$(SANDBOX_DIR)/rootfs.ext4"
+	echo "== образ корня песочницы =="
+	$(call docker-stage,sandbox-image,$(ROOTFS_EXT4_IMAGE))
+	mkdir -p "$(SANDBOX_DIR)"
+	rm -f "$$dest"
+	$(call image-copy,$(ROOTFS_EXT4_IMAGE),/out/sandbox-rootfs.ext4,$$dest)
+	ls -lh "$$dest"
 
 
 .PHONY: sandbox-workspace
@@ -563,17 +493,12 @@ test: build
 
 # что обязано лежать в дереве установки: путь:цель, которая его кладёт
 RELEASE_PARTS   :=                                \
-    sandbox/rootfs/bin/sh:deps                    \
-    sandbox/third/python/bin/python3:deps         \
-    sandbox/third/fastembed:deps                  \
-    sandbox/third/tessdata/eng.traineddata:deps   \
+    sandbox/rootfs.ext4:deps                      \
     sandbox/workspace.ext4:deps                   \
     third/bin/bwrap:deps                          \
     third/bin/fuse2fs:deps                        \
     code/app/bin:build                            \
-    code/sandbox/boba:build                       \
     deps/app:build                                \
-    deps/sandbox:build                            \
     app_root/public:build
 
 .PHONY: release
@@ -611,20 +536,18 @@ dev: check-artifacts
 	echo "== рантайм в $$out =="
 	mkdir -p "$$out/conf" "$$out/data/workspace" "$$out/data/tool-logs" "$$out/data/dump"
 
-	# песочница жёсткими ссылками: гигабайты не копируются, файлы настоящие
+	# песочница двумя образами: корень и шаблон workspace, жёсткими ссылками
 	rm -rf "$$out/sandbox"
-	cp -al "$(SANDBOX_DIR)" "$$out/sandbox"
-	mkdir -p "$$out/sandbox/rootfs$$out/conf/krb"
+	mkdir -p "$$out/sandbox"
+	cp -al "$(SANDBOX_DIR)/rootfs.ext4" "$$out/sandbox/rootfs.ext4"
+	cp -al "$(SANDBOX_DIR)/workspace.ext4" "$$out/sandbox/workspace.ext4"
 
 	mkdir -p "$$out/third"
 	rm -rf "$$out/third/bin"
 	cp -al "$(SANDBOX_DIR)/third/bin" "$$out/third/bin"
 
-	# зависимости песочницы: код инструментов приходит биндом в /usr/src,
-	# поэтому .pth ведёт туда же и в отладке, и в релизе
-	rm -rf "$$out/deps"
-	mkdir -p "$$out/deps"
-	cp -al "$(SANDBOX_DIR)/site" "$$out/deps/sandbox"
+	# код инструментов в деве приезжает биндом поверх /usr/src образа:
+	# правка видна сразу, пересборка образа не нужна
 	$(MAKE) -f $(MAKEFILE) --no-print-directory dev-pth OUT="$$out"
 
 	# ассеты фронта: тот же набор, что уходит в образ
@@ -637,7 +560,8 @@ dev: check-artifacts
 
 	# окружение процесса в контейнере: пути внутри него, а не на хосте
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)"
-	envsubst '$${BOBA_BASE} $${BOBA_VERSION}'   \
+	export BOBA_DATA="$(DEST_DIR)/data"
+	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}'   \
 	    < "$(CONF_DIR)/boba.env" > "$$out/conf/boba.env"
 	sed -i 's|^BOBA_CGROUP_BASE=.*|BOBA_CGROUP_BASE=/cgroup/boba-sandbox|' "$$out/conf/boba.env"
 
@@ -660,7 +584,7 @@ dev: check-artifacts
 # содержит один /usr/src, потому что код там уже плоский
 .PHONY: dev-pth
 dev-pth:
-	@pth="$(OUT)/deps/sandbox/boba-src.pth"
+	@pth="$(OUT)/sandbox/boba-src.pth"
 	: > "$$pth"
 	for project in $$(find "$(SRC_DIR)/packages" -name pyproject.toml -not -path '*/build/*'); do
 	    src="$$(dirname "$$project")/src"
@@ -677,11 +601,7 @@ dev-pth:
 # общая часть release и любой установки: права, шебанги, conf, проверки
 .PHONY: install-tree
 install-tree:
-	@mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs" "$(OUT)/data/dump"
-
-	# krb монтируется в песочницу своим же путём: точка под него зависит от
-	# BOBA_BASE, поэтому создаётся здесь, а не в образе
-	mkdir -p "$(OUT)/sandbox/rootfs$(BASE)/conf/krb"
+	@mkdir -p "$(OUT)/conf"
 
 	# шебанги указывают внутрь образа: переставляем на путь установки
 	sed -i "1s|^#!.*python3.*|#!$(BASE)/third/bin/python3|" "$(OUT)/code/app/bin"/*
@@ -693,9 +613,10 @@ install-tree:
 
 	# envsubst с явным списком: $${PYTHONHOME} и TOML-интерполяции не трогаются
 	export BOBA_BASE="$(BASE)" BOBA_VERSION="$(VERSION)" INSTALL_DIR="$(BASE)"
-	envsubst '$${INSTALL_DIR}'   \
+	export BOBA_DATA="$(DATA_DIR)"
+	envsubst '$${INSTALL_DIR} $${BOBA_DATA}'   \
 	    < "$(CONF_DIR)/boba-chainlit.service" > "$(OUT)/boba-chainlit.service"
-	envsubst '$${BOBA_BASE} $${BOBA_VERSION}'   \
+	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}'   \
 	    < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
 
 	if [ ! -f "$(OUT)/conf/config.toml" ]; then
