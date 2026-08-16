@@ -136,30 +136,50 @@ def get_openai_config(
     return app_config.agent.openai
 
 
+def _openai_socket_options(c: OpenAiConfig) -> list[tuple[int, int, int]]:
+    """Опции сокета: keepalive против молчаливого разрыва, user timeout —
+    против соединения, которое приняло данные и замолчало."""
+    options: list[tuple[int, int, int]] = [
+        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, int(c.tcp_keepalive)),
+    ]
+
+    if c.tcp_keepalive:
+        options += [
+            (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, c.tcp_keepidle),
+            (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, c.tcp_keepintvl),
+            (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, c.tcp_keepcnt),
+        ]
+
+    if c.tcp_user_timeout:
+        options.append(
+            (socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, c.tcp_user_timeout)
+        )
+
+    return options
+
+
 def _openai_transport_options(c: OpenAiConfig) -> dict:
     limits = httpx.Limits(
         max_connections=c.max_connections,
         max_keepalive_connections=c.max_keepalive_connections,
         keepalive_expiry=c.keepalive_expiry,
     )
-    verify = httpx.create_ssl_context(verify=c.ssl_verify, cert=None, trust_env=True)
-    socket_options = [
-        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, int(c.tcp_keepalive)),
-    ]
-    if c.tcp_keepalive:
-        socket_options += [
-            (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, c.tcp_keepidle),
-            (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, c.tcp_keepintvl),
-            (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, c.tcp_keepcnt),
-        ]
+    verify = httpx.create_ssl_context(
+        verify=c.ssl_verify, cert=None, trust_env=c.trust_env
+    )
+
+    proxy = None
+    if c.proxy:
+        proxy = c.proxy
 
     return {
-        "http2": False,
+        "http2": c.http2,
         "verify": verify,
         "limits": limits,
-        "proxy": None,
+        "proxy": proxy,
+        "trust_env": c.trust_env,
         "retries": c.retries,
-        "socket_options": socket_options,
+        "socket_options": _openai_socket_options(c),
     }
 
 
@@ -350,12 +370,20 @@ def langchain_agent(
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
     tools: Annotated[list[BaseTool], Depends(session_tools, scope="session")],
 ) -> CompiledStateGraph:
+    # потолок попытки и повторы держит клиент openai: httpx-таймауты меряют
+    # паузы между байтами и запрос целиком не ограничивают
+    request_timeout = None
+    if c.agent.openai.request_timeout:
+        request_timeout = c.agent.openai.request_timeout
+
     chat = ReasoningChatOpenAI(
         http_async_client=client,
         model=c.agent.model,
         base_url=c.agent.openai.base_url,
         api_key=SecretStr(c.agent.openai.api_key),
         temperature=c.agent.temperature,
+        timeout=request_timeout,
+        max_retries=c.agent.openai.max_retries,
     )
 
     system_prompt = c.agent.default_system_prompt

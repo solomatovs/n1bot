@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 import chainlit as cl
-from boba.chainlit.domain.errors import BaseError
+from boba.chainlit.domain.errors import BaseError, FailureReport
 
 __all__ = ["chainlit_error_ctx_handler", "show_error"]
 
@@ -38,7 +38,7 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
 
     @staticmethod
     async def handle(e: BaseError):
-        logger.exception(str(e))
+        logger.exception(FailureReport.of(e).log)
         if m := e.view_message():
             await show(m.content, m.author, m.fail_on_persist_error)
 
@@ -53,7 +53,10 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
         except BaseError as e:
             await handle(e)
         except Exception as e:
-            logger.exception(str(e))
-            await show(str(e) or type(e).__name__, "Error")
+            # один разбор на журнал и чат: формулировка совпадает дословно
+            report = FailureReport.of(e)
+            logger.exception(report.log)
+            if report.view:
+                await show(report.view, "Error")
 
     return wrapper

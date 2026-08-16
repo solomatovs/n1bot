@@ -29,6 +29,7 @@ import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped, TurnRegistry
 from boba.chainlit.chat.agent_tracer import AgentTracer
 from boba.chainlit.chat.transcript import TurnMark, TurnRecord
+from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import current_user_id
 from boba.chainlit.domain.turn import ActiveTurns
@@ -224,9 +225,13 @@ class ChatTurn:
     ) -> None:
         with TurnRegistry.instance().open(self._thread_id) as cancellation:
             await cl.context.emitter.task_start()
+            # контейнер до первого чанка: запрос в модель уходит с первой
+            # итерацией стрима, и до её ответа лента иначе пуста
+            await self._view.await_model()
             try:
                 async for chunk, _metadata in stream:
                     cancellation.raise_if_cancelled()
+                    await self._view.model_answered()
                     await self._on_chunk(chunk)
             except asyncio.CancelledError:
                 # задачу сняли снаружи; после кнопки Stop причина уже своя
@@ -239,7 +244,9 @@ class ChatTurn:
                 await self._report_stop(cancellation.reason)
                 return
             except Exception as e:
-                logger.exception("agent run failed")
+                # тот же текст уйдёт в чат и в историю: три источника обязаны
+                # объяснять сбой одинаково
+                logger.exception("agent run failed: %s", FailureReport.of(e).log)
                 self._outcome = StopReason.FAILED.value
                 cancellation.cancel(StopReason.FAILED)
                 await self._report_failure(e)
@@ -297,9 +304,14 @@ class ChatTurn:
             logger.warning("stopped turn is not drawn: chat is gone", exc_info=True)
 
     async def _report_failure(self, error: BaseException) -> None:
-        text = f"**failed:** {error}"
-        await self._view.error(text, self._key)
-        await self._remember(text, TurnMark.ERROR)
+        """Сбой хода: журнал, чат и история получают его от одного разбора."""
+        report = FailureReport.of(error)
+
+        if report.view:
+            await self._view.error(f"**failed:** {report.view}", self._key)
+
+        if report.history:
+            await self._remember(f"**failed:** {report.history}", TurnMark.ERROR)
 
     async def _remember(self, content: str, mark: TurnMark) -> None:
         """История обязана пережить остановку: её читает и лента, и сам агент."""

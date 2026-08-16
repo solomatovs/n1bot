@@ -23,6 +23,7 @@ from langchain_core.tools import BaseTool
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
 from boba.toolkit.channels import ToolChannel
+from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolResult, ToolResultBase, render_for_llm
 from boba.toolkit.stream import (
     StreamSink,
@@ -189,12 +190,12 @@ class ToolRunLogger:
 
     @staticmethod
     def _log_failure(name: str, started: float, error: BaseException) -> None:
+        """Тот же текст уходит LLM в ErrorResult: лог и история совпадают."""
         logger.warning(
-            "tool[%s]: failed in %dms: %s: %s",
+            "tool[%s]: failed in %dms: %s",
             name,
             ToolRunLogger._elapsed_ms(started),
-            type(error).__name__,
-            error,
+            FailureText.of(error),
         )
 
     @staticmethod

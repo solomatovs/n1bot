@@ -49,6 +49,9 @@ class StepText(StrEnum):
     """Тексты шагов ленты."""
 
     CONTAINER = "process..."
+    REQUESTED = "process... (request sent)"
+    """Подпись контейнера, пока модель молчит: ход уже идёт, токенов ещё нет."""
+
     RUNNING = "running"
     THINKING = "thinking"
     TOOL = "tool"
@@ -332,12 +335,12 @@ class ChatView:
         message.parent_id = None
         return message
 
-    async def container(self) -> Step:
+    async def container(self, name: str = StepText.CONTAINER) -> Step:
         if self._turn.container is not None:
             return self._turn.container
 
         step = self._step(
-            StepText.CONTAINER,
+            name,
             StepKind.RUN,
             parent_id=None,
             step_id=self.derive_id(self._thread_id, self._turn.key, StepRole.PROCESS),
@@ -345,6 +348,32 @@ class ChatView:
         await self._sink.put(step)
         self._turn.container = step
         return step
+
+    async def await_model(self) -> Step:
+        """Контейнер до первого токена: ход виден сразу, ещё до ответа модели.
+
+        Иначе лента молчит всё время инференса, и пользователь не понимает,
+        принят ли его вопрос вообще.
+        """
+        step = await self.container(StepText.REQUESTED)
+        if step.name == StepText.REQUESTED:
+            return step
+
+        step.name = StepText.REQUESTED
+        await self._sink.put(step)
+        return step
+
+    async def model_answered(self) -> None:
+        """Первый токен пришёл: контейнер снова обычный «process...»."""
+        step = self._turn.container
+        if step is None:
+            return
+
+        if step.name != StepText.REQUESTED:
+            return
+
+        step.name = StepText.CONTAINER
+        await self._sink.put(step)
 
     async def thinking(self, text: str, key: str | None = None) -> Step:
         """Готовые рассуждения одним шагом: сборка ленты из истории."""
