@@ -60,7 +60,7 @@ def raw_config() -> DictConfig:
     if not config_path:
         raise RuntimeError(
             "BOBA_CONFIG_PATH не задан — укажи конфиг приложения "
-            "(launch.json 'Chainlit2: pytest current file' его прокидывает)"
+            "(launch.json 'pytest: текущий файл' его прокидывает)"
         )
     return build_app_config(config_path=Path(config_path))
 
@@ -71,7 +71,7 @@ def app_config() -> AppConfig:
     if not config_path:
         raise RuntimeError(
             "BOBA_CONFIG_PATH не задан — укажи конфиг приложения "
-            "(launch.json 'Chainlit2: pytest current file' его прокидывает)"
+            "(launch.json 'pytest: текущий файл' его прокидывает)"
         )
     built = build_app_config(config_path=Path(config_path))
     return bind(built, path="app", model=AppConfig)
