@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, ClassVar, cast
+from urllib.parse import quote
 
 import chainlit as cl
 import pytest
@@ -20,8 +21,9 @@ from boba.chainlit.agent.tools.canvas import (
     build_canvas_tools,
 )
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.data.upload import SessionFiles
+from boba.chainlit.domain import session as session_module
 from boba.chainlit.domain.keys import ObjectKey
+from boba.chainlit.domain.session import SessionKind
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.canvas import (
     CanvasContent,
@@ -168,12 +170,12 @@ class TestRefusal:
         _, result = await CanvasOpener().open(f"/workspace/{THREAD}/mermaid/a.mmd")
 
         assert isinstance(result, ErrorResult)
-        assert result.error_kind == CanvasErrorKind.NO_SESSION
+        assert result.error_kind == SessionKind.NO_SESSION
 
     @pytest.mark.anyio
     async def test_path_outside_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(canvas_module, "current_user_id", lambda: USER)
-        monkeypatch.setattr(canvas_module, "current_thread_id", lambda: THREAD)
+        monkeypatch.setattr(session_module, "current_user_id", lambda: USER)
+        monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
 
         _, result = await CanvasOpener().open("/etc/passwd")
 
@@ -204,8 +206,8 @@ def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStorageClie
     client = LocalStorageClient(config)
     layer = _StorageOnlyLayer(client)
 
-    monkeypatch.setattr(canvas_module, "current_user_id", lambda: USER)
-    monkeypatch.setattr(canvas_module, "current_thread_id", lambda: THREAD)
+    monkeypatch.setattr(session_module, "current_user_id", lambda: USER)
+    monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
     monkeypatch.setattr(CanvasOpener, "_storage", staticmethod(lambda: client))
     monkeypatch.setattr(canvas_module, "get_data_layer", lambda: layer)
 
@@ -305,21 +307,28 @@ class TestFileViewers:
         assert content.kind is CanvasKind.IMAGE
         assert content.label == "график.png"
         assert content.mime == "image/png"
-        assert "/project/file/" in content.url
+        assert f"/canvas/{THREAD}/upload/" in content.url
 
     @pytest.mark.anyio
-    async def test_registered_file_is_served_from_storage(
+    async def test_link_outlives_the_session(
         self, storage: LocalStorageClient, http_context: None
     ) -> None:
-        """Роут отдачи узнаёт объект по своему ключу — без него был бы 404."""
+        """Ссылка адресует файл, а не запись в памяти сессии.
+
+        Содержимое панели рассылается во все вкладки треда и переживает
+        переподключение; сессионная ссылка умирала раньше него, и картинка
+        молча превращалась в битый img.
+        """
         await storage.upload_file(f"{USER}/{THREAD}/upload/график.png", self.PNG)
         key = ObjectKey.build(USER, THREAD, "график.png", "el-1")
 
-        await ImageViewer().open(key, ElementSink().push)
+        sink = ElementSink()
+        await ImageViewer().open(key, sink.push)
 
-        records = list(cl.context.session.files.values())
-        assert len(records) == 1
-        assert records[0][SessionFiles.OBJECT_KEY] == key.render()
+        url = sink.shown[0].url
+        assert "session_id" not in url
+        assert url.endswith(quote(key.name, safe=""))
+        assert not list(cl.context.session.files.values())
 
     @pytest.mark.anyio
     async def test_viewers_cover_expected_suffixes(self) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from abc import ABC
+from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from typing import (
     Annotated,
@@ -11,7 +11,6 @@ from typing import (
     ClassVar,
     Literal,
     TypeAlias,
-    assert_never,
     cast,
     get_args,
 )
@@ -26,6 +25,7 @@ __all__ = [
     "ErrorResult",
     "JsonResult",
     "PgCopyTextResult",
+    "ResultTooLargeError",
     "TableResult",
     "TextResult",
     "ToolArtifact",
@@ -36,6 +36,18 @@ __all__ = [
 ]
 
 
+class ResultTooLargeError(Exception):
+    """Выдача больше потолка; сообщение готово для пользователя и LLM."""
+
+    @classmethod
+    def bytes_limit(cls, max_bytes: int) -> ResultTooLargeError:
+        return cls(f"result exceeded {max_bytes} bytes; add LIMIT to the query")
+
+    @classmethod
+    def chars_limit(cls, max_chars: int) -> ResultTooLargeError:
+        return cls(f"page content exceeded {max_chars} characters")
+
+
 class ToolResultBase(BaseModel, ABC):
     """База вариантов (тип значения — ToolResult); ok — единственный признак успеха:
     ненулевой код выхода или ошибка сервера обязаны выставить ok=False."""
@@ -43,6 +55,10 @@ class ToolResultBase(BaseModel, ABC):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     ok: bool = True
+
+    @abstractmethod
+    def llm_text(self) -> str:
+        """Текст результата для LLM: он же content конверта вызова."""
 
 
 class TextResult(ToolResultBase):
@@ -52,6 +68,9 @@ class TextResult(ToolResultBase):
     text: str
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
+    def llm_text(self) -> str:
+        return self.text
+
 
 class JsonResult(ToolResultBase):
     """JSON-сериализуемый payload."""
@@ -59,6 +78,9 @@ class JsonResult(ToolResultBase):
     kind: Literal["json"] = "json"
     payload: Any
     metadata: Mapping[str, str] = Field(default_factory=dict)
+
+    def llm_text(self) -> str:
+        return json.dumps(self.payload, ensure_ascii=False)
 
 
 class TableResult(ToolResultBase):
@@ -70,6 +92,13 @@ class TableResult(ToolResultBase):
     """Footer-контекст под таблицей: усечение, предупреждения и т.п."""
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
+    def llm_text(self) -> str:
+        body = json.dumps(self.rows, ensure_ascii=False)
+        if self.note is None:
+            return body
+
+        return f"{body}\n\n{self.note}"
+
 
 class PgCopyTextResult(ToolResultBase):
     """Дамп COPY ... TO STDOUT (FORMAT TEXT, HEADER), tab-delimited."""
@@ -77,6 +106,9 @@ class PgCopyTextResult(ToolResultBase):
     kind: Literal["pg_copy_text"] = "pg_copy_text"
     text: str
     metadata: Mapping[str, str] = Field(default_factory=dict)
+
+    def llm_text(self) -> str:
+        return self.text
 
     _UNESCAPE: ClassVar[Mapping[str, str]] = {
         "n": "\n",
@@ -126,6 +158,15 @@ class AffectedSqlResult(ToolResultBase):
     """Нативный статус выполнения, напр. statusmessage psycopg — 'DELETE 5'."""
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
+    def llm_text(self) -> str:
+        if self.status:
+            return self.status
+
+        if self.affected_rows is not None:
+            return f"affected rows: {self.affected_rows}"
+
+        return "statement executed"
+
 
 class ChartResult(ToolResultBase):
     """Интерактивный график: Plotly figure spec как чистый dict."""
@@ -135,6 +176,12 @@ class ChartResult(ToolResultBase):
     title: str | None = None
     """Человекочитаемый заголовок графика — для сводки в LLM и подписи в UI."""
     metadata: Mapping[str, str] = Field(default_factory=dict)
+
+    def llm_text(self) -> str:
+        if self.title:
+            return f"[chart rendered: {self.title}]"
+
+        return "[chart rendered]"
 
 
 class CustomElementResult(ToolResultBase):
@@ -148,6 +195,12 @@ class CustomElementResult(ToolResultBase):
     """Человекочитаемый заголовок — для сводки в LLM и подписи в UI."""
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
+    def llm_text(self) -> str:
+        if self.title:
+            return f"[{self.element} rendered: {self.title}]"
+
+        return f"[{self.element} rendered]"
+
 
 class DiagramResult(ToolResultBase):
     """Диаграмма: спека mermaid и путь её файла в workspace треда."""
@@ -159,6 +212,12 @@ class DiagramResult(ToolResultBase):
     """Человекочитаемый заголовок — для сводки в LLM и подписи в UI."""
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
+    def llm_text(self) -> str:
+        if self.title:
+            return f"[diagram rendered: {self.title} ({self.path})]"
+
+        return f"[diagram rendered: {self.path}]"
+
 
 class ErrorResult(ToolResultBase):
     """Tool не выполнен; UI рендерит такой результат как ошибку."""
@@ -168,6 +227,9 @@ class ErrorResult(ToolResultBase):
     message: str
     error_kind: str
     metadata: Mapping[str, str] = Field(default_factory=dict)
+
+    def llm_text(self) -> str:
+        return self.message
 
 
 ToolResult: TypeAlias = Annotated[
@@ -184,40 +246,8 @@ ToolResult: TypeAlias = Annotated[
 ]
 
 
-def render_for_llm(result: ToolResult) -> str:  # noqa: C901, PLR0912
-    content: str
-    match result:
-        case TextResult(text=t):
-            content = t
-        case JsonResult(payload=p):
-            content = json.dumps(p, ensure_ascii=False)
-        case TableResult(rows=r, note=n):
-            body = json.dumps(r, ensure_ascii=False)
-            content = body if n is None else f"{body}\n\n{n}"
-        case PgCopyTextResult(text=t):
-            content = t
-        case AffectedSqlResult(affected_rows=n, status=s):
-            if s:
-                content = s
-            elif n is not None:
-                content = f"affected rows: {n}"
-            else:
-                content = "statement executed"
-        case ChartResult(title=title):
-            content = f"[chart rendered: {title}]" if title else "[chart rendered]"
-        case CustomElementResult(element=element, title=title):
-            content = f"[{element} rendered]"
-            if title:
-                content = f"[{element} rendered: {title}]"
-        case DiagramResult(path=path, title=title):
-            content = f"[diagram rendered: {path}]"
-            if title:
-                content = f"[diagram rendered: {title} ({path})]"
-        case ErrorResult(message=m):
-            content = m
-        case _ as never:
-            assert_never(never)
-    return content
+def render_for_llm(result: ToolResult) -> str:
+    return result.llm_text()
 
 
 def pack_result(result: ToolResult) -> tuple[str, ToolResult]:

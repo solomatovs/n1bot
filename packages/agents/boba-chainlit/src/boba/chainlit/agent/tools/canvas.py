@@ -22,9 +22,9 @@ from pydantic import BaseModel, ConfigDict, Field
 import chainlit as cl
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageClient
-from boba.chainlit.data.upload import SessionFiles
-from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.session import current_thread_id, current_user_id
+from boba.chainlit.domain.errors import RefusalError
+from boba.chainlit.domain.keys import CanvasFileUrl, ObjectKey
+from boba.chainlit.domain.session import RequiredSession
 from boba.chainlit.rendering.canvas import (
     CanvasAction,
     CanvasContent,
@@ -94,7 +94,7 @@ class CanvasOpener:
         """Вызов тула: показать файл; представление для ленты отдаёт вьювер."""
         try:
             opened = await self.show(path)
-        except CanvasError as e:
+        except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
 
         content = f"opened in the canvas: {opened.label} ({opened.path}); "
@@ -121,15 +121,8 @@ class CanvasOpener:
 
     @staticmethod
     def _session() -> tuple[str, str]:
-        user_id = current_user_id()
-        if not user_id:
-            raise CanvasError(CanvasErrorKind.NO_SESSION, "no chainlit user session")
-
-        thread_id = current_thread_id()
-        if not thread_id:
-            raise CanvasError(CanvasErrorKind.NO_THREAD, "no active thread")
-
-        return str(user_id), str(thread_id)
+        session = RequiredSession.of()
+        return session.user_id, session.thread_id
 
     @staticmethod
     def _key(user_id: str, thread_id: str, path: str) -> ObjectKey:
@@ -169,7 +162,7 @@ class FileViewer:
             kind=self.kind,
             path=key.in_workspace(),
             label=key.name,
-            url=await self._serve(key),
+            url=self._serve(key),
             mime=self._mime(key.name),
         )
 
@@ -183,16 +176,15 @@ class FileViewer:
         )
         return OpenedCanvas(label=key.name, path=key.in_workspace(), link=link)
 
-    async def _serve(self, key: ObjectKey) -> str:
-        """Регистрирует файл в сессии и отдаёт ссылку на него.
+    @staticmethod
+    def _serve(key: ObjectKey) -> str:
+        """Ссылка на файл панели: тред, каталог и имя; пользователь — из токена.
 
-        Роут /project/file в проекте свой (UploadRoute): он стримит объект из
-        storage по object_key, поэтому тело файла не поднимается в память, а
-        копия на диске chainlit не нужна.
+        Сессионная ссылка тут не годится: панель рассылается во все вкладки
+        треда и переживает переподключение, а запись файла в памяти сессии —
+        нет, и картинка ломалась бы молча.
         """
-        session = cl.context.session
-        file_id = SessionFiles.register(session, key, mime=self._mime(key.name), size=0)
-        return SessionFiles.url_for(session, file_id)
+        return CanvasFileUrl.path(key)
 
     @staticmethod
     def _mime(name: str) -> str:
@@ -250,7 +242,7 @@ async def open_canvas_action(action: cl.Action) -> None:
 
     try:
         await CanvasOpener().show(str(path))
-    except CanvasError as e:
+    except RefusalError as e:
         await show_error(f"Failed to open the canvas: {e}")
 
 
@@ -267,7 +259,7 @@ async def canvas_content_action(action: cl.Action) -> dict[str, Any]:
 
     try:
         content = await CanvasOpener().content(str(path))
-    except CanvasError as e:
+    except RefusalError as e:
         await show_error(f"Failed to open the canvas: {e}")
         return {}
 

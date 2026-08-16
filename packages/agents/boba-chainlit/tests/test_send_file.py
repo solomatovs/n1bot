@@ -7,8 +7,8 @@ from typing import cast
 import pytest
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import send_file as send_file_module
 from boba.chainlit.agent.tools.send_file import FileAttachment, build_send_file_tool
+from boba.chainlit.domain import session as session_module
 from boba.toolkit.result import ErrorResult
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -61,8 +61,8 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_without_active_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(send_file_module, "current_user_id", lambda: "7")
-        monkeypatch.setattr(send_file_module, "current_thread_id", lambda: THREAD)
+        monkeypatch.setattr(session_module, "current_user_id", lambda: "7")
+        monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
 
         refusal = await self._attach(f"/workspace/{THREAD}/upload/report.pdf")
         assert refusal.error_kind == "no_turn"

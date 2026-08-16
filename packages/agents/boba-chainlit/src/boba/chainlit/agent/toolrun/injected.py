@@ -11,13 +11,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from functools import wraps
 from typing import Any, TypeAlias
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, create_model
 
-from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall
+from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
 from boba.toolkit.entry import ToolArgv
 
 __all__ = ["ConfigResolver", "InjectedConfig", "ToolConfigError"]
@@ -32,6 +31,21 @@ class ToolConfigError(Exception):
 
 class InjectedConfig:
     """Партиал конфига поверх обёртки запуска плюс снятие полей со схемы."""
+
+    class _Partial(CallHooks):
+        def __init__(self, values: dict[str, object]) -> None:
+            self._values = values
+
+        def before(
+            self,
+            name: str,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> object:
+            for key, value in self._values.items():
+                kwargs.setdefault(key, value)
+
+            return None
 
     @classmethod
     def bind_all(cls, tools: Sequence[BaseTool], resolve: ConfigResolver) -> None:
@@ -55,33 +69,8 @@ class InjectedConfig:
         for name, annotation in injected.items():
             values[name] = resolve(name, annotation)
 
-        if tool.func is not None:
-            tool.func = cls._wrap(tool.func, values)
-
-        if tool.coroutine is not None:
-            tool.coroutine = cls._wrap_async(tool.coroutine, values)
-
+        ToolBody.hook_all([tool], cls._Partial(values))
         tool.args_schema = cls._without(schema, set(injected))
-
-    @staticmethod
-    def _wrap(call: SyncCall, values: dict[str, object]) -> SyncCall:
-        @wraps(call)
-        def wrapped(*args: object, **kwargs: object) -> object:
-            for name, value in values.items():
-                kwargs.setdefault(name, value)
-            return call(*args, **kwargs)
-
-        return wrapped
-
-    @staticmethod
-    def _wrap_async(call: AsyncCall, values: dict[str, object]) -> AsyncCall:
-        @wraps(call)
-        async def wrapped(*args: object, **kwargs: object) -> object:
-            for name, value in values.items():
-                kwargs.setdefault(name, value)
-            return await call(*args, **kwargs)
-
-        return wrapped
 
     @staticmethod
     def _without(schema: type[BaseModel], names: set[str]) -> type[BaseModel]:

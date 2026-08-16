@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Self
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
@@ -19,6 +20,7 @@ from boba.sandbox import WORKSPACE_MOUNT
 __all__ = [
     "AttachmentLinks",
     "AttachmentUrl",
+    "CanvasFileUrl",
     "DirKey",
     "ElementProps",
     "KeyField",
@@ -302,6 +304,24 @@ class AttachmentLinks:
     def url(self, thread_id: object, element_id: object, dir_thread: ThreadDir) -> str:
         path = AttachmentUrl(str(thread_id), dir_thread, str(element_id)).path()
         return self.prefix.rstrip("/") + path
+
+
+class CanvasFileUrl:
+    """Адрес файла панели: тред, каталог и имя; пользователь — из токена.
+
+    Содержимое панели живёт дольше сокет-сессии: оно рассылается во все
+    вкладки треда и переживает переподключение. Поэтому ссылка адресует файл
+    самим его местом в workspace, а не записью в памяти сессии.
+    """
+
+    ROUTE: ClassVar[str] = "/canvas/{thread_id}/{dir}/{name}"
+    ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
+
+    @classmethod
+    def path(cls, key: ObjectKey) -> str:
+        prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
+        name = quote(key.name, safe="")
+        return f"{prefix}/canvas/{key.thread_id}/{key.dir.value}/{name}"
 
 
 class StreamUrl:

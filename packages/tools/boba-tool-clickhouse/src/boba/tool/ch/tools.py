@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping, Sequence
-from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final, cast
 
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
@@ -24,17 +23,26 @@ from pydantic import Field
 from boba.db.clickhouse import ClickHouseConfig, ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.launcher import RowStream
-from boba.toolkit.result import TableResult, ToolResult, render_for_llm
-from boba.toolkit.sql import CatalogQuery, SqlProfiles, UnknownConnectionError
-
-_CONNECTION_DESCRIPTION = "Имя подключения"
+from boba.toolkit.result import (
+    ResultTooLargeError,
+    ToolResult,
+    pack_result,
+)
+from boba.toolkit.sql import (
+    CatalogQuery,
+    ConnectionName,
+    RowBudget,
+    SqlErrorKind,
+    SqlProfiles,
+    UnknownConnectionError,
+)
+from boba.toolkit.types import SecretRevealing
 
 ChParams = dict[str, Any]
 """Именованные параметры ClickHouse под подстановку {name:Type}."""
 
 
-class ChToolConfig(SqlProfiles[ClickHouseConfig]):
+class ChToolConfig(SecretRevealing, SqlProfiles[ClickHouseConfig]):
     """Whitelist подключений и лимиты выдачи ch-инструментов; [tool.ch]."""
 
     SECTION: ClassVar[str] = "tool.ch"
@@ -47,35 +55,6 @@ class ChToolConfig(SqlProfiles[ClickHouseConfig]):
             "Ключ — значение tool-arg `connection_name` (LLM выбирает БД по нему)."
         ),
     )
-
-    def revealed(self) -> dict[str, object]:
-        """JSON-совместимый дамп с раскрытыми секретами профилей.
-
-        Едет только в tool_stdin песочного вызова; обязан собираться обратно
-        в тот же тип — SecretStr оживает из открытой строки.
-        """
-        return self.model_dump(
-            mode="json",
-            context={ClickHouseConfig.REVEAL_SECRETS: True},
-        )
-
-
-class ResultTooLargeError(Exception):
-    """Выдача превысила потолок байт; текст готов для пользователя."""
-
-    def __init__(self, max_bytes: int) -> None:
-        msg = f"result exceeded {max_bytes} bytes; add LIMIT to the query"
-        super().__init__(msg)
-
-
-class ChErrorKind(StrEnum):
-    """Ожидаемые отказы ch-инструментов."""
-
-    DATABASE_UNAVAILABLE = "database_unavailable"
-    UNKNOWN_TARGET = "unknown_target"
-    SQL_FAILED = "sql_failed"
-    RESULT_TOO_LARGE = "result_too_large"
-
 
 class ChCatalog:
     """Каталожные запросы ClickHouse: фильтры уезжают именованными параметрами."""
@@ -151,17 +130,30 @@ order by
         return f"{select}where\n    {where}\n{order}"
 
 
+async def _collect_blocks(
+    blocks: Any,
+    names: Sequence[str],
+    budget: RowBudget,
+) -> None:
+    """Строки из блоков стрима в копилку; потолок строк останавливает чтение."""
+    async for block in blocks:
+        for values in cast("Sequence[Sequence[Any]]", block):
+            row = dict(zip(names, values, strict=True))
+            if not budget.add(row):
+                return
+
+
 async def _query_rows(
     connection: ClickHouseConfig,
     query: CatalogQuery[ChParams],
     cfg: ChToolConfig,
 ) -> tuple[str, ToolResult]:
     """Выполнить запрос и собрать выдачу таблицей; блоки стримятся с лимитом."""
-    parameters = query.params or None
+    parameters = query.params
+    if not parameters:
+        parameters = None
 
-    rows: list[dict[str, Any]] = []
-    size = 0
-    truncated = False
+    budget = RowBudget(max_rows=cfg.max_rows, max_bytes=cfg.max_bytes)
 
     async with PayloadClickHouse.opened_config(connection) as client:
         try:
@@ -170,32 +162,12 @@ async def _query_rows(
             )
             async with stream as blocks:
                 names: Sequence[str] = cast("Any", blocks.source).column_names
-                async for block in blocks:
-                    for values in cast("Sequence[Sequence[Any]]", block):
-                        if len(rows) >= cfg.max_rows:
-                            truncated = True
-                            break
-
-                        plain = RowStream.plain(dict(zip(names, values, strict=True)))
-
-                        size += len(RowStream.encode(plain))
-                        if size > cfg.max_bytes:
-                            raise ResultTooLargeError(cfg.max_bytes)
-
-                        rows.append(plain)
-
-                    if truncated:
-                        break
+                await _collect_blocks(blocks, names, budget)
         except DriverError as exc:
             msg = f"query failed: {type(exc).__name__}: {exc}"
             raise ClickHouseError(msg) from exc
 
-    note = None
-    if truncated:
-        note = f"truncated to max_rows ({cfg.max_rows})"
-
-    table = TableResult(rows=rows, note=note)
-    return render_for_llm(table), table
+    return pack_result(budget.table())
 
 
 @tool(response_format="content_and_artifact")
@@ -203,20 +175,12 @@ async def ch_list_targets(
     cfg: Annotated[ChToolConfig, InjectedToolArg],
 ) -> tuple[str, ToolResult]:
     """Список доступных значений connection_name для ClickHouse-инструментов."""
-    rows: list[dict[str, Any]] = []
-    for target in cfg.targets():
-        rows.append({"connection_name": target})
-
-    table = TableResult(rows=rows)
-    return render_for_llm(table), table
+    return pack_result(cfg.targets_table())
 
 
 @tool(response_format="content_and_artifact")
 async def ch_list_tables(
-    connection_name: Annotated[
-        str,
-        Field(min_length=1, description=_CONNECTION_DESCRIPTION),
-    ],
+    connection_name: ConnectionName,
     ch_database: Annotated[
         str | None,
         Field(
@@ -238,10 +202,7 @@ async def ch_list_tables(
 
 @tool(response_format="content_and_artifact")
 async def ch_describe_table(
-    connection_name: Annotated[
-        str,
-        Field(min_length=1, description=_CONNECTION_DESCRIPTION),
-    ],
+    connection_name: ConnectionName,
     table: Annotated[
         str,
         Field(min_length=1, description="Имя таблицы (без базы)"),
@@ -273,10 +234,7 @@ async def ch_query(
             ),
         ),
     ],
-    connection_name: Annotated[
-        str,
-        Field(min_length=1, description=_CONNECTION_DESCRIPTION),
-    ],
+    connection_name: ConnectionName,
     cfg: Annotated[ChToolConfig, InjectedToolArg],
 ) -> tuple[str, ToolResult]:
     """Выполнить SQL на подключении connection_name."""
@@ -285,11 +243,11 @@ async def ch_query(
     return await _query_rows(connection, CatalogQuery(text=sql, params={}), cfg)
 
 
-EXPECTED: Mapping[type[Exception], ChErrorKind] = {
-    ClickHouseError: ChErrorKind.DATABASE_UNAVAILABLE,
-    UnknownConnectionError: ChErrorKind.UNKNOWN_TARGET,
-    DriverError: ChErrorKind.SQL_FAILED,
-    ResultTooLargeError: ChErrorKind.RESULT_TOO_LARGE,
+EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
+    ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
+    UnknownConnectionError: SqlErrorKind.UNKNOWN_TARGET,
+    DriverError: SqlErrorKind.SQL_FAILED,
+    ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
 }
 
 TOOLS: Final = ToolMain.toolset(

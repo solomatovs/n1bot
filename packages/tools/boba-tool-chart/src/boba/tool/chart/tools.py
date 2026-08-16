@@ -20,7 +20,7 @@ from langchain_core.tools import tool
 from pydantic import Field
 
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.result import ChartResult, ToolResult, render_for_llm
+from boba.toolkit.result import ChartResult, ToolResult, pack_result
 
 
 class InvalidFigureSpecError(Exception):
@@ -96,7 +96,7 @@ async def visualize(
     title = FigureSpec.title_of(parsed)
 
     artifact = ChartResult(spec=parsed, title=title or None)
-    return render_for_llm(artifact), artifact
+    return pack_result(artifact)
 
 
 EXPECTED: Mapping[type[Exception], ChartErrorKind] = {

@@ -23,7 +23,10 @@ from boba.chainlit.agent.tools.diagram import (
     build_diagram_tools,
 )
 from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.domain import session as session_module
+from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
+from boba.chainlit.domain.session import SessionKind
 from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.canvas import (
@@ -125,15 +128,15 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_save_without_session(self) -> None:
-        with pytest.raises(DiagramRefusedError) as failure:
+        with pytest.raises(RefusalError) as failure:
             await DiagramFiles(1000).save("x.mmd", ER_SPEC)
 
-        assert failure.value.kind == DiagramErrorKind.NO_SESSION
+        assert failure.value.kind == SessionKind.NO_SESSION
 
     @pytest.mark.anyio
     async def test_save_bad_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(diagram_module, "current_user_id", lambda: "7")
-        monkeypatch.setattr(diagram_module, "current_thread_id", lambda: THREAD)
+        monkeypatch.setattr(session_module, "current_user_id", lambda: "7")
+        monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
 
         with pytest.raises(DiagramRefusedError) as failure:
             await DiagramFiles(1000).save("x.mmd", "не mermaid вовсе")
@@ -142,8 +145,8 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_save_over_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(diagram_module, "current_user_id", lambda: "7")
-        monkeypatch.setattr(diagram_module, "current_thread_id", lambda: THREAD)
+        monkeypatch.setattr(session_module, "current_user_id", lambda: "7")
+        monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
 
         with pytest.raises(DiagramRefusedError) as failure:
             await DiagramFiles(10).save("x.mmd", ER_SPEC)
@@ -183,8 +186,8 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DiagramFiles:
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)
 
-    monkeypatch.setattr(diagram_module, "current_user_id", lambda: "7")
-    monkeypatch.setattr(diagram_module, "current_thread_id", lambda: THREAD)
+    monkeypatch.setattr(session_module, "current_user_id", lambda: "7")
+    monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
     monkeypatch.setattr(DiagramFiles, "_layer", staticmethod(lambda: layer))
 
     return DiagramFiles(1000)

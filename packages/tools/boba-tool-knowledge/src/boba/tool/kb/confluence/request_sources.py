@@ -89,8 +89,14 @@ class ConfluenceRest:
         expand: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> str:
-        type_filter = "" if space_type == "any" else f"&type={space_type}"
-        expand_q = f"&expand={expand}" if expand else ""
+        type_filter = ""
+        if space_type != "any":
+            type_filter = f"&type={space_type}"
+
+        expand_q = ""
+        if expand:
+            expand_q = f"&expand={expand}"
+
         return f"/rest/api/space?limit={limit}&start=0{type_filter}{expand_q}"
 
     @staticmethod
@@ -108,7 +114,10 @@ class ConfluenceRest:
         limit: int = DEFAULT_PAGE_LIMIT,
         expand: str | None = None,
     ) -> str:
-        expand_q = f"&expand={expand}" if expand else ""
+        expand_q = ""
+        if expand:
+            expand_q = f"&expand={expand}"
+
         cql_q = quote(cql, safe="")
         return f"/rest/api/content/search?cql={cql_q}&limit={limit}{expand_q}"
 
@@ -159,11 +168,10 @@ class ConfluenceRest:
         if (parent_url := parent_metadata.get(ConfluenceKeys.SOURCE_URL)) is not None:
             meta = meta.set(ConfluenceKeys.PARENT_URL, parent_url)
         base = base_url.rstrip("/")
-        att_url = (
-            f"{base}{attachment.webui}"
-            if attachment.webui
-            else f"{base}{attachment.download_path}"
-        )
+        att_path = attachment.download_path
+        if attachment.webui:
+            att_path = attachment.webui
+        att_url = f"{base}{att_path}"
         meta = meta.set(ConfluenceKeys.SOURCE_URL, att_url)
         return ConfluenceRequest(
             http=HttpRequest(url=attachment.download_path, method="GET"),

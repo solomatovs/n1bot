@@ -23,7 +23,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import Field
 
-from boba.db.postgres import PayloadPostgres, PostgresConfig, PostgresError
+from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.models import SearchHit
 from boba.tool.kb.search import (
@@ -32,10 +32,11 @@ from boba.tool.kb.search import (
     KbSearch,
 )
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.result import TableResult, ToolResult, render_for_llm
+from boba.toolkit.result import TableResult, ToolResult, pack_result
+from boba.toolkit.types import SecretRevealing
 
 
-class KbToolConfig(PostgresKnowledgeBaseConfig):
+class KbToolConfig(SecretRevealing, PostgresKnowledgeBaseConfig):
     """Конфиг kb-поиска: подключение, таблицы, эмбеддер; секция [tool.kb]."""
 
     SECTION: ClassVar[str] = "tool.kb"
@@ -44,17 +45,6 @@ class KbToolConfig(PostgresKnowledgeBaseConfig):
         min_length=1,
         description="Имя коллекции чанков, по которой идёт поиск.",
     )
-
-    def revealed(self) -> dict[str, object]:
-        """JSON-совместимый дамп с раскрытым паролем подключения.
-
-        Едет только в tool_stdin песочного вызова; обязан собираться обратно
-        в тот же тип — SecretStr оживает из открытой строки.
-        """
-        return self.model_dump(
-            mode="json",
-            context={PostgresConfig.REVEAL_SECRETS: True},
-        )
 
 
 class KbErrorKind(StrEnum):
@@ -176,7 +166,7 @@ async def _search(  # noqa: PLR0913
         note = "nothing found"
 
     table = TableResult(rows=rows, note=note)
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 @tool(response_format="content_and_artifact")

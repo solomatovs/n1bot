@@ -11,6 +11,7 @@ __all__ = [
     "FailureText",
     "HttpErrorMessage",
     "InternalServiceError",
+    "RefusalError",
     "UserInputError",
     "ViewErrorMessage",
     "to_domain",
@@ -179,6 +180,14 @@ class RateLimitError(ExternalServiceError):
 
 class AgentError(InternalServiceError):
     "Сломался сам граф/модель (не провайдер), частный случай InternalServiceError"
+
+
+class RefusalError(Exception):
+    """Отказ операции с классификацией kind; текст готов для пользователя и LLM."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)

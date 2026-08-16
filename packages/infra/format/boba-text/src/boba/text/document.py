@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
-from typing import ClassVar
+from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -74,6 +74,22 @@ class LiteParseParams(BaseModel):
         ge=1,
         description="Параллелизм OCR; ~50-100 MiB памяти на воркер.",
     )
+
+    def with_parser(
+        self,
+        *,
+        ocr_enabled: bool,
+        num_workers: int,
+        ocr_language: str,
+    ) -> Self:
+        """Копия с параметрами парсинга, выбранными LLM на этот вызов."""
+        return self.model_copy(
+            update={
+                "ocr_enabled": ocr_enabled,
+                "num_workers": num_workers,
+                "ocr_language": ocr_language,
+            }
+        )
 
 
 class ParsedPage(BaseModel):

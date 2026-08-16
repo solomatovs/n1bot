@@ -6,16 +6,10 @@ from pydantic import ConfigDict, Field
 
 from boba.text.document import LiteParseParams
 
-__all__ = ["DocToolsConfig", "SandboxParserConfig"]
+__all__ = ["DocToolsConfig"]
 
 
-class SandboxParserConfig(LiteParseParams):
-    """Настройки парсера плюс песочница, в которой он исполняется."""
-
-    model_config = ConfigDict(extra="ignore")
-
-
-class DocToolsConfig(SandboxParserConfig):
+class DocToolsConfig(LiteParseParams):
     """Чтение документов из workspace; файлы открывает payload в песочнице."""
 
     model_config = ConfigDict(extra="ignore")

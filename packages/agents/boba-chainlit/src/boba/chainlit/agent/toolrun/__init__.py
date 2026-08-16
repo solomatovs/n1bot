@@ -13,10 +13,16 @@ from boba.chainlit.agent.toolrun.run_log import (
     StreamSource,
     ToolRunLogger,
 )
-from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.chainlit.agent.toolrun.wrapping import (
+    AsyncCall,
+    CallHooks,
+    SyncCall,
+    ToolBody,
+)
 
 __all__ = [
     "AsyncCall",
+    "CallHooks",
     "CallStream",
     "CancellableTools",
     "StreamSource",

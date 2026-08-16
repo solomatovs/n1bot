@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.text.document import LiteParseError
 from boba.tool.doc.config import DocToolsConfig
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.result import TableResult, TextResult, ToolResult, render_for_llm
+from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 
 _PATH_DESCRIPTION = (
     "Путь к файлу в /workspace, например "
@@ -50,19 +50,6 @@ class DocToolSection(DocToolsConfig):
     """Конфиг doc-инструментов; секция [tool.doc]."""
 
     SECTION: ClassVar[str] = "tool.doc"
-
-    def with_parser(
-        self, *, ocr_enabled: bool, num_workers: int, ocr_language: str
-    ) -> DocToolSection:
-        """Настройки парсера из вызова поверх секции."""
-        return self.model_copy(
-            update={
-                "ocr_enabled": ocr_enabled,
-                "num_workers": num_workers,
-                "ocr_language": ocr_language,
-            }
-        )
-
 
 class DocOutlineRow(BaseModel):
     """Строка карты документа: страница и её метрики."""
@@ -213,7 +200,7 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
             "truncated": str(truncated),
         },
     )
-    return render_for_llm(artifact), artifact
+    return pack_result(artifact)
 
 
 @tool(response_format="content_and_artifact")
@@ -256,7 +243,7 @@ async def document_outline(
         note=f"{path}: pages {result.num_pages}",
         metadata={"path": path},
     )
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 @tool(response_format="content_and_artifact")
@@ -315,7 +302,7 @@ async def search_document(  # noqa: PLR0913 — фасад LLM, параметр
         note=note,
         metadata={"path": path, "query": query},
     )
-    return render_for_llm(table), table
+    return pack_result(table)
 
 
 EXPECTED: Mapping[type[Exception], DocErrorKind] = {

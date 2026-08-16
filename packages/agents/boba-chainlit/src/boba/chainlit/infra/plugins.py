@@ -17,8 +17,13 @@ from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
-from boba.chainlit.agent.tools.canvas import CanvasToolConfig
-from boba.chainlit.agent.tools.diagram import DiagramToolConfig
+from boba.chainlit.agent.tools.canvas import CanvasToolConfig, build_canvas_tools
+from boba.chainlit.agent.tools.diagram import (
+    DiagramToolConfig,
+    build_diagram_tools,
+)
+from boba.chainlit.agent.tools.send_file import build_send_file_tool
+from boba.chainlit.agent.tools.stream_logs import build_stream_logs_tools
 from boba.chainlit.domain.session import (
     current_thread_id,
     current_user_id,
@@ -98,10 +103,6 @@ def _build_send_file_tools(
     cfg: None,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    from boba.chainlit.agent.tools.send_file import (  # noqa: PLC0415
-        build_send_file_tool,
-    )
-
     return [build_send_file_tool()]
 
 
@@ -109,10 +110,6 @@ def _build_diagram_tools(
     cfg: DiagramToolConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    from boba.chainlit.agent.tools.diagram import (  # noqa: PLC0415
-        build_diagram_tools,
-    )
-
     return build_diagram_tools(cfg)
 
 
@@ -120,10 +117,6 @@ def _build_canvas_tools(
     cfg: CanvasToolConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    from boba.chainlit.agent.tools.canvas import (  # noqa: PLC0415
-        build_canvas_tools,
-    )
-
     return build_canvas_tools(cfg)
 
 
@@ -131,10 +124,6 @@ def _build_stream_logs_tools(
     cfg: None,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    from boba.chainlit.agent.tools.stream_logs import (  # noqa: PLC0415
-        build_stream_logs_tools,
-    )
-
     return build_stream_logs_tools(cfg)
 
 

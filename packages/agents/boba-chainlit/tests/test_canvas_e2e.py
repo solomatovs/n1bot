@@ -473,6 +473,58 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
     assert max(rows) - min(rows) <= 2
 
 
+async def test_broken_diagram_keeps_the_control_row(panel: Any) -> None:
+    """Панель со сломанной диаграммой — та же панель: ряд кнопок обязан быть.
+
+    Раньше аварийные ветки вьюверов рисовались мимо рамки, и пользователь
+    оставался без зума, полноэкранного режима и закрытия.
+    """
+    show, _, _thread, _act = panel
+    side = await show("broken.mmd")
+
+    labels = await side.page.evaluate(
+        """() => [...document.querySelectorAll(
+            '#side-view-content button[aria-label]'
+        )].map(b => b.getAttribute('aria-label'))"""
+    )
+
+    assert labels[-2:] == ["Fullscreen", "Close"]
+    assert "Zoom in" in labels
+    assert "Zoom out" in labels
+    assert "Reset view" in labels
+
+
+async def test_unsupported_format_keeps_the_control_row(panel: Any) -> None:
+    """Объяснение «формат не показать» тоже живёт в общей рамке."""
+    show, _, _thread, _act = panel
+    side = await show("data.bin")
+
+    labels = await side.page.evaluate(
+        """() => [...document.querySelectorAll(
+            '#side-view-content button[aria-label]'
+        )].map(b => b.getAttribute('aria-label'))"""
+    )
+
+    assert labels[-2:] == ["Fullscreen", "Close"]
+
+
+async def test_file_link_does_not_depend_on_the_session(panel: Any) -> None:
+    """Ссылка панели адресует файл, а не запись в памяти сессии.
+
+    Сессионная ссылка умирала вместе с сокетом (перезапуск приложения,
+    переподключение вкладки), и картинка молча превращалась в битый img.
+    """
+    show, _, thread, _act = panel
+    side = await show("chart.svg")
+
+    src = await side.page.evaluate(
+        "() => document.querySelector('#side-view-content img').src"
+    )
+
+    assert "session_id" not in src
+    assert f"/canvas/{thread}/upload/chart.svg" in src
+
+
 async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     """Сломанная диаграмма не должна запирать панель: следующий файл рисуется."""
     show, _, thread, _act = panel
