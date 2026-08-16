@@ -30,7 +30,8 @@ from pydantic import SecretStr
 from ui.fake_llm import FakeLlmApp, ScenarioName
 
 from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
-from boba.chainlit.chat.agent_tracer import AgentTracer
+from boba.chainlit.chat.tracing import AgentTracer
+from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 
 pytestmark = pytest.mark.anyio
@@ -114,7 +115,7 @@ class TestTracerRunIndex:
         view = ChatView(THREAD, LiveSink(), user_name="tester")
         view.begin_turn("turn-1")
 
-        return AgentTracer(view)
+        return AgentTracer(view, TurnState())
 
     async def _turn(
         self, provider: httpx.AsyncClient, scenario: ScenarioName

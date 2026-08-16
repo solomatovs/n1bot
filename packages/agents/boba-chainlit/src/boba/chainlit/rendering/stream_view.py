@@ -17,7 +17,7 @@ import itertools
 import logging
 import threading
 from abc import abstractmethod
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, Self
 
@@ -25,7 +25,6 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from boba.chainlit.domain.keys import StreamUrl
 from boba.chainlit.domain.stream import (
-    JournalFile,
     JournalWindow,
     StreamJournalError,
     StreamJournalHub,
@@ -34,6 +33,7 @@ from boba.chainlit.domain.stream import (
     StreamSlice,
     StreamStorePort,
 )
+from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.canvas import (
     CanvasContent,
     CanvasKind,
@@ -228,19 +228,18 @@ class ToolStream:
 
 
 class ToolStreams:
-    """Реестр потоков: журнал вызовов плюс живые стримы текущих ходов.
+    """Потоки инструментов: журнал вызовов и доступ к живым стримам хода.
 
     Потоковыми считаются инструменты, отмеченные при сборке реестра тулов, —
     только они запускают процессы, чей вывод есть смысл журналировать; без
-    настроенного журнала потоков нет вовсе.
+    настроенного журнала потоков нет вовсе. Живые стримы живут в TurnContext
+    и закрываются вместе с ходом; файлы журнала переживают ход.
 
     Стрим открывает обвязка ToolRunLogger в потоке инструмента: call_id
     приезжает синтетическим полем схемы, очереди и обмена журналами между
     параллельными вызовами нет.
     """
 
-    _LOCK: ClassVar[threading.Lock] = threading.Lock()
-    _STREAMS: ClassVar[dict[str, dict[str, ToolStream]]] = {}
     _STREAMABLE: ClassVar[set[str]] = set()
 
     @classmethod
@@ -259,20 +258,7 @@ class ToolStreams:
     @classmethod
     def live_threads(cls) -> frozenset[str]:
         """Треды с живыми потоками: их нельзя удалять инструментом уборки."""
-        with cls._LOCK:
-            return frozenset(cls._STREAMS)
-
-    @classmethod
-    def live_prefixes(cls) -> frozenset[str]:
-        """Префиксы файлов живых вызовов: вытеснять их нельзя."""
-        with cls._LOCK:
-            return frozenset(cls._live_call_prefixes())
-
-    @classmethod
-    def _live_call_prefixes(cls) -> Iterator[str]:
-        for thread_id, calls in cls._STREAMS.items():
-            for call_id in calls:
-                yield JournalFile.call_prefix(thread_id, call_id)
+        return TurnContext.live_threads()
 
     @classmethod
     def mark_streamable(cls, names: Iterable[str]) -> None:
@@ -294,9 +280,18 @@ class ToolStreams:
         if journal is None:
             return None
 
+        context = TurnContext.active(thread_id)
+        if context is None:
+            logger.warning(
+                "stream journal skipped call %s of %s: no active turn",
+                call_id,
+                tool_name,
+            )
+            return None
+
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            stream = ToolStream(key, tool_name, journal, cls.live_prefixes())
+            stream = ToolStream(key, tool_name, journal, TurnContext.live_prefixes())
         except (StreamJournalError, ValidationError):
             logger.warning(
                 "stream journal refused call %s of %s",
@@ -306,35 +301,20 @@ class ToolStreams:
             )
             return None
 
-        with cls._LOCK:
-            cls._STREAMS.setdefault(thread_id, {})[call_id] = stream
-
+        context.add_stream(call_id, stream)
         return stream
 
     @classmethod
-    def finish(cls, thread_id: str, call_id: str, note: str) -> None:
-        stream = cls.get(thread_id, call_id)
-        if stream is None:
-            return
-
-        stream.close(note)
-
-    @classmethod
     def get(cls, thread_id: str, call_id: str) -> ToolStream | None:
-        with cls._LOCK:
-            return cls._STREAMS.get(thread_id, {}).get(call_id)
+        context = TurnContext.active(thread_id)
+        if context is None:
+            return None
 
-    @classmethod
-    def drop_thread(cls, thread_id: str) -> None:
-        """Конец хода: насос снимается, живые стримы забываются, журнал остаётся."""
-        StreamScreen.leave(thread_id)
+        stream = context.stream(call_id)
+        if not isinstance(stream, ToolStream):
+            return None
 
-        with cls._LOCK:
-            streams = cls._STREAMS.pop(thread_id, {})
-
-        for stream in streams.values():
-            if not stream.closed:
-                stream.close(str(StreamNote.STOPPED))
+        return stream
 
     @classmethod
     def recorded_slice(
@@ -382,13 +362,14 @@ class ToolStreams:
     def reset(cls) -> None:
         """Сброс реестра: пользуются тесты, приложению это не нужно."""
         StreamJournalHub.reset()
-        with cls._LOCK:
-            cls._STREAMS.clear()
-            cls._STREAMABLE.clear()
+        cls._STREAMABLE.clear()
 
 
 class StreamScreen:
-    """Насос показа: один поток на тред, переключение снимает предыдущий."""
+    """Насос показа: один поток на тред, переключение снимает предыдущий.
+
+    Насос живёт в TurnContext хода: конец хода снимает его вместе со стримами.
+    """
 
     SCHEME: ClassVar[str] = "stream://"
     """Псевдо-путь панели: по нему фронт отличает поток от файла."""
@@ -396,7 +377,6 @@ class StreamScreen:
     COALESCE_SEC: ClassVar[float] = 0.3
     """Пауза после пробуждения: болтливый инструмент не заливает сокет."""
 
-    _PUMPS: ClassVar[dict[str, asyncio.Task[None]]] = {}
     _REVISIONS: ClassVar[itertools.count[int]] = itertools.count(1)
     """Сквозной номер показа: едет в nonce, по нему фронт видит смену props."""
 
@@ -404,17 +384,25 @@ class StreamScreen:
     async def show(
         cls, thread_id: str, stream: ToolStream, channel: CanvasChannel
     ) -> asyncio.Task[None]:
-        cls.leave(thread_id)
         task = asyncio.create_task(cls._pump(stream, channel))
-        cls._PUMPS[thread_id] = task
-        task.add_done_callback(lambda done: cls._forget(thread_id, done))
+
+        context = TurnContext.active(thread_id)
+        if context is None:
+            # живой стрим без хода не существует; насос без владельца не нужен
+            task.cancel()
+            return task
+
+        context.attach_pump(task)
         return task
 
     @classmethod
     def leave(cls, thread_id: str) -> None:
         """Пользователь ушёл с потока: насос больше не трогает панель."""
-        if task := cls._PUMPS.pop(thread_id, None):
-            task.cancel()
+        context = TurnContext.active(thread_id)
+        if context is None:
+            return
+
+        context.leave_pump()
 
     @classmethod
     async def recorded(
@@ -465,11 +453,6 @@ class StreamScreen:
                 follow=follow,
             ),
         )
-
-    @classmethod
-    def _forget(cls, thread_id: str, task: asyncio.Task[None]) -> None:
-        if cls._PUMPS.get(thread_id) is task:
-            del cls._PUMPS[thread_id]
 
     @classmethod
     async def _pump(cls, stream: ToolStream, channel: CanvasChannel) -> None:

@@ -8,6 +8,7 @@ tool/chart — tool_call_id. Любое расхождение id ломает r
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from typing import Any, cast
 from uuid import uuid4
 
@@ -16,8 +17,9 @@ from chainlit.context import ChainlitContext, context_var
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
-from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.transcript import ConversationTranscript
+from boba.chainlit.chat.history import ConversationTranscript
+from boba.chainlit.chat.tracing import AgentTracer
+from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
 
 THREAD = "22222222-2222-2222-2222-222222222222"
@@ -29,9 +31,11 @@ ANSWER_ID = "ai-msg-2"
 
 
 @pytest.fixture(autouse=True)
-def chainlit_context() -> None:
+def chainlit_context() -> Iterator[None]:
     """Трасеру нужен контекст только чтобы восстановить его в коллбэках."""
-    context_var.set(cast("ChainlitContext", object()))
+    token = context_var.set(cast("ChainlitContext", object()))
+    yield
+    context_var.reset(token)
 
 
 def run(coro: Any) -> Any:
@@ -48,7 +52,7 @@ class TestStepContract:
         sink = RecordingSink()
         view = ChatView(THREAD, sink, user_name="tester")
         view.begin_turn(TURN_KEY)
-        tracer = AgentTracer(view)
+        tracer = AgentTracer(view, TurnState())
 
         llm_run = uuid4()
         await tracer.on_llm_start({}, [""], run_id=llm_run)

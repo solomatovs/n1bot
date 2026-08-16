@@ -22,9 +22,9 @@ from boba.chainlit.agent.tools.diagram import (
     MermaidViewer,
     build_diagram_tools,
 )
-from boba.chainlit.chat.turn import ChatTurn
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
+from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.canvas import (
     CanvasError,
@@ -514,9 +514,10 @@ class TestSaveToolEndToEnd:
     @pytest.fixture(autouse=True)
     def active_turn(self) -> Any:
         """Карточка цепляется к шагу ответа: без живого хода её некуда деть."""
-        ChatTurn._ACTIVE[THREAD] = cast(Any, FakeTurn())
+        scope = TurnContext.open(THREAD, cast(Any, FakeTurn()))
+        scope.__enter__()
         yield
-        ChatTurn._ACTIVE.pop(THREAD, None)
+        scope.__exit__(None, None, None)
 
     @pytest.fixture
     def feed(self, monkeypatch: pytest.MonkeyPatch) -> list[Any]:

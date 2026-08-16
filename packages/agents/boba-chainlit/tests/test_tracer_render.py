@@ -9,7 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
-from boba.chainlit.chat.transcript import ConversationTranscript
+from boba.chainlit.chat.history import ConversationTranscript
 from boba.chainlit.rendering.chat_view import (
     ChatView,
     RecordingSink,

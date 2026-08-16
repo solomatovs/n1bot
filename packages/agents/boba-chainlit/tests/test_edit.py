@@ -13,7 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from boba.chainlit.chat.edit import ThreadRewind
+from boba.chainlit.chat.history import ThreadRewind
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 
 THREAD = "11111111-1111-1111-1111-111111111111"

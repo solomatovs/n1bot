@@ -25,7 +25,7 @@ from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageError, StorageNotFoundError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.domain.session import current_thread_id, current_user_id
-from boba.chainlit.domain.turn import ActiveTurns
+from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.canvas import (
     CanvasContent,
     CanvasError,
@@ -392,7 +392,7 @@ class DiagramFiles:
     ) -> None:
         """Слежение на время хода; вне хода (клик пользователя) вотчера нет."""
         thread_id = key.thread_id
-        turn = ActiveTurns.of(thread_id)
+        turn = TurnContext.turn_of(thread_id)
         if turn is None:
             return
 
@@ -400,7 +400,7 @@ class DiagramFiles:
             return await self.read(key)
 
         def alive() -> bool:
-            return ActiveTurns.of(thread_id) is turn
+            return TurnContext.turn_of(thread_id) is turn
 
         watcher = CanvasWatcher(
             read=read,
@@ -583,7 +583,7 @@ class DiagramCard:
 
     @staticmethod
     def _targets(thread_id: str, tool_call_id: str) -> tuple[str, str]:
-        turn = ActiveTurns.of(thread_id)
+        turn = TurnContext.turn_of(thread_id)
         if turn is None:
             raise DiagramRefusedError(
                 DiagramErrorKind.NO_TURN, "the turn is already finished"

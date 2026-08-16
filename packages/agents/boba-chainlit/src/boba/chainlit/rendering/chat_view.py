@@ -22,6 +22,7 @@ from boba.chainlit.rendering.result import (
     ToolResultView,
 )
 from boba.chainlit.rendering.stream_view import StreamAction, ToolStreams
+from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
 from chainlit.element import CustomElement
@@ -57,6 +58,8 @@ class StepText(StrEnum):
     TOOL = "tool"
     STOPPED = "stopped by the user"
     ABORTED = "stopped"
+    FINISHED = "finished"
+    TURN_FAILED = "turn failed"
 
     @classmethod
     def for_stop(cls, reason: StopReason | None) -> StepText:
@@ -520,9 +523,14 @@ class ChatView:
         await self._sink.put(step)
 
     async def tool_failed(self, step: Step, error: object) -> None:
+        """Провал инструмента; текст сбоя совпадает с тем, что получает модель."""
+        text = str(error)
+        if isinstance(error, BaseException):
+            text = FailureText.of(error)
+
         step.is_error = True
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
-        step.output = f"**tool failed:** {error}"
+        step.output = f"**tool failed:** {text}"
         ended = utc_now()
         step.start = ended
         step.end = ended
