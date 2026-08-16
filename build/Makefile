@@ -377,6 +377,30 @@ sandbox-bin:
 	"$$dest/fuse2fs" -V
 
 
+# состав песочницы объявляют сами пакеты: у кого есть extra payload, тот и едет
+# внутрь вместе с ним (парсеры, эмбеддер, plotly)
+.PHONY: sandbox-names
+sandbox-names:
+	@dest="$(DEPS_DIR)/names-sandbox.txt"
+	echo "== пакеты песочницы =="
+	mkdir -p "$(DEPS_DIR)"
+	: > "$$dest"
+
+	for project in $(PYPROJECTS); do
+	    extras=$$(sed -n '/^\[project.optional-dependencies\]/,/^\[/p' "$$project")
+
+	    if ! echo "$$extras" | grep -q '^payload'; then
+	        continue
+	    fi
+
+	    name=$$(sed -n 's/^name = "\(.*\)"/\1/p' "$$project" | head -1)
+	    echo "$$name[payload]" >> "$$dest"
+	done
+
+	sort -o "$$dest" "$$dest"
+	sed 's/^/    /' "$$dest"
+
+
 # корень песочницы одним ext4-файлом: python, site-packages, код инструментов,
 # tessdata и веса уже внутри, в рантайме монтируется read-only
 .PHONY: sandbox-image

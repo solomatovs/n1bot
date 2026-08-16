@@ -145,7 +145,7 @@ class SandboxProfile(BaseModel):
         description=(
             "Ext4-образ корня, монтируемый read-only на время вызова; "
             "внутри него уже лежат python, site-packages и код инструментов. "
-            "Собирается целью make sandbox-rootfs. Взаимоисключим с rootfs."
+            "Собирается целью make sandbox-image. Взаимоисключим с rootfs."
         ),
     )
     ro_binds: tuple[BindSpec, ...] = Field(

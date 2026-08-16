@@ -517,10 +517,15 @@ class SandboxRunner:
             mounts.append(f"{spec.host}(ext4)->{spec.target}")
         for spec in rendered.rw_binds:
             mounts.append(f"{spec.host}->{spec.target}")
+
+        root = rendered.rootfs
+        if rendered.rootfs_image:
+            root = f"{rendered.rootfs_image}(ext4)"
+
         logger.info(
             "sandbox[%s]: start; rootfs=%r cwd=%r network=%s rw=%s",
             profile,
-            rendered.rootfs,
+            root,
             rendered.cwd,
             rendered.network,
             mounts,
