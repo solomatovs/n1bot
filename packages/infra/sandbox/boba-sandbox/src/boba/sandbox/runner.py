@@ -14,7 +14,7 @@ import os
 import shlex
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import ClassVar
 
@@ -30,6 +30,7 @@ from boba.toolkit.launcher import LauncherError, LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.stream import StreamSink, ToolCallContext, ToolStreamTap
 from boba.workspace.launcher import (
+    RO_MOUNT_ROOT,
     Launcher,
     LauncherExit,
     LauncherMarker,
@@ -148,6 +149,47 @@ class SandboxLogRelay:
         return logging.INFO
 
 
+@dataclass(frozen=True, slots=True)
+class _ChainPlan:
+    """Что монтирует цепочка лаунчера: ro-корень, rw-образы и их точки."""
+
+    images: tuple[tuple[str, str], ...]
+    ro_images: tuple[tuple[str, str], ...]
+    inner: SandboxProfile
+    rw_paths: tuple[str, ...]
+
+    ROOTFS_MOUNT: ClassVar[str] = RO_MOUNT_ROOT
+    """Точка корневого образа: tmpfs цепочки, каталог установки только читаем."""
+
+    @classmethod
+    def of(cls, profile: SandboxProfile) -> _ChainPlan:
+        mounts: list[BindSpec] = []
+        images: list[tuple[str, str]] = []
+        for spec in profile.rw_images:
+            mnt = f"{spec.host}.mnt"
+            images.append((spec.host, mnt))
+            mounts.append(BindSpec(host=mnt, target=spec.target))
+
+        rw_paths: list[str] = []
+        for spec in profile.rw_binds:
+            rw_paths.append(spec.host)
+
+        ro_images: list[tuple[str, str]] = []
+        update: dict[str, object] = {"rw_binds": profile.rw_binds + tuple(mounts)}
+        if profile.rootfs_image:
+            ro_images.append((profile.rootfs_image, cls.ROOTFS_MOUNT))
+            # внутренний bwrap видит корень уже смонтированным каталогом
+            update["rootfs"] = cls.ROOTFS_MOUNT
+            update["rootfs_image"] = ""
+
+        return cls(
+            images=tuple(images),
+            ro_images=tuple(ro_images),
+            inner=profile.model_copy(update=update),
+            rw_paths=tuple(rw_paths),
+        )
+
+
 class SandboxRunner:
     """Выполняет команду в уже собранном профиле песочницы."""
 
@@ -214,29 +256,18 @@ class SandboxRunner:
 
         inner = f"{channels.redirect()}; exec {shlex.join(argv_tail)}"
 
-        if not rendered.rw_images:
+        if not rendered.rw_images and not rendered.rootfs_image:
             return build_bwrap_argv(rendered, inner, env=env), limits
 
         require_fuse(rendered.binaries)
 
-        mounts: list[BindSpec] = []
-        images: list[tuple[str, str]] = []
-        rw_paths: list[str] = []
-        for spec in rendered.rw_images:
-            mnt = f"{spec.host}.mnt"
-            images.append((spec.host, mnt))
-            mounts.append(BindSpec(host=mnt, target=spec.target))
-        for spec in rendered.rw_binds:
-            rw_paths.append(spec.host)
-
-        inner_profile = rendered.model_copy(
-            update={"rw_binds": rendered.rw_binds + tuple(mounts)},
-        )
-        inner_argv = build_bwrap_argv(inner_profile, inner, env=env, nested=True)
+        plan = _ChainPlan.of(rendered)
+        inner_argv = build_bwrap_argv(plan.inner, inner, env=env, nested=True)
 
         pass_fds = ",".join(str(fd) for fd in channels.child_fds.values())
         argv = build_chain_argv(
-            images=images,
+            images=plan.images,
+            ro_images=plan.ro_images,
             template=rendered.image_template,
             op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
             python_bin=sys.executable,
@@ -244,7 +275,7 @@ class SandboxRunner:
             limits=limits,
             binaries=rendered.binaries,
             extra_env={Launcher.PASS_FDS_ENV: pass_fds},
-            rw_paths=rw_paths,
+            rw_paths=plan.rw_paths,
             network=rendered.network,
         )
         # лимиты применяет лаунчер к самой команде; обвязку не душим
@@ -450,35 +481,25 @@ class SandboxRunner:
         limits: ResourceLimits,
     ) -> tuple[list[str], ResourceLimits | None]:
         env = self._env_of(profile)
-        if not profile.rw_images:
+        if not profile.rw_images and not profile.rootfs_image:
             argv = build_bwrap_argv(profile, command, env=env)
             return argv, limits
 
         require_fuse(profile.binaries)
-        mounts: list[BindSpec] = []
-        images: list[tuple[str, str]] = []
-        rw_paths: list[str] = []
-        for spec in profile.rw_images:
-            mnt = f"{spec.host}.mnt"
-            images.append((spec.host, mnt))
-            mounts.append(BindSpec(host=mnt, target=spec.target))
-        for spec in profile.rw_binds:
-            rw_paths.append(spec.host)
+        plan = _ChainPlan.of(profile)
 
-        inner = profile.model_copy(
-            update={"rw_binds": profile.rw_binds + tuple(mounts)},
-        )
-        inner_argv = build_bwrap_argv(inner, command, env=env, nested=True)
+        inner_argv = build_bwrap_argv(plan.inner, command, env=env, nested=True)
         argv = build_chain_argv(
             extra_env={},
-            images=images,
+            images=plan.images,
+            ro_images=plan.ro_images,
             template=profile.image_template,
             op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
             python_bin=sys.executable,
             options=profile.launcher.to_options(),
             limits=limits,
             binaries=profile.binaries,
-            rw_paths=rw_paths,
+            rw_paths=plan.rw_paths,
             network=profile.network,
         )
         # лимиты применяет лаунчер к самой команде; обвязку не душим

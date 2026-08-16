@@ -31,6 +31,7 @@ from boba.toolkit.binaries import (
 
 __all__ = [
     "FUSE_DEVICE",
+    "RO_MOUNT_ROOT",
     "CapabilityDropper",
     "FileOperations",
     "FuseMounter",
@@ -55,6 +56,15 @@ __all__ = [
     "require_fuse",
     "trace",
 ]
+
+
+RO_MOUNT_ROOT = "/tmp/boba-ro"  # noqa: S108
+"""Точки монтирования ro-образов: tmpfs цепочки, на хосте ничего не пишется.
+
+Каталог песочницы в дереве установки только для чтения, поэтому точку рядом
+с образом там не создать; tmpfs накрывает существующий /tmp, который есть в
+любом корне — bwrap не умеет заводить каталог под tmpfs на read-only корне.
+"""
 
 
 class LauncherExit(IntEnum):
@@ -766,15 +776,17 @@ class Launcher:
     приложение на внешнем bwrap, а лаунчер передаёт вложенному bwrap как есть —
     иначе subprocess закрыл бы их и каналы не доехали бы до тела."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — состав запуска задаётся целиком
         self,
         template: str,
         images: list[tuple[str, str]],
+        ro_images: list[tuple[str, str]],
         options: LauncherOptions,
         limits: ResourceLimits,
         binaries: TrustedBinaries,
     ) -> None:
         self._images = images
+        self._ro_images = ro_images
         self._options = options
         self._limits = limits
         self._binaries = binaries
@@ -788,6 +800,10 @@ class Launcher:
         images: list[tuple[str, str]] = []
         for pair in args.image:
             images.append((pair[0], pair[1]))
+
+        ro_images: list[tuple[str, str]] = []
+        for pair in args.ro_image:
+            ro_images.append((pair[0], pair[1]))
         options = LauncherOptions(
             mount_wait_sec=args.mount_wait_sec,
             mount_poll_sec=args.mount_poll_sec,
@@ -803,7 +819,9 @@ class Launcher:
             oom_score_adj=args.oom_score_adj,
         )
         binaries = TrustedBinaries(dirs=tuple(args.trusted_bin_dir))
-        launcher = cls(args.template, images, options, limits, binaries)
+        launcher = cls(
+            args.template, images, ro_images, options, limits, binaries
+        )
         try:
             return launcher.run(args.mode, args.args)
         except (MountError, UntrustedBinaryError, OSError, ValueError) as e:
@@ -825,10 +843,21 @@ class Launcher:
                 trace(f"image {image} does not exist: nothing to read")
                 return LauncherExit.NOT_FOUND
 
+        # образ только для чтения (корень песочницы) неизменен: его кладёт
+        # сборка, писателей у него нет, поэтому лок не берётся — рядом с ним
+        # в дереве установки и нет места под lock-файл
+        for image, _ in self._ro_images:
+            if not os.path.exists(image):
+                trace(f"read-only image {image} does not exist")
+                return LauncherExit.NOT_FOUND
+
         mounter = FuseMounter(
             self._options, self._binaries, pass_fds=self._store.lock_fds
         )
         try:
+            for image, mnt in self._ro_images:
+                mounter.mount(image, mnt, readonly=True)
+
             for image, mnt in self._images:
                 mounter.mount(image, mnt, readonly=readonly)
             code = operation()
@@ -929,7 +958,10 @@ class Launcher:
         parser = argparse.ArgumentParser(prog="workspace-launcher")
         parser.add_argument("--template", required=True)
         parser.add_argument(
-            "--image", nargs=2, action="append", metavar=("IMG", "MNT"), required=True
+            "--image", nargs=2, action="append", metavar=("IMG", "MNT"), default=[]
+        )
+        parser.add_argument(
+            "--ro-image", nargs=2, action="append", metavar=("IMG", "MNT"), default=[]
         )
         parser.add_argument("--mount-wait-sec", type=float, required=True)
         parser.add_argument("--mount-poll-sec", type=float, required=True)
@@ -988,9 +1020,10 @@ def require_fuse(binaries: TrustedBinaries) -> None:
     binaries.resolve(SandboxBinary.BWRAP)
 
 
-def build_chain_argv(  # noqa: PLR0913, C901 — линейная сборка argv
+def build_chain_argv(  # noqa: PLR0913, PLR0912, C901 — линейная сборка argv
     *,
     images: Sequence[tuple[str, str]],
+    ro_images: Sequence[tuple[str, str]] = (),
     template: str,
     op: Sequence[str],
     python_bin: str,
@@ -1010,6 +1043,11 @@ def build_chain_argv(  # noqa: PLR0913, C901 — линейная сборка a
     for image, mnt in images:
         absolute.append((os.path.abspath(image), os.path.abspath(mnt)))
     images = absolute
+
+    ro_absolute: list[tuple[str, str]] = []
+    for image, mnt in ro_images:
+        ro_absolute.append((os.path.abspath(image), mnt))
+    ro_images = ro_absolute
     argv = [
         bwrap_path,
         "--die-with-parent",
@@ -1042,6 +1080,9 @@ def build_chain_argv(  # noqa: PLR0913, C901 — линейная сборка a
         writable.append(os.path.abspath(path))
     for path in dict.fromkeys(writable):
         argv += ["--bind", path, path]
+    if ro_images:
+        argv += ["--tmpfs", os.path.dirname(RO_MOUNT_ROOT)]
+
     argv += [
         "--dev",
         "/dev",
@@ -1094,6 +1135,9 @@ def build_chain_argv(  # noqa: PLR0913, C901 — линейная сборка a
     ]
     for directory in binaries.dirs:
         argv += ["--trusted-bin-dir", directory]
+
+    for image, mnt in ro_images:
+        argv += ["--ro-image", image, mnt]
 
     for image, mnt in images:
         argv += ["--image", image, mnt]

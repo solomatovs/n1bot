@@ -13,10 +13,11 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
                 "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_DATA": "${workspaceFolder}/compose/data",
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "stopOnEntry": false
@@ -32,9 +33,10 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
                 "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_DATA": "${workspaceFolder}/compose/data",
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
-                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "args": "${command:pickArgs}"
@@ -50,11 +52,12 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
                 "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_DATA": "${workspaceFolder}/compose/data",
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "args": [
@@ -76,10 +79,11 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
                 "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_DATA": "${workspaceFolder}/compose/data",
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "args": [
@@ -98,10 +102,11 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
                 "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_DATA": "${workspaceFolder}/compose/data",
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "args": [
@@ -120,10 +125,11 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
                 "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_DATA": "${workspaceFolder}/compose/data",
                 "BOBA_APP": "${workspaceFolder}/packages",
                 "BOBA_PORT": "8601",
                 "BOBA_URL_PREFIX": "/boba-debug",
-                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba"
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba.slice/boba-sandbox"
             },
             "justMyCode": false,
             "args": [

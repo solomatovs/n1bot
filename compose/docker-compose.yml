@@ -9,7 +9,7 @@ services:
     cgroup_parent: boba.slice
     volumes:
       - ./conf:/app/boba/conf:ro
-      - ./data:/app/boba/data:rw
+      - ${BOBA_DATA_DIR:-./data}:/app/boba/data:rw
       - ./app_root:/app/boba/app_root:rw
       - /sys/fs/cgroup/boba.slice:/cgroup:rw
     devices:

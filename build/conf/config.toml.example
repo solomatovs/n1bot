@@ -1,13 +1,12 @@
 ## единственное место, где конфиг читает окружение. BOBA_*-переменные задаются
-## явно: в релизе — conf/boba.env, при запуске из IDE — .vscode/boba-debug.env
+## явно: в релизе — conf/boba.env, при запуске из IDE — env в .vscode/launch.json
 [env]
     base        = "${oc.env:BOBA_BASE}"
-    app         = "${oc.env:BOBA_APP}"
     port        = "${oc.env:BOBA_PORT}"
     url_prefix  = "${oc.env:BOBA_URL_PREFIX}"
     cgroup_base = "${oc.env:BOBA_CGROUP_BASE}"
 
-    data        = "${env.base}/data"
+    data        = "${oc.env:BOBA_DATA}"
     sandbox     = "${env.base}/sandbox"
     krb         = "${env.base}/conf/krb"
 
@@ -216,7 +215,7 @@
     binaries       = "${sandbox.binaries}"
     [storage.launcher]
         mount_wait_sec    = 10.0
-        mount_poll_sec    = 0.05
+        mount_poll_sec    = 0.002
         shutdown_wait_sec = 5.0
         lock_wait_sec     = 10.0
         copy_chunk_bytes  = 1048576
@@ -292,56 +291,31 @@
         dirs = ["${env.base}/third/bin", "/usr/bin", "/usr/sbin", "/bin", "/sbin"]
 
     [sandbox.bind]
-        python    = "${env.sandbox}/third/python:/usr/local"
-        site      = "${env.base}/deps/sandbox:/usr/local/lib/python3.11/site-packages"
-        code      = "${env.app}:/usr/src"
-        tessdata  = "${env.sandbox}/third/tessdata:/usr/share/tessdata"
-        fastembed = "${env.sandbox}/third/fastembed:/var/cache/fastembed"
         krb       = "${env.krb}:${env.krb}"
         resolv    = "/etc/resolv.conf:/etc/resolv.conf"
         hosts     = "/etc/hosts:/etc/hosts"
 
     [sandbox.binds]
-        core = [
-            "${sandbox.bind.python}",
-            "${sandbox.bind.site}",
-            "${sandbox.bind.code}"
-        ]
-        docs = [
-            "${sandbox.bind.python}",
-            "${sandbox.bind.site}",
-            "${sandbox.bind.code}",
-            "${sandbox.bind.tessdata}"
-        ]
+        core = []
+        docs = []
         net  = [
             "${sandbox.bind.resolv}",
-            "${sandbox.bind.hosts}",
-            "${sandbox.bind.python}",
-            "${sandbox.bind.site}",
-            "${sandbox.bind.code}"
+            "${sandbox.bind.hosts}"
         ]
         pg   = [
             "${sandbox.bind.resolv}",
             "${sandbox.bind.hosts}",
-            "${sandbox.bind.python}",
-            "${sandbox.bind.site}",
-            "${sandbox.bind.code}",
             "${sandbox.bind.krb}"
         ]
         kb   = [
             "${sandbox.bind.resolv}",
             "${sandbox.bind.hosts}",
-            "${sandbox.bind.python}",
-            "${sandbox.bind.site}",
-            "${sandbox.bind.code}",
-            "${sandbox.bind.fastembed}",
-            "${sandbox.bind.tessdata}",
             "${sandbox.bind.krb}"
         ]
 
     ## единственный профиль; инструменты меняют его через [tool.<name>.sandbox.override]
     [sandbox.profiles.base]
-        rootfs                = "${env.sandbox}/rootfs"
+        rootfs_image          = "${env.sandbox}/rootfs.ext4"
         ro_binds              = "${sandbox.binds.core}"
         rw_binds              = []
         rw_images             = ["${env.data}/workspace/{user_id}.ext4:/workspace"]
@@ -366,7 +340,7 @@
         binaries              = "${sandbox.binaries}"
         [sandbox.profiles.base.launcher]
             mount_wait_sec    = 10.0
-            mount_poll_sec    = 0.05
+            mount_poll_sec    = 0.002
             shutdown_wait_sec = 5.0
             lock_wait_sec     = 10.0
             copy_chunk_bytes  = 1048576
