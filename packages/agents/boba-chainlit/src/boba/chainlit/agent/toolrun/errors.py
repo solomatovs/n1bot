@@ -31,17 +31,17 @@ class ToolErrorGuard:
 
     PREFIX: ClassVar[str] = "tool failed"
 
-    class _Hooks(CallHooks):
+    class _Hooks(CallHooks[str]):
         def before(
             self,
             name: str,
             args: tuple[object, ...],
             kwargs: dict[str, object],
-        ) -> object:
+        ) -> str:
             return name
 
-        def on_error(self, ctx: object, error: Exception) -> object:
-            return ToolErrorGuard._failure(str(ctx), error)
+        def on_error(self, ctx: str, error: Exception) -> object:
+            return ToolErrorGuard._failure(ctx, error)
 
     @classmethod
     def guard_all(cls, tools: Sequence[BaseTool]) -> list[BaseTool]:

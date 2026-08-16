@@ -11,7 +11,6 @@ from typing import (
     ClassVar,
     Literal,
     TypeAlias,
-    cast,
     get_args,
 )
 
@@ -246,7 +245,8 @@ ToolResult: TypeAlias = Annotated[
 ]
 
 
-def render_for_llm(result: ToolResult) -> str:
+def render_for_llm(result: ToolResultBase) -> str:
+    """Текст результата для LLM; форма варианта здесь не нужна."""
     return result.llm_text()
 
 
@@ -265,8 +265,19 @@ class ToolArtifact:
 
     @classmethod
     def revive(cls, artifact: Any) -> ToolResult | None:
+        """Артефакт -> вариант семейства; чужое значение — None.
+
+        Готовая модель проходит тем же адаптером: у дискриминированного
+        союза он узнаёт вариант по kind и возвращает сам объект, поэтому
+        приведения типа тут не нужно.
+        """
         if isinstance(artifact, ToolResultBase):
-            return cast(ToolResult, artifact)
-        if isinstance(artifact, Mapping) and artifact.get("kind") in cls._KINDS:
-            return cls._ADAPTER.validate_python(dict(artifact))
-        return None
+            return cls._ADAPTER.validate_python(artifact)
+
+        if not isinstance(artifact, Mapping):
+            return None
+
+        if artifact.get("kind") not in cls._KINDS:
+            return None
+
+        return cls._ADAPTER.validate_python(dict(artifact))

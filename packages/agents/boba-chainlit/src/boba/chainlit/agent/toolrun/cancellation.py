@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
 
 from langchain_core.tools import BaseTool
 
@@ -16,20 +15,19 @@ __all__ = ["CancellableTools"]
 class CancellableTools:
     """Не даёт инструменту стартовать после остановки и вернуть результат."""
 
-    class _Hooks(CallHooks):
+    class _Hooks(CallHooks[TurnCancellation]):
         def before(
             self,
             name: str,
             args: tuple[object, ...],
             kwargs: dict[str, object],
-        ) -> object:
+        ) -> TurnCancellation:
             cancellation = current_cancellation()
             cancellation.raise_if_cancelled()
             return cancellation
 
-        def after(self, ctx: object, result: object) -> object:
-            cancellation = cast("TurnCancellation", ctx)
-            cancellation.raise_if_cancelled()
+        def after(self, ctx: TurnCancellation, result: object) -> object:
+            ctx.raise_if_cancelled()
             return result
 
     @classmethod

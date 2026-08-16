@@ -22,6 +22,24 @@
             "stopOnEntry": false
         },
         {
+            "name": "tool: тело инструмента (текущий файл)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/compose",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/compose/third/bin:${env:PATH}",
+                "BOBA_BASE": "${workspaceFolder}/compose",
+                "BOBA_APP": "${workspaceFolder}/packages",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/compose/conf/config.toml",
+                "BOBA_CGROUP_BASE": "/sys/fs/cgroup/boba"
+            },
+            "justMyCode": false,
+            "args": "${command:pickArgs}"
+        },
+        {
             "name": "tool: текущий файл",
             "type": "debugpy",
             "request": "launch",
