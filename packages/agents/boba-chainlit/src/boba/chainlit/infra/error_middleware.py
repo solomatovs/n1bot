@@ -3,7 +3,7 @@ import logging
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit.domain.errors import BaseError, to_domain
+from boba.chainlit.domain.errors import BaseError, FailureReport, to_domain
 
 
 class DomainErrorMiddleware:
@@ -31,10 +31,12 @@ class DomainErrorMiddleware:
         try:
             await self.app(scope, receive, guarded_send)
         except Exception as e:
+            # http-слой пишет в журнал ту же формулировку, что чат и история
+            described = FailureReport.of(e).log
             if not isinstance(e, BaseError):
-                self._logger.exception(str(e))
+                self._logger.exception(described)
             else:
-                self._logger.error(str(e))
+                self._logger.error(described)
 
             domain = to_domain(e)
 

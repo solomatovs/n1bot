@@ -106,6 +106,42 @@ class OpenAiConfig(BaseModel):
         description="Дамп HTTP-обмена с провайдером.",
     )
 
+    trust_env: bool = Field(
+        default=True,
+        description=(
+            "Брать прокси и CA из окружения (HTTPS_PROXY, SSL_CERT_FILE); "
+            "false — окружение игнорируется целиком."
+        ),
+    )
+
+    proxy: str = Field(
+        default="",
+        description="Прокси для запросов к провайдеру; пусто — напрямую.",
+    )
+
+    http2: bool = Field(
+        default=False,
+        description="Разрешить HTTP/2 к провайдеру.",
+    )
+
+    request_timeout: float = Field(
+        default=300,
+        ge=0,
+        description=(
+            "Потолок одной попытки запроса целиком, секунды; read_timeout "
+            "ограничивает лишь паузу между чанками. 0 — без потолка."
+        ),
+    )
+
+    max_retries: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Повторы запроса клиентом openai при 429/5xx и таймауте; "
+            "каждый повтор — новая полная попытка."
+        ),
+    )
+
     connect_timeout: float = Field(
         default=5,
         description="установка TCP-соединения с хостом (включая TLS handshake)",
@@ -177,6 +213,16 @@ class OpenAiConfig(BaseModel):
             "TCP_KEEPCNT: число безответных проб, после которых соединение "
             "считается мёртвым; следующая работа с сокетом даст "
             "ECONNABORTED/ETIMEDOUT."
+        ),
+    )
+
+    tcp_user_timeout: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "TCP_USER_TIMEOUT: сколько миллисекунд ядро ждёт подтверждения "
+            "уже отправленных данных, прежде чем оборвать соединение; в "
+            "отличие от keepalive работает и на активном обмене. 0 — не задавать."
         ),
     )
 

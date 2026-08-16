@@ -86,6 +86,47 @@
         ssl_verify          = false
         dump                = { enable = false, path = "${env.data}/dump" }
 
+        # прокси и CA из переменных окружения (HTTPS_PROXY, SSL_CERT_FILE)
+        trust_env                 = true
+        # прокси к провайдеру; пусто — напрямую
+        proxy                     = ""
+        # разрешить HTTP/2 к провайдеру
+        http2                     = false
+
+        # потолок одной попытки запроса целиком, сек; 0 — без потолка
+        request_timeout           = 300
+        # повторы всего запроса клиентом openai при 429/5xx и таймауте
+        max_retries               = 0
+
+        # установка TCP-соединения с хостом, включая TLS handshake, сек
+        connect_timeout           = 5
+        # ожидание очередных байт от сервера; при стриме — пауза между чанками, сек
+        read_timeout              = 10
+        # отправка тела запроса на сервер, сек
+        write_timeout             = 10
+        # ожидание свободного соединения в пуле httpx, сек
+        pool_timeout              = 5
+
+        # повторы установления соединения внутри транспорта httpx
+        retries                   = 3
+        # потолок одновременных соединений к провайдеру
+        max_connections           = 50
+        # сколько соединений держать открытыми про запас
+        max_keepalive_connections = 10
+        # сколько секунд простоя живёт неиспользуемое соединение пула
+        keepalive_expiry          = 5
+
+        # слать TCP keepalive: файрвол режет молчащее соединение без предупреждения
+        tcp_keepalive             = true
+        # секунд простоя до первой keepalive-пробы
+        tcp_keepidle              = 60
+        # секунд между повторными keepalive-пробами
+        tcp_keepintvl             = 10
+        # сколько проб без ответа означают мёртвое соединение
+        tcp_keepcnt               = 10
+        # мс на подтверждение отправленных данных, иначе разрыв; 0 — не задавать
+        tcp_user_timeout          = 0
+
 
 ## общий postgres: libpq-параметры подключения + пул
 ## (поля по https://www.postgresql.org/docs/current/libpq-connect.html)

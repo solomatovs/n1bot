@@ -15,6 +15,7 @@ from typing import ClassVar
 from langchain_core.tools import BaseTool
 
 from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.toolkit.failure import FailureText
 from boba.toolkit.launcher import ErrorKind
 from boba.toolkit.result import ErrorResult, ToolResult, pack_result
 
@@ -63,7 +64,7 @@ class ToolErrorGuard:
     def _failure(cls, name: str, error: Exception) -> tuple[str, ToolResult]:
         return pack_result(
             ErrorResult(
-                message=f"{cls.PREFIX} {name!r}: {error}",
+                message=f"{cls.PREFIX} {name!r}: {FailureText.of(error)}",
                 error_kind=ErrorKind.of(error),
             )
         )

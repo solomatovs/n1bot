@@ -1,6 +1,21 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from boba.toolkit.failure import FailureText
+
+__all__ = [
+    "AuthenticationError",
+    "BaseError",
+    "ExternalServiceError",
+    "FailureReport",
+    "FailureText",
+    "HttpErrorMessage",
+    "InternalServiceError",
+    "UserInputError",
+    "ViewErrorMessage",
+    "to_domain",
+]
+
 
 @dataclass
 class ViewErrorMessage:
@@ -46,6 +61,9 @@ class ExternalServiceError(BaseError):
 
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
+
+    def history_message(self) -> str | None:
+        return self.message
 
     def http_message(self) -> HttpErrorMessage | None:
         return HttpErrorMessage(
@@ -113,6 +131,9 @@ class AuthenticationError(BaseError):
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
 
+    def history_message(self) -> str | None:
+        return self.message
+
     def http_message(self) -> HttpErrorMessage | None:
         return HttpErrorMessage(
             status_code=self.status_code,
@@ -130,6 +151,9 @@ class AuthorizationError(BaseError):
 
     def view_message(self) -> ViewErrorMessage | None:
         return ViewErrorMessage(content=self.message)
+
+    def history_message(self) -> str | None:
+        return self.message
 
     def http_message(self) -> HttpErrorMessage | None:
         return HttpErrorMessage(
@@ -155,3 +179,36 @@ class RateLimitError(ExternalServiceError):
 
 class AgentError(InternalServiceError):
     "Сломался сам граф/модель (не провайдер), частный случай InternalServiceError"
+
+
+@dataclass(frozen=True)
+class FailureReport:
+    """Разбор сбоя на три канала: журнал, чат и история LLM.
+
+    Единственное место, где решается, что каждый из них увидит. Обычному
+    исключению достаточно быть выброшенным: все три получат одну формулировку
+    с цепочкой причин. Доменная ошибка меняет это своими представлениями —
+    например, скрывает детали от пользователя или не идёт в историю.
+    """
+
+    log: str
+    """Текст для журнала приложения; есть всегда."""
+
+    view: str | None
+    """Текст для чата; None — пользователю показывать нечего."""
+
+    history: str | None
+    """Текст для истории LLM; None — модели об этом знать незачем."""
+
+    @classmethod
+    def of(cls, error: BaseException) -> "FailureReport":
+        described = FailureText.of(error)
+
+        if not isinstance(error, BaseError):
+            return cls(log=described, view=described, history=described)
+
+        view = None
+        if message := error.view_message():
+            view = message.content
+
+        return cls(log=described, view=view, history=error.history_message())
