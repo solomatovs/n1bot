@@ -11,8 +11,9 @@ from chainlit.context import ChainlitContext
 from langchain_core.outputs import LLMResult
 from langchain_core.tracers.base import AsyncBaseTracer
 
-from boba.chainlit.chat import agent_tracer as tracer_module
-from boba.chainlit.chat.agent_tracer import AgentTracer
+from boba.chainlit.chat import tracing as tracer_module
+from boba.chainlit.chat.tracing import AgentTracer
+from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.errors import DataLayerError
 from boba.chainlit.rendering.chat_view import ChatView
@@ -65,8 +66,7 @@ def _tracer() -> AgentTracer:
     AsyncBaseTracer.__init__(tracer)
     tracer._context = cast(ChainlitContext, None)
     tracer._view = cast(ChatView, _BrokenView())
-    tracer._reasoning = {}
-    tracer._tool_steps = {}
+    tracer._state = TurnState()
     return tracer
 
 
@@ -82,7 +82,7 @@ class TestTracerFailuresVisible:
     def test_llm_end_failure_shown(self, shown: list[str]) -> None:
         tracer = _tracer()
         run_id = uuid4()
-        tracer._reasoning[str(run_id)] = "мысли"
+        tracer._state.add_reasoning(str(run_id), "мысли")
 
         async def _run() -> None:
             await tracer.on_llm_start({}, [""], run_id=run_id)

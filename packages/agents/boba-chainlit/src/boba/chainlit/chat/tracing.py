@@ -1,34 +1,299 @@
-"""Журнал обмена с провайдером: запрос, рассуждения, ответ, вызовы инструментов.
+"""Langchain-коллбэки одного прогона: шаги в ленту и журнал стадий.
 
-Пишет строку на каждую смену состояния прогона, помечая её пользователем и
-тредом: колбэки инструментов приходят из чужого event loop'а, где контекста
+AgentTracer рисует процесс ответа step-иерархией через ChatView; LlmStateLog
+пишет строку на каждую смену состояния прогона с пометкой пользователя и
+треда — колбэки инструментов приходят из чужого event loop'а, где контекста
 сессии chainlit уже нет.
 
-Ошибки: своих не выпускает; сбой уходит колбэк-менеджеру langchain.
+Ошибки: своих не выпускает; сбой отрисовки шага показывается в чат и журнал
+одним разбором FailureReport, сбой журналирования уходит колбэк-менеджеру
+langchain.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeVar
 from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResult
+from langchain_core.tracers.base import AsyncBaseTracer
 from pydantic import BaseModel, ConfigDict
-from typing_extensions import override
+from typing_extensions import ParamSpec, override
 
 from boba.chainlit.agent.chat_model import GeneratedMessage, ReasoningText
+from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.session import LogUserMark
+from boba.chainlit.rendering.chat_view import ChatView
+from boba.chainlit.rendering.errors import show_error
+from chainlit.context import context_var
 
-__all__ = ["LlmStage", "LlmStageEvent", "LlmStateLog"]
+if TYPE_CHECKING:
+    from boba.chainlit.chat.turn import TurnState
+
+__all__ = ["AgentTracer", "LlmStage", "LlmStageEvent", "LlmStateLog"]
 
 logger = logging.getLogger(__name__)
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _visible_failure(
+    fn: Callable[_P, Coroutine[Any, Any, _R]],
+) -> Callable[_P, Coroutine[Any, Any, _R | None]]:
+    """langchain гасит исключения коллбэков в logger.warning: показываем сами.
+
+    Чат и журнал получают формулировку одного разбора; в историю сбой
+    отрисовки не пишется — ход продолжается, модели он не нужен.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R | None:
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as e:
+            report = FailureReport.of(e)
+            logger.exception("rendering failed in %s: %s", fn.__name__, report.log)
+            if report.view:
+                shown = f"Failed to render step ({fn.__name__}): {report.view}"
+                await show_error(shown)
+            return None
+
+    return wrapper
+
+
+class AgentTracer(AsyncBaseTracer):
+    """Трасит один агентский цикл и рисует step-иерархию процесса ответа.
+
+    Каждый колбэк сперва отдаёт событие базовому трасеру и только потом рисует:
+    учёт прогонов langchain обязан вестись, даже когда лента недоступна. Иначе
+    упавшая отрисовка старта уносит с собой индекс прогона, и закрытие падает
+    с TracerException «No indexed run ID» — второй ошибкой без своей причины.
+    """
+
+    def __init__(self, view: ChatView, state: TurnState) -> None:
+        super().__init__()
+        self._context = context_var.get()
+        self._view = view
+        self._state = state
+
+    @property
+    def view(self) -> ChatView:
+        """Лента, в которую трасер пишет шаги."""
+        return self._view
+
+    def _set_context(self) -> None:
+        context_var.set(self._context)
+
+    @override
+    @_visible_failure
+    async def on_llm_new_token(
+        self,
+        token: str,
+        *,
+        chunk: GenerationChunk | ChatGenerationChunk | None = None,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._set_context()
+        traced = await super().on_llm_new_token(
+            token,
+            chunk=chunk,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            **kwargs,
+        )
+
+        message = GeneratedMessage.of_chunk(chunk)
+        if message is None:
+            return traced
+
+        reasoning = ReasoningText.of(message)
+        if not reasoning:
+            return traced
+
+        self._state.add_reasoning(str(run_id), reasoning)
+        await self._view.stream_thinking(reasoning, message.id)
+
+        return traced
+
+    @override
+    @_visible_failure
+    async def on_llm_end(
+        self,
+        response: LLMResult,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._set_context()
+        traced = await super().on_llm_end(
+            response,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            **kwargs,
+        )
+
+        streamed = self._state.take_reasoning(str(run_id))
+        await self._view.close_thinking()
+
+        # рассуждения без стрима приходят разом в итоговом сообщении
+        if streamed:
+            return traced
+
+        message = GeneratedMessage.of_result(response)
+        if message is None:
+            return traced
+
+        text = ReasoningText.of(message)
+        if not text:
+            return traced
+
+        await self._view.thinking(text, message.id)
+
+        return traced
+
+    @override
+    @_visible_failure
+    async def on_llm_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._set_context()
+        traced = await super().on_llm_error(
+            error,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
+            **kwargs,
+        )
+
+        await self._view.close_thinking()
+
+        return traced
+
+    @override
+    @_visible_failure
+    async def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        tags: list[str] | None = None,
+        parent_run_id: UUID | None = None,
+        metadata: dict[str, Any] | None = None,
+        name: str | None = None,
+        inputs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._set_context()
+        traced = await super().on_tool_start(
+            serialized,
+            input_str,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
+            metadata=metadata,
+            name=name,
+            inputs=inputs,
+            **kwargs,
+        )
+
+        tool_name = name
+        if not tool_name and serialized:
+            tool_name = serialized.get("name")
+
+        if not tool_name:
+            tool_name = "tool"
+
+        call_id = kwargs.get("tool_call_id")
+        call_key: str | None = None
+        if call_id:
+            call_key = str(call_id)
+
+        step = await self._view.tool_started(tool_name, inputs, call_key)
+        self._state.open_tool(str(run_id), step)
+
+        return traced
+
+    @override
+    @_visible_failure
+    async def on_tool_end(
+        self,
+        output: Any,
+        *,
+        run_id: UUID,
+        **kwargs: Any,
+    ) -> None:
+        self._set_context()
+        traced = await super().on_tool_end(output, run_id=run_id, **kwargs)
+
+        step = self._state.close_tool(str(run_id))
+        if step is None:
+            return traced
+
+        # результат без конверта tool_call рисуется как есть: он и есть артефакт
+        if not isinstance(output, ToolMessage):
+            await self._view.tool_finished(step, output)
+            return traced
+
+        if output.status == "error":
+            await self._view.tool_failed(step, output.content)
+            return traced
+
+        artifact = output.artifact
+        if artifact is None:
+            artifact = output
+
+        await self._view.tool_finished(step, artifact, output.tool_call_id)
+
+        return traced
+
+    @override
+    @_visible_failure
+    async def on_tool_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._set_context()
+        traced = await super().on_tool_error(
+            error,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
+            **kwargs,
+        )
+
+        if step := self._state.close_tool(str(run_id)):
+            await self._view.tool_failed(step, error)
+
+        return traced
+
+    @override
+    async def _persist_run(self, run: Any) -> None:
+        pass
 
 
 class LlmStage(StrEnum):

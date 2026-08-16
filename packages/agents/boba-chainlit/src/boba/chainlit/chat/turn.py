@@ -1,15 +1,18 @@
-"""Ход агента в чате: прогон стрима, остановка, рассылка во все сокеты треда.
+"""Система хода: состояние, отчёт об исходе и жизненный цикл.
 
-Ход живёт дольше сокета: вкладку обновили, а стрим продолжается. ThreadEmitter
-решает адресатов в момент эмиссии — каждое событие уходит всем живым сессиям
-треда, новая вкладка подхватывает стрим сразу после подключения.
+Исход хода фиксируется в TurnState ровно один раз: первый settle побеждает,
+повторные не порождают второго отчёта. Отчёт по исходу — чат, история агента,
+журнал сервера — делает TurnReporter из одного разбора FailureReport; любой
+исход закрывает незавершённые шаги, запись истории не зависит от ленты.
+ChatTurn гоняет стрим под отменой TurnContext и отчитывается ровно одним
+исходом; crash() покрывает сбои вокруг стрима — до него и после.
 
-Ход обрывается только по кнопке Stop: отмену держит TurnRegistry по thread_id.
+Ход обрывается только по кнопке Stop: отмену держит TurnContext по thread_id.
 Разрыв связи ход не трогает — ответ пользователь увидит в истории.
 
-Ошибки: наружу выходит только asyncio.CancelledError — её ждёт chainlit как
-признак снятой задачи; прикладные сбои превращаются в сообщение об ошибке
-в ленте и в истории.
+Ошибки:
+asyncio.CancelledError — ход снят; её ждёт chainlit как признак отмены задачи.
+TurnStateError — нарушен протокол хода: повторный запуск одного ChatTurn.
 """
 
 from __future__ import annotations
@@ -18,110 +21,255 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any, ClassVar, cast
+from abc import abstractmethod
+from collections.abc import AsyncIterator, Iterator
+from enum import StrEnum
+from typing import Any, ClassVar, Protocol
 
 from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
-from boba.cancellation import StopReason, ToolStopped, TurnRegistry
-from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.transcript import TurnMark, TurnRecord
+from boba.cancellation import StopReason, ToolStopped
+from boba.chainlit.chat.history import TurnMark, TurnRecord
+from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.domain.errors import FailureReport
+from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import current_user_id
-from boba.chainlit.domain.turn import ActiveTurns
+from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
-from boba.chainlit.rendering.stream_view import ToolStreams
-from chainlit.context import ChainlitContext, context_var, get_context
-from chainlit.emitter import ChainlitEmitter
-from chainlit.server import sio
-from chainlit.session import WebsocketSession, ws_sessions_id
-from chainlit.step import StepDict
+from chainlit.step import Step, StepDict
+from chainlit.types import ThreadDict
 
-__all__ = ["ChatTurn", "StickyLoadingEmitter", "ThreadEmitter", "ThreadRoom"]
+__all__ = [
+    "ChatTurn",
+    "TurnHistory",
+    "TurnOutcome",
+    "TurnReporter",
+    "TurnState",
+    "TurnStateError",
+]
 
 logger = logging.getLogger(__name__)
 
 
-class StickyLoadingEmitter(ChainlitEmitter):
-    """Эмиттер resume-хендлера: не даёт chainlit погасить индикатор хода.
-
-    wrap_user_function(with_task=True) шлёт task_end сразу после хендлера;
-    при живом ходе loading обязан пережить resume, поэтому task_end глушится.
-    """
-
-    async def task_end(self) -> None:
-        return None
+class TurnStateError(Exception):
+    """Нарушение протокола хода: состояние использовано не по контракту."""
 
 
-class ThreadEmitter(ChainlitEmitter):
-    """Эмиттер треда: события уходят каждому живому сокету, а не одной сессии."""
+class TurnOutcome(StrEnum):
+    """Исход хода; ровно один на запуск."""
 
-    def __init__(self, session: WebsocketSession, thread_id: str) -> None:
-        super().__init__(session)
-        self._thread_id = thread_id
+    OK = "ok"
+    STOPPED = "stopped"
+    FAILED = "failed"
 
-    @property
-    def emit(self) -> Callable[[str, Any], Awaitable[None]]:
-        async def emit_to_thread(event: str, data: Any) -> None:
-            for session in ThreadRoom.sessions(self._thread_id):
-                # одна битая сессия не должна ронять весь ход
-                try:
-                    await cast("Awaitable[None]", session.emit(event, data))
-                except Exception:
-                    logger.warning(
-                        "emit %s failed for session %s of thread %s",
-                        event,
-                        session.id,
-                        self._thread_id,
-                        exc_info=True,
-                    )
 
-        return emit_to_thread
+class TurnState:
+    """Состояние хода: исход-машина set-once и незакрытые артефакты стрима."""
+
+    def __init__(self) -> None:
+        self._began = False
+        self._outcome: TurnOutcome | None = None
+        self._reason: StopReason | None = None
+        self._error: BaseException | None = None
+        self._tool_steps: dict[str, Step] = {}
+        self._reasoning: dict[str, str] = {}
+
+    def begin(self) -> None:
+        """Отмечает запуск; второй запуск того же хода — ошибка программиста."""
+        if self._began:
+            raise TurnStateError("turn already ran")
+
+        self._began = True
 
     @property
-    def emit_call(self) -> Any:
-        sessions = ThreadRoom.sessions(self._thread_id)
-        if self.session in sessions:
-            return self.session.emit_call
-        if sessions:
-            return sessions[0].emit_call
-        return self.session.emit_call
+    def outcome(self) -> TurnOutcome | None:
+        """Исход хода; None — ход ещё не завершён."""
+        return self._outcome
+
+    @property
+    def outcome_label(self) -> str:
+        """Метка исхода для журнала: у остановки причина точнее самого исхода."""
+        if self._outcome is None:
+            return "unsettled"
+
+        if self._outcome is TurnOutcome.STOPPED and self._reason is not None:
+            return self._reason.value
+
+        return self._outcome.value
+
+    @property
+    def error(self) -> BaseException | None:
+        """Ошибка, зафиксированная исходом FAILED."""
+        return self._error
+
+    def settle_ok(self) -> bool:
+        """Фиксирует успешное завершение; False — исход уже определён."""
+        return self._settle(TurnOutcome.OK)
+
+    def settle_stopped(self, reason: StopReason | None) -> bool:
+        """Фиксирует остановку; False — исход уже определён."""
+        settled = self._settle(TurnOutcome.STOPPED)
+        if settled:
+            self._reason = reason
+
+        return settled
+
+    def settle_failed(self, error: BaseException) -> bool:
+        """Фиксирует сбой; False — исход уже определён."""
+        settled = self._settle(TurnOutcome.FAILED)
+        if settled:
+            self._error = error
+
+        return settled
+
+    def _settle(self, outcome: TurnOutcome) -> bool:
+        if self._outcome is not None:
+            logger.debug(
+                "outcome already settled as %s, %s ignored",
+                self._outcome.value,
+                outcome.value,
+            )
+            return False
+
+        self._outcome = outcome
+        return True
+
+    def open_tool(self, run_key: str, step: Step) -> None:
+        """Регистрирует шаг запущенного инструмента по ключу прогона."""
+        self._tool_steps[run_key] = step
+
+    def close_tool(self, run_key: str) -> Step | None:
+        """Забирает шаг завершённого инструмента; None — прогон неизвестен."""
+        return self._tool_steps.pop(run_key, None)
+
+    def drain_tools(self) -> Iterator[Step]:
+        """Отдаёт и снимает с учёта все незавершённые шаги инструментов."""
+        while self._tool_steps:
+            _, step = self._tool_steps.popitem()
+            yield step
+
+    @property
+    def pending_tool_steps(self) -> list[Step]:
+        """Шаги инструментов, ещё не завершённые ходом."""
+        return list(self._tool_steps.values())
+
+    def add_reasoning(self, run_key: str, text: str) -> None:
+        """Копит потоковые рассуждения прогона."""
+        self._reasoning[run_key] = self._reasoning.get(run_key, "") + text
+
+    def take_reasoning(self, run_key: str) -> str:
+        """Забирает накопленные рассуждения прогона; пусто — их не было."""
+        return self._reasoning.pop(run_key, "")
+
+    @property
+    def pending_reasoning(self) -> str:
+        """Рассуждения незавершённых прогонов: их ждёт история после остановки."""
+        parts: list[str] = []
+        for text in self._reasoning.values():
+            parts.append(text)
+
+        return "".join(parts)
 
 
-class ThreadRoom:
-    """Живые сессии треда и переключение контекста хода на рассылку."""
+class TurnHistory(Protocol):
+    """Порт истории хода: запись исхода, который переживёт остановку."""
 
-    @staticmethod
-    def sessions(thread_id: str) -> list[WebsocketSession]:
-        """Сессии треда с живым сокетом; умершие ждут таймаута chainlit."""
-        sessions: list[WebsocketSession] = []
-        for session in list(ws_sessions_id.values()):
-            if session.thread_id != thread_id:
-                continue
-            if not sio.manager.is_connected(session.socket_id, "/"):
-                continue
-            sessions.append(session)
-        return sessions
+    @abstractmethod
+    async def remember(self, record: TurnRecord) -> None: ...
 
-    @staticmethod
-    def activate(thread_id: str) -> None:
-        """Подменяет контекст текущей задачи: эмиссии хода видят все вкладки."""
-        current = get_context()
-        session = cast("WebsocketSession", current.session)
-        emitter = ThreadEmitter(session, thread_id)
-        context_var.set(ChainlitContext(session, emitter))
-        logger.info("broadcast on thread %s: session=%s", thread_id, session.id)
 
-    @staticmethod
-    def keep_loading() -> None:
-        """Глушит task_end обёртки chainlit вокруг текущего хендлера."""
-        current = get_context()
-        session = cast("WebsocketSession", current.session)
-        context_var.set(ChainlitContext(session, StickyLoadingEmitter(session)))
+class TurnReporter:
+    """Исход хода тремя каналами: лента, история агента, журнал сервера."""
+
+    def __init__(
+        self,
+        view: ChatView,
+        state: TurnState,
+        history: TurnHistory,
+        key: str,
+    ) -> None:
+        self._view = view
+        self._state = state
+        self._history = history
+        self._key = key
+
+    async def ok(self) -> None:
+        """Успех: забытые шаги закрываются, а не висят «в процессе»."""
+        leftovers = list(self._state.drain_tools())
+        if not leftovers:
+            return
+
+        logger.warning("turn finished ok with %d unclosed tool steps", len(leftovers))
+
+        for step in leftovers:
+            await self._view.tool_stopped(step, StepText.FINISHED.value)
+
+    async def stopped(self, reason: StopReason | None) -> None:
+        """Остановка: пометка в ленте и прерванный ответ в истории."""
+        note = str(StepText.for_stop(reason))
+        content = self._interrupted_answer(note)
+
+        await self._draw_stop(note, content)
+        await self._remember(content, TurnMark.STOPPED)
+
+    async def failed(self, error: BaseException) -> None:
+        """Сбой: чат, история и журнал получают формулировку одного разбора."""
+        report = FailureReport.of(error)
+        logger.error("turn failed: %s", report.log, exc_info=error)
+
+        await self._draw_failure(report)
+
+        if report.history:
+            await self._remember(f"**failed:** {report.history}", TurnMark.ERROR)
+
+    def _interrupted_answer(self, note_text: str) -> str:
+        """Текст прерванного ответа: накопленный стрим плюс курсивная пометка."""
+        partial = ""
+        answer = self._view.answer_message
+        if answer is not None and answer.content:
+            partial = answer.content
+
+        note = f"_{note_text}_"
+        if not partial:
+            return note
+
+        return f"{partial}\n\n{note}"
+
+    async def _draw_stop(self, note_text: str, content: str) -> None:
+        """Отрисовка в ленте; при разрыве связи писать уже некому — это не сбой."""
+        try:
+            await self._view.close_thinking()
+
+            for step in self._state.drain_tools():
+                await self._view.tool_stopped(step, note_text)
+
+            await self._view.rewrite_answer(content, self._key)
+        except Exception:
+            logger.warning("stopped turn is not drawn: chat is gone", exc_info=True)
+
+    async def _draw_failure(self, report: FailureReport) -> None:
+        """Отрисовка сбоя; недоступная лента не должна терять запись истории."""
+        try:
+            await self._view.close_thinking()
+
+            for step in self._state.drain_tools():
+                await self._view.tool_stopped(step, StepText.TURN_FAILED.value)
+
+            if report.view:
+                await self._view.error(f"**failed:** {report.view}", self._key)
+        except Exception:
+            logger.warning("failed turn is not drawn: chat is gone", exc_info=True)
+
+    async def _remember(self, content: str, mark: TurnMark) -> None:
+        """История обязана пережить исход: её читает и лента, и сам агент."""
+        record = TurnRecord(
+            content=content,
+            mark=mark,
+            reasoning=self._state.pending_reasoning,
+        )
+        await self._history.remember(record)
 
 
 class ChatTurn:
@@ -130,33 +278,43 @@ class ChatTurn:
     _REPORTS: ClassVar[set[asyncio.Future[None]]] = set()
     """Живые отчёты об остановке: без ссылки задачу заберёт сборщик мусора."""
 
-    _ACTIVE: ClassVar[dict[str, ChatTurn]] = {}
-    """Идущие ходы по thread_id: переподключившаяся вкладка находит свой ход."""
-
     def __init__(
         self,
-        graph: CompiledStateGraph,
         thread_id: str,
         view: ChatView,
-        tracer: AgentTracer,
+        history: TurnHistory,
         key: str,
     ) -> None:
-        self._graph = graph
         self._thread_id = thread_id
         self._view = view
-        self._tracer = tracer
         self._key = key
-        self._outcome = "ok"
+        self._state = TurnState()
+        self._tracer = AgentTracer(view, self._state)
+        self._reporter = TurnReporter(
+            view=view,
+            state=self._state,
+            history=history,
+            key=key,
+        )
+
+    @property
+    def tracer(self) -> AgentTracer:
+        """Трасер хода: его отдают в callbacks прогона графа."""
+        return self._tracer
 
     @classmethod
     def stop(cls, thread_id: str) -> bool:
         """Кнопка Stop: обрывает ход немедленно; False — останавливать нечего."""
-        return TurnRegistry.instance().stop(thread_id, StopReason.USER_STOP)
+        return TurnContext.stop(thread_id, StopReason.USER_STOP)
 
     @classmethod
     def active(cls, thread_id: str) -> ChatTurn | None:
         """Живой ход треда; None — тред ничем не занят."""
-        return cls._ACTIVE.get(thread_id)
+        turn = TurnContext.turn_of(thread_id)
+        if not isinstance(turn, ChatTurn):
+            return None
+
+        return turn
 
     @property
     def answer_step_id(self) -> str | None:
@@ -190,7 +348,7 @@ class ChatTurn:
         if thinking := self._view.thinking_step:
             steps.append(thinking.to_dict())
 
-        for step in self._tracer.pending_tool_steps:
+        for step in self._state.pending_tool_steps:
             steps.append(step.to_dict())
 
         if answer := self._view.answer_message:
@@ -198,67 +356,106 @@ class ChatTurn:
 
         return steps
 
+    def resume_into(self, thread_dict: ThreadDict) -> None:
+        """Подкладывает живые шаги в ленту треда до её отправки клиенту.
+
+        Шаг с тем же id замещается — вкладка получает свежее состояние стрима,
+        новые шаги дописываются в конец.
+        """
+        live = self.resume_steps()
+
+        steps = list(thread_dict.get(ThreadField.STEPS) or [])
+        positions: dict[str, int] = {}
+        for index, step in enumerate(steps):
+            positions[step.get(StepField.ID, "")] = index
+
+        for step in live:
+            index = positions.get(step.get(StepField.ID, ""))
+            if index is None:
+                steps.append(step)
+            else:
+                steps[index] = step
+
+        thread_dict[ThreadField.STEPS] = steps
+
+        names: list[str] = []
+        for step in live:
+            names.append(str(step.get(StepField.NAME, "")))
+
+        logger.info(
+            "resume thread %s: %d live steps merged (%s)",
+            self._thread_id,
+            len(live),
+            ", ".join(names),
+        )
+
     async def run(
         self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
     ) -> None:
         """Гоняет стрим до конца либо до остановки; отменённый ход не молчит."""
-        self._ACTIVE[self._thread_id] = self
+        self._state.begin()
         started = time.monotonic()
         logger.info("turn start: thread=%s key=%s", self._thread_id, self._key)
         try:
             await self._run(stream)
         finally:
-            if self._ACTIVE.get(self._thread_id) is self:
-                del self._ACTIVE[self._thread_id]
-            ToolStreams.drop_thread(self._thread_id)
             elapsed_ms = int((time.monotonic() - started) * 1000)
             logger.info(
                 "turn finished: thread=%s outcome=%s in %dms",
                 self._thread_id,
-                self._outcome,
+                self._state.outcome_label,
                 elapsed_ms,
             )
             await self._finish_ui()
 
+    async def crash(self, error: BaseException) -> None:
+        """Сбой вокруг хода — до стрима или после: тот же трёхканальный отчёт.
+
+        Если исход уже был определён, второго отчёта не будет — ошибка идёт
+        наверх, её покажет обёртка callback'а.
+        """
+        if self._state.settle_failed(error):
+            await self._reporter.failed(error)
+            return
+
+        raise error
+
     async def _run(
         self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
     ) -> None:
-        with TurnRegistry.instance().open(self._thread_id) as cancellation:
-            await cl.context.emitter.task_start()
-            # контейнер до первого чанка: запрос в модель уходит с первой
-            # итерацией стрима, и до её ответа лента иначе пуста
-            await self._view.await_model()
+        with TurnContext.open(self._thread_id, self) as context:
+            cancellation = context.cancellation
             try:
+                await cl.context.emitter.task_start()
+                # контейнер до первого чанка: запрос в модель уходит с первой
+                # итерацией стрима, и до её ответа лента иначе пуста
+                await self._view.await_model()
                 async for chunk, _metadata in stream:
                     cancellation.raise_if_cancelled()
                     await self._view.model_answered()
                     await self._on_chunk(chunk)
+
+                await self._view.close_answer(self._key)
             except asyncio.CancelledError:
                 # задачу сняли снаружи; после кнопки Stop причина уже своя
                 cancellation.cancel(StopReason.ABORTED)
-                self._outcome = self._reason_label(cancellation.reason)
-                await self._report_stop(cancellation.reason)
+                if self._state.settle_stopped(cancellation.reason):
+                    await self._report_stop(cancellation.reason)
                 raise
             except ToolStopped:
-                self._outcome = self._reason_label(cancellation.reason)
-                await self._report_stop(cancellation.reason)
+                if self._state.settle_stopped(cancellation.reason):
+                    await self._report_stop(cancellation.reason)
                 return
             except Exception as e:
-                # тот же текст уйдёт в чат и в историю: три источника обязаны
-                # объяснять сбой одинаково
-                logger.exception("agent run failed: %s", FailureReport.of(e).log)
-                self._outcome = StopReason.FAILED.value
+                # отчёт до cancel: отмена гасит и задачу самого хода, незащищённый
+                # await после неё умирает — история сбоя была бы потеряна
+                if self._state.settle_failed(e):
+                    await self._reporter.failed(e)
                 cancellation.cancel(StopReason.FAILED)
-                await self._report_failure(e)
                 return
 
-        await self._view.close_answer(self._key)
-
-    @staticmethod
-    def _reason_label(reason: StopReason | None) -> str:
-        if reason is None:
-            return "stopped"
-        return reason.value
+        if self._state.settle_ok():
+            await self._reporter.ok()
 
     async def _finish_ui(self) -> None:
         """Гасит loading во всех вкладках треда: chainlit шлёт task_end только
@@ -275,55 +472,10 @@ class ChatTurn:
         Кнопку Stop chainlit обрабатывает отменой задачи хода, а прерыватель
         отменяет её второй раз — эта отмена приходит уже во время отрисовки.
         """
-        report = asyncio.ensure_future(self._stopped(reason))
+        report = asyncio.ensure_future(self._reporter.stopped(reason))
         self._REPORTS.add(report)
         report.add_done_callback(self._REPORTS.discard)
         await asyncio.shield(report)
-
-    async def _stopped(self, reason: StopReason | None) -> None:
-        """Фиксирует остановку: закрывает шаги и кладёт прерванный ответ в историю."""
-        note_text = StepText.for_stop(reason)
-        answer = self._view.answer_message
-        partial = ""
-        if answer is not None and answer.content:
-            partial = answer.content
-        note = f"_{note_text}_"
-        content = note
-        if partial:
-            content = f"{partial}\n\n{note}"
-
-        await self._draw_stop(note_text, content)
-        await self._remember(content, TurnMark.STOPPED)
-
-    async def _draw_stop(self, note_text: str, content: str) -> None:
-        """Отрисовка в ленте; при разрыве связи писать уже некому — это не сбой."""
-        try:
-            await self._tracer.stop_pending(note_text)
-            await self._view.rewrite_answer(content, self._key)
-        except Exception:
-            logger.warning("stopped turn is not drawn: chat is gone", exc_info=True)
-
-    async def _report_failure(self, error: BaseException) -> None:
-        """Сбой хода: журнал, чат и история получают его от одного разбора."""
-        report = FailureReport.of(error)
-
-        if report.view:
-            await self._view.error(f"**failed:** {report.view}", self._key)
-
-        if report.history:
-            await self._remember(f"**failed:** {report.history}", TurnMark.ERROR)
-
-    async def _remember(self, content: str, mark: TurnMark) -> None:
-        """История обязана пережить остановку: её читает и лента, и сам агент."""
-        record = TurnRecord(
-            content=content,
-            mark=mark,
-            reasoning=self._tracer.pending_reasoning,
-        )
-        await self._graph.aupdate_state(
-            RunnableConfig(configurable={"thread_id": self._thread_id}),
-            {"messages": [record.message()]},
-        )
 
     async def _on_chunk(self, chunk: BaseMessage) -> None:
         if not isinstance(chunk, AIMessageChunk):
@@ -331,6 +483,3 @@ class ChatTurn:
         if not isinstance(chunk.content, str) or not chunk.content:
             return
         await self._view.stream_answer(chunk.content, self._key)
-
-
-ActiveTurns.configure(ChatTurn.active)

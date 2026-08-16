@@ -23,7 +23,7 @@ from pydantic import SecretStr
 
 from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.agent.dump import DumpingTransport
-from boba.chainlit.chat.transcript import CheckpointMessages, TranscriptFeed
+from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.storage import StorageClient, StorageFactory

@@ -20,7 +20,7 @@ from ui.fake_llm import FakeLlmApp, ScenarioName
 from uvicorn.logging import DefaultFormatter
 
 from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
-from boba.chainlit.chat.llm_trace import LlmStateLog
+from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.anyio
 THREAD = "5c6e150c-5543-4fcc-9be9-bbc4c2523c38"
 USER = "solomatovs"
 MARK = f"{USER} {THREAD[:8]}"
-TRACE_LOGGER = "boba.chainlit.chat.llm_trace"
+TRACE_LOGGER = "boba.chainlit.chat.tracing"
 
 
 @pytest.fixture(autouse=True)

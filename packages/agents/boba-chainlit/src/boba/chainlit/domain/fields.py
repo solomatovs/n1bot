@@ -24,6 +24,8 @@ class StepField:
 
     ID: Final = "id"
     NAME: Final = "name"
+    OUTPUT: Final = "output"
+    IS_ERROR: Final = "isError"
     FEEDBACK: Final = "feedback"
 
 

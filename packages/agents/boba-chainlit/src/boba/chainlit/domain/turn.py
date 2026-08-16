@@ -1,15 +1,33 @@
-"""Порт идущего хода: инструменты цепляют вложения, не зная про сам ход.
+"""Контекст идущего хода: единственный реестр ходов по thread_id.
 
-Реализацию регистрирует слой чата на старте приложения — иначе инструменты
-зависели бы от оркестрации хода.
+Контекст открывает оркестрация хода; всё, что живёт ровно один ход, лежит
+здесь: отмена, ссылка на ход, живые журналы вызовов, насос показа потока.
+Инструменты и отрисовка находят ход только через этот реестр, закрытие
+контекста — единственный finally, гасящий всё сразу.
+
+Остановка хода адресуется thread_id и работает из любого потока: синхронный
+код прерывают зарегистрированные прерыватели, асинхронный — отмена задачи
+хода, зарегистрированная как прерыватель при открытии контекста.
+
+Ошибки: своих не выпускает; ToolStopped поднимает raise_if_cancelled отмены.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+import logging
+import threading
+from abc import abstractmethod
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from typing import ClassVar, Protocol
 
-__all__ = ["ActiveTurns", "TurnPort"]
+from boba.cancellation import StopReason, TurnCancellation, turn_cancellation
+from boba.chainlit.domain.stream import JournalFile
+
+__all__ = ["LiveStream", "TurnContext", "TurnPort"]
+
+logger = logging.getLogger(__name__)
 
 
 class TurnPort(Protocol):
@@ -19,25 +37,215 @@ class TurnPort(Protocol):
     def answer_step_id(self) -> str | None: ...
 
 
-class ActiveTurns:
-    """Реестр идущих ходов: одна точка доступа для инструментов."""
+class LiveStream(Protocol):
+    """Живой журнал вызова: контексту достаточно уметь его закрыть."""
 
-    _RESOLVER: ClassVar[Callable[[str], TurnPort | None] | None] = None
+    @property
+    @abstractmethod
+    def closed(self) -> bool: ...
+
+    @abstractmethod
+    def close(self, note: str) -> None: ...
+
+
+class TurnContext:
+    """Всё состояние одного идущего хода под одним ключом thread_id."""
+
+    STREAM_STOP_NOTE: ClassVar[str] = "stopped"
+    """Пометка журналам вызовов, не закрытым к концу хода."""
+
+    _LOCK: ClassVar[threading.Lock] = threading.Lock()
+    _ACTIVE: ClassVar[dict[str, TurnContext]] = {}
+
+    def __init__(
+        self,
+        thread_id: str,
+        turn: TurnPort,
+        cancellation: TurnCancellation,
+    ) -> None:
+        self._thread_id = thread_id
+        self._turn = turn
+        self._cancellation = cancellation
+        self._streams: dict[str, LiveStream] = {}
+        self._pump: asyncio.Task[None] | None = None
+
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
+
+    @property
+    def turn(self) -> TurnPort:
+        """Ход, открывший контекст."""
+        return self._turn
+
+    @property
+    def cancellation(self) -> TurnCancellation:
+        """Отмена хода; та же, что опубликована в contextvar исполнения."""
+        return self._cancellation
 
     @classmethod
-    def configure(cls, resolver: Callable[[str], TurnPort | None]) -> None:
-        cls._RESOLVER = resolver
+    @contextmanager
+    def open(
+        cls, thread_id: str, turn: TurnPort
+    ) -> Generator[TurnContext, None, None]:
+        """Открывает ход треда: отмена в контексте исполнения, ход в реестре.
+
+        Закрытие контекста снимает насос и закрывает живые журналы вызовов —
+        файлы журнала переживают ход, живые объекты нет.
+        """
+        with turn_cancellation() as cancellation:
+            context = cls(thread_id, turn, cancellation)
+            cls._register(context)
+            try:
+                with cls._task_abort(cancellation):
+                    yield context
+            finally:
+                cls._release(context)
+                context._close_live()
 
     @classmethod
-    def of(cls, thread_id: str) -> TurnPort | None:
-        """Живой ход треда; None — тред ничем не занят или реестр не настроен."""
-        resolver = cls._RESOLVER
-        if resolver is None:
+    def active(cls, thread_id: str) -> TurnContext | None:
+        """Контекст идущего хода; None — тред ничем не занят."""
+        with cls._LOCK:
+            return cls._ACTIVE.get(thread_id)
+
+    @classmethod
+    def turn_of(cls, thread_id: str) -> TurnPort | None:
+        """Ход треда для инструментов; None — тред ничем не занят."""
+        context = cls.active(thread_id)
+        if context is None:
             return None
 
-        return resolver(thread_id)
+        return context.turn
+
+    @classmethod
+    def stop(cls, thread_id: str, reason: StopReason) -> bool:
+        """Останавливает ход треда из любого потока; False — нечего."""
+        context = cls.active(thread_id)
+        if context is None:
+            logger.info("stop requested for thread %s: no active turn", thread_id)
+            return False
+
+        logger.info("stopping turn of thread %s (%s)", thread_id, reason.value)
+        context.cancellation.cancel(reason)
+        return True
+
+    def add_stream(self, call_id: str, stream: LiveStream) -> None:
+        """Регистрирует живой журнал вызова; жизнь журнала кончится с ходом."""
+        with self._LOCK:
+            self._streams[call_id] = stream
+
+    def stream(self, call_id: str) -> LiveStream | None:
+        """Живой журнал вызова; None — вызов не журналируется или закончился."""
+        with self._LOCK:
+            return self._streams.get(call_id)
+
+    @classmethod
+    def live_threads(cls) -> frozenset[str]:
+        """Треды с живыми журналами: их нельзя удалять инструментом уборки."""
+        with cls._LOCK:
+            live: list[str] = []
+            for context in cls._ACTIVE.values():
+                if context._streams:
+                    live.append(context._thread_id)
+
+            return frozenset(live)
+
+    @classmethod
+    def live_prefixes(cls) -> frozenset[str]:
+        """Префиксы файлов живых вызовов: вытеснять их из тома нельзя."""
+        with cls._LOCK:
+            return frozenset(cls._live_call_prefixes())
+
+    @classmethod
+    def _live_call_prefixes(cls) -> Iterator[str]:
+        for context in cls._ACTIVE.values():
+            for call_id in context._streams:
+                yield JournalFile.call_prefix(context._thread_id, call_id)
+
+    def attach_pump(self, task: asyncio.Task[None]) -> None:
+        """Ставит насос показа; предыдущий снимается — насос один на тред."""
+        self.leave_pump()
+        self._pump = task
+        task.add_done_callback(self._forget_pump)
+
+    def leave_pump(self) -> None:
+        """Снимает насос показа; без насоса делать нечего."""
+        task = self._pump
+        self._pump = None
+        if task is not None:
+            task.cancel()
+
+    def _forget_pump(self, task: asyncio.Task[None]) -> None:
+        if self._pump is task:
+            self._pump = None
 
     @classmethod
     def reset(cls) -> None:
-        """Сброс: пользуются тесты, приложению это не нужно."""
-        cls._RESOLVER = None
+        """Сброс реестра: пользуются тесты, приложению это не нужно."""
+        with cls._LOCK:
+            cls._ACTIVE.clear()
+
+    @classmethod
+    def _register(cls, context: TurnContext) -> None:
+        with cls._LOCK:
+            stale = cls._ACTIVE.get(context._thread_id)
+            cls._ACTIVE[context._thread_id] = context
+
+        if stale is None:
+            return
+
+        # новый ход того же треда: предыдущий дорабатывать незачем
+        logger.warning(
+            "thread %s already had an active turn; stopping it", context._thread_id
+        )
+        stale.cancellation.cancel(StopReason.SUPERSEDED)
+
+    @classmethod
+    def _release(cls, context: TurnContext) -> None:
+        with cls._LOCK:
+            if cls._ACTIVE.get(context._thread_id) is context:
+                del cls._ACTIVE[context._thread_id]
+
+    def _close_live(self) -> None:
+        """Конец хода: насос снимается, живые журналы закрываются, файлы остаются."""
+        self.leave_pump()
+
+        with self._LOCK:
+            streams = list(self._streams.values())
+            self._streams.clear()
+
+        for stream in streams:
+            if not stream.closed:
+                stream.close(self.STREAM_STOP_NOTE)
+
+    @classmethod
+    @contextmanager
+    def _task_abort(
+        cls, cancellation: TurnCancellation
+    ) -> Generator[None, None, None]:
+        """Отмена задачи хода как прерыватель: асинхронный мир тоже обрывается."""
+        abort = cls._task_canceller()
+        if abort is None:
+            yield
+            return
+
+        with cancellation.abort_with(abort):
+            yield
+
+    @staticmethod
+    def _task_canceller() -> Callable[[], None] | None:
+        """Прерыватель зовут из чужого потока — задачу трогаем только через loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
+        task = asyncio.current_task()
+        if task is None:
+            return None
+
+        def cancel_task() -> None:
+            loop.call_soon_threadsafe(task.cancel)
+
+        return cancel_task

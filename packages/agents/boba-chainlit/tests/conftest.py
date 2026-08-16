@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from omegaconf import DictConfig
 from psycopg import sql
 
-from boba.chainlit.chat.transcript import TranscriptFeed
+from boba.chainlit.chat.history import TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.domain.keys import AttachmentLinks

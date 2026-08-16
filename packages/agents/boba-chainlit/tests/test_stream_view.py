@@ -24,6 +24,7 @@ from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.data.stream_journal import DirVault, StreamJournal
 from boba.chainlit.domain.stream import JournalWindow
+from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.infra.plugins import stream_source
 from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind
 from boba.chainlit.rendering.chat_view import (
@@ -64,6 +65,29 @@ CALL_ID = "call-stream-1"
 TOOL_NAME = "fake_bash"
 
 
+class TurnScope:
+    """Контекст хода теста: живые стримы регистрируются в нём и гаснут с ним."""
+
+    _SCOPE: ClassVar[Any] = None
+
+    class Port:
+        answer_step_id = "answer-1"
+
+    @classmethod
+    def start(cls) -> None:
+        cls.end()
+        cls._SCOPE = TurnContext.open(THREAD, cls.Port())
+        cls._SCOPE.__enter__()
+
+    @classmethod
+    def end(cls) -> None:
+        """Конец хода: контекст закрывается, файлы журнала остаются на диске."""
+        scope = cls._SCOPE
+        cls._SCOPE = None
+        if scope is not None:
+            scope.__exit__(None, None, None)
+
+
 @pytest.fixture(autouse=True)
 def chainlit_context(tmp_path: Path) -> Any:
     """Контекст с thread_id и user сессии, журнал в каталоге на время теста."""
@@ -81,7 +105,10 @@ def chainlit_context(tmp_path: Path) -> Any:
     ToolStreams.configure(
         StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
     )
+    TurnScope.start()
     yield
+    TurnScope.end()
+    TurnContext.reset()
     ToolStreams.reset()
     ToolStreamTap.set(None)
     # контекст сбрасывается за собой: иначе сессия утечёт в тесты без неё
@@ -257,11 +284,11 @@ class TestJournalThroughWrapper:
 class TestJournalOutlivesTheTurn:
     """Журнал переживает конец хода: история открывает поток заново."""
 
-    def test_slice_after_drop_thread(self) -> None:
+    def test_slice_after_the_turn_ends(self) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed("прошлый ход".encode())
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
-        ToolStreams.drop_thread(THREAD)
+        stream.close(str(StreamNote.FINISHED))
+        TurnScope.end()
 
         assert ToolStreams.get(THREAD, CALL_ID) is None
 
@@ -272,23 +299,23 @@ class TestJournalOutlivesTheTurn:
         assert piece.text == "прошлый ход"
         assert piece.closed is True
 
-    def test_drop_thread_closes_abandoned_recorder(self) -> None:
+    def test_turn_end_closes_abandoned_recorder(self) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed(b"data")
 
-        ToolStreams.drop_thread(THREAD)
+        TurnScope.end()
 
         piece = ToolStreams.recorded_slice(
             USER, THREAD, CALL_ID, offset=0, channel=STDOUT
         )
         assert piece is not None
         assert piece.closed is True
-        assert piece.note == str(StreamNote.STOPPED)
+        assert piece.note == TurnContext.STREAM_STOP_NOTE
 
     def test_foreign_user_cannot_read_the_journal(self) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed(b"secret")
-        ToolStreams.drop_thread(THREAD)
+        TurnScope.end()
 
         piece = ToolStreams.recorded_slice(
             "999", THREAD, CALL_ID, offset=0, channel=STDOUT
@@ -417,8 +444,8 @@ class TestWindowAction:
     def _recorded(self) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed(self.BODY)
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
-        ToolStreams.drop_thread(THREAD)
+        stream.close(str(StreamNote.FINISHED))
+        TurnScope.end()
 
     def test_windows_walk_the_journal(self) -> None:
         self._recorded()
@@ -472,8 +499,8 @@ class TestShowAction:
     def test_recorded_stream_is_shown_from_the_journal(self) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed("сохранённый вывод".encode())
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
-        ToolStreams.drop_thread(THREAD)
+        stream.close(str(StreamNote.FINISHED))
+        TurnScope.end()
 
         channel = RecordingChannel()
 
@@ -613,7 +640,7 @@ class TestStreamDownload:
         stream = begin_stream()
         body = "строка вывода\n" * 20
         stream.sink_of(STDOUT).feed(body.encode())
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
+        stream.close(str(StreamNote.FINISHED))
 
         from httpx import ASGITransport, AsyncClient
 
@@ -645,7 +672,7 @@ class TestStreamDownload:
     def test_foreign_user_gets_no_log(self, tmp_path: Path) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed(b"secret output")
-        ToolStreams.finish(THREAD, CALL_ID, str(StreamNote.FINISHED))
+        stream.close(str(StreamNote.FINISHED))
 
         from httpx import ASGITransport, AsyncClient
 

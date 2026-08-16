@@ -14,11 +14,10 @@ from boba.chainlit.agent.tools.canvas import (
     canvas_content_action,
     open_canvas_action,
 )
-from boba.chainlit.chat.agent_tracer import AgentTracer
-from boba.chainlit.chat.edit import ThreadRewind
-from boba.chainlit.chat.llm_trace import LlmStateLog
-from boba.chainlit.chat.turn import ChatTurn, ThreadRoom
-from boba.chainlit.domain.fields import StepField, ThreadField
+from boba.chainlit.chat.history import GraphTurnHistory, ThreadRewind
+from boba.chainlit.chat.tracing import LlmStateLog
+from boba.chainlit.chat.turn import ChatTurn
+from boba.chainlit.domain.fields import ThreadField
 from boba.chainlit.domain.session import (
     LogUserMark,
     current_thread_id,
@@ -27,6 +26,7 @@ from boba.chainlit.domain.session import (
 )
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
+from boba.chainlit.infra.thread_room import ThreadRoom
 from boba.chainlit.rendering.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
@@ -57,30 +57,41 @@ async def on_message(
     thread_id = cl.context.session.thread_id
     ThreadRoom.activate(thread_id)
 
-    rewind = ThreadRewind(graph, data_layer, thread_id)
-    if await rewind.is_edit(msg.id):
-        await rewind.apply(msg.id, msg.content)
-        await rewind.refresh_view()
-
     view = ChatView(thread_id, LiveSink())
     view.begin_turn(msg.id)
-    tracer = AgentTracer(view)
-    state_log = LlmStateLog(LogUserMark(current_user_label(), thread_id))
-    run_config = RunnableConfig(
-        callbacks=[tracer, state_log],
-        configurable={"thread_id": thread_id},
+    turn = ChatTurn(
+        thread_id=thread_id,
+        view=view,
+        history=GraphTurnHistory(graph, thread_id),
+        key=msg.id,
     )
 
-    stream = cast(
-        "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
-        graph.astream(
-            {"messages": [ChatTurn.human_message(msg)]},
-            stream_mode="messages",
-            config=run_config,
-        ),
-    )
+    # сбой в любом месте хода — включая подготовку — отчитывается ходом же:
+    # чат, история и журнал получают одну формулировку
+    try:
+        rewind = ThreadRewind(graph, data_layer, thread_id)
+        if await rewind.is_edit(msg.id):
+            await rewind.apply(msg.id, msg.content)
+            await rewind.refresh_view()
 
-    await ChatTurn(graph, thread_id, view, tracer, msg.id).run(stream)
+        state_log = LlmStateLog(LogUserMark(current_user_label(), thread_id))
+        run_config = RunnableConfig(
+            callbacks=[turn.tracer, state_log],
+            configurable={"thread_id": thread_id},
+        )
+
+        stream = cast(
+            "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
+            graph.astream(
+                {"messages": [ChatTurn.human_message(msg)]},
+                stream_mode="messages",
+                config=run_config,
+            ),
+        )
+
+        await turn.run(stream)
+    except Exception as e:
+        await turn.crash(e)
 
 
 chainlit_config.code.on_message = wrap_user_function(on_message)
@@ -198,12 +209,15 @@ async def on_chat_resume(thread_dict: ThreadDict):
     """
     thread_id = thread_dict[ThreadField.ID]
     turn = ChatTurn.active(thread_id)
+
     room: list[str] = []
     for session in ThreadRoom.sessions(thread_id):
         room.append(session.id)
+
     turn_state = "none"
     if turn is not None:
         turn_state = "alive"
+
     logger.info(
         "resume thread %s: turn=%s, thread sessions=%s, current session=%s",
         thread_id,
@@ -211,29 +225,9 @@ async def on_chat_resume(thread_dict: ThreadDict):
         room,
         cl.context.session.id,
     )
+
     if turn is None:
         return
 
-    live = turn.resume_steps()
-    steps = list(thread_dict.get(ThreadField.STEPS) or [])
-    positions: dict[str, int] = {}
-    for index, step in enumerate(steps):
-        positions[step.get(StepField.ID, "")] = index
-    for step in live:
-        index = positions.get(step.get(StepField.ID, ""))
-        if index is None:
-            steps.append(step)
-        else:
-            steps[index] = step
-    thread_dict[ThreadField.STEPS] = steps
-    names: list[str] = []
-    for step in live:
-        names.append(str(step.get(StepField.NAME, "")))
-    logger.info(
-        "resume thread %s: %d live steps merged (%s)",
-        thread_id,
-        len(live),
-        ", ".join(names),
-    )
-
+    turn.resume_into(thread_dict)
     ThreadRoom.keep_loading()
