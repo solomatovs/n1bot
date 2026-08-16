@@ -23,14 +23,15 @@ import logging
 import time
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 
-from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
-from boba.chainlit.chat.history import TurnMark, TurnRecord
+from boba.chainlit.agent.chat_model import ResponseField
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.fields import StepField, ThreadField
@@ -44,13 +45,39 @@ from chainlit.types import ThreadDict
 __all__ = [
     "ChatTurn",
     "TurnHistory",
+    "TurnMark",
     "TurnOutcome",
+    "TurnRecord",
     "TurnReporter",
     "TurnState",
     "TurnStateError",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class TurnMark(StrEnum):
+    """Исход хода в additional_kwargs: его читает сборка ленты из истории."""
+
+    STOPPED = "stopped"
+    ERROR = "error"
+
+
+@dataclass
+class TurnRecord:
+    """Запись оборванного хода в историю агента."""
+
+    content: str
+    mark: TurnMark
+    reasoning: str = ""
+
+    def message(self) -> AIMessage:
+        """Сообщение для состояния графа: пометка исхода и рассуждения при них."""
+        extra: dict[str, Any] = {self.mark.value: True}
+        if self.reasoning:
+            extra[ResponseField.REASONING_CONTENT.value] = self.reasoning
+
+        return AIMessage(content=self.content, additional_kwargs=extra)
 
 
 class TurnStateError(Exception):

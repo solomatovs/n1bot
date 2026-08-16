@@ -16,6 +16,7 @@ from boba.cancellation import (
 )
 from boba.chainlit.chat.turn import ChatTurn
 from boba.chainlit.domain.turn import TurnContext
+from boba.toolkit.channels import CallOutcome
 
 THREAD = "thread-1"
 
@@ -128,7 +129,7 @@ class TestLiveArtifacts:
             assert context.stream("call-1") is stream
             assert TurnContext.live_threads() == frozenset({THREAD})
 
-        assert stream.note == TurnContext.STREAM_STOP_NOTE
+        assert stream.note == CallOutcome.STOPPED.value
         assert TurnContext.live_threads() == frozenset()
 
     def test_thread_without_streams_is_not_live(self) -> None:

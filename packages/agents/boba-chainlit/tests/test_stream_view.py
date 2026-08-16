@@ -34,13 +34,12 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
 )
 from boba.chainlit.rendering.stream_view import (
-    StreamNote,
+    StreamActions,
     StreamScreen,
     ToolStream,
     ToolStreams,
-    window_stream_action,
 )
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.stream import ToolStreamTap
 
 STDOUT = ToolChannel.STDOUT
@@ -189,7 +188,7 @@ class TestJournalThroughWrapper:
         )
         assert piece is not None
         assert piece.closed is True
-        assert piece.note == str(StreamNote.FINISHED)
+        assert piece.note == str(CallOutcome.FINISHED)
 
     def test_not_streamable_tool_gets_no_recorder(self) -> None:
         seen = run(self._invoke(streamable=False))
@@ -230,7 +229,7 @@ class TestJournalThroughWrapper:
         )
         assert piece is not None
         assert piece.closed is True
-        assert piece.note == str(StreamNote.FAILED)
+        assert piece.note == str(CallOutcome.FAILED)
         assert piece.text == "partial"
 
     def test_parallel_same_name_calls_keep_own_journals(self) -> None:
@@ -287,7 +286,7 @@ class TestJournalOutlivesTheTurn:
     def test_slice_after_the_turn_ends(self) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed("прошлый ход".encode())
-        stream.close(str(StreamNote.FINISHED))
+        stream.close(str(CallOutcome.FINISHED))
         TurnScope.end()
 
         assert ToolStreams.get(THREAD, CALL_ID) is None
@@ -310,7 +309,7 @@ class TestJournalOutlivesTheTurn:
         )
         assert piece is not None
         assert piece.closed is True
-        assert piece.note == TurnContext.STREAM_STOP_NOTE
+        assert piece.note == CallOutcome.STOPPED.value
 
     def test_foreign_user_cannot_read_the_journal(self) -> None:
         stream = begin_stream()
@@ -365,7 +364,7 @@ class TestPump:
             for index in range(self.CHUNKS):
                 sink.feed(b"%06d " % index + self.CHUNK)
                 time.sleep(0.002)
-            stream.close(str(StreamNote.FINISHED))
+            stream.close(str(CallOutcome.FINISHED))
 
         return stream, threading.Thread(target=write_all)
 
@@ -398,7 +397,7 @@ class TestPump:
         final = channel.contents[-1]
         assert final.kind is CanvasKind.STREAM
         assert f"{self.CHUNKS - 1:06d}" in final.text
-        assert str(StreamNote.FINISHED) in final.note
+        assert str(CallOutcome.FINISHED) in final.note
         assert final.stream is not None
         assert final.stream.closed is True
         assert final.stream.size == self.CHUNKS * (len(self.CHUNK) + 7)
@@ -444,17 +443,17 @@ class TestWindowAction:
     def _recorded(self) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed(self.BODY)
-        stream.close(str(StreamNote.FINISHED))
+        stream.close(str(CallOutcome.FINISHED))
         TurnScope.end()
 
     def test_windows_walk_the_journal(self) -> None:
         self._recorded()
 
         first = run(
-            window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
+            StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
         )
         middle = run(
-            window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 70000})
+            StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 70000})
         )
 
         assert first["stream"]["offset"] == 0
@@ -466,7 +465,7 @@ class TestWindowAction:
         self._recorded()
 
         beyond = run(
-            window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 10**9})
+            StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 10**9})
         )
 
         assert beyond["text"] == ""
@@ -474,7 +473,7 @@ class TestWindowAction:
 
     def test_unknown_call_gives_empty_answer(self) -> None:
         answer = run(
-            window_stream_action(USER, THREAD, {"call_id": "no-such-call", "offset": 0})
+            StreamActions.window(USER, THREAD, {"call_id": "no-such-call", "offset": 0})
         )
 
         assert answer == {}
@@ -485,7 +484,7 @@ class TestWindowAction:
             stream.sink_of(STDOUT).feed(b"live data")
             task = await StreamScreen.show(THREAD, stream, RecordingChannel())
 
-            await window_stream_action(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
+            await StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
             await asyncio.gather(task, return_exceptions=True)
             return task
 
@@ -499,7 +498,7 @@ class TestShowAction:
     def test_recorded_stream_is_shown_from_the_journal(self) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed("сохранённый вывод".encode())
-        stream.close(str(StreamNote.FINISHED))
+        stream.close(str(CallOutcome.FINISHED))
         TurnScope.end()
 
         channel = RecordingChannel()
@@ -640,7 +639,7 @@ class TestStreamDownload:
         stream = begin_stream()
         body = "строка вывода\n" * 20
         stream.sink_of(STDOUT).feed(body.encode())
-        stream.close(str(StreamNote.FINISHED))
+        stream.close(str(CallOutcome.FINISHED))
 
         from httpx import ASGITransport, AsyncClient
 
@@ -672,7 +671,7 @@ class TestStreamDownload:
     def test_foreign_user_gets_no_log(self, tmp_path: Path) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed(b"secret output")
-        stream.close(str(StreamNote.FINISHED))
+        stream.close(str(CallOutcome.FINISHED))
 
         from httpx import ASGITransport, AsyncClient
 

@@ -14,7 +14,6 @@ import logging
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Sequence
-from enum import StrEnum
 from functools import partial, wraps
 from typing import ClassVar, Protocol, TypeAlias, cast
 
@@ -22,7 +21,7 @@ from langchain_core.tools import BaseTool
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolResult, ToolResultBase, render_for_llm
 from boba.toolkit.stream import (
@@ -33,16 +32,9 @@ from boba.toolkit.stream import (
     ToolStreamTap,
 )
 
-__all__ = ["CallNote", "CallStream", "StreamSource", "ToolRunLogger"]
+__all__ = ["CallStream", "StreamSource", "ToolRunLogger"]
 
 logger = logging.getLogger(__name__)
-
-
-class CallNote(StrEnum):
-    """Итог журнала вызова; значения совпадают с формулировками панели."""
-
-    FINISHED = "finished"
-    FAILED = "failed"
 
 
 class CallStream(Protocol):
@@ -103,10 +95,10 @@ class ToolRunLogger:
                 ToolStreamTap.set(stream.sink_of(ToolChannel.STDOUT))
                 ToolChannelsTap.set(stream)
 
-            note = CallNote.FAILED
+            note = CallOutcome.FAILED
             try:
                 result = call(*args, **kwargs)
-                note = CallNote.FINISHED
+                note = CallOutcome.FINISHED
             except Exception as e:
                 ToolRunLogger._log_failure(name, started, e)
                 raise
@@ -140,10 +132,10 @@ class ToolRunLogger:
                 ToolStreamTap.set(stream.sink_of(ToolChannel.STDOUT))
                 ToolChannelsTap.set(stream)
 
-            note = CallNote.FAILED
+            note = CallOutcome.FAILED
             try:
                 result = await call(*args, **kwargs)
-                note = CallNote.FINISHED
+                note = CallOutcome.FINISHED
             except Exception as e:
                 ToolRunLogger._log_failure(name, started, e)
                 raise

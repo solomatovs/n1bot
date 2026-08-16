@@ -32,9 +32,8 @@ from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
 from boba.chainlit.rendering.stream_view import (
     StreamAction,
+    StreamActions,
     StreamScreen,
-    show_stream_action,
-    window_stream_action,
 )
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
@@ -172,7 +171,7 @@ async def on_canvas_stream(action: cl.Action) -> None:
         dict(action.payload),
     )
 
-    await show_stream_action(str(user_id), thread_id, action.payload)
+    await StreamActions.show(str(user_id), thread_id, action.payload)
 
 
 @cl.action_callback(StreamAction.WINDOW)
@@ -187,7 +186,7 @@ async def on_canvas_stream_window(action: cl.Action) -> dict[str, Any]:
     if user_id is None:
         return {}
 
-    return await window_stream_action(str(user_id), thread_id, action.payload)
+    return await StreamActions.window(str(user_id), thread_id, action.payload)
 
 
 @cl.action_callback(CanvasAction.STATUS)

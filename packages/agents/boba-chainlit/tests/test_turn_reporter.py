@@ -16,8 +16,7 @@ import pytest
 from langchain_core.messages import BaseMessage
 
 from boba.cancellation import StopReason
-from boba.chainlit.chat.history import TurnMark, TurnRecord
-from boba.chainlit.chat.turn import TurnReporter, TurnState
+from boba.chainlit.chat.turn import TurnMark, TurnRecord, TurnReporter, TurnState
 from boba.chainlit.domain.errors import UserInputError
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (

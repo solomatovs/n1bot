@@ -24,6 +24,7 @@ from typing import ClassVar, Protocol
 
 from boba.cancellation import StopReason, TurnCancellation, turn_cancellation
 from boba.chainlit.domain.stream import JournalFile
+from boba.toolkit.channels import CallOutcome
 
 __all__ = ["LiveStream", "TurnContext", "TurnPort"]
 
@@ -50,9 +51,6 @@ class LiveStream(Protocol):
 
 class TurnContext:
     """Всё состояние одного идущего хода под одним ключом thread_id."""
-
-    STREAM_STOP_NOTE: ClassVar[str] = "stopped"
-    """Пометка журналам вызовов, не закрытым к концу хода."""
 
     _LOCK: ClassVar[threading.Lock] = threading.Lock()
     _ACTIVE: ClassVar[dict[str, TurnContext]] = {}
@@ -217,7 +215,7 @@ class TurnContext:
 
         for stream in streams:
             if not stream.closed:
-                stream.close(self.STREAM_STOP_NOTE)
+                stream.close(CallOutcome.STOPPED.value)
 
     @classmethod
     @contextmanager

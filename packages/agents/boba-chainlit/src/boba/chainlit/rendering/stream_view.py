@@ -17,7 +17,7 @@ import itertools
 import logging
 import threading
 from abc import abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, Self
 
@@ -47,12 +47,11 @@ __all__ = [
     "CanvasChannel",
     "SidebarChannel",
     "StreamAction",
+    "StreamActions",
     "StreamNote",
     "StreamScreen",
     "ToolStream",
     "ToolStreams",
-    "show_stream_action",
-    "window_stream_action",
 ]
 
 logger = logging.getLogger(__name__)
@@ -68,12 +67,13 @@ class StreamAction(StrEnum):
 
 
 class StreamNote(StrEnum):
-    """Формулировки статусной строки окна потока."""
+    """Экранные тексты статусной строки окна потока.
+
+    Исходы закрытого вызова приходят из журнала словами CallOutcome —
+    их пишет обвязка вызова, панель показывает как есть.
+    """
 
     RUNNING = "running…"
-    FINISHED = "finished"
-    FAILED = "failed"
-    STOPPED = "stopped"
     GONE = "The log of this call is unavailable: journaling was not active."
 
     @classmethod
@@ -325,17 +325,12 @@ class ToolStreams:
         offset: int,
         channel: ToolChannel,
     ) -> StreamSlice | None:
-        """Окно журнала; любой отказ журнала — «нет данных», не сбой чата."""
-        journal = StreamJournalHub.get()
-        if journal is None:
-            return None
+        """Окно журнала от смещения; отказ журнала — «нет данных», не сбой чата."""
 
-        try:
-            key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
+        def read(journal: StreamStorePort, key: StreamKey) -> StreamSlice | None:
             return journal.slice_at(key, offset, channel)
-        except (StreamJournalError, ValidationError):
-            logger.warning("stream journal read failed: %s", call_id, exc_info=True)
-            return None
+
+        return cls._recorded(user_id, thread_id, call_id, read)
 
     @classmethod
     def recorded_slice_before(
@@ -347,13 +342,27 @@ class ToolStreams:
         channel: ToolChannel,
     ) -> StreamSlice | None:
         """Окно перед смещением: прокрутка вверх; отказ — «нет данных»."""
+
+        def read(journal: StreamStorePort, key: StreamKey) -> StreamSlice | None:
+            return journal.slice_before(key, end, channel)
+
+        return cls._recorded(user_id, thread_id, call_id, read)
+
+    @classmethod
+    def _recorded(
+        cls,
+        user_id: str,
+        thread_id: str,
+        call_id: str,
+        read: Callable[[StreamStorePort, StreamKey], StreamSlice | None],
+    ) -> StreamSlice | None:
         journal = StreamJournalHub.get()
         if journal is None:
             return None
 
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            return journal.slice_before(key, end, channel)
+            return read(journal, key)
         except (StreamJournalError, ValidationError):
             logger.warning("stream journal read failed: %s", call_id, exc_info=True)
             return None
@@ -484,75 +493,81 @@ class StreamScreen:
             logger.warning("stream pump stopped: push failed", exc_info=True)
 
 
-async def show_stream_action(
-    user_id: str, thread_id: str, payload: Mapping[str, object]
-) -> None:
-    """Показ потока: по умолчанию окно с начала файла; follow — к концу,
-    у живого вызова с насосом-слежением за хвостом."""
-    request = StreamShowRequest.model_validate(payload)
-    channel = SidebarChannel()
+class StreamActions:
+    """Действия фронта над потоком: показ журнала и перемотка окнами."""
 
-    if request.follow:
-        if stream := ToolStreams.get(thread_id, request.call_id):
-            await StreamScreen.show(thread_id, stream, channel)
+    @staticmethod
+    async def show(
+        user_id: str, thread_id: str, payload: Mapping[str, object]
+    ) -> None:
+        """Показ потока: по умолчанию окно с начала файла; follow — к концу,
+        у живого вызова с насосом-слежением за хвостом."""
+        request = StreamShowRequest.model_validate(payload)
+        channel = SidebarChannel()
+
+        if request.follow:
+            if stream := ToolStreams.get(thread_id, request.call_id):
+                await StreamScreen.show(thread_id, stream, channel)
+                return
+
+        StreamScreen.leave(thread_id)
+
+        offset = 0
+        if request.follow:
+            offset = -1
+
+        piece = ToolStreams.recorded_slice(
+            user_id, thread_id, request.call_id, offset=offset, channel=request.channel
+        )
+        if piece is None:
+            logger.info(
+                "stream show: no journal (hub=%s) user=%s thread=%s call=%s channel=%s",
+                StreamJournalHub.get() is not None,
+                user_id,
+                thread_id,
+                request.call_id,
+                request.channel,
+            )
+            await StreamScreen.gone(request.call_id, channel)
             return
 
-    StreamScreen.leave(thread_id)
-
-    offset = 0
-    if request.follow:
-        offset = -1
-
-    piece = ToolStreams.recorded_slice(
-        user_id, thread_id, request.call_id, offset=offset, channel=request.channel
-    )
-    if piece is None:
-        logger.info(
-            "stream show: no journal (hub=%s) user=%s thread=%s call=%s channel=%s",
-            StreamJournalHub.get() is not None,
-            user_id,
-            thread_id,
-            request.call_id,
-            request.channel,
-        )
-        await StreamScreen.gone(request.call_id, channel)
-        return
-
-    await StreamScreen.recorded(
-        thread_id, request.call_id, piece, channel, follow=request.follow
-    )
-
-
-async def window_stream_action(
-    user_id: str, thread_id: str, payload: Mapping[str, object]
-) -> dict[str, Any]:
-    """Прокрутка: окно журнала по границе; уход из хвоста снимает насос."""
-    request = StreamWindowRequest.model_validate(payload)
-
-    StreamScreen.leave(thread_id)
-
-    if request.before is not None:
-        piece = ToolStreams.recorded_slice_before(
-            user_id,
-            thread_id,
-            request.call_id,
-            end=request.before,
-            channel=request.channel,
-        )
-    else:
-        offset = request.offset
-        if offset is None:
-            offset = 0
-        piece = ToolStreams.recorded_slice(
-            user_id,
-            thread_id,
-            request.call_id,
-            offset=offset,
-            channel=request.channel,
+        await StreamScreen.recorded(
+            thread_id, request.call_id, piece, channel, follow=request.follow
         )
 
-    if piece is None:
-        return {}
+    @staticmethod
+    async def window(
+        user_id: str, thread_id: str, payload: Mapping[str, object]
+    ) -> dict[str, Any]:
+        """Прокрутка: окно журнала по границе; уход из хвоста снимает насос."""
+        request = StreamWindowRequest.model_validate(payload)
 
-    content = StreamScreen.content(thread_id, request.call_id, "", piece, follow=False)
-    return content.props()
+        StreamScreen.leave(thread_id)
+
+        if request.before is not None:
+            piece = ToolStreams.recorded_slice_before(
+                user_id,
+                thread_id,
+                request.call_id,
+                end=request.before,
+                channel=request.channel,
+            )
+        else:
+            offset = request.offset
+            if offset is None:
+                offset = 0
+            piece = ToolStreams.recorded_slice(
+                user_id,
+                thread_id,
+                request.call_id,
+                offset=offset,
+                channel=request.channel,
+            )
+
+        if piece is None:
+            return {}
+
+        content = StreamScreen.content(
+            thread_id, request.call_id, "", piece, follow=False
+        )
+        return content.props()
