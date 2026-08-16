@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import multiprocessing
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -12,16 +14,58 @@ import pytest
 pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
 
 from playwright.sync_api import Browser, Page, sync_playwright
+from psycopg import sql
 
+from boba.chainlit.infra.config import AppConfig
+from boba.db.postgres import AsyncPostgresPool
+from boba.settings import bind, build_app_config
 from ui.chat_page import ChatPage
 from ui.fake_llm import serve
 from ui.socket_log import SocketLog
-from ui.stand import StandConfig, StandProcess, StandUser, free_port
+from ui.stand import (
+    REPO_ROOT,
+    StandConfig,
+    StandPaths,
+    StandProcess,
+    StandUser,
+    free_port,
+)
 
-DB_PORT = 55432
 DB_NAME = "boba_ui_test"
 TOKEN_DELAY_SEC = 0.03
 BOOT_TIMEOUT_SEC = 120.0
+
+
+async def _ensure_database(name: str) -> None:
+    """Создаёт базу стенда на сервере из конфига приложения (если её нет)."""
+    built = build_app_config(config_path=StandPaths.BASE_CONFIG.under(REPO_ROOT))
+    app_config = bind(built, path="app", model=AppConfig)
+
+    maintenance = AsyncPostgresPool(app_config.data_layer.postgres)
+    await maintenance.open()
+    try:
+        async with maintenance.cursor() as cur:
+            await cur.execute(
+                "select 1 from pg_database where datname = %s",
+                (name,),
+            )
+            exists = await cur.fetchone()
+
+            if not exists:
+                await cur.execute(
+                    sql.SQL("create database {}").format(sql.Identifier(name))
+                )
+    finally:
+        await maintenance.close()
+
+
+@pytest.fixture(scope="session")
+def stand_database() -> str:
+    # свой поток: у сессии pytest может быть уже запущенный event loop
+    with ThreadPoolExecutor(max_workers=1) as runner:
+        runner.submit(asyncio.run, _ensure_database(DB_NAME)).result()
+
+    return DB_NAME
 
 
 @pytest.fixture(autouse=True)
@@ -71,13 +115,17 @@ def _await_llm(port: int) -> None:
 
 
 @pytest.fixture(scope="session")
-def stand(stand_workdir: Path, llm_port: int, fake_llm: None) -> Iterator[StandProcess]:
+def stand(
+    stand_workdir: Path,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+) -> Iterator[StandProcess]:
     config = StandConfig(
         workdir=stand_workdir,
         app_port=free_port(),
         llm_port=llm_port,
-        db_port=DB_PORT,
-        db_name=DB_NAME,
+        db_name=stand_database,
     )
     process = StandProcess(config=config, log_path=stand_workdir / "app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)

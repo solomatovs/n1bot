@@ -15,19 +15,22 @@ from typing import Any, ClassVar
 import pytest
 
 from boba.tool.kb.embedding import EmbeddingModel, LocalFastEmbedEmbedderFactory
+from boba.toolkit.cpu import CpuBudget
 
 MAX_REASONABLE_BATCH = 16
 """Выше этого инференс e5-large перестаёт помещаться в лимит профиля kb."""
 
 
 class FakeTextEmbedding:
-    """Заглушка fastembed: запоминает, с каким batch_size её позвали."""
+    """Заглушка fastembed: запоминает batch_size и число потоков движка."""
 
     calls: ClassVar[list[dict[str, Any]]] = []
+    threads: ClassVar[int | None] = None
 
-    def __init__(self, model_name: str, cache_dir: str) -> None:
+    def __init__(self, model_name: str, cache_dir: str, threads: int | None) -> None:
         self.model_name = model_name
         self.cache_dir = cache_dir
+        FakeTextEmbedding.threads = threads
 
     def passage_embed(self, texts, **kwargs):
         FakeTextEmbedding.calls.append({"method": "passage", **kwargs})
@@ -84,6 +87,26 @@ class TestBatchSizeReachesModel:
         embedder = LocalFastEmbedEmbedderFactory.build(_config(8))
         await embedder.embed_query("запрос")
         assert fake_fastembed.calls == [{"method": "query", "batch_size": 8}]
+
+
+class TestThreadsFollowTheQuota:
+    """Потоки движка — по квоте запуска: иначе onnxruntime берёт ядра хоста
+    и под cgroup-квотой его пул дерётся сам с собой (замер: ×5 на одном ядре).
+    """
+
+    @pytest.mark.parametrize(("cores", "expected"), [("1", 1), ("4", 4)])
+    def test_threads_come_from_the_cpu_budget(
+        self,
+        fake_fastembed,
+        monkeypatch: pytest.MonkeyPatch,
+        cores: str,
+        expected: int,
+    ) -> None:
+        monkeypatch.setenv(CpuBudget.ENV_VAR, cores)
+
+        LocalFastEmbedEmbedderFactory.build(_config(8))
+
+        assert fake_fastembed.threads == expected
 
 
 class TestConfigKeepsBatchSmall:

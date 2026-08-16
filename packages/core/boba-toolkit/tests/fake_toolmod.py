@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
@@ -52,6 +53,8 @@ async def fake_echo(
     if text == "crash":
         msg = "unexpected defect"
         raise RuntimeError(msg)
+
+    logging.getLogger("fake.tool").info("echo progress: %s", text)
 
     body = " ".join([text] * min(repeat, cfg.limit))
     artifact = TextResult(text=f"{body}|{cfg.token.get_secret_value()}")

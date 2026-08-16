@@ -139,6 +139,55 @@ class CgroupManager:
             raise CgroupError(msg) from e
         return leaf
 
+    THROTTLE_RATIO: ClassVar[float] = 0.2
+    """Доля времени под троттлингом, с которой запуск считается задушенным."""
+
+    def throttling(self, leaf: str) -> str:
+        """Сколько запуск простоял в очереди за cpu-квотой; пусто — не душили.
+
+        Упёршийся в квоту процесс выглядит зависшим: он работает, но получает
+        свою долю рывками. Без этой строки причину ищут в самом инструменте.
+        """
+        stat = self._cpu_stat(leaf)
+
+        throttled_usec = stat.get("throttled_usec")
+        usage_usec = stat.get("usage_usec")
+        if throttled_usec is None or not usage_usec:
+            return ""
+
+        ratio = throttled_usec / (throttled_usec + usage_usec)
+        if ratio < self.THROTTLE_RATIO:
+            return ""
+
+        periods = stat.get("nr_throttled", 0)
+        return (
+            f"cpu quota throttling: {ratio:.0%} of the time "
+            f"({throttled_usec // 1000}ms in {periods} periods); "
+            "raise cgroup_cpu_percent of the profile"
+        )
+
+    @staticmethod
+    def _cpu_stat(leaf: str) -> dict[str, int]:
+        """Счётчики cpu.stat leaf'а; недоступны — пустая карта."""
+        try:
+            with open(os.path.join(leaf, "cpu.stat")) as f:
+                raw = f.read()
+        except OSError:
+            return {}
+
+        stat: dict[str, int] = {}
+        for line in raw.splitlines():
+            parts = line.split()
+            if len(parts) != 2:  # noqa: PLR2004
+                continue
+
+            try:
+                stat[parts[0]] = int(parts[1])
+            except ValueError:
+                continue
+
+        return stat
+
     def release(self, leaf: str) -> None:
         """Добивает выживших через cgroup.kill и удаляет leaf."""
         try:

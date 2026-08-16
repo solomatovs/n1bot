@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from chainlit.element import Text
+from chainlit.element import CustomElement, Text
 from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
@@ -147,6 +147,35 @@ async def test_element_uploaded_by_route_keeps_its_stored_content(
     fetched = await layer.get_element(seeded.thread_id, element.id)
     assert fetched is not None
     assert stored.read_bytes() == b"streamed by the upload route"
+
+
+async def test_custom_element_keeps_props_out_of_storage(
+    seeded: Seed, files_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Кастом-элемент несёт только props: тела в хранилище у него нет.
+
+    Копию читать некому — лента берёт props из колонки, — а каждая запись
+    стоит монтирования образа пользователя.
+    """
+    layer = seeded.layer
+    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+
+    element = CustomElement(
+        thread_id=seeded.thread_id,
+        for_id=seeded.answer_step_id,
+        name="CanvasStream",
+        props={"call_id": "call-1", "label": "bash"},
+    )
+    await layer.create_element(element)
+
+    fetched = await layer.get_element(seeded.thread_id, element.id)
+    assert fetched is not None
+    assert fetched.get("props") == {"call_id": "call-1", "label": "bash"}
+
+    object_key = ObjectKey.build(
+        seeded.user.id, seeded.thread_id, element.name, element.id
+    ).render()
+    assert not (files_dir / object_key).exists()
 
 
 async def test_get_thread_builds_steps_from_history(seeded: Seed):

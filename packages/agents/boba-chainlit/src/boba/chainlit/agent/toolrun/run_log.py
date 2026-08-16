@@ -28,6 +28,7 @@ from boba.toolkit.stream import (
     StreamSink,
     ToolCallContext,
     ToolCallInfo,
+    ToolChannelsTap,
     ToolStreamTap,
 )
 
@@ -96,7 +97,10 @@ class ToolRunLogger:
             token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
             stream = ToolRunLogger._open_stream(name, call_id, stream_source)
             if stream is not None:
+                # оба тапа: текстовый запуск читает stdout-приёмник, канальный
+                # берёт приёмники всех каналов из ToolChannelsTap
                 ToolStreamTap.set(stream.sink_of(ToolChannel.STDOUT))
+                ToolChannelsTap.set(stream)
 
             note = CallNote.FAILED
             try:
@@ -108,6 +112,7 @@ class ToolRunLogger:
             finally:
                 if stream is not None:
                     ToolStreamTap.set(None)
+                    ToolChannelsTap.set(None)
                     stream.close(str(note))
                 ToolCallContext.reset(token)
 
@@ -129,7 +134,10 @@ class ToolRunLogger:
             token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
             stream = ToolRunLogger._open_stream(name, call_id, stream_source)
             if stream is not None:
+                # оба тапа: текстовый запуск читает stdout-приёмник, канальный
+                # берёт приёмники всех каналов из ToolChannelsTap
                 ToolStreamTap.set(stream.sink_of(ToolChannel.STDOUT))
+                ToolChannelsTap.set(stream)
 
             note = CallNote.FAILED
             try:
@@ -141,6 +149,7 @@ class ToolRunLogger:
             finally:
                 if stream is not None:
                     ToolStreamTap.set(None)
+                    ToolChannelsTap.set(None)
                     stream.close(str(note))
                 ToolCallContext.reset(token)
 

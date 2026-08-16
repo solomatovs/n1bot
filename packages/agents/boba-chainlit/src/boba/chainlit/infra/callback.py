@@ -154,6 +154,13 @@ async def on_canvas_stream(action: cl.Action) -> None:
     if user_id is None:
         return
 
+    logger.info(
+        "stream show: user=%s thread=%s payload=%s",
+        user_id,
+        thread_id,
+        dict(action.payload),
+    )
+
     await show_stream_action(str(user_id), thread_id, action.payload)
 
 

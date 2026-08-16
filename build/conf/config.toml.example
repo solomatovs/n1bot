@@ -246,6 +246,7 @@
 
 
 [sandbox]
+    require = true
     [sandbox.binaries]
         dirs = ["${env.base}/third/bin", "/usr/bin", "/usr/sbin", "/bin", "/sbin"]
 
@@ -487,6 +488,9 @@
     [tool.ingest.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.ingest.sandbox.override]
+            max_memory_bytes    = 17179869184
+            cgroup_memory_bytes = 8589934592
+            cgroup_cpu_percent  = 400
             ro_binds            = "${sandbox.binds.kb}"
             rw_images           = []
             image_template      = ""
@@ -506,10 +510,14 @@
     connection = "${postgres}"
     embedding  = "${embedding}"
     tables     = "${tables.kb}"
+    collection = "kb_confluence"
     tools      = { kb_vector_search = [], kb_fts_search = [] }
     [tool.kb.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.kb.sandbox.override]
+            max_memory_bytes    = 17179869184
+            cgroup_memory_bytes = 8589934592
+            cgroup_cpu_percent  = 400
             ro_binds            = "${sandbox.binds.kb}"
             rw_images           = []
             image_template      = ""

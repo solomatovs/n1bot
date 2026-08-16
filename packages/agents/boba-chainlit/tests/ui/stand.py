@@ -59,7 +59,6 @@ class StandConfig:
     workdir: Path
     app_port: int
     llm_port: int
-    db_port: int
     db_name: str
     url_prefix: str = "/boba-test"
 
@@ -112,7 +111,7 @@ class StandConfig:
         env["BOBA_ASSETS"] = str(StandPaths.ASSETS.under(REPO_ROOT))
         env["BOBA_BIND_CODE"] = f"{StandPaths.PACKAGES.under(REPO_ROOT)}:/opt/src"
         env["BOBA_SANDBOX_PYTHONPATH"] = "/opt/site"
-        env["BOBA_CGROUP_BASE"] = "/sys/fs/cgroup/boba.slice"
+        env["BOBA_CGROUP_BASE"] = "/sys/fs/cgroup/boba"
         env["BOBA_PORT"] = str(self.app_port)
         env["BOBA_URL_PREFIX"] = self.url_prefix
         env["PGGSSENCMODE"] = "disable"
@@ -123,29 +122,19 @@ class StandConfig:
         return env
 
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
-        doc["openai"]["fake"] = {
+        agent = doc["agent"]
+        agent["openai"] = {
             "base_url": f"http://127.0.0.1:{self.llm_port}/v1",
             "api_key": "none",
             "ssl_verify": False,
             "dump": {"enable": False},
         }
-        agent = doc["agent"]
-        agent["openai"] = "${openai.fake}"
         agent["model"] = "fake-model"
         agent["temperature"] = 0.0
 
     def _use_test_database(self, doc: MutableMapping[str, Any]) -> None:
-        postgres = doc["postgres"]
-        postgres["host"] = "127.0.0.1"
-        postgres["port"] = self.db_port
-        postgres["user"] = "postgres"
-        postgres["dbname"] = self.db_name
-        postgres["gssencmode"] = "disable"
-        postgres["sslmode"] = "disable"
-        postgres.pop("hostaddr", None)
-        postgres.pop("kerberos", None)
-        # секция clickhouse ссылается на принципала postgres — уходит следом
-        doc.get("clickhouse", {}).pop("kerberos", None)
+        """Сервер и учётка — из конфига приложения; стенду — отдельная база."""
+        doc["postgres"]["dbname"] = self.db_name
         doc["connections"]["enable"] = False
 
     def _use_local_storage(self, doc: MutableMapping[str, Any]) -> None:

@@ -40,6 +40,11 @@ class KbToolConfig(PostgresKnowledgeBaseConfig):
 
     SECTION: ClassVar[str] = "tool.kb"
 
+    collection: str = Field(
+        min_length=1,
+        description="Имя коллекции чанков, по которой идёт поиск.",
+    )
+
     def revealed(self) -> dict[str, object]:
         """JSON-совместимый дамп с раскрытым паролем подключения.
 
@@ -143,7 +148,7 @@ async def _search(  # noqa: PLR0913
             chunks_table=_table_of(cfg),
         )
         params: dict[str, Any] = {
-            "collections": [collection.COLLECTION],
+            "collections": [cfg.collection],
             "embedding": embedding,
             "snippet_chars": snippet_chars,
             "top_k": top_k,
@@ -154,7 +159,7 @@ async def _search(  # noqa: PLR0913
             schema=sql.Identifier(cfg.tables.pg_schema),
         )
         params = {
-            "collections": [collection.COLLECTION],
+            "collections": [cfg.collection],
             "query": query,
             "snippet_chars": snippet_chars,
             "top_k": top_k,

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -432,9 +433,13 @@ class ToolMain:
 
         return tuple(checked)
 
+    LOG_FORMAT: ClassVar[str] = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
     @classmethod
     def run(cls, tools: Sequence[ToolLike], argv: Sequence[str] | None = None) -> int:
         arguments = list(sys.argv[1:]) if argv is None else list(argv)
+
+        cls._setup_logging()
 
         try:
             return cls._run(tools, arguments)
@@ -444,6 +449,21 @@ class ToolMain:
         except PayloadFailureError as exc:
             cls._emit_error(exc.kind, str(exc))
             return cls.Exit.EXPECTED_FAILURE
+
+    @classmethod
+    def _setup_logging(cls) -> None:
+        """Логи тела — в stdout процесса: он журналируется и стримится в панель.
+
+        Конверт уезжает отдельным дескриптором, stdout протоколом не занят;
+        уровень приходит от хоста переменной окружения (BOBA_LOG_LEVEL).
+        """
+        from boba.toolkit.payload import PayloadLogging  # noqa: PLC0415
+
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(cls.LOG_FORMAT))
+        logging.basicConfig(
+            level=PayloadLogging.level(), handlers=[handler], force=True
+        )
 
     @classmethod
     def _run(cls, tools: Sequence[ToolLike], arguments: list[str]) -> int:

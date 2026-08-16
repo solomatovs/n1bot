@@ -25,6 +25,7 @@ from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.binaries import SandboxBinary
+from boba.toolkit.cpu import CpuBudget
 from boba.toolkit.launcher import LauncherError, LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.stream import StreamSink, ToolCallContext, ToolStreamTap
@@ -295,6 +296,8 @@ class SandboxRunner:
         finally:
             channels.close()
             if manager is not None and cgroup_dir is not None:
+                # счётчики читаются до удаления leaf'а: после release их нет
+                self._log_throttling(name, manager, cgroup_dir)
                 manager.release(cgroup_dir)
 
         self._log_finish(name, result)
@@ -305,6 +308,15 @@ class SandboxRunner:
         if diagnostic:
             logger.warning("sandbox[%s]: %s", name, diagnostic)
         return SandboxOutcome(name, result, diagnostic)
+
+    @staticmethod
+    def _log_throttling(name: str, manager: CgroupManager, leaf: str) -> None:
+        """Задушенный квотой запуск выглядит зависшим — это должно быть видно."""
+        note = manager.throttling(leaf)
+        if not note:
+            return
+
+        logger.warning("sandbox[%s]: %s", name, note)
 
     def diagnose(self, result: RunResult, tool_stderr: str) -> str:
         """Объяснение сбоя лимитами; в разборе участвует и хвост tool_stderr.
@@ -366,6 +378,7 @@ class SandboxRunner:
         finally:
             relay.flush()
             if manager is not None and cgroup_dir is not None:
+                self._log_throttling(name, manager, cgroup_dir)
                 manager.release(cgroup_dir)
         result = self._drop_relayed(result)
         self._log_finish(name, result)
@@ -398,10 +411,19 @@ class SandboxRunner:
 
     @staticmethod
     def _env_of(profile: SandboxProfile) -> dict[str, str]:
-        """env профиля плюс уровень логов: он берётся из секции logger приложения."""
+        """env профиля, уровень логов и доля CPU: их знает только хост.
+
+        Нативные движки внутри считают ядра по хосту и не видят cgroup-квоту —
+        без этой подсказки их потоки дерутся за выделенную долю.
+        """
         env = dict(profile.env_set)
+
         level = logging.getLogger(SandboxRunner.APP_LOGGER).getEffectiveLevel()
         env[PayloadLogging.LEVEL_ENV] = logging.getLevelName(level)
+
+        if cores := CpuBudget.of_percent(profile.cgroup_cpu_percent):
+            env[CpuBudget.ENV_VAR] = str(cores)
+
         return env
 
     @staticmethod

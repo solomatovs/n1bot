@@ -14,15 +14,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import psycopg
 import pytest
 from langchain_core.tools import BaseTool
 from psycopg import sql
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
+from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox import (
     SandboxCaller,
-    SandboxPayloadError,
     SandboxToolConfig,
 )
 from boba.settings import bind
@@ -34,7 +33,6 @@ from boba.toolkit.launcher import LauncherFactory, PayloadFailureError, ToolLaun
 from boba.toolkit.result import (
     AffectedSqlResult,
     ChartResult,
-    ErrorResult,
     JsonResult,
     TableResult,
     TextResult,
@@ -45,15 +43,15 @@ from boba.toolkit.wrap import ToolProcessWrap
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS = _REPO / "build" / "src" / "sandbox" / "rootfs"
 
-_UID = os.getuid()
-_DELEGATED = f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service"
+_CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
 
-def _inside_delegated_scope() -> bool:
-    """Мигрировать в cgroup_base можно только из его же поддерева."""
-    with open("/proc/self/cgroup") as f:
-        current = f.read().strip().split(":")[-1]
-    return current.startswith(f"/boba.slice/user-{_UID}.slice/user@{_UID}.service")
+def _cgroup_delegated() -> bool:
+    """Миграция в cgroup_base из session-scope: нужна запись в саму базу и в
+    cgroup.procs общего предка (корня cgroup) — это готовит boba-cgroup.service."""
+    base_ok = os.access(os.path.join(_CGROUP_BASE, "cgroup.procs"), os.W_OK)
+    root_ok = os.access("/sys/fs/cgroup/cgroup.procs", os.W_OK)
+    return base_ok and root_ok
 
 
 pytestmark = [
@@ -64,11 +62,11 @@ pytestmark = [
         reason="нет bwrap или артефактов песочницы (собрать: make deps)",
     ),
     pytest.mark.skipif(
-        not os.path.isdir(_DELEGATED) or not _inside_delegated_scope(),
+        not _cgroup_delegated(),
         reason=(
-            "pytest вне делегированного scope: cgroup-лимиты профиля не "
-            "применятся. Запуск: systemd-run --user --scope --slice="
-            "boba-sandbox.slice pytest ... (или конфигурация из launch.json)"
+            f"cgroup base {_CGROUP_BASE} не делегирован пользователю: "
+            "cgroup-лимиты профиля не применятся "
+            "(systemctl enable --now boba-cgroup.service)"
         ),
     ),
 ]
@@ -298,6 +296,7 @@ class KbCleanup:
 
     @staticmethod
     async def drop(cfg: ConfluenceIngestConfig, collection: str) -> None:
+        """Подключение — через пул приложения: kerberos-ccache из keytab."""
         statements = (
             sql.SQL(
                 """
@@ -318,11 +317,15 @@ class KbCleanup:
                 sql.Identifier(cfg.tables.pg_schema, cfg.tables.collections_table)
             ),
         )
-        conn = await psycopg.AsyncConnection.connect(**cfg.connection.conn_settings())
-        async with conn:
-            for statement in statements:
-                await conn.execute(statement, (collection,))
-            await conn.commit()
+
+        pool = AsyncPostgresPool(cfg.connection)
+        await pool.open()
+        try:
+            async with pool.connection() as conn, conn.transaction():
+                for statement in statements:
+                    await conn.execute(statement, (collection,))
+        finally:
+            await pool.close()
 
 
 @pytest.fixture(scope="module")
@@ -365,7 +368,8 @@ def kb_tools(raw_config, kb_collection: str):
     ToolProcessWrap.guard_all(module.TOOLS, launcher)
 
     def resolve(name: str, annotation: Any) -> object:
-        return bind(raw_config, path=annotation.SECTION, model=annotation)
+        cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
+        return cfg.model_copy(update={"collection": kb_collection})
 
     InjectedConfig.bind_all(functions, resolve)
 
@@ -520,7 +524,8 @@ class TestDocTools:
         assert result.rows[0]["page"] == 1
 
     async def test_missing_document_fails_loudly(self, doc_tools) -> None:
-        with pytest.raises(SandboxPayloadError):
+        """Нет файла — объявленный отказ парсера, а не крах процесса."""
+        with pytest.raises(PayloadFailureError) as failure:
             await Call.result(
                 doc_tools["read_document"],
                 path="/workspace/no.pdf",
@@ -529,6 +534,9 @@ class TestDocTools:
                 num_workers=1,
                 ocr_language="rus+eng",
             )
+
+        assert failure.value.kind == "document_unreadable"
+        assert "no.pdf" in str(failure.value)
 
 
 class TestChartTool:
@@ -634,10 +642,13 @@ class TestConfluenceTools:
         assert isinstance(result, TableResult)
 
     async def test_unknown_page_reports_error(self, confluence_tools) -> None:
-        result = await Call.result(
-            confluence_tools["confluence_fetch"], page_id="0", as_markdown=True
-        )
-        assert isinstance(result, ErrorResult)
+        """Несуществующая страница — объявленный отказ с kind'ом инструмента."""
+        with pytest.raises(PayloadFailureError) as failure:
+            await Call.result(
+                confluence_tools["confluence_fetch"], page_id="0", as_markdown=True
+            )
+
+        assert failure.value.kind == "confluence_request_failed"
 
 
 class TestPgTools:
@@ -780,13 +791,16 @@ class TestIngestTools:
         assert stats["skipped_unchanged"] >= 1
 
     async def test_unknown_space_reports_error(self, ingest_tools) -> None:
-        result = await Call.result(
-            ingest_tools["confluence_index_spaces"],
-            space_keys=["NOSUCHSPACE"],
-            prune_missing=False,
-            force_update=False,
-        )
-        assert isinstance(result, ErrorResult)
+        """Несуществующий space — объявленный отказ с kind'ом инструмента."""
+        with pytest.raises(PayloadFailureError) as failure:
+            await Call.result(
+                ingest_tools["confluence_index_spaces"],
+                space_keys=["NOSUCHSPACE"],
+                prune_missing=False,
+                force_update=False,
+            )
+
+        assert failure.value.kind == "ingest_request_failed"
 
     async def test_fetch_attachment(
         self, ingest_tools, confluence_attachment_ref

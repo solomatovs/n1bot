@@ -17,7 +17,7 @@ import pytest
 from boba.krb import KerberosEnv, KeytabConfig, KeytabCredentials
 
 _KRB = Path(__file__).resolve().parents[5] / "compose" / "conf" / "krb"
-KEYTAB = _KRB / "krb5.keytab"
+KEYTAB = _KRB / "boba-svc.keytab"
 KRB5_CONF = _KRB / "krb5.conf"
 PRINCIPAL = "boba-svc@LOSHARA.COM"
 

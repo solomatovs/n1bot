@@ -20,6 +20,7 @@ from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.rendering.result import MarkdownRendering, ToolResultView
+from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import (
@@ -29,6 +30,7 @@ from boba.toolkit.result import (
     ToolResult,
     render_for_llm,
 )
+from boba.toolkit.stream import ToolChannelsTap
 from boba.toolkit.wrap import ToolProcessWrap
 
 
@@ -153,3 +155,61 @@ class TestArtifactRendering:
         rendering = ToolResultView(revived).render()
         assert isinstance(rendering, MarkdownRendering)
         assert "| n" in rendering.markdown
+
+
+class _FakeStream:
+    """Журнал вызова для теста: приёмники каналов и заметка закрытия."""
+
+    def __init__(self) -> None:
+        self.fed: dict[ToolChannel, bytearray] = {}
+        self.note = ""
+
+    def sink_of(self, channel: ToolChannel) -> Any:
+        buffer = self.fed.setdefault(channel, bytearray())
+
+        class _Sink:
+            def feed(self, data: bytes) -> None:
+                buffer.extend(data)
+
+            def feed_text(self, text: str) -> None:
+                buffer.extend(text.encode())
+
+        return _Sink()
+
+    def close(self, note: str) -> None:
+        self.note = note
+
+
+class TestChannelTap:
+    """ToolRunLogger обязан подключить приёмники каналов: без ToolChannelsTap
+    канальный запуск не журналирует ни байта."""
+
+    @pytest.mark.anyio
+    async def test_channels_tap_is_set_during_the_call(self) -> None:
+        stream = _FakeStream()
+        seen: list[Any] = []
+
+        @tool(response_format="content_and_artifact")
+        async def tap_probe(
+            text: Annotated[str, Field(min_length=1, description="Что вернуть")],
+        ) -> tuple[str, ToolResult]:
+            """Фиксирует, какие тапы видит тело во время вызова."""
+            seen.append(ToolChannelsTap.get())
+            artifact = TextResult(text=text)
+            return render_for_llm(artifact), artifact
+
+        ToolCallIdField.attach_all([tap_probe])
+        ToolRunLogger.guard_all([tap_probe], lambda tool, call_id: stream)
+
+        await tap_probe.ainvoke(
+            {
+                "name": "tap_probe",
+                "args": {"text": "ping"},
+                "id": "call-tap-1",
+                "type": "tool_call",
+            }
+        )
+
+        assert seen == [stream]
+        assert ToolChannelsTap.get() is None
+        assert stream.note == "finished"

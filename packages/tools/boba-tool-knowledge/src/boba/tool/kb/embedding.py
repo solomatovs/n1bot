@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
+from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
 from boba.indexing.ports import Embedder
+from boba.toolkit.cpu import CpuBudget
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "EmbeddingModel",
@@ -31,10 +36,16 @@ class LocalFastEmbedEmbedder(Embedder[str]):
             TextEmbedding,
         )
 
+        # onnxruntime считает ядра по хосту и cgroup-квоту не видит: без
+        # threads его пул дерётся сам с собой (на одном ядре — в 5 раз дольше)
+        threads = CpuBudget.cores()
+        logger.info("embedder: %s on %d threads", model_name, threads)
+
         self._model_name = model_name
         self._model = TextEmbedding(
             model_name=model_name,
             cache_dir=cache_dir,
+            threads=threads,
         )
         self._dim = dim
         self._batch_size = batch_size
@@ -51,12 +62,21 @@ class LocalFastEmbedEmbedder(Embedder[str]):
         async with self._lock:
             return await asyncio.to_thread(self._query_embed, content)
 
+    PROGRESS_EVERY: ClassVar[int] = 25
+    """Шаг прогресса в журнале: длинный батч не должен выглядеть зависшим."""
+
     def _passage_embed(self, contents: Sequence[str]) -> list[Sequence[float]]:
         vectors: list[Sequence[float]] = []
         for vec in self._model.passage_embed(contents, batch_size=self._batch_size):
             v = vec.tolist()
             self._record_dim(v)
             vectors.append(v)
+
+            if len(vectors) % self.PROGRESS_EVERY == 0:
+                logger.info(
+                    "embedding progress: %d/%d", len(vectors), len(contents)
+                )
+
         return vectors
 
     def _query_embed(self, content: str) -> Sequence[float]:
