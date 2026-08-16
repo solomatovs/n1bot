@@ -7,7 +7,20 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-__all__ = ["ToolChannel", "WrapChannel"]
+__all__ = ["CallOutcome", "ToolChannel", "WrapChannel"]
+
+
+class CallOutcome(StrEnum):
+    """Пометка закрытия журнала вызова: её пишет обвязка, читает панель.
+
+    Один словарь на писателя и читателя: run_log закрывает журнал исходом
+    вызова, конец хода закрывает брошенные журналы STOPPED, панель
+    показывает пометку как статус потока.
+    """
+
+    FINISHED = "finished"
+    FAILED = "failed"
+    STOPPED = "stopped"
 
 
 class ToolChannel(StrEnum):

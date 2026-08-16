@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, Protocol, cast
 
 from langchain_core.messages import (
@@ -28,6 +27,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
 from boba.chainlit.agent.chat_model import ResponseField
+from boba.chainlit.chat.turn import TurnMark, TurnRecord
 from boba.chainlit.rendering.chat_view import (
     ChatView,
     RecordingSink,
@@ -47,8 +47,6 @@ __all__ = [
     "ThreadMessages",
     "ThreadRewind",
     "TranscriptFeed",
-    "TurnMark",
-    "TurnRecord",
 ]
 
 logger = logging.getLogger(__name__)
@@ -73,30 +71,6 @@ class PendingCall:
             args = {}
 
         return cls(name=str(name), args=cast("Mapping[str, Any]", args))
-
-
-class TurnMark(StrEnum):
-    """Исход хода в additional_kwargs: его читает сборка ленты из истории."""
-
-    STOPPED = "stopped"
-    ERROR = "error"
-
-
-@dataclass
-class TurnRecord:
-    """Запись оборванного хода в историю агента."""
-
-    content: str
-    mark: TurnMark
-    reasoning: str = ""
-
-    def message(self) -> AIMessage:
-        """Сообщение для состояния графа: пометка исхода и рассуждения при них."""
-        extra: dict[str, Any] = {self.mark.value: True}
-        if self.reasoning:
-            extra[ResponseField.REASONING_CONTENT.value] = self.reasoning
-
-        return AIMessage(content=self.content, additional_kwargs=extra)
 
 
 class GraphTurnHistory:

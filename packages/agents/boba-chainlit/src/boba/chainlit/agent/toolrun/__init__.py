@@ -9,7 +9,6 @@ from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.run_log import (
-    CallNote,
     CallStream,
     StreamSource,
     ToolRunLogger,
@@ -18,7 +17,6 @@ from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
 
 __all__ = [
     "AsyncCall",
-    "CallNote",
     "CallStream",
     "CancellableTools",
     "StreamSource",
