@@ -32,7 +32,7 @@ class ToolConfigError(Exception):
 class InjectedConfig:
     """Партиал конфига поверх обёртки запуска плюс снятие полей со схемы."""
 
-    class _Partial(CallHooks):
+    class _Partial(CallHooks[None]):
         def __init__(self, values: dict[str, object]) -> None:
             self._values = values
 
@@ -41,11 +41,9 @@ class InjectedConfig:
             name: str,
             args: tuple[object, ...],
             kwargs: dict[str, object],
-        ) -> object:
+        ) -> None:
             for key, value in self._values.items():
                 kwargs.setdefault(key, value)
-
-            return None
 
     @classmethod
     def bind_all(cls, tools: Sequence[BaseTool], resolve: ConfigResolver) -> None:

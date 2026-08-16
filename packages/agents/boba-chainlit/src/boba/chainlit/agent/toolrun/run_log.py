@@ -16,7 +16,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Sequence
 from contextvars import Token
 from dataclasses import dataclass
-from typing import ClassVar, Protocol, TypeAlias, cast
+from typing import ClassVar, Protocol, TypeAlias
 
 from langchain_core.tools import BaseTool
 
@@ -24,7 +24,7 @@ from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
 from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.failure import FailureText
-from boba.toolkit.result import ToolResult, ToolResultBase, render_for_llm
+from boba.toolkit.result import ToolResultBase
 from boba.toolkit.stream import (
     StreamSink,
     ToolCallContext,
@@ -71,7 +71,7 @@ class ToolRunLogger:
     PACKED_RESULT: ClassVar[int] = 2
     """Длина кортежа (content, artifact) у tool'ов с content_and_artifact."""
 
-    class _Hooks(CallHooks):
+    class _Hooks(CallHooks["_CallScope"]):
         def __init__(self, stream_source: StreamSource) -> None:
             self._stream_source = stream_source
 
@@ -80,7 +80,7 @@ class ToolRunLogger:
             name: str,
             args: tuple[object, ...],
             kwargs: dict[str, object],
-        ) -> object:
+        ) -> _CallScope:
             call_id = ToolCallIdField.pop(kwargs)
             ToolRunLogger._log_start(name, args, kwargs)
 
@@ -100,25 +100,22 @@ class ToolRunLogger:
                 note=str(CallOutcome.FAILED),
             )
 
-        def after(self, ctx: object, result: object) -> object:
-            scope = cast("_CallScope", ctx)
-            scope.note = str(CallOutcome.FINISHED)
-            ToolRunLogger._log_outcome(scope.name, scope.started, result)
+        def after(self, ctx: _CallScope, result: object) -> object:
+            ctx.note = str(CallOutcome.FINISHED)
+            ToolRunLogger._log_outcome(ctx.name, ctx.started, result)
             return result
 
-        def on_error(self, ctx: object, error: Exception) -> object:
-            scope = cast("_CallScope", ctx)
-            ToolRunLogger._log_failure(scope.name, scope.started, error)
+        def on_error(self, ctx: _CallScope, error: Exception) -> object:
+            ToolRunLogger._log_failure(ctx.name, ctx.started, error)
             raise error
 
-        def cleanup(self, ctx: object) -> None:
-            scope = cast("_CallScope", ctx)
-            if scope.stream is not None:
+        def cleanup(self, ctx: _CallScope) -> None:
+            if ctx.stream is not None:
                 ToolStreamTap.set(None)
                 ToolChannelsTap.set(None)
-                scope.stream.close(scope.note)
+                ctx.stream.close(ctx.note)
 
-            ToolCallContext.reset(scope.token)
+            ToolCallContext.reset(ctx.token)
 
     @classmethod
     def guard_all(
@@ -163,9 +160,14 @@ class ToolRunLogger:
         payload = result
         if isinstance(payload, tuple) and len(payload) == ToolRunLogger.PACKED_RESULT:
             payload = payload[1]
-        if not isinstance(payload, ToolResultBase) or payload.ok:
+
+        if not isinstance(payload, ToolResultBase):
             return None
-        return render_for_llm(cast("ToolResult", payload))
+
+        if payload.ok:
+            return None
+
+        return payload.llm_text()
 
     @staticmethod
     def _log_failure(name: str, started: float, error: BaseException) -> None:

@@ -46,7 +46,7 @@ class ToolAccess:
 class ToolAccessGuard:
     """Проверка прав в момент вызова инструмента."""
 
-    class _Hooks(CallHooks):
+    class _Hooks(CallHooks[None]):
         def __init__(
             self,
             access: ToolAccess,
@@ -60,10 +60,10 @@ class ToolAccessGuard:
             name: str,
             args: tuple[object, ...],
             kwargs: dict[str, object],
-        ) -> object:
+        ) -> None:
             roles = self._roles_source()
             if self._access.allowed(name, roles):
-                return None
+                return
 
             logger.warning(
                 "access denied to tool %r (user roles: %s)",

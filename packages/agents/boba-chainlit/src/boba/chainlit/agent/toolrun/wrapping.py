@@ -14,11 +14,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from functools import wraps
-from typing import Any, TypeAlias
+from typing import Any, Generic, TypeAlias, TypeVar
 
 from langchain_core.tools import BaseTool, StructuredTool
 
 __all__ = ["AsyncCall", "CallHooks", "SyncCall", "ToolBody"]
+
+CallCtx = TypeVar("CallCtx")
+"""Контекст вызова, который обвязка заводит в before и читает в остальном."""
 
 SyncCall: TypeAlias = Callable[..., Any]
 """Sync-тело инструмента: аргументы задаёт схема самого тула."""
@@ -27,12 +30,13 @@ AsyncCall: TypeAlias = Callable[..., Awaitable[Any]]
 """Async-тело инструмента."""
 
 
-class CallHooks:
+class CallHooks(Generic[CallCtx]):
     """Крючки одной обвязки вокруг вызова тела; база — сквозной проход.
 
-    before возвращает контекст вызова, он же приходит в остальные крючки.
-    on_error либо поднимает ошибку дальше, либо возвращает замену результата.
-    cleanup выполняется всегда, после after или on_error.
+    before возвращает контекст вызова, он же приходит в остальные крючки —
+    его тип обвязка объявляет параметром, поэтому приведения типа внутри
+    крючков не нужны. on_error либо поднимает ошибку дальше, либо возвращает
+    замену результата; cleanup выполняется всегда, после after или on_error.
     """
 
     def before(
@@ -40,16 +44,16 @@ class CallHooks:
         name: str,
         args: tuple[object, ...],
         kwargs: dict[str, object],
-    ) -> object:
-        return None
+    ) -> CallCtx:
+        raise NotImplementedError
 
-    def after(self, ctx: object, result: object) -> object:
+    def after(self, ctx: CallCtx, result: object) -> object:
         return result
 
-    def on_error(self, ctx: object, error: Exception) -> object:
+    def on_error(self, ctx: CallCtx, error: Exception) -> object:
         raise error
 
-    def cleanup(self, ctx: object) -> None:
+    def cleanup(self, ctx: CallCtx) -> None:
         return
 
 
@@ -80,7 +84,7 @@ class ToolBody:
 
     @classmethod
     def hook_all(
-        cls, tools: Sequence[BaseTool], hooks: CallHooks
+        cls, tools: Sequence[BaseTool], hooks: CallHooks[Any]
     ) -> list[BaseTool]:
         """Ставит одну обвязку крючками на оба тела каждого инструмента."""
 
