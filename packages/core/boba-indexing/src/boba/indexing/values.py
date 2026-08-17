@@ -8,7 +8,15 @@ import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import ClassVar, Generic, NewType, Protocol, TypeVar, runtime_checkable
+from typing import (
+    Any,
+    ClassVar,
+    Generic,
+    NewType,
+    Protocol,
+    TypeVar,
+    runtime_checkable,
+)
 
 __all__ = [
     "BytesContentHash",
@@ -153,7 +161,7 @@ class Metadata:
         """Слить два Metadata; other побеждает при коллизии ключей."""
         return Metadata(data={**self.data, **other.data})
 
-    def has(self, key: MetadataKey[T]) -> bool:
+    def has(self, key: MetadataKey[Any]) -> bool:
         """True если ключ присутствует в Metadata."""
         return key.name in self.data
 

@@ -93,8 +93,11 @@ class SocketLog:
 
     frames: list[SocketFrame] = field(default_factory=list)
 
-    def accept(self, raw: str) -> None:
-        """Принимает текстовый фрейм; служебные пакеты socket.io пропускаются."""
+    def accept(self, raw: bytes | str) -> None:
+        """Принимает фрейм; бинарные и служебные пакеты socket.io пропускаются."""
+        if isinstance(raw, bytes):
+            return
+
         parsed = self._parse(raw)
         if parsed is None:
             return

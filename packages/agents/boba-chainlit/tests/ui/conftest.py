@@ -13,7 +13,8 @@ import pytest
 
 pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
 
-from playwright.sync_api import Browser, Page, sync_playwright
+from playwright._impl._api_structures import SetCookieParam
+from playwright.sync_api import Browser, Page, WebSocket, sync_playwright
 from psycopg import sql
 
 from boba.chainlit.infra.config import AppConfig
@@ -135,7 +136,7 @@ def stand(
 
 
 @pytest.fixture(scope="session")
-def auth_cookies(stand: StandProcess) -> list[dict[str, object]]:
+def auth_cookies(stand: StandProcess) -> list[SetCookieParam]:
     """Логин формой chainlit: тест ходит той же дорогой, что и пользователь."""
     credential = stand.config.credential()
     response = httpx.post(
@@ -151,7 +152,7 @@ def auth_cookies(stand: StandProcess) -> list[dict[str, object]]:
             f"login failed: {response.status_code} {response.text[:200]}"
         )
 
-    cookies: list[dict[str, object]] = []
+    cookies: list[SetCookieParam] = []
     for name, value in response.cookies.items():
         cookies.append(
             {
@@ -182,12 +183,12 @@ def browser() -> Iterator[Browser]:
 def chat(
     browser: Browser,
     stand: StandProcess,
-    auth_cookies: list[dict[str, object]],
+    auth_cookies: list[SetCookieParam],
     llm_port: int,
 ) -> Iterator[ChatPage]:
     httpx.post(f"http://127.0.0.1:{llm_port}/reset", timeout=5.0)
     context = browser.new_context(viewport={"width": 1280, "height": 900})
-    context.add_cookies(auth_cookies)  # pyright: ignore[reportArgumentType]
+    context.add_cookies(auth_cookies)
     page: Page = context.new_page()
     log = SocketLog()
     _watch_sockets(page, log)
@@ -200,7 +201,7 @@ def chat(
 
 
 def _watch_sockets(page: Page, log: SocketLog) -> None:
-    def on_socket(socket: object) -> None:
-        socket.on("framereceived", log.accept)  # pyright: ignore[reportAttributeAccessIssue]
+    def on_socket(socket: WebSocket) -> None:
+        socket.on("framereceived", log.accept)
 
-    page.on("websocket", on_socket)  # pyright: ignore[reportArgumentType]
+    page.on("websocket", on_socket)
