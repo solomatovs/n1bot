@@ -490,6 +490,4 @@ class LoggingChunker(Chunker[T], Generic[T]):
                 )
             yield chunk
 
-        self._logger.info(
-            "chunking done: %d chunks in %dms", produced, elapsed.ms()
-        )
+        self._logger.info("chunking done: %d chunks in %dms", produced, elapsed.ms())

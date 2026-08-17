@@ -10,23 +10,8 @@ import chainlit as cl
 import pytest
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import canvas as canvas_module
-from boba.chainlit.agent.tools.canvas import (
-    AudioViewer,
-    CanvasOpener,
-    CanvasToolConfig,
-    ImageViewer,
-    PdfViewer,
-    TextViewer,
-    VideoViewer,
-    build_canvas_tools,
-)
-from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain import session as session_module
-from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.session import SessionKind
-from boba.chainlit.infra.config import LocalStorageConfig
-from boba.chainlit.rendering.canvas import (
+from boba.chainlit.canvas import panel as rendering_canvas
+from boba.chainlit.canvas.panel import (
     CanvasContent,
     CanvasError,
     CanvasErrorKind,
@@ -37,6 +22,22 @@ from boba.chainlit.rendering.canvas import (
     CanvasViewer,
     OpenedCanvas,
 )
+from boba.chainlit.canvas.tools import (
+    AudioViewer,
+    CanvasOpener,
+    CanvasToolConfig,
+    ImageViewer,
+    LogViewer,
+    MarkdownViewer,
+    PdfViewer,
+    VideoViewer,
+    build_canvas_tools,
+)
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.domain import session as session_module
+from boba.chainlit.domain.keys import ObjectKey
+from boba.chainlit.domain.session import SessionKind
+from boba.chainlit.infra.config import LocalStorageConfig
 from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import CustomElementResult, ErrorResult
 from boba.workspace.launcher import LauncherConfig
@@ -80,7 +81,12 @@ class FakeViewer:
             title=key.name,
         )
 
-        return OpenedCanvas(label=key.name, path=key.in_workspace(), link=link)
+        return OpenedCanvas(
+            label=key.name, path=key.in_workspace(), nonce="n-1", link=link
+        )
+
+    def watch_source(self, key: ObjectKey) -> None:
+        return None
 
 
 class OtherViewer(FakeViewer):
@@ -163,8 +169,10 @@ class TestToolInterface:
             raise AssertionError('isinstance(CanvasRegistry.viewer_for("график.png"),…')
         if not (isinstance(CanvasRegistry.viewer_for("report.PDF"), PdfViewer)):
             raise AssertionError('isinstance(CanvasRegistry.viewer_for("report.PDF"),…')
-        if not (isinstance(CanvasRegistry.viewer_for("notes.md"), TextViewer)):
-            raise AssertionError('isinstance(CanvasRegistry.viewer_for("notes.md"), T…')
+        if not (isinstance(CanvasRegistry.viewer_for("notes.md"), MarkdownViewer)):
+            raise AssertionError('isinstance(CanvasRegistry.viewer_for("notes.md"), M…')
+        if not (isinstance(CanvasRegistry.viewer_for("run.log"), LogViewer)):
+            raise AssertionError('isinstance(CanvasRegistry.viewer_for("run.log"), Lo…')
         if not (isinstance(CanvasRegistry.viewer_for("demo.mp4"), VideoViewer)):
             raise AssertionError('isinstance(CanvasRegistry.viewer_for("demo.mp4"), V…')
         if not (isinstance(CanvasRegistry.viewer_for("voice.mp3"), AudioViewer)):
@@ -229,8 +237,7 @@ def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStorageClie
 
     monkeypatch.setattr(session_module, "current_user_id", lambda: USER)
     monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
-    monkeypatch.setattr(CanvasOpener, "_storage", staticmethod(lambda: client))
-    monkeypatch.setattr(canvas_module, "get_data_layer", lambda: layer)
+    monkeypatch.setattr(rendering_canvas, "get_data_layer", lambda: layer)
 
     return client
 
@@ -280,8 +287,6 @@ class TestShow:
             @staticmethod
             async def set_title(title: str) -> None:
                 titles.append(title)
-
-        from boba.chainlit.rendering import canvas as rendering_canvas
 
         monkeypatch.setattr(rendering_canvas.cl.CustomElement, "send", capture)
         monkeypatch.setattr(rendering_canvas.cl, "ElementSidebar", Sidebar)
@@ -373,8 +378,10 @@ class TestFileViewers:
     async def test_viewers_cover_expected_suffixes(self) -> None:
         if ".pdf" not in PdfViewer.suffixes:
             raise AssertionError('".pdf" in PdfViewer.suffixes')
-        if ".md" not in TextViewer.suffixes:
-            raise AssertionError('".md" in TextViewer.suffixes')
+        if ".md" not in MarkdownViewer.suffixes:
+            raise AssertionError('".md" in MarkdownViewer.suffixes')
+        if ".log" not in LogViewer.suffixes:
+            raise AssertionError('".log" in LogViewer.suffixes')
         if ".mp4" not in VideoViewer.suffixes:
             raise AssertionError('".mp4" in VideoViewer.suffixes')
         if ".mp3" not in AudioViewer.suffixes:
@@ -396,3 +403,203 @@ class TestFileViewers:
             raise AssertionError("not isinstance(result, ErrorResult)")
         if "график.png" not in content:
             raise AssertionError('"график.png" in content')
+
+
+class TestStorageWindows:
+    """Окна текстового файла storage: чтение по смещению, стыки по строкам."""
+
+    LINES = 5000
+    """~110 КБ: больше окна журнала, файл целиком в окно не помещается."""
+
+    @staticmethod
+    def _body(lines: int) -> bytes:
+        rendered: list[str] = []
+        for index in range(lines):
+            rendered.append(f"line-{index:06d} payload")
+        return ("\n".join(rendered) + "\n").encode()
+
+    async def _windows(
+        self, storage: LocalStorageClient, body: bytes
+    ) -> rendering_canvas.StorageWindows:
+        object_key = f"{USER}/{THREAD}/upload/run.log"
+        await storage.upload_file(object_key, body)
+        return rendering_canvas.StorageWindows(storage, object_key)
+
+    @pytest.mark.anyio
+    async def test_first_window_is_line_aligned(
+        self, storage: LocalStorageClient
+    ) -> None:
+        body = self._body(self.LINES)
+        windows = await self._windows(storage, body)
+
+        piece = await windows.slice_at(0)
+
+        if piece.offset != 0:
+            raise AssertionError("piece.offset == 0")
+        if piece.size != len(body):
+            raise AssertionError("piece.size == len(body)")
+        if len(piece.text.encode()) > piece.window:
+            raise AssertionError("len(piece.text.encode()) <= piece.window")
+        if not piece.text.endswith("\n"):
+            raise AssertionError('piece.text.endswith("\\n")')
+
+    @pytest.mark.anyio
+    async def test_forward_chain_rebuilds_the_file(
+        self, storage: LocalStorageClient
+    ) -> None:
+        """Цепочка окон встык собирает файл байт в байт — без чтения целиком."""
+        body = self._body(self.LINES)
+        windows = await self._windows(storage, body)
+
+        collected = bytearray()
+        offset = 0
+        while offset < len(body):
+            piece = await windows.slice_at(offset)
+            if piece.offset != offset:
+                raise AssertionError("piece.offset == offset")
+            collected.extend(piece.text.encode())
+            offset = piece.end
+
+        if bytes(collected) != body:
+            raise AssertionError("bytes(collected) == body")
+
+    @pytest.mark.anyio
+    async def test_backward_window_joins_at_the_edge(
+        self, storage: LocalStorageClient
+    ) -> None:
+        body = self._body(self.LINES)
+        windows = await self._windows(storage, body)
+
+        first = await windows.slice_at(0)
+        back = await windows.slice_before(first.end)
+
+        if back.end != first.end:
+            raise AssertionError("back.end == first.end")
+
+    @pytest.mark.anyio
+    async def test_negative_offset_gives_the_tail(
+        self, storage: LocalStorageClient
+    ) -> None:
+        body = self._body(self.LINES)
+        windows = await self._windows(storage, body)
+
+        tail = await windows.slice_at(-1)
+
+        if tail.end != len(body):
+            raise AssertionError("tail.end == len(body)")
+        if not tail.text.endswith(f"line-{self.LINES - 1:06d} payload\n"):
+            raise AssertionError("tail.text ends with the last line")
+
+
+class TestLogViewer:
+    """Логи workspace: первое окно в панель, файл целиком в память не едет."""
+
+    @pytest.fixture(autouse=True)
+    def panel_storage(
+        self, storage: LocalStorageClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            rendering_canvas.PanelStorage, "client", staticmethod(lambda: storage)
+        )
+
+    @pytest.mark.anyio
+    async def test_content_is_the_first_window(
+        self, storage: LocalStorageClient
+    ) -> None:
+        body = TestStorageWindows._body(TestStorageWindows.LINES)
+        await storage.upload_file(f"{USER}/{THREAD}/upload/run.log", body)
+        key = ObjectKey.build(USER, THREAD, "run.log", "el-1")
+
+        content = await rendering_canvas.LogViewer().content(key)
+
+        if content.kind is not CanvasKind.STREAM:
+            raise AssertionError("content.kind is CanvasKind.STREAM")
+        if content.stream is None:
+            raise AssertionError("content.stream is not None")
+        if content.stream.offset != 0:
+            raise AssertionError("content.stream.offset == 0")
+        if content.stream.size != len(body):
+            raise AssertionError("content.stream.size == len(body)")
+        if len(content.text.encode()) > content.stream.window:
+            raise AssertionError("len(content.text.encode()) <= content.stream.window")
+        if not content.nonce:
+            raise AssertionError("content.nonce")
+        if f"/canvas/{THREAD}/upload/" not in content.url:
+            raise AssertionError('f"/canvas/{THREAD}/upload/" in content.url')
+
+    @pytest.mark.anyio
+    async def test_missing_file_is_refused(self, storage: LocalStorageClient) -> None:
+        key = ObjectKey.build(USER, THREAD, "absent.log", "el-1")
+
+        with pytest.raises(CanvasError) as failure:
+            await rendering_canvas.LogViewer().content(key)
+
+        if failure.value.kind != CanvasErrorKind.FILE_NOT_FOUND:
+            raise AssertionError("failure.value.kind == CanvasErrorKind.FILE_NOT_FOUND")
+
+    @pytest.mark.anyio
+    async def test_watch_source_sees_appends(self, storage: LocalStorageClient) -> None:
+        object_key = f"{USER}/{THREAD}/upload/run.log"
+        await storage.upload_file(object_key, b"first\n")
+        key = ObjectKey.build(USER, THREAD, "run.log", "el-1")
+
+        source = rendering_canvas.LogViewer().watch_source(key)
+        if source is None:
+            raise AssertionError("source is not None")
+
+        first = await source.probe()
+
+        await storage.upload_file(object_key, b"first\nsecond\n", overwrite=True)
+        second = await source.probe()
+
+        if first is None or second is None:
+            raise AssertionError("first is not None and second is not None")
+        if second.revision == first.revision:
+            raise AssertionError("second.revision != first.revision")
+        if second.size <= first.size:
+            raise AssertionError("second.size > first.size")
+
+
+class TestFileWindowAction:
+    """Действие окна для файла workspace: тот же контракт, что у журнала."""
+
+    @pytest.fixture(autouse=True)
+    def panel_storage(
+        self, storage: LocalStorageClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            rendering_canvas.PanelStorage, "client", staticmethod(lambda: storage)
+        )
+
+    @pytest.mark.anyio
+    async def test_windows_walk_the_file(self, storage: LocalStorageClient) -> None:
+        body = TestStorageWindows._body(TestStorageWindows.LINES)
+        await storage.upload_file(f"{USER}/{THREAD}/upload/run.log", body)
+        path = f"/workspace/{THREAD}/upload/run.log"
+
+        first = await rendering_canvas.StreamActions.window(
+            USER, THREAD, {"path": path, "offset": 0}
+        )
+        follow_up = await rendering_canvas.StreamActions.window(
+            USER, THREAD, {"path": path, "offset": first["stream"]["end"]}
+        )
+
+        if first["stream"]["offset"] != 0:
+            raise AssertionError('first["stream"]["offset"] == 0')
+        if follow_up["stream"]["offset"] != first["stream"]["end"]:
+            raise AssertionError('follow_up["stream"]["offset"] == first["stream"]["e…')
+        if first["stream"]["size"] != len(body):
+            raise AssertionError('first["stream"]["size"] == len(body)')
+
+    @pytest.mark.anyio
+    async def test_missing_file_gives_empty_answer(
+        self, storage: LocalStorageClient
+    ) -> None:
+        answer = await rendering_canvas.StreamActions.window(
+            USER,
+            THREAD,
+            {"path": f"/workspace/{THREAD}/upload/absent.log", "offset": 0},
+        )
+
+        if answer != {}:
+            raise AssertionError("answer == {}")

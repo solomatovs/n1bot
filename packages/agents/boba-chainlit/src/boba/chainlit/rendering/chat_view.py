@@ -14,6 +14,7 @@ from uuid import UUID, uuid5
 from literalai.observability.step import TrueStepType
 
 from boba.cancellation import StopReason
+from boba.chainlit.canvas.panel import CanvasAction, ToolStreams
 from boba.chainlit.rendering.result import (
     ChartRendering,
     CustomElementRendering,
@@ -21,7 +22,6 @@ from boba.chainlit.rendering.result import (
     MarkdownRendering,
     ToolResultView,
 )
-from boba.chainlit.rendering.stream_view import StreamAction, ToolStreams
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
@@ -456,7 +456,7 @@ class ChatView:
 
         element = CustomElement(
             name="CanvasStream",
-            props={str(StreamAction.CALL_ID): key, "label": name},
+            props={str(CanvasAction.CALL_ID): key, "label": name},
             thread_id=self._thread_id,
         )
         element_id = self.derive_id(self._thread_id, key, StepRole.STREAM)

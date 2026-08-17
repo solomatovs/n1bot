@@ -9,9 +9,8 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import diagram as diagram_module
-from boba.chainlit.agent.tools.diagram import (
-    CanvasWatcher,
+from boba.chainlit.canvas import diagram as diagram_module
+from boba.chainlit.canvas.diagram import (
     DiagramEntry,
     DiagramErrorKind,
     DiagramFiles,
@@ -22,14 +21,7 @@ from boba.chainlit.agent.tools.diagram import (
     MermaidViewer,
     build_diagram_tools,
 )
-from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain import session as session_module
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.session import SessionKind
-from boba.chainlit.domain.turn import TurnContext
-from boba.chainlit.infra.config import LocalStorageConfig
-from boba.chainlit.rendering.canvas import (
+from boba.chainlit.canvas.panel import (
     CanvasError,
     CanvasErrorKind,
     CanvasPanel,
@@ -37,6 +29,13 @@ from boba.chainlit.rendering.canvas import (
     RenderStatus,
     RenderVerdicts,
 )
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.domain import session as session_module
+from boba.chainlit.domain.errors import RefusalError
+from boba.chainlit.domain.keys import ObjectKey, ThreadDir
+from boba.chainlit.domain.session import SessionKind
+from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.infra.config import LocalStorageConfig
 from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
 from boba.workspace.launcher import LauncherConfig
@@ -389,90 +388,62 @@ class TestEntry:
             raise AssertionError("failure.value.kind == DiagramErrorKind.BAD_FILE")
 
 
-class FileFeed:
-    """Источник содержимого для вотчера: лента снапшотов, управляемая тестом.
+class TestWatchSource:
+    """Слежение за спекой: сигнал по смене содержимого, битый тик пропускается."""
 
-    Исчерпание ленты гасит alive — вотчер завершает себя, как при конце хода.
-    """
-
-    def __init__(self, initial: str, snapshots: list[str | None]) -> None:
-        self._current = initial
-        self._snapshots = snapshots
-        self.pushed: list[str] = []
-        self.alive = True
-
-    async def read(self) -> str:
-        if not self._snapshots:
-            self.alive = False
-            return self._current
-
-        head = self._snapshots.pop(0)
-        if head is None:
-            raise DiagramRefusedError(
-                DiagramErrorKind.FILE_NOT_FOUND, "файл переписывается"
-            )
-
-        self._current = head
-        return head
-
-    def is_alive(self) -> bool:
-        return self.alive
-
-    async def push(self, text: str) -> None:
-        self.pushed.append(text)
-
-
-class TestCanvasWatcher:
-    """Слежение за файлом: обновления, пропуск битого тика, самоостановка."""
-
-    @staticmethod
-    async def run(feed: FileFeed) -> None:
-        watcher = CanvasWatcher(
-            read=feed.read,
-            alive=feed.is_alive,
-            push=feed.push,
-            interval_sec=0.001,
+    @pytest.mark.anyio
+    async def test_probe_changes_only_on_new_content(
+        self, files: DiagramFiles, http_context: None
+    ) -> None:
+        await files.save("orders.mmd", ER_SPEC)
+        key = ObjectKey.build(
+            "7", THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
-        await watcher.run(initial=feed._current)
+
+        source = MermaidViewer(files).watch_source(key)
+        if source is None:
+            raise AssertionError("source is not None")
+
+        first = await source.probe()
+        same = await source.probe()
+
+        await files.save("orders.mmd", ER_SPEC + "\n  C ||--o{ D : owns")
+        changed = await source.probe()
+
+        if first is None or same is None or changed is None:
+            raise AssertionError("first is not None and same and changed")
+        if first.revision != same.revision:
+            raise AssertionError("first.revision == same.revision")
+        if changed.revision == first.revision:
+            raise AssertionError("changed.revision != first.revision")
 
     @pytest.mark.anyio
-    async def test_pushes_only_changes(self) -> None:
-        feed = FileFeed("v1", ["v1", "v1", "v2", "v3", "v3"])
+    async def test_read_error_keeps_the_last_probe(
+        self, files: DiagramFiles, http_context: None
+    ) -> None:
+        """Файл в момент чтения переписывается — тик отдаёт прежнее состояние."""
+        await files.save("orders.mmd", ER_SPEC)
+        key = ObjectKey.build(
+            "7", THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        )
 
-        await self.run(feed)
+        source = MermaidViewer(files).watch_source(key)
+        if source is None:
+            raise AssertionError("source is not None")
 
-        if feed.pushed != ["v2", "v3"]:
-            raise AssertionError('feed.pushed == ["v2", "v3"]')
+        first = await source.probe()
 
-    @pytest.mark.anyio
-    async def test_read_error_skips_tick(self) -> None:
-        """Файл в момент чтения переписывается — тик пропущен, слежение живо."""
-        feed = FileFeed("v1", ["v1", None, "v2"])
+        missing = ObjectKey.build(
+            "7", THREAD, "absent.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        )
+        broken = MermaidViewer(files).watch_source(missing)
+        if broken is None:
+            raise AssertionError("broken is not None")
 
-        await self.run(feed)
-
-        if feed.pushed != ["v2"]:
-            raise AssertionError('feed.pushed == ["v2"]')
-
-    @pytest.mark.anyio
-    async def test_stops_when_turn_ends(self) -> None:
-        feed = FileFeed("v1", ["v2"])
-        feed.alive = False
-
-        await self.run(feed)
-
-        if feed.pushed != []:
-            raise AssertionError("feed.pushed == []")
-
-    @pytest.mark.anyio
-    async def test_broken_snapshot_is_pushed_as_is(self) -> None:
-        """Битая спека едет на канвас без фильтрации: ошибку показывает браузер."""
-        feed = FileFeed("erDiagram\n  A ||--o{ B : x", ["erDiagram\n  A ||--"])
-
-        await self.run(feed)
-
-        if feed.pushed != ["erDiagram\n  A ||--"]:
-            raise AssertionError('feed.pushed == ["erDiagram\\n A ||--"]')
+        if await broken.probe() is not None:
+            raise AssertionError("await broken.probe() is None")
+        if first is None:
+            raise AssertionError("first is not None")
 
 
 class TestRenderVerdicts:

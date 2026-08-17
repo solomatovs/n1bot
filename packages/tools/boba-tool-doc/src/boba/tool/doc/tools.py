@@ -51,6 +51,7 @@ class DocToolSection(DocToolsConfig):
 
     SECTION: ClassVar[str] = "tool.doc"
 
+
 class DocOutlineRow(BaseModel):
     """Строка карты документа: страница и её метрики."""
 
@@ -182,9 +183,7 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
         ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
     )
 
-    result = await asyncio.to_thread(
-        LiteParseEngine.parse_pages, run_cfg, path, pages
-    )
+    result = await asyncio.to_thread(LiteParseEngine.parse_pages, run_cfg, path, pages)
 
     text, truncated = TextClip.clip(result.text, run_cfg.max_text_chars)
 
@@ -223,9 +222,7 @@ async def document_outline(
         ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
     )
 
-    result = await asyncio.to_thread(
-        LiteParseEngine.parse, run_cfg, path
-    )
+    result = await asyncio.to_thread(LiteParseEngine.parse, run_cfg, path)
 
     rows: list[dict[str, Any]] = []
     for page in result.pages:
@@ -269,9 +266,7 @@ async def search_document(  # noqa: PLR0913 — фасад LLM, параметр
         ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
     )
 
-    native = await asyncio.to_thread(
-        LiteParseEngine.parse_native, run_cfg, path
-    )
+    native = await asyncio.to_thread(LiteParseEngine.parse_native, run_cfg, path)
 
     rows: list[dict[str, Any]] = []
     limit_reached = False

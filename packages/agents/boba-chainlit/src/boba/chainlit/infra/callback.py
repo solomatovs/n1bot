@@ -10,10 +10,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
-from boba.chainlit.agent.tools.canvas import (
-    canvas_content_action,
-    open_canvas_action,
+from boba.chainlit.canvas.panel import (
+    CanvasAction,
+    RenderVerdicts,
+    StreamActions,
 )
+from boba.chainlit.canvas.tools import CanvasActions
 from boba.chainlit.chat.history import GraphTurnHistory, ThreadRewind
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn
@@ -27,14 +29,8 @@ from boba.chainlit.domain.session import (
 from boba.chainlit.infra.di import Depends, di_inject
 from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
 from boba.chainlit.infra.thread_room import ThreadRoom
-from boba.chainlit.rendering.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
-from boba.chainlit.rendering.stream_view import (
-    StreamAction,
-    StreamActions,
-    StreamScreen,
-)
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
 from chainlit.types import ThreadDict
@@ -132,27 +128,20 @@ def get_data_layer(
 @chainlit_error_ctx_handler
 async def on_canvas_open(action: cl.Action) -> None:
     """Клик по ссылке в переписке открывает панель без участия агента."""
-    # канвас уходит на файл: насос потока панель больше не трогает
-    if thread_id := current_thread_id():
-        StreamScreen.leave(thread_id)
-
-    await open_canvas_action(action)
+    await CanvasActions.open(action)
 
 
 @cl.action_callback(CanvasAction.CONTENT)
 @chainlit_error_ctx_handler
 async def on_canvas_content(action: cl.Action) -> dict[str, Any]:
     """Панель уже открыта: отдаём описание файла, не подменяя элемент."""
-    if thread_id := current_thread_id():
-        StreamScreen.leave(thread_id)
-
-    return await canvas_content_action(action)
+    return await CanvasActions.content(action)
 
 
-@cl.action_callback(StreamAction.SHOW)
+@cl.action_callback(CanvasAction.SHOW)
 @chainlit_error_ctx_handler
 async def on_canvas_stream(action: cl.Action) -> None:
-    """Кнопка на шаге инструмента: живой вызов — насос, старый — из журнала.
+    """Кнопка на шаге инструмента: журнал вызова в панель плюс слежение.
 
     Пользователь и тред берутся из сессии: чужой журнал по payload недостижим.
     """
@@ -174,10 +163,10 @@ async def on_canvas_stream(action: cl.Action) -> None:
     await StreamActions.show(str(user_id), thread_id, action.payload)
 
 
-@cl.action_callback(StreamAction.WINDOW)
+@cl.action_callback(CanvasAction.WINDOW)
 @chainlit_error_ctx_handler
 async def on_canvas_stream_window(action: cl.Action) -> dict[str, Any]:
-    """Перемотка журнала: окно по смещению, панель не подменяется."""
+    """Окно журнала или файла по смещению: панель не подменяется."""
     thread_id = current_thread_id()
     if thread_id is None:
         return {}
@@ -187,6 +176,17 @@ async def on_canvas_stream_window(action: cl.Action) -> dict[str, Any]:
         return {}
 
     return await StreamActions.window(str(user_id), thread_id, action.payload)
+
+
+@cl.action_callback(CanvasAction.LEAVE)
+@chainlit_error_ctx_handler
+async def on_canvas_leave(action: cl.Action) -> None:
+    """Панель закрыта или сменила файл: слежение прежнего показа снимается."""
+    thread_id = current_thread_id()
+    if thread_id is None:
+        return
+
+    StreamActions.leave(thread_id, action.payload)
 
 
 @cl.action_callback(CanvasAction.STATUS)

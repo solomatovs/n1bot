@@ -1,11 +1,12 @@
-"""Журнал вывода инструментов: файл на канал вызова в томе пользователя.
+"""Журнал вывода инструментов: модели, порты и файловая реализация.
 
-Вызов пишет {thread}/{call_id}.{tool}.{channel}.log по файлу на канал и один
-сайдкар {call_id}.meta.json с итогом; чтение — окнами по смещению в файле.
+Файл на канал вызова в томе пользователя: {thread}/{call_id}.{tool}.{channel}.log
+плюс сайдкар {call_id}.meta.json с итогом; чтение — окнами по смещению.
 Единица учёта и вытеснения — вызов целиком: все его файлы вместе.
+Модуль не знает про chainlit: им пользуются слой данных и панель.
 
-Ошибки: StreamJournalError — журнал не открылся, окно не читается, журналы
-треда не удаляются; сбои записи гасятся внутрь, закрывая поток пометкой.
+Ошибки: StreamJournalError — том недоступен, файл не открывается или место
+кончилось; сбои записи гасятся внутрь, закрывая поток пометкой.
 """
 
 from __future__ import annotations
@@ -14,36 +15,429 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 from collections.abc import Callable, Iterator
-from typing import ClassVar
+from enum import IntEnum, StrEnum
+from typing import ClassVar, Protocol
 
-from boba.chainlit.domain.stream import (
-    CallLogUsage,
-    JournalFile,
-    JournalText,
-    JournalWindow,
-    PathSegment,
-    StreamJournalError,
-    StreamKey,
-    StreamMeta,
-    StreamRecorderPort,
-    StreamSlice,
-    StreamStorePort,
-    ThreadUsage,
-    VaultPath,
-    VaultUsage,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from boba.toolkit.channels import ToolChannel
+from boba.toolkit.stream import StreamSink
 
 __all__ = [
+    "CallLogUsage",
     "DirVault",
+    "JournalFile",
+    "JournalText",
+    "JournalWindow",
+    "LogName",
+    "PathSegment",
+    "StreamFileView",
     "StreamJournal",
+    "StreamJournalError",
+    "StreamJournalHub",
+    "StreamKey",
+    "StreamMeta",
     "StreamRecorder",
+    "StreamRecorderPort",
+    "StreamSlice",
+    "StreamStat",
+    "StreamStorePort",
+    "ThreadUsage",
+    "VaultPath",
+    "VaultUsage",
+    "WindowAlign",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class StreamJournalError(Exception):
+    """Том журнала недоступен: писать некуда."""
+
+
+class LogName(BaseModel):
+    """Разобранное имя файла журнала: вызов, инструмент, канал.
+
+    Имя чужого формата не отвергается: весь стем считается call_id, чтобы
+    учёт места видел и мог вытеснить любой файл тома.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    SEGMENTS: ClassVar[int] = 3
+    """Сегментов в стеме: call_id, tool, channel."""
+
+    call_id: str
+    tool: str = ""
+    channel: str = ""
+
+    @classmethod
+    def parse(cls, stem: str) -> LogName:
+        """Разбор по сегментам с конца."""
+        segments = stem.split(".")
+        if len(segments) < cls.SEGMENTS:
+            return cls(call_id=stem)
+
+        return cls(
+            call_id=segments[0],
+            tool=".".join(segments[1:-1]),
+            channel=segments[-1],
+        )
+
+
+class JournalFile(StrEnum):
+    """Суффиксы файлов журнала; сборка и разбор путей — только здесь.
+
+    Лог вызова: {thread}/{call_id}.{tool}.{channel}.log — файл на канал.
+    Сайдкар с итогом один на вызов: {thread}/{call_id}.meta.json. Разбор
+    имени идёт по сегментам с конца; срезом суффикса call_id не берётся.
+    """
+
+    LOG = ".log"
+    META = ".meta.json"
+    TMP = ".tmp"
+
+    @classmethod
+    def rel_log(
+        cls, thread_id: str, call_id: str, tool: str, channel: ToolChannel
+    ) -> str:
+        if "." in call_id or "." in tool:
+            msg = f"log name segments must not contain dots: {call_id!r}, {tool!r}"
+            raise ValueError(msg)
+
+        return f"{thread_id}/{call_id}.{tool}.{channel.value}{cls.LOG}"
+
+    @classmethod
+    def rel_meta(cls, thread_id: str, call_id: str) -> str:
+        return f"{thread_id}/{call_id}{cls.META}"
+
+    @classmethod
+    def call_prefix(cls, thread_id: str, call_id: str) -> str:
+        """Префикс всех файлов вызова: единица защиты и вытеснения."""
+        return f"{thread_id}/{call_id}."
+
+    @classmethod
+    def is_log(cls, name: str) -> bool:
+        return name.endswith(cls.LOG)
+
+    @classmethod
+    def is_meta(cls, name: str) -> bool:
+        return name.endswith(cls.META)
+
+    @classmethod
+    def parse_log(cls, log_name: str) -> LogName:
+        """Имя лога: стем без суффикса разбирает LogName по сегментам."""
+        return LogName.parse(log_name[: -len(cls.LOG)])
+
+    @classmethod
+    def call_id_of_meta(cls, meta_name: str) -> str:
+        return meta_name[: -len(cls.META)]
+
+    @classmethod
+    def tmp_of(cls, path: str) -> str:
+        return f"{path}{cls.TMP}.{os.getpid()}"
+
+
+class JournalText(StrEnum):
+    """Текстовый кодек журнала: utf-8, битые байты замещаются при чтении."""
+
+    ENCODING = "utf-8"
+    DECODE_ERRORS = "replace"
+
+    @classmethod
+    def encode(cls, text: str) -> bytes:
+        return text.encode(cls.ENCODING)
+
+    @classmethod
+    def decode(cls, data: bytes) -> str:
+        return data.decode(cls.ENCODING, errors=cls.DECODE_ERRORS)
+
+
+class PathSegment:
+    """Проверка сегмента пути в томе журнала: одна на ключи и на сам том.
+
+    Сегмент приходит извне — идентификатор пользователя из аутентификации,
+    thread_id из ссылки, call_id из протокола провайдера, — а дальше уходит
+    в os.path.join, поэтому проверяется на входе и только здесь.
+    """
+
+    SAFE: ClassVar[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
+    """Сегмент целиком: только безопасные символы и без точки в начале."""
+
+    @classmethod
+    def checked(cls, value: str) -> str:
+        if not cls.SAFE.fullmatch(value):
+            msg = f"unsafe path segment: {value!r}"
+            raise ValueError(msg)
+
+        return value
+
+
+class VaultPath:
+    """Путь внутри тома: собирается, канонизируется и проверяется на выход наружу.
+
+    Проверка сегментов (PathSegment) отсекает `..` и слэш в идентификаторе, а
+    здесь ловится то, чего по строке не видно: симлинк внутри тома, ведущий
+    за его пределы.
+    """
+
+    @classmethod
+    def inside(cls, root: str, *parts: str) -> str:
+        base = os.path.realpath(root)
+        candidate = os.path.realpath(os.path.join(base, *parts))
+
+        if candidate == base:
+            return candidate
+
+        if candidate.startswith(base + os.sep):
+            return candidate
+
+        msg = f"path escapes the vault: {candidate!r}"
+        raise StreamJournalError(msg)
+
+
+class StreamKey(BaseModel):
+    """Адрес журнала одного вызова: {thread_id}/{call_id} в томе пользователя.
+
+    call_id приходит из протокола LLM-провайдера — в путь допускаются только
+    безопасные символы, всё прочее отвергается на границе. Точка в call_id
+    запрещена: имя файла {call_id}.{tool}.{channel}.log разбирается по
+    сегментам, и точка внутри сделала бы его неразложимым.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    user_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    call_id: str = Field(min_length=1, max_length=255)
+
+    @field_validator("user_id", "thread_id", "call_id")
+    @classmethod
+    def _safe_segment(cls, value: str) -> str:
+        return PathSegment.checked(value)
+
+    @field_validator("call_id")
+    @classmethod
+    def _no_dots(cls, value: str) -> str:
+        if "." in value:
+            msg = f"call_id must not contain dots: {value!r}"
+            raise ValueError(msg)
+
+        return value
+
+    def rel_log(self, tool: str, channel: ToolChannel) -> str:
+        return JournalFile.rel_log(self.thread_id, self.call_id, tool, channel)
+
+    def rel_meta(self) -> str:
+        return JournalFile.rel_meta(self.thread_id, self.call_id)
+
+    def call_prefix(self) -> str:
+        return JournalFile.call_prefix(self.thread_id, self.call_id)
+
+
+class StreamMeta(BaseModel):
+    """Сайдкар журнала: имя инструмента и итог записи."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    tool_name: str
+    closed: bool = False
+    note: str = ""
+
+
+class StreamSlice(BaseModel):
+    """Окно журнала для показа: текст плюс координаты в файле."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    offset: int
+    end: int
+    """Байт за последним в окне: сюда стыкуется следующее окно."""
+    size: int
+    window: int
+    closed: bool
+    note: str
+
+
+class StreamStat(BaseModel):
+    """Состояние файла потока без чтения тела: размер и итог записи."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    size: int
+    closed: bool
+    note: str
+
+
+class WindowAlign:
+    """Выравнивание окна чтения по границам строк: чистая логика без I/O.
+
+    Окна стыкуются встык без рваных строк: голова окна сдвигается за первый
+    перевод строки (кроме начала файла и стыка сразу за переводом строки),
+    хвост forward-окна обрезается по последнему переводу (кроме конца файла).
+    Строка длиннее окна отдаётся как есть — прогресс важнее красоты.
+    """
+
+    @staticmethod
+    def head(start: int, raw: bytes) -> tuple[int, bytes]:
+        """Голова окна по границе строки.
+
+        raw прочитан с start-1 (лишний байт впереди), кроме start == 0.
+        Стык сразу за переводом строки не трогается; произвольное смещение
+        сдвигается за первый перевод строки внутри окна; без переводов вовсе
+        (одна строка длиннее окна) — как есть.
+        """
+        if start == 0:
+            return start, raw
+
+        data = raw[1:]
+        if raw[:1] == b"\n":
+            return start, data
+
+        cut = data.find(b"\n")
+        if cut < 0 or cut == len(data) - 1:
+            return start, data
+
+        return start + cut + 1, data[cut + 1 :]
+
+    @staticmethod
+    def read_plan(start: int, length: int) -> tuple[int, int]:
+        """Что читать из файла, чтобы head() смог выровнять голову."""
+        if start == 0:
+            return 0, length
+
+        return start - 1, length + 1
+
+    @staticmethod
+    def forward_trim(start: int, data: bytes, size: int) -> tuple[bytes, int]:
+        """Хвост forward-окна по последнему переводу строки (кроме конца файла)."""
+        end = start + len(data)
+        if end >= size:
+            return data, end
+
+        cut = data.rfind(b"\n")
+        if 0 <= cut < len(data) - 1:
+            data = data[: cut + 1]
+            end = start + len(data)
+
+        return data, end
+
+
+class ThreadUsage(BaseModel):
+    """Занятость журналов одного треда."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    thread_id: str
+    bytes_used: int
+    calls: int
+    last_write_at: float
+
+
+class VaultUsage(BaseModel):
+    """Занятость служебного тома пользователя."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    total_bytes: int
+    free_bytes: int
+    threads: tuple[ThreadUsage, ...]
+
+
+class CallLogUsage(BaseModel):
+    """Файлы одного вызова: единица учёта и вытеснения при нехватке места.
+
+    Вызов пишет несколько файлов — лог на канал плюс сайдкар; вытесняются
+    они только вместе, иначе LRU оставил бы вызов без части каналов.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    thread_id: str
+    call_id: str
+    rel_files: tuple[str, ...]
+    bytes_used: int
+    last_write_at: float
+
+    @property
+    def prefix(self) -> str:
+        return JournalFile.call_prefix(self.thread_id, self.call_id)
+
+
+class JournalWindow(IntEnum):
+    """Размер окна чтения журнала: панель забирает файл кусками, не целиком."""
+
+    BYTES = 64 * 1024
+
+
+class StreamRecorderPort(StreamSink, Protocol):
+    """Писатель журнала одного вызова: слежению нужны размер, итог и закрытие."""
+
+    @property
+    def closed(self) -> bool: ...
+
+    @property
+    def size(self) -> int: ...
+
+    @property
+    def note(self) -> str: ...
+
+    def close(self, note: str) -> None: ...
+
+
+class StreamStorePort(Protocol):
+    """Журнал приложения: открыть писателя канала и прочитать окно."""
+
+    def recorder(
+        self,
+        key: StreamKey,
+        tool_name: str,
+        channel: ToolChannel,
+        on_data: Callable[[], None],
+        protected_prefixes: frozenset[str],
+    ) -> StreamRecorderPort: ...
+
+    def slice_at(
+        self, key: StreamKey, offset: int, channel: ToolChannel
+    ) -> StreamSlice | None: ...
+
+    def slice_before(
+        self, key: StreamKey, end: int, channel: ToolChannel
+    ) -> StreamSlice | None: ...
+
+    def stat_of(self, key: StreamKey, channel: ToolChannel) -> StreamStat | None: ...
+
+    def log_rel_path(self, key: StreamKey, channel: ToolChannel) -> str | None: ...
+
+    def usage(self, user_id: str) -> VaultUsage: ...
+
+    def purge_thread(self, user_id: str, thread_id: str) -> int: ...
+
+    def vault_root(self, user_id: str) -> str: ...
+
+
+class StreamJournalHub:
+    """Журнал приложения: одна точка доступа для панели, тулов и слоя данных."""
+
+    _JOURNAL: ClassVar[StreamStorePort | None] = None
+
+    @classmethod
+    def configure(cls, journal: StreamStorePort) -> None:
+        cls._JOURNAL = journal
+
+    @classmethod
+    def get(cls) -> StreamStorePort | None:
+        return cls._JOURNAL
+
+    @classmethod
+    def reset(cls) -> None:
+        """Сброс: пользуются тесты, приложению это не нужно."""
+        cls._JOURNAL = None
 
 
 class DirVault:
@@ -101,6 +495,16 @@ class StreamRecorder(StreamRecorderPort):
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def size(self) -> int:
+        with self._lock:
+            return self._size
+
+    @property
+    def note(self) -> str:
+        with self._lock:
+            return self._meta.note
+
     def feed(self, data: bytes) -> None:
         if not data:
             return
@@ -146,14 +550,6 @@ class StreamRecorder(StreamRecorderPort):
         self._write_meta()
         self._on_data()
 
-    def tail(self, window: int) -> StreamSlice:
-        with self._lock:
-            meta = self._meta
-            size = self._size
-
-        view = StreamFileView(self._log_path)
-        return view.slice_before(size, window, size, meta)
-
     def _write_meta(self) -> None:
         """Сайдкар атомарно: rename не оставит битого json при падении."""
         tmp = JournalFile.tmp_of(self._meta_path)
@@ -185,12 +581,7 @@ class StreamFileView:
         start = max(0, min(offset, size))
         start, data = self._aligned_read(start, min(window, size - start))
 
-        end = start + len(data)
-        if end < size:
-            cut = data.rfind(b"\n")
-            if 0 <= cut < len(data) - 1:
-                data = data[: cut + 1]
-                end = start + len(data)
+        data, end = WindowAlign.forward_trim(start, data, size)
 
         return self._slice(data, start, end, size, window, meta)
 
@@ -205,28 +596,14 @@ class StreamFileView:
         return self._slice(data, start, start + len(data), size, window, meta)
 
     def _aligned_read(self, start: int, length: int) -> tuple[int, bytes]:
-        """Чтение с головой на границе строки.
-
-        Смещение, стоящее сразу за переводом строки (стык окон), не трогается;
-        произвольное — сдвигается за первый перевод строки внутри окна. Без
-        переводов строки вовсе (одна строка длиннее окна) — как есть.
-        """
+        """Чтение с головой на границе строки; выравнивание — WindowAlign."""
         if length <= 0:
             return start, b""
 
-        if start == 0:
-            return start, self._read(0, length)
+        read_start, read_length = WindowAlign.read_plan(start, length)
+        raw = self._read(read_start, read_length)
 
-        raw = self._read(start - 1, length + 1)
-        data = raw[1:]
-        if raw[:1] == b"\n":
-            return start, data
-
-        cut = data.find(b"\n")
-        if cut < 0 or cut == len(data) - 1:
-            return start, data
-
-        return start + cut + 1, data[cut + 1 :]
+        return WindowAlign.head(start, raw)
 
     def _read(self, start: int, length: int) -> bytes:
         if length <= 0:
@@ -554,6 +931,16 @@ class StreamJournal(StreamStorePort):
             raise StreamJournalError(
                 f"stream log is not readable: {key.call_id}/{channel}: {exc}"
             ) from exc
+
+    def stat_of(self, key: StreamKey, channel: ToolChannel) -> StreamStat | None:
+        """Размер и итог журнала без чтения тела; None — журнала нет."""
+        opened = self._open_view(key, channel)
+        if opened is None:
+            return None
+
+        _, size, meta = opened
+
+        return StreamStat(size=size, closed=meta.closed, note=meta.note)
 
     def log_rel_path(self, key: StreamKey, channel: ToolChannel) -> str | None:
         """Rel-путь лога канала; имя инструмента берётся из сайдкара вызова.

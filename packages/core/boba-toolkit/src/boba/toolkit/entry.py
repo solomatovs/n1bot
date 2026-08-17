@@ -189,9 +189,7 @@ class ExpectedErrors:
         }
 
     @staticmethod
-    def kind_of(
-        error: Exception, mapping: Mapping[type[Exception], str]
-    ) -> str | None:
+    def kind_of(error: Exception, mapping: Mapping[type[Exception], str]) -> str | None:
         """Kind первого совпадения по MRO; None — исключение неожиданное."""
         for klass in type(error).__mro__:
             for declared, kind in mapping.items():

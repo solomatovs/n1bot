@@ -1,8 +1,8 @@
-"""Живой вывод инструмента: журнал, доставка call_id через обвязку, насос.
+"""Живой вывод инструмента: журнал, слежение сигналами и окна по смещению.
 
 Ключевые инварианты: вывод пишется в файл журнала и переживает конец хода;
-фронт получает окна фиксированного размера, сколько бы инструмент ни
-напечатал; журнал открывает обвязка по tool_call_id из ToolCall-конверта.
+фронту уходят только сигналы об изменении — содержимое он запрашивает сам
+окнами фиксированного размера; журнал открывает обвязка по tool_call_id.
 """
 
 from __future__ import annotations
@@ -22,22 +22,32 @@ from langchain_core.tools import tool
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.data.stream_journal import DirVault, StreamJournal
-from boba.chainlit.domain.stream import JournalWindow
+from boba.chainlit.canvas.journal import (
+    DirVault,
+    JournalWindow,
+    StreamJournal,
+    StreamKey,
+)
+from boba.chainlit.canvas.panel import (
+    CanvasContent,
+    CanvasKind,
+    CanvasPanel,
+    CanvasSignal,
+    CanvasWatch,
+    JournalWatchSource,
+    StreamActions,
+    StreamPath,
+    ToolStream,
+    ToolStreams,
+    WatchProbe,
+)
 from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.infra.plugins import stream_source
-from boba.chainlit.rendering.canvas import CanvasContent, CanvasKind
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
     ChatView,
     RecordingSink,
     StepRole,
-)
-from boba.chainlit.rendering.stream_view import (
-    StreamActions,
-    StreamScreen,
-    ToolStream,
-    ToolStreams,
 )
 from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.stream import ToolStreamTap
@@ -109,6 +119,7 @@ def chainlit_context(tmp_path: Path) -> Any:
     TurnScope.end()
     TurnContext.reset()
     ToolStreams.reset()
+    CanvasWatch.reset()
     ToolStreamTap.set(None)
     # контекст сбрасывается за собой: иначе сессия утечёт в тесты без неё
     context_var.reset(token)
@@ -370,118 +381,274 @@ class TestBegin:
             raise AssertionError("stream is None")
 
 
-class RecordingChannel:
-    """Канал в тестах: копит снапшоты вместо доставки в панель."""
+class FakeTransport:
+    """Транспорт в тестах: копит payload'ы сигналов вместо сокетов."""
 
     def __init__(self) -> None:
-        self.contents: list[CanvasContent] = []
+        self.sent: list[dict[str, Any]] = []
+        self.dead = False
 
-    async def push(self, content: CanvasContent) -> None:
-        self.contents.append(content)
+    def alive(self, thread_id: str) -> bool:
+        return not self.dead
+
+    async def send(self, thread_id: str, payload: Any) -> None:
+        self.sent.append(dict(payload))
 
 
-class TestPump:
-    """Насос переносит хвост журнала по пробуждениям, не накапливая вывод."""
+def _speed_up_watch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(CanvasWatch, "POLL_SEC", 0.05)
+    monkeypatch.setattr(CanvasWatch, "COALESCE_SEC", 0.05)
+
+
+def _journal_source(call_id: str, live: ToolStream | None) -> JournalWatchSource:
+    journal = ToolStreams.journal()
+    if journal is None:
+        raise AssertionError("journal is not None")
+
+    key = StreamKey(user_id=USER, thread_id=THREAD, call_id=call_id)
+    return JournalWatchSource(journal, key, STDOUT, live)
+
+
+async def _watch_finished(timeout_sec: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_sec
+
+    while CanvasWatch.watching(THREAD) is not None:
+        if time.monotonic() > deadline:
+            raise AssertionError("watch has not finished in time")
+        await asyncio.sleep(0.01)
+
+
+class TestWatch:
+    """Слежение шлёт сигналы об изменении; содержимое по сокету не едет."""
 
     CHUNKS = 300
     CHUNK = b"x" * 1024
 
-    async def _stream_with_writer(self) -> tuple[ToolStream, threading.Thread]:
-        stream = begin_stream()
+    def _watched_writes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[FakeTransport, int]:
+        _speed_up_watch(monkeypatch)
 
-        def write_all() -> None:
-            sink = stream.sink_of(STDOUT)
-            for index in range(self.CHUNKS):
-                sink.feed(b"%06d " % index + self.CHUNK)
-                time.sleep(0.002)
-            stream.close(str(CallOutcome.FINISHED))
+        async def scenario() -> tuple[FakeTransport, int]:
+            transport = FakeTransport()
+            CanvasWatch.configure(transport)
 
-        return stream, threading.Thread(target=write_all)
+            stream = begin_stream()
+            source = _journal_source(CALL_ID, stream)
+            CanvasWatch.show(
+                THREAD, StreamPath.render(CALL_ID), "n-1", source, seen="0:0"
+            )
 
-    async def _pumped(self) -> RecordingChannel:
-        """Писатель работает в своём потоке параллельно насосу — как инструмент."""
-        stream, writer = await self._stream_with_writer()
-        channel = RecordingChannel()
+            total = 0
 
-        task = await StreamScreen.show(THREAD, stream, channel)
-        writer.start()
-        await asyncio.get_running_loop().run_in_executor(None, writer.join)
-        await asyncio.wait_for(task, timeout=5)
-        return channel
+            def write_all() -> None:
+                nonlocal total
+                sink = stream.sink_of(STDOUT)
+                for index in range(self.CHUNKS):
+                    data = b"%06d " % index + self.CHUNK
+                    sink.feed(data)
+                    total += len(data)
+                    time.sleep(0.001)
+                stream.close(str(CallOutcome.FINISHED))
 
-    def test_snapshots_stay_within_the_window(self) -> None:
-        channel = run(self._pumped())
+            writer = threading.Thread(target=write_all)
+            writer.start()
+            await asyncio.get_running_loop().run_in_executor(None, writer.join)
+            await _watch_finished()
+            return transport, total
 
-        if not (channel.contents):
-            raise AssertionError("channel.contents")
-        for content in channel.contents:
-            if len(content.text.encode()) > JournalWindow.BYTES:
-                raise AssertionError("len(content.text.encode()) <= JournalWindow.BYT…")
+        return run(scenario())
 
-    def test_pushes_are_coalesced(self) -> None:
-        channel = run(self._pumped())
+    def test_signals_carry_state_and_no_content(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transport, total = self._watched_writes(monkeypatch)
 
-        if len(channel.contents) >= self.CHUNKS / 10:
-            raise AssertionError("len(channel.contents) < self.CHUNKS / 10")
+        if not transport.sent:
+            raise AssertionError("transport.sent")
+        for payload in transport.sent:
+            if payload["type"] != CanvasSignal.TYPE:
+                raise AssertionError('payload["type"] == CanvasSignal.TYPE')
+            if payload["path"] != StreamPath.render(CALL_ID):
+                raise AssertionError('payload["path"] == StreamPath.render(CALL_ID)')
+            if "text" in payload:
+                raise AssertionError('"text" not in payload')
 
-    def test_final_push_carries_the_tail_and_position(self) -> None:
-        channel = run(self._pumped())
+        final = transport.sent[-1]
+        if final["closed"] is not True:
+            raise AssertionError('final["closed"] is True')
+        if final["size"] != total:
+            raise AssertionError('final["size"] == total')
+        if final["note"] != str(CallOutcome.FINISHED):
+            raise AssertionError('final["note"] == str(CallOutcome.FINISHED)')
 
-        final = channel.contents[-1]
-        if final.kind is not CanvasKind.STREAM:
-            raise AssertionError("final.kind is CanvasKind.STREAM")
-        if f"{self.CHUNKS - 1:06d}" not in final.text:
-            raise AssertionError('f"{self.CHUNKS - 1:06d}" in final.text')
-        if str(CallOutcome.FINISHED) not in final.note:
-            raise AssertionError("str(CallOutcome.FINISHED) in final.note")
-        if final.stream is None:
-            raise AssertionError("final.stream is not None")
-        if final.stream.closed is not True:
-            raise AssertionError("final.stream.closed is True")
-        if final.stream.size != self.CHUNKS * (len(self.CHUNK) + 7):
-            raise AssertionError("final.stream.size == self.CHUNKS * (len(self.CHUNK)…")
-        if final.stream.offset + final.stream.window < final.stream.size:
-            raise AssertionError("final.stream.offset + final.stream.window >= final.…")
+    def test_signals_are_coalesced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        transport, _ = self._watched_writes(monkeypatch)
 
-    def test_show_replaces_the_previous_pump(self) -> None:
-        async def scenario() -> tuple[asyncio.Task[None], asyncio.Task[None]]:
+        if len(transport.sent) >= self.CHUNKS / 10:
+            raise AssertionError("len(transport.sent) < self.CHUNKS / 10")
+
+    def test_show_replaces_previous_watch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _speed_up_watch(monkeypatch)
+
+        async def scenario() -> str | None:
+            CanvasWatch.configure(FakeTransport())
             first = begin_stream("call-a")
             second = begin_stream("call-b")
-            channel = RecordingChannel()
 
-            first_task = await StreamScreen.show(THREAD, first, channel)
-            second_task = await StreamScreen.show(THREAD, second, channel)
+            CanvasWatch.show(
+                THREAD,
+                StreamPath.render("call-a"),
+                "n-a",
+                _journal_source("call-a", first),
+            )
+            CanvasWatch.show(
+                THREAD,
+                StreamPath.render("call-b"),
+                "n-b",
+                _journal_source("call-b", second),
+            )
 
-            second.close("done")
-            await asyncio.wait_for(second_task, timeout=5)
-            return first_task, second_task
+            watching = CanvasWatch.watching(THREAD)
+            CanvasWatch.drop(THREAD)
+            return watching
 
-        first_task, second_task = run(scenario())
+        watching = run(scenario())
+        if watching != StreamPath.render("call-b"):
+            raise AssertionError('watching == StreamPath.render("call-b")')
 
-        if first_task.cancelled() is not True:
-            raise AssertionError("first_task.cancelled() is True")
-        if second_task is first_task:
-            raise AssertionError("second_task is not first_task")
+    def test_leave_respects_the_nonce(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Гонка переоткрытия: leave старого показа не снимает свежий вотчер."""
+        _speed_up_watch(monkeypatch)
 
-    def test_leave_stops_the_pump(self) -> None:
-        async def scenario() -> asyncio.Task[None]:
+        async def scenario() -> tuple[str | None, str | None]:
+            CanvasWatch.configure(FakeTransport())
             stream = begin_stream()
-            task = await StreamScreen.show(THREAD, stream, RecordingChannel())
+            CanvasWatch.show(
+                THREAD,
+                StreamPath.render(CALL_ID),
+                "n-new",
+                _journal_source(CALL_ID, stream),
+            )
 
-            StreamScreen.leave(THREAD)
-            await asyncio.gather(task, return_exceptions=True)
-            return task
+            CanvasWatch.leave(THREAD, "n-old")
+            after_foreign = CanvasWatch.watching(THREAD)
 
-        task = run(scenario())
-        if task.cancelled() is not True:
-            raise AssertionError("task.cancelled() is True")
+            CanvasWatch.leave(THREAD, "n-new")
+            after_own = CanvasWatch.watching(THREAD)
+            return after_foreign, after_own
+
+        after_foreign, after_own = run(scenario())
+        if after_foreign != StreamPath.render(CALL_ID):
+            raise AssertionError("after_foreign == StreamPath.render(CALL_ID)")
+        if after_own is not None:
+            raise AssertionError("after_own is None")
+
+    def test_watch_stops_when_the_room_dies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _speed_up_watch(monkeypatch)
+
+        async def scenario() -> None:
+            transport = FakeTransport()
+            CanvasWatch.configure(transport)
+            stream = begin_stream()
+            CanvasWatch.show(
+                THREAD,
+                StreamPath.render(CALL_ID),
+                "n-1",
+                _journal_source(CALL_ID, stream),
+            )
+
+            transport.dead = True
+            await _watch_finished()
+
+        run(scenario())
+
+    def test_file_watch_survives_closed_probes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Файл workspace closed для показа, но не final: слежение живёт.
+
+        Регресс: файловые источники отдавали closed=True, и слежение
+        снималось сразу после первой пробы — обновления файлов не доходили.
+        """
+        _speed_up_watch(monkeypatch)
+
+        class MutableFile:
+            def __init__(self) -> None:
+                self.revision = "r1"
+
+            async def probe(self) -> WatchProbe:
+                return WatchProbe(
+                    revision=self.revision, size=1, closed=True, final=False
+                )
+
+            def attach_waker(self) -> None:
+                return None
+
+        async def scenario() -> tuple[list[dict[str, Any]], str | None]:
+            transport = FakeTransport()
+            CanvasWatch.configure(transport)
+            source = MutableFile()
+            CanvasWatch.show(THREAD, "/workspace/t/upload/a.log", "n-1", source)
+
+            await asyncio.sleep(0.2)
+            source.revision = "r2"
+
+            deadline = time.monotonic() + 5.0
+            while not transport.sent:
+                if time.monotonic() > deadline:
+                    raise AssertionError("signal has not arrived in time")
+                await asyncio.sleep(0.02)
+
+            watching = CanvasWatch.watching(THREAD)
+            CanvasWatch.drop(THREAD)
+            return transport.sent, watching
+
+        sent, watching = run(scenario())
+        if watching != "/workspace/t/upload/a.log":
+            raise AssertionError("слежение снялось после closed-пробы файла")
+        if sent[0]["revision"] != "r2":
+            raise AssertionError('sent[0]["revision"] == "r2"')
+
+    def test_closed_journal_watch_ends_without_signals(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Закрытый вызов статичен: слежение снимается без единого сигнала."""
+        _speed_up_watch(monkeypatch)
+
+        stream = begin_stream()
+        stream.sink_of(STDOUT).feed(b"done output")
+        stream.close(str(CallOutcome.FINISHED))
+        TurnScope.end()
+
+        async def scenario() -> FakeTransport:
+            transport = FakeTransport()
+            CanvasWatch.configure(transport)
+            CanvasWatch.show(
+                THREAD,
+                StreamPath.render(CALL_ID),
+                "n-1",
+                _journal_source(CALL_ID, None),
+            )
+            await _watch_finished()
+            return transport
+
+        transport = run(scenario())
+        if transport.sent:
+            raise AssertionError("not transport.sent")
 
 
 class TestWindowAction:
-    """Перемотка ходит по журналу окнами и снимает насос."""
+    """Окна ходят по журналу по пути показа stream://{call_id}."""
 
     BODY = ("0123456789" * 20000).encode()
     """200 КБ: больше трёх окон журнала."""
+
+    PATH = StreamPath.render(CALL_ID)
 
     def _recorded(self) -> None:
         stream = begin_stream()
@@ -493,10 +660,10 @@ class TestWindowAction:
         self._recorded()
 
         first = run(
-            StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
+            StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": 0})
         )
         middle = run(
-            StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 70000})
+            StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": 70000})
         )
 
         if first["stream"]["offset"] != 0:
@@ -508,11 +675,33 @@ class TestWindowAction:
         if len(middle["text"].encode()) != first["stream"]["window"]:
             raise AssertionError('len(middle["text"].encode()) == first["stream"]["wi…')
 
+    def test_tail_window_by_negative_offset(self) -> None:
+        self._recorded()
+
+        tail = run(
+            StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": -1})
+        )
+
+        if tail["stream"]["end"] != len(self.BODY):
+            raise AssertionError('tail["stream"]["end"] == len(self.BODY)')
+        if len(tail["text"].encode()) > JournalWindow.BYTES:
+            raise AssertionError('len(tail["text"].encode()) <= JournalWindow.BYTES')
+
+    def test_window_before_joins_backwards(self) -> None:
+        self._recorded()
+
+        before = run(
+            StreamActions.window(USER, THREAD, {"path": self.PATH, "before": 70000})
+        )
+
+        if before["stream"]["end"] != 70000:
+            raise AssertionError('before["stream"]["end"] == 70000')
+
     def test_offset_beyond_the_file_gives_empty_window(self) -> None:
         self._recorded()
 
         beyond = run(
-            StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 10**9})
+            StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": 10**9})
         )
 
         if beyond["text"] != "":
@@ -522,68 +711,106 @@ class TestWindowAction:
 
     def test_unknown_call_gives_empty_answer(self) -> None:
         answer = run(
-            StreamActions.window(USER, THREAD, {"call_id": "no-such-call", "offset": 0})
+            StreamActions.window(
+                USER, THREAD, {"path": StreamPath.render("no-such-call"), "offset": 0}
+            )
         )
 
         if answer != {}:
             raise AssertionError("answer == {}")
 
-    def test_window_request_stops_the_pump(self) -> None:
-        async def scenario() -> asyncio.Task[None]:
-            stream = begin_stream()
-            stream.sink_of(STDOUT).feed(b"live data")
-            task = await StreamScreen.show(THREAD, stream, RecordingChannel())
 
-            await StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 0})
-            await asyncio.gather(task, return_exceptions=True)
-            return task
+class PanelProbe:
+    """Подмена показа панели: контент копится вместо доставки в chainlit."""
 
-        task = run(scenario())
-        if task.cancelled() is not True:
-            raise AssertionError("task.cancelled() is True")
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.shown: list[CanvasContent] = []
+
+        async def capture(content: CanvasContent) -> None:
+            self.shown.append(content)
+
+        monkeypatch.setattr(CanvasPanel, "show", capture)
 
 
 class TestShowAction:
-    """Кнопка потока: живой вызов — насос, завершённый — окно из журнала."""
+    """Кнопка потока: окно с начала журнала в панель плюс слежение."""
 
-    def test_recorded_stream_is_shown_from_the_journal(self) -> None:
+    def test_recorded_stream_is_shown_from_the_start(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         stream = begin_stream()
         stream.sink_of(STDOUT).feed("сохранённый вывод".encode())
         stream.close(str(CallOutcome.FINISHED))
         TurnScope.end()
 
-        channel = RecordingChannel()
+        probe = PanelProbe(monkeypatch)
 
-        async def scenario() -> None:
-            piece = ToolStreams.recorded_slice(
-                USER, THREAD, CALL_ID, offset=-1, channel=STDOUT
-            )
-            if piece is None:
-                raise AssertionError("piece is not None")
-            await StreamScreen.recorded(THREAD, CALL_ID, piece, channel, follow=True)
+        run(StreamActions.show(USER, THREAD, {"call_id": CALL_ID}))
 
-        run(scenario())
-
-        if len(channel.contents) != 1:
-            raise AssertionError("len(channel.contents) == 1")
-        shown = channel.contents[0]
+        if len(probe.shown) != 1:
+            raise AssertionError("len(probe.shown) == 1")
+        shown = probe.shown[0]
         if shown.kind is not CanvasKind.STREAM:
             raise AssertionError("shown.kind is CanvasKind.STREAM")
         if "сохранённый вывод" not in shown.text:
             raise AssertionError('"сохранённый вывод" in shown.text')
+        if shown.stream is None:
+            raise AssertionError("shown.stream is not None")
+        if shown.stream.offset != 0:
+            raise AssertionError("shown.stream.offset == 0")
+        if not shown.nonce:
+            raise AssertionError("shown.nonce")
 
-    def test_unknown_stream_is_explained(self) -> None:
-        channel = RecordingChannel()
+    def test_show_registers_the_watch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _speed_up_watch(monkeypatch)
+        stream = begin_stream()
+        stream.sink_of(STDOUT).feed(b"live")
 
-        async def scenario() -> None:
-            await StreamScreen.gone("no-such", channel)
+        probe = PanelProbe(monkeypatch)
 
-        run(scenario())
+        async def scenario() -> str | None:
+            CanvasWatch.configure(FakeTransport())
+            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID})
+            watching = CanvasWatch.watching(THREAD)
+            CanvasWatch.drop(THREAD)
+            return watching
 
-        if channel.contents[0].kind is not CanvasKind.NOTICE:
-            raise AssertionError("channel.contents[0].kind is CanvasKind.NOTICE")
-        if "unavailable" not in channel.contents[0].note:
-            raise AssertionError('"unavailable" in channel.contents[0].note')
+        watching = run(scenario())
+        if watching != StreamPath.render(CALL_ID):
+            raise AssertionError("watching == StreamPath.render(CALL_ID)")
+        if len(probe.shown) != 1:
+            raise AssertionError("len(probe.shown) == 1")
+
+    def test_unknown_stream_is_explained(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        probe = PanelProbe(monkeypatch)
+
+        run(StreamActions.show(USER, THREAD, {"call_id": "no-such"}))
+
+        if probe.shown[0].kind is not CanvasKind.NOTICE:
+            raise AssertionError("probe.shown[0].kind is CanvasKind.NOTICE")
+        if "unavailable" not in probe.shown[0].note:
+            raise AssertionError('"unavailable" in probe.shown[0].note')
+
+    def test_leave_action_drops_the_watch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _speed_up_watch(monkeypatch)
+        stream = begin_stream()
+        stream.sink_of(STDOUT).feed(b"live")
+
+        probe = PanelProbe(monkeypatch)
+
+        async def scenario() -> str | None:
+            CanvasWatch.configure(FakeTransport())
+            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID})
+            nonce = probe.shown[0].nonce
+
+            StreamActions.leave(THREAD, {"path": probe.shown[0].path, "nonce": nonce})
+            return CanvasWatch.watching(THREAD)
+
+        watching = run(scenario())
+        if watching is not None:
+            raise AssertionError("watching is None")
 
 
 class ElementSink(ChatSink):

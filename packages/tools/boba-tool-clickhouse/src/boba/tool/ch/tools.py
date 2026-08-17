@@ -56,6 +56,7 @@ class ChToolConfig(SecretRevealing, SqlProfiles[ClickHouseConfig]):
         ),
     )
 
+
 class ChCatalog:
     """Каталожные запросы ClickHouse: фильтры уезжают именованными параметрами."""
 

@@ -3,17 +3,14 @@ workspace, показ — панелью канваса.
 
 Ошибки: ErrorResult — нет сессии, битая спека, путь вне каталогов треда,
 файл не найден, не отдан хранилищем или не текст; остальное упаковывает
-ToolErrorGuard. Вотчер канваса — фоновая задача: сбой доставки логируется
-и завершает слежение.
+ToolErrorGuard.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import textwrap
 import uuid
-from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Annotated, ClassVar, Self
 
@@ -21,13 +18,7 @@ from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
-from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.data.storage import StorageError, StorageNotFoundError
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.session import RequiredSession
-from boba.chainlit.domain.turn import TurnContext
-from boba.chainlit.rendering.canvas import (
+from boba.chainlit.canvas.panel import (
     CanvasContent,
     CanvasError,
     CanvasErrorKind,
@@ -38,7 +29,15 @@ from boba.chainlit.rendering.canvas import (
     OpenedCanvas,
     RenderStatus,
     RenderVerdicts,
+    StorageHashSource,
+    WatchSource,
 )
+from boba.chainlit.data.data_layer import AttachmentDataLayer
+from boba.chainlit.data.storage import StorageError, StorageNotFoundError
+from boba.chainlit.domain.errors import RefusalError
+from boba.chainlit.domain.keys import ObjectKey, ThreadDir
+from boba.chainlit.domain.session import RequiredSession
+from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.toolkit.result import (
     DiagramResult,
@@ -51,7 +50,6 @@ from boba.workspace.launcher import ReadWindow
 from chainlit.data import get_data_layer
 
 __all__ = [
-    "CanvasWatcher",
     "DiagramCard",
     "DiagramEntry",
     "DiagramErrorKind",
@@ -299,60 +297,8 @@ class DiagramEntry(BaseModel):
         )
 
 
-class CanvasWatcher:
-    """Слежение за файлом спеки: толкает изменения в канвас до конца хода.
-
-    Живёт, пока alive() истинно. Ошибка чтения пропускает тик — файл в этот
-    момент может переписываться; сбой доставки логируется и завершает задачу.
-    """
-
-    _TASKS: ClassVar[set[asyncio.Task[None]]] = set()
-    """Живые вотчеры: без ссылки задачу заберёт сборщик мусора."""
-
-    def __init__(
-        self,
-        read: Callable[[], Awaitable[str]],
-        alive: Callable[[], bool],
-        push: Callable[[str], Awaitable[None]],
-        interval_sec: float,
-    ) -> None:
-        self._read = read
-        self._alive = alive
-        self._push = push
-        self._interval_sec = interval_sec
-
-    def spawn(self, initial: str) -> asyncio.Task[None]:
-        task = asyncio.create_task(self.run(initial))
-        self._TASKS.add(task)
-        task.add_done_callback(self._TASKS.discard)
-        return task
-
-    async def run(self, initial: str) -> None:
-        last = initial
-
-        while self._alive():
-            await asyncio.sleep(self._interval_sec)
-
-            try:
-                text = await self._read()
-            except RefusalError:
-                continue
-
-            if text == last:
-                continue
-
-            last = text
-            try:
-                await self._push(text)
-            except Exception:
-                logger.warning("canvas watcher stopped: push failed", exc_info=True)
-                return
-
-
 class DiagramFiles:
-    """Спеки mermaid в каталоге mermaid/ треда: проверка, сохранение, показ."""
-
-    WATCH_INTERVAL_SEC: ClassVar[float] = 1.0
+    """Спеки mermaid в каталоге mermaid/ треда: проверка, сохранение, чтение."""
 
     def __init__(self, max_chars: int) -> None:
         self._max_chars = max_chars
@@ -378,32 +324,6 @@ class DiagramFiles:
         )
 
         return key
-
-    def watch(
-        self,
-        key: ObjectKey,
-        initial: str,
-        push: Callable[[str], Awaitable[None]],
-    ) -> None:
-        """Слежение на время хода; вне хода (клик пользователя) вотчера нет."""
-        thread_id = key.thread_id
-        turn = TurnContext.turn_of(thread_id)
-        if turn is None:
-            return
-
-        async def read() -> str:
-            return await self.read(key)
-
-        def alive() -> bool:
-            return TurnContext.turn_of(thread_id) is turn
-
-        watcher = CanvasWatcher(
-            read=read,
-            alive=alive,
-            push=push,
-            interval_sec=self.WATCH_INTERVAL_SEC,
-        )
-        watcher.spawn(initial)
 
     def _parse(self, spec: str) -> MermaidSpec:
         if len(spec) > self._max_chars:
@@ -507,11 +427,8 @@ class MermaidViewer:
         text = await self._read(key)
         nonce = str(uuid.uuid4())
 
-        async def show(current: str) -> None:
-            await push(self._content(key, current, nonce))
-
         RenderVerdicts.expect(nonce)
-        await show(text)
+        await push(self._content(key, text, nonce))
 
         verdict = await RenderVerdicts.wait(nonce, self.VERDICT_TIMEOUT_SEC)
         if verdict.status is RenderStatus.FAILED:
@@ -520,12 +437,18 @@ class MermaidViewer:
                 f"the diagram does not render in the browser: {verdict.message}",
             )
 
-        self._files.watch(key, text, show)
-
         entry = DiagramEntry.of(key, text)
         link = DiagramResult(spec=text, path=entry.path, title=entry.label)
 
-        return OpenedCanvas(label=entry.label, path=entry.path, link=link)
+        return OpenedCanvas(label=entry.label, path=entry.path, nonce=nonce, link=link)
+
+    def watch_source(self, key: ObjectKey) -> WatchSource | None:
+        """Слежение по содержимому: спека мала, а размер может не меняться."""
+
+        async def read() -> str:
+            return await self._read(key)
+
+        return StorageHashSource(read)
 
     async def _read(self, key: ObjectKey) -> str:
         try:

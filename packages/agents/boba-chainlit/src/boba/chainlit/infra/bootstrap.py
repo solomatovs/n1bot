@@ -175,16 +175,16 @@ def _use_file_serving(c: AppConfig) -> None:
 
 def _use_stream_journal(c: AppConfig) -> None:
     """Журнал вывода инструментов; без секции в конфиге потоков нет."""
-    from boba.chainlit.data.stream_journal import (  # noqa: PLC0415
+    from boba.chainlit.canvas.journal import (  # noqa: PLC0415
         DirVault,
         StreamJournal,
     )
+    from boba.chainlit.canvas.panel import ToolStreams  # noqa: PLC0415
     from boba.chainlit.data.upload import (  # noqa: PLC0415
         StreamServing,
         UploadPolicy,
     )
     from boba.chainlit.domain.keys import StreamUrl  # noqa: PLC0415
-    from boba.chainlit.rendering.stream_view import ToolStreams  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     journal_cfg = c.stream_journal
@@ -206,8 +206,11 @@ def _use_canvas_viewers() -> None:
     """
     Вьюверы канваса — на старте: панель открывается кликом до первого хода
     """
+    from boba.chainlit.canvas.panel import CanvasWatch  # noqa: PLC0415
     from boba.chainlit.infra.plugins import load_tools  # noqa: PLC0415
+    from boba.chainlit.infra.thread_room import CanvasRoomTransport  # noqa: PLC0415
 
+    CanvasWatch.configure(CanvasRoomTransport())
     load_tools(providers.get_raw_config())
 
 

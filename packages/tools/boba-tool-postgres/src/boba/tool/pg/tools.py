@@ -56,6 +56,7 @@ class PgToolConfig(SecretRevealing, SqlProfiles[PostgresConfig]):
         ),
     )
 
+
 async def _query_rows(
     connection: PostgresConfig,
     query: PgCatalogQuery,

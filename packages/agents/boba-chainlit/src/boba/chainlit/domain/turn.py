@@ -1,7 +1,7 @@
 """Контекст идущего хода: единственный реестр ходов по thread_id.
 
 Контекст открывает оркестрация хода; всё, что живёт ровно один ход, лежит
-здесь: отмена, ссылка на ход, живые журналы вызовов, насос показа потока.
+здесь: отмена, ссылка на ход, живые журналы вызовов.
 Инструменты и отрисовка находят ход только через этот реестр, закрытие
 контекста — единственный finally, гасящий всё сразу.
 
@@ -23,7 +23,6 @@ from contextlib import contextmanager
 from typing import ClassVar, Protocol
 
 from boba.cancellation import StopReason, TurnCancellation, turn_cancellation
-from boba.chainlit.domain.stream import JournalFile
 from boba.toolkit.channels import CallOutcome
 
 __all__ = ["LiveStream", "TurnContext", "TurnPort"]
@@ -39,11 +38,19 @@ class TurnPort(Protocol):
 
 
 class LiveStream(Protocol):
-    """Живой журнал вызова: контексту достаточно уметь его закрыть."""
+    """Живой журнал вызова: контекст закрывает его и защищает его файлы.
+
+    call_prefix — префикс файлов вызова в томе журнала: контекст отдаёт его
+    ротации как защищённый, не зная формата имён журнала.
+    """
 
     @property
     @abstractmethod
     def closed(self) -> bool: ...
+
+    @property
+    @abstractmethod
+    def call_prefix(self) -> str: ...
 
     @abstractmethod
     def close(self, note: str) -> None: ...
@@ -65,7 +72,6 @@ class TurnContext:
         self._turn = turn
         self._cancellation = cancellation
         self._streams: dict[str, LiveStream] = {}
-        self._pump: asyncio.Task[None] | None = None
 
     @property
     def thread_id(self) -> str:
@@ -83,9 +89,7 @@ class TurnContext:
 
     @classmethod
     @contextmanager
-    def open(
-        cls, thread_id: str, turn: TurnPort
-    ) -> Generator[TurnContext, None, None]:
+    def open(cls, thread_id: str, turn: TurnPort) -> Generator[TurnContext, None, None]:
         """Открывает ход треда: отмена в контексте исполнения, ход в реестре.
 
         Закрытие контекста снимает насос и закрывает живые журналы вызовов —
@@ -158,25 +162,8 @@ class TurnContext:
     @classmethod
     def _live_call_prefixes(cls) -> Iterator[str]:
         for context in cls._ACTIVE.values():
-            for call_id in context._streams:
-                yield JournalFile.call_prefix(context._thread_id, call_id)
-
-    def attach_pump(self, task: asyncio.Task[None]) -> None:
-        """Ставит насос показа; предыдущий снимается — насос один на тред."""
-        self.leave_pump()
-        self._pump = task
-        task.add_done_callback(self._forget_pump)
-
-    def leave_pump(self) -> None:
-        """Снимает насос показа; без насоса делать нечего."""
-        task = self._pump
-        self._pump = None
-        if task is not None:
-            task.cancel()
-
-    def _forget_pump(self, task: asyncio.Task[None]) -> None:
-        if self._pump is task:
-            self._pump = None
+            for stream in context._streams.values():
+                yield stream.call_prefix
 
     @classmethod
     def reset(cls) -> None:
@@ -206,9 +193,7 @@ class TurnContext:
                 del cls._ACTIVE[context._thread_id]
 
     def _close_live(self) -> None:
-        """Конец хода: насос снимается, живые журналы закрываются, файлы остаются."""
-        self.leave_pump()
-
+        """Конец хода: живые журналы закрываются, файлы журнала остаются."""
         with self._LOCK:
             streams = list(self._streams.values())
             self._streams.clear()
@@ -219,9 +204,7 @@ class TurnContext:
 
     @classmethod
     @contextmanager
-    def _task_abort(
-        cls, cancellation: TurnCancellation
-    ) -> Generator[None, None, None]:
+    def _task_abort(cls, cancellation: TurnCancellation) -> Generator[None, None, None]:
         """Отмена задачи хода как прерыватель: асинхронный мир тоже обрывается."""
         abort = cls._task_canceller()
         if abort is None:

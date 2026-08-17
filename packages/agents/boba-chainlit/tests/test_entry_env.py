@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,22 @@ from boba.chainlit.infra.entry import AppEntry
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
+
+
+@pytest.fixture(autouse=True)
+def keep_environ() -> Iterator[None]:
+    """Снимок окружения на время теста.
+
+    export_env пишет CHAINLIT_APP_ROOT прямо в os.environ, а корень здесь —
+    временный каталог: без восстановления он утекал в соседние тесты, и их
+    подпроцессы падали на импорте chainlit (тот заводит .files под APP_ROOT).
+    """
+    saved = dict(os.environ)
+
+    yield
+
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 CONFIG = """

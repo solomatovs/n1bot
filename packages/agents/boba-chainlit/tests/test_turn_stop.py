@@ -135,6 +135,10 @@ class TestLiveArtifacts:
         def closed(self) -> bool:
             return self.note is not None
 
+        @property
+        def call_prefix(self) -> str:
+            return f"{THREAD}/call-1."
+
         def close(self, note: str) -> None:
             self.note = note
 
@@ -156,32 +160,6 @@ class TestLiveArtifacts:
         with TurnContext.open(THREAD, FakeTurn()):
             if TurnContext.live_threads() != frozenset():
                 raise AssertionError("TurnContext.live_threads() == frozenset()")
-
-    def test_pump_is_cancelled_on_close(self) -> None:
-        async def scenario() -> bool:
-            with TurnContext.open(THREAD, FakeTurn()) as context:
-                pump = asyncio.create_task(asyncio.sleep(30))
-                context.attach_pump(pump)
-
-            await asyncio.sleep(0)
-            return pump.cancelled()
-
-        if asyncio.run(scenario()) is not True:
-            raise AssertionError("asyncio.run(scenario()) is True")
-
-    def test_new_pump_replaces_the_old_one(self) -> None:
-        async def scenario() -> bool:
-            with TurnContext.open(THREAD, FakeTurn()) as context:
-                first = asyncio.create_task(asyncio.sleep(30))
-                context.attach_pump(first)
-                second = asyncio.create_task(asyncio.sleep(30))
-                context.attach_pump(second)
-
-                await asyncio.sleep(0)
-                return first.cancelled() and not second.cancelled()
-
-        if asyncio.run(scenario()) is not True:
-            raise AssertionError("asyncio.run(scenario()) is True")
 
 
 class TestAsyncTurn:

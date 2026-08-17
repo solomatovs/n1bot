@@ -28,9 +28,7 @@ from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 from boba.toolkit.types import LLMStringList, SecretRevealing
 from boba.transport.http import HttpProfile
 
-_PAGE_ID_DESCRIPTION = (
-    "ID страницы Confluence (из URL `viewpage.action?pageId=<id>`)."
-)
+_PAGE_ID_DESCRIPTION = "ID страницы Confluence (из URL `viewpage.action?pageId=<id>`)."
 
 
 class ConfluenceRequestError(Exception):
@@ -150,9 +148,7 @@ class CqlSearch:
         return f"({text_block}) and ({space_block})"
 
     @staticmethod
-    def hit_row(
-        hit: dict[str, Any], base: str, snippet_chars: int
-    ) -> dict[str, Any]:
+    def hit_row(hit: dict[str, Any], base: str, snippet_chars: int) -> dict[str, Any]:
         html = ConfluenceJson.body_html(hit, "view")
         excerpt = ConfluencePageText.excerpt_of(html, snippet_chars)
 

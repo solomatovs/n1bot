@@ -75,10 +75,7 @@ class TrustedBinaries(BaseModel):
         for binary in binaries:
             names.append(binary.value)
 
-        msg = (
-            f"trusted binaries: {'/'.join(names)} not found in "
-            f"{', '.join(self.dirs)}"
-        )
+        msg = f"trusted binaries: {'/'.join(names)} not found in {', '.join(self.dirs)}"
         raise UntrustedBinaryError(msg)
 
     def has(self, binary: SandboxBinary) -> bool:

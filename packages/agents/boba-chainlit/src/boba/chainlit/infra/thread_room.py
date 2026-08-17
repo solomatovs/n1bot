@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 from chainlit.context import ChainlitContext, context_var, get_context
@@ -16,7 +16,12 @@ from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio
 from chainlit.session import WebsocketSession, ws_sessions_id
 
-__all__ = ["StickyLoadingEmitter", "ThreadEmitter", "ThreadRoom"]
+__all__ = [
+    "CanvasRoomTransport",
+    "StickyLoadingEmitter",
+    "ThreadEmitter",
+    "ThreadRoom",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -97,3 +102,29 @@ class ThreadRoom:
         current = get_context()
         session = cast("WebsocketSession", current.session)
         context_var.set(ChainlitContext(session, StickyLoadingEmitter(session)))
+
+
+class CanvasRoomTransport:
+    """Доставка сигналов канваса: window_message во все живые сокеты треда.
+
+    Фронт chainlit пробрасывает window_message в window.postMessage — панель
+    ловит его слушателем message без участия элементов и их пересозданий.
+    """
+
+    def alive(self, thread_id: str) -> bool:
+        return bool(ThreadRoom.sessions(thread_id))
+
+    async def send(self, thread_id: str, payload: Mapping[str, Any]) -> None:
+        for session in ThreadRoom.sessions(thread_id):
+            # одна битая сессия не должна глушить сигнал остальным
+            try:
+                await cast(
+                    "Awaitable[None]", session.emit("window_message", dict(payload))
+                )
+            except Exception:
+                logger.warning(
+                    "canvas signal failed for session %s of thread %s",
+                    session.id,
+                    thread_id,
+                    exc_info=True,
+                )

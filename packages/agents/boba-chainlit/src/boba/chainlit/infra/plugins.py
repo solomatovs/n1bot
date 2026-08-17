@@ -17,19 +17,19 @@ from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
-from boba.chainlit.agent.tools.canvas import CanvasToolConfig, build_canvas_tools
-from boba.chainlit.agent.tools.diagram import (
+from boba.chainlit.agent.tools.send_file import build_send_file_tool
+from boba.chainlit.canvas.diagram import (
     DiagramToolConfig,
     build_diagram_tools,
 )
-from boba.chainlit.agent.tools.send_file import build_send_file_tool
-from boba.chainlit.agent.tools.stream_logs import build_stream_logs_tools
+from boba.chainlit.canvas.panel import ToolStreams
+from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
+from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
 from boba.chainlit.domain.session import (
     current_thread_id,
     current_user_id,
     current_user_roles,
 )
-from boba.chainlit.rendering.stream_view import ToolStreams
 from boba.sandbox import (
     SandboxCaller,
     SandboxProfile,

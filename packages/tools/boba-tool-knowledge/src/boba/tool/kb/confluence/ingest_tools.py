@@ -96,6 +96,7 @@ class IngestToolConfig(SecretRevealing, ConfluenceIngestConfig):
 
     SECTION: ClassVar[str] = "tool.ingest"
 
+
 class LocalConfluenceReader(Reader[str]):
     """HTML-страница -> секции по заголовкам; bs4 работает прямо здесь."""
 
@@ -200,9 +201,7 @@ class IngestRun:
 
     @staticmethod
     def connection(cfg: IngestToolConfig) -> ConfluenceConnection:
-        return ConfluenceConnection(
-            profile=cfg.confluence, body_format=cfg.body_format
-        )
+        return ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
 
 
 @tool(response_format="content_and_artifact")
@@ -231,8 +230,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
         bool,
         Field(
             description=(
-                "Переиндексировать страницы целиком, минуя пропуск "
-                "неизменившихся."
+                "Переиндексировать страницы целиком, минуя пропуск неизменившихся."
             ),
         ),
     ] = False,
@@ -262,9 +260,12 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
     )
 
     stats = await IngestRun.run(
-        run_cfg, source, progress,
+        run_cfg,
+        source,
+        progress,
         attachments=attachments,
-        prune_missing=prune_missing, force_update=force_update,
+        prune_missing=prune_missing,
+        force_update=force_update,
     )
 
     note = f"page_ids ({len(page_ids)}): {', '.join(page_ids)}"
@@ -313,9 +314,12 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
     )
 
     stats = await IngestRun.run(
-        run_cfg, source, progress,
+        run_cfg,
+        source,
+        progress,
         attachments=attachments,
-        prune_missing=prune_missing, force_update=False,
+        prune_missing=prune_missing,
+        force_update=False,
     )
 
     table = TableResult(rows=[stats])
@@ -365,9 +369,12 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
     )
 
     stats = await IngestRun.run(
-        run_cfg, source, progress,
+        run_cfg,
+        source,
+        progress,
         attachments=attachments,
-        prune_missing=prune_missing, force_update=force_update,
+        prune_missing=prune_missing,
+        force_update=force_update,
     )
 
     note = f"space_keys ({len(space_keys)}): {', '.join(space_keys)}"
