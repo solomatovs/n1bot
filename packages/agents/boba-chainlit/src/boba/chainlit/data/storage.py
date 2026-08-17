@@ -81,11 +81,16 @@ class StorageNotFoundError(StorageError):
 
 
 class FileStat(BaseModel):
-    """Свойства объекта хранилища без чтения тела."""
+    """Свойства объекта хранилища без чтения тела.
+
+    revision — версия содержимого (момент последней записи): по ней слежение
+    канваса видит правку, не изменившую размер файла.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     size: int = Field(ge=0)
+    revision: int = Field(default=0, ge=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,7 +395,7 @@ class LocalStorageClient(StorageClient):
         if not stat_module.S_ISREG(result.st_mode):
             raise StorageError(f"storage: not a regular file: {path.name}")
 
-        return FileStat(size=result.st_size)
+        return FileStat(size=result.st_size, revision=result.st_mtime_ns)
 
     async def _window_chunks(
         self, path: Path, window: ReadWindow, size: int
@@ -525,8 +530,8 @@ class ImageStorageClient(StorageClient):
 
         self._check(rc, err)
 
-        size = ReadHeader.parse(self._header_line(out))
-        return FileStat(size=size)
+        head = ReadHeader.parse(self._header_line(out))
+        return FileStat(size=head.size, revision=head.revision)
 
     async def _open_stream(self, object_key: str, window: ReadWindow) -> OpenedStream:
         """Заголовок с размером читается до отдачи наружу: пока его нет,
@@ -549,7 +554,8 @@ class ImageStorageClient(StorageClient):
             await reader.release()
             raise
 
-        stat = FileStat(size=ReadHeader.parse(header))
+        head = ReadHeader.parse(header)
+        stat = FileStat(size=head.size, revision=head.revision)
         body = self._body_chunks(reader, object_key)
         return OpenedStream(stat=stat, chunks=body, release=reader.release)
 

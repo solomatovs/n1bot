@@ -84,9 +84,7 @@ class BasicAuth(_AuthBase):
         return httpx.BasicAuth(self.user, self.password.get_secret_value())
 
     @field_serializer("password", when_used="json")
-    def _dump_password(
-        self, value: SecretStr, info: SerializationInfo
-    ) -> str | None:
+    def _dump_password(self, value: SecretStr, info: SerializationInfo) -> str | None:
         return self._reveal(value, info)
 
 
@@ -115,9 +113,7 @@ class DigestAuth(_AuthBase):
         return httpx.DigestAuth(self.user, self.password.get_secret_value())
 
     @field_serializer("password", when_used="json")
-    def _dump_password(
-        self, value: SecretStr, info: SerializationInfo
-    ) -> str | None:
+    def _dump_password(self, value: SecretStr, info: SerializationInfo) -> str | None:
         return self._reveal(value, info)
 
 

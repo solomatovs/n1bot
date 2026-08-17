@@ -169,8 +169,6 @@ class ToolProcessWrap:
         owner.func = body
 
     @staticmethod
-    def _set_coroutine(
-        tool: ToolLike, body: Callable[..., Awaitable[Any]]
-    ) -> None:
+    def _set_coroutine(tool: ToolLike, body: Callable[..., Awaitable[Any]]) -> None:
         owner: Any = tool
         owner.coroutine = body

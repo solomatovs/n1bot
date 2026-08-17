@@ -6,7 +6,6 @@ services:
     init: true
     user: "${BOBA_UID:-0}:${BOBA_GID:-0}"
     env_file: ./conf/boba.env
-    cgroup_parent: boba.slice
     volumes:
       - ./conf:/app/boba/conf:ro
       - ${BOBA_DATA_DIR:-./data}:/app/boba/data:rw

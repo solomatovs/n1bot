@@ -258,17 +258,13 @@ class ConfluenceIngest:
         embedder = LoggingEmbedder(
             LocalFastEmbedEmbedderFactory.build(cfg.embedding), logger
         )
-        chunker = LoggingChunker(
-            StructuralChunkerFactory.build(cfg), logger, progress
-        )
+        chunker = LoggingChunker(StructuralChunkerFactory.build(cfg), logger, progress)
         allowed = AttachmentFilter.from_lists(
             media_types=cfg.attachment_media_types,
             titles=cfg.attachment_titles,
         )
         gate = AttachmentGate.of(allowed, attachments, ocr_enabled=cfg.ocr_enabled)
-        logger.info(
-            "attachments requested: %r, ocr=%s", attachments, cfg.ocr_enabled
-        )
+        logger.info("attachments requested: %r, ocr=%s", attachments, cfg.ocr_enabled)
         conn = ConfluenceConnection(
             profile=cfg.confluence,
             body_format=cfg.body_format,

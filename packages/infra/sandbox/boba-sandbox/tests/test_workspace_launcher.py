@@ -335,7 +335,7 @@ class TestFileOperations:
     @staticmethod
     def _split(out: io.BytesIO) -> tuple[int, bytes]:
         header, _, body = out.getvalue().partition(b"\n")
-        return ReadHeader.parse(header), body
+        return ReadHeader.parse(header).size, body
 
     def test_write_creates_dirs_and_content(self, tmp_path: Path) -> None:
         rc = self._ops(tmp_path).write("a/b/c.txt", io.BytesIO(b"data"))
@@ -401,6 +401,38 @@ class TestFileOperations:
             raise AssertionError("rc == 0")
         if self._split(out) != (7, b""):
             raise AssertionError('self._split(out) == (7, b"")')
+
+    def test_stat_revision_changes_on_same_size_rewrite(
+        self, tmp_path: Path
+    ) -> None:
+        """Правка той же длины видна по версии: слежение канваса ловит её."""
+        target = tmp_path / "f.txt"
+        target.write_bytes(b"aaaa")
+
+        first = io.BytesIO()
+        self._ops(tmp_path).stat("f.txt", first)
+        before = ReadHeader.parse(first.getvalue().partition(b"\n")[0])
+
+        os.utime(target, ns=(before.revision + 10**9, before.revision + 10**9))
+        target.write_bytes(b"bbbb")
+
+        second = io.BytesIO()
+        self._ops(tmp_path).stat("f.txt", second)
+        after = ReadHeader.parse(second.getvalue().partition(b"\n")[0])
+
+        if after.size != before.size:
+            raise AssertionError("размер обязан совпасть в этом сценарии")
+        if after.revision == before.revision:
+            raise AssertionError("версия не изменилась при правке той же длины")
+
+    def test_header_without_revision_reads_as_zero(self) -> None:
+        """Заголовок лаунчера прошлой сборки читается без версии."""
+        head = ReadHeader.parse(b"size=42")
+
+        if head.size != 42:
+            raise AssertionError("head.size == 42")
+        if head.revision != 0:
+            raise AssertionError("head.revision == 0")
 
     def test_stat_missing_is_not_found(self, tmp_path: Path) -> None:
         rc = self._ops(tmp_path).stat("nope", io.BytesIO())

@@ -85,6 +85,7 @@ class RowBudget:
 
         return TableResult(rows=self._rows, note=note)
 
+
 TConn = TypeVar("TConn", bound=BaseModel)
 """Профиль соединения коннектора: PostgresConfig, ClickHouseConfig, ..."""
 

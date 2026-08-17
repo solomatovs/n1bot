@@ -90,9 +90,7 @@ class SandboxCaller(ToolLauncher):
                 journal = sinks.sink_of(channel)
                 channels.add_sink(channel, journal.feed)
 
-        outcome = self._runner.run_with_channels(
-            command.argv, command.stdin, channels
-        )
+        outcome = self._runner.run_with_channels(command.argv, command.stdin, channels)
 
         reply_raw = envelope.data()
         if not reply_raw:

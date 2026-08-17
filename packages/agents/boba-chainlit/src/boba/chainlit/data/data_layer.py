@@ -12,6 +12,7 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
 
+from boba.chainlit.canvas.journal import StreamJournalError, StreamJournalHub
 from boba.chainlit.data.errors import (
     DataBrokenError,
     DataRejectedError,
@@ -34,7 +35,6 @@ from boba.chainlit.domain.keys import (
     ObjectKey,
 )
 from boba.chainlit.domain.session import current_user_id
-from boba.chainlit.domain.stream import StreamJournalError, StreamJournalHub
 from boba.db.postgres import AsyncPostgresPool
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message

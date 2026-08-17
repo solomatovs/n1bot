@@ -216,9 +216,7 @@ class ConfluencePaginator:
         async with self._http.fetch(HttpRequest(url=path)) as resp:
             payload = await resp.stream.read()
 
-        logger.info(
-            "discovery response: %d bytes in %dms", len(payload), elapsed.ms()
-        )
+        logger.info("discovery response: %d bytes in %dms", len(payload), elapsed.ms())
         return json.loads(payload)
 
     async def __aenter__(self):

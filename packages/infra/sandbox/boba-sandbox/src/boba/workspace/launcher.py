@@ -33,6 +33,7 @@ __all__ = [
     "FUSE_DEVICE",
     "RO_MOUNT_ROOT",
     "CapabilityDropper",
+    "FileHead",
     "FileOperations",
     "FuseMounter",
     "HostPath",
@@ -140,22 +141,53 @@ class ReadWindow(BaseModel):
         return min(self.length, available)
 
 
+class FileHead(BaseModel):
+    """Свойства файла из заголовка читающих операций: размер и версия.
+
+    revision — момент последней записи в наносекундах: по нему видно правку,
+    не изменившую размер (переписанная строка той же длины).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    size: int = Field(ge=0)
+    revision: int = Field(ge=0)
+
+
 class ReadHeader:
-    """Первая строка stdout читающих операций: полный размер файла."""
+    """Первая строка stdout читающих операций: размер файла и его версия.
+
+    Заголовок без revision принимается как нулевая версия: так читается
+    вывод лаунчера прошлой сборки, оставшийся в собранном образе.
+    """
 
     PREFIX: ClassVar[bytes] = b"size="
+    REVISION: ClassVar[bytes] = b"rev="
 
     @classmethod
-    def render(cls, size: int) -> bytes:
-        return cls.PREFIX + str(size).encode("ascii") + b"\n"
+    def render(cls, head: FileHead) -> bytes:
+        size = str(head.size).encode("ascii")
+        revision = str(head.revision).encode("ascii")
+
+        return cls.PREFIX + size + b" " + cls.REVISION + revision + b"\n"
 
     @classmethod
-    def parse(cls, line: bytes) -> int:
+    def parse(cls, line: bytes) -> FileHead:
         if not line.startswith(cls.PREFIX):
             msg = f"invalid read header: {line!r}"
             raise ValueError(msg)
 
-        return int(line[len(cls.PREFIX) :].strip())
+        fields = line[len(cls.PREFIX) :].strip().split()
+        if not fields:
+            msg = f"invalid read header: {line!r}"
+            raise ValueError(msg)
+
+        revision = 0
+        for field in fields[1:]:
+            if field.startswith(cls.REVISION):
+                revision = int(field[len(cls.REVISION) :])
+
+        return FileHead(size=int(fields[0]), revision=revision)
 
 
 class LauncherEnv(StrEnum):
@@ -677,14 +709,16 @@ class FileOperations:
     def read(self, rel: str, window: ReadWindow, dst: BinaryIO) -> LauncherExit:
         """Заголовок с полным размером, затем тело окна чанками."""
         try:
-            fd, size = self._open_regular(rel)
+            fd, head = self._open_regular(rel)
         except OSError as e:
             return self._refused(rel, e)
         except NotRegularFileError:
             return self._not_regular(rel)
 
+        size = head.size
+
         with os.fdopen(fd, "rb") as f:
-            dst.write(ReadHeader.render(size))
+            dst.write(ReadHeader.render(head))
 
             f.seek(window.offset)
             remaining = window.resolve_length(size)
@@ -699,9 +733,9 @@ class FileOperations:
         return LauncherExit.OK
 
     def stat(self, rel: str, dst: BinaryIO) -> LauncherExit:
-        """Только заголовок с размером: существование без чтения тела."""
+        """Только заголовок: существование и версия без чтения тела."""
         try:
-            fd, size = self._open_regular(rel)
+            fd, head = self._open_regular(rel)
         except OSError as e:
             return self._refused(rel, e)
         except NotRegularFileError:
@@ -709,12 +743,12 @@ class FileOperations:
 
         os.close(fd)
 
-        dst.write(ReadHeader.render(size))
+        dst.write(ReadHeader.render(head))
         dst.flush()
         return LauncherExit.OK
 
-    def _open_regular(self, rel: str) -> tuple[int, int]:
-        """Описатель обычного файла и его размер; тип берётся с уже открытого fd."""
+    def _open_regular(self, rel: str) -> tuple[int, FileHead]:
+        """Описатель обычного файла и его свойства; тип берётся с открытого fd."""
         fd = self._path.open_read(rel)
         try:
             return fd, self._require_regular(fd)
@@ -723,13 +757,13 @@ class FileOperations:
             raise
 
     @staticmethod
-    def _require_regular(fd: int) -> int:
-        """Размер открытого файла; всё, что не обычный файл, — отказ."""
+    def _require_regular(fd: int) -> FileHead:
+        """Свойства открытого файла; всё, что не обычный файл, — отказ."""
         info = os.fstat(fd)
         if not stat_module.S_ISREG(info.st_mode):
             raise NotRegularFileError
 
-        return info.st_size
+        return FileHead(size=info.st_size, revision=info.st_mtime_ns)
 
     @classmethod
     def _refused(cls, rel: str, failure: OSError) -> LauncherExit:
@@ -851,9 +885,7 @@ class Launcher:
             oom_score_adj=args.oom_score_adj,
         )
         binaries = TrustedBinaries(dirs=tuple(args.trusted_bin_dir))
-        launcher = cls(
-            args.template, images, ro_images, options, limits, binaries
-        )
+        launcher = cls(args.template, images, ro_images, options, limits, binaries)
         try:
             return launcher.run(args.mode, args.args)
         except (MountError, UntrustedBinaryError, OSError, ValueError) as e:

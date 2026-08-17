@@ -292,9 +292,7 @@ class SandboxRunner:
         self._prepare_dirs(rendered)
         limits = self.limits_of(rendered)
 
-        argv, runner_limits = self._channel_argv(
-            rendered, argv_tail, channels, limits
-        )
+        argv, runner_limits = self._channel_argv(rendered, argv_tail, channels, limits)
 
         name = self._label()
         self._log_start(name, rendered, limits, shlex.join(argv_tail))
@@ -601,4 +599,3 @@ class SandboxRunner:
 
         msg = f"sandbox: image not mounted: {result.stderr.strip()}"
         raise SandboxMountError(msg)
-

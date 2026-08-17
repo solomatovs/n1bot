@@ -10,17 +10,15 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from boba.chainlit.data.stream_journal import (
+from boba.chainlit.canvas.journal import (
     DirVault,
-    StreamJournal,
-    StreamKey,
-    StreamRecorder,
-)
-from boba.chainlit.domain.stream import (
     JournalFile,
     JournalWindow,
     LogName,
+    StreamJournal,
     StreamJournalError,
+    StreamKey,
+    StreamRecorder,
 )
 from boba.toolkit.channels import ToolChannel
 
@@ -214,16 +212,20 @@ class TestRecorder:
         recorder = _recorder(journal)
 
         recorder.feed(b"live ")
-        first = recorder.tail(JournalWindow.BYTES)
+        first = journal.slice_at(KEY, 0, STDOUT)
         recorder.feed(b"tail")
-        second = recorder.tail(JournalWindow.BYTES)
+        second = journal.slice_at(KEY, 0, STDOUT)
 
+        if first is None or second is None:
+            raise AssertionError("first is not None and second is not None")
         if first.text != "live ":
             raise AssertionError('first.text == "live "')
         if first.closed is not False:
             raise AssertionError("first.closed is False")
         if second.text != "live tail":
             raise AssertionError('second.text == "live tail"')
+        if recorder.size != len(b"live tail"):
+            raise AssertionError('recorder.size == len(b"live tail")')
 
     def test_missing_journal_is_none(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)

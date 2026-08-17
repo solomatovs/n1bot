@@ -35,6 +35,11 @@ from pydantic import ValidationError
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
+from boba.chainlit.canvas.journal import (
+    StreamJournalError,
+    StreamJournalHub,
+    StreamKey,
+)
 from boba.chainlit.data.storage import (
     LocalStorageClient,
     OpenedStream,
@@ -42,14 +47,9 @@ from boba.chainlit.data.storage import (
     StorageFullError,
     StorageNotFoundError,
 )
-from boba.chainlit.data.stream_journal import (
-    StreamJournalError,
-    StreamKey,
-)
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chainlit.domain.fields import ElementField, FileField
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.stream import StreamJournalHub
 from boba.toolkit.channels import ToolChannel
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user

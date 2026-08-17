@@ -144,9 +144,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
             async for raw in self._inner.fetch(request):
                 yield self._watched(raw, f"attachment {att.title}")
 
-            logger.info(
-                "fetch attachment done: %s in %dms", att.title, elapsed.ms()
-            )
+            logger.info("fetch attachment done: %s in %dms", att.title, elapsed.ms())
             return
 
         source_id = self._inner.source_id(request)
