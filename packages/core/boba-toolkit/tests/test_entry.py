@@ -44,6 +44,7 @@ def run_module(
 
     pass_fds: tuple[int, ...] = ()
     read_fd = -1
+    write_fd = -1
     if result_fd:
         read_fd, write_fd = os.pipe()
         os.set_inheritable(write_fd, True)

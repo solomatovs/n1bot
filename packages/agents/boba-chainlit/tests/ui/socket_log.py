@@ -95,7 +95,7 @@ class SocketLog:
 
     def accept(self, raw: bytes | str) -> None:
         """Принимает фрейм; бинарные и служебные пакеты socket.io пропускаются."""
-        if isinstance(raw, bytes):
+        if not isinstance(raw, str):
             return
 
         parsed = self._parse(raw)
