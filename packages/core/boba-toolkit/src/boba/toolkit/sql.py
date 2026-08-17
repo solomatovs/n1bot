@@ -62,6 +62,11 @@ class RowBudget:
     def truncated(self) -> bool:
         return self._truncated
 
+    @property
+    def size(self) -> int:
+        """Съеденные байты: остаток нужен следующей команде того же запроса."""
+        return self._size
+
     def add(self, row: Mapping[str, Any]) -> bool:
         """Добавить строку; False — потолок строк достигнут, хватит."""
         if len(self._rows) >= self._max_rows:

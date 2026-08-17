@@ -478,8 +478,26 @@ async def _open_live_tail(panel: Any) -> Any:
     return side
 
 
-STAGE = '[data-canvas-panel][data-full="true"], #side-view-content [data-canvas-stage]'
-"""Активная сцена: развёрнутая живёт в body, свёрнутая — внутри панели."""
+STAGE_PARTS = (
+    '[data-canvas-panel][data-full="true"] [data-canvas-stage]',
+    "#side-view-content [data-canvas-stage]",
+)
+"""Активная сцена: полный экран держит панель, свёрнутая живёт в боковом слоте."""
+
+STAGE = ", ".join(STAGE_PARTS)
+
+
+def _inside_stage(selector: str) -> str:
+    """Селектор внутри активной сцены.
+
+    Область складывается из вариантов через запятую, поэтому вложенность
+    дописывается каждому: иначе запятая склеила бы «сцена или элемент».
+    """
+    scoped: list[str] = []
+    for part in STAGE_PARTS:
+        scoped.append(f"{part} {selector}")
+
+    return ", ".join(scoped)
 
 
 async def _stage_text(page: Any) -> str:
@@ -495,7 +513,7 @@ async def _stage_text(page: Any) -> str:
 
 def _stage_button(page: Any, label: str) -> Any:
     """Кнопка активной сцены: в полном экране её нет внутри панели."""
-    return page.locator(f'{STAGE}').last.locator(f'button[aria-label*="{label}"]')
+    return page.locator(_inside_stage(f'button[aria-label*="{label}"]')).last
 
 
 async def _wait_text(side: Any, marker: str, timeout_sec: float = 15.0) -> bool:
@@ -510,7 +528,7 @@ def _channel_tab(page: Any, channel: ToolChannel) -> Any:
     """Вкладка канала активной сцены: в полном экране она живёт вне панели."""
     selector = f'[data-canvas-channel="{channel.value}"]'
 
-    return page.locator(f"{STAGE} {selector}").last
+    return page.locator(_inside_stage(selector)).last
 
 
 async def _tabs_state(page: Any) -> dict[str, str]:
@@ -815,7 +833,7 @@ async def test_download_button_saves_the_journal(
     side = await _open_live_tail(panel)
 
     async with page.expect_download() as pending:
-        await side.locator('button[aria-label="Download output"]').click()
+        await side.locator('button[aria-label="Download file"]').click()
 
     download = await pending.value
     name = download.suggested_filename

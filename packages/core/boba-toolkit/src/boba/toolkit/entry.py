@@ -38,6 +38,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from boba.toolkit.calls import ToolCallView, ToolCallViews
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import ToolResult
@@ -413,11 +414,19 @@ class ToolMain:
     )
 
     @classmethod
-    def toolset(cls, *tools: object) -> tuple[ToolLike, ...]:
+    def toolset(
+        cls,
+        *tools: object,
+        views: Mapping[str, ToolCallView] | None = None,
+    ) -> tuple[ToolLike, ...]:
         """Кортеж TOOLS из tool-объектов с проверкой duck-полей.
 
         Декоратор @tool статически отдаёт BaseTool без func/coroutine —
         мост к ToolLike делается здесь, один раз на модуль.
+
+        views — представления вызовов инструментов модуля: имя тула ->
+        вариант ToolCallView. Неперечисленные показываются как JsonCall.
+        Имя вне модуля — ошибка: опечатка не должна тихо оставить дефолт.
         """
         checked: list[ToolLike] = []
         for tool in tools:
@@ -429,7 +438,24 @@ class ToolMain:
             accepted: Any = tool
             checked.append(accepted)
 
+        if views:
+            cls._register_views(checked, views)
+
         return tuple(checked)
+
+    @classmethod
+    def _register_views(
+        cls, tools: Sequence[ToolLike], views: Mapping[str, ToolCallView]
+    ) -> None:
+        names = {tool.name for tool in tools}
+
+        for tool_name, view in views.items():
+            if tool_name not in names:
+                known = ", ".join(sorted(names))
+                msg = f"call view for unknown tool: {tool_name!r} (module has {known})"
+                raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
+
+            ToolCallViews.register(tool_name, view)
 
     LOG_FORMAT: ClassVar[str] = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 

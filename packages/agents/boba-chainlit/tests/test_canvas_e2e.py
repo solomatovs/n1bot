@@ -964,14 +964,17 @@ async def test_fullscreen_body_fills_the_height(panel: Any) -> None:
     await _expand(side)
     layout = await page.evaluate(
         """() => {
-            const stage = document.querySelector(
-              '[data-canvas-panel][data-full="true"]');
-            const bar = stage.firstElementChild.getBoundingClientRect();
-            const body = stage.lastElementChild.getBoundingClientRect();
+            // шапку узнаём по строке статуса, тело — следующий за ней блок
+            const status = document.querySelector(
+              '[data-canvas-panel][data-full="true"] [data-canvas-status]');
+            const bar = status.parentElement;
+            const body = bar.nextElementSibling;
+            const barBox = bar.getBoundingClientRect();
+            const bodyBox = body.getBoundingClientRect();
             return {
-                barHeight: bar.height,
-                bodyHeight: body.height,
-                bodyTop: Math.round(body.top - bar.bottom),
+                barHeight: barBox.height,
+                bodyHeight: bodyBox.height,
+                bodyTop: Math.round(bodyBox.top - barBox.bottom),
                 winHeight: window.innerHeight,
             };
         }"""
@@ -1390,3 +1393,72 @@ async def test_buttons_work_in_fullscreen(panel: Any) -> None:
         raise AssertionError("сброс вида не работает в полном экране")
     if collapsed != "false":
         raise AssertionError("кнопка закрытия не сворачивает полный экран")
+
+
+DOWNLOADABLE = ("chart.png", "report.md", "flow.mmd", "notes.log", "data.bin")
+"""Все типы показа: картинка, markdown, диаграмма, лог и формат без вьювера."""
+
+
+async def test_every_viewer_offers_download(panel: Any) -> None:
+    """Кнопка скачивания есть у любого показанного файла: панель всегда о файле.
+
+    Ссылку проставляет база вьюверов, а рисует кнопку общая шапка сцены —
+    поэтому наследники получают её без собственного кода.
+    """
+    show, _, _thread, _act = panel
+
+    for name in DOWNLOADABLE:
+        side = await show(name)
+        found = await side.locator('button[aria-label="Download file"]').count()
+
+        if found != 1:
+            raise AssertionError(f"{name}: кнопки скачивания нет (найдено {found})")
+
+
+async def test_download_saves_the_shown_file(panel: Any) -> None:
+    """Кнопка отдаёт именно показанный файл под его собственным именем."""
+    show, _, _thread, _act = panel
+
+    for name in ("chart.png", "flow.mmd", "report.md"):
+        side = await show(name)
+
+        async with side.page.expect_download() as pending:
+            await side.locator('button[aria-label="Download file"]').click()
+
+        saved = await pending.value
+        if saved.suggested_filename != name:
+            raise AssertionError(
+                f"{name}: скачался как {saved.suggested_filename}"
+            )
+
+
+async def test_download_works_in_fullscreen(panel: Any) -> None:
+    """В полном экране кнопка та же и так же работает."""
+    show, _, _thread, _act = panel
+    side = await show("report.md")
+    page = side.page
+
+    await _expand(side)
+    async with page.expect_download() as pending:
+        await page.locator(
+            '[data-canvas-stage] button[aria-label="Download file"]'
+        ).click()
+    saved = await pending.value
+    await _collapse(page)
+
+    if saved.suggested_filename != "report.md":
+        raise AssertionError(f"скачался {saved.suggested_filename}")
+
+
+async def test_preview_card_has_no_download_button(panel: Any) -> None:
+    """Карточка в ленте не панель: у неё своя ссылка на исходник, не кнопка."""
+    show, _, _thread, _act = panel
+    side = await show("flow.mmd")
+
+    in_feed = await side.page.evaluate(
+        """() => document.querySelectorAll(
+            '.message-content button[aria-label="Download file"]').length"""
+    )
+
+    if in_feed:
+        raise AssertionError("в карточке ленты не должно быть кнопки скачивания")

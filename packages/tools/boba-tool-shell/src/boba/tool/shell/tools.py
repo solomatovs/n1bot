@@ -8,8 +8,9 @@ from typing import Annotated
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.launcher import ClippedText, LauncherFactory, LaunchOutcome
-from boba.toolkit.result import JsonResult, ToolResult, pack_result
+from boba.toolkit.result import ShellResult, ToolResult, pack_result
 
 __all__ = ["BashToolConfig", "build_bash_tool"]
 
@@ -32,33 +33,19 @@ class BashToolConfig(BaseModel):
     )
 
 
-class BashOutput(BaseModel):
-    """Ответ инструмента: код возврата, усечённые потоки, длительность."""
+class BashOutput:
+    """Сборка результата команды: потоки урезаются до потолка конфига."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    exit_code: int
-    stdout: str
-    stdout_bytes: int
-    """Полный размер stdout до усечения."""
-    stdout_truncated: bool
-    stderr: str
-    stderr_bytes: int
-    """Полный размер stderr до усечения."""
-    stderr_truncated: bool
-    duration_ms: int
-    timed_out: bool
-    diagnostic: str
-
-    @classmethod
-    def of(cls, outcome: LaunchOutcome, limits: BashToolConfig) -> BashOutput:
+    @staticmethod
+    def of(outcome: LaunchOutcome, limits: BashToolConfig) -> ShellResult:
         result = outcome.result
         budget = limits.max_output_bytes
 
         stdout = ClippedText.of(result.stdout, budget)
         stderr = ClippedText.of(result.stderr, budget)
 
-        return cls(
+        return ShellResult(
+            ok=outcome.succeeded,
             exit_code=result.exit_code,
             stdout=stdout.text,
             stdout_bytes=stdout.total_bytes,
@@ -74,6 +61,7 @@ class BashOutput(BaseModel):
 
 def build_bash_tool(cfg: BashToolConfig, launchers: LauncherFactory) -> BaseTool:
     caller = launchers("bash")
+    ToolCallViews.register("bash", ScriptCall(arg="command", lang="bash"))
 
     @tool(response_format="content_and_artifact")
     def bash(
@@ -99,10 +87,7 @@ def build_bash_tool(cfg: BashToolConfig, launchers: LauncherFactory) -> BaseTool
         что вышло за аварийный потолок, отброшено, а ответ помечен truncated.
         """
         outcome = caller.call_text(command, stdin=stdin)
-        output = BashOutput.of(outcome, cfg)
 
-        return pack_result(
-            JsonResult(ok=outcome.succeeded, payload=output.model_dump())
-        )
+        return pack_result(BashOutput.of(outcome, cfg))
 
     return bash

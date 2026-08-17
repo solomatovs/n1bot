@@ -141,7 +141,6 @@
     sslmode           = "${site.pg_sslmode}"
     application_name  = "boba"
     autocommit        = true
-    prepare_threshold = 0
     options           = { statement_timeout = "30s" }
     # [postgres.kerberos]
     #     keytab      = "${site.krb_keytab}"

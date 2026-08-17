@@ -1,8 +1,6 @@
-"""Лента чата: раскладка шагов хода и рендер входа инструментов."""
+"""Лента чата: раскладка шагов хода."""
 
 from __future__ import annotations
-
-from typing import Any
 
 import pytest
 
@@ -70,40 +68,3 @@ class TestAnswerOrder:
 
         if len(set(seen)) != len(seen):
             raise AssertionError("len(set(seen)) == len(seen)")
-
-
-class TestToolInput:
-    """Вход инструмента читается человеком: спека и код — не json со \\n."""
-
-    @staticmethod
-    def _render(args: dict[str, Any]) -> tuple[str, str | bool]:
-        return ChatView._render_args(args)
-
-    def test_multiline_argument_becomes_markdown(self) -> None:
-        rendered, show_input = self._render(
-            {"name": "a.mmd", "spec": "flowchart LR\n    A --> B"}
-        )
-
-        if show_input is not True:
-            raise AssertionError("show_input is True")
-        if "**spec:**" not in rendered:
-            raise AssertionError('"**spec:**" in rendered')
-        if "```\nflowchart LR\n    A --> B\n```" not in rendered:
-            raise AssertionError('"```\\nflowchart LR\\n A --> B\\n```" in rendered')
-        if "\\n" in rendered:
-            raise AssertionError('"\\\\n" not in rendered')
-
-    def test_single_line_arguments_stay_json(self) -> None:
-        rendered, show_input = self._render({"path": "/workspace/a.png"})
-
-        if show_input != "json":
-            raise AssertionError('show_input == "json"')
-        if not (rendered.startswith("{")):
-            raise AssertionError('rendered.startswith("{")')
-
-    def test_fence_longer_than_any_inside_the_value(self) -> None:
-        """Спека с ``` внутри не должна разрывать блок."""
-        rendered, _ = self._render({"spec": "flowchart LR\n```\n    A --> B"})
-
-        if "````\nflowchart LR" not in rendered:
-            raise AssertionError('"````\\nflowchart LR" in rendered')
