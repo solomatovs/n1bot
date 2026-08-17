@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import chainlit as cl
 import pytest
+from pydantic import BaseModel
 
 from boba.chainlit.agent.tools import canvas as canvas_module
 from boba.chainlit.agent.tools.canvas import (
@@ -173,7 +174,7 @@ class TestToolInterface:
 
     def test_schema_fields(self) -> None:
         tool = build_canvas_tools(CanvasToolConfig())[0]
-        schema = cast(type[Any], tool.tool_call_schema)
+        schema = cast(type[BaseModel], tool.tool_call_schema)
         if set(schema.model_fields) != {"path"}:
             raise AssertionError('set(schema.model_fields) == {"path"}')
 

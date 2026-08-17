@@ -248,7 +248,7 @@ class LoggingChunkStore(ChunkStore[T], Generic[T]):
     @contextmanager
     def _step(
         self, op: DbOp, collection: CollectionId, count: int
-    ) -> Generator[None]:
+    ) -> Generator[None, None, None]:
         self._logger.info("db %s start: %d in %s", op.value, count, collection)
         elapsed = Elapsed()
 
