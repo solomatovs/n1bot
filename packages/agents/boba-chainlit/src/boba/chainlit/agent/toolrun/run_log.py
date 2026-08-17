@@ -2,7 +2,7 @@
 
 Обвязка знает вызов целиком: имя, tool_call_id из синтетического поля схемы
 (ToolCallIdField), исход и длительность. Поэтому она же открывает журнал
-живого вывода через переданный stream_source, ставит приёмники каналов в тапы
+живого вывода через переданный stream_source, ставит приёмники каналов в тап
 исполнителя и закрывает журнал по исходу вызова.
 
 Ошибки: своих не выпускает; исключение тела проходит наверх как есть.
@@ -22,7 +22,7 @@ from langchain_core.tools import BaseTool
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
-from boba.toolkit.channels import CallOutcome, ToolChannel
+from boba.toolkit.channels import CallOutcome, JournalChannel
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolResultBase
 from boba.toolkit.stream import (
@@ -30,7 +30,6 @@ from boba.toolkit.stream import (
     ToolCallContext,
     ToolCallInfo,
     ToolChannelsTap,
-    ToolStreamTap,
 )
 
 __all__ = ["CallStream", "StreamSource", "ToolRunLogger"]
@@ -42,7 +41,7 @@ class CallStream(Protocol):
     """Журнал живого вывода одного вызова: приёмники каналов и закрытие."""
 
     @abstractmethod
-    def sink_of(self, channel: ToolChannel) -> StreamSink: ...
+    def sink_of(self, channel: JournalChannel) -> StreamSink: ...
 
     @abstractmethod
     def close(self, note: str) -> None: ...
@@ -87,9 +86,6 @@ class ToolRunLogger:
             token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
             stream = ToolRunLogger._open_stream(name, call_id, self._stream_source)
             if stream is not None:
-                # оба тапа: текстовый запуск читает stdout-приёмник, канальный
-                # берёт приёмники всех каналов из ToolChannelsTap
-                ToolStreamTap.set(stream.sink_of(ToolChannel.STDOUT))
                 ToolChannelsTap.set(stream)
 
             return _CallScope(
@@ -111,7 +107,6 @@ class ToolRunLogger:
 
         def cleanup(self, ctx: _CallScope) -> None:
             if ctx.stream is not None:
-                ToolStreamTap.set(None)
                 ToolChannelsTap.set(None)
                 ctx.stream.close(ctx.note)
 

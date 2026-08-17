@@ -25,12 +25,18 @@ import mimetypes
 import threading
 import uuid
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 import chainlit as cl
 from boba.chainlit.canvas.journal import (
@@ -52,7 +58,7 @@ from boba.chainlit.data.storage import (
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import CanvasFileUrl, ObjectKey, StreamUrl
 from boba.chainlit.domain.turn import TurnContext
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolkit.result import CustomElementResult, DiagramResult
 from boba.toolkit.stream import StreamSink
 from boba.workspace.launcher import ReadWindow
@@ -273,6 +279,10 @@ class CanvasContent(BaseModel):
     """Метка показа: по ней ждут вердикт рендера и снимают слежение."""
     stream: StreamPos | None = None
     """Окно потока: есть только у kind = stream."""
+    channel: str = ""
+    """Показанный канал журнала вызова; пусто — содержимое не из журнала."""
+    channels: tuple[str, ...] = ()
+    """Каналы вызова с записью: фронт рисует их вкладками над окном."""
 
     def props(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -637,22 +647,53 @@ class CanvasWatch:
         await asyncio.sleep(self.COALESCE_SEC)
 
 
-class StreamPath:
-    """Псевдо-путь панели для журнала вызова: сборка и разбор в одном месте."""
+class StreamPath(BaseModel):
+    """Псевдо-путь панели для канала журнала: сборка и разбор в одном месте.
+
+    Канал входит в путь: панель адресует показом один файл, а каналы вызова —
+    разные файлы, и слежение с окнами обязано их различать. Канал проверяется
+    на доступность здесь: путь с закрытым каналом собрать нельзя.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     SCHEME: ClassVar[str] = "stream://"
 
+    call_id: str
+    channel: JournalChannel
+
+    @field_validator("channel")
     @classmethod
-    def render(cls, call_id: str) -> str:
-        return f"{cls.SCHEME}{call_id}"
+    def _readable(cls, value: JournalChannel) -> JournalChannel:
+        if not JournalChannels.visible(value):
+            msg = f"channel is not readable: {value.value}"
+            raise ValueError(msg)
+
+        return value
+
+    def render(self) -> str:
+        return f"{self.SCHEME}{self.call_id}/{self.channel.value}"
 
     @classmethod
-    def call_id_of(cls, path: str) -> str | None:
-        """call_id из пути; None — путь не потоковый."""
-        if not path.startswith(cls.SCHEME):
+    def is_stream(cls, path: str) -> bool:
+        """Путь адресует журнал вызова, а не файл workspace."""
+        return path.startswith(cls.SCHEME)
+
+    @classmethod
+    def parse(cls, path: str) -> StreamPath | None:
+        """Разбор пути показа; None — путь не потоковый или канал закрыт."""
+        if not cls.is_stream(path):
             return None
 
-        return path[len(cls.SCHEME) :]
+        call_id, _, name = path[len(cls.SCHEME) :].partition("/")
+        if not call_id:
+            return None
+
+        channel = JournalChannels.parse_visible(name)
+        if channel is None:
+            return None
+
+        return cls(call_id=call_id, channel=channel)
 
 
 class StreamNote(StrEnum):
@@ -695,7 +736,7 @@ class ToolStream:
         self._protected = protected_prefixes | {key.call_prefix()}
         self._lock = threading.Lock()
         self._waker: tuple[asyncio.AbstractEventLoop, asyncio.Event] | None = None
-        self._recorders: dict[ToolChannel, StreamRecorderPort] = {}
+        self._recorders: dict[JournalChannel, StreamRecorderPort] = {}
         self._open(ToolChannel.STDOUT)
 
     @property
@@ -718,7 +759,7 @@ class ToolStream:
 
         return all(recorder.closed for recorder in recorders)
 
-    def sink_of(self, channel: ToolChannel) -> StreamSink:
+    def sink_of(self, channel: JournalChannel) -> StreamSink:
         """Приёмник канала; рекордер открывается при первом обращении."""
         return self._open(channel)
 
@@ -730,7 +771,7 @@ class ToolStream:
         for recorder in recorders:
             recorder.close(note)
 
-    def probe(self, channel: ToolChannel) -> WatchProbe:
+    def probe(self, channel: JournalChannel) -> WatchProbe:
         """Состояние канала без чтения файла: размер и итог рекордера."""
         recorder = self._open(channel)
         size = recorder.size
@@ -744,7 +785,7 @@ class ToolStream:
             note=recorder.note,
         )
 
-    def _open(self, channel: ToolChannel) -> StreamRecorderPort:
+    def _open(self, channel: JournalChannel) -> StreamRecorderPort:
         with self._lock:
             recorder = self._recorders.get(channel)
             if recorder is not None:
@@ -876,7 +917,7 @@ class ToolStreams:
         thread_id: str,
         call_id: str,
         offset: int,
-        channel: ToolChannel,
+        channel: JournalChannel,
     ) -> StreamSlice | None:
         """Окно журнала от смещения; отказ журнала — «нет данных», не сбой чата."""
 
@@ -892,7 +933,7 @@ class ToolStreams:
         thread_id: str,
         call_id: str,
         end: int,
-        channel: ToolChannel,
+        channel: JournalChannel,
     ) -> StreamSlice | None:
         """Окно перед смещением: прокрутка вверх; отказ — «нет данных»."""
 
@@ -900,6 +941,36 @@ class ToolStreams:
             return journal.slice_before(key, end, channel)
 
         return cls._recorded(user_id, thread_id, call_id, read)
+
+    @classmethod
+    def recorded_channels(
+        cls, user_id: str, thread_id: str, call_id: str
+    ) -> tuple[JournalChannel, ...]:
+        """Каналы вызова с записью, доступные пользователю.
+
+        Служебные каналы (конверт результата, вывод обвязки запуска) в
+        панель не попадают: пишутся они всегда, читает их только разбор
+        сбоев на сервере. Отказ журнала — пустой список вкладок.
+        """
+        journal = StreamJournalHub.get()
+        if journal is None:
+            return ()
+
+        try:
+            key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
+            written = journal.channels_of(key)
+        except (StreamJournalError, ValidationError):
+            logger.warning("stream journal scan failed: %s", call_id, exc_info=True)
+            return ()
+
+        readable: list[JournalChannel] = []
+        for channel in written:
+            if not JournalChannels.visible(channel):
+                continue
+
+            readable.append(channel)
+
+        return tuple(readable)
 
     @classmethod
     def _recorded(
@@ -934,7 +1005,7 @@ class JournalWatchSource:
         self,
         journal: StreamStorePort,
         key: StreamKey,
-        channel: ToolChannel,
+        channel: JournalChannel,
         live: ToolStream | None,
     ) -> None:
         self._journal = journal
@@ -1351,24 +1422,41 @@ class CanvasPanel:
 
 
 class StreamShowRequest(BaseModel):
-    """Payload действия canvas_stream: вызов и канал.
+    """Payload действия canvas_stream: вызов, канал и способ доставки.
 
     Канал по умолчанию — stdout тела: его пишет каждый песочный вызов.
+    Закрытый канал отвергается разбором — читать его фронт не может.
+
+    inline — панель уже открыта и сама подменит содержимое: описание едет
+    ответом на действие, а не элементом. Пуш элемента chainlit перемонтирует
+    боковую панель целиком, с анимацией открытия и потерей состояния
+    вьювера, поэтому им открывают панель, а не переключают канал в открытой.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     call_id: str
-    channel: ToolChannel = ToolChannel.STDOUT
+    channel: JournalChannel = ToolChannel.STDOUT
+    inline: bool = False
+
+    @field_validator("channel")
+    @classmethod
+    def _readable(cls, value: JournalChannel) -> JournalChannel:
+        if not JournalChannels.visible(value):
+            msg = f"channel is not readable: {value.value}"
+            raise ValueError(msg)
+
+        return value
 
 
 class StreamWindowRequest(BaseModel):
     """Payload действия canvas_stream_window: цель и одна из границ окна.
 
-    path — показанный в панели путь: stream://{call_id} для журнала вызова
-    или путь workspace для файла. offset — окно вперёд от смещения (offset
-    меньше нуля — хвост файла); before — окно, заканчивающееся на смещении.
-    Ровно одно из двух.
+    path — показанный в панели путь: stream://{call_id}/{channel} для канала
+    журнала или путь workspace для файла; канал берётся из него, а не из
+    отдельного поля — иначе окно и показ разъехались бы по каналам. offset —
+    окно вперёд от смещения (offset меньше нуля — хвост файла); before —
+    окно, заканчивающееся на смещении. Ровно одно из двух.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -1376,7 +1464,6 @@ class StreamWindowRequest(BaseModel):
     path: str
     offset: int | None = None
     before: int | None = None
-    channel: ToolChannel = ToolChannel.STDOUT
 
     @model_validator(mode="after")
     def _one_bound(self) -> Self:
@@ -1400,31 +1487,50 @@ class StreamActions:
     """Действия фронта над потоком: показ журнала, окна и уход с файла."""
 
     @staticmethod
-    async def show(user_id: str, thread_id: str, payload: Mapping[str, object]) -> None:
-        """Кнопка на шаге: открыть журнал вызова с начала и следить за ним."""
+    async def show(
+        user_id: str, thread_id: str, payload: Mapping[str, object]
+    ) -> dict[str, Any]:
+        """Кнопка на шаге или вкладка канала: журнал в панель плюс слежение.
+
+        Открытая панель просит содержимое ответом (inline) и подменяет его у
+        себя; иначе панель открывается пушем элемента.
+        """
         request = StreamShowRequest.model_validate(payload)
-        path = StreamPath.render(request.call_id)
+        stream_path = StreamPath(call_id=request.call_id, channel=request.channel)
 
         piece = ToolStreams.recorded_slice(
             user_id, thread_id, request.call_id, offset=0, channel=request.channel
         )
         if piece is None:
             logger.info(
-                "stream show: no journal (hub=%s) user=%s thread=%s call=%s",
+                "stream show: no journal (hub=%s) user=%s thread=%s call=%s ch=%s",
                 StreamJournalHub.get() is not None,
                 user_id,
                 thread_id,
                 request.call_id,
+                request.channel.value,
             )
-            await CanvasPanel.show(StreamActions._gone(path))
-            return
+            gone = StreamActions._gone(stream_path.render())
+            if request.inline:
+                return gone.props()
+
+            await CanvasPanel.show(gone)
+            return {}
+
+        channels = ToolStreams.recorded_channels(user_id, thread_id, request.call_id)
 
         content = StreamActions.content(
-            thread_id, request.call_id, "", piece, str(uuid.uuid4())
+            thread_id, stream_path, "", piece, str(uuid.uuid4()), channels
         )
-        await CanvasPanel.show(content)
+        if not request.inline:
+            await CanvasPanel.show(content)
 
         StreamActions._watch(user_id, thread_id, request, content, piece)
+
+        if not request.inline:
+            return {}
+
+        return content.props()
 
     @staticmethod
     def _watch(
@@ -1456,35 +1562,48 @@ class StreamActions:
     async def window(
         user_id: str, thread_id: str, payload: Mapping[str, object]
     ) -> dict[str, Any]:
-        """Окно по границе: журнал вызова или текстовый файл workspace."""
+        """Окно по границе: канал журнала или текстовый файл workspace."""
         request = StreamWindowRequest.model_validate(payload)
 
-        call_id = StreamPath.call_id_of(request.path)
-        if call_id is not None:
-            return StreamActions._journal_window(user_id, thread_id, call_id, request)
+        stream_path = StreamPath.parse(request.path)
+        if stream_path is not None:
+            return StreamActions._journal_window(
+                user_id, thread_id, stream_path, request
+            )
+
+        if StreamPath.is_stream(request.path):
+            logger.warning("stream window: channel is not readable: %s", request.path)
+            return {}
 
         return await StreamActions._file_window(user_id, thread_id, request)
 
     @staticmethod
     def _journal_window(
-        user_id: str, thread_id: str, call_id: str, request: StreamWindowRequest
+        user_id: str,
+        thread_id: str,
+        stream_path: StreamPath,
+        request: StreamWindowRequest,
     ) -> dict[str, Any]:
+        call_id = stream_path.call_id
+        channel = stream_path.channel
+
         if request.before is not None:
             piece = ToolStreams.recorded_slice_before(
-                user_id, thread_id, call_id, end=request.before, channel=request.channel
+                user_id, thread_id, call_id, end=request.before, channel=channel
             )
         else:
             offset = request.offset
             if offset is None:
                 offset = 0
             piece = ToolStreams.recorded_slice(
-                user_id, thread_id, call_id, offset=offset, channel=request.channel
+                user_id, thread_id, call_id, offset=offset, channel=channel
             )
 
         if piece is None:
             return {}
 
-        content = StreamActions.content(thread_id, call_id, "", piece, "")
+        # вкладки едут с показом: окно двигает только текст и координаты
+        content = StreamActions.content(thread_id, stream_path, "", piece, "", ())
         return content.props()
 
     @staticmethod
@@ -1530,22 +1649,29 @@ class StreamActions:
         CanvasWatch.leave(thread_id, request.nonce)
 
     @staticmethod
-    def content(
+    def content(  # noqa: PLR0913
         thread_id: str,
-        call_id: str,
+        stream_path: StreamPath,
         label: str,
         piece: StreamSlice,
         nonce: str,
+        channels: Sequence[JournalChannel],
     ) -> CanvasContent:
+        names: list[str] = []
+        for channel in channels:
+            names.append(channel.value)
+
         return CanvasContent(
             kind=CanvasKind.STREAM,
-            path=StreamPath.render(call_id),
+            path=stream_path.render(),
             label=label,
-            url=StreamUrl.path(thread_id, call_id),
+            url=StreamUrl.path(thread_id, stream_path.call_id, stream_path.channel),
             text=piece.text,
             note=StreamNote.status_of(piece),
             nonce=nonce,
             stream=StreamActions._pos(piece),
+            channel=stream_path.channel.value,
+            channels=tuple(names),
         )
 
     @staticmethod

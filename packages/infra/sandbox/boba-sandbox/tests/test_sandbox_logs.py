@@ -8,9 +8,11 @@ import os
 import pytest
 
 from boba.sandbox.profile import SandboxProfile
-from boba.sandbox.runner import SandboxLogRelay, SandboxRunner
+from boba.sandbox.runner import SandboxLogRelay, SandboxRunner, StderrTee
+from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
 from boba.toolkit.launcher import LaunchPayload
 from boba.toolkit.payload import PayloadLogging
+from boba.toolkit.stream import StreamSink
 from boba.workspace.launcher import LauncherMarker
 
 
@@ -35,28 +37,87 @@ def chainlit_context() -> None:
     "релей не зависит от сессии chainlit"
 
 
+class RecordingSink:
+    """Приёмник одного канала в памяти: тест читает записанные строки."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def feed(self, data: bytes) -> None:
+        self.feed_text(data.decode("utf-8"))
+
+    def feed_text(self, text: str) -> None:
+        self.lines.append(text.rstrip("\n"))
+
+
+class RecordingSinks:
+    """Журнал каналов вызова в памяти: приёмник заводится по обращению."""
+
+    def __init__(self) -> None:
+        self._sinks: dict[str, RecordingSink] = {}
+
+    def sink_of(self, channel: JournalChannel) -> StreamSink:
+        sink = self._sinks.get(channel.value)
+        if sink is None:
+            sink = RecordingSink()
+            self._sinks[channel.value] = sink
+
+        return sink
+
+    def lines_of(self, channel: JournalChannel) -> list[str]:
+        sink = self._sinks.get(channel.value)
+        if sink is None:
+            return []
+
+        return sink.lines
+
+
 class TestRelay:
     """Читатель stderr один — релей; исход операции он не трогает."""
 
     @staticmethod
-    def _drop(line: str) -> None:
-        """Окно живого вывода в этих тестах не участвует."""
+    def _tee(sinks: RecordingSinks | None = None) -> StderrTee:
+        """Сырой stderr трактуется как вывод тела: так работает текстовый запуск."""
+        if sinks is None:
+            sinks = RecordingSinks()
+
+        return StderrTee(sinks, ToolChannel.STDERR)
 
     @classmethod
     def _relay(cls) -> SandboxLogRelay:
-        return SandboxLogRelay(LABEL, cls._drop)
+        return SandboxLogRelay(LABEL, cls._tee())
 
     def test_tee_gets_human_lines(self, caplog: pytest.LogCaptureFixture) -> None:
-        """В окно живого вывода уходит текст без маркеров протокола."""
-        lines: list[str] = []
-        relay = SandboxLogRelay(LABEL, lines.append)
+        """В журнал вызова уходит текст без маркеров протокола."""
+        sinks = RecordingSinks()
+        relay = SandboxLogRelay(LABEL, self._tee(sinks))
         frame = LaunchPayload.encode_log("INFO", "boba.tool.pg", "запрос пошёл")
         with caplog.at_level(logging.DEBUG):
             relay.feed(f"{frame}\n".encode())
             relay.feed(b"raw stderr line\n")
 
+        lines = sinks.lines_of(ToolChannel.STDERR)
         if lines != ["boba.tool.pg: запрос пошёл", "raw stderr line"]:
             raise AssertionError('lines == ["boba.tool.pg: запрос пошёл", "raw stderr…')
+
+    def test_launcher_lines_go_to_the_wrap_channel(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ход монтирования — канал обвязки: вывод инструмента им не пачкается."""
+        sinks = RecordingSinks()
+        relay = SandboxLogRelay(LABEL, self._tee(sinks))
+        with caplog.at_level(logging.DEBUG):
+            relay.feed(f"{LauncherMarker.LOG}image mounted\n".encode())
+            relay.feed(b"tool says hi\n")
+
+        if sinks.lines_of(WrapChannel.STDERR) != ["image mounted"]:
+            raise AssertionError(
+                'sinks.lines_of(WrapChannel.STDERR) == ["image mounted"]'
+            )
+        if sinks.lines_of(ToolChannel.STDERR) != ["tool says hi"]:
+            raise AssertionError(
+                'sinks.lines_of(ToolChannel.STDERR) == ["tool says hi"]'
+            )
 
     def test_log_frame_keeps_level_and_logger(
         self, caplog: pytest.LogCaptureFixture
@@ -109,15 +170,17 @@ class TestRelay:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Сырой stderr живёт в журнале вывода инструмента, не в журнале приложения."""
-        lines: list[str] = []
-        relay = SandboxLogRelay(LABEL, lines.append)
+        sinks = RecordingSinks()
+        relay = SandboxLogRelay(LABEL, self._tee(sinks))
         with caplog.at_level(logging.DEBUG):
             relay.feed(b"UserWarning: deprecated\n")
 
         if caplog.records:
             raise AssertionError("not caplog.records")
-        if lines != ["UserWarning: deprecated"]:
-            raise AssertionError('lines == ["UserWarning: deprecated"]')
+        if sinks.lines_of(ToolChannel.STDERR) != ["UserWarning: deprecated"]:
+            raise AssertionError(
+                'sinks.lines_of(ToolChannel.STDERR) == ["UserWarning: deprecated"]'
+            )
 
     def test_broken_frame_is_not_lost(self, caplog: pytest.LogCaptureFixture) -> None:
         relay = self._relay()
@@ -141,16 +204,18 @@ class TestRelay:
             raise AssertionError('"image mounted" in record.getMessage()')
 
     def test_tail_without_newline_is_flushed(self) -> None:
-        lines: list[str] = []
-        relay = SandboxLogRelay(LABEL, lines.append)
+        sinks = RecordingSinks()
+        relay = SandboxLogRelay(LABEL, self._tee(sinks))
 
         relay.feed(b"last line without newline")
-        if lines != []:
-            raise AssertionError("lines == []")
+        if sinks.lines_of(ToolChannel.STDERR) != []:
+            raise AssertionError("sinks.lines_of(ToolChannel.STDERR) == []")
 
         relay.flush()
-        if lines != ["last line without newline"]:
-            raise AssertionError('lines == ["last line without newline"]')
+        if sinks.lines_of(ToolChannel.STDERR) != ["last line without newline"]:
+            raise AssertionError(
+                'sinks.lines_of(ToolChannel.STDERR) == ["last line without newline"]'
+            )
 
     def test_empty_lines_are_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
         relay = self._relay()

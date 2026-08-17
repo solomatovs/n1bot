@@ -6,8 +6,15 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import ClassVar
 
-__all__ = ["CallOutcome", "ToolChannel", "WrapChannel"]
+__all__ = [
+    "CallOutcome",
+    "JournalChannel",
+    "JournalChannels",
+    "ToolChannel",
+    "WrapChannel",
+]
 
 
 class CallOutcome(StrEnum):
@@ -43,7 +50,70 @@ class ToolChannel(StrEnum):
 
 
 class WrapChannel(StrEnum):
-    """Каналы обвязки: stdout/stderr самого процесса bwrap."""
+    """Каналы обвязки запуска: stdout/stderr самого процесса песочницы.
+
+    Тело инструмента пишет в свои дескрипторы (ToolChannel), поэтому здесь
+    остаётся вывод обвязки — лаунчера образов и bwrap.
+    """
 
     STDOUT = "wrap_stdout"
     STDERR = "wrap_stderr"
+
+
+JournalChannel = ToolChannel | WrapChannel
+"""Канал журнала вызова: тело инструмента либо обвязка запуска."""
+
+
+class JournalChannels:
+    """Каналы журнала: что бывает, что видно пользователю и разбор имени.
+
+    Пишутся все каналы, но наружу — в панель, окна чтения и скачивание —
+    отдаются только stdout и stderr тела инструмента. Остальное служебное:
+    конверт результата, стдин и вывод обвязки запуска живут в журнале для
+    разбора сбоев, а не для чтения из чата. Список один на все точки входа.
+    """
+
+    VISIBLE: ClassVar[tuple[JournalChannel, ...]] = (
+        ToolChannel.STDOUT,
+        ToolChannel.STDERR,
+    )
+    """Каналы, доступные пользователю; порядок задаёт вкладки панели."""
+
+    @classmethod
+    def order(cls) -> tuple[JournalChannel, ...]:
+        """Все каналы журнала: сначала тело, потом обвязка."""
+        channels: list[JournalChannel] = []
+
+        for tool_channel in ToolChannel:
+            channels.append(tool_channel)
+
+        for wrap_channel in WrapChannel:
+            channels.append(wrap_channel)
+
+        return tuple(channels)
+
+    @classmethod
+    def parse(cls, raw: str) -> JournalChannel | None:
+        """Канал по имени; None — имя не принадлежит ни одному каналу."""
+        for channel in cls.order():
+            if channel.value == raw:
+                return channel
+
+        return None
+
+    @classmethod
+    def visible(cls, channel: JournalChannel) -> bool:
+        """Разрешён ли канал к чтению пользователем."""
+        return channel in cls.VISIBLE
+
+    @classmethod
+    def parse_visible(cls, raw: str) -> JournalChannel | None:
+        """Канал по имени с проверкой доступа; None — читать его нельзя."""
+        channel = cls.parse(raw)
+        if channel is None:
+            return None
+
+        if not cls.visible(channel):
+            return None
+
+        return channel

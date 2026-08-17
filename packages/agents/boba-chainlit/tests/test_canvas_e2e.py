@@ -501,7 +501,7 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
     rows = await page.evaluate(
         """() => {
             const stage = document.querySelector(
-              '[data-canvas-stage][data-full="true"]');
+              '[data-canvas-panel][data-full="true"]');
             const box = stage.getBoundingClientRect();
             return [...stage.querySelectorAll('button')]
               .filter(b => getComputedStyle(b).display !== 'none')
@@ -758,7 +758,7 @@ async def test_zoom_buttons_scale_the_diagram(panel: Any) -> None:
 
 
 FULL_GEOMETRY = """() => {
-    const stage = document.querySelector('[data-canvas-stage][data-full="true"]');
+    const stage = document.querySelector('[data-canvas-panel][data-full="true"]');
     if (!stage) return null;
     const box = stage.getBoundingClientRect();
     return {
@@ -857,13 +857,13 @@ async def test_collapse_returns_the_scene_into_the_panel(panel: Any) -> None:
 
     placement = await page.evaluate(
         """() => {
-            const stage = document.querySelector('[data-canvas-stage]');
+            const stage = document.querySelector('[data-canvas-panel]');
             const panel = document.querySelector('#side-view-content');
             return {
                 full: stage.getAttribute('data-full'),
                 inPanel: panel.contains(stage),
                 strays: document.querySelectorAll(
-                    'body > [data-canvas-stage], #root > [data-canvas-stage]'
+                    'body > [data-canvas-panel], #root > [data-canvas-panel]'
                 ).length,
             };
         }"""
@@ -934,7 +934,7 @@ async def test_fullscreen_covers_the_chat_underneath(panel: Any) -> None:
     hit = await page.evaluate(
         """() => {
             const stage = document.querySelector(
-              '[data-canvas-stage][data-full="true"]');
+              '[data-canvas-panel][data-full="true"]');
             const found = document.elementFromPoint(
                 window.innerWidth / 2, window.innerHeight / 2);
             const style = getComputedStyle(stage);
@@ -965,7 +965,7 @@ async def test_fullscreen_body_fills_the_height(panel: Any) -> None:
     layout = await page.evaluate(
         """() => {
             const stage = document.querySelector(
-              '[data-canvas-stage][data-full="true"]');
+              '[data-canvas-panel][data-full="true"]');
             const bar = stage.firstElementChild.getBoundingClientRect();
             const body = stage.lastElementChild.getBoundingClientRect();
             return {
@@ -1213,7 +1213,7 @@ async def test_scroll_position_survives_expanding(panel: Any) -> None:
     await _expand(side)
     kept = await page.evaluate(
         """() => document.querySelector(
-            '[data-canvas-stage][data-full="true"] [data-canvas-scroll]').scrollTop"""
+            '[data-canvas-panel][data-full="true"] [data-canvas-scroll]').scrollTop"""
     )
     await _collapse(page)
 
@@ -1358,30 +1358,30 @@ async def test_buttons_work_in_fullscreen(panel: Any) -> None:
 
     read = (
         "() => document.querySelector("
-        "'[data-canvas-stage][data-full=\"true\"] "
+        "'[data-canvas-panel][data-full=\"true\"] "
         "div[style*=\"transform-origin\"]').style.transform"
     )
     before = await page.evaluate(read)
 
     await page.locator(
-        '[data-canvas-stage][data-full="true"] button[aria-label="Zoom in"]'
+        '[data-canvas-panel][data-full="true"] button[aria-label="Zoom in"]'
     ).click()
     await page.wait_for_timeout(300)
     zoomed = await page.evaluate(read)
 
     await page.locator(
-        '[data-canvas-stage][data-full="true"] button[aria-label="Reset view"]'
+        '[data-canvas-panel][data-full="true"] button[aria-label="Reset view"]'
     ).click()
     await page.wait_for_timeout(300)
     reset = await page.evaluate(read)
 
     await page.locator(
-        '[data-canvas-stage][data-full="true"] button[aria-label="Close"]'
+        '[data-canvas-panel][data-full="true"] button[aria-label="Close"]'
     ).click()
     await page.wait_for_timeout(400)
     collapsed = await page.evaluate(
         """() => document.querySelector(
-            '[data-canvas-stage]').getAttribute('data-full')"""
+            '[data-canvas-panel]').getAttribute('data-full')"""
     )
 
     if zoomed == before:

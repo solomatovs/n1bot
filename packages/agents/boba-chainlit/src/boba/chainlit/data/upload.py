@@ -50,7 +50,7 @@ from boba.chainlit.data.storage import (
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chainlit.domain.fields import ElementField, FileField
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
@@ -958,11 +958,16 @@ class StreamServing:
         if journal is None:
             raise HTTPException(status_code=404, detail="Stream not found")
 
+        # служебные каналы вызова наружу не отдаются: скачать можно то же,
+        # что показывает панель
+        log_channel = JournalChannels.parse_visible(channel)
+        if log_channel is None:
+            raise HTTPException(status_code=404, detail="Stream not found")
+
         try:
             key = StreamKey(
                 user_id=str(current_user.id), thread_id=thread_id, call_id=call_id
             )
-            log_channel = ToolChannel(channel)
         except ValueError as e:
             raise HTTPException(status_code=404, detail="Stream not found") from e
 

@@ -20,7 +20,7 @@ from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.rendering.result import MarkdownRendering, ToolResultView
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import JournalChannel
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import (
@@ -173,10 +173,10 @@ class _FakeStream:
     """Журнал вызова для теста: приёмники каналов и заметка закрытия."""
 
     def __init__(self) -> None:
-        self.fed: dict[ToolChannel, bytearray] = {}
+        self.fed: dict[JournalChannel, bytearray] = {}
         self.note = ""
 
-    def sink_of(self, channel: ToolChannel) -> Any:
+    def sink_of(self, channel: JournalChannel) -> Any:
         buffer = self.fed.setdefault(channel, bytearray())
 
         class _Sink:
