@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-clickhouse"
-version = "0.0.11.dev7"
+version = "0.0.12.dev1"
 description = "Boba ClickHouse: ClickHouseConfig + подключение payload'а по HTTP, пароль или Kerberos SPNEGO на каждый запрос."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.11.dev7",
-    "boba-krb==0.0.11.dev7",
+    "boba-toolkit==0.0.12.dev1",
+    "boba-krb==0.0.12.dev1",
     "pydantic>=2.10,<2.11",
 ]
 
