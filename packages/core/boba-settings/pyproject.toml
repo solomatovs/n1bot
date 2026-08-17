@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-settings"
-version = "0.0.12.dev5"
+version = "0.0.12.dev6"
 description = "OmegaConf-источники + чистые pydantic-модели: load -> bind -> validate."
 requires-python = ">=3.11,<4"
 dependencies = [
