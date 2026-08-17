@@ -140,18 +140,21 @@ async def on_canvas_content(action: cl.Action) -> dict[str, Any]:
 
 @cl.action_callback(CanvasAction.SHOW)
 @chainlit_error_ctx_handler
-async def on_canvas_stream(action: cl.Action) -> None:
+async def on_canvas_stream(action: cl.Action) -> dict[str, Any]:
     """Кнопка на шаге инструмента: журнал вызова в панель плюс слежение.
+
+    Открытая панель просит содержимое ответом (inline) — тогда элемент не
+    пушится и панель не переоткрывается.
 
     Пользователь и тред берутся из сессии: чужой журнал по payload недостижим.
     """
     thread_id = current_thread_id()
     if thread_id is None:
-        return
+        return {}
 
     user_id = current_user_id()
     if user_id is None:
-        return
+        return {}
 
     logger.info(
         "stream show: user=%s thread=%s payload=%s",
@@ -160,7 +163,7 @@ async def on_canvas_stream(action: cl.Action) -> None:
         dict(action.payload),
     )
 
-    await StreamActions.show(str(user_id), thread_id, action.payload)
+    return await StreamActions.show(str(user_id), thread_id, action.payload)
 
 
 @cl.action_callback(CanvasAction.WINDOW)

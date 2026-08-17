@@ -48,6 +48,7 @@ LINES = 200000
 LIVE_LINES = 15000
 FIRST_LINE = "L0000000,start"
 LAST_LINE = f"L{LINES - 1:07d},row"
+ERR_LINE = "E0000000,warning"
 
 
 def _config() -> AppConfig:
@@ -191,6 +192,13 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
     recorder.feed("".join(chunk).encode())
     recorder.close("rc=0")
 
+    # второй канал того же вызова: по нему панель рисует вкладки
+    errors = journal.recorder(
+        key, "bash", ToolChannel.STDERR, lambda: None, frozenset()
+    )
+    errors.feed(f"{ERR_LINE}\n".encode())
+    errors.close("rc=0")
+
     live_key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID)
     live = journal.recorder(
         live_key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
@@ -313,7 +321,7 @@ async def test_panel_and_fullscreen_share_the_button_set(
     await page.wait_for_timeout(500)
 
     full_labels = await page.evaluate(
-        """() => [...document.querySelector('[data-canvas-stage][data-full="true"]')
+        """() => [...document.querySelector('[data-canvas-panel][data-full="true"]')
             .querySelectorAll('button[aria-label]')]
             .map(b => b.getAttribute('aria-label'))"""
     )
@@ -322,7 +330,7 @@ async def test_panel_and_fullscreen_share_the_button_set(
 
     shrunk = await page.evaluate(
         """() => document.querySelector(
-            '[data-canvas-stage]'
+            '[data-canvas-panel]'
         ).getAttribute('data-full')"""
     )
 
@@ -333,6 +341,7 @@ async def test_panel_and_fullscreen_share_the_button_set(
         raise AssertionError('"Close" in set(full_labels)')
     if shrunk != "false":
         raise AssertionError("Escape сворачивает полноэкранный режим")
+
 
 
 async def _scroll_box(page: Any) -> Any:
@@ -469,7 +478,7 @@ async def _open_live_tail(panel: Any) -> Any:
     return side
 
 
-STAGE = '[data-canvas-stage][data-full="true"], #side-view-content [data-canvas-stage]'
+STAGE = '[data-canvas-panel][data-full="true"], #side-view-content [data-canvas-stage]'
 """Активная сцена: развёрнутая живёт в body, свёрнутая — внутри панели."""
 
 
@@ -496,6 +505,130 @@ async def _wait_text(side: Any, marker: str, timeout_sec: float = 15.0) -> bool:
         await side.page.wait_for_timeout(500)
     return False
 
+
+def _channel_tab(page: Any, channel: ToolChannel) -> Any:
+    """Вкладка канала активной сцены: в полном экране она живёт вне панели."""
+    selector = f'[data-canvas-channel="{channel.value}"]'
+
+    return page.locator(f"{STAGE} {selector}").last
+
+
+async def _tabs_state(page: Any) -> dict[str, str]:
+    """Вкладки активной сцены: канал -> отмечен ли он показанным."""
+    return await page.evaluate(
+        """selector => {
+            const stage = document.querySelector(selector);
+            if (!stage) return {};
+            const state = {};
+            for (const tab of stage.querySelectorAll('[data-canvas-channel]')) {
+                state[tab.dataset.canvasChannel] = tab.dataset.active;
+            }
+            return state;
+        }""",
+        STAGE,
+    )
+
+
+async def test_channel_tabs_switch_the_shown_channel(
+    stream_thread: Any, panel: Any
+) -> None:
+    """Кнопки stdout/stderr показывают свой файл журнала того же вызова.
+
+    Сверяются оба состояния: отметка активной вкладки и текст окна — до
+    клика в панели виден stdout, после клика stderr, и наоборот.
+    """
+    page, _thread_id = stream_thread
+    act = panel[3]
+    await act("canvas_stream", {"call_id": CALL_ID})
+
+    before_tabs = await _tabs_state(page)
+    before_text = await _stage_text(page)
+
+    await _channel_tab(page, ToolChannel.STDERR).click()
+    await page.wait_for_timeout(1500)
+
+    after_tabs = await _tabs_state(page)
+    after_text = await _stage_text(page)
+
+    await _channel_tab(page, ToolChannel.STDOUT).click()
+    await page.wait_for_timeout(1500)
+
+    back_tabs = await _tabs_state(page)
+    back_text = await _stage_text(page)
+
+    if before_tabs != {"tool_stdout": "true", "tool_stderr": "false"}:
+        raise AssertionError("до клика показан stdout")
+    if FIRST_LINE not in before_text:
+        raise AssertionError("FIRST_LINE in before_text")
+    if ERR_LINE in before_text:
+        raise AssertionError("ERR_LINE not in before_text")
+
+    if after_tabs != {"tool_stdout": "false", "tool_stderr": "true"}:
+        raise AssertionError("клик по stderr отмечает вкладку stderr")
+    if ERR_LINE not in after_text:
+        raise AssertionError("ERR_LINE in after_text")
+    if FIRST_LINE in after_text:
+        raise AssertionError("FIRST_LINE not in after_text")
+
+    if back_tabs != before_tabs:
+        raise AssertionError("возврат на stdout восстанавливает вкладки")
+    if FIRST_LINE not in back_text:
+        raise AssertionError("FIRST_LINE in back_text")
+
+
+async def test_channel_tabs_keep_the_fullscreen_mode(
+    stream_thread: Any, panel: Any
+) -> None:
+    """Переключение канала не сворачивает полный экран и не пересоздаёт панель.
+
+    Режим показа принадлежит панели, а не содержимому: метка на её узле
+    переживает смену канала. Сбрасывает режим только «Закрыть» или Escape.
+    """
+    page, _thread_id = stream_thread
+    act = panel[3]
+    side = await act("canvas_stream", {"call_id": CALL_ID})
+
+    await side.locator('button[aria-label="Fullscreen"]').click()
+    await page.wait_for_timeout(500)
+
+    await page.evaluate(
+        """() => {
+            const panel = document.querySelector(
+              '[data-canvas-panel][data-full="true"]');
+            panel.dataset.stamp = 'alive';
+        }"""
+    )
+
+    await _channel_tab(page, ToolChannel.STDERR).click()
+    await page.wait_for_timeout(1500)
+
+    switched = await page.evaluate(
+        """() => {
+            const panel = document.querySelector('[data-canvas-panel]');
+            return {
+                full: panel.getAttribute('data-full'),
+                stamp: panel.dataset.stamp || '',
+            };
+        }"""
+    )
+    text = await _stage_text(page)
+
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(500)
+
+    collapsed = await page.evaluate(
+        """() => document.querySelector(
+            '[data-canvas-panel]').getAttribute('data-full')"""
+    )
+
+    if switched["full"] != "true":
+        raise AssertionError("полный экран свернулся при смене канала")
+    if switched["stamp"] != "alive":
+        raise AssertionError("панель пересоздалась при смене канала")
+    if ERR_LINE not in text:
+        raise AssertionError("ERR_LINE in text")
+    if collapsed != "false":
+        raise AssertionError("Escape сворачивает полноэкранный режим")
 
 class _WindowCalls:
     """Счётчик запросов окон: замирание у прокрутки вверх проверяется по сети."""
@@ -620,7 +753,7 @@ async def test_fullscreen_survives_live_output(stream_thread: Any, panel: Any) -
     await page.evaluate(
         """() => {
             const stage = document.querySelector(
-              '[data-canvas-stage][data-full="true"]');
+              '[data-canvas-panel][data-full="true"]');
             stage.dataset.stamp = 'alive';
         }"""
     )
@@ -632,7 +765,7 @@ async def test_fullscreen_survives_live_output(stream_thread: Any, panel: Any) -
 
     state = await page.evaluate(
         """() => {
-            const stage = document.querySelector('[data-canvas-stage]');
+            const stage = document.querySelector('[data-canvas-panel]');
             return {
                 full: stage.getAttribute('data-full'),
                 stamp: stage.dataset.stamp || '',
@@ -728,7 +861,7 @@ async def test_live_follow_works_in_fullscreen(stream_thread: Any, panel: Any) -
     state = await page.evaluate(
         """() => {
             const stage = document.querySelector(
-              '[data-canvas-stage][data-full="true"]');
+              '[data-canvas-panel][data-full="true"]');
             if (!stage) return null;
             const box = stage.getBoundingClientRect();
             const scroll = stage.querySelector('[data-canvas-scroll]');
@@ -772,7 +905,7 @@ async def test_journal_fullscreen_covers_the_window(stream_thread: Any) -> None:
     geometry = await page.evaluate(
         """() => {
             const stage = document.querySelector(
-              '[data-canvas-stage][data-full="true"]');
+              '[data-canvas-panel][data-full="true"]');
             if (!stage) return null;
             const box = stage.getBoundingClientRect();
             return {
@@ -892,7 +1025,7 @@ async def test_growing_live_output_keeps_catching_up(
     status = await page.evaluate(
         """() => {
             const stage = document.querySelector(
-              '[data-canvas-stage][data-full="true"], '
+              '[data-canvas-panel][data-full="true"], '
               + '#side-view-content [data-canvas-stage]');
             return stage.querySelector('[data-canvas-status]').innerText;
         }"""

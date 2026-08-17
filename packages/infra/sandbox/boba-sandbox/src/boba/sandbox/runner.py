@@ -25,10 +25,11 @@ from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult, run_subprocess
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.binaries import SandboxBinary
+from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
 from boba.toolkit.cpu import CpuBudget
 from boba.toolkit.launcher import LauncherError, LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
-from boba.toolkit.stream import StreamSink, ToolCallContext, ToolStreamTap
+from boba.toolkit.stream import ChannelSinks, ToolCallContext, ToolChannelsTap
 from boba.workspace.launcher import (
     RO_MOUNT_ROOT,
     Launcher,
@@ -55,6 +56,7 @@ __all__ = [
     "SandboxMountError",
     "SandboxOutcome",
     "SandboxRunner",
+    "StderrTee",
     "has_bwrap",
 ]
 
@@ -69,12 +71,43 @@ class SandboxLaunchError(LauncherError):
     """Окружение запуска подготовить не удалось: команда не запускалась."""
 
 
+class StderrTee:
+    """Строки stderr процесса в журнал вызова: обвязка и тело разными каналами.
+
+    Кадры лаунчера образов всегда едут каналом обвязки (wrap_stderr). Прочие
+    строки — сырой stderr, и чей он, знает только вызывающий: у канального
+    запуска тело пишет своим дескриптором, поэтому в сыром stderr остаётся
+    та же обвязка, а у текстового по нему говорит само тело инструмента.
+
+    Рекордер канала открывается первой строкой — молчаливый запуск лишнего
+    файла в журнале не оставляет.
+    """
+
+    def __init__(self, sinks: ChannelSinks | None, raw: JournalChannel) -> None:
+        self._sinks = sinks
+        self._raw = raw
+
+    def wrap(self, line: str) -> None:
+        """Строка обвязки запуска: лаунчер образов, bwrap."""
+        self._write(WrapChannel.STDERR, line)
+
+    def raw(self, line: str) -> None:
+        """Строка сырого stderr процесса: канал задан при сборке."""
+        self._write(self._raw, line)
+
+    def _write(self, channel: JournalChannel, line: str) -> None:
+        if self._sinks is None:
+            return
+
+        sink = self._sinks.sink_of(channel)
+        sink.feed_text(f"{line}\n")
+
+
 class SandboxLogRelay:
     """Кадры `sandbox-log:` из stderr в общий журнал: инструмент и уровень.
 
-    Сырые строки stderr в журнал приложения не идут — их пишет журнал вывода
-    инструмента (tee); здесь остаются только структурные кадры payload'а и
-    лаунчера.
+    Сырые строки stderr в журнал приложения не идут — их пишет журнал вызова
+    (tee); здесь остаются только структурные кадры payload'а и лаунчера.
 
     Пользователь в записи попадает сам — его подставляет фабрика записей
     приложения, а релей работает в контексте вызвавшего инструмента.
@@ -83,7 +116,7 @@ class SandboxLogRelay:
     NOISE_LEVEL: ClassVar[int] = logging.DEBUG
     """Уровень для битых кадров лога: аномалия payload'а, не вывод."""
 
-    def __init__(self, label: str, tee: Callable[[str], None]) -> None:
+    def __init__(self, label: str, tee: StderrTee) -> None:
         self._label = label
         self._tee = tee
         self._tail = bytearray()
@@ -119,27 +152,28 @@ class SandboxLogRelay:
         if line.startswith(LauncherMarker.LOG.value):
             body = line[len(LauncherMarker.LOG) :]
             logger.info("sandbox[%s]: %s", self._label, body)
-            self._tee(body)
+            self._tee.wrap(body)
             return
         if line.strip():
-            self._tee(line)
+            self._tee.raw(line)
 
     def _log_frame(self, body: str) -> None:
+        """Кадр лога payload'а — голос тела инструмента, а не обвязки."""
         try:
             frame = json.loads(body)
         except json.JSONDecodeError:
             logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, body)
-            self._tee(body)
+            self._tee.raw(body)
             return
         if not isinstance(frame, dict):
             logger.log(self.NOISE_LEVEL, "tool[%s]: %s", self._label, body)
-            self._tee(body)
+            self._tee.raw(body)
             return
         level = self._level_of(str(frame.get("lvl") or ""))
         name = str(frame.get("name") or "?")
         message = str(frame.get("msg") or "")
         logger.log(level, "tool[%s] %s: %s", self._label, name, message)
-        self._tee(f"{name}: {message}")
+        self._tee.raw(f"{name}: {message}")
 
     @staticmethod
     def _level_of(name: str) -> int:
@@ -295,6 +329,8 @@ class SandboxRunner:
         argv, runner_limits = self._channel_argv(rendered, argv_tail, channels, limits)
 
         name = self._label()
+        tee = StderrTee(ToolChannelsTap.get(), WrapChannel.STDERR)
+        relay = SandboxLogRelay(name, tee)
         self._log_start(name, rendered, limits, shlex.join(argv_tail))
 
         group = GroupLimits.of_profile(rendered)
@@ -316,6 +352,7 @@ class SandboxRunner:
                 env=os.environ,
                 stdout_sink=None,
                 keep_stdout=True,
+                stderr_sink=relay.feed,
                 limits=runner_limits,
                 cgroup_dir=cgroup_dir,
                 pass_fds=tuple(channels.child_fds.values()),
@@ -323,6 +360,7 @@ class SandboxRunner:
                 on_spawn=channels.close_child_ends,
             )
         finally:
+            relay.flush()
             channels.close()
             if manager is not None and cgroup_dir is not None:
                 # счётчики читаются до удаления leaf'а: после release их нет
@@ -372,16 +410,16 @@ class SandboxRunner:
         argv, runner_limits = self._build_argv(rendered, command, limits)
 
         name = self._label()
-        tap = ToolStreamTap.get()
-        relay = SandboxLogRelay(name, self._stream_tee(tap))
+        sinks = ToolChannelsTap.get()
+        relay = SandboxLogRelay(name, StderrTee(sinks, ToolChannel.STDERR))
         self._log_start(name, rendered, limits, command)
 
-        # сырой stdout едет в окно живого вывода только у текстового запуска:
-        # у потокового stdout занят кадрами, их окно получает после декодера
+        # текстовый запуск: тело пишет в общий stdout процесса, поэтому в
+        # журнал канала stdout едет он сам, а вывод обвязки — своим каналом
         out_sink = stdout_sink
         keep_stdout = stdout_sink is None
-        if tap is not None and stdout_sink is None:
-            out_sink = tap.feed
+        if sinks is not None and stdout_sink is None:
+            out_sink = sinks.sink_of(ToolChannel.STDOUT).feed
         group = GroupLimits.of_profile(rendered)
         cgroup_dir: str | None = None
         manager: CgroupManager | None = None
@@ -426,17 +464,6 @@ class SandboxRunner:
         if call and call != self._tool:
             return f"{self._tool}:{call}"
         return self._tool
-
-    @staticmethod
-    def _stream_tee(tap: StreamSink | None) -> Callable[[str], None]:
-        """Строки stderr в окно живого вывода; без тапа — некуда."""
-
-        def tee(line: str) -> None:
-            if tap is None:
-                return
-            tap.feed_text(line + "\n")
-
-        return tee
 
     @staticmethod
     def _env_of(profile: SandboxProfile) -> dict[str, str]:

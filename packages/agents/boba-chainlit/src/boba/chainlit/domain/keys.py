@@ -16,6 +16,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from boba.sandbox import WORKSPACE_MOUNT
+from boba.toolkit.channels import JournalChannel
 
 __all__ = [
     "AttachmentLinks",
@@ -325,7 +326,7 @@ class CanvasFileUrl:
 
 
 class StreamUrl:
-    """Адрес скачивания журнала вызова: тред и call_id; пользователь — из сессии.
+    """Адрес скачивания канала журнала: тред, call_id и канал; юзер — из сессии.
 
     Ссылка несёт префикс подмонтированного приложения, как у файлов сессии,
     иначе GET ушёл бы в корень домена мимо роута.
@@ -335,6 +336,7 @@ class StreamUrl:
     ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
 
     @classmethod
-    def path(cls, thread_id: str, call_id: str) -> str:
+    def path(cls, thread_id: str, call_id: str, channel: JournalChannel) -> str:
         prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
-        return f"{prefix}/stream/{thread_id}/{call_id}"
+        name = quote(channel.value, safe="")
+        return f"{prefix}/stream/{thread_id}/{call_id}?channel={name}"

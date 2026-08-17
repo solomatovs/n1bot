@@ -18,7 +18,7 @@ from pydantic import SecretStr
 
 from boba.sandbox import SandboxCaller, SandboxProfile
 from boba.sandbox.caller import SandboxPayloadError
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import (
     ReplyError,
     ReplyOk,
@@ -138,12 +138,12 @@ class RecordingSinks:
     """ChannelSinks: приёмник на канал, как их отдаёт журнал вызова."""
 
     def __init__(self) -> None:
-        self.sinks: dict[ToolChannel, ChannelRecorder] = {}
+        self.sinks: dict[JournalChannel, ChannelRecorder] = {}
 
-    def sink_of(self, channel: ToolChannel) -> StreamSink:
+    def sink_of(self, channel: JournalChannel) -> StreamSink:
         return self.sinks.setdefault(channel, ChannelRecorder())
 
-    def text_of(self, channel: ToolChannel) -> str:
+    def text_of(self, channel: JournalChannel) -> str:
         recorder = self.sinks.get(channel)
         if recorder is None:
             return ""

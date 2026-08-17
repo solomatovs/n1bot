@@ -2,8 +2,8 @@
 
 Пишущая сторона (поток процесса) отдаёт байты в StreamSink; куда они едут —
 в кольцевое окно памяти или в файл журнала — решает владелец приёмника.
-Тап передаёт приёмник из UI-слоя в исполнителя через contextvar, не связывая
-слои импортами.
+Тап передаёт приёмники каналов из UI-слоя в исполнителя через contextvar, не
+связывая слои импортами.
 
 Ошибки: наружу ничего не выходит; on_data обязан не поднимать исключений.
 """
@@ -19,7 +19,7 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import JournalChannel
 
 __all__ = [
     "ChannelSinks",
@@ -29,7 +29,6 @@ __all__ = [
     "ToolCallInfo",
     "ToolChannelsTap",
     "ToolStreamBuffer",
-    "ToolStreamTap",
 ]
 
 
@@ -133,27 +132,11 @@ class ToolStreamBuffer:
             self._dropped += excess
 
 
-class ToolStreamTap:
-    """Приёмник живого вывода в текущем контексте выполнения инструмента."""
-
-    _SINK: ClassVar[ContextVar[StreamSink | None]] = ContextVar(
-        "tool_stream_tap", default=None
-    )
-
-    @classmethod
-    def set(cls, sink: StreamSink | None) -> None:
-        cls._SINK.set(sink)
-
-    @classmethod
-    def get(cls) -> StreamSink | None:
-        return cls._SINK.get()
-
-
 class ChannelSinks(Protocol):
     """Приёмники журнала каналов одного вызова."""
 
     @abstractmethod
-    def sink_of(self, channel: ToolChannel) -> StreamSink: ...
+    def sink_of(self, channel: JournalChannel) -> StreamSink: ...
 
 
 class ToolChannelsTap:

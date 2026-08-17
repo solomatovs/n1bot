@@ -24,7 +24,7 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import JournalChannel, JournalChannels
 from boba.toolkit.stream import StreamSink
 
 __all__ = [
@@ -103,7 +103,7 @@ class JournalFile(StrEnum):
 
     @classmethod
     def rel_log(
-        cls, thread_id: str, call_id: str, tool: str, channel: ToolChannel
+        cls, thread_id: str, call_id: str, tool: str, channel: JournalChannel
     ) -> str:
         if "." in call_id or "." in tool:
             msg = f"log name segments must not contain dots: {call_id!r}, {tool!r}"
@@ -229,7 +229,7 @@ class StreamKey(BaseModel):
 
         return value
 
-    def rel_log(self, tool: str, channel: ToolChannel) -> str:
+    def rel_log(self, tool: str, channel: JournalChannel) -> str:
         return JournalFile.rel_log(self.thread_id, self.call_id, tool, channel)
 
     def rel_meta(self) -> str:
@@ -397,22 +397,24 @@ class StreamStorePort(Protocol):
         self,
         key: StreamKey,
         tool_name: str,
-        channel: ToolChannel,
+        channel: JournalChannel,
         on_data: Callable[[], None],
         protected_prefixes: frozenset[str],
     ) -> StreamRecorderPort: ...
 
     def slice_at(
-        self, key: StreamKey, offset: int, channel: ToolChannel
+        self, key: StreamKey, offset: int, channel: JournalChannel
     ) -> StreamSlice | None: ...
 
     def slice_before(
-        self, key: StreamKey, end: int, channel: ToolChannel
+        self, key: StreamKey, end: int, channel: JournalChannel
     ) -> StreamSlice | None: ...
 
-    def stat_of(self, key: StreamKey, channel: ToolChannel) -> StreamStat | None: ...
+    def stat_of(self, key: StreamKey, channel: JournalChannel) -> StreamStat | None: ...
 
-    def log_rel_path(self, key: StreamKey, channel: ToolChannel) -> str | None: ...
+    def log_rel_path(self, key: StreamKey, channel: JournalChannel) -> str | None: ...
+
+    def channels_of(self, key: StreamKey) -> tuple[JournalChannel, ...]: ...
 
     def usage(self, user_id: str) -> VaultUsage: ...
 
@@ -656,7 +658,7 @@ class StreamJournal(StreamStorePort):
         self,
         key: StreamKey,
         tool_name: str,
-        channel: ToolChannel,
+        channel: JournalChannel,
         on_data: Callable[[], None],
         protected_prefixes: frozenset[str],
     ) -> StreamRecorder:
@@ -683,7 +685,7 @@ class StreamJournal(StreamStorePort):
         key: StreamKey,
         root: str,
         tool_name: str,
-        channel: ToolChannel,
+        channel: JournalChannel,
         on_data: Callable[[], None],
         protected: frozenset[str],
     ) -> StreamRecorder:
@@ -894,7 +896,7 @@ class StreamJournal(StreamStorePort):
             )
 
     def slice_at(
-        self, key: StreamKey, offset: int, channel: ToolChannel
+        self, key: StreamKey, offset: int, channel: JournalChannel
     ) -> StreamSlice | None:
         """Окно записанного журнала вперёд; None — журнала такого вызова нет.
 
@@ -916,7 +918,7 @@ class StreamJournal(StreamStorePort):
             ) from exc
 
     def slice_before(
-        self, key: StreamKey, end: int, channel: ToolChannel
+        self, key: StreamKey, end: int, channel: JournalChannel
     ) -> StreamSlice | None:
         """Окно, заканчивающееся на end: прокрутка вверх стыкуется встык."""
         opened = self._open_view(key, channel)
@@ -932,7 +934,7 @@ class StreamJournal(StreamStorePort):
                 f"stream log is not readable: {key.call_id}/{channel}: {exc}"
             ) from exc
 
-    def stat_of(self, key: StreamKey, channel: ToolChannel) -> StreamStat | None:
+    def stat_of(self, key: StreamKey, channel: JournalChannel) -> StreamStat | None:
         """Размер и итог журнала без чтения тела; None — журнала нет."""
         opened = self._open_view(key, channel)
         if opened is None:
@@ -942,7 +944,47 @@ class StreamJournal(StreamStorePort):
 
         return StreamStat(size=size, closed=meta.closed, note=meta.note)
 
-    def log_rel_path(self, key: StreamKey, channel: ToolChannel) -> str | None:
+    def channels_of(self, key: StreamKey) -> tuple[JournalChannel, ...]:
+        """Каналы вызова, у которых есть файл; порядок — канонический.
+
+        Пустой кортеж — журнала вызова нет вовсе либо его вытеснила ротация.
+        """
+        root = self._vault.root_for(key.user_id)
+        thread_path = VaultPath.inside(root, key.thread_id)
+
+        written = set(self._written_channels(thread_path, key.call_id))
+
+        found: list[JournalChannel] = []
+        for channel in JournalChannels.order():
+            if channel.value not in written:
+                continue
+
+            found.append(channel)
+
+        return tuple(found)
+
+    @staticmethod
+    def _written_channels(thread_path: str, call_id: str) -> Iterator[str]:
+        """Имена каналов из файлов вызова; каталога нет — ничего не записано."""
+        try:
+            entries = list(os.scandir(thread_path))
+        except OSError:
+            return
+
+        for file_entry in entries:
+            if not file_entry.is_file(follow_symlinks=False):
+                continue
+
+            if not JournalFile.is_log(file_entry.name):
+                continue
+
+            parsed = JournalFile.parse_log(file_entry.name)
+            if parsed.call_id != call_id:
+                continue
+
+            yield parsed.channel
+
+    def log_rel_path(self, key: StreamKey, channel: JournalChannel) -> str | None:
         """Rel-путь лога канала; имя инструмента берётся из сайдкара вызова.
 
         None — вызов не журналировался (нет сайдкара) либо файла канала нет.
@@ -959,7 +1001,7 @@ class StreamJournal(StreamStorePort):
         return rel
 
     def _open_view(
-        self, key: StreamKey, channel: ToolChannel
+        self, key: StreamKey, channel: JournalChannel
     ) -> tuple[StreamFileView, int, StreamMeta] | None:
         root = self._vault.root_for(key.user_id)
 

@@ -1,4 +1,4 @@
-"""Тап живого вывода: окно наполняется по ходу работы процесса в песочнице."""
+"""Тап каналов: окна наполняются по ходу процесса, обвязка едет своим каналом."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from typing import Any
 import pytest
 
 from boba.sandbox import SandboxCaller, SandboxProfile
-from boba.toolkit.stream import ToolStreamBuffer, ToolStreamTap
+from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
+from boba.toolkit.stream import StreamSink, ToolChannelsTap, ToolStreamBuffer
 
 
 def _bin_dirs() -> list[str]:
@@ -57,44 +58,76 @@ _PROFILE_BASE: dict[str, Any] = {
 @pytest.fixture(autouse=True)
 def clean_tap() -> Any:
     yield
-    ToolStreamTap.set(None)
+    ToolChannelsTap.set(None)
 
 
-def _window(window_bytes: int = 64 * 1024) -> ToolStreamBuffer:
-    def wake() -> None:
-        pass
+class Windows:
+    """Журнал каналов вызова в памяти: окно на канал, заводится по обращению."""
 
-    return ToolStreamBuffer(window_bytes, wake)
+    def __init__(self, window_bytes: int = 64 * 1024) -> None:
+        self._window_bytes = window_bytes
+        self._buffers: dict[str, ToolStreamBuffer] = {}
+        self.wake_sizes: list[int] = []
+
+    def sink_of(self, channel: JournalChannel) -> StreamSink:
+        return self.buffer_of(channel)
+
+    def buffer_of(self, channel: JournalChannel) -> ToolStreamBuffer:
+        buffer = self._buffers.get(channel.value)
+        if buffer is not None:
+            return buffer
+
+        def wake() -> None:
+            self._on_wake(channel)
+
+        buffer = ToolStreamBuffer(self._window_bytes, wake)
+        self._buffers[channel.value] = buffer
+        return buffer
+
+    def text_of(self, channel: JournalChannel) -> str:
+        return self.buffer_of(channel).snapshot().text
+
+    def _on_wake(self, channel: JournalChannel) -> None:
+        if channel is not ToolChannel.STDOUT:
+            return
+
+        self.wake_sizes.append(len(self.text_of(channel)))
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap не установлен")
 @pytest.mark.skipif(os.geteuid() == 0, reason="под root userns ведёт себя иначе")
 class TestCallTextTap:
-    """Текстовый запуск: окно видит сырые stdout и stderr, результат полон."""
+    """Текстовый запуск: stdout и stderr тела ложатся в свои каналы журнала."""
 
     @staticmethod
     def _caller(**profile_kw: Any) -> SandboxCaller:
         profile = SandboxProfile.model_validate({**_PROFILE_BASE, **profile_kw})
         return SandboxCaller("bash", profile, dict)
 
-    def test_window_gets_both_streams_and_result_is_kept(self) -> None:
-        buffer = _window()
-        ToolStreamTap.set(buffer)
+    def test_streams_go_to_their_own_channels_and_result_is_kept(self) -> None:
+        windows = Windows()
+        ToolChannelsTap.set(windows)
 
         outcome = self._caller().call_text("echo привет; echo беда >&2", stdin="")
 
-        window = buffer.snapshot()
-        if "привет" not in window.text:
-            raise AssertionError('"привет" in window.text')
-        if "беда" not in window.text:
-            raise AssertionError('"беда" in window.text')
+        out = windows.text_of(ToolChannel.STDOUT)
+        err = windows.text_of(ToolChannel.STDERR)
+        if "привет" not in out:
+            raise AssertionError('"привет" in out')
+        if "беда" not in err:
+            raise AssertionError('"беда" in err')
+        if "беда" in out:
+            raise AssertionError('"беда" not in out')
+        # запуск без образов обвязке говорить не о чем: её канал пуст
+        if windows.text_of(WrapChannel.STDERR) != "":
+            raise AssertionError('windows.text_of(WrapChannel.STDERR) == ""')
         if "привет" not in outcome.result.stdout:
             raise AssertionError('"привет" in outcome.result.stdout')
         if "беда" not in outcome.result.stderr:
             raise AssertionError('"беда" in outcome.result.stderr')
 
     def test_without_tap_nothing_changes(self) -> None:
-        ToolStreamTap.set(None)
+        ToolChannelsTap.set(None)
 
         outcome = self._caller().call_text("echo одинокий", stdin="")
 
@@ -108,13 +141,13 @@ class TestCallTextTap:
         процесса — в нём последние строки.
         """
         window_bytes = 64 * 1024
-        buffer = _window(window_bytes)
-        ToolStreamTap.set(buffer)
+        windows = Windows(window_bytes)
+        ToolChannelsTap.set(windows)
 
         # ~1.6 МБ: 200000 строк по 8 байт
         outcome = self._caller().call_text("seq -w 1 200000", stdin="")
 
-        window = buffer.snapshot()
+        window = windows.buffer_of(ToolChannel.STDOUT).snapshot()
         if len(window.text.encode()) > window_bytes:
             raise AssertionError("len(window.text.encode()) <= window_bytes")
         if window.dropped_bytes <= 1_000_000:
@@ -128,17 +161,12 @@ class TestCallTextTap:
 
     def test_window_fills_while_the_process_runs(self) -> None:
         """Пробуждения приходят по ходу процесса, а не одним махом в конце."""
-        sizes: list[int] = []
-        holder: list[ToolStreamBuffer] = []
-
-        def wake() -> None:
-            sizes.append(len(holder[0].snapshot().text))
-
-        buffer = ToolStreamBuffer(64 * 1024, wake)
-        holder.append(buffer)
-        ToolStreamTap.set(buffer)
+        windows = Windows()
+        ToolChannelsTap.set(windows)
 
         self._caller().call_text("echo старт; sleep 0.3; echo финиш", stdin="")
+
+        sizes = windows.wake_sizes
 
         if len(sizes) < 2:
             raise AssertionError("len(sizes) >= 2")
