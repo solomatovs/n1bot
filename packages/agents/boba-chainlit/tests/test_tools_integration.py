@@ -19,6 +19,7 @@ from langchain_core.tools import BaseTool
 from psycopg import sql
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
+from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox import (
     SandboxCaller,
@@ -29,11 +30,13 @@ from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.tool.web.tools import WebGrepConfig
+from boba.toolkit.calls import ScriptCall
 from boba.toolkit.launcher import LauncherFactory, PayloadFailureError, ToolLauncher
 from boba.toolkit.result import (
     AffectedSqlResult,
     ChartResult,
-    JsonResult,
+    MultiResult,
+    ShellResult,
     TableResult,
     TextResult,
     ToolArtifact,
@@ -451,28 +454,64 @@ class TestBashTool:
 
     async def test_command_runs(self, bash_tool, workspace_image) -> None:
         result = await Call.ok(bash_tool, command="echo hello; pwd")
-        if not (isinstance(result, JsonResult)):
-            raise AssertionError("isinstance(result, JsonResult)")
-        if result.payload["exit_code"] != 0:
-            raise AssertionError('result.payload["exit_code"] == 0')
-        if "hello" not in result.payload["stdout"]:
-            raise AssertionError('"hello" in result.payload["stdout"]')
-        if "/workspace" not in result.payload["stdout"]:
-            raise AssertionError('"/workspace" in result.payload["stdout"]')
+        if not (isinstance(result, ShellResult)):
+            raise AssertionError("isinstance(result, ShellResult)")
+        if result.exit_code != 0:
+            raise AssertionError("result.exit_code == 0")
+        if "hello" not in result.stdout:
+            raise AssertionError('"hello" in result.stdout')
+        if "/workspace" not in result.stdout:
+            raise AssertionError('"/workspace" in result.stdout')
+
+    async def test_call_and_result_render_as_script_and_exit_code(
+        self, bash_tool, workspace_image
+    ) -> None:
+        """Показ вызова: команда — bash-блок входа, вывод — блок с кодом."""
+        result = await Call.ok(bash_tool, command="echo hello")
+
+        rendering = ToolCallMarkdown(
+            ScriptCall(arg="command", lang="bash"),
+            {"command": "echo hello", "stdin": ""},
+        ).render()
+        md = ToolResultMarkdown(result).render()
+
+        if rendering is None:
+            raise AssertionError("rendering is not None")
+        if rendering.markdown != "```bash\necho hello\n```":
+            raise AssertionError('rendering.markdown == "```bash\\necho hello\\n```"')
+        if "```stdout\nhello\n```" not in md:
+            raise AssertionError('"```stdout\\nhello\\n```" in md')
+        if "_exit code: 0_" not in md:
+            raise AssertionError('"_exit code: 0_" in md')
 
     async def test_stdin_reaches_command(self, bash_tool, workspace_image) -> None:
         result = await Call.ok(bash_tool, command="cat", stdin="через stdin")
-        if result.payload["stdout"] != "через stdin":
-            raise AssertionError('result.payload["stdout"] == "через stdin"')
+        if result.stdout != "через stdin":
+            raise AssertionError('result.stdout == "через stdin"')
 
     async def test_failed_command_is_not_ok(self, bash_tool, workspace_image) -> None:
         result = await Call.result(bash_tool, command="echo boom >&2; exit 3")
         if result.ok:
             raise AssertionError("not result.ok")
-        if result.payload["exit_code"] != 3:
-            raise AssertionError('result.payload["exit_code"] == 3')
-        if "boom" not in result.payload["stderr"]:
-            raise AssertionError('"boom" in result.payload["stderr"]')
+        if result.exit_code != 3:
+            raise AssertionError("result.exit_code == 3")
+        if "boom" not in result.stderr:
+            raise AssertionError('"boom" in result.stderr')
+
+    async def test_silent_failure_shows_stderr(
+        self, bash_tool, workspace_image
+    ) -> None:
+        """Команда молчит в stdout: на экран идёт stderr, а не пустой блок."""
+        result = await Call.result(bash_tool, command="echo boom >&2; exit 3")
+
+        md = ToolResultMarkdown(result).render()
+
+        if result.output.strip() != "boom":
+            raise AssertionError('result.output.strip() == "boom"')
+        if "```stderr\nboom\n```" not in md:
+            raise AssertionError('"```stderr\\nboom\\n```" in md')
+        if "_exit code: 3_" not in md:
+            raise AssertionError('"_exit code: 3_" in md')
 
     async def test_network_is_unavailable(self, bash_tool, workspace_image) -> None:
         """Профиль bash без сети: имена не резолвятся, наружу хода нет."""
@@ -787,16 +826,96 @@ class TestPgTools:
         if result.status != "CREATE TABLE":
             raise AssertionError('result.status == "CREATE TABLE"')
 
-    async def test_copy_returns_copy_text(self, pg_tools) -> None:
+    async def test_copy_unloads_the_statement_as_is(self, pg_tools) -> None:
+        """Формат выбирает запрос: csv-дамп доезжает как есть и помечен языком."""
         result = await Call.ok(
             pg_tools["pg_copy"],
             connection_name="main",
-            sql="select 1 as one, 'два' as two",
+            sql=(
+                "COPY (select 1 as one, 'два' as two) "
+                "TO STDOUT WITH (FORMAT CSV, HEADER)"
+            ),
         )
-        if "one" not in result.text:
-            raise AssertionError('"one" in result.text')
-        if "два" not in result.text:
-            raise AssertionError('"два" in result.text')
+        if not isinstance(result, TextResult):
+            raise AssertionError("isinstance(result, TextResult)")
+        if result.text != "one,two\n1,два\n":
+            raise AssertionError('result.text == "one,two\\n1,два\\n"')
+        if result.language != "csv":
+            raise AssertionError('result.language == "csv"')
+
+    async def test_copy_decodes_in_the_connection_encoding(self, pg_tools) -> None:
+        """Кириллица доезжает целой: дамп читается кодировкой подключения.
+
+        Символ склеивается из блоков COPY, поэтому проверяется и длинная
+        выгрузка — на ней граница блока рвёт многобайтовый символ.
+        """
+        result = await Call.ok(
+            pg_tools["pg_copy"],
+            connection_name="main",
+            sql=(
+                "COPY (select repeat('ё', 4000) as long) "
+                "TO STDOUT WITH (FORMAT CSV)"
+            ),
+        )
+
+        if "�" in result.text:
+            raise AssertionError("в выгрузке остались замены битых байтов")
+        if result.text.strip() != "ё" * 4000:
+            raise AssertionError('result.text.strip() == "ё" * 4000')
+
+    async def test_copy_statement_is_judged_by_postgres(self, pg_tools) -> None:
+        """Стейтмент уходит как есть: приговор выносит сервер, не инструмент."""
+        with pytest.raises(PayloadFailureError) as caught:
+            await Call.result(
+                pg_tools["pg_copy"], connection_name="main", sql="select 1"
+            )
+
+        if caught.value.kind != "sql_failed":
+            raise AssertionError('caught.value.kind == "sql_failed"')
+
+    async def test_many_statements_run_in_one_call(self, pg_tools) -> None:
+        """Несколько команд через `;`: итог каждой по порядку одним набором."""
+        result = await Call.ok(
+            pg_tools["pg_query"],
+            connection_name="main",
+            sql=(
+                "create temp table multi_probe(x int); "
+                "insert into multi_probe values (1), (2); "
+                "select count(*) as n from multi_probe;"
+            ),
+        )
+
+        if not isinstance(result, MultiResult):
+            raise AssertionError("isinstance(result, MultiResult)")
+        kinds = [type(item).__name__ for item in result.items]
+        if kinds != ["AffectedSqlResult", "AffectedSqlResult", "TableResult"]:
+            raise AssertionError(f"итоги команд по порядку, получено {kinds}")
+
+        last = result.items[-1]
+        if not isinstance(last, TableResult):
+            raise AssertionError("isinstance(last, TableResult)")
+        if list(last.rows) != [{"n": 2}]:
+            raise AssertionError('rows == [{"n": 2}]')
+
+    async def test_failed_statement_rolls_the_set_back(self, pg_tools) -> None:
+        """Набор идёт одной транзакцией: падение второй команды сносит первую."""
+        with pytest.raises(PayloadFailureError):
+            await Call.result(
+                pg_tools["pg_query"],
+                connection_name="main",
+                sql=(
+                    "create temp table rollback_probe(x int); "
+                    "select * from no_such_table_here;"
+                ),
+            )
+
+        after = await Call.result(
+            pg_tools["pg_query"],
+            connection_name="main",
+            sql="select to_regclass('rollback_probe') is null as gone",
+        )
+        if list(after.rows) != [{"gone": True}]:
+            raise AssertionError("таблица первой команды откачена")
 
     async def test_unknown_target_is_rejected(self, pg_tools) -> None:
         """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""

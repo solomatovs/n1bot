@@ -1205,7 +1205,13 @@ class FileViewer:
 
         return any(lowered.endswith(suffix) for suffix in self.suffixes)
 
-    async def content(self, key: ObjectKey) -> CanvasContent:
+    def describe(self, key: ObjectKey, **extra: Any) -> CanvasContent:
+        """Описание файла: путь, подпись, ссылка на файл и метка показа.
+
+        Единственное место, где содержимое панели получает ссылку, — поэтому
+        файл, показанный любым наследником, всегда можно скачать. Наследник
+        добавляет своё (текст, окно потока, объяснение) через extra.
+        """
         return CanvasContent(
             kind=self.kind,
             path=key.in_workspace(),
@@ -1213,7 +1219,11 @@ class FileViewer:
             url=self._serve(key),
             mime=self._mime(key.name),
             nonce=str(uuid.uuid4()),
+            **extra,
         )
+
+    async def content(self, key: ObjectKey) -> CanvasContent:
+        return self.describe(key)
 
     async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
         described = await self.content(key)
@@ -1313,15 +1323,10 @@ class LogViewer(FileViewer):
                 f"cannot read the file: {key.in_workspace()}: {e}",
             ) from e
 
-        return CanvasContent(
-            kind=self.kind,
-            path=key.in_workspace(),
-            label=key.name,
-            url=self._serve(key),
-            mime=self._mime(key.name),
+        return self.describe(
+            key,
             text=piece.text,
             note=StreamNote.status_of(piece),
-            nonce=str(uuid.uuid4()),
             stream=StreamPos(
                 offset=piece.offset,
                 end=piece.end,
@@ -1386,11 +1391,16 @@ class CanvasPanel:
 
     @classmethod
     def notice(cls, key: ObjectKey) -> CanvasContent:
-        """Объяснение вместо содержимого: файл показать некому."""
+        """Объяснение вместо содержимого: файл показать некому.
+
+        Ссылка на файл остаётся: показать формат панель не умеет, а отдать
+        его пользователю на скачивание — вполне.
+        """
         return CanvasContent(
             kind=CanvasKind.NOTICE,
             path=key.in_workspace(),
             label=key.name,
+            url=CanvasFileUrl.path(key),
             note=(
                 "The panel cannot display this file format. Supported: "
                 f"{CanvasRegistry.suffixes_hint()}"

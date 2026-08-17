@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, cast
@@ -15,13 +14,15 @@ from literalai.observability.step import TrueStepType
 
 from boba.cancellation import StopReason
 from boba.chainlit.canvas.panel import CanvasAction, ToolStreams
-from boba.chainlit.rendering.result import (
+from boba.chainlit.rendering.tool import (
     ChartRendering,
     CustomElementRendering,
     DiagramRendering,
     MarkdownRendering,
+    ToolCallMarkdown,
     ToolResultView,
 )
+from boba.toolkit.calls import ToolCallViews
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
@@ -433,7 +434,10 @@ class ChatView:
         )
         self._tool_names[step.id] = name
         if args:
-            step.input, step.show_input = self._render_args(args)
+            rendering = ToolCallMarkdown(ToolCallViews.of(name), args).render()
+            if rendering is not None:
+                step.input = rendering.markdown
+                step.show_input = rendering.show_input
         step.output = StepText.RUNNING
         step.start = utc_now()
 
@@ -603,42 +607,3 @@ class ChatView:
             auto_collapse=True,
         )
 
-    @classmethod
-    def _render_args(cls, args: Mapping[str, Any]) -> tuple[str, str | bool]:
-        """Вход тула и его show_input: json, а при многострочных аргументах —
-        markdown-блоки (спека диаграммы, код bash/python читаются как текст)."""
-        multiline = False
-        for value in args.values():
-            if isinstance(value, str) and "\n" in value:
-                multiline = True
-                break
-
-        if not multiline:
-            rendered = json.dumps(dict(args), ensure_ascii=False, indent=2, default=str)
-            return rendered, "json"
-
-        blocks = list(cls._arg_blocks(args))
-        return "\n\n".join(blocks), True
-
-    @classmethod
-    def _arg_blocks(cls, args: Mapping[str, Any]) -> Iterator[str]:
-        for name, value in args.items():
-            if isinstance(value, str) and "\n" in value:
-                fence = cls._fence_for(value)
-                yield f"**{name}:**\n{fence}\n{value}\n{fence}"
-                continue
-
-            if isinstance(value, str):
-                yield f"**{name}:** `{value}`"
-                continue
-
-            rendered = json.dumps(value, ensure_ascii=False, default=str)
-            yield f"**{name}:** `{rendered}`"
-
-    @staticmethod
-    def _fence_for(value: str) -> str:
-        """Ограда длиннее любой в тексте: спека с ``` не разорвёт блок."""
-        fence = "```"
-        while fence in value:
-            fence += "`"
-        return fence

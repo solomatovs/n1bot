@@ -26,6 +26,7 @@ from boba.chainlit.canvas.panel import (
     CanvasPanel,
     CanvasPush,
     CanvasRegistry,
+    FileViewer,
     OpenedCanvas,
     RenderStatus,
     RenderVerdicts,
@@ -39,6 +40,7 @@ from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.domain.session import RequiredSession
 from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
+from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
     DiagramResult,
     ErrorResult,
@@ -402,23 +404,24 @@ class DiagramFiles:
         return layer
 
 
-class MermaidViewer:
+class MermaidViewer(FileViewer):
     """Вьювер канваса для .mmd: описывает диаграмму и ждёт вердикт рендера.
+
+    Наследует базу вьюверов: путь, подпись и ссылку на файл проставляет она,
+    поэтому спеку можно скачать так же, как любой другой показанный файл.
 
     Синтаксис спеки знает только mermaid.js в браузере, поэтому после показа
     вьювер ждёт canvas_render_status по nonce: FAILED — CanvasError с текстом
     ошибки mermaid, молчание браузера показу не мешает.
     """
 
+    kind: ClassVar[CanvasKind] = CanvasKind.MERMAID
     suffixes: ClassVar[frozenset[str]] = frozenset({DiagramMarker.SUFFIX})
 
     VERDICT_TIMEOUT_SEC: ClassVar[float] = 10.0
 
     def __init__(self, files: DiagramFiles) -> None:
         self._files = files
-
-    def handles(self, name: str) -> bool:
-        return name.lower().endswith(DiagramMarker.SUFFIX)
 
     async def content(self, key: ObjectKey) -> CanvasContent:
         return self._content(key, await self._read(key), str(uuid.uuid4()))
@@ -456,17 +459,12 @@ class MermaidViewer:
         except RefusalError as e:
             raise CanvasError(e.kind, str(e)) from e
 
-    @staticmethod
-    def _content(key: ObjectKey, text: str, nonce: str) -> CanvasContent:
+    def _content(self, key: ObjectKey, text: str, nonce: str) -> CanvasContent:
+        """Спека поверх описания базы: подпись берётся из заголовка диаграммы."""
         entry = DiagramEntry.of(key, text)
 
-        return CanvasContent(
-            kind=CanvasKind.MERMAID,
-            path=entry.path,
-            label=entry.label,
-            text=entry.spec,
-            nonce=nonce,
-        )
+        described = self.describe(key, text=entry.spec)
+        return described.model_copy(update={"label": entry.label, "nonce": nonce})
 
 
 class DiagramCard:
@@ -539,6 +537,7 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
     card = DiagramCard(files)
     # клик по карточке открывает файл в канвасе: вьювер знает про .mmd отсюда
     CanvasRegistry.register(MermaidViewer(files))
+    ToolCallViews.register("diagram_save", ScriptCall(arg="spec", lang="mermaid"))
 
     @tool(response_format="content_and_artifact")
     async def diagram_save(

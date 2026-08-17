@@ -15,7 +15,7 @@ from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
 from boba.sandbox import SandboxCaller
 from boba.sandbox.argv import build_bwrap_argv
 from boba.sandbox.profile import BindSpec, SandboxProfile, SandboxToolConfig
-from boba.toolkit.result import JsonResult
+from boba.toolkit.result import ShellResult
 
 
 def _bin_dirs() -> list[str]:
@@ -263,34 +263,34 @@ class TestBashTool:
         return build_bash_tool(output, lambda tool: SandboxCaller(tool, profile, dict))
 
     @staticmethod
-    def _invoke(tool, **args) -> dict:
+    def _invoke(tool, **args) -> ShellResult:
         args.setdefault("stdin", "")
         msg: ToolMessage = tool.invoke(_tool_call("bash", args))
-        if not (isinstance(msg.artifact, JsonResult)):
-            raise AssertionError("isinstance(msg.artifact, JsonResult)")
-        return msg.artifact.payload
+        if not (isinstance(msg.artifact, ShellResult)):
+            raise AssertionError("isinstance(msg.artifact, ShellResult)")
+        return msg.artifact
 
     def test_echo_inside_sandbox(self, tmp_path: Path) -> None:
         payload = self._invoke(self._make_tool(tmp_path), command="echo hello")
-        if payload["exit_code"] != 0:
-            raise AssertionError('payload["exit_code"] == 0')
-        if payload["stdout"].rstrip() != "hello":
-            raise AssertionError('payload["stdout"].rstrip() == "hello"')
-        if payload["timed_out"]:
-            raise AssertionError('not payload["timed_out"]')
+        if payload.exit_code != 0:
+            raise AssertionError('payload.exit_code == 0')
+        if payload.stdout.rstrip() != "hello":
+            raise AssertionError('payload.stdout.rstrip() == "hello"')
+        if payload.timed_out:
+            raise AssertionError('not payload.timed_out')
 
     def test_cwd_is_workspace_root(self, tmp_path: Path) -> None:
         payload = self._invoke(self._make_tool(tmp_path), command="pwd")
-        if payload["stdout"].rstrip() != str(tmp_path.resolve()):
-            raise AssertionError('payload["stdout"].rstrip() == str(tmp_path.resolve(…')
+        if payload.stdout.rstrip() != str(tmp_path.resolve()):
+            raise AssertionError('payload.stdout.rstrip() == str(tmp_path.resolve(…')
 
     def test_workspace_writes_persist_on_host(self, tmp_path: Path) -> None:
         payload = self._invoke(
             self._make_tool(tmp_path),
             command="echo content > out.txt",
         )
-        if payload["exit_code"] != 0:
-            raise AssertionError('payload["exit_code"] == 0')
+        if payload.exit_code != 0:
+            raise AssertionError('payload.exit_code == 0')
         if (tmp_path / "out.txt").read_text() != "content\n":
             raise AssertionError('(tmp_path / "out.txt").read_text() == "content\\n"')
 
@@ -299,8 +299,8 @@ class TestBashTool:
             self._make_tool(tmp_path),
             command="echo x > /etc/from-sandbox 2>&1; echo rc=$?",
         )
-        if payload["exit_code"] != 0:
-            raise AssertionError('payload["exit_code"] == 0')
+        if payload.exit_code != 0:
+            raise AssertionError('payload.exit_code == 0')
         if Path("/etc/from-sandbox").exists():
             raise AssertionError('not Path("/etc/from-sandbox").exists()')
 
@@ -309,8 +309,8 @@ class TestBashTool:
             self._make_tool(tmp_path),
             command="echo x > /usr/from-sandbox 2>&1",
         )
-        if payload["exit_code"] == 0:
-            raise AssertionError('payload["exit_code"] != 0')
+        if payload.exit_code == 0:
+            raise AssertionError('payload.exit_code != 0')
         if Path("/usr/from-sandbox").exists():
             raise AssertionError('not Path("/usr/from-sandbox").exists()')
 
@@ -319,16 +319,16 @@ class TestBashTool:
             self._make_tool(tmp_path),
             command="getent hosts example.com 2>&1; echo done-$?",
         )
-        if not ("done-2" in payload["stdout"] or "done-1" in payload["stdout"]):
-            raise AssertionError('"done-2" in payload["stdout"] or "done-1" in payloa…')
+        if not ("done-2" in payload.stdout or "done-1" in payload.stdout):
+            raise AssertionError('"done-2" in payload.stdout or "done-1" in payloa…')
 
     def test_timeout_marks_timed_out(self, tmp_path: Path) -> None:
         payload = self._invoke(
             self._make_tool(tmp_path, _profile(timeout_sec=1)),
             command="sleep 10",
         )
-        if not (payload["timed_out"]):
-            raise AssertionError('payload["timed_out"]')
+        if not (payload.timed_out):
+            raise AssertionError('payload.timed_out')
 
     def test_llm_does_not_choose_profile(self, tmp_path: Path) -> None:
         """Профиль задаёт конфиг: у инструмента нет такого аргумента."""
@@ -342,28 +342,28 @@ class TestBashTool:
             self._make_tool(tmp_path),
             command="ps -e --no-headers | wc -l",
         )
-        if int(payload["stdout"].strip()) >= 10:
-            raise AssertionError('int(payload["stdout"].strip()) < 10')
+        if int(payload.stdout.strip()) >= 10:
+            raise AssertionError('int(payload.stdout.strip()) < 10')
 
     def test_memory_limit_applied_without_image(self, tmp_path: Path) -> None:
         tool = self._make_tool(tmp_path, _profile(max_memory_bytes=64 * 1024 * 1024))
         payload = self._invoke(tool, command="ulimit -v")
-        if payload["stdout"].strip() != str(64 * 1024):
-            raise AssertionError('payload["stdout"].strip() == str(64 * 1024)')
+        if payload.stdout.strip() != str(64 * 1024):
+            raise AssertionError('payload.stdout.strip() == str(64 * 1024)')
 
     def test_cpu_limit_applied_without_image(self, tmp_path: Path) -> None:
         tool = self._make_tool(tmp_path, _profile(max_cpu_sec=5))
         payload = self._invoke(tool, command="ulimit -t")
-        if payload["stdout"].strip() != "5":
-            raise AssertionError('payload["stdout"].strip() == "5"')
+        if payload.stdout.strip() != "5":
+            raise AssertionError('payload.stdout.strip() == "5"')
 
     def test_tmpfs_size_limit_enforced(self, tmp_path: Path) -> None:
         payload = self._invoke(
             self._make_tool(tmp_path, _profile(tmpfs=("/tmp:1M",))),  # noqa: S108
             command="dd if=/dev/zero of=/tmp/blob bs=1M count=4 2>&1; echo rc=$?",
         )
-        if "rc=0" in payload["stdout"]:
-            raise AssertionError('"rc=0" not in payload["stdout"]')
+        if "rc=0" in payload.stdout:
+            raise AssertionError('"rc=0" not in payload.stdout')
 
     def test_placeholders_render_and_dirs_created(self, tmp_path: Path) -> None:
         template = f"{tmp_path}/{{user_id}}/{{thread_id}}"
@@ -380,17 +380,17 @@ class TestBashTool:
             ),
         )
         payload = self._invoke(tool, command="echo data > out.txt")
-        if payload["exit_code"] != 0:
-            raise AssertionError('payload["exit_code"] == 0')
+        if payload.exit_code != 0:
+            raise AssertionError('payload.exit_code == 0')
         if (tmp_path / "7" / "t1" / "out.txt").read_text() != "data\n":
             raise AssertionError('(tmp_path / "7" / "t1" / "out.txt").read_text() == …')
 
     def test_short_output_is_not_clipped(self, tmp_path: Path) -> None:
         payload = self._invoke(self._make_tool(tmp_path), command="echo hello")
-        if payload["stdout_truncated"]:
-            raise AssertionError('not payload["stdout_truncated"]')
-        if payload["stdout_bytes"] != len(b"hello\n"):
-            raise AssertionError('payload["stdout_bytes"] == len(b"hello\\n")')
+        if payload.stdout_truncated:
+            raise AssertionError('not payload.stdout_truncated')
+        if payload.stdout_bytes != len(b"hello\n"):
+            raise AssertionError('payload.stdout_bytes == len(b"hello\\n")')
 
     def test_large_output_is_clipped_to_budget(self, tmp_path: Path) -> None:
         limits = BashToolConfig(max_output_bytes=200)
@@ -398,13 +398,13 @@ class TestBashTool:
 
         payload = self._invoke(tool, command="seq 1 100000")
 
-        if payload["exit_code"] != 0:
-            raise AssertionError('payload["exit_code"] == 0')
-        if not (payload["stdout_truncated"]):
-            raise AssertionError('payload["stdout_truncated"]')
-        if payload["stdout_bytes"] <= 500_000:
-            raise AssertionError('payload["stdout_bytes"] > 500_000')
-        if not (payload["stdout"].startswith("1\n2\n3\n")):
-            raise AssertionError('payload["stdout"].startswith("1\\n2\\n3\\n")')
-        if "truncated: 200 of" not in payload["stdout"]:
-            raise AssertionError('"truncated: 200 of" in payload["stdout"]')
+        if payload.exit_code != 0:
+            raise AssertionError('payload.exit_code == 0')
+        if not (payload.stdout_truncated):
+            raise AssertionError('payload.stdout_truncated')
+        if payload.stdout_bytes <= 500_000:
+            raise AssertionError('payload.stdout_bytes > 500_000')
+        if not (payload.stdout.startswith("1\n2\n3\n")):
+            raise AssertionError('payload.stdout.startswith("1\\n2\\n3\\n")')
+        if "truncated: 200 of" not in payload.stdout:
+            raise AssertionError('"truncated: 200 of" in payload.stdout')

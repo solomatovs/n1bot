@@ -27,6 +27,7 @@ from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxMountError
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.toolkit.binaries import TrustedBinaries
+from boba.toolkit.result import ShellResult
 from boba.workspace.launcher import (
     FUSE_DEVICE,
     LauncherOptions,
@@ -169,7 +170,7 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
     return build_bash_tool(OUTPUT_LIMITS, launchers)
 
 
-def _invoke(tool, command: str, stdin: str = "") -> dict:
+def _invoke(tool, command: str, stdin: str = "") -> ShellResult:
     msg = tool.invoke(
         {
             "args": {"command": command, "stdin": stdin},
@@ -178,7 +179,10 @@ def _invoke(tool, command: str, stdin: str = "") -> dict:
             "type": "tool_call",
         }
     )
-    return msg.artifact.payload
+    if not isinstance(msg.artifact, ShellResult):
+        raise AssertionError("isinstance(msg.artifact, ShellResult)")
+
+    return msg.artifact
 
 
 def _storage(
@@ -541,8 +545,8 @@ class TestLiveImage:
     def test_write_persists_between_calls(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template)
         _invoke(tool, "echo hello > f.txt")
-        if _invoke(tool, "cat f.txt")["stdout"].strip() != "hello":
-            raise AssertionError('_invoke(tool, "cat f.txt")["stdout"].strip() == "he…')
+        if _invoke(tool, "cat f.txt").stdout.strip() != "hello":
+            raise AssertionError('_invoke(tool, "cat f.txt").stdout.strip() == "he…')
 
     def test_image_created_from_template(self, tmp_path: Path, template: Path) -> None:
         _invoke(_bash(tmp_path, template), "true")
@@ -559,8 +563,8 @@ class TestLiveImage:
             _bash(tmp_path, template),
             "dd if=/dev/zero of=/workspace/big bs=1M count=64 2>&1",
         )
-        if "No space left" not in payload["stdout"]:
-            raise AssertionError('"No space left" in payload["stdout"]')
+        if "No space left" not in payload.stdout:
+            raise AssertionError('"No space left" in payload.stdout')
 
     def test_storage_upload_visible_in_sandbox(
         self, tmp_path: Path, template: Path
@@ -570,8 +574,8 @@ class TestLiveImage:
         payload = _invoke(
             _bash(tmp_path, template), "cat '/workspace/t1/upload/отчёт.csv'"
         )
-        if payload["stdout"].strip() != "attachment":
-            raise AssertionError('payload["stdout"].strip() == "attachment"')
+        if payload.stdout.strip() != "attachment":
+            raise AssertionError('payload.stdout.strip() == "attachment"')
 
     def test_sandbox_write_readable_by_storage(
         self, tmp_path: Path, template: Path
@@ -783,23 +787,23 @@ class TestLiveImage:
             for i in range(2):
                 futures.append(pool.submit(_invoke, tool, f"echo {i} > par-{i}.txt"))
         for future in futures:
-            if future.result()["exit_code"] != 0:
-                raise AssertionError('future.result()["exit_code"] == 0')
+            if future.result().exit_code != 0:
+                raise AssertionError('future.result().exit_code == 0')
         both = _invoke(tool, "cat par-0.txt par-1.txt")
-        if both["stdout"].split() != ["0", "1"]:
-            raise AssertionError('both["stdout"].split() == ["0", "1"]')
+        if both.stdout.split() != ["0", "1"]:
+            raise AssertionError('both.stdout.split() == ["0", "1"]')
 
     def test_run_command_has_no_capabilities(
         self, tmp_path: Path, template: Path
     ) -> None:
         payload = _invoke(_bash(tmp_path, template), "grep CapEff /proc/self/status")
-        if payload["stdout"].split()[1] != "0000000000000000":
-            raise AssertionError('payload["stdout"].split()[1] == "0000000000000000"')
+        if payload.stdout.split()[1] != "0000000000000000":
+            raise AssertionError('payload.stdout.split()[1] == "0000000000000000"')
 
     def test_userns_creation_blocked(self, tmp_path: Path, template: Path) -> None:
         payload = _invoke(_bash(tmp_path, template), "unshare -U true 2>&1; echo rc=$?")
-        if "rc=0" in payload["stdout"]:
-            raise AssertionError('"rc=0" not in payload["stdout"]')
+        if "rc=0" in payload.stdout:
+            raise AssertionError('"rc=0" not in payload.stdout')
 
     def test_workspace_shared_between_threads(
         self, tmp_path: Path, template: Path
@@ -807,8 +811,8 @@ class TestLiveImage:
         """Образ на пользователя: второй тред видит файлы первого."""
         _invoke(_bash(tmp_path, template, thread_id="t1"), "echo from-t1 > shared.txt")
         payload = _invoke(_bash(tmp_path, template, thread_id="t2"), "cat shared.txt")
-        if payload["stdout"].strip() != "from-t1":
-            raise AssertionError('payload["stdout"].strip() == "from-t1"')
+        if payload.stdout.strip() != "from-t1":
+            raise AssertionError('payload.stdout.strip() == "from-t1"')
 
     def test_single_image_per_user(self, tmp_path: Path, template: Path) -> None:
         _invoke(_bash(tmp_path, template, thread_id="t1"), "true")
@@ -829,52 +833,52 @@ class TestLiveImage:
             _bash(tmp_path, template, thread_id="t2"),
             "cat /workspace/t1/upload/shared.txt",
         )
-        if payload["stdout"].strip() != "attachment":
-            raise AssertionError('payload["stdout"].strip() == "attachment"')
+        if payload.stdout.strip() != "attachment":
+            raise AssertionError('payload.stdout.strip() == "attachment"')
 
     def test_hostname_is_neutral(self, tmp_path: Path, template: Path) -> None:
         payload = _invoke(_bash(tmp_path, template), "uname -n")
-        if payload["stdout"].strip() != "sandbox":
-            raise AssertionError('payload["stdout"].strip() == "sandbox"')
+        if payload.stdout.strip() != "sandbox":
+            raise AssertionError('payload.stdout.strip() == "sandbox"')
 
     def test_memory_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_memory_bytes=64 * 1024 * 1024)
         payload = _invoke(tool, "ulimit -v")
-        if payload["stdout"].strip() != str(64 * 1024):
-            raise AssertionError('payload["stdout"].strip() == str(64 * 1024)')
+        if payload.stdout.strip() != str(64 * 1024):
+            raise AssertionError('payload.stdout.strip() == str(64 * 1024)')
 
     def test_cpu_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_cpu_sec=5)
         payload = _invoke(tool, "ulimit -t")
-        if payload["stdout"].strip() != "5":
-            raise AssertionError('payload["stdout"].strip() == "5"')
+        if payload.stdout.strip() != "5":
+            raise AssertionError('payload.stdout.strip() == "5"')
 
     def test_memory_limit_enforced(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_memory_bytes=64 * 1024 * 1024)
         payload = _invoke(
             tool, "dd if=/dev/zero of=/dev/null bs=200M count=1 2>&1; echo rc=$?"
         )
-        if "rc=0" in payload["stdout"]:
-            raise AssertionError('"rc=0" not in payload["stdout"]')
+        if "rc=0" in payload.stdout:
+            raise AssertionError('"rc=0" not in payload.stdout')
 
     def test_file_size_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_file_size_bytes=8 * 1024 * 1024)
         payload = _invoke(tool, "ulimit -f")
         # bash показывает RLIMIT_FSIZE в блоках по 1024 байта
-        if payload["stdout"].strip() != str(8 * 1024 * 1024 // 1024):
-            raise AssertionError('payload["stdout"].strip() == str(8 * 1024 * 1024 //…')
+        if payload.stdout.strip() != str(8 * 1024 * 1024 // 1024):
+            raise AssertionError('payload.stdout.strip() == str(8 * 1024 * 1024 //…')
 
     def test_open_files_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_open_files=128)
         payload = _invoke(tool, "ulimit -n")
-        if payload["stdout"].strip() != "128":
-            raise AssertionError('payload["stdout"].strip() == "128"')
+        if payload.stdout.strip() != "128":
+            raise AssertionError('payload.stdout.strip() == "128"')
 
     def test_process_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_processes=32)
         payload = _invoke(tool, "ulimit -u")
-        if payload["stdout"].strip() != "32":
-            raise AssertionError('payload["stdout"].strip() == "32"')
+        if payload.stdout.strip() != "32":
+            raise AssertionError('payload.stdout.strip() == "32"')
 
     def test_fork_bomb_capped(self, tmp_path: Path, template: Path) -> None:
         code = (
@@ -893,7 +897,7 @@ class TestLiveImage:
         )
         tool = _bash(tmp_path, template, max_processes=16, timeout_sec=60)
         payload = _invoke(tool, "python3 -", stdin=code)
-        forked = int(payload["stdout"].split()[1])
+        forked = int(payload.stdout.split()[1])
         if not (0 < forked < 40):
             raise AssertionError("0 < forked < 40")
 
@@ -902,8 +906,8 @@ class TestLiveImage:
         payload = _invoke(
             tool, "dd if=/dev/zero of=big bs=64k count=32 2>&1; echo rc=$?"
         )
-        if "rc=0" in payload["stdout"]:
-            raise AssertionError('"rc=0" not in payload["stdout"]')
+        if "rc=0" in payload.stdout:
+            raise AssertionError('"rc=0" not in payload.stdout')
 
     def test_broken_template_raises_mount_error(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.ext4"

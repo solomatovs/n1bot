@@ -19,12 +19,11 @@ from pydantic import BaseModel, Field, SecretStr
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.rendering.result import MarkdownRendering, ToolResultView
+from boba.chainlit.rendering.tool import MarkdownRendering, ToolResultView
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import (
-    PgCopyTextResult,
     TextResult,
     ToolArtifact,
     ToolResult,
@@ -154,19 +153,12 @@ class TestArtifactRendering:
         if "hi|p1p3" not in revived.text:
             raise AssertionError('"hi|p1p3" in revived.text')
 
-    def test_pg_copy_artifact_renders_as_table(self) -> None:
-        """Артефакт пилота: kind pg_copy_text рисуется таблицей, не JSON."""
-        artifact = PgCopyTextResult(text="n\n1\n")
+    def test_retired_kind_is_not_revived(self) -> None:
+        """Вариант pg_copy_text удалён без совместимости: ревив отдаёт None."""
+        legacy = {"kind": "pg_copy_text", "ok": True, "text": "n\n1\n"}
 
-        revived = ToolArtifact.revive(artifact.model_dump(mode="json"))
-        if not (isinstance(revived, PgCopyTextResult)):
-            raise AssertionError("isinstance(revived, PgCopyTextResult)")
-
-        rendering = ToolResultView(revived).render()
-        if not (isinstance(rendering, MarkdownRendering)):
-            raise AssertionError("isinstance(rendering, MarkdownRendering)")
-        if "| n" not in rendering.markdown:
-            raise AssertionError('"| n" in rendering.markdown')
+        if ToolArtifact.revive(legacy) is not None:
+            raise AssertionError("ToolArtifact.revive(legacy) is None")
 
 
 class _FakeStream:

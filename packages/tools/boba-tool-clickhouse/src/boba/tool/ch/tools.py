@@ -22,6 +22,7 @@ from pydantic import Field
 
 from boba.db.clickhouse import ClickHouseConfig, ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
+from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
     ResultTooLargeError,
@@ -256,6 +257,7 @@ TOOLS: Final = ToolMain.toolset(
     ch_list_tables,
     ch_describe_table,
     ch_query,
+    views={"ch_query": ScriptCall(arg="sql", lang="sql")},
 )
 
 if __name__ == "__main__":

@@ -24,11 +24,14 @@ from pydantic import Field
 
 from boba.db.postgres import PayloadPostgres, PostgresConfig, PostgresError
 from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
+from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
     AffectedSqlResult,
-    PgCopyTextResult,
+    MultiResult,
     ResultTooLargeError,
+    TableResult,
+    TextResult,
     ToolResult,
     pack_result,
 )
@@ -40,6 +43,17 @@ from boba.toolkit.sql import (
     UnknownConnectionError,
 )
 from boba.toolkit.types import SecretRevealing
+
+
+class CopyDump:
+    """Показ выгрузки COPY: чем разделены поля, знает только автор запроса.
+
+    Дамп не разбирается — постгрес отдаёт его в формате, заданном самим
+    стейтментом. Блок помечается csv: описание инструмента просит этот
+    формат, а шапка блока — единственное, на что метка влияет.
+    """
+
+    LANG: ClassVar[str] = "csv"
 
 
 class PgToolConfig(SecretRevealing, SqlProfiles[PostgresConfig]):
@@ -62,24 +76,58 @@ async def _query_rows(
     query: PgCatalogQuery,
     cfg: PgToolConfig,
 ) -> tuple[str, ToolResult]:
-    """Выполнить запрос с параметрами и собрать выдачу таблицей."""
+    """Выполнить запрос и собрать итог каждой его команды по порядку.
+
+    Команд в запросе может быть несколько (`select ...; update ...;`): без
+    подготовки psycopg шлёт их простым протоколом, и postgres выполняет
+    набор одной неявной транзакцией — падение любой команды откатывает всё.
+    Один итог отдаётся сам собой, несколько — набором MultiResult.
+    """
+    results: list[ToolResult] = []
+    spent = 0
+
     conn = await PayloadPostgres.connect_config(connection)
     async with conn, conn.cursor(row_factory=dict_row) as cur:
-        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом
-        await cur.execute(query.text.encode(), query.params or None)
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        await cur.execute(query.text.encode(conn.info.encoding), query.params or None)
 
-        if cur.description is None:
-            affected = _affected(cur)
-            return pack_result(affected)
+        while True:
+            if cur.description is None:
+                results.append(_affected(cur))
+            else:
+                table, size = await _fetch_table(cur, cfg, cfg.max_bytes - spent)
+                spent += size
+                results.append(table)
 
-        fetched = await cur.fetchmany(cfg.max_rows + 1)
+            if not cur.nextset():
+                break
 
-    budget = RowBudget(max_rows=cfg.max_rows, max_bytes=cfg.max_bytes)
+    if len(results) == 1:
+        return pack_result(results[0])
+
+    return pack_result(MultiResult(items=tuple(results)))
+
+
+async def _fetch_table(
+    cur: psycopg.AsyncCursor[Any],
+    cfg: PgToolConfig,
+    max_bytes: int,
+) -> tuple[TableResult, int]:
+    """Выборка одной команды таблицей и её вес.
+
+    Потолок строк действует на команду, потолок байтов — на весь вызов:
+    выдача уходит в одно сообщение, поэтому следующей команде остаётся
+    остаток.
+    """
+    budget = RowBudget(max_rows=cfg.max_rows, max_bytes=max_bytes)
+
+    fetched = await cur.fetchmany(cfg.max_rows + 1)
     for row in fetched:
         if not budget.add(row):
             break
 
-    return pack_result(budget.table())
+    return budget.table(), budget.size
 
 
 def _affected(cur: psycopg.AsyncCursor[Any]) -> AffectedSqlResult:
@@ -178,7 +226,9 @@ async def pg_query(
                 "Произвольный SQL. Запрос с выборкой возвращает строки; "
                 "если их больше лимита — добавьте LIMIT в сам запрос. "
                 "INSERT/UPDATE/DELETE/DDL возвращают число затронутых "
-                "строк и статус сервера."
+                "строк и статус сервера. Команд может быть несколько через "
+                "`;` — они идут одной транзакцией, и в ответ придёт итог "
+                "каждой по порядку; падение любой откатывает весь набор."
             ),
         ),
     ],
@@ -198,27 +248,31 @@ async def pg_copy(
         Field(
             min_length=1,
             description=(
-                "Read-only SQL для выгрузки. Выполняется через "
-                "COPY (...) TO STDOUT и возвращается текстом; запись и "
-                "DDL внутри COPY сервер отклонит. Если строк больше "
+                "Стейтмент COPY ... TO STDOUT целиком, например: "
+                "COPY (select ...) TO STDOUT WITH (FORMAT CSV, HEADER). "
+                "Выгружай форматом CSV — в таком виде вывод и показывается. "
+                "Ответ возвращается текстом как есть. Если строк больше "
                 "лимита — добавьте LIMIT в сам запрос."
             ),
         ),
     ],
     cfg: Annotated[PgToolConfig, InjectedToolArg],
 ) -> tuple[str, ToolResult]:
-    """Выгрузить результат SELECT текстом через COPY ... TO STDOUT."""
+    """Выгрузить данные стейтментом COPY ... TO STDOUT как есть."""
     connection = cfg.resolve(connection_name)
 
-    # bytes: тип Query psycopg требует LiteralString, а запрос пишет LLM
-    statement = f"COPY ({sql}) TO STDOUT WITH (FORMAT TEXT, HEADER)".encode()
-
-    # блоки COPY режут utf-8 в произвольном месте — декодер инкрементальный
-    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     parts: list[str] = []
     size = 0
 
     conn = await PayloadPostgres.connect_config(connection)
+
+    # bytes: тип Query psycopg требует LiteralString, а запрос пишет LLM;
+    # кодировка — client_encoding подключения, а не обязательно utf-8
+    statement = sql.encode(conn.info.encoding)
+
+    # блоки COPY режут символ в произвольном месте — декодер инкрементальный
+    decoder = codecs.getincrementaldecoder(conn.info.encoding)(errors="replace")
+
     async with conn, conn.cursor() as cur, cur.copy(statement) as copy_out:
         async for block in copy_out:
             data = bytes(block)
@@ -235,7 +289,7 @@ async def pg_copy(
     if tail:
         parts.append(tail)
 
-    artifact = PgCopyTextResult(text="".join(parts))
+    artifact = TextResult(text="".join(parts), language=CopyDump.LANG)
     return pack_result(artifact)
 
 
@@ -252,6 +306,10 @@ TOOLS: Final = ToolMain.toolset(
     pg_describe_table,
     pg_query,
     pg_copy,
+    views={
+        "pg_query": ScriptCall(arg="sql", lang="sql"),
+        "pg_copy": ScriptCall(arg="sql", lang="sql"),
+    },
 )
 
 if __name__ == "__main__":

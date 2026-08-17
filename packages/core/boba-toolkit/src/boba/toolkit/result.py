@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import (
     Annotated,
     Any,
@@ -23,8 +23,9 @@ __all__ = [
     "DiagramResult",
     "ErrorResult",
     "JsonResult",
-    "PgCopyTextResult",
+    "MultiResult",
     "ResultTooLargeError",
+    "ShellResult",
     "TableResult",
     "TextResult",
     "ToolArtifact",
@@ -65,6 +66,12 @@ class TextResult(ToolResultBase):
 
     kind: Literal["text"] = "text"
     text: str
+    language: str = ""
+    """Язык markdown-блока показа: зеркало ScriptCall.lang для вызова.
+
+    Пусто — текст уже markdown и рисуется как есть; заданный язык уводит
+    его в блок (дамп csv, лог, вывод чужого формата).
+    """
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
     def llm_text(self) -> str:
@@ -97,54 +104,6 @@ class TableResult(ToolResultBase):
             return body
 
         return f"{body}\n\n{self.note}"
-
-
-class PgCopyTextResult(ToolResultBase):
-    """Дамп COPY ... TO STDOUT (FORMAT TEXT, HEADER), tab-delimited."""
-
-    kind: Literal["pg_copy_text"] = "pg_copy_text"
-    text: str
-    metadata: Mapping[str, str] = Field(default_factory=dict)
-
-    def llm_text(self) -> str:
-        return self.text
-
-    _UNESCAPE: ClassVar[Mapping[str, str]] = {
-        "n": "\n",
-        "t": "\t",
-        "r": "\r",
-        "b": "\b",
-        "f": "\f",
-        "v": "\v",
-        "\\": "\\",
-    }
-
-    def iter_rows(self) -> Iterator[list[str | None]]:
-        if not self.text:
-            return
-        lines = self.text.split("\n")
-        if lines and lines[-1] == "":
-            lines.pop()
-        for line in lines:
-            yield [self._unescape(field) for field in line.split("\t")]
-
-    @classmethod
-    def _unescape(cls, field: str) -> str | None:
-        if field == "\\N":
-            return None
-        if "\\" not in field:
-            return field
-        out: list[str] = []
-        i, n = 0, len(field)
-        while i < n:
-            c = field[i]
-            if c == "\\" and i + 1 < n:
-                out.append(cls._UNESCAPE.get(field[i + 1], field[i + 1]))
-                i += 2
-            else:
-                out.append(c)
-                i += 1
-        return "".join(out)
 
 
 class AffectedSqlResult(ToolResultBase):
@@ -218,6 +177,80 @@ class DiagramResult(ToolResultBase):
         return f"[diagram rendered: {self.path}]"
 
 
+class ShellResult(ToolResultBase):
+    """Итог shell-команды: код возврата и её потоки вывода.
+
+    Сама команда здесь не хранится: её рисует вход шага из аргументов
+    вызова. Потоки хранятся врозь: LLM разбирает их по отдельности, а
+    пользователю показывается один — stdout, а когда он пуст, stderr.
+    """
+
+    kind: Literal["shell"] = "shell"
+    exit_code: int
+    stdout: str
+    stdout_bytes: int
+    """Полный размер stdout до усечения."""
+    stdout_truncated: bool
+    stderr: str
+    stderr_bytes: int
+    """Полный размер stderr до усечения."""
+    stderr_truncated: bool
+    duration_ms: int
+    timed_out: bool
+    diagnostic: str
+    metadata: Mapping[str, str] = Field(default_factory=dict)
+
+    LLM_SKIP: ClassVar[frozenset[str]] = frozenset({"kind", "ok", "metadata"})
+    """Поля конверта: в отчёте для LLM им места нет."""
+
+    @property
+    def shows_stdout(self) -> bool:
+        """Показывается stdout; пустой stdout уступает место stderr."""
+        return bool(self.stdout.strip())
+
+    @property
+    def output(self) -> str:
+        """Поток, который видит пользователь."""
+        if self.shows_stdout:
+            return self.stdout
+
+        return self.stderr
+
+    @property
+    def truncated(self) -> bool:
+        """Усечён ли показанный поток."""
+        if self.shows_stdout:
+            return self.stdout_truncated
+
+        return self.stderr_truncated
+
+    def llm_text(self) -> str:
+        report = self.model_dump(exclude=set(self.LLM_SKIP))
+
+        return json.dumps(report, ensure_ascii=False)
+
+
+class MultiResult(ToolResultBase):
+    """Несколько итогов одного вызова по порядку: команды одного запроса.
+
+    Составляется из тех же вариантов семейства — выборка остаётся таблицей,
+    DML счётчиком. Набор целен: команды идут одной транзакцией, поэтому
+    частично провалившегося набора не бывает.
+    """
+
+    kind: Literal["multi"] = "multi"
+    items: Sequence[ToolResult]
+    metadata: Mapping[str, str] = Field(default_factory=dict)
+
+    def llm_text(self) -> str:
+        parts: list[str] = []
+
+        for index, item in enumerate(self.items, start=1):
+            parts.append(f"[{index}] {item.llm_text()}")
+
+        return "\n\n".join(parts)
+
+
 class ErrorResult(ToolResultBase):
     """Tool не выполнен; UI рендерит такой результат как ошибку."""
 
@@ -235,14 +268,18 @@ ToolResult: TypeAlias = Annotated[
     TextResult
     | JsonResult
     | TableResult
-    | PgCopyTextResult
     | AffectedSqlResult
     | ChartResult
     | CustomElementResult
     | DiagramResult
+    | ShellResult
+    | MultiResult
     | ErrorResult,
     Field(discriminator="kind"),
 ]
+
+MultiResult.model_rebuild()
+"""Набор ссылается на семейство целиком: ссылка разрешается после него."""
 
 
 def render_for_llm(result: ToolResultBase) -> str:

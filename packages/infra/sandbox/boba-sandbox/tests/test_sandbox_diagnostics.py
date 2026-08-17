@@ -16,6 +16,7 @@ from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.process_runner import RunResult
 from boba.sandbox.profile import SandboxProfile
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
+from boba.toolkit.result import ShellResult
 from boba.workspace.launcher import FUSE_DEVICE
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
@@ -198,7 +199,7 @@ def _tool(profile: SandboxProfile):
     return build_bash_tool(OUTPUT_LIMITS, _launchers(profile))
 
 
-def _invoke(tool, command: str, stdin: str = "") -> dict:
+def _invoke(tool, command: str, stdin: str = "") -> ShellResult:
     msg = tool.invoke(
         {
             "args": {"command": command, "stdin": stdin},
@@ -207,12 +208,15 @@ def _invoke(tool, command: str, stdin: str = "") -> dict:
             "type": "tool_call",
         }
     )
-    return msg.artifact.payload
+    if not isinstance(msg.artifact, ShellResult):
+        raise AssertionError("isinstance(msg.artifact, ShellResult)")
+
+    return msg.artifact
 
 
 @needs_sandbox
 class TestDiagnosticAppearsLive:
-    """Лимит реально превышается — сообщение обязано быть в payload."""
+    """Лимит реально превышается — сообщение обязано быть в результате."""
 
     def test_open_files(self) -> None:
         code = (
@@ -222,57 +226,57 @@ class TestDiagnosticAppearsLive:
         )
         tool = _tool(_profile(max_open_files=10))
         payload = _invoke(tool, "python3 -", stdin=code)
-        if payload["exit_code"] == 0:
-            raise AssertionError('payload["exit_code"] != 0')
-        if "max_open_files=10" not in payload["diagnostic"]:
-            raise AssertionError('"max_open_files=10" in payload["diagnostic"]')
+        if payload.exit_code == 0:
+            raise AssertionError('payload.exit_code != 0')
+        if "max_open_files=10" not in payload.diagnostic:
+            raise AssertionError('"max_open_files=10" in payload.diagnostic')
 
     def test_processes(self) -> None:
         command = "for i in $(seq 1 50); do sleep 5 & done; wait"
         tool = _tool(_profile(max_processes=10, timeout_sec=20))
         payload = _invoke(tool, command)
-        if "max_processes=10" not in payload["diagnostic"]:
-            raise AssertionError('"max_processes=10" in payload["diagnostic"]')
+        if "max_processes=10" not in payload.diagnostic:
+            raise AssertionError('"max_processes=10" in payload.diagnostic')
 
     def test_file_size(self) -> None:
         tool = _tool(_profile(max_file_size_bytes=1024 * 1024, tmpfs=("/tmp:64M",)))
         payload = _invoke(tool, "dd if=/dev/zero of=/tmp/big bs=64k count=64")
-        if payload["exit_code"] == 0:
-            raise AssertionError('payload["exit_code"] != 0')
-        if "max_file_size_bytes=1048576" not in payload["diagnostic"]:
-            raise AssertionError('"max_file_size_bytes=1048576" in payload["diagnosti…')
+        if payload.exit_code == 0:
+            raise AssertionError('payload.exit_code != 0')
+        if "max_file_size_bytes=1048576" not in payload.diagnostic:
+            raise AssertionError('"max_file_size_bytes=1048576" in payload.diagnostic')
 
     def test_memory(self) -> None:
         code = "x = bytearray(400 * 1024 * 1024)\n"
         tool = _tool(_profile(max_memory_bytes=64 * 1024 * 1024))
         payload = _invoke(tool, "python3 -", stdin=code)
-        if payload["exit_code"] == 0:
-            raise AssertionError('payload["exit_code"] != 0')
-        if "max_memory_bytes=67108864" not in payload["diagnostic"]:
-            raise AssertionError('"max_memory_bytes=67108864" in payload["diagnostic"]')
+        if payload.exit_code == 0:
+            raise AssertionError('payload.exit_code != 0')
+        if "max_memory_bytes=67108864" not in payload.diagnostic:
+            raise AssertionError('"max_memory_bytes=67108864" in payload.diagnostic')
 
     def test_timeout(self) -> None:
         tool = _tool(_profile(timeout_sec=1))
         payload = _invoke(tool, "sleep 10")
-        if payload["timed_out"] is not True:
-            raise AssertionError('payload["timed_out"] is True')
-        if "timeout_sec=1" not in payload["diagnostic"]:
-            raise AssertionError('"timeout_sec=1" in payload["diagnostic"]')
+        if payload.timed_out is not True:
+            raise AssertionError('payload.timed_out is True')
+        if "timeout_sec=1" not in payload.diagnostic:
+            raise AssertionError('"timeout_sec=1" in payload.diagnostic')
 
     def test_network_disabled_explained(self) -> None:
         code = "import socket\nsocket.getaddrinfo('example.com', 443)\n"
         tool = _tool(_profile(network=False))
         payload = _invoke(tool, "python3 -", stdin=code)
-        if payload["exit_code"] == 0:
-            raise AssertionError('payload["exit_code"] != 0')
-        if "network=false" not in payload["diagnostic"]:
-            raise AssertionError('"network=false" in payload["diagnostic"]')
-        if "not at fault" not in payload["diagnostic"]:
-            raise AssertionError('"not at fault" in payload["diagnostic"]')
+        if payload.exit_code == 0:
+            raise AssertionError('payload.exit_code != 0')
+        if "network=false" not in payload.diagnostic:
+            raise AssertionError('"network=false" in payload.diagnostic')
+        if "not at fault" not in payload.diagnostic:
+            raise AssertionError('"not at fault" in payload.diagnostic')
 
     def test_successful_command_has_empty_diagnostic(self) -> None:
         payload = _invoke(_tool(_profile()), "echo ok")
-        if payload["exit_code"] != 0:
-            raise AssertionError('payload["exit_code"] == 0')
-        if payload["diagnostic"] != "":
-            raise AssertionError('payload["diagnostic"] == ""')
+        if payload.exit_code != 0:
+            raise AssertionError('payload.exit_code == 0')
+        if payload.diagnostic != "":
+            raise AssertionError('payload.diagnostic == ""')

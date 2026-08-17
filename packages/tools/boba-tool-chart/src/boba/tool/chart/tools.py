@@ -19,6 +19,7 @@ from typing import Annotated, Any, Final
 from langchain_core.tools import tool
 from pydantic import Field
 
+from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import ChartResult, ToolResult, pack_result
 
@@ -103,7 +104,10 @@ EXPECTED: Mapping[type[Exception], ChartErrorKind] = {
     InvalidFigureSpecError: ChartErrorKind.INVALID_FIGURE_SPEC,
 }
 
-TOOLS: Final = ToolMain.toolset(visualize)
+TOOLS: Final = ToolMain.toolset(
+    visualize,
+    views={"visualize": ScriptCall(arg="spec", lang="json")},
+)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))
