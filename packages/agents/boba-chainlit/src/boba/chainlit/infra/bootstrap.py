@@ -22,6 +22,7 @@ from boba.chainlit.infra.config import (
 from boba.chainlit.infra.di import Container
 from boba.chainlit.infra.error_middleware import DomainErrorMiddleware
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
+from boba.chainlit.infra.stale_action import StaleActionMiddleware
 
 
 def run_app(config_path: Path):
@@ -93,6 +94,9 @@ def _use_domain_error(app: FastAPI):
 
     app.add_middleware(DomainErrorMiddleware)
     chainlit_app.add_middleware(DomainErrorMiddleware)
+    # добавлен после обработчика ошибок — значит стоит перед ним и отсекает
+    # действия мёртвых сессий до того, как они станут внутренней ошибкой
+    chainlit_app.add_middleware(StaleActionMiddleware)
 
 
 def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
