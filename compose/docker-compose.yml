@@ -1,10 +1,10 @@
 services:
   chainlit:
-    image: boba:${BOBA_TAG}
+    image: boba:${BOBA_TAG:-latest}
     hostname: chainlit
     container_name: chainlit
     init: true
-    user: "${BOBA_UID}:${BOBA_GID}"
+    user: "${BOBA_UID:-0}:${BOBA_GID:-0}"
     env_file: ./conf/boba.env
     cgroup_parent: boba.slice
     volumes:
