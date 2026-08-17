@@ -65,6 +65,7 @@ def kb_config() -> PostgresKnowledgeBaseConfig:
                 "model": "intfloat/multilingual-e5-small",
                 "dim": 384,
                 "batch_size": 8,
+                "progress_every": 1,
             },
             "sandbox": _SANDBOX,
         }

@@ -452,10 +452,11 @@
     collections_table = "kb_collections"
 
 [embedding]
-    model      = "intfloat/multilingual-e5-large"
-    cache_dir  = "/var/cache/fastembed"
-    dim        = 1024
-    batch_size = 8
+    model          = "intfloat/multilingual-e5-large"
+    cache_dir      = "/var/cache/fastembed"
+    dim            = 1024
+    batch_size     = 8
+    progress_every = 1
 
 [tool.ingest]
     enable                 = true

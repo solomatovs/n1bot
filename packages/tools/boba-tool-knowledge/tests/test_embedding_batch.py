@@ -67,6 +67,7 @@ def _config(batch_size: int) -> EmbeddingModel:
         cache_dir="/var/cache/fastembed",
         dim=384,
         batch_size=batch_size,
+        progress_every=1,
     )
 
 

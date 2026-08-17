@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
 from boba.indexing.ports import Embedder
+from boba.tool.kb.indexing_log import Elapsed
 from boba.toolkit.cpu import CpuBudget
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,12 @@ class LocalFastEmbedEmbedder(Embedder[str]):
     """
 
     def __init__(
-        self, model_name: str, cache_dir: str, dim: int, batch_size: int
+        self,
+        model_name: str,
+        cache_dir: str,
+        dim: int,
+        batch_size: int,
+        progress_every: int,
     ) -> None:
         from fastembed import (  # noqa: PLC0415 # pyright: ignore[reportMissingImports]
             TextEmbedding,
@@ -49,6 +54,7 @@ class LocalFastEmbedEmbedder(Embedder[str]):
         )
         self._dim = dim
         self._batch_size = batch_size
+        self._progress_every = progress_every
         self._lock = asyncio.Lock()
 
     async def embed_documents(
@@ -62,19 +68,20 @@ class LocalFastEmbedEmbedder(Embedder[str]):
         async with self._lock:
             return await asyncio.to_thread(self._query_embed, content)
 
-    PROGRESS_EVERY: ClassVar[int] = 25
-    """Шаг прогресса в журнале: длинный батч не должен выглядеть зависшим."""
-
     def _passage_embed(self, contents: Sequence[str]) -> list[Sequence[float]]:
         vectors: list[Sequence[float]] = []
+        elapsed = Elapsed()
         for vec in self._model.passage_embed(contents, batch_size=self._batch_size):
             v = vec.tolist()
             self._record_dim(v)
             vectors.append(v)
 
-            if len(vectors) % self.PROGRESS_EVERY == 0:
+            if len(vectors) % self._progress_every == 0:
                 logger.info(
-                    "embedding progress: %d/%d", len(vectors), len(contents)
+                    "embedding progress: %d/%d in %dms",
+                    len(vectors),
+                    len(contents),
+                    elapsed.ms(),
                 )
 
         return vectors
@@ -116,6 +123,14 @@ class EmbeddingModel(BaseModel):
             "Пусто -> дефолт fastembed (~/.cache/fastembed)."
         ),
     )
+    progress_every: int = Field(
+        gt=0,
+        description=(
+            "Через сколько посчитанных векторов писать строку прогресса в "
+            "журнал; обязателен. 1 — строка на каждый эмбеддинг, видно, что "
+            "процесс жив; больше — реже и тише."
+        ),
+    )
     batch_size: int = Field(
         gt=0,
         description=(
@@ -145,4 +160,5 @@ class LocalFastEmbedEmbedderFactory:
             cache_dir=cfg.cache_dir,
             dim=cfg.dim,
             batch_size=cfg.batch_size,
+            progress_every=cfg.progress_every,
         )

@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from fnmatch import fnmatchcase
 from typing import Any, ClassVar
 
@@ -23,7 +24,9 @@ from boba.indexing import MetadataKey
 
 __all__ = [
     "AttachmentFilter",
+    "AttachmentGate",
     "AttachmentInfo",
+    "AttachmentVerdict",
     "ConfluenceDescription",
     "ConfluenceKeys",
     "ConfluencePageItem",
@@ -185,8 +188,44 @@ class AttachmentFilter:
             title_patterns=tuple(titles),
         )
 
+    SEPARATORS: ClassVar[str] = ",;\n\t "
+    """Разделители паттернов в строке запроса: LLM пишет их как придётся."""
+
+    MEDIA_MARK: ClassVar[str] = "/"
+    """Слэш в паттерне — это media-type, иначе имя файла."""
+
+    @classmethod
+    def parse(cls, raw: str) -> AttachmentFilter:
+        """Строка паттернов -> фильтр; со слэшем идёт в media-type, прочее в имя."""
+        media: list[str] = []
+        titles: list[str] = []
+
+        for item in cls._items(raw):
+            if cls.MEDIA_MARK in item:
+                media.append(item)
+                continue
+
+            titles.append(item)
+
+        return cls(media_type_patterns=tuple(media), title_patterns=tuple(titles))
+
+    @classmethod
+    def _items(cls, raw: str) -> Iterator[str]:
+        chunk = raw
+        for separator in cls.SEPARATORS[:-1]:
+            chunk = chunk.replace(separator, " ")
+
+        for item in chunk.split(" "):
+            cleaned = item.strip()
+            if cleaned:
+                yield cleaned
+
     def is_passthrough(self) -> bool:
         return not self.media_type_patterns and not self.title_patterns
+
+    def is_empty(self) -> bool:
+        """Ни одного паттерна: запрос вложений не просил."""
+        return self.is_passthrough()
 
     def matches(self, att: AttachmentInfo) -> bool:
         if self.is_passthrough():
@@ -196,6 +235,68 @@ class AttachmentFilter:
             return True
         title = att.title.lower()
         return any(fnmatchcase(title, p.lower()) for p in self.title_patterns)
+
+
+class AttachmentVerdict(StrEnum):
+    """Решение по одному вложению; попадает в лог как причина пропуска."""
+
+    TAKE = "take"
+    NOT_REQUESTED = "not requested"
+    NOT_ALLOWED = "not allowed by config"
+    IMAGE_WITHOUT_OCR = "image without ocr"
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentGate:
+    """Что из вложений страницы реально пойдёт в индекс.
+
+    Два фильтра: `allowed` из конфига — потолок администратора, `requested` из
+    запроса LLM — выбор внутри потолка. Пустой запрос значит «вложения не
+    нужны»: качать их незачем. Картинки без OCR отсекаются отдельно — текста
+    из них всё равно не извлечь, а скачивание и разбор стоят времени.
+    """
+
+    IMAGE_MEDIA_PREFIX: ClassVar[str] = "image/"
+
+    allowed: AttachmentFilter
+    requested: AttachmentFilter
+    ocr_enabled: bool
+
+    @classmethod
+    def of(
+        cls,
+        allowed: AttachmentFilter,
+        requested: str,
+        *,
+        ocr_enabled: bool,
+    ) -> AttachmentGate:
+        return cls(
+            allowed=allowed,
+            requested=AttachmentFilter.parse(requested),
+            ocr_enabled=ocr_enabled,
+        )
+
+    def wants_attachments(self) -> bool:
+        return not self.requested.is_empty()
+
+    def verdict(self, att: AttachmentInfo) -> AttachmentVerdict:
+        if self.requested.is_empty():
+            return AttachmentVerdict.NOT_REQUESTED
+
+        if not self.requested.matches(att):
+            return AttachmentVerdict.NOT_REQUESTED
+
+        if not self.allowed.matches(att):
+            return AttachmentVerdict.NOT_ALLOWED
+
+        if self._is_image(att) and not self.ocr_enabled:
+            return AttachmentVerdict.IMAGE_WITHOUT_OCR
+
+        return AttachmentVerdict.TAKE
+
+    @classmethod
+    def _is_image(cls, att: AttachmentInfo) -> bool:
+        return att.media_type.lower().startswith(cls.IMAGE_MEDIA_PREFIX)
 
 
 class HttpKeys:

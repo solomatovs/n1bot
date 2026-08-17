@@ -58,10 +58,11 @@ class ConfluenceIngestCli:
         cfg = cls.config(raw, args)
 
         logger.info(
-            "ingest start: mode=%s target=%s ocr=%s workers=%d lang=%s "
-            "force_update=%s prune_missing=%s collection=%s",
+            "ingest start: mode=%s target=%s attachments=%r ocr=%s workers=%d "
+            "lang=%s force_update=%s prune_missing=%s collection=%s",
             args.mode,
             args.target,
+            args.attachments,
             cfg.ocr_enabled,
             cfg.num_workers,
             cfg.ocr_language,
@@ -86,6 +87,7 @@ class ConfluenceIngestCli:
                 page_ids=list(cls.items(args)),
                 prune_missing=args.prune_missing,
                 force_update=args.force_update,
+                attachments=args.attachments,
                 cfg=cfg,
             )
             return str(content)
@@ -98,6 +100,7 @@ class ConfluenceIngestCli:
             content, _artifact = await body(
                 cql=args.target,
                 prune_missing=args.prune_missing,
+                attachments=args.attachments,
                 cfg=cfg,
             )
             return str(content)
@@ -110,6 +113,7 @@ class ConfluenceIngestCli:
             space_keys=list(cls.items(args)),
             prune_missing=args.prune_missing,
             force_update=args.force_update,
+            attachments=args.attachments,
             cfg=cfg,
         )
         return str(content)
@@ -130,6 +134,14 @@ class ConfluenceIngestCli:
             "--target",
             required=True,
             help='Space-ключи ("DQ,IPKD"), page_id ("983049,983136") или CQL.',
+        )
+        parser.add_argument(
+            "--attachments",
+            default="",
+            help=(
+                "Маски вложений через запятую: '*.pdf,*.docx' по имени файла, "
+                "'application/pdf,image/*' по типу. Пусто — только текст страниц."
+            ),
         )
         parser.add_argument(
             "--ocr-enabled",
