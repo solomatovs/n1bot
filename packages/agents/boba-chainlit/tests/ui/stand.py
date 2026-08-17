@@ -44,6 +44,17 @@ class StandPaths(StrEnum):
         return root / self.value
 
 
+class StandUrl(StrEnum):
+    """Адрес локального стенда: сервер поднимает сам тест, TLS ему негде взять."""
+
+    SCHEME = "http"
+    HOST = "127.0.0.1"
+
+    @classmethod
+    def of(cls, port: int, path: str = "") -> str:
+        return f"{cls.SCHEME}://{cls.HOST}:{port}{path}"
+
+
 @dataclass(frozen=True)
 class StandCredential:
     """Учётка стенда: читается из [auth.local] рабочего конфига."""
@@ -82,7 +93,7 @@ class StandConfig:
 
     @property
     def base_url(self) -> str:
-        return f"http://127.0.0.1:{self.app_port}{self.url_prefix}"
+        return StandUrl.of(self.app_port, self.url_prefix)
 
     def credential(self) -> StandCredential:
         """Логин и пароль берутся из конфига разработчика, а не из кода."""
@@ -143,7 +154,7 @@ class StandConfig:
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
         agent = doc["agent"]
         agent["openai"] = {
-            "base_url": f"http://127.0.0.1:{self.llm_port}/v1",
+            "base_url": StandUrl.of(self.llm_port, "/v1"),
             "api_key": "none",
             "ssl_verify": False,
             "dump": {"enable": False},

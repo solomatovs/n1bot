@@ -4,7 +4,50 @@
   const SSO_URL = "__SSO_URL__";
   const BTN_ID = "sso-login-btn";
 
-  const onLogin = () => /\/login\/?$/.test(window.location.pathname);
+  // Браузерные API держим в одной точке: в серверном рендере их не существует.
+  const browser = {
+    get doc() {
+      if (typeof document === "undefined") return null;
+      return document;
+    },
+    get win() {
+      if (typeof window === "undefined") return null;
+      return window;
+    },
+    byId(id) {
+      const doc = this.doc;
+      if (!doc) return null;
+      return doc.getElementById(id);
+    },
+    find(selector) {
+      const doc = this.doc;
+      if (!doc) return null;
+      return doc.querySelector(selector);
+    },
+    root() {
+      const doc = this.doc;
+      if (!doc) return null;
+      return doc.documentElement;
+    },
+    onReady(handler) {
+      const doc = this.doc;
+      if (!doc) return;
+      doc.addEventListener("DOMContentLoaded", handler);
+    },
+    path() {
+      const win = this.win;
+      if (!win) return "";
+      return win.location.pathname;
+    },
+    go(url) {
+      const win = this.win;
+      if (!win) return;
+      win.location.href = url;
+    },
+  };
+
+
+  const onLogin = () => /\/login\/?$/.test(browser.path());
 
   function build(sample) {
     // клон нативной кнопки: классы, вёрстка и тема наследуются автоматически
@@ -19,13 +62,13 @@
       fetch(SSO_URL, { credentials: "same-origin" })
         .then((r) => {
           if (r.ok) {
-            window.location.href = r.url;
+            browser.go(r.url);
           } else {
-            window.location.href = window.location.pathname + "?error=sso";
+            browser.go(browser.path() + "?error=sso");
           }
         })
         .catch(() => {
-          window.location.href = window.location.pathname + "?error=sso";
+          browser.go(browser.path() + "?error=sso");
         });
     });
     return btn;
@@ -33,13 +76,13 @@
 
   function inject() {
     if (!onLogin()) {
-      const stale = document.getElementById(BTN_ID);
+      const stale = browser.byId(BTN_ID);
       if (stale) stale.remove();
       return;
     }
-    if (document.getElementById(BTN_ID)) return;
+    if (browser.byId(BTN_ID)) return;
 
-    const form = document.querySelector("form");
+    const form = browser.find("form");
     if (!form) return;
 
     // образец стиля — нативная submit-кнопка формы
@@ -51,7 +94,8 @@
   }
 
   const obs = new MutationObserver(() => inject());
-  obs.observe(document.documentElement, { childList: true, subtree: true });
-  document.addEventListener("DOMContentLoaded", inject);
+  const root = browser.root();
+  if (root) obs.observe(root, { childList: true, subtree: true });
+  browser.onReady(inject);
   inject();
 })();

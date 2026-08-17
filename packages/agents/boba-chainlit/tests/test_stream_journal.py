@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from boba.chainlit.data import stream_journal
 from boba.chainlit.data.stream_journal import (
     DirVault,
     StreamJournal,
@@ -240,7 +239,8 @@ class TestRecorder:
         recorder.close("rc=0")
 
         root = DirVault(str(tmp_path / "vault")).root_for(KEY.user_id)
-        os.remove(os.path.join(root, KEY.rel_meta()))
+        meta_path = os.path.realpath(os.path.join(root, KEY.rel_meta()))
+        os.remove(meta_path)
 
         if journal.slice_at(KEY, 0, STDOUT) is not None:
             raise AssertionError("journal.slice_at(KEY, 0, STDOUT) is None")
@@ -477,10 +477,10 @@ class TestWriteFailure:
         recorder = journal.recorder(KEY, "bash", STDOUT, _wake, frozenset())
         recorder.feed(b"head")
 
-        def no_space(fd: int, data: bytes) -> int:
+        def no_space(data: bytes) -> int:
             raise OSError(errno.ENOSPC, "No space left on device")
 
-        monkeypatch.setattr(stream_journal.os, "write", no_space)
+        monkeypatch.setattr(recorder._file, "write", no_space)
         recorder.feed(b"overflow")
 
         monkeypatch.undo()

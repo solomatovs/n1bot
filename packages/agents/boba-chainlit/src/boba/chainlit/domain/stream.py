@@ -35,6 +35,7 @@ __all__ = [
     "StreamSlice",
     "StreamStorePort",
     "ThreadUsage",
+    "VaultPath",
     "VaultUsage",
 ]
 
@@ -159,6 +160,29 @@ class PathSegment:
             raise ValueError(msg)
 
         return value
+
+
+class VaultPath:
+    """Путь внутри тома: собирается, канонизируется и проверяется на выход наружу.
+
+    Проверка сегментов (PathSegment) отсекает `..` и слэш в идентификаторе, а
+    здесь ловится то, чего по строке не видно: симлинк внутри тома, ведущий
+    за его пределы.
+    """
+
+    @classmethod
+    def inside(cls, root: str, *parts: str) -> str:
+        base = os.path.realpath(root)
+        candidate = os.path.realpath(os.path.join(base, *parts))
+
+        if candidate == base:
+            return candidate
+
+        if candidate.startswith(base + os.sep):
+            return candidate
+
+        msg = f"path escapes the vault: {candidate!r}"
+        raise StreamJournalError(msg)
 
 
 class StreamKey(BaseModel):

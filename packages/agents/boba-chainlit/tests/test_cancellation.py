@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+from conftest import FakeUrl
 from langchain_core.tools import tool
 
 from boba.cancellation import (
@@ -231,7 +232,7 @@ class TestHttpAbort:
         server = HTTPServer(("127.0.0.1", 0), _DripHandler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            yield f"http://127.0.0.1:{server.server_port}"
+            yield FakeUrl.loopback(server.server_port)
         finally:
             server.shutdown()
 

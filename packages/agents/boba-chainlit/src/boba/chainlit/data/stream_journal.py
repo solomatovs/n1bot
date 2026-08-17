@@ -32,6 +32,7 @@ from boba.chainlit.domain.stream import (
     StreamSlice,
     StreamStorePort,
     ThreadUsage,
+    VaultPath,
     VaultUsage,
 )
 from boba.toolkit.channels import ToolChannel
@@ -57,7 +58,7 @@ class DirVault:
             msg = f"unsafe vault segment: {user_id!r}"
             raise StreamJournalError(msg)
 
-        path = os.path.join(self._root, user_id)
+        path = VaultPath.inside(self._root, user_id)
         os.makedirs(path, exist_ok=True)
         return path
 
@@ -87,8 +88,9 @@ class StreamRecorder(StreamRecorderPort):
         self._meta = StreamMeta(tool_name=tool_name)
 
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-        self._fd = os.open(log_path, flags, self.FILE_MODE)
-        self._size = os.fstat(self._fd).st_size
+        descriptor = os.open(log_path, flags, self.FILE_MODE)
+        self._file = os.fdopen(descriptor, "wb")
+        self._size = os.fstat(self._file.fileno()).st_size
         self._write_meta()
 
     @property
@@ -119,7 +121,9 @@ class StreamRecorder(StreamRecorderPort):
     def _append(self, data: bytes) -> str:
         """Дописать порцию под локом; непустая строка — причина закрытия."""
         try:
-            os.write(self._fd, data)
+            # панель читает файл по смещению по ходу работы: буфер держать нельзя
+            self._file.write(data)
+            self._file.flush()
             self._size += len(data)
         except OSError as exc:
             logger.warning("stream journal write failed: %s: %s", self._log_path, exc)
@@ -137,7 +141,7 @@ class StreamRecorder(StreamRecorderPort):
                 return
             self._closed = True
             self._meta = self._meta.model_copy(update={"closed": True, "note": note})
-            os.close(self._fd)
+            self._file.close()
 
         self._write_meta()
         self._on_data()
@@ -290,7 +294,7 @@ class StreamJournal(StreamStorePort):
 
         self._ensure_reserve(root, protected)
 
-        log_path = os.path.join(root, key.rel_log(tool_name, channel))
+        log_path = VaultPath.inside(root, key.rel_log(tool_name, channel))
 
         # вместо релея stderr в общий журнал — одна строка о месте записи
         logger.info("tool stream journal: %s -> %s", tool_name, log_path)
@@ -311,8 +315,8 @@ class StreamJournal(StreamStorePort):
         Каталог треда создаётся в цикле: вытеснение могло снести опустевший
         каталог того же треда, куда пишем.
         """
-        log_path = os.path.join(root, key.rel_log(tool_name, channel))
-        meta_path = os.path.join(root, key.rel_meta())
+        log_path = VaultPath.inside(root, key.rel_log(tool_name, channel))
+        meta_path = VaultPath.inside(root, key.rel_meta())
 
         while True:
             try:
@@ -358,7 +362,7 @@ class StreamJournal(StreamStorePort):
         except ValueError as exc:
             raise StreamJournalError(f"unsafe thread segment: {thread_id!r}") from exc
 
-        path = os.path.join(root, segment)
+        path = VaultPath.inside(root, segment)
 
         freed = 0
         for entry in self._thread_usages(root):
@@ -425,7 +429,7 @@ class StreamJournal(StreamStorePort):
         """Снести все файлы вызова; опустевший каталог треда убрать."""
         for rel in entry.rel_files:
             try:
-                os.remove(os.path.join(root, rel))
+                os.remove(VaultPath.inside(root, rel))
             except FileNotFoundError:
                 continue
             except OSError:
@@ -434,7 +438,7 @@ class StreamJournal(StreamStorePort):
                 )
 
         try:
-            os.rmdir(os.path.join(root, entry.thread_id))
+            os.rmdir(VaultPath.inside(root, entry.thread_id))
         except OSError:
             return
 
@@ -557,12 +561,12 @@ class StreamJournal(StreamStorePort):
         None — вызов не журналировался (нет сайдкара) либо файла канала нет.
         """
         root = self._vault.root_for(key.user_id)
-        meta = self._read_meta(os.path.join(root, key.rel_meta()))
+        meta = self._read_meta(VaultPath.inside(root, key.rel_meta()))
         if not meta.tool_name:
             return None
 
         rel = key.rel_log(meta.tool_name, channel)
-        if not os.path.isfile(os.path.join(root, rel)):
+        if not os.path.isfile(VaultPath.inside(root, rel)):
             return None
 
         return rel
@@ -572,11 +576,11 @@ class StreamJournal(StreamStorePort):
     ) -> tuple[StreamFileView, int, StreamMeta] | None:
         root = self._vault.root_for(key.user_id)
 
-        meta = self._read_meta(os.path.join(root, key.rel_meta()))
+        meta = self._read_meta(VaultPath.inside(root, key.rel_meta()))
         if not meta.tool_name:
             return None
 
-        log_path = os.path.join(root, key.rel_log(meta.tool_name, channel))
+        log_path = VaultPath.inside(root, key.rel_log(meta.tool_name, channel))
 
         try:
             size = os.stat(log_path).st_size

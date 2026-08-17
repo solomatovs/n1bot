@@ -142,7 +142,7 @@ class ProcTable:
 
     @classmethod
     def cmdline(cls, pid: int) -> str:
-        path = os.path.join(cls.PROC, str(pid), "cmdline")
+        path = os.path.realpath(os.path.join(cls.PROC, str(pid), "cmdline"))
         try:
             with open(path, "rb") as f:
                 raw = f.read()
@@ -163,7 +163,7 @@ class ProcTable:
             return frozenset()
 
         for tid in tids:
-            path = os.path.join(task_dir, tid, "children")
+            path = os.path.realpath(os.path.join(task_dir, tid, "children"))
             try:
                 with open(path) as f:
                     raw = f.read()

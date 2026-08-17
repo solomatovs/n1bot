@@ -153,11 +153,20 @@ class DumpingTransport(httpx.AsyncHTTPTransport):
         )
         self.log = logging.getLogger(type(self).__qualname__)
 
+    def _path(self, request: httpx.Request) -> Path:
+        """Имя файла приходит из конфига: держим дамп внутри своего каталога."""
+        base = self._dump_dir.resolve()
+        path = (base / self._request_label(request)).resolve()
+
+        if not path.is_relative_to(base):
+            msg = f"dump file escapes {base}: {path}"
+            raise ValueError(msg)
+
+        return path
+
     async def handle_async_request(self, request: httpx.Request):
         with contextlib.ExitStack() as stack:
-            _dump = stack.enter_context(
-                self._channel.activate(self._dump_dir / self._request_label(request))
-            )
+            _dump = stack.enter_context(self._channel.activate(self._path(request)))
 
             try:
                 response = await super().handle_async_request(request)

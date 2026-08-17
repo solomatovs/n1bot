@@ -28,6 +28,7 @@ from ui.stand import (
     StandConfig,
     StandPaths,
     StandProcess,
+    StandUrl,
     free_port,
 )
 
@@ -101,7 +102,7 @@ def fake_llm(llm_port: int) -> Iterator[None]:
 
 
 def _await_llm(port: int) -> None:
-    url = f"http://127.0.0.1:{port}/health"
+    url = StandUrl.of(port, "/health")
     for _ in range(100):
         try:
             response = httpx.get(url, timeout=1.0)
@@ -186,7 +187,7 @@ def chat(
     auth_cookies: list[SetCookieParam],
     llm_port: int,
 ) -> Iterator[ChatPage]:
-    httpx.post(f"http://127.0.0.1:{llm_port}/reset", timeout=5.0)
+    httpx.post(StandUrl.of(llm_port, "/reset"), timeout=5.0)
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     context.add_cookies(auth_cookies)
     page: Page = context.new_page()

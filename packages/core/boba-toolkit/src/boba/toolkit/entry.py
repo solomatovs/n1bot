@@ -639,7 +639,9 @@ class ToolMain:
 
     @staticmethod
     def _write_envelope(fd: int, reply: ReplyOk | ReplyError) -> None:
-        os.write(fd, reply.model_dump_json().encode("utf-8"))
+        # fd унаследован от launcher: закрывает его вызывающий, не этот writer
+        with os.fdopen(fd, "wb", closefd=False) as channel:
+            channel.write(reply.model_dump_json().encode("utf-8"))
 
     @classmethod
     def _tools_help(cls, tools: Sequence[ToolLike]) -> str:

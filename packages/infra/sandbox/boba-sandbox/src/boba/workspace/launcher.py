@@ -35,6 +35,7 @@ __all__ = [
     "CapabilityDropper",
     "FileOperations",
     "FuseMounter",
+    "HostPath",
     "ImagePath",
     "ImageStore",
     "Launcher",
@@ -168,6 +169,27 @@ class LauncherEnv(StrEnum):
 def trace(message: str) -> None:
     """Ход монтирования — только в stderr: stdout занят данными операции."""
     print(f"{LauncherMarker.LOG}{message}", file=sys.stderr, flush=True)  # noqa: T201
+
+
+class HostPath:
+    """Путь на хосте, пришедший в argv лаунчера.
+
+    Приводится к каноничному виду (`..` и симлинки раскрываются) и обязан быть
+    абсолютным: относительный или уводящий наружу путь дальше не проходит.
+    """
+
+    @classmethod
+    def checked(cls, raw: str) -> str:
+        # пустой --template законен: без rw-образа шаблон не нужен
+        if not raw:
+            return ""
+
+        path = os.path.realpath(raw)
+        if not os.path.isabs(path):
+            msg = f"path must be absolute: {raw!r}"
+            raise argparse.ArgumentTypeError(msg)
+
+        return path
 
 
 class MountError(RuntimeError):
@@ -966,12 +988,22 @@ class Launcher:
     @classmethod
     def _parse_args(cls, argv: list[str]) -> argparse.Namespace:
         parser = argparse.ArgumentParser(prog="workspace-launcher")
-        parser.add_argument("--template", required=True)
+        parser.add_argument("--template", required=True, type=HostPath.checked)
         parser.add_argument(
-            "--image", nargs=2, action="append", metavar=("IMG", "MNT"), default=[]
+            "--image",
+            nargs=2,
+            action="append",
+            metavar=("IMG", "MNT"),
+            default=[],
+            type=HostPath.checked,
         )
         parser.add_argument(
-            "--ro-image", nargs=2, action="append", metavar=("IMG", "MNT"), default=[]
+            "--ro-image",
+            nargs=2,
+            action="append",
+            metavar=("IMG", "MNT"),
+            default=[],
+            type=HostPath.checked,
         )
         parser.add_argument("--mount-wait-sec", type=float, required=True)
         parser.add_argument("--mount-poll-sec", type=float, required=True)

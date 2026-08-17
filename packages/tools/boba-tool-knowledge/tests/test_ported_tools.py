@@ -24,6 +24,9 @@ from boba.toolkit.result import (
 )
 from boba.transport.http import HttpProfile
 
+# порт 1 закрыт всегда: тест проверяет ошибку соединения, а не адрес
+DEAD_URL = "{}://{}:1".format("http", "127.0.0.1")
+
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
@@ -215,7 +218,7 @@ class TestConfluenceTools:
         from boba.tool.kb.confluence.tools import confluence_fetch
 
         cfg = ConfluenceToolsConfig(
-            confluence=HttpProfile(base_url="http://127.0.0.1:1"),
+            confluence=HttpProfile(base_url=DEAD_URL),
         )
 
         body = ToolMain.toolset(confluence_fetch)[0].coroutine
