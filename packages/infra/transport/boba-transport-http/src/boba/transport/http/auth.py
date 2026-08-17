@@ -44,7 +44,8 @@ class _AuthBase(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    REVEAL_SECRETS: ClassVar[str] = "reveal_secrets"
+    REVEAL_CONTEXT: ClassVar[str] = "reveal_secrets"
+    """Ключ обязан совпадать с SecretRevealing.REVEAL_CONTEXT из toolkit."""
     """Ключ контекста сериализации: секрет раскрывается только с ним."""
 
     def httpx_auth(self) -> httpx.Auth | None:
@@ -52,12 +53,12 @@ class _AuthBase(BaseModel):
 
     @classmethod
     def _reveal(cls, value: SecretStr, info: SerializationInfo) -> str | None:
-        """Секрет уходит в дамп только с REVEAL_SECRETS в контексте."""
+        """Секрет уходит в дамп только с REVEAL_CONTEXT в контексте."""
         context = info.context
         if not isinstance(context, Mapping):
             return None
 
-        if not context.get(cls.REVEAL_SECRETS):
+        if not context.get(cls.REVEAL_CONTEXT):
             return None
 
         return value.get_secret_value()

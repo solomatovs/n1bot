@@ -207,6 +207,7 @@ help:
 	echo "                 {conf,app_root,app,sandbox,third},"
 	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR), данные — в DATA_DIR=$(DATA_DIR)"
 	echo "  make sec       ruff, bandit, semgrep и pip-audit (MODE=all|sast|sca|rules)"
+	echo "                 MODE=full — охват и правила как у сканера ИБ, без порогов"
 	echo "  make clean     удалить исходники, deps и собранную папку (кроме fastembed)"
 	echo ""
 	echo "  make all       sources + deps + build + test"

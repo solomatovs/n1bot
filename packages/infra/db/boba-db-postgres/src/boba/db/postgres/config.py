@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from boba.krb import KeytabConfig
+from boba.toolkit.types import SecretRevealing
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 
@@ -101,7 +102,7 @@ class PostgresConfig(BaseModel):
     GSS_MODES: ClassVar[frozenset[str]] = frozenset({"prefer", "require"})
 
     # ключ контекста сериализации: пароль раскрывается только в доверенный канал
-    REVEAL_SECRETS: ClassVar[str] = "reveal_secrets"
+    REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
 
     # не connect-параметры: конструктор пула, строка '-c k=v', креды kerberos
     NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(

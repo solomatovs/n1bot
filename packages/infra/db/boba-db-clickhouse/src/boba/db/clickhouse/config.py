@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from boba.krb import KeytabConfig
+from boba.toolkit.types import SecretRevealing
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]
 
@@ -70,7 +71,7 @@ class ClickHouseConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     # ключ контекста сериализации: пароль раскрывается только в доверенный канал
-    REVEAL_SECRETS: ClassVar[str] = "reveal_secrets"
+    REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
 
     # не аргументы конструктора клиента: настройки сессии и креды kerberos
     NOT_CLIENT_FIELDS: ClassVar[frozenset[str]] = frozenset(

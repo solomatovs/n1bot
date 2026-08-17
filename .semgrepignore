@@ -1,0 +1,9 @@
+:include .gitignore
+
+.venv/
+.git/
+release/
+compose/
+build/src/
+node_modules/
+*.min.js

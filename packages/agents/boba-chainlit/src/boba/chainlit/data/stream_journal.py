@@ -52,13 +52,12 @@ class DirVault:
         self._root = root
 
     def root_for(self, user_id: str) -> str:
-        """Каталог тома; сегмент проверяется здесь — дальше он уходит в путь."""
-        try:
-            segment = PathSegment.checked(user_id)
-        except ValueError as exc:
-            raise StreamJournalError(f"unsafe vault segment: {user_id!r}") from exc
+        """Каталог тома; сегмент сверяется с шаблоном прямо перед сборкой пути."""
+        if not PathSegment.SAFE.fullmatch(user_id):
+            msg = f"unsafe vault segment: {user_id!r}"
+            raise StreamJournalError(msg)
 
-        path = os.path.join(self._root, segment)
+        path = os.path.join(self._root, user_id)
         os.makedirs(path, exist_ok=True)
         return path
 

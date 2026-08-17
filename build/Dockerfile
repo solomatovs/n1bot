@@ -7,11 +7,10 @@ FROM ${PYTHON_IMAGE} AS python-dist
 FROM ${GCC_IMAGE} AS base
 
 
-RUN apt-get update                                \
-    && apt-get install -y --no-install-recommends \
-        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 \
-        liblzma5 libreadline7 libncurses5 zlib1g  \
-        libkrb5-dev                               \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0                \
+        liblzma5 libreadline7 libncurses5 zlib1g                 \
+        libkrb5-dev                                              \
     && rm -rf /var/lib/apt/lists/*
 
 # перекрываем системный python своим
@@ -56,10 +55,9 @@ FROM base AS bwrap-build
 
 ARG BWRAP_VERSION=0.11.2
 
-RUN apt-get update                                \
-    && apt-get install -y --no-install-recommends \
-        libcap-dev meson ninja-build pkg-config   \
-        xz-utils                                  \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libcap-dev meson ninja-build pkg-config                  \
+        xz-utils                                                 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY build/src/bubblewrap-${BWRAP_VERSION}.tar.xz  /tmp/bwrap.tar.xz
@@ -91,9 +89,8 @@ ARG LIBFUSE_VERSION=3.12.0
 ARG E2FSPROGS_VERSION=1.47.2
 ARG SANDBOX_WS_SIZE=1G
 
-RUN apt-get update                                \
-    && apt-get install -y --no-install-recommends \
-        meson ninja-build pkg-config xz-utils     \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        meson ninja-build pkg-config xz-utils                    \
     && rm -rf /var/lib/apt/lists/*
 
 COPY build/src/fuse-${LIBFUSE_VERSION}.tar.xz         /tmp/fuse.tar.xz
@@ -151,8 +148,7 @@ RUN set -eu                                                        \
     && update-ca-certificates
 
 RUN set -eu                                                             \
-    && apt-get update                                                   \
-    && apt-get install -y --no-install-recommends                       \
+    && apt-get update && apt-get install -y --no-install-recommends     \
         unzip p7zip-full file curl jq                                   \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 liblzma5 libreadline7 \
         libncurses5 zlib1g                                              \
@@ -327,11 +323,10 @@ ARG PYTHON_VERSION=3.11   \
     BOBA_GID=1000
 
 
-RUN apt-get update                                \
-    && apt-get install -y --no-install-recommends \
-        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 \
-        liblzma5 libreadline7 libncurses5 zlib1g  \
-        libkrb5-3 libgssapi-krb5-2 krb5-user      \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0                \
+        liblzma5 libreadline7 libncurses5 zlib1g                 \
+        libkrb5-3 libgssapi-krb5-2 krb5-user                     \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-dist /opt/python/usr/local          ${BOBA_DIR}/third

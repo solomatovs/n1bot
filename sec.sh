@@ -49,9 +49,60 @@ _run_semgrep() {
     --error "$_sec_dir/packages" || _rc=1
 }
 
+# охват и правила как у сканера ИБ: всё дерево, а не только packages, плюс
+# Dockerfile, Makefile, shell и jsx. Своя часть правил лежит в build/conf
+_run_full() {
+  echo "== semgrep: полный охват (правила ИБ) =="
+  SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
+    scan --config="$_sec_dir/build/src/semgrep"                   \
+    --config="$_sec_dir/build/conf/semgrep-boba"                  \
+    --metrics=off --scan-unknown-extensions --json -q             \
+    "$_sec_dir" > "$_full_json" || _rc=1
+
+  python3 - "$_full_json" <<'PY'
+import collections
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    report = json.load(handle)
+
+results = report["results"]
+by_rule = collections.Counter(r["check_id"].split(".")[-1] for r in results)
+
+print(f"  файлов просканировано: {len(report['paths']['scanned'])}")
+print(f"  находок: {len(results)}")
+for rule, count in by_rule.most_common():
+    print(f"    {count:5}  {rule}")
+PY
+
+  echo "== bandit: без порогов, вместе с тестами =="
+  "$_uv" tool run --system-certs bandit                     \
+    -q -r "$_sec_dir/packages" "$_sec_dir/build/test"       \
+    --exclude '**/.venv/**' -f json 2>/dev/null > "$_bandit_json" || true
+
+  python3 - "$_bandit_json" <<'PY'
+import collections
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    report = json.load(handle)
+
+results = report["results"]
+by_test = collections.Counter(
+    (r["test_id"], r["issue_text"].split(".")[0]) for r in results
+)
+
+print(f"  находок: {len(results)}")
+for (test, text), count in by_test.most_common():
+    print(f"    {count:5}  {test}  {text[:60]}")
+PY
+}
+
 _update_rules() {
   echo "== semgrep rules =="
-  for pack in python secrets; do
+  for pack in python secrets dockerfile javascript react; do
     curl -fsS "https://semgrep.dev/c/p/$pack" \
       -o "$_sec_dir/build/src/semgrep/$pack.yml" || _rc=1
     echo "$pack.yml updated"
@@ -73,7 +124,14 @@ _run_audit() {
   rm -f "$_req"
 }
 
+_full_json=$(mktemp)
+_bandit_json=$(mktemp)
+trap 'rm -f "$_full_json" "$_bandit_json"' EXIT
+
 case "$_mode" in
+  full)
+    _run_full
+    ;;
   sast)
     _run_ruff
     _run_bandit
@@ -92,7 +150,7 @@ case "$_mode" in
     _update_rules
     ;;
   *)
-    echo "usage: sec.sh [all|sast|sca|rules]" >&2
+    echo "usage: sec.sh [all|full|sast|sca|rules]" >&2
     exit 2
     ;;
 esac
