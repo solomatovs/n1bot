@@ -37,7 +37,7 @@ from boba.tool.kb.chunking import (
 )
 from boba.tool.kb.confluence.cleanup import ConfluencePageScopeCleanup
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.models import AttachmentFilter
+from boba.tool.kb.confluence.models import AttachmentFilter, AttachmentGate
 from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
 from boba.tool.kb.confluence.request_sources import ConfluenceRequest
 from boba.tool.kb.embedding import (
@@ -157,7 +157,7 @@ class ConfluenceIngest:
         workers: int,
         progress: IngestProgress,
         force_update: bool = False,
-        attachment_filter: AttachmentFilter | None = None,
+        gate: AttachmentGate,
         routes: Mapping[str, Reader[str]],
     ) -> dict[str, Any]:
         """Полный Confluence -> kb_chunks pipeline для уже собранного RequestSource."""
@@ -184,7 +184,7 @@ class ConfluenceIngest:
         transport = ConfluenceContentTransport.from_connection(
             conn,
             progress=progress,
-            attachment_filter=attachment_filter,
+            gate=gate,
         )
 
         # prune_missing сносит весь стейл коллекции; force_update без prune — страницы
@@ -248,6 +248,7 @@ class ConfluenceIngest:
         prune_missing: bool,
         force_update: bool = False,
         *,
+        attachments: str,
         progress: IngestProgress,
         routes: Mapping[str, Reader[str]],
     ) -> dict[str, Any]:
@@ -260,9 +261,13 @@ class ConfluenceIngest:
         chunker = LoggingChunker(
             StructuralChunkerFactory.build(cfg), logger, progress
         )
-        att_filter = AttachmentFilter.from_lists(
+        allowed = AttachmentFilter.from_lists(
             media_types=cfg.attachment_media_types,
             titles=cfg.attachment_titles,
+        )
+        gate = AttachmentGate.of(allowed, attachments, ocr_enabled=cfg.ocr_enabled)
+        logger.info(
+            "attachments requested: %r, ocr=%s", attachments, cfg.ocr_enabled
         )
         conn = ConfluenceConnection(
             profile=cfg.confluence,
@@ -280,6 +285,6 @@ class ConfluenceIngest:
             workers=cfg.page_workers,
             progress=progress,
             force_update=force_update,
-            attachment_filter=att_filter,
+            gate=gate,
             routes=routes,
         )

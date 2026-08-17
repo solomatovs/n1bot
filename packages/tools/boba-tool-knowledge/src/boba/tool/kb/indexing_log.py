@@ -35,6 +35,7 @@ from enum import StrEnum
 from typing import ClassVar, Generic, TypeVar
 
 from boba.indexing import (
+    AsyncBinaryStream,
     Chunk,
     Chunker,
     ChunkerId,
@@ -327,6 +328,11 @@ class LoggingChunkStore(ChunkStore[T], Generic[T]):
         with self._step(DbOp.UPSERT, collection, len(batch)):
             await self._inner.upsert(collection, batch)
 
+        # поимённо: по этой строке видно, что конкретный чанк уже в базе.
+        # source_id не печатаем — это длинный url, он уже был в строках read
+        for chunk in batch:
+            self._logger.info("db upserted: %s", chunk.chunk_id)
+
     async def update_metadata(
         self,
         collection: CollectionId,
@@ -345,6 +351,41 @@ class LoggingChunkStore(ChunkStore[T], Generic[T]):
         ids = list(chunk_ids)
         with self._step(DbOp.DELETE, collection, len(ids)):
             await self._inner.delete(collection, ids)
+
+
+class LoggingStream(AsyncBinaryStream):
+    """Обёртка тела документа: скачивание видно отдельно от разбора.
+
+    Transport отдаёт RawDocument, когда пришли заголовки; сами байты тянет уже
+    Reader вызовом read(). Без этой пары строк долгая закачка выглядит как
+    зависший разбор.
+    """
+
+    def __init__(
+        self,
+        inner: AsyncBinaryStream,
+        logger: logging.Logger,
+        label: str,
+    ) -> None:
+        self._inner = inner
+        self._logger = logger
+        self._label = label
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._inner.__aiter__()
+
+    async def read(self) -> bytes:
+        self._logger.info("body read start: %s", self._label)
+        elapsed = Elapsed()
+        data = await self._inner.read()
+        self._logger.info(
+            "body read done: %s, %d bytes in %dms",
+            self._label,
+            len(data),
+            elapsed.ms(),
+        )
+
+        return data
 
 
 class LoggingReader(Reader[T], Generic[T]):

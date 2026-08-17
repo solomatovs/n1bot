@@ -41,7 +41,11 @@ from boba.indexing import (
 )
 from boba.indexing.ports import Embedder
 from boba.tool.kb.chunking import ChunkerParams, StructuralChunkerFactory
-from boba.tool.kb.confluence.models import ConfluenceKeys
+from boba.tool.kb.confluence.models import (
+    AttachmentFilter,
+    AttachmentGate,
+    ConfluenceKeys,
+)
 from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
 from boba.tool.kb.confluence.request_sources import (
     ConfluencePagesRequestSource,
@@ -287,6 +291,7 @@ class IngestStand:
             body_format="view",
             base_url=BASE_URL,
             progress=self.progress,
+            gate=AttachmentGate.of(AttachmentFilter(), "*", ocr_enabled=True),
         )
 
     async def run(self) -> None:

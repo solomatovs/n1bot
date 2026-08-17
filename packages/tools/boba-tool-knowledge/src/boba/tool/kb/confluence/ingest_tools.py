@@ -47,13 +47,22 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceRequest,
 )
 from boba.tool.kb.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
-from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
+from boba.tool.kb.indexing_log import Elapsed, IngestProgress, LoggingReader
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 from boba.toolkit.types import LLMStringList, SecretRevealing
 
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
+_ATTACHMENTS_DESCRIPTION = (
+    "Какие вложения страниц читать. Список масок через запятую. Маска без "
+    "косой черты — имя файла: `*.pdf`, `*.docx`, `отчёт*.xlsx`. Маска с косой "
+    "чертой — тип содержимого: `application/pdf`, `image/*`. "
+    "Пусто (по умолчанию) — вложения не читаются, индексируется только текст "
+    "страниц; так быстрее всего и меньше всего памяти. `*` — все вложения "
+    "страницы. Картинки (`*.png`, `image/*`) читаются только при "
+    "ocr_enabled=true, иначе пропускаются: без распознавания текста в них нет."
+)
 _OCR_DESCRIPTION = (
     "OCR вложений: true распознаёт текст по картинкам (сканы, картинковые "
     "PDF), false — только текстовый слой. OCR дорог: минуты и гигабайты "
@@ -107,9 +116,17 @@ class LocalConfluenceReader(Reader[str]):
         # bs4 тяжёлый: в процесс приложения модуль инструментов его не тянет
         from boba.tool.kb.html.payload import PageOps  # noqa: PLC0415
 
+        logger.info("html parse start: %s, %d bytes", title or "?", len(payload))
+        elapsed = Elapsed()
         answer = await asyncio.to_thread(
             PageOps.confluence_sections,
             {"html": html, "title": title},
+        )
+        logger.info(
+            "html parse done: %s -> %d sections in %dms",
+            title or "?",
+            len(answer["sections"]),
+            elapsed.ms(),
         )
         for row in answer["sections"]:
             yield Section(
@@ -139,10 +156,12 @@ class IngestRun:
         Каждый роут обёрнут логом: иначе долгий разбор (OCR) молчит до конца.
         """
         # liteparse тяжёлый: грузится только в процессе прогона
-        from boba.liteparse.engine import LiteParseReader  # noqa: PLC0415
         from boba.text import TextMedia  # noqa: PLC0415
+        from boba.tool.kb.confluence.document_log import (  # noqa: PLC0415
+            LoggingDocumentReader,
+        )
 
-        documents = LiteParseReader(cfg)
+        documents = LoggingDocumentReader(cfg)
         plain: dict[str, Reader[str]] = {}
         for content_type in ConfluenceIngest.HTML_CONTENT_TYPES:
             plain[content_type] = LocalConfluenceReader()
@@ -157,12 +176,13 @@ class IngestRun:
         return routes
 
     @classmethod
-    async def run(
+    async def run(  # noqa: PLR0913 — параметры прогона независимы
         cls,
         cfg: IngestToolConfig,
         source: RequestSource[ConfluenceRequest],
         progress: IngestProgress,
         *,
+        attachments: str,
         prune_missing: bool,
         force_update: bool,
     ) -> dict[str, Any]:
@@ -171,6 +191,7 @@ class IngestRun:
             source,
             prune_missing,
             force_update,
+            attachments=attachments,
             progress=progress,
             routes=cls.routes(cfg),
         )
@@ -215,6 +236,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
             ),
         ),
     ] = False,
+    attachments: Annotated[str, Field(description=_ATTACHMENTS_DESCRIPTION)] = "",
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     num_workers: Annotated[
         int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
@@ -241,6 +263,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
 
     stats = await IngestRun.run(
         run_cfg, source, progress,
+        attachments=attachments,
         prune_missing=prune_missing, force_update=force_update,
     )
 
@@ -264,6 +287,7 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
         bool,
         Field(description="Удалить чанки, не попавшие в выборку."),
     ] = False,
+    attachments: Annotated[str, Field(description=_ATTACHMENTS_DESCRIPTION)] = "",
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     num_workers: Annotated[
         int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
@@ -289,7 +313,9 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
     )
 
     stats = await IngestRun.run(
-        run_cfg, source, progress, prune_missing=prune_missing, force_update=False
+        run_cfg, source, progress,
+        attachments=attachments,
+        prune_missing=prune_missing, force_update=False,
     )
 
     table = TableResult(rows=[stats])
@@ -313,6 +339,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
         bool,
         Field(description="Переиндексировать страницы целиком."),
     ] = False,
+    attachments: Annotated[str, Field(description=_ATTACHMENTS_DESCRIPTION)] = "",
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     num_workers: Annotated[
         int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
@@ -339,6 +366,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
 
     stats = await IngestRun.run(
         run_cfg, source, progress,
+        attachments=attachments,
         prune_missing=prune_missing, force_update=force_update,
     )
 
