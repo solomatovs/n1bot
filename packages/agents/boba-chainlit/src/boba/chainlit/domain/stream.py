@@ -25,6 +25,7 @@ __all__ = [
     "JournalText",
     "JournalWindow",
     "LogName",
+    "PathSegment",
     "StreamJournalError",
     "StreamJournalHub",
     "StreamKey",
@@ -139,6 +140,36 @@ class JournalText(StrEnum):
         return data.decode(cls.ENCODING, errors=cls.DECODE_ERRORS)
 
 
+class PathSegment:
+    """Проверка сегмента пути в томе журнала: одна на ключи и на сам том.
+
+    Сегмент приходит извне — идентификатор пользователя из аутентификации,
+    thread_id из ссылки, call_id из протокола провайдера, — а дальше уходит
+    в os.path.join, поэтому проверяется на входе и только здесь.
+    """
+
+    SAFE: ClassVar[frozenset[str]] = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+    )
+
+    @classmethod
+    def checked(cls, value: str) -> str:
+        if not value:
+            msg = "empty path segment"
+            raise ValueError(msg)
+
+        unsafe = set(value) - cls.SAFE
+        if unsafe:
+            msg = f"unsafe characters in stream key segment: {sorted(unsafe)}"
+            raise ValueError(msg)
+
+        if value.startswith("."):
+            msg = f"stream key segment must not start with a dot: {value!r}"
+            raise ValueError(msg)
+
+        return value
+
+
 class StreamKey(BaseModel):
     """Адрес журнала одного вызова: {thread_id}/{call_id} в томе пользователя.
 
@@ -150,10 +181,6 @@ class StreamKey(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    SAFE: ClassVar[frozenset[str]] = frozenset(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-    )
-
     user_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
     call_id: str = Field(min_length=1, max_length=255)
@@ -161,16 +188,7 @@ class StreamKey(BaseModel):
     @field_validator("user_id", "thread_id", "call_id")
     @classmethod
     def _safe_segment(cls, value: str) -> str:
-        unsafe = set(value) - cls.SAFE
-        if unsafe:
-            msg = f"unsafe characters in stream key segment: {sorted(unsafe)}"
-            raise ValueError(msg)
-
-        if value.startswith("."):
-            msg = f"stream key segment must not start with a dot: {value!r}"
-            raise ValueError(msg)
-
-        return value
+        return PathSegment.checked(value)
 
     @field_validator("call_id")
     @classmethod

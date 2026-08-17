@@ -84,17 +84,22 @@ class TestCallTextTap:
         outcome = self._caller().call_text("echo привет; echo беда >&2", stdin="")
 
         window = buffer.snapshot()
-        assert "привет" in window.text
-        assert "беда" in window.text
-        assert "привет" in outcome.result.stdout
-        assert "беда" in outcome.result.stderr
+        if "привет" not in window.text:
+            raise AssertionError('"привет" in window.text')
+        if "беда" not in window.text:
+            raise AssertionError('"беда" in window.text')
+        if "привет" not in outcome.result.stdout:
+            raise AssertionError('"привет" in outcome.result.stdout')
+        if "беда" not in outcome.result.stderr:
+            raise AssertionError('"беда" in outcome.result.stderr')
 
     def test_without_tap_nothing_changes(self) -> None:
         ToolStreamTap.set(None)
 
         outcome = self._caller().call_text("echo одинокий", stdin="")
 
-        assert "одинокий" in outcome.result.stdout
+        if "одинокий" not in outcome.result.stdout:
+            raise AssertionError('"одинокий" in outcome.result.stdout')
 
     def test_window_stays_bounded_on_huge_output(self) -> None:
         """Мегабайты вывода не оседают в окне: оно держит только хвост.
@@ -110,11 +115,16 @@ class TestCallTextTap:
         outcome = self._caller().call_text("seq -w 1 200000", stdin="")
 
         window = buffer.snapshot()
-        assert len(window.text.encode()) <= window_bytes
-        assert window.dropped_bytes > 1_000_000
-        assert "200000" in window.text
-        assert "\n000002\n" not in window.text
-        assert outcome.result.stdout.startswith("000001\n")
+        if len(window.text.encode()) > window_bytes:
+            raise AssertionError("len(window.text.encode()) <= window_bytes")
+        if window.dropped_bytes <= 1_000_000:
+            raise AssertionError("window.dropped_bytes > 1_000_000")
+        if "200000" not in window.text:
+            raise AssertionError('"200000" in window.text')
+        if "\n000002\n" in window.text:
+            raise AssertionError('"\\n000002\\n" not in window.text')
+        if not (outcome.result.stdout.startswith("000001\n")):
+            raise AssertionError('outcome.result.stdout.startswith("000001\\n")')
 
     def test_window_fills_while_the_process_runs(self) -> None:
         """Пробуждения приходят по ходу процесса, а не одним махом в конце."""
@@ -130,6 +140,9 @@ class TestCallTextTap:
 
         self._caller().call_text("echo старт; sleep 0.3; echo финиш", stdin="")
 
-        assert len(sizes) >= 2
-        assert sizes == sorted(sizes)
-        assert sizes[0] < sizes[-1]
+        if len(sizes) < 2:
+            raise AssertionError("len(sizes) >= 2")
+        if sizes != sorted(sizes):
+            raise AssertionError("sizes == sorted(sizes)")
+        if sizes[0] >= sizes[-1]:
+            raise AssertionError("sizes[0] < sizes[-1]")

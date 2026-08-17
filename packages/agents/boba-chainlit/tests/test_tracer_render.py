@@ -46,16 +46,21 @@ def make_view() -> tuple[ChatView, RecordingSink]:
 class TestToolArtifact:
     def test_revives_model_from_dict(self) -> None:
         revived = ToolArtifact.revive({"kind": "text", "text": "hi"})
-        assert isinstance(revived, TextResult)
-        assert revived.text == "hi"
+        if not (isinstance(revived, TextResult)):
+            raise AssertionError("isinstance(revived, TextResult)")
+        if revived.text != "hi":
+            raise AssertionError('revived.text == "hi"')
 
     def test_keeps_model_as_is(self) -> None:
         original = TextResult(text="hi")
-        assert ToolArtifact.revive(original) is original
+        if ToolArtifact.revive(original) is not original:
+            raise AssertionError("ToolArtifact.revive(original) is original")
 
     def test_unknown_payload_is_none(self) -> None:
-        assert ToolArtifact.revive({"kind": "nope"}) is None
-        assert ToolArtifact.revive("plain string") is None
+        if ToolArtifact.revive({"kind": "nope"}) is not None:
+            raise AssertionError('ToolArtifact.revive({"kind": "nope"}) is None')
+        if ToolArtifact.revive("plain string") is not None:
+            raise AssertionError('ToolArtifact.revive("plain string") is None')
 
     def test_broken_own_artifact_raises(self) -> None:
         with pytest.raises(ValidationError):
@@ -75,48 +80,65 @@ class TestToolFinished:
 
     def test_markdown_text(self) -> None:
         step, _ = self._finish(TextResult(text="hi"))
-        assert step.output == "hi"
-        assert step.language is None
-        assert step.is_error is False
+        if step.output != "hi":
+            raise AssertionError('step.output == "hi"')
+        if step.language is not None:
+            raise AssertionError("step.language is None")
+        if step.is_error is not False:
+            raise AssertionError("step.is_error is False")
 
     def test_error_result_marks_step(self) -> None:
         step, _ = self._finish(ErrorResult(message="boom", error_kind="e"))
-        assert step.is_error is True
-        assert "boom" in step.output
+        if step.is_error is not True:
+            raise AssertionError("step.is_error is True")
+        if "boom" not in step.output:
+            raise AssertionError('"boom" in step.output')
 
     def test_chart_adds_top_level_step(self) -> None:
         step, sink = self._finish(ChartResult(spec={"data": []}, title="T"))
-        assert step.output == "chart rendered: T"
+        if step.output != "chart rendered: T":
+            raise AssertionError('step.output == "chart rendered: T"')
         chart = [s for s in sink.steps if s.get("type") == "assistant_message"]
-        assert len(chart) == 1
-        assert chart[0].get("output") == "T"
-        assert chart[0].get("parentId") is None
+        if len(chart) != 1:
+            raise AssertionError("len(chart) == 1")
+        if chart[0].get("output") != "T":
+            raise AssertionError('chart[0].get("output") == "T"')
+        if chart[0].get("parentId") is not None:
+            raise AssertionError('chart[0].get("parentId") is None')
 
     def test_chart_step_id_is_derived_from_tool_call(self) -> None:
         _, sink = self._finish(ChartResult(spec={"data": []}, title="T"))
         chart = next(s for s in sink.steps if s.get("type") == "assistant_message")
-        assert chart.get("id") == ChatView.derive_id(THREAD, "call_1", StepRole.CHART)
+        if chart.get("id") != ChatView.derive_id(THREAD, "call_1", StepRole.CHART):
+            raise AssertionError('chart.get("id") == ChatView.derive_id(THREAD, "call…')
 
     def test_artifact_dict_renders_like_model(self) -> None:
         step, _ = self._finish({"kind": "text", "text": "from checkpoint"})
-        assert step.output == "from checkpoint"
+        if step.output != "from checkpoint":
+            raise AssertionError('step.output == "from checkpoint"')
 
     def test_failed_command_is_marked_red(self) -> None:
         """Ненулевой код возврата — неуспех, хотя инструмент отработал."""
         step, _ = self._finish(
             JsonResult(ok=False, payload={"exit_code": 127, "stderr": "not found"})
         )
-        assert step.name == StepStatus.FAILED.title("demo")
-        assert step.is_error is True
+        if step.name != StepStatus.FAILED.title("demo"):
+            raise AssertionError('step.name == StepStatus.FAILED.title("demo")')
+        if step.is_error is not True:
+            raise AssertionError("step.is_error is True")
 
     def test_successful_command_is_marked_green(self) -> None:
         step, _ = self._finish(JsonResult(payload={"exit_code": 0, "stdout": "ok"}))
-        assert step.name == StepStatus.DONE.title("demo")
-        assert step.is_error is False
+        if step.name != StepStatus.DONE.title("demo"):
+            raise AssertionError('step.name == StepStatus.DONE.title("demo")')
+        if step.is_error is not False:
+            raise AssertionError("step.is_error is False")
 
     def test_error_result_is_not_ok_by_default(self) -> None:
-        assert ErrorResult(message="boom", error_kind="e").ok is False
-        assert TextResult(text="hi").ok is True
+        if ErrorResult(message="boom", error_kind="e").ok is not False:
+            raise AssertionError('ErrorResult(message="boom", error_kind="e").ok is F…')
+        if TextResult(text="hi").ok is not True:
+            raise AssertionError('TextResult(text="hi").ok is True')
 
     def test_stopped_tool_is_marked_red(self) -> None:
         view, sink = make_view()
@@ -127,13 +149,17 @@ class TestToolFinished:
             return step
 
         step = run(scenario())
-        assert step.name == StepStatus.FAILED.title("visualize")
-        assert step.output == StepText.STOPPED
-        assert sink.steps
+        if step.name != StepStatus.FAILED.title("visualize"):
+            raise AssertionError('step.name == StepStatus.FAILED.title("visualize")')
+        if step.output != StepText.STOPPED:
+            raise AssertionError("step.output == StepText.STOPPED")
+        if not (sink.steps):
+            raise AssertionError("sink.steps")
 
     def test_non_tool_result_falls_through(self) -> None:
         step, _ = self._finish({"whatever": 1})
-        assert step.output
+        if not (step.output):
+            raise AssertionError("step.output")
 
 
 class TestTranscript:
@@ -172,13 +198,19 @@ class TestTranscript:
         for step in sink.steps:
             by_type.setdefault(str(step.get("type")), []).append(step)
 
-        assert [s.get("output") for s in by_type["user_message"]] == ["нарисуй график"]
-        assert by_type["run"][0].get("name") == StepText.CONTAINER
-        assert by_type["tool"][0].get("name") == StepStatus.DONE.title("visualize")
-        assert by_type["tool"][0].get("parentId") == by_type["run"][0].get("id")
+        if [s.get("output") for s in by_type["user_message"]] != ["нарисуй график"]:
+            raise AssertionError('[s.get("output") for s in by_type["user_message"]] …')
+        if by_type["run"][0].get("name") != StepText.CONTAINER:
+            raise AssertionError('by_type["run"][0].get("name") == StepText.CONTAINER')
+        if by_type["tool"][0].get("name") != StepStatus.DONE.title("visualize"):
+            raise AssertionError('by_type["tool"][0].get("name") == StepStatus.DONE.t…')
+        if by_type["tool"][0].get("parentId") != by_type["run"][0].get("id"):
+            raise AssertionError('by_type["tool"][0].get("parentId") == by_type["run"…')
         answers = [s.get("output") for s in by_type["assistant_message"]]
-        assert answers == ["Final", "готово"]
-        assert all(s.get("parentId") is None for s in by_type["assistant_message"])
+        if answers != ["Final", "готово"]:
+            raise AssertionError('answers == ["Final", "готово"]')
+        if not (all(s.get("parentId") is None for s in by_type["assistant_message"])):
+            raise AssertionError('all(s.get("parentId") is None for s in by_type["ass…')
 
     def test_table_artifact_from_checkpoint(self) -> None:
         sink = self._replay(
@@ -195,8 +227,10 @@ class TestTranscript:
         )
         tool = next(s for s in sink.steps if s.get("type") == "tool")
         output = tool.get("output") or ""
-        assert "a" in output
-        assert "b" in output
+        if "a" not in output:
+            raise AssertionError('"a" in output')
+        if "b" not in output:
+            raise AssertionError('"b" in output')
 
     def test_failed_tool_is_marked_red(self) -> None:
         sink = self._replay(
@@ -212,7 +246,8 @@ class TestTranscript:
             ]
         )
         tool = next(s for s in sink.steps if s.get("type") == "tool")
-        assert tool.get("name") == StepStatus.FAILED.title("bad")
+        if tool.get("name") != StepStatus.FAILED.title("bad"):
+            raise AssertionError('tool.get("name") == StepStatus.FAILED.title("bad")')
 
     def test_error_tool_message(self) -> None:
         sink = self._replay(
@@ -228,7 +263,8 @@ class TestTranscript:
             ]
         )
         tool = next(s for s in sink.steps if s.get("type") == "tool")
-        assert tool.get("isError") is True
+        if tool.get("isError") is not True:
+            raise AssertionError('tool.get("isError") is True')
 
     def test_reasoning_becomes_thinking_step(self) -> None:
         sink = self._replay(
@@ -242,9 +278,12 @@ class TestTranscript:
             ]
         )
         thinking = [s for s in sink.steps if s.get("type") == "llm"]
-        assert len(thinking) == 1
-        assert thinking[0].get("name") == StepStatus.IDLE.title("thinking")
-        assert thinking[0].get("output") == "размышляю"
+        if len(thinking) != 1:
+            raise AssertionError("len(thinking) == 1")
+        if thinking[0].get("name") != StepStatus.IDLE.title("thinking"):
+            raise AssertionError('thinking[0].get("name") == StepStatus.IDLE.title("t…')
+        if thinking[0].get("output") != "размышляю":
+            raise AssertionError('thinking[0].get("output") == "размышляю"')
 
     def test_answer_id_matches_live_rendering(self) -> None:
         sink = self._replay(
@@ -255,12 +294,14 @@ class TestTranscript:
         )
         answer = next(s for s in sink.steps if s.get("type") == "assistant_message")
         expected = ChatView.derive_id(THREAD, "chainlit-msg-1", StepRole.ANSWER)
-        assert answer.get("id") == expected
+        if answer.get("id") != expected:
+            raise AssertionError('answer.get("id") == expected')
 
     def test_question_keeps_chainlit_message_id(self) -> None:
         sink = self._replay([HumanMessage(content="привет", id="chainlit-msg-1")])
         question = next(s for s in sink.steps if s.get("type") == "user_message")
-        assert question.get("id") == "chainlit-msg-1"
+        if question.get("id") != "chainlit-msg-1":
+            raise AssertionError('question.get("id") == "chainlit-msg-1"')
 
     def test_failure_from_history_renders_as_error(self) -> None:
         sink = self._replay(
@@ -274,8 +315,11 @@ class TestTranscript:
             ]
         )
         step = next(s for s in sink.steps if s.get("type") == "assistant_message")
-        assert step.get("isError") is True
-        assert "провайдер недоступен" in (step.get("output") or "")
+        if step.get("isError") is not True:
+            raise AssertionError('step.get("isError") is True')
+        output = step.get("output") or ""
+        if "провайдер недоступен" not in output:
+            raise AssertionError(f"в шаге нет текста ошибки: {output!r}")
 
     def test_replay_is_deterministic(self) -> None:
         messages = [
@@ -284,7 +328,8 @@ class TestTranscript:
         ]
         first = self._replay(messages).steps
         second = self._replay(messages).steps
-        assert [s.get("id") for s in first] == [s.get("id") for s in second]
+        if [s.get("id") for s in first] != [s.get("id") for s in second]:
+            raise AssertionError('[s.get("id") for s in first] == [s.get("id") for s …')
 
     def test_each_question_opens_its_own_container(self) -> None:
         sink = self._replay(
@@ -304,5 +349,7 @@ class TestTranscript:
             ]
         )
         containers = [s for s in sink.steps if s.get("type") == "run"]
-        assert len(containers) == 2
-        assert containers[0].get("id") != containers[1].get("id")
+        if len(containers) != 2:
+            raise AssertionError("len(containers) == 2")
+        if containers[0].get("id") == containers[1].get("id"):
+            raise AssertionError('containers[0].get("id") != containers[1].get("id")')

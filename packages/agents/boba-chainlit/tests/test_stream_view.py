@@ -121,7 +121,8 @@ def run(coro: Any) -> Any:
 def begin_stream(call_id: str = CALL_ID) -> ToolStream:
     ToolStreams.mark_streamable([TOOL_NAME])
     stream = ToolStreams.begin(USER, THREAD, call_id, TOOL_NAME)
-    assert stream is not None
+    if stream is None:
+        raise AssertionError("stream is not None")
     return stream
 
 
@@ -168,8 +169,10 @@ class TestJournalThroughWrapper:
     def test_sync_tool_sees_its_recorder(self) -> None:
         seen = run(self._invoke())
 
-        assert len(seen) == 1
-        assert seen[0] is not None
+        if len(seen) != 1:
+            raise AssertionError("len(seen) == 1")
+        if seen[0] is None:
+            raise AssertionError("seen[0] is not None")
 
     def test_tool_output_lands_in_the_journal(self) -> None:
         run(self._invoke())
@@ -177,8 +180,10 @@ class TestJournalThroughWrapper:
         piece = ToolStreams.recorded_slice(
             USER, THREAD, CALL_ID, offset=0, channel=STDOUT
         )
-        assert piece is not None
-        assert "ran: echo hi" in piece.text
+        if piece is None:
+            raise AssertionError("piece is not None")
+        if "ran: echo hi" not in piece.text:
+            raise AssertionError('"ran: echo hi" in piece.text')
 
     def test_journal_is_closed_after_the_call(self) -> None:
         run(self._invoke())
@@ -186,15 +191,20 @@ class TestJournalThroughWrapper:
         piece = ToolStreams.recorded_slice(
             USER, THREAD, CALL_ID, offset=0, channel=STDOUT
         )
-        assert piece is not None
-        assert piece.closed is True
-        assert piece.note == str(CallOutcome.FINISHED)
+        if piece is None:
+            raise AssertionError("piece is not None")
+        if piece.closed is not True:
+            raise AssertionError("piece.closed is True")
+        if piece.note != str(CallOutcome.FINISHED):
+            raise AssertionError("piece.note == str(CallOutcome.FINISHED)")
 
     def test_not_streamable_tool_gets_no_recorder(self) -> None:
         seen = run(self._invoke(streamable=False))
 
-        assert seen == [None]
-        assert ToolStreams.get(THREAD, CALL_ID) is None
+        if seen != [None]:
+            raise AssertionError("seen == [None]")
+        if ToolStreams.get(THREAD, CALL_ID) is not None:
+            raise AssertionError("ToolStreams.get(THREAD, CALL_ID) is None")
 
     def test_failed_call_closes_with_failure_note(self) -> None:
         ToolStreams.mark_streamable([TOOL_NAME])
@@ -203,7 +213,8 @@ class TestJournalThroughWrapper:
         def fake_bash(command: str) -> str:
             """Падает после записи в журнал."""
             sink = ToolStreamTap.get()
-            assert sink is not None
+            if sink is None:
+                raise AssertionError("sink is not None")
             sink.feed(b"partial")
             msg = "boom"
             raise RuntimeError(msg)
@@ -227,10 +238,14 @@ class TestJournalThroughWrapper:
         piece = ToolStreams.recorded_slice(
             USER, THREAD, CALL_ID, offset=0, channel=STDOUT
         )
-        assert piece is not None
-        assert piece.closed is True
-        assert piece.note == str(CallOutcome.FAILED)
-        assert piece.text == "partial"
+        if piece is None:
+            raise AssertionError("piece is not None")
+        if piece.closed is not True:
+            raise AssertionError("piece.closed is True")
+        if piece.note != str(CallOutcome.FAILED):
+            raise AssertionError("piece.note == str(CallOutcome.FAILED)")
+        if piece.text != "partial":
+            raise AssertionError('piece.text == "partial"')
 
     def test_parallel_same_name_calls_keep_own_journals(self) -> None:
         """Два одноимённых вызова: каждый пишет в файл своего call_id."""
@@ -240,7 +255,8 @@ class TestJournalThroughWrapper:
         def fake_bash(command: str) -> str:
             """Пишет свою команду в свой журнал."""
             sink = ToolStreamTap.get()
-            assert sink is not None
+            if sink is None:
+                raise AssertionError("sink is not None")
             sink.feed(f"cmd: {command}".encode())
             return "done"
 
@@ -274,10 +290,14 @@ class TestJournalThroughWrapper:
         beta = ToolStreams.recorded_slice(
             USER, THREAD, "call-b", offset=0, channel=STDOUT
         )
-        assert alpha is not None
-        assert beta is not None
-        assert alpha.text == "cmd: alpha"
-        assert beta.text == "cmd: beta"
+        if alpha is None:
+            raise AssertionError("alpha is not None")
+        if beta is None:
+            raise AssertionError("beta is not None")
+        if alpha.text != "cmd: alpha":
+            raise AssertionError('alpha.text == "cmd: alpha"')
+        if beta.text != "cmd: beta":
+            raise AssertionError('beta.text == "cmd: beta"')
 
 
 class TestJournalOutlivesTheTurn:
@@ -289,14 +309,18 @@ class TestJournalOutlivesTheTurn:
         stream.close(str(CallOutcome.FINISHED))
         TurnScope.end()
 
-        assert ToolStreams.get(THREAD, CALL_ID) is None
+        if ToolStreams.get(THREAD, CALL_ID) is not None:
+            raise AssertionError("ToolStreams.get(THREAD, CALL_ID) is None")
 
         piece = ToolStreams.recorded_slice(
             USER, THREAD, CALL_ID, offset=0, channel=STDOUT
         )
-        assert piece is not None
-        assert piece.text == "прошлый ход"
-        assert piece.closed is True
+        if piece is None:
+            raise AssertionError("piece is not None")
+        if piece.text != "прошлый ход":
+            raise AssertionError('piece.text == "прошлый ход"')
+        if piece.closed is not True:
+            raise AssertionError("piece.closed is True")
 
     def test_turn_end_closes_abandoned_recorder(self) -> None:
         stream = begin_stream()
@@ -307,9 +331,12 @@ class TestJournalOutlivesTheTurn:
         piece = ToolStreams.recorded_slice(
             USER, THREAD, CALL_ID, offset=0, channel=STDOUT
         )
-        assert piece is not None
-        assert piece.closed is True
-        assert piece.note == CallOutcome.STOPPED.value
+        if piece is None:
+            raise AssertionError("piece is not None")
+        if piece.closed is not True:
+            raise AssertionError("piece.closed is True")
+        if piece.note != CallOutcome.STOPPED.value:
+            raise AssertionError("piece.note == CallOutcome.STOPPED.value")
 
     def test_foreign_user_cannot_read_the_journal(self) -> None:
         stream = begin_stream()
@@ -319,7 +346,8 @@ class TestJournalOutlivesTheTurn:
         piece = ToolStreams.recorded_slice(
             "999", THREAD, CALL_ID, offset=0, channel=STDOUT
         )
-        assert piece is None
+        if piece is not None:
+            raise AssertionError("piece is None")
 
 
 class TestBegin:
@@ -330,14 +358,16 @@ class TestBegin:
 
         stream = ToolStreams.begin(USER, THREAD, "../../etc/passwd", TOOL_NAME)
 
-        assert stream is None
+        if stream is not None:
+            raise AssertionError("stream is None")
 
     def test_dotted_call_id_is_refused(self) -> None:
         ToolStreams.mark_streamable([TOOL_NAME])
 
         stream = ToolStreams.begin(USER, THREAD, "call.0", TOOL_NAME)
 
-        assert stream is None
+        if stream is not None:
+            raise AssertionError("stream is None")
 
 
 class RecordingChannel:
@@ -382,26 +412,36 @@ class TestPump:
     def test_snapshots_stay_within_the_window(self) -> None:
         channel = run(self._pumped())
 
-        assert channel.contents
+        if not (channel.contents):
+            raise AssertionError("channel.contents")
         for content in channel.contents:
-            assert len(content.text.encode()) <= JournalWindow.BYTES
+            if len(content.text.encode()) > JournalWindow.BYTES:
+                raise AssertionError("len(content.text.encode()) <= JournalWindow.BYT…")
 
     def test_pushes_are_coalesced(self) -> None:
         channel = run(self._pumped())
 
-        assert len(channel.contents) < self.CHUNKS / 10
+        if len(channel.contents) >= self.CHUNKS / 10:
+            raise AssertionError("len(channel.contents) < self.CHUNKS / 10")
 
     def test_final_push_carries_the_tail_and_position(self) -> None:
         channel = run(self._pumped())
 
         final = channel.contents[-1]
-        assert final.kind is CanvasKind.STREAM
-        assert f"{self.CHUNKS - 1:06d}" in final.text
-        assert str(CallOutcome.FINISHED) in final.note
-        assert final.stream is not None
-        assert final.stream.closed is True
-        assert final.stream.size == self.CHUNKS * (len(self.CHUNK) + 7)
-        assert final.stream.offset + final.stream.window >= final.stream.size
+        if final.kind is not CanvasKind.STREAM:
+            raise AssertionError("final.kind is CanvasKind.STREAM")
+        if f"{self.CHUNKS - 1:06d}" not in final.text:
+            raise AssertionError('f"{self.CHUNKS - 1:06d}" in final.text')
+        if str(CallOutcome.FINISHED) not in final.note:
+            raise AssertionError("str(CallOutcome.FINISHED) in final.note")
+        if final.stream is None:
+            raise AssertionError("final.stream is not None")
+        if final.stream.closed is not True:
+            raise AssertionError("final.stream.closed is True")
+        if final.stream.size != self.CHUNKS * (len(self.CHUNK) + 7):
+            raise AssertionError("final.stream.size == self.CHUNKS * (len(self.CHUNK)…")
+        if final.stream.offset + final.stream.window < final.stream.size:
+            raise AssertionError("final.stream.offset + final.stream.window >= final.…")
 
     def test_show_replaces_the_previous_pump(self) -> None:
         async def scenario() -> tuple[asyncio.Task[None], asyncio.Task[None]]:
@@ -418,8 +458,10 @@ class TestPump:
 
         first_task, second_task = run(scenario())
 
-        assert first_task.cancelled() is True
-        assert second_task is not first_task
+        if first_task.cancelled() is not True:
+            raise AssertionError("first_task.cancelled() is True")
+        if second_task is first_task:
+            raise AssertionError("second_task is not first_task")
 
     def test_leave_stops_the_pump(self) -> None:
         async def scenario() -> asyncio.Task[None]:
@@ -431,7 +473,8 @@ class TestPump:
             return task
 
         task = run(scenario())
-        assert task.cancelled() is True
+        if task.cancelled() is not True:
+            raise AssertionError("task.cancelled() is True")
 
 
 class TestWindowAction:
@@ -456,10 +499,14 @@ class TestWindowAction:
             StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 70000})
         )
 
-        assert first["stream"]["offset"] == 0
-        assert first["stream"]["size"] == len(self.BODY)
-        assert middle["stream"]["offset"] == 70000
-        assert len(middle["text"].encode()) == first["stream"]["window"]
+        if first["stream"]["offset"] != 0:
+            raise AssertionError('first["stream"]["offset"] == 0')
+        if first["stream"]["size"] != len(self.BODY):
+            raise AssertionError('first["stream"]["size"] == len(self.BODY)')
+        if middle["stream"]["offset"] != 70000:
+            raise AssertionError('middle["stream"]["offset"] == 70000')
+        if len(middle["text"].encode()) != first["stream"]["window"]:
+            raise AssertionError('len(middle["text"].encode()) == first["stream"]["wi…')
 
     def test_offset_beyond_the_file_gives_empty_window(self) -> None:
         self._recorded()
@@ -468,15 +515,18 @@ class TestWindowAction:
             StreamActions.window(USER, THREAD, {"call_id": CALL_ID, "offset": 10**9})
         )
 
-        assert beyond["text"] == ""
-        assert beyond["stream"]["offset"] == len(self.BODY)
+        if beyond["text"] != "":
+            raise AssertionError('beyond["text"] == ""')
+        if beyond["stream"]["offset"] != len(self.BODY):
+            raise AssertionError('beyond["stream"]["offset"] == len(self.BODY)')
 
     def test_unknown_call_gives_empty_answer(self) -> None:
         answer = run(
             StreamActions.window(USER, THREAD, {"call_id": "no-such-call", "offset": 0})
         )
 
-        assert answer == {}
+        if answer != {}:
+            raise AssertionError("answer == {}")
 
     def test_window_request_stops_the_pump(self) -> None:
         async def scenario() -> asyncio.Task[None]:
@@ -489,7 +539,8 @@ class TestWindowAction:
             return task
 
         task = run(scenario())
-        assert task.cancelled() is True
+        if task.cancelled() is not True:
+            raise AssertionError("task.cancelled() is True")
 
 
 class TestShowAction:
@@ -507,15 +558,19 @@ class TestShowAction:
             piece = ToolStreams.recorded_slice(
                 USER, THREAD, CALL_ID, offset=-1, channel=STDOUT
             )
-            assert piece is not None
+            if piece is None:
+                raise AssertionError("piece is not None")
             await StreamScreen.recorded(THREAD, CALL_ID, piece, channel, follow=True)
 
         run(scenario())
 
-        assert len(channel.contents) == 1
+        if len(channel.contents) != 1:
+            raise AssertionError("len(channel.contents) == 1")
         shown = channel.contents[0]
-        assert shown.kind is CanvasKind.STREAM
-        assert "сохранённый вывод" in shown.text
+        if shown.kind is not CanvasKind.STREAM:
+            raise AssertionError("shown.kind is CanvasKind.STREAM")
+        if "сохранённый вывод" not in shown.text:
+            raise AssertionError('"сохранённый вывод" in shown.text')
 
     def test_unknown_stream_is_explained(self) -> None:
         channel = RecordingChannel()
@@ -525,8 +580,10 @@ class TestShowAction:
 
         run(scenario())
 
-        assert channel.contents[0].kind is CanvasKind.NOTICE
-        assert "unavailable" in channel.contents[0].note
+        if channel.contents[0].kind is not CanvasKind.NOTICE:
+            raise AssertionError("channel.contents[0].kind is CanvasKind.NOTICE")
+        if "unavailable" not in channel.contents[0].note:
+            raise AssertionError('"unavailable" in channel.contents[0].note')
 
 
 class ElementSink(ChatSink):
@@ -556,11 +613,15 @@ class TestStreamButton:
         step = run(self._tool_step(sink, TOOL_NAME))
 
         elements = step.elements or []
-        assert len(elements) == 1
+        if len(elements) != 1:
+            raise AssertionError("len(elements) == 1")
         element = elements[0]
-        assert element.name == "CanvasStream"
-        assert getattr(element, "props", {}).get("call_id") == CALL_ID
-        assert element.id == ChatView.derive_id(THREAD, CALL_ID, StepRole.STREAM)
+        if element.name != "CanvasStream":
+            raise AssertionError('element.name == "CanvasStream"')
+        if getattr(element, "props", {}).get("call_id") != CALL_ID:
+            raise AssertionError('getattr(element, "props", {}).get("call_id") == CAL…')
+        if element.id != ChatView.derive_id(THREAD, CALL_ID, StepRole.STREAM):
+            raise AssertionError("element.id == ChatView.derive_id(THREAD, CALL_ID, S…")
 
     def test_no_journal_means_no_button(self) -> None:
         ToolStreams.reset()
@@ -568,21 +629,24 @@ class TestStreamButton:
 
         step = run(self._tool_step(ElementSink(), TOOL_NAME))
 
-        assert not step.elements
+        if step.elements:
+            raise AssertionError("not step.elements")
 
     def test_other_tools_stay_clean(self) -> None:
         sink = ElementSink()
 
         step = run(self._tool_step(sink, "diagram_save"))
 
-        assert not step.elements
+        if step.elements:
+            raise AssertionError("not step.elements")
 
     def test_replay_sink_never_emits_the_button(self) -> None:
         ToolStreams.mark_streamable([TOOL_NAME])
 
         step = run(self._tool_step(RecordingSink(), TOOL_NAME))
 
-        assert not step.elements
+        if step.elements:
+            raise AssertionError("not step.elements")
 
     def test_replayed_step_dict_matches_live(self) -> None:
         """Кнопка не должна ломать контракт шагов: сравниваются StepDict."""
@@ -591,9 +655,12 @@ class TestStreamButton:
         live = run(self._tool_step(ElementSink(), TOOL_NAME)).to_dict()
         replay = run(self._tool_step(RecordingSink(), TOOL_NAME)).to_dict()
 
-        assert live["id"] == replay["id"]
-        assert live["name"] == replay["name"]
-        assert live["parentId"] == replay["parentId"]
+        if live["id"] != replay["id"]:
+            raise AssertionError('live["id"] == replay["id"]')
+        if live["name"] != replay["name"]:
+            raise AssertionError('live["name"] == replay["name"]')
+        if live["parentId"] != replay["parentId"]:
+            raise AssertionError('live["parentId"] == replay["parentId"]')
 
 
 class TestStreamDownload:
@@ -647,7 +714,7 @@ class TestStreamDownload:
 
         async def scenario() -> Any:
             transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://t") as client:
+            async with AsyncClient(transport=transport, base_url="https://t") as client:
                 whole = await client.get(f"/stream/{THREAD}/{CALL_ID}")
                 part = await client.get(
                     f"/stream/{THREAD}/{CALL_ID}", headers={"Range": "bytes=0-9"}
@@ -657,16 +724,24 @@ class TestStreamDownload:
 
         whole, part, missing = run(scenario())
 
-        assert whole.status_code == 200
-        assert whole.content == body.encode()
-        assert whole.headers["content-length"] == str(len(body.encode()))
-        assert "attachment" in whole.headers["content-disposition"]
-        assert f"{CALL_ID}.tool_stdout.log" in whole.headers["content-disposition"]
+        if whole.status_code != 200:
+            raise AssertionError("whole.status_code == 200")
+        if whole.content != body.encode():
+            raise AssertionError("whole.content == body.encode()")
+        if whole.headers["content-length"] != str(len(body.encode())):
+            raise AssertionError('whole.headers["content-length"] == str(len(body.enc…')
+        if "attachment" not in whole.headers["content-disposition"]:
+            raise AssertionError('"attachment" in whole.headers["content-disposition"]')
+        if f"{CALL_ID}.tool_stdout.log" not in whole.headers["content-disposition"]:
+            raise AssertionError('f"{CALL_ID}.tool_stdout.log" in whole.headers["cont…')
 
-        assert part.status_code == 206
-        assert part.content == body.encode()[:10]
+        if part.status_code != 206:
+            raise AssertionError("part.status_code == 206")
+        if part.content != body.encode()[:10]:
+            raise AssertionError("part.content == body.encode()[:10]")
 
-        assert missing.status_code == 404
+        if missing.status_code != 404:
+            raise AssertionError("missing.status_code == 404")
 
     def test_foreign_user_gets_no_log(self, tmp_path: Path) -> None:
         stream = begin_stream()
@@ -679,8 +754,9 @@ class TestStreamDownload:
 
         async def scenario() -> Any:
             transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://t") as client:
+            async with AsyncClient(transport=transport, base_url="https://t") as client:
                 return await client.get(f"/stream/{THREAD}/{CALL_ID}")
 
         response = run(scenario())
-        assert response.status_code == 404
+        if response.status_code != 404:
+            raise AssertionError("response.status_code == 404")

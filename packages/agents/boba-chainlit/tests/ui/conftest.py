@@ -27,7 +27,6 @@ from ui.stand import (
     StandConfig,
     StandPaths,
     StandProcess,
-    StandUser,
     free_port,
 )
 
@@ -138,11 +137,12 @@ def stand(
 @pytest.fixture(scope="session")
 def auth_cookies(stand: StandProcess) -> list[dict[str, object]]:
     """Логин формой chainlit: тест ходит той же дорогой, что и пользователь."""
+    credential = stand.config.credential()
     response = httpx.post(
         f"{stand.config.base_url}/login",
         data={
-            "username": StandUser.NAME.value,
-            "password": StandUser.PASSWORD.value,
+            "username": credential.login,
+            "password": credential.password,
         },
         timeout=30.0,
     )

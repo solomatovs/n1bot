@@ -105,7 +105,10 @@ known-first-party = ["boba"]
 "shutil.which".msg = "PATH is attacker-controlled: use boba.toolkit.binaries.TrustedBinaries"
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251", "T201"]
+"**/tests/**" = [
+    "S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251", "T201",
+    "C901",
+]
 "build/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
 
 [tool.uv.workspace]

@@ -84,7 +84,8 @@ def template(tmp_path: Path) -> Path:
     with path.open("wb") as f:
         f.truncate(16 * 1024 * 1024)
     mkfs = shutil.which("mkfs.ext4")
-    assert mkfs is not None
+    if mkfs is None:
+        raise AssertionError("mkfs is not None")
     subprocess.run(  # noqa: S603
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
@@ -117,58 +118,73 @@ class TestDiagnosticText:
 
     def test_timeout_names_limit(self) -> None:
         text = _explain(_result(timed_out=True), _profile(timeout_sec=7))
-        assert "timeout_sec=7" in text
-        assert "timeout" in text.lower()
+        if "timeout_sec=7" not in text:
+            raise AssertionError('"timeout_sec=7" in text')
+        if "timeout" not in text.lower():
+            raise AssertionError('"timeout" in text.lower()')
 
     def test_cpu_limit_named(self) -> None:
         text = _explain(_result(exit_code=152), _profile(max_cpu_sec=5))
-        assert "max_cpu_sec=5" in text
-        assert "SIGXCPU" in text
+        if "max_cpu_sec=5" not in text:
+            raise AssertionError('"max_cpu_sec=5" in text')
+        if "SIGXCPU" not in text:
+            raise AssertionError('"SIGXCPU" in text')
 
     def test_file_size_limit_named(self) -> None:
         result = _result(stderr="bash: line 1: File size limit exceeded")
         text = _explain(result, _profile(max_file_size_bytes=1024))
-        assert "max_file_size_bytes=1024" in text
+        if "max_file_size_bytes=1024" not in text:
+            raise AssertionError('"max_file_size_bytes=1024" in text')
 
     def test_open_files_limit_named(self) -> None:
         result = _result(stderr="OSError: [Errno 24] Too many open files: 'x'")
         text = _explain(result, _profile(max_open_files=10))
-        assert "max_open_files=10" in text
+        if "max_open_files=10" not in text:
+            raise AssertionError('"max_open_files=10" in text')
 
     def test_process_limit_named(self) -> None:
         result = _result(stderr="bash: fork: retry: Resource temporarily unavailable")
         text = _explain(result, _profile(max_processes=10))
-        assert "max_processes=10" in text
+        if "max_processes=10" not in text:
+            raise AssertionError('"max_processes=10" in text')
 
     def test_memory_limit_named(self) -> None:
         result = _result(stderr="MemoryError")
         text = _explain(result, _profile(max_memory_bytes=64 * 1024 * 1024))
-        assert "max_memory_bytes=67108864" in text
+        if "max_memory_bytes=67108864" not in text:
+            raise AssertionError('"max_memory_bytes=67108864" in text')
 
     def test_full_image_explained(self) -> None:
         result = _result(stderr="dd: writing 'big': No space left on device")
         text = _explain(result, _profile())
-        assert "workspace image" in text
-        assert "No space left" in text
+        if "workspace image" not in text:
+            raise AssertionError('"workspace image" in text')
+        if "No space left" not in text:
+            raise AssertionError('"No space left" in text')
 
     def test_network_disabled_explained_with_alternatives(self) -> None:
         result = _result(
             stderr="socket.gaierror: [Errno -3] Temporary failure in name resolution"
         )
         text = _explain(result, _profile(network=False))
-        assert "network=false" in text
-        assert "not at fault" in text
+        if "network=false" not in text:
+            raise AssertionError('"network=false" in text')
+        if "not at fault" not in text:
+            raise AssertionError('"not at fault" in text')
 
     def test_network_error_ignored_when_network_enabled(self) -> None:
         result = _result(stderr="Temporary failure in name resolution")
-        assert _explain(result, _profile(network=True)) == ""
+        if _explain(result, _profile(network=True)) != "":
+            raise AssertionError('_explain(result, _profile(network=True)) == ""')
 
     def test_plain_failure_has_no_diagnostic(self) -> None:
         result = _result(stderr="cat: f.txt: No such file or directory")
-        assert _explain(result, _profile()) == ""
+        if _explain(result, _profile()) != "":
+            raise AssertionError('_explain(result, _profile()) == ""')
 
     def test_success_has_no_diagnostic(self) -> None:
-        assert _explain(_result(exit_code=0), _profile()) == ""
+        if _explain(_result(exit_code=0), _profile()) != "":
+            raise AssertionError('_explain(_result(exit_code=0), _profile()) == ""')
 
 
 def _launchers(profile: SandboxProfile):
@@ -206,43 +222,57 @@ class TestDiagnosticAppearsLive:
         )
         tool = _tool(_profile(max_open_files=10))
         payload = _invoke(tool, "python3 -", stdin=code)
-        assert payload["exit_code"] != 0
-        assert "max_open_files=10" in payload["diagnostic"]
+        if payload["exit_code"] == 0:
+            raise AssertionError('payload["exit_code"] != 0')
+        if "max_open_files=10" not in payload["diagnostic"]:
+            raise AssertionError('"max_open_files=10" in payload["diagnostic"]')
 
     def test_processes(self) -> None:
         command = "for i in $(seq 1 50); do sleep 5 & done; wait"
         tool = _tool(_profile(max_processes=10, timeout_sec=20))
         payload = _invoke(tool, command)
-        assert "max_processes=10" in payload["diagnostic"]
+        if "max_processes=10" not in payload["diagnostic"]:
+            raise AssertionError('"max_processes=10" in payload["diagnostic"]')
 
     def test_file_size(self) -> None:
         tool = _tool(_profile(max_file_size_bytes=1024 * 1024, tmpfs=("/tmp:64M",)))
         payload = _invoke(tool, "dd if=/dev/zero of=/tmp/big bs=64k count=64")
-        assert payload["exit_code"] != 0
-        assert "max_file_size_bytes=1048576" in payload["diagnostic"]
+        if payload["exit_code"] == 0:
+            raise AssertionError('payload["exit_code"] != 0')
+        if "max_file_size_bytes=1048576" not in payload["diagnostic"]:
+            raise AssertionError('"max_file_size_bytes=1048576" in payload["diagnosti…')
 
     def test_memory(self) -> None:
         code = "x = bytearray(400 * 1024 * 1024)\n"
         tool = _tool(_profile(max_memory_bytes=64 * 1024 * 1024))
         payload = _invoke(tool, "python3 -", stdin=code)
-        assert payload["exit_code"] != 0
-        assert "max_memory_bytes=67108864" in payload["diagnostic"]
+        if payload["exit_code"] == 0:
+            raise AssertionError('payload["exit_code"] != 0')
+        if "max_memory_bytes=67108864" not in payload["diagnostic"]:
+            raise AssertionError('"max_memory_bytes=67108864" in payload["diagnostic"]')
 
     def test_timeout(self) -> None:
         tool = _tool(_profile(timeout_sec=1))
         payload = _invoke(tool, "sleep 10")
-        assert payload["timed_out"] is True
-        assert "timeout_sec=1" in payload["diagnostic"]
+        if payload["timed_out"] is not True:
+            raise AssertionError('payload["timed_out"] is True')
+        if "timeout_sec=1" not in payload["diagnostic"]:
+            raise AssertionError('"timeout_sec=1" in payload["diagnostic"]')
 
     def test_network_disabled_explained(self) -> None:
         code = "import socket\nsocket.getaddrinfo('example.com', 443)\n"
         tool = _tool(_profile(network=False))
         payload = _invoke(tool, "python3 -", stdin=code)
-        assert payload["exit_code"] != 0
-        assert "network=false" in payload["diagnostic"]
-        assert "not at fault" in payload["diagnostic"]
+        if payload["exit_code"] == 0:
+            raise AssertionError('payload["exit_code"] != 0')
+        if "network=false" not in payload["diagnostic"]:
+            raise AssertionError('"network=false" in payload["diagnostic"]')
+        if "not at fault" not in payload["diagnostic"]:
+            raise AssertionError('"not at fault" in payload["diagnostic"]')
 
     def test_successful_command_has_empty_diagnostic(self) -> None:
         payload = _invoke(_tool(_profile()), "echo ok")
-        assert payload["exit_code"] == 0
-        assert payload["diagnostic"] == ""
+        if payload["exit_code"] != 0:
+            raise AssertionError('payload["exit_code"] == 0')
+        if payload["diagnostic"] != "":
+            raise AssertionError('payload["diagnostic"] == ""')

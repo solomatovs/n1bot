@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import pytest
+from conftest import FakeSecret
 
 from boba.chainlit.auth.kerberos import (
     KerberosRolesInLdapConfig,
@@ -37,12 +38,15 @@ def chainlit_context() -> None:
 def test_sids_header_roundtrip() -> None:
     sids = ["S-1-5-21-1", "S-1-5-21-2"]
     raw = SidsHeader.render(sids)
-    assert SidsHeader.parse(raw) == sids
+    if SidsHeader.parse(raw) != sids:
+        raise AssertionError("SidsHeader.parse(raw) == sids")
 
 
 def test_sids_header_parse_skips_empty_parts() -> None:
-    assert SidsHeader.parse("S-1-5-1,,S-1-5-2,") == ["S-1-5-1", "S-1-5-2"]
-    assert SidsHeader.parse("") == []
+    if SidsHeader.parse("S-1-5-1,,S-1-5-2,") != ["S-1-5-1", "S-1-5-2"]:
+        raise AssertionError('SidsHeader.parse("S-1-5-1,,S-1-5-2,") == ["S-1-5-1", "S…')
+    if SidsHeader.parse("") != []:
+        raise AssertionError('SidsHeader.parse("") == []')
 
 
 def test_sid_roles_maps_each_group() -> None:
@@ -51,14 +55,17 @@ def test_sid_roles_maps_each_group() -> None:
     )
     provider = SidUserRolesProvider(mapping)
     roles = list(provider.roles_of(["S-1-5-21-1", "S-1-5-21-2", "S-1-5-21-3"]))
-    assert sorted(roles) == ["admin", "dev"]
+    if sorted(roles) != ["admin", "dev"]:
+        raise AssertionError('sorted(roles) == ["admin", "dev"]')
 
 
 def test_sid_exclude_flags_matching_group() -> None:
     mapping = RoleExcludeConfig(["S-1-5-21-9"])
     provider = SidExcludeUserProvider(mapping)
-    assert any(provider.exclude_of(["S-1-5-21-9"]))
-    assert not any(provider.exclude_of(["S-1-5-21-1"]))
+    if not (any(provider.exclude_of(["S-1-5-21-9"]))):
+        raise AssertionError('any(provider.exclude_of(["S-1-5-21-9"]))')
+    if any(provider.exclude_of(["S-1-5-21-1"])):
+        raise AssertionError('not any(provider.exclude_of(["S-1-5-21-1"]))')
 
 
 async def test_local_auth_allows_user_with_roles() -> None:
@@ -67,15 +74,19 @@ async def test_local_auth_allows_user_with_roles() -> None:
         roles=RoleMappingConfig({"alice": ["admin"]}),
     )
     user = await LocalAuth(config).password_auth("alice", "pw")
-    assert user is not None
-    assert user.identifier == "alice"
-    assert user.metadata[UserMetadataField.ROLES] == ["admin"]
+    if user is None:
+        raise AssertionError("user is not None")
+    if user.identifier != "alice":
+        raise AssertionError('user.identifier == "alice"')
+    if user.metadata[UserMetadataField.ROLES] != ["admin"]:
+        raise AssertionError('user.metadata[UserMetadataField.ROLES] == ["admin"]')
 
 
 async def test_local_auth_rejects_wrong_password() -> None:
     config = LocalAuthConfig(users={"alice": "pw"})
     user = await LocalAuth(config).password_auth("alice", "nope")
-    assert user is None
+    if user is not None:
+        raise AssertionError("user is None")
 
 
 async def test_local_auth_rejects_excluded_user() -> None:
@@ -96,8 +107,10 @@ async def test_local_auth_rejects_no_roles_when_required() -> None:
 async def test_local_auth_allows_no_roles_when_not_required() -> None:
     config = LocalAuthConfig(users={"alice": "pw"}, require_roles=False)
     user = await LocalAuth(config).password_auth("alice", "pw")
-    assert user is not None
-    assert UserMetadataField.ROLES not in user.metadata
+    if user is None:
+        raise AssertionError("user is not None")
+    if UserMetadataField.ROLES in user.metadata:
+        raise AssertionError("UserMetadataField.ROLES not in user.metadata")
 
 
 def test_ldap_provider_maps_roles_from_all_sources() -> None:
@@ -111,7 +124,7 @@ def test_ldap_provider_maps_roles_from_all_sources() -> None:
             server="ldaps://dc.example.com:636",
             base_dn="DC=example,DC=com",
             bind_dn="cn=svc",
-            bind_password="secret",
+            bind_password=FakeSecret.LDAP_BIND,
             mapping=mapping,
         ),
     )
@@ -121,7 +134,8 @@ def test_ldap_provider_maps_roles_from_all_sources() -> None:
         member_of=["CN=Devs,OU=G", "CN=Other,OU=G"],
     )
     roles = list(provider.roles_of(user))
-    assert sorted(roles) == ["admin", "dev", "devops"]
+    if sorted(roles) != ["admin", "dev", "devops"]:
+        raise AssertionError('sorted(roles) == ["admin", "dev", "devops"]')
 
 
 def test_ldap_provider_excludes_by_any_source() -> None:
@@ -134,7 +148,7 @@ def test_ldap_provider_excludes_by_any_source() -> None:
             server="ldaps://dc.example.com:636",
             base_dn="DC=example,DC=com",
             bind_dn="cn=svc",
-            bind_password="secret",
+            bind_password=FakeSecret.LDAP_BIND,
             mapping=mapping,
         ),
     )
@@ -144,18 +158,21 @@ def test_ldap_provider_excludes_by_any_source() -> None:
         samaccountname="bob",
         member_of=[],
     )
-    assert provider.excluded_of(blocked_by_name) is True
+    if provider.excluded_of(blocked_by_name) is not True:
+        raise AssertionError("provider.excluded_of(blocked_by_name) is True")
 
     blocked_by_group = ADUserEntry(
         dn="CN=carol,OU=U",
         samaccountname="carol",
         member_of=["CN=Blocked,OU=G"],
     )
-    assert provider.excluded_of(blocked_by_group) is True
+    if provider.excluded_of(blocked_by_group) is not True:
+        raise AssertionError("provider.excluded_of(blocked_by_group) is True")
 
     allowed = ADUserEntry(
         dn="CN=carol,OU=U",
         samaccountname="carol",
         member_of=["CN=Other,OU=G"],
     )
-    assert provider.excluded_of(allowed) is False
+    if provider.excluded_of(allowed) is not False:
+        raise AssertionError("provider.excluded_of(allowed) is False")

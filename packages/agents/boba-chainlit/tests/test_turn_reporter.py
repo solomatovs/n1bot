@@ -97,16 +97,23 @@ class TestFailed:
         described = "RuntimeError: inference is unreachable <- OSError: connect refused"
 
         error_steps = [s for s in sink.steps if s.get(StepField.IS_ERROR)]
-        assert len(error_steps) == 1
-        assert error_steps[0].get(StepField.OUTPUT) == f"**failed:** {described}"
+        if len(error_steps) != 1:
+            raise AssertionError("len(error_steps) == 1")
+        if error_steps[0].get(StepField.OUTPUT) != f"**failed:** {described}":
+            raise AssertionError('error_steps[0].get(StepField.OUTPUT) == f"**failed:…')
 
-        assert len(history.records) == 1
-        assert history.records[0].mark is TurnMark.ERROR
-        assert history.records[0].content == f"**failed:** {described}"
+        if len(history.records) != 1:
+            raise AssertionError("len(history.records) == 1")
+        if history.records[0].mark is not TurnMark.ERROR:
+            raise AssertionError("history.records[0].mark is TurnMark.ERROR")
+        if history.records[0].content != f"**failed:** {described}":
+            raise AssertionError('history.records[0].content == f"**failed:** {descri…')
 
         logged = [r.message for r in caplog.records if "turn failed" in r.message]
-        assert logged
-        assert described in logged[0]
+        if not (logged):
+            raise AssertionError("logged")
+        if described not in logged[0]:
+            raise AssertionError("described in logged[0]")
 
     async def test_pending_tool_steps_are_closed(self) -> None:
         view, sink = await _view_with_sink()
@@ -116,11 +123,17 @@ class TestFailed:
 
         await _reporter(view, state, RememberedHistory()).failed(RuntimeError("boom"))
 
-        assert state.pending_tool_steps == []
+        if state.pending_tool_steps != []:
+            raise AssertionError("state.pending_tool_steps == []")
         closed = [s for s in sink.steps if s.get(StepField.ID) == step.id]
-        assert closed
-        assert closed[-1].get(StepField.OUTPUT) == StepText.TURN_FAILED.value
-        assert str(closed[-1].get(StepField.NAME)).startswith(StepStatus.FAILED.value)
+        if not (closed):
+            raise AssertionError("closed")
+        if closed[-1].get(StepField.OUTPUT) != StepText.TURN_FAILED.value:
+            raise AssertionError("closed[-1].get(StepField.OUTPUT) == StepText.TURN_F…")
+        if not (
+            str(closed[-1].get(StepField.NAME)).startswith(StepStatus.FAILED.value)
+        ):
+            raise AssertionError("str(closed[-1].get(StepField.NAME)).startswith(Step…")
 
     async def test_user_input_error_stays_out_of_history(self) -> None:
         view, _sink = await _view_with_sink()
@@ -130,7 +143,8 @@ class TestFailed:
             UserInputError("file is not supported")
         )
 
-        assert history.records == []
+        if history.records != []:
+            raise AssertionError("history.records == []")
 
     async def test_history_survives_a_broken_view(self) -> None:
         history = RememberedHistory()
@@ -138,8 +152,10 @@ class TestFailed:
 
         await _reporter(broken, TurnState(), history).failed(RuntimeError("boom"))
 
-        assert len(history.records) == 1
-        assert history.records[0].mark is TurnMark.ERROR
+        if len(history.records) != 1:
+            raise AssertionError("len(history.records) == 1")
+        if history.records[0].mark is not TurnMark.ERROR:
+            raise AssertionError("history.records[0].mark is TurnMark.ERROR")
 
 
 class TestStopped:
@@ -157,14 +173,20 @@ class TestStopped:
 
         expected = f"partial text\n\n_{StepText.STOPPED.value}_"
         answer = view.answer_message
-        assert answer is not None
-        assert answer.content == expected
+        if answer is None:
+            raise AssertionError("answer is not None")
+        if answer.content != expected:
+            raise AssertionError("answer.content == expected")
 
-        assert len(history.records) == 1
+        if len(history.records) != 1:
+            raise AssertionError("len(history.records) == 1")
         record = history.records[0]
-        assert record.mark is TurnMark.STOPPED
-        assert record.content == expected
-        assert record.reasoning == "thinking hard"
+        if record.mark is not TurnMark.STOPPED:
+            raise AssertionError("record.mark is TurnMark.STOPPED")
+        if record.content != expected:
+            raise AssertionError("record.content == expected")
+        if record.reasoning != "thinking hard":
+            raise AssertionError('record.reasoning == "thinking hard"')
 
     async def test_pending_tool_steps_are_closed_with_the_note(self) -> None:
         view, sink = await _view_with_sink()
@@ -174,9 +196,11 @@ class TestStopped:
 
         await _reporter(view, state, RememberedHistory()).stopped(StopReason.USER_STOP)
 
-        assert state.pending_tool_steps == []
+        if state.pending_tool_steps != []:
+            raise AssertionError("state.pending_tool_steps == []")
         closed = [s for s in sink.steps if s.get(StepField.ID) == step.id]
-        assert closed[-1].get(StepField.OUTPUT) == StepText.STOPPED.value
+        if closed[-1].get(StepField.OUTPUT) != StepText.STOPPED.value:
+            raise AssertionError("closed[-1].get(StepField.OUTPUT) == StepText.STOPPE…")
 
 
 class TestFailedTurnKeepsHistory:
@@ -206,9 +230,12 @@ class TestFailedTurnKeepsHistory:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        assert len(history.records) == 1
-        assert history.records[0].mark is TurnMark.ERROR
-        assert "inference is unreachable" in history.records[0].content
+        if len(history.records) != 1:
+            raise AssertionError("len(history.records) == 1")
+        if history.records[0].mark is not TurnMark.ERROR:
+            raise AssertionError("history.records[0].mark is TurnMark.ERROR")
+        if "inference is unreachable" not in history.records[0].content:
+            raise AssertionError('"inference is unreachable" in history.records[0].co…')
 
 
 class TestOk:
@@ -222,10 +249,13 @@ class TestOk:
 
         await _reporter(view, state, history := RememberedHistory()).ok()
 
-        assert state.pending_tool_steps == []
+        if state.pending_tool_steps != []:
+            raise AssertionError("state.pending_tool_steps == []")
         closed = [s for s in sink.steps if s.get(StepField.ID) == step.id]
-        assert closed[-1].get(StepField.OUTPUT) == StepText.FINISHED.value
-        assert history.records == []
+        if closed[-1].get(StepField.OUTPUT) != StepText.FINISHED.value:
+            raise AssertionError("closed[-1].get(StepField.OUTPUT) == StepText.FINISH…")
+        if history.records != []:
+            raise AssertionError("history.records == []")
 
     async def test_clean_finish_is_silent(self) -> None:
         view, sink = await _view_with_sink()
@@ -233,4 +263,5 @@ class TestOk:
 
         await _reporter(view, TurnState(), RememberedHistory()).ok()
 
-        assert len(sink.steps) == before
+        if len(sink.steps) != before:
+            raise AssertionError("len(sink.steps) == before")

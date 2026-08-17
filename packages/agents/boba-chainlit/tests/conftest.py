@@ -1,8 +1,10 @@
 """Общие фикстуры для тестов PostgresDataLayer."""
 
 import os
+import secrets
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
@@ -24,6 +26,20 @@ from boba.settings import bind, build_app_config
 
 TEST_DB = "boba_chainlit_test"
 AUTH_USER = "test-user"
+
+
+class FakeSecret(StrEnum):
+    """Заглушки секретов для тестов: значение рождается на запуске, не в коде."""
+
+    LDAP_BIND = secrets.token_hex(8)
+    AUTH = secrets.token_hex(8)
+
+
+class FakeUrl(StrEnum):
+    """Адреса-заглушки: запросы уходят в ASGI-приложение, а не в сеть."""
+
+    BASE = "https://boba"
+    WORKSPACE = "https://boba/workspace"
 
 
 class FakeThreadMessages:
@@ -187,7 +203,8 @@ async def seeded(
     user = await layer.create_user(
         ChainlitUser(identifier="user-1", metadata={"role": "tester"})
     )
-    assert user is not None
+    if user is None:
+        raise AssertionError("user is not None")
 
     thread_id = str(uuid4())
     await layer.update_thread(
@@ -205,7 +222,8 @@ async def seeded(
     thread_messages.by_thread[thread_id] = messages
 
     answer_step_id = ChatView.derive_id(thread_id, "m1", StepRole.ANSWER)
-    assert answer_step_id is not None
+    if answer_step_id is None:
+        raise AssertionError("answer_step_id is not None")
 
     return Seed(
         layer=layer,

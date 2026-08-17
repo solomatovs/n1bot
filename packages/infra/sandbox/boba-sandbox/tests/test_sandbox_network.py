@@ -176,10 +176,11 @@ class TestNetworkProfiles:
         runner = SandboxRunner(cls.LABEL, profile, lambda: cls.PATH_VARS)
         outcome = runner.run(command, "")
 
-        assert outcome.succeeded, (
-            f"{command}: rc={outcome.result.exit_code} "
-            f"stdout={outcome.result.stdout!r} stderr={outcome.result.stderr!r}"
-        )
+        if not (outcome.succeeded):
+            raise AssertionError(
+                f"{command}: rc={outcome.result.exit_code} "
+                f"stdout={outcome.result.stdout!r} stderr={outcome.result.stderr!r}"
+            )
         return outcome.result.stdout
 
     def test_network_profile_mounts_resolver(self) -> None:
@@ -196,14 +197,16 @@ class TestNetworkProfiles:
 
                 missing.append(f"tool.{name}: {required.value}")
 
-        assert missing == []
+        if missing != []:
+            raise AssertionError("missing == []")
 
     def test_resolver_is_visible_inside(self) -> None:
         """Внутри песочницы виден host-резолвер, а не пустой файл из rootfs."""
         for _name, profile in _networked():
             resolver = self._run(profile, ProbeCommand.RESOLVER.render(""))
 
-            assert "nameserver" in resolver
+            if "nameserver" not in resolver:
+                raise AssertionError('"nameserver" in resolver')
 
     def test_configured_host_resolves_inside(self) -> None:
         """Имя, которое резолвится на машине, обязано резолвиться и в песочнице."""
@@ -212,4 +215,5 @@ class TestNetworkProfiles:
         for _name, profile in _networked():
             resolved = self._run(profile, ProbeCommand.LOOKUP.render(host))
 
-            assert host in resolved
+            if host not in resolved:
+                raise AssertionError("host in resolved")

@@ -39,9 +39,14 @@ def test_module_loads_and_validates_config() -> None:
     outcome = _caller().run_tool(command)
 
     reply = outcome.reply
-    assert isinstance(reply, ReplyError)
-    assert reply.kind == "invalid_request"
-    assert "ModuleNotFoundError" not in reply.message
-    assert "ImportError" not in reply.message
+    if not (isinstance(reply, ReplyError)):
+        raise AssertionError("isinstance(reply, ReplyError)")
+    if reply.kind != "invalid_request":
+        raise AssertionError('reply.kind == "invalid_request"')
+    if "ModuleNotFoundError" in reply.message:
+        raise AssertionError('"ModuleNotFoundError" not in reply.message')
+    if "ImportError" in reply.message:
+        raise AssertionError('"ImportError" not in reply.message')
     # параллелизм страниц задаётся явно — без него конфиг невалиден
-    assert "page_workers" in reply.message
+    if "page_workers" not in reply.message:
+        raise AssertionError('"page_workers" in reply.message')

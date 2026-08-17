@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -14,6 +14,7 @@ from boba.chainlit.domain.errors import RefusalError
 from chainlit.context import ChainlitContextException
 
 __all__ = [
+    "LogLine",
     "LogUserMark",
     "UserMetadataField",
     "current_thread_id",
@@ -28,6 +29,40 @@ class UserMetadataField:
 
     PROVIDER: Final = "provider"
     ROLES: Final = "roles"
+
+
+class LogLine:
+    """Текст чужого происхождения в строке журнала: одна строка без управляющих.
+
+    Ошибка инструмента и ответ модели попадают в лог как есть, а перевод строки
+    внутри них подделал бы соседнюю запись журнала.
+    """
+
+    ESCAPES: ClassVar[Mapping[str, str]] = {
+        "\\": "\\\\",
+        "\n": "\\n",
+        "\r": "\\r",
+        "\t": "\\t",
+    }
+    DELETE: ClassVar[str] = "\x7f"
+
+    @classmethod
+    def safe(cls, text: str) -> str:
+        chunks: list[str] = []
+
+        for char in text:
+            escape = cls.ESCAPES.get(char)
+            if escape is not None:
+                chunks.append(escape)
+                continue
+
+            if char < " " or char == cls.DELETE:
+                chunks.append(f"\\x{ord(char):02x}")
+                continue
+
+            chunks.append(char)
+
+        return "".join(chunks)
 
 
 class LogUserMark:

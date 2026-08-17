@@ -409,6 +409,16 @@ class FuseMounter:
     def mount(
         self, image: str, mnt: str, *, readonly: bool, fakeroot: bool = False
     ) -> None:
+        # пути приезжают из argv лаунчера: относительный или начинающийся с
+        # дефиса fuse2fs разобрал бы как опцию, а не как файл
+        if not os.path.isabs(image):
+            msg = f"image path must be absolute: {image!r}"
+            raise MountError(msg)
+
+        if not os.path.isabs(mnt):
+            msg = f"mount point must be absolute: {mnt!r}"
+            raise MountError(msg)
+
         fuse2fs = self._binaries.resolve(SandboxBinary.FUSE2FS)
         os.makedirs(mnt, exist_ok=True)
 

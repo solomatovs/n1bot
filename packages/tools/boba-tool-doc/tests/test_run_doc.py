@@ -39,18 +39,18 @@ def doc_cfg(raw_config) -> DocToolSection:
 
 async def test_run_read_document(doc_cfg: DocToolSection) -> None:
     body = ToolMain.toolset(read_document)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        path=RunArgs.PATH, pages=RunArgs.PAGES, cfg=doc_cfg
-    )
+    content, _artifact = await body(path=RunArgs.PATH, pages=RunArgs.PAGES, cfg=doc_cfg)
 
     print(content)
 
 
 async def test_run_document_outline(doc_cfg: DocToolSection) -> None:
     body = ToolMain.toolset(document_outline)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(path=RunArgs.PATH, cfg=doc_cfg)
 
@@ -59,10 +59,9 @@ async def test_run_document_outline(doc_cfg: DocToolSection) -> None:
 
 async def test_run_search_document(doc_cfg: DocToolSection) -> None:
     body = ToolMain.toolset(search_document)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        path=RunArgs.PATH, query=RunArgs.QUERY, cfg=doc_cfg
-    )
+    content, _artifact = await body(path=RunArgs.PATH, query=RunArgs.QUERY, cfg=doc_cfg)
 
     print(content)

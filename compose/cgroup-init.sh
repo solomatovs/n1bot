@@ -1,35 +1,46 @@
 #!/bin/sh
-# Делегирует boba.slice пользователю контейнера: в ней песочница создаёт
-# per-run cgroup'ы с лимитами. Docker сам заводит slice от root, а лимиты
-# пишет chainlit от своего uid — отсюда chown.
+# Делегированный cgroup v2 для песочницы boba: одно поддерево на все запуски.
 #
-# Запускать от root один раз после загрузки хоста, до docker compose up:
-#     sudo ./cgroup-init.sh
+# Приложение переносит каждый запуск инструмента в собственный leaf, поэтому
+# ему нужна запись в самом поддереве и в cgroup.procs общего предка — по
+# правилу общего предка cgroup v2. Поддерево одно и то же для запуска из IDE
+# (BOBA_CGROUP_BASE=/sys/fs/cgroup/boba.slice/boba-sandbox) и для контейнера
+# (том /sys/fs/cgroup/boba.slice:/cgroup, BOBA_CGROUP_BASE=/cgroup/boba-sandbox).
+#
+# Имя boba.slice выбрано под systemd-драйвер docker: cgroup_parent принимает
+# только *.slice, поэтому контейнер ложится рядом с поддеревом песочницы.
 set -eu
 
+USER_NAME="${BOBA_USER:-boba}"
 SLICE=/sys/fs/cgroup/boba.slice
-UID_GID="${BOBA_UID:-1000}:${BOBA_GID:-984}"
-
-if [ "$(id -u)" -ne 0 ]; then
-    echo "нужны права root: sudo $0" >&2
-    exit 1
-fi
+BASE="$SLICE/boba-sandbox"
+CONTROLLERS="cpu memory pids"
 
 if [ ! -d /sys/fs/cgroup/cgroup.controllers ] && [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
-    echo "на хосте нет cgroup v2 (/sys/fs/cgroup/cgroup.controllers)" >&2
+    echo "нет cgroup v2 в /sys/fs/cgroup" >&2
     exit 1
 fi
 
-mkdir -p "$SLICE" "$SLICE/boba-sandbox"
+id "$USER_NAME" > /dev/null 2>&1 || {
+    echo "нет пользователя $USER_NAME (задай BOBA_USER)" >&2
+    exit 1
+}
 
-# контроллеры в subtree_control родителя: без них у leaf'ов не будет
-# memory.max / cpu.max / pids.max
-echo "+cpu +memory +pids" > "$SLICE/cgroup.subtree_control"
+mkdir -p "$SLICE" "$BASE"
 
-chown -R "$UID_GID" "$SLICE"
+# контроллеры нужны и в срезе, и в поддереве: лимиты ставятся на leaf'ах
+for target in /sys/fs/cgroup "$SLICE"; do
+    for controller in $CONTROLLERS; do
+        if ! grep -qw "$controller" "$target/cgroup.subtree_control" 2>/dev/null; then
+            echo "+$controller" > "$target/cgroup.subtree_control" || true
+        fi
+    done
+done
 
-# правило общего предка cgroup v2: перенос процесса из session-*.scope в
-# boba.slice требует прав на cgroup.procs их общего предка — корня
-chown "$UID_GID" /sys/fs/cgroup/cgroup.procs
+# запись в общего предка: без неё перенос процесса в leaf даёт EACCES
+chown "$USER_NAME" "$SLICE" "$SLICE/cgroup.procs" "$SLICE/cgroup.subtree_control"
+chown -R "$USER_NAME" "$BASE"
 
-echo "$SLICE делегирован $UID_GID; контроллеры: $(cat "$SLICE/cgroup.controllers")"
+echo "cgroup готов: $BASE (пользователь $USER_NAME)"
+echo "  IDE:     BOBA_CGROUP_BASE=$BASE"
+echo "  compose: том $SLICE:/cgroup, BOBA_CGROUP_BASE=/cgroup/boba-sandbox"

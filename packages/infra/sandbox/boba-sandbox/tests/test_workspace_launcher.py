@@ -121,7 +121,8 @@ class TestSparseCopier:
         data = bytes(range(256)) * 300
         src.write_bytes(data)
         self._copy(src, dst)
-        assert dst.read_bytes() == data
+        if dst.read_bytes() != data:
+            raise AssertionError("dst.read_bytes() == data")
 
     def test_holes_stay_holes(self, tmp_path: Path) -> None:
         src, dst = tmp_path / "src", tmp_path / "dst"
@@ -130,21 +131,26 @@ class TestSparseCopier:
             f.seek(8 * 1024 * 1024)
             f.write(b"tail")
         self._copy(src, dst)
-        assert dst.read_bytes() == src.read_bytes()
-        assert dst.stat().st_blocks * 512 < dst.stat().st_size
+        if dst.read_bytes() != src.read_bytes():
+            raise AssertionError("dst.read_bytes() == src.read_bytes()")
+        if dst.stat().st_blocks * 512 >= dst.stat().st_size:
+            raise AssertionError("dst.stat().st_blocks * 512 < dst.stat().st_size")
 
     def test_zero_blocks_become_holes(self, tmp_path: Path) -> None:
         src, dst = tmp_path / "src", tmp_path / "dst"
         src.write_bytes(b"\0" * (4 * CHUNK))
         self._copy(src, dst)
-        assert dst.read_bytes() == src.read_bytes()
-        assert dst.stat().st_blocks * 512 < dst.stat().st_size
+        if dst.read_bytes() != src.read_bytes():
+            raise AssertionError("dst.read_bytes() == src.read_bytes()")
+        if dst.stat().st_blocks * 512 >= dst.stat().st_size:
+            raise AssertionError("dst.stat().st_blocks * 512 < dst.stat().st_size")
 
     def test_empty_file(self, tmp_path: Path) -> None:
         src, dst = tmp_path / "src", tmp_path / "dst"
         src.touch()
         self._copy(src, dst)
-        assert dst.stat().st_size == 0
+        if dst.stat().st_size != 0:
+            raise AssertionError("dst.stat().st_size == 0")
 
 
 class TestImageStore:
@@ -157,7 +163,8 @@ class TestImageStore:
         store = self._store(template)
         try:
             store.acquire(str(image))
-            assert image.read_bytes() == b"TEMPLATE"
+            if image.read_bytes() != b"TEMPLATE":
+                raise AssertionError('image.read_bytes() == b"TEMPLATE"')
         finally:
             store.release_all()
 
@@ -167,7 +174,8 @@ class TestImageStore:
         store = self._store(template)
         try:
             store.acquire(str(image))
-            assert image.read_bytes() == b"EXISTING"
+            if image.read_bytes() != b"EXISTING":
+                raise AssertionError('image.read_bytes() == b"EXISTING"')
         finally:
             store.release_all()
 
@@ -176,7 +184,8 @@ class TestImageStore:
         store = self._store(template)
         try:
             store.acquire(str(image))
-            assert (tmp_path / ("img" + ImageStore.LOCK_SUFFIX)).exists()
+            if not ((tmp_path / ("img" + ImageStore.LOCK_SUFFIX)).exists()):
+                raise AssertionError('(tmp_path / ("img" + ImageStore.LOCK_SUFFIX)).e…')
         finally:
             store.release_all()
 
@@ -218,12 +227,14 @@ class TestImageStore:
                 store.acquire(str(image))
         finally:
             store.release_all()
-        assert not image.exists()
+        if image.exists():
+            raise AssertionError("not image.exists()")
         leftovers: list[Path] = []
         for path in tmp_path.iterdir():
             if ".tmp." in path.name:
                 leftovers.append(path)
-        assert not leftovers
+        if leftovers:
+            raise AssertionError("not leftovers")
 
     DEAD_PID: ClassVar[int] = 999_999
     """Pid, которого нет: владелец частичной копии умер, не докопировав её."""
@@ -244,8 +255,10 @@ class TestImageStore:
         finally:
             store.release_all()
 
-        assert image.exists()
-        assert not partial.exists()
+        if not (image.exists()):
+            raise AssertionError("image.exists()")
+        if partial.exists():
+            raise AssertionError("not partial.exists()")
 
     def test_partial_copy_of_a_live_owner_kept_on_acquire(
         self, tmp_path: Path, template: Path
@@ -260,14 +273,18 @@ class TestImageStore:
         finally:
             store.release_all()
 
-        assert partial.exists()
+        if not (partial.exists()):
+            raise AssertionError("partial.exists()")
 
     def test_alien_name_is_not_a_partial_copy(self, tmp_path: Path) -> None:
         image = str(tmp_path / "img")
 
-        assert PartialCopy.owner_of(image, f"{image}.tmp.notapid") is None
-        assert PartialCopy.owner_of(image, f"{image}.backup") is None
-        assert PartialCopy.owner_of(image, PartialCopy.render(image, 42)) == 42
+        if PartialCopy.owner_of(image, f"{image}.tmp.notapid") is not None:
+            raise AssertionError('PartialCopy.owner_of(image, f"{image}.tmp.notapid")…')
+        if PartialCopy.owner_of(image, f"{image}.backup") is not None:
+            raise AssertionError('PartialCopy.owner_of(image, f"{image}.backup") is N…')
+        if PartialCopy.owner_of(image, PartialCopy.render(image, 42)) != 42:
+            raise AssertionError("PartialCopy.owner_of(image, PartialCopy.render(imag…")
 
     def test_lock_held_blocks_second_owner(
         self, tmp_path: Path, template: Path
@@ -300,9 +317,11 @@ class TestImageStore:
         thread = threading.Thread(target=worker)
         thread.start()
         try:
-            assert not done.wait(0.3)
+            if done.wait(0.3):
+                raise AssertionError("not done.wait(0.3)")
             first.release_all()
-            assert done.wait(3)
+            if not (done.wait(3)):
+                raise AssertionError("done.wait(3)")
         finally:
             thread.join()
             second.release_all()
@@ -320,14 +339,17 @@ class TestFileOperations:
 
     def test_write_creates_dirs_and_content(self, tmp_path: Path) -> None:
         rc = self._ops(tmp_path).write("a/b/c.txt", io.BytesIO(b"data"))
-        assert rc == 0
-        assert (tmp_path / "a" / "b" / "c.txt").read_bytes() == b"data"
+        if rc != 0:
+            raise AssertionError("rc == 0")
+        if (tmp_path / "a" / "b" / "c.txt").read_bytes() != b"data":
+            raise AssertionError('(tmp_path / "a" / "b" / "c.txt").read_bytes() == b"…')
 
     def test_write_overwrites(self, tmp_path: Path) -> None:
         ops = self._ops(tmp_path)
         ops.write("f.txt", io.BytesIO(b"old"))
         ops.write("f.txt", io.BytesIO(b"new"))
-        assert (tmp_path / "f.txt").read_bytes() == b"new"
+        if (tmp_path / "f.txt").read_bytes() != b"new":
+            raise AssertionError('(tmp_path / "f.txt").read_bytes() == b"new"')
 
     def test_read_returns_header_and_content(self, tmp_path: Path) -> None:
         (tmp_path / "f.txt").write_bytes(b"payload")
@@ -335,8 +357,10 @@ class TestFileOperations:
 
         rc = self._ops(tmp_path).read("f.txt", ReadWindow.entire(), out)
 
-        assert rc == 0
-        assert self._split(out) == (7, b"payload")
+        if rc != 0:
+            raise AssertionError("rc == 0")
+        if self._split(out) != (7, b"payload"):
+            raise AssertionError('self._split(out) == (7, b"payload")')
 
     def test_read_window_slices_body(self, tmp_path: Path) -> None:
         (tmp_path / "f.txt").write_bytes(b"0123456789")
@@ -345,8 +369,10 @@ class TestFileOperations:
         window = ReadWindow(offset=3, length=4)
         rc = self._ops(tmp_path).read("f.txt", window, out)
 
-        assert rc == 0
-        assert self._split(out) == (10, b"3456")
+        if rc != 0:
+            raise AssertionError("rc == 0")
+        if self._split(out) != (10, b"3456"):
+            raise AssertionError('self._split(out) == (10, b"3456")')
 
     def test_read_window_past_end_is_empty(self, tmp_path: Path) -> None:
         (tmp_path / "f.txt").write_bytes(b"abc")
@@ -355,12 +381,15 @@ class TestFileOperations:
         window = ReadWindow(offset=10, length=5)
         rc = self._ops(tmp_path).read("f.txt", window, out)
 
-        assert rc == 0
-        assert self._split(out) == (3, b"")
+        if rc != 0:
+            raise AssertionError("rc == 0")
+        if self._split(out) != (3, b""):
+            raise AssertionError('self._split(out) == (3, b"")')
 
     def test_read_missing_is_not_found(self, tmp_path: Path) -> None:
         rc = self._ops(tmp_path).read("nope", ReadWindow.entire(), io.BytesIO())
-        assert rc == LauncherExit.NOT_FOUND
+        if rc != LauncherExit.NOT_FOUND:
+            raise AssertionError("rc == LauncherExit.NOT_FOUND")
 
     def test_stat_reports_size_without_body(self, tmp_path: Path) -> None:
         (tmp_path / "f.txt").write_bytes(b"payload")
@@ -368,27 +397,33 @@ class TestFileOperations:
 
         rc = self._ops(tmp_path).stat("f.txt", out)
 
-        assert rc == 0
-        assert self._split(out) == (7, b"")
+        if rc != 0:
+            raise AssertionError("rc == 0")
+        if self._split(out) != (7, b""):
+            raise AssertionError('self._split(out) == (7, b"")')
 
     def test_stat_missing_is_not_found(self, tmp_path: Path) -> None:
         rc = self._ops(tmp_path).stat("nope", io.BytesIO())
-        assert rc == LauncherExit.NOT_FOUND
+        if rc != LauncherExit.NOT_FOUND:
+            raise AssertionError("rc == LauncherExit.NOT_FOUND")
 
     def test_stat_rejects_directory(self, tmp_path: Path) -> None:
         (tmp_path / "sub").mkdir()
         rc = self._ops(tmp_path).stat("sub", io.BytesIO())
-        assert rc == LauncherExit.NOT_REGULAR
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
 
     def test_read_rejects_directory(self, tmp_path: Path) -> None:
         (tmp_path / "sub").mkdir()
         rc = self._ops(tmp_path).read("sub", ReadWindow.entire(), io.BytesIO())
-        assert rc == LauncherExit.NOT_REGULAR
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
 
     def test_write_rejects_existing_directory(self, tmp_path: Path) -> None:
         (tmp_path / "sub").mkdir()
         rc = self._ops(tmp_path).write("sub", io.BytesIO(b"x"))
-        assert rc == LauncherExit.NOT_REGULAR
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
 
     def test_read_does_not_block_on_fifo(self, tmp_path: Path) -> None:
         """stat перед open: именованный канал без писателя не подвешивает read."""
@@ -397,7 +432,8 @@ class TestFileOperations:
 
         rc = self._ops(tmp_path).read("pipe", ReadWindow.entire(), io.BytesIO())
 
-        assert rc == LauncherExit.NOT_REGULAR
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
 
     def test_stat_does_not_block_on_fifo(self, tmp_path: Path) -> None:
         fifo = tmp_path / "pipe"
@@ -405,14 +441,18 @@ class TestFileOperations:
 
         rc = self._ops(tmp_path).stat("pipe", io.BytesIO())
 
-        assert rc == LauncherExit.NOT_REGULAR
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
 
     def test_delete_then_not_found(self, tmp_path: Path) -> None:
         (tmp_path / "f.txt").write_bytes(b"x")
         ops = self._ops(tmp_path)
-        assert ops.delete("f.txt") == 0
-        assert not (tmp_path / "f.txt").exists()
-        assert ops.delete("f.txt") == LauncherExit.NOT_FOUND
+        if ops.delete("f.txt") != 0:
+            raise AssertionError('ops.delete("f.txt") == 0')
+        if (tmp_path / "f.txt").exists():
+            raise AssertionError('not (tmp_path / "f.txt").exists()')
+        if ops.delete("f.txt") != LauncherExit.NOT_FOUND:
+            raise AssertionError('ops.delete("f.txt") == LauncherExit.NOT_FOUND')
 
     @pytest.mark.parametrize("rel", ["/abs", "../x", "a/../../x"])
     def test_escape_rejected(self, tmp_path: Path, rel: str) -> None:
@@ -421,7 +461,8 @@ class TestFileOperations:
 
     def test_path_normalized_inside_root(self, tmp_path: Path) -> None:
         self._ops(tmp_path).write("a/./b/../c.txt", io.BytesIO(b"x"))
-        assert (tmp_path / "a" / "c.txt").exists()
+        if not ((tmp_path / "a" / "c.txt").exists()):
+            raise AssertionError('(tmp_path / "a" / "c.txt").exists()')
 
 
 class TestSymlinkEscape:
@@ -450,8 +491,10 @@ class TestSymlinkEscape:
         out = io.BytesIO()
         rc = ops.read("leak", ReadWindow.entire(), out)
 
-        assert rc == LauncherExit.NOT_REGULAR
-        assert b"host secret" not in out.getvalue()
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
+        if b"host secret" in out.getvalue():
+            raise AssertionError('b"host secret" not in out.getvalue()')
 
     def test_stat_refuses_symlinked_file(self, tmp_path: Path, outside: Path) -> None:
         ops = self._ops(tmp_path)
@@ -459,7 +502,8 @@ class TestSymlinkEscape:
 
         rc = ops.stat("leak", io.BytesIO())
 
-        assert rc == LauncherExit.NOT_REGULAR
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
 
     def test_read_refuses_symlinked_parent(self, tmp_path: Path, outside: Path) -> None:
         """Промежуточный каталог тоже проверяется, а не только имя файла."""
@@ -469,8 +513,10 @@ class TestSymlinkEscape:
         out = io.BytesIO()
         rc = ops.read("upload/outside.txt", ReadWindow.entire(), out)
 
-        assert rc == LauncherExit.NOT_REGULAR
-        assert b"host secret" not in out.getvalue()
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
+        if b"host secret" in out.getvalue():
+            raise AssertionError('b"host secret" not in out.getvalue()')
 
     def test_write_refuses_symlinked_target(
         self, tmp_path: Path, outside: Path
@@ -481,8 +527,10 @@ class TestSymlinkEscape:
 
         rc = ops.write("leak", io.BytesIO(b"overwritten"))
 
-        assert rc == LauncherExit.NOT_REGULAR
-        assert outside.read_bytes() == b"host secret"
+        if rc != LauncherExit.NOT_REGULAR:
+            raise AssertionError("rc == LauncherExit.NOT_REGULAR")
+        if outside.read_bytes() != b"host secret":
+            raise AssertionError('outside.read_bytes() == b"host secret"')
 
     def test_delete_removes_the_link_not_the_target(
         self, tmp_path: Path, outside: Path
@@ -491,9 +539,12 @@ class TestSymlinkEscape:
         link = tmp_path / "root" / "leak"
         link.symlink_to(outside)
 
-        assert ops.delete("leak") == LauncherExit.OK
-        assert not link.is_symlink()
-        assert outside.read_bytes() == b"host secret"
+        if ops.delete("leak") != LauncherExit.OK:
+            raise AssertionError('ops.delete("leak") == LauncherExit.OK')
+        if link.is_symlink():
+            raise AssertionError("not link.is_symlink()")
+        if outside.read_bytes() != b"host secret":
+            raise AssertionError('outside.read_bytes() == b"host secret"')
 
     def test_listing_skips_symlinks(self, tmp_path: Path, outside: Path) -> None:
         ops = self._ops(tmp_path)
@@ -501,9 +552,11 @@ class TestSymlinkEscape:
         (tmp_path / "root" / "leak").symlink_to(outside)
 
         out = io.BytesIO()
-        assert ops.list_dir(".", out) == LauncherExit.OK
+        if ops.list_dir(".", out) != LauncherExit.OK:
+            raise AssertionError('ops.list_dir(".", out) == LauncherExit.OK')
 
-        assert out.getvalue().split() == [b"real.txt"]
+        if out.getvalue().split() != [b"real.txt"]:
+            raise AssertionError('out.getvalue().split() == [b"real.txt"]')
 
 
 class TestFuseMounter:
@@ -515,10 +568,12 @@ class TestFuseMounter:
         )
 
     def test_is_mounted_true_for_root(self) -> None:
-        assert FuseMounter.is_mounted("/")
+        if not (FuseMounter.is_mounted("/")):
+            raise AssertionError('FuseMounter.is_mounted("/")')
 
     def test_is_mounted_false_for_plain_dir(self, tmp_path: Path) -> None:
-        assert not FuseMounter.is_mounted(str(tmp_path))
+        if FuseMounter.is_mounted(str(tmp_path)):
+            raise AssertionError("not FuseMounter.is_mounted(str(tmp_path))")
 
     def test_missing_fuse2fs_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -555,7 +610,8 @@ class TestFuseMounter:
         mounter = FuseMounter(_launcher_options(), _trusted())
         mounter._daemons.append(daemon)
         mounter.shutdown()
-        assert daemon.returncode == -signal.SIGTERM
+        if daemon.returncode != -signal.SIGTERM:
+            raise AssertionError("daemon.returncode == -signal.SIGTERM")
 
     def test_shutdown_kills_stubborn_daemon(self) -> None:
         code = (
@@ -567,12 +623,14 @@ class TestFuseMounter:
         daemon = subprocess.Popen(  # noqa: S603
             [sys.executable, "-c", code], stdout=subprocess.PIPE, shell=False
         )
-        assert daemon.stdout is not None
+        if daemon.stdout is None:
+            raise AssertionError("daemon.stdout is not None")
         daemon.stdout.readline()
         mounter = FuseMounter(_launcher_options(shutdown_wait_sec=0.2), _trusted())
         mounter._daemons.append(daemon)
         mounter.shutdown()
-        assert daemon.returncode == -signal.SIGKILL
+        if daemon.returncode != -signal.SIGKILL:
+            raise AssertionError("daemon.returncode == -signal.SIGKILL")
 
     def test_shutdown_is_idempotent(self) -> None:
         daemon = self._sleeper()
@@ -580,7 +638,8 @@ class TestFuseMounter:
         mounter._daemons.append(daemon)
         mounter.shutdown()
         mounter.shutdown()
-        assert daemon.returncode == -signal.SIGTERM
+        if daemon.returncode != -signal.SIGTERM:
+            raise AssertionError("daemon.returncode == -signal.SIGTERM")
 
 
 class TestCapabilityDropper:
@@ -602,8 +661,10 @@ class TestCapabilityDropper:
         for line in out.splitlines():
             if line.startswith("Cap"):
                 caps[line.split(":")[0]] = line.split()[1]
-        assert int(caps["CapEff"], 16) == 0
-        assert int(caps["CapPrm"], 16) == 0
+        if int(caps["CapEff"], 16) != 0:
+            raise AssertionError('int(caps["CapEff"], 16) == 0')
+        if int(caps["CapPrm"], 16) != 0:
+            raise AssertionError('int(caps["CapPrm"], 16) == 0')
 
 
 class TestLauncherMain:
@@ -631,31 +692,41 @@ class TestLauncherMain:
         self, tmp_path: Path, template: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rc = self._main(tmp_path, template, "run", "a", "b")
-        assert rc == LauncherExit.MOUNT_ERROR
-        assert LauncherMarker.ERROR in capsys.readouterr().err
-        assert not (tmp_path / ("img" + ImageStore.LOCK_SUFFIX)).exists()
-        assert not (tmp_path / "img").exists()
+        if rc != LauncherExit.MOUNT_ERROR:
+            raise AssertionError("rc == LauncherExit.MOUNT_ERROR")
+        if LauncherMarker.ERROR not in capsys.readouterr().err:
+            raise AssertionError("LauncherMarker.ERROR in capsys.readouterr().err")
+        if (tmp_path / ("img" + ImageStore.LOCK_SUFFIX)).exists():
+            raise AssertionError('not (tmp_path / ("img" + ImageStore.LOCK_SUFFIX)).e…')
+        if (tmp_path / "img").exists():
+            raise AssertionError('not (tmp_path / "img").exists()')
 
     def test_empty_run_command_rejected(
         self, tmp_path: Path, template: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rc = self._main(tmp_path, template, "run", "   ")
-        assert rc == LauncherExit.MOUNT_ERROR
-        assert "empty command" in capsys.readouterr().err
+        if rc != LauncherExit.MOUNT_ERROR:
+            raise AssertionError("rc == LauncherExit.MOUNT_ERROR")
+        if "empty command" not in capsys.readouterr().err:
+            raise AssertionError('"empty command" in capsys.readouterr().err')
 
     def test_unbalanced_quotes_rejected(
         self, tmp_path: Path, template: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rc = self._main(tmp_path, template, "run", "'unclosed")
-        assert rc == LauncherExit.MOUNT_ERROR
-        assert LauncherMarker.ERROR in capsys.readouterr().err
+        if rc != LauncherExit.MOUNT_ERROR:
+            raise AssertionError("rc == LauncherExit.MOUNT_ERROR")
+        if LauncherMarker.ERROR not in capsys.readouterr().err:
+            raise AssertionError("LauncherMarker.ERROR in capsys.readouterr().err")
 
     def test_missing_template_is_mount_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rc = self._main(tmp_path, tmp_path / "absent", "delete", "x")
-        assert rc == LauncherExit.MOUNT_ERROR
-        assert LauncherMarker.ERROR in capsys.readouterr().err
+        if rc != LauncherExit.MOUNT_ERROR:
+            raise AssertionError("rc == LauncherExit.MOUNT_ERROR")
+        if LauncherMarker.ERROR not in capsys.readouterr().err:
+            raise AssertionError("LauncherMarker.ERROR in capsys.readouterr().err")
 
     def test_cli_options_parsed_into_launcher(self) -> None:
         args = Launcher._parse_args(
@@ -691,16 +762,26 @@ class TestLauncherMain:
                 "x",
             ]
         )
-        assert args.trusted_bin_dir == ["/usr/bin"]
-        assert args.mount_wait_sec == 1.5
-        assert args.lock_wait_sec == 2.5
-        assert args.copy_chunk_bytes == 4096
-        assert args.max_memory_bytes == 1048576
-        assert args.max_cpu_sec == 7
-        assert args.max_file_size_bytes == 2048
-        assert args.oom_score_adj == 800
-        assert args.mode == "read"
-        assert args.args == ["x"]
+        if args.trusted_bin_dir != ["/usr/bin"]:
+            raise AssertionError('args.trusted_bin_dir == ["/usr/bin"]')
+        if args.mount_wait_sec != 1.5:
+            raise AssertionError("args.mount_wait_sec == 1.5")
+        if args.lock_wait_sec != 2.5:
+            raise AssertionError("args.lock_wait_sec == 2.5")
+        if args.copy_chunk_bytes != 4096:
+            raise AssertionError("args.copy_chunk_bytes == 4096")
+        if args.max_memory_bytes != 1048576:
+            raise AssertionError("args.max_memory_bytes == 1048576")
+        if args.max_cpu_sec != 7:
+            raise AssertionError("args.max_cpu_sec == 7")
+        if args.max_file_size_bytes != 2048:
+            raise AssertionError("args.max_file_size_bytes == 2048")
+        if args.oom_score_adj != 800:
+            raise AssertionError("args.oom_score_adj == 800")
+        if args.mode != "read":
+            raise AssertionError('args.mode == "read"')
+        if args.args != ["x"]:
+            raise AssertionError('args.args == ["x"]')
 
     def test_cli_requires_all_options(self) -> None:
         """Скрытых значений нет: без флагов лаунчер не запускается."""
@@ -733,16 +814,22 @@ class TestChainOptions:
             copy_chunk_bytes=4096,
         )
         argv = self._argv(["read", "x"], options)
-        assert argv[argv.index("--mount-wait-sec") + 1] == "3.5"
-        assert argv[argv.index("--mount-poll-sec") + 1] == "0.1"
-        assert argv[argv.index("--shutdown-wait-sec") + 1] == "2.0"
-        assert argv[argv.index("--lock-wait-sec") + 1] == "4.5"
-        assert argv[argv.index("--copy-chunk-bytes") + 1] == "4096"
+        if argv[argv.index("--mount-wait-sec") + 1] != "3.5":
+            raise AssertionError('argv[argv.index("--mount-wait-sec") + 1] == "3.5"')
+        if argv[argv.index("--mount-poll-sec") + 1] != "0.1":
+            raise AssertionError('argv[argv.index("--mount-poll-sec") + 1] == "0.1"')
+        if argv[argv.index("--shutdown-wait-sec") + 1] != "2.0":
+            raise AssertionError('argv[argv.index("--shutdown-wait-sec") + 1] == "2.0"')
+        if argv[argv.index("--lock-wait-sec") + 1] != "4.5":
+            raise AssertionError('argv[argv.index("--lock-wait-sec") + 1] == "4.5"')
+        if argv[argv.index("--copy-chunk-bytes") + 1] != "4096":
+            raise AssertionError('argv[argv.index("--copy-chunk-bytes") + 1] == "4096"')
 
     def test_run_command_shlex_roundtrip(self) -> None:
         inner = ["/bin/echo", "a b", "it's", "--flag=v"]
         argv = self._argv(["run", shlex.join(inner)], _launcher_options())
-        assert shlex.split(argv[-1]) == inner
+        if shlex.split(argv[-1]) != inner:
+            raise AssertionError("shlex.split(argv[-1]) == inner")
 
     def test_config_requires_all_timings(self) -> None:
         with pytest.raises(ValueError, match="mount_wait_sec"):
@@ -756,13 +843,17 @@ class TestChainOptions:
             lock_wait_sec=3.0,
             copy_chunk_bytes=4096,
         )
-        assert cfg.to_options() == _launcher_options(
-            mount_wait_sec=1.0,
-            mount_poll_sec=0.1,
-            shutdown_wait_sec=2.0,
-            lock_wait_sec=3.0,
-            copy_chunk_bytes=4096,
-        )
+        if not (
+            cfg.to_options()
+            == _launcher_options(
+                mount_wait_sec=1.0,
+                mount_poll_sec=0.1,
+                shutdown_wait_sec=2.0,
+                lock_wait_sec=3.0,
+                copy_chunk_bytes=4096,
+            )
+        ):
+            raise AssertionError("cfg.to_options() == _launcher_options( mount_wait_s…")
 
     def test_limits_rendered_as_flags(self) -> None:
         limits = ResourceLimits(
@@ -780,9 +871,12 @@ class TestChainOptions:
             limits=limits,
             binaries=_trusted(),
         )
-        assert argv[argv.index("--max-memory-bytes") + 1] == "1048576"
-        assert argv[argv.index("--max-cpu-sec") + 1] == "7"
-        assert argv[argv.index("--max-file-size-bytes") + 1] == "2048"
+        if argv[argv.index("--max-memory-bytes") + 1] != "1048576":
+            raise AssertionError('argv[argv.index("--max-memory-bytes") + 1] == "1048…')
+        if argv[argv.index("--max-cpu-sec") + 1] != "7":
+            raise AssertionError('argv[argv.index("--max-cpu-sec") + 1] == "7"')
+        if argv[argv.index("--max-file-size-bytes") + 1] != "2048":
+            raise AssertionError('argv[argv.index("--max-file-size-bytes") + 1] == "2…')
 
 
 class TestResourceLimits:
@@ -812,11 +906,15 @@ class TestResourceLimits:
                 cpu_time = line
             if line.startswith("Max file size"):
                 file_size = line
-        assert str(64 * 1024 * 1024) in address_space
-        assert " 5 " in f"{cpu_time} "
-        assert str(8 * 1024 * 1024) in file_size
+        if str(64 * 1024 * 1024) not in address_space:
+            raise AssertionError("str(64 * 1024 * 1024) in address_space")
+        if " 5 " not in f"{cpu_time} ":
+            raise AssertionError('" 5 " in f"{cpu_time} "')
+        if str(8 * 1024 * 1024) not in file_size:
+            raise AssertionError("str(8 * 1024 * 1024) in file_size")
 
     def test_zero_limits_do_nothing(self) -> None:
         before = Path("/proc/self/limits").read_text()
         ResourceLimits().apply_to_process(os.getpid())
-        assert Path("/proc/self/limits").read_text() == before
+        if Path("/proc/self/limits").read_text() != before:
+            raise AssertionError('Path("/proc/self/limits").read_text() == before')

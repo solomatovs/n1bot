@@ -129,18 +129,21 @@ class TestLoggingReader:
         stream = LoggingReader(inner, logging.getLogger("test")).read(_raw())
         await anext(stream)
         # обёртка не имеет права вычитать ридер вперёд потребителя
-        assert inner.emitted == 1
+        if inner.emitted != 1:
+            raise AssertionError("inner.emitted == 1")
 
     async def test_passes_every_section_through(self) -> None:
         inner = _CountingReader(total=4)
         reader = LoggingReader(inner, logging.getLogger("test"))
         sections = [section async for section in reader.read(_raw())]
-        assert len(sections) == 4
+        if len(sections) != 4:
+            raise AssertionError("len(sections) == 4")
 
     def test_keeps_inner_reader_id(self) -> None:
         inner = _CountingReader(total=1)
         reader = LoggingReader(inner, logging.getLogger("test"))
-        assert reader.reader_id() == inner.reader_id()
+        if reader.reader_id() != inner.reader_id():
+            raise AssertionError("reader.reader_id() == inner.reader_id()")
 
 
 class TestLoggingChunker:
@@ -149,7 +152,8 @@ class TestLoggingChunker:
         chunker = LoggingChunker(inner, logging.getLogger("test"), _progress())
         stream = chunker.chunk(_sections(10))
         await anext(stream)
-        assert inner.emitted == 1
+        if inner.emitted != 1:
+            raise AssertionError("inner.emitted == 1")
 
     async def test_ticks_every_n_chunks(
         self,
@@ -166,10 +170,13 @@ class TestLoggingChunker:
                 )
             ]
         ticks = [r for r in caplog.records if "chunks so far" in r.getMessage()]
-        assert len(produced) == LoggingChunker.EVERY * 2
-        assert len(ticks) == 2
+        if len(produced) != LoggingChunker.EVERY * 2:
+            raise AssertionError("len(produced) == LoggingChunker.EVERY * 2")
+        if len(ticks) != 2:
+            raise AssertionError("len(ticks) == 2")
 
     def test_keeps_inner_chunker_id(self) -> None:
         inner = _CountingChunker()
         chunker = LoggingChunker(inner, logging.getLogger("test"), _progress())
-        assert chunker.chunker_id() == inner.chunker_id()
+        if chunker.chunker_id() != inner.chunker_id():
+            raise AssertionError("chunker.chunker_id() == inner.chunker_id()")

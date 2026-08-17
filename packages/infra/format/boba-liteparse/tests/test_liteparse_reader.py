@@ -64,26 +64,34 @@ def _raw(data: bytes, content_type: str | None) -> RawDocument:
 
 async def test_pdf_one_section_per_page_with_locus() -> None:
     secs = [item async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, _PDF_TYPE))]
-    assert [s.order for s in secs] == [1, 2]
-    assert [s.metadata.get(SectionKeys.PAGE_NUMBER) for s in secs] == [1, 2]
-    assert all(s.metadata.get(ReaderKeys.DOC_TYPE) == "pdf" for s in secs)
-    assert "Alpha page one" in secs[0].content
-    assert "Beta page two" in secs[1].content
+    if [s.order for s in secs] != [1, 2]:
+        raise AssertionError("[s.order for s in secs] == [1, 2]")
+    if [s.metadata.get(SectionKeys.PAGE_NUMBER) for s in secs] != [1, 2]:
+        raise AssertionError("[s.metadata.get(SectionKeys.PAGE_NUMBER) for s in secs]…")
+    if not (all(s.metadata.get(ReaderKeys.DOC_TYPE) == "pdf" for s in secs)):
+        raise AssertionError('all(s.metadata.get(ReaderKeys.DOC_TYPE) == "pdf" for s …')
+    if "Alpha page one" not in secs[0].content:
+        raise AssertionError('"Alpha page one" in secs[0].content')
+    if "Beta page two" not in secs[1].content:
+        raise AssertionError('"Beta page two" in secs[1].content')
 
 
 async def test_passes_through_source_metadata() -> None:
     [first, *_] = [
         item async for item in LiteParseReader(_PARAMS).read(_raw(_PDF, _PDF_TYPE))
     ]
-    assert first.source_id == SourceId(_SOURCE)
+    if first.source_id != SourceId(_SOURCE):
+        raise AssertionError("first.source_id == SourceId(_SOURCE)")
     # имя файла (page_title), выставленное upstream, доезжает до Section
-    assert first.metadata.get(ReaderKeys.PAGE_TITLE) == "report.pdf"
+    if first.metadata.get(ReaderKeys.PAGE_TITLE) != "report.pdf":
+        raise AssertionError('first.metadata.get(ReaderKeys.PAGE_TITLE) == "report.pd…')
 
 
 async def test_content_type_with_params_is_normalized() -> None:
     raw = _raw(_PDF, "Application/PDF; charset=binary")
     secs = [item async for item in LiteParseReader(_PARAMS).read(raw)]
-    assert [s.order for s in secs] == [1, 2]
+    if [s.order for s in secs] != [1, 2]:
+        raise AssertionError("[s.order for s in secs] == [1, 2]")
 
 
 async def test_unsupported_content_type_raises_incompatible() -> None:
@@ -105,10 +113,13 @@ async def test_corrupt_document_raises_incompatible() -> None:
 
 async def test_empty_payload_yields_nothing() -> None:
     empty = LiteParseReader(_PARAMS).read(_raw(b"", "application/pdf"))
-    assert [section async for section in empty] == []
+    if [section async for section in empty] != []:
+        raise AssertionError("[section async for section in empty] == []")
 
 
 def test_media_types_match_default_suffix_map() -> None:
     reader = LiteParseReader(_PARAMS)
-    assert "application/pdf" in reader.media_types
-    assert set(reader.media_types) == set(DocumentMedia.SUFFIX_BY_MEDIA_TYPE)
+    if "application/pdf" not in reader.media_types:
+        raise AssertionError('"application/pdf" in reader.media_types')
+    if set(reader.media_types) != set(DocumentMedia.SUFFIX_BY_MEDIA_TYPE):
+        raise AssertionError("set(reader.media_types) == set(DocumentMedia.SUFFIX_BY_…")

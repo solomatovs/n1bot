@@ -61,37 +61,48 @@ async def http_context() -> None:
 class TestMermaidSpec:
     def test_plain_spec(self) -> None:
         parsed = MermaidSpec.parse(ER_SPEC)
-        assert parsed.diagram_type == "erDiagram"
-        assert parsed.title is None
-        assert parsed.text == ER_SPEC
+        if parsed.diagram_type != "erDiagram":
+            raise AssertionError('parsed.diagram_type == "erDiagram"')
+        if parsed.title is not None:
+            raise AssertionError("parsed.title is None")
+        if parsed.text != ER_SPEC:
+            raise AssertionError("parsed.text == ER_SPEC")
 
     def test_fence_with_language_is_stripped(self) -> None:
         parsed = MermaidSpec.parse(f"```mermaid\n{ER_SPEC}\n```")
-        assert parsed.text == ER_SPEC
+        if parsed.text != ER_SPEC:
+            raise AssertionError("parsed.text == ER_SPEC")
 
     def test_bare_fence_is_stripped(self) -> None:
         parsed = MermaidSpec.parse(f"```\n{ER_SPEC}\n```")
-        assert parsed.text == ER_SPEC
+        if parsed.text != ER_SPEC:
+            raise AssertionError("parsed.text == ER_SPEC")
 
     def test_indented_spec_is_dedented(self) -> None:
         raw = "    erDiagram\n        A ||--o{ B : x"
         parsed = MermaidSpec.parse(raw)
-        assert parsed.text.startswith("erDiagram")
+        if not (parsed.text.startswith("erDiagram")):
+            raise AssertionError('parsed.text.startswith("erDiagram")')
 
     def test_frontmatter_title_extracted_and_kept(self) -> None:
         raw = f"---\ntitle: Схема заказов\n---\n{ER_SPEC}"
         parsed = MermaidSpec.parse(raw)
-        assert parsed.title == "Схема заказов"
-        assert parsed.diagram_type == "erDiagram"
-        assert parsed.text.startswith("---")
+        if parsed.title != "Схема заказов":
+            raise AssertionError('parsed.title == "Схема заказов"')
+        if parsed.diagram_type != "erDiagram":
+            raise AssertionError('parsed.diagram_type == "erDiagram"')
+        if not (parsed.text.startswith("---")):
+            raise AssertionError('parsed.text.startswith("---")')
 
     def test_comment_lines_are_skipped(self) -> None:
         parsed = MermaidSpec.parse(f"%% комментарий\n{ER_SPEC}")
-        assert parsed.diagram_type == "erDiagram"
+        if parsed.diagram_type != "erDiagram":
+            raise AssertionError('parsed.diagram_type == "erDiagram"')
 
     def test_dashed_type_token(self) -> None:
         parsed = MermaidSpec.parse("stateDiagram-v2\n    [*] --> Active")
-        assert parsed.diagram_type == "stateDiagram-v2"
+        if parsed.diagram_type != "stateDiagram-v2":
+            raise AssertionError('parsed.diagram_type == "stateDiagram-v2"')
 
     def test_unknown_type_rejected_with_known_list(self) -> None:
         with pytest.raises(DiagramSpecError, match="erDiagram"):
@@ -105,12 +116,14 @@ class TestMermaidSpec:
 class TestToolInterface:
     def test_tool_names(self) -> None:
         tools = build_diagram_tools(DiagramToolConfig(max_chars=1000))
-        assert [t.name for t in tools] == ["diagram_save"]
+        if [t.name for t in tools] != ["diagram_save"]:
+            raise AssertionError('[t.name for t in tools] == ["diagram_save"]')
 
     def test_save_schema_fields(self) -> None:
         save = build_diagram_tools(DiagramToolConfig(max_chars=1000))[0]
         schema = cast(type[BaseModel], save.tool_call_schema)
-        assert set(schema.model_fields) == {"name", "spec"}
+        if set(schema.model_fields) != {"name", "spec"}:
+            raise AssertionError('set(schema.model_fields) == {"name", "spec"}')
 
     def test_build_registers_viewer(self) -> None:
         """Канвас узнаёт про .mmd только отсюда — иначе файл некому показать."""
@@ -119,8 +132,10 @@ class TestToolInterface:
 
         viewer = CanvasRegistry.viewer_for("orders.mmd")
 
-        assert isinstance(viewer, MermaidViewer)
-        assert CanvasRegistry.viewer_for("notes.txt") is None
+        if not (isinstance(viewer, MermaidViewer)):
+            raise AssertionError("isinstance(viewer, MermaidViewer)")
+        if CanvasRegistry.viewer_for("notes.txt") is not None:
+            raise AssertionError('CanvasRegistry.viewer_for("notes.txt") is None')
 
 
 class TestRefusal:
@@ -131,7 +146,8 @@ class TestRefusal:
         with pytest.raises(RefusalError) as failure:
             await DiagramFiles(1000).save("x.mmd", ER_SPEC)
 
-        assert failure.value.kind == SessionKind.NO_SESSION
+        if failure.value.kind != SessionKind.NO_SESSION:
+            raise AssertionError("failure.value.kind == SessionKind.NO_SESSION")
 
     @pytest.mark.anyio
     async def test_save_bad_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,7 +157,8 @@ class TestRefusal:
         with pytest.raises(DiagramRefusedError) as failure:
             await DiagramFiles(1000).save("x.mmd", "не mermaid вовсе")
 
-        assert failure.value.kind == DiagramErrorKind.INVALID_SPEC
+        if failure.value.kind != DiagramErrorKind.INVALID_SPEC:
+            raise AssertionError("failure.value.kind == DiagramErrorKind.INVALID_SPEC")
 
     @pytest.mark.anyio
     async def test_save_over_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,7 +168,8 @@ class TestRefusal:
         with pytest.raises(DiagramRefusedError) as failure:
             await DiagramFiles(10).save("x.mmd", ER_SPEC)
 
-        assert failure.value.kind == DiagramErrorKind.INVALID_SPEC
+        if failure.value.kind != DiagramErrorKind.INVALID_SPEC:
+            raise AssertionError("failure.value.kind == DiagramErrorKind.INVALID_SPEC")
 
     @pytest.mark.anyio
     async def test_save_path_traversal_in_name(
@@ -160,7 +178,8 @@ class TestRefusal:
         """Имя от LLM чистится: файл остаётся в каталоге диаграмм треда."""
         key = await files.save("../../etc/passwd.mmd", ER_SPEC)
 
-        assert key.in_workspace() == f"/workspace/{THREAD}/mermaid/passwd.mmd"
+        if key.in_workspace() != f"/workspace/{THREAD}/mermaid/passwd.mmd":
+            raise AssertionError('key.in_workspace() == f"/workspace/{THREAD}/mermaid…')
 
 
 class _StorageOnlyLayer:
@@ -202,10 +221,12 @@ class TestSaveAndView:
     ) -> None:
         key = await files.save("orders.mmd", f"```mermaid\n{ER_SPEC}\n```")
 
-        assert key.in_workspace() == f"/workspace/{THREAD}/mermaid/orders.mmd"
+        if key.in_workspace() != f"/workspace/{THREAD}/mermaid/orders.mmd":
+            raise AssertionError('key.in_workspace() == f"/workspace/{THREAD}/mermaid…')
 
         stored = tmp_path / "7" / THREAD / "mermaid" / "orders.mmd"
-        assert stored.read_text(encoding="utf-8") == ER_SPEC
+        if stored.read_text(encoding="utf-8") != ER_SPEC:
+            raise AssertionError('stored.read_text(encoding="utf-8") == ER_SPEC')
 
     @pytest.fixture
     def fast_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,14 +249,21 @@ class TestSaveAndView:
         )
         opened = await MermaidViewer(files).open(key, push)
 
-        assert opened.label == "orders.mmd"
-        assert isinstance(opened.link, DiagramResult)
-        assert opened.link.spec == ER_SPEC
-        assert len(shown) == 1
+        if opened.label != "orders.mmd":
+            raise AssertionError('opened.label == "orders.mmd"')
+        if not (isinstance(opened.link, DiagramResult)):
+            raise AssertionError("isinstance(opened.link, DiagramResult)")
+        if opened.link.spec != ER_SPEC:
+            raise AssertionError("opened.link.spec == ER_SPEC")
+        if len(shown) != 1:
+            raise AssertionError("len(shown) == 1")
         content = shown[0]
-        assert content.path == key.in_workspace()
-        assert content.text == ER_SPEC
-        assert content.nonce
+        if content.path != key.in_workspace():
+            raise AssertionError("content.path == key.in_workspace()")
+        if content.text != ER_SPEC:
+            raise AssertionError("content.text == ER_SPEC")
+        if not (content.nonce):
+            raise AssertionError("content.nonce")
 
     @pytest.mark.anyio
     async def test_viewer_reads_user_upload(
@@ -259,13 +287,16 @@ class TestSaveAndView:
         )
         await MermaidViewer(files).open(key, push)
 
-        assert shown[0].text == ER_SPEC
+        if shown[0].text != ER_SPEC:
+            raise AssertionError("shown[0].text == ER_SPEC")
 
     def test_viewer_handles_only_mmd(self, files: DiagramFiles) -> None:
         viewer = MermaidViewer(files)
 
-        assert viewer.handles("orders.mmd") is True
-        assert viewer.handles("report.pdf") is False
+        if viewer.handles("orders.mmd") is not True:
+            raise AssertionError('viewer.handles("orders.mmd") is True')
+        if viewer.handles("report.pdf") is not False:
+            raise AssertionError('viewer.handles("report.pdf") is False')
 
     @pytest.mark.anyio
     async def test_read_missing_file(self, files: DiagramFiles) -> None:
@@ -276,7 +307,8 @@ class TestSaveAndView:
         with pytest.raises(DiagramRefusedError) as failure:
             await files.read(key)
 
-        assert failure.value.kind == DiagramErrorKind.FILE_NOT_FOUND
+        if failure.value.kind != DiagramErrorKind.FILE_NOT_FOUND:
+            raise AssertionError("failure.value.kind == DiagramErrorKind.FILE_NOT_FOU…")
 
 
 class TestEntry:
@@ -292,9 +324,12 @@ class TestEntry:
 
         entry = DiagramEntry.of(key, "не диаграмма вовсе")
 
-        assert entry.spec == "не диаграмма вовсе"
-        assert entry.type == ""
-        assert entry.label == "a.mmd"
+        if entry.spec != "не диаграмма вовсе":
+            raise AssertionError('entry.spec == "не диаграмма вовсе"')
+        if entry.type != "":
+            raise AssertionError('entry.type == ""')
+        if entry.label != "a.mmd":
+            raise AssertionError('entry.label == "a.mmd"')
 
     def test_entry_of_broken_body_keeps_type(self) -> None:
         """Заголовок разобран — тип известен; синтаксис тела проверяет браузер."""
@@ -304,8 +339,10 @@ class TestEntry:
 
         entry = DiagramEntry.of(key, "erDiagram\n  A ||--")
 
-        assert entry.spec == "erDiagram\n  A ||--"
-        assert entry.type == "erDiagram"
+        if entry.spec != "erDiagram\n  A ||--":
+            raise AssertionError('entry.spec == "erDiagram\\n A ||--"')
+        if entry.type != "erDiagram":
+            raise AssertionError('entry.type == "erDiagram"')
 
     @pytest.mark.anyio
     async def test_read_binary_file(self, files: DiagramFiles) -> None:
@@ -323,7 +360,8 @@ class TestEntry:
         with pytest.raises(DiagramRefusedError) as failure:
             await files.read(key)
 
-        assert failure.value.kind == DiagramErrorKind.BAD_FILE
+        if failure.value.kind != DiagramErrorKind.BAD_FILE:
+            raise AssertionError("failure.value.kind == DiagramErrorKind.BAD_FILE")
 
     @pytest.mark.anyio
     async def test_read_refuses_file_over_the_limit(self, files: DiagramFiles) -> None:
@@ -347,7 +385,8 @@ class TestEntry:
         with pytest.raises(DiagramRefusedError) as failure:
             await files.read(key)
 
-        assert failure.value.kind == DiagramErrorKind.BAD_FILE
+        if failure.value.kind != DiagramErrorKind.BAD_FILE:
+            raise AssertionError("failure.value.kind == DiagramErrorKind.BAD_FILE")
 
 
 class FileFeed:
@@ -402,7 +441,8 @@ class TestCanvasWatcher:
 
         await self.run(feed)
 
-        assert feed.pushed == ["v2", "v3"]
+        if feed.pushed != ["v2", "v3"]:
+            raise AssertionError('feed.pushed == ["v2", "v3"]')
 
     @pytest.mark.anyio
     async def test_read_error_skips_tick(self) -> None:
@@ -411,7 +451,8 @@ class TestCanvasWatcher:
 
         await self.run(feed)
 
-        assert feed.pushed == ["v2"]
+        if feed.pushed != ["v2"]:
+            raise AssertionError('feed.pushed == ["v2"]')
 
     @pytest.mark.anyio
     async def test_stops_when_turn_ends(self) -> None:
@@ -420,7 +461,8 @@ class TestCanvasWatcher:
 
         await self.run(feed)
 
-        assert feed.pushed == []
+        if feed.pushed != []:
+            raise AssertionError("feed.pushed == []")
 
     @pytest.mark.anyio
     async def test_broken_snapshot_is_pushed_as_is(self) -> None:
@@ -429,7 +471,8 @@ class TestCanvasWatcher:
 
         await self.run(feed)
 
-        assert feed.pushed == ["erDiagram\n  A ||--"]
+        if feed.pushed != ["erDiagram\n  A ||--"]:
+            raise AssertionError('feed.pushed == ["erDiagram\\n A ||--"]')
 
 
 class TestRenderVerdicts:
@@ -442,8 +485,10 @@ class TestRenderVerdicts:
         RenderVerdicts.report({"nonce": "n-1", "ok": False, "error": "Parse error"})
         verdict = await RenderVerdicts.wait("n-1", 1.0)
 
-        assert verdict.status is RenderStatus.FAILED
-        assert verdict.message == "Parse error"
+        if verdict.status is not RenderStatus.FAILED:
+            raise AssertionError("verdict.status is RenderStatus.FAILED")
+        if verdict.message != "Parse error":
+            raise AssertionError('verdict.message == "Parse error"')
 
     @pytest.mark.anyio
     async def test_success_report(self) -> None:
@@ -452,7 +497,8 @@ class TestRenderVerdicts:
         RenderVerdicts.report({"nonce": "n-2", "ok": True, "error": ""})
         verdict = await RenderVerdicts.wait("n-2", 1.0)
 
-        assert verdict.status is RenderStatus.RENDERED
+        if verdict.status is not RenderStatus.RENDERED:
+            raise AssertionError("verdict.status is RenderStatus.RENDERED")
 
     @pytest.mark.anyio
     async def test_silence_is_unknown(self) -> None:
@@ -460,7 +506,8 @@ class TestRenderVerdicts:
 
         verdict = await RenderVerdicts.wait("n-3", 0.05)
 
-        assert verdict.status is RenderStatus.UNKNOWN
+        if verdict.status is not RenderStatus.UNKNOWN:
+            raise AssertionError("verdict.status is RenderStatus.UNKNOWN")
 
     @pytest.mark.anyio
     async def test_unknown_nonce_is_ignored(self) -> None:
@@ -497,8 +544,10 @@ class TestViewerVerdict:
         with pytest.raises(CanvasError) as failure:
             await opening
 
-        assert failure.value.kind == CanvasErrorKind.RENDER_FAILED
-        assert "Parse error on line 5" in str(failure.value)
+        if failure.value.kind != CanvasErrorKind.RENDER_FAILED:
+            raise AssertionError("failure.value.kind == CanvasErrorKind.RENDER_FAILED")
+        if "Parse error on line 5" not in str(failure.value):
+            raise AssertionError('"Parse error on line 5" in str(failure.value)')
 
 
 class FakeTurn:
@@ -544,9 +593,7 @@ class TestSaveToolEndToEnd:
         monkeypatch.setattr(CanvasPanel, "_push", classmethod(capture))
         return pushed
 
-    async def _call(
-        self, spec: str, verdict: dict[str, Any], panel: list[Any]
-    ) -> Any:
+    async def _call(self, spec: str, verdict: dict[str, Any], panel: list[Any]) -> Any:
         """Зовёт тул как агент — tool_call, иначе artifact до вызывающего не дойдёт."""
         save = build_diagram_tools(DiagramToolConfig(max_chars=32000))[0]
         request = {
@@ -582,10 +629,14 @@ class TestSaveToolEndToEnd:
             ER_SPEC, {"ok": False, "error": "Parse error on line 5"}, panel
         )
 
-        assert isinstance(result, ErrorResult)
-        assert result.error_kind == CanvasErrorKind.RENDER_FAILED
-        assert "Parse error on line 5" in result.message
-        assert "diagram saved" in result.message
+        if not (isinstance(result, ErrorResult)):
+            raise AssertionError("isinstance(result, ErrorResult)")
+        if result.error_kind != CanvasErrorKind.RENDER_FAILED:
+            raise AssertionError("result.error_kind == CanvasErrorKind.RENDER_FAILED")
+        if "Parse error on line 5" not in result.message:
+            raise AssertionError('"Parse error on line 5" in result.message')
+        if "diagram saved" not in result.message:
+            raise AssertionError('"diagram saved" in result.message')
 
     @pytest.mark.anyio
     async def test_failed_diagram_leaves_no_card_in_the_feed(
@@ -599,7 +650,8 @@ class TestSaveToolEndToEnd:
         вызовом, а попытка видна шагом инструмента внутри хода."""
         await self._call(ER_SPEC, {"ok": False, "error": "Parse error"}, panel)
 
-        assert feed == []
+        if feed != []:
+            raise AssertionError("feed == []")
 
     @pytest.mark.anyio
     async def test_rendered_diagram_card_goes_to_the_feed(
@@ -612,15 +664,24 @@ class TestSaveToolEndToEnd:
         """Успех — диаграмма в панели плюс кликабельная карточка в ленте."""
         content, result = await self._call(ER_SPEC, {"ok": True, "error": ""}, panel)
 
-        assert isinstance(result, TextResult)
-        assert "diagram saved" in content
+        if not (isinstance(result, TextResult)):
+            raise AssertionError("isinstance(result, TextResult)")
+        if "diagram saved" not in content:
+            raise AssertionError('"diagram saved" in content')
 
-        assert panel[0].kind == "mermaid"
-        assert panel[0].text == ER_SPEC
+        if panel[0].kind != "mermaid":
+            raise AssertionError('panel[0].kind == "mermaid"')
+        if panel[0].text != ER_SPEC:
+            raise AssertionError("panel[0].text == ER_SPEC")
 
         card = feed[0]
-        assert card.props["kind"] == "mermaid"
-        assert card.props["preview"] is True
-        assert card.props["text"] == ER_SPEC
-        assert not card.props.get("nonce"), "карточка не участвует в верификации"
-        assert card.props["path"] == f"/workspace/{THREAD}/mermaid/orders.mmd"
+        if card.props["kind"] != "mermaid":
+            raise AssertionError('card.props["kind"] == "mermaid"')
+        if card.props["preview"] is not True:
+            raise AssertionError('card.props["preview"] is True')
+        if card.props["text"] != ER_SPEC:
+            raise AssertionError('card.props["text"] == ER_SPEC')
+        if card.props.get("nonce"):
+            raise AssertionError("карточка не участвует в верификации")
+        if card.props["path"] != f"/workspace/{THREAD}/mermaid/orders.mmd":
+            raise AssertionError('card.props["path"] == f"/workspace/{THREAD}/mermaid…')

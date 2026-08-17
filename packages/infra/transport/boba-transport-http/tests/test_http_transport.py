@@ -48,9 +48,12 @@ async def test_returns_status_headers_and_body(monkeypatch):
         transport.fetch(HttpRequest(url="https://x.test/doc")) as resp,
     ):
         # заголовки отдаются сырыми; обогащение/strip — забота потребителя
-        assert resp.status == 200
-        assert resp.headers["etag"] == '"v1"'
-        assert await resp.stream.read() == b"hello body"
+        if resp.status != 200:
+            raise AssertionError("resp.status == 200")
+        if resp.headers["etag"] != '"v1"':
+            raise AssertionError('resp.headers["etag"] == \'"v1"\'')
+        if await resp.stream.read() != b"hello body":
+            raise AssertionError('await resp.stream.read() == b"hello body"')
 
 
 async def test_body_arrives_as_a_stream(monkeypatch):
@@ -70,7 +73,8 @@ async def test_body_arrives_as_a_stream(monkeypatch):
         async for chunk in resp.stream:
             seen.append(chunk)
 
-    assert seen == parts
+    if seen != parts:
+        raise AssertionError("seen == parts")
 
 
 async def test_retry_recovers_after_5xx(monkeypatch):
@@ -91,8 +95,10 @@ async def test_retry_recovers_after_5xx(monkeypatch):
         transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
     ):
         body = await resp.stream.read()
-    assert calls["n"] == 3
-    assert body == b"ok"
+    if calls["n"] != 3:
+        raise AssertionError('calls["n"] == 3')
+    if body != b"ok":
+        raise AssertionError('body == b"ok"')
 
 
 async def test_retry_exhausted_raises_last_5xx(monkeypatch):
@@ -109,8 +115,10 @@ async def test_retry_exhausted_raises_last_5xx(monkeypatch):
     with pytest.raises(httpx.HTTPStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
             pass
-    assert exc.value.response.status_code == 500
-    assert calls["n"] == 2
+    if exc.value.response.status_code != 500:
+        raise AssertionError("exc.value.response.status_code == 500")
+    if calls["n"] != 2:
+        raise AssertionError('calls["n"] == 2')
     await transport.close()
 
 
@@ -128,8 +136,10 @@ async def test_4xx_not_retried(monkeypatch):
     with pytest.raises(httpx.HTTPStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
             pass
-    assert exc.value.response.status_code == 404
-    assert calls["n"] == 1
+    if exc.value.response.status_code != 404:
+        raise AssertionError("exc.value.response.status_code == 404")
+    if calls["n"] != 1:
+        raise AssertionError('calls["n"] == 1')
     await transport.close()
 
 
@@ -149,8 +159,10 @@ async def test_url_query_preserved_with_empty_params(monkeypatch):
         transport.fetch(req) as resp,
     ):
         await resp.stream.read()
-    assert seen["url"] == "https://x.test/rest/api/content/1?expand=body.view"
-    assert transport.resolve_url(req).endswith("?expand=body.view")
+    if seen["url"] != "https://x.test/rest/api/content/1?expand=body.view":
+        raise AssertionError('seen["url"] == "https://x.test/rest/api/content/1?expan…')
+    if not (transport.resolve_url(req).endswith("?expand=body.view")):
+        raise AssertionError('transport.resolve_url(req).endswith("?expand=body.view")')
 
 
 async def test_auth_from_profile_applied_to_client(monkeypatch):
@@ -172,5 +184,7 @@ async def test_auth_from_profile_applied_to_client(monkeypatch):
     ):
         await resp.stream.read()
     # httpx.BasicAuth добавляет header через auth_flow поверх client'а.
-    assert "authorization" in seen_headers
-    assert seen_headers["authorization"].lower().startswith("basic ")
+    if "authorization" not in seen_headers:
+        raise AssertionError('"authorization" in seen_headers')
+    if not (seen_headers["authorization"].lower().startswith("basic ")):
+        raise AssertionError('seen_headers["authorization"].lower().startswith("basic…')

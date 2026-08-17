@@ -55,29 +55,36 @@ class TestRewindPlan:
     def test_last_turn_is_truncated(self) -> None:
         messages = turn("q1", "a1")
         plan = ThreadRewind.plan(messages, "q1", THREAD)
-        assert plan.remove_ids == ["a1"]
-        assert plan.element_ids == []
+        if plan.remove_ids != ["a1"]:
+            raise AssertionError('plan.remove_ids == ["a1"]')
+        if plan.element_ids != []:
+            raise AssertionError("plan.element_ids == []")
 
     def test_middle_turn_drops_everything_after(self) -> None:
         messages = turn("q1", "a1") + turn("q2", "a2")
         plan = ThreadRewind.plan(messages, "q1", THREAD)
-        assert plan.remove_ids == ["a1", "q2", "a2"]
+        if plan.remove_ids != ["a1", "q2", "a2"]:
+            raise AssertionError('plan.remove_ids == ["a1", "q2", "a2"]')
 
     def test_chart_elements_are_collected(self) -> None:
         messages = turn("q1", "a1", call_id="call_1")
         plan = ThreadRewind.plan(messages, "q1", THREAD)
-        assert plan.element_ids == [
-            ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)
-        ]
-        assert "a1-tool" in plan.remove_ids
+        if not (
+            plan.element_ids == [ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)]
+        ):
+            raise AssertionError('plan.element_ids == [ ChatView.derive_id(THREAD, "c…')
+        if "a1-tool" not in plan.remove_ids:
+            raise AssertionError('"a1-tool" in plan.remove_ids')
 
     def test_nothing_after_question(self) -> None:
         plan = ThreadRewind.plan([HumanMessage(content="q", id="q1")], "q1", THREAD)
-        assert not plan
+        if plan:
+            raise AssertionError("not plan")
 
     def test_unknown_question_changes_nothing(self) -> None:
         plan = ThreadRewind.plan(turn("q1", "a1"), "нет-такого", THREAD)
-        assert not plan
+        if plan:
+            raise AssertionError("not plan")
 
 
 class TestPrefix:
@@ -86,10 +93,12 @@ class TestPrefix:
 
         kept = ThreadRewind.prefix(messages, "q2")
 
-        assert [m.id for m in kept] == ["q1", "a1"]
+        if [m.id for m in kept] != ["q1", "a1"]:
+            raise AssertionError('[m.id for m in kept] == ["q1", "a1"]')
 
     def test_first_question_gives_empty_prefix(self) -> None:
-        assert ThreadRewind.prefix(turn("q1", "a1"), "q1") == []
+        if ThreadRewind.prefix(turn("q1", "a1"), "q1") != []:
+            raise AssertionError('ThreadRewind.prefix(turn("q1", "a1"), "q1") == []')
 
 
 class _ElementSink:
@@ -133,16 +142,20 @@ class TestApplyOnRealGraph:
             history = turn("q1", "a1", call_id="call_1") + turn("q2", "a2")
             await graph.ainvoke({"messages": history}, config)
 
-            assert await rewind.is_edit("q1") is True
+            if await rewind.is_edit("q1") is not True:
+                raise AssertionError('await rewind.is_edit("q1") is True')
             await rewind.apply("q1", "новый вопрос")
 
             return await rewind.messages(), sink.deleted
 
         messages, deleted = self.run(scenario())
 
-        assert [m.id for m in messages] == ["q1"]
-        assert messages[0].content == "новый вопрос"
-        assert deleted == [ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)]
+        if [m.id for m in messages] != ["q1"]:
+            raise AssertionError('[m.id for m in messages] == ["q1"]')
+        if messages[0].content != "новый вопрос":
+            raise AssertionError('messages[0].content == "новый вопрос"')
+        if deleted != [ChatView.derive_id(THREAD, "call_1", StepRole.ELEMENT)]:
+            raise AssertionError('deleted == [ChatView.derive_id(THREAD, "call_1", St…')
 
     def test_edit_of_a_middle_question_keeps_the_prefix(self) -> None:
         async def scenario() -> list[Any]:
@@ -158,5 +171,7 @@ class TestApplyOnRealGraph:
 
         messages = self.run(scenario())
 
-        assert [m.id for m in messages] == ["q1", "a1", "q2"]
-        assert messages[-1].content == "правка второго"
+        if [m.id for m in messages] != ["q1", "a1", "q2"]:
+            raise AssertionError('[m.id for m in messages] == ["q1", "a1", "q2"]')
+        if messages[-1].content != "правка второго":
+            raise AssertionError('messages[-1].content == "правка второго"')

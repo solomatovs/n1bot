@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import FakeSecret
 
 from boba.chainlit.infra.entry import AppEntry
 
@@ -24,7 +25,7 @@ CONFIG = """
 [chainlit]
     root        = "<root>"
     url_prefix  = "/boba"
-    auth_secret = "секрет"
+    auth_secret = "<auth_secret>"
 """
 
 
@@ -32,7 +33,9 @@ class TestExportEnv:
     @staticmethod
     def _config(tmp_path: Path, root: str) -> Path:
         path = tmp_path / "config.toml"
-        path.write_text(CONFIG.replace("<root>", root), encoding="utf-8")
+        body = CONFIG.replace("<root>", root)
+        body = body.replace("<auth_secret>", FakeSecret.AUTH)
+        path.write_text(body, encoding="utf-8")
         return path
 
     def test_env_taken_from_config(
@@ -45,9 +48,12 @@ class TestExportEnv:
         root = tmp_path / "data"
         AppEntry.export_env(self._config(tmp_path, str(root)))
 
-        assert os.environ[AppEntry.APP_ROOT_ENV] == str(root)
-        assert os.environ[AppEntry.ROOT_PATH_ENV] == "/boba"
-        assert os.environ[AppEntry.AUTH_SECRET_ENV] == "секрет"
+        if os.environ[AppEntry.APP_ROOT_ENV] != str(root):
+            raise AssertionError("os.environ[AppEntry.APP_ROOT_ENV] == str(root)")
+        if os.environ[AppEntry.ROOT_PATH_ENV] != "/boba":
+            raise AssertionError('os.environ[AppEntry.ROOT_PATH_ENV] == "/boba"')
+        if os.environ[AppEntry.AUTH_SECRET_ENV] != FakeSecret.AUTH:
+            raise AssertionError("os.environ[AppEntry.AUTH_SECRET_ENV] == FakeSecret.…")
 
     def test_relative_root_resolved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -56,7 +62,8 @@ class TestExportEnv:
 
         AppEntry.export_env(self._config(tmp_path, "./data"))
 
-        assert Path(os.environ[AppEntry.APP_ROOT_ENV]).is_absolute()
+        if not (Path(os.environ[AppEntry.APP_ROOT_ENV]).is_absolute()):
+            raise AssertionError("Path(os.environ[AppEntry.APP_ROOT_ENV]).is_absolute…")
 
     def test_empty_root_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="root"):
@@ -86,6 +93,9 @@ class TestEntryPointsFreeOfChainlit:
     def test_module_import_leaves_cwd_clean(self, module: str, tmp_path: Path) -> None:
         result = self._probe(module, tmp_path)
 
-        assert result.stdout.strip() == "[]"
-        assert not (tmp_path / ".chainlit").exists()
-        assert not (tmp_path / ".files").exists()
+        if result.stdout.strip() != "[]":
+            raise AssertionError('result.stdout.strip() == "[]"')
+        if (tmp_path / ".chainlit").exists():
+            raise AssertionError('not (tmp_path / ".chainlit").exists()')
+        if (tmp_path / ".files").exists():
+            raise AssertionError('not (tmp_path / ".files").exists()')

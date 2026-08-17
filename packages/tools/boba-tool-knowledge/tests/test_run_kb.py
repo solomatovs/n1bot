@@ -31,7 +31,8 @@ def kb_cfg(raw_config) -> KbToolConfig:
 
 async def test_run_kb_vector_search(kb_cfg: KbToolConfig) -> None:
     body = ToolMain.toolset(kb_vector_search)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(
         query=RunArgs.QUERY, top_k=RunArgs.TOP_K, cfg=kb_cfg
@@ -42,7 +43,8 @@ async def test_run_kb_vector_search(kb_cfg: KbToolConfig) -> None:
 
 async def test_run_kb_fts_search(kb_cfg: KbToolConfig) -> None:
     body = ToolMain.toolset(kb_fts_search)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(
         query=RunArgs.QUERY, top_k=RunArgs.TOP_K, cfg=kb_cfg

@@ -85,12 +85,14 @@ def _sandbox_config() -> SandboxToolConfig:
 
 class TestTurnCancellation:
     def test_not_cancelled_initially(self) -> None:
-        assert TurnCancellation().cancelled is False
+        if TurnCancellation().cancelled is not False:
+            raise AssertionError("TurnCancellation().cancelled is False")
 
     def test_cancel_sets_flag_and_raises(self) -> None:
         c = TurnCancellation()
         c.cancel()
-        assert c.cancelled is True
+        if c.cancelled is not True:
+            raise AssertionError("c.cancelled is True")
         with pytest.raises(ToolStopped):
             c.raise_if_cancelled()
 
@@ -98,9 +100,11 @@ class TestTurnCancellation:
         c = TurnCancellation()
         called: list[str] = []
         with c.abort_with(lambda: called.append("aborted")):
-            assert called == []
+            if called != []:
+                raise AssertionError("called == []")
             c.cancel()
-        assert called == ["aborted"]
+        if called != ["aborted"]:
+            raise AssertionError('called == ["aborted"]')
 
     def test_abort_unregistered_after_block(self) -> None:
         c = TurnCancellation()
@@ -108,7 +112,8 @@ class TestTurnCancellation:
         with c.abort_with(lambda: called.append("aborted")):
             pass
         c.cancel()
-        assert called == []
+        if called != []:
+            raise AssertionError("called == []")
 
     def test_abort_with_refuses_to_start_when_cancelled(self) -> None:
         c = TurnCancellation()
@@ -125,7 +130,8 @@ class TestTurnCancellation:
 
         with c.abort_with(boom), c.abort_with(lambda: called.append("second")):
             c.cancel()
-        assert called == ["second"]
+        if called != ["second"]:
+            raise AssertionError('called == ["second"]')
 
     def test_cancel_is_idempotent(self) -> None:
         c = TurnCancellation()
@@ -133,7 +139,8 @@ class TestTurnCancellation:
         with c.abort_with(lambda: called.append("x")):
             c.cancel()
             c.cancel()
-        assert called == ["x"]
+        if called != ["x"]:
+            raise AssertionError('called == ["x"]')
 
     def test_visible_from_worker_thread(self) -> None:
         "инструменты исполняются в тред-пуле langchain — флаг обязан доезжать"
@@ -142,12 +149,14 @@ class TestTurnCancellation:
             c.cancel()
             with ThreadPoolExecutor(1) as pool:
                 seen = pool.submit(ctx.run, lambda: current_cancellation().cancelled)
-                assert seen.result() is True
+                if seen.result() is not True:
+                    raise AssertionError("seen.result() is True")
 
     def test_wait_returns_true_when_cancelled(self) -> None:
         c = TurnCancellation()
         threading.Timer(0.05, c.cancel).start()
-        assert c.wait(5.0) is True
+        if c.wait(5.0) is not True:
+            raise AssertionError("c.wait(5.0) is True")
 
 
 class TestToolGuard:
@@ -167,7 +176,8 @@ class TestToolGuard:
 
     def test_runs_normally_without_cancellation(self) -> None:
         echo, _ = self._tools()
-        assert echo.invoke({"text": "hi"}) == "hi"
+        if echo.invoke({"text": "hi"}) != "hi":
+            raise AssertionError('echo.invoke({"text": "hi"}) == "hi"')
 
     def test_refuses_to_start_after_cancel(self) -> None:
         echo, _ = self._tools()
@@ -250,9 +260,10 @@ class TestHttpAbort:
                 return time.monotonic() - started
 
         elapsed = asyncio.run(scenario())
-        assert elapsed < self.ABORT_DEADLINE_SEC, (
-            f"обрыв занял {elapsed:.1f}с — запрос дочитывался, а не прерывался"
-        )
+        if elapsed >= self.ABORT_DEADLINE_SEC:
+            raise AssertionError(
+                f"обрыв занял {elapsed:.1f}с — запрос дочитывался, а не прерывался"
+            )
 
 
 class TestSubprocessAbort:
@@ -296,16 +307,20 @@ class TestSubprocessAbort:
                         {"command": f"sleep {self.DURATION}", "stdin": ""}
                     ),
                 )
-                assert c.wait(0.0) is False
+                if c.wait(0.0) is not False:
+                    raise AssertionError("c.wait(0.0) is False")
                 threading.Event().wait(1.5)
-                assert self._running() >= 1, "процесс не стартовал — замер невалиден"
+                if self._running() < 1:
+                    raise AssertionError("процесс не стартовал — замер невалиден")
                 started = time.monotonic()
                 c.cancel()
                 with pytest.raises(ToolStopped):
                     future.result(timeout=15)
                 elapsed = time.monotonic() - started
-        assert self._running() == 0, "процесс пережил остановку хода"
-        assert elapsed < self.KILL_DEADLINE_SEC, (
-            f"остановка заняла {elapsed:.1f}с — процесс убит не прерывателем, "
-            "а запасным таймаутом"
-        )
+        if self._running() != 0:
+            raise AssertionError("процесс пережил остановку хода")
+        if elapsed >= self.KILL_DEADLINE_SEC:
+            raise AssertionError(
+                f"остановка заняла {elapsed:.1f}с — процесс убит не прерывателем, "
+                "а запасным таймаутом"
+            )

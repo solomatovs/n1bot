@@ -80,13 +80,15 @@ class TestBatchSizeReachesModel:
     ) -> None:
         embedder = LocalFastEmbedEmbedderFactory.build(_config(8))
         await embedder.embed_documents([f"текст {i}" for i in range(100)])
-        assert fake_fastembed.calls == [{"method": "passage", "batch_size": 8}]
+        if fake_fastembed.calls != [{"method": "passage", "batch_size": 8}]:
+            raise AssertionError('fake_fastembed.calls == [{"method": "passage", "bat…')
 
     @pytest.mark.anyio
     async def test_query_uses_the_same_batch_size(self, fake_fastembed) -> None:
         embedder = LocalFastEmbedEmbedderFactory.build(_config(8))
         await embedder.embed_query("запрос")
-        assert fake_fastembed.calls == [{"method": "query", "batch_size": 8}]
+        if fake_fastembed.calls != [{"method": "query", "batch_size": 8}]:
+            raise AssertionError('fake_fastembed.calls == [{"method": "query", "batch…')
 
 
 class TestThreadsFollowTheQuota:
@@ -106,7 +108,8 @@ class TestThreadsFollowTheQuota:
 
         LocalFastEmbedEmbedderFactory.build(_config(8))
 
-        assert fake_fastembed.threads == expected
+        if fake_fastembed.threads != expected:
+            raise AssertionError("fake_fastembed.threads == expected")
 
 
 class TestConfigKeepsBatchSmall:
@@ -117,7 +120,8 @@ class TestConfigKeepsBatchSmall:
         from boba.settings import bind
 
         embedding = bind(raw_config, path=f"{section}.embedding", model=EmbeddingModel)
-        assert 0 < embedding.batch_size <= MAX_REASONABLE_BATCH, (
-            f"[{section}.embedding]: batch_size={embedding.batch_size} — "
-            "инференс ONNX растёт линейно по батчу и словит OOM"
-        )
+        if not (0 < embedding.batch_size <= MAX_REASONABLE_BATCH):
+            raise AssertionError(
+                f"[{section}.embedding]: batch_size={embedding.batch_size} — "
+                "инференс ONNX растёт линейно по батчу и словит OOM"
+            )

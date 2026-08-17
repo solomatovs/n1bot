@@ -35,13 +35,15 @@ class TestUserInEveryRecord:
 
     def test_attribute_present_without_session(self) -> None:
         record = self._record()
-        assert getattr(record, UserLogContext.ATTRIBUTE) == UserLogContext.UNKNOWN
+        if getattr(record, UserLogContext.ATTRIBUTE) != UserLogContext.UNKNOWN:
+            raise AssertionError("getattr(record, UserLogContext.ATTRIBUTE) == UserLo…")
 
     def test_user_label_taken_from_session(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(log_context, "current_user_label", lambda: "ivanov")
-        assert getattr(self._record(), UserLogContext.ATTRIBUTE) == "ivanov"
+        if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
+            raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUTE) =…")
 
     def test_broken_session_does_not_break_logging(
         self, monkeypatch: pytest.MonkeyPatch
@@ -51,25 +53,27 @@ class TestUserInEveryRecord:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(log_context, "current_user_label", boom)
-        assert getattr(self._record(), UserLogContext.ATTRIBUTE) == (
-            UserLogContext.UNKNOWN
-        )
+        if getattr(self._record(), UserLogContext.ATTRIBUTE) != UserLogContext.UNKNOWN:
+            raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUTE) =…")
 
     def test_install_is_idempotent(self) -> None:
         factory = logging.getLogRecordFactory()
         UserLogContext.install()
         UserLogContext.install()
-        assert logging.getLogRecordFactory() is factory
+        if logging.getLogRecordFactory() is not factory:
+            raise AssertionError("logging.getLogRecordFactory() is factory")
 
     def test_format_with_user_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(log_context, "current_user_label", lambda: "petrov")
         formatter = logging.Formatter("[%(user)s] %(message)s")
-        assert formatter.format(self._record()) == "[petrov] сообщение"
+        if formatter.format(self._record()) != "[petrov] сообщение":
+            raise AssertionError('formatter.format(self._record()) == "[petrov] сообщ…')
 
     def test_request_context_used_without_session(self) -> None:
         token = RequestUserContext.set("sidorov")
         try:
-            assert getattr(self._record(), UserLogContext.ATTRIBUTE) == "sidorov"
+            if getattr(self._record(), UserLogContext.ATTRIBUTE) != "sidorov":
+                raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUT…")
         finally:
             RequestUserContext.reset(token)
 
@@ -79,7 +83,8 @@ class TestUserInEveryRecord:
         monkeypatch.setattr(log_context, "current_user_label", lambda: "ivanov")
         token = RequestUserContext.set("sidorov")
         try:
-            assert getattr(self._record(), UserLogContext.ATTRIBUTE) == "ivanov"
+            if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
+                raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUT…")
         finally:
             RequestUserContext.reset(token)
 
@@ -115,8 +120,10 @@ class TestRequestUserMiddleware:
 
         scope = self._scope([(b"authorization", b"Bearer whatever")])
         self._run(RequestUserMiddleware(app), scope)
-        assert seen == ["sidorov"]
-        assert RequestUserContext.get() == ""
+        if seen != ["sidorov"]:
+            raise AssertionError('seen == ["sidorov"]')
+        if RequestUserContext.get() != "":
+            raise AssertionError('RequestUserContext.get() == ""')
 
     def test_broken_token_gives_empty_label(self) -> None:
         seen: list[str] = []
@@ -126,7 +133,8 @@ class TestRequestUserMiddleware:
 
         scope = self._scope([(b"cookie", b"access_token=garbage")])
         self._run(RequestUserMiddleware(app), scope)
-        assert seen == [""]
+        if seen != [""]:
+            raise AssertionError('seen == [""]')
 
     def test_non_http_scope_passthrough(self) -> None:
         called: list[bool] = []
@@ -135,4 +143,5 @@ class TestRequestUserMiddleware:
             called.append(True)
 
         self._run(RequestUserMiddleware(app), {"type": "lifespan"})
-        assert called == [True]
+        if called != [True]:
+            raise AssertionError("called == [True]")

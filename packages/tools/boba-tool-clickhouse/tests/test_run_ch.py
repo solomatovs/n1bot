@@ -32,7 +32,8 @@ def ch_cfg(raw_config) -> ChToolConfig:
 
 async def test_run_ch_query(ch_cfg: ChToolConfig) -> None:
     body = ToolMain.toolset(ch_query)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, artifact = await body(
         sql=RunArgs.SQL, connection_name=RunArgs.CONNECTION, cfg=ch_cfg
@@ -44,7 +45,8 @@ async def test_run_ch_query(ch_cfg: ChToolConfig) -> None:
 
 async def test_run_ch_list_tables(ch_cfg: ChToolConfig) -> None:
     body = ToolMain.toolset(ch_list_tables)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(
         connection_name=RunArgs.CONNECTION, ch_database=None, cfg=ch_cfg

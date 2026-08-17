@@ -67,8 +67,10 @@ async def test_to_chunk_metadata_is_merged_into_chunk():
         content_hasher=Sha256TextEncoder(),
     )
     [chunk] = [item async for item in chunker.chunk(_astream([section]))]
-    assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 1
-    assert chunk.metadata.get(SectionKeys.HEADING_TEXT) == "Intro"
+    if chunk.metadata.get(SectionKeys.HEADING_LEVEL) != 1:
+        raise AssertionError("chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 1")
+    if chunk.metadata.get(SectionKeys.HEADING_TEXT) != "Intro":
+        raise AssertionError('chunk.metadata.get(SectionKeys.HEADING_TEXT) == "Intro"')
 
 
 async def test_section_metadata_overrides_typed_keys_on_collision():
@@ -94,4 +96,5 @@ async def test_section_metadata_overrides_typed_keys_on_collision():
         content_hasher=Sha256TextEncoder(),
     )
     [chunk] = [item async for item in chunker.chunk(_astream([section]))]
-    assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 2
+    if chunk.metadata.get(SectionKeys.HEADING_LEVEL) != 2:
+        raise AssertionError("chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 2")

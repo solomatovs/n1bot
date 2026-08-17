@@ -58,20 +58,26 @@ class TestChartInSandbox:
         )
         message = _invoke(spec)
 
-        assert isinstance(message.artifact, ChartResult)
-        assert message.artifact.title == "Продажи"
+        if not (isinstance(message.artifact, ChartResult)):
+            raise AssertionError("isinstance(message.artifact, ChartResult)")
+        if message.artifact.title != "Продажи":
+            raise AssertionError('message.artifact.title == "Продажи"')
 
     def test_title_may_be_a_plain_string(self) -> None:
         message = _invoke('{"data": [], "layout": {"title": "Отчёт"}}')
 
-        assert isinstance(message.artifact, ChartResult)
-        assert message.artifact.title == "Отчёт"
+        if not (isinstance(message.artifact, ChartResult)):
+            raise AssertionError("isinstance(message.artifact, ChartResult)")
+        if message.artifact.title != "Отчёт":
+            raise AssertionError('message.artifact.title == "Отчёт"')
 
     def test_spec_without_title(self) -> None:
         message = _invoke('{"data": [{"type": "bar", "x": ["a"], "y": [1]}]}')
 
-        assert isinstance(message.artifact, ChartResult)
-        assert message.artifact.title is None
+        if not (isinstance(message.artifact, ChartResult)):
+            raise AssertionError("isinstance(message.artifact, ChartResult)")
+        if message.artifact.title is not None:
+            raise AssertionError("message.artifact.title is None")
 
     def test_chart_result_carries_spec_and_content(self) -> None:
         spec = (
@@ -80,20 +86,27 @@ class TestChartInSandbox:
         )
         message = _invoke(spec)
 
-        assert isinstance(message.artifact, ChartResult)
-        assert message.artifact.title == "T"
-        assert message.artifact.spec["data"][0]["type"] == "bar"
-        assert message.content == "[chart rendered: T]"
+        if not (isinstance(message.artifact, ChartResult)):
+            raise AssertionError("isinstance(message.artifact, ChartResult)")
+        if message.artifact.title != "T":
+            raise AssertionError('message.artifact.title == "T"')
+        if message.artifact.spec["data"][0]["type"] != "bar":
+            raise AssertionError('message.artifact.spec["data"][0]["type"] == "bar"')
+        if message.content != "[chart rendered: T]":
+            raise AssertionError('message.content == "[chart rendered: T]"')
 
     def test_invalid_spec_reaches_the_caller(self) -> None:
         with pytest.raises(PayloadFailureError, match="invalid Plotly") as failure:
             _invoke('{"data": 42}')
 
-        assert failure.value.kind == "invalid_figure_spec"
-        assert "Traceback" not in str(failure.value)
+        if failure.value.kind != "invalid_figure_spec":
+            raise AssertionError('failure.value.kind == "invalid_figure_spec"')
+        if "Traceback" in str(failure.value):
+            raise AssertionError('"Traceback" not in str(failure.value)')
 
     def test_broken_json_is_an_expected_failure(self) -> None:
         with pytest.raises(PayloadFailureError) as failure:
             _invoke("{not json")
 
-        assert failure.value.kind == "invalid_figure_spec"
+        if failure.value.kind != "invalid_figure_spec":
+            raise AssertionError('failure.value.kind == "invalid_figure_spec"')

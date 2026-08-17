@@ -22,7 +22,8 @@ class _Pg(BaseModel):
 def test_bind_plain_section() -> None:
     cfg = ConfigBuilder().add_dict({"a": {"b": {"host": "h", "port": 6000}}}).build()
     got = bind(cfg, "a.b", _Conn)
-    assert (got.host, got.port) == ("h", 6000)
+    if (got.host, got.port) != ("h", 6000):
+        raise AssertionError('(got.host, got.port) == ("h", 6000)')
 
 
 def test_bind_missing_section_uses_defaults() -> None:
@@ -30,7 +31,8 @@ def test_bind_missing_section_uses_defaults() -> None:
         x: int = 7
 
     cfg = ConfigBuilder().add_dict({"a": {}}).build()
-    assert bind(cfg, "nope.section", _Opt).x == 7
+    if bind(cfg, "nope.section", _Opt).x != 7:
+        raise AssertionError('bind(cfg, "nope.section", _Opt).x == 7')
 
 
 def test_bind_required_missing_raises() -> None:
@@ -51,4 +53,5 @@ def test_bind_reference_assembly() -> None:
         .build()
     )
     pg = bind(cfg, "tool.pg", _Pg)
-    assert pg.databases["main"].host == "172.18.0.9"
+    if pg.databases["main"].host != "172.18.0.9":
+        raise AssertionError('pg.databases["main"].host == "172.18.0.9"')

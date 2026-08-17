@@ -32,7 +32,8 @@ def pg_cfg(raw_config) -> PgToolConfig:
 
 async def test_run_pg_query(pg_cfg: PgToolConfig) -> None:
     body = ToolMain.toolset(pg_query)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, artifact = await body(
         connection_name=RunArgs.CONNECTION, sql=RunArgs.SQL, cfg=pg_cfg
@@ -44,7 +45,8 @@ async def test_run_pg_query(pg_cfg: PgToolConfig) -> None:
 
 async def test_run_pg_list_tables(pg_cfg: PgToolConfig) -> None:
     body = ToolMain.toolset(pg_list_tables)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(
         connection_name=RunArgs.CONNECTION,
@@ -58,7 +60,8 @@ async def test_run_pg_list_tables(pg_cfg: PgToolConfig) -> None:
 
 async def test_run_pg_copy(pg_cfg: PgToolConfig) -> None:
     body = ToolMain.toolset(pg_copy)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(
         connection_name=RunArgs.CONNECTION, sql=RunArgs.SQL, cfg=pg_cfg

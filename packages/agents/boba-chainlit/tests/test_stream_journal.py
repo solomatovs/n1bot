@@ -17,7 +17,12 @@ from boba.chainlit.data.stream_journal import (
     StreamKey,
     StreamRecorder,
 )
-from boba.chainlit.domain.stream import JournalFile, JournalWindow, LogName
+from boba.chainlit.domain.stream import (
+    JournalFile,
+    JournalWindow,
+    LogName,
+    StreamJournalError,
+)
 from boba.toolkit.channels import ToolChannel
 
 KEY = StreamKey(user_id="7", thread_id="t-1", call_id="call-1")
@@ -63,9 +68,32 @@ class TestKey:
 
     def test_rel_log_carries_tool_and_channel(self) -> None:
         key = StreamKey(user_id="7", thread_id="t-1", call_id="call_uKx7pB2qX0")
-        assert key.rel_log("bash", STDOUT) == (
-            "t-1/call_uKx7pB2qX0.bash.tool_stdout.log"
-        )
+        if key.rel_log("bash", STDOUT) != "t-1/call_uKx7pB2qX0.bash.tool_stdout.log":
+            raise AssertionError('key.rel_log("bash", STDOUT) == ( "t-1/call_uKx7pB2q…')
+
+
+class TestVaultSegments:
+    """Том проверяет сегмент сам: путь строится и из тех значений, что мимо ключа."""
+
+    def test_vault_refuses_traversal(self, tmp_path: Path) -> None:
+        vault = DirVault(str(tmp_path / "vault"))
+
+        with pytest.raises(StreamJournalError):
+            vault.root_for("../../etc")
+
+        if (tmp_path / "etc").exists():
+            raise AssertionError('not (tmp_path / "etc").exists()')
+
+    def test_purge_refuses_traversal(self, tmp_path: Path) -> None:
+        journal = _journal(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        with pytest.raises(StreamJournalError):
+            journal.purge_thread(KEY.user_id, "../../outside")
+
+        if not (outside.is_dir()):
+            raise AssertionError("outside.is_dir()")
 
 
 class TestLogName:
@@ -75,14 +103,17 @@ class TestLogName:
         rel = JournalFile.rel_log("t-1", "c-1", "pg_query", STDERR)
         name = rel.split("/")[1]
         parsed = JournalFile.parse_log(name)
-        assert parsed == LogName(
-            call_id="c-1", tool="pg_query", channel="tool_stderr"
-        )
+        if not (
+            parsed == LogName(call_id="c-1", tool="pg_query", channel="tool_stderr")
+        ):
+            raise AssertionError('parsed == LogName( call_id="c-1", tool="pg_query", …')
 
     def test_foreign_name_groups_as_whole_stem(self) -> None:
         parsed = JournalFile.parse_log("legacy-call.log")
-        assert parsed.call_id == "legacy-call"
-        assert parsed.tool == ""
+        if parsed.call_id != "legacy-call":
+            raise AssertionError('parsed.call_id == "legacy-call"')
+        if parsed.tool != "":
+            raise AssertionError('parsed.tool == ""')
 
     def test_dots_in_segments_are_refused_at_render(self) -> None:
         with pytest.raises(ValueError, match="dots"):
@@ -100,20 +131,30 @@ class TestRecorder:
         recorder.close("rc=0")
 
         piece = journal.slice_at(KEY, 0, STDOUT)
-        assert piece is not None
-        assert piece.size == 200000
-        assert len(piece.text.encode()) == JournalWindow.BYTES
+        if piece is None:
+            raise AssertionError("piece is not None")
+        if piece.size != 200000:
+            raise AssertionError("piece.size == 200000")
+        if len(piece.text.encode()) != JournalWindow.BYTES:
+            raise AssertionError("len(piece.text.encode()) == JournalWindow.BYTES")
 
         middle = journal.slice_at(KEY, 100000, STDOUT)
-        assert middle is not None
-        assert middle.offset == 100000
-        assert middle.text.startswith("0123456789")
+        if middle is None:
+            raise AssertionError("middle is not None")
+        if middle.offset != 100000:
+            raise AssertionError("middle.offset == 100000")
+        if not (middle.text.startswith("0123456789")):
+            raise AssertionError('middle.text.startswith("0123456789")')
 
         tail = journal.slice_at(KEY, -1, STDOUT)
-        assert tail is not None
-        assert tail.offset == 200000 - JournalWindow.BYTES
-        assert tail.closed is True
-        assert tail.note == "rc=0"
+        if tail is None:
+            raise AssertionError("tail is not None")
+        if tail.offset != 200000 - JournalWindow.BYTES:
+            raise AssertionError("tail.offset == 200000 - JournalWindow.BYTES")
+        if tail.closed is not True:
+            raise AssertionError("tail.closed is True")
+        if tail.note != "rc=0":
+            raise AssertionError('tail.note == "rc=0"')
 
     def test_channels_are_separate_files(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
@@ -127,10 +168,14 @@ class TestRecorder:
 
         stdout_piece = journal.slice_at(KEY, 0, STDOUT)
         stderr_piece = journal.slice_at(KEY, 0, STDERR)
-        assert stdout_piece is not None
-        assert stderr_piece is not None
-        assert stdout_piece.text == "body"
-        assert stderr_piece.text == "trace"
+        if stdout_piece is None:
+            raise AssertionError("stdout_piece is not None")
+        if stderr_piece is None:
+            raise AssertionError("stderr_piece is not None")
+        if stdout_piece.text != "body":
+            raise AssertionError('stdout_piece.text == "body"')
+        if stderr_piece.text != "trace":
+            raise AssertionError('stderr_piece.text == "trace"')
 
     def test_feed_after_close_is_ignored(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
@@ -142,9 +187,12 @@ class TestRecorder:
         recorder.close("другая причина")
 
         piece = journal.slice_at(KEY, 0, STDOUT)
-        assert piece is not None
-        assert piece.text == "until"
-        assert piece.note == "done"
+        if piece is None:
+            raise AssertionError("piece is not None")
+        if piece.text != "until":
+            raise AssertionError('piece.text == "until"')
+        if piece.note != "done":
+            raise AssertionError('piece.note == "done"')
 
     def test_on_data_fires_on_feed_and_close(self, tmp_path: Path) -> None:
         wakes: list[int] = []
@@ -154,11 +202,13 @@ class TestRecorder:
 
         recorder = _recorder(_journal(tmp_path), wake)
         recorder.feed(b"")
-        assert wakes == []
+        if wakes != []:
+            raise AssertionError("wakes == []")
 
         recorder.feed(b"x")
         recorder.close("done")
-        assert len(wakes) == 2
+        if len(wakes) != 2:
+            raise AssertionError("len(wakes) == 2")
 
     def test_live_recorder_is_readable_while_writing(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
@@ -169,14 +219,18 @@ class TestRecorder:
         recorder.feed(b"tail")
         second = recorder.tail(JournalWindow.BYTES)
 
-        assert first.text == "live "
-        assert first.closed is False
-        assert second.text == "live tail"
+        if first.text != "live ":
+            raise AssertionError('first.text == "live "')
+        if first.closed is not False:
+            raise AssertionError("first.closed is False")
+        if second.text != "live tail":
+            raise AssertionError('second.text == "live tail"')
 
     def test_missing_journal_is_none(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
 
-        assert journal.slice_at(KEY, 0, STDOUT) is None
+        if journal.slice_at(KEY, 0, STDOUT) is not None:
+            raise AssertionError("journal.slice_at(KEY, 0, STDOUT) is None")
 
     def test_lost_meta_reads_as_missing(self, tmp_path: Path) -> None:
         """Без сайдкара имя инструмента не восстановить — файла канала «нет»."""
@@ -188,7 +242,8 @@ class TestRecorder:
         root = DirVault(str(tmp_path / "vault")).root_for(KEY.user_id)
         os.remove(os.path.join(root, KEY.rel_meta()))
 
-        assert journal.slice_at(KEY, 0, STDOUT) is None
+        if journal.slice_at(KEY, 0, STDOUT) is not None:
+            raise AssertionError("journal.slice_at(KEY, 0, STDOUT) is None")
 
 
 class TestWindowChains:
@@ -218,12 +273,15 @@ class TestWindowChains:
         offset = 0
         while offset < len(body):
             piece = journal.slice_at(KEY, offset, STDOUT)
-            assert piece is not None
-            assert piece.offset == offset
+            if piece is None:
+                raise AssertionError("piece is not None")
+            if piece.offset != offset:
+                raise AssertionError("piece.offset == offset")
             rebuilt += piece.text.encode()
             offset = piece.end
 
-        assert rebuilt == body
+        if rebuilt != body:
+            raise AssertionError("rebuilt == body")
 
     def test_backward_chain_rebuilds_the_file(self, tmp_path: Path) -> None:
         journal, body = self._written(tmp_path)
@@ -232,26 +290,36 @@ class TestWindowChains:
         end = len(body)
         while end > 0:
             piece = journal.slice_before(KEY, end, STDOUT)
-            assert piece is not None
-            assert piece.end == end
+            if piece is None:
+                raise AssertionError("piece is not None")
+            if piece.end != end:
+                raise AssertionError("piece.end == end")
             rebuilt = piece.text.encode() + rebuilt
             end = piece.offset
 
-        assert rebuilt == body
+        if rebuilt != body:
+            raise AssertionError("rebuilt == body")
 
     def test_windows_start_at_line_boundaries(self, tmp_path: Path) -> None:
         journal, body = self._written(tmp_path)
 
         middle = journal.slice_before(KEY, len(body) // 2, STDOUT)
-        assert middle is not None
-        assert middle.offset > 0
-        assert body[middle.offset - 1 : middle.offset] == b"\n"
-        assert not middle.text.startswith("\n")
+        if middle is None:
+            raise AssertionError("middle is not None")
+        if middle.offset <= 0:
+            raise AssertionError("middle.offset > 0")
+        if body[middle.offset - 1 : middle.offset] != b"\n":
+            raise AssertionError('body[middle.offset - 1 : middle.offset] == b"\\n"')
+        if middle.text.startswith("\n"):
+            raise AssertionError('not middle.text.startswith("\\n")')
 
         tail = journal.slice_at(KEY, -1, STDOUT)
-        assert tail is not None
-        assert body[tail.offset - 1 : tail.offset] == b"\n"
-        assert tail.end == len(body)
+        if tail is None:
+            raise AssertionError("tail is not None")
+        if body[tail.offset - 1 : tail.offset] != b"\n":
+            raise AssertionError('body[tail.offset - 1 : tail.offset] == b"\\n"')
+        if tail.end != len(body):
+            raise AssertionError("tail.end == len(body)")
 
     def test_line_longer_than_the_window_still_flows(self, tmp_path: Path) -> None:
         """Строка длиннее окна отдаётся кусками: прогресс важнее выравнивания."""
@@ -261,13 +329,18 @@ class TestWindowChains:
         recorder.close("rc=0")
 
         first = journal.slice_at(KEY, 0, STDOUT)
-        assert first is not None
-        assert first.end == JournalWindow.BYTES
+        if first is None:
+            raise AssertionError("first is not None")
+        if first.end != JournalWindow.BYTES:
+            raise AssertionError("first.end == JournalWindow.BYTES")
 
         second = journal.slice_at(KEY, first.end, STDOUT)
-        assert second is not None
-        assert second.offset == first.end
-        assert second.end > second.offset
+        if second is None:
+            raise AssertionError("second is not None")
+        if second.offset != first.end:
+            raise AssertionError("second.offset == first.end")
+        if second.end <= second.offset:
+            raise AssertionError("second.end > second.offset")
 
 
 class TestUsageAndPurge:
@@ -289,12 +362,16 @@ class TestUsageAndPurge:
 
         usage = journal.usage("7")
 
-        assert usage.total_bytes > 0
+        if usage.total_bytes <= 0:
+            raise AssertionError("usage.total_bytes > 0")
         names = [entry.thread_id for entry in usage.threads]
-        assert names == ["t-old", "t-new"]
+        if names != ["t-old", "t-new"]:
+            raise AssertionError('names == ["t-old", "t-new"]')
         by_name = {entry.thread_id: entry for entry in usage.threads}
-        assert by_name["t-new"].bytes_used > 5000
-        assert by_name["t-new"].calls == 1
+        if by_name["t-new"].bytes_used <= 5000:
+            raise AssertionError('by_name["t-new"].bytes_used > 5000')
+        if by_name["t-new"].calls != 1:
+            raise AssertionError('by_name["t-new"].calls == 1')
 
     def test_channels_of_one_call_count_as_one(self, tmp_path: Path) -> None:
         """Три файла каналов одного вызова — один вызов в учёте треда."""
@@ -307,7 +384,8 @@ class TestUsageAndPurge:
         usage = journal.usage("7")
 
         by_name = {entry.thread_id: entry for entry in usage.threads}
-        assert by_name["t-1"].calls == 1
+        if by_name["t-1"].calls != 1:
+            raise AssertionError('by_name["t-1"].calls == 1')
 
     def test_purge_removes_the_thread(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
@@ -315,9 +393,12 @@ class TestUsageAndPurge:
 
         freed = journal.purge_thread("7", "t-1")
 
-        assert freed > 3000
-        assert journal.slice_at(KEY, 0, STDOUT) is None
-        assert journal.purge_thread("7", "t-1") == 0
+        if freed <= 3000:
+            raise AssertionError("freed > 3000")
+        if journal.slice_at(KEY, 0, STDOUT) is not None:
+            raise AssertionError("journal.slice_at(KEY, 0, STDOUT) is None")
+        if journal.purge_thread("7", "t-1") != 0:
+            raise AssertionError('journal.purge_thread("7", "t-1") == 0')
 
     def test_rotation_evicts_oldest_unprotected(self, tmp_path: Path) -> None:
         """Резерв больше свободного места: старые логи вытесняются.
@@ -334,9 +415,12 @@ class TestUsageAndPurge:
         journal.recorder(key, "bash", STDOUT, _wake, frozenset({"t-protected/c-1."}))
 
         root = tmp_path / "vault" / "7"
-        assert not (root / "t-old").exists()
-        assert (root / "t-protected" / "c-1.bash.tool_stdout.log").exists()
-        assert (root / "t-cur" / "c-2.bash.tool_stdout.log").exists()
+        if (root / "t-old").exists():
+            raise AssertionError('not (root / "t-old").exists()')
+        if not ((root / "t-protected" / "c-1.bash.tool_stdout.log").exists()):
+            raise AssertionError('(root / "t-protected" / "c-1.bash.tool_stdout.log")…')
+        if not ((root / "t-cur" / "c-2.bash.tool_stdout.log").exists()):
+            raise AssertionError('(root / "t-cur" / "c-2.bash.tool_stdout.log").exist…')
 
     def test_eviction_takes_the_call_with_all_channels(self, tmp_path: Path) -> None:
         """Вызов вытесняется целиком: все каналы и сайдкар, не один файл."""
@@ -347,17 +431,19 @@ class TestUsageAndPurge:
             recorder.feed(b"a" * 100)
             recorder.close("rc=0")
 
-        rotating = StreamJournal(
-            DirVault(str(tmp_path / "vault")), reserve_bytes=2**60
-        )
+        rotating = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
         fresh_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-new")
         rotating.recorder(fresh_key, "bash", STDOUT, _wake, frozenset())
 
         root = tmp_path / "vault" / "7" / "t-1"
-        assert not (root / "c-old.bash.tool_stdout.log").exists()
-        assert not (root / "c-old.bash.tool_stderr.log").exists()
-        assert not (root / "c-old.meta.json").exists()
-        assert (root / "c-new.bash.tool_stdout.log").exists()
+        if (root / "c-old.bash.tool_stdout.log").exists():
+            raise AssertionError('not (root / "c-old.bash.tool_stdout.log").exists()')
+        if (root / "c-old.bash.tool_stderr.log").exists():
+            raise AssertionError('not (root / "c-old.bash.tool_stderr.log").exists()')
+        if (root / "c-old.meta.json").exists():
+            raise AssertionError('not (root / "c-old.meta.json").exists()')
+        if not ((root / "c-new.bash.tool_stdout.log").exists()):
+            raise AssertionError('(root / "c-new.bash.tool_stdout.log").exists()')
 
     def test_closed_call_of_current_thread_is_evictable(self, tmp_path: Path) -> None:
         """Защищён живой вызов, не тред: старый закрытый лог треда уходит."""
@@ -371,8 +457,10 @@ class TestUsageAndPurge:
         journal.recorder(fresh_key, "bash", STDOUT, _wake, frozenset())
 
         root = tmp_path / "vault" / "7"
-        assert not (root / "t-1" / "c-old.bash.tool_stdout.log").exists()
-        assert (root / "t-1" / "c-new.bash.tool_stdout.log").exists()
+        if (root / "t-1" / "c-old.bash.tool_stdout.log").exists():
+            raise AssertionError('not (root / "t-1" / "c-old.bash.tool_stdout.log").e…')
+        if not ((root / "t-1" / "c-new.bash.tool_stdout.log").exists()):
+            raise AssertionError('(root / "t-1" / "c-new.bash.tool_stdout.log").exist…')
 
 
 class TestWriteFailure:
@@ -398,10 +486,15 @@ class TestWriteFailure:
         monkeypatch.undo()
         recorder.feed("после закрытия не падает".encode())
 
-        assert recorder.closed is True
+        if recorder.closed is not True:
+            raise AssertionError("recorder.closed is True")
 
         piece = journal.slice_at(KEY, -1, STDOUT)
-        assert piece is not None
-        assert piece.closed is True
-        assert "journal stopped" in piece.note
-        assert piece.text == "head"
+        if piece is None:
+            raise AssertionError("piece is not None")
+        if piece.closed is not True:
+            raise AssertionError("piece.closed is True")
+        if "journal stopped" not in piece.note:
+            raise AssertionError('"journal stopped" in piece.note')
+        if piece.text != "head":
+            raise AssertionError('piece.text == "head"')

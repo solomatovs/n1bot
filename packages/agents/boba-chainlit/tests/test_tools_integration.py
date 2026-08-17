@@ -135,13 +135,15 @@ class Call:
             {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
         )
         result = ToolArtifact.revive(message.artifact)
-        assert result is not None, f"{tool.name}: artifact не разобран"
+        if result is None:
+            raise AssertionError(f"{tool.name}: artifact не разобран")
         return result
 
     @staticmethod
     async def ok(tool: Any, **args: Any) -> Any:
         result = await Call.result(tool, **args)
-        assert result.ok, f"{tool.name}: {result}"
+        if not (result.ok):
+            raise AssertionError(f"{tool.name}: {result}")
         return result
 
 
@@ -225,7 +227,10 @@ def whitelisted_url(raw_config) -> str:
     """Адрес для web-тестов берётся из whitelist'а: другие хосты запрещены."""
     cfg = bind(raw_config, path="tool.web", model=WebGrepConfig)
     hosts = sorted(cfg.profiles)
-    assert hosts, "[tool.web.profiles] пуст — web-инструментам некуда ходить"
+    if not (hosts):
+        raise AssertionError(
+            "[tool.web.profiles] пуст — web-инструментам некуда ходить"
+        )
     return f"https://{hosts[0]}/"
 
 
@@ -238,9 +243,7 @@ def confluence_tools(raw_config):
 
     module = reload(confluence_module)
 
-    sandbox = bind(
-        raw_config, path="tool.confluence.sandbox", model=SandboxToolConfig
-    )
+    sandbox = bind(raw_config, path="tool.confluence.sandbox", model=SandboxToolConfig)
     launcher = SandboxCaller("confluence", sandbox.effective(), ToolSetup.path_vars)
 
     functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
@@ -397,7 +400,8 @@ async def workspace_pdf(bash_tool, workspace_image) -> str:
         command=f"base64 -d > {WORKSPACE_PDF}; test -s {WORKSPACE_PDF}",
         stdin=payload,
     )
-    assert result.payload["exit_code"] == 0
+    if result.payload["exit_code"] != 0:
+        raise AssertionError('result.payload["exit_code"] == 0')
     return WORKSPACE_PDF
 
 
@@ -405,7 +409,8 @@ async def workspace_pdf(bash_tool, workspace_image) -> str:
 async def confluence_page(confluence_tools) -> dict[str, str]:
     """Страница берётся из живого поиска: жёсткие id ломаются со стендом."""
     spaces = await Call.ok(confluence_tools["confluence_spaces"], limit=10)
-    assert spaces.rows, "в Confluence нет ни одного space"
+    if not (spaces.rows):
+        raise AssertionError("в Confluence нет ни одного space")
     found = await Call.ok(
         confluence_tools["confluence_search"],
         query="данные",
@@ -446,25 +451,34 @@ class TestBashTool:
 
     async def test_command_runs(self, bash_tool, workspace_image) -> None:
         result = await Call.ok(bash_tool, command="echo hello; pwd")
-        assert isinstance(result, JsonResult)
-        assert result.payload["exit_code"] == 0
-        assert "hello" in result.payload["stdout"]
-        assert "/workspace" in result.payload["stdout"]
+        if not (isinstance(result, JsonResult)):
+            raise AssertionError("isinstance(result, JsonResult)")
+        if result.payload["exit_code"] != 0:
+            raise AssertionError('result.payload["exit_code"] == 0')
+        if "hello" not in result.payload["stdout"]:
+            raise AssertionError('"hello" in result.payload["stdout"]')
+        if "/workspace" not in result.payload["stdout"]:
+            raise AssertionError('"/workspace" in result.payload["stdout"]')
 
     async def test_stdin_reaches_command(self, bash_tool, workspace_image) -> None:
         result = await Call.ok(bash_tool, command="cat", stdin="через stdin")
-        assert result.payload["stdout"] == "через stdin"
+        if result.payload["stdout"] != "через stdin":
+            raise AssertionError('result.payload["stdout"] == "через stdin"')
 
     async def test_failed_command_is_not_ok(self, bash_tool, workspace_image) -> None:
         result = await Call.result(bash_tool, command="echo boom >&2; exit 3")
-        assert not result.ok
-        assert result.payload["exit_code"] == 3
-        assert "boom" in result.payload["stderr"]
+        if result.ok:
+            raise AssertionError("not result.ok")
+        if result.payload["exit_code"] != 3:
+            raise AssertionError('result.payload["exit_code"] == 3')
+        if "boom" not in result.payload["stderr"]:
+            raise AssertionError('"boom" in result.payload["stderr"]')
 
     async def test_network_is_unavailable(self, bash_tool, workspace_image) -> None:
         """Профиль bash без сети: имена не резолвятся, наружу хода нет."""
         result = await Call.result(bash_tool, command="getent hosts confl.loshara.com")
-        assert not result.ok
+        if result.ok:
+            raise AssertionError("not result.ok")
 
 
 class TestDocTools:
@@ -479,10 +493,14 @@ class TestDocTools:
             num_workers=1,
             ocr_language="rus+eng",
         )
-        assert isinstance(result, TextResult)
-        assert "Alpha page one" in result.text
-        assert "Beta page two" in result.text
-        assert result.metadata["pages"] == "1,2"
+        if not (isinstance(result, TextResult)):
+            raise AssertionError("isinstance(result, TextResult)")
+        if "Alpha page one" not in result.text:
+            raise AssertionError('"Alpha page one" in result.text')
+        if "Beta page two" not in result.text:
+            raise AssertionError('"Beta page two" in result.text')
+        if result.metadata["pages"] != "1,2":
+            raise AssertionError('result.metadata["pages"] == "1,2"')
 
     async def test_document_outline(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(
@@ -492,11 +510,13 @@ class TestDocTools:
             num_workers=1,
             ocr_language="rus+eng",
         )
-        assert isinstance(result, TableResult)
+        if not (isinstance(result, TableResult)):
+            raise AssertionError("isinstance(result, TableResult)")
         pages = []
         for row in result.rows:
             pages.append(row["page"])
-        assert pages == [1, 2]
+        if pages != [1, 2]:
+            raise AssertionError("pages == [1, 2]")
 
     async def test_read_document_pages_subset(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(
@@ -507,8 +527,10 @@ class TestDocTools:
             num_workers=1,
             ocr_language="rus+eng",
         )
-        assert "Beta page two" in result.text
-        assert "Alpha page one" not in result.text
+        if "Beta page two" not in result.text:
+            raise AssertionError('"Beta page two" in result.text')
+        if "Alpha page one" in result.text:
+            raise AssertionError('"Alpha page one" not in result.text')
 
     async def test_search_document(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(
@@ -519,9 +541,12 @@ class TestDocTools:
             num_workers=1,
             ocr_language="rus+eng",
         )
-        assert isinstance(result, TableResult)
-        assert len(result.rows) == 2
-        assert result.rows[0]["page"] == 1
+        if not (isinstance(result, TableResult)):
+            raise AssertionError("isinstance(result, TableResult)")
+        if len(result.rows) != 2:
+            raise AssertionError("len(result.rows) == 2")
+        if result.rows[0]["page"] != 1:
+            raise AssertionError('result.rows[0]["page"] == 1')
 
     async def test_missing_document_fails_loudly(self, doc_tools) -> None:
         """Нет файла — объявленный отказ парсера, а не крах процесса."""
@@ -535,8 +560,10 @@ class TestDocTools:
                 ocr_language="rus+eng",
             )
 
-        assert failure.value.kind == "document_unreadable"
-        assert "no.pdf" in str(failure.value)
+        if failure.value.kind != "document_unreadable":
+            raise AssertionError('failure.value.kind == "document_unreadable"')
+        if "no.pdf" not in str(failure.value):
+            raise AssertionError('"no.pdf" in str(failure.value)')
 
 
 class TestChartTool:
@@ -550,15 +577,19 @@ class TestChartTool:
             }
         )
         result = await Call.ok(chart_tool, spec=spec)
-        assert isinstance(result, ChartResult)
-        assert result.title == "итоги"
-        assert result.spec["data"][0]["type"] == "bar"
+        if not (isinstance(result, ChartResult)):
+            raise AssertionError("isinstance(result, ChartResult)")
+        if result.title != "итоги":
+            raise AssertionError('result.title == "итоги"')
+        if result.spec["data"][0]["type"] != "bar":
+            raise AssertionError('result.spec["data"][0]["type"] == "bar"')
 
     async def test_broken_spec_fails_loudly(self, chart_tool) -> None:
         with pytest.raises(PayloadFailureError) as caught:
             await Call.result(chart_tool, spec="не json")
 
-        assert caught.value.kind == "invalid_figure_spec"
+        if caught.value.kind != "invalid_figure_spec":
+            raise AssertionError('caught.value.kind == "invalid_figure_spec"')
 
 
 class TestWebTools:
@@ -572,9 +603,12 @@ class TestWebTools:
             line_offset=0,
             line_count=20,
         )
-        assert result.payload["total_lines"] > 0
-        assert result.payload["returned_lines"] <= 20
-        assert result.payload["source_url"] == whitelisted_url
+        if result.payload["total_lines"] <= 0:
+            raise AssertionError('result.payload["total_lines"] > 0')
+        if result.payload["returned_lines"] > 20:
+            raise AssertionError('result.payload["returned_lines"] <= 20')
+        if result.payload["source_url"] != whitelisted_url:
+            raise AssertionError('result.payload["source_url"] == whitelisted_url')
 
     async def test_grep_page(self, web_tools, whitelisted_url) -> None:
         result = await Call.ok(
@@ -583,9 +617,12 @@ class TestWebTools:
             pattern="Confluence",
             limit=3,
         )
-        assert isinstance(result, TableResult)
-        assert result.rows
-        assert "Confluence" in result.rows[0]["content"]
+        if not (isinstance(result, TableResult)):
+            raise AssertionError("isinstance(result, TableResult)")
+        if not (result.rows):
+            raise AssertionError("result.rows")
+        if "Confluence" not in result.rows[0]["content"]:
+            raise AssertionError('"Confluence" in result.rows[0]["content"]')
 
     async def test_host_outside_whitelist(self, web_tools) -> None:
         """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""
@@ -598,8 +635,10 @@ class TestWebTools:
                 line_count=5,
             )
 
-        assert caught.value.kind == "unknown_host"
-        assert "whitelist" in str(caught.value)
+        if caught.value.kind != "unknown_host":
+            raise AssertionError('caught.value.kind == "unknown_host"')
+        if "whitelist" not in str(caught.value):
+            raise AssertionError('"whitelist" in str(caught.value)')
 
 
 class TestConfluenceTools:
@@ -607,9 +646,12 @@ class TestConfluenceTools:
 
     async def test_spaces(self, confluence_tools) -> None:
         result = await Call.ok(confluence_tools["confluence_spaces"], limit=10)
-        assert isinstance(result, TableResult)
-        assert result.rows
-        assert set(result.rows[0]) >= {"key", "name", "type"}
+        if not (isinstance(result, TableResult)):
+            raise AssertionError("isinstance(result, TableResult)")
+        if not (result.rows):
+            raise AssertionError("result.rows")
+        if set(result.rows[0]) < {"key", "name", "type"}:
+            raise AssertionError('set(result.rows[0]) >= {"key", "name", "type"}')
 
     async def test_search(self, confluence_tools) -> None:
         result = await Call.ok(
@@ -618,8 +660,10 @@ class TestConfluenceTools:
             limit=5,
             snippet_chars=200,
         )
-        assert result.rows
-        assert set(result.rows[0]) >= {"page_id", "title", "space_key", "url"}
+        if not (result.rows):
+            raise AssertionError("result.rows")
+        if set(result.rows[0]) < {"page_id", "title", "space_key", "url"}:
+            raise AssertionError('set(result.rows[0]) >= {"page_id", "title", "space_…')
 
     async def test_fetch_page(self, confluence_tools, confluence_page) -> None:
         result = await Call.ok(
@@ -627,8 +671,10 @@ class TestConfluenceTools:
             page_id=confluence_page["page_id"],
             as_markdown=True,
         )
-        assert isinstance(result, TextResult)
-        assert result.text.strip()
+        if not (isinstance(result, TextResult)):
+            raise AssertionError("isinstance(result, TextResult)")
+        if not (result.text.strip()):
+            raise AssertionError("result.text.strip()")
 
     async def test_grep_page(self, confluence_tools, confluence_page) -> None:
         word = confluence_page["title"].split()[0]
@@ -639,7 +685,8 @@ class TestConfluenceTools:
             case_insensitive=True,
             limit=3,
         )
-        assert isinstance(result, TableResult)
+        if not (isinstance(result, TableResult)):
+            raise AssertionError("isinstance(result, TableResult)")
 
     async def test_unknown_page_reports_error(self, confluence_tools) -> None:
         """Несуществующая страница — объявленный отказ с kind'ом инструмента."""
@@ -648,7 +695,8 @@ class TestConfluenceTools:
                 confluence_tools["confluence_fetch"], page_id="0", as_markdown=True
             )
 
-        assert failure.value.kind == "confluence_request_failed"
+        if failure.value.kind != "confluence_request_failed":
+            raise AssertionError('failure.value.kind == "confluence_request_failed"')
 
 
 class TestPgTools:
@@ -659,7 +707,8 @@ class TestPgTools:
         targets = []
         for row in result.rows:
             targets.append(row["connection_name"])
-        assert targets
+        if not (targets):
+            raise AssertionError("targets")
 
     async def test_list_tables(self, pg_tools) -> None:
         result = await Call.ok(
@@ -667,8 +716,10 @@ class TestPgTools:
             connection_name="main",
             pg_schema="pg_catalog",
         )
-        assert result.rows
-        assert set(result.rows[0]) >= {"schema", "table_name", "kind", "owner"}
+        if not (result.rows):
+            raise AssertionError("result.rows")
+        if set(result.rows[0]) < {"schema", "table_name", "kind", "owner"}:
+            raise AssertionError('set(result.rows[0]) >= {"schema", "table_name", "ki…')
 
     async def test_system_schemas_are_not_hidden(self, pg_tools) -> None:
         """Каталог не прячется: системные схемы видны наравне с остальными."""
@@ -676,7 +727,8 @@ class TestPgTools:
         schemas = set()
         for row in result.rows:
             schemas.add(row["schema"])
-        assert schemas
+        if not (schemas):
+            raise AssertionError("schemas")
 
     async def test_table_pattern_filters_by_name(self, pg_tools) -> None:
         result = await Call.ok(
@@ -685,9 +737,11 @@ class TestPgTools:
             pg_schema="pg_catalog",
             table_pattern="pg_cl%",
         )
-        assert result.rows
+        if not (result.rows):
+            raise AssertionError("result.rows")
         for row in result.rows:
-            assert row["table_name"].startswith("pg_cl")
+            if not (row["table_name"].startswith("pg_cl")):
+                raise AssertionError('row["table_name"].startswith("pg_cl")')
 
     async def test_describe_table(self, pg_tools) -> None:
         tables = await Call.ok(
@@ -703,8 +757,10 @@ class TestPgTools:
             table=first["table_name"],
             pg_schema=first["schema"],
         )
-        assert result.rows
-        assert set(result.rows[0]) >= {"column_name", "type", "nullable", "primary_key"}
+        if not (result.rows):
+            raise AssertionError("result.rows")
+        if set(result.rows[0]) < {"column_name", "type", "nullable", "primary_key"}:
+            raise AssertionError('set(result.rows[0]) >= {"column_name", "type", "nul…')
 
     async def test_query_returns_rows(self, pg_tools) -> None:
         result = await Call.ok(
@@ -712,9 +768,12 @@ class TestPgTools:
             connection_name="main",
             sql="select 1 as one, 'два' as two",
         )
-        assert isinstance(result, TableResult)
-        assert result.rows[0]["one"] == 1
-        assert result.rows[0]["two"] == "два"
+        if not (isinstance(result, TableResult)):
+            raise AssertionError("isinstance(result, TableResult)")
+        if result.rows[0]["one"] != 1:
+            raise AssertionError('result.rows[0]["one"] == 1')
+        if result.rows[0]["two"] != "два":
+            raise AssertionError('result.rows[0]["two"] == "два"')
 
     async def test_statement_without_rows_reports_status(self, pg_tools) -> None:
         """DDL проходит и отчитывается статусом; временная таблица живёт в сессии."""
@@ -723,8 +782,10 @@ class TestPgTools:
             connection_name="main",
             sql="create temp table integration_probe(x int)",
         )
-        assert isinstance(result, AffectedSqlResult)
-        assert result.status == "CREATE TABLE"
+        if not (isinstance(result, AffectedSqlResult)):
+            raise AssertionError("isinstance(result, AffectedSqlResult)")
+        if result.status != "CREATE TABLE":
+            raise AssertionError('result.status == "CREATE TABLE"')
 
     async def test_copy_returns_copy_text(self, pg_tools) -> None:
         result = await Call.ok(
@@ -732,8 +793,10 @@ class TestPgTools:
             connection_name="main",
             sql="select 1 as one, 'два' as two",
         )
-        assert "one" in result.text
-        assert "два" in result.text
+        if "one" not in result.text:
+            raise AssertionError('"one" in result.text')
+        if "два" not in result.text:
+            raise AssertionError('"два" in result.text')
 
     async def test_unknown_target_is_rejected(self, pg_tools) -> None:
         """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""
@@ -742,7 +805,8 @@ class TestPgTools:
                 pg_tools["pg_query"], connection_name="нет-такого", sql="select 1"
             )
 
-        assert caught.value.kind == "unknown_target"
+        if caught.value.kind != "unknown_target":
+            raise AssertionError('caught.value.kind == "unknown_target"')
 
 
 class TestIngestTools:
@@ -758,9 +822,12 @@ class TestIngestTools:
             force_update=True,
         )
         stats = result.rows[0]
-        assert stats["collection"] == kb_collection
-        assert stats["indexed"] > 0
-        assert stats["failed"] == 0
+        if stats["collection"] != kb_collection:
+            raise AssertionError('stats["collection"] == kb_collection')
+        if stats["indexed"] <= 0:
+            raise AssertionError('stats["indexed"] > 0')
+        if stats["failed"] != 0:
+            raise AssertionError('stats["failed"] == 0')
 
     async def test_index_cql_skips_unchanged(
         self, ingest_tools, confluence_page
@@ -772,8 +839,10 @@ class TestIngestTools:
             prune_missing=False,
         )
         stats = result.rows[0]
-        assert stats["skipped_unchanged"] == 1
-        assert stats["indexed"] == 0
+        if stats["skipped_unchanged"] != 1:
+            raise AssertionError('stats["skipped_unchanged"] == 1')
+        if stats["indexed"] != 0:
+            raise AssertionError('stats["indexed"] == 0')
 
     async def test_index_spaces(
         self, ingest_tools, confluence_page, kb_collection
@@ -786,9 +855,12 @@ class TestIngestTools:
             force_update=False,
         )
         stats = result.rows[0]
-        assert stats["collection"] == kb_collection
-        assert stats["failed"] == 0
-        assert stats["skipped_unchanged"] >= 1
+        if stats["collection"] != kb_collection:
+            raise AssertionError('stats["collection"] == kb_collection')
+        if stats["failed"] != 0:
+            raise AssertionError('stats["failed"] == 0')
+        if stats["skipped_unchanged"] < 1:
+            raise AssertionError('stats["skipped_unchanged"] >= 1')
 
     async def test_unknown_space_reports_error(self, ingest_tools) -> None:
         """Несуществующий space — объявленный отказ с kind'ом инструмента."""
@@ -800,7 +872,8 @@ class TestIngestTools:
                 force_update=False,
             )
 
-        assert failure.value.kind == "ingest_request_failed"
+        if failure.value.kind != "ingest_request_failed":
+            raise AssertionError('failure.value.kind == "ingest_request_failed"')
 
     async def test_fetch_attachment(
         self, ingest_tools, confluence_attachment_ref
@@ -810,8 +883,10 @@ class TestIngestTools:
             page_id=confluence_attachment_ref["page_id"],
             filename=confluence_attachment_ref["filename"],
         )
-        assert isinstance(result, TextResult)
-        assert result.text.strip()
+        if not (isinstance(result, TextResult)):
+            raise AssertionError("isinstance(result, TextResult)")
+        if not (result.text.strip()):
+            raise AssertionError("result.text.strip()")
 
 
 class TestKbTools:
@@ -829,12 +904,15 @@ class TestKbTools:
         result = await Call.ok(
             kb_tools["kb_fts_search"], query=confluence_page["title"], top_k=20
         )
-        assert isinstance(result, TableResult)
-        assert result.rows
+        if not (isinstance(result, TableResult)):
+            raise AssertionError("isinstance(result, TableResult)")
+        if not (result.rows):
+            raise AssertionError("result.rows")
         found = []
         for row in result.rows:
             found.append(row["page_id"])
-        assert confluence_page["page_id"] in found
+        if confluence_page["page_id"] not in found:
+            raise AssertionError('confluence_page["page_id"] in found')
 
     async def test_vector_search_returns_hits(
         self, kb_tools, ingest_tools, confluence_page
@@ -848,5 +926,7 @@ class TestKbTools:
         result = await Call.ok(
             kb_tools["kb_vector_search"], query=confluence_page["title"], top_k=5
         )
-        assert result.rows
-        assert set(result.rows[0]) >= {"id", "distance", "snippet"}
+        if not (result.rows):
+            raise AssertionError("result.rows")
+        if set(result.rows[0]) < {"id", "distance", "snippet"}:
+            raise AssertionError('set(result.rows[0]) >= {"id", "distance", "snippet"}')

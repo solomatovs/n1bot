@@ -37,7 +37,8 @@ def ingest_cfg(raw_config) -> IngestToolConfig:
 
 async def test_run_confluence_ingest(ingest_cfg: IngestToolConfig) -> None:
     body = ToolMain.toolset(confluence_index_pages)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(
         page_ids=RunArgs.PAGE_IDS,

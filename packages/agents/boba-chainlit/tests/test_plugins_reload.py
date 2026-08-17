@@ -23,8 +23,10 @@ def chainlit_context() -> None:
 
 def _schema_fields(tool: object) -> set[str]:
     schema = getattr(tool, "args_schema", None)
-    assert isinstance(schema, type)
-    assert issubclass(schema, BaseModel)
+    if not (isinstance(schema, type)):
+        raise AssertionError("isinstance(schema, type)")
+    if not (issubclass(schema, BaseModel)):
+        raise AssertionError("issubclass(schema, BaseModel)")
     return set(schema.model_fields)
 
 
@@ -32,13 +34,16 @@ def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
     first = load_tools(raw_config)
     second = load_tools(raw_config)
 
-    assert [t.name for t in first.tools] == [t.name for t in second.tools]
+    if [t.name for t in first.tools] != [t.name for t in second.tools]:
+        raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
 
     by_name = {t.name: t for t in second.tools}
     loaded = by_name["pg_list_targets"]
 
-    assert ToolCallIdField.NAME in _schema_fields(loaded)
-    assert "cfg" not in _schema_fields(loaded)
+    if ToolCallIdField.NAME not in _schema_fields(loaded):
+        raise AssertionError("ToolCallIdField.NAME in _schema_fields(loaded)")
+    if "cfg" in _schema_fields(loaded):
+        raise AssertionError('"cfg" not in _schema_fields(loaded)')
 
 
 def test_module_singletons_stay_pristine(raw_config) -> None:
@@ -48,11 +53,14 @@ def test_module_singletons_stay_pristine(raw_config) -> None:
     for tool in PG_TOOLS:
         fields = _schema_fields(tool)
 
-        assert ToolCallIdField.NAME not in fields
-        assert "cfg" in fields
+        if ToolCallIdField.NAME in fields:
+            raise AssertionError("ToolCallIdField.NAME not in fields")
+        if "cfg" not in fields:
+            raise AssertionError('"cfg" in fields')
 
     origin = ToolMainBody.of(pg_list_targets)
-    assert origin.__module__ == "boba.tool.pg.tools"
+    if origin.__module__ != "boba.tool.pg.tools":
+        raise AssertionError('origin.__module__ == "boba.tool.pg.tools"')
 
 
 class ToolMainBody:
@@ -64,5 +72,6 @@ class ToolMainBody:
         if body is None:
             body = getattr(tool, "func", None)
 
-        assert body is not None
+        if body is None:
+            raise AssertionError("body is not None")
         return body

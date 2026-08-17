@@ -79,9 +79,12 @@ class TestAddress:
     def test_roundtrip(self) -> None:
         address = ToolAddress.of(FAKE)
 
-        assert address.module == "fake_toolmod"
-        assert address.name == "fake_echo"
-        assert address.argv_head()[1:] == ["-m", "fake_toolmod", "fake_echo"]
+        if address.module != "fake_toolmod":
+            raise AssertionError('address.module == "fake_toolmod"')
+        if address.name != "fake_echo":
+            raise AssertionError('address.name == "fake_echo"')
+        if address.argv_head()[1:] != ["-m", "fake_toolmod", "fake_echo"]:
+            raise AssertionError('address.argv_head()[1:] == ["-m", "fake_toolmod", "…')
 
 
 class TestArgv:
@@ -93,10 +96,12 @@ class TestArgv:
         )
 
         argv = list(command.argv)
-        assert argv[4:] == ["--text", "hi there", "--repeat", "3"]
+        if argv[4:] != ["--text", "hi there", "--repeat", "3"]:
+            raise AssertionError('argv[4:] == ["--text", "hi there", "--repeat", "3"]')
 
         payload = json.loads(command.stdin)
-        assert payload["cfg"]["token"] == "s3cret-token"
+        if payload["cfg"]["token"] != "s3cret-token":
+            raise AssertionError('payload["cfg"]["token"] == "s3cret-token"')
 
     def test_secret_never_in_argv(self) -> None:
         command = ToolArgv.render(
@@ -105,7 +110,8 @@ class TestArgv:
             {"text": "x", "repeat": 1, "cfg": CFG},
         )
 
-        assert "s3cret-token" not in " ".join(command.argv)
+        if "s3cret-token" in " ".join(command.argv):
+            raise AssertionError('"s3cret-token" not in " ".join(command.argv)')
 
     def test_parse_restores_kwargs(self) -> None:
         command = ToolArgv.render(
@@ -116,11 +122,15 @@ class TestArgv:
 
         kwargs = ToolArgv.parse(FAKE, command.argv[4:], command.stdin)
 
-        assert kwargs["text"] == "план б"
-        assert kwargs["repeat"] == 2
+        if kwargs["text"] != "план б":
+            raise AssertionError('kwargs["text"] == "план б"')
+        if kwargs["repeat"] != 2:
+            raise AssertionError('kwargs["repeat"] == 2')
         restored = kwargs["cfg"]
-        assert isinstance(restored, FakeConfig)
-        assert restored.token.get_secret_value() == "s3cret-token"
+        if not (isinstance(restored, FakeConfig)):
+            raise AssertionError("isinstance(restored, FakeConfig)")
+        if restored.token.get_secret_value() != "s3cret-token":
+            raise AssertionError('restored.token.get_secret_value() == "s3cret-token"')
 
     def test_oversized_argument_is_refused(self) -> None:
         with pytest.raises(ArgumentTooLargeError):
@@ -137,10 +147,12 @@ class TestExpectedErrors:
             pass
 
         kind = ExpectedErrors.kind_of(DerivedUnavailableError("x"), dict(EXPECTED))
-        assert kind == "fake_unavailable"
+        if kind != "fake_unavailable":
+            raise AssertionError('kind == "fake_unavailable"')
 
     def test_unknown_error_gives_none(self) -> None:
-        assert ExpectedErrors.kind_of(ValueError("x"), dict(EXPECTED)) is None
+        if ExpectedErrors.kind_of(ValueError("x"), dict(EXPECTED)) is not None:
+            raise AssertionError('ExpectedErrors.kind_of(ValueError("x"), dict(EXPECT…')
 
 
 class TestToolMainAsProgram:
@@ -151,8 +163,10 @@ class TestToolMainAsProgram:
     def test_help_lists_tools(self) -> None:
         proc, _ = run_module(["--help"])
 
-        assert proc.returncode == 0
-        assert b"fake_echo" in proc.stdout
+        if proc.returncode != 0:
+            raise AssertionError("proc.returncode == 0")
+        if b"fake_echo" not in proc.stdout:
+            raise AssertionError('b"fake_echo" in proc.stdout')
 
     def test_human_run_prints_content(self) -> None:
         proc, _ = run_module(
@@ -160,8 +174,10 @@ class TestToolMainAsProgram:
             stdin=self.STDIN,
         )
 
-        assert proc.returncode == 0
-        assert "ping ping|s3cret-token" in proc.stdout.decode()
+        if proc.returncode != 0:
+            raise AssertionError("proc.returncode == 0")
+        if "ping ping|s3cret-token" not in proc.stdout.decode():
+            raise AssertionError('"ping ping|s3cret-token" in proc.stdout.decode()')
 
     def test_envelope_goes_to_result_fd_not_stdout(self) -> None:
         proc, envelope = run_module(
@@ -170,13 +186,18 @@ class TestToolMainAsProgram:
             result_fd=True,
         )
 
-        assert proc.returncode == 0
-        assert b'"status"' not in proc.stdout, "конверт не должен попасть в stdout"
+        if proc.returncode != 0:
+            raise AssertionError("proc.returncode == 0")
+        if b'"status"' in proc.stdout:
+            raise AssertionError("конверт не должен попасть в stdout")
 
         reply = REPLY.validate_json(envelope)
-        assert isinstance(reply, ReplyOk)
-        assert "ping|s3cret-token" in reply.content
-        assert reply.artifact.kind == "text"
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError("isinstance(reply, ReplyOk)")
+        if "ping|s3cret-token" not in reply.content:
+            raise AssertionError('"ping|s3cret-token" in reply.content')
+        if reply.artifact.kind != "text":
+            raise AssertionError('reply.artifact.kind == "text"')
 
     def test_body_logs_land_on_stdout(self) -> None:
         """Логи тела — живой вывод: журнал и панель читают stdout процесса."""
@@ -186,12 +207,16 @@ class TestToolMainAsProgram:
             result_fd=True,
         )
 
-        assert proc.returncode == 0
+        if proc.returncode != 0:
+            raise AssertionError("proc.returncode == 0")
 
         stdout = proc.stdout.decode()
-        assert "echo progress: ping" in stdout
-        assert "INFO fake.tool" in stdout
-        assert b"echo progress" not in envelope
+        if "echo progress: ping" not in stdout:
+            raise AssertionError('"echo progress: ping" in stdout')
+        if "INFO fake.tool" not in stdout:
+            raise AssertionError('"INFO fake.tool" in stdout')
+        if b"echo progress" in envelope:
+            raise AssertionError('b"echo progress" not in envelope')
 
     def test_expected_error_becomes_error_envelope(self) -> None:
         proc, envelope = run_module(
@@ -200,12 +225,16 @@ class TestToolMainAsProgram:
             result_fd=True,
         )
 
-        assert proc.returncode == ToolMain.Exit.EXPECTED_FAILURE
+        if proc.returncode != ToolMain.Exit.EXPECTED_FAILURE:
+            raise AssertionError("proc.returncode == ToolMain.Exit.EXPECTED_FAILURE")
 
         reply = REPLY.validate_json(envelope)
-        assert isinstance(reply, ReplyError)
-        assert reply.kind == "fake_unavailable"
-        assert "fake backend is down" in reply.message
+        if not (isinstance(reply, ReplyError)):
+            raise AssertionError("isinstance(reply, ReplyError)")
+        if reply.kind != "fake_unavailable":
+            raise AssertionError('reply.kind == "fake_unavailable"')
+        if "fake backend is down" not in reply.message:
+            raise AssertionError('"fake backend is down" in reply.message')
 
     def test_unexpected_error_leaves_no_envelope(self) -> None:
         proc, envelope = run_module(
@@ -215,18 +244,24 @@ class TestToolMainAsProgram:
         )
 
         # правило разбора: ненулевой rc без конверта — неожиданное падение
-        assert proc.returncode != 0
-        assert envelope == b""
-        assert b"RuntimeError" in proc.stderr
+        if proc.returncode == 0:
+            raise AssertionError("proc.returncode != 0")
+        if envelope != b"":
+            raise AssertionError('envelope == b""')
+        if b"RuntimeError" not in proc.stderr:
+            raise AssertionError('b"RuntimeError" in proc.stderr')
 
     def test_unknown_tool_is_entry_error(self) -> None:
         proc, envelope = run_module(["no_such_tool"], result_fd=True)
 
-        assert proc.returncode == ToolMain.Exit.ENTRY_ERROR
+        if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
+            raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
 
         reply = REPLY.validate_json(envelope)
-        assert isinstance(reply, ReplyError)
-        assert reply.kind == str(EntryErrorKind.UNKNOWN_TOOL)
+        if not (isinstance(reply, ReplyError)):
+            raise AssertionError("isinstance(reply, ReplyError)")
+        if reply.kind != str(EntryErrorKind.UNKNOWN_TOOL):
+            raise AssertionError("reply.kind == str(EntryErrorKind.UNKNOWN_TOOL)")
 
     def test_invalid_flag_is_entry_error(self) -> None:
         proc, envelope = run_module(
@@ -235,14 +270,19 @@ class TestToolMainAsProgram:
             result_fd=True,
         )
 
-        assert proc.returncode == ToolMain.Exit.ENTRY_ERROR
+        if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
+            raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
 
         reply = REPLY.validate_json(envelope)
-        assert isinstance(reply, ReplyError)
-        assert reply.kind == str(EntryErrorKind.INVALID_REQUEST)
+        if not (isinstance(reply, ReplyError)):
+            raise AssertionError("isinstance(reply, ReplyError)")
+        if reply.kind != str(EntryErrorKind.INVALID_REQUEST):
+            raise AssertionError("reply.kind == str(EntryErrorKind.INVALID_REQUEST)")
 
     def test_missing_config_is_entry_error(self) -> None:
         proc, _ = run_module(["fake_echo", "--text", "x", "--repeat", "1"])
 
-        assert proc.returncode == ToolMain.Exit.ENTRY_ERROR
-        assert b"invalid_request" in proc.stderr
+        if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
+            raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
+        if b"invalid_request" not in proc.stderr:
+            raise AssertionError('b"invalid_request" in proc.stderr')

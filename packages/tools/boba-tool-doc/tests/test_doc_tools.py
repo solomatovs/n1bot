@@ -50,7 +50,8 @@ def _body(name: str) -> Any:
         if tool.name != name:
             continue
 
-        assert tool.coroutine is not None
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
         return tool.coroutine
 
     raise AssertionError(f"нет инструмента {name}")
@@ -75,30 +76,42 @@ class TestReadDocument:
             path=pdf, pages="1-2", cfg=_cfg()
         )
 
-        assert isinstance(artifact, TextResult)
-        assert "Alpha page one" in content
-        assert "Beta page two" in content
-        assert artifact.metadata["pages"] == "1,2"
-        assert artifact.metadata["truncated"] == "False"
+        if not (isinstance(artifact, TextResult)):
+            raise AssertionError("isinstance(artifact, TextResult)")
+        if "Alpha page one" not in content:
+            raise AssertionError('"Alpha page one" in content')
+        if "Beta page two" not in content:
+            raise AssertionError('"Beta page two" in content')
+        if artifact.metadata["pages"] != "1,2":
+            raise AssertionError('artifact.metadata["pages"] == "1,2"')
+        if artifact.metadata["truncated"] != "False":
+            raise AssertionError('artifact.metadata["truncated"] == "False"')
 
     async def test_selects_subset(self, pdf: str) -> None:
         content, artifact = await _body("read_document")(
             path=pdf, pages="2", cfg=_cfg()
         )
 
-        assert isinstance(artifact, TextResult)
-        assert "Beta page two" in content
-        assert "page one" not in content
-        assert artifact.metadata["pages"] == "2"
+        if not (isinstance(artifact, TextResult)):
+            raise AssertionError("isinstance(artifact, TextResult)")
+        if "Beta page two" not in content:
+            raise AssertionError('"Beta page two" in content')
+        if "page one" in content:
+            raise AssertionError('"page one" not in content')
+        if artifact.metadata["pages"] != "2":
+            raise AssertionError('artifact.metadata["pages"] == "2"')
 
     async def test_clips_text_and_marks_for_llm(self, pdf: str) -> None:
         content, artifact = await _body("read_document")(
             path=pdf, pages="1-2", cfg=_cfg(max_text_chars=5)
         )
 
-        assert isinstance(artifact, TextResult)
-        assert artifact.metadata["truncated"] == "True"
-        assert "[truncated to 5 characters]" in content
+        if not (isinstance(artifact, TextResult)):
+            raise AssertionError("isinstance(artifact, TextResult)")
+        if artifact.metadata["truncated"] != "True":
+            raise AssertionError('artifact.metadata["truncated"] == "True"')
+        if "[truncated to 5 characters]" not in content:
+            raise AssertionError('"[truncated to 5 characters]" in content')
 
     async def test_llm_parser_controls_reach_engine(self, pdf: str) -> None:
         """Настройки вызова перекрывают секцию: без tessdata OCR падает сразу."""
@@ -117,17 +130,22 @@ class TestDocumentOutline:
     async def test_row_per_page(self, pdf: str) -> None:
         _content, artifact = await _body("document_outline")(path=pdf, cfg=_cfg())
 
-        assert isinstance(artifact, TableResult)
+        if not (isinstance(artifact, TableResult)):
+            raise AssertionError("isinstance(artifact, TableResult)")
 
         rows: list[DocOutlineRow] = []
         for raw in artifact.rows:
             rows.append(DocOutlineRow.model_validate(raw))
 
-        assert [row.page for row in rows] == [1, 2]
-        assert rows[0].chars > 0
+        if [row.page for row in rows] != [1, 2]:
+            raise AssertionError("[row.page for row in rows] == [1, 2]")
+        if rows[0].chars <= 0:
+            raise AssertionError("rows[0].chars > 0")
 
-        assert artifact.note is not None
-        assert "pages 2" in artifact.note
+        if artifact.note is None:
+            raise AssertionError("artifact.note is not None")
+        if "pages 2" not in artifact.note:
+            raise AssertionError('"pages 2" in artifact.note')
 
 
 class TestSearchDocument:
@@ -136,26 +154,34 @@ class TestSearchDocument:
             path=pdf, query="Alpha", cfg=_cfg()
         )
 
-        assert isinstance(artifact, TableResult)
+        if not (isinstance(artifact, TableResult)):
+            raise AssertionError("isinstance(artifact, TableResult)")
 
         rows: list[DocSearchRow] = []
         for raw in artifact.rows:
             rows.append(DocSearchRow.model_validate(raw))
 
-        assert [row.page for row in rows] == [1, 2]
-        assert "Alpha" in rows[0].snippet
-        assert rows[0].height > 0
+        if [row.page for row in rows] != [1, 2]:
+            raise AssertionError("[row.page for row in rows] == [1, 2]")
+        if "Alpha" not in rows[0].snippet:
+            raise AssertionError('"Alpha" in rows[0].snippet')
+        if rows[0].height <= 0:
+            raise AssertionError("rows[0].height > 0")
 
     async def test_reports_limit(self, pdf: str) -> None:
         _content, artifact = await _body("search_document")(
             path=pdf, query="Alpha", cfg=_cfg(search_max_matches=1)
         )
 
-        assert isinstance(artifact, TableResult)
-        assert len(artifact.rows) == 1
+        if not (isinstance(artifact, TableResult)):
+            raise AssertionError("isinstance(artifact, TableResult)")
+        if len(artifact.rows) != 1:
+            raise AssertionError("len(artifact.rows) == 1")
 
-        assert artifact.note is not None
-        assert "limit reached" in artifact.note
+        if artifact.note is None:
+            raise AssertionError("artifact.note is not None")
+        if "limit reached" not in artifact.note:
+            raise AssertionError('"limit reached" in artifact.note')
 
 
 class TestExpectedFailures:
@@ -169,7 +195,8 @@ class TestExpectedFailures:
             await _body("read_document")(path=str(doc), pages="1", cfg=_cfg())
 
     def test_parse_error_maps_to_document_unreadable(self) -> None:
-        assert EXPECTED[LiteParseError] is DocErrorKind.DOCUMENT_UNREADABLE
+        if EXPECTED[LiteParseError] is not DocErrorKind.DOCUMENT_UNREADABLE:
+            raise AssertionError("EXPECTED[LiteParseError] is DocErrorKind.DOCUMENT_U…")
 
 
 class TestSchemas:
@@ -181,27 +208,36 @@ class TestSchemas:
         return tools[name].tool_call_schema.model_json_schema()
 
     def test_all_tools_registered(self) -> None:
-        assert [t.name for t in TOOLS] == list(self._NAMES)
+        if [t.name for t in TOOLS] != list(self._NAMES):
+            raise AssertionError("[t.name for t in TOOLS] == list(self._NAMES)")
 
     def test_read_document_requires_path_and_pages(self) -> None:
         schema = self._schema("read_document")
 
-        assert "path" in schema["required"]
-        assert "pages" in schema["required"]
+        if "path" not in schema["required"]:
+            raise AssertionError('"path" in schema["required"]')
+        if "pages" not in schema["required"]:
+            raise AssertionError('"pages" in schema["required"]')
 
     @pytest.mark.parametrize("name", _NAMES)
     def test_cfg_is_hidden_from_llm(self, name: str) -> None:
-        assert "cfg" not in self._schema(name)["properties"]
+        if "cfg" in self._schema(name)["properties"]:
+            raise AssertionError('"cfg" not in self._schema(name)["properties"]')
 
     @pytest.mark.parametrize("name", _NAMES)
     def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:
         schema = self._schema(name)
         props = schema["properties"]
 
-        assert props["ocr_enabled"]["default"] is False
-        assert props["num_workers"]["default"] == 1
-        assert props["num_workers"]["maximum"] == 4
-        assert props["ocr_language"]["default"] == "rus+eng"
+        if props["ocr_enabled"]["default"] is not False:
+            raise AssertionError('props["ocr_enabled"]["default"] is False')
+        if props["num_workers"]["default"] != 1:
+            raise AssertionError('props["num_workers"]["default"] == 1')
+        if props["num_workers"]["maximum"] != 4:
+            raise AssertionError('props["num_workers"]["maximum"] == 4')
+        if props["ocr_language"]["default"] != "rus+eng":
+            raise AssertionError('props["ocr_language"]["default"] == "rus+eng"')
 
         for control in ("ocr_enabled", "num_workers", "ocr_language"):
-            assert control not in schema["required"]
+            if control in schema["required"]:
+                raise AssertionError('control not in schema["required"]')

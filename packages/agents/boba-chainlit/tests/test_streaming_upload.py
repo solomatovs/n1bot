@@ -102,7 +102,7 @@ def client_app(app_builder: Callable[[UploadPolicy], FastAPI]) -> FastAPI:
 
 
 def transport(app: FastAPI) -> AsyncClient:
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
 
 
 async def read_all(storage: LocalStorageClient, object_key: str) -> bytes:
@@ -129,23 +129,31 @@ async def test_upload_lands_in_storage_and_is_served_back(
             files={"file": ("отчёт.bin", payload, "application/octet-stream")},
         )
 
-    assert response.status_code == 200, response.text
+    if response.status_code != 200:
+        raise AssertionError(response.text)
     body = response.json()
-    assert body["name"] == "отчёт.bin"
-    assert body["size"] == len(payload)
+    if body["name"] != "отчёт.bin":
+        raise AssertionError('body["name"] == "отчёт.bin"')
+    if body["size"] != len(payload):
+        raise AssertionError('body["size"] == len(payload)')
 
     record = session.files[body["id"]]
-    assert await read_all(storage, record["object_key"]) == payload
+    if await read_all(storage, record["object_key"]) != payload:
+        raise AssertionError('await read_all(storage, record["object_key"]) == payload')
 
     async with transport(client_app) as client:
         served = await client.get(
             f"/project/file/{body['id']}", params={"session_id": session.id}
         )
 
-    assert served.status_code == 200
-    assert served.content == payload
-    assert served.headers["content-length"] == str(len(payload))
-    assert served.headers["accept-ranges"] == "bytes"
+    if served.status_code != 200:
+        raise AssertionError("served.status_code == 200")
+    if served.content != payload:
+        raise AssertionError("served.content == payload")
+    if served.headers["content-length"] != str(len(payload)):
+        raise AssertionError('served.headers["content-length"] == str(len(payload))')
+    if served.headers["accept-ranges"] != "bytes":
+        raise AssertionError('served.headers["accept-ranges"] == "bytes"')
 
 
 async def test_download_honors_range(
@@ -178,16 +186,24 @@ async def test_download_honors_range(
             headers={"Range": "bytes=-5"},
         )
 
-    assert partial.status_code == 206
-    assert partial.content == payload[10:20]
-    assert partial.headers["content-range"] == f"bytes 10-19/{len(payload)}"
-    assert partial.headers["content-length"] == "10"
+    if partial.status_code != 206:
+        raise AssertionError("partial.status_code == 206")
+    if partial.content != payload[10:20]:
+        raise AssertionError("partial.content == payload[10:20]")
+    if partial.headers["content-range"] != f"bytes 10-19/{len(payload)}":
+        raise AssertionError('partial.headers["content-range"] == f"bytes 10-19/{len(…')
+    if partial.headers["content-length"] != "10":
+        raise AssertionError('partial.headers["content-length"] == "10"')
 
-    assert tail.status_code == 206
-    assert tail.content == payload[990:]
+    if tail.status_code != 206:
+        raise AssertionError("tail.status_code == 206")
+    if tail.content != payload[990:]:
+        raise AssertionError("tail.content == payload[990:]")
 
-    assert suffix.status_code == 206
-    assert suffix.content == payload[-5:]
+    if suffix.status_code != 206:
+        raise AssertionError("suffix.status_code == 206")
+    if suffix.content != payload[-5:]:
+        raise AssertionError("suffix.content == payload[-5:]")
 
 
 async def test_download_range_beyond_file_is_416(
@@ -208,8 +224,10 @@ async def test_download_range_beyond_file_is_416(
             headers={"Range": "bytes=100-"},
         )
 
-    assert response.status_code == 416
-    assert response.headers["content-range"] == "bytes */3"
+    if response.status_code != 416:
+        raise AssertionError("response.status_code == 416")
+    if response.headers["content-range"] != "bytes */3":
+        raise AssertionError('response.headers["content-range"] == "bytes */3"')
 
 
 async def test_upload_never_buffers_the_body(
@@ -256,10 +274,14 @@ async def test_upload_never_buffers_the_body(
             content=body.stream(),
         )
 
-    assert response.status_code == 200, response.text
-    assert not spooled, "тело не должно спуливаться во временный файл"
-    assert sum(seen) == len(payload)
-    assert max(seen) < len(payload), "файл не должен приезжать одним куском"
+    if response.status_code != 200:
+        raise AssertionError(response.text)
+    if spooled:
+        raise AssertionError("тело не должно спуливаться во временный файл")
+    if sum(seen) != len(payload):
+        raise AssertionError("sum(seen) == len(payload)")
+    if max(seen) >= len(payload):
+        raise AssertionError("файл не должен приезжать одним куском")
 
 
 async def test_rejected_upload_stops_reading_at_the_cap(
@@ -298,8 +320,10 @@ async def test_rejected_upload_stops_reading_at_the_cap(
             content=counted(),
         )
 
-    assert response.status_code == 507
-    assert sum(sent) < body.size, "чтение должно прекратиться на потолке"
+    if response.status_code != 507:
+        raise AssertionError("response.status_code == 507")
+    if sum(sent) >= body.size:
+        raise AssertionError("чтение должно прекратиться на потолке")
 
 
 async def test_rejected_upload_still_drains_the_body(
@@ -337,9 +361,12 @@ async def test_rejected_upload_still_drains_the_body(
             content=counted(),
         )
 
-    assert response.status_code == 507
-    assert "no space left" in response.json()["detail"]
-    assert sum(sent) == body.size, "тело должно быть дочитано до конца"
+    if response.status_code != 507:
+        raise AssertionError("response.status_code == 507")
+    if "no space left" not in response.json()["detail"]:
+        raise AssertionError('"no space left" in response.json()["detail"]')
+    if sum(sent) != body.size:
+        raise AssertionError("тело должно быть дочитано до конца")
 
 
 async def test_form_fields_before_the_file_are_skipped(
@@ -355,9 +382,11 @@ async def test_form_fields_before_the_file_are_skipped(
             files={"file": ("note.txt", b"hello", "text/plain")},
         )
 
-    assert response.status_code == 200, response.text
+    if response.status_code != 200:
+        raise AssertionError(response.text)
     record = session.files[response.json()["id"]]
-    assert await read_all(storage, record["object_key"]) == b"hello"
+    if await read_all(storage, record["object_key"]) != b"hello":
+        raise AssertionError('await read_all(storage, record["object_key"]) == b"hell…')
 
 
 async def test_body_without_a_file_part_is_rejected(
@@ -371,7 +400,8 @@ async def test_body_without_a_file_part_is_rejected(
             data={"kind": "attachment"},
         )
 
-    assert response.status_code == 400
+    if response.status_code != 400:
+        raise AssertionError("response.status_code == 400")
 
 
 async def test_foreign_session_is_rejected(
@@ -387,4 +417,5 @@ async def test_foreign_session_is_rejected(
             files={"file": ("note.txt", b"hello", "text/plain")},
         )
 
-    assert response.status_code == 401
+    if response.status_code != 401:
+        raise AssertionError("response.status_code == 401")
