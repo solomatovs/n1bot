@@ -74,13 +74,19 @@ def test_channels_are_separated() -> None:
     )
     run = run_script(script, channels)
 
-    assert run.exit_code == 0
-    assert out.text() == "body stdout\n"
-    assert err.text() == "body stderr\n"
-    assert result.text() == "envelope\n"
+    if run.exit_code != 0:
+        raise AssertionError("run.exit_code == 0")
+    if out.text() != "body stdout\n":
+        raise AssertionError('out.text() == "body stdout\\n"')
+    if err.text() != "body stderr\n":
+        raise AssertionError('err.text() == "body stderr\\n"')
+    if result.text() != "envelope\n":
+        raise AssertionError('result.text() == "envelope\\n"')
     # stdout/stderr процесса bash (wrap-каналы) остались пустыми
-    assert run.stdout == ""
-    assert run.stderr == ""
+    if run.stdout != "":
+        raise AssertionError('run.stdout == ""')
+    if run.stderr != "":
+        raise AssertionError('run.stderr == ""')
 
 
 def test_wrap_output_stays_on_process_streams() -> None:
@@ -107,8 +113,10 @@ def test_wrap_output_stays_on_process_streams() -> None:
     finally:
         channels.close()
 
-    assert run.stdout == "wrap line\n"
-    assert out.text() == "body line\n"
+    if run.stdout != "wrap line\n":
+        raise AssertionError('run.stdout == "wrap line\\n"')
+    if out.text() != "body line\n":
+        raise AssertionError('out.text() == "body line\\n"')
 
 
 def test_pump_exits_on_eof_not_timeout() -> None:
@@ -119,9 +127,12 @@ def test_pump_exits_on_eof_not_timeout() -> None:
     run = run_script("true", channels, timeout_sec=600)
     elapsed = time.monotonic() - started
 
-    assert run.exit_code == 0
-    assert not run.timed_out
-    assert elapsed < 5
+    if run.exit_code != 0:
+        raise AssertionError("run.exit_code == 0")
+    if run.timed_out:
+        raise AssertionError("not run.timed_out")
+    if elapsed >= 5:
+        raise AssertionError("elapsed < 5")
 
 
 def test_output_larger_than_pipe_buffer() -> None:
@@ -133,8 +144,10 @@ def test_output_larger_than_pipe_buffer() -> None:
 
     run = run_script("head -c 1048576 /dev/zero", channels)
 
-    assert run.exit_code == 0
-    assert len(out.data) == 1048576
+    if run.exit_code != 0:
+        raise AssertionError("run.exit_code == 0")
+    if len(out.data) != 1048576:
+        raise AssertionError("len(out.data) == 1048576")
 
 
 def test_stdin_larger_than_pipe_buffer() -> None:
@@ -147,8 +160,10 @@ def test_stdin_larger_than_pipe_buffer() -> None:
     payload = b"x" * 1048576
     run = run_script("cat", channels, stdin_data=payload)
 
-    assert run.exit_code == 0
-    assert len(out.data) == len(payload)
+    if run.exit_code != 0:
+        raise AssertionError("run.exit_code == 0")
+    if len(out.data) != len(payload):
+        raise AssertionError("len(out.data) == len(payload)")
 
 
 def test_stdin_unread_by_child_does_not_hang() -> None:
@@ -157,8 +172,10 @@ def test_stdin_unread_by_child_does_not_hang() -> None:
 
     run = run_script("true", channels, stdin_data=b"y" * 1048576, timeout_sec=30)
 
-    assert run.exit_code == 0
-    assert not run.timed_out
+    if run.exit_code != 0:
+        raise AssertionError("run.exit_code == 0")
+    if run.timed_out:
+        raise AssertionError("not run.timed_out")
 
 
 def test_empty_channels_are_legal() -> None:
@@ -172,9 +189,12 @@ def test_empty_channels_are_legal() -> None:
 
     run = run_script("true", channels)
 
-    assert run.exit_code == 0
-    assert out.text() == ""
-    assert result.text() == ""
+    if run.exit_code != 0:
+        raise AssertionError("run.exit_code == 0")
+    if out.text() != "":
+        raise AssertionError('out.text() == ""')
+    if result.text() != "":
+        raise AssertionError('result.text() == ""')
 
 
 def test_tail_sink_keeps_only_tail() -> None:
@@ -183,7 +203,8 @@ def test_tail_sink_keeps_only_tail() -> None:
     tail.feed(b"0123456789")
     tail.feed(b"abcdef")
 
-    assert tail.text() == "89abcdef"
+    if tail.text() != "89abcdef":
+        raise AssertionError('tail.text() == "89abcdef"')
 
 
 def test_tail_sink_as_tee_on_channel() -> None:
@@ -197,6 +218,9 @@ def test_tail_sink_as_tee_on_channel() -> None:
 
     run = run_script('echo "boom: traceback text" >&2', channels)
 
-    assert run.exit_code == 0
-    assert err.text() == "boom: traceback text\n"
-    assert tail.text() == " traceback text\n"
+    if run.exit_code != 0:
+        raise AssertionError("run.exit_code == 0")
+    if err.text() != "boom: traceback text\n":
+        raise AssertionError('err.text() == "boom: traceback text\\n"')
+    if tail.text() != " traceback text\n":
+        raise AssertionError('tail.text() == " traceback text\\n"')

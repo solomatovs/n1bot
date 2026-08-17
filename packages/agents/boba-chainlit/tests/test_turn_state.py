@@ -17,35 +17,46 @@ class TestOutcome:
     async def test_first_settle_wins(self) -> None:
         state = TurnState()
 
-        assert state.settle_stopped(StopReason.USER_STOP) is True
-        assert state.settle_failed(RuntimeError("boom")) is False
-        assert state.settle_ok() is False
+        if state.settle_stopped(StopReason.USER_STOP) is not True:
+            raise AssertionError("state.settle_stopped(StopReason.USER_STOP) is True")
+        if state.settle_failed(RuntimeError("boom")) is not False:
+            raise AssertionError('state.settle_failed(RuntimeError("boom")) is False')
+        if state.settle_ok() is not False:
+            raise AssertionError("state.settle_ok() is False")
 
-        assert state.outcome is TurnOutcome.STOPPED
-        assert state.error is None
+        if state.outcome is not TurnOutcome.STOPPED:
+            raise AssertionError("state.outcome is TurnOutcome.STOPPED")
+        if state.error is not None:
+            raise AssertionError("state.error is None")
 
     async def test_failed_keeps_the_error(self) -> None:
         state = TurnState()
         error = RuntimeError("boom")
 
-        assert state.settle_failed(error) is True
-        assert state.outcome is TurnOutcome.FAILED
-        assert state.error is error
+        if state.settle_failed(error) is not True:
+            raise AssertionError("state.settle_failed(error) is True")
+        if state.outcome is not TurnOutcome.FAILED:
+            raise AssertionError("state.outcome is TurnOutcome.FAILED")
+        if state.error is not error:
+            raise AssertionError("state.error is error")
 
     async def test_label_prefers_the_stop_reason(self) -> None:
         state = TurnState()
         state.settle_stopped(StopReason.ABORTED)
 
-        assert state.outcome_label == StopReason.ABORTED.value
+        if state.outcome_label != StopReason.ABORTED.value:
+            raise AssertionError("state.outcome_label == StopReason.ABORTED.value")
 
     async def test_label_without_reason_is_generic(self) -> None:
         state = TurnState()
         state.settle_stopped(None)
 
-        assert state.outcome_label == TurnOutcome.STOPPED.value
+        if state.outcome_label != TurnOutcome.STOPPED.value:
+            raise AssertionError("state.outcome_label == TurnOutcome.STOPPED.value")
 
     async def test_label_before_settle_is_honest(self) -> None:
-        assert TurnState().outcome_label == "unsettled"
+        if TurnState().outcome_label != "unsettled":
+            raise AssertionError('TurnState().outcome_label == "unsettled"')
 
     async def test_second_run_is_a_protocol_violation(self) -> None:
         state = TurnState()
@@ -69,14 +80,19 @@ class TestPendingArtifacts:
 
         state.open_tool("run-1", first)
         state.open_tool("run-2", second)
-        assert state.pending_tool_steps == [first, second]
+        if state.pending_tool_steps != [first, second]:
+            raise AssertionError("state.pending_tool_steps == [first, second]")
 
-        assert state.close_tool("run-1") is first
-        assert state.close_tool("run-1") is None
+        if state.close_tool("run-1") is not first:
+            raise AssertionError('state.close_tool("run-1") is first')
+        if state.close_tool("run-1") is not None:
+            raise AssertionError('state.close_tool("run-1") is None')
 
         drained = list(state.drain_tools())
-        assert drained == [second]
-        assert state.pending_tool_steps == []
+        if drained != [second]:
+            raise AssertionError("drained == [second]")
+        if state.pending_tool_steps != []:
+            raise AssertionError("state.pending_tool_steps == []")
 
     async def test_reasoning_accumulates_per_run(self) -> None:
         state = TurnState()
@@ -84,8 +100,12 @@ class TestPendingArtifacts:
         state.add_reasoning("run-1", "дум")
         state.add_reasoning("run-1", "аю")
         state.add_reasoning("run-2", "ещё")
-        assert state.pending_reasoning == "думаюещё"
+        if state.pending_reasoning != "думаюещё":
+            raise AssertionError('state.pending_reasoning == "думаюещё"')
 
-        assert state.take_reasoning("run-1") == "думаю"
-        assert state.take_reasoning("run-1") == ""
-        assert state.pending_reasoning == "ещё"
+        if state.take_reasoning("run-1") != "думаю":
+            raise AssertionError('state.take_reasoning("run-1") == "думаю"')
+        if state.take_reasoning("run-1") != "":
+            raise AssertionError('state.take_reasoning("run-1") == ""')
+        if state.pending_reasoning != "ещё":
+            raise AssertionError('state.pending_reasoning == "ещё"')

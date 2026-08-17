@@ -93,11 +93,13 @@ class TestExampleStaysValid:
     def test_app_section_binds(self, example_config: DictConfig) -> None:
         app = bind(example_config, path="app", model=AppConfig)
 
-        assert app.sandbox.profiles
+        if not (app.sandbox.profiles):
+            raise AssertionError("app.sandbox.profiles")
 
     def test_every_tool_section_binds_meta(self, example_config: DictConfig) -> None:
         tools = OmegaConf.select(example_config, "tool")
-        assert tools, "в шаблоне нет ни одной секции [tool.*]"
+        if not (tools):
+            raise AssertionError("в шаблоне нет ни одной секции [tool.*]")
 
         for name in tools:
             bind(example_config, path=f"tool.{name}", model=PluginMeta)
@@ -115,11 +117,13 @@ class TestHeavyToolsGetTheirCpu:
             example_config, f"{section}.sandbox.override.cgroup_cpu_percent"
         )
 
-        assert quota is not None, (
-            f"[{section}.sandbox.override]: cgroup_cpu_percent не задан — "
-            "секция унаследует одно ядро базового профиля"
-        )
-        assert quota > BASE_CPU_PERCENT, (
-            f"[{section}.sandbox.override]: cgroup_cpu_percent={quota} — "
-            "эмбеддингу и OCR одного ядра мало"
-        )
+        if quota is None:
+            raise AssertionError(
+                f"[{section}.sandbox.override]: cgroup_cpu_percent не задан — "
+                "секция унаследует одно ядро базового профиля"
+            )
+        if quota <= BASE_CPU_PERCENT:
+            raise AssertionError(
+                f"[{section}.sandbox.override]: cgroup_cpu_percent={quota} — "
+                "эмбеддингу и OCR одного ядра мало"
+            )

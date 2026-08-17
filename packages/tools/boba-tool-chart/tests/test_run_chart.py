@@ -28,7 +28,8 @@ class RunArgs:
 
 async def test_run_visualize() -> None:
     body = ToolMain.toolset(visualize)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, artifact = await body(spec=RunArgs.spec())
 

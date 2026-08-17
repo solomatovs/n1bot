@@ -255,16 +255,6 @@ RUN set -eu                                                            \
 print('\\n'.join(sorted(d.metadata['Name'] for d in md.distributions() \
 if d.metadata['Name'].startswith('boba-'))))" > /opt/app-packages.txt
 
-# свой код отделяется от зависимостей: обновление релиза перекладывает
-# мегабайты boba/, а не сотни мегабайт чужих пакетов
-RUN set -eu                                             \
-    && mkdir -p /opt/code-app/boba                      \
-    && mv /opt/app-site/boba/* /opt/code-app/boba/      \
-    && rmdir /opt/app-site/boba                         \
-    && mv /opt/app-site/boba_*.dist-info /opt/code-app/ \
-    && mv /opt/app-site/bin /opt/code-app/bin           \
-    && PYTHONPATH=/opt/code-app:/opt/app-site python3 -c "import boba.chainlit; print('code-app ok')"
-
 
 # site-packages песочницы
 FROM base AS sandbox-site
@@ -354,9 +344,8 @@ COPY --from=sandbox-image /out/sandbox-rootfs.ext4      ${BOBA_DIR}/sandbox/root
 COPY --from=fuse2fs-build /out/sandbox-workspace.ext4  ${BOBA_DIR}/sandbox/workspace.ext4
 COPY build/conf/                                       /tmp/conf/
 
-COPY --from=app-site /opt/app-site          ${BOBA_DIR}/deps/app/
-COPY --from=app-site /opt/code-app          ${BOBA_DIR}/code/app/
-COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/deps/app/packages.txt
+COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
+COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
 
 COPY packages/agents/boba-chainlit/assets/chainlit/config.toml    ${BOBA_DIR}/app_root/.chainlit/
 COPY packages/agents/boba-chainlit/assets/chainlit/translations/  ${BOBA_DIR}/app_root/.chainlit/translations/
@@ -379,7 +368,7 @@ RUN mkdir -p ${BOBA_DIR}/conf \
 
 # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
 RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" \
-        ${BOBA_DIR}/code/app/bin/*
+        ${BOBA_DIR}/app/bin/*
 
 RUN chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root
 
@@ -400,5 +389,13 @@ EXPOSE 8501
 
 ENV BOBA_DIR=${BOBA_DIR}
 USER ${BOBA_UID}:${BOBA_GID}
+
+# порт и префикс приходят из boba.env, как и сам python: проба идёт тем же
+# интерпретатором, что и приложение, чтобы не тащить в образ curl
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3   \
+    CMD python3 -c "import os, urllib.request;                           \
+url = 'http://127.0.0.1:' + os.environ['BOBA_PORT'] + os.environ['BOBA_URL_PREFIX'] + '/'; \
+urllib.request.urlopen(url, timeout=4)"
+
 ENTRYPOINT ["python3"]
 CMD ["-m", "boba.chainlit.main"]

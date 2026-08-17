@@ -96,16 +96,21 @@ class TestPgTools:
 
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in PG_TOOLS]
-        assert names == self._NAMES
+        if names != self._NAMES:
+            raise AssertionError("names == self._NAMES")
 
     async def test_list_targets_returns_whitelist(self) -> None:
         body = ToolMain.toolset(pg_list_targets)[0].coroutine
-        assert body is not None
+        if body is None:
+            raise AssertionError("body is not None")
         _content, artifact = await body(cfg=pg_config())
 
-        assert isinstance(artifact, TableResult)
-        assert list(artifact.rows) == [{"connection_name": "main"}]
-        assert artifact.ok is True
+        if not (isinstance(artifact, TableResult)):
+            raise AssertionError("isinstance(artifact, TableResult)")
+        if list(artifact.rows) != [{"connection_name": "main"}]:
+            raise AssertionError('list(artifact.rows) == [{"connection_name": "main"}]')
+        if artifact.ok is not True:
+            raise AssertionError("artifact.ok is True")
 
     async def test_unknown_target_raises_domain_error(self) -> None:
         """Профиль не в whitelist — доменное исключение с kind в EXPECTED."""
@@ -114,26 +119,33 @@ class TestPgTools:
         from boba.toolkit.sql import UnknownConnectionError
 
         body = ToolMain.toolset(pg_query)[0].coroutine
-        assert body is not None
+        if body is None:
+            raise AssertionError("body is not None")
         with pytest.raises(UnknownConnectionError) as caught:
             await body(connection_name="нет-такого", sql="select 1", cfg=pg_config())
 
         kind = ExpectedErrors.kind_of(caught.value, dict(EXPECTED))
-        assert kind == "unknown_target"
+        if kind != "unknown_target":
+            raise AssertionError('kind == "unknown_target"')
 
 
 class TestKbTools:
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in KB_TOOLS]
-        assert names == [
-            "kb_vector_search",
-            "kb_fts_search",
-        ]
+        if not (
+            names
+            == [
+                "kb_vector_search",
+                "kb_fts_search",
+            ]
+        ):
+            raise AssertionError('names == [ "kb_vector_search", "kb_fts_search", ]')
 
     def test_search_arguments_hide_injected(self) -> None:
         tool = KB_TOOLS[0]
         llm_fields = set(tool.args_schema.model_fields) - {"cfg"}
-        assert llm_fields == {"query", "top_k", "snippet_chars"}
+        if llm_fields != {"query", "top_k", "snippet_chars"}:
+            raise AssertionError('llm_fields == {"query", "top_k", "snippet_chars"}')
 
 
 def _bin_dirs() -> list[str]:
@@ -188,12 +200,16 @@ class TestConfluenceTools:
 
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in CONFLUENCE_TOOLS]
-        assert names == [
-            "confluence_fetch",
-            "confluence_grep",
-            "confluence_search",
-            "confluence_spaces",
-        ]
+        if not (
+            names
+            == [
+                "confluence_fetch",
+                "confluence_grep",
+                "confluence_search",
+                "confluence_spaces",
+            ]
+        ):
+            raise AssertionError('names == [ "confluence_fetch", "confluence_grep", "…')
 
     async def test_network_error_raises_domain_error(self) -> None:
         from boba.tool.kb.confluence.tools import confluence_fetch
@@ -203,6 +219,7 @@ class TestConfluenceTools:
         )
 
         body = ToolMain.toolset(confluence_fetch)[0].coroutine
-        assert body is not None
+        if body is None:
+            raise AssertionError("body is not None")
         with pytest.raises(ConfluenceRequestError):
             await body(page_id="1", cfg=cfg)

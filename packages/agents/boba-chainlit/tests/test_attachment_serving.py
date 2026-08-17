@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import pytest
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser
-from conftest import Seed
+from conftest import FakeUrl, Seed
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -77,26 +77,33 @@ async def test_persisted_plotly_chart_is_served_as_json(
     )
 
     thread = await layer.get_thread(seeded.thread_id)
-    assert thread is not None
+    if thread is None:
+        raise AssertionError("thread is not None")
     elements = thread["elements"]
-    assert elements is not None
+    if elements is None:
+        raise AssertionError("elements is not None")
     stored = next(e for e in elements if e.get("id") == element.id)
     stored_url = stored.get("url")
-    assert stored_url is not None
-    assert stored_url.endswith(url.path())
+    if stored_url is None:
+        raise AssertionError("stored_url is not None")
+    if not (stored_url.endswith(url.path())):
+        raise AssertionError("stored_url.endswith(url.path())")
 
     app = build_serving_app(
         AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
     )
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://boba") as client:
+    async with AsyncClient(transport=transport, base_url=FakeUrl.BASE) as client:
         response = await client.get(url.path())
 
-    assert response.status_code == 200
+    if response.status_code != 200:
+        raise AssertionError("response.status_code == 200")
     # только с таким content-type фронт парсит тело как JSON и рисует график
-    assert response.headers["content-type"].startswith("application/json")
+    if not (response.headers["content-type"].startswith("application/json")):
+        raise AssertionError('response.headers["content-type"].startswith("applicatio…')
     figure_spec = json.loads(response.content)
-    assert figure_spec["data"][0]["type"] == "candlestick"
+    if figure_spec["data"][0]["type"] != "candlestick":
+        raise AssertionError('figure_spec["data"][0]["type"] == "candlestick"')
 
 
 async def test_bot_file_is_shown_without_copying(
@@ -117,7 +124,8 @@ async def test_bot_file_is_shown_without_copying(
     stored_before = sorted(p.name for p in files_dir.rglob("*") if p.is_file())
 
     element_id = ChatView.derive_id(seeded.thread_id, "call_1", StepRole.ELEMENT)
-    assert element_id is not None
+    if element_id is None:
+        raise AssertionError("element_id is not None")
     element = cl.File(
         id=element_id,
         name=key.name,
@@ -129,12 +137,15 @@ async def test_bot_file_is_shown_without_copying(
     )
     await layer.create_element(element)
 
-    assert sorted(p.name for p in files_dir.rglob("*") if p.is_file()) == stored_before
+    if sorted(p.name for p in files_dir.rglob("*") if p.is_file()) != stored_before:
+        raise AssertionError('sorted(p.name for p in files_dir.rglob("*") if p.is_fil…')
 
     thread = await layer.get_thread(seeded.thread_id)
-    assert thread is not None
+    if thread is None:
+        raise AssertionError("thread is not None")
     elements = thread["elements"]
-    assert elements is not None
+    if elements is None:
+        raise AssertionError("elements is not None")
     shown = next(e for e in elements if e.get("id") == element_id)
     url = AttachmentUrl(
         thread_id=seeded.thread_id,
@@ -142,21 +153,28 @@ async def test_bot_file_is_shown_without_copying(
         element_id=element_id,
     )
     stored_url = shown.get("url")
-    assert stored_url is not None
-    assert stored_url.endswith(url.path())
+    if stored_url is None:
+        raise AssertionError("stored_url is not None")
+    if not (stored_url.endswith(url.path())):
+        raise AssertionError("stored_url.endswith(url.path())")
 
     app = build_serving_app(
         AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
     )
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://boba") as client:
+    async with AsyncClient(transport=transport, base_url=FakeUrl.BASE) as client:
         response = await client.get(url.path())
 
-    assert response.status_code == 200
-    assert response.content == REPORT_BODY
-    assert response.headers["content-type"].startswith("text/plain")
-    assert response.headers["content-length"] == str(len(REPORT_BODY))
-    assert response.headers["accept-ranges"] == "bytes"
+    if response.status_code != 200:
+        raise AssertionError("response.status_code == 200")
+    if response.content != REPORT_BODY:
+        raise AssertionError("response.content == REPORT_BODY")
+    if not (response.headers["content-type"].startswith("text/plain")):
+        raise AssertionError('response.headers["content-type"].startswith("text/plain…')
+    if response.headers["content-length"] != str(len(REPORT_BODY)):
+        raise AssertionError('response.headers["content-length"] == str(len(REPORT_BO…')
+    if response.headers["accept-ranges"] != "bytes":
+        raise AssertionError('response.headers["accept-ranges"] == "bytes"')
 
 
 async def test_attachment_range_is_served_partially(
@@ -174,7 +192,8 @@ async def test_attachment_range_is_served_partially(
     )
 
     element_id = ChatView.derive_id(seeded.thread_id, "call_rng", StepRole.ELEMENT)
-    assert element_id is not None
+    if element_id is None:
+        raise AssertionError("element_id is not None")
     element = cl.File(
         id=element_id,
         name=key.name,
@@ -195,16 +214,21 @@ async def test_attachment_range_is_served_partially(
         AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
     )
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://boba") as client:
+    async with AsyncClient(transport=transport, base_url=FakeUrl.BASE) as client:
         partial = await client.get(url.path(), headers={"Range": "bytes=0-8"})
         beyond = await client.get(url.path(), headers={"Range": "bytes=9999-"})
 
-    assert partial.status_code == 206
-    assert partial.content == REPORT_BODY[:9]
-    assert partial.headers["content-range"] == f"bytes 0-8/{len(REPORT_BODY)}"
+    if partial.status_code != 206:
+        raise AssertionError("partial.status_code == 206")
+    if partial.content != REPORT_BODY[:9]:
+        raise AssertionError("partial.content == REPORT_BODY[:9]")
+    if partial.headers["content-range"] != f"bytes 0-8/{len(REPORT_BODY)}":
+        raise AssertionError('partial.headers["content-range"] == f"bytes 0-8/{len(RE…')
 
-    assert beyond.status_code == 416
-    assert beyond.headers["content-range"] == f"bytes */{len(REPORT_BODY)}"
+    if beyond.status_code != 416:
+        raise AssertionError("beyond.status_code == 416")
+    if beyond.headers["content-range"] != f"bytes */{len(REPORT_BODY)}":
+        raise AssertionError('beyond.headers["content-range"] == f"bytes */{len(REPOR…')
 
 
 async def test_foreign_user_gets_no_file(
@@ -228,10 +252,11 @@ async def test_foreign_user_gets_no_file(
         element_id=element.id,
     )
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://boba") as client:
+    async with AsyncClient(transport=transport, base_url=FakeUrl.BASE) as client:
         response = await client.get(url.path())
 
-    assert response.status_code == 404
+    if response.status_code != 404:
+        raise AssertionError("response.status_code == 404")
 
 
 async def test_diagram_from_mermaid_dir_is_served(
@@ -254,7 +279,8 @@ async def test_diagram_from_mermaid_dir_is_served(
     )
 
     element_id = ChatView.derive_id(seeded.thread_id, "call_diagram", StepRole.ELEMENT)
-    assert element_id is not None
+    if element_id is None:
+        raise AssertionError("element_id is not None")
     element = WorkspaceFile(
         id=element_id,
         name=key.name,
@@ -268,19 +294,25 @@ async def test_diagram_from_mermaid_dir_is_served(
     await layer.create_element(element)
 
     thread = await layer.get_thread(seeded.thread_id)
-    assert thread is not None
+    if thread is None:
+        raise AssertionError("thread is not None")
     elements = thread["elements"]
-    assert elements is not None
+    if elements is None:
+        raise AssertionError("elements is not None")
     shown = next(e for e in elements if e.get("id") == element_id)
     stored_url = shown.get("url")
-    assert stored_url is not None
-    assert stored_url.endswith(f"/attachment/{seeded.thread_id}/mermaid/{element_id}")
+    if stored_url is None:
+        raise AssertionError("stored_url is not None")
+    if not (
+        stored_url.endswith(f"/attachment/{seeded.thread_id}/mermaid/{element_id}")
+    ):
+        raise AssertionError('stored_url.endswith(f"/attachment/{seeded.thread_id}/me…')
 
     app = build_serving_app(
         AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
     )
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://boba") as client:
+    async with AsyncClient(transport=transport, base_url=FakeUrl.BASE) as client:
         response = await client.get(
             AttachmentUrl(
                 thread_id=seeded.thread_id,
@@ -289,5 +321,7 @@ async def test_diagram_from_mermaid_dir_is_served(
             ).path()
         )
 
-    assert response.status_code == 200
-    assert response.content.decode().startswith("flowchart LR")
+    if response.status_code != 200:
+        raise AssertionError("response.status_code == 200")
+    if not (response.content.decode().startswith("flowchart LR")):
+        raise AssertionError('response.content.decode().startswith("flowchart LR")')

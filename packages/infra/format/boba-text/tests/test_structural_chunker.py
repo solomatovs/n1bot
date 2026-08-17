@@ -91,10 +91,12 @@ async def test_breadcrumbs_grow_and_pop_correctly():
     by_text = {c.format_content: c for c in chunks}
     # Body после H1>A>H2>B видит "A › B"
     body_b = by_text["A › B\n\nbody-under-B"]
-    assert body_b.metadata.get(SectionKeys.HEADING_PATH) == "A › B"
+    if body_b.metadata.get(SectionKeys.HEADING_PATH) != "A › B":
+        raise AssertionError('body_b.metadata.get(SectionKeys.HEADING_PATH) == "A › B"')
     # Body после H1>C видит только "C"
     body_c = by_text["C\n\nbody-under-C"]
-    assert body_c.metadata.get(SectionKeys.HEADING_PATH) == "C"
+    if body_c.metadata.get(SectionKeys.HEADING_PATH) != "C":
+        raise AssertionError('body_c.metadata.get(SectionKeys.HEADING_PATH) == "C"')
 
 
 async def test_breadcrumbs_reset_on_source_id_change():
@@ -108,8 +110,10 @@ async def test_breadcrumbs_reset_on_source_id_change():
     chunks = [item async for item in _chunker().chunk(_astream(sections))]
     [_, body] = chunks
     # Для doc2 стек пуст -> нет HEADING_PATH и нет prefix в format_content.
-    assert body.format_content == "hello"
-    assert body.metadata.get(SectionKeys.HEADING_PATH) is None
+    if body.format_content != "hello":
+        raise AssertionError('body.format_content == "hello"')
+    if body.metadata.get(SectionKeys.HEADING_PATH) is not None:
+        raise AssertionError("body.metadata.get(SectionKeys.HEADING_PATH) is None")
 
 
 async def test_heading_chunk_itself_has_no_prefix_but_path_in_metadata():
@@ -126,10 +130,14 @@ async def test_heading_chunk_itself_has_no_prefix_but_path_in_metadata():
     ]
     chunks = [item async for item in _chunker().chunk(_astream(sections))]
     a, b = chunks
-    assert a.format_content == "# A"
-    assert a.metadata.get(SectionKeys.HEADING_PATH) == "A"
-    assert b.format_content == "## B"
-    assert b.metadata.get(SectionKeys.HEADING_PATH) == "A › B"
+    if a.format_content != "# A":
+        raise AssertionError('a.format_content == "# A"')
+    if a.metadata.get(SectionKeys.HEADING_PATH) != "A":
+        raise AssertionError('a.metadata.get(SectionKeys.HEADING_PATH) == "A"')
+    if b.format_content != "## B":
+        raise AssertionError('b.format_content == "## B"')
+    if b.metadata.get(SectionKeys.HEADING_PATH) != "A › B":
+        raise AssertionError('b.metadata.get(SectionKeys.HEADING_PATH) == "A › B"')
 
 
 # ---------------- to_chunk_metadata + typed keys -------------------------------
@@ -144,8 +152,10 @@ async def test_to_chunk_metadata_is_merged():
         text="X",
     )
     [chunk] = [item async for item in _chunker().chunk(_astream([section]))]
-    assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 3
-    assert chunk.metadata.get(SectionKeys.HEADING_TEXT) == "X"
+    if chunk.metadata.get(SectionKeys.HEADING_LEVEL) != 3:
+        raise AssertionError("chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 3")
+    if chunk.metadata.get(SectionKeys.HEADING_TEXT) != "X":
+        raise AssertionError('chunk.metadata.get(SectionKeys.HEADING_TEXT) == "X"')
 
 
 # ---------------- table: replicate header + per-row raw -----------------------
@@ -192,12 +202,17 @@ async def test_table_replicates_header_in_each_row_chunk():
     chunks = [item async for item in _chunker(factory).chunk(_astream([section]))]
     # Каждый row-чанк начинается с реплицированного markdown header'а.
     table_chunks = [c for c in chunks if "| name | type |" in c.format_content]
-    assert len(table_chunks) == 2
-    assert "| id | int |" in table_chunks[0].format_content
-    assert "| foo | str |" in table_chunks[1].format_content
+    if len(table_chunks) != 2:
+        raise AssertionError("len(table_chunks) == 2")
+    if "| id | int |" not in table_chunks[0].format_content:
+        raise AssertionError('"| id | int |" in table_chunks[0].format_content')
+    if "| foo | str |" not in table_chunks[1].format_content:
+        raise AssertionError('"| foo | str |" in table_chunks[1].format_content')
     # raw_content per-row — оригинальный <tr>.
-    assert table_chunks[0].raw_content.startswith("<tr>")
-    assert table_chunks[0].raw_content != table_chunks[1].raw_content
+    if not (table_chunks[0].raw_content.startswith("<tr>")):
+        raise AssertionError('table_chunks[0].raw_content.startswith("<tr>")')
+    if table_chunks[0].raw_content == table_chunks[1].raw_content:
+        raise AssertionError("table_chunks[0].raw_content != table_chunks[1].raw_cont…")
 
 
 # ---------------- code: fenced wrapping ----------------------------------------
@@ -226,7 +241,8 @@ class _CodeSection(Section[str]):
 async def test_code_block_wrapped_with_fence():
     section = _CodeSection(source_id=SourceId("c"), content="<pre/>", order=0)
     [chunk] = [item async for item in _chunker().chunk(_astream([section]))]
-    assert chunk.format_content == "```py\nx = 1\n```"
+    if chunk.format_content != "```py\nx = 1\n```":
+        raise AssertionError('chunk.format_content == "```py\\nx = 1\\n```"')
 
 
 # ---------------- hr: skipped --------------------------------------------------
@@ -243,7 +259,8 @@ class _EmptyPlanSection(Section[str]):
 async def test_hr_section_is_skipped():
     section = _EmptyPlanSection(source_id=SourceId("h"), content="<hr/>", order=0)
     chunks = [item async for item in _chunker().chunk(_astream([section]))]
-    assert chunks == []
+    if chunks != []:
+        raise AssertionError("chunks == []")
 
 
 # ---------------- chunk_index continuous per source_id -------------------------
@@ -257,4 +274,5 @@ async def test_chunk_index_is_continuous_per_source():
         Section(source_id=SourceId("d"), content="body", order=1),
     ]
     chunks = [item async for item in _chunker().chunk(_astream(sections))]
-    assert [c.chunk_index for c in chunks] == [0, 1]
+    if [c.chunk_index for c in chunks] != [0, 1]:
+        raise AssertionError("[c.chunk_index for c in chunks] == [0, 1]")

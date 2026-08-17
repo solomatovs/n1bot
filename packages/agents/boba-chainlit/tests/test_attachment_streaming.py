@@ -208,7 +208,8 @@ class TestServedStreaming:
                     f"/project/file/{file_id}",
                     params={"session_id": session.id},
                 ) as response:
-                    assert response.status_code == 200
+                    if response.status_code != 200:
+                        raise AssertionError("response.status_code == 200")
                     length = response.headers["content-length"]
                     ranges = response.headers["accept-ranges"]
 
@@ -216,11 +217,16 @@ class TestServedStreaming:
                         received += len(chunk)
                         state.update(chunk)
 
-        assert length == str(payload.size)
-        assert ranges == "bytes"
-        assert received == payload.size
-        assert state.hexdigest() == payload.digest()
-        assert probe.peak_bytes < self.PEAK_LIMIT
+        if length != str(payload.size):
+            raise AssertionError("length == str(payload.size)")
+        if ranges != "bytes":
+            raise AssertionError('ranges == "bytes"')
+        if received != payload.size:
+            raise AssertionError("received == payload.size")
+        if state.hexdigest() != payload.digest():
+            raise AssertionError("state.hexdigest() == payload.digest()")
+        if probe.peak_bytes >= self.PEAK_LIMIT:
+            raise AssertionError("probe.peak_bytes < self.PEAK_LIMIT")
 
     async def test_range_window_is_served_from_the_middle(
         self,
@@ -244,13 +250,16 @@ class TestServedStreaming:
                     headers={"Range": f"bytes={offset}-{last}"},
                 )
 
-        assert response.status_code == 206
-        assert (
-            response.headers["content-range"] == f"bytes {offset}-{last}/{payload.size}"
-        )
-        assert response.headers["content-length"] == str(length)
-        assert response.content == PatternPayload.slice_at(offset, length)
-        assert probe.peak_bytes < self.PEAK_LIMIT
+        if response.status_code != 206:
+            raise AssertionError("response.status_code == 206")
+        if response.headers["content-range"] != f"bytes {offset}-{last}/{payload.size}":
+            raise AssertionError('response.headers["content-range"] == f"bytes {offse…')
+        if response.headers["content-length"] != str(length):
+            raise AssertionError('response.headers["content-length"] == str(length)')
+        if response.content != PatternPayload.slice_at(offset, length):
+            raise AssertionError("response.content == PatternPayload.slice_at(offset,…")
+        if probe.peak_bytes >= self.PEAK_LIMIT:
+            raise AssertionError("probe.peak_bytes < self.PEAK_LIMIT")
 
     async def test_client_may_abandon_the_stream(
         self,
@@ -270,12 +279,14 @@ class TestServedStreaming:
                 f"/project/file/{file_id}",
                 params={"session_id": session.id},
             ) as response:
-                assert response.status_code == 200
+                if response.status_code != 200:
+                    raise AssertionError("response.status_code == 200")
                 async for chunk in response.aiter_bytes(self.CLIENT_CHUNK):
                     received += len(chunk)
                     break
 
-        assert 0 < received < payload.size
+        if not (0 < received < payload.size):
+            raise AssertionError("0 < received < payload.size")
 
     async def test_log_reports_start_progress_and_finish(
         self,
@@ -296,7 +307,8 @@ class TestServedStreaming:
                     f"/project/file/{file_id}",
                     params={"session_id": session.id},
                 ) as response:
-                    assert response.status_code == 200
+                    if response.status_code != 200:
+                        raise AssertionError("response.status_code == 200")
                     async for _ in response.aiter_bytes(self.CLIENT_CHUNK):
                         continue
 
@@ -305,10 +317,14 @@ class TestServedStreaming:
         progress = [line for line in lines if "streaming" in line]
         finished = [line for line in lines if "sent," in line]
 
-        assert started, lines
-        assert progress, "не видно хода передачи"
-        assert finished, lines
-        assert self._mib(payload.size) in finished[0]
+        if not (started):
+            raise AssertionError(lines)
+        if not (progress):
+            raise AssertionError("не видно хода передачи")
+        if not (finished):
+            raise AssertionError(lines)
+        if self._mib(payload.size) not in finished[0]:
+            raise AssertionError("self._mib(payload.size) in finished[0]")
 
     async def test_log_marks_the_client_abort(
         self,
@@ -334,7 +350,8 @@ class TestServedStreaming:
             await asyncio.sleep(0.2)
 
         aborted = [r.message for r in caplog.records if "aborted" in r.message]
-        assert aborted, [r.message for r in caplog.records]
+        if not (aborted):
+            raise AssertionError([r.message for r in caplog.records])
 
     @staticmethod
     def _mib(size: int) -> str:
@@ -366,6 +383,8 @@ class TestServedStreaming:
                     headers={"Range": f"bytes={offset}-{last}"},
                 )
 
-                assert response.status_code == 206, f"offset {offset}"
+                if response.status_code != 206:
+                    raise AssertionError(f"offset {offset}")
                 expected = PatternPayload.slice_at(offset, length)
-                assert response.content == expected, f"offset {offset}"
+                if response.content != expected:
+                    raise AssertionError(f"offset {offset}")

@@ -34,14 +34,18 @@ class TestToMarkdown:
 
     def test_headings_and_emphasis(self) -> None:
         markdown = self._run(_HTML)
-        assert "# Заголовок" in markdown
-        assert "**жирным**" in markdown
+        if "# Заголовок" not in markdown:
+            raise AssertionError('"# Заголовок" in markdown')
+        if "**жирным**" not in markdown:
+            raise AssertionError('"**жирным**" in markdown')
 
     def test_links_are_kept(self) -> None:
-        assert "[ссылка](https://example.com)" in self._run(_HTML)
+        if "[ссылка](https://example.com)" not in self._run(_HTML):
+            raise AssertionError('"[ссылка](https://example.com)" in self._run(_HTML)')
 
     def test_empty_html_is_allowed(self) -> None:
-        assert self._run("") == ""
+        if self._run("") != "":
+            raise AssertionError('self._run("") == ""')
 
 
 _CONFLUENCE_HTML = (
@@ -63,30 +67,40 @@ class TestConfluenceSections:
 
     def test_section_per_heading(self) -> None:
         sections = self._run(_CONFLUENCE_HTML, "Страница")
-        assert [s["heading_text"] for s in sections] == ["Введение", "Детали"]
-        assert [s["heading_level"] for s in sections] == [1, 2]
+        if [s["heading_text"] for s in sections] != ["Введение", "Детали"]:
+            raise AssertionError('[s["heading_text"] for s in sections] == ["Введение…')
+        if [s["heading_level"] for s in sections] != [1, 2]:
+            raise AssertionError('[s["heading_level"] for s in sections] == [1, 2]')
 
     def test_breadcrumb_starts_from_title(self) -> None:
         sections = self._run(_CONFLUENCE_HTML, "Страница")
-        assert sections[0]["heading_path"] == "Страница › Введение"
-        assert sections[1]["heading_path"] == "Страница › Введение › Детали"
+        if sections[0]["heading_path"] != "Страница › Введение":
+            raise AssertionError('sections[0]["heading_path"] == "Страница › Введение"')
+        if sections[1]["heading_path"] != "Страница › Введение › Детали":
+            raise AssertionError('sections[1]["heading_path"] == "Страница › Введение…')
 
     def test_text_follows_heading(self) -> None:
         sections = self._run(_CONFLUENCE_HTML, "Страница")
-        assert sections[0]["content"] == "Введение\n\nПервый абзац."
+        if sections[0]["content"] != "Введение\n\nПервый абзац.":
+            raise AssertionError(
+                'sections[0]["content"] == "Введение\\n\\nПервый абзац…'
+            )
 
     def test_macros_are_dropped(self) -> None:
         """Содержимое ac:*/ri: в текст не попадает."""
         for section in self._run(_CONFLUENCE_HTML, "Страница"):
-            assert "служебное" not in str(section["content"])
+            if "служебное" in str(section["content"]):
+                raise AssertionError('"служебное" not in str(section["content"])')
 
 
 class TestPlainText:
     def test_tags_are_stripped(self) -> None:
         answer = PageOps.plain_text({"html": _HTML})
         text = str(answer["text"])
-        assert "Заголовок" in text
-        assert "<b>" not in text
+        if "Заголовок" not in text:
+            raise AssertionError('"Заголовок" in text')
+        if "<b>" in text:
+            raise AssertionError('"<b>" not in text')
 
 
 class TestParsersStayInSandbox:
@@ -99,7 +113,8 @@ class TestParsersStayInSandbox:
         code = (
             "import sys\n"
             "import boba.chainlit.infra.plugins\n"
-            f"assert {module!r} not in sys.modules, 'the app pulls {module}'\n"
+            f"if {module!r} in sys.modules:\n"
+            f"    raise SystemExit('the app pulls {module}')\n"
             "print('ok')\n"
         )
         subprocess.run(  # noqa: S603

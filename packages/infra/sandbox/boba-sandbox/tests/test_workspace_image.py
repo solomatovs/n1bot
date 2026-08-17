@@ -105,7 +105,8 @@ def template(tmp_path: Path) -> Path:
     with path.open("wb") as f:
         f.truncate(16 * 1024 * 1024)
     mkfs = shutil.which("mkfs.ext4")
-    assert mkfs is not None
+    if mkfs is None:
+        raise AssertionError("mkfs is not None")
     subprocess.run(  # noqa: S603
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
@@ -190,7 +191,8 @@ def _storage(
         op_timeout_sec=op_timeout_sec,
     )
     client = StorageFactory.create(cfg)
-    assert isinstance(client, ImageStorageClient)
+    if not (isinstance(client, ImageStorageClient)):
+        raise AssertionError("isinstance(client, ImageStorageClient)")
     return client
 
 
@@ -224,11 +226,13 @@ class TestConfig:
             image_path="/ws/{user_id}.ext4",
             image_template="/t.ext4",
         )
-        assert isinstance(StorageFactory.create(cfg), ImageStorageClient)
+        if not (isinstance(StorageFactory.create(cfg), ImageStorageClient)):
+            raise AssertionError("isinstance(StorageFactory.create(cfg), ImageStorage…")
 
     def test_factory_picks_local_client(self) -> None:
         cfg = _storage_cfg(files_dir="/srv/files")
-        assert type(StorageFactory.create(cfg)) is LocalStorageClient
+        if type(StorageFactory.create(cfg)) is not LocalStorageClient:
+            raise AssertionError("type(StorageFactory.create(cfg)) is LocalStorageCli…")
 
     def test_profile_images_require_template(self) -> None:
         with pytest.raises(ValueError, match="image_template is empty"):
@@ -244,15 +248,20 @@ class TestObjectKey:
             image_template="/t.ext4",
         )
         client = StorageFactory.create(cfg)
-        assert isinstance(client, ImageStorageClient)
+        if not (isinstance(client, ImageStorageClient)):
+            raise AssertionError("isinstance(client, ImageStorageClient)")
         return client
 
     def test_key_splits_into_image_and_rel(self) -> None:
         """Образ на пользователя, thread_id остаётся частью пути внутри."""
-        assert self._client()._image_and_rel("7/t1/upload/report.pdf") == (
-            "/ws/7.ext4",
-            "t1/upload/report.pdf",
-        )
+        if not (
+            self._client()._image_and_rel("7/t1/upload/report.pdf")
+            == (
+                "/ws/7.ext4",
+                "t1/upload/report.pdf",
+            )
+        ):
+            raise AssertionError('self._client()._image_and_rel("7/t1/upload/report.p…')
 
     def test_short_key_rejected(self) -> None:
         with pytest.raises(ValueError, match="invalid object_key"):
@@ -276,8 +285,10 @@ class TestRelativePaths:
             image_path="./data/ws/{user_id}/{thread_id}.ext4",
             image_template="./data/tpl.ext4",
         )
-        assert cfg.image_path.startswith("/")
-        assert cfg.image_template.startswith("/")
+        if not (cfg.image_path.startswith("/")):
+            raise AssertionError('cfg.image_path.startswith("/")')
+        if not (cfg.image_template.startswith("/")):
+            raise AssertionError('cfg.image_template.startswith("/")')
 
     def test_relative_image_bound_by_absolute_path(self) -> None:
         argv = build_chain_argv(
@@ -295,10 +306,13 @@ class TestRelativePaths:
         for i, arg in enumerate(argv):
             if arg == "--bind":
                 binds.append(argv[i + 1])
-        assert binds
+        if not (binds):
+            raise AssertionError("binds")
         for path in binds:
-            assert os.path.isabs(path), path
-        assert argv[argv.index("--image") + 1].startswith("/")
+            if not (os.path.isabs(path)):
+                raise AssertionError(path)
+        if not (argv[argv.index("--image") + 1].startswith("/")):
+            raise AssertionError('argv[argv.index("--image") + 1].startswith("/")')
 
 
 class TestChainArgv:
@@ -330,59 +344,81 @@ class TestChainArgv:
         )
         memory = argv[argv.index("--max-memory-bytes") + 1]
         cpu = argv[argv.index("--max-cpu-sec") + 1]
-        assert memory == str(64 * 1024 * 1024)
-        assert cpu == "5"
+        if memory != str(64 * 1024 * 1024):
+            raise AssertionError("memory == str(64 * 1024 * 1024)")
+        if cpu != "5":
+            raise AssertionError('cpu == "5"')
 
     def test_outer_bwrap_is_root_in_userns(self) -> None:
         argv = self._argv()
-        assert argv[0].endswith("bwrap")
-        assert os.path.isabs(argv[0]) or shutil.which("bwrap") is None
-        assert "--unshare-user" in argv
-        assert argv[argv.index("--uid") + 1] == "0"
+        if not (argv[0].endswith("bwrap")):
+            raise AssertionError('argv[0].endswith("bwrap")')
+        if not (os.path.isabs(argv[0]) or shutil.which("bwrap") is None):
+            raise AssertionError('os.path.isabs(argv[0]) or shutil.which("bwrap") is …')
+        if "--unshare-user" not in argv:
+            raise AssertionError('"--unshare-user" in argv')
+        if argv[argv.index("--uid") + 1] != "0":
+            raise AssertionError('argv[argv.index("--uid") + 1] == "0"')
 
     def test_namespaces_isolated_with_neutral_hostname(self) -> None:
         argv = self._argv()
-        assert "--unshare-pid" in argv
-        assert "--unshare-ipc" in argv
-        assert "--new-session" in argv
-        assert argv[argv.index("--hostname") + 1] == "sandbox"
+        if "--unshare-pid" not in argv:
+            raise AssertionError('"--unshare-pid" in argv')
+        if "--unshare-ipc" not in argv:
+            raise AssertionError('"--unshare-ipc" in argv')
+        if "--new-session" not in argv:
+            raise AssertionError('"--new-session" in argv')
+        if argv[argv.index("--hostname") + 1] != "sandbox":
+            raise AssertionError('argv[argv.index("--hostname") + 1] == "sandbox"')
 
     def test_host_fs_readonly_except_image_dir(self) -> None:
         argv = self._argv()
         i = argv.index("--ro-bind")
-        assert argv[i + 1 : i + 3] == ["/", "/"]
+        if argv[i + 1 : i + 3] != ["/", "/"]:
+            raise AssertionError('argv[i + 1 : i + 3] == ["/", "/"]')
         b = argv.index("--bind")
-        assert argv[b + 1 : b + 3] == ["/ws", "/ws"]
+        if argv[b + 1 : b + 3] != ["/ws", "/ws"]:
+            raise AssertionError('argv[b + 1 : b + 3] == ["/ws", "/ws"]')
 
     def test_rw_paths_bound_writable(self) -> None:
         argv = self._argv(rw_paths=("/srv/data",))
-        assert "/srv/data" in argv
+        if "/srv/data" not in argv:
+            raise AssertionError('"/srv/data" in argv')
 
     def test_only_fuse_device_exposed(self) -> None:
         argv = self._argv()
-        assert argv[argv.index("--dev") + 1] == "/dev"
-        assert argv[argv.index("--dev-bind") + 1] == "/dev/fuse"
+        if argv[argv.index("--dev") + 1] != "/dev":
+            raise AssertionError('argv[argv.index("--dev") + 1] == "/dev"')
+        if argv[argv.index("--dev-bind") + 1] != "/dev/fuse":
+            raise AssertionError('argv[argv.index("--dev-bind") + 1] == "/dev/fuse"')
 
     def test_env_cleared_to_path_only(self) -> None:
         argv = self._argv()
-        assert "--clearenv" in argv
-        assert argv[argv.index("--setenv") + 1] == "PATH"
+        if "--clearenv" not in argv:
+            raise AssertionError('"--clearenv" in argv')
+        if argv[argv.index("--setenv") + 1] != "PATH":
+            raise AssertionError('argv[argv.index("--setenv") + 1] == "PATH"')
 
     def test_sys_admin_capability_added(self) -> None:
         argv = self._argv()
-        assert argv[argv.index("--cap-add") + 1] == "CAP_SYS_ADMIN"
+        if argv[argv.index("--cap-add") + 1] != "CAP_SYS_ADMIN":
+            raise AssertionError('argv[argv.index("--cap-add") + 1] == "CAP_SYS_ADMIN"')
 
     def test_network_isolated_by_default(self) -> None:
-        assert "--unshare-net" in self._argv()
+        if "--unshare-net" not in self._argv():
+            raise AssertionError('"--unshare-net" in self._argv()')
 
     def test_network_enabled_on_demand(self) -> None:
-        assert "--unshare-net" not in self._argv(network=True)
+        if "--unshare-net" in self._argv(network=True):
+            raise AssertionError('"--unshare-net" not in self._argv(network=True)')
 
     def test_launcher_gets_image_and_op(self) -> None:
         argv = self._argv()
         i = argv.index("--image")
-        assert argv[i + 1 : i + 3] == ["/ws/a.ext4", "/ws/a.ext4.mnt"]
-        assert argv[-2:] == ["write", "upload/x"]
+        if argv[i + 1 : i + 3] != ["/ws/a.ext4", "/ws/a.ext4.mnt"]:
+            raise AssertionError('argv[i + 1 : i + 3] == ["/ws/a.ext4", "/ws/a.ext4.m…')
+        if argv[-2:] != ["write", "upload/x"]:
+            raise AssertionError('argv[-2:] == ["write", "upload/x"]')
 
 
 class TestErrorBoundary:
@@ -392,7 +428,8 @@ class TestErrorBoundary:
     def _local(tmp_path: Path) -> LocalStorageClient:
         cfg = _storage_cfg(files_dir=str(tmp_path / "files"))
         client = StorageFactory.create(cfg)
-        assert isinstance(client, LocalStorageClient)
+        if not (isinstance(client, LocalStorageClient)):
+            raise AssertionError("isinstance(client, LocalStorageClient)")
         return client
 
     @staticmethod
@@ -443,7 +480,8 @@ class TestErrorBoundary:
         with pytest.raises(StorageError) as failure:
             asyncio.run(storage.upload_file("7/t1/upload/a.txt", b"x"))
 
-        assert isinstance(failure.value.__cause__, OSError)
+        if not (isinstance(failure.value.__cause__, OSError)):
+            raise AssertionError("isinstance(failure.value.__cause__, OSError)")
 
     def test_directory_instead_of_object_is_storage_error(self, tmp_path: Path) -> None:
         storage = self._local(tmp_path)
@@ -452,7 +490,8 @@ class TestErrorBoundary:
         with pytest.raises(StorageError) as failure:
             asyncio.run(read_all(storage, "7/t1/upload"))
 
-        assert not isinstance(failure.value, StorageNotFoundError)
+        if isinstance(failure.value, StorageNotFoundError):
+            raise AssertionError("not isinstance(failure.value, StorageNotFoundError)")
 
     def test_size_is_known_before_the_body(self, tmp_path: Path) -> None:
         """Потолок на объём ставит вызывающий: слой сообщает размер до тела."""
@@ -465,7 +504,8 @@ class TestErrorBoundary:
             ) as body:
                 return body.stat.size
 
-        assert asyncio.run(opened_size()) == 64
+        if asyncio.run(opened_size()) != 64:
+            raise AssertionError("asyncio.run(opened_size()) == 64")
 
     def test_window_read_returns_slice(self, tmp_path: Path) -> None:
         storage = self._local(tmp_path)
@@ -480,15 +520,18 @@ class TestErrorBoundary:
                 collected.extend(chunk)
             return opened.stat.size, bytes(collected)
 
-        assert asyncio.run(window()) == (10, b"234")
+        if asyncio.run(window()) != (10, b"234"):
+            raise AssertionError('asyncio.run(window()) == (10, b"234")')
 
     def test_operations_are_not_overridden_past_the_guard(self) -> None:
         operations = list(self._guarded_operations())
-        assert operations
+        if not (operations):
+            raise AssertionError("operations")
 
         for client in (LocalStorageClient, ImageStorageClient):
             for name in operations:
-                assert name not in vars(client), f"{client.__name__}.{name} мимо guard"
+                if name in vars(client):
+                    raise AssertionError(f"{client.__name__}.{name} мимо guard")
 
 
 @needs_fuse
@@ -498,22 +541,26 @@ class TestLiveImage:
     def test_write_persists_between_calls(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template)
         _invoke(tool, "echo hello > f.txt")
-        assert _invoke(tool, "cat f.txt")["stdout"].strip() == "hello"
+        if _invoke(tool, "cat f.txt")["stdout"].strip() != "hello":
+            raise AssertionError('_invoke(tool, "cat f.txt")["stdout"].strip() == "he…')
 
     def test_image_created_from_template(self, tmp_path: Path, template: Path) -> None:
         _invoke(_bash(tmp_path, template), "true")
-        assert (tmp_path / "ws" / "7.ext4").is_file()
+        if not ((tmp_path / "ws" / "7.ext4").is_file()):
+            raise AssertionError('(tmp_path / "ws" / "7.ext4").is_file()')
 
     def test_no_mount_leaks_to_host(self, tmp_path: Path, template: Path) -> None:
         _invoke(_bash(tmp_path, template), "true")
-        assert "fuse2fs" not in Path("/proc/mounts").read_text()
+        if "fuse2fs" in Path("/proc/mounts").read_text():
+            raise AssertionError('"fuse2fs" not in Path("/proc/mounts").read_text()')
 
     def test_size_limit_is_enforced(self, tmp_path: Path, template: Path) -> None:
         payload = _invoke(
             _bash(tmp_path, template),
             "dd if=/dev/zero of=/workspace/big bs=1M count=64 2>&1",
         )
-        assert "No space left" in payload["stdout"]
+        if "No space left" not in payload["stdout"]:
+            raise AssertionError('"No space left" in payload["stdout"]')
 
     def test_storage_upload_visible_in_sandbox(
         self, tmp_path: Path, template: Path
@@ -523,7 +570,8 @@ class TestLiveImage:
         payload = _invoke(
             _bash(tmp_path, template), "cat '/workspace/t1/upload/отчёт.csv'"
         )
-        assert payload["stdout"].strip() == "attachment"
+        if payload["stdout"].strip() != "attachment":
+            raise AssertionError('payload["stdout"].strip() == "attachment"')
 
     def test_sandbox_write_readable_by_storage(
         self, tmp_path: Path, template: Path
@@ -531,7 +579,8 @@ class TestLiveImage:
         tool = _bash(tmp_path, template)
         _invoke(tool, "mkdir -p t1/upload && echo from-bash > t1/upload/x")
         storage = _storage(tmp_path, template)
-        assert asyncio.run(read_all(storage, "7/t1/upload/x")).strip() == b"from-bash"
+        if asyncio.run(read_all(storage, "7/t1/upload/x")).strip() != b"from-bash":
+            raise AssertionError('asyncio.run(read_all(storage, "7/t1/upload/x")).str…')
 
     def test_storage_roundtrip(self, tmp_path: Path, template: Path) -> None:
         storage = _storage(tmp_path, template)
@@ -540,7 +589,8 @@ class TestLiveImage:
             await storage.upload_file("7/t1/upload/el-2", "текст")
             return await read_all(storage, "7/t1/upload/el-2")
 
-        assert asyncio.run(cycle()).decode() == "текст"
+        if asyncio.run(cycle()).decode() != "текст":
+            raise AssertionError('asyncio.run(cycle()).decode() == "текст"')
 
     def test_storage_delete(self, tmp_path: Path, template: Path) -> None:
         storage = _storage(tmp_path, template)
@@ -552,7 +602,8 @@ class TestLiveImage:
                 await storage.delete_file("7/t1/upload/el-3"),
             )
 
-        assert asyncio.run(cycle()) == (True, False)
+        if asyncio.run(cycle()) != (True, False):
+            raise AssertionError("asyncio.run(cycle()) == (True, False)")
 
     def test_storage_read_missing_raises(self, tmp_path: Path, template: Path) -> None:
         storage = _storage(tmp_path, template)
@@ -568,7 +619,8 @@ class TestLiveImage:
             result = await storage.stat("7/t1/upload/sized.bin")
             return result.size
 
-        assert asyncio.run(cycle()) == 1234
+        if asyncio.run(cycle()) != 1234:
+            raise AssertionError("asyncio.run(cycle()) == 1234")
 
     def test_storage_stat_missing_raises(self, tmp_path: Path, template: Path) -> None:
         storage = _storage(tmp_path, template)
@@ -590,7 +642,8 @@ class TestLiveImage:
                 collected.extend(chunk)
             return opened.stat.size, bytes(collected)
 
-        assert asyncio.run(cycle()) == (10, b"456")
+        if asyncio.run(cycle()) != (10, b"456"):
+            raise AssertionError('asyncio.run(cycle()) == (10, b"456")')
 
     def test_storage_concurrent_reads(self, tmp_path: Path, template: Path) -> None:
         """Чтение под разделяемым локом: два окна одного образа идут параллельно."""
@@ -605,7 +658,8 @@ class TestLiveImage:
             )
             return first, second
 
-        assert asyncio.run(cycle()) == (b"aaa", b"bbb")
+        if asyncio.run(cycle()) != (b"aaa", b"bbb"):
+            raise AssertionError('asyncio.run(cycle()) == (b"aaa", b"bbb")')
 
     def test_directory_in_image_is_storage_error(
         self, tmp_path: Path, template: Path
@@ -617,7 +671,8 @@ class TestLiveImage:
         with pytest.raises(StorageError) as failure:
             asyncio.run(storage.stat("7/t1/upload"))
 
-        assert not isinstance(failure.value, StorageNotFoundError)
+        if isinstance(failure.value, StorageNotFoundError):
+            raise AssertionError("not isinstance(failure.value, StorageNotFoundError)")
 
     def test_fifo_in_image_does_not_hang_read(
         self, tmp_path: Path, template: Path
@@ -631,7 +686,8 @@ class TestLiveImage:
         with pytest.raises(StorageError) as failure:
             asyncio.run(storage.stat("7/t1/upload/pipe"))
 
-        assert not isinstance(failure.value, StorageNotFoundError)
+        if isinstance(failure.value, StorageNotFoundError):
+            raise AssertionError("not isinstance(failure.value, StorageNotFoundError)")
 
     def test_symlink_planted_by_bash_leaks_nothing(
         self, tmp_path: Path, template: Path
@@ -649,7 +705,8 @@ class TestLiveImage:
         with pytest.raises(StorageError) as failure:
             asyncio.run(read_all(storage, "7/t1/upload/leak"))
 
-        assert "host secret" not in str(failure.value)
+        if "host secret" in str(failure.value):
+            raise AssertionError('"host secret" not in str(failure.value)')
 
     def test_symlinked_dir_planted_by_bash_leaks_nothing(
         self, tmp_path: Path, template: Path
@@ -668,7 +725,8 @@ class TestLiveImage:
         with pytest.raises(StorageError) as failure:
             asyncio.run(read_all(storage, "7/t1/upload/secret.txt"))
 
-        assert "host secret" not in str(failure.value)
+        if "host secret" in str(failure.value):
+            raise AssertionError('"host secret" not in str(failure.value)')
 
     def test_read_does_not_materialize_image(
         self, tmp_path: Path, template: Path
@@ -679,7 +737,8 @@ class TestLiveImage:
         with pytest.raises(StorageNotFoundError):
             asyncio.run(storage.stat("7/t1/upload/anything"))
 
-        assert not (tmp_path / "ws" / "7.ext4").exists()
+        if (tmp_path / "ws" / "7.ext4").exists():
+            raise AssertionError('not (tmp_path / "ws" / "7.ext4").exists()')
 
     def test_storage_waits_for_busy_image(self, tmp_path: Path, template: Path) -> None:
         """flock блокирующий: storage дожидается занятой песочницы."""
@@ -695,7 +754,8 @@ class TestLiveImage:
             await busy
             return await read_all(storage, "7/t1/upload/after")
 
-        assert asyncio.run(race()) == b"waited"
+        if asyncio.run(race()) != b"waited":
+            raise AssertionError('asyncio.run(race()) == b"waited"')
 
     def test_image_not_recreated_on_second_call(
         self, tmp_path: Path, template: Path
@@ -705,12 +765,14 @@ class TestLiveImage:
         image = tmp_path / "ws" / "7.ext4"
         ino = image.stat().st_ino
         _invoke(tool, "true")
-        assert image.stat().st_ino == ino
+        if image.stat().st_ino != ino:
+            raise AssertionError("image.stat().st_ino == ino")
 
     def test_image_copy_is_sparse(self, tmp_path: Path, template: Path) -> None:
         _invoke(_bash(tmp_path, template), "true")
         image = tmp_path / "ws" / "7.ext4"
-        assert image.stat().st_blocks * 512 < image.stat().st_size
+        if image.stat().st_blocks * 512 >= image.stat().st_size:
+            raise AssertionError("image.stat().st_blocks * 512 < image.stat().st_size")
 
     def test_concurrent_bash_calls_serialized(
         self, tmp_path: Path, template: Path
@@ -721,19 +783,23 @@ class TestLiveImage:
             for i in range(2):
                 futures.append(pool.submit(_invoke, tool, f"echo {i} > par-{i}.txt"))
         for future in futures:
-            assert future.result()["exit_code"] == 0
+            if future.result()["exit_code"] != 0:
+                raise AssertionError('future.result()["exit_code"] == 0')
         both = _invoke(tool, "cat par-0.txt par-1.txt")
-        assert both["stdout"].split() == ["0", "1"]
+        if both["stdout"].split() != ["0", "1"]:
+            raise AssertionError('both["stdout"].split() == ["0", "1"]')
 
     def test_run_command_has_no_capabilities(
         self, tmp_path: Path, template: Path
     ) -> None:
         payload = _invoke(_bash(tmp_path, template), "grep CapEff /proc/self/status")
-        assert payload["stdout"].split()[1] == "0000000000000000"
+        if payload["stdout"].split()[1] != "0000000000000000":
+            raise AssertionError('payload["stdout"].split()[1] == "0000000000000000"')
 
     def test_userns_creation_blocked(self, tmp_path: Path, template: Path) -> None:
         payload = _invoke(_bash(tmp_path, template), "unshare -U true 2>&1; echo rc=$?")
-        assert "rc=0" not in payload["stdout"]
+        if "rc=0" in payload["stdout"]:
+            raise AssertionError('"rc=0" not in payload["stdout"]')
 
     def test_workspace_shared_between_threads(
         self, tmp_path: Path, template: Path
@@ -741,7 +807,8 @@ class TestLiveImage:
         """Образ на пользователя: второй тред видит файлы первого."""
         _invoke(_bash(tmp_path, template, thread_id="t1"), "echo from-t1 > shared.txt")
         payload = _invoke(_bash(tmp_path, template, thread_id="t2"), "cat shared.txt")
-        assert payload["stdout"].strip() == "from-t1"
+        if payload["stdout"].strip() != "from-t1":
+            raise AssertionError('payload["stdout"].strip() == "from-t1"')
 
     def test_single_image_per_user(self, tmp_path: Path, template: Path) -> None:
         _invoke(_bash(tmp_path, template, thread_id="t1"), "true")
@@ -750,7 +817,8 @@ class TestLiveImage:
         for path in (tmp_path / "ws").iterdir():
             if path.suffix == ".ext4":
                 images.append(path)
-        assert [p.name for p in images] == ["7.ext4"]
+        if [p.name for p in images] != ["7.ext4"]:
+            raise AssertionError('[p.name for p in images] == ["7.ext4"]')
 
     def test_upload_of_one_thread_visible_in_another(
         self, tmp_path: Path, template: Path
@@ -761,44 +829,52 @@ class TestLiveImage:
             _bash(tmp_path, template, thread_id="t2"),
             "cat /workspace/t1/upload/shared.txt",
         )
-        assert payload["stdout"].strip() == "attachment"
+        if payload["stdout"].strip() != "attachment":
+            raise AssertionError('payload["stdout"].strip() == "attachment"')
 
     def test_hostname_is_neutral(self, tmp_path: Path, template: Path) -> None:
         payload = _invoke(_bash(tmp_path, template), "uname -n")
-        assert payload["stdout"].strip() == "sandbox"
+        if payload["stdout"].strip() != "sandbox":
+            raise AssertionError('payload["stdout"].strip() == "sandbox"')
 
     def test_memory_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_memory_bytes=64 * 1024 * 1024)
         payload = _invoke(tool, "ulimit -v")
-        assert payload["stdout"].strip() == str(64 * 1024)
+        if payload["stdout"].strip() != str(64 * 1024):
+            raise AssertionError('payload["stdout"].strip() == str(64 * 1024)')
 
     def test_cpu_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_cpu_sec=5)
         payload = _invoke(tool, "ulimit -t")
-        assert payload["stdout"].strip() == "5"
+        if payload["stdout"].strip() != "5":
+            raise AssertionError('payload["stdout"].strip() == "5"')
 
     def test_memory_limit_enforced(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_memory_bytes=64 * 1024 * 1024)
         payload = _invoke(
             tool, "dd if=/dev/zero of=/dev/null bs=200M count=1 2>&1; echo rc=$?"
         )
-        assert "rc=0" not in payload["stdout"]
+        if "rc=0" in payload["stdout"]:
+            raise AssertionError('"rc=0" not in payload["stdout"]')
 
     def test_file_size_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_file_size_bytes=8 * 1024 * 1024)
         payload = _invoke(tool, "ulimit -f")
         # bash показывает RLIMIT_FSIZE в блоках по 1024 байта
-        assert payload["stdout"].strip() == str(8 * 1024 * 1024 // 1024)
+        if payload["stdout"].strip() != str(8 * 1024 * 1024 // 1024):
+            raise AssertionError('payload["stdout"].strip() == str(8 * 1024 * 1024 //…')
 
     def test_open_files_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_open_files=128)
         payload = _invoke(tool, "ulimit -n")
-        assert payload["stdout"].strip() == "128"
+        if payload["stdout"].strip() != "128":
+            raise AssertionError('payload["stdout"].strip() == "128"')
 
     def test_process_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_processes=32)
         payload = _invoke(tool, "ulimit -u")
-        assert payload["stdout"].strip() == "32"
+        if payload["stdout"].strip() != "32":
+            raise AssertionError('payload["stdout"].strip() == "32"')
 
     def test_fork_bomb_capped(self, tmp_path: Path, template: Path) -> None:
         code = (
@@ -818,14 +894,16 @@ class TestLiveImage:
         tool = _bash(tmp_path, template, max_processes=16, timeout_sec=60)
         payload = _invoke(tool, "python3 -", stdin=code)
         forked = int(payload["stdout"].split()[1])
-        assert 0 < forked < 40
+        if not (0 < forked < 40):
+            raise AssertionError("0 < forked < 40")
 
     def test_file_size_limit_enforced(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_file_size_bytes=1024 * 1024)
         payload = _invoke(
             tool, "dd if=/dev/zero of=big bs=64k count=32 2>&1; echo rc=$?"
         )
-        assert "rc=0" not in payload["stdout"]
+        if "rc=0" in payload["stdout"]:
+            raise AssertionError('"rc=0" not in payload["stdout"]')
 
     def test_broken_template_raises_mount_error(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.ext4"
@@ -852,7 +930,8 @@ class TestLiveImage:
             await storage.upload_file("7/t1/upload/keep", b"second", overwrite=False)
             return await read_all(storage, "7/t1/upload/keep")
 
-        assert asyncio.run(cycle()) == b"first"
+        if asyncio.run(cycle()) != b"first":
+            raise AssertionError('asyncio.run(cycle()) == b"first"')
 
     def test_slow_source_outlives_op_timeout(
         self, tmp_path: Path, template: Path
@@ -869,7 +948,8 @@ class TestLiveImage:
             await storage.upload_stream("7/t1/upload/slow.bin", slow())
             return await read_all(storage, "7/t1/upload/slow.bin")
 
-        assert asyncio.run(cycle()) == b"x" * 1024 * 8
+        if asyncio.run(cycle()) != b"x" * 1024 * 8:
+            raise AssertionError('asyncio.run(cycle()) == b"x" * 1024 * 8')
 
     def test_stalled_source_hits_op_timeout(
         self, tmp_path: Path, template: Path

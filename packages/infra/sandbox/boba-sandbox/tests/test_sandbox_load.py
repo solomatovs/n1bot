@@ -48,6 +48,7 @@ needs_fuse = pytest.mark.skipif(
     reason="нужны bwrap, fuse2fs, mkfs.ext4 и /dev/fuse",
 )
 
+
 class CgroupZone:
     """Делегированная cgroup v2 зона стенда: первая доступная на запись."""
 
@@ -563,7 +564,8 @@ class LoadStand:
             }
         )
         client = StorageFactory.create(cfg)
-        assert isinstance(client, ImageStorageClient)
+        if not (isinstance(client, ImageStorageClient)):
+            raise AssertionError("isinstance(client, ImageStorageClient)")
         return client
 
     def census(self, cgroup_base: str = "") -> ResourceCensus:
@@ -626,7 +628,8 @@ def template(tmp_path: Path) -> Path:
         f.truncate(LoadStand.TEMPLATE_BYTES)
 
     mkfs = shutil.which("mkfs.ext4")
-    assert mkfs is not None
+    if mkfs is None:
+        raise AssertionError("mkfs is not None")
     subprocess.run(  # noqa: S603
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
@@ -667,11 +670,14 @@ class TestParallelLoad:
             outcomes = [future.result() for future in futures]
 
         for (user, index), outcome in zip(jobs, outcomes, strict=True):
-            assert outcome.result.exit_code == 0, outcome.result.stderr
-            assert f"{user}-{index}" in outcome.result.stdout
+            if outcome.result.exit_code != 0:
+                raise AssertionError(outcome.result.stderr)
+            if f"{user}-{index}" not in outcome.result.stdout:
+                raise AssertionError('f"{user}-{index}" in outcome.result.stdout')
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
     def test_every_user_gets_own_image(self, stand: LoadStand) -> None:
         with ThreadPoolExecutor(max_workers=LoadScale.THREADS) as pool:
@@ -680,14 +686,18 @@ class TestParallelLoad:
                 for user in range(LoadScale.USERS)
             ]
             for future in futures:
-                assert future.result().result.exit_code == 0
+                if future.result().result.exit_code != 0:
+                    raise AssertionError("future.result().result.exit_code == 0")
 
         for user in range(LoadScale.USERS):
-            assert stand.image_of(str(user)).exists()
+            if not (stand.image_of(str(user)).exists()):
+                raise AssertionError("stand.image_of(str(user)).exists()")
 
         listing = stand.caller("0").call_text(f"ls {LoadStand.WORKSPACE}", stdin="")
-        assert "u0-0.txt" in listing.result.stdout
-        assert "u1-0.txt" not in listing.result.stdout
+        if "u0-0.txt" not in listing.result.stdout:
+            raise AssertionError('"u0-0.txt" in listing.result.stdout')
+        if "u1-0.txt" in listing.result.stdout:
+            raise AssertionError('"u1-0.txt" not in listing.result.stdout')
 
     def test_one_image_shared_by_threads_keeps_all_writes(
         self, stand: LoadStand
@@ -701,16 +711,19 @@ class TestParallelLoad:
                 for index in range(LoadScale.THREADS)
             ]
             for future in futures:
-                assert future.result().result.exit_code == 0
+                if future.result().result.exit_code != 0:
+                    raise AssertionError("future.result().result.exit_code == 0")
 
         listing = stand.caller("shared").call_text(
             f"ls {LoadStand.WORKSPACE}", stdin=""
         )
         for index in range(LoadScale.THREADS):
-            assert f"ushared-{index}.txt" in listing.result.stdout
+            if f"ushared-{index}.txt" not in listing.result.stdout:
+                raise AssertionError('f"ushared-{index}.txt" in listing.result.stdout')
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
     MIX_USER: ClassVar[str] = "mix"
     MIX_CALLS: ClassVar[int] = 4
@@ -720,9 +733,7 @@ class TestParallelLoad:
         """Ключ вложения: первый сегмент — пользователь, дальше путь в образе."""
         return f"{cls.MIX_USER}/t1/upload/file-{index}.txt"
 
-    def test_storage_and_sandbox_share_image_under_load(
-        self, stand: LoadStand
-    ) -> None:
+    def test_storage_and_sandbox_share_image_under_load(self, stand: LoadStand) -> None:
         """Вложения и bash работают с одним образом: flock их разводит."""
         before = stand.census()
         storage = stand.storage()
@@ -740,14 +751,17 @@ class TestParallelLoad:
             for future in uploads:
                 future.result()
             for future in shells:
-                assert future.result().result.exit_code == 0
+                if future.result().result.exit_code != 0:
+                    raise AssertionError("future.result().result.exit_code == 0")
 
         for index in range(self.MIX_CALLS):
             body = asyncio.run(self._read_all(storage, self._attachment_key(index)))
-            assert body == f"attachment-{index}".encode()
+            if body != f"attachment-{index}".encode():
+                raise AssertionError('body == f"attachment-{index}".encode()')
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
     @staticmethod
     async def _read_all(storage: ImageStorageClient, object_key: str) -> bytes:
@@ -766,10 +780,12 @@ class TestParallelLoad:
 
         for index in range(LoadScale.REPEATS):
             outcome = stand.caller("fd").call_text(f"echo {index}", stdin="")
-            assert outcome.result.exit_code == 0
+            if outcome.result.exit_code != 0:
+                raise AssertionError("outcome.result.exit_code == 0")
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
 
 class CallReport(BaseModel):
@@ -822,13 +838,17 @@ class TestAbnormalTermination:
             self.LONG_COMMAND, stdin=""
         )
 
-        assert outcome.result.timed_out is True
+        if outcome.result.timed_out is not True:
+            raise AssertionError("outcome.result.timed_out is True")
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
         again = stand.caller("timeout").call_text("echo alive", stdin="")
-        assert again.result.exit_code == 0
-        assert "alive" in again.result.stdout
+        if again.result.exit_code != 0:
+            raise AssertionError("again.result.exit_code == 0")
+        if "alive" not in again.result.stdout:
+            raise AssertionError('"alive" in again.result.stdout')
 
     def test_cancelled_turn_frees_image(self, stand: LoadStand) -> None:
         """Остановка хода посреди работы команды: образ и демон отпущены."""
@@ -844,10 +864,12 @@ class TestAbnormalTermination:
             stopper.join()
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
         again = stand.caller("cancel").call_text("echo alive", stdin="")
-        assert again.result.exit_code == 0
+        if again.result.exit_code != 0:
+            raise AssertionError("again.result.exit_code == 0")
 
     def test_failing_output_consumer_frees_image(self, stand: LoadStand) -> None:
         """Потребитель потока падает: процесс добивается, образ отпускается."""
@@ -862,10 +884,12 @@ class TestAbnormalTermination:
             runner.run("echo noise; sleep 300", stdin="", stdout_sink=sink)
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
         again = stand.caller("sink").call_text("echo alive", stdin="")
-        assert again.result.exit_code == 0
+        if again.result.exit_code != 0:
+            raise AssertionError("again.result.exit_code == 0")
 
     def test_killed_bwrap_frees_image(self, stand: LoadStand) -> None:
         """SIGKILL внешнему bwrap: цепочка гаснет вместе с ним."""
@@ -881,19 +905,21 @@ class TestAbnormalTermination:
             os.kill(pid, signal.SIGKILL)
             report = future.result(timeout=Waiting.APPEAR_SEC)
 
-        assert report.exit_code != 0
+        if report.exit_code == 0:
+            raise AssertionError("report.exit_code != 0")
         survivors = ProcTable.wait_gone(tuple(daemons), Waiting.SETTLE_SEC)
-        assert survivors == (), f"fuse2fs survived its bwrap: {survivors}"
+        if survivors != ():
+            raise AssertionError(f"fuse2fs survived its bwrap: {survivors}")
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
         again = stand.caller("bwrap").call_text("echo alive", stdin="")
-        assert again.result.exit_code == 0
+        if again.result.exit_code != 0:
+            raise AssertionError("again.result.exit_code == 0")
 
-    def test_killed_fuse_daemon_does_not_hang_next_call(
-        self, stand: LoadStand
-    ) -> None:
+    def test_killed_fuse_daemon_does_not_hang_next_call(self, stand: LoadStand) -> None:
         """SIGKILL смонтированному fuse2fs: команда теряет точку, вызов не висит."""
         before = stand.census()
         marker = f"fuse-load-{uuid4().hex[:8]}"
@@ -910,13 +936,17 @@ class TestAbnormalTermination:
             os.kill(pid, signal.SIGKILL)
             report = future.result(timeout=Waiting.APPEAR_SEC)
 
-        assert "lost-mount" in report.stdout
+        if "lost-mount" not in report.stdout:
+            raise AssertionError('"lost-mount" in report.stdout')
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
         again = stand.caller("fuse").call_text("echo alive", stdin="")
-        assert again.result.exit_code == 0
-        assert "alive" in again.result.stdout
+        if again.result.exit_code != 0:
+            raise AssertionError("again.result.exit_code == 0")
+        if "alive" not in again.result.stdout:
+            raise AssertionError('"alive" in again.result.stdout')
 
     def test_killed_host_process_leaves_nothing_behind(
         self, stand: LoadStand, tmp_path: Path
@@ -930,21 +960,26 @@ class TestAbnormalTermination:
         try:
             stand.wait_for_signal(marker)
             daemons = ProcTable.matching(ProcName.FUSE2FS, str(stand.root))
-            assert daemons, "fuse2fs of the child call was not found"
+            if not (daemons):
+                raise AssertionError("fuse2fs of the child call was not found")
             proc.kill()
             proc.wait(timeout=Waiting.SETTLE_SEC)
         finally:
             child.cleanup(proc)
 
         survivors = ProcTable.wait_gone(tuple(daemons), Waiting.SETTLE_SEC)
-        assert survivors == (), f"fuse2fs outlived the killed host: {survivors}"
+        if survivors != ():
+            raise AssertionError(f"fuse2fs outlived the killed host: {survivors}")
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
         again = stand.caller(_ChildCall.USER).call_text("echo alive", stdin="")
-        assert again.result.exit_code == 0
-        assert "alive" in again.result.stdout
+        if again.result.exit_code != 0:
+            raise AssertionError("again.result.exit_code == 0")
+        if "alive" not in again.result.stdout:
+            raise AssertionError('"alive" in again.result.stdout')
 
     def test_killed_host_process_keeps_image_usable(
         self, stand: LoadStand, tmp_path: Path
@@ -965,10 +1000,12 @@ class TestAbnormalTermination:
         listing = stand.caller(_ChildCall.USER).call_text(
             f"ls {LoadStand.WORKSPACE}", stdin=""
         )
-        assert listing.result.exit_code == 0
+        if listing.result.exit_code != 0:
+            raise AssertionError("listing.result.exit_code == 0")
 
         written = stand.caller(_ChildCall.USER).call_text("echo ok", stdin="")
-        assert written.result.exit_code == 0
+        if written.result.exit_code != 0:
+            raise AssertionError("written.result.exit_code == 0")
 
     def test_parallel_load_survives_random_kills(self, stand: LoadStand) -> None:
         """Нагрузка вперемешку с убийствами: уцелевшие вызовы честны, мусора нет."""
@@ -989,14 +1026,17 @@ class TestAbnormalTermination:
             if report.mount_lost:
                 continue
 
-            assert report.failure == "", report.failure
+            if report.failure != "":
+                raise AssertionError(report.failure)
             if report.exit_code != 0:
                 continue
 
-            assert report.stdout.strip() == str(index)
+            if report.stdout.strip() != str(index):
+                raise AssertionError("report.stdout.strip() == str(index)")
 
         leak = stand.settle(before)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
     @staticmethod
     def _kill_some_daemons(stand: LoadStand) -> None:
@@ -1162,14 +1202,14 @@ class TestGroupLimitsUnderLoad:
         with ThreadPoolExecutor(max_workers=LoadScale.THREADS) as pool:
             futures = [pool.submit(call, index) for index in range(LoadScale.THREADS)]
             for future in futures:
-                assert future.result().result.exit_code == 0
+                if future.result().result.exit_code != 0:
+                    raise AssertionError("future.result().result.exit_code == 0")
 
         leak = stand.settle(before, cgroup_base)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
-    def test_group_oom_releases_leaf(
-        self, stand: LoadStand, cgroup_base: str
-    ) -> None:
+    def test_group_oom_releases_leaf(self, stand: LoadStand, cgroup_base: str) -> None:
         """Группа упирается в memory.max: её убивают, leaf исчезает."""
         before = stand.census(cgroup_base)
         caller = stand.caller(
@@ -1186,9 +1226,11 @@ class TestGroupLimitsUnderLoad:
             "head -c 256M /dev/zero | tail -c 256M > /dev/null", stdin=""
         )
 
-        assert outcome.result.exit_code != 0
+        if outcome.result.exit_code == 0:
+            raise AssertionError("outcome.result.exit_code != 0")
         leak = stand.settle(before, cgroup_base)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
     def test_pids_limit_holds_under_fork_pressure(
         self, stand: LoadStand, cgroup_base: str
@@ -1207,9 +1249,11 @@ class TestGroupLimitsUnderLoad:
             "bomb() { bomb | bomb & }; bomb; sleep 5; echo survived", stdin=""
         )
 
-        assert "survived" in outcome.result.stdout or outcome.result.exit_code != 0
+        if not ("survived" in outcome.result.stdout or outcome.result.exit_code != 0):
+            raise AssertionError('"survived" in outcome.result.stdout or outcome.resu…')
         leak = stand.settle(before, cgroup_base)
-        assert leak.empty, leak.describe()
+        if not (leak.empty):
+            raise AssertionError(leak.describe())
 
 
 @needs_fuse
@@ -1230,9 +1274,12 @@ class TestCrashDebris:
 
         outcome = stand.caller("debris").call_text("echo alive", stdin="")
 
-        assert outcome.result.exit_code == 0
-        assert image.exists()
-        assert not partial.exists(), "брошенная частичная копия должна быть убрана"
+        if outcome.result.exit_code != 0:
+            raise AssertionError("outcome.result.exit_code == 0")
+        if not (image.exists()):
+            raise AssertionError("image.exists()")
+        if partial.exists():
+            raise AssertionError("брошенная частичная копия должна быть убрана")
 
     def test_partial_copy_of_a_live_process_is_kept(self, stand: LoadStand) -> None:
         """Копия живого процесса не наша: её докопирует владелец."""
@@ -1243,23 +1290,27 @@ class TestCrashDebris:
 
         outcome = stand.caller("live-debris").call_text("echo alive", stdin="")
 
-        assert outcome.result.exit_code == 0
-        assert partial.exists()
+        if outcome.result.exit_code != 0:
+            raise AssertionError("outcome.result.exit_code == 0")
+        if not (partial.exists()):
+            raise AssertionError("partial.exists()")
 
-    def test_abandoned_lock_file_does_not_block_calls(
-        self, stand: LoadStand
-    ) -> None:
+    def test_abandoned_lock_file_does_not_block_calls(self, stand: LoadStand) -> None:
         """Файл лока переживает вызовы: значение имеет только сам flock."""
         first = stand.caller("lock").call_text("echo first", stdin="")
         lock = stand.image_of("lock").with_suffix(".ext4.lock")
 
-        assert first.result.exit_code == 0
-        assert lock.exists()
+        if first.result.exit_code != 0:
+            raise AssertionError("first.result.exit_code == 0")
+        if not (lock.exists()):
+            raise AssertionError("lock.exists()")
 
         second = stand.caller("lock").call_text("echo second", stdin="")
 
-        assert second.result.exit_code == 0
-        assert "second" in second.result.stdout
+        if second.result.exit_code != 0:
+            raise AssertionError("second.result.exit_code == 0")
+        if "second" not in second.result.stdout:
+            raise AssertionError('"second" in second.result.stdout')
 
 
 @needs_fuse
@@ -1278,4 +1329,5 @@ class TestChildCallHarness:
             child.cleanup(proc)
 
         lines = stdout.decode().strip().splitlines()
-        assert json.loads(lines[-1])["rc"] == 0
+        if json.loads(lines[-1])["rc"] != 0:
+            raise AssertionError('json.loads(lines[-1])["rc"] == 0')

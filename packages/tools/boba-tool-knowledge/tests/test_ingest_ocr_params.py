@@ -38,23 +38,30 @@ class TestIngestOcrParams:
 
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in INGEST_TOOLS]
-        assert names == self._NAMES
+        if names != self._NAMES:
+            raise AssertionError("names == self._NAMES")
 
     def test_llm_params_override_config(self) -> None:
         run_cfg = _config().with_parser(
             ocr_enabled=True, num_workers=3, ocr_language="rus"
         )
 
-        assert run_cfg.ocr_enabled is True
-        assert run_cfg.num_workers == 3
-        assert run_cfg.ocr_language == "rus"
+        if run_cfg.ocr_enabled is not True:
+            raise AssertionError("run_cfg.ocr_enabled is True")
+        if run_cfg.num_workers != 3:
+            raise AssertionError("run_cfg.num_workers == 3")
+        if run_cfg.ocr_language != "rus":
+            raise AssertionError('run_cfg.ocr_language == "rus"')
 
     def test_config_defaults_stay_without_overrides(self) -> None:
         cfg = _config()
 
-        assert cfg.ocr_enabled is False
-        assert cfg.num_workers == 1
-        assert cfg.ocr_language == "rus+eng"
+        if cfg.ocr_enabled is not False:
+            raise AssertionError("cfg.ocr_enabled is False")
+        if cfg.num_workers != 1:
+            raise AssertionError("cfg.num_workers == 1")
+        if cfg.ocr_language != "rus+eng":
+            raise AssertionError('cfg.ocr_language == "rus+eng"')
 
     @pytest.mark.parametrize(
         "name",
@@ -69,9 +76,14 @@ class TestIngestOcrParams:
         tools: dict[str, Any] = {tool.name: tool for tool in INGEST_TOOLS}
         schema = tools[name].args_schema.model_json_schema()
         props = schema["properties"]
-        assert props["ocr_enabled"]["default"] is False
-        assert props["num_workers"]["default"] == 1
-        assert props["num_workers"]["maximum"] == 4
-        assert props["ocr_language"]["default"] == "rus+eng"
+        if props["ocr_enabled"]["default"] is not False:
+            raise AssertionError('props["ocr_enabled"]["default"] is False')
+        if props["num_workers"]["default"] != 1:
+            raise AssertionError('props["num_workers"]["default"] == 1')
+        if props["num_workers"]["maximum"] != 4:
+            raise AssertionError('props["num_workers"]["maximum"] == 4')
+        if props["ocr_language"]["default"] != "rus+eng":
+            raise AssertionError('props["ocr_language"]["default"] == "rus+eng"')
         for control in ("ocr_enabled", "num_workers", "ocr_language"):
-            assert control not in schema.get("required", [])
+            if control in schema.get("required", []):
+                raise AssertionError('control not in schema.get("required", [])')

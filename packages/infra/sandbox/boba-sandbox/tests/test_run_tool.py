@@ -171,14 +171,20 @@ class TestRunToolInSandbox:
             ToolChannelsTap.set(None)
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyOk)
-        assert reply.content == "hello|fx-s3cret"
-        assert reply.artifact.kind == "text"
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError("isinstance(reply, ReplyOk)")
+        if reply.content != "hello|fx-s3cret":
+            raise AssertionError('reply.content == "hello|fx-s3cret"')
+        if reply.artifact.kind != "text":
+            raise AssertionError('reply.artifact.kind == "text"')
 
         # болтовня тела ушла своими каналами, конверт остался чистым
-        assert "noise on stdout" in sinks.text_of(ToolChannel.STDOUT)
-        assert "noise on stderr" in sinks.text_of(ToolChannel.STDERR)
-        assert "noise" not in reply.content
+        if "noise on stdout" not in sinks.text_of(ToolChannel.STDOUT):
+            raise AssertionError('"noise on stdout" in sinks.text_of(ToolChannel.STDO…')
+        if "noise on stderr" not in sinks.text_of(ToolChannel.STDERR):
+            raise AssertionError('"noise on stderr" in sinks.text_of(ToolChannel.STDE…')
+        if "noise" in reply.content:
+            raise AssertionError('"noise" not in reply.content')
 
     def test_expected_error_arrives_as_error_reply(self) -> None:
         caller = SandboxCaller("fx", _profile(), dict)
@@ -186,15 +192,20 @@ class TestRunToolInSandbox:
         outcome = caller.run_tool(_command("boom"))
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyError)
-        assert reply.kind == "fx_down"
-        assert "fx backend is down" in reply.message
+        if not (isinstance(reply, ReplyError)):
+            raise AssertionError("isinstance(reply, ReplyError)")
+        if reply.kind != "fx_down":
+            raise AssertionError('reply.kind == "fx_down"')
+        if "fx backend is down" not in reply.message:
+            raise AssertionError('"fx backend is down" in reply.message')
 
     def test_secret_is_absent_from_argv(self) -> None:
         command = _command("hello")
 
-        assert "fx-s3cret" not in " ".join(command.argv)
-        assert b"fx-s3cret" in command.stdin
+        if "fx-s3cret" in " ".join(command.argv):
+            raise AssertionError('"fx-s3cret" not in " ".join(command.argv)')
+        if b"fx-s3cret" not in command.stdin:
+            raise AssertionError('b"fx-s3cret" in command.stdin')
 
     def test_broken_command_reports_missing_envelope(self) -> None:
         caller = SandboxCaller("fx", _profile(), dict)
@@ -204,7 +215,8 @@ class TestRunToolInSandbox:
         with pytest.raises(SandboxPayloadError) as caught:
             caller.run_tool(command)
 
-        assert "no envelope" in str(caught.value)
+        if "no envelope" not in str(caught.value):
+            raise AssertionError('"no envelope" in str(caught.value)')
 
 
 @pytest.fixture(scope="module")
@@ -215,7 +227,8 @@ def ext4_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
         f.truncate(64 * 1024 * 1024)
 
     mkfs = shutil.which("mkfs.ext4")
-    assert mkfs is not None
+    if mkfs is None:
+        raise AssertionError("mkfs is not None")
     subprocess.run(  # noqa: S603
         [mkfs, "-q", "-F", str(path)],
         check=True,
@@ -230,9 +243,7 @@ def ext4_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
 class TestRunToolThroughChain:
     """Цепочка «bwrap -> лаунчер -> bwrap»: каналы проезжают насквозь."""
 
-    def _chain_caller(
-        self, tmp_path: Path, ext4_template: Path
-    ) -> SandboxCaller:
+    def _chain_caller(self, tmp_path: Path, ext4_template: Path) -> SandboxCaller:
         image = tmp_path / "ws" / "chain-user.ext4"
         profile = _profile(
             rw_images=(f"{image}:/workspace",),
@@ -254,13 +265,18 @@ class TestRunToolThroughChain:
             ToolChannelsTap.set(None)
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyOk)
-        assert reply.content == "hello|fx-s3cret"
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError("isinstance(reply, ReplyOk)")
+        if reply.content != "hello|fx-s3cret":
+            raise AssertionError('reply.content == "hello|fx-s3cret"')
 
         # болтовня тела разъехалась по каналам и через две ступени bwrap
-        assert "noise on stdout" in sinks.text_of(ToolChannel.STDOUT)
-        assert "noise on stderr" in sinks.text_of(ToolChannel.STDERR)
-        assert "noise" not in reply.content
+        if "noise on stdout" not in sinks.text_of(ToolChannel.STDOUT):
+            raise AssertionError('"noise on stdout" in sinks.text_of(ToolChannel.STDO…')
+        if "noise on stderr" not in sinks.text_of(ToolChannel.STDERR):
+            raise AssertionError('"noise on stderr" in sinks.text_of(ToolChannel.STDE…')
+        if "noise" in reply.content:
+            raise AssertionError('"noise" not in reply.content')
 
     def test_workspace_image_is_mounted_for_the_tool(
         self, tmp_path: Path, ext4_template: Path
@@ -270,9 +286,12 @@ class TestRunToolThroughChain:
         outcome = caller.run_tool(_command("workspace"))
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyOk)
-        assert reply.content.startswith("workspace:")
-        assert "fx-probe.txt" in reply.content
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError("isinstance(reply, ReplyOk)")
+        if not (reply.content.startswith("workspace:")):
+            raise AssertionError('reply.content.startswith("workspace:")')
+        if "fx-probe.txt" not in reply.content:
+            raise AssertionError('"fx-probe.txt" in reply.content')
 
     def test_expected_error_survives_the_chain(
         self, tmp_path: Path, ext4_template: Path
@@ -282,5 +301,7 @@ class TestRunToolThroughChain:
         outcome = caller.run_tool(_command("boom"))
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyError)
-        assert reply.kind == "fx_down"
+        if not (isinstance(reply, ReplyError)):
+            raise AssertionError("isinstance(reply, ReplyError)")
+        if reply.kind != "fx_down":
+            raise AssertionError('reply.kind == "fx_down"')

@@ -55,32 +55,44 @@ def _cfg(**extra: Any) -> PostgresConfig:
 
 def test_pool_passes_cfg_to_connection_pool():
     AsyncPostgresPool(_cfg())
-    assert len(_FakeAsyncConnectionPool.instances) == 1
+    if len(_FakeAsyncConnectionPool.instances) != 1:
+        raise AssertionError("len(_FakeAsyncConnectionPool.instances) == 1")
     kwargs = _FakeAsyncConnectionPool.instances[0].kwargs
-    assert kwargs["open"] is False
-    assert kwargs["connection_class"].__name__ == "AsyncConnection"
+    if kwargs["open"] is not False:
+        raise AssertionError('kwargs["open"] is False')
+    if kwargs["connection_class"].__name__ != "AsyncConnection":
+        raise AssertionError('kwargs["connection_class"].__name__ == "AsyncConnection"')
     conn = kwargs["kwargs"]
-    assert conn["host"] == "h"
-    assert conn["dbname"] == "test"
-    assert conn["user"] == "u"
-    assert conn["autocommit"] is True
-    assert kwargs["min_size"] == 1
-    assert kwargs["timeout"] == 2.0
+    if conn["host"] != "h":
+        raise AssertionError('conn["host"] == "h"')
+    if conn["dbname"] != "test":
+        raise AssertionError('conn["dbname"] == "test"')
+    if conn["user"] != "u":
+        raise AssertionError('conn["user"] == "u"')
+    if conn["autocommit"] is not True:
+        raise AssertionError('conn["autocommit"] is True')
+    if kwargs["min_size"] != 1:
+        raise AssertionError('kwargs["min_size"] == 1')
+    if kwargs["timeout"] != 2.0:
+        raise AssertionError('kwargs["timeout"] == 2.0')
 
 
 def test_pool_applies_override_options():
     AsyncPostgresPool(_cfg(), override_options={"search_path": "chainlit"})
     kwargs = _FakeAsyncConnectionPool.instances[0].kwargs
-    assert "search_path=chainlit" in kwargs["kwargs"]["options"]
+    if "search_path=chainlit" not in kwargs["kwargs"]["options"]:
+        raise AssertionError('"search_path=chainlit" in kwargs["kwargs"]["options"]')
 
 
 def test_open_close():
     pool = AsyncPostgresPool(_cfg())
     inner = _FakeAsyncConnectionPool.instances[0]
     asyncio.run(pool.open())
-    assert inner.opened is True
+    if inner.opened is not True:
+        raise AssertionError("inner.opened is True")
     asyncio.run(pool.close())
-    assert inner.closed is True
+    if inner.closed is not True:
+        raise AssertionError("inner.closed is True")
     # close идемпотентен
     asyncio.run(pool.close())
 

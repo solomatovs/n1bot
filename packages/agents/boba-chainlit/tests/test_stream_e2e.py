@@ -244,7 +244,8 @@ async def test_stream_button_lives_in_the_step_header(stream_thread: Any) -> Non
     trigger = await _open_step(page)
 
     button = trigger.locator('[aria-label="Show tool output"]')
-    assert await button.count() == 1
+    if await button.count() != 1:
+        raise AssertionError("await button.count() == 1")
 
 
 async def test_click_opens_the_journal_from_the_start(stream_thread: Any) -> None:
@@ -256,8 +257,10 @@ async def test_click_opens_the_journal_from_the_start(stream_thread: Any) -> Non
     await page.wait_for_timeout(3000)
 
     text = await page.locator("#side-view-content").inner_text()
-    assert FIRST_LINE in text
-    assert LAST_LINE not in text
+    if FIRST_LINE not in text:
+        raise AssertionError("FIRST_LINE in text")
+    if LAST_LINE in text:
+        raise AssertionError("LAST_LINE not in text")
 
 
 async def test_jump_to_end_and_back(stream_thread: Any) -> None:
@@ -268,13 +271,16 @@ async def test_jump_to_end_and_back(stream_thread: Any) -> None:
     await side.locator('button[aria-label*="Go to the file end"]').click()
     await page.wait_for_timeout(2000)
     tail = await side.inner_text()
-    assert LAST_LINE in tail
-    assert FIRST_LINE not in tail
+    if LAST_LINE not in tail:
+        raise AssertionError("LAST_LINE in tail")
+    if FIRST_LINE in tail:
+        raise AssertionError("FIRST_LINE not in tail")
 
     await side.locator('button[aria-label="Go to the file start"]').click()
     await page.wait_for_timeout(2000)
     head = await side.inner_text()
-    assert FIRST_LINE in head
+    if FIRST_LINE not in head:
+        raise AssertionError("FIRST_LINE in head")
 
 
 async def test_panel_and_fullscreen_share_the_button_set(
@@ -302,8 +308,10 @@ async def test_panel_and_fullscreen_share_the_button_set(
     await page.keyboard.press("Escape")
 
     # панель = полноэкранный набор плюс «Во весь экран»; «Закрыть» есть в обоих
-    assert set(labels) - {"Fullscreen"} == set(full_labels)
-    assert "Close" in set(full_labels)
+    if set(labels) - {"Fullscreen"} != set(full_labels):
+        raise AssertionError('set(labels) - {"Fullscreen"} == set(full_labels)')
+    if "Close" not in set(full_labels):
+        raise AssertionError('"Close" in set(full_labels)')
 
 
 async def _scroll_box(page: Any) -> Any:
@@ -328,7 +336,8 @@ async def test_scrolling_down_loads_next_windows(stream_thread: Any) -> None:
     await page.wait_for_timeout(3000)
 
     side = page.locator("#side-view-content")
-    assert FIRST_LINE in await side.inner_text()
+    if FIRST_LINE not in await side.inner_text():
+        raise AssertionError("FIRST_LINE in await side.inner_text()")
 
     seen_l5000 = False
     for _ in range(6):
@@ -338,7 +347,8 @@ async def test_scrolling_down_loads_next_windows(stream_thread: Any) -> None:
             seen_l5000 = True
             break
 
-    assert seen_l5000, "прокрутка вниз не подгрузила следующее окно"
+    if not (seen_l5000):
+        raise AssertionError("прокрутка вниз не подгрузила следующее окно")
 
 
 async def test_scrolling_down_works_on_a_live_journal(
@@ -349,7 +359,8 @@ async def test_scrolling_down_works_on_a_live_journal(
 
     act = panel[3]
     side = await act("canvas_stream", {"call_id": LIVE_CALL_ID})
-    assert "V0000000,row" in await side.inner_text()
+    if "V0000000,row" not in await side.inner_text():
+        raise AssertionError('"V0000000,row" in await side.inner_text()')
 
     seen = False
     for _ in range(6):
@@ -358,7 +369,8 @@ async def test_scrolling_down_works_on_a_live_journal(
             seen = True
             break
 
-    assert seen, "живой журнал не листается вниз"
+    if not (seen):
+        raise AssertionError("живой журнал не листается вниз")
 
 
 async def test_elements_are_served_without_cache(stream_thread: Any) -> None:
@@ -376,7 +388,8 @@ async def test_elements_are_served_without_cache(stream_thread: Any) -> None:
         }"""
     )
 
-    assert cache_control == "no-cache"
+    if cache_control != "no-cache":
+        raise AssertionError('cache_control == "no-cache"')
 
 
 async def test_dom_stays_bounded_on_a_long_scroll(stream_thread: Any) -> None:
@@ -391,7 +404,8 @@ async def test_dom_stays_bounded_on_a_long_scroll(stream_thread: Any) -> None:
     await page.wait_for_timeout(3000)
 
     side = page.locator("#side-view-content")
-    assert FIRST_LINE in await side.inner_text()
+    if FIRST_LINE not in await side.inner_text():
+        raise AssertionError("FIRST_LINE in await side.inner_text()")
 
     for _ in range(14):
         await _scroll_to_bottom(page)
@@ -405,5 +419,7 @@ async def test_dom_stays_bounded_on_a_long_scroll(stream_thread: Any) -> None:
     )
 
     # 8 окон по 64 КиБ плюс запас на хвостовой добор
-    assert probe["length"] < 9 * 66000, "DOM копит окна вместо вытеснения"
-    assert FIRST_LINE not in probe["head"], "верх загруженного не вытеснился"
+    if probe["length"] >= 9 * 66000:
+        raise AssertionError("DOM копит окна вместо вытеснения")
+    if FIRST_LINE in probe["head"]:
+        raise AssertionError("верх загруженного не вытеснился")

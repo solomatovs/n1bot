@@ -68,27 +68,33 @@ class TestLocalMode:
         tool = fresh_tool()
         ToolProcessWrap.guard_all([tool], None)
 
-        assert tool.coroutine is not None
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
         content, artifact = run_body(tool.coroutine, text="hi", repeat=2, cfg=CFG)
 
-        assert "hi hi|t0ken" in content
-        assert isinstance(artifact, TextResult)
+        if "hi hi|t0ken" not in content:
+            raise AssertionError('"hi hi|t0ken" in content')
+        if not (isinstance(artifact, TextResult)):
+            raise AssertionError("isinstance(artifact, TextResult)")
 
     def test_expected_error_maps_to_kind(self) -> None:
         tool = fresh_tool()
         ToolProcessWrap.guard_all([tool], None)
 
-        assert tool.coroutine is not None
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
         with pytest.raises(PayloadFailureError) as caught:
             run_body(tool.coroutine, text="boom", repeat=1, cfg=CFG)
 
-        assert caught.value.kind == "fake_unavailable"
+        if caught.value.kind != "fake_unavailable":
+            raise AssertionError('caught.value.kind == "fake_unavailable"')
 
     def test_unexpected_error_passes_through(self) -> None:
         tool = fresh_tool()
         ToolProcessWrap.guard_all([tool], None)
 
-        assert tool.coroutine is not None
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
         with pytest.raises(RuntimeError):
             run_body(tool.coroutine, text="crash", repeat=1, cfg=CFG)
 
@@ -106,40 +112,53 @@ class TestSandboxMode:
         launcher = RecordingLauncher(self.OK_REPLY)
         ToolProcessWrap.guard_all([tool], launcher)
 
-        assert tool.coroutine is not None
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
         content, artifact = run_body(tool.coroutine, text="hello", repeat=1, cfg=CFG)
 
-        assert content == "done"
-        assert isinstance(artifact, TextResult)
+        if content != "done":
+            raise AssertionError('content == "done"')
+        if not (isinstance(artifact, TextResult)):
+            raise AssertionError("isinstance(artifact, TextResult)")
 
         command = launcher.commands[0]
-        assert "-m" in command.argv
-        assert "fake_toolmod" in command.argv
-        assert "--text" in command.argv
-        assert "t0ken" not in " ".join(command.argv)
-        assert b"t0ken" in command.stdin
+        if "-m" not in command.argv:
+            raise AssertionError('"-m" in command.argv')
+        if "fake_toolmod" not in command.argv:
+            raise AssertionError('"fake_toolmod" in command.argv')
+        if "--text" not in command.argv:
+            raise AssertionError('"--text" in command.argv')
+        if "t0ken" in " ".join(command.argv):
+            raise AssertionError('"t0ken" not in " ".join(command.argv)')
+        if b"t0ken" not in command.stdin:
+            raise AssertionError('b"t0ken" in command.stdin')
 
     def test_error_reply_raises_payload_failure(self) -> None:
         tool = fresh_tool()
         reply = '{"status": "error", "kind": "fake_unavailable", "message": "down"}'
         ToolProcessWrap.guard_all([tool], RecordingLauncher(reply))
 
-        assert tool.coroutine is not None
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
         with pytest.raises(PayloadFailureError) as caught:
             run_body(tool.coroutine, text="x", repeat=1, cfg=CFG)
 
-        assert caught.value.kind == "fake_unavailable"
-        assert "down" in str(caught.value)
+        if caught.value.kind != "fake_unavailable":
+            raise AssertionError('caught.value.kind == "fake_unavailable"')
+        if "down" not in str(caught.value):
+            raise AssertionError('"down" in str(caught.value)')
 
     def test_oversized_argument_is_expected_failure(self) -> None:
         tool = fresh_tool()
         ToolProcessWrap.guard_all([tool], RecordingLauncher(self.OK_REPLY))
 
-        assert tool.coroutine is not None
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
         with pytest.raises(PayloadFailureError) as caught:
             run_body(tool.coroutine, text="x" * 140_000, repeat=1, cfg=CFG)
 
-        assert caught.value.kind == str(WrapErrorKind.ARGUMENT_TOO_LARGE)
+        if caught.value.kind != str(WrapErrorKind.ARGUMENT_TOO_LARGE):
+            raise AssertionError("caught.value.kind == str(WrapErrorKind.ARGUMENT_TOO…")
 
     def test_error_reply_never_reaches_return(self) -> None:
         """Отказ — исключение, а не «успешный» результат с ok=False."""
@@ -148,11 +167,12 @@ class TestSandboxMode:
         launcher = RecordingLauncher(reply)
         ToolProcessWrap.guard_all([tool], launcher)
 
-        assert tool.coroutine is not None
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
         with pytest.raises(PayloadFailureError):
             run_body(tool.coroutine, text="x", repeat=1, cfg=CFG)
 
-        assert isinstance(launcher.commands, list)
-        assert isinstance(
-            REPLY.validate_json(reply), ReplyError
-        )
+        if not (isinstance(launcher.commands, list)):
+            raise AssertionError("isinstance(launcher.commands, list)")
+        if not (isinstance(REPLY.validate_json(reply), ReplyError)):
+            raise AssertionError("isinstance( REPLY.validate_json(reply), ReplyError )")

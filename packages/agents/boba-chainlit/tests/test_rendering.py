@@ -29,49 +29,68 @@ def chainlit_context() -> None:
 
 class TestRenderForLlm:
     def test_text(self) -> None:
-        assert render_for_llm(TextResult(text="hello")) == "hello"
+        if render_for_llm(TextResult(text="hello")) != "hello":
+            raise AssertionError('render_for_llm(TextResult(text="hello")) == "hello"')
 
     def test_json(self) -> None:
-        assert render_for_llm(JsonResult(payload={"a": 1})) == '{"a": 1}'
+        if render_for_llm(JsonResult(payload={"a": 1})) != '{"a": 1}':
+            raise AssertionError(
+                'render_for_llm(JsonResult(payload={"a": 1})) == \'{"…'
+            )
 
     def test_table_with_note(self) -> None:
         result = TableResult(rows=[{"a": 1}], note="truncated")
-        assert render_for_llm(result) == '[{"a": 1}]\n\ntruncated'
+        if render_for_llm(result) != '[{"a": 1}]\n\ntruncated':
+            raise AssertionError(
+                "render_for_llm(result) == '[{\"a\": 1}]\\n\\ntruncated'"
+            )
 
     def test_table_without_note(self) -> None:
         result = TableResult(rows=[{"a": 1}])
-        assert render_for_llm(result) == '[{"a": 1}]'
+        if render_for_llm(result) != '[{"a": 1}]':
+            raise AssertionError("render_for_llm(result) == '[{\"a\": 1}]'")
 
     def test_pg_copy_text(self) -> None:
         result = PgCopyTextResult(text="a\tb\n1\t2\n")
-        assert render_for_llm(result) == "a\tb\n1\t2\n"
+        if render_for_llm(result) != "a\tb\n1\t2\n":
+            raise AssertionError('render_for_llm(result) == "a\\tb\\n1\\t2\\n"')
 
     def test_chart_confirmation(self) -> None:
-        assert render_for_llm(ChartResult(spec={"data": []}, title="Sales")) == (
-            "[chart rendered: Sales]"
-        )
-        assert render_for_llm(ChartResult(spec={"data": []})) == "[chart rendered]"
+        if not (
+            render_for_llm(ChartResult(spec={"data": []}, title="Sales"))
+            == ("[chart rendered: Sales]")
+        ):
+            raise AssertionError('render_for_llm(ChartResult(spec={"data": []}, title…')
+        if render_for_llm(ChartResult(spec={"data": []})) != "[chart rendered]":
+            raise AssertionError('render_for_llm(ChartResult(spec={"data": []})) == "…')
 
     def test_error(self) -> None:
         result = ErrorResult(message="boom", error_kind="timeout")
-        assert render_for_llm(result) == "boom"
+        if render_for_llm(result) != "boom":
+            raise AssertionError('render_for_llm(result) == "boom"')
 
 
 class TestPackResult:
     def test_returns_content_and_result(self) -> None:
         result = TextResult(text="x")
         content, artifact = pack_result(result)
-        assert content == "x"
-        assert artifact is result
+        if content != "x":
+            raise AssertionError('content == "x"')
+        if artifact is not result:
+            raise AssertionError("artifact is result")
 
 
 class TestToolResultView:
     def test_chart(self) -> None:
         result = ChartResult(spec={"data": []}, title="t")
-        assert ToolResultView(result).render() == ChartRendering(
-            spec={"data": []},
-            title="t",
-        )
+        if not (
+            ToolResultView(result).render()
+            == ChartRendering(
+                spec={"data": []},
+                title="t",
+            )
+        ):
+            raise AssertionError("ToolResultView(result).render() == ChartRendering( …")
 
     def test_markdown_variants(self) -> None:
         for result in (
@@ -82,44 +101,61 @@ class TestToolResultView:
             ErrorResult(message="boom", error_kind="e"),
         ):
             rendering = ToolResultView(result).render()
-            assert isinstance(rendering, MarkdownRendering)
-            assert rendering.markdown
+            if not (isinstance(rendering, MarkdownRendering)):
+                raise AssertionError("isinstance(rendering, MarkdownRendering)")
+            if not (rendering.markdown):
+                raise AssertionError("rendering.markdown")
 
 
 class TestToolResultMarkdown:
     def test_table_is_gfm(self) -> None:
         result = TableResult(rows=[{"name": "a", "n": 1}], note="cut")
         md = ToolResultMarkdown(result).render()
-        assert "|" in md
-        assert "_cut_" in md
-        assert md.startswith("\n")
+        if "|" not in md:
+            raise AssertionError('"|" in md')
+        if "_cut_" not in md:
+            raise AssertionError('"_cut_" in md')
+        if not (md.startswith("\n")):
+            raise AssertionError('md.startswith("\\n")')
 
     def test_empty_table(self) -> None:
-        assert ToolResultMarkdown(TableResult(rows=[])).render() == "\n_(no rows)_"
+        if ToolResultMarkdown(TableResult(rows=[])).render() != "\n_(no rows)_":
+            raise AssertionError("ToolResultMarkdown(TableResult(rows=[])).render() =…")
 
     def test_json_fence_multiline(self) -> None:
         md = ToolResultMarkdown(JsonResult(payload={"a": [1, 2]})).render()
-        assert md.startswith("\n```json\n")
-        assert md.endswith("```\n")
+        if not (md.startswith("\n```json\n")):
+            raise AssertionError('md.startswith("\\n```json\\n")')
+        if not (md.endswith("```\n")):
+            raise AssertionError('md.endswith("```\\n")')
 
     def test_json_inline_short(self) -> None:
-        assert ToolResultMarkdown(JsonResult(payload={})).render() == "`{}`"
+        if ToolResultMarkdown(JsonResult(payload={})).render() != "`{}`":
+            raise AssertionError("ToolResultMarkdown(JsonResult(payload={})).render()…")
 
     def test_pg_copy_text_table(self) -> None:
         result = PgCopyTextResult(text="a\tb\n1\t2\n3\t4\n")
         md = ToolResultMarkdown(result).render()
-        assert "a" in md
-        assert "1" in md
-        assert "|" in md
+        if "a" not in md:
+            raise AssertionError('"a" in md')
+        if "1" not in md:
+            raise AssertionError('"1" in md')
+        if "|" not in md:
+            raise AssertionError('"|" in md')
 
     def test_error(self) -> None:
         rendered = ToolResultMarkdown(
             ErrorResult(message="boom", error_kind="e")
         ).render()
-        assert rendered == "**Error:** boom"
+        if rendered != "**Error:** boom":
+            raise AssertionError('rendered == "**Error:** boom"')
 
     def test_flatten_cell_newlines(self) -> None:
         result = TableResult(rows=[{"a": "x\ny"}])
         md = ToolResultMarkdown(result).render()
-        assert "\n" not in md.split("| a")[1].split("|")[1] or True
-        assert "⏎" in md
+        if not ("\n" not in md.split("| a")[1].split("|")[1] or True):
+            raise AssertionError(
+                '"\\n" not in md.split("| a")[1].split("|")[1] or True'
+            )
+        if "⏎" not in md:
+            raise AssertionError('"⏎" in md')

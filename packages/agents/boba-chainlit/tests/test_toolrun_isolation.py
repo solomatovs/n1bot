@@ -59,4 +59,5 @@ class TestToolrunIsolation:
 
             leaked.append(name)
 
-        assert not leaked, f"{module.name}: внешние зависимости {leaked}"
+        if leaked:
+            raise AssertionError(f"{module.name}: внешние зависимости {leaked}")

@@ -83,8 +83,10 @@ class TestProfileRegistry:
                 },
             }
         )
-        assert cfg.profiles["default"].rootfs == "/srv/rootfs-a"
-        assert cfg.profiles["online"].network is True
+        if cfg.profiles["default"].rootfs != "/srv/rootfs-a":
+            raise AssertionError('cfg.profiles["default"].rootfs == "/srv/rootfs-a"')
+        if cfg.profiles["online"].network is not True:
+            raise AssertionError('cfg.profiles["online"].network is True')
 
     def test_empty_registry_rejected(self) -> None:
         with pytest.raises(ValueError, match="profiles"):
@@ -101,46 +103,59 @@ class TestToolProfile:
     """Инструмент получает профиль ссылкой; переопределения пишет админ."""
 
     def test_profile_comes_from_reference(self) -> None:
-        assert _tool_config({}).effective().cwd == "/workspace"
+        if _tool_config({}).effective().cwd != "/workspace":
+            raise AssertionError('_tool_config({}).effective().cwd == "/workspace"')
 
     def test_reference_may_be_a_plain_mapping(self) -> None:
         """OmegaConf подставляет узел профиля как словарь."""
         cfg = SandboxToolConfig.model_validate(
             {"profile": dict(_PROFILE_BASE), "override": {}}
         )
-        assert cfg.effective().max_processes == 256
+        if cfg.effective().max_processes != 256:
+            raise AssertionError("cfg.effective().max_processes == 256")
 
     def test_field_replaces_base(self) -> None:
-        assert _tool_config({"cwd": "/other"}).effective().cwd == "/other"
+        if _tool_config({"cwd": "/other"}).effective().cwd != "/other":
+            raise AssertionError('_tool_config({"cwd": "/other"}).effective().cwd == …')
 
     def test_untouched_fields_come_from_base(self) -> None:
-        assert _tool_config({"cwd": "/other"}).effective().max_processes == 256
+        if _tool_config({"cwd": "/other"}).effective().max_processes != 256:
+            raise AssertionError('_tool_config({"cwd": "/other"}).effective().max_pro…')
 
     def test_mounts_are_parsed_from_strings(self) -> None:
         eff = _tool_config({"ro_binds": ["/srv/payload:/opt/payload"]}).effective()
-        assert (eff.ro_binds[0].host, eff.ro_binds[0].target) == (
-            "/srv/payload",
-            "/opt/payload",
-        )
+        if not (
+            (eff.ro_binds[0].host, eff.ro_binds[0].target)
+            == (
+                "/srv/payload",
+                "/opt/payload",
+            )
+        ):
+            raise AssertionError("(eff.ro_binds[0].host, eff.ro_binds[0].target) == (…")
 
     def test_list_is_replaced_not_appended(self) -> None:
         cfg = _tool_config({"ro_binds": ["/srv/b"]}, ro_binds=("/srv/a",))
-        assert [b.host for b in cfg.effective().ro_binds] == ["/srv/b"]
+        if [b.host for b in cfg.effective().ro_binds] != ["/srv/b"]:
+            raise AssertionError('[b.host for b in cfg.effective().ro_binds] == ["/sr…')
 
     def test_any_field_may_be_overridden(self) -> None:
         """Ограничений нет: решает администратор."""
         eff = _tool_config({"network": True, "rootfs": "/srv/other"}).effective()
-        assert eff.network is True
-        assert eff.rootfs == "/srv/other"
+        if eff.network is not True:
+            raise AssertionError("eff.network is True")
+        if eff.rootfs != "/srv/other":
+            raise AssertionError('eff.rootfs == "/srv/other"')
 
     def test_base_profile_is_not_mutated(self) -> None:
         cfg = _tool_config({"network": True})
         cfg.effective()
-        assert cfg.profile.network is False
+        if cfg.profile.network is not False:
+            raise AssertionError("cfg.profile.network is False")
 
     def test_empty_override_returns_base(self) -> None:
         cfg = _tool_config({})
-        assert cfg.effective() is cfg.profile
+        if cfg.effective() is not cfg.profile:
+            raise AssertionError("cfg.effective() is cfg.profile")
 
     def test_unknown_field_rejected(self) -> None:
         with pytest.raises(ValueError, match="Extra inputs"):
@@ -170,7 +185,8 @@ class TestProfileReference:
     def test_reference_is_resolved(self) -> None:
         raw = self._raw("${sandbox.profiles.default}")
         cfg = bind(raw, path="tool.bash.sandbox", model=SandboxToolConfig)
-        assert cfg.effective().max_processes == 256
+        if cfg.effective().max_processes != 256:
+            raise AssertionError("cfg.effective().max_processes == 256")
 
     def test_unknown_profile_fails_at_load(self) -> None:
         raw = self._raw("${sandbox.profiles.нет-такого}")
@@ -183,7 +199,8 @@ class TestComponentIsolation:
         """Порядок импорта не должен ломать пакет: цикла быть не может."""
         code = (
             "import boba.sandbox as s\n"
-            "assert s.SandboxRunner and s.SandboxToolConfig\n"
+            "if not (s.SandboxRunner and s.SandboxToolConfig):\n"
+            "    raise SystemExit('пакет собран без раннера или конфига')\n"
             "print('ok')\n"
         )
         result = subprocess.run(  # noqa: S603
@@ -192,4 +209,5 @@ class TestComponentIsolation:
             capture_output=True,
             text=True,
         )
-        assert result.stdout.strip() == "ok"
+        if result.stdout.strip() != "ok":
+            raise AssertionError('result.stdout.strip() == "ok"')

@@ -23,10 +23,12 @@ class TestToolInterface:
     def test_llm_sees_only_path(self) -> None:
         """tool_call_id подставляет langchain: в схеме для модели его быть не должно."""
         schema = cast(type[BaseModel], build_send_file_tool().tool_call_schema)
-        assert set(schema.model_fields) == {"path"}
+        if set(schema.model_fields) != {"path"}:
+            raise AssertionError('set(schema.model_fields) == {"path"}')
 
     def test_tool_name(self) -> None:
-        assert build_send_file_tool().name == "send_file"
+        if build_send_file_tool().name != "send_file":
+            raise AssertionError('build_send_file_tool().name == "send_file"')
 
     @pytest.mark.anyio
     async def test_tool_call_id_is_injected(self) -> None:
@@ -40,8 +42,10 @@ class TestToolInterface:
         message = await build_send_file_tool().ainvoke(call)
 
         # аргумент связался: до отказа по сессии дело дошло, а не до ошибки схемы
-        assert isinstance(message.artifact, ErrorResult)
-        assert message.artifact.error_kind == "no_session"
+        if not (isinstance(message.artifact, ErrorResult)):
+            raise AssertionError("isinstance(message.artifact, ErrorResult)")
+        if message.artifact.error_kind != "no_session":
+            raise AssertionError('message.artifact.error_kind == "no_session"')
 
 
 class TestRefusal:
@@ -50,14 +54,17 @@ class TestRefusal:
     @staticmethod
     async def _attach(path: str) -> ErrorResult:
         result = await FileAttachment.attach(path, "call_1")
-        assert isinstance(result, ErrorResult)
+        if not (isinstance(result, ErrorResult)):
+            raise AssertionError("isinstance(result, ErrorResult)")
         return result
 
     @pytest.mark.anyio
     async def test_without_session(self) -> None:
         refusal = await self._attach("/workspace/x/upload/report.pdf")
-        assert refusal.error_kind == "no_session"
-        assert refusal.ok is False
+        if refusal.error_kind != "no_session":
+            raise AssertionError('refusal.error_kind == "no_session"')
+        if refusal.ok is not False:
+            raise AssertionError("refusal.ok is False")
 
     @pytest.mark.anyio
     async def test_without_active_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,4 +72,5 @@ class TestRefusal:
         monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
 
         refusal = await self._attach(f"/workspace/{THREAD}/upload/report.pdf")
-        assert refusal.error_kind == "no_turn"
+        if refusal.error_kind != "no_turn":
+            raise AssertionError('refusal.error_kind == "no_turn"')

@@ -42,22 +42,30 @@ def pdf_path(tmp_path) -> str:
 
 def test_parse_full_text(params: LiteParseParams, pdf_path: str):
     result = LiteParseEngine.parse(params, pdf_path)
-    assert result.num_pages == 2
-    assert "Alpha page one" in result.text
-    assert "Beta page two" in result.text
+    if result.num_pages != 2:
+        raise AssertionError("result.num_pages == 2")
+    if "Alpha page one" not in result.text:
+        raise AssertionError('"Alpha page one" in result.text')
+    if "Beta page two" not in result.text:
+        raise AssertionError('"Beta page two" in result.text')
 
 
 def test_parse_pages_selects_subset(params: LiteParseParams, pdf_path: str):
     result = LiteParseEngine.parse_pages(params, pdf_path, "2")
-    assert [p.page_num for p in result.pages] == [2]
-    assert "Beta page two" in result.text
-    assert "page one" not in result.text
+    if [p.page_num for p in result.pages] != [2]:
+        raise AssertionError("[p.page_num for p in result.pages] == [2]")
+    if "Beta page two" not in result.text:
+        raise AssertionError('"Beta page two" in result.text')
+    if "page one" in result.text:
+        raise AssertionError('"page one" not in result.text')
 
 
 def test_parse_bytes_matches_parse(params: LiteParseParams):
     result = LiteParseEngine.parse_bytes(params, _PDF, "doc.pdf")
-    assert result.num_pages == 2
-    assert "Alpha page one" in result.text
+    if result.num_pages != 2:
+        raise AssertionError("result.num_pages == 2")
+    if "Alpha page one" not in result.text:
+        raise AssertionError('"Alpha page one" in result.text')
 
 
 def test_parse_invalid_raises_liteparse_error(params: LiteParseParams):
@@ -80,4 +88,5 @@ def test_native_search_items_finds_on_both_pages(
         for page in native.pages
         if LiteParseEngine.search_items(page.text_items, "alpha")
     ]
-    assert pages_with_hit == [1, 2]
+    if pages_with_hit != [1, 2]:
+        raise AssertionError("pages_with_hit == [1, 2]")

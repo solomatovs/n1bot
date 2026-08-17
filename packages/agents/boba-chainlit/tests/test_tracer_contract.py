@@ -73,7 +73,7 @@ async def provider() -> AsyncIterator[httpx.AsyncClient]:
     app = FakeLlmApp(token_delay_sec=0.0).asgi()
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
-        base_url="http://fake-llm",
+        base_url="https://fake-llm",
     )
 
     try:
@@ -124,7 +124,7 @@ class TestTracerRunIndex:
         chat = ReasoningChatOpenAI(
             http_async_client=provider,
             model="fake-model",
-            base_url="http://fake-llm/v1",
+            base_url="https://fake-llm/v1",
             api_key=SecretStr("fake-key"),
         )
         tracer = self._tracer()
@@ -172,7 +172,8 @@ class TestTracerRunIndex:
                 tool_call_id=CALL_ID,
             )
 
-        assert str(run_id) in tracer.run_map
+        if str(run_id) not in tracer.run_map:
+            raise AssertionError("str(run_id) in tracer.run_map")
 
     async def test_failed_step_render_does_not_break_tool_end(
         self, caplog: pytest.LogCaptureFixture
@@ -194,7 +195,8 @@ class TestTracerRunIndex:
                 run_id=run_id,
             )
 
-        assert self._lost_runs(caplog) == []
+        if self._lost_runs(caplog) != []:
+            raise AssertionError("self._lost_runs(caplog) == []")
 
     async def test_turn_with_tool_does_not_cascade(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -204,7 +206,8 @@ class TestTracerRunIndex:
         with caplog.at_level(logging.DEBUG):
             await self._turn(provider, ScenarioName.TOOL)
 
-        assert self._lost_runs(caplog) == []
+        if self._lost_runs(caplog) != []:
+            raise AssertionError("self._lost_runs(caplog) == []")
 
     async def test_failed_tool_turn_does_not_cascade(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -216,4 +219,5 @@ class TestTracerRunIndex:
         ):
             await self._turn(provider, ScenarioName.TOOL_ERROR)
 
-        assert self._lost_runs(caplog) == []
+        if self._lost_runs(caplog) != []:
+            raise AssertionError("self._lost_runs(caplog) == []")

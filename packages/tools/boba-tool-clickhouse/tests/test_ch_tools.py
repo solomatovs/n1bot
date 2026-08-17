@@ -42,28 +42,35 @@ class TestChTools:
 
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in CH_TOOLS]
-        assert names == self._NAMES
+        if names != self._NAMES:
+            raise AssertionError("names == self._NAMES")
 
     async def test_list_targets_returns_whitelist(self) -> None:
         body = ToolMain.toolset(ch_list_targets)[0].coroutine
-        assert body is not None
+        if body is None:
+            raise AssertionError("body is not None")
         _content, artifact = await body(cfg=ch_config())
 
-        assert isinstance(artifact, TableResult)
-        assert list(artifact.rows) == [{"connection_name": "main"}]
-        assert artifact.ok is True
+        if not (isinstance(artifact, TableResult)):
+            raise AssertionError("isinstance(artifact, TableResult)")
+        if list(artifact.rows) != [{"connection_name": "main"}]:
+            raise AssertionError('list(artifact.rows) == [{"connection_name": "main"}]')
+        if artifact.ok is not True:
+            raise AssertionError("artifact.ok is True")
 
     async def test_unknown_target_raises_domain_error(self) -> None:
         """Профиль не в whitelist — доменное исключение с kind в EXPECTED."""
         from boba.tool.ch.tools import EXPECTED
 
         body = ToolMain.toolset(ch_query)[0].coroutine
-        assert body is not None
+        if body is None:
+            raise AssertionError("body is not None")
         with pytest.raises(UnknownConnectionError) as caught:
             await body(sql="select 1", connection_name="нет-такого", cfg=ch_config())
 
         kind = ExpectedErrors.kind_of(caught.value, dict(EXPECTED))
-        assert kind == "unknown_target"
+        if kind != "unknown_target":
+            raise AssertionError('kind == "unknown_target"')
 
     def test_profiles_are_required(self) -> None:
         with pytest.raises(ValidationError, match="no profiles configured"):
@@ -87,19 +94,24 @@ class TestClickHouseConfig:
             {**self._BASE, "username": "u", "password": "s3cret"}
         )
         settings = config.client_settings()
-        assert settings["password"] == "s3cret"
-        assert "ca_cert" not in settings
-        assert settings["settings"] == {}
+        if settings["password"] != "s3cret":
+            raise AssertionError('settings["password"] == "s3cret"')
+        if "ca_cert" in settings:
+            raise AssertionError('"ca_cert" not in settings')
+        if settings["settings"] != {}:
+            raise AssertionError('settings["settings"] == {}')
 
     def test_password_is_masked_without_reveal_context(self) -> None:
         config = ClickHouseConfig.model_validate(
             {**self._BASE, "username": "u", "password": "s3cret"}
         )
-        assert config.model_dump(mode="json")["password"] is None
+        if config.model_dump(mode="json")["password"] is not None:
+            raise AssertionError('config.model_dump(mode="json")["password"] is None')
         revealed = config.model_dump(
             mode="json", context={ClickHouseConfig.REVEAL_SECRETS: True}
         )
-        assert revealed["password"] == "s3cret"
+        if revealed["password"] != "s3cret":
+            raise AssertionError('revealed["password"] == "s3cret"')
 
     def test_username_is_required_without_kerberos(self) -> None:
         with pytest.raises(ValidationError, match="username обязателен"):
@@ -130,7 +142,8 @@ class TestClickHouseConfig:
                 "krbsrvname": "HTTP",
             }
         )
-        assert config.service_name() == "HTTP@ch01.loshara.com"
+        if config.service_name() != "HTTP@ch01.loshara.com":
+            raise AssertionError('config.service_name() == "HTTP@ch01.loshara.com"')
 
 
 class TestSpnegoHeaders:
@@ -149,14 +162,18 @@ class TestSpnegoHeaders:
         headers = self._Fake()
         headers["User-Agent"] = "boba"
         first, second = headers.copy(), headers.copy()
-        assert first["Authorization"] == "Negotiate token-1"
-        assert second["Authorization"] == "Negotiate token-2"
-        assert first["User-Agent"] == "boba"
+        if first["Authorization"] != "Negotiate token-1":
+            raise AssertionError('first["Authorization"] == "Negotiate token-1"')
+        if second["Authorization"] != "Negotiate token-2":
+            raise AssertionError('second["Authorization"] == "Negotiate token-2"')
+        if first["User-Agent"] != "boba":
+            raise AssertionError('first["User-Agent"] == "boba"')
 
     def test_stored_headers_keep_no_token(self) -> None:
         headers = self._Fake()
         headers.copy()
-        assert SpnegoHeaders.HEADER not in headers
+        if SpnegoHeaders.HEADER in headers:
+            raise AssertionError("SpnegoHeaders.HEADER not in headers")
 
 
 class TestJsonable:
@@ -176,12 +193,16 @@ class TestJsonable:
             "map": {"k": b"v"},
             "empty": None,
         }
-        assert RowStream.plain(row) == {
-            "i": 1,
-            "d": "1.5",
-            "u": "00000000-0000-0000-0000-000000000001",
-            "dt": "2026-01-02",
-            "arr": [1, 2],
-            "map": {"k": "v"},
-            "empty": None,
-        }
+        if not (
+            RowStream.plain(row)
+            == {
+                "i": 1,
+                "d": "1.5",
+                "u": "00000000-0000-0000-0000-000000000001",
+                "dt": "2026-01-02",
+                "arr": [1, 2],
+                "map": {"k": "v"},
+                "empty": None,
+            }
+        ):
+            raise AssertionError('RowStream.plain(row) == { "i": 1, "d": "1.5", "u": …')

@@ -52,7 +52,7 @@ async def provider() -> AsyncIterator[httpx.AsyncClient]:
     app = FakeLlmApp(token_delay_sec=0.0).asgi()
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
-        base_url="http://fake-llm",
+        base_url="https://fake-llm",
     )
     try:
         yield client
@@ -66,7 +66,7 @@ class TestLlmStateLog:
         return ReasoningChatOpenAI(
             http_async_client=provider,
             model="fake-model",
-            base_url="http://fake-llm/v1",
+            base_url="https://fake-llm/v1",
             api_key=SecretStr("fake-key"),
         )
 
@@ -164,16 +164,21 @@ class TestLlmStateLog:
     ) -> None:
         await self._stream_chat(provider, ScenarioName.THINKING_ANSWER)
 
-        assert self._complaints(caplog) == []
-        assert self._heads(caplog) == [
-            "llm request started",
-            "llm first token",
-            "llm thinking started",
-            "llm thinking finished",
-            "llm answer started",
-            "llm answer finished",
-            "llm request finished",
-        ]
+        if self._complaints(caplog) != []:
+            raise AssertionError("self._complaints(caplog) == []")
+        if not (
+            self._heads(caplog)
+            == [
+                "llm request started",
+                "llm first token",
+                "llm thinking started",
+                "llm thinking finished",
+                "llm answer started",
+                "llm answer finished",
+                "llm request finished",
+            ]
+        ):
+            raise AssertionError('self._heads(caplog) == [ "llm request started", "ll…')
 
     async def test_stage_lines_carry_size_and_duration(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -183,8 +188,10 @@ class TestLlmStateLog:
         finished = next(
             line for line in self._lines(caplog) if line.startswith("llm thinking fin")
         )
-        assert "33 chars in" in finished
-        assert finished.endswith("ms")
+        if "33 chars in" not in finished:
+            raise AssertionError('"33 chars in" in finished')
+        if not (finished.endswith("ms")):
+            raise AssertionError('finished.endswith("ms")')
 
     async def test_lines_are_formatted_with_user_and_thread(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -198,10 +205,13 @@ class TestLlmStateLog:
         for record in self._records(caplog):
             formatted.append(formatter.format(record))
 
-        assert self._complaints(caplog) == []
-        assert formatted
+        if self._complaints(caplog) != []:
+            raise AssertionError("self._complaints(caplog) == []")
+        if not (formatted):
+            raise AssertionError("formatted")
         for line in formatted:
-            assert f"[{MARK}]" in line
+            if f"[{MARK}]" not in line:
+                raise AssertionError('f"[{MARK}]" in line')
 
     async def test_mark_does_not_leak_after_the_line(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -209,12 +219,14 @@ class TestLlmStateLog:
         """Метка живёт только на время записи: чужие строки её не наследуют."""
         await self._stream_chat(provider, ScenarioName.ANSWER)
 
-        assert LogUserMark.current() == ""
+        if LogUserMark.current() != "":
+            raise AssertionError('LogUserMark.current() == ""')
 
         record = logging.getLogger("probe").makeRecord(
             "probe", logging.INFO, "f.py", 1, "after the turn", (), None
         )
-        assert getattr(record, UserLogContext.ATTRIBUTE) == UserLogContext.UNKNOWN
+        if getattr(record, UserLogContext.ATTRIBUTE) != UserLogContext.UNKNOWN:
+            raise AssertionError("getattr(record, UserLogContext.ATTRIBUTE) == UserLo…")
 
     async def test_answer_without_stream_is_logged_as_complete(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -224,14 +236,20 @@ class TestLlmStateLog:
             ScenarioName.THINKING_ANSWER.value, config={"callbacks": [self._log()]}
         )
 
-        assert self._complaints(caplog) == []
-        assert self._heads(caplog) == [
-            "llm request started",
-            "llm thinking complete",
-            "llm answer complete",
-            "llm request finished",
-        ]
-        assert "tokens in=11 out=7" in self._lines(caplog)[-1]
+        if self._complaints(caplog) != []:
+            raise AssertionError("self._complaints(caplog) == []")
+        if not (
+            self._heads(caplog)
+            == [
+                "llm request started",
+                "llm thinking complete",
+                "llm answer complete",
+                "llm request finished",
+            ]
+        ):
+            raise AssertionError('self._heads(caplog) == [ "llm request started", "ll…')
+        if "tokens in=11 out=7" not in self._lines(caplog)[-1]:
+            raise AssertionError('"tokens in=11 out=7" in self._lines(caplog)[-1]')
 
     async def test_tool_call_turn_logs_both_runs_and_the_call(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -239,13 +257,19 @@ class TestLlmStateLog:
         await self._stream_agent(provider, ScenarioName.TOOL)
 
         heads = self._heads(caplog)
-        assert self._complaints(caplog) == []
-        assert heads.count("llm request started") == 2
-        assert "tool stream_logs_usage started" in heads
-        assert "tool stream_logs_usage finished" in heads
-        assert heads.index("tool stream_logs_usage started") > heads.index(
-            "llm request finished"
-        )
+        if self._complaints(caplog) != []:
+            raise AssertionError("self._complaints(caplog) == []")
+        if heads.count("llm request started") != 2:
+            raise AssertionError('heads.count("llm request started") == 2')
+        if "tool stream_logs_usage started" not in heads:
+            raise AssertionError('"tool stream_logs_usage started" in heads')
+        if "tool stream_logs_usage finished" not in heads:
+            raise AssertionError('"tool stream_logs_usage finished" in heads')
+        if not (
+            heads.index("tool stream_logs_usage started")
+            > heads.index("llm request finished")
+        ):
+            raise AssertionError('heads.index("tool stream_logs_usage started") > hea…')
 
     async def test_tool_line_reports_call_id_and_duration(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -257,8 +281,10 @@ class TestLlmStateLog:
             for line in self._lines(caplog)
             if line.startswith("tool stream_logs_usage finished")
         )
-        assert "call=call_stream_logs" in finished
-        assert "output=13 chars" in finished
+        if "call=call_stream_logs" not in finished:
+            raise AssertionError('"call=call_stream_logs" in finished')
+        if "output=13 chars" not in finished:
+            raise AssertionError('"output=13 chars" in finished')
 
     async def test_failed_tool_is_logged_as_failed(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -267,5 +293,7 @@ class TestLlmStateLog:
         with pytest.raises(ValueError, match="unknown thread"):
             await self._stream_agent(provider, ScenarioName.TOOL_ERROR)
 
-        assert self._complaints(caplog) == []
-        assert "tool stream_logs_cleanup failed" in self._heads(caplog)
+        if self._complaints(caplog) != []:
+            raise AssertionError("self._complaints(caplog) == []")
+        if "tool stream_logs_cleanup failed" not in self._heads(caplog):
+            raise AssertionError('"tool stream_logs_cleanup failed" in self._heads(ca…')

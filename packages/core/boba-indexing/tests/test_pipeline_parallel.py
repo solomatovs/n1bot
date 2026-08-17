@@ -199,9 +199,12 @@ class TestParallelSources:
         elapsed = time.monotonic() - started
 
         sequential = _PAGES * _FETCH_DELAY_SEC
-        assert elapsed < sequential / 2
-        assert transport.peak > 1
-        assert len(sink.accepted) == _PAGES
+        if elapsed >= sequential / 2:
+            raise AssertionError("elapsed < sequential / 2")
+        if transport.peak <= 1:
+            raise AssertionError("transport.peak > 1")
+        if len(sink.accepted) != _PAGES:
+            raise AssertionError("len(sink.accepted) == _PAGES")
 
     async def test_workers_bound_is_respected(self) -> None:
         """Больше config.workers источников в полёте быть не должно."""
@@ -210,7 +213,8 @@ class TestParallelSources:
 
         await _run(_pipeline(transport, pages), _Sink(), workers=3)
 
-        assert transport.peak <= 3
+        if transport.peak > 3:
+            raise AssertionError("transport.peak <= 3")
 
     async def test_serial_run_keeps_one_in_flight(self) -> None:
         """workers=1 — прежнее последовательное поведение."""
@@ -219,7 +223,8 @@ class TestParallelSources:
 
         await _run(_pipeline(transport, pages), _Sink(), workers=1)
 
-        assert transport.peak == 1
+        if transport.peak != 1:
+            raise AssertionError("transport.peak == 1")
 
 
 class TestRunOutcome:
@@ -230,8 +235,10 @@ class TestRunOutcome:
         events = await _run(_pipeline(transport, pages), _Sink(), workers=4)
 
         [finished] = [e for e in events if isinstance(e, RunFinished)]
-        assert finished.stats.sources_processed == _PAGES
-        assert finished.stats.chunks_upserted == _PAGES
+        if finished.stats.sources_processed != _PAGES:
+            raise AssertionError("finished.stats.sources_processed == _PAGES")
+        if finished.stats.chunks_upserted != _PAGES:
+            raise AssertionError("finished.stats.chunks_upserted == _PAGES")
 
     async def test_cleanup_runs_after_all_sources(self) -> None:
         """Удаление устаревшего — строго последним, после всех источников."""
@@ -244,8 +251,10 @@ class TestRunOutcome:
         deleted_at = next(
             i for i, e in enumerate(events) if isinstance(e, ChunksDeleted)
         )
-        assert sink.cleaned == 1
-        assert deleted_at == len(events) - 2  # перед RunFinished
+        if sink.cleaned != 1:
+            raise AssertionError("sink.cleaned == 1")
+        if deleted_at != len(events) - 2:
+            raise AssertionError("deleted_at == len(events) - 2")  # перед RunFinished
 
     async def test_failed_source_does_not_stop_others(self) -> None:
         transport = _SlowTransport(0.0)
@@ -255,8 +264,10 @@ class TestRunOutcome:
         events = await _run(_pipeline(transport, pages), sink, workers=4)
 
         failed = [e for e in events if isinstance(e, SourceFailed)]
-        assert [str(e.source_id) for e in failed] == ["page:2"]
-        assert len(sink.accepted) == len(pages) - 1
+        if [str(e.source_id) for e in failed] != ["page:2"]:
+            raise AssertionError('[str(e.source_id) for e in failed] == ["page:2"]')
+        if len(sink.accepted) != len(pages) - 1:
+            raise AssertionError("len(sink.accepted) == len(pages) - 1")
 
     async def test_workers_below_one_rejected(self) -> None:
         with pytest.raises(ValueError, match="workers"):

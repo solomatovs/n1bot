@@ -44,11 +44,12 @@ class StandPaths(StrEnum):
         return root / self.value
 
 
-class StandUser(StrEnum):
-    """Учётка стенда: она же лежит в [auth.local] рабочего конфига."""
+@dataclass(frozen=True)
+class StandCredential:
+    """Учётка стенда: читается из [auth.local] рабочего конфига."""
 
-    NAME = "admin"
-    PASSWORD = "myPassdfd3"
+    login: str
+    password: str
 
 
 @dataclass
@@ -82,6 +83,26 @@ class StandConfig:
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.app_port}{self.url_prefix}"
+
+    def credential(self) -> StandCredential:
+        """Логин и пароль берутся из конфига разработчика, а не из кода."""
+        base = StandPaths.BASE_CONFIG.under(REPO_ROOT)
+        with base.open("rb") as handle:
+            doc: dict[str, Any] = tomllib.load(handle)
+
+        try:
+            users = doc["auth"]["local"]["users"]
+        except KeyError as exc:
+            msg = f"нет [auth.local].users в {base}"
+            raise StandError(msg) from exc
+
+        logins = sorted(users)
+        if not logins:
+            msg = f"в [auth.local].users пусто: {base}"
+            raise StandError(msg)
+
+        login = logins[0]
+        return StandCredential(login=login, password=str(users[login]))
 
     def write(self) -> Path:
         """Кладёт конфиг стенда в рабочий каталог и отдаёт его путь."""

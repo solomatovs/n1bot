@@ -26,7 +26,7 @@ class ChatEvent(StrEnum):
     NEW_MESSAGE = "new_message"
     UPDATE_MESSAGE = "update_message"
     STREAM_START = "stream_start"
-    STREAM_TOKEN = "stream_token"
+    STREAM_CHUNK = "stream_token"
     TASK_START = "task_start"
     TASK_END = "task_end"
     ELEMENT = "element"
@@ -74,7 +74,7 @@ class SocketFrame:
 
     @property
     def token(self) -> str:
-        if self.event is not ChatEvent.STREAM_TOKEN:
+        if self.event is not ChatEvent.STREAM_CHUNK:
             return ""
 
         if not isinstance(self.payload, dict):
@@ -116,7 +116,7 @@ class SocketLog:
         """Токены, пришедшие в конкретный шаг, в порядке прихода."""
         tokens: list[str] = []
         for frame in self.frames:
-            if frame.event is not ChatEvent.STREAM_TOKEN:
+            if frame.event is not ChatEvent.STREAM_CHUNK:
                 continue
 
             if frame.step_id != step_id:

@@ -126,7 +126,8 @@ class TestStepContract:
 
         # live не рисует вопрос (его шлёт фронт) и ответ (он идёт стримом)
         missing = set(live) - set(replay)
-        assert not missing, f"live даёт шаги, которых нет в истории: {missing}"
+        if missing:
+            raise AssertionError(f"live даёт шаги, которых нет в истории: {missing}")
 
     def test_every_step_is_addressable(self) -> None:
         live = self._by_id(run(self._live()))
@@ -134,7 +135,8 @@ class TestStepContract:
         container_id = ChatView.derive_id(THREAD, TURN_KEY, StepRole.PROCESS)
         thinking_id = ChatView.derive_id(THREAD, AI_ID, StepRole.THINKING)
         tool_id = ChatView.derive_id(THREAD, CALL_ID, StepRole.TOOL)
-        assert set(live) == {container_id, thinking_id, tool_id}
+        if set(live) != {container_id, thinking_id, tool_id}:
+            raise AssertionError("set(live) == {container_id, thinking_id, tool_id}")
 
     def test_children_stay_under_the_same_container(self) -> None:
         live = self._by_id(run(self._live()))
@@ -142,13 +144,16 @@ class TestStepContract:
         container_id = ChatView.derive_id(THREAD, TURN_KEY, StepRole.PROCESS)
 
         for steps in (live, replay):
-            assert container_id is not None
-            assert steps[container_id].get("parentId") is None
+            if container_id is None:
+                raise AssertionError("container_id is not None")
+            if steps[container_id].get("parentId") is not None:
+                raise AssertionError('steps[container_id].get("parentId") is None')
             children = []
             for step in steps.values():
                 if step.get("parentId") is not None:
                     children.append(step.get("parentId"))
-            assert set(children) == {container_id}
+            if set(children) != {container_id}:
+                raise AssertionError("set(children) == {container_id}")
 
     def test_replayed_names_match_live(self) -> None:
         """Заголовок шага («✓ demo», «✓ process...») живёт в name и обязан совпасть.
@@ -164,25 +169,37 @@ class TestStepContract:
         for step_id in shared:
             live_step = live[step_id]
             replay_step = replay[step_id]
-            assert live_step.get("name") == replay_step.get("name")
-            assert live_step.get("output") == replay_step.get("output")
-            assert live_step.get("parentId") == replay_step.get("parentId")
-            assert live_step.get("isError") == replay_step.get("isError")
+            if live_step.get("name") != replay_step.get("name"):
+                raise AssertionError('live_step.get("name") == replay_step.get("name")')
+            if live_step.get("output") != replay_step.get("output"):
+                raise AssertionError('live_step.get("output") == replay_step.get("out…')
+            if live_step.get("parentId") != replay_step.get("parentId"):
+                raise AssertionError('live_step.get("parentId") == replay_step.get("p…')
+            if live_step.get("isError") != replay_step.get("isError"):
+                raise AssertionError('live_step.get("isError") == replay_step.get("is…')
             if live_step.get("type") == "run":
                 # контейнер держится весь ход: start есть, end нет — он живой
-                assert live_step.get("end") is None
-                assert replay_step.get("end") is None
+                if live_step.get("end") is not None:
+                    raise AssertionError('live_step.get("end") is None')
+                if replay_step.get("end") is not None:
+                    raise AssertionError('replay_step.get("end") is None')
                 continue
             # завершённый шаг не должен выглядеть живым: end есть и start == end
             # (иначе фронт рисует loading-cursor)
-            assert live_step.get("end") is not None
-            assert replay_step.get("end") is not None
-            assert live_step.get("start") == live_step.get("end")
-            assert replay_step.get("start") == replay_step.get("end")
+            if live_step.get("end") is None:
+                raise AssertionError('live_step.get("end") is not None')
+            if replay_step.get("end") is None:
+                raise AssertionError('replay_step.get("end") is not None')
+            if live_step.get("start") != live_step.get("end"):
+                raise AssertionError('live_step.get("start") == live_step.get("end")')
+            if replay_step.get("start") != replay_step.get("end"):
+                raise AssertionError('replay_step.get("start") == replay_step.get("en…')
 
     def test_answer_id_matches_stream_target(self) -> None:
         """stream_token дописывает по id: ответ истории обязан совпасть с live."""
         replay = self._by_id(run(self._replay()))
         answer_id = ChatView.derive_id(THREAD, TURN_KEY, StepRole.ANSWER)
-        assert answer_id in replay
-        assert replay[answer_id].get("output") == "ответ"
+        if answer_id not in replay:
+            raise AssertionError("answer_id in replay")
+        if replay[answer_id].get("output") != "ответ":
+            raise AssertionError('replay[answer_id].get("output") == "ответ"')

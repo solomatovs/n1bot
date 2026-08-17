@@ -38,30 +38,47 @@ class TestGroupLimits:
     """Чистая логика: контроллеры, формат cpu.max, признак «запрошено»."""
 
     def test_not_requested_when_absent(self) -> None:
-        assert GroupLimits().requested is False
+        if GroupLimits().requested is not False:
+            raise AssertionError("GroupLimits().requested is False")
 
     def test_requested_by_any_field(self) -> None:
-        assert GroupLimits(memory_bytes=1).requested is True
-        assert GroupLimits(cpu_percent=100).requested is True
-        assert GroupLimits(cpu_weight=100).requested is True
-        assert GroupLimits(pids_max=10).requested is True
-        assert GroupLimits(swap_max_bytes=0).requested is True
-        assert GroupLimits(oom_kill_all=False).requested is True
+        if GroupLimits(memory_bytes=1).requested is not True:
+            raise AssertionError("GroupLimits(memory_bytes=1).requested is True")
+        if GroupLimits(cpu_percent=100).requested is not True:
+            raise AssertionError("GroupLimits(cpu_percent=100).requested is True")
+        if GroupLimits(cpu_weight=100).requested is not True:
+            raise AssertionError("GroupLimits(cpu_weight=100).requested is True")
+        if GroupLimits(pids_max=10).requested is not True:
+            raise AssertionError("GroupLimits(pids_max=10).requested is True")
+        if GroupLimits(swap_max_bytes=0).requested is not True:
+            raise AssertionError("GroupLimits(swap_max_bytes=0).requested is True")
+        if GroupLimits(oom_kill_all=False).requested is not True:
+            raise AssertionError("GroupLimits(oom_kill_all=False).requested is True")
 
     def test_controllers_follow_fields(self) -> None:
-        assert GroupLimits().controllers == ()
-        assert GroupLimits(memory_bytes=1).controllers == ("memory",)
-        assert GroupLimits(swap_max_bytes=0).controllers == ("memory",)
-        assert GroupLimits(oom_kill_all=True).controllers == ("memory",)
-        assert GroupLimits(cpu_weight=50).controllers == ("cpu",)
-        assert GroupLimits(pids_max=5).controllers == ("pids",)
+        if GroupLimits().controllers != ():
+            raise AssertionError("GroupLimits().controllers == ()")
+        if GroupLimits(memory_bytes=1).controllers != ("memory",):
+            raise AssertionError('GroupLimits(memory_bytes=1).controllers == ("memory…')
+        if GroupLimits(swap_max_bytes=0).controllers != ("memory",):
+            raise AssertionError('GroupLimits(swap_max_bytes=0).controllers == ("memo…')
+        if GroupLimits(oom_kill_all=True).controllers != ("memory",):
+            raise AssertionError('GroupLimits(oom_kill_all=True).controllers == ("mem…')
+        if GroupLimits(cpu_weight=50).controllers != ("cpu",):
+            raise AssertionError('GroupLimits(cpu_weight=50).controllers == ("cpu",)')
+        if GroupLimits(pids_max=5).controllers != ("pids",):
+            raise AssertionError('GroupLimits(pids_max=5).controllers == ("pids",)')
         every = GroupLimits(memory_bytes=1, cpu_percent=100, pids_max=5)
-        assert every.controllers == ("cpu", "memory", "pids")
+        if every.controllers != ("cpu", "memory", "pids"):
+            raise AssertionError('every.controllers == ("cpu", "memory", "pids")')
 
     def test_cpu_max_is_quota_over_period(self) -> None:
-        assert GroupLimits(cpu_percent=100).cpu_max == "100000 100000"
-        assert GroupLimits(cpu_percent=150).cpu_max == "150000 100000"
-        assert GroupLimits(cpu_percent=50).cpu_max == "50000 100000"
+        if GroupLimits(cpu_percent=100).cpu_max != "100000 100000":
+            raise AssertionError('GroupLimits(cpu_percent=100).cpu_max == "100000 100…')
+        if GroupLimits(cpu_percent=150).cpu_max != "150000 100000":
+            raise AssertionError('GroupLimits(cpu_percent=150).cpu_max == "150000 100…')
+        if GroupLimits(cpu_percent=50).cpu_max != "50000 100000":
+            raise AssertionError('GroupLimits(cpu_percent=50).cpu_max == "50000 10000…')
 
     def test_cpu_max_undefined_without_percent(self) -> None:
         with pytest.raises(ValueError, match="cpu_percent is not set"):
@@ -117,8 +134,10 @@ class TestProfileValidation:
 
     def test_absent_group_limits_allow_empty_base(self) -> None:
         profile = self._profile()
-        assert profile.cgroup_memory_bytes is None
-        assert profile.cgroup_oom_kill_all is None
+        if profile.cgroup_memory_bytes is not None:
+            raise AssertionError("profile.cgroup_memory_bytes is None")
+        if profile.cgroup_oom_kill_all is not None:
+            raise AssertionError("profile.cgroup_oom_kill_all is None")
 
     def test_zero_is_not_a_switch_anymore(self) -> None:
         """«Выключено» выражается отсутствием параметра, а не нулём."""
@@ -165,15 +184,22 @@ class TestCgroupManager:
         )
         leaf = manager.acquire(limits)
         try:
-            assert self._knob(leaf, "memory.max") == str(limits.memory_bytes)
-            assert self._knob(leaf, "cpu.max").split() == ["50000", "100000"]
-            assert self._knob(leaf, "cpu.weight") == "25"
-            assert self._knob(leaf, "pids.max") == "17"
-            assert self._knob(leaf, "memory.swap.max") == "0"
-            assert self._knob(leaf, "memory.oom.group") == "1"
+            if self._knob(leaf, "memory.max") != str(limits.memory_bytes):
+                raise AssertionError('self._knob(leaf, "memory.max") == str(limits.me…')
+            if self._knob(leaf, "cpu.max").split() != ["50000", "100000"]:
+                raise AssertionError('self._knob(leaf, "cpu.max").split() == ["50000"…')
+            if self._knob(leaf, "cpu.weight") != "25":
+                raise AssertionError('self._knob(leaf, "cpu.weight") == "25"')
+            if self._knob(leaf, "pids.max") != "17":
+                raise AssertionError('self._knob(leaf, "pids.max") == "17"')
+            if self._knob(leaf, "memory.swap.max") != "0":
+                raise AssertionError('self._knob(leaf, "memory.swap.max") == "0"')
+            if self._knob(leaf, "memory.oom.group") != "1":
+                raise AssertionError('self._knob(leaf, "memory.oom.group") == "1"')
         finally:
             manager.release(leaf)
-        assert not os.path.exists(leaf)
+        if os.path.exists(leaf):
+            raise AssertionError("not os.path.exists(leaf)")
 
     @needs_delegation
     def test_absent_knobs_stay_at_kernel_defaults(self, base: str) -> None:
@@ -181,10 +207,13 @@ class TestCgroupManager:
         manager = CgroupManager(base)
         leaf = manager.acquire(GroupLimits(cpu_weight=42))
         try:
-            assert self._knob(leaf, "cpu.weight") == "42"
-            assert self._knob(leaf, "cpu.max").split()[0] == "max"
+            if self._knob(leaf, "cpu.weight") != "42":
+                raise AssertionError('self._knob(leaf, "cpu.weight") == "42"')
+            if self._knob(leaf, "cpu.max").split()[0] != "max":
+                raise AssertionError('self._knob(leaf, "cpu.max").split()[0] == "max"')
             # memory-контроллер не запрошен — даже не включался в базе
-            assert not os.path.exists(os.path.join(leaf, "memory.max"))
+            if os.path.exists(os.path.join(leaf, "memory.max")):
+                raise AssertionError('not os.path.exists(os.path.join(leaf, "memory.m…')
         finally:
             manager.release(leaf)
 
@@ -210,12 +239,15 @@ class TestCgroupManager:
             pytest.skip("pytest запущен вне делегированного scope: миграция запрещена")
         try:
             with open(procs) as f:
-                assert str(proc.pid) in f.read().split()
+                if str(proc.pid) not in f.read().split():
+                    raise AssertionError("str(proc.pid) in f.read().split()")
         finally:
             manager.release(leaf)
             proc.wait(timeout=10)
-        assert proc.returncode != 0, "cgroup.kill должен был убить ребёнка"
-        assert not os.path.exists(leaf)
+        if proc.returncode == 0:
+            raise AssertionError("cgroup.kill должен был убить ребёнка")
+        if os.path.exists(leaf):
+            raise AssertionError("not os.path.exists(leaf)")
 
 
 class TestOomScoreAdj:
@@ -228,7 +260,8 @@ class TestOomScoreAdj:
         try:
             ResourceLimits(oom_score_adj=700).apply_to_process(proc.pid)
             with open(f"/proc/{proc.pid}/oom_score_adj") as f:
-                assert f.read().strip() == "700"
+                if f.read().strip() != "700":
+                    raise AssertionError('f.read().strip() == "700"')
         finally:
             proc.kill()
             proc.wait()
@@ -243,7 +276,8 @@ class TestOomScoreAdj:
             ResourceLimits().apply_to_process(proc.pid)
             with open(f"/proc/{proc.pid}/oom_score_adj") as f:
                 after = f.read().strip()
-            assert before == after
+            if before != after:
+                raise AssertionError("before == after")
         finally:
             proc.kill()
             proc.wait()

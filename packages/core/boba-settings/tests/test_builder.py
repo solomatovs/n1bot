@@ -13,13 +13,16 @@ def test_yaml_layer(tmp_path: Path) -> None:
     f = tmp_path / "config.yaml"
     f.write_text("a:\n  host: h\n  port: 6000\n")
     cfg = ConfigBuilder().add_yaml(f).build()
-    assert cfg.a.host == "h"
-    assert cfg.a.port == 6000
+    if cfg.a.host != "h":
+        raise AssertionError('cfg.a.host == "h"')
+    if cfg.a.port != 6000:
+        raise AssertionError("cfg.a.port == 6000")
 
 
 def test_missing_yaml_is_noop(tmp_path: Path) -> None:
     cfg = ConfigBuilder().add_yaml(tmp_path / "nope.yaml").add_dict({"x": 1}).build()
-    assert cfg.x == 1
+    if cfg.x != 1:
+        raise AssertionError("cfg.x == 1")
 
 
 def test_layer_priority_later_wins(tmp_path: Path) -> None:
@@ -28,7 +31,8 @@ def test_layer_priority_later_wins(tmp_path: Path) -> None:
     secrets = tmp_path / "secrets.yaml"
     secrets.write_text("a:\n  port: 2\n")
     cfg = ConfigBuilder().add_yaml(base).add_yaml(secrets).add_cli(["a.port=3"]).build()
-    assert cfg.a.port == 3
+    if cfg.a.port != 3:
+        raise AssertionError("cfg.a.port == 3")
 
 
 def test_secrets_merge_into_referenced_block(tmp_path: Path) -> None:
@@ -37,9 +41,12 @@ def test_secrets_merge_into_referenced_block(tmp_path: Path) -> None:
     secrets = tmp_path / "secrets.yaml"
     secrets.write_text("openai:\n  openrouter:\n    api_key: SECRET\n")
     cfg = ConfigBuilder().add_yaml(base).add_yaml(secrets).build()
-    assert cfg.openai.openrouter.base_url == "u"
-    assert cfg.openai.openrouter.api_key == "SECRET"
+    if cfg.openai.openrouter.base_url != "u":
+        raise AssertionError('cfg.openai.openrouter.base_url == "u"')
+    if cfg.openai.openrouter.api_key != "SECRET":
+        raise AssertionError('cfg.openai.openrouter.api_key == "SECRET"')
 
 
 def test_empty_builder() -> None:
-    assert OmegaConf.to_container(ConfigBuilder().build()) == {}
+    if OmegaConf.to_container(ConfigBuilder().build()) != {}:
+        raise AssertionError("OmegaConf.to_container(ConfigBuilder().build()) == {}")

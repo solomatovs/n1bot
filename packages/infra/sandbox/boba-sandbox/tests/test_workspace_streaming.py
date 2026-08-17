@@ -133,7 +133,8 @@ def big_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
         f.truncate(512 * 1024 * 1024)
 
     mkfs = shutil.which("mkfs.ext4")
-    assert mkfs is not None
+    if mkfs is None:
+        raise AssertionError("mkfs is not None")
     subprocess.run(  # noqa: S603
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
@@ -169,7 +170,8 @@ def storage(
         "binaries": {"dirs": _bin_dirs()},
     }
     client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
-    assert isinstance(client, ImageStorageClient)
+    if not (isinstance(client, ImageStorageClient)):
+        raise AssertionError("isinstance(client, ImageStorageClient)")
 
     asyncio.run(client.upload_stream(KEY, payload.source()))
 
@@ -236,8 +238,10 @@ class TestStreamingReads:
             asyncio.run(client.upload_stream(KEY, payload.source()))
 
         stat = asyncio.run(client.stat(KEY))
-        assert stat.size == payload.size
-        assert probe.peak_bytes < self.HOST_PEAK_LIMIT
+        if stat.size != payload.size:
+            raise AssertionError("stat.size == payload.size")
+        if probe.peak_bytes >= self.HOST_PEAK_LIMIT:
+            raise AssertionError("probe.peak_bytes < self.HOST_PEAK_LIMIT")
 
     def test_whole_file_streams_without_buffering(
         self, storage: ImageStorageClient, payload: PatternPayload
@@ -246,9 +250,12 @@ class TestStreamingReads:
         with MemoryProbe() as probe:
             read, digest = asyncio.run(drain(storage, ReadWindow.entire()))
 
-        assert read == payload.size
-        assert digest == payload.digest()
-        assert probe.peak_bytes < self.HOST_PEAK_LIMIT
+        if read != payload.size:
+            raise AssertionError("read == payload.size")
+        if digest != payload.digest():
+            raise AssertionError("digest == payload.digest()")
+        if probe.peak_bytes >= self.HOST_PEAK_LIMIT:
+            raise AssertionError("probe.peak_bytes < self.HOST_PEAK_LIMIT")
 
     def test_stat_reports_size_without_reading_body(
         self, storage: ImageStorageClient, payload: PatternPayload
@@ -256,8 +263,10 @@ class TestStreamingReads:
         with MemoryProbe() as probe:
             stat = asyncio.run(storage.stat(KEY))
 
-        assert stat.size == payload.size
-        assert probe.peak_bytes < self.HOST_PEAK_LIMIT
+        if stat.size != payload.size:
+            raise AssertionError("stat.size == payload.size")
+        if probe.peak_bytes >= self.HOST_PEAK_LIMIT:
+            raise AssertionError("probe.peak_bytes < self.HOST_PEAK_LIMIT")
 
     def test_window_reads_only_its_own_bytes(
         self, storage: ImageStorageClient, payload: PatternPayload
@@ -271,8 +280,10 @@ class TestStreamingReads:
                 collect(storage, ReadWindow(offset=offset, length=length))
             )
 
-        assert got == PatternPayload.slice_at(offset, length)
-        assert probe.peak_bytes < self.HOST_PEAK_LIMIT
+        if got != PatternPayload.slice_at(offset, length):
+            raise AssertionError("got == PatternPayload.slice_at(offset, length)")
+        if probe.peak_bytes >= self.HOST_PEAK_LIMIT:
+            raise AssertionError("probe.peak_bytes < self.HOST_PEAK_LIMIT")
 
     def test_windows_walk_the_file_forward_and_back(
         self, storage: ImageStorageClient
@@ -289,7 +300,8 @@ class TestStreamingReads:
         for offset in offsets:
             window = ReadWindow(offset=offset, length=length)
             got = asyncio.run(collect(storage, window))
-            assert got == PatternPayload.slice_at(offset, length), f"offset {offset}"
+            if got != PatternPayload.slice_at(offset, length):
+                raise AssertionError(f"offset {offset}")
 
     def test_window_past_the_end_is_empty(
         self, storage: ImageStorageClient, payload: PatternPayload
@@ -297,7 +309,8 @@ class TestStreamingReads:
         window = ReadWindow(offset=payload.size + 1024, length=4096)
         read, _ = asyncio.run(drain(storage, window))
 
-        assert read == 0
+        if read != 0:
+            raise AssertionError("read == 0")
 
     def test_tail_window_runs_to_the_end(
         self, storage: ImageStorageClient, payload: PatternPayload
@@ -307,7 +320,8 @@ class TestStreamingReads:
 
         got = asyncio.run(collect(storage, window))
 
-        assert got == PatternPayload.slice_at(offset, 5000)
+        if got != PatternPayload.slice_at(offset, 5000):
+            raise AssertionError("got == PatternPayload.slice_at(offset, 5000)")
 
     def test_size_lets_the_caller_refuse_before_the_body(
         self, storage: ImageStorageClient, payload: PatternPayload
@@ -321,8 +335,10 @@ class TestStreamingReads:
         with MemoryProbe() as probe:
             size = asyncio.run(peek_and_refuse())
 
-        assert size == payload.size
-        assert probe.peak_bytes < self.HOST_PEAK_LIMIT
+        if size != payload.size:
+            raise AssertionError("size == payload.size")
+        if probe.peak_bytes >= self.HOST_PEAK_LIMIT:
+            raise AssertionError("probe.peak_bytes < self.HOST_PEAK_LIMIT")
 
     def test_launcher_memory_does_not_scale_with_the_file(
         self, storage: ImageStorageClient, payload: PatternPayload
@@ -334,8 +350,10 @@ class TestStreamingReads:
         read, _ = asyncio.run(drain(storage, ReadWindow.entire()))
         after_whole = ChildMemory.peak_bytes()
 
-        assert read == payload.size
-        assert after_whole == after_small
+        if read != payload.size:
+            raise AssertionError("read == payload.size")
+        if after_whole != after_small:
+            raise AssertionError("after_whole == after_small")
 
     def test_abandoned_stream_releases_the_image(
         self, storage: ImageStorageClient, payload: PatternPayload
@@ -356,7 +374,8 @@ class TestStreamingReads:
             await storage.upload_file("7/t1/upload/after.txt", b"lock released")
             return (await storage.stat("7/t1/upload/after.txt")).size
 
-        assert asyncio.run(abandon_then_write()) == len(b"lock released")
+        if asyncio.run(abandon_then_write()) != len(b"lock released"):
+            raise AssertionError('asyncio.run(abandon_then_write()) == len(b"lock rel…')
 
     def test_reader_does_not_block_another_reader(
         self, storage: ImageStorageClient
@@ -374,7 +393,8 @@ class TestStreamingReads:
             finally:
                 await held.close()
 
-        assert asyncio.run(overlap()) == PatternPayload.slice_at(0, 4096)
+        if asyncio.run(overlap()) != PatternPayload.slice_at(0, 4096):
+            raise AssertionError("asyncio.run(overlap()) == PatternPayload.slice_at(0…")
 
     OVERLAP_TIMEOUT_SEC: ClassVar[float] = 30.0
     """Второе открытие под эксклюзивным локом ждало бы вечно: лучше упасть."""
@@ -415,7 +435,8 @@ class TestStreamingReads:
             stat = await client.stat("7/t1/upload/after.txt")
             return stat.size
 
-        assert asyncio.run(abandon_then_write()) == 1
+        if asyncio.run(abandon_then_write()) != 1:
+            raise AssertionError("asyncio.run(abandon_then_write()) == 1")
 
     def test_concurrent_window_reads_share_the_image(
         self, storage: ImageStorageClient
@@ -435,4 +456,5 @@ class TestStreamingReads:
         results = asyncio.run(race())
 
         for offset, got in zip(offsets, results, strict=True):
-            assert got == PatternPayload.slice_at(offset, length), f"offset {offset}"
+            if got != PatternPayload.slice_at(offset, length):
+                raise AssertionError(f"offset {offset}")

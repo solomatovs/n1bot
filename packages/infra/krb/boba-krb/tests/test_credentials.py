@@ -64,7 +64,8 @@ class TestKeytabConfig:
 
     def test_ccache_with_type_accepted(self) -> None:
         cfg = KeytabConfig(keytab="k", principal="p", ccache="FILE:./krb5cc")
-        assert cfg.ccache == "FILE:./krb5cc"
+        if cfg.ccache != "FILE:./krb5cc":
+            raise AssertionError('cfg.ccache == "FILE:./krb5cc"')
 
 
 class TestKerberosEnv:
@@ -72,15 +73,19 @@ class TestKerberosEnv:
         os.environ[KerberosEnv.CCACHE] = "FILE:/tmp/outer"
 
         with KerberosEnv.applied({KerberosEnv.CCACHE: "FILE:/tmp/inner"}):
-            assert os.environ[KerberosEnv.CCACHE] == "FILE:/tmp/inner"
+            if os.environ[KerberosEnv.CCACHE] != "FILE:/tmp/inner":
+                raise AssertionError('os.environ[KerberosEnv.CCACHE] == "FILE:/tmp/in…')
 
-        assert os.environ[KerberosEnv.CCACHE] == "FILE:/tmp/outer"
+        if os.environ[KerberosEnv.CCACHE] != "FILE:/tmp/outer":
+            raise AssertionError('os.environ[KerberosEnv.CCACHE] == "FILE:/tmp/outer"')
 
     def test_removes_variables_absent_before(self, clean_env: None) -> None:
         with KerberosEnv.applied({KerberosEnv.CCACHE: "FILE:/tmp/inner"}):
-            assert KerberosEnv.CCACHE in os.environ
+            if KerberosEnv.CCACHE not in os.environ:
+                raise AssertionError("KerberosEnv.CCACHE in os.environ")
 
-        assert KerberosEnv.CCACHE not in os.environ
+        if KerberosEnv.CCACHE in os.environ:
+            raise AssertionError("KerberosEnv.CCACHE not in os.environ")
 
     def test_threads_never_observe_foreign_value(self, clean_env: None) -> None:
         """Два потока со своими ccache: внутри лока значение всегда своё."""
@@ -104,7 +109,8 @@ class TestKerberosEnv:
         for thread in threads:
             thread.join()
 
-        assert not errors
+        if errors:
+            raise AssertionError("not errors")
 
     def test_coroutines_never_observe_foreign_value(self, clean_env: None) -> None:
         """То же для корутин: applied_async держит лок на весь блок."""
@@ -124,7 +130,8 @@ class TestKerberosEnv:
 
         asyncio.run(main())
 
-        assert not errors
+        if errors:
+            raise AssertionError("not errors")
 
     def test_async_wait_does_not_block_event_loop(self, clean_env: None) -> None:
         """Пока корутина ждёт лок, занятый потоком, event loop продолжает крутиться."""
@@ -145,7 +152,8 @@ class TestKerberosEnv:
         async def waiter() -> None:
             values = {KerberosEnv.CCACHE: "FILE:/tmp/waiter"}
             async with KerberosEnv.applied_async(values):
-                assert os.environ[KerberosEnv.CCACHE] == "FILE:/tmp/waiter"
+                if os.environ[KerberosEnv.CCACHE] != "FILE:/tmp/waiter":
+                    raise AssertionError('os.environ[KerberosEnv.CCACHE] == "FILE:/tm…')
 
         async def main() -> None:
             thread = threading.Thread(target=holder)
@@ -156,7 +164,8 @@ class TestKerberosEnv:
 
         asyncio.run(main())
 
-        assert ticks == 20
+        if ticks != 20:
+            raise AssertionError("ticks == 20")
 
 
 @live_kdc
@@ -168,7 +177,8 @@ class TestKeytabCredentials:
 
         credentials.ensure()
 
-        assert (tmp_path / "cc").is_file()
+        if not ((tmp_path / "cc").is_file()):
+            raise AssertionError('(tmp_path / "cc").is_file()')
 
     def test_second_ensure_reuses_valid_ticket(
         self, tmp_path: Path, clean_env: None
@@ -179,7 +189,8 @@ class TestKeytabCredentials:
         stamp = (tmp_path / "cc").stat().st_mtime_ns
         credentials.ensure()
 
-        assert (tmp_path / "cc").stat().st_mtime_ns == stamp
+        if (tmp_path / "cc").stat().st_mtime_ns != stamp:
+            raise AssertionError('(tmp_path / "cc").stat().st_mtime_ns == stamp')
 
     def test_applied_exposes_own_environment(
         self, tmp_path: Path, clean_env: None
@@ -187,10 +198,13 @@ class TestKeytabCredentials:
         credentials = KeytabCredentials(config(tmp_path / "cc"))
 
         with credentials.applied():
-            assert os.environ[KerberosEnv.CCACHE] == f"FILE:{tmp_path / 'cc'}"
-            assert os.environ[KerberosEnv.CLIENT_KEYTAB] == str(KEYTAB)
+            if os.environ[KerberosEnv.CCACHE] != f"FILE:{tmp_path / 'cc'}":
+                raise AssertionError('os.environ[KerberosEnv.CCACHE] == f"FILE:{tmp_p…')
+            if os.environ[KerberosEnv.CLIENT_KEYTAB] != str(KEYTAB):
+                raise AssertionError("os.environ[KerberosEnv.CLIENT_KEYTAB] == str(KE…")
 
-        assert KerberosEnv.CCACHE not in os.environ
+        if KerberosEnv.CCACHE in os.environ:
+            raise AssertionError("KerberosEnv.CCACHE not in os.environ")
 
     def test_concurrent_ensure_acquires_once(
         self, tmp_path: Path, clean_env: None
@@ -206,7 +220,8 @@ class TestKeytabCredentials:
 
         asyncio.run(main())
 
-        assert (tmp_path / "cc").stat().st_mtime_ns == stamp
+        if (tmp_path / "cc").stat().st_mtime_ns != stamp:
+            raise AssertionError('(tmp_path / "cc").stat().st_mtime_ns == stamp')
 
     def test_two_principals_keep_separate_ccaches(
         self, tmp_path: Path, clean_env: None
@@ -217,12 +232,16 @@ class TestKeytabCredentials:
 
         async def main() -> None:
             async with first.applied_async():
-                assert os.environ[KerberosEnv.CCACHE] == f"FILE:{tmp_path / 'cc_a'}"
+                if os.environ[KerberosEnv.CCACHE] != f"FILE:{tmp_path / 'cc_a'}":
+                    raise AssertionError('os.environ[KerberosEnv.CCACHE] == f"FILE:{t…')
 
             async with second.applied_async():
-                assert os.environ[KerberosEnv.CCACHE] == f"FILE:{tmp_path / 'cc_b'}"
+                if os.environ[KerberosEnv.CCACHE] != f"FILE:{tmp_path / 'cc_b'}":
+                    raise AssertionError('os.environ[KerberosEnv.CCACHE] == f"FILE:{t…')
 
         asyncio.run(main())
 
-        assert (tmp_path / "cc_a").is_file()
-        assert (tmp_path / "cc_b").is_file()
+        if not ((tmp_path / "cc_a").is_file()):
+            raise AssertionError('(tmp_path / "cc_a").is_file()')
+        if not ((tmp_path / "cc_b").is_file()):
+            raise AssertionError('(tmp_path / "cc_b").is_file()')

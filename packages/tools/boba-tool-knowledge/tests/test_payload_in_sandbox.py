@@ -95,9 +95,12 @@ class TestDocumentsInSandbox:
         )
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyOk)
-        assert "Alpha page one" in reply.content
-        assert "Beta page two" in reply.content
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError("isinstance(reply, ReplyOk)")
+        if "Alpha page one" not in reply.content:
+            raise AssertionError('"Alpha page one" in reply.content')
+        if "Beta page two" not in reply.content:
+            raise AssertionError('"Beta page two" in reply.content')
 
     def test_read_document_page_subset(self, docs: Path) -> None:
         outcome = _run_doc(
@@ -108,9 +111,12 @@ class TestDocumentsInSandbox:
         )
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyOk)
-        assert "Beta page two" in reply.content
-        assert "page one" not in reply.content
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError("isinstance(reply, ReplyOk)")
+        if "Beta page two" not in reply.content:
+            raise AssertionError('"Beta page two" in reply.content')
+        if "page one" in reply.content:
+            raise AssertionError('"page one" not in reply.content')
 
     def test_document_outline(self, docs: Path) -> None:
         outcome = _run_doc(
@@ -121,8 +127,10 @@ class TestDocumentsInSandbox:
         )
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyOk)
-        assert "pages 2" in reply.content
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError("isinstance(reply, ReplyOk)")
+        if "pages 2" not in reply.content:
+            raise AssertionError('"pages 2" in reply.content')
 
     def test_search_document(self, docs: Path) -> None:
         outcome = _run_doc(
@@ -133,8 +141,10 @@ class TestDocumentsInSandbox:
         )
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyOk)
-        assert "Alpha" in reply.content
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError("isinstance(reply, ReplyOk)")
+        if "Alpha" not in reply.content:
+            raise AssertionError('"Alpha" in reply.content')
 
     def test_small_address_space_is_reported(self, docs: Path) -> None:
         """Заниженный RLIMIT_AS ломает pdfium — ошибка должна это объяснить."""
@@ -149,10 +159,11 @@ class TestDocumentsInSandbox:
             )
 
         message = str(failure.value)
-        assert "RLIMIT_AS" in message, (
-            "падение по адресному пространству должно объясняться словами, "
-            f"а не паникой rust: {message}"
-        )
+        if "RLIMIT_AS" not in message:
+            raise AssertionError(
+                "падение по адресному пространству должно объясняться словами, "
+                f"а не паникой rust: {message}"
+            )
 
     def test_ocr_without_tessdata_is_reported(self, docs: Path) -> None:
         """Без моделей OCR liteparse пошёл бы в сеть; сети в песочнице нет."""
@@ -164,9 +175,12 @@ class TestDocumentsInSandbox:
         )
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyError)
-        assert reply.kind == "document_unreadable"
-        assert "Traceback" not in reply.message
+        if not (isinstance(reply, ReplyError)):
+            raise AssertionError("isinstance(reply, ReplyError)")
+        if reply.kind != "document_unreadable":
+            raise AssertionError('reply.kind == "document_unreadable"')
+        if "Traceback" in reply.message:
+            raise AssertionError('"Traceback" not in reply.message')
 
     def test_missing_file_is_a_declared_failure(self, docs: Path) -> None:
         outcome = _run_doc(
@@ -177,9 +191,12 @@ class TestDocumentsInSandbox:
         )
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyError)
-        assert reply.kind == "document_unreadable"
-        assert "Traceback" not in reply.message
+        if not (isinstance(reply, ReplyError)):
+            raise AssertionError("isinstance(reply, ReplyError)")
+        if reply.kind != "document_unreadable":
+            raise AssertionError('reply.kind == "document_unreadable"')
+        if "Traceback" in reply.message:
+            raise AssertionError('"Traceback" not in reply.message')
 
 
 @needs_sandbox
@@ -246,16 +263,19 @@ class TestOfficeNonAsciiNames:
         )
 
         reply = outcome.reply
-        assert isinstance(reply, ReplyOk), reply
+        if not (isinstance(reply, ReplyOk)):
+            raise AssertionError(reply)
         return reply
 
     def test_ascii_named_docx_is_readable(self, office_docs: Path) -> None:
         reply = self._read(office_docs, self.ASCII_NAME)
-        assert "Alpha section one" in reply.content
+        if "Alpha section one" not in reply.content:
+            raise AssertionError('"Alpha section one" in reply.content')
 
     def test_cyrillic_named_docx_is_readable(self, office_docs: Path) -> None:
         reply = self._read(office_docs, self.CYRILLIC_NAME)
-        assert "Alpha section one" in reply.content
+        if "Alpha section one" not in reply.content:
+            raise AssertionError('"Alpha section one" in reply.content')
 
 
 @needs_sandbox
@@ -283,10 +303,11 @@ class TestRootfsContents:
         )
         runner = SandboxRunner("rootfs-test", sandbox.effective(), dict)
         outcome = runner.run(f"python3 -c 'import {module}'", stdin="")
-        assert outcome.succeeded, (
-            f"в песочнице нет {module}: пересобери — make deps "
-            f"(stderr: {outcome.result.stderr.strip()})"
-        )
+        if not (outcome.succeeded):
+            raise AssertionError(
+                f"в песочнице нет {module}: пересобери — make deps "
+                f"(stderr: {outcome.result.stderr.strip()})"
+            )
 
 
 @needs_sandbox
@@ -302,5 +323,7 @@ class TestEmbedderInSandbox:
         )
         runner = SandboxRunner("kb-test", sandbox.effective(), dict)
         outcome = runner.run(f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}", stdin="")
-        assert outcome.succeeded, f"нет весов {self.WEIGHTS}: пересобери — make deps"
-        assert outcome.result.stdout.strip()
+        if not (outcome.succeeded):
+            raise AssertionError(f"нет весов {self.WEIGHTS}: пересобери — make deps")
+        if not (outcome.result.stdout.strip()):
+            raise AssertionError("outcome.result.stdout.strip()")

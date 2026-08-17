@@ -100,14 +100,16 @@ class TestPipeline:
         pipe_echo = build_pipeline()
 
         schema = pipe_echo.tool_call_schema
-        assert list(schema.model_fields) == ["text"]
+        if list(schema.model_fields) != ["text"]:
+            raise AssertionError('list(schema.model_fields) == ["text"]')
 
     def test_tool_call_invocation_reaches_the_body(self) -> None:
         pipe_echo = build_pipeline()
 
         message = asyncio.run(pipe_echo.ainvoke(call_envelope("hi")))
 
-        assert "hi|p1p3" in str(message.content)
+        if "hi|p1p3" not in str(message.content):
+            raise AssertionError('"hi|p1p3" in str(message.content)')
 
     def test_expected_error_kind_survives_the_pipeline(self) -> None:
         pipe_echo = build_pipeline()
@@ -115,8 +117,10 @@ class TestPipeline:
         with pytest.raises(PayloadFailureError) as caught:
             asyncio.run(pipe_echo.ainvoke(call_envelope("boom")))
 
-        assert caught.value.kind == "pipe_down"
-        assert "pipe backend is down" in str(caught.value)
+        if caught.value.kind != "pipe_down":
+            raise AssertionError('caught.value.kind == "pipe_down"')
+        if "pipe backend is down" not in str(caught.value):
+            raise AssertionError('"pipe backend is down" in str(caught.value)')
 
 
 class TestArtifactRendering:
@@ -128,11 +132,14 @@ class TestArtifactRendering:
         message = asyncio.run(pipe_echo.ainvoke(call_envelope("hi")))
 
         revived = ToolArtifact.revive(message.artifact)
-        assert isinstance(revived, TextResult)
+        if not (isinstance(revived, TextResult)):
+            raise AssertionError("isinstance(revived, TextResult)")
 
         rendering = ToolResultView(revived).render()
-        assert isinstance(rendering, MarkdownRendering)
-        assert "hi|p1p3" in rendering.markdown
+        if not (isinstance(rendering, MarkdownRendering)):
+            raise AssertionError("isinstance(rendering, MarkdownRendering)")
+        if "hi|p1p3" not in rendering.markdown:
+            raise AssertionError('"hi|p1p3" in rendering.markdown')
 
     def test_serialized_artifact_revives_from_history(self) -> None:
         """История хранит артефакт сериализованным dict'ом (langgraph)."""
@@ -142,19 +149,24 @@ class TestArtifactRendering:
         stored = message.artifact.model_dump(mode="json")
 
         revived = ToolArtifact.revive(stored)
-        assert isinstance(revived, TextResult)
-        assert "hi|p1p3" in revived.text
+        if not (isinstance(revived, TextResult)):
+            raise AssertionError("isinstance(revived, TextResult)")
+        if "hi|p1p3" not in revived.text:
+            raise AssertionError('"hi|p1p3" in revived.text')
 
     def test_pg_copy_artifact_renders_as_table(self) -> None:
         """Артефакт пилота: kind pg_copy_text рисуется таблицей, не JSON."""
         artifact = PgCopyTextResult(text="n\n1\n")
 
         revived = ToolArtifact.revive(artifact.model_dump(mode="json"))
-        assert isinstance(revived, PgCopyTextResult)
+        if not (isinstance(revived, PgCopyTextResult)):
+            raise AssertionError("isinstance(revived, PgCopyTextResult)")
 
         rendering = ToolResultView(revived).render()
-        assert isinstance(rendering, MarkdownRendering)
-        assert "| n" in rendering.markdown
+        if not (isinstance(rendering, MarkdownRendering)):
+            raise AssertionError("isinstance(rendering, MarkdownRendering)")
+        if "| n" not in rendering.markdown:
+            raise AssertionError('"| n" in rendering.markdown')
 
 
 class _FakeStream:
@@ -210,6 +222,9 @@ class TestChannelTap:
             }
         )
 
-        assert seen == [stream]
-        assert ToolChannelsTap.get() is None
-        assert stream.note == "finished"
+        if seen != [stream]:
+            raise AssertionError("seen == [stream]")
+        if ToolChannelsTap.get() is not None:
+            raise AssertionError("ToolChannelsTap.get() is None")
+        if stream.note != "finished":
+            raise AssertionError('stream.note == "finished"')

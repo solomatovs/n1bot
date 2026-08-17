@@ -27,20 +27,25 @@ class TestPluginMetaNotation:
 
     def test_own_roles_win_over_section(self) -> None:
         meta = self._meta(enable=True, roles=["DEV"], tools={"query": ["ADM"]})
-        assert meta.roles_of("query") == ["ADM"]
+        if meta.roles_of("query") != ["ADM"]:
+            raise AssertionError('meta.roles_of("query") == ["ADM"]')
 
     def test_empty_list_inherits_section_roles(self) -> None:
         meta = self._meta(enable=True, roles=["DEV", "ADM"], tools={"list": []})
-        assert meta.roles_of("list") == ["DEV", "ADM"]
+        if meta.roles_of("list") != ["DEV", "ADM"]:
+            raise AssertionError('meta.roles_of("list") == ["DEV", "ADM"]')
 
     def test_empty_list_without_section_roles_is_deny(self) -> None:
         meta = self._meta(enable=True, tools={"list": []})
-        assert meta.roles_of("list") == []
+        if meta.roles_of("list") != []:
+            raise AssertionError('meta.roles_of("list") == []')
 
     def test_tools_table_is_the_allowlist(self) -> None:
         meta = self._meta(enable=True, tools={"a": ["ADM"]})
-        assert "a" in meta.tools
-        assert "b" not in meta.tools
+        if "a" not in meta.tools:
+            raise AssertionError('"a" in meta.tools')
+        if "b" in meta.tools:
+            raise AssertionError('"b" not in meta.tools')
 
 
 class TestToolAccess:
@@ -54,31 +59,40 @@ class TestToolAccess:
     )
 
     def test_matching_role_allowed(self) -> None:
-        assert self.ACCESS.allowed("query", {"ADM"}) is True
+        if self.ACCESS.allowed("query", {"ADM"}) is not True:
+            raise AssertionError('self.ACCESS.allowed("query", {"ADM"}) is True')
 
     def test_other_role_denied(self) -> None:
-        assert self.ACCESS.allowed("query", {"DEV"}) is False
+        if self.ACCESS.allowed("query", {"DEV"}) is not False:
+            raise AssertionError('self.ACCESS.allowed("query", {"DEV"}) is False')
 
     def test_any_intersection_is_enough(self) -> None:
-        assert self.ACCESS.allowed("list_targets", {"DEV"}) is True
+        if self.ACCESS.allowed("list_targets", {"DEV"}) is not True:
+            raise AssertionError('self.ACCESS.allowed("list_targets", {"DEV"}) is True')
 
     def test_wildcard_allows_any_role(self) -> None:
-        assert self.ACCESS.allowed("visualize", {"WHATEVER"}) is True
+        if self.ACCESS.allowed("visualize", {"WHATEVER"}) is not True:
+            raise AssertionError('self.ACCESS.allowed("visualize", {"WHATEVER"}) is T…')
 
     def test_wildcard_still_needs_a_user(self) -> None:
-        assert self.ACCESS.allowed("visualize", set()) is True
+        if self.ACCESS.allowed("visualize", set()) is not True:
+            raise AssertionError('self.ACCESS.allowed("visualize", set()) is True')
 
     def test_empty_roles_deny_by_default(self) -> None:
-        assert self.ACCESS.allowed("forgotten", {"ADM"}) is False
+        if self.ACCESS.allowed("forgotten", {"ADM"}) is not False:
+            raise AssertionError('self.ACCESS.allowed("forgotten", {"ADM"}) is False')
 
     def test_unknown_tool_denied(self) -> None:
-        assert self.ACCESS.allowed("no_such_tool", {"ADM"}) is False
+        if self.ACCESS.allowed("no_such_tool", {"ADM"}) is not False:
+            raise AssertionError('self.ACCESS.allowed("no_such_tool", {"ADM"}) is Fal…')
 
     def test_user_without_roles_gets_nothing_but_wildcard(self) -> None:
-        assert self.ACCESS.names_for(set()) == {"visualize"}
+        if self.ACCESS.names_for(set()) != {"visualize"}:
+            raise AssertionError('self.ACCESS.names_for(set()) == {"visualize"}')
 
     def test_names_for_role(self) -> None:
-        assert self.ACCESS.names_for({"DEV"}) == {"list_targets", "visualize"}
+        if self.ACCESS.names_for({"DEV"}) != {"list_targets", "visualize"}:
+            raise AssertionError('self.ACCESS.names_for({"DEV"}) == {"list_targets", …')
 
 
 class TestRegistryFiltering:
@@ -104,14 +118,17 @@ class TestRegistryFiltering:
 
     def test_admin_sees_everything(self) -> None:
         names = {t.name for t in self._registry().for_roles({"ADM"})}
-        assert names == {"query", "list_targets"}
+        if names != {"query", "list_targets"}:
+            raise AssertionError('names == {"query", "list_targets"}')
 
     def test_dev_does_not_see_query(self) -> None:
         names = {t.name for t in self._registry().for_roles({"DEV"})}
-        assert names == {"list_targets"}
+        if names != {"list_targets"}:
+            raise AssertionError('names == {"list_targets"}')
 
     def test_no_roles_no_tools(self) -> None:
-        assert self._registry().for_roles(set()) == []
+        if self._registry().for_roles(set()) != []:
+            raise AssertionError("self._registry().for_roles(set()) == []")
 
 
 class TestAccessGuard:
@@ -126,16 +143,16 @@ class TestAccessGuard:
         return ToolAccessGuard.guard_all([query], access, lambda: roles)[0]
 
     def test_allowed_role_runs(self) -> None:
-        assert self._guarded({"ADM"}).invoke({"sql": "select 1"}) == (
-            "executed: select 1"
-        )
+        if self._guarded({"ADM"}).invoke({"sql": "select 1"}) != "executed: select 1":
+            raise AssertionError('self._guarded({"ADM"}).invoke({"sql": "select 1"}) …')
 
     def test_denied_role_raises(self) -> None:
         with pytest.raises(ToolAccessDeniedError, match="query"):
             self._guarded({"DEV"}).invoke({"sql": "select 1"})
 
     def test_denied_is_ordinary_exception(self) -> None:
-        assert issubclass(ToolAccessDeniedError, Exception)
+        if not (issubclass(ToolAccessDeniedError, Exception)):
+            raise AssertionError("issubclass(ToolAccessDeniedError, Exception)")
 
 
 class TestHistoryHidesForeignTools:
@@ -157,14 +174,17 @@ class TestHistoryHidesForeignTools:
 
     def test_foreign_call_removed_from_current_turn(self) -> None:
         view = build_llm_view(self._history(), frozenset({"list_targets"}))
-        assert [type(m).__name__ for m in view] == ["HumanMessage"]
+        if [type(m).__name__ for m in view] != ["HumanMessage"]:
+            raise AssertionError('[type(m).__name__ for m in view] == ["HumanMessage"]')
 
     def test_allowed_call_kept(self) -> None:
         view = build_llm_view(self._history(), frozenset({"query"}))
-        assert len(view) == 3
+        if len(view) != 3:
+            raise AssertionError("len(view) == 3")
 
     def test_no_filter_keeps_everything(self) -> None:
-        assert len(build_llm_view(self._history(), None)) == 3
+        if len(build_llm_view(self._history(), None)) != 3:
+            raise AssertionError("len(build_llm_view(self._history(), None)) == 3")
 
     @staticmethod
     def _long_history(turns: int) -> list:
@@ -178,26 +198,33 @@ class TestHistoryHidesForeignTools:
     def test_history_window_limits_old_messages(self) -> None:
         view = build_llm_view(self._long_history(20), None, history_messages=5)
         # 5 старых реплик + текущий ход
-        assert len(view) == 6
-        assert view[-1].content == "текущий"
+        if len(view) != 6:
+            raise AssertionError("len(view) == 6")
+        if view[-1].content != "текущий":
+            raise AssertionError('view[-1].content == "текущий"')
 
     def test_history_window_keeps_the_newest(self) -> None:
         view = build_llm_view(self._long_history(20), None, history_messages=2)
-        assert [m.content for m in view[:-1]] == ["вопрос 19", "ответ 19"]
+        if [m.content for m in view[:-1]] != ["вопрос 19", "ответ 19"]:
+            raise AssertionError('[m.content for m in view[:-1]] == ["вопрос 19", "от…')
 
     def test_history_window_default_matches_config(self) -> None:
         from boba.chainlit.infra.config import AgentProfile
 
         default = AgentProfile.model_fields["history_messages"].default
         view = build_llm_view(self._long_history(100), None)
-        assert len(view) == default + 1
+        if len(view) != default + 1:
+            raise AssertionError("len(view) == default + 1")
 
     def test_short_history_is_not_padded(self) -> None:
         view = build_llm_view(self._long_history(2), None, history_messages=50)
-        assert len(view) == 5
+        if len(view) != 5:
+            raise AssertionError("len(view) == 5")
 
     def test_old_turns_never_carry_tool_calls(self) -> None:
         history = [*self._history(), HumanMessage(content="ещё", id="u2")]
         view = build_llm_view(history, frozenset({"query"}))
-        assert not any(isinstance(m, ToolMessage) for m in view)
-        assert not any(isinstance(m, AIMessage) and m.tool_calls for m in view)
+        if any(isinstance(m, ToolMessage) for m in view):
+            raise AssertionError("not any(isinstance(m, ToolMessage) for m in view)")
+        if any(isinstance(m, AIMessage) and m.tool_calls for m in view):
+            raise AssertionError("not any(isinstance(m, AIMessage) and m.tool_calls f…")

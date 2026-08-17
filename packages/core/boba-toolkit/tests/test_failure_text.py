@@ -11,11 +11,13 @@ from boba.toolkit.failure import FailureText
 
 class TestSingleError:
     def test_type_and_message(self) -> None:
-        assert FailureText.of(ValueError("плохой ввод")) == "ValueError: плохой ввод"
+        if FailureText.of(ValueError("плохой ввод")) != "ValueError: плохой ввод":
+            raise AssertionError('FailureText.of(ValueError("плохой ввод")) == "Value…')
 
     def test_empty_message_leaves_the_type(self) -> None:
         """У части библиотечных исключений текста нет — остаётся имя типа."""
-        assert FailureText.of(TimeoutError()) == "TimeoutError"
+        if FailureText.of(TimeoutError()) != "TimeoutError":
+            raise AssertionError('FailureText.of(TimeoutError()) == "TimeoutError"')
 
 
 class TestCauseChain:
@@ -30,10 +32,14 @@ class TestCauseChain:
         except RuntimeError as error:
             described = FailureText.of(error)
 
-        assert described == (
-            "RuntimeError: Connection error. "
-            "<- OSError: All connection attempts failed"
-        )
+        if not (
+            described
+            == (
+                "RuntimeError: Connection error. "
+                "<- OSError: All connection attempts failed"
+            )
+        ):
+            raise AssertionError('described == ( "RuntimeError: Connection error. " "…')
 
     def test_implicit_context_is_appended(self) -> None:
         """raise внутри except без from: причина всё равно известна."""
@@ -45,8 +51,10 @@ class TestCauseChain:
         except RuntimeError as error:
             described = FailureText.of(error)
 
-        assert "RuntimeError: lookup failed" in described
-        assert "KeyError: 'host'" in described
+        if "RuntimeError: lookup failed" not in described:
+            raise AssertionError('"RuntimeError: lookup failed" in described')
+        if "KeyError: 'host'" not in described:
+            raise AssertionError("\"KeyError: 'host'\" in described")
 
     def test_suppressed_context_is_dropped(self) -> None:
         """`from None` — автор явно сказал, что причина не относится к делу."""
@@ -58,7 +66,8 @@ class TestCauseChain:
         except RuntimeError as error:
             described = FailureText.of(error)
 
-        assert described == "RuntimeError: clean"
+        if described != "RuntimeError: clean":
+            raise AssertionError('described == "RuntimeError: clean"')
 
     def test_chain_is_bounded(self) -> None:
         """Длинная цепочка обёрток не должна раздувать сообщение в чате."""
@@ -70,10 +79,12 @@ class TestCauseChain:
 
         described = FailureText.of(error)
 
-        assert described.count(FailureText.SEPARATOR) == FailureText.MAX_LINKS - 1
+        if described.count(FailureText.SEPARATOR) != FailureText.MAX_LINKS - 1:
+            raise AssertionError("described.count(FailureText.SEPARATOR) == FailureTe…")
 
     def test_self_reference_does_not_loop(self) -> None:
         error = RuntimeError("loop")
         error.__cause__ = error
 
-        assert FailureText.of(error) == "RuntimeError: loop"
+        if FailureText.of(error) != "RuntimeError: loop":
+            raise AssertionError('FailureText.of(error) == "RuntimeError: loop"')

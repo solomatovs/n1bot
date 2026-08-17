@@ -26,8 +26,10 @@ class TestWindow:
         buffer.feed(b"abc")
 
         window = buffer.snapshot()
-        assert window.text == "4567890abc"
-        assert window.dropped_bytes == 3
+        if window.text != "4567890abc":
+            raise AssertionError('window.text == "4567890abc"')
+        if window.dropped_bytes != 3:
+            raise AssertionError("window.dropped_bytes == 3")
 
     def test_chunk_larger_than_window_keeps_its_tail(self) -> None:
         buffer = self._buffer(10, [])
@@ -35,8 +37,10 @@ class TestWindow:
         buffer.feed(b"x" * 90 + b"0123456789")
 
         window = buffer.snapshot()
-        assert window.text == "0123456789"
-        assert window.dropped_bytes == 90
+        if window.text != "0123456789":
+            raise AssertionError('window.text == "0123456789"')
+        if window.dropped_bytes != 90:
+            raise AssertionError("window.dropped_bytes == 90")
 
     def test_close_freezes_window(self) -> None:
         buffer = self._buffer(100, [])
@@ -47,20 +51,25 @@ class TestWindow:
         buffer.close("другая причина")
 
         window = buffer.snapshot()
-        assert window.text == "until close"
-        assert window.closed is True
-        assert window.note == "rc=0"
+        if window.text != "until close":
+            raise AssertionError('window.text == "until close"')
+        if window.closed is not True:
+            raise AssertionError("window.closed is True")
+        if window.note != "rc=0":
+            raise AssertionError('window.note == "rc=0"')
 
     def test_wake_on_data_and_close_only(self) -> None:
         wakes: list[int] = []
         buffer = self._buffer(100, wakes)
 
         buffer.feed(b"")
-        assert wakes == []
+        if wakes != []:
+            raise AssertionError("wakes == []")
 
         buffer.feed(b"data")
         buffer.close("done")
-        assert len(wakes) == 2
+        if len(wakes) != 2:
+            raise AssertionError("len(wakes) == 2")
 
     def test_multibyte_cut_does_not_break_snapshot(self) -> None:
         buffer = self._buffer(3, [])
@@ -68,8 +77,10 @@ class TestWindow:
         buffer.feed("яя".encode())
 
         window = buffer.snapshot()
-        assert window.dropped_bytes == 1
-        assert window.text.endswith("я")
+        if window.dropped_bytes != 1:
+            raise AssertionError("window.dropped_bytes == 1")
+        if not (window.text.endswith("я")):
+            raise AssertionError('window.text.endswith("я")')
 
     def test_window_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="window_bytes must be positive"):

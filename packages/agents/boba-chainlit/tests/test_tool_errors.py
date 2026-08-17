@@ -52,18 +52,24 @@ class TestToolErrorGuard:
     def test_ok_passes_through() -> None:
         g, _ = _guarded()
         message = TestToolErrorGuard._invoke(g, {"text": "hi"})
-        assert message.content == "hi"
-        assert message.artifact == TextResult(text="hi")
+        if message.content != "hi":
+            raise AssertionError('message.content == "hi"')
+        if message.artifact != TextResult(text="hi"):
+            raise AssertionError('message.artifact == TextResult(text="hi")')
 
     @staticmethod
     def test_raised_exception_becomes_error_result() -> None:
         _, b = _guarded()
         message = TestToolErrorGuard._invoke(b, {})
         artifact = message.artifact
-        assert isinstance(artifact, ErrorResult)
-        assert artifact.ok is False
-        assert artifact.error_kind == "SandboxPayloadError"
-        assert "OOM" in message.content
+        if not (isinstance(artifact, ErrorResult)):
+            raise AssertionError("isinstance(artifact, ErrorResult)")
+        if artifact.ok is not False:
+            raise AssertionError("artifact.ok is False")
+        if artifact.error_kind != "SandboxPayloadError":
+            raise AssertionError('artifact.error_kind == "SandboxPayloadError"')
+        if "OOM" not in message.content:
+            raise AssertionError('"OOM" in message.content')
 
     @staticmethod
     def test_async_raised_exception_becomes_error_result() -> None:
@@ -76,9 +82,12 @@ class TestToolErrorGuard:
 
         message = asyncio.run(_call())
         artifact = message.artifact
-        assert isinstance(artifact, ErrorResult)
-        assert artifact.ok is False
-        assert "OOM" in message.content
+        if not (isinstance(artifact, ErrorResult)):
+            raise AssertionError("isinstance(artifact, ErrorResult)")
+        if artifact.ok is not False:
+            raise AssertionError("artifact.ok is False")
+        if "OOM" not in message.content:
+            raise AssertionError('"OOM" in message.content')
 
     @staticmethod
     def test_base_exception_is_not_caught() -> None:

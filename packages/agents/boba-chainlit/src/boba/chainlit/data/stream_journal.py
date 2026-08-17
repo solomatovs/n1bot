@@ -24,6 +24,7 @@ from boba.chainlit.domain.stream import (
     JournalFile,
     JournalText,
     JournalWindow,
+    PathSegment,
     StreamJournalError,
     StreamKey,
     StreamMeta,
@@ -51,7 +52,13 @@ class DirVault:
         self._root = root
 
     def root_for(self, user_id: str) -> str:
-        path = os.path.join(self._root, user_id)
+        """Каталог тома; сегмент проверяется здесь — дальше он уходит в путь."""
+        try:
+            segment = PathSegment.checked(user_id)
+        except ValueError as exc:
+            raise StreamJournalError(f"unsafe vault segment: {user_id!r}") from exc
+
+        path = os.path.join(self._root, segment)
         os.makedirs(path, exist_ok=True)
         return path
 
@@ -346,7 +353,13 @@ class StreamJournal(StreamStorePort):
     def purge_thread(self, user_id: str, thread_id: str) -> int:
         """Удалить журналы треда; возвращает освобождённые байты."""
         root = self._vault.root_for(user_id)
-        path = os.path.join(root, thread_id)
+
+        try:
+            segment = PathSegment.checked(thread_id)
+        except ValueError as exc:
+            raise StreamJournalError(f"unsafe thread segment: {thread_id!r}") from exc
+
+        path = os.path.join(root, segment)
 
         freed = 0
         for entry in self._thread_usages(root):

@@ -104,8 +104,10 @@ class TestRegistry:
         viewer: CanvasViewer = FakeViewer(".mmd")
         CanvasRegistry.register(viewer)
 
-        assert CanvasRegistry.viewer_for("a.mmd") is viewer
-        assert CanvasRegistry.viewer_for("a.pdf") is None
+        if CanvasRegistry.viewer_for("a.mmd") is not viewer:
+            raise AssertionError('CanvasRegistry.viewer_for("a.mmd") is viewer')
+        if CanvasRegistry.viewer_for("a.pdf") is not None:
+            raise AssertionError('CanvasRegistry.viewer_for("a.pdf") is None')
 
     def test_registration_is_idempotent_per_type(self) -> None:
         """Тулы собираются на каждую сессию — реестр не должен расти."""
@@ -115,17 +117,21 @@ class TestRegistry:
         CanvasRegistry.register(first)
         CanvasRegistry.register(second)
 
-        assert CanvasRegistry.viewer_for("a.mmd") is second
-        assert CanvasRegistry.viewers_hint() == "FakeViewer"
+        if CanvasRegistry.viewer_for("a.mmd") is not second:
+            raise AssertionError('CanvasRegistry.viewer_for("a.mmd") is second')
+        if CanvasRegistry.viewers_hint() != "FakeViewer":
+            raise AssertionError('CanvasRegistry.viewers_hint() == "FakeViewer"')
 
     def test_different_types_live_together(self) -> None:
         CanvasRegistry.register(FakeViewer(".mmd"))
         CanvasRegistry.register(OtherViewer(".pdf"))
 
-        assert CanvasRegistry.viewers_hint() == "FakeViewer, OtherViewer"
+        if CanvasRegistry.viewers_hint() != "FakeViewer, OtherViewer":
+            raise AssertionError('CanvasRegistry.viewers_hint() == "FakeViewer, Other…')
 
     def test_hint_without_viewers(self) -> None:
-        assert CanvasRegistry.viewers_hint() == "none registered"
+        if CanvasRegistry.viewers_hint() != "none registered":
+            raise AssertionError('CanvasRegistry.viewers_hint() == "none registered"')
 
 
 class TestPanel:
@@ -136,30 +142,40 @@ class TestPanel:
         with pytest.raises(CanvasError) as failure:
             await CanvasPanel.open(key)
 
-        assert failure.value.kind == CanvasErrorKind.NO_VIEWER
-        assert "notes.txt" in str(failure.value)
+        if failure.value.kind != CanvasErrorKind.NO_VIEWER:
+            raise AssertionError("failure.value.kind == CanvasErrorKind.NO_VIEWER")
+        if "notes.txt" not in str(failure.value):
+            raise AssertionError('"notes.txt" in str(failure.value)')
 
 
 class TestToolInterface:
     def test_tool_name(self) -> None:
         tools = build_canvas_tools(CanvasToolConfig())
-        assert [t.name for t in tools] == ["canvas_open"]
+        if [t.name for t in tools] != ["canvas_open"]:
+            raise AssertionError('[t.name for t in tools] == ["canvas_open"]')
 
     def test_build_registers_file_viewers(self) -> None:
         """PNG от bash/python-тулов обязан показываться — ход из бага."""
         build_canvas_tools(CanvasToolConfig())
 
-        assert isinstance(CanvasRegistry.viewer_for("график.png"), ImageViewer)
-        assert isinstance(CanvasRegistry.viewer_for("report.PDF"), PdfViewer)
-        assert isinstance(CanvasRegistry.viewer_for("notes.md"), TextViewer)
-        assert isinstance(CanvasRegistry.viewer_for("demo.mp4"), VideoViewer)
-        assert isinstance(CanvasRegistry.viewer_for("voice.mp3"), AudioViewer)
-        assert CanvasRegistry.viewer_for("data.bin") is None
+        if not (isinstance(CanvasRegistry.viewer_for("график.png"), ImageViewer)):
+            raise AssertionError('isinstance(CanvasRegistry.viewer_for("график.png"),…')
+        if not (isinstance(CanvasRegistry.viewer_for("report.PDF"), PdfViewer)):
+            raise AssertionError('isinstance(CanvasRegistry.viewer_for("report.PDF"),…')
+        if not (isinstance(CanvasRegistry.viewer_for("notes.md"), TextViewer)):
+            raise AssertionError('isinstance(CanvasRegistry.viewer_for("notes.md"), T…')
+        if not (isinstance(CanvasRegistry.viewer_for("demo.mp4"), VideoViewer)):
+            raise AssertionError('isinstance(CanvasRegistry.viewer_for("demo.mp4"), V…')
+        if not (isinstance(CanvasRegistry.viewer_for("voice.mp3"), AudioViewer)):
+            raise AssertionError('isinstance(CanvasRegistry.viewer_for("voice.mp3"), …')
+        if CanvasRegistry.viewer_for("data.bin") is not None:
+            raise AssertionError('CanvasRegistry.viewer_for("data.bin") is None')
 
     def test_schema_fields(self) -> None:
         tool = build_canvas_tools(CanvasToolConfig())[0]
         schema = cast(type[Any], tool.tool_call_schema)
-        assert set(schema.model_fields) == {"path"}
+        if set(schema.model_fields) != {"path"}:
+            raise AssertionError('set(schema.model_fields) == {"path"}')
 
 
 class TestRefusal:
@@ -169,8 +185,10 @@ class TestRefusal:
     async def test_without_session(self) -> None:
         _, result = await CanvasOpener().open(f"/workspace/{THREAD}/mermaid/a.mmd")
 
-        assert isinstance(result, ErrorResult)
-        assert result.error_kind == SessionKind.NO_SESSION
+        if not (isinstance(result, ErrorResult)):
+            raise AssertionError("isinstance(result, ErrorResult)")
+        if result.error_kind != SessionKind.NO_SESSION:
+            raise AssertionError("result.error_kind == SessionKind.NO_SESSION")
 
     @pytest.mark.anyio
     async def test_path_outside_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,8 +197,10 @@ class TestRefusal:
 
         _, result = await CanvasOpener().open("/etc/passwd")
 
-        assert isinstance(result, ErrorResult)
-        assert result.error_kind == CanvasErrorKind.BAD_PATH
+        if not (isinstance(result, ErrorResult)):
+            raise AssertionError("isinstance(result, ErrorResult)")
+        if result.error_kind != CanvasErrorKind.BAD_PATH:
+            raise AssertionError("result.error_kind == CanvasErrorKind.BAD_PATH")
 
 
 class _StorageOnlyLayer:
@@ -227,8 +247,10 @@ class TestShow:
 
         opened = await CanvasOpener().show(f"/workspace/{THREAD}/mermaid/a.mmd")
 
-        assert opened.label == "a.mmd"
-        assert viewer.opened[0].name == "a.mmd"
+        if opened.label != "a.mmd":
+            raise AssertionError('opened.label == "a.mmd"')
+        if viewer.opened[0].name != "a.mmd":
+            raise AssertionError('viewer.opened[0].name == "a.mmd"')
 
     @pytest.mark.anyio
     async def test_panel_slot_id_is_stable(
@@ -266,12 +288,18 @@ class TestShow:
         await CanvasOpener().show(f"/workspace/{THREAD}/upload/a.png")
         await CanvasOpener().show(f"/workspace/{THREAD}/upload/b.png")
 
-        assert [e.props["label"] for e in shown] == ["a.png", "b.png"]
-        assert [e.name for e in shown] == [CanvasPanel.VIEW_ELEMENT] * 2
-        assert [e.display for e in shown] == ["side", "side"]
-        assert shown[0].id == CanvasPanel.CONTENT_ID
-        assert shown[1].id == CanvasPanel.CONTENT_ID
-        assert titles == [CanvasPanel.TITLE, CanvasPanel.TITLE]
+        if [e.props["label"] for e in shown] != ["a.png", "b.png"]:
+            raise AssertionError('[e.props["label"] for e in shown] == ["a.png", "b.p…')
+        if [e.name for e in shown] != [CanvasPanel.VIEW_ELEMENT] * 2:
+            raise AssertionError("[e.name for e in shown] == [CanvasPanel.VIEW_ELEMEN…")
+        if [e.display for e in shown] != ["side", "side"]:
+            raise AssertionError('[e.display for e in shown] == ["side", "side"]')
+        if shown[0].id != CanvasPanel.CONTENT_ID:
+            raise AssertionError("shown[0].id == CanvasPanel.CONTENT_ID")
+        if shown[1].id != CanvasPanel.CONTENT_ID:
+            raise AssertionError("shown[1].id == CanvasPanel.CONTENT_ID")
+        if titles != [CanvasPanel.TITLE, CanvasPanel.TITLE]:
+            raise AssertionError("titles == [CanvasPanel.TITLE, CanvasPanel.TITLE]")
 
 
 class ElementSink:
@@ -300,14 +328,21 @@ class TestFileViewers:
         sink = ElementSink()
         opened = await ImageViewer().open(key, sink.push)
 
-        assert opened.label == "график.png"
-        assert isinstance(opened.link, CustomElementResult)
-        assert opened.link.props["path"] == opened.path
+        if opened.label != "график.png":
+            raise AssertionError('opened.label == "график.png"')
+        if not (isinstance(opened.link, CustomElementResult)):
+            raise AssertionError("isinstance(opened.link, CustomElementResult)")
+        if opened.link.props["path"] != opened.path:
+            raise AssertionError('opened.link.props["path"] == opened.path')
         content = sink.shown[0]
-        assert content.kind is CanvasKind.IMAGE
-        assert content.label == "график.png"
-        assert content.mime == "image/png"
-        assert f"/canvas/{THREAD}/upload/" in content.url
+        if content.kind is not CanvasKind.IMAGE:
+            raise AssertionError("content.kind is CanvasKind.IMAGE")
+        if content.label != "график.png":
+            raise AssertionError('content.label == "график.png"')
+        if content.mime != "image/png":
+            raise AssertionError('content.mime == "image/png"')
+        if f"/canvas/{THREAD}/upload/" not in content.url:
+            raise AssertionError('f"/canvas/{THREAD}/upload/" in content.url')
 
     @pytest.mark.anyio
     async def test_link_outlives_the_session(
@@ -326,16 +361,23 @@ class TestFileViewers:
         await ImageViewer().open(key, sink.push)
 
         url = sink.shown[0].url
-        assert "session_id" not in url
-        assert url.endswith(quote(key.name, safe=""))
-        assert not list(cl.context.session.files.values())
+        if "session_id" in url:
+            raise AssertionError('"session_id" not in url')
+        if not (url.endswith(quote(key.name, safe=""))):
+            raise AssertionError('url.endswith(quote(key.name, safe=""))')
+        if list(cl.context.session.files.values()):
+            raise AssertionError("not list(cl.context.session.files.values())")
 
     @pytest.mark.anyio
     async def test_viewers_cover_expected_suffixes(self) -> None:
-        assert ".pdf" in PdfViewer.suffixes
-        assert ".md" in TextViewer.suffixes
-        assert ".mp4" in VideoViewer.suffixes
-        assert ".mp3" in AudioViewer.suffixes
+        if ".pdf" not in PdfViewer.suffixes:
+            raise AssertionError('".pdf" in PdfViewer.suffixes')
+        if ".md" not in TextViewer.suffixes:
+            raise AssertionError('".md" in TextViewer.suffixes')
+        if ".mp4" not in VideoViewer.suffixes:
+            raise AssertionError('".mp4" in VideoViewer.suffixes')
+        if ".mp3" not in AudioViewer.suffixes:
+            raise AssertionError('".mp3" in AudioViewer.suffixes')
 
     @pytest.mark.anyio
     async def test_tool_opens_png_end_to_end(
@@ -349,5 +391,7 @@ class TestFileViewers:
             f"/workspace/{THREAD}/upload/график.png"
         )
 
-        assert not isinstance(result, ErrorResult)
-        assert "график.png" in content
+        if isinstance(result, ErrorResult):
+            raise AssertionError("not isinstance(result, ErrorResult)")
+        if "график.png" not in content:
+            raise AssertionError('"график.png" in content')

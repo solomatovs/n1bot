@@ -55,7 +55,8 @@ class TestRelay:
             relay.feed(f"{frame}\n".encode())
             relay.feed(b"raw stderr line\n")
 
-        assert lines == ["boba.tool.pg: запрос пошёл", "raw stderr line"]
+        if lines != ["boba.tool.pg: запрос пошёл", "raw stderr line"]:
+            raise AssertionError('lines == ["boba.tool.pg: запрос пошёл", "raw stderr…')
 
     def test_log_frame_keeps_level_and_logger(
         self, caplog: pytest.LogCaptureFixture
@@ -66,10 +67,14 @@ class TestRelay:
             relay.feed(f"{frame}\n".encode())
 
         record = caplog.records[-1]
-        assert record.levelno == logging.WARNING
-        assert LABEL in record.getMessage()
-        assert "boba.tool.pg" in record.getMessage()
-        assert "долгий запрос" in record.getMessage()
+        if record.levelno != logging.WARNING:
+            raise AssertionError("record.levelno == logging.WARNING")
+        if LABEL not in record.getMessage():
+            raise AssertionError("LABEL in record.getMessage()")
+        if "boba.tool.pg" not in record.getMessage():
+            raise AssertionError('"boba.tool.pg" in record.getMessage()')
+        if "долгий запрос" not in record.getMessage():
+            raise AssertionError('"долгий запрос" in record.getMessage()')
 
     def test_multiline_message_survives_as_one_record(
         self, caplog: pytest.LogCaptureFixture
@@ -80,8 +85,12 @@ class TestRelay:
         with caplog.at_level(logging.DEBUG):
             relay.feed(f"{frame}\n".encode())
 
-        assert len(caplog.records) == 1
-        assert "строка1\nстрока2" in caplog.records[0].getMessage()
+        if len(caplog.records) != 1:
+            raise AssertionError("len(caplog.records) == 1")
+        if "строка1\nстрока2" not in caplog.records[0].getMessage():
+            raise AssertionError(
+                '"строка1\\nстрока2" in caplog.records[0].getMessage()'
+            )
 
     def test_frames_split_across_reads(self, caplog: pytest.LogCaptureFixture) -> None:
         """Границы чтения из пайпа не совпадают с границами строк."""
@@ -91,8 +100,10 @@ class TestRelay:
             for start in range(0, len(raw), 5):
                 relay.feed(raw[start : start + 5])
 
-        assert len(caplog.records) == 1
-        assert "привет" in caplog.records[0].getMessage()
+        if len(caplog.records) != 1:
+            raise AssertionError("len(caplog.records) == 1")
+        if "привет" not in caplog.records[0].getMessage():
+            raise AssertionError('"привет" in caplog.records[0].getMessage()')
 
     def test_raw_stderr_stays_out_of_the_app_log(
         self, caplog: pytest.LogCaptureFixture
@@ -103,15 +114,18 @@ class TestRelay:
         with caplog.at_level(logging.DEBUG):
             relay.feed(b"UserWarning: deprecated\n")
 
-        assert not caplog.records
-        assert lines == ["UserWarning: deprecated"]
+        if caplog.records:
+            raise AssertionError("not caplog.records")
+        if lines != ["UserWarning: deprecated"]:
+            raise AssertionError('lines == ["UserWarning: deprecated"]')
 
     def test_broken_frame_is_not_lost(self, caplog: pytest.LogCaptureFixture) -> None:
         relay = self._relay()
         with caplog.at_level(logging.DEBUG):
             relay.feed(f"{LaunchPayload.LOG_MARKER}{{битый\n".encode())
 
-        assert "битый" in caplog.records[-1].getMessage()
+        if "битый" not in caplog.records[-1].getMessage():
+            raise AssertionError('"битый" in caplog.records[-1].getMessage()')
 
     def test_launcher_lines_stay_recognised(
         self, caplog: pytest.LogCaptureFixture
@@ -121,37 +135,46 @@ class TestRelay:
             relay.feed(f"{LauncherMarker.LOG}image mounted\n".encode())
 
         record = caplog.records[-1]
-        assert record.levelno == logging.INFO
-        assert "image mounted" in record.getMessage()
+        if record.levelno != logging.INFO:
+            raise AssertionError("record.levelno == logging.INFO")
+        if "image mounted" not in record.getMessage():
+            raise AssertionError('"image mounted" in record.getMessage()')
 
     def test_tail_without_newline_is_flushed(self) -> None:
         lines: list[str] = []
         relay = SandboxLogRelay(LABEL, lines.append)
 
         relay.feed(b"last line without newline")
-        assert lines == []
+        if lines != []:
+            raise AssertionError("lines == []")
 
         relay.flush()
-        assert lines == ["last line without newline"]
+        if lines != ["last line without newline"]:
+            raise AssertionError('lines == ["last line without newline"]')
 
     def test_empty_lines_are_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
         relay = self._relay()
         with caplog.at_level(logging.DEBUG):
             relay.feed(b"\n   \n")
 
-        assert not caplog.records
+        if caplog.records:
+            raise AssertionError("not caplog.records")
 
 
 class TestStderrCleanup:
     """Отрелеенное не остаётся в stderr результата: там только объяснение сбоя."""
 
     def test_relayed_lines_are_recognised(self) -> None:
-        assert SandboxLogRelay.relayed(LaunchPayload.encode_log("INFO", "t", "m"))
-        assert SandboxLogRelay.relayed(f"{LauncherMarker.LOG}mounted")
+        if not (SandboxLogRelay.relayed(LaunchPayload.encode_log("INFO", "t", "m"))):
+            raise AssertionError('SandboxLogRelay.relayed(LaunchPayload.encode_log("I…')
+        if not (SandboxLogRelay.relayed(f"{LauncherMarker.LOG}mounted")):
+            raise AssertionError('SandboxLogRelay.relayed(f"{LauncherMarker.LOG}mount…')
 
     def test_traceback_lines_are_kept(self) -> None:
-        assert SandboxLogRelay.relayed("Traceback (most recent call last):") is False
-        assert SandboxLogRelay.relayed("RuntimeError: boom") is False
+        if SandboxLogRelay.relayed("Traceback (most recent call last):") is not False:
+            raise AssertionError('SandboxLogRelay.relayed("Traceback (most recent cal…')
+        if SandboxLogRelay.relayed("RuntimeError: boom") is not False:
+            raise AssertionError('SandboxLogRelay.relayed("RuntimeError: boom") is Fa…')
 
 
 _PROFILE_BASE: dict[str, object] = {
@@ -199,12 +222,15 @@ class TestLevelSource:
 
     def test_level_comes_from_app_logger(self) -> None:
         env = self._env(logging.DEBUG)
-        assert env[PayloadLogging.LEVEL_ENV] == "DEBUG"
+        if env[PayloadLogging.LEVEL_ENV] != "DEBUG":
+            raise AssertionError('env[PayloadLogging.LEVEL_ENV] == "DEBUG"')
 
     def test_level_follows_reconfiguration(self) -> None:
         env = self._env(logging.WARNING)
-        assert env[PayloadLogging.LEVEL_ENV] == "WARNING"
+        if env[PayloadLogging.LEVEL_ENV] != "WARNING":
+            raise AssertionError('env[PayloadLogging.LEVEL_ENV] == "WARNING"')
 
     def test_profile_env_is_kept(self) -> None:
         env = self._env(logging.INFO)
-        assert env["PATH"] == "/usr/bin:/bin"
+        if env["PATH"] != "/usr/bin:/bin":
+            raise AssertionError('env["PATH"] == "/usr/bin:/bin"')

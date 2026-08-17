@@ -6,12 +6,12 @@ SRC_DIR         ?= $(abspath $(BASE_DIR)/..)
 MAKEFILE        := $(BASE_DIR)/Makefile
 BUILD_CONTEXT   ?= $(SRC_DIR)
 TEST_DIR        ?= $(BASE_DIR)/test
-# шаблоны для сборки (make extract, Dockerfile COPY) живут в build/conf
+# шаблоны для сборки (make release, Dockerfile COPY) живут в build/conf
 CONF_DIR        := $(BASE_DIR)/conf
 
 # артефакты для сборки: tarball'ы, uv, tessdata, fastembed, webassets, wheels, sandbox
 DEPS_DIR        ?= $(BASE_DIR)/src
-# результаты make extract — в корне репо
+# результаты make release — в корне репо, каталогом с версией
 RELEASE_DIR     := $(SRC_DIR)/release
 
 
@@ -29,21 +29,19 @@ VERSION         := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(VERSION_FILE))
 BOBA_TAG        ?= $(VERSION)
 REQUIRES_PY     := $(shell sed -n 's/^requires-python = ">=\([0-9]*\.[0-9]*\).*/\1/p' $(VERSION_FILE))
 
-# релиз для make extract
-RELEASE_NAME    := boba-$(VERSION)
-# корень установки на сервере: в него уедет дерево из make extract
+# корень установки на сервере: в него уедет дерево из make release
 INSTALL_DIR     ?= /app/boba
 # данные, переживающие релизы: workspace пользователей, дампы, журналы.
 # Лежат рядом с деревом версии, а не внутри — иначе терялись бы при обновлении
 DATA_DIR        ?= /app/boba/data
-# тот же корень внутри образа; версия живёт в app/<version>, не в нём
+# тот же корень внутри образа
 DEST_DIR        ?= /app/boba
 
 # финальный runtime-образ
 IMAGE           := boba:$(BOBA_TAG)
-# из какого образа make extract достаёт портативную папку и куда её кладёт
+# из какого образа make release достаёт дерево установки и куда его кладёт
 RELEASE_IMAGE   ?= $(IMAGE)
-OUT             ?= $(RELEASE_DIR)/$(RELEASE_NAME)
+OUT             ?= $(RELEASE_DIR)/$(VERSION)
 
 # режим sec.sh: all, sast, sca или rules
 MODE            ?= all
@@ -71,8 +69,13 @@ BASE_IMAGE      := boba-base:$(PYTHON_VERSION)
 # OCR-модели tesseract
 TESS_LANGS      ?= eng rus osd
 TESSDATA_REPO   ?= https://github.com/tesseract-ocr/tessdata_best/raw/main
+TESSDATA_SHA256 ?= eng:8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba   \
+    rus:b617eb6830ffabaaa795dd87ea7fd251adfe9cf0efe05eb9a2e8128b7728d6b6                 \
+    osd:9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff
 # embedding-веса fastembed
 EMBED_MODELS    ?= intfloat/multilingual-e5-large
+# суммы скачанных весов: библиотека тянет их сама, проверяем по факту
+FASTEMBED_MANIFEST := $(CONF_DIR)/fastembed.sha256
 
 # фронт chainlit тянет шрифт и стили формул с CDN; в закрытом контуре их
 # кладут в data/public/vendor, а ссылки в index.html переписывает Dockerfile
@@ -82,22 +85,27 @@ ASSETS_DIR      := $(SRC_DIR)/packages/agents/boba-chainlit/assets
 ASSETS_VENDOR   := $(ASSETS_DIR)/public/vendor
 KATEX_VERSION   ?= 0.16.22
 KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
+KATEX_SHA256    ?= 055cd79635251419ed908c334582a41dee341d8af05b4c5588277e145127a78f
 INTER_VERSION   ?= 5.3.0
 INTER_URL       ?= https://registry.npmjs.org/@fontsource/inter/-/inter-$(INTER_VERSION).tgz
+INTER_SHA256    ?= 02034af8d41dcc67ac8eab88f642e129bb8a2e8922abf30229c32725f54d8fd6
 # начертания Inter, которые запрашивает фронт
 INTER_WEIGHTS   ?= 400 500 700
 MERMAID_VERSION ?= 11.16.1
 MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
+MERMAID_SHA256  ?= ebd9885111092c78cefc79a76f6c1dc34ed5b834b02ae8f338227ce79c003de4
 
 # готовый бинарь; для внутреннего mirror переопредели UV_URL
 UV_VERSION      ?= 0.11.21
 UV_PLATFORM     ?= x86_64-unknown-linux-musl
 UV_URL          ?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(UV_PLATFORM).tar.gz
+UV_SHA256       ?= 9dadff5b9e7b1d2d011e41852a1cbca713d9d5d88194f2eb6bd240fa4fb0a719
 
 # bubblewrap: собирается стадией bwrap-build
 BWRAP_VERSION   ?= 0.11.2
 BWRAP_URL       ?= https://github.com/containers/bubblewrap/releases/download/v$(BWRAP_VERSION)/bubblewrap-$(BWRAP_VERSION).tar.xz
 BWRAP_TARBALL   := $(DEPS_DIR)/bubblewrap-$(BWRAP_VERSION).tar.xz
+BWRAP_SHA256    ?= 69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
 
 # fuse2fs + libfuse: собираются стадией fuse2fs-build.
 # 3.12.0 — последний релиз, которому хватает meson 0.49 из apt Astra 2.12
@@ -105,9 +113,11 @@ BWRAP_TARBALL   := $(DEPS_DIR)/bubblewrap-$(BWRAP_VERSION).tar.xz
 LIBFUSE_VERSION ?= 3.12.0
 LIBFUSE_URL     ?= https://github.com/libfuse/libfuse/releases/download/fuse-$(LIBFUSE_VERSION)/fuse-$(LIBFUSE_VERSION).tar.xz
 LIBFUSE_TARBALL := $(DEPS_DIR)/fuse-$(LIBFUSE_VERSION).tar.xz
+LIBFUSE_SHA256  ?= 33b8a92d6f7a88e6a889f0009206933482f48f3eb85d88cf09ef551313ac7373
 E2FSPROGS_VERSION?= 1.47.2
 E2FSPROGS_URL   ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$(E2FSPROGS_VERSION)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
 E2FSPROGS_TARBALL:= $(DEPS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
+E2FSPROGS_SHA256?= 08242e64ca0e8194d9c1caad49762b19209a06318199b63ce74ae4ef2d74e63c
 # размер шаблонного workspace-образа: лимит диска на тред
 SANDBOX_WS_SIZE ?= 1G
 
@@ -142,6 +152,20 @@ docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT)   \
     --target $(1)                                        \
     --tag $(2)                                           \
     $(PROGRESS) $(BUILD_CONTEXT)
+endef
+
+# загрузка с проверкой целостности: $(1) — url, $(2) — файл, $(3) — sha256.
+# Битую загрузку удаляем: иначе следующий запуск примет её за готовый артефакт
+define fetch-checked
+curl -fSL $(CURL_OPTS) -o "$(2)" "$(1)"
+actual=$$(sha256sum "$(2)" | cut -d" " -f1)
+if [ "$$actual" != "$(3)" ]; then
+    rm -f "$(2)"
+    echo "sha256 не сошлась: $(1)" >&2
+    echo "  ожидалось $(3)" >&2
+    echo "  получено  $$actual" >&2
+    exit 1
+fi
 endef
 
 # выемка артефакта из образа: $(1) — образ, $(2) — путь внутри, $(3) — куда
@@ -180,7 +204,7 @@ help:
 	echo "                 без образа — им пользуются и отладка, и docker compose"
 	echo "  make release   дерево установки из готового образа:"
 	echo "                 RELEASE_IMAGE=$(RELEASE_IMAGE), OUT=$(OUT)"
-	echo "                 {conf,app_root,code/app,deps/app,sandbox,third},"
+	echo "                 {conf,app_root,app,sandbox,third},"
 	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR), данные — в DATA_DIR=$(DATA_DIR)"
 	echo "  make sec       ruff, bandit, semgrep и pip-audit (MODE=all|sast|sca|rules)"
 	echo "  make clean     удалить исходники, deps и собранную папку (кроме fastembed)"
@@ -210,7 +234,7 @@ help:
 
 # значения, по которым отлаживают сборку: печатаются при вызове цели
 DEBUG_VARS      := BASE_DIR SRC_DIR CONF_DIR DEPS_DIR RELEASE_DIR TEST_DIR   \
-    VERSION RELEASE_NAME IMAGE RELEASE_IMAGE OUT DEST_DIR INSTALL_DIR        \
+    VERSION IMAGE RELEASE_IMAGE OUT DEST_DIR INSTALL_DIR                     \
     BASE_IMAGE GLIBC_IMAGE GCC_IMAGE PYTHON_IMAGE REQUIRES_PY NO_CACHE       \
     UV_URL CA_CHAIN
 
@@ -268,11 +292,17 @@ version-check:
 sources:
 	@mkdir -p $(DEPS_DIR)
 	echo "== bubblewrap $(BWRAP_VERSION) =="
-	[ -f "$(BWRAP_TARBALL)" ] || curl -fSL $(CURL_OPTS) -o "$(BWRAP_TARBALL)" "$(BWRAP_URL)"
+	if [ ! -f "$(BWRAP_TARBALL)" ]; then
+	    $(call fetch-checked,$(BWRAP_URL),$(BWRAP_TARBALL),$(BWRAP_SHA256))
+	fi
 	echo "== libfuse $(LIBFUSE_VERSION) =="
-	[ -f "$(LIBFUSE_TARBALL)" ] || curl -fSL $(CURL_OPTS) -o "$(LIBFUSE_TARBALL)" "$(LIBFUSE_URL)"
+	if [ ! -f "$(LIBFUSE_TARBALL)" ]; then
+	    $(call fetch-checked,$(LIBFUSE_URL),$(LIBFUSE_TARBALL),$(LIBFUSE_SHA256))
+	fi
 	echo "== e2fsprogs $(E2FSPROGS_VERSION) =="
-	[ -f "$(E2FSPROGS_TARBALL)" ] || curl -fSL $(CURL_OPTS) -o "$(E2FSPROGS_TARBALL)" "$(E2FSPROGS_URL)"
+	if [ ! -f "$(E2FSPROGS_TARBALL)" ]; then
+	    $(call fetch-checked,$(E2FSPROGS_URL),$(E2FSPROGS_TARBALL),$(E2FSPROGS_SHA256))
+	fi
 	ls -lh $(DEPS_DIR)/
 
 
@@ -288,9 +318,10 @@ uv:
 	if [ -f "$(DEPS_DIR)/uv/uv" ]; then
 	    echo "  ✓ $(DEPS_DIR)/uv/uv"
 	else
-	    curl -fSL $(CURL_OPTS) "$(UV_URL)" | tar -xz -C /tmp
+	    $(call fetch-checked,$(UV_URL),/tmp/uv-$(UV_VERSION).tar.gz,$(UV_SHA256))
+	    tar -xzf /tmp/uv-$(UV_VERSION).tar.gz -C /tmp
 	    install -m 0755 /tmp/uv-$(UV_PLATFORM)/uv $(DEPS_DIR)/uv/uv
-	    rm -rf /tmp/uv-$(UV_PLATFORM)
+	    rm -rf /tmp/uv-$(UV_PLATFORM) /tmp/uv-$(UV_VERSION).tar.gz
 	    $(DEPS_DIR)/uv/uv --version
 	fi
 
@@ -304,7 +335,19 @@ tessdata:
 	    if [ -f "$$dest" ]; then
 	        echo "  ✓ $$dest"
 	    else
-	        curl -fSL $(CURL_OPTS) -o "$$dest" "$(TESSDATA_REPO)/$$lang.traineddata"
+	        sha=""
+	        for item in $(TESSDATA_SHA256); do
+	            if [ "$${item%%:*}" = "$$lang" ]; then
+	                sha="$${item##*:}"
+	            fi
+	        done
+
+	        if [ -z "$$sha" ]; then
+	            echo "нет sha256 для $$lang — добавь в TESSDATA_SHA256" >&2
+	            exit 1
+	        fi
+
+	        $(call fetch-checked,$(TESSDATA_REPO)/$$lang.traineddata,$$dest,$$sha)
 	    fi
 	done
 
@@ -318,7 +361,7 @@ webassets:
 	    echo "  ✓ $(WEBASSETS_DIR)/katex"
 	else
 	    tmp=$$(mktemp -d)
-	    curl -fSL $(CURL_OPTS) -o "$$tmp/katex.tar.gz" "$(KATEX_URL)"
+	    $(call fetch-checked,$(KATEX_URL),$$tmp/katex.tar.gz,$(KATEX_SHA256))
 	    # ttf и woff не нужны: woff2 стоит в src первым и его понимают все браузеры
 	    tar -xzf "$$tmp/katex.tar.gz" -C "$$tmp" --wildcards   \
 	        katex/katex.min.css 'katex/fonts/*.woff2'
@@ -331,7 +374,7 @@ webassets:
 	    echo "  ✓ $(WEBASSETS_DIR)/inter"
 	else
 	    tmp=$$(mktemp -d)
-	    curl -fSL $(CURL_OPTS) -o "$$tmp/inter.tgz" "$(INTER_URL)"
+	    $(call fetch-checked,$(INTER_URL),$$tmp/inter.tgz,$(INTER_SHA256))
 	    tar -xzf "$$tmp/inter.tgz" -C "$$tmp"
 	    : > "$(WEBASSETS_DIR)/inter/inter.css"
 	    # <вес>.css несёт все подсеты с unicode-range, включая кириллицу
@@ -346,7 +389,7 @@ webassets:
 	    echo "  ✓ $(WEBASSETS_DIR)/mermaid"
 	else
 	    tmp=$$(mktemp -d)
-	    curl -fSL $(CURL_OPTS) -o "$$tmp/mermaid.tgz" "$(MERMAID_URL)"
+	    $(call fetch-checked,$(MERMAID_URL),$$tmp/mermaid.tgz,$(MERMAID_SHA256))
 	    # из пакета нужен один IIFE-бандл: он выставляет globalThis.mermaid
 	    tar -xzf "$$tmp/mermaid.tgz" -C "$$tmp" package/dist/mermaid.min.js
 	    cp "$$tmp/package/dist/mermaid.min.js" "$(WEBASSETS_DIR)/mermaid/"
@@ -447,6 +490,35 @@ fastembed: base
 	      || echo "!! $$m не скачан — не поддерживается этой версией fastembed"
 	    done
 	    chown -R "$$HOST_UID:$$HOST_GID" /fastembed'
+	$(MAKE) -f $(MAKEFILE) --no-print-directory fastembed-check
+
+
+# веса приезжают из сети внутрь контейнера, поэтому целостность проверяется
+# после загрузки: список сумм лежит рядом с остальными шаблонами сборки
+.PHONY: fastembed-check
+fastembed-check:
+	@if [ ! -f "$(FASTEMBED_MANIFEST)" ]; then
+	    echo "нет $(FASTEMBED_MANIFEST) — сними суммы: make fastembed-manifest" >&2
+	    exit 1
+	fi
+	cd "$(DEPS_DIR)/fastembed"
+	sha256sum -c --quiet "$(FASTEMBED_MANIFEST)"
+
+	listed=$$(grep -c '' "$(FASTEMBED_MANIFEST)")
+	actual=$$(find . -type f | wc -l)
+	if [ "$$listed" != "$$actual" ]; then
+	    echo "файлов весов $$actual, а в манифесте $$listed" >&2
+	    exit 1
+	fi
+	echo "  ✓ веса сходятся с $(FASTEMBED_MANIFEST) ($$listed файлов)"
+
+
+# переснять суммы: после смены EMBED_MODELS или версии весов
+.PHONY: fastembed-manifest
+fastembed-manifest:
+	@cd "$(DEPS_DIR)/fastembed"
+	find . -type f | sort | xargs sha256sum > "$(FASTEMBED_MANIFEST)"
+	echo ">>> $(FASTEMBED_MANIFEST): $$(grep -c '' "$(FASTEMBED_MANIFEST)") файлов"
 
 
 .PHONY: base
@@ -501,7 +573,7 @@ test: build
 	    echo "нет $(TEST_DIR)/bobacheck.py — файл лежит в репозитории, TEST_DIR=$(TEST_DIR)" >&2
 	    exit 1
 	}
-	echo "== проверка $(RELEASE_NAME) в образе $(IMAGE) =="
+	echo "== проверка релиза $(VERSION) в образе $(IMAGE) =="
 	# boba.env в образе нет: окружение даёт тот, кто запускает процесс.
 	# тест берёт тот же шаблон, что уедет в compose и systemd
 	env_file=$$(mktemp)
@@ -512,7 +584,7 @@ test: build
 
 	docker run --rm -i --env-file "$$env_file"   \
 	  --entrypoint sh $(IMAGE) -c '
-	    "$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/deps/app/packages.txt"
+	    "$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/app/packages.txt"
 	  ' < "$(TEST_DIR)/bobacheck.py"
 
 # что обязано лежать в дереве установки: путь:цель, которая его кладёт
@@ -521,8 +593,7 @@ RELEASE_PARTS   :=                                \
     sandbox/workspace.ext4:deps                   \
     third/bin/bwrap:deps                          \
     third/bin/fuse2fs:deps                        \
-    code/app/bin:build                            \
-    deps/app:build                                \
+    app/bin:build                                 \
     app_root/public:build
 
 .PHONY: release
@@ -542,12 +613,8 @@ release:
 
 	$(MAKE) -f $(MAKEFILE) --no-print-directory install-tree OUT="$(OUT)" BASE="$(INSTALL_DIR)"
 
-	# стабильный путь для внешних ссылок: они не знают версию
-	ln -sfn "$(RELEASE_NAME)" "$(RELEASE_DIR)/current"
-
 	echo ">>> релиз готов: $(OUT)  ($$(du -sh --apparent-size "$(OUT)" 2>/dev/null | cut -f1))"
-	echo "    свой код:       $$(du -sh --apparent-size "$(OUT)/code" 2>/dev/null | cut -f1)"
-	echo "    зависимости:    $$(du -sh --apparent-size "$(OUT)/deps" 2>/dev/null | cut -f1)"
+	echo "    приложение:     $$(du -sh --apparent-size "$(OUT)/app" 2>/dev/null | cut -f1)"
 	echo "    песочница:      $$(du -sh --apparent-size "$(OUT)/sandbox" 2>/dev/null | cut -f1)"
 	echo "    установка:      cp -a $(OUT)/. $(INSTALL_DIR)/"
 
@@ -589,6 +656,8 @@ dev: check-artifacts
 	    < "$(CONF_DIR)/boba.env" > "$$out/conf/boba.env"
 	sed -i 's|^BOBA_CGROUP_BASE=.*|BOBA_CGROUP_BASE=/cgroup/boba-sandbox|' "$$out/conf/boba.env"
 
+	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$$out/cgroup-init.sh"
+
 	if [ ! -f "$$out/conf/config.toml" ]; then
 	    cp "$(CONF_DIR)/config.toml.example" "$$out/conf/config.toml"
 	    echo "    conf/config.toml создан из шаблона — впиши секцию [site]"
@@ -597,7 +666,7 @@ dev: check-artifacts
 	# umask каталога сборки даёт g+w, а TrustedBinaries такой third/bin
 	# не примет — то же самое делает install-tree для релиза
 	chmod go-w "$$out"
-	chmod -R go-w "$$out/third" "$$out/sandbox" "$$out/deps"
+	chmod -R go-w "$$out/third" "$$out/sandbox"
 
 	echo ">>> дерево готово: $$out"
 	echo "    debug:  BOBA_BASE=$$out BOBA_APP=$(SRC_DIR)/packages"
@@ -628,7 +697,7 @@ install-tree:
 	@mkdir -p "$(OUT)/conf"
 
 	# шебанги указывают внутрь образа: переставляем на путь установки
-	sed -i "1s|^#!.*python3.*|#!$(BASE)/third/bin/python3|" "$(OUT)/code/app/bin"/*
+	sed -i "1s|^#!.*python3.*|#!$(BASE)/third/bin/python3|" "$(OUT)/app/bin"/*
 
 	# отсюда берутся bwrap и fuse2fs: групповая или чужая запись на пути до
 	# них — отказ TrustedBinaries, а umask каталога сборки даёт как раз g+w
@@ -642,6 +711,8 @@ install-tree:
 	    < "$(CONF_DIR)/boba-chainlit.service" > "$(OUT)/boba-chainlit.service"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}'   \
 	    < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
+
+	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
 
 	if [ ! -f "$(OUT)/conf/config.toml" ]; then
 	    cp "$(CONF_DIR)/config.toml.example" "$(OUT)/conf/config.toml"

@@ -80,13 +80,12 @@ def app_server() -> Iterator[None]:
     # чужой процесс на порту молча увёл бы тесты на другой код
     probe = socket.socket()
     try:
-        probe.connect(("127.0.0.1", PORT))
-    except OSError:
-        pass
-    else:
-        pytest.fail(f"порт {PORT} уже занят: остановите запущенное приложение")
+        taken = probe.connect_ex(("127.0.0.1", PORT)) == 0
     finally:
         probe.close()
+
+    if taken:
+        pytest.fail(f"порт {PORT} уже занят: остановите запущенное приложение")
 
     log = Path(tempfile.gettempdir()) / "boba-canvas-e2e.log"
     process = subprocess.Popen(  # noqa: S603
@@ -102,17 +101,24 @@ def app_server() -> Iterator[None]:
 
 
 async def _wait_for_server() -> None:
+    last_error = "нет ответа"
+
     async with httpx.AsyncClient() as probe:
         for _ in range(90):
             try:
                 answer = await probe.get(BASE + "/login", follow_redirects=True)
-                if answer.status_code < 500:
-                    return
-            except httpx.HTTPError:
-                pass
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+                await asyncio.sleep(1)
+                continue
+
+            if answer.status_code < 500:
+                return
+
+            last_error = f"HTTP {answer.status_code}"
             await asyncio.sleep(1)
 
-    pytest.fail("приложение не поднялось")
+    pytest.fail(f"приложение не поднялось: {last_error}")
 
 
 async def _upload(thread_id: str) -> None:
@@ -202,8 +208,10 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
                 break
             await page.wait_for_timeout(500)
 
-        assert "id" in session, "не удалось получить sessionId"
-        assert "thread" in session, "не удалось получить threadId"
+        if "id" not in session:
+            raise AssertionError("не удалось получить sessionId")
+        if "thread" not in session:
+            raise AssertionError("не удалось получить threadId")
 
         await _upload(session["thread"])
 
@@ -243,7 +251,8 @@ async def test_image_is_rendered(panel: Any) -> None:
     side = await show("chart.png")
     image = side.locator("img").first
 
-    assert await image.count()
+    if not (await image.count()):
+        raise AssertionError("await image.count()")
     # ждём саму загрузку: на холодном старте она приходит позже показа
     await side.page.wait_for_function(
         """() => {
@@ -273,10 +282,15 @@ async def test_diagram_is_drawn_not_shown_as_text(panel: Any) -> None:
     side = await show("flow.mmd")
     text = await side.inner_text()
 
-    assert await side.locator('div[style*="transform-origin"] svg').count() > 0
-    assert "Доход" in text
+    if await side.locator('div[style*="transform-origin"] svg').count() <= 0:
+        raise AssertionError(
+            "await side.locator('div[style*=\"transform-origin\"] svg'…"
+        )
+    if "Доход" not in text:
+        raise AssertionError('"Доход" in text')
     # имя файла в панели не дублируем: шапка отнимала бы место у диаграммы
-    assert "flow.mmd" not in text
+    if "flow.mmd" in text:
+        raise AssertionError('"flow.mmd" not in text')
 
 
 async def test_close_button_does_not_cover_the_diagram(panel: Any) -> None:
@@ -290,15 +304,18 @@ async def test_close_button_does_not_cover_the_diagram(panel: Any) -> None:
         " return {bg: s.backgroundColor, opacity: s.opacity}; }"
     )
 
-    assert style["bg"] in ("rgba(0, 0, 0, 0)", "transparent")
-    assert float(style["opacity"]) < 1
+    if style["bg"] not in ("rgba(0, 0, 0, 0)", "transparent"):
+        raise AssertionError('style["bg"] in ("rgba(0, 0, 0, 0)", "transparent")')
+    if float(style["opacity"]) >= 1:
+        raise AssertionError('float(style["opacity"]) < 1')
 
 
 async def test_markdown_is_rendered(panel: Any) -> None:
     show, _, _thread, _act = panel
     side = await show("report.md")
 
-    assert "Отчёт" in await side.inner_text()
+    if "Отчёт" not in await side.inner_text():
+        raise AssertionError('"Отчёт" in await side.inner_text()')
 
 
 async def test_unsupported_format_is_explained(panel: Any) -> None:
@@ -311,7 +328,8 @@ async def test_unsupported_format_is_explained(panel: Any) -> None:
     side = await show("data.bin")
     text = await side.inner_text()
 
-    assert "cannot display" in text
+    if "cannot display" not in text:
+        raise AssertionError('"cannot display" in text')
 
 
 async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
@@ -320,14 +338,18 @@ async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
     side = await show("broken.mmd")
     text = await side.inner_text()
 
-    assert "not rendered" in text
-    assert "Parse error" in text
+    if "not rendered" not in text:
+        raise AssertionError('"not rendered" in text')
+    if "Parse error" not in text:
+        raise AssertionError('"Parse error" in text')
 
     failures = [
         body for body in reports if '"ok": false' in body or '"ok":false' in body
     ]
-    assert failures, "браузер не отправил canvas_render_status с ошибкой"
-    assert "Parse error" in failures[-1]
+    if not (failures):
+        raise AssertionError("браузер не отправил canvas_render_status с ошибкой")
+    if "Parse error" not in failures[-1]:
+        raise AssertionError('"Parse error" in failures[-1]')
 
 
 async def test_diagram_fills_the_panel(panel: Any) -> None:
@@ -338,10 +360,14 @@ async def test_diagram_fills_the_panel(panel: Any) -> None:
     box = await side.bounding_box()
     svg = await side.locator('div[style*="transform-origin"] svg').first.bounding_box()
 
-    assert box
-    assert svg
-    assert svg["width"] > box["width"] * 0.9
-    assert svg["height"] > box["height"] * 0.8
+    if not (box):
+        raise AssertionError("box")
+    if not (svg):
+        raise AssertionError("svg")
+    if svg["width"] <= box["width"] * 0.9:
+        raise AssertionError('svg["width"] > box["width"] * 0.9')
+    if svg["height"] <= box["height"] * 0.8:
+        raise AssertionError('svg["height"] > box["height"] * 0.8')
 
 
 async def test_wheel_does_not_zoom_in_the_panel(panel: Any) -> None:
@@ -358,12 +384,14 @@ async def test_wheel_does_not_zoom_in_the_panel(panel: Any) -> None:
     before = await page.evaluate(read)
     # наводим в центр: сверху висит кнопка закрытия панели
     box = await side.bounding_box()
-    assert box
+    if not (box):
+        raise AssertionError("box")
     await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     await page.mouse.wheel(0, -400)
     await page.wait_for_timeout(400)
 
-    assert await page.evaluate(read) == before
+    if await page.evaluate(read) != before:
+        raise AssertionError("await page.evaluate(read) == before")
 
 
 async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
@@ -391,15 +419,20 @@ async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
     )
     await page.wait_for_timeout(2500)
 
-    assert "Отчёт" in await side.inner_text()
+    if "Отчёт" not in await side.inner_text():
+        raise AssertionError('"Отчёт" in await side.inner_text()')
 
     same_node = await page.evaluate(
         "() => window.__panelNode === document.querySelector('#side-view-content')"
         ".closest('[class*=translate-x-]')"
     )
 
-    assert same_node, "панель пересоздалась — анимация открытия проиграется заново"
-    assert await page.evaluate("() => window.__reopens") == 0
+    if not (same_node):
+        raise AssertionError(
+            "панель пересоздалась — анимация открытия проиграется заново"
+        )
+    if await page.evaluate("() => window.__reopens") != 0:
+        raise AssertionError('await page.evaluate("() => window.__reopens") == 0')
 
 
 async def test_controls_share_one_alignment(panel: Any) -> None:
@@ -435,16 +468,22 @@ async def test_controls_share_one_alignment(panel: Any) -> None:
         }"""
     )
 
-    assert geometry["backHidden"] is True
-    assert geometry["buttons"]
+    if geometry["backHidden"] is not True:
+        raise AssertionError('geometry["backHidden"] is True')
+    if not (geometry["buttons"]):
+        raise AssertionError('geometry["buttons"]')
     tops = {entry["top"] for entry in geometry["buttons"]}
-    assert max(tops) - min(tops) <= 2
+    if max(tops) - min(tops) > 2:
+        raise AssertionError("max(tops) - min(tops) <= 2")
     for entry in geometry["buttons"]:
-        assert entry["size"] == 36
+        if entry["size"] != 36:
+            raise AssertionError('entry["size"] == 36')
 
     last = geometry["buttons"][-1]
-    assert last["label"] == "Close"
-    assert abs(last["right"] - 25) <= 4
+    if last["label"] != "Close":
+        raise AssertionError('last["label"] == "Close"')
+    if abs(last["right"] - 25) > 4:
+        raise AssertionError('abs(last["right"] - 25) <= 4')
 
 
 async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
@@ -469,8 +508,10 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
         }"""
     )
 
-    assert rows
-    assert max(rows) - min(rows) <= 2
+    if not (rows):
+        raise AssertionError("rows")
+    if max(rows) - min(rows) > 2:
+        raise AssertionError("max(rows) - min(rows) <= 2")
 
 
 async def test_broken_diagram_keeps_the_control_row(panel: Any) -> None:
@@ -488,10 +529,14 @@ async def test_broken_diagram_keeps_the_control_row(panel: Any) -> None:
         )].map(b => b.getAttribute('aria-label'))"""
     )
 
-    assert labels[-2:] == ["Fullscreen", "Close"]
-    assert "Zoom in" in labels
-    assert "Zoom out" in labels
-    assert "Reset view" in labels
+    if labels[-2:] != ["Fullscreen", "Close"]:
+        raise AssertionError('labels[-2:] == ["Fullscreen", "Close"]')
+    if "Zoom in" not in labels:
+        raise AssertionError('"Zoom in" in labels')
+    if "Zoom out" not in labels:
+        raise AssertionError('"Zoom out" in labels')
+    if "Reset view" not in labels:
+        raise AssertionError('"Reset view" in labels')
 
 
 async def test_unsupported_format_keeps_the_control_row(panel: Any) -> None:
@@ -505,7 +550,8 @@ async def test_unsupported_format_keeps_the_control_row(panel: Any) -> None:
         )].map(b => b.getAttribute('aria-label'))"""
     )
 
-    assert labels[-2:] == ["Fullscreen", "Close"]
+    if labels[-2:] != ["Fullscreen", "Close"]:
+        raise AssertionError('labels[-2:] == ["Fullscreen", "Close"]')
 
 
 async def test_file_link_does_not_depend_on_the_session(panel: Any) -> None:
@@ -521,8 +567,10 @@ async def test_file_link_does_not_depend_on_the_session(panel: Any) -> None:
         "() => document.querySelector('#side-view-content img').src"
     )
 
-    assert "session_id" not in src
-    assert f"/canvas/{thread}/upload/chart.svg" in src
+    if "session_id" in src:
+        raise AssertionError('"session_id" not in src')
+    if f"/canvas/{thread}/upload/chart.svg" not in src:
+        raise AssertionError('f"/canvas/{thread}/upload/chart.svg" in src')
 
 
 async def test_panel_switches_after_a_render_error(panel: Any) -> None:
@@ -531,7 +579,8 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     side = await show("broken.mmd")
     page = side.page
 
-    assert "not rendered" in await side.inner_text()
+    if "not rendered" not in await side.inner_text():
+        raise AssertionError('"not rendered" in await side.inner_text()')
 
     await page.evaluate(
         """path => window.dispatchEvent(
@@ -541,8 +590,10 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     await page.wait_for_timeout(3000)
 
     text = await side.inner_text()
-    assert "Доход" in text
-    assert "not rendered" not in text
+    if "Доход" not in text:
+        raise AssertionError('"Доход" in text')
+    if "not rendered" in text:
+        raise AssertionError('"not rendered" not in text')
 
 
 async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
@@ -556,7 +607,8 @@ async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
     _show, _, _thread, act = panel
     side = await act("canvas_stream", {"call_id": "e2e-нет-такого-вызова"})
 
-    assert "unavailable" in await side.inner_text()
+    if "unavailable" not in await side.inner_text():
+        raise AssertionError('"unavailable" in await side.inner_text()')
 
 
 async def test_panel_close_button_closes_the_panel(panel: Any) -> None:
@@ -568,7 +620,8 @@ async def test_panel_close_button_closes_the_panel(panel: Any) -> None:
     await side.locator('button[aria-label="Close"]').click()
     await page.wait_for_timeout(1500)
 
-    assert await page.locator("#side-view-content").count() == 0
+    if await page.locator("#side-view-content").count() != 0:
+        raise AssertionError('await page.locator("#side-view-content").count() == 0')
 
 
 async def test_bar_survives_scrolling(panel: Any) -> None:
@@ -604,5 +657,7 @@ async def test_bar_survives_scrolling(panel: Any) -> None:
         }"""
     )
 
-    assert after["height"] > 0
-    assert abs(after["top"] - before) <= 2
+    if after["height"] <= 0:
+        raise AssertionError('after["height"] > 0')
+    if abs(after["top"] - before) > 2:
+        raise AssertionError('abs(after["top"] - before) <= 2')

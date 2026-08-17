@@ -27,27 +27,37 @@ async def test_create_and_get_user(layer: PostgresDataLayer):
     created = await layer.create_user(
         ChainlitUser(identifier="alice", metadata={"k": "v"})
     )
-    assert created is not None
-    assert created.identifier == "alice"
+    if created is None:
+        raise AssertionError("created is not None")
+    if created.identifier != "alice":
+        raise AssertionError('created.identifier == "alice"')
 
     fetched = await layer.get_user("alice")
-    assert fetched is not None
-    assert fetched.id == created.id
-    assert fetched.identifier == "alice"
+    if fetched is None:
+        raise AssertionError("fetched is not None")
+    if fetched.id != created.id:
+        raise AssertionError("fetched.id == created.id")
+    if fetched.identifier != "alice":
+        raise AssertionError('fetched.identifier == "alice"')
 
-    assert await layer.get_user("does-not-exist") is None
+    if await layer.get_user("does-not-exist") is not None:
+        raise AssertionError('await layer.get_user("does-not-exist") is None')
 
 
 async def test_update_thread_and_author(seeded: Seed):
     layer = seeded.layer
     author = await layer.get_thread_author(seeded.thread_id)
-    assert author == seeded.user.identifier
+    if author != seeded.user.identifier:
+        raise AssertionError("author == seeded.user.identifier")
 
     await layer.update_thread(seeded.thread_id, name="renamed")
     thread = await layer.get_thread(seeded.thread_id)
-    assert thread is not None
-    assert thread["name"] == "renamed"
-    assert thread["userId"] == seeded.user.id
+    if thread is None:
+        raise AssertionError("thread is not None")
+    if thread["name"] != "renamed":
+        raise AssertionError('thread["name"] == "renamed"')
+    if thread["userId"] != seeded.user.id:
+        raise AssertionError('thread["userId"] == seeded.user.id')
 
 
 async def test_steps_are_not_persisted(seeded: Seed):
@@ -63,9 +73,12 @@ async def test_steps_are_not_persisted(seeded: Seed):
     await layer.update_step(step)
 
     thread = await layer.get_thread(seeded.thread_id)
-    assert thread is not None
-    assert all(s.get("id") != step["id"] for s in thread["steps"])
-    assert await layer.get_favorite_steps(seeded.user.id) == []
+    if thread is None:
+        raise AssertionError("thread is not None")
+    if not (all(s.get("id") != step["id"] for s in thread["steps"])):
+        raise AssertionError('all(s.get("id") != step["id"] for s in thread["steps"])')
+    if await layer.get_favorite_steps(seeded.user.id) != []:
+        raise AssertionError("await layer.get_favorite_steps(seeded.user.id) == []")
 
 
 async def test_upsert_and_delete_feedback(seeded: Seed):
@@ -77,16 +90,21 @@ async def test_upsert_and_delete_feedback(seeded: Seed):
         threadId=seeded.thread_id,
     )
     feedback_id = await layer.upsert_feedback(feedback)
-    assert feedback_id
+    if not (feedback_id):
+        raise AssertionError("feedback_id")
 
     thread = await layer.get_thread(seeded.thread_id)
-    assert thread is not None
+    if thread is None:
+        raise AssertionError("thread is not None")
     step = next(s for s in thread["steps"] if s.get("id") == seeded.answer_step_id)
     feedback_dict = step.get("feedback")
-    assert feedback_dict is not None
-    assert feedback_dict["value"] == 1
+    if feedback_dict is None:
+        raise AssertionError("feedback_dict is not None")
+    if feedback_dict["value"] != 1:
+        raise AssertionError('feedback_dict["value"] == 1')
 
-    assert await layer.delete_feedback(feedback_id) is True
+    if await layer.delete_feedback(feedback_id) is not True:
+        raise AssertionError("await layer.delete_feedback(feedback_id) is True")
 
 
 async def test_create_get_delete_element(
@@ -104,20 +122,27 @@ async def test_create_get_delete_element(
     await layer.create_element(element)
 
     fetched = await layer.get_element(seeded.thread_id, element.id)
-    assert fetched is not None
-    assert fetched.get("id") == element.id
-    assert fetched.get("url")
+    if fetched is None:
+        raise AssertionError("fetched is not None")
+    if fetched.get("id") != element.id:
+        raise AssertionError('fetched.get("id") == element.id')
+    if not (fetched.get("url")):
+        raise AssertionError('fetched.get("url")')
 
     # путь не хранится, а вычисляется по шаблону от пользователя сессии
     object_key = ObjectKey.build(
         seeded.user.id, seeded.thread_id, element.name, element.id
     ).render()
-    assert object_key.endswith("/upload/note.txt")
-    assert (files_dir / object_key).read_bytes() == b"payload"
+    if not (object_key.endswith("/upload/note.txt")):
+        raise AssertionError('object_key.endswith("/upload/note.txt")')
+    if (files_dir / object_key).read_bytes() != b"payload":
+        raise AssertionError('(files_dir / object_key).read_bytes() == b"payload"')
 
     await layer.delete_element(element.id)
-    assert await layer.get_element(seeded.thread_id, element.id) is None
-    assert not (files_dir / object_key).exists()
+    if await layer.get_element(seeded.thread_id, element.id) is not None:
+        raise AssertionError("await layer.get_element(seeded.thread_id, element.id) i…")
+    if (files_dir / object_key).exists():
+        raise AssertionError("not (files_dir / object_key).exists()")
 
 
 async def test_element_uploaded_by_route_keeps_its_stored_content(
@@ -145,8 +170,10 @@ async def test_element_uploaded_by_route_keeps_its_stored_content(
     await layer.create_element(element)
 
     fetched = await layer.get_element(seeded.thread_id, element.id)
-    assert fetched is not None
-    assert stored.read_bytes() == b"streamed by the upload route"
+    if fetched is None:
+        raise AssertionError("fetched is not None")
+    if stored.read_bytes() != b"streamed by the upload route":
+        raise AssertionError('stored.read_bytes() == b"streamed by the upload route"')
 
 
 async def test_custom_element_keeps_props_out_of_storage(
@@ -169,30 +196,41 @@ async def test_custom_element_keeps_props_out_of_storage(
     await layer.create_element(element)
 
     fetched = await layer.get_element(seeded.thread_id, element.id)
-    assert fetched is not None
-    assert fetched.get("props") == {"call_id": "call-1", "label": "bash"}
+    if fetched is None:
+        raise AssertionError("fetched is not None")
+    if fetched.get("props") != {"call_id": "call-1", "label": "bash"}:
+        raise AssertionError('fetched.get("props") == {"call_id": "call-1", "label": …')
 
     object_key = ObjectKey.build(
         seeded.user.id, seeded.thread_id, element.name, element.id
     ).render()
-    assert not (files_dir / object_key).exists()
+    if (files_dir / object_key).exists():
+        raise AssertionError("not (files_dir / object_key).exists()")
 
 
 async def test_get_thread_builds_steps_from_history(seeded: Seed):
     layer = seeded.layer
     thread = await layer.get_thread(seeded.thread_id)
-    assert thread is not None
-    assert thread["id"] == seeded.thread_id
-    assert thread["tags"] == ["a"]
+    if thread is None:
+        raise AssertionError("thread is not None")
+    if thread["id"] != seeded.thread_id:
+        raise AssertionError('thread["id"] == seeded.thread_id')
+    if thread["tags"] != ["a"]:
+        raise AssertionError('thread["tags"] == ["a"]')
 
     outputs = [(s.get("type"), s.get("output")) for s in thread["steps"]]
-    assert outputs == [("user_message", "hi"), ("assistant_message", "hello")]
+    if outputs != [("user_message", "hi"), ("assistant_message", "hello")]:
+        raise AssertionError('outputs == [("user_message", "hi"), ("assistant_message…')
     answer = thread["steps"][1]
-    assert answer.get("id") == seeded.answer_step_id
-    assert answer.get("feedback") is None
-    assert thread["elements"] == []
+    if answer.get("id") != seeded.answer_step_id:
+        raise AssertionError('answer.get("id") == seeded.answer_step_id')
+    if answer.get("feedback") is not None:
+        raise AssertionError('answer.get("feedback") is None')
+    if thread["elements"] != []:
+        raise AssertionError('thread["elements"] == []')
 
-    assert await layer.get_thread(str(uuid4())) is None
+    if await layer.get_thread(str(uuid4())) is not None:
+        raise AssertionError("await layer.get_thread(str(uuid4())) is None")
 
 
 async def test_thread_without_history_has_no_steps(seeded: Seed):
@@ -203,8 +241,10 @@ async def test_thread_without_history_has_no_steps(seeded: Seed):
     )
     empty = next(t for t in threads.data if t["id"] != seeded.thread_id)
     thread = await layer.get_thread(empty["id"])
-    assert thread is not None
-    assert thread["steps"] == []
+    if thread is None:
+        raise AssertionError("thread is not None")
+    if thread["steps"] != []:
+        raise AssertionError('thread["steps"] == []')
 
 
 async def test_list_threads(seeded: Seed):
@@ -213,7 +253,8 @@ async def test_list_threads(seeded: Seed):
         Pagination(first=10),
         ThreadFilter(userId=seeded.user.id),
     )
-    assert any(t["id"] == seeded.thread_id for t in page.data)
+    if not (any(t["id"] == seeded.thread_id for t in page.data)):
+        raise AssertionError('any(t["id"] == seeded.thread_id for t in page.data)')
 
     with pytest.raises(DataRejectedError, match="userId is required"):
         await layer.list_threads(Pagination(first=10), ThreadFilter())
@@ -222,11 +263,13 @@ async def test_list_threads(seeded: Seed):
 async def test_delete_thread(seeded: Seed):
     layer = seeded.layer
     await layer.delete_thread(seeded.thread_id)
-    assert await layer.get_thread(seeded.thread_id) is None
+    if await layer.get_thread(seeded.thread_id) is not None:
+        raise AssertionError("await layer.get_thread(seeded.thread_id) is None")
 
 
 async def test_build_debug_url(layer: PostgresDataLayer):
-    assert await layer.build_debug_url() == ""
+    if await layer.build_debug_url() != "":
+        raise AssertionError('await layer.build_debug_url() == ""')
 
 
 async def test_close_releases_storage(layer: PostgresDataLayer):

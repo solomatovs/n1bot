@@ -76,8 +76,10 @@ class TestTracerFailuresVisible:
     def test_tool_start_failure_shown(self, shown: list[str]) -> None:
         tracer = _tracer()
         asyncio.run(tracer.on_tool_start({}, "", run_id=uuid4(), inputs={}))
-        assert shown
-        assert "on_tool_start" in shown[0]
+        if not (shown):
+            raise AssertionError("shown")
+        if "on_tool_start" not in shown[0]:
+            raise AssertionError('"on_tool_start" in shown[0]')
 
     def test_llm_end_failure_shown(self, shown: list[str]) -> None:
         tracer = _tracer()
@@ -89,14 +91,18 @@ class TestTracerFailuresVisible:
             await tracer.on_llm_end(LLMResult(generations=[]), run_id=run_id)
 
         asyncio.run(_run())
-        assert shown
-        assert "on_llm_end" in shown[0]
+        if not (shown):
+            raise AssertionError("shown")
+        if "on_llm_end" not in shown[0]:
+            raise AssertionError('"on_llm_end" in shown[0]')
 
     def test_failure_does_not_break_the_turn(self, shown: list[str]) -> None:
         tracer = _tracer()
         result = asyncio.run(tracer.on_tool_start({}, "", run_id=uuid4(), inputs={}))
-        assert result is None
-        assert shown
+        if result is not None:
+            raise AssertionError("result is None")
+        if not (shown):
+            raise AssertionError("shown")
 
 
 class TestDataLayerErrorContract:
@@ -115,11 +121,14 @@ class TestDataLayerErrorContract:
         with pytest.raises(DataLayerError) as failure:
             asyncio.run(create(layer, element))
 
-        assert "create_element" in str(failure.value)
-        assert not shown
+        if "create_element" not in str(failure.value):
+            raise AssertionError('"create_element" in str(failure.value)')
+        if shown:
+            raise AssertionError("not shown")
 
     def test_element_without_for_id_is_skipped(self, shown: list[str]) -> None:
         layer = self._layer()
         create = PostgresDataLayer.create_element.__wrapped__
         asyncio.run(create(layer, _Element(for_id=None)))
-        assert not shown
+        if shown:
+            raise AssertionError("not shown")

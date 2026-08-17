@@ -7,6 +7,7 @@ from typing import Any
 
 import chainlit as cl
 from boba.chainlit.domain.errors import BaseError, FailureReport
+from boba.chainlit.domain.session import LogLine
 
 __all__ = ["chainlit_error_ctx_handler", "show_error"]
 
@@ -18,7 +19,7 @@ async def show_error(
 ) -> None:
     """Сбой в чат сообщением: raise из фоновых тасок chainlit не доходит до UI."""
     logger = logging.getLogger("chainlit_handler")
-    logger.error(content)
+    logger.error(LogLine.safe(content))
     message = cl.ErrorMessage(
         author=author,
         content=content,

@@ -22,13 +22,17 @@ def web_cfg(raw_config) -> WebGrepConfig:
 @pytest.fixture(scope="module")
 def whitelisted_url(web_cfg: WebGrepConfig) -> str:
     hosts = sorted(web_cfg.profiles)
-    assert hosts, "[tool.web.profiles] пуст — web-инструментам некуда ходить"
+    if not (hosts):
+        raise AssertionError(
+            "[tool.web.profiles] пуст — web-инструментам некуда ходить"
+        )
     return f"https://{hosts[0]}/"
 
 
 async def test_run_web_fetch(web_cfg: WebGrepConfig, whitelisted_url: str) -> None:
     body = ToolMain.toolset(web_fetch_page)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(
         url=whitelisted_url,
@@ -43,7 +47,8 @@ async def test_run_web_fetch(web_cfg: WebGrepConfig, whitelisted_url: str) -> No
 
 async def test_run_web_grep(web_cfg: WebGrepConfig, whitelisted_url: str) -> None:
     body = ToolMain.toolset(web_grep_page)[0].coroutine
-    assert body is not None
+    if body is None:
+        raise AssertionError("body is not None")
 
     content, _artifact = await body(
         url=whitelisted_url,

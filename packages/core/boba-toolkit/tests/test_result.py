@@ -10,11 +10,13 @@ class TestRenderForLlm:
         result = CustomElementResult(
             element="Mermaid", props={"spec": "erDiagram"}, title="Схема заказов"
         )
-        assert render_for_llm(result) == "[Mermaid rendered: Схема заказов]"
+        if render_for_llm(result) != "[Mermaid rendered: Схема заказов]":
+            raise AssertionError('render_for_llm(result) == "[Mermaid rendered: Схема…')
 
     def test_without_title(self) -> None:
         result = CustomElementResult(element="Mermaid", props={"spec": "erDiagram"})
-        assert render_for_llm(result) == "[Mermaid rendered]"
+        if render_for_llm(result) != "[Mermaid rendered]":
+            raise AssertionError('render_for_llm(result) == "[Mermaid rendered]"')
 
 
 class TestRevive:
@@ -29,8 +31,11 @@ class TestRevive:
 
         revived = ToolArtifact.revive(result.model_dump())
 
-        assert isinstance(revived, CustomElementResult)
-        assert revived == result
+        if not (isinstance(revived, CustomElementResult)):
+            raise AssertionError("isinstance(revived, CustomElementResult)")
+        if revived != result:
+            raise AssertionError("revived == result")
 
     def test_unknown_kind_is_ignored(self) -> None:
-        assert ToolArtifact.revive({"kind": "no_such_kind"}) is None
+        if ToolArtifact.revive({"kind": "no_such_kind"}) is not None:
+            raise AssertionError('ToolArtifact.revive({"kind": "no_such_kind"}) is No…')

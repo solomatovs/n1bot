@@ -36,17 +36,21 @@ class TestAnswerOrder:
 
         await view.stream_answer("Сейчас нарисую", TURN)
         first = view.answer_message
-        assert first is not None
+        if first is None:
+            raise AssertionError("first is not None")
 
         await view.tool_started("diagram_save", {"name": "a.mmd"}, "call-1")
 
-        assert view.answer_message is None
+        if view.answer_message is not None:
+            raise AssertionError("view.answer_message is None")
 
         await view.stream_answer("Готово", TURN)
         second = view.answer_message
 
-        assert second is not None
-        assert second.id != first.id
+        if second is None:
+            raise AssertionError("second is not None")
+        if second.id == first.id:
+            raise AssertionError("second.id != first.id")
 
     @pytest.mark.anyio
     async def test_answers_of_one_turn_have_distinct_ids(
@@ -59,11 +63,13 @@ class TestAnswerOrder:
         for index in range(3):
             await view.stream_answer(f"часть {index}", TURN)
             message = view.answer_message
-            assert message is not None
+            if message is None:
+                raise AssertionError("message is not None")
             seen.append(message.id)
             await view.tool_started("bash", {"cmd": "ls"}, f"call-{index}")
 
-        assert len(set(seen)) == len(seen)
+        if len(set(seen)) != len(seen):
+            raise AssertionError("len(set(seen)) == len(seen)")
 
 
 class TestToolInput:
@@ -78,19 +84,26 @@ class TestToolInput:
             {"name": "a.mmd", "spec": "flowchart LR\n    A --> B"}
         )
 
-        assert show_input is True
-        assert "**spec:**" in rendered
-        assert "```\nflowchart LR\n    A --> B\n```" in rendered
-        assert "\\n" not in rendered
+        if show_input is not True:
+            raise AssertionError("show_input is True")
+        if "**spec:**" not in rendered:
+            raise AssertionError('"**spec:**" in rendered')
+        if "```\nflowchart LR\n    A --> B\n```" not in rendered:
+            raise AssertionError('"```\\nflowchart LR\\n A --> B\\n```" in rendered')
+        if "\\n" in rendered:
+            raise AssertionError('"\\\\n" not in rendered')
 
     def test_single_line_arguments_stay_json(self) -> None:
         rendered, show_input = self._render({"path": "/workspace/a.png"})
 
-        assert show_input == "json"
-        assert rendered.startswith("{")
+        if show_input != "json":
+            raise AssertionError('show_input == "json"')
+        if not (rendered.startswith("{")):
+            raise AssertionError('rendered.startswith("{")')
 
     def test_fence_longer_than_any_inside_the_value(self) -> None:
         """Спека с ``` внутри не должна разрывать блок."""
         rendered, _ = self._render({"spec": "flowchart LR\n```\n    A --> B"})
 
-        assert "````\nflowchart LR" in rendered
+        if "````\nflowchart LR" not in rendered:
+            raise AssertionError('"````\\nflowchart LR" in rendered')

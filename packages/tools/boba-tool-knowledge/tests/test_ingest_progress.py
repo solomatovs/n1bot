@@ -342,10 +342,14 @@ class TestIoLogging:
         with caplog.at_level(logging.INFO):
             await stand.run()
 
-        assert _matching(caplog, "db diff_by_hash start")
-        assert _matching(caplog, "db diff_by_hash done")
-        assert _matching(caplog, "db upsert start")
-        assert _matching(caplog, "db upsert done")
+        if not (_matching(caplog, "db diff_by_hash start")):
+            raise AssertionError('_matching(caplog, "db diff_by_hash start")')
+        if not (_matching(caplog, "db diff_by_hash done")):
+            raise AssertionError('_matching(caplog, "db diff_by_hash done")')
+        if not (_matching(caplog, "db upsert start")):
+            raise AssertionError('_matching(caplog, "db upsert start")')
+        if not (_matching(caplog, "db upsert done")):
+            raise AssertionError('_matching(caplog, "db upsert done")')
 
     async def test_page_and_attachment_fetch_are_bracketed(
         self, caplog: pytest.LogCaptureFixture
@@ -354,10 +358,14 @@ class TestIoLogging:
         with caplog.at_level(logging.INFO):
             await stand.run()
 
-        assert len(_matching(caplog, "fetch page start")) == len(PAGE_IDS)
-        assert len(_matching(caplog, "fetch page done")) == len(PAGE_IDS)
-        assert len(_matching(caplog, "fetch attachment start")) == 2 * len(PAGE_IDS)
-        assert len(_matching(caplog, "fetch attachment done")) == 2 * len(PAGE_IDS)
+        if len(_matching(caplog, "fetch page start")) != len(PAGE_IDS):
+            raise AssertionError('len(_matching(caplog, "fetch page start")) == len(P…')
+        if len(_matching(caplog, "fetch page done")) != len(PAGE_IDS):
+            raise AssertionError('len(_matching(caplog, "fetch page done")) == len(PA…')
+        if len(_matching(caplog, "fetch attachment start")) != 2 * len(PAGE_IDS):
+            raise AssertionError('len(_matching(caplog, "fetch attachment start")) ==…')
+        if len(_matching(caplog, "fetch attachment done")) != 2 * len(PAGE_IDS):
+            raise AssertionError('len(_matching(caplog, "fetch attachment done")) == …')
 
     async def test_read_and_chunking_are_bracketed(
         self, caplog: pytest.LogCaptureFixture
@@ -366,10 +374,14 @@ class TestIoLogging:
         with caplog.at_level(logging.INFO):
             await stand.run()
 
-        assert _matching(caplog, "read start")
-        assert _matching(caplog, "read done")
-        assert _matching(caplog, "chunking start")
-        assert _matching(caplog, "chunking done")
+        if not (_matching(caplog, "read start")):
+            raise AssertionError('_matching(caplog, "read start")')
+        if not (_matching(caplog, "read done")):
+            raise AssertionError('_matching(caplog, "read done")')
+        if not (_matching(caplog, "chunking start")):
+            raise AssertionError('_matching(caplog, "chunking start")')
+        if not (_matching(caplog, "chunking done")):
+            raise AssertionError('_matching(caplog, "chunking done")')
 
 
 class TestProgress:
@@ -383,21 +395,27 @@ class TestProgress:
             await stand.run()
 
         summary = stand.progress.render()
-        assert "pages 2/2" in summary
-        assert "attachments 6/6" in summary
-        assert "chunks 0" not in summary
-        assert "failed 0" in summary
+        if "pages 2/2" not in summary:
+            raise AssertionError('"pages 2/2" in summary')
+        if "attachments 6/6" not in summary:
+            raise AssertionError('"attachments 6/6" in summary')
+        if "chunks 0" in summary:
+            raise AssertionError('"chunks 0" not in summary')
+        if "failed 0" not in summary:
+            raise AssertionError('"failed 0" in summary')
 
     async def test_open_discovery_is_marked(self) -> None:
         progress = IngestProgress(LOGGER)
         progress.pages_found(10)
         progress.page_done()
 
-        assert "pages 1/10+" in progress.render()
+        if "pages 1/10+" not in progress.render():
+            raise AssertionError('"pages 1/10+" in progress.render()')
 
         progress.pages_closed()
 
-        assert "pages 1/10" in progress.render()
+        if "pages 1/10" not in progress.render():
+            raise AssertionError('"pages 1/10" in progress.render()')
 
     async def test_summary_is_logged_after_every_page(
         self, caplog: pytest.LogCaptureFixture
@@ -406,11 +424,13 @@ class TestProgress:
         with caplog.at_level(logging.INFO):
             await stand.run()
 
-        assert len(_matching(caplog, "progress: spaces")) >= len(PAGE_IDS)
+        if len(_matching(caplog, "progress: spaces")) < len(PAGE_IDS):
+            raise AssertionError('len(_matching(caplog, "progress: spaces")) >= len(P…')
 
     async def test_spaces_are_counted(self) -> None:
         progress = IngestProgress(LOGGER)
         progress.spaces_found(3)
         progress.space_done("DOCS")
 
-        assert "spaces 1/3" in progress.render()
+        if "spaces 1/3" not in progress.render():
+            raise AssertionError('"spaces 1/3" in progress.render()')
