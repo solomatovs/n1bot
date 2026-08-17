@@ -208,41 +208,22 @@ class TestOfficeNonAsciiNames:
     ASCII_NAME: ClassVar[str] = "user manual_v9.docx"
     CYRILLIC_NAME: ClassVar[str] = "Инструкция пользователя Магазина данных_v9.docx"
 
-    CONTENT_TYPES: ClassVar[str] = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-        '<Default Extension="rels" ContentType='
-        '"application/vnd.openxmlformats-package.relationships+xml"/>'
-        '<Default Extension="xml" ContentType="application/xml"/>'
-        '<Override PartName="/word/document.xml" ContentType='
-        '"application/vnd.openxmlformats-officedocument'
-        '.wordprocessingml.document.main+xml"/>'
-        "</Types>"
-    )
-    RELS: ClassVar[str] = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        "<Relationships xmlns="
-        '"http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org'
-        '/officeDocument/2006/relationships/officeDocument" '
-        'Target="word/document.xml"/>'
-        "</Relationships>"
-    )
-    DOCUMENT: ClassVar[str] = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        "<w:document xmlns:w="
-        '"http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        "<w:body><w:p><w:r><w:t>Alpha section one</w:t></w:r></w:p></w:body>"
-        "</w:document>"
+    FIXTURES: ClassVar[Path] = Path(__file__).parent / "fixtures" / "docx"
+    """Части docx лежат файлами: в коде их namespace'ам делать нечего."""
+
+    PARTS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("[Content_Types].xml", "content_types.xml"),
+        ("_rels/.rels", "rels.xml"),
+        ("word/document.xml", "document.xml"),
     )
 
     @classmethod
     def _docx(cls) -> bytes:
         buffer = BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
-            archive.writestr("[Content_Types].xml", cls.CONTENT_TYPES)
-            archive.writestr("_rels/.rels", cls.RELS)
-            archive.writestr("word/document.xml", cls.DOCUMENT)
+            for inside, fixture in cls.PARTS:
+                body = (cls.FIXTURES / fixture).read_text(encoding="utf-8")
+                archive.writestr(inside, body)
         return buffer.getvalue()
 
     @pytest.fixture

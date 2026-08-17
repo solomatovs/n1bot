@@ -121,12 +121,27 @@ class CgroupManager:
     _lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(self, base: str) -> None:
-        self._base = base
+        # база приходит из конфига: раскрываем симлинки и `..` один раз, дальше
+        # по дереву ходим только относительно неё
+        self._base = os.path.realpath(base)
+
+    def _inside(self, *parts: str) -> str:
+        """Путь в поддереве базы; выйти за её пределы нельзя."""
+        candidate = os.path.realpath(os.path.join(self._base, *parts))
+
+        if candidate == self._base:
+            return candidate
+
+        if candidate.startswith(self._base + os.sep):
+            return candidate
+
+        msg = f"cgroup: path escapes {self._base}: {candidate}"
+        raise CgroupError(msg)
 
     def acquire(self, limits: GroupLimits) -> str:
         """Создаёт leaf под один запуск, пишет лимиты; возвращает путь."""
         self._prepare(limits.controllers)
-        leaf = os.path.join(self._base, f"run-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+        leaf = self._inside(f"run-{os.getpid()}-{uuid.uuid4().hex[:8]}")
         try:
             os.mkdir(leaf)
             self._write_limits(leaf, limits)

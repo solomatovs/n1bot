@@ -26,6 +26,7 @@ from typing import Any
 
 import httpx
 import pytest
+from conftest import FakeUrl
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -33,7 +34,7 @@ REPO = Path(__file__).resolve().parents[4]
 LAUNCHER = REPO / ".venv/bin/python"
 ENTRY = REPO / "packages/agents/boba-chainlit/src/boba/chainlit/main.py"
 PORT = int(os.environ.get("BOBA_E2E_PORT", "8601"))
-BASE = f"http://127.0.0.1:{PORT}/boba-debug"
+BASE = FakeUrl.loopback(PORT, "/boba-debug")
 USER_ID = "1"
 LOGIN = ("admin", "myPassdfd3")
 
@@ -42,10 +43,7 @@ PNG = bytes.fromhex(
     "8d32cfbd0000001a49444154789c63fcffff3f0324a6018a03a0d80751"
     "8c00e30600002e2c0201f3ba9d5c0000000049454e44ae426082"
 )
-SVG = (
-    b'<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40">'
-    b'<rect width="120" height="40" fill="#4c7cf0"/></svg>'
-)
+SVG = (Path(__file__).parent / "fixtures" / "probe.svg").read_bytes()
 BROKEN_MMD = (
     "flowchart LR\n"
     '    A["Доход"] --> B["Вычеты"]\n'

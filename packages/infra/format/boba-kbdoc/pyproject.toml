@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-kbdoc"
-version = "0.0.12.dev4"
+version = "0.0.12.dev5"
 description = "Boba KB-document format: Reader-обёртка с header'ом (**key:** value) поверх произвольного inner Reader[str]."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-indexing==0.0.12.dev4",
+    "boba-indexing==0.0.12.dev5",
 ]
 
 [tool.setuptools.packages.find]

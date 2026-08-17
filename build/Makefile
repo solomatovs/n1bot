@@ -72,7 +72,9 @@ TESSDATA_REPO   ?= https://github.com/tesseract-ocr/tessdata_best/raw/main
 TESSDATA_SHA256 ?= eng:8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba   \
     rus:b617eb6830ffabaaa795dd87ea7fd251adfe9cf0efe05eb9a2e8128b7728d6b6                 \
     osd:9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff
-# embedding-веса fastembed
+# embedding-веса fastembed; версия качалки фиксируется — иначе в образ
+# приедет произвольная сборка со своим набором моделей
+FASTEMBED_VERSION ?= 0.8.0
 EMBED_MODELS    ?= intfloat/multilingual-e5-large
 # суммы скачанных весов: библиотека тянет их сама, проверяем по факту
 FASTEMBED_MANIFEST := $(CONF_DIR)/fastembed.sha256
@@ -482,7 +484,7 @@ fastembed: base
 	  -v "$(DEPS_DIR)/fastembed":/fastembed                                               \
 	  --entrypoint sh $(BASE_IMAGE) -c '
 	    set -e
-	    pip3 install --no-cache-dir fastembed
+	    pip3 install --no-cache-dir "fastembed==$(FASTEMBED_VERSION)"
 	    for m in $$EMBED_MODELS; do
 	      echo ">>> fastembed: $$m"
 	      python3 -c "import sys; from fastembed import TextEmbedding;

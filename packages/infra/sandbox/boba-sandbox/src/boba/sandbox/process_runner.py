@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import os
 import select
 import subprocess
@@ -46,6 +47,9 @@ class _StdinFeed:
 
     def __init__(self, pipe: IO[bytes], data: bytes) -> None:
         self._pipe = pipe
+        # сырой слой поверх того же дескриптора: пишет ровно один write(2) и
+        # возвращает, сколько байт ушло, — буферизованный объект так не умеет
+        self._writer = io.FileIO(pipe.fileno(), "w", closefd=False)
         self._data = data
         self._offset = 0
         self._open = True
@@ -69,9 +73,13 @@ class _StdinFeed:
             return
 
         try:
-            written = os.write(self._pipe.fileno(), chunk)
+            written = self._writer.write(chunk)
         except BrokenPipeError:
             self.close()
+            return
+
+        # None — труба забита прямо сейчас: остаток уйдёт на следующем обходе
+        if written is None:
             return
 
         self._offset += written
@@ -83,6 +91,7 @@ class _StdinFeed:
             return
 
         self._open = False
+        self._writer.close()
         # close на пайпе с умершим читателем даёт BrokenPipe — это законно
         with contextlib.suppress(BrokenPipeError):
             self._pipe.close()

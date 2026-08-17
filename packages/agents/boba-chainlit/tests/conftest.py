@@ -44,6 +44,13 @@ class FakeUrl(StrEnum):
 
     BASE = "https://boba"
     WORKSPACE = "https://boba/workspace"
+    LOOPBACK_SCHEME = "http"
+    LOOPBACK_HOST = "127.0.0.1"
+
+    @classmethod
+    def loopback(cls, port: int, path: str = "") -> str:
+        """Адрес локального стенда: сервер поднимается тестом, TLS ему негде взять."""
+        return f"{cls.LOOPBACK_SCHEME}://{cls.LOOPBACK_HOST}:{port}{path}"
 
 
 class FakeThreadMessages:

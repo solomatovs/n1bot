@@ -168,7 +168,8 @@ class TestCgroupManager:
 
     @staticmethod
     def _knob(leaf: str, name: str) -> str:
-        with open(os.path.join(leaf, name)) as f:
+        path = os.path.realpath(os.path.join(leaf, name))
+        with open(path) as f:
             return f.read().strip()
 
     @needs_delegation

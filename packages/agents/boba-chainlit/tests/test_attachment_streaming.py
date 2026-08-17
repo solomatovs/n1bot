@@ -17,6 +17,7 @@ from typing import Any, ClassVar, Self
 import pytest
 import uvicorn
 from chainlit.auth import get_current_user
+from conftest import FakeUrl
 from fastapi import FastAPI
 from httpx import AsyncClient
 
@@ -119,7 +120,7 @@ class LiveServer:
     @property
     def base_url(self) -> str:
         port = self._server.servers[0].sockets[0].getsockname()[1]
-        return f"http://127.0.0.1:{port}"
+        return FakeUrl.loopback(port)
 
 
 class ServedUser:

@@ -19,6 +19,69 @@ import {
   X,
 } from "lucide-react";
 
+// Браузерные API держим в одной точке: при серверном рендере их нет, а
+// разбросанные по обработчикам обращения проверить негде.
+const browser = {
+  get doc() {
+    if (typeof document === "undefined") return null;
+    return document;
+  },
+  get win() {
+    if (typeof window === "undefined") return null;
+    return window;
+  },
+  find(selector) {
+    const doc = this.doc;
+    if (!doc) return null;
+    return doc.querySelector(selector);
+  },
+  byId(id) {
+    const doc = this.doc;
+    if (!doc) return null;
+    return doc.getElementById(id);
+  },
+  create(tag) {
+    const doc = this.doc;
+    if (!doc) return null;
+    return doc.createElement(tag);
+  },
+  root() {
+    const doc = this.doc;
+    if (!doc) return null;
+    return doc.documentElement;
+  },
+  head() {
+    const doc = this.doc;
+    if (!doc) return null;
+    return doc.head;
+  },
+  body() {
+    const doc = this.doc;
+    if (!doc) return null;
+    return doc.body;
+  },
+  global(name) {
+    const win = this.win;
+    if (!win) return undefined;
+    return win[name];
+  },
+  emit(event) {
+    const win = this.win;
+    if (!win) return;
+    win.dispatchEvent(event);
+  },
+  listen(name, handler) {
+    const win = this.win;
+    if (!win) return;
+    win.addEventListener(name, handler);
+  },
+  unlisten(name, handler) {
+    const win = this.win;
+    if (!win) return;
+    win.removeEventListener(name, handler);
+  },
+};
+
 const MERMAID_PATH = "/public/vendor/mermaid/mermaid.min.js";
 const SWITCH_EVENT = "boba:canvas";
 // пересохранение файла: открытая панель того же пути перерисовывается на месте,
@@ -29,25 +92,25 @@ const REFRESH_EVENT = "boba:canvas-refresh";
 // компонент: тег переиспользуется всеми диаграммами на странице.
 function useMermaid(needed) {
   const [state, setState] = useState(() =>
-    window.mermaid ? "ready" : "loading"
+    browser.global("mermaid") ? "ready" : "loading"
   );
 
   useEffect(() => {
-    if (!needed || window.mermaid) {
-      if (window.mermaid) setState("ready");
+    if (!needed || browser.global("mermaid")) {
+      if (browser.global("mermaid")) setState("ready");
       return;
     }
 
     const rootPath =
-      document.querySelector('meta[property="og:root_path"]')?.content || "";
+      browser.find('meta[property="og:root_path"]')?.content || "";
     const src = rootPath.replace(/\/$/, "") + MERMAID_PATH;
 
-    let script = document.querySelector(`script[src="${src}"]`);
+    let script = browser.find(`script[src="${src}"]`);
     if (!script) {
-      script = document.createElement("script");
+      script = browser.create("script");
       script.src = src;
       script.async = true;
-      document.head.appendChild(script);
+      browser.head()?.appendChild(script);
     }
 
     const onLoad = () => setState("ready");
@@ -152,7 +215,7 @@ function TrailButton({ full }) {
   }
 
   const closePanel = () => {
-    const back = document.querySelector("#side-view-title button");
+    const back = browser.find("#side-view-title button");
     if (back) back.click();
   };
 
@@ -381,7 +444,7 @@ function Diagram({ content }) {
   const [svg, setSvg] = useState("");
   const [error, setError] = useState(null);
   const [dark, setDark] = useState(() =>
-    document.documentElement.classList.contains("dark")
+    browser.root()?.classList.contains("dark") || false
   );
   const idRef = useRef(`mmd-${Math.random().toString(36).slice(2)}`);
   const hostRef = useRef(null);
@@ -401,7 +464,8 @@ function Diagram({ content }) {
   };
 
   useEffect(() => {
-    const root = document.documentElement;
+    const root = browser.root();
+    if (!root) return undefined;
     const observer = new MutationObserver(() =>
       setDark(root.classList.contains("dark"))
     );
@@ -418,7 +482,7 @@ function Diagram({ content }) {
     if (library !== "ready") return;
 
     let cancelled = false;
-    window.mermaid.initialize({
+    browser.global("mermaid").initialize({
       startOnLoad: false,
       securityLevel: "strict",
       suppressErrorRendering: true,
@@ -426,7 +490,8 @@ function Diagram({ content }) {
     });
     // третий аргумент — контейнер в DOM: mindmap/timeline меряют разметку
     // при рендере и падают во временном неприкреплённом элементе
-    window.mermaid
+    browser
+      .global("mermaid")
       .render(idRef.current, spec, hostRef.current || undefined)
       .then((out) => {
         if (cancelled) return;
@@ -669,10 +734,11 @@ function StreamTail({ content }) {
   // скачивание — тем же роутом отдачи файлов; сервер шлёт весь .log целиком
   const download = () => {
     if (!view.url) return;
-    const link = document.createElement("a");
+    const link = browser.create("a");
+    if (!link) return;
     link.href = view.url;
     link.download = `${view.label || callId || "output"}.log`;
-    document.body.appendChild(link);
+    browser.body()?.appendChild(link);
     link.click();
     link.remove();
   };
@@ -866,7 +932,7 @@ export default function CanvasView() {
   // событие просто некому поймать
   useEffect(() => {
     if (!props.preview) return;
-    window.dispatchEvent(
+    browser.emit(
       new CustomEvent(REFRESH_EVENT, {
         detail: { path: content.path, content },
       })
@@ -884,14 +950,14 @@ export default function CanvasView() {
       setContent(detail.content);
     };
 
-    window.addEventListener(REFRESH_EVENT, onRefresh);
-    return () => window.removeEventListener(REFRESH_EVENT, onRefresh);
+    browser.listen(REFRESH_EVENT, onRefresh);
+    return () => browser.unlisten(REFRESH_EVENT, onRefresh);
   }, [content.path, props.preview]);
 
   // карточка в ленте: тот же рендер, но кликом показывает файл в панели
   const openInCanvas = () => {
-    if (document.getElementById("side-view-content")) {
-      window.dispatchEvent(
+    if (browser.byId("side-view-content")) {
+      browser.emit(
         new CustomEvent(SWITCH_EVENT, { detail: { path: content.path } })
       );
       return;
@@ -913,8 +979,8 @@ export default function CanvasView() {
       });
     };
 
-    window.addEventListener(SWITCH_EVENT, onSwitch);
-    return () => window.removeEventListener(SWITCH_EVENT, onSwitch);
+    browser.listen(SWITCH_EVENT, onSwitch);
+    return () => browser.unlisten(SWITCH_EVENT, onSwitch);
   }, [content.path, props.preview]);
 
   if (props.preview) {
