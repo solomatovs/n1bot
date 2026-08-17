@@ -43,7 +43,7 @@ class TestExportEnv:
     ) -> None:
         monkeypatch.delenv(AppEntry.APP_ROOT_ENV, raising=False)
         monkeypatch.delenv(AppEntry.ROOT_PATH_ENV, raising=False)
-        monkeypatch.delenv(AppEntry.AUTH_SECRET_ENV, raising=False)
+        monkeypatch.delenv(AppEntry.AUTH_ENV, raising=False)
 
         root = tmp_path / "data"
         AppEntry.export_env(self._config(tmp_path, str(root)))
@@ -52,8 +52,8 @@ class TestExportEnv:
             raise AssertionError("os.environ[AppEntry.APP_ROOT_ENV] == str(root)")
         if os.environ[AppEntry.ROOT_PATH_ENV] != "/boba":
             raise AssertionError('os.environ[AppEntry.ROOT_PATH_ENV] == "/boba"')
-        if os.environ[AppEntry.AUTH_SECRET_ENV] != FakeSecret.AUTH:
-            raise AssertionError("os.environ[AppEntry.AUTH_SECRET_ENV] == FakeSecret.…")
+        if os.environ[AppEntry.AUTH_ENV] != FakeSecret.AUTH:
+            raise AssertionError("os.environ[AppEntry.AUTH_ENV] == FakeSecret.…")
 
     def test_relative_root_resolved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

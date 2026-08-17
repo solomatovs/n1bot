@@ -33,6 +33,10 @@ class FakeSecret(StrEnum):
 
     LDAP_BIND = secrets.token_hex(8)
     AUTH = secrets.token_hex(8)
+    DB = secrets.token_hex(8)
+    DB_OTHER = secrets.token_hex(8)
+    HTTP_BASIC = secrets.token_hex(8)
+    HTTP_BEARER = secrets.token_hex(8)
 
 
 class FakeUrl(StrEnum):

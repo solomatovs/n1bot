@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from enum import IntEnum, StrEnum
 from typing import ClassVar, Protocol
@@ -148,23 +149,13 @@ class PathSegment:
     в os.path.join, поэтому проверяется на входе и только здесь.
     """
 
-    SAFE: ClassVar[frozenset[str]] = frozenset(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-    )
+    SAFE: ClassVar[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
+    """Сегмент целиком: только безопасные символы и без точки в начале."""
 
     @classmethod
     def checked(cls, value: str) -> str:
-        if not value:
-            msg = "empty path segment"
-            raise ValueError(msg)
-
-        unsafe = set(value) - cls.SAFE
-        if unsafe:
-            msg = f"unsafe characters in stream key segment: {sorted(unsafe)}"
-            raise ValueError(msg)
-
-        if value.startswith("."):
-            msg = f"stream key segment must not start with a dot: {value!r}"
+        if not cls.SAFE.fullmatch(value):
+            msg = f"unsafe path segment: {value!r}"
             raise ValueError(msg)
 
         return value

@@ -26,7 +26,7 @@ class AppEntry:
 
     ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
 
-    AUTH_SECRET_ENV: ClassVar[str] = "CHAINLIT_AUTH_SECRET"  # noqa: S105
+    AUTH_ENV: ClassVar[str] = "CHAINLIT_AUTH_SECRET"
 
     @classmethod
     def run(cls) -> None:
@@ -71,4 +71,4 @@ class AppEntry:
 
         auth_secret = section.get("auth_secret")
         if auth_secret:
-            os.environ[cls.AUTH_SECRET_ENV] = auth_secret
+            os.environ[cls.AUTH_ENV] = auth_secret

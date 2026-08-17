@@ -1,0 +1,122 @@
+rules:
+  - id: boba-apt-get-update-alone
+    languages: [generic]
+    severity: WARNING
+    paths:
+      include: ["Dockerfile*", "**/Dockerfile*"]
+    message: apt-get update оторван от install — слой закэшируется с устаревшим индексом
+    patterns:
+      - pattern-regex: 'apt-get\s+update\s*\\'
+
+  - id: boba-download-piped-to-shell
+    languages: [generic]
+    severity: WARNING
+    paths:
+      include: ["*.sh", "Dockerfile*", "**/Dockerfile*", "Makefile", "**/Makefile"]
+    message: код из сети исполняется без проверки целостности
+    patterns:
+      - pattern-regex: 'curl[^\n|]*\|\s*(tar|sh|bash|python3?)'
+
+  - id: boba-browser-api-direct
+    languages: [javascript, typescript]
+    severity: INFO
+    paths:
+      include: ["*.js", "*.jsx", "*.ts", "*.tsx"]
+    message: браузерное API вызывается напрямую (при SSR его не существует)
+    pattern-either:
+      - pattern: document.$X
+      - pattern: window.$X
+
+  - id: boba-file-op-dynamic-path
+    languages: [python]
+    severity: WARNING
+    message: путь файловой операции собран из значения, а не задан литералом
+    patterns:
+      - pattern-either:
+          - pattern: open($P, ...)
+          - pattern: os.makedirs($P, ...)
+          - pattern: os.mkdir($P, ...)
+          - pattern: os.remove($P)
+          - pattern: os.unlink($P)
+          - pattern: os.rmdir($P)
+          - pattern: os.rename($P, ...)
+          - pattern: shutil.rmtree($P, ...)
+      - pattern-not: open("...", ...)
+      - pattern-not: os.makedirs("...", ...)
+      - pattern-not: os.mkdir("...", ...)
+      - pattern-not: os.remove("...")
+      - pattern-not: os.unlink("...")
+      - pattern-not: os.rmdir("...")
+      - pattern-not: os.rename("...", ...)
+      - pattern-not: shutil.rmtree("...", ...)
+
+  - id: boba-subprocess-dynamic-argv
+    languages: [python]
+    severity: WARNING
+    message: аргументы процесса собраны из значений, а не заданы литералом
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.Popen($ARGV, ...)
+          - pattern: subprocess.run($ARGV, ...)
+          - pattern: subprocess.call($ARGV, ...)
+          - pattern: subprocess.check_output($ARGV, ...)
+          - pattern: os.execv($ARGV, ...)
+          - pattern: os.execvp($ARGV, ...)
+      - pattern-not: subprocess.Popen(["...", ...], ...)
+      - pattern-not: subprocess.run(["...", ...], ...)
+
+  - id: boba-plaintext-url
+    languages: [generic]
+    severity: INFO
+    paths:
+      include: ["*.py", "*.js", "*.jsx", "*.ts", "*.tsx", "*.toml", "*.yml", "*.yaml"]
+    message: адрес без шифрования — данные пойдут открытым текстом
+    patterns:
+      - pattern-regex: 'http://[a-zA-Z0-9]'
+
+  - id: boba-untrusted-install
+    languages: [generic]
+    severity: WARNING
+    paths:
+      include: ["*.sh", "Dockerfile*", "**/Dockerfile*", "Makefile", "**/Makefile"]
+    message: пакеты ставятся из сети без фиксации содержимого
+    patterns:
+      - pattern-regex: '(pip3?|uv pip|apt-get|npm)\s+install'
+
+  - id: boba-log-forging
+    languages: [python]
+    severity: WARNING
+    message: в журнал уходит значение целиком — перевод строки внутри подделает запись
+    patterns:
+      - pattern-either:
+          - pattern: $LOG.info($X)
+          - pattern: $LOG.warning($X)
+          - pattern: $LOG.error($X)
+          - pattern: $LOG.exception($X)
+          - pattern: $LOG.debug($X)
+      - pattern-not: $LOG.info("...")
+      - pattern-not: $LOG.warning("...")
+      - pattern-not: $LOG.error("...")
+      - pattern-not: $LOG.exception("...")
+      - pattern-not: $LOG.debug("...")
+
+  - id: boba-raw-fd-write
+    languages: [python]
+    severity: WARNING
+    message: запись в дескриптор данными, которые пришли снаружи
+    patterns:
+      - pattern: os.write($FD, $DATA)
+      - pattern-not: os.write($FD, b"...")
+
+  - id: boba-hardcoded-secret-literal
+    languages: [python]
+    severity: WARNING
+    message: имя намекает на секрет, а значение задано литералом
+    patterns:
+      - pattern-either:
+          - pattern: $NAME = "..."
+          - pattern: '$NAME: $T = "..."'
+          - pattern: $F(..., $NAME="...", ...)
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i).*(secret|password|passwd|token|api_?key|credential).*

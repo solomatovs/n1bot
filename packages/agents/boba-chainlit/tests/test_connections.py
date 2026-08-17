@@ -8,6 +8,7 @@ import secrets as std_secrets
 from typing import Literal
 
 import pytest
+from conftest import FakeSecret
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.chainlit.connections import (
@@ -164,31 +165,32 @@ class TestDeepEncryption:
 
 class TestRealProfiles:
     def test_postgres_password_is_a_secret(self) -> None:
-        if not (isinstance(_pg(password="p").password, SecretStr)):
-            raise AssertionError('isinstance(_pg(password="p").password, SecretStr)')
+        if not (isinstance(_pg(password=FakeSecret.DB).password, SecretStr)):
+            raise AssertionError("пароль профиля должен быть SecretStr")
 
     def test_postgres_password_encrypted(self) -> None:
-        sealed = _cipher().encrypt(_pg(password="СЕКРЕТ"))
+        sealed = _cipher().encrypt(_pg(password=FakeSecret.DB))
         if not (SecretCipher.is_encrypted(sealed["password"])):
             raise AssertionError('SecretCipher.is_encrypted(sealed["password"])')
-        if "СЕКРЕТ" in json.dumps(sealed, ensure_ascii=False):
-            raise AssertionError('"СЕКРЕТ" not in json.dumps(sealed, ensure_ascii=Fal…')
+        if FakeSecret.DB in json.dumps(sealed, ensure_ascii=False):
+            raise AssertionError("пароль утёк в зашифрованный дамп")
 
     def test_libpq_still_gets_a_plain_string(self) -> None:
-        if _pg(password="СЕКРЕТ").conn_settings()["password"] != "СЕКРЕТ":
-            raise AssertionError('_pg(password="СЕКРЕТ").conn_settings()["password"] …')
+        if _pg(password=FakeSecret.DB).conn_settings()["password"] != FakeSecret.DB:
+            raise AssertionError("libpq должен получать пароль строкой")
 
     def test_kind_does_not_leak_into_libpq(self) -> None:
         if "kind" in _pg().conn_settings():
             raise AssertionError('"kind" not in _pg().conn_settings()')
 
     def test_password_is_masked_in_dumps(self) -> None:
-        if "СЕКРЕТ" in _pg(password="СЕКРЕТ").model_dump_json():
-            raise AssertionError('"СЕКРЕТ" not in _pg(password="СЕКРЕТ").model_dump_j…')
+        if FakeSecret.DB in _pg(password=FakeSecret.DB).model_dump_json():
+            raise AssertionError("пароль виден в model_dump_json")
 
     def test_pool_cache_key_still_separates_passwords(self) -> None:
-        first = {**_pg(password="А").conn_settings(), **_pg().pool_settings()}
-        second = {**_pg(password="Б").conn_settings(), **_pg().pool_settings()}
+        pool = _pg().pool_settings()
+        first = {**_pg(password=FakeSecret.DB).conn_settings(), **pool}
+        second = {**_pg(password=FakeSecret.DB_OTHER).conn_settings(), **pool}
         if not (
             json.dumps(first, sort_keys=True, default=str)
             != json.dumps(
@@ -203,34 +205,38 @@ class TestRealProfiles:
         "auth",
         [
             NoneAuth(method="none"),
-            BasicAuth(method="basic", user="u", password=SecretStr("p4ss")),
-            BearerAuth(method="bearer", token=SecretStr("t0ken")),
-            DigestAuth(method="digest", user="u", password=SecretStr("p4ss")),
+            BasicAuth(
+                method="basic", user="u", password=SecretStr(FakeSecret.HTTP_BASIC)
+            ),
+            BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER)),
+            DigestAuth(
+                method="digest", user="u", password=SecretStr(FakeSecret.HTTP_BASIC)
+            ),
         ],
     )
     def test_web_auth_variants_roundtrip(self, auth) -> None:
         cipher = _cipher()
         sealed = cipher.encrypt(HttpProfile(base_url="https://x", auth=auth))
         blob = json.dumps(sealed, ensure_ascii=False)
-        if "p4ss" in blob:
-            raise AssertionError('"p4ss" not in blob')
-        if "t0ken" in blob:
-            raise AssertionError('"t0ken" not in blob')
+        if FakeSecret.HTTP_BASIC in blob:
+            raise AssertionError("пароль утёк в зашифрованный профиль")
+        if FakeSecret.HTTP_BEARER in blob:
+            raise AssertionError("токен утёк в зашифрованный профиль")
         if HttpProfile.model_validate(cipher.decrypt(sealed)).auth != auth:
             raise AssertionError("HttpProfile.model_validate(cipher.decrypt(sealed)).…")
 
     def test_httpx_auth_still_built(self) -> None:
-        bearer = BearerAuth(method="bearer", token=SecretStr("t"))
+        bearer = BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER))
         if bearer.httpx_auth() is None:
             raise AssertionError("bearer.httpx_auth() is not None")
 
     def test_token_masked_in_dump(self) -> None:
         profile = HttpProfile(
             base_url="https://x",
-            auth=BearerAuth(method="bearer", token=SecretStr("TOK")),
+            auth=BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER)),
         )
-        if "TOK" in profile.model_dump_json():
-            raise AssertionError('"TOK" not in profile.model_dump_json()')
+        if FakeSecret.HTTP_BEARER in profile.model_dump_json():
+            raise AssertionError("токен виден в model_dump_json")
 
 
 class TestConnectionKinds:

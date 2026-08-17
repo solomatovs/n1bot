@@ -124,8 +124,9 @@ class PostgresDataLayer(AttachmentDataLayer):
                     )
             except InsufficientPrivilege:
                 logger.info(
-                    f"no permission for CREATE SCHEMA {self._schema!r}, "
-                    "assuming an administrator created it"
+                    "no permission for CREATE SCHEMA %r, "
+                    "assuming an administrator created it",
+                    self._schema,
                 )
             for model in self._MODELS:
                 async with conn.transaction():

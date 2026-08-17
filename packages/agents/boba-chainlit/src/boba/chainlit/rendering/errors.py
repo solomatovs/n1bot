@@ -19,7 +19,7 @@ async def show_error(
 ) -> None:
     """Сбой в чат сообщением: raise из фоновых тасок chainlit не доходит до UI."""
     logger = logging.getLogger("chainlit_handler")
-    logger.error(LogLine.safe(content))
+    logger.error("%s", LogLine.safe(content))
     message = cl.ErrorMessage(
         author=author,
         content=content,
@@ -39,7 +39,7 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
 
     @staticmethod
     async def handle(e: BaseError):
-        logger.exception(FailureReport.of(e).log)
+        logger.exception("%s", LogLine.safe(FailureReport.of(e).log))
         if m := e.view_message():
             await show(m.content, m.author, m.fail_on_persist_error)
 
@@ -56,7 +56,7 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
         except Exception as e:
             # один разбор на журнал и чат: формулировка совпадает дословно
             report = FailureReport.of(e)
-            logger.exception(report.log)
+            logger.exception("%s", LogLine.safe(report.log))
             if report.view:
                 await show(report.view, "Error")
 

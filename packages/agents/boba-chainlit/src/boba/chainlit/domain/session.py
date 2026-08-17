@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator, Mapping
+import json
+from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -35,34 +36,13 @@ class LogLine:
     """Текст чужого происхождения в строке журнала: одна строка без управляющих.
 
     Ошибка инструмента и ответ модели попадают в лог как есть, а перевод строки
-    внутри них подделал бы соседнюю запись журнала.
+    внутри них подделал бы соседнюю запись журнала. Экранирует json: он
+    штатный кодировщик, а не своя таблица подстановок.
     """
-
-    ESCAPES: ClassVar[Mapping[str, str]] = {
-        "\\": "\\\\",
-        "\n": "\\n",
-        "\r": "\\r",
-        "\t": "\\t",
-    }
-    DELETE: ClassVar[str] = "\x7f"
 
     @classmethod
     def safe(cls, text: str) -> str:
-        chunks: list[str] = []
-
-        for char in text:
-            escape = cls.ESCAPES.get(char)
-            if escape is not None:
-                chunks.append(escape)
-                continue
-
-            if char < " " or char == cls.DELETE:
-                chunks.append(f"\\x{ord(char):02x}")
-                continue
-
-            chunks.append(char)
-
-        return "".join(chunks)
+        return json.dumps(text, ensure_ascii=False)
 
 
 class LogUserMark:
@@ -150,6 +130,7 @@ def current_thread_id() -> str | None:
         return cl.context.session.thread_id
     except ChainlitContextException:
         return None
+
 
 class SessionKind(StrEnum):
     """Отказы требований сессии: операции нужны пользователь и тред."""
