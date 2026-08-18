@@ -155,6 +155,20 @@ class TestDiagnosticText:
         if "max_memory_bytes=67108864" not in text:
             raise AssertionError('"max_memory_bytes=67108864" in text')
 
+    def test_thread_local_failure_is_a_memory_limit(self) -> None:
+        """glibc падает до main и пишет своё сообщение в нижнем регистре."""
+        result = _result(
+            exit_code=127,
+            stderr="cannot allocate memory for thread-local data: ABORT",
+        )
+
+        text = _explain(result, _profile(max_memory_bytes=64 * 1024 * 1024))
+
+        if "max_memory_bytes=67108864" not in text:
+            raise AssertionError(f"падение TLS не объяснено лимитом: {text!r}")
+        if "RLIMIT_AS" not in text:
+            raise AssertionError(f"в объяснении нет RLIMIT_AS: {text!r}")
+
     def test_full_image_explained(self) -> None:
         result = _result(stderr="dd: writing 'big': No space left on device")
         text = _explain(result, _profile())

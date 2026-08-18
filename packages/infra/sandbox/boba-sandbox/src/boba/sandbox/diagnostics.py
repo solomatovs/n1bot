@@ -46,6 +46,8 @@ class SandboxDiagnostics:
         # rust-аллокатор (pdfium/liteparse) при исчерпании RLIMIT_AS
         "memory allocation of",
         "failed to map segment from shared object",
+        # glibc падает ещё до main, когда под TLS потока не хватает адресов
+        "cannot allocate memory",
     )
     SPACE_MARKERS: ClassVar[tuple[str, ...]] = ("No space left on device",)
     NETWORK_MARKERS: ClassVar[tuple[str, ...]] = (

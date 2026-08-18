@@ -1,0 +1,59 @@
+{
+    "chat": {
+        "settings": {
+            "llm": {
+                "tabs": {
+                    "model_tab": "Model",
+                    "sampling_tab": "Sampling",
+                    "prompt_tab": "Prompt"
+                },
+                "fields": {
+                    "model": {
+                        "label": "Model",
+                        "description": "Which model of the profile answers your messages."
+                    },
+                    "temperature": {
+                        "label": "Temperature",
+                        "description": "Sampling randomness: lower is focused and repeatable, higher is diverse."
+                    },
+                    "top_p": {
+                        "label": "Top P",
+                        "description": "Nucleus sampling: the model considers only the most probable tokens covering this share. Change it instead of temperature, not together with it."
+                    },
+                    "max_tokens": {
+                        "label": "Max tokens",
+                        "description": "Upper bound on the answer length in tokens; the request fails when the answer needs more."
+                    },
+                    "frequency_penalty": {
+                        "label": "Frequency penalty",
+                        "description": "Penalty on tokens by how often they already appeared: positive values reduce repetition."
+                    },
+                    "presence_penalty": {
+                        "label": "Presence penalty",
+                        "description": "Penalty on tokens that already appeared at all: positive values push the answer to new topics."
+                    },
+                    "stop": {
+                        "label": "Stop sequences",
+                        "description": "Sequences that stop the generation; the sequence itself is not part of the answer."
+                    },
+                    "seed": {
+                        "label": "Seed",
+                        "description": "Sampling seed: the same seed and parameters make the answer repeatable. Empty — the provider picks it."
+                    },
+                    "reasoning_effort": {
+                        "label": "Reasoning effort",
+                        "description": "How long a reasoning model thinks before answering: more effort means slower but deeper answers."
+                    },
+                    "history_messages": {
+                        "label": "History messages",
+                        "description": "How many previous messages of the thread are sent to the model."
+                    },
+                    "user_prompt": {
+                        "label": "Custom instructions",
+                        "description": "Your own instructions; they are appended to the profile system prompt and apply to every answer."
+                    }
+                }
+            }
+        }
+    }
+}

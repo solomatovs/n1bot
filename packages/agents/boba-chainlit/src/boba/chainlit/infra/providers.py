@@ -29,14 +29,22 @@ from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.storage import StorageClient, StorageFactory
 from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.keys import AttachmentLinks
-from boba.chainlit.domain.session import current_user_roles
+from boba.chainlit.domain.session import (
+    current_chat_profile,
+    current_user_metadata,
+    current_user_roles,
+)
 from boba.chainlit.infra.config import (
-    AgentProfile,
+    AgentSettings,
     AppConfig,
+    ChatProfiles,
     CheckpointerConfig,
     DataLayerConfig,
     LocalStorageConfig,
     OpenAiConfig,
+    SelectedProfile,
+    SettingsView,
+    UserMeta,
 )
 from boba.chainlit.infra.di import Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
@@ -90,10 +98,41 @@ def storage_provider(
     return StorageFactory.create(cfg)
 
 
-def get_agent_profile(
+def chat_profiles_registry(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> AgentProfile:
-    return app_config.agent
+) -> ChatProfiles:
+    return ChatProfiles(app_config.profiles)
+
+
+def session_profile(
+    registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+) -> SelectedProfile:
+    """Профиль текущей сессии; без доступного профиля — отказ.
+
+    Ошибки:
+    RefusalError — профиль не выбран или недоступен ролям пользователя.
+    """
+    return registry.resolve(current_chat_profile(), current_user_roles())
+
+
+def session_settings_view(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+) -> SettingsView:
+    """Профиль сессии, поверх которого легли личные настройки пользователя."""
+    meta = UserMeta.of(current_user_metadata())
+    return SettingsView.of(
+        app_config.settings,
+        selected.config,
+        meta.overrides_for(selected.name),
+    )
+
+
+def session_agent_settings(
+    view: Annotated[SettingsView, Depends(session_settings_view, scope="session")],
+) -> AgentSettings:
+    """Настройки, с которыми идёт ход."""
+    return view.agent()
 
 
 def tool_registry(
@@ -104,8 +143,9 @@ def tool_registry(
 
 def session_tools(
     registry: Annotated[ToolRegistry, Depends(tool_registry)],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> list[BaseTool]:
-    return registry.for_roles(current_user_roles())
+    return registry.for_session(current_user_roles(), selected.name)
 
 
 async def kb_schema(
@@ -128,12 +168,6 @@ async def connection_store(
     store = ConnectionStore(cfg)
     await store.setup()
     return store
-
-
-def get_openai_config(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> OpenAiConfig:
-    return app_config.agent.openai
 
 
 def _openai_socket_options(c: OpenAiConfig) -> list[tuple[int, int, int]]:
@@ -192,7 +226,7 @@ def httpx_timeout(c: OpenAiConfig) -> httpx.Timeout:
     )
 
 
-def _openai_dump_transport(c: AppConfig) -> DumpingTransport:
+def _openai_dump_transport(openai: OpenAiConfig) -> DumpingTransport:
     from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
 
     def chainlit_filename(request: httpx.Request) -> str:
@@ -210,24 +244,37 @@ def _openai_dump_transport(c: AppConfig) -> DumpingTransport:
         return f"{label}-{request.url.host}.log"
 
     return DumpingTransport(
-        dump_dir=Path(c.agent.openai.dump.path),
+        dump_dir=Path(openai.dump.path),
         dump_file=chainlit_filename,
-        **_openai_transport_options(c.agent.openai),
+        **_openai_transport_options(openai),
     )
 
 
-def httpx_client(c: Annotated[AppConfig, Depends(get_app_config)]) -> AsyncClient:
-    if c.agent.openai.dump.enable:
-        transport = _openai_dump_transport(c)
+def _openai_client(openai: OpenAiConfig) -> AsyncClient:
+    if openai.dump.enable:
+        transport = _openai_dump_transport(openai)
     else:
-        transport = httpx.AsyncHTTPTransport(
-            **_openai_transport_options(c.agent.openai)
-        )
+        transport = httpx.AsyncHTTPTransport(**_openai_transport_options(openai))
 
     return AsyncClient(
-        timeout=httpx_timeout(c.agent.openai),
+        timeout=httpx_timeout(openai),
         transport=transport,
     )
+
+
+async def httpx_clients(
+    c: Annotated[AppConfig, Depends(get_app_config)],
+) -> AsyncIterator[dict[str, AsyncClient]]:
+    """HTTP-клиент провайдера на каждый профиль чата; живут до остановки."""
+    clients: dict[str, AsyncClient] = {}
+    for name, profile in c.profiles.items():
+        clients[name] = _openai_client(profile.openai)
+
+    try:
+        yield clients
+    finally:
+        for client in clients.values():
+            await client.aclose()
 
 
 async def langchain_checkpoint_saver(
@@ -302,7 +349,7 @@ def build_history_view(allowed_tools: frozenset[str], history_messages: int):
 def build_llm_view(
     msgs: list,
     allowed_tools: frozenset[str] | None = None,
-    history_messages: int = AgentProfile.model_fields["history_messages"].default,
+    history_messages: int = AgentSettings.model_fields["history_messages"].default,
 ) -> list:
     start = _index_of_last_user_turn(msgs)
     head, current = msgs[:start], msgs[start:]
@@ -365,29 +412,32 @@ def _index_of_last_user_turn(msgs: list) -> int:
 
 
 def langchain_agent(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-    client: Annotated[AsyncClient, Depends(httpx_client)],
+    clients: Annotated[dict[str, AsyncClient], Depends(httpx_clients)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
     tools: Annotated[list[BaseTool], Depends(session_tools, scope="session")],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    settings: Annotated[
+        AgentSettings, Depends(session_agent_settings, scope="session")
+    ],
 ) -> CompiledStateGraph:
     # таймаут запроса клиент openai ставит поверх клиентского: без него в
     # httpx уходит None и фазы остаются без потолка
     stream_chunk_timeout = None
-    if c.agent.openai.stream_chunk_timeout:
-        stream_chunk_timeout = c.agent.openai.stream_chunk_timeout
+    if settings.openai.stream_chunk_timeout:
+        stream_chunk_timeout = settings.openai.stream_chunk_timeout
 
     chat = ReasoningChatOpenAI(
-        http_async_client=client,
-        model=c.agent.model,
-        base_url=c.agent.openai.base_url,
-        api_key=SecretStr(c.agent.openai.api_key),
-        temperature=c.agent.temperature,
-        timeout=httpx_timeout(c.agent.openai),
+        http_async_client=clients[selected.name],
+        model=settings.model,
+        base_url=settings.openai.base_url,
+        api_key=SecretStr(settings.openai.api_key),
+        timeout=httpx_timeout(settings.openai),
         stream_chunk_timeout=stream_chunk_timeout,
-        max_retries=c.agent.openai.max_retries,
+        max_retries=settings.openai.max_retries,
+        **settings.chat_kwargs(),
     )
 
-    system_prompt = c.agent.default_system_prompt
+    system_prompt = settings.system_prompt
 
     agent = create_agent(
         model=chat,
@@ -396,7 +446,7 @@ def langchain_agent(
         checkpointer=saver,
         middleware=[
             build_history_view(
-                frozenset(t.name for t in tools), c.agent.history_messages
+                frozenset(t.name for t in tools), settings.history_messages
             )
         ],
     )

@@ -26,10 +26,12 @@ from boba.chainlit.canvas.panel import ToolStreams
 from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
 from boba.chainlit.domain.session import (
+    current_chat_profile,
     current_thread_id,
     current_user_id,
     current_user_roles,
 )
+from boba.chainlit.infra.config import ProfilesSection, RolesSection
 from boba.sandbox import (
     SandboxCaller,
     SandboxProfile,
@@ -85,11 +87,7 @@ class PluginMeta(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     enable: bool = False
-    roles: StringList = []
-    tools: dict[str, StringList] = {}
-
-    def roles_of(self, tool_name: str) -> list[str]:
-        return self.tools.get(tool_name) or self.roles
+    tools: StringList = []
 
 
 def _build_sandbox_tools(
@@ -310,14 +308,24 @@ class ToolRegistry:
     tools: list[BaseTool]
     access: ToolAccess
 
-    def for_roles(self, user_roles: Iterable[str]) -> list[BaseTool]:
+    def for_session(
+        self,
+        user_roles: Iterable[str],
+        profile: str | None,
+    ) -> list[BaseTool]:
         roles = frozenset(user_roles)
-        allowed = [t for t in self.tools if self.access.allowed(t.name, roles)]
+
+        allowed: list[BaseTool] = []
+        for tool in self.tools:
+            if self.access.allowed(tool.name, roles, profile):
+                allowed.append(tool)
+
         logger.info(
-            "tools available: %d of %d (roles: %s)",
+            "tools available: %d of %d (roles: %s, chat profile: %s)",
             len(allowed),
             len(self.tools),
-            sorted(roles) or "нет",
+            sorted(roles) or "none",
+            profile or "none",
         )
         return allowed
 
@@ -394,11 +402,32 @@ def _plugin_tools(
     return built
 
 
+def _access_of(raw_config: DictConfig, tools: Sequence[BaseTool]) -> ToolAccess:
+    """Права из [roles.*]/[profiles.*]; опечатка в имени инструмента — отказ старта."""
+    roles = bind(raw_config, "roles", RolesSection).root
+    profiles = bind(raw_config, "profiles", ProfilesSection).root
+
+    known = frozenset(tool.name for tool in tools)
+
+    for role_name, grant in roles.items():
+        missing = grant.unknown(known)
+        if missing:
+            msg = f"[roles.{role_name}]: unknown tools {missing}"
+            raise RuntimeError(msg)
+
+    for profile_name, profile in profiles.items():
+        missing = profile.unknown(known)
+        if missing:
+            msg = f"[profiles.{profile_name}]: unknown tools {missing}"
+            raise RuntimeError(msg)
+
+    return ToolAccess(known, roles, profiles)
+
+
 def load_tools(raw_config: DictConfig) -> ToolRegistry:
     require = bind(raw_config, "sandbox", SandboxRequire).require
 
     tools: list[BaseTool] = []
-    roles_by_tool: dict[str, list[str]] = {}
     for name, plugin in _PLUGINS.items():
         meta = bind(raw_config, f"tool.{name}", PluginMeta)
         if not meta.enable:
@@ -406,9 +435,6 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
 
         profile = _plugin_profile(name, plugin, raw_config, require)
         built = _plugin_tools(name, plugin, meta, profile, raw_config)
-
-        for tool in built:
-            roles_by_tool[tool.name] = meta.roles_of(tool.name)
         tools.extend(built)
 
         # живой вывод есть только у процессов песочницы: кнопка потока
@@ -419,10 +445,10 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
                 streamable.append(tool.name)
             ToolStreams.mark_streamable(streamable)
 
-    access = ToolAccess(roles_by_tool)
+    access = _access_of(raw_config, tools)
     ToolCallIdField.attach_all(tools)
     ToolRunLogger.guard_all(tools, stream_source)
     CancellableTools.guard_all(tools)
-    ToolAccessGuard.guard_all(tools, access, current_user_roles)
+    ToolAccessGuard.guard_all(tools, access, current_user_roles, current_chat_profile)
     ToolErrorGuard.guard_all(tools)
     return ToolRegistry(tools=tools, access=access)

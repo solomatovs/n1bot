@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, ClassVar
 
-from pydantic import BaseModel, BeforeValidator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-__all__ = ["LLMStringList", "SecretRevealing", "StringList"]
+__all__ = ["LLMStringList", "SecretRevealing", "StringList", "ToolGrant"]
 
 
 class SecretRevealing(BaseModel):
@@ -33,6 +33,42 @@ def _csv_to_list(v: Any) -> Any:
 
 StringList = Annotated[list[str], BeforeValidator(_csv_to_list)]
 """list[str] с CSV-парсингом строкового входа ("a,b,c" -> ["a","b","c"])."""
+
+
+class ToolGrant(BaseModel):
+    """Набор инструментов, разрешённых субъекту доступа: роли или профилю."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    WILDCARD: ClassVar[str] = "*"
+
+    tools: StringList = Field(
+        default=[],
+        description=(
+            "Имена инструментов; '*' — все собранные. Пустой список — "
+            "инструментов нет."
+        ),
+    )
+
+    def covers(self, tool: str) -> bool:
+        if self.WILDCARD in self.tools:
+            return True
+
+        return tool in self.tools
+
+    def unknown(self, known: frozenset[str]) -> list[str]:
+        """Имена, которых нет среди собранных инструментов: опечатки конфига."""
+        missing: list[str] = []
+        for name in self.tools:
+            if name == self.WILDCARD:
+                continue
+
+            if name in known:
+                continue
+
+            missing.append(name)
+
+        return missing
 
 
 def _to_string_list(v: Any) -> Any:

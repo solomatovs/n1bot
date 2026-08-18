@@ -1,4 +1,4 @@
-"""Тесты ролевого доступа: нотация конфига, набор под роли, отказ на вызове."""
+"""Тесты доступа к инструментам: пересечение ролей и профиля, отказ на вызове."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from boba.chainlit.agent.toolrun.access import (
     ToolAccessDeniedError,
     ToolAccessGuard,
 )
+from boba.chainlit.domain.config import RoleConfig, ToolGrant
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry
 from boba.chainlit.infra.providers import build_llm_view
 
@@ -21,78 +22,113 @@ def chainlit_context() -> None:
 
 
 class TestPluginMetaNotation:
-    @staticmethod
-    def _meta(**kw) -> PluginMeta:
-        return PluginMeta(**kw)
-
-    def test_own_roles_win_over_section(self) -> None:
-        meta = self._meta(enable=True, roles=["DEV"], tools={"query": ["ADM"]})
-        if meta.roles_of("query") != ["ADM"]:
-            raise AssertionError('meta.roles_of("query") == ["ADM"]')
-
-    def test_empty_list_inherits_section_roles(self) -> None:
-        meta = self._meta(enable=True, roles=["DEV", "ADM"], tools={"list": []})
-        if meta.roles_of("list") != ["DEV", "ADM"]:
-            raise AssertionError('meta.roles_of("list") == ["DEV", "ADM"]')
-
-    def test_empty_list_without_section_roles_is_deny(self) -> None:
-        meta = self._meta(enable=True, tools={"list": []})
-        if meta.roles_of("list") != []:
-            raise AssertionError('meta.roles_of("list") == []')
-
-    def test_tools_table_is_the_allowlist(self) -> None:
-        meta = self._meta(enable=True, tools={"a": ["ADM"]})
+    def test_tools_list_is_the_allowlist(self) -> None:
+        meta = PluginMeta(enable=True, tools=["a", "b"])
         if "a" not in meta.tools:
             raise AssertionError('"a" in meta.tools')
-        if "b" in meta.tools:
-            raise AssertionError('"b" not in meta.tools')
+        if "c" in meta.tools:
+            raise AssertionError('"c" not in meta.tools')
+
+    def test_tools_default_is_empty(self) -> None:
+        meta = PluginMeta(enable=True)
+        if meta.tools != []:
+            raise AssertionError("meta.tools == []")
+
+
+class TestToolGrant:
+    def test_named_tool_covered(self) -> None:
+        grant = ToolGrant(tools=["query"])
+        if grant.covers("query") is not True:
+            raise AssertionError('grant.covers("query") is True')
+
+    def test_other_tool_not_covered(self) -> None:
+        grant = ToolGrant(tools=["query"])
+        if grant.covers("list_targets") is not False:
+            raise AssertionError('grant.covers("list_targets") is False')
+
+    def test_wildcard_covers_everything(self) -> None:
+        grant = ToolGrant(tools=["*"])
+        if grant.covers("whatever") is not True:
+            raise AssertionError('grant.covers("whatever") is True')
+
+    def test_empty_grant_covers_nothing(self) -> None:
+        grant = ToolGrant(tools=[])
+        if grant.covers("query") is not False:
+            raise AssertionError('grant.covers("query") is False')
+
+    def test_unknown_reports_typos(self) -> None:
+        grant = ToolGrant(tools=["query", "no_such", "*"])
+        if grant.unknown(frozenset({"query"})) != ["no_such"]:
+            raise AssertionError('grant.unknown(...) == ["no_such"]')
 
 
 class TestToolAccess:
     ACCESS = ToolAccess(
-        {
-            "query": ["ADM"],
-            "list_targets": ["DEV", "ADM"],
-            "visualize": ["*"],
-            "forgotten": [],
-        }
+        tool_names=["query", "list_targets", "visualize"],
+        roles={
+            "ADM": RoleConfig(tools=["*"]),
+            "DEV": RoleConfig(tools=["list_targets", "visualize"]),
+            "EMPTY": RoleConfig(tools=[]),
+        },
+        profiles={
+            "general": ToolGrant(tools=["*"]),
+            "search": ToolGrant(tools=["list_targets"]),
+        },
     )
 
-    def test_matching_role_allowed(self) -> None:
-        if self.ACCESS.allowed("query", {"ADM"}) is not True:
-            raise AssertionError('self.ACCESS.allowed("query", {"ADM"}) is True')
+    def test_role_and_profile_both_cover(self) -> None:
+        if self.ACCESS.allowed("query", {"ADM"}, "general") is not True:
+            raise AssertionError('allowed("query", {"ADM"}, "general") is True')
 
-    def test_other_role_denied(self) -> None:
-        if self.ACCESS.allowed("query", {"DEV"}) is not False:
-            raise AssertionError('self.ACCESS.allowed("query", {"DEV"}) is False')
+    def test_profile_cuts_role_wildcard(self) -> None:
+        if self.ACCESS.allowed("query", {"ADM"}, "search") is not False:
+            raise AssertionError('allowed("query", {"ADM"}, "search") is False')
 
-    def test_any_intersection_is_enough(self) -> None:
-        if self.ACCESS.allowed("list_targets", {"DEV"}) is not True:
-            raise AssertionError('self.ACCESS.allowed("list_targets", {"DEV"}) is True')
+    def test_role_cuts_profile_wildcard(self) -> None:
+        if self.ACCESS.allowed("query", {"DEV"}, "general") is not False:
+            raise AssertionError('allowed("query", {"DEV"}, "general") is False')
 
-    def test_wildcard_allows_any_role(self) -> None:
-        if self.ACCESS.allowed("visualize", {"WHATEVER"}) is not True:
-            raise AssertionError('self.ACCESS.allowed("visualize", {"WHATEVER"}) is T…')
+    def test_any_role_intersection_is_enough(self) -> None:
+        if self.ACCESS.allowed("query", {"DEV", "ADM"}, "general") is not True:
+            raise AssertionError('allowed("query", {"DEV","ADM"}, "general") is True')
 
-    def test_wildcard_still_needs_a_user(self) -> None:
-        if self.ACCESS.allowed("visualize", set()) is not True:
-            raise AssertionError('self.ACCESS.allowed("visualize", set()) is True')
+    def test_no_profile_denies(self) -> None:
+        if self.ACCESS.allowed("query", {"ADM"}, None) is not False:
+            raise AssertionError('allowed("query", {"ADM"}, None) is False')
 
-    def test_empty_roles_deny_by_default(self) -> None:
-        if self.ACCESS.allowed("forgotten", {"ADM"}) is not False:
-            raise AssertionError('self.ACCESS.allowed("forgotten", {"ADM"}) is False')
+    def test_unknown_profile_denies(self) -> None:
+        if self.ACCESS.allowed("query", {"ADM"}, "ghost") is not False:
+            raise AssertionError('allowed("query", {"ADM"}, "ghost") is False')
+
+    def test_unknown_role_denies(self) -> None:
+        if self.ACCESS.allowed("query", {"GHOST"}, "general") is not False:
+            raise AssertionError('allowed("query", {"GHOST"}, "general") is False')
+
+    def test_no_roles_denies_even_wildcard_profile(self) -> None:
+        if self.ACCESS.allowed("query", set(), "general") is not False:
+            raise AssertionError('allowed("query", set(), "general") is False')
+
+    def test_empty_role_grant_denies(self) -> None:
+        if self.ACCESS.allowed("query", {"EMPTY"}, "general") is not False:
+            raise AssertionError('allowed("query", {"EMPTY"}, "general") is False')
 
     def test_unknown_tool_denied(self) -> None:
-        if self.ACCESS.allowed("no_such_tool", {"ADM"}) is not False:
-            raise AssertionError('self.ACCESS.allowed("no_such_tool", {"ADM"}) is Fal…')
+        if self.ACCESS.allowed("no_such_tool", {"ADM"}, "general") is not False:
+            raise AssertionError('allowed("no_such_tool", ...) is False')
 
-    def test_user_without_roles_gets_nothing_but_wildcard(self) -> None:
-        if self.ACCESS.names_for(set()) != {"visualize"}:
-            raise AssertionError('self.ACCESS.names_for(set()) == {"visualize"}')
+    def test_names_for_intersection(self) -> None:
+        names = self.ACCESS.names_for({"DEV"}, "general")
+        if names != {"list_targets", "visualize"}:
+            raise AssertionError('names == {"list_targets", "visualize"}')
 
-    def test_names_for_role(self) -> None:
-        if self.ACCESS.names_for({"DEV"}) != {"list_targets", "visualize"}:
-            raise AssertionError('self.ACCESS.names_for({"DEV"}) == {"list_targets", …')
+    def test_names_for_narrow_profile(self) -> None:
+        names = self.ACCESS.names_for({"ADM"}, "search")
+        if names != {"list_targets"}:
+            raise AssertionError('names == {"list_targets"}')
+
+    def test_names_without_profile_empty(self) -> None:
+        if self.ACCESS.names_for({"ADM"}, None) != set():
+            raise AssertionError("names_for({'ADM'}, None) == set()")
 
 
 class TestRegistryFiltering:
@@ -111,44 +147,65 @@ class TestRegistryFiltering:
         return [query, list_targets]
 
     def _registry(self) -> ToolRegistry:
-        return ToolRegistry(
-            tools=self._tools(),
-            access=ToolAccess({"query": ["ADM"], "list_targets": ["DEV", "ADM"]}),
+        access = ToolAccess(
+            tool_names=["query", "list_targets"],
+            roles={
+                "ADM": RoleConfig(tools=["*"]),
+                "DEV": RoleConfig(tools=["list_targets"]),
+            },
+            profiles={"general": ToolGrant(tools=["*"])},
         )
+        return ToolRegistry(tools=self._tools(), access=access)
 
     def test_admin_sees_everything(self) -> None:
-        names = {t.name for t in self._registry().for_roles({"ADM"})}
+        names = {t.name for t in self._registry().for_session({"ADM"}, "general")}
         if names != {"query", "list_targets"}:
             raise AssertionError('names == {"query", "list_targets"}')
 
     def test_dev_does_not_see_query(self) -> None:
-        names = {t.name for t in self._registry().for_roles({"DEV"})}
+        names = {t.name for t in self._registry().for_session({"DEV"}, "general")}
         if names != {"list_targets"}:
             raise AssertionError('names == {"list_targets"}')
 
     def test_no_roles_no_tools(self) -> None:
-        if self._registry().for_roles(set()) != []:
-            raise AssertionError("self._registry().for_roles(set()) == []")
+        if self._registry().for_session(set(), "general") != []:
+            raise AssertionError('for_session(set(), "general") == []')
+
+    def test_no_profile_no_tools(self) -> None:
+        if self._registry().for_session({"ADM"}, None) != []:
+            raise AssertionError('for_session({"ADM"}, None) == []')
 
 
 class TestAccessGuard:
     @staticmethod
-    def _guarded(roles: set[str]):
+    def _guarded(roles: set[str], profile: str | None):
         @tool
         def query(sql: str) -> str:
             """только ADM"""
             return f"executed: {sql}"
 
-        access = ToolAccess({"query": ["ADM"]})
-        return ToolAccessGuard.guard_all([query], access, lambda: roles)[0]
+        access = ToolAccess(
+            tool_names=["query"],
+            roles={"ADM": RoleConfig(tools=["query"])},
+            profiles={"general": ToolGrant(tools=["*"])},
+        )
+        guarded = ToolAccessGuard.guard_all(
+            [query], access, lambda: roles, lambda: profile
+        )
+        return guarded[0]
 
     def test_allowed_role_runs(self) -> None:
-        if self._guarded({"ADM"}).invoke({"sql": "select 1"}) != "executed: select 1":
-            raise AssertionError('self._guarded({"ADM"}).invoke({"sql": "select 1"}) …')
+        result = self._guarded({"ADM"}, "general").invoke({"sql": "select 1"})
+        if result != "executed: select 1":
+            raise AssertionError('result == "executed: select 1"')
 
     def test_denied_role_raises(self) -> None:
         with pytest.raises(ToolAccessDeniedError, match="query"):
-            self._guarded({"DEV"}).invoke({"sql": "select 1"})
+            self._guarded({"DEV"}, "general").invoke({"sql": "select 1"})
+
+    def test_missing_profile_raises(self) -> None:
+        with pytest.raises(ToolAccessDeniedError, match="query"):
+            self._guarded({"ADM"}, None).invoke({"sql": "select 1"})
 
     def test_denied_is_ordinary_exception(self) -> None:
         if not (issubclass(ToolAccessDeniedError, Exception)):
@@ -209,9 +266,9 @@ class TestHistoryHidesForeignTools:
             raise AssertionError('[m.content for m in view[:-1]] == ["вопрос 19", "от…')
 
     def test_history_window_default_matches_config(self) -> None:
-        from boba.chainlit.infra.config import AgentProfile
+        from boba.chainlit.infra.config import AgentSettings
 
-        default = AgentProfile.model_fields["history_messages"].default
+        default = AgentSettings.model_fields["history_messages"].default
         view = build_llm_view(self._long_history(100), None)
         if len(view) != default + 1:
             raise AssertionError("len(view) == default + 1")

@@ -72,6 +72,8 @@ class StandConfig:
     llm_port: int
     db_name: str
     url_prefix: str = "/boba-test"
+    single_profile: bool = False
+    """True — в конфиге остаётся один профиль: селектора в UI быть не должно."""
 
     SANDBOXED_TOOLS: tuple[str, ...] = (
         "bash",
@@ -95,8 +97,11 @@ class StandConfig:
     def base_url(self) -> str:
         return StandUrl.of(self.app_port, self.url_prefix)
 
-    def credential(self) -> StandCredential:
-        """Логин и пароль берутся из конфига разработчика, а не из кода."""
+    def credential(self, login: str = "") -> StandCredential:
+        """Логин и пароль берутся из конфига разработчика, а не из кода.
+
+        Без аргумента — первый логин по алфавиту; с аргументом — именно он.
+        """
         base = StandPaths.BASE_CONFIG.under(REPO_ROOT)
         with base.open("rb") as handle:
             doc: dict[str, Any] = tomllib.load(handle)
@@ -112,8 +117,29 @@ class StandConfig:
             msg = f"в [auth.local].users пусто: {base}"
             raise StandError(msg)
 
-        login = logins[0]
+        if not login:
+            login = logins[0]
+
+        if login not in users:
+            msg = f"нет логина {login!r} в [auth.local].users: {base}"
+            raise StandError(msg)
+
         return StandCredential(login=login, password=str(users[login]))
+
+    def local_users(self) -> dict[str, list[str]]:
+        """Логины [auth.local] рабочего конфига и их роли."""
+        base = StandPaths.BASE_CONFIG.under(REPO_ROOT)
+        with base.open("rb") as handle:
+            doc: dict[str, Any] = tomllib.load(handle)
+
+        users = doc.get("auth", {}).get("local", {}).get("users", {})
+        roles = doc.get("auth", {}).get("local", {}).get("roles", {})
+
+        found: dict[str, list[str]] = {}
+        for login in users:
+            found[str(login)] = [str(r) for r in roles.get(login, [])]
+
+        return found
 
     def write(self) -> Path:
         """Кладёт конфиг стенда в рабочий каталог и отдаёт его путь."""
@@ -122,6 +148,7 @@ class StandConfig:
             doc: dict[str, Any] = tomllib.load(handle)
 
         self._use_fake_llm(doc)
+        self._use_test_profiles(doc)
         self._use_test_database(doc)
         self._use_local_storage(doc)
         self._use_local_auth(doc)
@@ -152,15 +179,89 @@ class StandConfig:
         return env
 
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
-        agent = doc["agent"]
-        agent["openai"] = {
-            "base_url": StandUrl.of(self.llm_port, "/v1"),
-            "api_key": "none",
-            "ssl_verify": False,
-            "dump": {"enable": False},
+        doc["openai"] = {
+            "main": {
+                "base_url": StandUrl.of(self.llm_port, "/v1"),
+                "api_key": "none",
+                "ssl_verify": False,
+                "dump": {"enable": False},
+            }
         }
-        agent["model"] = "fake-model"
-        agent["temperature"] = 0.0
+
+    def _use_test_profiles(self, doc: MutableMapping[str, Any]) -> None:
+        """Профили и роли стенда: фиксированные, тесты знают их наизусть.
+
+        general — все инструменты, search — узкий набор; DEV-роль не покрывает
+        canvas_open, чтобы было видно пересечение роли и профиля. Сценарий
+        fake llm выбирается по тексту сообщения, поэтому имя модели свободно.
+        """
+        doc["roles"] = {
+            "ADM": {"tools": ["*"]},
+            "DEV": {
+                "tools": [
+                    "diagram_save",
+                    "send_file",
+                    "stream_logs_usage",
+                    "stream_logs_cleanup",
+                ]
+            },
+        }
+
+        doc["settings"] = {
+            "temperature": {"min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0},
+            "top_p": {"min": 0.0, "max": 1.0, "step": 0.05, "default": 1.0},
+            "max_tokens": {"min": 256, "max": 16000, "step": 256, "default": 4096},
+            "frequency_penalty": {
+                "min": -2.0,
+                "max": 2.0,
+                "step": 0.1,
+                "default": 0.0,
+            },
+            "presence_penalty": {
+                "min": -2.0,
+                "max": 2.0,
+                "step": 0.1,
+                "default": 0.0,
+            },
+            "history_messages": {"min": 1, "max": 100, "step": 1, "default": 30},
+        }
+
+        doc["profiles"] = {
+            "general": {
+                "display_name": "General",
+                "description": "Stand profile with every tool",
+                "default": True,
+                "roles": ["*"],
+                "tools": ["*"],
+                "openai": "${openai.main}",
+                "model": "fake-model-general",
+                "models": ["fake-model-general", "fake-model-alt"],
+                "settings": ["*"],
+                "system_prompt": "You are the general stand assistant",
+                "history_messages": 30,
+                "temperature": 0.1,
+                "max_tokens": 1111,
+                "top_p": 0.9,
+            },
+            "search": {
+                "display_name": "Search",
+                "description": "Stand profile with a narrow toolset",
+                "default": False,
+                "roles": ["*"],
+                "tools": ["diagram_save", "canvas_open"],
+                "openai": "${openai.main}",
+                "model": "fake-model-search",
+                "models": ["fake-model-search"],
+                "settings": ["temperature", "top_p", "history_messages", "user_prompt"],
+                "system_prompt": "You are the search stand assistant",
+                "history_messages": 30,
+                "temperature": 0.7,
+                "max_tokens": 2222,
+            },
+        }
+
+        if self.single_profile:
+            doc["profiles"] = {"general": doc["profiles"]["general"]}
 
     def _use_test_database(self, doc: MutableMapping[str, Any]) -> None:
         """Сервер и учётка — из конфига приложения; стенду — отдельная база."""

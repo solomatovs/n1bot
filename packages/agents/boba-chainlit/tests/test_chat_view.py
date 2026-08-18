@@ -9,6 +9,8 @@ from enum import StrEnum
 from typing import Any, cast
 
 import pytest
+from chainlit.context import ChainlitContext, context_var
+from chainlit.step import StepDict
 
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
@@ -19,8 +21,6 @@ from boba.chainlit.rendering.chat_view import (
     TurnPulse,
 )
 from boba.toolkit.result import TextResult
-from chainlit.context import ChainlitContext, context_var
-from chainlit.step import StepDict
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 TURN = "22222222-2222-2222-2222-222222222222"
@@ -230,7 +230,11 @@ class FakeEmitter:
         self.of(ChatEvent.STREAM_START, str(step_dict.get(StepField.ID, "")))
 
     async def send_token(
-        self, id: str, token: str, is_sequence: bool = False, is_input: bool = False
+        self,
+        id: str,  # noqa: A002 — chainlit зовёт по имени: emitter-контракт
+        token: str,
+        is_sequence: bool = False,
+        is_input: bool = False,
     ) -> None:
         self.of(ChatEvent.STREAM_TOKEN, id)
 

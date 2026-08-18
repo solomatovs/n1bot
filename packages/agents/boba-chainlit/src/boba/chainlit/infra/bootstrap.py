@@ -262,11 +262,11 @@ def _get_or_create_session_container():
     except ChainlitContextException:
         return None
 
-    container = user_session.get("_di_session_container")
+    container = user_session.get(Container.SESSION_KEY)
     if container is None:
         container = Container(level="session", parent=Container.root)
         user_session.set(
-            "_di_session_container",
+            Container.SESSION_KEY,
             container,
         )
 
@@ -290,7 +290,7 @@ def _close_container_if_session_end() -> None:
             if prev:
                 await prev()
         finally:
-            if container := user_session.get("_di_session_container"):
+            if container := user_session.get(Container.SESSION_KEY):
                 await container.aclose()
 
     cl_config.code.on_chat_end = on_chat_end
