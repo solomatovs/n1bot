@@ -50,6 +50,7 @@ boba-chainlit = "boba.chainlit.infra.entry:AppEntry.run"
 
 [tool.setuptools.package-data]
 "boba.chainlit.auth" = ["*.js"]
+"boba.chainlit.chat" = ["translations/*.json"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

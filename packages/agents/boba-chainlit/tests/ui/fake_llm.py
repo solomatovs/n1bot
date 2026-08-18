@@ -190,11 +190,12 @@ class ScenarioBook:
 
 @dataclass
 class FakeLlmApp:
-    """ASGI-приложение провайдера: держит счётчик ходов на каждый сценарий."""
+    """ASGI-приложение провайдера: счётчик ходов на сценарий и журнал запросов."""
 
     token_delay_sec: float = 0.02
     model: str = "fake-model"
     turns_done: dict[str, int] = field(default_factory=dict)
+    requests: list[dict[str, Any]] = field(default_factory=list)
 
     def asgi(self) -> FastAPI:
         app = FastAPI()
@@ -205,13 +206,20 @@ class FakeLlmApp:
 
         @app.post("/reset")
         async def reset() -> dict[str, str]:
-            """Сброс счётчика ходов: каждый тест начинает сценарий сначала."""
+            """Сброс счётчика ходов и журнала: тест начинает с чистого листа."""
             self.turns_done.clear()
+            self.requests.clear()
             return {"status": "ok"}
+
+        @app.get("/requests")
+        async def recorded() -> JSONResponse:
+            """Журнал полных запросов провайдеру: тест сверяет параметры модели."""
+            return JSONResponse({"requests": self.requests})
 
         @app.post("/v1/chat/completions")
         async def completions(request: Request) -> Response:
             payload = await request.json()
+            self.requests.append(payload)
             name = ScenarioName.of(self._last_user_text(payload))
             index = self.turns_done.get(name.value, 0)
             self.turns_done[name.value] = index + 1

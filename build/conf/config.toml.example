@@ -66,9 +66,11 @@
 
 [app]
     chainlit        = "${chainlit}"
-    agent           = "${agent}"
+    profiles        = "${profiles}"
+    roles           = "${roles}"
     checkpointer    = "${checkpointer}"
     data_layer      = "${data_layer}"
+    settings        = "${settings}"
     storage         = "${storage}"
     stream_journal  = "${stream_journal}"
     sandbox         = "${sandbox}"
@@ -78,11 +80,63 @@
         "${auth.local}"
     ]
 
-[agent]
-    model                   = "${site.llm_model}"
-    default_system_prompt   = "${site.llm_prompt}"
-    history_messages        = 30
-    [agent.openai]
+[roles.ADM]
+    tools = ["*"]
+
+[roles.DEV]
+    tools = ["*"]
+
+[profiles.general]
+    display_name          = "Общий"
+    description           = "Профиль общего назначения: доступны все инструменты"
+    default               = true
+    roles                 = ["*"]
+    tools                 = ["*"]
+    openai                = "${openai.main}"
+    model                 = "${site.llm_model}"
+    models                = ["${site.llm_model}"]
+    settings              = ["*"]
+    system_prompt         = "${site.llm_prompt}"
+    history_messages      = 30
+    temperature           = 0
+
+[profiles.search]
+    display_name          = "Поиск"
+    description           = "Поиск по Confluence и базе знаний"
+    default               = false
+    roles                 = ["*"]
+    tools                 = [
+        "confluence_search",
+        "confluence_spaces",
+        "confluence_fetch",
+        "confluence_grep",
+        "kb_vector_search",
+        "kb_fts_search",
+        "read_document",
+        "document_outline",
+        "search_document",
+        "web_fetch_page",
+        "web_grep_page"
+    ]
+    openai                = "${openai.main}"
+    model                 = "${site.llm_model}"
+    models                = ["${site.llm_model}"]
+    settings              = ["temperature", "top_p", "history_messages", "user_prompt"]
+    system_prompt         = "Ты поисковый ассистент: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
+    history_messages      = 30
+    temperature           = 0
+
+
+[settings]
+    temperature       = { min = 0.0, max = 2.0, step = 0.05, default = 1.0 }
+    top_p             = { min = 0.0, max = 1.0, step = 0.05, default = 1.0 }
+    max_tokens        = { min = 256, max = 16000, step = 256, default = 4096 }
+    frequency_penalty = { min = -2.0, max = 2.0, step = 0.1, default = 0.0 }
+    presence_penalty  = { min = -2.0, max = 2.0, step = 0.1, default = 0.0 }
+    history_messages  = { min = 1, max = 100, step = 1, default = 30 }
+
+
+[openai.main]
         base_url            = "${site.llm_url}"
         api_key             = "${site.llm_token}"
         ssl_verify          = false
@@ -365,8 +419,7 @@
 
 [tool.bash]
     enable           = true
-    roles            = ["*"]
-    tools            = { bash = [] }
+    tools            = ["bash"]
     max_output_bytes = 65536
     [tool.bash.sandbox]
         profile  = "${sandbox.profiles.base}"
@@ -374,18 +427,16 @@
 
 [tool.workflow]
     enable = true
-    roles  = ["*"]
-    tools  = { workflow = [] }
+    tools  = ["workflow"]
 
 [tool.doc]
     enable                  = true
-    roles                   = ["*"]
     ocr_enabled             = true
     tessdata_path           = "/usr/share/tessdata"
     max_text_chars          = 200000
     search_context_chars    = 80
     search_max_matches      = 50
-    tools                   = { read_document = [], document_outline = [], search_document = [] }
+    tools                   = ["read_document", "document_outline", "search_document"]
     [tool.doc.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.doc.sandbox.override]
@@ -393,8 +444,7 @@
 
 [tool.chart]
     enable  = false
-    roles   = ["*"]
-    tools   = { visualize = [] }
+    tools   = ["visualize"]
     [tool.chart.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.chart.sandbox.override]
@@ -419,8 +469,8 @@
 
 [tool.web]
     enable          = true
-    roles           = ["*"]
     max_text_chars  = 2000
+    tools           = ["web_fetch_page", "web_grep_page"]
     profiles        = { "<confluence.example.local>" = "${web.confluence}" }
     [tool.web.sandbox]
         profile = "${sandbox.profiles.base}"
@@ -430,16 +480,16 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-    [tool.web.tools]
-        web_fetch_page = []
-        web_grep_page  = []
-        web_fetch      = []
-        web_grep       = []
 
 [tool.confluence]
     enable          = true
-    roles           = ["*"]
     confluence      = "${web.confluence}"
+    tools           = [
+        "confluence_search",
+        "confluence_spaces",
+        "confluence_fetch",
+        "confluence_grep"
+    ]
     body_format     = "view"
     max_text_chars  = 2000
     [tool.confluence.sandbox]
@@ -450,15 +500,6 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-    [tool.confluence.tools]
-        confluence_search        = []
-        confluence_spaces        = []
-        confluence_fetch         = []
-        confluence_grep          = []
-        confluence_page          = []
-        html_to_markdown         = []
-        html_plain_text          = []
-        html_confluence_sections = []
 
 [tables.kb]
     pg_schema         = "kb"
@@ -474,8 +515,13 @@
 
 [tool.ingest]
     enable                 = true
-    roles                  = ["*"]
     connection             = "${postgres}"
+    tools                  = [
+        "confluence_index_pages",
+        "confluence_index_cql",
+        "confluence_index_spaces",
+        "confluence_attachment"
+    ]
     confluence             = "${web.confluence}"
     body_format            = "view"
     collection             = "kb_confluence"
@@ -526,22 +572,15 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-    [tool.ingest.tools]
-        confluence_index_pages  = []
-        confluence_index_cql    = []
-        confluence_index_spaces = []
-        confluence_ingest       = []
-        confluence_attachment   = []
 
 
 [tool.kb]
     enable     = true
-    roles      = ["*"]
     connection = "${postgres}"
     embedding  = "${embedding}"
     tables     = "${tables.kb}"
     collection = "kb_confluence"
-    tools      = { kb_vector_search = [], kb_fts_search = [] }
+    tools      = ["kb_vector_search", "kb_fts_search"]
     [tool.kb.sandbox]
         profile = "${sandbox.profiles.base}"
         [tool.kb.sandbox.override]
@@ -556,8 +595,14 @@
 
 [tool.pg]
     enable     = true
-    roles      = ["*"]
     max_rows   = 500
+    tools      = [
+        "pg_list_targets",
+        "pg_list_tables",
+        "pg_describe_table",
+        "pg_query",
+        "pg_copy"
+    ]
     max_bytes  = 1000000
     profiles   = { main = "${postgres}" }
     connection = "${postgres}"
@@ -569,18 +614,16 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-    [tool.pg.tools]
-        pg_list_targets   = []
-        pg_list_tables    = []
-        pg_describe_table = []
-        pg_query          = []
-        pg_export         = []
-        pg_copy           = []
 
 [tool.ch]
     enable     = true
-    roles      = ["*"]
     max_rows   = 100
+    tools      = [
+        "ch_list_targets",
+        "ch_list_tables",
+        "ch_describe_table",
+        "ch_query"
+    ]
     max_bytes  = 1000000
     profiles   = { main = "${clickhouse}" }
     [tool.ch.sandbox]
@@ -591,32 +634,22 @@
             image_template      = ""
             network             = true
             cwd                 = "/tmp"
-    [tool.ch.tools]
-        ch_list_targets   = []
-        ch_list_tables    = []
-        ch_describe_table = []
-        ch_query          = []
-        ch_insert         = []
 
 [tool.send_file]
     enable = true
-    roles  = ["*"]
-    tools  = { send_file = [] }
+    tools  = ["send_file"]
 
 
 [tool.diagram]
     enable    = true
-    roles     = ["*"]
     max_chars = 32000
-    tools     = { diagram_save = [] }
+    tools     = ["diagram_save"]
 
 
 [tool.canvas]
     enable = true
-    roles  = ["*"]
-    tools  = { canvas_open = [] }
+    tools  = ["canvas_open"]
 
 [tool.stream_logs]
     enable = true
-    roles  = ["*"]
-    tools  = { stream_logs_usage = [], stream_logs_cleanup = [] }
+    tools  = ["stream_logs_usage", "stream_logs_cleanup"]

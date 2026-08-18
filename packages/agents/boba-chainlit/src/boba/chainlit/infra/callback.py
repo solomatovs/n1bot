@@ -17,17 +17,38 @@ from boba.chainlit.canvas.panel import (
 )
 from boba.chainlit.canvas.tools import CanvasActions
 from boba.chainlit.chat.history import GraphTurnHistory, ThreadRewind
+from boba.chainlit.chat.panel_text import PanelText
+from boba.chainlit.chat.settings import SettingsPanel
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn
+from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.domain.fields import ThreadField
 from boba.chainlit.domain.session import (
     LogUserMark,
+    UserMetadataField,
+    current_chat_profile,
+    current_language,
     current_thread_id,
     current_user_id,
     current_user_label,
+    current_user_roles,
+    roles_of_user,
 )
-from boba.chainlit.infra.di import Depends, di_inject
-from boba.chainlit.infra.providers import chainlit_data_layer, langchain_agent
+from boba.chainlit.infra.config import (
+    AppConfig,
+    ChatProfiles,
+    SelectedProfile,
+    SettingsView,
+    UserLlmOverrides,
+    UserMeta,
+)
+from boba.chainlit.infra.di import Container, Depends, di_inject
+from boba.chainlit.infra.providers import (
+    chainlit_data_layer,
+    chat_profiles_registry,
+    get_app_config,
+    langchain_agent,
+)
 from boba.chainlit.infra.thread_room import ThreadRoom
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
@@ -92,12 +113,144 @@ async def on_message(
 chainlit_config.code.on_message = wrap_user_function(on_message)
 
 
+@cl.set_chat_profiles
+@di_inject
+async def set_chat_profiles(
+    user: cl.User | None,
+    language: str | None,
+    registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+) -> list[cl.ChatProfile]:
+    """Профили, видимые ролям пользователя; выбор профиля обязателен."""
+    roles = roles_of_user(user)
+
+    profiles: list[cl.ChatProfile] = []
+    for name, profile in registry.visible_for(roles).items():
+        icon = None
+        if profile.icon:
+            icon = profile.icon
+
+        profiles.append(
+            cl.ChatProfile(
+                name=name,
+                display_name=profile.display_name,
+                markdown_description=profile.description,
+                icon=icon,
+                default=profile.default,
+            )
+        )
+
+    return profiles
+
+
+def _session_selected_profile(registry: ChatProfiles) -> SelectedProfile:
+    return registry.resolve(current_chat_profile(), current_user_roles())
+
+
+def _session_view(config: AppConfig, registry: ChatProfiles) -> SettingsView:
+    """Итоговые настройки сессии: профиль плюс личные настройки пользователя."""
+    selected = _session_selected_profile(registry)
+
+    metadata = None
+    if user := cl.user_session.get("user"):
+        metadata = user.metadata
+
+    saved = UserMeta.of(metadata).overrides_for(selected.name)
+    return SettingsView.of(config.settings, selected.config, saved)
+
+
+def _refresh_session_user_meta(profile: str, overrides: UserLlmOverrides) -> None:
+    """Свежие настройки — в metadata пользователя сессии, без перелогина."""
+    user = cl.user_session.get("user")
+    if user is None:
+        return
+
+    metadata = dict(user.metadata or {})
+    llm = dict(metadata.get(UserMetadataField.LLM) or {})
+
+    stored = overrides.stored()
+    if stored:
+        llm[profile] = stored
+    else:
+        llm.pop(profile, None)
+
+    metadata[UserMetadataField.LLM] = llm
+    user.metadata = metadata
+
+
+async def _reset_session_container() -> None:
+    """Закрывает DI-контейнер сессии: следующий ход соберёт агента заново."""
+    container = cl.user_session.get(Container.SESSION_KEY)
+    if isinstance(container, Container):
+        await container.aclose()
+
+    cl.user_session.set(Container.SESSION_KEY, None)
+
+
 @cl.on_chat_start
 @chainlit_error_ctx_handler
 @di_inject
-async def on_chat_start():
+async def on_chat_start(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+):
     session = cl.context.session
-    logger.info("chat start: session=%s, thread=%s", session.id, session.thread_id)
+    logger.info(
+        "chat start: session=%s, thread=%s, profile=%s",
+        session.id,
+        session.thread_id,
+        session.chat_profile or "none",
+    )
+
+    panel = SettingsPanel(
+        _session_view(app_config, registry),
+        PanelText(app_config.chainlit.root, current_language()),
+    )
+    tabs = panel.tabs()
+
+    # профиль без разрешённых настроек панель не показывает
+    if tabs:
+        await cl.ChatSettings(tabs).send()
+
+
+@cl.on_settings_update
+@chainlit_error_ctx_handler
+@di_inject
+async def on_settings_update(
+    settings: dict[str, Any],
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+    data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
+):
+    """Сохраняет настройки пользователя и пересобирает агента сессии."""
+    selected = _session_selected_profile(registry)
+
+    panel = SettingsPanel(
+        _session_view(app_config, registry),
+        PanelText(app_config.chainlit.root, current_language()),
+    )
+    overrides = panel.parse(settings).overrides
+
+    user_id = current_user_id()
+    if user_id is None:
+        logger.warning("settings update without a user session, ignored")
+        return
+
+    if not isinstance(data_layer, PostgresDataLayer):
+        msg = f"data layer is not PostgresDataLayer: {type(data_layer)}"
+        raise RuntimeError(msg)
+
+    await data_layer.update_user_llm_settings(
+        int(user_id), selected.name, overrides.stored()
+    )
+
+    _refresh_session_user_meta(selected.name, overrides)
+    await _reset_session_container()
+
+    logger.info(
+        "llm settings saved: profile=%s, overrides=%s",
+        selected.name,
+        sorted(overrides.stored()),
+    )
 
 
 @cl.on_logout

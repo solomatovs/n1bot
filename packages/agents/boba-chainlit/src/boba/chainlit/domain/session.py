@@ -13,15 +13,20 @@ from typing import ClassVar, Final
 import chainlit as cl
 from boba.chainlit.domain.errors import RefusalError
 from chainlit.context import ChainlitContextException
+from chainlit.session import WebsocketSession
 
 __all__ = [
     "LogLine",
     "LogUserMark",
     "UserMetadataField",
+    "current_chat_profile",
+    "current_language",
     "current_thread_id",
     "current_user_id",
     "current_user_label",
+    "current_user_metadata",
     "current_user_roles",
+    "roles_of_user",
 ]
 
 
@@ -30,6 +35,7 @@ class UserMetadataField:
 
     PROVIDER: Final = "provider"
     ROLES: Final = "roles"
+    LLM: Final = "llm"
 
 
 class LogLine:
@@ -91,8 +97,8 @@ def _current_user() -> cl.User | cl.PersistedUser | None:
         return None
 
 
-def current_user_roles() -> frozenset[str]:
-    user = _current_user()
+def roles_of_user(user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
+    """Роли пользователя из metadata; годится и вне контекста сессии."""
     if user is None:
         return frozenset()
 
@@ -107,6 +113,49 @@ def current_user_roles() -> frozenset[str]:
         return frozenset({roles})
 
     return frozenset(str(r) for r in roles)
+
+
+def current_user_roles() -> frozenset[str]:
+    return roles_of_user(_current_user())
+
+
+def current_user_metadata() -> dict[str, object]:
+    """Metadata пользователя сессии; вне сессии — пустой словарь."""
+    user = _current_user()
+    if user is None:
+        return {}
+
+    metadata = user.metadata
+    if metadata is None:
+        return {}
+
+    return dict(metadata)
+
+
+def current_language() -> str:
+    """Язык вкладки; вне ws-сессии — пустая строка."""
+    try:
+        session = cl.context.session
+    except ChainlitContextException:
+        return ""
+
+    if not isinstance(session, WebsocketSession):
+        return ""
+
+    return session.language
+
+
+def current_chat_profile() -> str | None:
+    """Имя профиля чата текущей сессии; None — профиль не выбран."""
+    try:
+        value = cl.user_session.get("chat_profile")
+    except ChainlitContextException:
+        return None
+
+    if not value:
+        return None
+
+    return str(value)
 
 
 def current_user_id() -> str | None:

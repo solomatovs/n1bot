@@ -1,6 +1,7 @@
-"""Модели настроек, которые читает слой данных.
+"""Модели настроек, которые читают нижние слои.
 
-Живут ниже сборки приложения: хранилище не должно зависеть от инфраструктуры.
+Живут ниже сборки приложения: хранилище и доступ к инструментам не должны
+зависеть от инфраструктуры.
 """
 
 from __future__ import annotations
@@ -11,9 +12,14 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from boba.toolkit.binaries import TrustedBinaries
+from boba.toolkit.types import ToolGrant
 from boba.workspace.launcher import LauncherConfig
 
-__all__ = ["LocalStorageConfig"]
+__all__ = ["LocalStorageConfig", "RoleConfig", "ToolGrant"]
+
+
+class RoleConfig(ToolGrant):
+    """Секция [roles.<ROLE>]: что роль разрешает своему обладателю."""
 
 
 class LocalStorageConfig(BaseModel):

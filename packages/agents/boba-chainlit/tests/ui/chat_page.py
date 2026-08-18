@@ -29,10 +29,16 @@ class Selector(StrEnum):
     INPUT = "#chat-input"
     SUBMIT = "#chat-submit"
     STEP = "[data-step-type]"
+    PROFILES = "#chat-profiles"
+    PROFILE_ITEM = '[data-test^="select-item:"]'
 
     @staticmethod
     def of_type(step_type: str) -> str:
         return f'[data-step-type="{step_type}"]'
+
+    @staticmethod
+    def of_profile(name: str) -> str:
+        return f'[data-test="select-item:{name}"]'
 
 
 class StepKind(StrEnum):
@@ -68,6 +74,12 @@ class ChatPage:
 
     ON_CHAT_START: ClassVar[str] = "on_chat_start"
 
+    MENU_ESCAPE_X: ClassVar[int] = 20
+    """X координатного клика мимо меню профилей: левый край вкладки."""
+
+    MENU_ESCAPE_Y: ClassVar[int] = 500
+    """Y того же клика: ниже выпадающего списка, но выше поля ввода."""
+
     def open(self) -> None:
         self.page.goto(f"{self.base_url}/", wait_until="domcontentloaded")
         self._await(Selector.INPUT.value)
@@ -86,6 +98,73 @@ class ChatPage:
             self.page.wait_for_timeout(100)
 
         raise ChatPageError(f"chat start is not drawn\n{self.log.describe()}")
+
+    def has_profile_selector(self) -> bool:
+        """Есть ли на странице селектор профилей чата."""
+        return bool(self.page.locator(Selector.PROFILES.value).count())
+
+    def profile_label(self) -> str:
+        """Текст селектора профилей: какой профиль выбран сейчас."""
+        selector = self.page.locator(Selector.PROFILES.value)
+        if not selector.count():
+            raise ChatPageError(f"profile selector is not drawn\n{self.dom()[:2000]}")
+
+        return selector.first.inner_text().strip()
+
+    def open_profile_menu(self) -> list[str]:
+        """Открывает меню профилей и отдаёт имена пунктов в порядке DOM."""
+        selector = self.page.locator(Selector.PROFILES.value)
+        if not selector.count():
+            raise ChatPageError(f"profile selector is not drawn\n{self.dom()[:2000]}")
+
+        selector.first.click()
+        self._await(Selector.PROFILE_ITEM.value)
+
+        names: list[str] = []
+        items = self.page.locator(Selector.PROFILE_ITEM.value)
+        for index in range(items.count()):
+            item = items.nth(index)
+            if not item.is_visible():
+                continue
+
+            value = item.get_attribute("data-test")
+            if value is None:
+                continue
+
+            names.append(value.removeprefix("select-item:"))
+
+        return names
+
+    def profile_menu_items(self) -> int:
+        """Сколько пунктов меню профилей сейчас в разметке."""
+        return self.page.locator(Selector.PROFILE_ITEM.value).count()
+
+    def profile_menu_open(self) -> bool:
+        """Открыто ли меню: состояние держит сам триггер (aria-expanded)."""
+        selector = self.page.locator(Selector.PROFILES.value)
+        if not selector.count():
+            raise ChatPageError(f"profile selector is not drawn\n{self.dom()[:2000]}")
+
+        return selector.first.get_attribute("aria-expanded") == "true"
+
+    def close_profile_menu(self) -> None:
+        """Закрывает меню профилей, ничего не выбирая: клик мимо него.
+
+        Меню держит оверлей, перехватывающий события, поэтому закрывает не
+        клик по элементу страницы, а координатный клик в стороне.
+        """
+        self.page.mouse.click(self.MENU_ESCAPE_X, self.MENU_ESCAPE_Y)
+        self.page.wait_for_timeout(300)
+
+    def select_profile(self, name: str) -> None:
+        """Выбирает профиль из открытого меню и ждёт перезапуска чата."""
+        item = self.page.locator(Selector.of_profile(name))
+        if not item.count():
+            raise ChatPageError(f"profile {name!r} is not in menu\n{self.dom()[:2000]}")
+
+        self.log.clear()
+        item.first.click()
+        self._await_chat_start()
 
     def ask(self, text: str) -> None:
         """Задаёт вопрос; журнал очищается, чтобы в нём был только этот ход."""

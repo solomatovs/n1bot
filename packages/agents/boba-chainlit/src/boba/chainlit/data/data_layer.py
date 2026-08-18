@@ -34,7 +34,7 @@ from boba.chainlit.domain.keys import (
     ElementProps,
     ObjectKey,
 )
-from boba.chainlit.domain.session import current_user_id
+from boba.chainlit.domain.session import UserMetadataField, current_user_id
 from boba.db.postgres import AsyncPostgresPool
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
@@ -177,7 +177,7 @@ class PostgresDataLayer(AttachmentDataLayer):
                 {ph}
             )
             on conflict (identifier) do update set
-                meta = excluded.meta
+                meta = coalesce({users}.meta, '{{}}'::jsonb) || excluded.meta
             returning
                 {cols}
             """
@@ -201,6 +201,54 @@ class PostgresDataLayer(AttachmentDataLayer):
             return None
 
         return row.to_persisted()
+
+    @data_boundary
+    async def update_user_llm_settings(
+        self,
+        user_id: int,
+        profile: str,
+        values: Mapping[str, Any],
+    ) -> None:
+        """Настройки LLM пользователя для профиля; пустые значения снимают ключ."""
+        if values:
+            query = sql.SQL(
+                """
+                update {users}
+                set meta = jsonb_set(
+                    jsonb_set(
+                        coalesce(meta, '{{}}'::jsonb),
+                        '{{llm}}',
+                        coalesce(meta -> 'llm', '{{}}'::jsonb)
+                    ),
+                    %(path)s,
+                    %(values)s
+                )
+                where id = %(id)s
+                """
+            ).format(users=User.get_table_name(self._schema))
+            params: dict[str, Any] = {
+                "id": user_id,
+                "path": [UserMetadataField.LLM, profile],
+                "values": Jsonb(dict(values)),
+            }
+        else:
+            query = sql.SQL(
+                """
+                update {users}
+                set meta = coalesce(meta, '{{}}'::jsonb) #- %(path)s
+                where id = %(id)s
+                """
+            ).format(users=User.get_table_name(self._schema))
+            params = {
+                "id": user_id,
+                "path": [UserMetadataField.LLM, profile],
+            }
+
+        try:
+            async with self._pool.connection() as conn:
+                await conn.execute(query, params)
+        except Exception as e:
+            raise DataUnavailableError("update_user_llm_settings", str(e)) from e
 
     @data_boundary
     async def upsert_feedback(self, feedback: FeedbackPayload) -> str:

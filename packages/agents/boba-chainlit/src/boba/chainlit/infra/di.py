@@ -34,6 +34,9 @@ class Container:
     }
     _CACHED: ClassVar[frozenset[Scope]] = frozenset({"app", "session"})
 
+    SESSION_KEY: ClassVar[str] = "_di_session_container"
+    """Ключ user_session chainlit, под которым живёт контейнер сессии."""
+
     root: ClassVar["Container | None"] = None
     _session_hook: ClassVar[list["Callable[[], Container | None]"]] = []
 
