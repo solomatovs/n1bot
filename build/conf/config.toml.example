@@ -9,6 +9,9 @@
     data        = "${oc.env:BOBA_DATA}"
     sandbox     = "${env.base}/sandbox"
     krb         = "${env.base}/conf/krb"
+    # корень chainlit (.chainlit, public, chainlit.md, .files); в деплое это
+    # раскатанные ассеты, при отладке BOBA_APP_ROOT ведёт в дерево исходников
+    app_root    = "${oc.env:BOBA_APP_ROOT,${env.base}/app_root}"
 
 [site]
     # ldap
@@ -280,7 +283,7 @@
     # ssl_cert        = "${env.data}/certs/cert.crt"
     # ssl_key         = "${env.data}/certs/private.key"
     # ssl_ca_certs    = "${env.data}/certs/ca-cert.crt"
-    root            = "${env.base}/app_root"
+    root            = "${env.app_root}"
     auth_secret     = "${site.chainlit_auth_secret}"
 
     # heartbeat engine.io: с этим периодом сервер шлёт клиенту ping, сек

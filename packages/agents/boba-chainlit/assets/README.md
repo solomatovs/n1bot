@@ -1,14 +1,15 @@
 # Ассеты интерфейса
 
-Оформление и переводы chainlit-приложения. Лежат в репозитории и запекаются
-в образ: сборщик кладёт их в `${BOBA_DIR}/data/`, откуда их читает chainlit
-(`CHAINLIT_APP_ROOT`, значение берётся из `chainlit.root` конфига).
+Оформление и переводы chainlit-приложения. Каталог сам по себе — готовый
+app_root: файлы лежат ровно там, где их ищет chainlit (`CHAINLIT_APP_ROOT`,
+значение берётся из `chainlit.root` конфига).
 
-- `chainlit/config.toml` и `chainlit/translations/*.json` (в том числе русский
-  `ru-RU.json`) — становятся `.chainlit/` внутри app_root;
-- `chainlit/chainlit.md` — стартовая страница, ложится в корень app_root:
-  в `.chainlit/` chainlit её не ищет;
+- `.chainlit/config.toml` и `.chainlit/translations/*.json` (в том числе русский
+  `ru-RU.json`) — настройки и переводы интерфейса;
+- `chainlit.md` — стартовая страница; в `.chainlit/` chainlit её не ищет;
 - `public/` — тема `theme.json`, логотипы, favicon, аватары.
 
-Каталог назван без точки: скрытые имена теряются при упаковке и попадают
-под общие ignore-правила. Точку добавляет сборщик.
+Развёртывание копирует набор в app_root образа (Dockerfile) и релиза
+(`make release`). Отладочный запуск читает каталог напрямую: `BOBA_APP_ROOT`
+в launch.json указывает сюда, и правка ассета видна без пересборки. Рядом
+появляется `.files` — рабочий каталог вложений chainlit, он под ignore-правилом.

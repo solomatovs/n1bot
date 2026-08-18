@@ -345,9 +345,9 @@ COPY build/conf/                                       /tmp/conf/
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
 
-COPY packages/agents/boba-chainlit/assets/chainlit/config.toml    ${BOBA_DIR}/app_root/.chainlit/
-COPY packages/agents/boba-chainlit/assets/chainlit/translations/  ${BOBA_DIR}/app_root/.chainlit/translations/
-COPY packages/agents/boba-chainlit/assets/chainlit/chainlit.md    ${BOBA_DIR}/app_root/
+COPY packages/agents/boba-chainlit/assets/.chainlit/config.toml   ${BOBA_DIR}/app_root/.chainlit/
+COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
+COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY build/src/webassets/                                         ${BOBA_DIR}/app_root/public/vendor/
 

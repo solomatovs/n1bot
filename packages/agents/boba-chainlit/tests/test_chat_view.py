@@ -2,20 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any, cast
+
 import pytest
 
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
     ChatView,
+    LiveSink,
     RecordingSink,
     StepRole,
     TurnPulse,
 )
+from boba.toolkit.result import TextResult
+from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 TURN = "22222222-2222-2222-2222-222222222222"
 PULSE = ChatView.derive_id(THREAD, TURN, StepRole.PULSE)
+ANSWER = ChatView.derive_id(THREAD, TURN, StepRole.ANSWER)
 
 
 @pytest.fixture(autouse=True)
@@ -160,3 +170,161 @@ class TestTurnPulse:
 
         if self._pulse(sink.steps) is not None:
             raise AssertionError("finished turn has no pulse")
+
+
+class ChatEvent(StrEnum):
+    """События ленты, которые chainlit шлёт вкладке."""
+
+    NEW = "new_message"
+    UPDATE = "update_message"
+    DELETE = "delete_message"
+    STREAM_START = "stream_start"
+    STREAM_TOKEN = "stream_token"
+
+
+@dataclass
+class Frame:
+    """Кадр эмиссии: что и про какой шаг ушло вкладке."""
+
+    event: ChatEvent
+    step_id: str
+
+
+class FakeSession:
+    """Сессия для Message и chat_context: им нужны только идентификаторы."""
+
+    def __init__(self, thread_id: str) -> None:
+        self.id = "session-1"
+        self.thread_id = thread_id
+
+
+class FakeEmitter:
+    """Эмиттер-рекордер: кадры ленты копятся вместо отправки в сокет."""
+
+    def __init__(self) -> None:
+        self.frames: list[Frame] = []
+
+    def of(self, event: ChatEvent, step_id: str) -> None:
+        self.frames.append(Frame(event=event, step_id=step_id))
+
+    def ids(self, event: ChatEvent) -> list[str]:
+        seen: list[str] = []
+        for frame in self.frames:
+            if frame.event is not event:
+                continue
+
+            seen.append(frame.step_id)
+
+        return seen
+
+    async def send_step(self, step_dict: StepDict) -> None:
+        self.of(ChatEvent.NEW, str(step_dict.get(StepField.ID, "")))
+
+    async def update_step(self, step_dict: StepDict) -> None:
+        self.of(ChatEvent.UPDATE, str(step_dict.get(StepField.ID, "")))
+
+    async def delete_step(self, step_dict: StepDict) -> None:
+        self.of(ChatEvent.DELETE, str(step_dict.get(StepField.ID, "")))
+
+    async def stream_start(self, step_dict: StepDict) -> None:
+        self.of(ChatEvent.STREAM_START, str(step_dict.get(StepField.ID, "")))
+
+    async def send_token(
+        self, id: str, token: str, is_sequence: bool = False, is_input: bool = False
+    ) -> None:
+        self.of(ChatEvent.STREAM_TOKEN, id)
+
+
+class FakeContext:
+    """Контекст хода: ленте нужны только сессия и эмиттер."""
+
+    def __init__(self, thread_id: str) -> None:
+        self.session = FakeSession(thread_id)
+        self.emitter = FakeEmitter()
+
+
+
+
+class TestLivePulseFrames:
+    """Живая лента: кадры пульса приходят вкладке ровно на границах ожидания.
+
+    Контекст ставится в теле теста, а ход гоняется asyncio.run: корутина
+    наследует контекст вызывающего, поэтому кадры не зависят от порядка
+    тестов в сессии.
+    """
+
+    @staticmethod
+    def _play(
+        scenario: Callable[[ChatView], Coroutine[Any, Any, None]],
+    ) -> FakeEmitter:
+        recorded = FakeContext(THREAD)
+        token = context_var.set(cast("ChainlitContext", recorded))
+        try:
+            view = ChatView(THREAD, LiveSink(), user_name="Пользователь")
+            view.begin_turn(TURN)
+            asyncio.run(scenario(view))
+        finally:
+            context_var.reset(token)
+
+        return recorded.emitter
+
+    @staticmethod
+    def _pulse_events(emitter: FakeEmitter) -> list[ChatEvent]:
+        events: list[ChatEvent] = []
+        for frame in emitter.frames:
+            if frame.step_id != PULSE:
+                continue
+
+            events.append(frame.event)
+
+        return events
+
+    def test_turn_opens_and_closes_the_pulse(self) -> None:
+        async def scenario(view: ChatView) -> None:
+            await view.await_model()
+            await view.stream_answer("сейчас посмотрю", TURN)
+            step = await view.tool_started("bash", {"cmd": "ls"}, "call-1")
+            await view.tool_finished(step, TextResult(text="ok"), "call-1")
+            await view.close_answer(TURN)
+            await view.finish_turn()
+
+        emitter = self._play(scenario)
+
+        expected = [
+            ChatEvent.NEW,
+            ChatEvent.DELETE,
+            ChatEvent.NEW,
+            ChatEvent.DELETE,
+        ]
+        if self._pulse_events(emitter) != expected:
+            raise AssertionError(
+                f"pulse frames are {self._pulse_events(emitter)}, expected {expected}"
+            )
+
+    def test_pulse_is_sent_after_the_answer(self) -> None:
+        """Кружок обязан прийти позже ответа, иначе он висит не в конце ленты."""
+
+        async def scenario(view: ChatView) -> None:
+            await view.await_model()
+            await view.stream_answer("сейчас посмотрю", TURN)
+            await view.tool_started("bash", {"cmd": "ls"}, "call-1")
+
+        emitter = self._play(scenario)
+
+        answer_at = -1
+        pulse_at = -1
+        for index, frame in enumerate(emitter.frames):
+            if frame.event is not ChatEvent.NEW:
+                continue
+
+            if frame.step_id == PULSE:
+                pulse_at = index
+                continue
+
+            if frame.step_id == ANSWER:
+                answer_at = index
+
+        if answer_at < 0:
+            raise AssertionError(f"the sealed answer is sent: {emitter.frames}")
+        if pulse_at < answer_at:
+            raise AssertionError("pulse follows the answer it waits under")
