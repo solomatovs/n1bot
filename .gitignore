@@ -23,6 +23,9 @@ packages/**/dist/
 .chainlit/
 .files/
 
+# ассеты — готовый app_root: debug-сессия читает их напрямую по BOBA_APP_ROOT
+!/packages/agents/boba-chainlit/assets/.chainlit/
+
 /build/*
 !/build/Dockerfile
 !/build/Makefile

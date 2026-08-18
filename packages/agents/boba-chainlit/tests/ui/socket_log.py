@@ -25,6 +25,7 @@ class ChatEvent(StrEnum):
 
     NEW_MESSAGE = "new_message"
     UPDATE_MESSAGE = "update_message"
+    DELETE_MESSAGE = "delete_message"
     STREAM_START = "stream_start"
     STREAM_CHUNK = "stream_token"
     TASK_START = "task_start"

@@ -647,9 +647,9 @@ dev: check-artifacts
 	# ассеты фронта: тот же набор, что уходит в образ
 	rm -rf "$$out/app_root"
 	mkdir -p "$$out/app_root/.chainlit" "$$out/app_root/.files"
-	cp -a "$(ASSETS_DIR)/chainlit/config.toml" "$$out/app_root/.chainlit/"
-	cp -a "$(ASSETS_DIR)/chainlit/translations" "$$out/app_root/.chainlit/"
-	cp -a "$(ASSETS_DIR)/chainlit/chainlit.md" "$$out/app_root/"
+	cp -a "$(ASSETS_DIR)/.chainlit/config.toml" "$$out/app_root/.chainlit/"
+	cp -a "$(ASSETS_DIR)/.chainlit/translations" "$$out/app_root/.chainlit/"
+	cp -a "$(ASSETS_DIR)/chainlit.md" "$$out/app_root/"
 	cp -a "$(ASSETS_DIR)/public" "$$out/app_root/public"
 
 	# окружение процесса в контейнере: пути внутри него, а не на хосте

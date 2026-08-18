@@ -265,3 +265,49 @@ class TestOk:
 
         if len(sink.steps) != before:
             raise AssertionError("len(sink.steps) == before")
+
+
+class TestPulseOfTheTurn:
+    """Кружок ожидания снимается любым исходом хода, а не только удачным."""
+
+    @staticmethod
+    async def _silent_stream() -> AsyncIterator[tuple[BaseMessage, dict[str, Any]]]:
+        """Ход без единого токена: кружок к финалу остаётся показанным."""
+        return
+        yield
+
+    @staticmethod
+    async def _failing_stream() -> AsyncIterator[tuple[BaseMessage, dict[str, Any]]]:
+        raise RuntimeError("inference is unreachable")
+        yield
+
+    async def _run(
+        self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
+    ) -> ChatView:
+        from boba.chainlit.chat.turn import ChatTurn
+
+        view, _sink = await _view_with_sink()
+        turn = ChatTurn(
+            thread_id=THREAD,
+            view=view,
+            history=cast(Any, RememberedHistory()),
+            key=TURN_KEY,
+        )
+
+        task = asyncio.create_task(turn.run(stream))
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        return view
+
+    async def test_finished_turn_clears_the_pulse(self) -> None:
+        view = await self._run(self._silent_stream())
+
+        if view.pulse_step is not None:
+            raise AssertionError("finished turn leaves no pulse")
+
+    async def test_failed_turn_clears_the_pulse(self) -> None:
+        view = await self._run(self._failing_stream())
+
+        if view.pulse_step is not None:
+            raise AssertionError("failed turn leaves no pulse")
