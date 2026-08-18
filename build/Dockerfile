@@ -265,7 +265,7 @@ RUN set -eu                                                               \
         --find-links=/tmp/wheels $(cat /tmp/names-sandbox.txt)            \
     && rm -rf /tmp/wheels
 
-RUN PYTHONPATH=/opt/site python3 -c "import liteparse, markdownify, bs4, lxml, plotly, httpx, psycopg, clickhouse_connect, aiohttp, fastembed, gssapi, krb5; print('site ok')"
+RUN PYTHONPATH=/opt/site python3 -c "import liteparse, markdownify, bs4, lxml, plotly, httpx, psycopg, clickhouse_connect, aiohttp, fastembed, gssapi, krb5, pandas, openpyxl; print('site ok')"
 
 # код инструментов уезжает отдельно: он запекается в /usr/src образа песочницы,
 # а sys.path сюда добавляет boba-src.pth рядом с site-packages
