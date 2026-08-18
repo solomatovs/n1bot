@@ -964,6 +964,16 @@ class ElementSink(ChatSink):
     async def put(self, step: Step) -> None:
         self.steps.append(step)
 
+    async def drop(self, step: Step) -> None:
+        kept: list[Step] = []
+        for stored in self.steps:
+            if stored.id == step.id:
+                continue
+
+            kept.append(stored)
+
+        self.steps = kept
+
 
 class TestStreamButton:
     """Кнопка потока живёт на шаге потокового тула и адресуется по call_id."""

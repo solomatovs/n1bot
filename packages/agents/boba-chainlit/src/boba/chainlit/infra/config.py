@@ -124,17 +124,18 @@ class OpenAiConfig(BaseModel):
         description="Разрешить HTTP/2 к провайдеру.",
     )
 
-    request_timeout: float = Field(
-        default=300,
+    stream_chunk_timeout: float = Field(
+        default=600,
         ge=0,
         description=(
-            "Потолок одной попытки запроса целиком, секунды; read_timeout "
-            "ограничивает лишь паузу между чанками. 0 — без потолка."
+            "Пауза между чанками контента в стриме, секунды: считает разрывы "
+            "между разобранными чанками, keepalive её не сбрасывает. "
+            "0 — без потолка."
         ),
     )
 
     max_retries: int = Field(
-        default=0,
+        default=2,
         ge=0,
         description=(
             "Повторы запроса клиентом openai при 429/5xx и таймауте; "
@@ -148,9 +149,10 @@ class OpenAiConfig(BaseModel):
     )
 
     read_timeout: float = Field(
-        default=100,
+        default=600,
         description=(
-            "ожидание данных от сервера; при stream=True — пауза между чанками"
+            "ожидание очередных байт от сервера; при stream=True — пауза "
+            "между байтами, а не между чанками контента"
         ),
     )
 
@@ -305,14 +307,21 @@ class ChainlitExtendConfig(BaseModel):
     ping_interval: int = Field(
         default=300,
         description=(
-            "даём клиенту пережить долгие паузы(engine.io heartbeat)"
-            "удобно для debug при длительных breakpoint'ах"
+            "Период heartbeat'а engine.io, секунды: с ним сервер шлёт клиенту "
+            "ping, значение уезжает клиенту в handshake. Клиент считает "
+            "соединение мёртвым, если ping не пришёл за ping_interval + "
+            "ping_timeout, и переподключается; большое значение даёт пережить "
+            "паузу на breakpoint'е отладки."
         ),
     )
 
     ping_timeout: int = Field(
         default=300,
-        description="",
+        description=(
+            "Ожидание pong'а engine.io, секунды: без ответа сервер закрывает "
+            "сессию сокета с причиной ping timeout. Вместе с ping_interval "
+            "задаёт, через сколько тишины вкладка уходит в реконнект."
+        ),
     )
 
     max_decode_packets: int = Field(
@@ -328,6 +337,27 @@ class ChainlitExtendConfig(BaseModel):
         description=(
             "Секрет подписи JWT; chainlit читает его только из env "
             "(CHAINLIT_AUTH_SECRET), бутстрап прокидывает значение туда."
+        ),
+    )
+
+    ws_ping_interval: float = Field(
+        default=20,
+        ge=0,
+        description=(
+            "Период ws-пинга uvicorn, секунды: кадр ping самого протокола "
+            "WebSocket, отдельный от heartbeat'а engine.io. Отвечает на него "
+            "браузер, а не приложение. 0 — не пинговать, живость остаётся "
+            "только на engine.io."
+        ),
+    )
+
+    ws_ping_timeout: float = Field(
+        default=20,
+        ge=0,
+        description=(
+            "Ожидание ws-pong'а, секунды: без ответа uvicorn рвёт соединение "
+            "и вкладка уходит в реконнект, даже когда ход жив. Малое значение "
+            "рвёт связь на замершей вкладке и сетевых задержках. 0 — не ждать."
         ),
     )
 

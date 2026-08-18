@@ -92,17 +92,17 @@
         # разрешить HTTP/2 к провайдеру
         http2                     = false
 
-        # потолок одной попытки запроса целиком, сек; 0 — без потолка
-        request_timeout           = 300
+        # пауза между чанками контента в стриме, сек; 0 — без потолка
+        stream_chunk_timeout      = 600
         # повторы всего запроса клиентом openai при 429/5xx и таймауте
-        max_retries               = 0
+        max_retries               = 2
 
         # установка TCP-соединения с хостом, включая TLS handshake, сек
         connect_timeout           = 5
-        # ожидание очередных байт от сервера; при стриме — пауза между чанками, сек
-        read_timeout              = 10
+        # ожидание очередных байт от сервера; при стриме — пауза между байтами, сек
+        read_timeout              = 600
         # отправка тела запроса на сервер, сек
-        write_timeout             = 10
+        write_timeout             = 100
         # ожидание свободного соединения в пуле httpx, сек
         pool_timeout              = 5
 
@@ -282,6 +282,18 @@
     # ssl_ca_certs    = "${env.data}/certs/ca-cert.crt"
     root            = "${env.base}/app_root"
     auth_secret     = "${site.chainlit_auth_secret}"
+
+    # heartbeat engine.io: с этим периодом сервер шлёт клиенту ping, сек
+    ping_interval    = 300
+    # сколько ждать pong; после ping_interval + ping_timeout тишины клиент
+    # считает связь мёртвой и переподключается — ход при этом продолжается,
+    # а лента получает свой индикатор заново
+    ping_timeout     = 300
+    # ping самого протокола WebSocket от uvicorn, сек; отвечает браузер, 0 — не слать
+    ws_ping_interval = 20
+    # сколько uvicorn ждёт pong: без ответа соединение рвётся и вкладка уходит
+    # в реконнект даже при живом ходе; 0 — не ждать
+    ws_ping_timeout  = 20
 
 
 [sandbox]

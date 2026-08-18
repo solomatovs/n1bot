@@ -26,6 +26,7 @@ from boba.toolkit.calls import ToolCallViews
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
+from chainlit.context import context
 from chainlit.element import CustomElement
 from chainlit.langchain.callbacks import process_content
 from chainlit.message import Message
@@ -42,6 +43,7 @@ __all__ = [
     "StepStatus",
     "StepText",
     "TurnDraft",
+    "TurnPulse",
 ]
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,7 @@ class StepRole(StrEnum):
     ANSWER = "answer"
     ERROR = "error"
     PROCESS = "process"
+    PULSE = "pulse"
     THINKING = "thinking"
     TOOL = "tool"
     CHART = "chart"
@@ -172,6 +175,10 @@ class ChatSink(ABC):
     async def put(self, step: Step) -> None:
         pass
 
+    @abstractmethod
+    async def drop(self, step: Step) -> None:
+        """Убирает шаг из ленты; следующий put ставит его в конец заново."""
+
 
 class LiveSink(ChatSink):
     """Отдаёт шаги в открытую сессию chainlit."""
@@ -189,6 +196,15 @@ class LiveSink(ChatSink):
         self._sent.add(step.id)
         await step.send()
 
+    async def drop(self, step: Step) -> None:
+        if step.id not in self._sent:
+            return
+
+        self._sent.discard(step.id)
+        # снятый шаг уходит заново отправкой, а chainlit шлёт её лишь однажды
+        step.persisted = False
+        await context.emitter.delete_step(step.to_dict())
+
 
 class RecordingSink(ChatSink):
     """Копит шаги как StepDict — для отдачи истории треда."""
@@ -199,9 +215,78 @@ class RecordingSink(ChatSink):
     async def put(self, step: Step) -> None:
         self._steps[step.id] = step.to_dict()
 
+    async def drop(self, step: Step) -> None:
+        self._steps.pop(step.id, None)
+
     @property
     def steps(self) -> list[StepDict]:
         return list(self._steps.values())
+
+
+class TurnPulse:
+    """Кружок ожидания в конце ленты: ход идёт, чем бы он сейчас ни был занят.
+
+    Стримящийся ответ рисует курсор сам, поэтому на время стрима пульс гасится:
+    кружок в ленте всегда ровно один. Любой новый шаг ленты встаёт ниже пульса,
+    поэтому показ снимает кружок и рисует заново — так он остаётся последним.
+    """
+
+    CONTENT: ClassVar[str] = "\u200b"
+    """Zero-width space: chainlit рисует его мигающим кружком."""
+
+    def __init__(self, sink: ChatSink, step: Step) -> None:
+        self._sink = sink
+        self._step = step
+        self._live = False
+        self._shown = False
+
+    @property
+    def step(self) -> Step | None:
+        """Показанный шаг пульса; None — кружка в ленте сейчас нет."""
+        if not self._shown:
+            return None
+
+        return self._step
+
+    async def start(self) -> None:
+        """Ход начался: кружок держится до его конца."""
+        self._live = True
+        await self._draw()
+
+    async def hold(self) -> None:
+        """Пошёл стрим ответа: курсор рисует само сообщение."""
+        await self._erase()
+
+    async def resume(self) -> None:
+        """Ответ закрыт: кружок возвращается в конец ленты."""
+        if not self._live:
+            return
+
+        await self._draw()
+
+    async def bump(self) -> None:
+        """Ниже пульса встал новый шаг: кружок переезжает в конец ленты."""
+        if not self._shown:
+            return
+
+        await self._draw()
+
+    async def stop(self) -> None:
+        """Ход завершён: кружка в ленте быть не должно."""
+        self._live = False
+        await self._erase()
+
+    async def _draw(self) -> None:
+        await self._erase()
+        await self._sink.put(self._step)
+        self._shown = True
+
+    async def _erase(self) -> None:
+        if not self._shown:
+            return
+
+        await self._sink.drop(self._step)
+        self._shown = False
 
 
 class ChatView:
@@ -214,6 +299,9 @@ class ChatView:
 
     Стримящиеся элементы хода — ответ и рассуждения — живут в TurnDraft: пока
     ход открыт, их дописывают токен за токеном, и лишь закрытие уходит в sink.
+
+    Пока ход не закончен, в конце ленты держится кружок ожидания (TurnPulse) —
+    независимо от того, думает модель, зовёт инструмент или молчит.
     """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
@@ -234,6 +322,7 @@ class ChatView:
         self._assistant_name = chainlit_config.ui.name
         self._turn = TurnDraft()
         self._tool_names: dict[str, str] = {}
+        self._pulse = self._new_pulse(None)
 
     @property
     def thread_id(self) -> str:
@@ -255,9 +344,29 @@ class ChatView:
         """Открытый шаг рассуждений; None — модель ещё ничего не надумала."""
         return self._turn.thinking
 
+    @property
+    def pulse_step(self) -> Step | None:
+        """Показанный кружок ожидания; None — ход ничего не ждёт."""
+        return self._pulse.step
+
     def begin_turn(self, key: str | None) -> None:
         """Открывает ход: его ключ адресует контейнер и ответ."""
         self._turn = TurnDraft(key=key)
+        self._pulse = self._new_pulse(key)
+
+    async def finish_turn(self) -> None:
+        """Ход закончен любым исходом: кружок ожидания снимается."""
+        await self._pulse.stop()
+
+    def _new_pulse(self, key: str | None) -> TurnPulse:
+        step = self._step(
+            self._assistant_name,
+            StepKind.ASSISTANT,
+            parent_id=None,
+            step_id=self.derive_id(self._thread_id, key, StepRole.PULSE),
+        )
+        step.output = TurnPulse.CONTENT
+        return TurnPulse(self._sink, step)
 
     async def question(self, text: str, step_id: str | None = None) -> Step:
         step = self._step(
@@ -279,6 +388,7 @@ class ChatView:
         )
         step.output = text
         await self._sink.put(step)
+        await self._pulse.bump()
         return step
 
     async def error(self, text: str, key: str | None = None) -> Step:
@@ -291,6 +401,7 @@ class ChatView:
         step.output = text
         step.is_error = True
         await self._sink.put(step)
+        await self._pulse.bump()
         return step
 
     async def stream_answer(self, token: str, key: str | None = None) -> None:
@@ -298,6 +409,7 @@ class ChatView:
         if self._turn.answer is None:
             self._turn.answer = self._open_answer(key)
 
+        await self._pulse.hold()
         await self._turn.answer.stream_token(token)
 
     async def close_answer(self, key: str | None = None) -> None:
@@ -329,6 +441,7 @@ class ChatView:
             return
 
         await message.send()
+        await self._pulse.resume()
 
     def _open_answer(self, key: str | None = None) -> Message:
         answer_key = self._turn.answer_key(key)
@@ -350,6 +463,7 @@ class ChatView:
             step_id=self.derive_id(self._thread_id, self._turn.key, StepRole.PROCESS),
         )
         await self._sink.put(step)
+        await self._pulse.bump()
         self._turn.container = step
         return step
 
@@ -360,6 +474,8 @@ class ChatView:
         принят ли его вопрос вообще.
         """
         step = await self.container(StepText.REQUESTED)
+        await self._pulse.start()
+
         if step.name == StepText.REQUESTED:
             return step
 
@@ -567,6 +683,7 @@ class ChatView:
             step.elements = [element]
 
         await self._sink.put(step)
+        await self._pulse.bump()
 
     @classmethod
     def derive_id(cls, thread_id: str, key: str | None, role: StepRole) -> str | None:

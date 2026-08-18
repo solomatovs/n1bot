@@ -370,11 +370,11 @@ def langchain_agent(
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
     tools: Annotated[list[BaseTool], Depends(session_tools, scope="session")],
 ) -> CompiledStateGraph:
-    # потолок попытки и повторы держит клиент openai: httpx-таймауты меряют
-    # паузы между байтами и запрос целиком не ограничивают
-    request_timeout = None
-    if c.agent.openai.request_timeout:
-        request_timeout = c.agent.openai.request_timeout
+    # таймаут запроса клиент openai ставит поверх клиентского: без него в
+    # httpx уходит None и фазы остаются без потолка
+    stream_chunk_timeout = None
+    if c.agent.openai.stream_chunk_timeout:
+        stream_chunk_timeout = c.agent.openai.stream_chunk_timeout
 
     chat = ReasoningChatOpenAI(
         http_async_client=client,
@@ -382,7 +382,8 @@ def langchain_agent(
         base_url=c.agent.openai.base_url,
         api_key=SecretStr(c.agent.openai.api_key),
         temperature=c.agent.temperature,
-        timeout=request_timeout,
+        timeout=httpx_timeout(c.agent.openai),
+        stream_chunk_timeout=stream_chunk_timeout,
         max_retries=c.agent.openai.max_retries,
     )
 

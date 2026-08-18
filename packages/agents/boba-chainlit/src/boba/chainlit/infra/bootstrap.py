@@ -22,6 +22,7 @@ from boba.chainlit.infra.config import (
 from boba.chainlit.infra.di import Container
 from boba.chainlit.infra.error_middleware import DomainErrorMiddleware
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
+from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
 
 
@@ -53,6 +54,16 @@ def run_app(config_path: Path):
     app.add_middleware(RequestUserMiddleware)
 
     async def start():
+        # 0 отключает ws-пинг uvicorn: тогда живость сокета держит только
+        # heartbeat engine.io, у которого свои интервалы
+        ws_ping_interval = None
+        if c.chainlit.ws_ping_interval:
+            ws_ping_interval = c.chainlit.ws_ping_interval
+
+        ws_ping_timeout = None
+        if c.chainlit.ws_ping_timeout:
+            ws_ping_timeout = c.chainlit.ws_ping_timeout
+
         uv_config = uvicorn.Config(
             app,
             host=c.chainlit.host,
@@ -61,6 +72,8 @@ def run_app(config_path: Path):
             log_config=None,
             log_level=None,
             access_log=True,
+            ws_ping_interval=ws_ping_interval,
+            ws_ping_timeout=ws_ping_timeout,
             ws_per_message_deflate=c.chainlit.ws_per_message_deflate,
             ssl_keyfile=c.chainlit.ssl_key,
             ssl_certfile=c.chainlit.ssl_cert,
@@ -108,6 +121,9 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
     sio.eio.ping_interval = config.ping_interval
     sio.eio.ping_timeout = config.ping_timeout
     Payload.max_decode_packets = config.max_decode_packets
+
+    # хендлеры chainlit зарегистрированы импортом chainlit.server выше
+    SocketEvents.install()
 
     init_markdown(config.root)
 

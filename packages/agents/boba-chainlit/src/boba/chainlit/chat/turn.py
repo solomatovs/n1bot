@@ -381,6 +381,9 @@ class ChatTurn:
         if answer := self._view.answer_message:
             steps.append(answer.to_dict())
 
+        if pulse := self._view.pulse_step:
+            steps.append(pulse.to_dict())
+
         return steps
 
     def resume_into(self, thread_dict: ThreadDict) -> None:
@@ -485,8 +488,13 @@ class ChatTurn:
             await self._reporter.ok()
 
     async def _finish_ui(self) -> None:
-        """Гасит loading во всех вкладках треда: chainlit шлёт task_end только
-        сессии, начавшей ход, а после F5 она мертва."""
+        """Гасит кружок ожидания и loading во всех вкладках треда: chainlit шлёт
+        task_end только сессии, начавшей ход, а после F5 она мертва."""
+        try:
+            await self._view.finish_turn()
+        except Exception:
+            logger.warning("turn pulse is not cleared: chat is gone", exc_info=True)
+
         end = asyncio.ensure_future(cl.context.emitter.task_end())
         self._REPORTS.add(end)
         end.add_done_callback(self._REPORTS.discard)
