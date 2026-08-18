@@ -146,7 +146,15 @@ def t_absent(module):
         raise RuntimeError(f"{module} в окружении приложения (его тянут tool-пакеты)")
 
 
-for module in ["liteparse", "markdownify", "bs4", "fastembed", "onnxruntime"]:
+for module in [
+    "liteparse",
+    "markdownify",
+    "bs4",
+    "fastembed",
+    "onnxruntime",
+    "pandas",
+    "openpyxl",
+]:
     warn(f"нет {module} в приложении", lambda m=module: t_absent(m))
 
 print()

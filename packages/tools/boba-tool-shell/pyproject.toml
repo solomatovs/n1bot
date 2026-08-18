@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-shell"
-version = "0.0.12.dev8"
+version = "0.0.12.dev9"
 description = "Инструмент bash: команда пользователя в песочнице поверх workspace-образа."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.12.dev8",
+    "boba-toolkit==0.0.12.dev9",
     "langchain-core",
     "pydantic>=2.10,<2.11",
 ]
@@ -17,6 +17,8 @@ dependencies = [
 # в окружении приложения их быть не должно
 [project.optional-dependencies]
 payload = [
+    "pandas>=2,<3",
+    "openpyxl>=3.1,<4",
 ]
 
 [tool.setuptools.packages.find]
