@@ -23,6 +23,7 @@ class StepField:
     """Ключи StepDict."""
 
     ID: Final = "id"
+    PARENT_ID: Final = "parentId"
     NAME: Final = "name"
     OUTPUT: Final = "output"
     IS_ERROR: Final = "isError"

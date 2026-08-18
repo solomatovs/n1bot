@@ -23,11 +23,12 @@
                 "email": {
                     "label": "Логин",
                     "required": "логин обязателен для заполнения",
-                    "placeholder": "Ivanov.SA"
+                    "placeholder": "login"
                 },
                 "password": {
                     "label": "Пароль",
-                    "required": "пароль обязателен для заполнения"
+                    "required": "пароль обязателен для заполнения",
+                    "placeholder": "password"
                 },
                 "actions": {
                     "signin": "Войти"

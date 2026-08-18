@@ -161,9 +161,9 @@ RUN set -eu                                                             \
 # лежали в путях загрузчика, выбор решал порядок ld.so.cache и на разных
 # машинах давал разный результат. Ставится после apt: установка пакетов
 # принесла бы дистрибутивную версию обратно
-COPY --from=base /usr/local/lib64/libstdc++.so.${LIBSTDCXX_VERSION}   \
+COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION} \
                  /usr/lib/x86_64-linux-gnu/
-COPY --from=base /usr/local/lib64/libgcc_s.so.1                       \
+COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                     \
                  /lib/x86_64-linux-gnu/
 
 RUN set -eu                                                          \
@@ -316,10 +316,11 @@ RUN set -eu                                                           \
 # and make extract copy to server host
 FROM ${GLIBC_IMAGE} AS runtime
 
-ARG PYTHON_VERSION=3.11   \
-    BOBA_DIR=/app/boba    \
-    BOBA_VERSION=0.0.0    \
-    BOBA_UID=1000         \
+ARG PYTHON_VERSION=3.11       \
+    LIBSTDCXX_VERSION=6.0.25  \
+    BOBA_DIR=/app/boba        \
+    BOBA_VERSION=0.0.0        \
+    BOBA_UID=1000             \
     BOBA_GID=1000
 
 
@@ -330,8 +331,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-dist /opt/python/usr/local          ${BOBA_DIR}/third
-COPY --from=base /usr/local/lib64/libstdc++.so.6       ${BOBA_DIR}/third/lib/
-COPY --from=base /usr/local/lib64/libstdc++.so.6.0.25  ${BOBA_DIR}/third/lib/
+COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                    \
+                 ${BOBA_DIR}/third/lib/
+COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION} \
+                 ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/local/bin/uv                     ${BOBA_DIR}/third/bin/uv
 COPY --from=bwrap-build /out/bwrap                     ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs                 ${BOBA_DIR}/third/bin/fuse2fs
