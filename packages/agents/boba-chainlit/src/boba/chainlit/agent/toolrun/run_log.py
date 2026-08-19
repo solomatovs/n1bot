@@ -98,8 +98,9 @@ class ToolRunLogger:
 
         def after(self, ctx: _CallScope, result: object) -> object:
             ctx.note = str(CallOutcome.FINISHED)
+            elapsed = ToolRunLogger._elapsed_ms(ctx.started)
             ToolRunLogger._log_outcome(ctx.name, ctx.started, result)
-            return result
+            return ToolRunLogger._timed(result, elapsed)
 
         def on_error(self, ctx: _CallScope, error: Exception) -> object:
             ToolRunLogger._log_failure(ctx.name, ctx.started, error)
@@ -177,6 +178,21 @@ class ToolRunLogger:
     @staticmethod
     def _elapsed_ms(started: float) -> int:
         return int((time.monotonic() - started) * 1000)
+
+    @staticmethod
+    def _timed(result: object, elapsed: int) -> object:
+        """Дописывает время вызова в артефакт; чужой формат ответа не трогает."""
+        if not isinstance(result, tuple):
+            return result
+
+        if len(result) != ToolRunLogger.PACKED_RESULT:
+            return result
+
+        content, payload = result
+        if not isinstance(payload, ToolResultBase):
+            return result
+
+        return content, payload.model_copy(update={"elapsed_ms": elapsed})
 
     @classmethod
     def _render_args(

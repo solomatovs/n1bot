@@ -17,7 +17,9 @@ from boba.chainlit.rendering.chat_view import (
     ChatView,
     LiveSink,
     RecordingSink,
+    StepElapsed,
     StepRole,
+    StepStatus,
     TurnPulse,
 )
 from boba.toolkit.result import TextResult
@@ -383,3 +385,59 @@ class TestPrefetchStage:
 
         if stage.id != ChatView.derive_id(THREAD, TURN, StepRole.STAGE):
             raise AssertionError("id этапа выводится из ключа хода")
+
+
+class TestStepElapsed:
+    """Подпись длительности вызова в названии шага."""
+
+    def test_milliseconds(self) -> None:
+        if StepElapsed.of(340) != "340 ms":
+            raise AssertionError(StepElapsed.of(340))
+
+    def test_seconds(self) -> None:
+        if StepElapsed.of(1250) != "1.2 s":
+            raise AssertionError(StepElapsed.of(1250))
+
+    def test_minutes(self) -> None:
+        if StepElapsed.of(95_000) != "1 m 35 s":
+            raise AssertionError(StepElapsed.of(95_000))
+
+    def test_unmeasured_is_silent(self) -> None:
+        """Ноль означает, что время не измеряли: в названии его быть не должно."""
+        if StepElapsed.of(0) != "":
+            raise AssertionError(StepElapsed.of(0))
+
+        if StepStatus.DONE.timed("bash", 0) != StepStatus.DONE.title("bash"):
+            raise AssertionError(StepStatus.DONE.timed("bash", 0))
+
+    def test_title_keeps_status(self) -> None:
+        if StepStatus.FAILED.timed("bash", 2000) != "✖ bash · 2.0 s":
+            raise AssertionError(StepStatus.FAILED.timed("bash", 2000))
+
+
+class TestToolStepDuration:
+    """Длительность вызова показывается на завершённом шаге инструмента."""
+
+    @pytest.mark.anyio
+    async def test_duration_lands_in_step_name(self, http_context: None) -> None:
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-1")
+        await view.tool_finished(
+            step, TextResult(text="hits", elapsed_ms=1500), "call-1"
+        )
+
+        if step.name != "✔ kb_fts_search · 1.5 s":
+            raise AssertionError(step.name)
+
+    @pytest.mark.anyio
+    async def test_unmeasured_call_keeps_plain_name(self, http_context: None) -> None:
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-2")
+        await view.tool_finished(step, TextResult(text="hits"), "call-2")
+
+        if step.name != "✔ kb_fts_search":
+            raise AssertionError(step.name)

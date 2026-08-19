@@ -99,6 +99,37 @@ class StepStatus(StrEnum):
         """Название шага со статусным кружком слева."""
         return f"{self.value} {name}"
 
+    def timed(self, name: str, elapsed_ms: int) -> str:
+        """То же название с длительностью вызова; неизмеренное время опускается."""
+        label = StepElapsed.of(elapsed_ms)
+        if not label:
+            return self.title(name)
+
+        return f"{self.title(name)} · {label}"
+
+
+class StepElapsed:
+    """Длительность вызова в названии шага."""
+
+    SECOND_MS: ClassVar[int] = 1000
+    MINUTE_MS: ClassVar[int] = 60 * SECOND_MS
+
+    @classmethod
+    def of(cls, elapsed_ms: int) -> str:
+        """Подпись длительности; 0 и отрицательное — время не измерено."""
+        if elapsed_ms <= 0:
+            return ""
+
+        if elapsed_ms < cls.SECOND_MS:
+            return f"{elapsed_ms} ms"
+
+        if elapsed_ms < cls.MINUTE_MS:
+            return f"{elapsed_ms / cls.SECOND_MS:.1f} s"
+
+        minutes = elapsed_ms // cls.MINUTE_MS
+        seconds = (elapsed_ms % cls.MINUTE_MS) / cls.SECOND_MS
+        return f"{minutes} m {seconds:.0f} s"
+
 
 class StepRole(StrEnum):
     """Роль шага в детерминированном id: один ключ — несколько шагов."""
@@ -666,7 +697,9 @@ class ChatView:
         status = StepStatus.DONE
         if failed:
             status = StepStatus.FAILED
-        step.name = status.title(self._tool_names.get(step.id, step.name))
+        step.name = status.timed(
+            self._tool_names.get(step.id, step.name), result.elapsed_ms
+        )
         match ToolResultView(result).render():
             case ChartRendering() as chart:
                 step.output = "chart rendered"

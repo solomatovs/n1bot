@@ -464,3 +464,41 @@ class TestPrefetchStageReplay:
         for step in sink.steps:
             if step.get(StepField.ID) == stage_id:
                 raise AssertionError("без вызовов подготовки этап не рисуется")
+
+
+class TestDurationSurvivesHistory:
+    """Длительность живёт в артефакте, поэтому лента из истории совпадает с live."""
+
+    def test_replayed_step_keeps_duration(self) -> None:
+        messages = [
+            HumanMessage(content="найди", id="m1"),
+            AIMessage(
+                content="",
+                id="m2",
+                tool_calls=[
+                    {
+                        "name": "kb_fts_search",
+                        "args": {"query": "kerberos"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="hits",
+                id="t1",
+                tool_call_id="call_1",
+                name="kb_fts_search",
+                artifact=TableResult(rows=[{"page": "x"}], elapsed_ms=2400),
+            ),
+        ]
+
+        view, sink = make_view()
+        run(ConversationTranscript(messages, view).replay())
+
+        names: list[str] = []
+        for step in sink.steps:
+            names.append(str(step.get(StepField.NAME, "")))
+
+        if "✔ kb_fts_search · 2.4 s" not in names:
+            raise AssertionError(f"длительность не восстановлена: {names}")
