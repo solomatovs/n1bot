@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 from boba.chainlit.chat.panel_text import PanelText, PanelTextError
 from boba.chainlit.chat.settings import PanelTab, SettingsPanel
 from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.domain.session import current_language
 from boba.chainlit.infra.config import (
     AppConfig,
     ChatProfileConfig,
@@ -59,7 +60,7 @@ def _profile(**kw) -> ChatProfileConfig:
     base = {
         "display_name": "Profile",
         "description": "test profile",
-        "openai": OPENAI,
+        "provider": OPENAI,
         "model": "base-model",
         "models": ["base-model", "alt-model"],
         "settings": ["*"],
@@ -156,7 +157,7 @@ class TestApplyTo:
     def test_transport_is_never_overridden(self) -> None:
         settings = UserLlmOverrides(temperature=1.0).apply_to(_profile())
 
-        if settings.openai.base_url != OPENAI["base_url"]:
+        if settings.provider.base_url != OPENAI["base_url"]:
             raise AssertionError("openai transport changed")
 
     def test_reasoning_and_seed_reach_chat_kwargs(self) -> None:
@@ -473,6 +474,29 @@ class TestPanelText:
 
         with pytest.raises(PanelTextError, match="no translation"):
             text.tab("no_such_tab")
+
+
+class TestPanelLanguage:
+    """Язык панели совпадает с языком остального интерфейса chainlit."""
+
+    def test_forced_ui_language_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from chainlit.config import config as chainlit_config
+
+        monkeypatch.setattr(chainlit_config.ui, "language", "ru-RU")
+
+        if current_language() != "ru-RU":
+            raise AssertionError(f"language: {current_language()!r}")
+
+    def test_without_forced_language_falls_to_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from chainlit.config import config as chainlit_config
+
+        monkeypatch.setattr(chainlit_config.ui, "language", None)
+
+        # вне ws-сессии языка нет: панель возьмёт язык по умолчанию
+        if current_language() != "":
+            raise AssertionError(f"language: {current_language()!r}")
 
 
 class TestUserMeta:

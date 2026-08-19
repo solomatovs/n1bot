@@ -7,7 +7,7 @@ RefusalError — профиль чата не выбран или недосту
 import logging
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -267,12 +267,12 @@ class ReasoningEffort(StrEnum):
     HIGH = "high"
 
 
-class AgentSettings(BaseModel):
-    """Настройки LLM профиля: транспорт провайдера, модель, промпт и сэмплинг."""
+class LlmSettings(BaseModel):
+    """Обращение к LLM: транспорт провайдера, модель, промпт и сэмплинг."""
 
     model_config = ConfigDict(extra="ignore")
 
-    openai: Annotated[
+    provider: Annotated[
         OpenAiConfig,
         Field(
             description=(
@@ -290,16 +290,6 @@ class AgentSettings(BaseModel):
     system_prompt: str = Field(
         default="",
         description="Системный промпт по умолчанию",
-    )
-
-    history_messages: int = Field(
-        default=30,
-        ge=1,
-        description=(
-            "Сколько последних сообщений истории уходит в LLM. Считаются "
-            "только реплики: вызовы инструментов и их результаты из прошлых "
-            "ходов вырезаются, текущий ход передаётся целиком."
-        ),
     )
 
     temperature: float | None = Field(
@@ -380,6 +370,77 @@ class AgentSettings(BaseModel):
         return kwargs
 
 
+class AgentSettings(LlmSettings):
+    """Настройки хода агента: параметры LLM плюс окно истории."""
+
+    history_messages: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Сколько последних сообщений истории уходит в LLM. Считаются "
+            "только реплики: вызовы инструментов и их результаты из прошлых "
+            "ходов вырезаются, текущий ход передаётся целиком."
+        ),
+    )
+
+
+class FlowKind(StrEnum):
+    """Виды агентского flow профиля чата."""
+
+    PLAIN = "plain"
+    PREFETCH = "prefetch"
+
+
+class PlainFlowConfig(BaseModel):
+    """Flow без подготовки: обычный цикл модель-инструменты."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal[FlowKind.PLAIN] = FlowKind.PLAIN
+
+
+class RephraserConfig(LlmSettings):
+    """Секция [profiles.<name>.flow.rephraser]: модель, готовящая запросы поиска.
+
+    Параметры сэмплинга обязательны на деле, а не формально: роутеры
+    подставляют собственный потолок max_tokens, который модель не принимает.
+    """
+
+    queries: Annotated[
+        int,
+        Field(ge=1, description="Сколько поисковых запросов готовит модель."),
+    ]
+
+
+class PrefetchFlowConfig(BaseModel):
+    """Flow с подготовкой контекста: поиск идёт до обращения к основной модели."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal[FlowKind.PREFETCH]
+
+    tools: Annotated[
+        StringList,
+        Field(
+            min_length=1,
+            description="Инструменты, вызываемые с каждым поисковым запросом.",
+        ),
+    ]
+
+    rephraser: RephraserConfig | None = Field(
+        default=None,
+        description=(
+            "Модель, переписывающая запрос пользователя в поисковые; секция "
+            "не задана — в инструменты уходит исходный запрос."
+        ),
+    )
+
+    @staticmethod
+    def client_key(profile: str) -> str:
+        """Ключ httpx-клиента переформулировщика в реестре клиентов профилей."""
+        return f"{profile}:flow"
+
+
 class UserSetting(StrEnum):
     """Настройки LLM, которые профиль может открыть пользователю.
 
@@ -445,6 +506,15 @@ class ChatProfileConfig(AgentSettings, ToolGrant):
         ),
     )
 
+    flow: Annotated[
+        PlainFlowConfig | PrefetchFlowConfig,
+        Field(
+            discriminator="kind",
+            default_factory=PlainFlowConfig,
+            description="Агентский flow профиля; секция не задана — обычный цикл.",
+        ),
+    ]
+
     def setting_allowed(self, name: str) -> bool:
         if ToolGrant.WILDCARD in self.settings:
             return True
@@ -483,6 +553,29 @@ class ChatProfileConfig(AgentSettings, ToolGrant):
         model_allowed = self.setting_allowed(UserSetting.MODEL)
         if model_allowed and self.settings and not self.models:
             msg = "profile: setting 'model' is allowed, but models list is empty"
+            raise ValueError(msg)
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_flow(self) -> Self:
+        """Инструменты flow обязаны входить в набор инструментов профиля."""
+        flow = self.flow
+        if not isinstance(flow, PrefetchFlowConfig):
+            return self
+
+        if ToolGrant.WILDCARD in self.tools:
+            return self
+
+        missing: list[str] = []
+        for name in flow.tools:
+            if name in self.tools:
+                continue
+
+            missing.append(name)
+
+        if missing:
+            msg = f"profile: flow tools {missing} are not in profile tools"
             raise ValueError(msg)
 
         return self

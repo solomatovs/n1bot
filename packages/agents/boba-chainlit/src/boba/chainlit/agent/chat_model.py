@@ -79,12 +79,60 @@ class ReasoningText:
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
-    """ChatOpenAI, нормализующий рассуждения провайдера в reasoning_content."""
+    """ChatOpenAI, нормализующий рассуждения провайдера в reasoning_content.
+
+    Рассуждения ходят в обе стороны: провайдеры в режиме размышления требуют
+    вернуть reasoning_content вместе с сообщением ассистента, а штатный класс
+    отправляет обратно только текст и вызовы инструментов.
+    """
 
     _REASONING_FIELDS: ClassVar[tuple[ResponseField, ...]] = (
         ResponseField.REASONING_CONTENT,
         ResponseField.REASONING,
     )
+
+    ASSISTANT_ROLE: ClassVar[str] = "assistant"
+
+    @override
+    def _get_request_payload(
+        self,
+        input_: Any,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return payload
+
+        sources = self._convert_input(input_).to_messages()
+        if len(sources) != len(messages):
+            return payload
+
+        for source, target in zip(sources, messages, strict=True):
+            self._restore_reasoning(source, target)
+
+        return payload
+
+    @classmethod
+    def _restore_reasoning(cls, source: BaseMessage, target: Any) -> None:
+        """Возвращает рассуждения в сообщение запроса; чужие роли не трогает."""
+        if not isinstance(target, dict):
+            return
+
+        if target.get("role") != cls.ASSISTANT_ROLE:
+            return
+
+        field = ResponseField.REASONING_CONTENT.value
+        if field in target:
+            return
+
+        if field not in source.additional_kwargs:
+            return
+
+        target[field] = ReasoningText.of(source)
 
     @staticmethod
     def _reasoning_of(payload: Mapping[str, Any]) -> str:

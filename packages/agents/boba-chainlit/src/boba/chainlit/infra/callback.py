@@ -195,10 +195,11 @@ async def on_chat_start(
 ):
     session = cl.context.session
     logger.info(
-        "chat start: session=%s, thread=%s, profile=%s",
+        "chat start: session=%s, thread=%s, profile=%s, language=%s",
         session.id,
         session.thread_id,
         session.chat_profile or "none",
+        current_language() or "browser",
     )
 
     panel = SettingsPanel(

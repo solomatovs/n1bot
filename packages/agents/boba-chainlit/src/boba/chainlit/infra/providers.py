@@ -2,13 +2,12 @@
 
 import re
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Annotated
 
 import httpx
 from httpx import AsyncClient
-from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, wrap_model_call
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -23,7 +22,17 @@ from pydantic import SecretStr
 
 from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.agent.dump import DumpingTransport
+from boba.chainlit.agent.flow import (
+    AgentGraphBuilder,
+    GraphSpec,
+    LlmRephraser,
+    PassthroughRephraser,
+    PlainGraphBuilder,
+    PrefetchGraphBuilder,
+    Rephraser,
+)
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
+from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.storage import StorageClient, StorageFactory
@@ -42,12 +51,14 @@ from boba.chainlit.infra.config import (
     DataLayerConfig,
     LocalStorageConfig,
     OpenAiConfig,
+    PrefetchFlowConfig,
     SelectedProfile,
     SettingsView,
     UserMeta,
 )
 from boba.chainlit.infra.di import Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
+from boba.chainlit.rendering.chat_view import StepText
 from boba.db.pgvector import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox import CgroupManager
@@ -265,10 +276,23 @@ def _openai_client(openai: OpenAiConfig) -> AsyncClient:
 async def httpx_clients(
     c: Annotated[AppConfig, Depends(get_app_config)],
 ) -> AsyncIterator[dict[str, AsyncClient]]:
-    """HTTP-клиент провайдера на каждый профиль чата; живут до остановки."""
+    """HTTP-клиент провайдера на каждый профиль чата; живут до остановки.
+
+    Prefetch-flow профиля получает свой клиент под ключом flow: у его
+    переформулировщика свой транспорт.
+    """
     clients: dict[str, AsyncClient] = {}
     for name, profile in c.profiles.items():
-        clients[name] = _openai_client(profile.openai)
+        clients[name] = _openai_client(profile.provider)
+
+        flow = profile.flow
+        if not isinstance(flow, PrefetchFlowConfig):
+            continue
+
+        if flow.rephraser is None:
+            continue
+
+        clients[flow.client_key(name)] = _openai_client(flow.rephraser.provider)
 
     try:
         yield clients
@@ -411,6 +435,65 @@ def _index_of_last_user_turn(msgs: list) -> int:
     return 0
 
 
+def _flow_tools(names: Sequence[str], tools: Sequence[BaseTool]) -> list[BaseTool]:
+    """Инструменты flow среди доступных сессии; чужое имя — отказ сборки."""
+    by_name: dict[str, BaseTool] = {}
+    for tool in tools:
+        by_name[tool.name] = tool
+
+    selected: list[BaseTool] = []
+    for name in names:
+        found = by_name.get(name)
+        if found is None:
+            msg = f"flow tool {name!r} is not available to the session"
+            raise RuntimeError(msg)
+
+        selected.append(found)
+
+    return selected
+
+
+def _graph_builder(
+    selected: SelectedProfile,
+    clients: dict[str, AsyncClient],
+    tools: Sequence[BaseTool],
+) -> AgentGraphBuilder:
+    """Билдер графа хода по flow профиля."""
+    flow = selected.config.flow
+    if not isinstance(flow, PrefetchFlowConfig):
+        return PlainGraphBuilder()
+
+    rephraser = _rephraser(flow, clients, selected.name)
+    stage = TracedStage(StepText.PREFETCH.value)
+    return PrefetchGraphBuilder(rephraser, _flow_tools(flow.tools, tools), stage)
+
+
+def _rephraser(
+    flow: PrefetchFlowConfig,
+    clients: dict[str, AsyncClient],
+    profile: str,
+) -> Rephraser:
+    """Модель, готовящая поисковые запросы; без секции — запрос идёт как есть."""
+    cfg = flow.rephraser
+    if cfg is None:
+        return PassthroughRephraser()
+
+    # стрим переформулировщику не нужен: его ответ забирает не лента, а
+    # подготовка контекста, и рассуждения модели в ленту попадать не должны
+    chat = ReasoningChatOpenAI(
+        http_async_client=clients[flow.client_key(profile)],
+        model=cfg.model,
+        base_url=cfg.provider.base_url,
+        api_key=SecretStr(cfg.provider.api_key),
+        timeout=httpx_timeout(cfg.provider),
+        max_retries=cfg.provider.max_retries,
+        disable_streaming=True,
+        **cfg.chat_kwargs(),
+    )
+
+    return LlmRephraser(chat, cfg.system_prompt, cfg.queries)
+
+
 def langchain_agent(
     clients: Annotated[dict[str, AsyncClient], Depends(httpx_clients)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
@@ -423,32 +506,30 @@ def langchain_agent(
     # таймаут запроса клиент openai ставит поверх клиентского: без него в
     # httpx уходит None и фазы остаются без потолка
     stream_chunk_timeout = None
-    if settings.openai.stream_chunk_timeout:
-        stream_chunk_timeout = settings.openai.stream_chunk_timeout
+    if settings.provider.stream_chunk_timeout:
+        stream_chunk_timeout = settings.provider.stream_chunk_timeout
 
     chat = ReasoningChatOpenAI(
         http_async_client=clients[selected.name],
         model=settings.model,
-        base_url=settings.openai.base_url,
-        api_key=SecretStr(settings.openai.api_key),
-        timeout=httpx_timeout(settings.openai),
+        base_url=settings.provider.base_url,
+        api_key=SecretStr(settings.provider.api_key),
+        timeout=httpx_timeout(settings.provider),
         stream_chunk_timeout=stream_chunk_timeout,
-        max_retries=settings.openai.max_retries,
+        max_retries=settings.provider.max_retries,
         **settings.chat_kwargs(),
     )
 
-    system_prompt = settings.system_prompt
+    names: list[str] = []
+    for tool in tools:
+        names.append(tool.name)
 
-    agent = create_agent(
-        model=chat,
+    spec = GraphSpec(
+        chat=chat,
         tools=tools,
-        system_prompt=system_prompt,
+        system_prompt=settings.system_prompt,
         checkpointer=saver,
-        middleware=[
-            build_history_view(
-                frozenset(t.name for t in tools), settings.history_messages
-            )
-        ],
+        history=build_history_view(frozenset(names), settings.history_messages),
     )
 
-    return agent
+    return _graph_builder(selected, clients, tools).build(spec)

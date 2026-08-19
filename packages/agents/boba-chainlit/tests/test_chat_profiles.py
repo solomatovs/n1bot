@@ -25,7 +25,7 @@ def _profile(**kw) -> ChatProfileConfig:
     base = {
         "display_name": "Profile",
         "description": "test profile",
-        "openai": OPENAI,
+        "provider": OPENAI,
         "model": "test-model",
     }
     base.update(kw)
@@ -122,7 +122,7 @@ class TestVisibilityByWildcard:
 class TestChatKwargs:
     def test_unset_params_are_not_sent(self) -> None:
         settings = AgentSettings.model_validate(
-            {"openai": OPENAI, "model": "test-model"}
+            {"provider": OPENAI, "model": "test-model"}
         )
         if settings.chat_kwargs() != {}:
             raise AssertionError("settings.chat_kwargs() == {}")
@@ -130,7 +130,7 @@ class TestChatKwargs:
     def test_set_params_are_sent(self) -> None:
         settings = AgentSettings.model_validate(
             {
-                "openai": OPENAI,
+                "provider": OPENAI,
                 "model": "test-model",
                 "temperature": 0.2,
                 "max_tokens": 1000,
@@ -150,14 +150,14 @@ class TestChatKwargs:
 
     def test_zero_temperature_is_sent(self) -> None:
         settings = AgentSettings.model_validate(
-            {"openai": OPENAI, "model": "test-model", "temperature": 0}
+            {"provider": OPENAI, "model": "test-model", "temperature": 0}
         )
         if settings.chat_kwargs() != {"temperature": 0}:
             raise AssertionError('chat_kwargs() == {"temperature": 0}')
 
     def test_openai_transport_binds(self) -> None:
         settings = AgentSettings.model_validate(
-            {"openai": OPENAI, "model": "test-model"}
+            {"provider": OPENAI, "model": "test-model"}
         )
-        if not isinstance(settings.openai, OpenAiConfig):
-            raise AssertionError("isinstance(settings.openai, OpenAiConfig)")
+        if not isinstance(settings.provider, OpenAiConfig):
+            raise AssertionError("isinstance(settings.provider, OpenAiConfig)")

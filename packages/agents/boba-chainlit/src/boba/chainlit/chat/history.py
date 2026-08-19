@@ -27,6 +27,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
 from boba.chainlit.agent.chat_model import ResponseField
+from boba.chainlit.agent.flow import PrefetchCall
 from boba.chainlit.chat.turn import TurnMark, TurnRecord
 from boba.chainlit.rendering.chat_view import (
     ChatView,
@@ -140,6 +141,7 @@ class ConversationTranscript:
         self._view = view
         self._pending: dict[str, PendingCall] = {}
         self._turn = TurnDraft()
+        self._stage_queries: list[str] = []
 
     async def replay(self) -> None:
         for index, message in enumerate(self._messages):
@@ -149,16 +151,61 @@ class ConversationTranscript:
 
             match message:
                 case HumanMessage():
+                    await self._close_stage()
                     self._view.begin_turn(message.id)
                     self._pending.clear()
                     self._turn = TurnDraft(key=message.id)
                     await self._view.question(self._text(message), message.id)
                 case ToolMessage():
+                    await self._open_stage(message)
                     await self._tool(message, key)
                 case AIMessage():
+                    if not self._prepares(message):
+                        await self._close_stage()
                     await self._assistant(message, key)
                 case _:
                     continue
+
+        await self._close_stage()
+
+    @staticmethod
+    def _prepares(message: AIMessage) -> bool:
+        """Сообщение подготовки: его вызовы рисуются этапом, а не ходом."""
+        for call in message.tool_calls:
+            if PrefetchCall.marks(call.get("id")):
+                return True
+
+        return False
+
+    async def _open_stage(self, message: ToolMessage) -> None:
+        """Первый ответ подготовки открывает этап, остальные копят запросы."""
+        if not PrefetchCall.marks(message.tool_call_id):
+            return
+
+        if self._view.stage_step is None:
+            await self._view.begin_stage(StepText.PREFETCH.value)
+
+        call = self._pending.get(message.tool_call_id)
+        if call is None:
+            return
+
+        query = call.args.get("query")
+        if not query:
+            return
+
+        text = str(query)
+        if text in self._stage_queries:
+            return
+
+        self._stage_queries.append(text)
+
+    async def _close_stage(self) -> None:
+        """Закрывает этап подготовки; без открытого этапа закрывать нечего."""
+        if self._view.stage_step is None:
+            return
+
+        await self._view.end_stage(self._stage_queries)
+        self._stage_queries = []
 
     async def _assistant(self, message: AIMessage, key: str) -> None:
         if self._is_error(message):

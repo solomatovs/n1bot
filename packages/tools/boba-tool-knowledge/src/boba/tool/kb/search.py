@@ -1,4 +1,4 @@
-"""KB search tools (vector/fts): дискриминатор коллекции строит строку kb_chunks."""
+"""Запросы KB-поиска и разметка строк выдачи по коллекциям."""
 
 from __future__ import annotations
 
@@ -23,16 +23,14 @@ SearchMethod = Literal["vector", "fts"]
 
 @dataclass(frozen=True)
 class MetaField:
-    """Output-колонка ← ключ kb_chunks.metadata (та же MetadataKey, что у ingest)."""
+    """Колонка выдачи и ключ kb_chunks.metadata, из которого она берётся."""
 
     column: str
     key: MetadataKey[Any]
 
 
 class CollectionSearch:
-    """База дискриминатора: подкласс задаёт COLLECTION и META_FIELDS, строку собирает
-    row().
-    """
+    """Строка выдачи коллекции: подкласс задаёт COLLECTION и META_FIELDS."""
 
     COLLECTION: ClassVar[str]
     META_FIELDS: ClassVar[tuple[MetaField, ...]]
@@ -40,10 +38,8 @@ class CollectionSearch:
     @classmethod
     def row(cls, hit: SearchHit) -> dict[str, Any]:
         row: dict[str, Any] = {
-            "id": hit.id,
             "distance": hit.distance,
-            "snippet": hit.snippet,
-            "tags": ", ".join(sorted(hit.tags)),
+            "format_content": hit.format_content,
         }
         for field in cls.META_FIELDS:
             row[field.column] = hit.metadata.get(field.key.name, "")
@@ -51,9 +47,7 @@ class CollectionSearch:
 
 
 class ConfluenceCollection(CollectionSearch):
-    """Коллекция Confluence-страниц: META_FIELDS — ключи, которые пишет confluence-
-    ingest.
-    """
+    """Коллекция Confluence-страниц; META_FIELDS — ключи confluence-ingest."""
 
     COLLECTION = "kb_confluence"
 
@@ -72,9 +66,7 @@ class ConfluenceCollection(CollectionSearch):
 
 
 class KbDocCollection(CollectionSearch):
-    """Коллекция KbDoc-выгрузок из workspace; wire-имена совпадают с confluence-
-    коллекцией.
-    """
+    """Коллекция KbDoc-выгрузок из workspace; имена колонок как у confluence."""
 
     COLLECTION = "kb_confluence_doc"
 
@@ -93,29 +85,42 @@ class KbDocCollection(CollectionSearch):
 
 
 class KbSearch:
-    """Единый прогон KB-поиска: method выбирает канал, collection — scope."""
+    """Запросы KB-поиска и настройки сессии под них."""
 
     VECTOR_SQL: ClassVar[LiteralString] = """
 select
-    c.chunk_id,
-    c.source_id,
-    c.chunk_index,
-    c.content_hash,
     c.metadata,
-    c.tags,
-    left(c.format_content, %(snippet_chars)s) as snippet,
+    c.format_content,
     (c.embedding::vector({dim})) <=> %(embedding)s::vector as distance
 from
     {chunks_table} c
 where
     c.collection = any(%(collections)s)
-    and c.embedding is not null
 order by
     distance asc
 limit
     %(top_k)s
 """
-    """Векторный поиск: format-плейсхолдеры {dim}/{chunks_table}, остальное — bind."""
+    """Векторный поиск.
+
+    Из документации pgvector (https://github.com/pgvector/pgvector):
+
+    Поддерживаются следующие функции расстояния:
+
+    `<->` — L2-расстояние
+    `<#>` — (отрицательное) скалярное произведение
+    `<=>` — косинусное расстояние
+    `<+>` — L1-расстояние
+    `<~>` — расстояние Хэмминга (битовые векторы)
+    `<%>` — расстояние Жаккара (битовые векторы)
+
+    Примечание: `<#>` возвращает отрицательное скалярное произведение,
+    поскольку Postgres поддерживает индексные сканы по операторам только в
+    порядке ASC.
+
+    Если векторы нормализованы до длины 1 (как эмбеддинги OpenAI), для
+    наилучшей производительности используйте скалярное произведение.
+    """
 
     FTS_SQL: ClassVar[LiteralString] = """
 with q as (
@@ -125,13 +130,8 @@ with q as (
         as tsq
 )
 select
-    c.chunk_id,
-    c.source_id,
-    c.chunk_index,
-    c.content_hash,
     c.metadata,
-    c.tags,
-    left(c.format_content, %(snippet_chars)s) as snippet,
+    c.format_content,
     ts_rank_cd(c.tsv, q.tsq) as rank
 from
     {chunks_table} c,
@@ -144,7 +144,30 @@ order by
 limit
     %(top_k)s
 """
-    """FTS-поиск: format-плейсхолдеры {chunks_table}/{schema}, остальное — bind."""
+    """Полнотекстовый поиск."""
+
+    ITERATIVE_SCAN: ClassVar[LiteralString] = (
+        "set hnsw.iterative_scan = strict_order"
+    )
+    """Итеративный индексный скан.
+
+    Из документации pgvector (https://github.com/pgvector/pgvector):
+
+    С приближёнными индексами запросы с фильтрацией могут возвращать меньше
+    результатов, поскольку фильтрация применяется после того, как индекс
+    просканирован. Начиная с 0.8.0 можно включить итеративные индексные
+    сканы: индекс будет сканироваться дальше, пока не наберётся достаточно
+    результатов (либо пока не будет достигнут hnsw.max_scan_tuples или
+    ivfflat.max_probes).
+
+    Итеративные сканы могут использовать строгий или ослабленный порядок.
+
+    Строгий (strict_order) гарантирует, что результаты идут в точном порядке
+    по расстоянию.
+
+    Ослабленный (relaxed_order) допускает небольшие отклонения от порядка по
+    расстоянию, но даёт лучшую полноту выдачи.
+    """
 
     QUERY_DESC_VECTOR: ClassVar[str] = (
         "Поисковый запрос на естественном языке — семантический поиск "
@@ -157,7 +180,3 @@ limit
         '`OR` = альтернативы, `"фраза"` = фраза целиком, `-слово` = исключить.'
     )
     TOPK_DESC: ClassVar[str] = "Сколько hits вернуть. По умолчанию 5."
-    SNIPPET_DEFAULT: ClassVar[int] = 3000
-    SNIPPET_DESC: ClassVar[str] = (
-        "Максимальная длина сниппета документа в hits (символов). По умолчанию 3000."
-    )

@@ -148,8 +148,8 @@ class TestKbTools:
     def test_search_arguments_hide_injected(self) -> None:
         tool = KB_TOOLS[0]
         llm_fields = set(tool.args_schema.model_fields) - {"cfg"}
-        if llm_fields != {"query", "top_k", "snippet_chars"}:
-            raise AssertionError('llm_fields == {"query", "top_k", "snippet_chars"}')
+        if llm_fields != {"query", "top_k"}:
+            raise AssertionError(f'llm_fields == {{"query", "top_k"}}, got {llm_fields}')
 
 
 def _bin_dirs() -> list[str]:
