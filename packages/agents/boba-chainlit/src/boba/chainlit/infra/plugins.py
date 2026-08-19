@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_type_hints
 
 from langchain_core.tools import BaseTool, StructuredTool
 from omegaconf import DictConfig, OmegaConf
@@ -50,7 +52,7 @@ from boba.tool.kb.tools import TOOLS as KB_TOOLS
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.tool.web.tools import TOOLS as WEB_TOOLS
-from boba.toolkit.entry import ToolAddress, ToolLike, ToolMain
+from boba.toolkit.entry import ToolAddress, ToolArgv, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
@@ -416,7 +418,7 @@ def _module_tools(
 
     launcher: ToolLauncher | None = None
     if sandbox is not None:
-        launcher = _section_launcher(plugin, sandbox, zygote_policy)
+        launcher = _section_launcher(plugin, sandbox, zygote_policy, raw_config)
 
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
     InjectedConfig.bind_all(functions, _config_resolver(raw_config))
@@ -428,6 +430,7 @@ def _section_launcher(
     plugin: ToolPlugin,
     sandbox: PluginSandbox,
     zygote_policy: ZygotePolicy | None,
+    raw_config: DictConfig,
 ) -> ToolLauncher:
     """Исполнитель секции: тёплая зигота либо холодный запуск по вызову."""
     if not sandbox.zygote:
@@ -441,10 +444,54 @@ def _section_launcher(
         raise RuntimeError(msg)
 
     supervisor = ZygoteRegistry.obtain(
-        plugin.section, sandbox.profile, plugin.modules, zygote_policy
+        plugin.section,
+        sandbox.profile,
+        plugin.modules,
+        zygote_policy,
+        warmup_configs=_warmup_configs(plugin, raw_config),
     )
 
     return ZygoteToolCaller(plugin.section, supervisor, sandbox.profile)
+
+
+def _warmup_configs(
+    plugin: ToolPlugin, raw_config: DictConfig
+) -> dict[str, dict[str, object]]:
+    """Конфиги WARMUP-хуков модулей секции: модель из аннотации хука.
+
+    Хост уже импортировал tool-модули (TOOLS приезжают импортом), поэтому
+    хук берётся из sys.modules без повторного импорта.
+    """
+    configs: dict[str, dict[str, object]] = {}
+
+    for name in plugin.modules:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+
+        hook = getattr(module, "WARMUP", None)
+        if hook is None:
+            continue
+
+        parameters = list(inspect.signature(hook).parameters)
+        if len(parameters) != 1:
+            msg = f"module {name}: WARMUP must take exactly one config parameter"
+            raise RuntimeError(msg)
+
+        annotation = get_type_hints(hook).get(parameters[0])
+        section = getattr(annotation, "SECTION", None)
+        if not isinstance(section, str):
+            msg = f"module {name}: WARMUP config model must define SECTION"
+            raise RuntimeError(msg)
+
+        if not isinstance(annotation, type) or not issubclass(annotation, BaseModel):
+            msg = f"module {name}: WARMUP parameter is not a pydantic model"
+            raise RuntimeError(msg)
+
+        model = bind(raw_config, section, annotation)
+        configs[name] = ToolArgv.reveal(annotation, model)
+
+    return configs
 
 
 def _plugin_sandbox(

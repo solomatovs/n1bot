@@ -197,7 +197,7 @@ class ToolArgv:
 
             value = kwargs[name]
             if cls._injected(field.metadata):
-                stdin_payload[name] = cls._reveal(field.annotation, value)
+                stdin_payload[name] = cls.reveal(field.annotation, value)
                 continue
 
             if value is None:
@@ -311,7 +311,7 @@ class ToolArgv:
         return False
 
     @staticmethod
-    def _reveal(annotation: Any, value: object) -> Any:
+    def reveal(annotation: Any, value: object) -> Any:
         """JSON-совместимый дамп injected-значения с раскрытыми секретами."""
         revealed = getattr(value, "revealed", None)
         if callable(revealed):
@@ -556,7 +556,7 @@ class ToolMain:
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
             model = bind(raw, section, annotation)
-            payload[name] = ToolArgv._reveal(annotation, model)
+            payload[name] = ToolArgv.reveal(annotation, model)
 
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 

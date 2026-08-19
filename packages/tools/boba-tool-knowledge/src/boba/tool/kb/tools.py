@@ -22,10 +22,10 @@ from typing import Annotated, Any, ClassVar, Final
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
-from boba.llm.embedding import EmbedderFactory, EmbeddingError
+from boba.llm.embedding import EmbedderFactory, EmbeddingConfig, EmbeddingError
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.models import SearchHit
 from boba.tool.kb.search import (
@@ -40,6 +40,25 @@ from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger(__name__)
+
+
+class KbWarmupConfig(BaseModel):
+    """Конфиг прогрева зиготы: только эмбеддер, секреты подключения не нужны."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    SECTION: ClassVar[str] = "tool.kb"
+
+    embedding: EmbeddingConfig
+
+
+async def _warmup(cfg: KbWarmupConfig) -> None:
+    """Модель ONNX поднимается в зиготе: дети берут её через COW."""
+    embedder = EmbedderFactory.build(cfg.embedding)
+    await embedder.embed_query("warm-up")
+
+
+WARMUP: Final = _warmup
 
 
 class KbToolConfig(SecretRevealing, PostgresKnowledgeBaseConfig):

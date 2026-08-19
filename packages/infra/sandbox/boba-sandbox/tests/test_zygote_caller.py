@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
-from fake_channel_tool import ChannelConfig, fx_echo, fx_probe_tmp
+from fake_channel_tool import ChannelConfig, fx_echo, fx_probe_tmp, fx_warm_state
 from pydantic import SecretStr
 
 from boba.sandbox import SandboxProfile
@@ -381,3 +381,48 @@ class TestRegistry:
 
         if second.state is not ZygoteState.READY:
             raise AssertionError(f"state={second.state}")
+
+
+class TestWarmup:
+    """WARMUP модуля: исполняется в зиготе до ready, дети видят результат."""
+
+    def teardown_method(self) -> None:
+        ZygoteRegistry.stop_all()
+
+    def _call_warm_state(self, caller: ZygoteToolCaller) -> str:
+        address = ToolAddress(module="fake_channel_tool", name="fx_warm_state")
+        schema = ToolArgv.schema_of(
+            next(t for t in ToolMain.toolset(fx_warm_state) if t)
+        )
+        outcome = caller.run_tool(ToolArgv.render(address, schema, {}))
+
+        if not isinstance(outcome.reply, ReplyOk):
+            raise AssertionError(f"reply={outcome.reply}")
+
+        return outcome.reply.content
+
+    def test_warmup_runs_before_ready_and_children_inherit(self) -> None:
+        profile = _profile()
+        supervisor = ZygoteRegistry.obtain(
+            "fx-warm",
+            profile,
+            ["fake_channel_tool"],
+            FAST,
+            warmup_configs={"fake_channel_tool": {"greeting": "privet"}},
+        )
+        caller = ZygoteToolCaller("fx-warm", supervisor, profile)
+
+        state = self._call_warm_state(caller)
+        if state != "warmed:privet":
+            raise AssertionError(f"кэш прогрева не унаследован: {state!r}")
+
+    def test_missing_config_skips_the_hook(self) -> None:
+        profile = _profile()
+        supervisor = ZygoteRegistry.obtain(
+            "fx-plain", profile, ["fake_channel_tool"], FAST
+        )
+        caller = ZygoteToolCaller("fx-plain", supervisor, profile)
+
+        state = self._call_warm_state(caller)
+        if state != "":
+            raise AssertionError(f"без конфига прогрев пропускается: {state!r}")
