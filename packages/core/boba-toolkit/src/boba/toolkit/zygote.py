@@ -15,9 +15,11 @@ OSError — syscall изоляции отказал; хост видит это 
 from __future__ import annotations
 
 import array
+import asyncio
 import ctypes
 import errno
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -26,11 +28,12 @@ import select
 import signal
 import socket
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import IntEnum, StrEnum
-from typing import ClassVar
+from types import ModuleType
+from typing import Any, ClassVar, get_type_hints
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import ToolLike, ToolMain
@@ -157,6 +160,15 @@ class CallExit(BaseModel):
     op: str = "exit"
     call_id: str = Field(min_length=1)
     code: int
+
+
+class WarmupMessage(BaseModel):
+    """Первое сообщение хоста: конфиги WARMUP-хуков по именам модулей."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: str = "warmup"
+    configs: dict[str, dict[str, Any]]
 
 
 class ZygoteReady(BaseModel):
@@ -320,9 +332,13 @@ class ZygoteMain:
 
         warmup = Elapsed()
         tools: list[ToolLike] = []
+        modules: dict[str, ModuleType] = {}
         for name in module_names:
             module = importlib.import_module(name)
+            modules[name] = module
             tools.extend(module.TOOLS)
+
+        cls._run_warmups(sock, modules)
 
         logger.info(
             "zygote up %dms after exec, warmed %d module(s) with %d tool(s) in %dms",
@@ -338,6 +354,50 @@ class ZygoteMain:
         ZygoteWire.send(sock, ZygoteReady(warmup_ms=warmup.ms()))
 
         return main.serve()
+
+    WARMUP_ATTRIBUTE: ClassVar[str] = "WARMUP"
+
+    @classmethod
+    def _run_warmups(cls, sock: socket.socket, modules: dict[str, ModuleType]) -> None:
+        """Первое сообщение хоста — конфиги WARMUP; хук исполняется до ready."""
+        message, _fds = ZygoteWire.recv(sock)
+        warmup = WarmupMessage.model_validate(message)
+
+        for name, module in modules.items():
+            hook = getattr(module, cls.WARMUP_ATTRIBUTE, None)
+            if hook is None:
+                continue
+
+            raw = warmup.configs.get(name)
+            if raw is None:
+                logger.warning(
+                    "zygote: module %s declares WARMUP but no config arrived, "
+                    "skipping the hook",
+                    name,
+                )
+                continue
+
+            elapsed = Elapsed()
+            asyncio.run(hook(cls._warmup_config(name, hook, raw)))
+            logger.info("zygote: %s warmed up in %dms", name, elapsed.ms())
+
+    @staticmethod
+    def _warmup_config(
+        name: str, hook: Callable[..., object], raw: dict[str, Any]
+    ) -> object:
+        """Конфиг хука: модель из аннотации его единственного параметра."""
+        parameters = list(inspect.signature(hook).parameters)
+        if len(parameters) != 1:
+            msg = f"module {name}: WARMUP must take exactly one config parameter"
+            raise ZygoteProtocolError(msg)
+
+        hints = get_type_hints(hook)
+        annotation = hints.get(parameters[0])
+        if annotation is None:
+            msg = f"module {name}: WARMUP parameter has no annotation"
+            raise ZygoteProtocolError(msg)
+
+        return TypeAdapter(annotation).validate_python(raw)
 
     @classmethod
     def _block_new_userns(cls) -> None:

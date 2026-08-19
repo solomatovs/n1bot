@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Sequence
 from typing import Annotated, ClassVar, Literal
 
@@ -142,18 +143,26 @@ class LocalFastEmbedEmbedder(Embedder[str]):
         self._dim = cfg.dim
         self._batch_size = cfg.batch_size
         self._progress_every = cfg.progress_every
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def embed_documents(
         self,
         contents: Sequence[str],
     ) -> Sequence[Sequence[float]]:
-        async with self._lock:
-            return await asyncio.to_thread(self._passage_embed, contents)
+        return await asyncio.to_thread(self._locked_passage_embed, contents)
 
     async def embed_query(self, content: str) -> Sequence[float]:
-        async with self._lock:
-            return await asyncio.to_thread(self._query_embed, content)
+        return await asyncio.to_thread(self._locked_query_embed, content)
+
+    def _locked_passage_embed(
+        self, contents: Sequence[str]
+    ) -> list[Sequence[float]]:
+        with self._lock:
+            return self._passage_embed(contents)
+
+    def _locked_query_embed(self, content: str) -> Sequence[float]:
+        with self._lock:
+            return self._query_embed(content)
 
     def _passage_embed(self, contents: Sequence[str]) -> list[Sequence[float]]:
         vectors: list[Sequence[float]] = []
@@ -326,11 +335,25 @@ class OpenAiEmbedder(Embedder[str]):
 
 
 class EmbedderFactory:
-    """Собирает Embedder[str] из union-конфига EmbeddingConfig."""
+    """Собирает Embedder[str] из union-конфига; экземпляры кэшируются на процесс.
 
-    @staticmethod
-    def build(cfg: EmbeddingConfig) -> Embedder[str]:
+    Кэш — опора зиготы: WARMUP поднимает модель в родителе, вызов в форке
+    получает тот же объект через copy-on-write вместо повторной загрузки.
+    """
+
+    _cache: ClassVar[dict[str, Embedder[str]]] = {}
+
+    @classmethod
+    def build(cls, cfg: EmbeddingConfig) -> Embedder[str]:
+        key = cfg.model_dump_json()
+
+        if cached := cls._cache.get(key):
+            return cached
+
         if isinstance(cfg, LocalEmbedding):
-            return LocalFastEmbedEmbedder(cfg)
+            built: Embedder[str] = LocalFastEmbedEmbedder(cfg)
+        else:
+            built = OpenAiEmbedder(cfg)
 
-        return OpenAiEmbedder(cfg)
+        cls._cache[key] = built
+        return built

@@ -34,6 +34,27 @@ class ChannelConfig(BaseModel):
         return {"token": self.token.get_secret_value()}
 
 
+class FxWarmupConfig(BaseModel):
+    """Конфиг прогрева: значение уезжает в кэш процесса до ready."""
+
+    SECTION: ClassVar[str] = "tool.fx.warmup"
+
+    greeting: str
+
+
+class WarmCache:
+    """Кэш процесса: WARMUP кладёт, вызовы (дети форка) читают через COW."""
+
+    value: ClassVar[str] = ""
+
+
+async def _warmup(cfg: FxWarmupConfig) -> None:
+    WarmCache.value = f"warmed:{cfg.greeting}"
+
+
+WARMUP: Final = _warmup
+
+
 class FxDownError(Exception):
     """Ожидаемый отказ."""
 
@@ -76,6 +97,13 @@ async def fx_echo(
 
 
 @tool
+async def fx_warm_state() -> tuple[str, ToolResult]:
+    """Отдаёт содержимое кэша процесса: тёплое — унаследовано от зиготы."""
+    artifact = TextResult(text=WarmCache.value)
+    return WarmCache.value, artifact
+
+
+@tool
 async def fx_probe_tmp(
     marker: Annotated[str, Field(min_length=1, description="Имя файла-маркера")],
 ) -> tuple[str, ToolResult]:
@@ -111,7 +139,7 @@ EXPECTED: Mapping[type[Exception], FxErrorKind] = {
     FxDownError: FxErrorKind.DOWN,
 }
 
-TOOLS: Final = ToolMain.toolset(fx_echo, fx_probe_tmp)
+TOOLS: Final = ToolMain.toolset(fx_echo, fx_probe_tmp, fx_warm_state)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

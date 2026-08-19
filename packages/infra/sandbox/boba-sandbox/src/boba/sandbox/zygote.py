@@ -49,6 +49,7 @@ from boba.toolkit.zygote import (
     CallRequest,
     ChildLimits,
     ControlMark,
+    WarmupMessage,
     ZygoteEnv,
     ZygoteWire,
 )
@@ -170,10 +171,19 @@ class ZygoteSupervisor:
     WAIT_STOP_SEC: ClassVar[float] = 5.0
     READ_CHUNK: ClassVar[int] = 65536
 
-    def __init__(self, name: str, spawner: Spawner, policy: ZygotePolicy) -> None:
+    def __init__(
+        self,
+        name: str,
+        spawner: Spawner,
+        policy: ZygotePolicy,
+        warmup_configs: Mapping[str, Mapping[str, object]] = {},
+    ) -> None:
         self._name = name
         self._spawner = spawner
         self._policy = policy
+        self._warmup = WarmupMessage(
+            configs={name: dict(cfg) for name, cfg in warmup_configs.items()}
+        )
 
         self._lock = threading.Lock()
         self._send_lock = threading.Lock()
@@ -303,6 +313,7 @@ class ZygoteSupervisor:
 
         host_sock.settimeout(self._policy.start_timeout_sec)
         try:
+            ZygoteWire.send(host_sock, self._warmup)
             message, _fds = ZygoteWire.recv(host_sock)
         except (TimeoutError, OSError) as exc:
             logger.warning("zygote %s: no ready: %s", self._name, exc)
@@ -852,6 +863,7 @@ class ZygoteRegistry:
         profile: SandboxProfile,
         modules: Sequence[str],
         policy: ZygotePolicy,
+        warmup_configs: Mapping[str, Mapping[str, object]] = {},
     ) -> ZygoteSupervisor:
         """Живой супервизор секции; при отсутствии — поднять и запомнить."""
         with cls._lock:
@@ -860,7 +872,9 @@ class ZygoteRegistry:
                 return existing
 
             spawner = ZygoteSpawner(profile, modules)
-            supervisor = ZygoteSupervisor(name, spawner.spawn, policy)
+            supervisor = ZygoteSupervisor(
+                name, spawner.spawn, policy, warmup_configs
+            )
             cls._entries[name] = supervisor
 
         supervisor.start()
