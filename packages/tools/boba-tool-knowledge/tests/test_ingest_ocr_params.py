@@ -16,6 +16,7 @@ def _config() -> IngestToolConfig:
             "connection": {"host": "h", "dbname": "d", "user": "u"},
             "tables": {},
             "embedding": {
+                "provider": "local",
                 "model": "intfloat/e5",
                 "dim": 8,
                 "batch_size": 4,

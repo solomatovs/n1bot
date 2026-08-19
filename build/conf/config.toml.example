@@ -56,6 +56,9 @@
     llm_url         = ""
     llm_token       = ""
     llm_model       = ""
+    # лёгкая модель под переформулировку запросов поиска: она отвечает на
+    # порядок быстрее рассуждающей
+    llm_rephraser_model = ""
     llm_prompt      = "Ты ассистент. Отвечай по найденному контексту."
 
     # database encryption key (для шифрования паролей в connection таблице)
@@ -130,7 +133,7 @@
         tools         = ["kb_vector_search", "kb_fts_search"]
         [profiles.search.flow.rephraser]
             provider      = "${openai.main}"
-            model         = "${site.llm_model}"
+            model         = "${site.llm_rephraser_model}"
             system_prompt = "Ты переформулируешь запрос пользователя в поисковые запросы по Confluence: сохраняй смысл и точные термины"
             queries       = 3
             temperature   = 0

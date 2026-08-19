@@ -13,7 +13,7 @@ from collections.abc import Sequence
 
 from boba.liteparse.engine import LiteParseReader
 from boba.text.document import ParsedPage
-from boba.tool.kb.indexing_log import Elapsed
+from boba.toolkit.timing import Elapsed
 
 __all__ = ["LoggingDocumentReader"]
 

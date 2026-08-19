@@ -31,7 +31,6 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
-from boba.chainlit.agent.chat_model import ResponseField
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.fields import StepField, ThreadField
@@ -39,6 +38,7 @@ from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import current_user_id
 from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
+from boba.llm.chat import ResponseField
 from chainlit.step import Step, StepDict
 from chainlit.types import ThreadDict
 

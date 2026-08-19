@@ -1092,7 +1092,7 @@ class StorageHashSource:
             return self._last
 
         raw = text.encode("utf-8")
-        digest = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+        digest = hashlib.sha256(raw).hexdigest()
 
         self._last = WatchProbe(revision=digest, size=len(raw), closed=True)
         return self._last

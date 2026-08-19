@@ -10,7 +10,7 @@ from __future__ import annotations
 from conftest import needs_sandbox, needs_userns, sandbox_profile
 
 from boba.sandbox import SandboxCaller, SandboxToolConfig
-from boba.toolkit.entry import ReplyError, ToolCommand
+from boba.toolkit.protocol import ReplyError, ToolCommand
 
 
 def _caller() -> SandboxCaller:

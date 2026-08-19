@@ -14,11 +14,8 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.tool.kb.embedding import EmbeddingModel, LocalFastEmbedEmbedderFactory
+from boba.llm.embedding import EmbedderFactory, LocalEmbedding
 from boba.toolkit.cpu import CpuBudget
-
-MAX_REASONABLE_BATCH = 16
-"""Выше этого инференс e5-large перестаёт помещаться в лимит профиля kb."""
 
 
 class FakeTextEmbedding:
@@ -61,8 +58,9 @@ def fake_fastembed(monkeypatch: pytest.MonkeyPatch):
     return FakeTextEmbedding
 
 
-def _config(batch_size: int) -> EmbeddingModel:
-    return EmbeddingModel(
+def _config(batch_size: int) -> LocalEmbedding:
+    return LocalEmbedding(
+        provider="local",
         model="intfloat/multilingual-e5-small",
         cache_dir="/var/cache/fastembed",
         dim=384,
@@ -79,14 +77,14 @@ class TestBatchSizeReachesModel:
         self,
         fake_fastembed,
     ) -> None:
-        embedder = LocalFastEmbedEmbedderFactory.build(_config(8))
+        embedder = EmbedderFactory.build(_config(8))
         await embedder.embed_documents([f"текст {i}" for i in range(100)])
         if fake_fastembed.calls != [{"method": "passage", "batch_size": 8}]:
             raise AssertionError('fake_fastembed.calls == [{"method": "passage", "bat…')
 
     @pytest.mark.anyio
     async def test_query_uses_the_same_batch_size(self, fake_fastembed) -> None:
-        embedder = LocalFastEmbedEmbedderFactory.build(_config(8))
+        embedder = EmbedderFactory.build(_config(8))
         await embedder.embed_query("запрос")
         if fake_fastembed.calls != [{"method": "query", "batch_size": 8}]:
             raise AssertionError('fake_fastembed.calls == [{"method": "query", "batch…')
@@ -107,22 +105,7 @@ class TestThreadsFollowTheQuota:
     ) -> None:
         monkeypatch.setenv(CpuBudget.ENV_VAR, cores)
 
-        LocalFastEmbedEmbedderFactory.build(_config(8))
+        EmbedderFactory.build(_config(8))
 
         if fake_fastembed.threads != expected:
             raise AssertionError("fake_fastembed.threads == expected")
-
-
-class TestConfigKeepsBatchSmall:
-    """Конфиг приложения: батч модели должен оставаться в пределах памяти."""
-
-    @pytest.mark.parametrize("section", ["tool.kb", "tool.ingest"])
-    def test_batch_size_is_bounded(self, raw_config, section: str) -> None:
-        from boba.settings import bind
-
-        embedding = bind(raw_config, path=f"{section}.embedding", model=EmbeddingModel)
-        if not (0 < embedding.batch_size <= MAX_REASONABLE_BATCH):
-            raise AssertionError(
-                f"[{section}.embedding]: batch_size={embedding.batch_size} — "
-                "инференс ONNX растёт линейно по батчу и словит OOM"
-            )

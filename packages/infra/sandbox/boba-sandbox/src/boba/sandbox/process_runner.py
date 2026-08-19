@@ -40,6 +40,24 @@ class _ReadSlot:
     buffer: bytearray | None
 
 
+class _FirstOutput:
+    """Момент первого байта любого потока: латентность старта процесса."""
+
+    def __init__(self, started: float) -> None:
+        self._started = started
+        self._at_ms: int | None = None
+
+    @property
+    def at_ms(self) -> int | None:
+        return self._at_ms
+
+    def mark(self) -> None:
+        if self._at_ms is not None:
+            return
+
+        self._at_ms = int((time.monotonic() - self._started) * 1000)
+
+
 class _StdinFeed:
     """Запись stdin порциями из select-цикла; закрывается по исчерпании."""
 
@@ -145,6 +163,7 @@ def run_subprocess(  # noqa: PLR0913
         env=dict(env),
         preexec_fn=preexec,  # noqa: PLW1509
     )
+    spawn_ms = int((time.monotonic() - started) * 1000)
 
     # родительские копии концов ребёнка закрываются сразу: иначе нет EOF
     if on_spawn is not None:
@@ -152,6 +171,8 @@ def run_subprocess(  # noqa: PLR0913
 
     if limits is not None:
         limits.apply_to_process(proc.pid)
+
+    first_output = _FirstOutput(started)
 
     cancellation = current_cancellation()
     with cancellation.abort_with(proc.kill):
@@ -164,6 +185,7 @@ def run_subprocess(  # noqa: PLR0913
             stderr_sink,
             keep_stdout,
             channel_sinks or {},
+            first_output,
         )
 
     cancellation.raise_if_cancelled()
@@ -177,6 +199,8 @@ def run_subprocess(  # noqa: PLR0913
         stderr=err_bytes.decode("utf-8", errors="replace"),
         duration_ms=duration_ms,
         timed_out=timed_out,
+        spawn_ms=spawn_ms,
+        first_output_ms=first_output.at_ms,
     )
 
 
@@ -189,6 +213,7 @@ def _pump(  # noqa: PLR0913
     stderr_sink: Callable[[bytes], None] | None,
     keep_stdout: bool,
     channel_sinks: Mapping[int, Callable[[bytes], None]],
+    first_output: _FirstOutput,
 ) -> tuple[bytes, bytes, bool]:
     if proc.stdin is None or proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
@@ -213,7 +238,7 @@ def _pump(  # noqa: PLR0913
     feed = _StdinFeed(proc.stdin, stdin_data)
 
     try:
-        timed_out = _select_loop(deadline, slots, feed, cancellation)
+        timed_out = _select_loop(deadline, slots, feed, cancellation, first_output)
     except Exception:
         # потребитель оборвал поток: процесс дальше не нужен
         proc.kill()
@@ -252,6 +277,7 @@ def _select_loop(
     slots: Mapping[int, _ReadSlot],
     feed: _StdinFeed,
     cancellation: TurnCancellation,
+    first_output: _FirstOutput,
 ) -> bool:
     """Чтение всех дескрипторов до EOF и запись stdin; True — дедлайн."""
     open_fds = set(slots.keys())
@@ -278,17 +304,19 @@ def _select_loop(
             feed.write_some()
 
         for fd in ready_read:
-            more = _read_chunk(fd, slots[fd])
+            more = _read_chunk(fd, slots[fd], first_output)
             if not more:
                 open_fds.discard(fd)
 
     return False
 
 
-def _read_chunk(fd: int, slot: _ReadSlot) -> bool:
+def _read_chunk(fd: int, slot: _ReadSlot, first_output: _FirstOutput) -> bool:
     chunk = os.read(fd, _ReadSlot.READ_CHUNK)
     if not chunk:
         return False
+
+    first_output.mark()
 
     if slot.sink is not None:
         slot.sink(chunk)

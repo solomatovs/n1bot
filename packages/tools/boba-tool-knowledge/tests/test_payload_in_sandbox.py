@@ -24,8 +24,8 @@ from boba.sandbox import (
     SandboxRunner,
     SandboxToolConfig,
 )
-from boba.toolkit.entry import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.launcher import ToolOutcome
+from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
 _TESSDATA = "/usr/share/tessdata"
 

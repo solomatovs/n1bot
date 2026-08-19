@@ -8,6 +8,7 @@ PostgresError — до хранилища не достучаться.
 httpx.HTTPError — Confluence недоступен или ответил статусом.
 AttachmentNotFoundError — вложения с таким именем на странице нет.
 LiteParseError — вложение скачалось, но не разбирается.
+EmbeddingError — удалённый эмбеддер недоступен или ответил мусором.
 Сбой разбора отдельного документа ingest переживает сам, наружу не выходит.
 """
 
@@ -34,6 +35,7 @@ from boba.indexing import (
     Section,
     SectionKeys,
 )
+from boba.llm.embedding import EmbeddingError
 from boba.text.document import LiteParseError, LiteParseParams
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import (
@@ -47,9 +49,10 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceRequest,
 )
 from boba.tool.kb.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
-from boba.tool.kb.indexing_log import Elapsed, IngestProgress, LoggingReader
+from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
+from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import LLMStringList, SecretRevealing
 
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
@@ -89,6 +92,7 @@ class IngestErrorKind(StrEnum):
     REQUEST_FAILED = "ingest_request_failed"
     ATTACHMENT_NOT_FOUND = "attachment_not_found"
     DOCUMENT_UNREADABLE = "document_unreadable"
+    EMBEDDING_FAILED = "embedding_failed"
 
 
 class IngestToolConfig(SecretRevealing, ConfluenceIngestConfig):
@@ -454,6 +458,7 @@ EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
     httpx.HTTPError: IngestErrorKind.REQUEST_FAILED,
     AttachmentNotFoundError: IngestErrorKind.ATTACHMENT_NOT_FOUND,
     LiteParseError: IngestErrorKind.DOCUMENT_UNREADABLE,
+    EmbeddingError: IngestErrorKind.EMBEDDING_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(

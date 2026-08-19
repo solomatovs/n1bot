@@ -14,16 +14,14 @@ from pydantic import SecretStr
 
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import (
-    REPLY,
     ArgumentTooLargeError,
     EntryErrorKind,
     ExpectedErrors,
-    ReplyError,
-    ReplyOk,
     ToolAddress,
     ToolArgv,
     ToolMain,
 )
+from boba.toolkit.protocol import REPLY, ReplyError, ReplyOk
 
 TESTS_DIR = str(Path(__file__).resolve().parent)
 

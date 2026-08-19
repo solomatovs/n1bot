@@ -470,7 +470,9 @@ class TestListingPlan:
             raise AssertionError(f"листинг досортировывается в памяти:\n{plan}")
 
         if "kb_chunks_collection_source_chunk" not in plan:
-            raise AssertionError(f"btree по (collection, source_id, chunk_index):\n{plan}")
+            raise AssertionError(
+                f"btree по (collection, source_id, chunk_index):\n{plan}"
+            )
 
 
 async def _probe(conn: AsyncConnection, schema_cfg: PostgresStoreSchema) -> str:

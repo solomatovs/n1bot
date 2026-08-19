@@ -62,6 +62,7 @@ def kb_config() -> PostgresKnowledgeBaseConfig:
             "connection": {"host": "h", "dbname": "d", "user": "u"},
             "tables": {"pg_schema": "kb"},
             "embedding": {
+                "provider": "local",
                 "model": "intfloat/multilingual-e5-small",
                 "dim": 384,
                 "batch_size": 8,
@@ -149,7 +150,9 @@ class TestKbTools:
         tool = KB_TOOLS[0]
         llm_fields = set(tool.args_schema.model_fields) - {"cfg"}
         if llm_fields != {"query", "top_k"}:
-            raise AssertionError(f'llm_fields == {{"query", "top_k"}}, got {llm_fields}')
+            raise AssertionError(
+                f'llm_fields == {{"query", "top_k"}}, got {llm_fields}'
+            )
 
 
 def _bin_dirs() -> list[str]:

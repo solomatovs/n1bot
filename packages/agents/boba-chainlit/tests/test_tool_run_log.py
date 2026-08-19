@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import pytest
 from langchain_core.tools import StructuredTool, tool
-from typing import Any
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.run_log import StreamSource, ToolRunLogger
@@ -183,7 +183,12 @@ class TestElapsedInResult:
         ToolRunLogger.guard_all([slow_probe], NO_STREAMS)
 
         message = await slow_probe.ainvoke(
-            {"name": "slow_probe", "args": {"query": "x"}, "id": "c1", "type": "tool_call"}
+            {
+                "name": "slow_probe",
+                "args": {"query": "x"},
+                "id": "c1",
+                "type": "tool_call",
+            }
         )
         result = ToolArtifact.revive(message.artifact)
 
@@ -205,7 +210,12 @@ class TestElapsedInResult:
         ToolRunLogger.guard_all([plain_probe], NO_STREAMS)
 
         message = await plain_probe.ainvoke(
-            {"name": "plain_probe", "args": {"query": "x"}, "id": "c2", "type": "tool_call"}
+            {
+                "name": "plain_probe",
+                "args": {"query": "x"},
+                "id": "c2",
+                "type": "tool_call",
+            }
         )
         if message.content != "plain x":
             raise AssertionError(message.content)

@@ -14,12 +14,11 @@ import json
 from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-if TYPE_CHECKING:
-    from boba.toolkit.entry import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
 __all__ = [
     "ClippedText",
@@ -149,13 +148,19 @@ class ClippedText(BaseModel):
 
 @dataclass(frozen=True)
 class RunResult:
-    """Результат запуска: код возврата, потоки, длительность, таймаут."""
+    """Результат запуска: код возврата, потоки, длительность, таймаут.
+
+    spawn_ms — сколько занял сам fork/exec; first_output_ms — латентность
+    первого байта любого потока от старта, None — процесс не вывел ничего.
+    """
 
     exit_code: int
     stdout: str
     stderr: str
     duration_ms: int
     timed_out: bool
+    spawn_ms: int = 0
+    first_output_ms: int | None = None
 
 
 class LaunchOutcome:

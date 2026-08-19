@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import os
+import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path as FilePath
 from typing import Any
 
 import httpx
@@ -29,8 +32,30 @@ ADMIN_LOGIN = "admin"
 GENERAL_PROMPT = "You are the general stand assistant"
 SEARCH_PROMPT = "You are the search stand assistant"
 
-TEXT = PanelText("", PanelText.DEFAULT_LANGUAGE)
-"""Подписи панели: браузер стенда ходит с языком по умолчанию."""
+def _app_language() -> str:
+    """Язык интерфейса: его навязывает секция [UI] конфига chainlit.
+
+    Подписи панели тест ищет на этом языке; иначе он ждёт английские названия
+    вкладок, а панель нарисована на языке развёртывания.
+    """
+    root = os.environ.get("BOBA_APP_ROOT")
+    if not root:
+        root = f"{os.environ.get('BOBA_BASE', '')}/app_root"
+
+    config = FilePath(root) / ".chainlit" / "config.toml"
+    if not config.is_file():
+        return PanelText.DEFAULT_LANGUAGE
+
+    doc = tomllib.loads(config.read_text(encoding="utf-8"))
+    language = doc.get("UI", {}).get("language")
+    if not language:
+        return PanelText.DEFAULT_LANGUAGE
+
+    return str(language)
+
+
+TEXT = PanelText("", _app_language())
+"""Подписи панели на языке приложения."""
 
 SAVE_GRACE_MS = 1500
 """Пауза после Confirm: сохранение и сброс DI-контейнера идут по сокету."""
@@ -521,6 +546,20 @@ class TestSettingsLifecycle:
         # seed отрицательным быть не может: модель отвергает значение целиком
         if llm_meta(ADMIN_LOGIN).get("general") is not None:
             raise AssertionError(f"negative seed stored: {llm_meta(ADMIN_LOGIN)}")
+
+
+class TestSettingsAfterTurn:
+    """Панель настроек остаётся рабочей, когда в треде уже есть переписка."""
+
+    def test_panel_opens_after_the_first_message(self, chat: ChatPage) -> None:
+        _ask_and_wait(chat)
+
+        _open_settings(chat)
+        _open_tab(chat, PanelTab.PROMPT)
+
+        field = PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
+        if chat.page.locator(field).count() == 0:
+            raise AssertionError("после сообщения панель открылась без виджетов")
 
 
 class TestSettingsIsolation:

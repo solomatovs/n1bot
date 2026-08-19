@@ -25,11 +25,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import IntEnum, StrEnum
 from types import NoneType, UnionType
 from typing import (
-    Annotated,
     Any,
     ClassVar,
-    Final,
-    Literal,
     Protocol,
     Union,
     get_args,
@@ -41,23 +38,22 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from boba.toolkit.calls import ToolCallView, ToolCallViews
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.launcher import PayloadFailureError
-from boba.toolkit.result import ToolResult
+from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.timing import Elapsed, ProcessAge
 
 __all__ = [
-    "REPLY",
     "ArgumentTooLargeError",
     "EntryErrorKind",
     "ExpectedErrors",
-    "ReplyError",
-    "ReplyOk",
     "ToolAddress",
     "ToolArgv",
-    "ToolCommand",
     "ToolEntryError",
     "ToolLike",
     "ToolMain",
-    "ToolReply",
 ]
+
+
+logger = logging.getLogger(__name__)
 
 
 class ArgumentTooLargeError(Exception):
@@ -132,39 +128,6 @@ class ToolAddress(BaseModel):
 
     def argv_head(self) -> list[str]:
         return [self.PYTHON, "-m", self.module, self.name]
-
-
-class ToolCommand(BaseModel):
-    """Что запускать: готовая команда и её stdin."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    argv: tuple[str, ...]
-    stdin: bytes
-
-
-class ReplyOk(BaseModel):
-    """Конверт успеха: возвращённое телом значение через границу процесса."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    status: Literal["ok"] = "ok"
-    content: str
-    artifact: ToolResult
-
-
-class ReplyError(BaseModel):
-    """Конверт отказа: ожидаемая ошибка тела либо нарушение контракта."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    status: Literal["error"] = "error"
-    kind: str
-    message: str
-
-
-ToolReply = Annotated[ReplyOk | ReplyError, Field(discriminator="status")]
-REPLY: Final[TypeAdapter[ReplyOk | ReplyError]] = TypeAdapter(ToolReply)
 
 
 class ExpectedErrors:
@@ -465,6 +428,12 @@ class ToolMain:
 
         cls._setup_logging()
 
+        # возраст процесса = вложенный bwrap + python + импорты модуля тела
+        logger.info(
+            "payload up %dms after exec (bwrap + python + imports)",
+            ProcessAge.ms(),
+        )
+
         try:
             return cls._run(tools, arguments)
         except ToolEntryError as exc:
@@ -508,8 +477,15 @@ class ToolMain:
 
         config_path = cls._pop_config(arguments)
 
+        config_read = Elapsed()
         stdin = cls._config_source(tool, config_path)
         kwargs = ToolArgv.parse(tool, arguments, stdin)
+        logger.info(
+            "tool[%s]: args ready in %dms (config %d bytes)",
+            tool.name,
+            config_read.ms(),
+            len(stdin),
+        )
 
         reply = cls._call(tool, kwargs)
         return cls._deliver(reply, want_artifact)
@@ -592,17 +568,22 @@ class ToolMain:
 
         expected = ExpectedErrors.of_body(body)
 
+        elapsed = Elapsed()
         try:
             if tool.coroutine is not None:
                 result = asyncio.run(cls._acall(tool.coroutine, kwargs))
             else:
                 result = body(**kwargs)
         except Exception as exc:
+            logger.info("tool[%s]: body failed in %dms", tool.name, elapsed.ms())
+
             kind = ExpectedErrors.kind_of(exc, expected)
             if kind is None:
                 raise
 
             raise PayloadFailureError(kind, str(exc)) from exc
+
+        logger.info("tool[%s]: body finished in %dms", tool.name, elapsed.ms())
 
         return cls._pack(tool, result)
 

@@ -20,7 +20,6 @@ IngestProgress ведёт счёт по единицам прогона — spac
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import (
     AsyncIterable,
     AsyncIterator,
@@ -65,9 +64,9 @@ from boba.indexing import (
     TransportKeys,
 )
 from boba.indexing.ports import Embedder
+from boba.toolkit.timing import Elapsed
 
 __all__ = [
-    "Elapsed",
     "IngestProgress",
     "LoggedIndexRun",
     "LoggingChunkStore",
@@ -77,16 +76,6 @@ __all__ = [
 ]
 
 T = TypeVar("T")
-
-
-class Elapsed:
-    """Длительность шага: заводится перед операцией, читается после неё."""
-
-    def __init__(self) -> None:
-        self._started = time.monotonic()
-
-    def ms(self) -> int:
-        return int((time.monotonic() - self._started) * 1000)
 
 
 class DbOp(StrEnum):

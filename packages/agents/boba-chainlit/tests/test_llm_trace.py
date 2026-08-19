@@ -19,11 +19,11 @@ from pydantic import SecretStr
 from ui.fake_llm import FakeLlmApp, ScenarioName
 from uvicorn.logging import DefaultFormatter
 
-from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
+from boba.llm.chat import ReasoningChatOpenAI
 
 pytestmark = pytest.mark.anyio
 

@@ -24,6 +24,7 @@ from gssapi.raw.misc import GSSError
 
 from boba.krb.config import KeytabConfig
 from boba.krb.errors import CredentialsExpiredError, KerberosError, KeytabError
+from boba.toolkit.timing import Elapsed
 
 __all__ = [
     "CcacheRegistry",
@@ -203,6 +204,7 @@ class KeytabCredentials(KerberosCredentials):
 
     def _acquire(self) -> None:
         """kinit из keytab: свежий TGT замещает содержимое ccache."""
+        elapsed = Elapsed()
         try:
             context = krb5.init_context()
             principal = krb5.parse_name_flags(context, self._config.principal.encode())
@@ -225,10 +227,11 @@ class KeytabCredentials(KerberosCredentials):
             raise KeytabError(f"{msg}: {exc}") from exc
 
         self._logger.info(
-            "kerberos: TGT %s from %s -> %s",
+            "kerberos: TGT %s from %s -> %s in %dms",
             self._config.principal,
             self._config.keytab,
             self._config.ccache,
+            elapsed.ms(),
         )
 
 
@@ -284,6 +287,7 @@ class DelegatedCredentials(KerberosCredentials):
 
     def _renew_ticket(self) -> None:
         """Продлевает renewable-TGT в ccache пользователя."""
+        elapsed = Elapsed()
         try:
             context = krb5.init_context()
             cache = krb5.cc_resolve(context, self._user.ccache.encode())
@@ -295,7 +299,11 @@ class DelegatedCredentials(KerberosCredentials):
             msg = f"renew delegated ticket for {self._user.principal}"
             raise CredentialsExpiredError(f"{msg}: {exc}") from exc
 
-        self._logger.info("kerberos: renewed ticket for %s", self._user.principal)
+        self._logger.info(
+            "kerberos: renewed ticket for %s in %dms",
+            self._user.principal,
+            elapsed.ms(),
+        )
 
 
 class CcacheRegistry:

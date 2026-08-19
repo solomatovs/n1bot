@@ -1,7 +1,6 @@
 """Провайдеры зависимостей: конфиг, клиенты, хранилища и сам агент langgraph."""
 
 import re
-import socket
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Annotated
@@ -20,8 +19,6 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg_pool import PoolTimeout
 from pydantic import SecretStr
 
-from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
-from boba.chainlit.agent.dump import DumpingTransport
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
     GraphSpec,
@@ -50,7 +47,6 @@ from boba.chainlit.infra.config import (
     CheckpointerConfig,
     DataLayerConfig,
     LocalStorageConfig,
-    OpenAiConfig,
     PrefetchFlowConfig,
     SelectedProfile,
     SettingsView,
@@ -61,6 +57,8 @@ from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit.rendering.chat_view import StepText
 from boba.db.pgvector import KbSchema
 from boba.db.postgres import AsyncPostgresPool
+from boba.llm.chat import ReasoningChatOpenAI
+from boba.llm.openai import OpenAiConfig, OpenAiHttp
 from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
@@ -181,96 +179,30 @@ async def connection_store(
     return store
 
 
-def _openai_socket_options(c: OpenAiConfig) -> list[tuple[int, int, int]]:
-    """Опции сокета: keepalive против молчаливого разрыва, user timeout —
-    против соединения, которое приняло данные и замолчало."""
-    options: list[tuple[int, int, int]] = [
-        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, int(c.tcp_keepalive)),
-    ]
-
-    if c.tcp_keepalive:
-        options += [
-            (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, c.tcp_keepidle),
-            (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, c.tcp_keepintvl),
-            (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, c.tcp_keepcnt),
-        ]
-
-    if c.tcp_user_timeout:
-        options.append(
-            (socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, c.tcp_user_timeout)
-        )
-
-    return options
-
-
-def _openai_transport_options(c: OpenAiConfig) -> dict:
-    limits = httpx.Limits(
-        max_connections=c.max_connections,
-        max_keepalive_connections=c.max_keepalive_connections,
-        keepalive_expiry=c.keepalive_expiry,
-    )
-    verify = httpx.create_ssl_context(
-        verify=c.ssl_verify, cert=None, trust_env=c.trust_env
-    )
-
-    proxy = None
-    if c.proxy:
-        proxy = c.proxy
-
-    return {
-        "http2": c.http2,
-        "verify": verify,
-        "limits": limits,
-        "proxy": proxy,
-        "trust_env": c.trust_env,
-        "retries": c.retries,
-        "socket_options": _openai_socket_options(c),
-    }
-
-
-def httpx_timeout(c: OpenAiConfig) -> httpx.Timeout:
-    return httpx.Timeout(
-        connect=c.connect_timeout,
-        read=c.read_timeout,
-        write=c.write_timeout,
-        pool=c.pool_timeout,
-    )
-
-
-def _openai_dump_transport(openai: OpenAiConfig) -> DumpingTransport:
+def _chainlit_dump_file(request: httpx.Request) -> str:
+    """Имя файла дампа: пользователь и thread текущей chainlit-сессии."""
     from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
 
-    def chainlit_filename(request: httpx.Request) -> str:
-        try:
-            ctx = get_context()
-        except ChainlitContextException:
-            return f"no-context-{request.url.host}.log"
+    try:
+        ctx = get_context()
+    except ChainlitContextException:
+        return f"no-context-{request.url.host}.log"
 
-        who = "anon"
-        if user := getattr(ctx.session, "user", None):
-            who = user.identifier
+    who = "anon"
+    if user := getattr(ctx.session, "user", None):
+        who = user.identifier
 
-        label = re.sub(r"[^\w.@-]", "_", f"{who}-{ctx.session.thread_id}")
+    label = re.sub(r"[^\w.@-]", "_", f"{who}-{ctx.session.thread_id}")
 
-        return f"{label}-{request.url.host}.log"
-
-    return DumpingTransport(
-        dump_dir=Path(openai.dump.path),
-        dump_file=chainlit_filename,
-        **_openai_transport_options(openai),
-    )
+    return f"{label}-{request.url.host}.log"
 
 
 def _openai_client(openai: OpenAiConfig) -> AsyncClient:
+    dump_file = None
     if openai.dump.enable:
-        transport = _openai_dump_transport(openai)
-    else:
-        transport = httpx.AsyncHTTPTransport(**_openai_transport_options(openai))
+        dump_file = _chainlit_dump_file
 
-    return AsyncClient(
-        timeout=httpx_timeout(openai),
-        transport=transport,
-    )
+    return OpenAiHttp.client(openai, dump_file)
 
 
 async def httpx_clients(
@@ -485,7 +417,7 @@ def _rephraser(
         model=cfg.model,
         base_url=cfg.provider.base_url,
         api_key=SecretStr(cfg.provider.api_key),
-        timeout=httpx_timeout(cfg.provider),
+        timeout=OpenAiHttp.timeout(cfg.provider),
         max_retries=cfg.provider.max_retries,
         disable_streaming=True,
         **cfg.chat_kwargs(),
@@ -514,7 +446,7 @@ def langchain_agent(
         model=settings.model,
         base_url=settings.provider.base_url,
         api_key=SecretStr(settings.provider.api_key),
-        timeout=httpx_timeout(settings.provider),
+        timeout=OpenAiHttp.timeout(settings.provider),
         stream_chunk_timeout=stream_chunk_timeout,
         max_retries=settings.provider.max_retries,
         **settings.chat_kwargs(),

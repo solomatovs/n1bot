@@ -17,13 +17,13 @@ from boba.sandbox.channels import ChannelSet, TailSink
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxRunner
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.entry import REPLY, ToolCommand
 from boba.toolkit.launcher import (
     LauncherError,
     LaunchOutcome,
     ToolLauncher,
     ToolOutcome,
 )
+from boba.toolkit.protocol import REPLY, ToolCommand
 from boba.toolkit.stream import ToolChannelsTap
 
 __all__ = [
