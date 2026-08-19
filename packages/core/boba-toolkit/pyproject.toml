@@ -4,11 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-toolkit"
-version = "0.0.13.dev1"
+version = "0.0.13.dev2"
 description = "Основание инструментов: песочница bwrap, workspace-образы, отмена хода и контракт результата."
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.10,<2.11",
+]
+
+# ветка --config в entry.py: сборка injected-конфигов из toml приложения;
+# в песочницу extra не ставится — omegaconf туда нельзя
+[project.optional-dependencies]
+config = [
+    "boba-settings==0.0.13.dev2",
 ]
 
 [tool.setuptools.packages.find]

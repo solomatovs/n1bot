@@ -38,18 +38,18 @@ from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
 from typing_extensions import override
 
-from boba.chainlit.agent.chat_model import ResponseField
+from boba.llm.chat import ResponseField
 from boba.toolkit.result import ErrorResult, ToolArtifact
 
 __all__ = [
     "AgentGraphBuilder",
     "GraphSpec",
     "LlmRephraser",
+    "PassthroughRephraser",
     "PlainGraphBuilder",
     "PrefetchCall",
     "PrefetchError",
     "PrefetchGraphBuilder",
-    "PassthroughRephraser",
     "PrefetchMiddleware",
     "PrefetchStage",
     "QueryRephrasings",

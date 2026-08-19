@@ -29,10 +29,10 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import SecretStr
 from ui.fake_llm import FakeLlmApp, ScenarioName
 
-from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
+from boba.llm.chat import ReasoningChatOpenAI
 
 pytestmark = pytest.mark.anyio
 

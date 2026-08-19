@@ -8,13 +8,14 @@ import pytest
 from fake_toolmod import FakeConfig
 from pydantic import SecretStr
 
-from boba.toolkit.entry import REPLY, ReplyError, ToolCommand, ToolMain
+from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import (
     LaunchOutcome,
     PayloadFailureError,
     RunResult,
     ToolOutcome,
 )
+from boba.toolkit.protocol import REPLY, ReplyError, ToolCommand
 from boba.toolkit.result import TextResult
 from boba.toolkit.wrap import ToolProcessWrap, WrapErrorKind
 

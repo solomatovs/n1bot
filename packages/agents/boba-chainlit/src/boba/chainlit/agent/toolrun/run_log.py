@@ -31,6 +31,7 @@ from boba.toolkit.stream import (
     ToolCallInfo,
     ToolChannelsTap,
 )
+from boba.toolkit.timing import Elapsed
 
 __all__ = ["CallStream", "StreamSource", "ToolRunLogger"]
 
@@ -84,9 +85,15 @@ class ToolRunLogger:
             ToolRunLogger._log_start(name, args, kwargs)
 
             token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
+            journal_open = Elapsed()
             stream = ToolRunLogger._open_stream(name, call_id, self._stream_source)
             if stream is not None:
                 ToolChannelsTap.set(stream)
+                logger.info(
+                    "tool[%s]: stream journal opened in %dms",
+                    name,
+                    journal_open.ms(),
+                )
 
             return _CallScope(
                 name=name,

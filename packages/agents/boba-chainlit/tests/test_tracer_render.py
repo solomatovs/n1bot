@@ -10,8 +10,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
 from boba.chainlit.agent.flow import PrefetchCall
-from boba.chainlit.domain.fields import StepField
 from boba.chainlit.chat.history import ConversationTranscript
+from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
     ChatView,
     RecordingSink,

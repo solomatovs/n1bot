@@ -15,10 +15,11 @@ from __future__ import annotations
 import functools
 import logging
 import time
+from abc import abstractmethod
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeVar
+from typing import Any, ClassVar, Final, Protocol, TypeVar
 from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
@@ -29,17 +30,22 @@ from langchain_core.tracers.base import AsyncBaseTracer
 from pydantic import BaseModel, ConfigDict
 from typing_extensions import ParamSpec, override
 
-from boba.chainlit.agent.chat_model import GeneratedMessage, ReasoningText
 from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.rendering.chat_view import ChatView
 from boba.chainlit.rendering.errors import show_error
+from boba.llm.chat import GeneratedMessage, ReasoningText
 from chainlit.context import context_var
+from chainlit.step import Step
 
-if TYPE_CHECKING:
-    from boba.chainlit.chat.turn import TurnState
-
-__all__ = ["AgentTracer", "LlmStage", "LlmStageEvent", "LlmStateLog", "TracedStage"]
+__all__ = [
+    "AgentTracer",
+    "LlmStage",
+    "LlmStageEvent",
+    "LlmStateLog",
+    "TracedStage",
+    "TurnArtifacts",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +78,26 @@ def _visible_failure(
     return wrapper
 
 
+class TurnArtifacts(Protocol):
+    """Незавершённые артефакты хода, которые ведёт трасер.
+
+    Порт вместо импорта TurnState: ход знает про трасер и передаёт его в
+    колбэки прогона, обратной зависимости у отрисовки быть не должно.
+    """
+
+    @abstractmethod
+    def open_tool(self, run_key: str, step: Step) -> None: ...
+
+    @abstractmethod
+    def close_tool(self, run_key: str) -> Step | None: ...
+
+    @abstractmethod
+    def add_reasoning(self, run_key: str, text: str) -> None: ...
+
+    @abstractmethod
+    def take_reasoning(self, run_key: str) -> str: ...
+
+
 class AgentTracer(AsyncBaseTracer):
     """Трасит один агентский цикл и рисует step-иерархию процесса ответа.
 
@@ -81,7 +107,7 @@ class AgentTracer(AsyncBaseTracer):
     с TracerException «No indexed run ID» — второй ошибкой без своей причины.
     """
 
-    def __init__(self, view: ChatView, state: TurnState) -> None:
+    def __init__(self, view: ChatView, state: TurnArtifacts) -> None:
         super().__init__()
         self._context = context_var.get()
         self._view = view

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import psycopg
@@ -12,8 +13,11 @@ import psycopg
 from boba.db.postgres.async_pool import PostgresError
 from boba.db.postgres.config import PostgresConfig
 from boba.krb import KerberosError, KeytabCredentials
+from boba.toolkit.timing import Elapsed
 
 __all__ = ["PayloadPostgres"]
+
+logger = logging.getLogger(__name__)
 
 
 class PayloadPostgres:
@@ -29,17 +33,24 @@ class PayloadPostgres:
         connection: PostgresConfig,
     ) -> psycopg.AsyncConnection[Any]:
         """Соединение по модели профиля; kerberos-профиль получает свой TGT."""
+        elapsed = Elapsed()
+
         if connection.kerberos is None:
-            return await PayloadPostgres._connect(connection)
+            conn = await PayloadPostgres._connect(connection)
+            logger.info("postgres connected in %dms", elapsed.ms())
+            return conn
 
         credentials = KeytabCredentials(connection.kerberos)
 
         try:
             async with credentials.applied_async():
-                return await PayloadPostgres._connect(connection)
+                conn = await PayloadPostgres._connect(connection)
         except KerberosError as e:
             msg = f"kerberos failed: {type(e).__name__}: {e}"
             raise PostgresError(msg) from e
+
+        logger.info("postgres connected in %dms (kerberos)", elapsed.ms())
+        return conn
 
     @staticmethod
     async def _connect(connection: PostgresConfig) -> psycopg.AsyncConnection[Any]:

@@ -174,7 +174,9 @@ class TestPrefetchGraph:
     async def test_turn_prefetches_search_results(self) -> None:
         rephraser = FakeRephraser(["variant one", "variant two"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, [fts_probe, vector_probe], RecordingStage()),
+            PrefetchGraphBuilder(
+                rephraser, [fts_probe, vector_probe], RecordingStage()
+            ),
             answers=["answered with context"],
         )
 

@@ -54,6 +54,7 @@ from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
+from chainlit.input_widget import Tab
 from chainlit.types import ThreadDict
 from chainlit.utils import wrap_user_function
 
@@ -186,6 +187,15 @@ async def _reset_session_container() -> None:
     cl.user_session.set(Container.SESSION_KEY, None)
 
 
+def _session_settings(app_config: AppConfig, registry: ChatProfiles) -> list[Tab]:
+    """Вкладки панели настроек сессии; пусто — профиль ничего не открывает."""
+    panel = SettingsPanel(
+        _session_view(app_config, registry),
+        PanelText(app_config.chainlit.root, current_language()),
+    )
+    return panel.tabs()
+
+
 @cl.on_chat_start
 @chainlit_error_ctx_handler
 @di_inject
@@ -202,14 +212,8 @@ async def on_chat_start(
         current_language() or "browser",
     )
 
-    panel = SettingsPanel(
-        _session_view(app_config, registry),
-        PanelText(app_config.chainlit.root, current_language()),
-    )
-    tabs = panel.tabs()
-
     # профиль без разрешённых настроек панель не показывает
-    if tabs:
+    if tabs := _session_settings(app_config, registry):
         await cl.ChatSettings(tabs).send()
 
 

@@ -33,7 +33,8 @@ from boba.tool.kb.confluence.models import (
     ConfluenceSpaceItem,
 )
 from boba.tool.kb.confluence.parsing import ConfluenceJson
-from boba.tool.kb.indexing_log import Elapsed, IngestProgress
+from boba.tool.kb.indexing_log import IngestProgress
+from boba.toolkit.timing import Elapsed
 from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 __all__ = [

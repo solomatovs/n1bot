@@ -28,6 +28,7 @@ from boba.toolkit.binaries import (
     TrustedBinaries,
     UntrustedBinaryError,
 )
+from boba.toolkit.timing import Elapsed, ProcessAge
 
 __all__ = [
     "FUSE_DEVICE",
@@ -862,6 +863,9 @@ class Launcher:
 
     @classmethod
     def main(cls, argv: list[str]) -> int:
+        # возраст процесса = bwrap + старт python с импортами до этой строки
+        trace(f"launcher up {ProcessAge.ms()}ms after exec (bwrap + python startup)")
+
         args = cls._parse_args(argv)
         images: list[tuple[str, str]] = []
         for pair in args.image:
@@ -989,12 +993,16 @@ class Launcher:
             FuseMounter.set_pdeathsig()
             self._limits.apply_to_current_process()
 
-        return subprocess.call(  # noqa: S603
+        elapsed = Elapsed()
+        rc = subprocess.call(  # noqa: S603
             argv,
             shell=False,
             pass_fds=self._store.lock_fds + channel_fds,
             preexec_fn=prepare_child,
         )
+        trace(f"command exited rc={rc} in {elapsed.ms()}ms")
+
+        return rc
 
     @classmethod
     def _channel_fds(cls) -> tuple[int, ...]:

@@ -30,6 +30,7 @@ from boba.toolkit.cpu import CpuBudget
 from boba.toolkit.launcher import LauncherError, LaunchOutcome, LaunchPayload
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.stream import ChannelSinks, ToolCallContext, ToolChannelsTap
+from boba.toolkit.timing import Elapsed
 from boba.workspace.launcher import (
     RO_MOUNT_ROOT,
     Launcher,
@@ -321,6 +322,7 @@ class SandboxRunner:
         stdin_data: bytes,
         channels: ChannelSet,
     ) -> SandboxOutcome:
+        prepared = Elapsed()
         rendered = self._profile.render(dict(self._path_vars()))
 
         self._prepare_dirs(rendered)
@@ -338,10 +340,17 @@ class SandboxRunner:
         manager: CgroupManager | None = None
         if group.requested:
             manager = CgroupManager(rendered.cgroup_base)
+            acquire = Elapsed()
             cgroup_dir = manager.acquire(group)
             logger.info(
-                "sandbox[%s]: cgroup %s (%s)", name, cgroup_dir, group.describe()
+                "sandbox[%s]: cgroup %s acquired in %dms (%s)",
+                name,
+                cgroup_dir,
+                acquire.ms(),
+                group.describe(),
             )
+
+        logger.info("sandbox[%s]: launch prepared in %dms", name, prepared.ms())
 
         try:
             result = run_subprocess(
@@ -403,6 +412,7 @@ class SandboxRunner:
         stdin: str,
         stdout_sink: Callable[[bytes], None] | None,
     ) -> SandboxOutcome:
+        prepared = Elapsed()
         rendered = self._profile.render(dict(self._path_vars()))
         self._prepare_dirs(rendered)
 
@@ -425,10 +435,18 @@ class SandboxRunner:
         manager: CgroupManager | None = None
         if group.requested:
             manager = CgroupManager(rendered.cgroup_base)
+            acquire = Elapsed()
             cgroup_dir = manager.acquire(group)
             logger.info(
-                "sandbox[%s]: cgroup %s (%s)", name, cgroup_dir, group.describe()
+                "sandbox[%s]: cgroup %s acquired in %dms (%s)",
+                name,
+                cgroup_dir,
+                acquire.ms(),
+                group.describe(),
             )
+
+        logger.info("sandbox[%s]: launch prepared in %dms", name, prepared.ms())
+
         try:
             result = run_subprocess(
                 argv,
@@ -572,12 +590,19 @@ class SandboxRunner:
 
     @staticmethod
     def _log_finish(profile: str, result: RunResult) -> None:
+        first_output = "none"
+        if result.first_output_ms is not None:
+            first_output = f"{result.first_output_ms}ms"
+
         logger.info(
-            "sandbox[%s]: finished rc=%s in %sms timed_out=%s",
+            "sandbox[%s]: finished rc=%s in %sms timed_out=%s "
+            "(spawn=%sms first_output=%s)",
             profile,
             result.exit_code,
             result.duration_ms,
             result.timed_out,
+            result.spawn_ms,
+            first_output,
         )
 
     @classmethod

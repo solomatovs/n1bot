@@ -6,12 +6,14 @@
 Ошибки:
 PostgresError — до базы знаний не достучаться (сеть, libpq, kerberos).
 psycopg.Error — СУБД отклонила поисковый запрос.
-Отсутствие весов эмбеддера ожидаемым не считается: это дефект сборки
-rootfs, и трейсбек там по делу.
+EmbeddingError — удалённый эмбеддер недоступен или ответил мусором.
+Отсутствие весов локального эмбеддера ожидаемым не считается: это дефект
+сборки rootfs, и трейсбек там по делу.
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
@@ -24,6 +26,7 @@ from psycopg.rows import dict_row
 from pydantic import Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
+from boba.llm.embedding import EmbedderFactory, EmbeddingError
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.models import SearchHit
 from boba.tool.kb.search import (
@@ -33,7 +36,10 @@ from boba.tool.kb.search import (
 )
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import TableResult, ToolResult, pack_result
+from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
+
+logger = logging.getLogger(__name__)
 
 
 class KbToolConfig(SecretRevealing, PostgresKnowledgeBaseConfig):
@@ -52,6 +58,7 @@ class KbErrorKind(StrEnum):
 
     DATABASE_UNAVAILABLE = "database_unavailable"
     QUERY_FAILED = "kb_query_failed"
+    EMBEDDING_FAILED = "embedding_failed"
 
 
 class KbRows:
@@ -86,20 +93,20 @@ class KbRows:
         return out
 
 
-def _embed(cfg: KbToolConfig, query: str) -> tuple[list[float], int]:
+async def _embed(cfg: KbToolConfig, query: str) -> tuple[list[float], int]:
     """Вектор запроса и его размерность — их ждёт SQL-шаблон."""
-    from fastembed import (  # noqa: PLC0415 # pyright: ignore[reportMissingImports]
-        TextEmbedding,
-    )
+    build = Elapsed()
+    embedder = EmbedderFactory.build(cfg.embedding)
+    logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.provider)
 
-    encoder = TextEmbedding(
-        model_name=cfg.embedding.model, cache_dir=cfg.embedding.cache_dir
-    )
-    vector = next(iter(encoder.embed([query])))
+    embed = Elapsed()
+    vector = await embedder.embed_query(query)
 
     values: list[float] = []
     for item in vector:
         values.append(float(item))
+
+    logger.info("query embedded in %dms (dim=%d)", embed.ms(), len(values))
 
     return values, len(values)
 
@@ -111,13 +118,20 @@ async def _select(
     *,
     iterative: bool = False,
 ) -> list[dict[str, Any]]:
+    connect = Elapsed()
     conn = await PayloadPostgres.connect_config(cfg.connection)
+    logger.info("kb connected in %dms", connect.ms())
+
     async with conn, conn.cursor(row_factory=dict_row) as cur:
         if iterative:
             await cur.execute(sql.SQL(KbSearch.ITERATIVE_SCAN))
 
+        query = Elapsed()
         await cur.execute(statement, params)
-        return await cur.fetchall()
+        rows = await cur.fetchall()
+        logger.info("kb query finished in %dms (%d rows)", query.ms(), len(rows))
+
+        return rows
 
 
 def _table_of(cfg: KbToolConfig) -> sql.Identifier:
@@ -133,7 +147,7 @@ async def _search(
     vector: bool,
 ) -> tuple[str, ToolResult]:
     if vector:
-        embedding, dim = _embed(cfg, query)
+        embedding, dim = await _embed(cfg, query)
         statement = sql.SQL(KbSearch.VECTOR_SQL).format(
             dim=sql.Literal(dim),
             chunks_table=_table_of(cfg),
@@ -207,6 +221,7 @@ async def kb_fts_search(
 EXPECTED: Mapping[type[Exception], KbErrorKind] = {
     PostgresError: KbErrorKind.DATABASE_UNAVAILABLE,
     psycopg.Error: KbErrorKind.QUERY_FAILED,
+    EmbeddingError: KbErrorKind.EMBEDDING_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(kb_vector_search, kb_fts_search)

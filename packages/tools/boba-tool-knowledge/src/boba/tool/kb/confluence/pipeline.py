@@ -52,7 +52,8 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceRequest,
     ConfluenceRest,
 )
-from boba.tool.kb.indexing_log import Elapsed, IngestProgress, LoggingStream
+from boba.tool.kb.indexing_log import IngestProgress, LoggingStream
+from boba.toolkit.timing import Elapsed
 from boba.transport.http import (
     CancellableHttpTransport,
     HttpResponse,

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import chainlit as cl
 import pytest
 from httpx import AsyncClient
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -23,10 +24,9 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from omegaconf import DictConfig
+from openai import OpenAIError
 from pydantic import SecretStr
 
-import chainlit as cl
-from boba.chainlit.agent.chat_model import ReasoningChatOpenAI
 from boba.chainlit.agent.flow import (
     GraphSpec,
     LlmRephraser,
@@ -45,8 +45,9 @@ from boba.chainlit.infra.providers import (
     _graph_builder,
     build_history_view,
     httpx_clients,
-    httpx_timeout,
 )
+from boba.llm.chat import ReasoningChatOpenAI
+from boba.llm.openai import OpenAiHttp
 from boba.settings import bind
 from boba.toolkit.result import TableResult, ToolArtifact
 
@@ -108,7 +109,7 @@ def rephraser_config(flow_config: PrefetchFlowConfig) -> RephraserConfig:
 
 
 @pytest.fixture
-async def chainlit_context(app_config: AppConfig) -> AsyncIterator[None]:
+async def chainlit_context(app_config: AppConfig) -> None:
     """Сессия с ролями и профилем: их читают guard'ы доступа к инструментам.
 
     Профиль живёт на самой сессии: user_session перечитывает его оттуда при
@@ -121,8 +122,6 @@ async def chainlit_context(app_config: AppConfig) -> AsyncIterator[None]:
 
     context = init_http_context(user=user)
     context.session.chat_profile = PROFILE
-
-    yield
 
 
 @pytest.fixture(scope="module")
@@ -158,7 +157,7 @@ def _graph(
         model=settings.model,
         base_url=settings.provider.base_url,
         api_key=SecretStr(settings.provider.api_key),
-        timeout=httpx_timeout(settings.provider),
+        timeout=OpenAiHttp.timeout(settings.provider),
         max_retries=settings.provider.max_retries,
         **settings.chat_kwargs(),
     )
@@ -195,7 +194,7 @@ def _rephraser(
         model=cfg.model,
         base_url=cfg.provider.base_url,
         api_key=SecretStr(cfg.provider.api_key),
-        timeout=httpx_timeout(cfg.provider),
+        timeout=OpenAiHttp.timeout(cfg.provider),
         max_retries=0,
         disable_streaming=True,
         **cfg.chat_kwargs(),
@@ -259,7 +258,7 @@ class TestRephraser:
             rephraser_config, clients, model="no/such-model-at-all"
         )
 
-        with pytest.raises(Exception) as caught:
+        with pytest.raises((PrefetchError, OpenAIError)) as caught:
             await rephraser.rephrase(QUESTION)
 
         if isinstance(caught.value, PrefetchError):
@@ -273,6 +272,7 @@ class TestRephraser:
 class TestPrefetchGraph:
     """Полный ход профиля: подготовка контекста и ответ модели."""
 
+    @pytest.mark.usefixtures("chainlit_context")
     async def test_turn_prefetches_and_answers(
         self,
         app_config: AppConfig,
@@ -280,7 +280,6 @@ class TestPrefetchGraph:
         rephraser_config: RephraserConfig,
         clients: dict[str, AsyncClient],
         session_tools: list[BaseTool],
-        chainlit_context: None,
     ) -> None:
         graph = _graph(app_config, clients, session_tools)
 
@@ -393,14 +392,13 @@ class TestPrefetchGraph:
         if not str(answer.content).strip():
             raise AssertionError("модель ответила пустотой")
 
+    @pytest.mark.usefixtures("clients", "chainlit_context")
     async def test_unreachable_provider_fails_the_turn(
         self,
         app_config: AppConfig,
         flow_config: PrefetchFlowConfig,
         rephraser_config: RephraserConfig,
-        clients: dict[str, AsyncClient],
         session_tools: list[BaseTool],
-        chainlit_context: None,
     ) -> None:
         """Переформулировщик недоступен: ход падает, а не отвечает без контекста."""
         rephraser = rephraser_config.model_copy(
