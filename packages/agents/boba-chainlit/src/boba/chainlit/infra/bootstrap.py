@@ -24,6 +24,7 @@ from boba.chainlit.infra.error_middleware import DomainErrorMiddleware
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
+from boba.sandbox.zygote import ZygoteRegistry
 
 
 def run_app(config_path: Path):
@@ -97,6 +98,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        ZygoteRegistry.stop_all()
         Container.set_session_hook(None)
         Container.set_root(None)
         await container.aclose()

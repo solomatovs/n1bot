@@ -7,11 +7,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
+from omegaconf import DictConfig
 from pydantic import BaseModel
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.infra.plugins import load_tools
+from boba.sandbox import RootfsPremount, SandboxConfig, ZygoteRegistry
+from boba.settings import bind
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import pg_list_targets
 
@@ -19,6 +24,26 @@ from boba.tool.pg.tools import pg_list_targets
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
+
+
+@pytest.fixture(autouse=True)
+def app_sandbox(raw_config: DictConfig) -> Iterator[None]:
+    """Старт как в приложении: премонтированный корень, зиготы гасятся."""
+    sandbox = bind(raw_config, "sandbox", SandboxConfig)
+
+    premount: RootfsPremount | None = None
+    if sandbox.premount_dir:
+        premount = RootfsPremount(sandbox.premount_dir)
+        premount.mount_profiles(sandbox.profiles)
+        RootfsPremount.activate(premount)
+
+    try:
+        yield
+    finally:
+        ZygoteRegistry.stop_all()
+        RootfsPremount.reset()
+        if premount is not None:
+            premount.shutdown()
 
 
 def _schema_fields(tool: object) -> set[str]:

@@ -27,6 +27,8 @@ class SandboxBinary(StrEnum):
 
     BWRAP = "bwrap"
     FUSE2FS = "fuse2fs"
+    FUSERMOUNT3 = "fusermount3"
+    FUSERMOUNT = "fusermount"
 
 
 class TrustedBinaries(BaseModel):

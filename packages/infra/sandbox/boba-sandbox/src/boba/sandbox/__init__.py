@@ -7,6 +7,7 @@ from boba.sandbox.caller import (
 )
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
+from boba.sandbox.premount import RootfsPremount, RootfsPremountError
 from boba.sandbox.profile import (
     BindSpec,
     SandboxConfig,
@@ -21,6 +22,13 @@ from boba.sandbox.runner import (
     SandboxRunner,
     has_bwrap,
 )
+from boba.sandbox.zygote import (
+    ZygotePolicy,
+    ZygoteRegistry,
+    ZygoteSpawner,
+    ZygoteSupervisor,
+    ZygoteToolCaller,
+)
 
 __all__ = [
     "WORKSPACE_MOUNT",
@@ -28,6 +36,8 @@ __all__ = [
     "CgroupError",
     "CgroupManager",
     "GroupLimits",
+    "RootfsPremount",
+    "RootfsPremountError",
     "SandboxCaller",
     "SandboxConfig",
     "SandboxDiagnostics",
@@ -39,6 +49,11 @@ __all__ = [
     "SandboxRunner",
     "SandboxToolConfig",
     "TmpfsSpec",
+    "ZygotePolicy",
+    "ZygoteRegistry",
+    "ZygoteSpawner",
+    "ZygoteSupervisor",
+    "ZygoteToolCaller",
     "build_bwrap_argv",
     "has_bwrap",
 ]
