@@ -8,6 +8,7 @@ from boba.db.postgres.async_pool import (
     KerberosConnection,
     PostgresError,
     PostgresPoolClosedError,
+    PostgresPoolLoopError,
 )
 from boba.db.postgres.config import (
     PostgresConfig,
@@ -26,4 +27,5 @@ __all__ = [
     "PostgresOptionsConfig",
     "PostgresPoolClosedError",
     "PostgresPoolConfig",
+    "PostgresPoolLoopError",
 ]

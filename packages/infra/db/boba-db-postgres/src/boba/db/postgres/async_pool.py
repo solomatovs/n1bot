@@ -26,6 +26,7 @@ __all__ = [
     "KerberosConnection",
     "PostgresError",
     "PostgresPoolClosedError",
+    "PostgresPoolLoopError",
 ]
 
 
@@ -35,6 +36,10 @@ class PostgresError(Exception):
 
 class PostgresPoolClosedError(PostgresError):
     """Попытка взять connection из уже закрытого pool'а."""
+
+
+class PostgresPoolLoopError(PostgresError):
+    """Обращение к пулу из event loop, отличного от того, в котором он открыт."""
 
 
 logger = logging.getLogger(__name__)
@@ -97,6 +102,8 @@ class AsyncPostgresPool:
             open=False,
         )
         self._closed = False
+        self._loop_id: int | None = None
+        self._loop_reported = False
         logger.info(
             "AsyncPostgresPool created db=%s user=%s min_size=%d max_size=%s krb=%s",
             cfg.dbname,
@@ -116,7 +123,59 @@ class AsyncPostgresPool:
 
     async def open(self) -> None:
         """Открыть пул (установить фоновые соединения)."""
+        self._loop_id = id(asyncio.get_running_loop())
+        logger.info(
+            "AsyncPostgresPool open db=%s user=%s loop=%#x",
+            self._cfg.dbname,
+            self._cfg.user,
+            self._loop_id,
+        )
         await self._pool.open()
+
+    def _check_loop(self, op: str) -> None:
+        """Свериться с loop'ом, в котором пул открыт.
+
+        Внутренние asyncio-локи psycopg_pool привязываются к тому loop'у, где их
+        впервые дождались; из другого loop они бросают невнятное
+        `RuntimeError: ... is bound to a different event loop`, и пул остаётся
+        нерабочим до конца жизни процесса. Ловим это на своей границе, чтобы в
+        логе были оба loop'а и операция, а не только стек psycopg.
+        """
+        if self._loop_id is None:
+            return
+
+        current = id(asyncio.get_running_loop())
+        if current == self._loop_id:
+            return
+
+        # наверху вызов повторяется бесконечно — полный стек пишем один раз
+        if not self._loop_reported:
+            self._loop_reported = True
+            logger.error(
+                "AsyncPostgresPool loop mismatch db=%s op=%s opened_loop=%#x "
+                "current_loop=%#x — пул открыт в другом event loop; ищите второй "
+                "loop (asyncio.run в потоке, свой loop у фоновой задачи, "
+                "пересоздание loop'а сервером)",
+                self._cfg.dbname,
+                op,
+                self._loop_id,
+                current,
+                stack_info=True,
+            )
+        else:
+            logger.debug(
+                "AsyncPostgresPool loop mismatch db=%s op=%s opened_loop=%#x "
+                "current_loop=%#x",
+                self._cfg.dbname,
+                op,
+                self._loop_id,
+                current,
+            )
+
+        raise PostgresPoolLoopError(
+            f"pool for {self._cfg.dbname} is bound to event loop {self._loop_id:#x}, "
+            f"called from {current:#x} ({op})"
+        )
 
     @classmethod
     async def get(
@@ -135,6 +194,18 @@ class AsyncPostgresPool:
         async with cls._CACHE_LOCK:
             pool = cls._CACHE.get(key)
             if pool is not None and not pool._closed:
+                # кэш процессный и переживает любой loop: тут видно момент, когда
+                # пул уезжает в чужой loop — дальше он уже нерабочий навсегда
+                current = id(asyncio.get_running_loop())
+                if pool._loop_id is not None and pool._loop_id != current:
+                    logger.error(
+                        "AsyncPostgresPool cache hit from another loop db=%s "
+                        "opened_loop=%#x current_loop=%#x",
+                        cfg.dbname,
+                        pool._loop_id,
+                        current,
+                        stack_info=True,
+                    )
                 return pool
 
             pool = cls(cfg, override_options=override_options, configure=configure)
@@ -175,13 +246,15 @@ class AsyncPostgresPool:
         if self._closed:
             raise PostgresPoolClosedError("PostgresPool is closed")
 
+        self._check_loop("connection")
+
         async with self._pool.connection() as conn:
             yield conn
 
     @asynccontextmanager
     async def cursor(self) -> AsyncGenerator[psycopg.AsyncCursor[Any], None]:
         """AsyncConnection + tuple-cursor — одиночные запросы без row_factory."""
-        async with self._pool.connection() as conn, conn.cursor() as cur:
+        async with self.connection() as conn, conn.cursor() as cur:
             yield cur
 
     @asynccontextmanager
@@ -190,7 +263,7 @@ class AsyncPostgresPool:
     ) -> AsyncGenerator[psycopg.AsyncClientCursor[Any], None]:
         """AsyncConnection + AsyncClientCursor (client-side parameter binding)."""
         async with (
-            self._pool.connection() as conn,
+            self.connection() as conn,
             psycopg.AsyncClientCursor(conn) as cur,
         ):
             yield cur
@@ -199,7 +272,7 @@ class AsyncPostgresPool:
     async def dict_cursor(self) -> AsyncGenerator[psycopg.AsyncCursor[DictRow], None]:
         """AsyncConnection + dict-cursor (row_factory=dict_row)."""
         async with (
-            self._pool.connection() as conn,
+            self.connection() as conn,
             conn.cursor(row_factory=dict_row) as cur,
         ):
             yield cur

@@ -55,7 +55,7 @@ from boba.chainlit.infra.config import (
 from boba.chainlit.infra.di import Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit.rendering.chat_view import StepText
-from boba.db.pgvector import KbSchema
+from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.llm.chat import ReasoningChatOpenAI
 from boba.llm.openai import OpenAiConfig, OpenAiHttp

@@ -10,7 +10,8 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.13.dev2",
     "boba-text==0.0.13.dev2",
-    "langchain-core",
+    "langchain-core>=1.4,<1.5",
+    "langsmith>=0.8,<0.9",
     "pydantic>=2.10,<2.11",
 ]
 

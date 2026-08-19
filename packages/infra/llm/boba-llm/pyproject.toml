@@ -17,7 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 chat = [
     "langchain[openai]",
-    "langchain-core",
+    "langchain-core>=1.4,<1.5",
+    "langsmith>=0.8,<0.9",
 ]
 payload = [
     "fastembed>=0.4,<1",

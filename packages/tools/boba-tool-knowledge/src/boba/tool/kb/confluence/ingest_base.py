@@ -10,10 +10,10 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
-from boba.db.pgvector import (
+from boba.db.pgvector.config import PostgresStoreConfig
+from boba.db.pgvector.store import (
     PostgresChunkStore,
     PostgresCollectionsStore,
-    PostgresStoreConfig,
 )
 from boba.indexing import (
     ChunkStore,
