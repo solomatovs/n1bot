@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 __all__ = [
     "CollectionNotFoundError",
@@ -28,8 +28,6 @@ class CollectionNotFoundError(KeyError):
 class SearchHit:
     """Один результат kb_search_*; distance — cosine или -ts_rank_cd, меньше ближе."""
 
-    id: str
     distance: float
     metadata: Mapping[str, str]
-    snippet: str
-    tags: Sequence[str] = field(default_factory=tuple)
+    format_content: str

@@ -1047,5 +1047,6 @@ class TestKbTools:
         )
         if not (result.rows):
             raise AssertionError("result.rows")
-        if set(result.rows[0]) < {"id", "distance", "snippet"}:
-            raise AssertionError('set(result.rows[0]) >= {"id", "distance", "snippet"}')
+        columns = set(result.rows[0])
+        if not {"distance", "format_content", "page_title"} <= columns:
+            raise AssertionError(f"в выдаче нет нужных колонок: {sorted(columns)}")

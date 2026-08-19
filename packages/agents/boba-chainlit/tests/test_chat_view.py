@@ -332,3 +332,54 @@ class TestLivePulseFrames:
             raise AssertionError(f"the sealed answer is sent: {emitter.frames}")
         if pulse_at < answer_at:
             raise AssertionError("pulse follows the answer it waits under")
+
+
+class TestPrefetchStage:
+    """Этап подготовки: шаги поиска вкладываются в него, а не в контейнер."""
+
+    @pytest.mark.anyio
+    async def test_tools_nest_into_the_open_stage(self, http_context: None) -> None:
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        stage = await view.begin_stage("context lookup")
+        inside = await view.tool_started("kb_fts_search", {"query": "kerberos"}, "c-1")
+        await view.end_stage(["kerberos"])
+        outside = await view.tool_started("kb_fts_search", {"query": "later"}, "c-2")
+
+        container = view.container_step
+        if container is None:
+            raise AssertionError("контейнер хода открыт")
+
+        if stage.parent_id != container.id:
+            raise AssertionError("этап лежит в контейнере хода")
+        if inside.parent_id != stage.id:
+            raise AssertionError("шаг подготовки лежит в этапе")
+        if outside.parent_id != container.id:
+            raise AssertionError("после этапа шаги снова идут в контейнер")
+
+    @pytest.mark.anyio
+    async def test_stage_output_lists_the_queries(self, http_context: None) -> None:
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.begin_stage("context lookup")
+        await view.end_stage(["первый запрос", "второй запрос"])
+
+        if view.stage_step is not None:
+            raise AssertionError("закрытый этап больше не принимает шаги")
+
+        output = ChatView.stage_output(["первый запрос", "второй запрос"])
+        if output != "- первый запрос\n- второй запрос":
+            raise AssertionError(f"подпись этапа: {output!r}")
+
+    @pytest.mark.anyio
+    async def test_stage_id_is_derived_from_the_turn(self, http_context: None) -> None:
+        """Live и сборка истории обязаны дать этапу один id."""
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        stage = await view.begin_stage("context lookup")
+
+        if stage.id != ChatView.derive_id(THREAD, TURN, StepRole.STAGE):
+            raise AssertionError("id этапа выводится из ключа хода")

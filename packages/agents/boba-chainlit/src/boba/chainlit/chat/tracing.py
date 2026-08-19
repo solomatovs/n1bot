@@ -24,6 +24,7 @@ from uuid import UUID
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResult
+from langchain_core.runnables.config import ensure_config
 from langchain_core.tracers.base import AsyncBaseTracer
 from pydantic import BaseModel, ConfigDict
 from typing_extensions import ParamSpec, override
@@ -38,7 +39,7 @@ from chainlit.context import context_var
 if TYPE_CHECKING:
     from boba.chainlit.chat.turn import TurnState
 
-__all__ = ["AgentTracer", "LlmStage", "LlmStageEvent", "LlmStateLog"]
+__all__ = ["AgentTracer", "LlmStage", "LlmStageEvent", "LlmStateLog", "TracedStage"]
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +295,47 @@ class AgentTracer(AsyncBaseTracer):
     @override
     async def _persist_run(self, run: Any) -> None:
         pass
+
+
+class TracedStage:
+    """Этап ленты, найденный по трасеру текущего прогона.
+
+    Граф живёт всю сессию, а лента — один ход, поэтому ленту берём не из
+    конструктора, а из колбэков прогона: там её держит AgentTracer.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    async def begin(self) -> None:
+        view = self._view()
+        if view is None:
+            return
+
+        await view.begin_stage(self._name)
+
+    async def end(self, queries: Sequence[str]) -> None:
+        view = self._view()
+        if view is None:
+            return
+
+        await view.end_stage(queries)
+
+    @staticmethod
+    def _view() -> ChatView | None:
+        """Лента прогона; None — ход идёт без ленты (cli, тесты)."""
+        config = ensure_config()
+
+        callbacks = config.get("callbacks")
+        handlers = getattr(callbacks, "handlers", None)
+        if not handlers:
+            return None
+
+        for handler in handlers:
+            if isinstance(handler, AgentTracer):
+                return handler.view
+
+        return None
 
 
 class LlmStage(StrEnum):

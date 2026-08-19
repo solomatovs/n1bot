@@ -12,6 +12,7 @@ from typing import ClassVar, Final
 
 import chainlit as cl
 from boba.chainlit.domain.errors import RefusalError
+from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContextException
 from chainlit.session import WebsocketSession
 
@@ -133,7 +134,14 @@ def current_user_metadata() -> dict[str, object]:
 
 
 def current_language() -> str:
-    """Язык вкладки; вне ws-сессии — пустая строка."""
+    """Язык интерфейса: навязанный конфигом chainlit либо язык вкладки.
+
+    Тот же порядок, что у самого chainlit (config.ui.language or language):
+    иначе панель говорила бы не на языке остального интерфейса.
+    """
+    if forced := chainlit_config.ui.language:
+        return forced
+
     try:
         session = cl.context.session
     except ChainlitContextException:

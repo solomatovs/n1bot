@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, cast
@@ -59,6 +59,8 @@ class StepText(StrEnum):
     RUNNING = "running"
     THINKING = "thinking"
     TOOL = "tool"
+    PREFETCH = "context lookup"
+    """Этап подготовки контекста: под ним лежат вызовы предварительного поиска."""
     STOPPED = "stopped by the user"
     ABORTED = "stopped"
     FINISHED = "finished"
@@ -105,6 +107,7 @@ class StepRole(StrEnum):
     ERROR = "error"
     PROCESS = "process"
     PULSE = "pulse"
+    STAGE = "stage"
     THINKING = "thinking"
     TOOL = "tool"
     CHART = "chart"
@@ -125,6 +128,17 @@ class TurnDraft:
     answer: Message | None = None
     answers: int = 0
     thinking: Step | None = None
+    stage: Step | None = None
+    """Открытый этап: пока он жив, шаги хода вкладываются в него, а не в контейнер."""
+
+    def seal_stage(self) -> Step | None:
+        """Снимает открытый этап; None — этап не открывали."""
+        step = self.stage
+        if step is None:
+            return None
+
+        self.stage = None
+        return step
 
     def answer_key(self, key: str | None = None) -> str | None:
         """Каждый следующий ответ хода — своё сообщение, как в истории."""
@@ -349,6 +363,11 @@ class ChatView:
         """Показанный кружок ожидания; None — ход ничего не ждёт."""
         return self._pulse.step
 
+    @property
+    def stage_step(self) -> Step | None:
+        """Открытый этап хода; None — шаги идут прямо в контейнер."""
+        return self._turn.stage
+
     def begin_turn(self, key: str | None) -> None:
         """Открывает ход: его ключ адресует контейнер и ответ."""
         self._turn = TurnDraft(key=key)
@@ -537,6 +556,45 @@ class ChatView:
         step.start = utc_now()
         return step
 
+    async def begin_stage(self, name: str) -> Step:
+        """Открывает этап хода: шаги до его закрытия вкладываются внутрь."""
+        await self._seal_answer()
+
+        step = await self._child(
+            StepStatus.IDLE.title(name), StepKind.RUN, self._turn.key, StepRole.STAGE
+        )
+        step.output = StepText.RUNNING
+        step.start = utc_now()
+        await self._sink.put(step)
+
+        self._turn.stage = step
+        return step
+
+    async def end_stage(self, queries: Sequence[str]) -> None:
+        """Закрывает этап и подписывает его запросами; без этапа закрывать нечего."""
+        step = self._turn.seal_stage()
+        if step is None:
+            return
+
+        step.name = StepStatus.DONE.title(step.name.split(" ", 1)[-1])
+        step.output = self.stage_output(queries)
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
+        await self._sink.put(step)
+
+    @staticmethod
+    def stage_output(queries: Sequence[str]) -> str:
+        """Подпись этапа: запросы, с которыми он работал, по строке на запрос."""
+        lines: list[str] = []
+        for query in queries:
+            lines.append(f"- {query}")
+
+        if not lines:
+            return StepText.FINISHED.value
+
+        return "\n".join(lines)
+
     async def tool_started(
         self,
         name: str,
@@ -698,13 +756,20 @@ class ChatView:
         key: str | None,
         role: StepRole,
     ) -> Step:
-        container = await self.container()
+        parent = await self._parent()
         return self._step(
             name,
             kind,
-            parent_id=container.id,
+            parent_id=parent.id,
             step_id=self.derive_id(self._thread_id, key, role),
         )
+
+    async def _parent(self) -> Step:
+        """Родитель очередного шага: открытый этап, иначе контейнер хода."""
+        if self._turn.stage is not None:
+            return self._turn.stage
+
+        return await self.container()
 
     def _step(
         self,

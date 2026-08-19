@@ -9,6 +9,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
+from boba.chainlit.agent.flow import PrefetchCall
+from boba.chainlit.domain.fields import StepField
 from boba.chainlit.chat.history import ConversationTranscript
 from boba.chainlit.rendering.chat_view import (
     ChatView,
@@ -353,3 +355,112 @@ class TestTranscript:
             raise AssertionError("len(containers) == 2")
         if containers[0].get("id") == containers[1].get("id"):
             raise AssertionError('containers[0].get("id") != containers[1].get("id")')
+
+
+class TestPrefetchStageReplay:
+    """Сборка ленты из истории обязана дать ту же раскладку, что live."""
+
+    def _replay(self, messages: list) -> RecordingSink:
+        view, sink = make_view()
+        run(ConversationTranscript(messages, view).replay())
+        return sink
+
+    @staticmethod
+    def _history() -> list:
+        calls = []
+        replies = []
+        for index, query in enumerate(("kerberos postgres", "gss keytab")):
+            call_id = f"{PrefetchCall.PREFIX}{index}"
+            calls.append(
+                {
+                    "name": "kb_fts_search",
+                    "args": {"query": query},
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            )
+            replies.append(
+                ToolMessage(
+                    content="hits",
+                    id=f"t{index}",
+                    tool_call_id=call_id,
+                    name="kb_fts_search",
+                    artifact=TableResult(rows=[{"page": query}]),
+                )
+            )
+
+        return [
+            HumanMessage(content="как настроить kerberos?", id="m1"),
+            AIMessage(content="", id="m2", tool_calls=calls),
+            *replies,
+            AIMessage(content="вот ответ", id="m3"),
+        ]
+
+    def _by_id(self, sink: RecordingSink) -> dict[str, Any]:
+        steps: dict[str, Any] = {}
+        for step in sink.steps:
+            steps[step.get(StepField.ID, "")] = step
+
+        return steps
+
+    def test_prefetch_calls_nest_into_the_stage(self) -> None:
+        sink = self._replay(self._history())
+        steps = self._by_id(sink)
+
+        stage_id = ChatView.derive_id(THREAD, "m1", StepRole.STAGE)
+        if stage_id not in steps:
+            raise AssertionError("этап подготовки восстановлен из истории")
+
+        nested = []
+        for step in sink.steps:
+            if step.get(StepField.PARENT_ID) == stage_id:
+                nested.append(step.get(StepField.NAME, ""))
+
+        if len(nested) != 2:
+            raise AssertionError(f"в этапе оба вызова подготовки, а не {nested}")
+
+    def test_stage_output_lists_the_queries(self) -> None:
+        sink = self._replay(self._history())
+        steps = self._by_id(sink)
+
+        stage_id = ChatView.derive_id(THREAD, "m1", StepRole.STAGE)
+        if stage_id is None:
+            raise AssertionError("id этапа выводится из ключа хода")
+
+        stage = steps[stage_id]
+
+        expected = ChatView.stage_output(["kerberos postgres", "gss keytab"])
+        if stage.get(StepField.OUTPUT) != expected:
+            raise AssertionError(f"подпись этапа {stage.get(StepField.OUTPUT)!r}")
+
+    def test_model_calls_stay_out_of_the_stage(self) -> None:
+        """Вызовы, сделанные самой моделью, в этап не попадают."""
+        messages = [
+            HumanMessage(content="вопрос", id="m1"),
+            AIMessage(
+                content="",
+                id="m2",
+                tool_calls=[
+                    {
+                        "name": "kb_fts_search",
+                        "args": {"query": "своими руками"},
+                        "id": "call_own",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="hits",
+                id="t0",
+                tool_call_id="call_own",
+                name="kb_fts_search",
+                artifact=TableResult(rows=[{"page": "x"}]),
+            ),
+        ]
+
+        sink = self._replay(messages)
+
+        stage_id = ChatView.derive_id(THREAD, "m1", StepRole.STAGE)
+        for step in sink.steps:
+            if step.get(StepField.ID) == stage_id:
+                raise AssertionError("без вызовов подготовки этап не рисуется")

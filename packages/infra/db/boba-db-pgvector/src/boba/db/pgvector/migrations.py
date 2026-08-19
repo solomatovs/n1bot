@@ -29,6 +29,7 @@ class Migrations:
         """Подставляет идентификаторы/литералы schema_cfg в SQL-шаблон; cast до
         LiteralString безопасен: источник — файл миграции пакета, не user-input."""
         chunks_name = schema_cfg.chunks_table
+        schema_name = schema_cfg.pg_schema
         return sql.SQL(cast(LiteralString, text)).format(
             schema=schema_cfg.schema_ident(),
             chunks_table=schema_cfg.chunks_ident(),
@@ -39,6 +40,23 @@ class Migrations:
             chunks_collection_idx_name=sql.Identifier(f"{chunks_name}_collection"),
             chunks_collection_source_idx_name=sql.Identifier(
                 f"{chunks_name}_collection_source",
+            ),
+            chunks_collection_tsv_gin_name=sql.Identifier(
+                f"{chunks_name}_collection_tsv_gin",
+            ),
+            chunks_collection_source_chunk_idx_name=sql.Identifier(
+                f"{chunks_name}_collection_source_chunk",
+            ),
+            # drop index требует схему в имени: search_path соединения миграций
+            # до схемы KB не расширяется
+            chunks_tsv_gin_qualified=sql.Identifier(
+                schema_name, f"{chunks_name}_tsv_gin"
+            ),
+            chunks_collection_idx_qualified=sql.Identifier(
+                schema_name, f"{chunks_name}_collection"
+            ),
+            chunks_collection_source_idx_qualified=sql.Identifier(
+                schema_name, f"{chunks_name}_collection_source"
             ),
         )
 

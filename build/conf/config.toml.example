@@ -92,7 +92,7 @@
     default               = true
     roles                 = ["*"]
     tools                 = ["*"]
-    openai                = "${openai.main}"
+    provider              = "${openai.main}"
     model                 = "${site.llm_model}"
     models                = ["${site.llm_model}"]
     settings              = ["*"]
@@ -118,13 +118,23 @@
         "web_fetch_page",
         "web_grep_page"
     ]
-    openai                = "${openai.main}"
+    provider              = "${openai.main}"
     model                 = "${site.llm_model}"
     models                = ["${site.llm_model}"]
     settings              = ["temperature", "top_p", "history_messages", "user_prompt"]
     system_prompt         = "Ты поисковый ассистент: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
     history_messages      = 30
     temperature           = 0
+    [profiles.search.flow]
+        kind          = "prefetch"
+        tools         = ["kb_vector_search", "kb_fts_search"]
+        [profiles.search.flow.rephraser]
+            provider      = "${openai.main}"
+            model         = "${site.llm_model}"
+            system_prompt = "Ты переформулируешь запрос пользователя в поисковые запросы по Confluence: сохраняй смысл и точные термины"
+            queries       = 3
+            temperature   = 0
+            max_tokens    = 2048
 
 
 [settings]
@@ -207,7 +217,7 @@
     [postgres.pool]
         timeout           = 5.0
         min_size          = 2
-        max_size          = 4
+        max_size          = 16
         max_waiting       = 0
         max_lifetime      = 12000
         max_idle          = 600

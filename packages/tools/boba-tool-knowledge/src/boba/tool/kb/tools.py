@@ -65,26 +65,23 @@ class KbRows:
             distance = -float(row["rank"])
 
         return SearchHit(
-            id=row["chunk_id"],
             distance=distance,
             metadata=cls._metadata(row),
-            snippet=row["snippet"] or "",
-            tags=tuple(row.get("tags") or ()),
+            format_content=row["format_content"] or "",
         )
 
     @staticmethod
     def _metadata(row: dict[str, Any]) -> dict[str, str]:
         raw = row.get("metadata") or {}
-        out: dict[str, str] = {}
-        if isinstance(raw, dict):
-            for key, value in raw.items():
-                if value is not None:
-                    out[str(key)] = str(value)
+        if not isinstance(raw, dict):
+            return {}
 
-        for key in ("source_id", "chunk_index", "content_hash"):
-            value = row.get(key)
-            if value is not None:
-                out.setdefault(key, str(value))
+        out: dict[str, str] = {}
+        for key, value in raw.items():
+            if value is None:
+                continue
+
+            out[str(key)] = str(value)
 
         return out
 
@@ -111,9 +108,14 @@ async def _select(
     cfg: KbToolConfig,
     statement: sql.Composed,
     params: dict[str, Any],
+    *,
+    iterative: bool = False,
 ) -> list[dict[str, Any]]:
     conn = await PayloadPostgres.connect_config(cfg.connection)
     async with conn, conn.cursor(row_factory=dict_row) as cur:
+        if iterative:
+            await cur.execute(sql.SQL(KbSearch.ITERATIVE_SCAN))
+
         await cur.execute(statement, params)
         return await cur.fetchall()
 
@@ -122,12 +124,11 @@ def _table_of(cfg: KbToolConfig) -> sql.Identifier:
     return sql.Identifier(cfg.tables.pg_schema, cfg.tables.chunks_table)
 
 
-async def _search(  # noqa: PLR0913
+async def _search(
     cfg: KbToolConfig,
     collection: type[CollectionSearch],
     query: str,
     top_k: int,
-    snippet_chars: int,
     *,
     vector: bool,
 ) -> tuple[str, ToolResult]:
@@ -140,7 +141,6 @@ async def _search(  # noqa: PLR0913
         params: dict[str, Any] = {
             "collections": [cfg.collection],
             "embedding": embedding,
-            "snippet_chars": snippet_chars,
             "top_k": top_k,
         }
     else:
@@ -151,11 +151,10 @@ async def _search(  # noqa: PLR0913
         params = {
             "collections": [cfg.collection],
             "query": query,
-            "snippet_chars": snippet_chars,
             "top_k": top_k,
         }
 
-    raw_rows = await _select(cfg, statement, params)
+    raw_rows = await _select(cfg, statement, params, iterative=vector)
 
     rows: list[dict[str, Any]] = []
     for raw in raw_rows:
@@ -176,21 +175,15 @@ async def kb_vector_search(
         Field(min_length=1, description=KbSearch.QUERY_DESC_VECTOR),
     ],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
-    snippet_chars: Annotated[
-        int,
-        Field(ge=1, description=KbSearch.SNIPPET_DESC),
-    ] = KbSearch.SNIPPET_DEFAULT,
     *,
     cfg: Annotated[KbToolConfig, InjectedToolArg],
 ) -> tuple[str, ToolResult]:
     """Семантический (vector) поиск по коллекции Confluence-страниц.
 
-    Возвращает таблицу hits с колонками id/distance/link/snippet и
-    метаданными, по релевантности.
+    Возвращает таблицу hits: distance, format_content и метаданные страницы,
+    по релевантности.
     """
-    return await _search(
-        cfg, ConfluenceCollection, query, top_k, snippet_chars, vector=True
-    )
+    return await _search(cfg, ConfluenceCollection, query, top_k, vector=True)
 
 
 @tool(response_format="content_and_artifact")
@@ -200,21 +193,15 @@ async def kb_fts_search(
         Field(min_length=1, description=KbSearch.QUERY_DESC_FTS),
     ],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
-    snippet_chars: Annotated[
-        int,
-        Field(ge=1, description=KbSearch.SNIPPET_DESC),
-    ] = KbSearch.SNIPPET_DEFAULT,
     *,
     cfg: Annotated[KbToolConfig, InjectedToolArg],
 ) -> tuple[str, ToolResult]:
     """Полнотекстовый (fts) поиск по коллекции Confluence-страниц.
 
-    Возвращает таблицу hits с колонками id/distance/link/snippet и
-    метаданными, по релевантности.
+    Возвращает таблицу hits: rank-расстояние, format_content и метаданные
+    страницы, по релевантности.
     """
-    return await _search(
-        cfg, ConfluenceCollection, query, top_k, snippet_chars, vector=False
-    )
+    return await _search(cfg, ConfluenceCollection, query, top_k, vector=False)
 
 
 EXPECTED: Mapping[type[Exception], KbErrorKind] = {
