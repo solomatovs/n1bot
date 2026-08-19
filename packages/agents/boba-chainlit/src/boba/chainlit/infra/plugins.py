@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
@@ -49,11 +49,19 @@ from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.tool.web.tools import TOOLS as WEB_TOOLS
 from boba.toolkit.entry import ToolLike, ToolMain
+from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
 
-__all__ = ["PluginMeta", "ToolPlugin", "ToolRegistry", "load_tools", "stream_source"]
+__all__ = [
+    "PluginMeta",
+    "ToolPlugin",
+    "ToolRegistry",
+    "as_structured_tool",
+    "load_tools",
+    "stream_source",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +102,7 @@ def _build_sandbox_tools(
     cfg: BashToolConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return [build_bash_tool(cfg, launchers)]
+    return [as_structured_tool(build_bash_tool(cfg, launchers))]
 
 
 def _build_send_file_tools(
@@ -128,18 +136,38 @@ def _build_stream_logs_tools(
 def _module_toolset(tools: Sequence[ToolLike]) -> tuple[BaseTool, ...]:
     """TOOLS модуля инструментов -> langchain-инструменты для реестра.
 
-    Статически TOOLS — ToolLike (toolkit не знает langchain); обвязкам
-    загрузчика нужен BaseTool — несоответствие ловится на старте.
+    Статически TOOLS — ToolLike (toolkit не знает langchain): модули
+    объявляются фасадом PayloadTool и langchain не импортируют. Мост в
+    BaseTool делается здесь, на стороне приложения.
     """
     checked: list[BaseTool] = []
     for tool in tools:
-        if not isinstance(tool, BaseTool):
-            msg = f"module tool {tool!r} is not a langchain BaseTool"
-            raise TypeError(msg)
-
-        checked.append(tool)
+        checked.append(as_structured_tool(tool))
 
     return tuple(checked)
+
+
+def as_structured_tool(tool: ToolLike) -> BaseTool:
+    """PayloadTool фасада -> StructuredTool; langchain-инструмент — как есть.
+
+    Injected-параметры остаются в args_schema: их снимает InjectedConfig
+    после постановки обёртки запуска, LLM усечённую схему и увидит.
+    """
+    if isinstance(tool, BaseTool):
+        return tool
+
+    if not isinstance(tool, PayloadTool):
+        msg = f"module tool {tool!r} is neither PayloadTool nor BaseTool"
+        raise TypeError(msg)
+
+    return StructuredTool(
+        name=tool.name,
+        description=tool.description,
+        args_schema=tool.args_schema,
+        func=tool.func,
+        coroutine=tool.coroutine,
+        response_format=PayloadTool.RESPONSE_FORMAT,
+    )
 
 
 def stream_source(tool: str, call_id: str) -> CallStream | None:

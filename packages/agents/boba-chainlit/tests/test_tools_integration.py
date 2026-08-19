@@ -15,10 +15,10 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from langchain_core.tools import BaseTool
 from psycopg import sql
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
+from boba.chainlit.infra.plugins import as_structured_tool
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox import (
@@ -31,6 +31,7 @@ from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.calls import ScriptCall
+from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import LauncherFactory, PayloadFailureError, ToolLauncher
 from boba.toolkit.result import (
     AffectedSqlResult,
@@ -160,7 +161,7 @@ def bash_tool(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.bash", BashToolConfig)
     launchers = ToolSetup.launchers(raw_config, "tool.bash")
 
-    return build_bash_tool(cfg, launchers)
+    return as_structured_tool(build_bash_tool(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
@@ -175,8 +176,8 @@ def doc_tools(raw_config):
     sandbox = bind(raw_config, path="tool.doc.sandbox", model=SandboxToolConfig)
     launcher = SandboxCaller("doc", sandbox.effective(), ToolSetup.path_vars)
 
-    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
-    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
@@ -198,8 +199,9 @@ def chart_tool(raw_config):
     sandbox = bind(raw_config, path="tool.chart.sandbox", model=SandboxToolConfig)
     launcher = SandboxCaller("chart", sandbox.effective(), ToolSetup.path_vars)
 
-    ToolProcessWrap.guard_all(module.TOOLS, launcher)
-    return module.visualize
+    visualize = as_structured_tool(module.visualize)
+    ToolProcessWrap.guard_all(ToolMain.toolset(visualize), launcher)
+    return visualize
 
 
 @pytest.fixture(scope="module")
@@ -214,8 +216,8 @@ def web_tools(raw_config):
     sandbox = bind(raw_config, path="tool.web.sandbox", model=SandboxToolConfig)
     launcher = SandboxCaller("web", sandbox.effective(), ToolSetup.path_vars)
 
-    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
-    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
@@ -249,8 +251,8 @@ def confluence_tools(raw_config):
     sandbox = bind(raw_config, path="tool.confluence.sandbox", model=SandboxToolConfig)
     launcher = SandboxCaller("confluence", sandbox.effective(), ToolSetup.path_vars)
 
-    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
-    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
@@ -272,8 +274,8 @@ def pg_tools(raw_config):
     sandbox = bind(raw_config, path="tool.pg.sandbox", model=SandboxToolConfig)
     launcher = SandboxCaller("pg", sandbox.effective(), ToolSetup.path_vars)
 
-    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
-    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
@@ -346,8 +348,8 @@ def ingest_tools(raw_config, kb_collection: str):
     sandbox = bind(raw_config, path="tool.ingest.sandbox", model=SandboxToolConfig)
     launcher = SandboxCaller("ingest", sandbox.effective(), ToolSetup.path_vars)
 
-    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
-    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
@@ -370,8 +372,8 @@ def kb_tools(raw_config, kb_collection: str):
     sandbox = bind(raw_config, path="tool.kb.sandbox", model=SandboxToolConfig)
     launcher = SandboxCaller("kb", sandbox.effective(), ToolSetup.path_vars)
 
-    functions = [tool for tool in module.TOOLS if isinstance(tool, BaseTool)]
-    ToolProcessWrap.guard_all(module.TOOLS, launcher)
+    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
@@ -403,8 +405,8 @@ async def workspace_pdf(bash_tool, workspace_image) -> str:
         command=f"base64 -d > {WORKSPACE_PDF}; test -s {WORKSPACE_PDF}",
         stdin=payload,
     )
-    if result.payload["exit_code"] != 0:
-        raise AssertionError('result.payload["exit_code"] == 0')
+    if result.exit_code != 0:
+        raise AssertionError("result.exit_code == 0")
     return WORKSPACE_PDF
 
 
@@ -852,10 +854,7 @@ class TestPgTools:
         result = await Call.ok(
             pg_tools["pg_copy"],
             connection_name="main",
-            sql=(
-                "COPY (select repeat('ё', 4000) as long) "
-                "TO STDOUT WITH (FORMAT CSV)"
-            ),
+            sql=("COPY (select repeat('ё', 4000) as long) TO STDOUT WITH (FORMAT CSV)"),
         )
 
         if "�" in result.text:

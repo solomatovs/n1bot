@@ -483,12 +483,13 @@ class FuseMounter:
         if fakeroot:
             argv = [fuse2fs, "-f", "-o", self.FAKEROOT_OPTIONS, image, mnt]
 
-        # stdout лаунчера несёт данные операции: предупреждения fuse2fs — в stderr
+        # stdout fuse2fs — информационный шум («Mounting read-only.»); в stderr
+        # он смешивался бы с выводом тела. Ошибки fuse2fs идут его stderr'ом.
         daemon = subprocess.Popen(  # noqa: S603
             argv,
             shell=False,
             stdin=subprocess.DEVNULL,
-            stdout=sys.stderr,
+            stdout=subprocess.DEVNULL,
             pass_fds=self._pass_fds,
             preexec_fn=self.set_pdeathsig,  # noqa: PLW1509
         )

@@ -18,7 +18,6 @@ from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar, Final
 
 import psycopg
-from langchain_core.tools import InjectedToolArg, tool
 from psycopg.rows import dict_row
 from pydantic import Field
 
@@ -26,6 +25,7 @@ from boba.db.postgres import PayloadPostgres, PostgresConfig, PostgresError
 from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
 from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     AffectedSqlResult,
     MultiResult,
@@ -139,15 +139,15 @@ def _affected(cur: psycopg.AsyncCursor[Any]) -> AffectedSqlResult:
     return AffectedSqlResult(affected_rows=rowcount, status=cur.statusmessage)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def pg_list_targets(
-    cfg: Annotated[PgToolConfig, InjectedToolArg],
+    cfg: Annotated[PgToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Список доступных значений connection_name для postgres-инструментов."""
     return pack_result(cfg.targets_table())
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def pg_list_tables(
     connection_name: ConnectionName,
     pg_schema: Annotated[
@@ -170,7 +170,7 @@ async def pg_list_tables(
         ),
     ] = None,
     *,
-    cfg: Annotated[PgToolConfig, InjectedToolArg],
+    cfg: Annotated[PgToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Таблицы и view подключения из pg_catalog.
 
@@ -185,7 +185,7 @@ async def pg_list_tables(
     return await _query_rows(connection, query, cfg)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def pg_describe_table(
     connection_name: ConnectionName,
     table: Annotated[
@@ -202,7 +202,7 @@ async def pg_describe_table(
         ),
     ] = None,
     *,
-    cfg: Annotated[PgToolConfig, InjectedToolArg],
+    cfg: Annotated[PgToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Схема таблицы из pg_catalog: колонки, нативные типы, ключи.
 
@@ -215,7 +215,7 @@ async def pg_describe_table(
     return await _query_rows(connection, query, cfg)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def pg_query(
     connection_name: ConnectionName,
     sql: Annotated[
@@ -232,7 +232,7 @@ async def pg_query(
             ),
         ),
     ],
-    cfg: Annotated[PgToolConfig, InjectedToolArg],
+    cfg: Annotated[PgToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
     connection = cfg.resolve(connection_name)
@@ -240,7 +240,7 @@ async def pg_query(
     return await _query_rows(connection, PgCatalogQuery(text=sql, params=()), cfg)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def pg_copy(
     connection_name: ConnectionName,
     sql: Annotated[
@@ -256,7 +256,7 @@ async def pg_copy(
             ),
         ),
     ],
-    cfg: Annotated[PgToolConfig, InjectedToolArg],
+    cfg: Annotated[PgToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Выгрузить данные стейтментом COPY ... TO STDOUT как есть."""
     connection = cfg.resolve(connection_name)

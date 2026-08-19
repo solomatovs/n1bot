@@ -24,6 +24,7 @@ from boba.cancellation import (
 )
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
+from boba.chainlit.infra.plugins import as_structured_tool
 from boba.sandbox import SandboxCaller, SandboxProfile, SandboxToolConfig
 from boba.toolkit.result import ErrorResult
 from boba.transport.http import CancellableHttpTransport, HttpProfile, HttpRequest
@@ -296,9 +297,11 @@ class TestSubprocessAbort:
 
     def test_cancel_kills_running_process(self) -> None:
         profile = _sandbox_config().effective()
-        tool_ = build_bash_tool(
-            self.LIMITS, lambda tool: SandboxCaller(tool, profile, dict)
-        )
+
+        def launcher(tool: str) -> SandboxCaller:
+            return SandboxCaller(tool, profile, dict)
+
+        tool_ = as_structured_tool(build_bash_tool(self.LIMITS, launcher))
         with turn_cancellation() as c:
             ctx = copy_context()
             with ThreadPoolExecutor(1) as pool:

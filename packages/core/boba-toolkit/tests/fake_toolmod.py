@@ -12,10 +12,10 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, ClassVar, Final
 
-from langchain_core.tools import InjectedToolArg, tool
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TextResult, ToolResult, render_for_llm
 
 
@@ -39,11 +39,11 @@ class FakeErrorKind(StrEnum):
     UNAVAILABLE = "fake_unavailable"
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def fake_echo(
     text: Annotated[str, Field(min_length=1, description="Что вернуть")],
     repeat: Annotated[int, Field(ge=1, description="Сколько раз")],
-    cfg: Annotated[FakeConfig, InjectedToolArg],
+    cfg: Annotated[FakeConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Повторяет текст, приправив секретом из конфига."""
     if text == "boom":

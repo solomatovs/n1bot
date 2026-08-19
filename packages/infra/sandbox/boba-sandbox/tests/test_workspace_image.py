@@ -171,18 +171,15 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
 
 
 def _invoke(tool, command: str, stdin: str = "") -> ShellResult:
-    msg = tool.invoke(
-        {
-            "args": {"command": command, "stdin": stdin},
-            "id": "call-bash",
-            "name": "bash",
-            "type": "tool_call",
-        }
-    )
-    if not isinstance(msg.artifact, ShellResult):
-        raise AssertionError("isinstance(msg.artifact, ShellResult)")
+    body = tool.func
+    if body is None:
+        raise AssertionError("bash tool has no sync body")
 
-    return msg.artifact
+    _content, artifact = body(command=command, stdin=stdin)
+    if not isinstance(artifact, ShellResult):
+        raise AssertionError("isinstance(artifact, ShellResult)")
+
+    return artifact
 
 
 def _storage(
@@ -788,7 +785,7 @@ class TestLiveImage:
                 futures.append(pool.submit(_invoke, tool, f"echo {i} > par-{i}.txt"))
         for future in futures:
             if future.result().exit_code != 0:
-                raise AssertionError('future.result().exit_code == 0')
+                raise AssertionError("future.result().exit_code == 0")
         both = _invoke(tool, "cat par-0.txt par-1.txt")
         if both.stdout.split() != ["0", "1"]:
             raise AssertionError('both.stdout.split() == ["0", "1"]')
@@ -845,7 +842,7 @@ class TestLiveImage:
         tool = _bash(tmp_path, template, max_memory_bytes=64 * 1024 * 1024)
         payload = _invoke(tool, "ulimit -v")
         if payload.stdout.strip() != str(64 * 1024):
-            raise AssertionError('payload.stdout.strip() == str(64 * 1024)')
+            raise AssertionError("payload.stdout.strip() == str(64 * 1024)")
 
     def test_cpu_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_cpu_sec=5)
@@ -866,7 +863,7 @@ class TestLiveImage:
         payload = _invoke(tool, "ulimit -f")
         # bash показывает RLIMIT_FSIZE в блоках по 1024 байта
         if payload.stdout.strip() != str(8 * 1024 * 1024 // 1024):
-            raise AssertionError('payload.stdout.strip() == str(8 * 1024 * 1024 //…')
+            raise AssertionError("payload.stdout.strip() == str(8 * 1024 * 1024 //…")
 
     def test_open_files_limit_visible(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, max_open_files=128)

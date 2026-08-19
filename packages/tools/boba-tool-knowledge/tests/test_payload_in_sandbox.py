@@ -148,7 +148,7 @@ class TestDocumentsInSandbox:
 
     def test_small_address_space_is_reported(self, docs: Path) -> None:
         """Заниженный RLIMIT_AS ломает pdfium — ошибка должна это объяснить."""
-        caller = _caller(docs, max_memory_bytes=1024 * 1024 * 1024)
+        caller = _caller(docs, max_memory_bytes=512 * 1024 * 1024)
 
         with pytest.raises(SandboxPayloadError) as failure:
             _run_doc(

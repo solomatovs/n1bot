@@ -212,11 +212,18 @@ RUN set -eu                                                                 \
 FROM base AS boba-wheels
 
 COPY pyproject.toml  /tmp/boba/pyproject.toml
+COPY uv.lock         /tmp/boba/uv.lock
 COPY packages/       /tmp/boba/packages/
 
+# constraints из uv.lock: обе стадии установки получают версии хоста,
+# без него uv ставил бы свежайшие и образ расходился бы с приложением
 RUN set -eu         \
     && cd /tmp/boba \
-    && uv build --all-packages --wheel --no-sources -o /tmp/wheels
+    && uv build --all-packages --wheel --no-sources -o /tmp/wheels \
+    && uv export --frozen --all-packages --all-extras              \
+        --no-emit-workspace --no-hashes                            \
+        -o /tmp/wheels/constraints.txt                             \
+    && wc -l /tmp/wheels/constraints.txt
 
 # boba site-packages
 FROM base AS app-site
@@ -227,6 +234,7 @@ COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
 # сюда не попадают — они объявлены как extra payload у tool-пакетов
 RUN set -eu                                                                   \
     && uv pip install --python "$(command -v python3)" --target /opt/app-site \
+        --constraint /tmp/wheels/constraints.txt                              \
         --find-links=/tmp/wheels boba-chainlit                                \
     && rm -rf /tmp/wheels
 
@@ -262,6 +270,7 @@ COPY build/src/names-sandbox.txt      /tmp/names-sandbox.txt
 RUN set -eu                                                               \
     && cat /tmp/names-sandbox.txt                                         \
     && uv pip install --python "$(command -v python3)" --target /opt/site \
+        --constraint /tmp/wheels/constraints.txt                          \
         --find-links=/tmp/wheels $(cat /tmp/names-sandbox.txt)            \
     && rm -rf /tmp/wheels
 

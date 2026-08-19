@@ -17,13 +17,13 @@ from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, ClassVar, Final, cast
 
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
-from langchain_core.tools import InjectedToolArg, tool
 from pydantic import Field
 
 from boba.db.clickhouse import ClickHouseConfig, ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     ResultTooLargeError,
     ToolResult,
@@ -172,15 +172,15 @@ async def _query_rows(
     return pack_result(budget.table())
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def ch_list_targets(
-    cfg: Annotated[ChToolConfig, InjectedToolArg],
+    cfg: Annotated[ChToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Список доступных значений connection_name для ClickHouse-инструментов."""
     return pack_result(cfg.targets_table())
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def ch_list_tables(
     connection_name: ConnectionName,
     ch_database: Annotated[
@@ -194,7 +194,7 @@ async def ch_list_tables(
         ),
     ] = None,
     *,
-    cfg: Annotated[ChToolConfig, InjectedToolArg],
+    cfg: Annotated[ChToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Список таблиц/view подключения. Колонки: database, table, engine."""
     connection = cfg.resolve(connection_name)
@@ -202,7 +202,7 @@ async def ch_list_tables(
     return await _query_rows(connection, ChCatalog.tables(ch_database), cfg)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def ch_describe_table(
     connection_name: ConnectionName,
     table: Annotated[
@@ -216,7 +216,7 @@ async def ch_describe_table(
         ),
     ] = None,
     *,
-    cfg: Annotated[ChToolConfig, InjectedToolArg],
+    cfg: Annotated[ChToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Схема таблицы: колонки, типы, default-выражения, комментарии."""
     connection = cfg.resolve(connection_name)
@@ -224,7 +224,7 @@ async def ch_describe_table(
     return await _query_rows(connection, ChCatalog.columns(table, ch_database), cfg)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def ch_query(
     sql: Annotated[
         str,
@@ -237,7 +237,7 @@ async def ch_query(
         ),
     ],
     connection_name: ConnectionName,
-    cfg: Annotated[ChToolConfig, InjectedToolArg],
+    cfg: Annotated[ChToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Выполнить SQL на подключении connection_name."""
     connection = cfg.resolve(connection_name)

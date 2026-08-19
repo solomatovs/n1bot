@@ -214,18 +214,15 @@ def _tool(profile: SandboxProfile):
 
 
 def _invoke(tool, command: str, stdin: str = "") -> ShellResult:
-    msg = tool.invoke(
-        {
-            "args": {"command": command, "stdin": stdin},
-            "id": "call-bash",
-            "name": "bash",
-            "type": "tool_call",
-        }
-    )
-    if not isinstance(msg.artifact, ShellResult):
-        raise AssertionError("isinstance(msg.artifact, ShellResult)")
+    body = tool.func
+    if body is None:
+        raise AssertionError("bash tool has no sync body")
 
-    return msg.artifact
+    _content, artifact = body(command=command, stdin=stdin)
+    if not isinstance(artifact, ShellResult):
+        raise AssertionError("isinstance(artifact, ShellResult)")
+
+    return artifact
 
 
 @needs_sandbox
@@ -241,7 +238,7 @@ class TestDiagnosticAppearsLive:
         tool = _tool(_profile(max_open_files=10))
         payload = _invoke(tool, "python3 -", stdin=code)
         if payload.exit_code == 0:
-            raise AssertionError('payload.exit_code != 0')
+            raise AssertionError("payload.exit_code != 0")
         if "max_open_files=10" not in payload.diagnostic:
             raise AssertionError('"max_open_files=10" in payload.diagnostic')
 
@@ -256,7 +253,7 @@ class TestDiagnosticAppearsLive:
         tool = _tool(_profile(max_file_size_bytes=1024 * 1024, tmpfs=("/tmp:64M",)))
         payload = _invoke(tool, "dd if=/dev/zero of=/tmp/big bs=64k count=64")
         if payload.exit_code == 0:
-            raise AssertionError('payload.exit_code != 0')
+            raise AssertionError("payload.exit_code != 0")
         if "max_file_size_bytes=1048576" not in payload.diagnostic:
             raise AssertionError('"max_file_size_bytes=1048576" in payload.diagnostic')
 
@@ -265,7 +262,7 @@ class TestDiagnosticAppearsLive:
         tool = _tool(_profile(max_memory_bytes=64 * 1024 * 1024))
         payload = _invoke(tool, "python3 -", stdin=code)
         if payload.exit_code == 0:
-            raise AssertionError('payload.exit_code != 0')
+            raise AssertionError("payload.exit_code != 0")
         if "max_memory_bytes=67108864" not in payload.diagnostic:
             raise AssertionError('"max_memory_bytes=67108864" in payload.diagnostic')
 
@@ -273,7 +270,7 @@ class TestDiagnosticAppearsLive:
         tool = _tool(_profile(timeout_sec=1))
         payload = _invoke(tool, "sleep 10")
         if payload.timed_out is not True:
-            raise AssertionError('payload.timed_out is True')
+            raise AssertionError("payload.timed_out is True")
         if "timeout_sec=1" not in payload.diagnostic:
             raise AssertionError('"timeout_sec=1" in payload.diagnostic')
 
@@ -282,7 +279,7 @@ class TestDiagnosticAppearsLive:
         tool = _tool(_profile(network=False))
         payload = _invoke(tool, "python3 -", stdin=code)
         if payload.exit_code == 0:
-            raise AssertionError('payload.exit_code != 0')
+            raise AssertionError("payload.exit_code != 0")
         if "network=false" not in payload.diagnostic:
             raise AssertionError('"network=false" in payload.diagnostic')
         if "not at fault" not in payload.diagnostic:
@@ -291,6 +288,6 @@ class TestDiagnosticAppearsLive:
     def test_successful_command_has_empty_diagnostic(self) -> None:
         payload = _invoke(_tool(_profile()), "echo ok")
         if payload.exit_code != 0:
-            raise AssertionError('payload.exit_code == 0')
+            raise AssertionError("payload.exit_code == 0")
         if payload.diagnostic != "":
             raise AssertionError('payload.diagnostic == ""')
