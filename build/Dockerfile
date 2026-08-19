@@ -300,6 +300,10 @@ RUN set -eu                                                           \
     && cd /tree/usr/share/tessdata                                    \
     && ln -sf eng.traineddata rus+eng.traineddata                     \
     && ln -sf rus.traineddata eng+rus.traineddata                     \
+    && PYTHONHOME=/tree/usr/local /tree/usr/local/bin/python3         \
+        -m compileall -q -j 0 -s /tree -p /                           \
+        -x '/(test|tests|lib2to3|idle_test)/'                         \
+        /tree/usr/local/lib/python${PYTHON_VERSION} /tree/usr/src     \
     && cd /tmp/e2fs-src                                               \
     && used_mb=$(du -sm /tree | cut -f1)                              \
     && size_mb=$(( used_mb + used_mb / 5 + 512 ))                     \

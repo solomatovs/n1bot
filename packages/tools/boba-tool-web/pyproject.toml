@@ -12,7 +12,8 @@ dependencies = [
     "boba-toolkit==0.0.13.dev2",
     "boba-transport-http==0.0.13.dev2",
     "httpx",
-    "langchain-core",
+    "langchain-core>=1.4,<1.5",
+    "langsmith>=0.8,<0.9",
     "pydantic>=2.10,<2.11",
 ]
 

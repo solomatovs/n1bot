@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from boba.db.pgvector import PostgresStoreConfig
+from boba.db.pgvector.config import PostgresStoreConfig
 from boba.llm.embedding import EmbeddingConfig
 
 __all__ = [

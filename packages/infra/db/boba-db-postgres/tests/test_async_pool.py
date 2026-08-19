@@ -12,6 +12,7 @@ from boba.db.postgres import (
     AsyncPostgresPool,
     PostgresConfig,
     PostgresPoolClosedError,
+    PostgresPoolLoopError,
 )
 
 
@@ -102,3 +103,22 @@ def test_connection_after_close_raises():
     asyncio.run(pool.close())
     with pytest.raises(PostgresPoolClosedError):
         asyncio.run(pool.connection().__aenter__())
+
+
+def test_connection_from_another_loop_raises():
+    # каждый asyncio.run — свой loop; пул открыт в первом, обращение идёт из второго
+    pool = AsyncPostgresPool(_cfg())
+    asyncio.run(pool.open())
+    with pytest.raises(PostgresPoolLoopError):
+        asyncio.run(pool.connection().__aenter__())
+
+
+def test_connection_in_same_loop_passes():
+    pool = AsyncPostgresPool(_cfg())
+
+    async def open_and_use() -> None:
+        await pool.open()
+        async with pool.connection():
+            pass
+
+    asyncio.run(open_and_use())
