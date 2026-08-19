@@ -6,11 +6,14 @@ import asyncio
 import logging
 
 import pytest
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import StructuredTool, tool
+from typing import Any
 
+from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.run_log import StreamSource, ToolRunLogger
 from boba.sandbox.process_runner import RunResult
 from boba.sandbox.runner import SandboxRunner
+from boba.toolkit.result import TextResult, ToolArtifact, pack_result
 from boba.toolkit.stream import ToolCallContext
 
 LOGGER_NAME = "boba.chainlit.agent.toolrun.run_log"
@@ -163,3 +166,46 @@ class TestSandboxFailureLog:
             raise AssertionError("len(tail) == SandboxRunner.FAIL_TAIL_CHARS + 1")
         if not (tail.startswith("…")):
             raise AssertionError('tail.startswith("…")')
+
+
+class TestElapsedInResult:
+    """Обвязка запуска кладёт время вызова в артефакт, а не только в лог."""
+
+    @pytest.mark.anyio
+    async def test_elapsed_is_recorded(self) -> None:
+        @tool(response_format="content_and_artifact")
+        async def slow_probe(query: str) -> tuple[str, Any]:
+            """Инструмент, который заметно работает."""
+            await asyncio.sleep(0.05)
+            return pack_result(TextResult(text=f"found {query}"))
+
+        ToolCallIdField.attach_all([slow_probe])
+        ToolRunLogger.guard_all([slow_probe], NO_STREAMS)
+
+        message = await slow_probe.ainvoke(
+            {"name": "slow_probe", "args": {"query": "x"}, "id": "c1", "type": "tool_call"}
+        )
+        result = ToolArtifact.revive(message.artifact)
+
+        if not isinstance(result, TextResult):
+            raise AssertionError(f"артефакт разобран: {result}")
+
+        if result.elapsed_ms < 50:
+            raise AssertionError(f"время вызова не проставлено: {result.elapsed_ms}")
+
+    @pytest.mark.anyio
+    async def test_foreign_return_is_untouched(self) -> None:
+        """Инструмент вернул не пару content/artifact — обвязка не вмешивается."""
+        @tool
+        async def plain_probe(query: str) -> str:
+            """Инструмент со свободным ответом."""
+            return f"plain {query}"
+
+        ToolCallIdField.attach_all([plain_probe])
+        ToolRunLogger.guard_all([plain_probe], NO_STREAMS)
+
+        message = await plain_probe.ainvoke(
+            {"name": "plain_probe", "args": {"query": "x"}, "id": "c2", "type": "tool_call"}
+        )
+        if message.content != "plain x":
+            raise AssertionError(message.content)
