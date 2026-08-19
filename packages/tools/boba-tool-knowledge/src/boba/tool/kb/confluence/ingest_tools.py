@@ -22,7 +22,6 @@ from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
 import httpx
-from langchain_core.tools import InjectedToolArg, tool
 from pydantic import Field
 
 from boba.db.postgres import PostgresError
@@ -51,6 +50,7 @@ from boba.tool.kb.confluence.request_sources import (
 from boba.tool.kb.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import LLMStringList, SecretRevealing
@@ -208,7 +208,7 @@ class IngestRun:
         return ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, параметры независимы
     page_ids: Annotated[
         LLMStringList,
@@ -247,7 +247,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
     *,
-    cfg: Annotated[IngestToolConfig, InjectedToolArg],
+    cfg: Annotated[IngestToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Индексирует явный список страниц Confluence по page_id."""
     run_cfg = cfg.with_parser(
@@ -277,7 +277,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
     return pack_result(table)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, параметры независимы
     cql: Annotated[
         str,
@@ -301,7 +301,7 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
     *,
-    cfg: Annotated[IngestToolConfig, InjectedToolArg],
+    cfg: Annotated[IngestToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Индексирует страницы Confluence, найденные CQL-запросом."""
     run_cfg = cfg.with_parser(
@@ -330,7 +330,7 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
     return pack_result(table)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, параметры независимы
     space_keys: Annotated[
         LLMStringList,
@@ -356,7 +356,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
     *,
-    cfg: Annotated[IngestToolConfig, InjectedToolArg],
+    cfg: Annotated[IngestToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Индексирует спейсы Confluence целиком."""
     run_cfg = cfg.with_parser(
@@ -386,7 +386,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
     return pack_result(table)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, параметры независимы
     page_id: Annotated[
         str,
@@ -404,7 +404,7 @@ async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, парам
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
     *,
-    cfg: Annotated[IngestToolConfig, InjectedToolArg],
+    cfg: Annotated[IngestToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Читает вложение страницы Confluence и возвращает его текст."""
     run_cfg = cfg.with_parser(

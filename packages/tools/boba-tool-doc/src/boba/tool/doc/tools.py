@@ -15,12 +15,12 @@ from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
-from langchain_core.tools import InjectedToolArg, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.text.document import LiteParseError
 from boba.tool.doc.config import DocToolsConfig
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 
 _PATH_DESCRIPTION = (
@@ -151,7 +151,7 @@ class PageMatchRows:
         )
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def read_document(  # noqa: PLR0913 — фасад LLM, параметры независимы
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     pages: Annotated[
@@ -173,7 +173,7 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
     *,
-    cfg: Annotated[DocToolSection, InjectedToolArg],
+    cfg: Annotated[DocToolSection, Injected],
 ) -> tuple[str, ToolResult]:
     """Прочитать текст страниц документа из workspace; основной способ чтения."""
     # liteparse тяжёлый и нативный: импорт в теле, разбор в потоке (GIL)
@@ -202,7 +202,7 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
     return pack_result(artifact)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def document_outline(
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
@@ -213,7 +213,7 @@ async def document_outline(
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
     *,
-    cfg: Annotated[DocToolSection, InjectedToolArg],
+    cfg: Annotated[DocToolSection, Injected],
 ) -> tuple[str, ToolResult]:
     """Карта документа по страницам: дешёвый обзор перед read_document."""
     from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
@@ -243,7 +243,7 @@ async def document_outline(
     return pack_result(table)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def search_document(  # noqa: PLR0913 — фасад LLM, параметры независимы
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     query: Annotated[
@@ -257,7 +257,7 @@ async def search_document(  # noqa: PLR0913 — фасад LLM, параметр
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
     *,
-    cfg: Annotated[DocToolSection, InjectedToolArg],
+    cfg: Annotated[DocToolSection, Injected],
 ) -> tuple[str, ToolResult]:
     """Найти фразу в документе: страница, координаты совпадения и сниппет."""
     from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415

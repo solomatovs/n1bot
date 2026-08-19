@@ -175,9 +175,10 @@ class ToolArgv:
     """MAX_ARG_STRLEN минус завершающий нуль; ровно 131072 даёт E2BIG."""
 
     INJECTED_MARKERS: ClassVar[frozenset[str]] = frozenset(
-        {"InjectedToolArg", "InjectedToolCallId"}
+        {"Injected", "InjectedToolArg", "InjectedToolCallId"}
     )
-    """Имена langchain-метадаты по MRO: toolkit её типов не импортирует."""
+    """Имена injected-маркеров по MRO: Injected — свой (facade), остальные —
+    langchain-метадата; её типов toolkit не импортирует."""
 
     @classmethod
     def render(

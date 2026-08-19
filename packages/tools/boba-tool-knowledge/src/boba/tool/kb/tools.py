@@ -20,7 +20,6 @@ from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
 import psycopg
-from langchain_core.tools import InjectedToolArg, tool
 from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import Field
@@ -35,6 +34,7 @@ from boba.tool.kb.search import (
     KbSearch,
 )
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult, ToolResult, pack_result
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
@@ -182,7 +182,7 @@ async def _search(
     return pack_result(table)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def kb_vector_search(
     query: Annotated[
         str,
@@ -190,7 +190,7 @@ async def kb_vector_search(
     ],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
     *,
-    cfg: Annotated[KbToolConfig, InjectedToolArg],
+    cfg: Annotated[KbToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Семантический (vector) поиск по коллекции Confluence-страниц.
 
@@ -200,7 +200,7 @@ async def kb_vector_search(
     return await _search(cfg, ConfluenceCollection, query, top_k, vector=True)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def kb_fts_search(
     query: Annotated[
         str,
@@ -208,7 +208,7 @@ async def kb_fts_search(
     ],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
     *,
-    cfg: Annotated[KbToolConfig, InjectedToolArg],
+    cfg: Annotated[KbToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Полнотекстовый (fts) поиск по коллекции Confluence-страниц.
 

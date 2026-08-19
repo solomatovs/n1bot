@@ -5,10 +5,10 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import Annotated
 
-from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.calls import ScriptCall, ToolCallViews
+from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.launcher import ClippedText, LauncherFactory, LaunchOutcome
 from boba.toolkit.result import ShellResult, ToolResult, pack_result
 
@@ -59,11 +59,11 @@ class BashOutput:
         )
 
 
-def build_bash_tool(cfg: BashToolConfig, launchers: LauncherFactory) -> BaseTool:
+def build_bash_tool(cfg: BashToolConfig, launchers: LauncherFactory) -> PayloadTool:
     caller = launchers("bash")
     ToolCallViews.register("bash", ScriptCall(arg="command", lang="bash"))
 
-    @tool(response_format="content_and_artifact")
+    @tool
     def bash(
         command: Annotated[
             str,

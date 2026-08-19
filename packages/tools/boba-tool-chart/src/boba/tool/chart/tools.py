@@ -16,11 +16,11 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Any, Final
 
-from langchain_core.tools import tool
 from pydantic import Field
 
 from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import tool
 from boba.toolkit.result import ChartResult, ToolResult, pack_result
 
 
@@ -74,7 +74,7 @@ class FigureSpec:
         return str(raw)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def visualize(
     spec: Annotated[
         str,

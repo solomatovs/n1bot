@@ -17,12 +17,12 @@ from enum import StrEnum
 from typing import Annotated, ClassVar, Final
 
 import httpx
-from langchain_core.tools import InjectedToolArg, tool
 from pydantic import Field
 
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.web.connection import UnknownHostError, WebConnection
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     JsonResult,
     ResultTooLargeError,
@@ -105,7 +105,7 @@ class WebPage:
         return text
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def web_fetch_page(
     url: Annotated[str, Field(min_length=1, description="URL для скачивания")],
     as_markdown: Annotated[
@@ -120,7 +120,7 @@ async def web_fetch_page(
         int,
         Field(ge=1, description="Сколько строк вернуть начиная с line_offset"),
     ],
-    cfg: Annotated[WebGrepConfig, InjectedToolArg],
+    cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Скачивает URL и возвращает окно строк; total_lines — для пагинации."""
     profile = cfg.resolve_profile(url)
@@ -143,7 +143,7 @@ async def web_fetch_page(
     return pack_result(artifact)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def web_grep_page(  # noqa: PLR0913
     url: Annotated[
         str,
@@ -174,7 +174,7 @@ async def web_grep_page(  # noqa: PLR0913
         Field(description="Литеральный поиск без regex. По умолчанию false."),
     ] = False,
     *,
-    cfg: Annotated[WebGrepConfig, InjectedToolArg],
+    cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Найти совпадения pattern в содержимом страницы."""
     profile = cfg.resolve_profile(url)

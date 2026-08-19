@@ -3,6 +3,7 @@
 !packages
 !build
 !pyproject.toml
+!uv.lock
 
 packages/**/__pycache__
 packages/**/*.egg-info

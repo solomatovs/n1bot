@@ -17,13 +17,13 @@ from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final, Literal
 
 import httpx
-from langchain_core.tools import InjectedToolArg, tool
 from pydantic import ConfigDict, Field
 
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.tool.kb.confluence.request_sources import ConfluenceRest
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 from boba.toolkit.types import LLMStringList, SecretRevealing
 from boba.transport.http import HttpProfile
@@ -168,7 +168,7 @@ class CqlSearch:
         }
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def confluence_fetch(
     page_id: Annotated[
         str,
@@ -190,7 +190,7 @@ async def confluence_fetch(
         ),
     ] = True,
     *,
-    cfg: Annotated[ConfluenceToolsConfig, InjectedToolArg],
+    cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Скачивает одну Confluence-страницу и возвращает её контент."""
     text = await ConfluencePageText.of_page(cfg, page_id, as_markdown=as_markdown)
@@ -199,7 +199,7 @@ async def confluence_fetch(
     return pack_result(artifact)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def confluence_grep(  # noqa: PLR0913 — независимые флаги grep'а
     page_id: Annotated[
         str,
@@ -235,7 +235,7 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
         Field(description="Литеральный поиск без regex. По умолчанию false."),
     ] = False,
     *,
-    cfg: Annotated[ConfluenceToolsConfig, InjectedToolArg],
+    cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Ищет совпадения по тексту одной Confluence-страницы."""
     text = await ConfluencePageText.of_page(cfg, page_id, as_markdown=as_markdown)
@@ -251,7 +251,7 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
     return pack_result(table)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def confluence_search(
     query: Annotated[
         str,
@@ -275,7 +275,7 @@ async def confluence_search(
         Field(ge=1, description=CqlSearch.SNIPPET_DESC),
     ] = CqlSearch.SNIPPET_DEFAULT,
     *,
-    cfg: Annotated[ConfluenceToolsConfig, InjectedToolArg],
+    cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Ищет страницы в Confluence через CQL и возвращает таблицу hits."""
     cql = CqlSearch.build_cql(query=query, spaces=spaces)
@@ -300,7 +300,7 @@ async def confluence_search(
     return pack_result(table)
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def confluence_spaces(
     pattern: Annotated[
         str | None,
@@ -320,7 +320,7 @@ async def confluence_spaces(
         Field(ge=1, le=1000, description="Максимум спейсов в ответе."),
     ] = 200,
     *,
-    cfg: Annotated[ConfluenceToolsConfig, InjectedToolArg],
+    cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Список spaces Confluence с опциональным glob-фильтром."""
     path = ConfluenceRest.space_list_path(space_type, limit=limit)
