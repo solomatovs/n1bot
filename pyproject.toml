@@ -142,6 +142,7 @@ boba-db-pgvector    = { workspace = true }
 boba-db-clickhouse  = { workspace = true }
 boba-sandbox        = { workspace = true }
 boba-krb            = { workspace = true }
+boba-llm            = { workspace = true }
 boba-chainlit       = { workspace = true }
 
 [dependency-groups]
