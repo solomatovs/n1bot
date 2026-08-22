@@ -250,6 +250,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.langchain_checkpoint_saver)
     container.eager(providers.kb_schema)
     container.eager(providers.connection_store)
+    # локальные модели грузятся на старте: первая сессия не ждёт веса
+    container.eager(providers.local_chat_runtimes)
     Container.set_root(container)
     Container.set_session_hook(_get_or_create_session_container)
     _close_container_if_session_end()

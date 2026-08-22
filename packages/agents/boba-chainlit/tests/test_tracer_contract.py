@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 import httpx
+from conftest import fake_openai_chat
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.emitter import BaseChainlitEmitter
@@ -26,13 +27,11 @@ from chainlit.session import HTTPSession
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import SecretStr
 from ui.fake_llm import FakeLlmApp, ScenarioName
 
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
-from boba.llm.chat import ReasoningChatOpenAI
 
 pytestmark = pytest.mark.anyio
 
@@ -121,12 +120,7 @@ class TestTracerRunIndex:
         self, provider: httpx.AsyncClient, scenario: ScenarioName
     ) -> AgentTracer:
         """Ход как в проде: агент langgraph, стрим сообщениями, живой трасер."""
-        chat = ReasoningChatOpenAI(
-            http_async_client=provider,
-            model="fake-model",
-            base_url="https://fake-llm/v1",
-            api_key=SecretStr("fake-key"),
-        )
+        chat = fake_openai_chat(provider)
         tracer = self._tracer()
         agent = create_agent(
             model=chat,

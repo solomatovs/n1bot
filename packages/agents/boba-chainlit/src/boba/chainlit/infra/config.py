@@ -23,7 +23,7 @@ from boba.chainlit.domain.config import LocalStorageConfig, RoleConfig, ToolGran
 from boba.chainlit.domain.errors import RefusalError
 from boba.db.postgres import PostgresConfig
 from boba.llm.generation import GenerationConfig
-from boba.llm.openai import OpenAiConfig
+from boba.llm.provider import ChatBackendConfig, ChatSampling
 from boba.sandbox.profile import SandboxConfig
 from boba.toolkit.types import StringList
 
@@ -72,19 +72,6 @@ LOGGING_CONFIG: dict[str, Any] = {
 }
 
 
-class ModelParam(StrEnum):
-    """Имена параметров запроса к LLM: так их принимает ChatOpenAI."""
-
-    TEMPERATURE = "temperature"
-    MAX_TOKENS = "max_tokens"
-    TOP_P = "top_p"
-    FREQUENCY_PENALTY = "frequency_penalty"
-    PRESENCE_PENALTY = "presence_penalty"
-    STOP = "stop_sequences"
-    SEED = "seed"
-    REASONING_EFFORT = "reasoning_effort"
-
-
 class ReasoningEffort(StrEnum):
     """Глубина рассуждений reasoning-моделей провайдера."""
 
@@ -95,16 +82,16 @@ class ReasoningEffort(StrEnum):
 
 
 class LlmSettings(BaseModel):
-    """Обращение к LLM: транспорт провайдера, модель, промпт и сэмплинг."""
+    """Обращение к LLM: бэкенд провайдера, модель, промпт и сэмплинг."""
 
     model_config = ConfigDict(extra="ignore")
 
-    provider: Annotated[
-        OpenAiConfig,
+    backend: Annotated[
+        ChatBackendConfig,
         Field(
             description=(
-                "Транспорт openai-провайдера; в конфиге подключается ссылкой "
-                "${openai.<name>}."
+                "Чат-бэкенд профиля: provider = 'openai' с транспортом "
+                "${openai.<name>} либо provider = 'local' с каталогом модели."
             ),
         ),
     ]
@@ -170,31 +157,22 @@ class LlmSettings(BaseModel):
         ),
     )
 
-    def chat_kwargs(self) -> dict[str, Any]:
-        """Параметры запроса к провайдеру; незаданные не отправляются."""
-        numeric: dict[ModelParam, float | int | None] = {
-            ModelParam.TEMPERATURE: self.temperature,
-            ModelParam.MAX_TOKENS: self.max_tokens,
-            ModelParam.TOP_P: self.top_p,
-            ModelParam.FREQUENCY_PENALTY: self.frequency_penalty,
-            ModelParam.PRESENCE_PENALTY: self.presence_penalty,
-            ModelParam.SEED: self.seed,
-        }
-
-        kwargs: dict[str, Any] = {}
-        for param, value in numeric.items():
-            if value is None:
-                continue
-
-            kwargs[param.value] = value
-
-        if self.stop:
-            kwargs[ModelParam.STOP.value] = list(self.stop)
-
+    def chat_sampling(self) -> ChatSampling:
+        """Сэмплинг запроса к провайдеру; незаданные параметры не отправляются."""
+        effort = ""
         if self.reasoning_effort is not None:
-            kwargs[ModelParam.REASONING_EFFORT.value] = self.reasoning_effort.value
+            effort = self.reasoning_effort.value
 
-        return kwargs
+        return ChatSampling(
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            frequency_penalty=self.frequency_penalty,
+            presence_penalty=self.presence_penalty,
+            seed=self.seed,
+            stop=tuple(self.stop),
+            reasoning_effort=effort,
+        )
 
 
 class AgentSettings(LlmSettings):

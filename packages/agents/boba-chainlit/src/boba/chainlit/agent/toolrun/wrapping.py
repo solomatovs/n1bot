@@ -12,13 +12,52 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from functools import wraps
 from typing import Any, Generic, TypeAlias, TypeVar
 
 from langchain_core.tools import BaseTool, StructuredTool
 
-__all__ = ["AsyncCall", "CallHooks", "SyncCall", "ToolBody"]
+__all__ = ["AsyncCall", "CallHooks", "SyncCall", "ToolAsyncBody", "ToolBody"]
+
+
+class ToolAsyncBody:
+    """Корутина для инструмента с одним sync-телом: вызов уходит в поток.
+
+    Без корутины StructuredTool.ainvoke гонит в поток весь sync-вызов вместе
+    с колбэками, и async-трасер ленты исполняется там в чужом event loop —
+    шаги ленты не доходят до базы. С корутиной колбэки остаются в loop
+    приложения, в поток уходит только тело. Ставится последней, поверх всех
+    обвязок: тело к этому моменту уже обёрнуто, корутине обвязка не нужна.
+    """
+
+    @classmethod
+    def ensure_all(cls, tools: Sequence[BaseTool]) -> None:
+        for tool in tools:
+            cls._ensure(tool)
+
+    @classmethod
+    def _ensure(cls, tool: BaseTool) -> None:
+        if not isinstance(tool, StructuredTool):
+            return
+
+        if tool.coroutine is not None:
+            return
+
+        func = tool.func
+        if func is None:
+            return
+
+        tool.coroutine = cls._threaded(func)
+
+    @staticmethod
+    def _threaded(func: SyncCall) -> AsyncCall:
+        @wraps(func)
+        async def body(*args: object, **kwargs: object) -> object:
+            return await asyncio.to_thread(func, *args, **kwargs)
+
+        return body
 
 CallCtx = TypeVar("CallCtx")
 """Контекст вызова, который обвязка заводит в before и читает в остальном."""

@@ -1,10 +1,29 @@
 """Единая точка работы с LLM-провайдерами: транспорт, чат, эмбеддинги.
 
-Чат-модель (`boba.llm.chat`) импортируется напрямую: она тянет langchain,
-которого нет в песочных payload-окружениях.
+Стандарт провайдеров: каждая способность — порт, union-конфиг с
+дискриминатором provider и фабрика (см. boba.llm.provider). Модули с
+langchain (chat, bridge) и локальным рантаймом (local) импортируются
+напрямую: их зависимостей нет в песочных payload-окружениях.
 
 Ошибки: см. docstring'и модулей пакета.
 """
+
+from boba.llm.provider import (
+    ChatBackendConfig,
+    ChatDelta,
+    ChatEvent,
+    ChatProvider,
+    ChatProviderError,
+    ChatReply,
+    ChatRequest,
+    ChatRole,
+    ChatSampling,
+    ChatTurn,
+    LocalChatConfig,
+    OpenAiChatConfig,
+    ToolCallRequest,
+    ToolSpec,
+)
 
 from boba.llm.embedding import (
     EmbedderFactory,
@@ -18,14 +37,28 @@ from boba.llm.embedding import (
 from boba.llm.openai import OpenAiConfig, OpenAiDumpConfig, OpenAiHttp
 
 __all__ = [
+    "ChatBackendConfig",
+    "ChatDelta",
+    "ChatEvent",
+    "ChatProvider",
+    "ChatProviderError",
+    "ChatReply",
+    "ChatRequest",
+    "ChatRole",
+    "ChatSampling",
+    "ChatTurn",
     "EmbedderFactory",
     "EmbeddingConfig",
     "EmbeddingError",
+    "LocalChatConfig",
     "LocalEmbedding",
     "LocalFastEmbedEmbedder",
+    "OpenAiChatConfig",
     "OpenAiConfig",
     "OpenAiDumpConfig",
     "OpenAiEmbedder",
     "OpenAiEmbedding",
     "OpenAiHttp",
+    "ToolCallRequest",
+    "ToolSpec",
 ]

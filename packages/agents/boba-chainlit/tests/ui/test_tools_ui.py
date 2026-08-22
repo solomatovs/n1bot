@@ -20,6 +20,7 @@ import pytest
 
 from ui.chat_page import ChatPage, StepKind
 from ui.fake_llm import ScenarioName
+from ui.conftest import StandDatabase
 from ui.stand import StandConfig, StandProcess, free_port
 
 pytestmark = pytest.mark.ui
@@ -28,6 +29,9 @@ BOOT_TIMEOUT_SEC = 180.0
 """Подъём стенда с песочницей: восемь зигот, у kb — прогрев эмбеддера."""
 
 TURN_TIMEOUT_SEC = 180.0
+
+STREAM_ELEMENT = "CanvasStream"
+"""Имя элемента кнопки живого вывода на шаге инструмента песочницы."""
 
 
 class StepMark:
@@ -46,9 +50,18 @@ class ToolCase:
     expect: str
     """Фрагмент, который обязан быть в разметке шага после успешного вызова."""
 
-    def message(self) -> str:
+    LLM_PORT: ClassVar[str] = "{llm_port}"
+    """Плейсхолдер порта фейкового сервера в строковых аргументах."""
+
+    def message(self, llm_port: int) -> str:
         """Сообщение пользователю: фейковый провайдер сделает из него tool_call."""
-        request = {"name": self.tool, "arguments": self.arguments}
+        arguments: dict[str, Any] = {}
+        for name, value in self.arguments.items():
+            if isinstance(value, str):
+                value = value.replace(self.LLM_PORT, str(llm_port))
+            arguments[name] = value
+
+        request = {"name": self.tool, "arguments": arguments}
 
         return f"{ScenarioName.CALL.value} {json.dumps(request, ensure_ascii=False)}"
 
@@ -81,8 +94,13 @@ CASES: tuple[ToolCase, ...] = (
     ),
     ToolCase(
         tool="web_fetch_page",
-        arguments={"url": "http://127.0.0.1:1/"},
-        expect="web_fetch_page",
+        arguments={
+            "url": "http://127.0.0.1:{llm_port}/page",
+            "as_markdown": True,
+            "line_offset": 0,
+            "line_count": 50,
+        },
+        expect="stand page",
     ),
 )
 """По случаю на инструмент: имя, аргументы и след успешной работы в ленте."""
@@ -123,9 +141,13 @@ class TestToolsInFeed:
 
     @pytest.mark.parametrize("case", CASES, ids=lambda case: case.tool)
     def test_tool_call_is_drawn_and_finished(
-        self, sandbox_chat: ChatPage, case: ToolCase
+        self,
+        sandbox_chat: ChatPage,
+        sandbox_stand: StandProcess,
+        llm_port: int,
+        case: ToolCase,
     ) -> None:
-        sandbox_chat.ask(case.message())
+        sandbox_chat.ask(case.message(llm_port))
         sandbox_chat.await_idle(timeout_sec=TURN_TIMEOUT_SEC)
 
         sandbox_chat.expand_process()
@@ -148,4 +170,32 @@ class TestToolsInFeed:
         if case.expect not in markup:
             raise AssertionError(
                 f"в шаге {case.tool} нет следа работы {case.expect!r}:\n{markup}"
+            )
+
+        complaints = sandbox_stand.complaints()
+        if complaints:
+            raise AssertionError(
+                f"ход {case.tool} оставил ошибки в логе стенда:\n"
+                + "\n".join(complaints[:10])
+            )
+
+    def test_stream_button_reaches_the_data_layer(
+        self,
+        sandbox_chat: ChatPage,
+        sandbox_stand: StandProcess,
+        stand_db: StandDatabase,
+        llm_port: int,
+    ) -> None:
+        """Элемент кнопки потока bash-шага записан в базу: колбэки трасера
+        идут в loop приложения, а не в чужой — иначе запись молча терялась."""
+        before = stand_db.elements_named(STREAM_ELEMENT)
+
+        sandbox_chat.ask(CASES[0].message(llm_port))
+        sandbox_chat.await_idle(timeout_sec=TURN_TIMEOUT_SEC)
+
+        after = stand_db.elements_named(STREAM_ELEMENT)
+        if after <= before:
+            raise AssertionError(
+                f"элемент {STREAM_ELEMENT} не записан: было {before}, стало {after}\n"
+                + sandbox_stand.tail(60)
             )

@@ -1,5 +1,8 @@
 """Генерация ответа по json-схеме: union-конфиг, локальный ONNX и openai-бэкенды.
 
+Локальный бэкенд работает поверх общего рантайма OnnxChatRuntime (boba.llm.local):
+одна загруженная модель обслуживает и чат, и генерацию по схеме.
+
 Ошибки:
 GenerationError — модель не загрузилась, провайдер недоступен либо вернул тело
     не по контракту chat/completions.
@@ -8,11 +11,8 @@ GenerationError — модель не загрузилась, провайдер
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import logging
-import os
-import threading
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
@@ -21,13 +21,16 @@ from typing import Annotated, Any, ClassVar, Literal, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from boba.llm.local import OnnxChatRuntime, RunSpec
 from boba.llm.openai import OpenAiConfig
+from boba.llm.provider import ChatProviderError
 from boba.toolkit.timing import Elapsed
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "GenerationConfig",
+    "GeneratorFactory",
     "GenerationError",
     "LocalGeneration",
     "LocalOnnxGenerator",
@@ -107,6 +110,25 @@ class GenerationBase(BaseModel):
     )
 
 
+class GenerationMessages:
+    """Json-диалог system+user для chat_template локальной модели."""
+
+    @staticmethod
+    def render(system_prompt: str, user: str) -> str:
+        messages = [
+            {
+                ChatField.ROLE.value: ChatRole.SYSTEM.value,
+                ChatField.CONTENT.value: system_prompt,
+            },
+            {
+                ChatField.ROLE.value: ChatRole.USER.value,
+                ChatField.CONTENT.value: user,
+            },
+        ]
+
+        return json.dumps(messages, ensure_ascii=False)
+
+
 class LocalGeneration(GenerationBase):
     """Локальный инференс onnxruntime-genai (in-process, ONNX)."""
 
@@ -163,179 +185,45 @@ class StructuredGenerator(Protocol):
     async def generate(self, user: str, schema: SchemaSpec) -> str: ...
 
 
-class OnnxModel(Protocol):
-    """Загруженная модель onnxruntime-genai."""
-
-
-class OnnxTokenizer(Protocol):
-    """Токенайзер модели и шаблон диалога при нём."""
-
-    @abstractmethod
-    def encode(self, text: str) -> Sequence[int]: ...
-
-    @abstractmethod
-    def decode(self, tokens: Sequence[int]) -> str: ...
-
-    @abstractmethod
-    def apply_chat_template(
-        self,
-        messages: str,
-        *,
-        add_generation_prompt: bool,
-    ) -> str: ...
-
-
-class OnnxParams(Protocol):
-    """Параметры прогона: поиск и грамматика ответа."""
-
-    @abstractmethod
-    def set_search_options(self, **options: object) -> None: ...
-
-    @abstractmethod
-    def set_guidance(self, kind: str, data: str) -> None: ...
-
-
-class OnnxGenerator(Protocol):
-    """Пошаговая генерация одной последовательности."""
-
-    @abstractmethod
-    def append_tokens(self, tokens: Sequence[int]) -> None: ...
-
-    @abstractmethod
-    def generate_next_token(self) -> None: ...
-
-    @abstractmethod
-    def is_done(self) -> bool: ...
-
-    @abstractmethod
-    def get_sequence(self, index: int) -> Sequence[int]: ...
-
-
-class OnnxGenai:
-    """Вход в onnxruntime-genai: библиотека идёт без аннотаций, поэтому её
-    объекты разбираются здесь один раз и дальше живут протоколами."""
-
-    MODULE: ClassVar[str] = "onnxruntime_genai"
-
-    def __init__(self) -> None:
-        imports = Elapsed()
-        try:
-            self._module = importlib.import_module(self.MODULE)
-        except ImportError as exc:
-            msg = f"{self.MODULE} is not installed"
-            raise GenerationError(msg) from exc
-
-        logger.info("generator: %s imported in %dms", self.MODULE, imports.ms())
-
-    def load(self, model_dir: str) -> tuple[OnnxModel, OnnxTokenizer]:
-        try:
-            model = self._module.Model(self._module.Config(model_dir))
-            tokenizer = self._module.Tokenizer(model)
-        except Exception as exc:
-            msg = f"model not loaded: {model_dir}"
-            raise GenerationError(msg) from exc
-
-        return model, tokenizer
-
-    def params(self, model: OnnxModel) -> OnnxParams:
-        return self._module.GeneratorParams(model)
-
-    def generator(self, model: OnnxModel, params: OnnxParams) -> OnnxGenerator:
-        return self._module.Generator(model, params)
-
-
 class LocalOnnxGenerator(StructuredGenerator):
-    """Генерация in-process на onnxruntime-genai; формат держит грамматика llguidance.
+    """Генерация по схеме на общем локальном рантайме OnnxChatRuntime.
 
-    Схема компилируется в грамматику и ограничивает сэмплинг, поэтому ответ
-    синтаксически верен по построению — вызовы функций тут не нужны.
-
-    Модель одна на процесс, поэтому прогон уходит в поток под локом: ONNX и так
-    занимает все доступные ядра, а loop остаётся свободен.
+    Формат ответа держит грамматика llguidance: схема компилируется в неё и
+    ограничивает сэмплинг, поэтому ответ синтаксически верен по построению.
     """
 
-    def __init__(self, cfg: LocalGeneration) -> None:
-        runtime = OnnxGenai()
-
-        # размер пула onnxruntime берёт из маски доступных ядер, а её
-        # выставляет запуск по cgroup-квоте профиля
-        cores = len(os.sched_getaffinity(0))
-        logger.info("generator: %s on %d core(s)", cfg.model_dir, cores)
-
-        load = Elapsed()
-        model, tokenizer = runtime.load(cfg.model_dir)
-        logger.info("generator: %s loaded in %dms", cfg.model_dir, load.ms())
-
-        self._runtime = runtime
+    def __init__(self, cfg: LocalGeneration, runtime: OnnxChatRuntime) -> None:
         self._cfg = cfg
-        self._model = model
-        self._tokenizer = tokenizer
-        self._lock = threading.Lock()
-
-        # захваченный в момент fork замок остался бы захваченным в ребёнке
-        # навсегда: владелец в ребёнка не переносится
-        os.register_at_fork(after_in_child=self._reset_lock)
-
-    def _reset_lock(self) -> None:
-        self._lock = threading.Lock()
+        self._runtime = runtime
 
     async def generate(self, user: str, schema: SchemaSpec) -> str:
-        return await asyncio.to_thread(self._locked_generate, user, schema)
-
-    def _locked_generate(self, user: str, schema: SchemaSpec) -> str:
-        with self._lock:
-            return self._generate(user, schema)
+        return await asyncio.to_thread(self._generate, user, schema)
 
     def _generate(self, user: str, schema: SchemaSpec) -> str:
-        prompt = self._prompt(user)
-        encoded = self._tokenizer.encode(prompt)
-
-        params = self._runtime.params(self._model)
-        params.set_search_options(
-            max_length=len(encoded) + self._cfg.max_tokens,
-            do_sample=False,
+        rendered = self._runtime.render(
+            GenerationMessages.render(self._cfg.system_prompt, user)
         )
-        params.set_guidance(GuidanceType.JSON_SCHEMA.value, json.dumps(schema.body))
+        prompt = f"{rendered}{self._cfg.reply_prefix}"
 
-        elapsed = Elapsed()
+        spec = RunSpec(
+            max_tokens=self._cfg.max_tokens,
+            guidance_kind=GuidanceType.JSON_SCHEMA.value,
+            guidance_data=json.dumps(dict(schema.body)),
+        )
+
+        pieces: list[str] = []
         try:
-            produced = self._decode(params, encoded)
-        except Exception as exc:
+            self._runtime.run(prompt, spec, pieces.append, self._never_stopped)
+        except ChatProviderError as exc:
             msg = f"local generation failed: {self._cfg.model_dir}"
             raise GenerationError(msg) from exc
 
-        logger.info("generator: %d token(s) in %dms", len(produced), elapsed.ms())
+        return "".join(pieces)
 
-        return self._tokenizer.decode(produced)
-
-    def _decode(self, params: OnnxParams, encoded: Sequence[int]) -> Sequence[int]:
-        """Токены ответа без промпта: get_sequence отдаёт всю ленту целиком."""
-        generator = self._runtime.generator(self._model, params)
-        generator.append_tokens(encoded)
-
-        while not generator.is_done():
-            generator.generate_next_token()
-
-        return generator.get_sequence(0)[len(encoded) :]
-
-    def _prompt(self, user: str) -> str:
-        messages = [
-            {
-                ChatField.ROLE.value: ChatRole.SYSTEM.value,
-                ChatField.CONTENT.value: self._cfg.system_prompt,
-            },
-            {
-                ChatField.ROLE.value: ChatRole.USER.value,
-                ChatField.CONTENT.value: user,
-            },
-        ]
-
-        rendered = self._tokenizer.apply_chat_template(
-            json.dumps(messages),
-            add_generation_prompt=True,
-        )
-
-        return f"{rendered}{self._cfg.reply_prefix}"
+    @staticmethod
+    def _never_stopped() -> bool:
+        """Прогон генерации по схеме не прерывается снаружи."""
+        return False
 
 
 class ChatFunctionCall(BaseModel):
@@ -486,3 +374,33 @@ class OpenAiStructuredGenerator(StructuredGenerator):
             return message.tool_calls[0].function.arguments
 
         return message.content
+
+
+class GeneratorFactory:
+    """Собирает StructuredGenerator по union-конфигу.
+
+    Ресурсы приходят снаружи: httpx-клиент openai-бэкенда и локальный рантайм
+    строит и держит DI приложения — фабрика только выбирает реализацию.
+    """
+
+    @classmethod
+    def build(
+        cls,
+        cfg: LocalGeneration | OpenAiGeneration,
+        *,
+        client: httpx.AsyncClient | None,
+        runtime: OnnxChatRuntime | None,
+    ) -> StructuredGenerator:
+        match cfg:
+            case LocalGeneration():
+                if runtime is None:
+                    msg = f"local generation needs a runtime: {cfg.model_dir}"
+                    raise ValueError(msg)
+
+                return LocalOnnxGenerator(cfg, runtime)
+            case OpenAiGeneration():
+                if client is None:
+                    msg = "openai generation needs an httpx client"
+                    raise ValueError(msg)
+
+                return OpenAiStructuredGenerator(cfg, client)

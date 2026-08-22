@@ -414,7 +414,12 @@ def workspace_image(raw_config):
     """Образ тестового пользователя: создаётся из шаблона и сносится после."""
     sandbox = ToolSetup.config(raw_config, "tool.bash.sandbox", SandboxToolConfig)
     profile = sandbox.profile.render(ToolSetup.path_vars())
-    image = Path(profile.mounts.images[0].host)
+
+    workspace = profile.mounts.workspace
+    if workspace is None:
+        pytest.fail("у профиля bash нет workspace-образа пользователя")
+
+    image = Path(workspace.image_of(USER_ID))
     yield image
     for path in (image, Path(f"{image}.lock")):
         path.unlink(missing_ok=True)
