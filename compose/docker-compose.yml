@@ -4,7 +4,9 @@ services:
     hostname: chainlit
     container_name: chainlit
     init: true
-    user: "${BOBA_UID:-0}:${BOBA_GID:-0}"
+    # без переменных берётся USER образа (1000:1000): песочница монтирует
+    # образы в user namespace, и от root файлы владельца данных недоступны
+    user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
     env_file: ./conf/boba.env
     volumes:
       - ./conf:/app/boba/conf:ro

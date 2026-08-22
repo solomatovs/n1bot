@@ -20,6 +20,7 @@ from boba.chainlit.rendering.chat_view import (
     StepElapsed,
     StepRole,
     StepStatus,
+    StepText,
     TurnPulse,
 )
 from boba.toolkit.result import TextResult
@@ -473,8 +474,9 @@ class TestToolIntent:
 
         if step.name != "○ bash · смотрю содержимое каталога":
             raise AssertionError(step.name)
-        if step.output:
-            raise AssertionError(f"running не пишется под подписью: {step.output!r}")
+        # без output фронт не рисует секцию шага и не монтирует кнопку потока
+        if step.output != StepText.RUNNING:
+            raise AssertionError(f"running обязан быть под подписью: {step.output!r}")
 
     @pytest.mark.anyio
     async def test_intent_survives_the_result(self, http_context: None) -> None:
