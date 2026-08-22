@@ -112,17 +112,8 @@
     btn.textContent = "Войти через SSO";
     btn.addEventListener("click", (e) => {
       e.preventDefault();
-      fetch(SSO_URL, { credentials: "same-origin" })
-        .then((r) => {
-          if (r.ok) {
-            browser.go(r.url);
-          } else {
-            browser.go(browser.path() + "?error=sso");
-          }
-        })
-        .catch(() => {
-          browser.go(browser.path() + "?error=sso");
-        });
+      // навигация, а не fetch: Negotiate браузер делает при переходе по адресу
+      browser.go(SSO_URL);
     });
     return btn;
   }
