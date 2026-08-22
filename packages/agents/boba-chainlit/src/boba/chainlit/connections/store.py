@@ -1,42 +1,76 @@
-"""Таблица connections: хранение профилей подключений с шифрованием секретов."""
+"""Таблицы connections/roles/grants: профили соединений и кому они выданы.
+
+connections — чистое хранилище профилей, без владельца и без уникальности
+имени; связь с пользователями и ролями живёт только в grants.
+
+Ошибки:
+ConnectionStoreError — база отказала или строка не сохранилась.
+ConnectionNotFoundError — в connections нет строки с таким id.
+SecretCryptoError — секрет строки не расшифровался ключом конфига.
+"""
 
 from __future__ import annotations
 
 import base64
 import binascii
 import logging
-from typing import Any, ClassVar
+from collections.abc import AsyncIterator, Iterable, Sequence
+from contextlib import asynccontextmanager
+from enum import StrEnum
+from typing import Annotated, Any, ClassVar, TypeAlias
 
+import psycopg
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    TypeAdapter,
+    field_validator,
+)
 
 from boba.chainlit.connections.secrets import SecretCipher
+from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresConfig
 from boba.transport.http import HttpProfile
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ConnectionKinds",
+    "ConnectionKind",
     "ConnectionNotFoundError",
+    "ConnectionProfile",
     "ConnectionStore",
+    "ConnectionStoreError",
     "ConnectionsConfig",
-    "GrantKinds",
+    "GrantKind",
+    "GrantTarget",
+    "StoredConnection",
+    "Subject",
 ]
 
-KEY_BYTES = 32
+
+class ConnectionStoreError(Exception):
+    """База отказала или строка не сохранилась."""
+
+
+class ConnectionNotFoundError(ConnectionStoreError):
+    """В таблице connections нет строки с таким id."""
 
 
 class ConnectionsConfig(BaseModel):
-    """Секция [connections]: где лежит таблица и чем шифруются значения."""
+    """Секция [connections]: где лежат таблицы и чем шифруются значения."""
 
     model_config = ConfigDict(extra="ignore")
 
+    KEY_BYTES: ClassVar[int] = 32
+
     enable: bool = Field(
         default=False,
-        description="Создавать таблицу connections при старте приложения.",
+        description="Создавать таблицы connections/roles/grants при старте.",
     )
     connection: PostgresConfig | None = Field(
         default=None,
@@ -44,7 +78,7 @@ class ConnectionsConfig(BaseModel):
     )
     db_schema: str = Field(
         default="chainlit",
-        description="Схема postgres, в которой живёт таблица connections.",
+        description="Схема postgres, в которой живут таблицы.",
     )
     table: str = Field(
         default="connections",
@@ -73,17 +107,20 @@ class ConnectionsConfig(BaseModel):
         raw = value.get_secret_value()
         if not raw:
             return value
+
         try:
             decoded = base64.b64decode(raw, validate=True)
         except (binascii.Error, ValueError) as e:
             msg = "connections.encryption_key: base64 expected"
             raise ValueError(msg) from e
-        if len(decoded) != KEY_BYTES:
+
+        if len(decoded) != cls.KEY_BYTES:
             msg = (
-                f"connections.encryption_key: {KEY_BYTES}-byte key required, "
+                f"connections.encryption_key: {cls.KEY_BYTES}-byte key required, "
                 f"got {len(decoded)}"
             )
             raise ValueError(msg)
+
         return value
 
     def key_bytes(self) -> bytes:
@@ -91,84 +128,97 @@ class ConnectionsConfig(BaseModel):
         if not raw:
             msg = "connections.encryption_key is not set"
             raise ValueError(msg)
+
         return base64.b64decode(raw, validate=True)
 
     def require_conn(self) -> PostgresConfig:
         if self.connection is None:
             msg = 'connections.connection is not set: connection = "${postgres}"'
             raise ValueError(msg)
+
         return self.connection
 
 
-class ConnectionKinds:
-    """Реестр kind -> рабочая модель профиля; по нему валидируется jsonb."""
+ConnectionProfile: TypeAlias = Annotated[
+    PostgresConfig | ClickHouseConfig | HttpProfile,
+    Field(discriminator="kind"),
+]
+"""Рабочая модель соединения; jsonb строки разбирается по полю kind."""
 
-    _BY_KIND: ClassVar[dict[str, type[BaseModel]]] = {
-        "postgres": PostgresConfig,
-        "web": HttpProfile,
-    }
 
-    @classmethod
-    def model(cls, kind: str) -> type[BaseModel]:
-        try:
-            return cls._BY_KIND[kind]
-        except KeyError:
-            msg = f"unknown connection kind {kind!r} (known: {', '.join(cls.known())})"
-            raise ValueError(msg) from None
+class ConnectionKind(StrEnum):
+    """Виды соединений: значение — дискриминатор kind рабочей модели."""
+
+    POSTGRES = "postgres"
+    CLICKHOUSE = "clickhouse"
+    WEB = "web"
 
     @classmethod
-    def kind_of(cls, profile: BaseModel) -> str:
-        kind = getattr(profile, "kind", None)
-        if not isinstance(kind, str):
-            msg = f"{type(profile).__name__}: no kind field, not a connection profile"
+    def of(cls, profile: ConnectionProfile) -> ConnectionKind:
+        return cls(profile.kind)
+
+
+class GrantKind(StrEnum):
+    """Стороны связи в grants: значение — имя таблицы, kind_id — id в ней."""
+
+    CONNECTIONS = "connections"
+    ROLES = "roles"
+    USERS = "users"
+
+
+class GrantTarget(BaseModel):
+    """Кому выдано соединение: пользователю или роли по id в их таблице."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: GrantKind
+    id: int
+
+    @field_validator("kind")
+    @classmethod
+    def _target_only(cls, value: GrantKind) -> GrantKind:
+        if value is GrantKind.CONNECTIONS:
+            msg = "grant target must be a user or a role, not a connection"
             raise ValueError(msg)
-        return kind
+
+        return value
 
     @classmethod
-    def known(cls) -> tuple[str, ...]:
-        return tuple(sorted(cls._BY_KIND))
-
-
-class GrantKinds:
-    """Стороны связи в таблице grants: kind — имя таблицы, kind_id — id в ней."""
-
-    CONNECTIONS: ClassVar[str] = "connections"
-    ROLES: ClassVar[str] = "roles"
-    USERS: ClassVar[str] = "users"
+    def user(cls, user_id: int) -> GrantTarget:
+        return cls(kind=GrantKind.USERS, id=user_id)
 
     @classmethod
-    def known_src(cls) -> tuple[str, ...]:
-        return (cls.CONNECTIONS,)
-
-    @classmethod
-    def known_tgt(cls) -> tuple[str, ...]:
-        return (cls.ROLES, cls.USERS)
-
-    @classmethod
-    def validate_src(cls, kind: str) -> str:
-        if kind not in cls.known_src():
-            msg = (
-                f"unknown grant src_kind {kind!r} (known: {', '.join(cls.known_src())})"
-            )
-            raise ValueError(msg)
-        return kind
-
-    @classmethod
-    def validate_tgt(cls, kind: str) -> str:
-        if kind not in cls.known_tgt():
-            msg = (
-                f"unknown grant tgt_kind {kind!r} (known: {', '.join(cls.known_tgt())})"
-            )
-            raise ValueError(msg)
-        return kind
+    def role(cls, role_id: int) -> GrantTarget:
+        return cls(kind=GrantKind.ROLES, id=role_id)
 
 
-class ConnectionNotFoundError(LookupError):
-    """В таблице connections нет строки с таким именем."""
+class Subject(BaseModel):
+    """Кто спрашивает соединения: пользователь и имена его ролей."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    roles: Sequence[str] = ()
+
+
+class StoredConnection(BaseModel):
+    """Строка connections с расшифрованным профилем."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    name: str
+    profile: ConnectionProfile
+
+    @property
+    def kind(self) -> ConnectionKind:
+        return ConnectionKind.of(self.profile)
 
 
 class ConnectionStore:
-    """CRUD над таблицей connections: наружу — профили, в базе — шифротекст."""
+    """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст."""
+
+    _PROFILE: ClassVar[TypeAdapter[ConnectionProfile]] = TypeAdapter(ConnectionProfile)
 
     def __init__(
         self,
@@ -183,6 +233,7 @@ class ConnectionStore:
         """Пул берётся при первом обращении: __init__ не может await."""
         if self._pool_ref is None:
             self._pool_ref = await AsyncPostgresPool.get(self._cfg.require_conn())
+
         return self._pool_ref
 
     def _table(self) -> sql.Identifier:
@@ -194,9 +245,19 @@ class ConnectionStore:
     def _grants(self) -> sql.Identifier:
         return sql.Identifier(self._cfg.db_schema, self._cfg.grants_table)
 
+    @asynccontextmanager
+    async def _guarded(self, action: str) -> AsyncIterator[None]:
+        """Граница слоя: отказ базы уходит наружу как ConnectionStoreError."""
+        try:
+            yield
+        except psycopg.Error as exc:
+            msg = f"connections: {action} failed"
+            raise ConnectionStoreError(msg) from exc
+
     async def setup(self) -> None:
         pool = await self._pool()
-        async with pool.connection() as conn:
+
+        async with self._guarded("setup"), pool.connection() as conn:
             try:
                 await conn.execute(
                     sql.SQL("create schema if not exists {schema}").format(
@@ -226,7 +287,7 @@ class ConnectionStore:
                 """
                 create table if not exists {connections} (
                     id   integer generated always as identity primary key,
-                    name text not null unique,
+                    name text not null,
                     kind text not null,
                     data jsonb not null default '{{}}'::jsonb
                 )
@@ -269,8 +330,36 @@ class ConnectionStore:
             ),
         )
 
-    async def save(self, name: str, profile: BaseModel) -> int:
-        kind = ConnectionKinds.kind_of(profile)
+    async def sync_roles(self, names: Iterable[str]) -> None:
+        """Добавляет в roles имена, которых там ещё нет; ничего не удаляет."""
+        query = sql.SQL(
+            """
+            insert into {roles} (
+                role
+            )
+            values (
+                %(role)s
+            )
+            on conflict (role) do nothing
+            """
+        ).format(
+            roles=self._roles(),
+        )
+
+        rows: list[dict[str, str]] = []
+        for name in names:
+            rows.append({"role": name})
+
+        if not rows:
+            return
+
+        pool = await self._pool()
+        async with self._guarded("sync roles"), pool.cursor() as cur:
+            await cur.executemany(query, rows)
+
+    async def add(self, name: str, profile: ConnectionProfile) -> int:
+        """Новая строка connections; уникальность имени — забота вызывающего."""
+        kind = ConnectionKind.of(profile)
         payload = self._cipher.encrypt(profile)
         query = sql.SQL(
             """
@@ -284,118 +373,102 @@ class ConnectionStore:
                 %(kind)s,
                 %(data)s
             )
-            on conflict (name) do update set
-                kind = excluded.kind,
-                data = excluded.data
             returning
                 id
             """
         ).format(
             connections=self._table(),
         )
+        params = {"name": name, "kind": kind.value, "data": Jsonb(payload)}
 
         pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(
-                query, {"name": name, "kind": kind, "data": Jsonb(payload)}
-            )
+        async with self._guarded("add"), pool.cursor() as cur:
+            await cur.execute(query, params)
             row = await cur.fetchone()
 
         if row is None:
             msg = f"connections: row {name!r} was not saved"
-            raise RuntimeError(msg)
+            raise ConnectionStoreError(msg)
+
         return int(row[0])
 
-    async def load(self, name: str) -> BaseModel:
+    async def get(self, connection_id: int) -> StoredConnection:
         query = sql.SQL(
             """
             select
-                kind,
+                id,
+                name,
                 data
             from
                 {connections}
             where
-                name = %s
-            limit
-                1
+                id = %(id)s
             """
         ).format(
             connections=self._table(),
         )
 
         pool = await self._pool()
-        async with pool.dict_cursor() as cur:
-            await cur.execute(query, (name,))
+        async with self._guarded("get"), pool.dict_cursor() as cur:
+            await cur.execute(query, {"id": connection_id})
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"connections: connection {name!r} not found"
+            msg = f"connections: connection #{connection_id} not found"
             raise ConnectionNotFoundError(msg)
-        return self._to_profile(row["kind"], row["data"])
 
-    async def load_all(self, kind: str | None = None) -> dict[str, BaseModel]:
-        where = sql.SQL("")
-        if kind:
-            where = sql.SQL(
-                """
-                where
-                    kind = %(kind)s
-                """
-            )
+        return self._stored(row)
+
+    async def list_all(self) -> Sequence[StoredConnection]:
         query = sql.SQL(
             """
             select
+                id,
                 name,
-                kind,
                 data
             from
                 {connections}
-            {where}
             order by
                 id
             """
         ).format(
             connections=self._table(),
-            where=where,
         )
 
         pool = await self._pool()
-        async with pool.dict_cursor() as cur:
-            await cur.execute(query, {"kind": kind})
+        async with self._guarded("list"), pool.dict_cursor() as cur:
+            await cur.execute(query)
             rows = await cur.fetchall()
 
-        return {row["name"]: self._to_profile(row["kind"], row["data"]) for row in rows}
+        return list(map(self._stored, rows))
 
-    async def delete(self, name: str) -> bool:
+    async def remove(self, connection_id: int) -> bool:
+        """Удаляет строку вместе с её грантами; False — строки не было."""
         drop_grants = sql.SQL(
             """
             delete from
-                {grants} g
-            using
-                {connections} c
+                {grants}
             where
-                c.name = %(name)s
-                and g.src_kind = %(src_kind)s
-                and g.src_kind_id = c.id
+                src_kind = %(src_kind)s
+                and src_kind_id = %(id)s
             """
         ).format(
             grants=self._grants(),
-            connections=self._table(),
         )
         drop_row = sql.SQL(
             """
             delete from
                 {connections}
             where
-                name = %(name)s
+                id = %(id)s
             """
         ).format(
             connections=self._table(),
         )
+        params = {"id": connection_id, "src_kind": GrantKind.CONNECTIONS.value}
 
         pool = await self._pool()
-        async with pool.cursor() as cur:
-            params = {"name": name, "src_kind": GrantKinds.CONNECTIONS}
+        async with self._guarded("remove"), pool.cursor() as cur:
             await cur.execute(drop_grants, params)
             await cur.execute(drop_row, params)
             return cur.rowcount > 0
@@ -416,21 +489,17 @@ class ConnectionStore:
         )
 
         pool = await self._pool()
-        async with pool.cursor() as cur:
+        async with self._guarded("roles"), pool.cursor() as cur:
             await cur.execute(query)
             fetched = await cur.fetchall()
 
-        return {row[0]: int(row[1]) for row in fetched}
+        by_name: dict[str, int] = {}
+        for row in fetched:
+            by_name[row[0]] = int(row[1])
 
-    async def grant(
-        self,
-        src_kind: str,
-        src_kind_id: int,
-        tgt_kind: str,
-        tgt_kind_id: int,
-    ) -> int:
-        GrantKinds.validate_src(src_kind)
-        GrantKinds.validate_tgt(tgt_kind)
+        return by_name
+
+    async def grant(self, connection_id: int, target: GrantTarget) -> int:
         query = sql.SQL(
             """
             insert into {grants} (
@@ -453,35 +522,23 @@ class ConnectionStore:
         ).format(
             grants=self._grants(),
         )
-        params = {
-            "src_kind": src_kind,
-            "src_kind_id": src_kind_id,
-            "tgt_kind": tgt_kind,
-            "tgt_kind_id": tgt_kind_id,
-        }
+        params = self._grant_params(connection_id, target)
 
         pool = await self._pool()
-        async with pool.cursor() as cur:
+        async with self._guarded("grant"), pool.cursor() as cur:
             await cur.execute(query, params)
             row = await cur.fetchone()
 
         if row is None:
             msg = (
-                f"grants: link {src_kind}#{src_kind_id} -> "
-                f"{tgt_kind}#{tgt_kind_id} was not saved"
+                f"grants: link connections#{connection_id} -> "
+                f"{target.kind.value}#{target.id} was not saved"
             )
-            raise RuntimeError(msg)
+            raise ConnectionStoreError(msg)
+
         return int(row[0])
 
-    async def revoke(
-        self,
-        src_kind: str,
-        src_kind_id: int,
-        tgt_kind: str,
-        tgt_kind_id: int,
-    ) -> bool:
-        GrantKinds.validate_src(src_kind)
-        GrantKinds.validate_tgt(tgt_kind)
+    async def revoke(self, connection_id: int, target: GrantTarget) -> bool:
         query = sql.SQL(
             """
             delete from
@@ -495,20 +552,14 @@ class ConnectionStore:
         ).format(
             grants=self._grants(),
         )
-        params = {
-            "src_kind": src_kind,
-            "src_kind_id": src_kind_id,
-            "tgt_kind": tgt_kind,
-            "tgt_kind_id": tgt_kind_id,
-        }
+        params = self._grant_params(connection_id, target)
 
         pool = await self._pool()
-        async with pool.cursor() as cur:
+        async with self._guarded("revoke"), pool.cursor() as cur:
             await cur.execute(query, params)
             return cur.rowcount > 0
 
-    async def grants_of(self, src_kind: str, src_kind_id: int) -> list[tuple[str, int]]:
-        GrantKinds.validate_src(src_kind)
+    async def grants_of(self, connection_id: int) -> Sequence[GrantTarget]:
         query = sql.SQL(
             """
             select
@@ -525,96 +576,88 @@ class ConnectionStore:
         ).format(
             grants=self._grants(),
         )
+        params = {
+            "src_kind": GrantKind.CONNECTIONS.value,
+            "src_kind_id": connection_id,
+        }
 
         pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(query, {"src_kind": src_kind, "src_kind_id": src_kind_id})
+        async with self._guarded("grants"), pool.cursor() as cur:
+            await cur.execute(query, params)
             fetched = await cur.fetchall()
 
-        return [(row[0], int(row[1])) for row in fetched]
+        targets: list[GrantTarget] = []
+        for row in fetched:
+            targets.append(GrantTarget(kind=GrantKind(row[0]), id=int(row[1])))
 
-    async def grant_connection(self, name: str, tgt_kind: str, tgt_kind_id: int) -> int:
-        connection_id = await self._connection_id(name)
-        return await self.grant(
-            GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id
-        )
+        return targets
 
-    async def revoke_connection(
-        self, name: str, tgt_kind: str, tgt_kind_id: int
-    ) -> bool:
-        connection_id = await self._connection_id(name)
-        return await self.revoke(
-            GrantKinds.CONNECTIONS, connection_id, tgt_kind, tgt_kind_id
-        )
-
-    async def connection_grants(self, name: str) -> list[tuple[str, int]]:
-        connection_id = await self._connection_id(name)
-        return await self.grants_of(GrantKinds.CONNECTIONS, connection_id)
-
-    async def connections_for(
-        self, tgt_kind: str, tgt_kind_id: int
-    ) -> dict[str, BaseModel]:
-        GrantKinds.validate_tgt(tgt_kind)
+    async def for_subject(
+        self, subject: Subject, kind: ConnectionKind
+    ) -> Sequence[StoredConnection]:
+        """Соединения вида kind, выданные пользователю лично или любой его роли."""
         query = sql.SQL(
             """
             select
+                c.id,
                 c.name,
-                c.kind,
                 c.data
             from
                 {connections} c
-                inner join {grants} g on
-                    g.src_kind = %(src_kind)s
-                    and g.src_kind_id = c.id
             where
-                g.tgt_kind = %(tgt_kind)s
-                and g.tgt_kind_id = %(tgt_kind_id)s
+                c.kind = %(kind)s
+                and exists (
+                    select
+                        1
+                    from
+                        {grants} g
+                        left join {roles} r on
+                            g.tgt_kind = %(roles_kind)s
+                            and g.tgt_kind_id = r.id
+                    where
+                        g.src_kind = %(src_kind)s
+                        and g.src_kind_id = c.id
+                        and (
+                            (
+                                g.tgt_kind = %(users_kind)s
+                                and g.tgt_kind_id = %(user_id)s
+                            )
+                            or r.role = any(%(roles)s)
+                        )
+                )
             order by
                 c.id
             """
         ).format(
             connections=self._table(),
             grants=self._grants(),
+            roles=self._roles(),
         )
         params = {
-            "src_kind": GrantKinds.CONNECTIONS,
-            "tgt_kind": tgt_kind,
-            "tgt_kind_id": tgt_kind_id,
+            "kind": kind.value,
+            "src_kind": GrantKind.CONNECTIONS.value,
+            "users_kind": GrantKind.USERS.value,
+            "roles_kind": GrantKind.ROLES.value,
+            "user_id": subject.user_id,
+            "roles": list(subject.roles),
         }
 
         pool = await self._pool()
-        async with pool.dict_cursor() as cur:
+        async with self._guarded("for subject"), pool.dict_cursor() as cur:
             await cur.execute(query, params)
             rows = await cur.fetchall()
 
-        return {row["name"]: self._to_profile(row["kind"], row["data"]) for row in rows}
+        return list(map(self._stored, rows))
 
-    async def _connection_id(self, name: str) -> int:
-        query = sql.SQL(
-            """
-            select
-                id
-            from
-                {connections}
-            where
-                name = %s
-            limit
-                1
-            """
-        ).format(
-            connections=self._table(),
-        )
+    @staticmethod
+    def _grant_params(connection_id: int, target: GrantTarget) -> dict[str, Any]:
+        return {
+            "src_kind": GrantKind.CONNECTIONS.value,
+            "src_kind_id": connection_id,
+            "tgt_kind": target.kind.value,
+            "tgt_kind_id": target.id,
+        }
 
-        pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(query, (name,))
-            row = await cur.fetchone()
-
-        if row is None:
-            msg = f"connections: connection {name!r} not found"
-            raise ConnectionNotFoundError(msg)
-        return int(row[0])
-
-    def _to_profile(self, kind: str, data: dict[str, Any]) -> BaseModel:
-        model = ConnectionKinds.model(kind)
-        return model.model_validate(self._cipher.decrypt(data))
+    def _stored(self, row: dict[str, Any]) -> StoredConnection:
+        profile = self._PROFILE.validate_python(self._cipher.decrypt(row["data"]))
+        return StoredConnection(id=int(row["id"]), name=row["name"], profile=profile)

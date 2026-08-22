@@ -48,6 +48,7 @@ from boba.chainlit.infra.config import (
     DataLayerConfig,
     LocalStorageConfig,
     PrefetchFlowConfig,
+    RolesSection,
     SelectedProfile,
     SettingsView,
     UserMeta,
@@ -180,11 +181,17 @@ async def kb_schema(
 async def connection_store(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> ConnectionStore | None:
+    """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
     cfg = bind(raw, "connections", ConnectionsConfig)
     if not cfg.enable:
         return None
+
     store = ConnectionStore(cfg)
     await store.setup()
+
+    roles = bind(raw, "roles", RolesSection).root
+    await store.sync_roles(roles)
+
     return store
 
 
