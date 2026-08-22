@@ -29,7 +29,11 @@ from boba.db.postgres import AsyncPostgresPool
 
 pytestmark = pytest.mark.anyio
 
+from boba.llm.provider import OpenAiChatConfig
+
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
+
+BACKEND = {"provider": "openai", "openai": OPENAI}
 
 NO_OVERRIDES = ""
 """Пустой app_root: строки берутся из пакета, как в чистом развёртывании."""
@@ -61,7 +65,7 @@ def _profile(**kw) -> ChatProfileConfig:
     base = {
         "display_name": "Profile",
         "description": "test profile",
-        "provider": OPENAI,
+        "backend": BACKEND,
         "model": "base-model",
         "models": ["base-model", "alt-model"],
         "settings": ["*"],
@@ -158,18 +162,21 @@ class TestApplyTo:
     def test_transport_is_never_overridden(self) -> None:
         settings = UserLlmOverrides(temperature=1.0).apply_to(_profile())
 
-        if settings.provider.base_url != OPENAI["base_url"]:
+        backend = settings.backend
+        if not isinstance(backend, OpenAiChatConfig):
+            raise AssertionError(f"backend is openai: {backend}")
+        if backend.openai.base_url != OPENAI["base_url"]:
             raise AssertionError("openai transport changed")
 
-    def test_reasoning_and_seed_reach_chat_kwargs(self) -> None:
+    def test_reasoning_and_seed_reach_chat_sampling(self) -> None:
         overrides = UserLlmOverrides(seed=7, reasoning_effort=ReasoningEffort.HIGH)
 
-        kwargs = overrides.apply_to(_profile()).chat_kwargs()
+        sampling = overrides.apply_to(_profile()).chat_sampling()
 
-        if kwargs.get("seed") != 7:
-            raise AssertionError(f"seed: {kwargs.get('seed')}")
-        if kwargs.get("reasoning_effort") != "high":
-            raise AssertionError(f"effort: {kwargs.get('reasoning_effort')}")
+        if sampling.seed != 7:
+            raise AssertionError(f"seed: {sampling.seed}")
+        if sampling.reasoning_effort != "high":
+            raise AssertionError(f"effort: {sampling.reasoning_effort}")
 
 
 class TestEdited:

@@ -14,7 +14,7 @@ import json
 from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 import uvicorn
 from fastapi import FastAPI, Request, Response
@@ -64,11 +64,28 @@ class ScenarioName(StrEnum):
 
 @dataclass
 class ToolCallSpec:
-    """Вызов инструмента, который провайдер попросит выполнить."""
+    """Вызов инструмента, который провайдер попросит выполнить.
+
+    Подпись вызова intent обязательна у каждого инструмента приложения, и
+    настоящая модель её заполняет; фейк ведёт себя так же — дописывает
+    подпись, если сценарий её не задал.
+    """
 
     call_id: str
     name: str
     arguments: str
+
+    INTENT_FIELD: ClassVar[str] = "intent"
+
+    def __post_init__(self) -> None:
+        parsed = json.loads(self.arguments)
+        if not isinstance(parsed, dict):
+            raise ScenarioError(f"tool call arguments are not an object: {self.arguments}")
+
+        if self.INTENT_FIELD not in parsed:
+            parsed[self.INTENT_FIELD] = f"stand call of {self.name}"
+
+        self.arguments = json.dumps(parsed, ensure_ascii=False)
 
 
 @dataclass
@@ -239,6 +256,14 @@ class FakeLlmApp:
         @app.get("/health")
         async def health() -> dict[str, str]:
             return {"status": "ok"}
+
+        @app.get("/page")
+        async def page() -> Response:
+            """Страница для web-инструментов стенда: whitelist указывает сюда."""
+            return Response(
+                "<html><body><h1>stand page</h1><p>fake llm serves html</p></body></html>",
+                media_type="text/html",
+            )
 
         @app.post("/reset")
         async def reset() -> dict[str, str]:

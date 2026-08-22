@@ -15,7 +15,6 @@ import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import SecretStr
 from ui.fake_llm import FakeLlmApp, ScenarioName
 from uvicorn.logging import DefaultFormatter
 
@@ -23,7 +22,8 @@ from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
-from boba.llm.chat import ReasoningChatOpenAI
+from boba.llm.bridge import ProviderChatModel
+from conftest import fake_openai_chat
 
 pytestmark = pytest.mark.anyio
 
@@ -62,13 +62,8 @@ async def provider() -> AsyncIterator[httpx.AsyncClient]:
 
 class TestLlmStateLog:
     @staticmethod
-    def _chat(provider: httpx.AsyncClient) -> ReasoningChatOpenAI:
-        return ReasoningChatOpenAI(
-            http_async_client=provider,
-            model="fake-model",
-            base_url="https://fake-llm/v1",
-            api_key=SecretStr("fake-key"),
-        )
+    def _chat(provider: httpx.AsyncClient) -> ProviderChatModel:
+        return fake_openai_chat(provider)
 
     @staticmethod
     def _log() -> LlmStateLog:

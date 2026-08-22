@@ -60,6 +60,8 @@ pytestmark = pytest.mark.anyio
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
 
+BACKEND = {"provider": "openai", "openai": OPENAI}
+
 REPHRASER = {
     "provider": "openai",
     "openai": OPENAI,
@@ -745,7 +747,7 @@ class TestFlowConfig:
         base: dict[str, Any] = {
             "display_name": "Profile",
             "description": "test profile",
-            "provider": OPENAI,
+            "backend": BACKEND,
             "model": "test-model",
         }
         base.update(kw)
@@ -809,7 +811,7 @@ class TestProviderAssembly:
         base: dict[str, Any] = {
             "display_name": "Search",
             "description": "search profile",
-            "provider": OPENAI,
+            "backend": BACKEND,
             "model": "test-model",
             "tools": ["*"],
         }

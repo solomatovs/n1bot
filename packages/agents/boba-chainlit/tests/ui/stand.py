@@ -17,7 +17,7 @@ from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -39,6 +39,7 @@ class StandPaths(StrEnum):
     ASSETS = "compose/chainlit"
     SANDBOX = "build/src/sandbox"
     PACKAGES = "packages"
+    KEYTAB = "compose/conf/krb/boba-svc.keytab"
 
     def under(self, root: Path) -> Path:
         return root / self.value
@@ -78,6 +79,9 @@ class StandConfig:
     sandbox: bool = False
     """True — инструменты песочницы остаются включёнными: боевой путь целиком."""
 
+    sso: bool = False
+    """True — рядом с [auth.local] поднимается [auth.kerberos]: логин с кнопкой SSO."""
+
     SANDBOXED_TOOLS: tuple[str, ...] = (
         "bash",
         "doc",
@@ -100,47 +104,35 @@ class StandConfig:
     def base_url(self) -> str:
         return StandUrl.of(self.app_port, self.url_prefix)
 
+    STAND_USERS: ClassVar[dict[str, str]] = {
+        "admin": "stand-admin-pass",
+        "dev": "stand-dev-pass",
+    }
+    """Учётки стенда: фиксированы кодом, рабочий конфиг их не задаёт."""
+
+    STAND_ROLES: ClassVar[dict[str, list[str]]] = {
+        "admin": ["ADM"],
+        "dev": ["DEV"],
+    }
+    """Роли учёток стенда: согласованы с [roles] стенда, а не рабочего конфига."""
+
     def credential(self, login: str = "") -> StandCredential:
-        """Логин и пароль берутся из конфига разработчика, а не из кода.
-
-        Без аргумента — первый логин по алфавиту; с аргументом — именно он.
-        """
-        base = StandPaths.BASE_CONFIG.under(REPO_ROOT)
-        with base.open("rb") as handle:
-            doc: dict[str, Any] = tomllib.load(handle)
-
-        try:
-            users = doc["auth"]["local"]["users"]
-        except KeyError as exc:
-            msg = f"нет [auth.local].users в {base}"
-            raise StandError(msg) from exc
-
-        logins = sorted(users)
-        if not logins:
-            msg = f"в [auth.local].users пусто: {base}"
-            raise StandError(msg)
-
+        """Логин и пароль стенда; без аргумента — первый логин по алфавиту."""
+        logins = sorted(self.STAND_USERS)
         if not login:
             login = logins[0]
 
-        if login not in users:
-            msg = f"нет логина {login!r} в [auth.local].users: {base}"
+        if login not in self.STAND_USERS:
+            msg = f"нет логина {login!r} среди учёток стенда: {logins}"
             raise StandError(msg)
 
-        return StandCredential(login=login, password=str(users[login]))
+        return StandCredential(login=login, password=self.STAND_USERS[login])
 
     def local_users(self) -> dict[str, list[str]]:
-        """Логины [auth.local] рабочего конфига и их роли."""
-        base = StandPaths.BASE_CONFIG.under(REPO_ROOT)
-        with base.open("rb") as handle:
-            doc: dict[str, Any] = tomllib.load(handle)
-
-        users = doc.get("auth", {}).get("local", {}).get("users", {})
-        roles = doc.get("auth", {}).get("local", {}).get("roles", {})
-
+        """Логины стенда и их роли."""
         found: dict[str, list[str]] = {}
-        for login in users:
-            found[str(login)] = [str(r) for r in roles.get(login, [])]
+        for login in self.STAND_USERS:
+            found[login] = list(self.STAND_ROLES.get(login, []))
 
         return found
 
@@ -191,6 +183,16 @@ class StandConfig:
             }
         }
 
+        # web-инструменты стенда ходят на тот же фейковый сервер: whitelist
+        # рабочего конфига смотрит во внешние хосты, недоступные стенду
+        web = doc.get("tool", {}).get("web")
+        if isinstance(web, MutableMapping):
+            profiles = web.get("profiles")
+            if not isinstance(profiles, MutableMapping):
+                profiles = {}
+                web["profiles"] = profiles
+            profiles[StandUrl.HOST.value] = "${web.public}"
+
     def _use_test_profiles(self, doc: MutableMapping[str, Any]) -> None:
         """Профили и роли стенда: фиксированные, тесты знают их наизусть.
 
@@ -236,7 +238,7 @@ class StandConfig:
                 "default": True,
                 "roles": ["*"],
                 "tools": ["*"],
-                "provider": "${openai.main}",
+                "backend": { "provider": "openai", "openai": "${openai.main}" },
                 "model": "fake-model-general",
                 "models": ["fake-model-general", "fake-model-alt"],
                 "settings": ["*"],
@@ -252,7 +254,7 @@ class StandConfig:
                 "default": False,
                 "roles": ["*"],
                 "tools": ["diagram_save", "canvas_open"],
-                "provider": "${openai.main}",
+                "backend": { "provider": "openai", "openai": "${openai.main}" },
                 "model": "fake-model-search",
                 "models": ["fake-model-search"],
                 "settings": ["temperature", "top_p", "history_messages", "user_prompt"],
@@ -282,9 +284,29 @@ class StandConfig:
         journal_dir.mkdir(parents=True, exist_ok=True)
         doc["stream_journal"]["dir"] = str(journal_dir)
 
-    @staticmethod
-    def _use_local_auth(doc: MutableMapping[str, Any]) -> None:
+    def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
+        """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""
         doc["app"]["auth"] = ["${auth.local}"]
+        doc["auth"]["local"] = {
+            "type": "local",
+            "users": dict(self.STAND_USERS),
+            "roles": {login: list(roles) for login, roles in self.STAND_ROLES.items()},
+            "require_roles": True,
+        }
+
+        if not self.sso:
+            return
+
+        # keytab и SPN из рабочего конфига; маппинг ролей через LDAP стенду не нужен
+        doc["app"]["auth"] = ["${auth.kerberos}", "${auth.local}"]
+        doc["auth"]["kerberos"] = {
+            "type": "kerberos",
+            "principal_format": "{username}@${site.krb_realm}",
+            "accept": {
+                "service_name": "HTTP/${site.krb_domain}@${site.krb_realm}",
+                "keytab": "${site.krb_keytab}",
+            },
+        }
 
     def _disable_sandbox_tools(self, doc: MutableMapping[str, Any]) -> None:
         """Без песочницы остаются инструменты, которым она не нужна."""
@@ -335,6 +357,14 @@ class StandProcess:
     log_path: Path
     process: subprocess.Popen[bytes] | None = None
 
+    COMPLAINT_MARKERS: ClassVar[tuple[str, ...]] = (
+        "ERROR:",
+        "Traceback",
+        "Task exception was never retrieved",
+        "loop mismatch",
+    )
+    """Маркеры строк, которых в логе живого хода быть не должно."""
+
     def start(self, boot_timeout_sec: float) -> None:
         self.config.write()
         log = self.log_path.open("wb")
@@ -356,6 +386,22 @@ class StandProcess:
             self.process.wait(timeout=20)
         except subprocess.TimeoutExpired:
             self.process.kill()
+
+    def complaints(self) -> list[str]:
+        """Строки лога стенда об ошибках: ход обязан проходить без них."""
+        if not self.log_path.is_file():
+            return []
+
+        text = self.log_path.read_text(encoding="utf-8", errors="replace")
+
+        found: list[str] = []
+        for line in text.splitlines():
+            for marker in self.COMPLAINT_MARKERS:
+                if marker in line:
+                    found.append(line)
+                    break
+
+        return found
 
     def tail(self, lines: int = 40) -> str:
         """Хвост лога стенда: без него падение теста молчит о причине."""

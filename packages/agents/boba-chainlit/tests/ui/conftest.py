@@ -162,6 +162,18 @@ class StandDatabase:
         )
         self._run(self._execute(query, None))
 
+    def elements_named(self, name: str) -> int:
+        """Сколько элементов с таким именем записал data layer стенда."""
+        query = sql.SQL("select count(*) from {}.elements where name = %s").format(
+            sql.Identifier(self._schema)
+        )
+
+        row = self._run(self._execute(query, (name,)))
+        if row is None:
+            return 0
+
+        return int(row[0])
+
     def llm_settings_of(self, identifier: str) -> dict:
         """Ключ llm из users.meta: тест сверяет, что именно сохранилось."""
         query = sql.SQL(

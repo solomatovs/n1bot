@@ -115,17 +115,31 @@ class TestToolStep:
             )
 
     def test_running_state_precedes_the_result(self, chat: ChatPage) -> None:
-        """Первым приходит пометка running, а не готовый вывод инструмента."""
+        """Первым приходит открытый шаг с подписью вызова, а не готовый вывод.
+
+        Состояние «идёт» показывает открытый шаг (кружок ○, нет end), подпись
+        вызова живёт в названии; вывод инструмента появляется только потом.
+        """
         chat.ask(f"{ScenarioName.TOOL.value} please")
         chat.await_idle()
 
         steps = chat.log.steps_of_type(StepKind.TOOL.value)
         if len(steps) < 2:
             raise AssertionError(chat.log.describe())
-        if steps[0].get("output") != "running":
-            raise AssertionError(steps[0])
-        if steps[-1].get("output") == "running":
-            raise AssertionError(steps[-1])
+
+        first = steps[0]
+        if not str(first.get("name", "")).startswith("○"):
+            raise AssertionError(first)
+        if first.get("end") is not None:
+            raise AssertionError(first)
+        if first.get("output"):
+            raise AssertionError(first)
+
+        last = steps[-1]
+        if last.get("end") is None:
+            raise AssertionError(last)
+        if not last.get("output"):
+            raise AssertionError(last)
 
     def test_is_shown_in_dom(self, chat: ChatPage) -> None:
         chat.ask(f"{ScenarioName.TOOL.value} please")

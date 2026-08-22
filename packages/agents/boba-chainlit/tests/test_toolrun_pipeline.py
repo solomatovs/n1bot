@@ -10,6 +10,7 @@ import asyncio
 from typing import Annotated, Any, ClassVar
 
 import pytest
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.tools import InjectedToolArg, tool
 from pydantic import BaseModel, Field, SecretStr
 
@@ -17,6 +18,7 @@ from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
+from boba.chainlit.agent.toolrun.wrapping import ToolAsyncBody
 from boba.chainlit.rendering.tool import MarkdownRendering, ToolResultView
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import JournalChannel
@@ -208,3 +210,68 @@ class TestChannelTap:
             raise AssertionError("ToolChannelsTap.get() is None")
         if stream.note != "finished":
             raise AssertionError('stream.note == "finished"')
+
+
+class _LoopRecorder(AsyncCallbackHandler):
+    """Запоминает, в каком event loop langchain позвал on_tool_start."""
+
+    def __init__(self) -> None:
+        self.loops: list[int] = []
+
+    async def on_tool_start(self, *args: Any, **kwargs: Any) -> None:
+        self.loops.append(id(asyncio.get_running_loop()))
+
+
+class TestAsyncBody:
+    """Sync-инструмент получает корутину: колбэки трасера остаются в loop хода.
+
+    Без неё StructuredTool.ainvoke уводит весь вызов в поток, где langchain
+    запускает async-колбэки через собственный Runner — в чужом loop, и шаги
+    ленты не доходят до пула postgres.
+    """
+
+    @staticmethod
+    def _sync_tool() -> Any:
+        @tool
+        def sync_echo(text: str) -> str:
+            """Возвращает текст."""
+            return text
+
+        return sync_echo
+
+    @pytest.mark.anyio
+    async def test_callbacks_run_in_the_caller_loop(self) -> None:
+        sync_echo = self._sync_tool()
+        ToolAsyncBody.ensure_all([sync_echo])
+
+        recorder = _LoopRecorder()
+        envelope = {
+            "name": "sync_echo",
+            "args": {"text": "hi"},
+            "id": "call-loop-1",
+            "type": "tool_call",
+        }
+        message = await sync_echo.ainvoke(envelope, config={"callbacks": [recorder]})
+
+        if "hi" not in str(message.content):
+            raise AssertionError(f"тело исполнилось: {message.content!r}")
+
+        if recorder.loops != [id(asyncio.get_running_loop())]:
+            raise AssertionError(f"колбэк шёл в чужом loop: {recorder.loops}")
+
+    @pytest.mark.anyio
+    async def test_without_coroutine_callbacks_leave_the_loop(self) -> None:
+        """Контроль: сам баг воспроизводится без корутины."""
+        sync_echo = self._sync_tool()
+
+        recorder = _LoopRecorder()
+        envelope = {
+            "name": "sync_echo",
+            "args": {"text": "hi"},
+            "id": "call-loop-2",
+            "type": "tool_call",
+        }
+        await sync_echo.ainvoke(envelope, config={"callbacks": [recorder]})
+
+        if recorder.loops == [id(asyncio.get_running_loop())]:
+            raise AssertionError("без корутины колбэк ушёл бы в чужой loop")

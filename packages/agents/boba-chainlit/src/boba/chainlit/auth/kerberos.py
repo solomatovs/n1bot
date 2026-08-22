@@ -10,6 +10,7 @@ import base64
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable, Iterator
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -64,6 +65,13 @@ from boba.krb import (
     SpnegoIdentity,
 )
 from chainlit.config import config as cl_config
+
+
+class ButtonJsVar(StrEnum):
+    """Плейсхолдеры sso_button.js, которые сервер заменяет на URL."""
+
+    SSO_URL = "__SSO_URL__"
+    TRANSLATIONS_URL = "__TRANSLATIONS_URL__"
 
 
 class KerberosRolesInLdapMappingConfig(LdapRolesConfig):
@@ -429,14 +437,13 @@ class KerberosAuth:
     _BUTTON_JS: ClassVar[Path] = Path(__file__).parent / "sso_button.js"
     """JS кнопки едет в wheel как package-data — см. pyproject boba-chainlit."""
 
-    _SSO_URL_VAR: ClassVar[str] = "__SSO_URL__"
-
     def __init__(self, url_prefix: str, config: KerberosAuthConfig):
         self._config = config
         # роуты без префикса (root_path учтёт роутер), middleware и кнопка — с полным
         self._sso_path = config.sso_path
         self._sso_url = f"{url_prefix}{config.sso_path}"
         self._js_path = f"{self._sso_url}.js"
+        self._translations_url = f"{url_prefix}/project/translations"
         self._app_url = f"{url_prefix}/"
         self._login_url = f"{url_prefix}/login"
         self._provider = "kerberos"
@@ -655,4 +662,6 @@ class KerberosAuth:
     def _get_static_button(self) -> str:
         """JS кнопки SSO из файла-ресурса рядом с модулем; сервер знает только URL."""
         template = self._BUTTON_JS.read_text(encoding="utf-8")
-        return template.replace(self._SSO_URL_VAR, self._sso_url)
+        with_sso = template.replace(ButtonJsVar.SSO_URL, self._sso_url)
+
+        return with_sso.replace(ButtonJsVar.TRANSLATIONS_URL, self._translations_url)

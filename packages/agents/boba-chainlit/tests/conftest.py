@@ -22,6 +22,10 @@ from boba.chainlit.domain.keys import AttachmentLinks, WorkspaceMount
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
+from boba.llm.bridge import ProviderChatModel
+from boba.llm.openai import OpenAiConfig
+from boba.llm.openai_chat import OpenAiChatProvider
+from boba.llm.provider import ChatSampling, OpenAiChatConfig
 from boba.settings import bind, build_app_config
 
 TEST_DB = "boba_chainlit_test"
@@ -73,6 +77,31 @@ class Seed:
     messages: list[BaseMessage]
     answer_step_id: str
     """id шага итогового ответа — он же цель для feedback и вложений."""
+
+
+def fake_openai_chat(
+    client: object,
+    model: str = "fake-model",
+    base_url: str = "https://fake-llm/v1",
+    sampling: ChatSampling | None = None,
+) -> ProviderChatModel:
+    """Чат-модель прод-стека на фейковом httpx-клиенте: SSE идёт через него."""
+    cfg = OpenAiChatConfig(
+        provider="openai",
+        openai=OpenAiConfig(base_url=base_url, api_key="fake-key"),
+    )
+
+    if sampling is None:
+        sampling = ChatSampling()
+
+    import httpx
+
+    if not isinstance(client, httpx.AsyncClient):
+        raise TypeError(f"fake client must be httpx.AsyncClient, got {type(client)}")
+
+    provider = OpenAiChatProvider(cfg, client, model)
+    return ProviderChatModel(provider=provider, sampling=sampling, model_name=model)
+
 
 
 @pytest.fixture(scope="session")

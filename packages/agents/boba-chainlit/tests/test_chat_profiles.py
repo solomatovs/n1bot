@@ -9,11 +9,13 @@ from boba.chainlit.infra.config import (
     AgentSettings,
     ChatProfileConfig,
     ChatProfiles,
-    OpenAiConfig,
     ProfileRefusal,
 )
+from boba.llm.provider import ChatSampling, OpenAiChatConfig
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
+
+BACKEND = {"provider": "openai", "openai": OPENAI}
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +27,7 @@ def _profile(**kw) -> ChatProfileConfig:
     base = {
         "display_name": "Profile",
         "description": "test profile",
-        "provider": OPENAI,
+        "backend": BACKEND,
         "model": "test-model",
     }
     base.update(kw)
@@ -119,18 +121,18 @@ class TestVisibilityByWildcard:
             raise AssertionError('visible_for({"OTHER"}) is False')
 
 
-class TestChatKwargs:
+class TestChatSampling:
     def test_unset_params_are_not_sent(self) -> None:
         settings = AgentSettings.model_validate(
-            {"provider": OPENAI, "model": "test-model"}
+            {"backend": BACKEND, "model": "test-model"}
         )
-        if settings.chat_kwargs() != {}:
-            raise AssertionError("settings.chat_kwargs() == {}")
+        if settings.chat_sampling() != ChatSampling():
+            raise AssertionError("settings.chat_sampling() == ChatSampling()")
 
     def test_set_params_are_sent(self) -> None:
         settings = AgentSettings.model_validate(
             {
-                "provider": OPENAI,
+                "backend": BACKEND,
                 "model": "test-model",
                 "temperature": 0.2,
                 "max_tokens": 1000,
@@ -138,26 +140,26 @@ class TestChatKwargs:
                 "stop": ["END"],
             }
         )
-        kwargs = settings.chat_kwargs()
-        expected = {
-            "temperature": 0.2,
-            "max_tokens": 1000,
-            "top_p": 0.9,
-            "stop_sequences": ["END"],
-        }
-        if kwargs != expected:
-            raise AssertionError("kwargs == expected")
+        sampling = settings.chat_sampling()
+        expected = ChatSampling(
+            temperature=0.2,
+            max_tokens=1000,
+            top_p=0.9,
+            stop=("END",),
+        )
+        if sampling != expected:
+            raise AssertionError(f"sampling: {sampling}")
 
     def test_zero_temperature_is_sent(self) -> None:
         settings = AgentSettings.model_validate(
-            {"provider": OPENAI, "model": "test-model", "temperature": 0}
+            {"backend": BACKEND, "model": "test-model", "temperature": 0}
         )
-        if settings.chat_kwargs() != {"temperature": 0}:
-            raise AssertionError('chat_kwargs() == {"temperature": 0}')
+        if settings.chat_sampling().temperature != 0:
+            raise AssertionError("chat_sampling().temperature == 0")
 
     def test_openai_transport_binds(self) -> None:
         settings = AgentSettings.model_validate(
-            {"provider": OPENAI, "model": "test-model"}
+            {"backend": BACKEND, "model": "test-model"}
         )
-        if not isinstance(settings.provider, OpenAiConfig):
-            raise AssertionError("isinstance(settings.provider, OpenAiConfig)")
+        if not isinstance(settings.backend, OpenAiChatConfig):
+            raise AssertionError("isinstance(settings.backend, OpenAiChatConfig)")

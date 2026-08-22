@@ -18,6 +18,7 @@ from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
+from boba.chainlit.agent.toolrun.wrapping import ToolAsyncBody
 from boba.chainlit.infra.tickets import KerberosTickets
 from boba.chainlit.agent.tools.send_file import build_send_file_tool
 from boba.chainlit.canvas.diagram import (
@@ -560,4 +561,5 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
     CancellableTools.guard_all(tools)
     ToolAccessGuard.guard_all(tools, access, current_user_roles, current_chat_profile)
     ToolErrorGuard.guard_all(tools)
+    ToolAsyncBody.ensure_all(tools)
     return ToolRegistry(tools=tools, access=access)

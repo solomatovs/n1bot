@@ -24,7 +24,6 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from omegaconf import DictConfig
-from pydantic import SecretStr
 
 from boba.chainlit.agent.flow import (
     GraphSpec,
@@ -44,7 +43,7 @@ from boba.chainlit.infra.providers import (
     rephrase_generators,
     session_graph_builder,
 )
-from boba.llm.chat import ReasoningChatOpenAI
+from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import (
     GenerationConfig,
     LocalGeneration,
@@ -53,7 +52,7 @@ from boba.llm.generation import (
     OpenAiStructuredGenerator,
     StructuredGenerator,
 )
-from boba.llm.openai import OpenAiHttp
+from boba.llm.local import OnnxChatRuntime
 from boba.settings import bind
 from boba.toolkit.result import TableResult, ToolArtifact
 
@@ -158,15 +157,13 @@ def _graph(
     selected = SelectedProfile(name=PROFILE, config=app_config.profiles[PROFILE])
     settings = selected.config
 
-    chat = ReasoningChatOpenAI(
-        http_async_client=clients[PROFILE],
+    provider = ChatProviderFactory.build(
+        settings.backend,
         model=settings.model,
-        base_url=settings.provider.base_url,
-        api_key=SecretStr(settings.provider.api_key),
-        timeout=OpenAiHttp.timeout(settings.provider),
-        max_retries=settings.provider.max_retries,
-        **settings.chat_kwargs(),
+        client=clients.get(PROFILE),
+        runtime=None,
     )
+    chat = ProviderChatModel(provider=provider, sampling=settings.chat_sampling())
 
     names: list[str] = []
     for tool in tools:
@@ -180,12 +177,30 @@ def _graph(
         history=build_history_view(frozenset(names), settings.history_messages),
     )
 
-    generators = rephrase_generators(app_config, clients)
+    generators = rephrase_generators(app_config, clients, _runtimes(app_config))
     builder = session_graph_builder(generators, selected, tools)
     if not isinstance(builder, PrefetchGraphBuilder):
         pytest.fail(f"профиль {PROFILE} должен строить prefetch-граф, а не {builder}")
 
     return builder.build(spec)
+
+
+def _runtimes(app_config: AppConfig) -> dict[str, OnnxChatRuntime]:
+    """Локальные рантаймы конфига; профили теста обычно openai — пусто."""
+    runtimes: dict[str, OnnxChatRuntime] = {}
+    for profile in app_config.profiles.values():
+        flow = profile.flow
+        if not isinstance(flow, PrefetchFlowConfig):
+            continue
+
+        if not isinstance(flow.rephraser, LocalGeneration):
+            continue
+
+        model_dir = flow.rephraser.model_dir
+        if model_dir not in runtimes:
+            runtimes[model_dir] = OnnxChatRuntime(model_dir)
+
+    return runtimes
 
 
 def _generator(
@@ -197,7 +212,7 @@ def _generator(
     cfg = rephraser.model_copy(update=overrides)
 
     if isinstance(cfg, LocalGeneration):
-        return LocalOnnxGenerator(cfg)
+        return LocalOnnxGenerator(cfg, OnnxChatRuntime(cfg.model_dir))
 
     client = clients[PrefetchFlowConfig.client_key(PROFILE)]
     return OpenAiStructuredGenerator(cfg, client)

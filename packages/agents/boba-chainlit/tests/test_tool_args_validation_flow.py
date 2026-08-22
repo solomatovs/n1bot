@@ -69,7 +69,7 @@ BAD_CALL: dict[str, Any] = {
 }
 GOOD_CALL: dict[str, Any] = {
     "name": TOOL,
-    "args": {"query": "kerberos"},
+    "args": {"query": "kerberos", "intent": "retry with the query filled in"},
     "id": "call-with-query",
     "type": "tool_call",
 }

@@ -18,7 +18,6 @@ from omegaconf import DictConfig
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg_pool import PoolTimeout
-from pydantic import SecretStr
 
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
@@ -58,15 +57,16 @@ from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit.rendering.chat_view import StepText
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
-from boba.llm.chat import ReasoningChatOpenAI
+from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import (
+    GeneratorFactory,
     LocalGeneration,
-    LocalOnnxGenerator,
     OpenAiGeneration,
-    OpenAiStructuredGenerator,
     StructuredGenerator,
 )
+from boba.llm.local import OnnxChatRuntime
 from boba.llm.openai import OpenAiConfig, OpenAiHttp
+from boba.llm.provider import ChatProvider, LocalChatConfig, OpenAiChatConfig
 from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
@@ -217,14 +217,16 @@ def _openai_client(openai: OpenAiConfig) -> AsyncClient:
 async def httpx_clients(
     c: Annotated[AppConfig, Depends(get_app_config)],
 ) -> AsyncIterator[dict[str, AsyncClient]]:
-    """HTTP-клиент провайдера на каждый профиль чата; живут до остановки.
+    """HTTP-клиент на каждый openai-бэкенд профиля чата; живут до остановки.
 
-    Prefetch-flow профиля получает свой клиент под ключом flow: у его
-    переформулировщика свой транспорт.
+    Профиль на локальном бэкенде клиента не имеет. Prefetch-flow профиля
+    получает свой клиент под ключом flow: у его переформулировщика свой
+    транспорт.
     """
     clients: dict[str, AsyncClient] = {}
     for name, profile in c.profiles.items():
-        clients[name] = _openai_client(profile.provider)
+        if isinstance(profile.backend, OpenAiChatConfig):
+            clients[name] = _openai_client(profile.backend.openai)
 
         flow = profile.flow
         if not isinstance(flow, PrefetchFlowConfig):
@@ -240,6 +242,37 @@ async def httpx_clients(
     finally:
         for client in clients.values():
             await client.aclose()
+
+
+def local_chat_runtimes(
+    c: Annotated[AppConfig, Depends(get_app_config)],
+) -> dict[str, OnnxChatRuntime]:
+    """Локальные рантаймы по каталогу модели; один экземпляр на процесс.
+
+    Каталог собирается со всех профилей с локальным бэкендом и локальных
+    переформулировщиков: одна и та же модель грузится один раз и обслуживает
+    обе способности.
+    """
+    runtimes: dict[str, OnnxChatRuntime] = {}
+
+    for profile in c.profiles.values():
+        if isinstance(profile.backend, LocalChatConfig):
+            model_dir = profile.backend.model_dir
+            if model_dir not in runtimes:
+                runtimes[model_dir] = OnnxChatRuntime(model_dir)
+
+        flow = profile.flow
+        if not isinstance(flow, PrefetchFlowConfig):
+            continue
+
+        if not isinstance(flow.rephraser, LocalGeneration):
+            continue
+
+        model_dir = flow.rephraser.model_dir
+        if model_dir not in runtimes:
+            runtimes[model_dir] = OnnxChatRuntime(model_dir)
+
+    return runtimes
 
 
 async def langchain_checkpoint_saver(
@@ -397,11 +430,12 @@ def _flow_tools(names: Sequence[str], tools: Sequence[BaseTool]) -> list[BaseToo
 def rephrase_generators(
     c: Annotated[AppConfig, Depends(get_app_config)],
     clients: Annotated[dict[str, AsyncClient], Depends(httpx_clients)],
+    runtimes: Annotated[dict[str, OnnxChatRuntime], Depends(local_chat_runtimes)],
 ) -> dict[str, StructuredGenerator]:
     """Генератор переформулировок на профиль; живут до остановки приложения.
 
-    Локальная модель занимает сотни мегабайт и грузится секунду, поэтому
-    строится один раз на процесс, а не на сессию чата.
+    Локальный бэкенд работает на общем рантайме local_chat_runtimes: модель
+    грузится один раз на процесс и делится с чатом.
     """
     generators: dict[str, StructuredGenerator] = {}
     for name, profile in c.profiles.items():
@@ -413,12 +447,15 @@ def rephrase_generators(
         if cfg is None:
             continue
 
+        runtime = None
         if isinstance(cfg, LocalGeneration):
-            generators[name] = LocalOnnxGenerator(cfg)
-            continue
+            runtime = runtimes[cfg.model_dir]
 
-        client = clients[flow.client_key(name)]
-        generators[name] = OpenAiStructuredGenerator(cfg, client)
+        generators[name] = GeneratorFactory.build(
+            cfg,
+            client=clients.get(flow.client_key(name)),
+            runtime=runtime,
+        )
 
     return generators
 
@@ -452,29 +489,42 @@ def _rephraser(
     return LlmRephraser(generator)
 
 
-def session_chat(
+def session_chat_provider(
     clients: Annotated[dict[str, AsyncClient], Depends(httpx_clients)],
+    runtimes: Annotated[dict[str, OnnxChatRuntime], Depends(local_chat_runtimes)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],
-) -> BaseChatModel:
-    """Чат-модель хода: транспорт профиля плюс настройки сессии."""
-    # таймаут запроса клиент openai ставит поверх клиентского: без него в
-    # httpx уходит None и фазы остаются без потолка
-    stream_chunk_timeout = None
-    if settings.provider.stream_chunk_timeout:
-        stream_chunk_timeout = settings.provider.stream_chunk_timeout
+) -> ChatProvider:
+    """Чат-провайдер сессии: реализацию выбирает бэкенд профиля."""
+    backend = settings.backend
 
-    return ReasoningChatOpenAI(
-        http_async_client=clients[selected.name],
+    runtime = None
+    if isinstance(backend, LocalChatConfig):
+        runtime = runtimes[backend.model_dir]
+
+    return ChatProviderFactory.build(
+        backend,
         model=settings.model,
-        base_url=settings.provider.base_url,
-        api_key=SecretStr(settings.provider.api_key),
-        timeout=OpenAiHttp.timeout(settings.provider),
-        stream_chunk_timeout=stream_chunk_timeout,
-        max_retries=settings.provider.max_retries,
-        **settings.chat_kwargs(),
+        client=clients.get(selected.name),
+        runtime=runtime,
+    )
+
+
+def session_chat(
+    provider: Annotated[
+        ChatProvider, Depends(session_chat_provider, scope="session")
+    ],
+    settings: Annotated[
+        AgentSettings, Depends(session_agent_settings, scope="session")
+    ],
+) -> BaseChatModel:
+    """Чат-модель хода: мост графа поверх провайдера с сэмплингом сессии."""
+    return ProviderChatModel(
+        provider=provider,
+        sampling=settings.chat_sampling(),
+        model_name=settings.model,
     )
 
 

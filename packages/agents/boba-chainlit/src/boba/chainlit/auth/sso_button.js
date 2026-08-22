@@ -1,8 +1,55 @@
-// Кнопка «Войти через SSO» на странице логина; __SSO_URL__ подставляет сервер.
+// Кнопка «Войти через SSO» и placeholder пароля на странице логина;
+// __SSO_URL__ и __TRANSLATIONS_URL__ подставляет сервер.
 (() => {
   "use strict";
   const SSO_URL = "__SSO_URL__";
+  const TRANSLATIONS_URL = "__TRANSLATIONS_URL__";
   const BTN_ID = "sso-login-btn";
+  const PASSWORD_ID = "password";
+  const PASSWORD_PLACEHOLDER_PATH = ["auth", "login", "form", "password", "placeholder"];
+
+  // фронт chainlit ставит placeholder только полю логина: у пароля берём его из переводов сами
+  let passwordPlaceholder = "";
+  let placeholderRequested = false;
+
+  function pick(obj, path) {
+    let cur = obj;
+    for (const key of path) {
+      if (cur === null || typeof cur !== "object") return "";
+      cur = cur[key];
+    }
+    if (typeof cur !== "string") return "";
+    return cur;
+  }
+
+  function loadPlaceholder() {
+    if (placeholderRequested) return;
+    placeholderRequested = true;
+
+    const win = browser.win;
+    if (!win) return;
+    const language = win.navigator.language || "en-US";
+    const url = TRANSLATIONS_URL + "?language=" + encodeURIComponent(language);
+    fetch(url, { credentials: "same-origin" })
+      .then((r) => {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then((body) => {
+        if (!body) return;
+        passwordPlaceholder = pick(body, ["translation", ...PASSWORD_PLACEHOLDER_PATH]);
+        injectPlaceholder();
+      })
+      .catch(() => {});
+  }
+
+  function injectPlaceholder() {
+    if (!passwordPlaceholder) return;
+    const field = browser.byId(PASSWORD_ID);
+    if (!field) return;
+    if (field.placeholder === passwordPlaceholder) return;
+    field.placeholder = passwordPlaceholder;
+  }
 
   // Браузерные API держим в одной точке: в серверном рендере их не существует.
   const browser = {
@@ -80,6 +127,10 @@
       if (stale) stale.remove();
       return;
     }
+
+    loadPlaceholder();
+    injectPlaceholder();
+
     if (browser.byId(BTN_ID)) return;
 
     const form = browser.find("form");
