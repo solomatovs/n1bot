@@ -10,6 +10,7 @@ import sys
 from uuid import uuid4
 
 import pytest
+from zygote_stand import ProfileFields
 
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.profile import SandboxProfile
@@ -91,58 +92,79 @@ class TestProfileValidation:
     @staticmethod
     def _profile(**overrides: object) -> SandboxProfile:
         fields: dict[str, object] = {
-            "rootfs": "",
-            "ro_binds": [],
-            "rw_binds": [],
-            "rw_images": [],
-            "image_template": "",
-            "launcher": {
-                "mount_wait_sec": 1.0,
-                "mount_poll_sec": 0.05,
-                "shutdown_wait_sec": 1.0,
-                "lock_wait_sec": 10.0,
-                "copy_chunk_bytes": 1048576,
+            "host": {
+                "mounting": {
+                    "mount_wait_sec": 1.0,
+                    "mount_poll_sec": 0.05,
+                    "shutdown_wait_sec": 1.0,
+                    "lock_wait_sec": 10.0,
+                    "copy_chunk_bytes": 1048576,
+                },
+                "binaries": {"dirs": _bin_dirs()},
+                "stderr_tail_bytes": 4096,
+                "fail_tail_chars": 2000,
+                "kill_grace_sec": 5,
+                "cgroup_base": "",
             },
-            "binaries": {"dirs": _bin_dirs()},
-            "tmpfs": [],
-            "network": False,
-            "env_set": {},
-            "timeout_sec": 5,
-            "max_memory_bytes": 1,
-            "max_cpu_sec": 1,
-            "max_file_size_bytes": 1,
-            "max_open_files": 1,
-            "max_processes": 1,
-            "cgroup_base": "",
-            "oom_score_adj": 0,
-            "cwd": "",
+            "rootfs": {
+                "dir": "",
+            },
+            "mounts": {
+                "ro": [],
+                "rw": [],
+                "images": [],
+                "image_template": "",
+                "tmpfs": [],
+                "proc": "/proc",
+                "dev": "/dev",
+                "call_tmpfs": "/tmp",  # noqa: S108
+                "setup_ro": (),
+                "setup_rw": (),
+            },
+            "isolation": {
+                "network": False,
+                "env": {},
+                "max_processes": 1,
+                "reap_poll_sec": 0.05,
+            },
+            "limits": {
+                "timeout_sec": 5,
+                "process_memory_bytes": 1,
+                "process_cpu_sec": 1,
+                "process_file_bytes": 1,
+                "process_open_files": 1,
+                "process_oom_score_adj": 0,
+            },
+            "run": {
+                "shell": "/bin/bash",
+                "cwd": "",
+            },
         }
-        fields.update(overrides)
-        return SandboxProfile.model_validate(fields)
+        return SandboxProfile.model_validate(ProfileFields.merged(fields, overrides))
 
     def test_group_limits_require_cgroup_base(self) -> None:
         with pytest.raises(ValueError, match="cgroup_base is empty"):
-            self._profile(cgroup_cpu_percent=100)
+            self._profile(group_cpu_percent=100)
 
     def test_any_single_group_field_requires_base(self) -> None:
         with pytest.raises(ValueError, match="cgroup_base is empty"):
-            self._profile(cgroup_oom_kill_all=True)
+            self._profile(group_oom_kill_all=True)
 
     def test_cgroup_base_must_be_absolute(self) -> None:
         with pytest.raises(ValueError, match="must be absolute"):
-            self._profile(cgroup_base="relative/path", cgroup_cpu_weight=10)
+            self._profile(cgroup_base="relative/path", group_cpu_weight=10)
 
     def test_absent_group_limits_allow_empty_base(self) -> None:
         profile = self._profile()
-        if profile.cgroup_memory_bytes is not None:
-            raise AssertionError("profile.cgroup_memory_bytes is None")
-        if profile.cgroup_oom_kill_all is not None:
-            raise AssertionError("profile.cgroup_oom_kill_all is None")
+        if profile.limits.group_memory_bytes is not None:
+            raise AssertionError("profile.limits.group_memory_bytes is None")
+        if profile.limits.group_oom_kill_all is not None:
+            raise AssertionError("profile.limits.group_oom_kill_all is None")
 
     def test_zero_is_not_a_switch_anymore(self) -> None:
         """«Выключено» выражается отсутствием параметра, а не нулём."""
         with pytest.raises(ValueError, match="greater than 0"):
-            self._profile(cgroup_base="/sys/fs/cgroup/x", cgroup_cpu_percent=0)
+            self._profile(cgroup_base="/sys/fs/cgroup/x", group_cpu_percent=0)
 
 
 _UID = os.getuid()
@@ -294,7 +316,7 @@ class TestProbe:
     def test_names_profile_on_failure(self) -> None:
         profile = TestProfileValidation._profile(
             cgroup_base="/sys/fs/cgroup/nonexistent/forbidden",
-            cgroup_cpu_percent=100,
+            group_cpu_percent=100,
         )
         CgroupManager._prepared.pop("/sys/fs/cgroup/nonexistent/forbidden", None)
         with pytest.raises(CgroupError, match="sandbox profile 'broken'"):

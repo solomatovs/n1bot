@@ -532,8 +532,7 @@ class NumberBounds(BaseModel):
 
         if not self.low <= self.default <= self.high:
             msg = (
-                f"settings: default {self.default} is out of "
-                f"[{self.low}, {self.high}]"
+                f"settings: default {self.default} is out of [{self.low}, {self.high}]"
             )
             raise ValueError(msg)
 
@@ -613,8 +612,8 @@ class UserLlmOverrides(BaseModel):
             )
 
         if self.presence_penalty is not None:
-            update[UserSetting.PRESENCE_PENALTY.value] = (
-                bounds.presence_penalty.clamp(self.presence_penalty)
+            update[UserSetting.PRESENCE_PENALTY.value] = bounds.presence_penalty.clamp(
+                self.presence_penalty
             )
 
         if self.history_messages is not None:
@@ -859,6 +858,17 @@ class ChainlitExtendConfig(BaseModel):
         description="WebSocket-реализация uvicorn: auto/websockets/wsproto/none.",
     )
 
+    shutdown_timeout_sec: int = Field(
+        gt=0,
+        description=(
+            "Сколько секунд uvicorn ждёт завершения соединений и задач после "
+            "сигнала остановки, прежде чем отменить их и выйти. Без этого "
+            "значения ожидание бесконечно: открытая вкладка держит websocket, "
+            "остановка приложения не доходит до shutdown, а вместе с "
+            "приложением остаются жить и зиготы песочницы."
+        ),
+    )
+
 
 class CheckpointerConfig(BaseModel):
     """Конфиг langgraph-checkpointer: postgres-подключение + схема БД."""
@@ -978,9 +988,7 @@ class AppConfig(BaseModel):
     settings: Annotated[
         SettingsBounds,
         Field(
-            description=(
-                "Пределы пользовательских настроек LLM; ссылкой ${settings}."
-            ),
+            description=("Пределы пользовательских настроек LLM; ссылкой ${settings}."),
         ),
     ]
 

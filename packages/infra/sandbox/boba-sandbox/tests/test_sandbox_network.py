@@ -20,9 +20,10 @@ from urllib.parse import urlsplit
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
+from zygote_stand import ZygoteStand
 
 from boba.sandbox.profile import SandboxProfile, SandboxToolConfig
-from boba.sandbox.runner import SandboxRunner, has_bwrap
+from boba.sandbox.runner import has_bwrap
 from boba.settings import bind, build_app_config
 
 
@@ -85,8 +86,8 @@ class SandboxToolProfiles:
                 continue
 
             profile = bind(self._raw, f"tool.{name}.sandbox", SandboxToolConfig)
-            effective = profile.effective()
-            if not effective.network:
+            effective = profile.profile
+            if not effective.isolation.network:
                 continue
 
             profiles[name] = effective
@@ -170,13 +171,17 @@ class TestNetworkProfiles:
 
     @classmethod
     def _run(cls, profile: SandboxProfile, command: str) -> str:
+        """Команда тем же путём, что в проде: зигота секции и её исполнитель."""
         if not has_bwrap(profile):
             pytest.skip("bwrap недоступен в доверенных каталогах профиля")
 
-        runner = SandboxRunner(cls.LABEL, profile, lambda: cls.PATH_VARS)
-        outcome = runner.run(command, "")
+        caller = ZygoteStand.caller(cls.LABEL, profile, path_vars=lambda: cls.PATH_VARS)
+        try:
+            outcome = caller.call_text(command, stdin="")
+        finally:
+            ZygoteStand.stop()
 
-        if not (outcome.succeeded):
+        if outcome.result.exit_code != 0:
             raise AssertionError(
                 f"{command}: rc={outcome.result.exit_code} "
                 f"stdout={outcome.result.stdout!r} stderr={outcome.result.stderr!r}"
@@ -188,7 +193,7 @@ class TestNetworkProfiles:
         missing: list[str] = []
         for name, profile in _networked():
             targets: set[str] = set()
-            for spec in profile.ro_binds:
+            for spec in profile.mounts.ro:
                 targets.add(spec.target)
 
             for required in ResolverFile:

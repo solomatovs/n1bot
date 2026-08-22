@@ -45,9 +45,7 @@ class ActionProbe:
 
 def build_app(probe: ActionProbe) -> FastAPI:
     app = FastAPI()
-    app.add_api_route(
-        StaleActionMiddleware.PATH, probe.call_action, methods=["POST"]
-    )
+    app.add_api_route(StaleActionMiddleware.PATH, probe.call_action, methods=["POST"])
     app.add_middleware(StaleActionMiddleware)
 
     return app

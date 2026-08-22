@@ -39,6 +39,7 @@ NO_OVERRIDES = ""
 def chainlit_context() -> None:
     """Заглушка сессионной фикстуры: тесты слоя не ходят в контекст chainlit."""
 
+
 BOUNDS = SettingsBounds.model_validate(
     {
         "temperature": {"min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0},
@@ -161,9 +162,7 @@ class TestApplyTo:
             raise AssertionError("openai transport changed")
 
     def test_reasoning_and_seed_reach_chat_kwargs(self) -> None:
-        overrides = UserLlmOverrides(
-            seed=7, reasoning_effort=ReasoningEffort.HIGH
-        )
+        overrides = UserLlmOverrides(seed=7, reasoning_effort=ReasoningEffort.HIGH)
 
         kwargs = overrides.apply_to(_profile()).chat_kwargs()
 

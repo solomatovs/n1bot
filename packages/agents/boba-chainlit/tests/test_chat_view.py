@@ -249,8 +249,6 @@ class FakeContext:
         self.emitter = FakeEmitter()
 
 
-
-
 class TestLivePulseFrames:
     """Живая лента: кадры пульса приходят вкладке ровно на границах ожидания.
 

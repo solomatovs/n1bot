@@ -22,7 +22,7 @@ from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
 import httpx
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres import PostgresError
 from boba.indexing import (
@@ -34,7 +34,7 @@ from boba.indexing import (
     Section,
     SectionKeys,
 )
-from boba.llm.embedding import EmbeddingError
+from boba.llm.embedding import EmbeddingConfig, EmbeddingError
 from boba.text.document import LiteParseError, LiteParseParams
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import (
@@ -49,8 +49,9 @@ from boba.tool.kb.confluence.request_sources import (
 )
 from boba.tool.kb.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
+from boba.tool.kb.warm import WarmEmbedder
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.facade import Injected, tool
+from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import LLMStringList, SecretRevealing
@@ -99,6 +100,21 @@ class IngestToolConfig(SecretRevealing, ConfluenceIngestConfig):
     """Конфиг ingest-инструментов; секция [tool.ingest]."""
 
     SECTION: ClassVar[str] = "tool.ingest"
+
+
+class IngestWarmupConfig(BaseModel):
+    """Конфиг прогрева зиготы ingest: нужен только эмбеддер."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    embedding: EmbeddingConfig
+
+
+@warmup
+async def warm_embedder(cfg: IngestWarmupConfig) -> None:
+    """Модель эмбеддингов поднимается в зиготе: вызовы берут её через COW."""
+    embedder = WarmEmbedder.load(cfg.embedding)
+    await embedder.embed_query("warm-up")
 
 
 class LocalConfluenceReader(Reader[str]):

@@ -30,7 +30,6 @@ from boba.indexing import (
 )
 from boba.indexing.ports import Chunker, Embedder, ReaderId
 from boba.indexing.values import CollectionId
-from boba.llm.embedding import EmbedderFactory, EmbeddingConfig
 from boba.text.document import LiteParseParams
 from boba.tool.kb.chunking import (
     ChunkerParams,
@@ -48,6 +47,7 @@ from boba.tool.kb.indexing_log import (
     LoggingChunkStore,
     LoggingEmbedder,
 )
+from boba.tool.kb.warm import EmbeddingConfig, WarmEmbedder
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import StringList
 from boba.transport.http import HttpProfile
@@ -252,7 +252,7 @@ class ConfluenceIngest:
         """Собрать stores/embedder/chunker/filter из cfg и вызвать run."""
         chunk_store = LoggingChunkStore(PostgresChunkStore(cfg=cfg), logger)
         collections_store = PostgresCollectionsStore(cfg=cfg)
-        embedder = LoggingEmbedder(EmbedderFactory.build(cfg.embedding), logger)
+        embedder = LoggingEmbedder(WarmEmbedder.of(cfg.embedding), logger)
         chunker = LoggingChunker(StructuralChunkerFactory.build(cfg), logger, progress)
         allowed = AttachmentFilter.from_lists(
             media_types=cfg.attachment_media_types,

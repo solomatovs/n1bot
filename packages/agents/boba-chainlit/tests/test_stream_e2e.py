@@ -343,7 +343,6 @@ async def test_panel_and_fullscreen_share_the_button_set(
         raise AssertionError("Escape сворачивает полноэкранный режим")
 
 
-
 async def _scroll_box(page: Any) -> Any:
     return page.locator("#side-view-content .overflow-auto").first
 
@@ -648,6 +647,7 @@ async def test_channel_tabs_keep_the_fullscreen_mode(
     if collapsed != "false":
         raise AssertionError("Escape сворачивает полноэкранный режим")
 
+
 class _WindowCalls:
     """Счётчик запросов окон: замирание у прокрутки вверх проверяется по сети."""
 
@@ -899,13 +899,9 @@ async def test_live_follow_works_in_fullscreen(stream_thread: Any, panel: Any) -
     if state is None:
         raise AssertionError("полный экран свернулся при доливе")
     if state["width"] < state["winWidth"] * 0.98:
-        raise AssertionError(
-            f'ширина {state["width"]} вместо {state["winWidth"]}'
-        )
+        raise AssertionError(f"ширина {state['width']} вместо {state['winWidth']}")
     if state["height"] < state["winHeight"] * 0.98:
-        raise AssertionError(
-            f'высота {state["height"]} вместо {state["winHeight"]}'
-        )
+        raise AssertionError(f"высота {state['height']} вместо {state['winHeight']}")
     if state["pinned"] is not True:
         raise AssertionError("окно отлипло от низа при доливе в полном экране")
 

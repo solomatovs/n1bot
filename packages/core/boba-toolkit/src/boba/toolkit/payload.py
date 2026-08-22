@@ -35,26 +35,41 @@ class PayloadLogging:
     """Логер процесса песочницы: кадры в stderr вместо свободного текста.
 
     Уровень не настраивается здесь: его вычисляет хост из своей секции logger
-    и передаёт переменной окружения — так у настройки остаётся один источник.
+    и передаёт аргументом зиготы. Тела инструментов, форкнутые из зиготы,
+    берут запомненный уровень, а не собственный источник.
     """
 
     LEVEL_ENV: ClassVar[str] = "BOBA_LOG_LEVEL"
-    """Канал доставки уровня от хоста; в конфиге такой ручки нет."""
+    """Уровень для запуска процесса руками, без зиготы."""
 
     FALLBACK_LEVEL: ClassVar[str] = "INFO"
-    """Только для запуска процесса руками, без хоста."""
+    """Ни аргумента, ни переменной: процесс запущен вне приложения."""
+
+    _adopted: ClassVar[int] = 0
+    """Уровень, принятый от хоста; 0 — аргумента не было."""
 
     @classmethod
-    def setup(cls) -> None:
+    def setup(cls, level: str) -> None:
         """Ставится один раз на процесс; уровень приходит от хоста."""
+        cls._adopted = cls._parse(level)
+
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(PayloadLogFormatter())
-        logging.basicConfig(level=cls.level(), handlers=[handler], force=True)
+        logging.basicConfig(level=cls._adopted, handlers=[handler], force=True)
 
     @classmethod
     def level(cls) -> int:
-        raw = os.environ.get(cls.LEVEL_ENV, cls.FALLBACK_LEVEL).upper()
-        resolved = logging.getLevelName(raw)
+        """Уровень тела инструмента: от зиготы, иначе из окружения."""
+        if cls._adopted:
+            return cls._adopted
+
+        raw = os.environ.get(cls.LEVEL_ENV, cls.FALLBACK_LEVEL)
+        return cls._parse(raw)
+
+    @staticmethod
+    def _parse(raw: str) -> int:
+        resolved = logging.getLevelName(raw.upper())
         if isinstance(resolved, int):
             return resolved
+
         return logging.INFO

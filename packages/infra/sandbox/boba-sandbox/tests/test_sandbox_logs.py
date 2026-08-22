@@ -7,13 +7,14 @@ import os
 
 import pytest
 
-from boba.sandbox.profile import SandboxProfile
-from boba.sandbox.runner import SandboxLogRelay, SandboxRunner, StderrTee
+from boba.sandbox.runner import SandboxLogRelay, StderrTee
+from boba.sandbox.zygote import ZygoteSpawner
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
+from boba.toolkit.images import LauncherMarker
 from boba.toolkit.launcher import LaunchPayload
 from boba.toolkit.payload import PayloadLogging
-from boba.toolkit.stream import StreamSink
-from boba.workspace.launcher import LauncherMarker
+from boba.toolkit.stream import ChannelSinks, Chunk, StreamSink
+from boba.toolkit.zygote import ZygoteArgs
 
 
 def _bin_dirs() -> list[str]:
@@ -37,20 +38,20 @@ def chainlit_context() -> None:
     "релей не зависит от сессии chainlit"
 
 
-class RecordingSink:
+class RecordingSink(StreamSink):
     """Приёмник одного канала в памяти: тест читает записанные строки."""
 
     def __init__(self) -> None:
         self.lines: list[str] = []
 
-    def feed(self, data: bytes) -> None:
-        self.feed_text(data.decode("utf-8"))
+    def feed(self, data: Chunk) -> None:
+        self.feed_text(bytes(data).decode("utf-8"))
 
     def feed_text(self, text: str) -> None:
         self.lines.append(text.rstrip("\n"))
 
 
-class RecordingSinks:
+class RecordingSinks(ChannelSinks):
     """Журнал каналов вызова в памяти: приёмник заводится по обращению."""
 
     def __init__(self) -> None:
@@ -243,31 +244,53 @@ class TestStderrCleanup:
 
 
 _PROFILE_BASE: dict[str, object] = {
-    "rootfs": "",
-    "ro_binds": (),
-    "rw_binds": (),
-    "rw_images": (),
-    "image_template": "",
-    "launcher": {
-        "mount_wait_sec": 10.0,
-        "mount_poll_sec": 0.05,
-        "shutdown_wait_sec": 5.0,
-        "lock_wait_sec": 10.0,
-        "copy_chunk_bytes": 1 << 20,
+    "host": {
+        "mounting": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.05,
+            "shutdown_wait_sec": 5.0,
+            "lock_wait_sec": 10.0,
+            "copy_chunk_bytes": 1 << 20,
+        },
+        "binaries": {"dirs": _bin_dirs()},
+        "stderr_tail_bytes": 4096,
+        "fail_tail_chars": 2000,
+        "kill_grace_sec": 5,
+        "cgroup_base": "",
     },
-    "binaries": {"dirs": _bin_dirs()},
-    "tmpfs": (),
-    "network": False,
-    "env_set": {"PATH": "/usr/bin:/bin"},
-    "timeout_sec": 30,
-    "max_memory_bytes": 512 * 1024 * 1024,
-    "max_cpu_sec": 30,
-    "max_file_size_bytes": 64 * 1024 * 1024,
-    "max_open_files": 1024,
-    "max_processes": 256,
-    "cgroup_base": "",
-    "oom_score_adj": 0,
-    "cwd": "/tmp",  # noqa: S108
+    "rootfs": {
+        "dir": "",
+    },
+    "mounts": {
+        "setup_ro": (),
+        "setup_rw": (),
+        "ro": (),
+        "rw": (),
+        "images": (),
+        "image_template": "",
+        "tmpfs": (),
+        "proc": "/proc",
+        "dev": "/dev",
+        "call_tmpfs": "/tmp",  # noqa: S108
+    },
+    "isolation": {
+        "reap_poll_sec": 0.05,
+        "network": False,
+        "env": {"PATH": "/usr/bin:/bin"},
+        "max_processes": 256,
+    },
+    "limits": {
+        "timeout_sec": 30,
+        "process_memory_bytes": 512 * 1024 * 1024,
+        "process_cpu_sec": 30,
+        "process_file_bytes": 64 * 1024 * 1024,
+        "process_open_files": 1024,
+        "process_oom_score_adj": 0,
+    },
+    "run": {
+        "shell": "/bin/bash",
+        "cwd": "/tmp",  # noqa: S108
+    },
 }
 
 
@@ -275,27 +298,39 @@ class TestLevelSource:
     """Уровень логов у payload'а один с приложением: своей ручки в конфиге нет."""
 
     @staticmethod
-    def _env(level: int) -> dict[str, str]:
-        app_logger = logging.getLogger(SandboxRunner.APP_LOGGER)
+    def _level(level: int) -> str:
+        app_logger = logging.getLogger(ZygoteSpawner.APP_LOGGER)
         previous = app_logger.level
         app_logger.setLevel(level)
         try:
-            profile = SandboxProfile.model_validate(_PROFILE_BASE)
-            return SandboxRunner._env_of(profile)
+            return ZygoteSpawner.log_level()
         finally:
             app_logger.setLevel(previous)
 
     def test_level_comes_from_app_logger(self) -> None:
-        env = self._env(logging.DEBUG)
-        if env[PayloadLogging.LEVEL_ENV] != "DEBUG":
-            raise AssertionError('env[PayloadLogging.LEVEL_ENV] == "DEBUG"')
+        if self._level(logging.DEBUG) != "DEBUG":
+            raise AssertionError('self._level(logging.DEBUG) == "DEBUG"')
 
     def test_level_follows_reconfiguration(self) -> None:
-        env = self._env(logging.WARNING)
-        if env[PayloadLogging.LEVEL_ENV] != "WARNING":
-            raise AssertionError('env[PayloadLogging.LEVEL_ENV] == "WARNING"')
+        if self._level(logging.WARNING) != "WARNING":
+            raise AssertionError('self._level(logging.WARNING) == "WARNING"')
 
-    def test_profile_env_is_kept(self) -> None:
-        env = self._env(logging.INFO)
-        if env["PATH"] != "/usr/bin:/bin":
-            raise AssertionError('env["PATH"] == "/usr/bin:/bin"')
+    def test_level_travels_in_zygote_arguments(self) -> None:
+        args = ZygoteArgs(
+            socket_fd=3,
+            max_processes=0,
+            reap_poll_sec=0.05,
+            log_level=self._level(logging.WARNING),
+        )
+        parsed = ZygoteArgs.parse(args.render())
+        if parsed.log_level != "WARNING":
+            raise AssertionError('parsed.log_level == "WARNING"')
+
+    def test_body_takes_level_from_zygote(self) -> None:
+        previous = PayloadLogging._adopted
+        PayloadLogging._adopted = logging.WARNING
+        try:
+            if PayloadLogging.level() != logging.WARNING:
+                raise AssertionError("PayloadLogging.level() == logging.WARNING")
+        finally:
+            PayloadLogging._adopted = previous

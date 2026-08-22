@@ -12,26 +12,12 @@ from typing import Any
 
 import pytest
 
+from boba.sandbox import SandboxProfile
+
 REPO = Path(__file__).resolve().parents[4]
 SANDBOX = REPO / "build" / "src" / "sandbox"
 ROOTFS = SANDBOX / "rootfs"
 
-SRC_PACKAGES = (
-    "core/boba-cancellation",
-    "core/boba-indexing",
-    "core/boba-toolkit",
-    "infra/sandbox/boba-sandbox",
-    "infra/db/boba-db-postgres",
-    "infra/db/boba-db-pgvector",
-    "infra/krb/boba-krb",
-    "infra/llm/boba-llm",
-    "tools/boba-tool-shell",
-    "tools/boba-tool-chart",
-    "tools/boba-tool-web",
-    "tools/boba-tool-doc",
-    "tools/boba-tool-postgres",
-    "tools/boba-tool-knowledge",
-)
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
 
 ADDRESS_SPACE = 16 * 1024 * 1024 * 1024
@@ -59,6 +45,14 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
+SRC_PACKAGES = (
+    "core/boba-cancellation",
+    "core/boba-toolkit",
+    "tools/boba-tool-chart",
+)
+"""Пакеты, чей код нужен телу инструмента внутри песочницы."""
+
+
 class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site."""
 
@@ -78,49 +72,113 @@ class SandboxLayout:
 
     @staticmethod
     def python_path() -> str:
-        """Свой код: интерпретатор и site-packages стоят на штатных местах."""
-        parts = []
+        """Каталоги src пакетов внутри песочницы: их же перечисляет .pth."""
+        parts: list[str] = []
         for name in SRC_PACKAGES:
             parts.append(f"/usr/src/{name}/src")
 
         return ":".join(parts)
 
 
+def _place(raw: dict[str, Any], name: str, value: Any) -> None:
+    """Плоское поле профиля в свою группу: группа находится по модели."""
+    if name in SandboxProfile.GROUPS:
+        group = dict(raw.get(name, {}))
+        if isinstance(value, dict):
+            group.update(value)
+            raw[name] = group
+            return
+
+        raw[name] = value
+        return
+
+    for group_name in SandboxProfile.GROUPS:
+        model = SandboxProfile.model_fields[group_name].annotation
+        if name not in getattr(model, "model_fields", {}):
+            continue
+
+        group = dict(raw.get(group_name, {}))
+        group[name] = value
+        raw[group_name] = group
+        return
+
+    msg = f"профиль: поле {name!r} не принадлежит ни одной группе"
+    raise KeyError(msg)
+
+
+def _merged(base: dict[str, Any], flat: dict[str, Any]) -> dict[str, Any]:
+    """Копия базы профиля с наложенными плоскими полями."""
+    raw: dict[str, Any] = {}
+    for name, value in base.items():
+        if isinstance(value, dict):
+            raw[name] = dict(value)
+            continue
+
+        raw[name] = value
+
+    for name, value in flat.items():
+        _place(raw, name, value)
+
+    return raw
+
+
 def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
     """Профиль запуска payload'а — тот же по смыслу, что в конфиге приложения."""
     profile: dict[str, Any] = {
-        "rootfs": str(ROOTFS),
-        "ro_binds": tuple(SandboxLayout.ro_binds(docs_dir)),
-        "rw_binds": (),
-        "rw_images": (),
-        "image_template": "",
-        "launcher": {
-            "mount_wait_sec": 10.0,
-            "mount_poll_sec": 0.05,
-            "shutdown_wait_sec": 5.0,
-            "lock_wait_sec": 10.0,
-            "copy_chunk_bytes": 1 << 20,
+        "host": {
+            "mounting": {
+                "mount_wait_sec": 10.0,
+                "mount_poll_sec": 0.05,
+                "shutdown_wait_sec": 5.0,
+                "lock_wait_sec": 10.0,
+                "copy_chunk_bytes": 1 << 20,
+            },
+            "binaries": {"dirs": _bin_dirs()},
+            "stderr_tail_bytes": 4096,
+            "fail_tail_chars": 2000,
+            "kill_grace_sec": 5,
+            "cgroup_base": "",
         },
-        "binaries": {"dirs": _bin_dirs()},
-        "tmpfs": ("/tmp:256M",),  # noqa: S108
-        "network": False,
-        "env_set": {
-            "PYTHONPATH": SandboxLayout.python_path(),
-            "HOME": "/tmp",  # noqa: S108
-            "LANG": "C.UTF-8",
+        "rootfs": {
+            "dir": str(ROOTFS),
         },
-        "timeout_sec": 120,
-        "max_memory_bytes": ADDRESS_SPACE,
-        "max_cpu_sec": 120,
-        "max_file_size_bytes": 64 * 1024 * 1024,
-        "max_open_files": 1024,
-        "max_processes": 256,
-        "cgroup_base": "",
-        "oom_score_adj": 0,
-        "cwd": "/tmp",  # noqa: S108
+        "mounts": {
+            "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
+            "rw": (),
+            "images": (),
+            "image_template": "",
+            "tmpfs": ("/tmp:256M",),  # noqa: S108
+            "proc": "/proc",
+            "dev": "/dev",
+            "call_tmpfs": "/tmp",  # noqa: S108
+            "setup_ro": (),
+            "setup_rw": (),
+        },
+        "isolation": {
+            "network": False,
+            "env": {
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "PYTHONPATH": SandboxLayout.python_path(),
+                "HOME": "/tmp",  # noqa: S108
+                "LANG": "C.UTF-8",
+            },
+            "max_processes": 256,
+            "reap_poll_sec": 0.05,
+        },
+        "limits": {
+            "timeout_sec": 120,
+            "process_memory_bytes": ADDRESS_SPACE,
+            "process_cpu_sec": 120,
+            "process_file_bytes": 64 * 1024 * 1024,
+            "process_open_files": 1024,
+            "process_oom_score_adj": 0,
+        },
+        "run": {
+            "shell": "/bin/bash",
+            "cwd": "/tmp",  # noqa: S108
+        },
     }
-    profile.update(kw)
-    return profile
+    return _merged(profile, kw)
 
 
 @pytest.fixture(autouse=True)

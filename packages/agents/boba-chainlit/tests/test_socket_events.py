@@ -16,7 +16,7 @@ import pytest
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
 
-from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.domain.turn import TurnContext, TurnPort
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
 
 pytestmark = pytest.mark.anyio
@@ -26,7 +26,7 @@ SESSION_ID = "session-socket-1"
 SOCKET_ID = "socket-socket-1"
 
 
-class FakeTurn:
+class FakeTurn(TurnPort):
     """Ход под тест: реестру достаточно порта с шагом ответа."""
 
     answer_step_id = "answer-step"

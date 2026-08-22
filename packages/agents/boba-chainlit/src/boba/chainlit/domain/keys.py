@@ -15,7 +15,6 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from boba.sandbox import WORKSPACE_MOUNT
 from boba.toolkit.channels import JournalChannel
 
 __all__ = [
@@ -36,6 +35,36 @@ class ThreadDir(StrEnum):
 
     UPLOAD = "upload"
     MERMAID = "mermaid"
+
+
+class WorkspaceMount:
+    """Точка рабочего каталога чата в песочнице; значение приходит из профиля.
+
+    Ключи вложений строятся по ней, поэтому она нужна и вне запуска — в
+    отрисовке и в инструментах. Настраивается один раз при загрузке
+    инструментов; обращение до настройки — ошибка, а не тихий дефолт.
+    """
+
+    _PATH: ClassVar[str] = ""
+
+    @classmethod
+    def configure(cls, path: str) -> None:
+        if not path:
+            msg = "workspace mount is empty: sandbox profile must declare it"
+            raise RuntimeError(msg)
+
+        cls._PATH = path
+
+    @classmethod
+    def path(cls) -> str:
+        if not cls._PATH:
+            msg = (
+                "workspace mount is not configured: load_tools() sets it from "
+                "the sandbox profile"
+            )
+            raise RuntimeError(msg)
+
+        return cls._PATH
 
 
 class KeyField(StrEnum):
@@ -120,7 +149,7 @@ class ObjectKey(KeySegment):
         """Ключ по пути из песочницы; вне каталогов треда — ValueError."""
         rel = path.strip()
 
-        mount = cls.SEPARATOR.join((WORKSPACE_MOUNT, ""))
+        mount = cls.SEPARATOR.join((WorkspaceMount.path(), ""))
         if rel.startswith(mount):
             rel = rel[len(mount) :]
 
@@ -151,7 +180,7 @@ class ObjectKey(KeySegment):
 
         dirs = "|".join(sorted(ThreadDir))
         expected = cls.SEPARATOR.join(
-            (WORKSPACE_MOUNT, str(thread_id), f"{{{dirs}}}", name)
+            (WorkspaceMount.path(), str(thread_id), f"{{{dirs}}}", name)
         )
         return (
             f"file is outside the thread attachments dir: {path!r}; "
@@ -167,7 +196,7 @@ class ObjectKey(KeySegment):
 
     def in_workspace(self) -> str:
         """Путь файла так, как его видит песочница."""
-        return self.SEPARATOR.join((WORKSPACE_MOUNT, self.in_thread()))
+        return self.SEPARATOR.join((WorkspaceMount.path(), self.in_thread()))
 
     def dir_key(self) -> DirKey:
         """Каталог, в котором лежит файл."""
@@ -242,7 +271,7 @@ class DirKey(KeySegment):
 
     def in_workspace(self) -> str:
         """Путь каталога так, как его видит песочница."""
-        return self.SEPARATOR.join((WORKSPACE_MOUNT, self.in_thread()))
+        return self.SEPARATOR.join((WorkspaceMount.path(), self.in_thread()))
 
     def file(self, name: str) -> ObjectKey:
         """Ключ файла в этом каталоге; имя приходит из листинга, не от LLM."""

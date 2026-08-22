@@ -40,6 +40,9 @@ class ScenarioName(StrEnum):
     THINKING = "scenario:thinking"
     ANSWER = "scenario:answer"
     THINKING_ANSWER = "scenario:thinking-answer"
+    CALL = "scenario:call"
+    """Вызов любого инструмента: аргументы приходят в самом сообщении."""
+
     TOOL = "scenario:tool"
     TOOL_ERROR = "scenario:tool-error"
     DIAGRAM = "scenario:diagram"
@@ -101,8 +104,13 @@ class ScenarioBook:
 
     DIAGRAM_SPEC: str = "erDiagram\\n    USER ||--o{ ORDER : places"
 
+    CALL_ANSWER: str = "the tool has answered"
+
     @classmethod
-    def of(cls, name: ScenarioName) -> Scenario:
+    def of(cls, name: ScenarioName, text: str = "") -> Scenario:
+        if name is ScenarioName.CALL:
+            return cls._call(text)
+
         builders = {
             ScenarioName.THINKING: cls._thinking,
             ScenarioName.ANSWER: cls._answer,
@@ -116,6 +124,34 @@ class ScenarioBook:
             raise ScenarioError(f"scenario is not scripted: {name}")
 
         return build()
+
+    @classmethod
+    def _call(cls, text: str) -> Scenario:
+        """Инструмент и аргументы диктует сам тест: `scenario:call {json}`."""
+        _, _, tail = text.partition(ScenarioName.CALL.value)
+        try:
+            request = json.loads(tail.strip())
+        except json.JSONDecodeError as exc:
+            msg = f"scenario:call without json: {tail[:120]!r}"
+            raise ScenarioError(msg) from exc
+
+        name = request.get("name")
+        if not name:
+            msg = f"scenario:call without tool name: {tail[:120]!r}"
+            raise ScenarioError(msg)
+
+        call = ToolCallSpec(
+            call_id=f"call_{name}",
+            name=str(name),
+            arguments=json.dumps(request.get("arguments", {})),
+        )
+
+        return Scenario(
+            turns=[
+                TurnScript(reasoning=f"I will call {name}", tool_calls=[call]),
+                TurnScript(content=cls.CALL_ANSWER),
+            ]
+        )
 
     @staticmethod
     def _thinking() -> Scenario:
@@ -220,10 +256,11 @@ class FakeLlmApp:
         async def completions(request: Request) -> Response:
             payload = await request.json()
             self.requests.append(payload)
-            name = ScenarioName.of(self._last_user_text(payload))
+            text = self._last_user_text(payload)
+            name = ScenarioName.of(text)
             index = self.turns_done.get(name.value, 0)
             self.turns_done[name.value] = index + 1
-            script = ScenarioBook.of(name).turn(index)
+            script = ScenarioBook.of(name, text).turn(index)
 
             if not payload.get("stream"):
                 return JSONResponse(self._completion(script))

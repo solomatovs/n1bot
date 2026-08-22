@@ -10,7 +10,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
-from boba.sandbox.caller import SandboxPayloadError
+from boba.sandbox.zygote import ZygoteCallError
 from boba.toolkit.result import ErrorResult, TextResult
 
 __all__: list[str] = []
@@ -34,7 +34,7 @@ def good(text: str) -> tuple[str, TextResult]:
 @tool(response_format="content_and_artifact")
 def boom() -> tuple[str, ErrorResult]:
     """инструмент, падающий аварийно (как oom killer песочницы)"""
-    raise SandboxPayloadError("doc:read_document: killed by OOM")
+    raise ZygoteCallError("doc:read_document: killed by OOM")
 
 
 def _guarded() -> list:
@@ -66,8 +66,8 @@ class TestToolErrorGuard:
             raise AssertionError("isinstance(artifact, ErrorResult)")
         if artifact.ok is not False:
             raise AssertionError("artifact.ok is False")
-        if artifact.error_kind != "SandboxPayloadError":
-            raise AssertionError('artifact.error_kind == "SandboxPayloadError"')
+        if artifact.error_kind != "ZygoteCallError":
+            raise AssertionError('artifact.error_kind == "ZygoteCallError"')
         if "OOM" not in message.content:
             raise AssertionError('"OOM" in message.content')
 

@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import PluginMeta
+from boba.sandbox import SandboxToolConfig
 from boba.settings import bind, build_app_config
 
 REPO = Path(__file__).resolve().parents[4]
@@ -107,23 +107,23 @@ class TestExampleStaysValid:
 
 class TestHeavyToolsGetTheirCpu:
     """Нативный инференс под квотой базового профиля идёт в разы дольше:
-    onnxruntime считает ядра по хосту, а получает долю (см. CpuBudget)."""
+    движок берёт размер пула из маски ядер, которую ставит запуск по квоте."""
 
     @pytest.mark.parametrize("section", HEAVY_SECTIONS)
     def test_cpu_quota_is_raised(
         self, example_config: DictConfig, section: str
     ) -> None:
-        quota: Any = OmegaConf.select(
-            example_config, f"{section}.sandbox.override.cgroup_cpu_percent"
-        )
+        profile = bind(example_config, f"{section}.sandbox", SandboxToolConfig).profile
+        quota = profile.limits.group_cpu_percent
 
         if quota is None:
             raise AssertionError(
-                f"[{section}.sandbox.override]: cgroup_cpu_percent не задан — "
-                "секция унаследует одно ядро базового профиля"
+                f"[{section}]: профиль без group_cpu_percent — секция получит "
+                "одно ядро базового профиля"
             )
+
         if quota <= BASE_CPU_PERCENT:
             raise AssertionError(
-                f"[{section}.sandbox.override]: cgroup_cpu_percent={quota} — "
+                f"[{section}]: group_cpu_percent={quota} — "
                 "эмбеддингу и OCR одного ядра мало"
             )

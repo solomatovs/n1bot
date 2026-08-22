@@ -37,13 +37,15 @@ from boba.chainlit.canvas.panel import (
     CanvasSignal,
     CanvasWatch,
     JournalWatchSource,
+    SignalTransport,
     StreamActions,
     StreamPath,
     ToolStream,
     ToolStreams,
     WatchProbe,
+    WatchSource,
 )
-from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.domain.turn import TurnContext, TurnPort
 from boba.chainlit.infra.plugins import stream_source
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -89,7 +91,7 @@ class TurnScope:
 
     _SCOPE: ClassVar[Any] = None
 
-    class Port:
+    class Port(TurnPort):
         answer_step_id = "answer-1"
 
     @classmethod
@@ -391,7 +393,7 @@ class TestBegin:
             raise AssertionError("stream is None")
 
 
-class FakeTransport:
+class FakeTransport(SignalTransport):
     """Транспорт в тестах: копит payload'ы сигналов вместо сокетов."""
 
     def __init__(self) -> None:
@@ -445,9 +447,7 @@ class TestWatch:
 
             stream = begin_stream()
             source = _journal_source(CALL_ID, stream)
-            CanvasWatch.show(
-                THREAD, STREAM_PATH, "n-1", source, seen="0:0"
-            )
+            CanvasWatch.show(THREAD, STREAM_PATH, "n-1", source, seen="0:0")
 
             total = 0
 
@@ -587,7 +587,7 @@ class TestWatch:
         """
         _speed_up_watch(monkeypatch)
 
-        class MutableFile:
+        class MutableFile(WatchSource):
             def __init__(self) -> None:
                 self.revision = "r1"
 
@@ -897,9 +897,7 @@ class TestShowAction:
 
         watching = run(scenario())
         if watching != stream_path(CALL_ID, ToolChannel.STDERR):
-            raise AssertionError(
-                "watching == stream_path(CALL_ID, ToolChannel.STDERR)"
-            )
+            raise AssertionError("watching == stream_path(CALL_ID, ToolChannel.STDERR)")
 
     def test_show_registers_the_watch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _speed_up_watch(monkeypatch)
@@ -1059,13 +1057,14 @@ class TestStreamDownload:
             {
                 "kind": "local",
                 "files_dir": base_dir,
-                "launcher": {
+                "mounting": {
                     "mount_wait_sec": 1.0,
                     "mount_poll_sec": 0.1,
                     "shutdown_wait_sec": 1.0,
                     "lock_wait_sec": 10.0,
                     "copy_chunk_bytes": 65536,
                 },
+                "mount_dir": "/tmp",  # noqa: S108
                 "binaries": {"dirs": _bin_dirs()},
             }
         )

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
-import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, get_type_hints
+from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
 from omegaconf import DictConfig, OmegaConf
@@ -27,6 +25,7 @@ from boba.chainlit.canvas.diagram import (
 from boba.chainlit.canvas.panel import ToolStreams
 from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
+from boba.chainlit.domain.keys import WorkspaceMount
 from boba.chainlit.domain.session import (
     current_chat_profile,
     current_thread_id,
@@ -35,8 +34,6 @@ from boba.chainlit.domain.session import (
 )
 from boba.chainlit.infra.config import ProfilesSection, RolesSection
 from boba.sandbox import (
-    RootfsPremount,
-    SandboxCaller,
     SandboxProfile,
     SandboxToolConfig,
     has_bwrap,
@@ -53,10 +50,11 @@ from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.tool.web.tools import TOOLS as WEB_TOOLS
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolLike, ToolMain
-from boba.toolkit.facade import PayloadTool
+from boba.toolkit.facade import PayloadTool, WarmupHooks
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolkit.zygote import WarmupCall
 
 __all__ = [
     "PluginMeta",
@@ -65,6 +63,7 @@ __all__ = [
     "as_structured_tool",
     "load_tools",
     "stream_source",
+    "warmup_configs",
 ]
 
 logger = logging.getLogger(__name__)
@@ -92,17 +91,8 @@ class SandboxRequire(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    require: bool = False
-    zygote: ZygotePolicy | None = None
-    """Политика зигот; отсутствие секции запрещает zygote=true у tool-секций."""
-
-
-@dataclass(frozen=True)
-class PluginSandbox:
-    """Песочница секции: профиль запуска и способ обслуживания вызовов."""
-
-    profile: SandboxProfile
-    zygote: bool
+    zygote: ZygotePolicy
+    """Политика супервизора зигот; каждая sandboxed-секция обслуживается зиготой."""
 
 
 class PluginMeta(BaseModel):
@@ -216,15 +206,6 @@ def _sandbox_path_vars() -> dict[str, str]:
     return {name: str(value) for name, value in values.items() if value}
 
 
-def _launchers(profile: SandboxProfile) -> LauncherFactory:
-    """Фабрика исполнителей на профиле инструмента: окружение выбирает приложение."""
-
-    def launcher(tool: str) -> ToolLauncher:
-        return SandboxCaller(tool, profile, _sandbox_path_vars)
-
-    return launcher
-
-
 def _enabled_tools(
     plugin: ToolPlugin,
     cfg: ConfigT,
@@ -246,8 +227,8 @@ def _enabled_tools(
     return built
 
 
-def _sandbox_section(raw_config: DictConfig, name: str) -> PluginSandbox | None:
-    """Песочница секции [tool.<name>.sandbox]; None — секции нет, запуск локальный.
+def _sandbox_section(raw_config: DictConfig, name: str) -> SandboxProfile | None:
+    """Профиль секции [tool.<name>.sandbox]; None — секции нет, запуск локальный.
 
     Секция есть, а bwrap недоступен — отказ старта: молчаливая деградация
     инструмента до процесса приложения запрещена.
@@ -257,7 +238,10 @@ def _sandbox_section(raw_config: DictConfig, name: str) -> PluginSandbox | None:
         return None
 
     sandbox = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
-    profile = RootfsPremount.apply(sandbox.effective())
+    profile = sandbox.profile
+
+    if profile.mounts.workspace is not None:
+        WorkspaceMount.configure(profile.mounts.workspace.mount)
 
     if not has_bwrap(profile):
         msg = (
@@ -266,7 +250,7 @@ def _sandbox_section(raw_config: DictConfig, name: str) -> PluginSandbox | None:
         )
         raise RuntimeError(msg)
 
-    return PluginSandbox(profile=profile, zygote=sandbox.zygote)
+    return profile
 
 
 def _config_resolver(raw_config: DictConfig) -> Callable[[str, Any], object]:
@@ -396,9 +380,9 @@ class ToolRegistry:
 def _module_tools(
     plugin: ToolPlugin,
     meta: PluginMeta,
-    sandbox: PluginSandbox | None,
+    profile: SandboxProfile,
     raw_config: DictConfig,
-    zygote_policy: ZygotePolicy | None,
+    zygote_policy: ZygotePolicy,
 ) -> list[BaseTool]:
     """Функции модуля новой модели: обёртка запуска + partial конфига.
 
@@ -416,9 +400,7 @@ def _module_tools(
     if not functions:
         return []
 
-    launcher: ToolLauncher | None = None
-    if sandbox is not None:
-        launcher = _section_launcher(plugin, sandbox, zygote_policy, raw_config)
+    launcher = _section_launcher(plugin, profile, zygote_policy, raw_config)
 
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
     InjectedConfig.bind_all(functions, _config_resolver(raw_config))
@@ -428,111 +410,99 @@ def _module_tools(
 
 def _section_launcher(
     plugin: ToolPlugin,
-    sandbox: PluginSandbox,
-    zygote_policy: ZygotePolicy | None,
+    profile: SandboxProfile,
+    zygote_policy: ZygotePolicy,
     raw_config: DictConfig,
 ) -> ToolLauncher:
-    """Исполнитель секции: тёплая зигота либо холодный запуск по вызову."""
-    if not sandbox.zygote:
-        return SandboxCaller(plugin.section, sandbox.profile, _sandbox_path_vars)
-
-    if zygote_policy is None:
-        msg = (
-            f"[tool.{plugin.section}.sandbox] zygote = true, "
-            f"but [sandbox.zygote] policy is missing"
-        )
-        raise RuntimeError(msg)
-
+    """Исполнитель секции: зигота секции, одна на все её инструменты."""
     supervisor = ZygoteRegistry.obtain(
         plugin.section,
-        sandbox.profile,
+        profile,
         plugin.modules,
         zygote_policy,
-        warmup_configs=_warmup_configs(plugin, raw_config),
+        warmup_calls=warmup_configs(plugin.section, plugin.modules, raw_config),
     )
 
-    return ZygoteToolCaller(plugin.section, supervisor, sandbox.profile)
+    return ZygoteToolCaller(plugin.section, supervisor, profile, _sandbox_path_vars)
 
 
-def _warmup_configs(
-    plugin: ToolPlugin, raw_config: DictConfig
-) -> dict[str, dict[str, object]]:
-    """Конфиги WARMUP-хуков модулей секции: модель из аннотации хука.
+def warmup_configs(
+    section: str, modules: Sequence[str], raw_config: DictConfig
+) -> tuple[WarmupCall, ...]:
+    """Прогревы модулей секции: конфиг каждому хуку из секции его инструмента.
 
-    Хост уже импортировал tool-модули (TOOLS приезжают импортом), поэтому
-    хук берётся из sys.modules без повторного импорта.
+    Хуки объявляет автор инструмента через @warmup, хост их не угадывает —
+    берёт из реестра фасада. Модель конфига — аннотация параметра хука,
+    значения приезжают из [tool.<section>].
     """
-    configs: dict[str, dict[str, object]] = {}
+    calls: list[WarmupCall] = []
 
-    for name in plugin.modules:
-        module = sys.modules.get(name)
-        if module is None:
-            continue
+    for name in modules:
+        for hook in WarmupHooks.of(name):
+            model = bind(raw_config, f"tool.{section}", hook.config_model)
+            calls.append(
+                WarmupCall(
+                    module=name,
+                    hook=hook.name,
+                    config=ToolArgv.reveal(hook.config_model, model),
+                )
+            )
 
-        hook = getattr(module, "WARMUP", None)
-        if hook is None:
-            continue
-
-        parameters = list(inspect.signature(hook).parameters)
-        if len(parameters) != 1:
-            msg = f"module {name}: WARMUP must take exactly one config parameter"
-            raise RuntimeError(msg)
-
-        annotation = get_type_hints(hook).get(parameters[0])
-        section = getattr(annotation, "SECTION", None)
-        if not isinstance(section, str):
-            msg = f"module {name}: WARMUP config model must define SECTION"
-            raise RuntimeError(msg)
-
-        if not isinstance(annotation, type) or not issubclass(annotation, BaseModel):
-            msg = f"module {name}: WARMUP parameter is not a pydantic model"
-            raise RuntimeError(msg)
-
-        model = bind(raw_config, section, annotation)
-        configs[name] = ToolArgv.reveal(annotation, model)
-
-    return configs
+    return tuple(calls)
 
 
 def _plugin_sandbox(
-    name: str, plugin: ToolPlugin, raw_config: DictConfig, require: bool
-) -> PluginSandbox | None:
-    """Песочница плагина; None — запуск локальный (dev-режим)."""
+    name: str, plugin: ToolPlugin, raw_config: DictConfig
+) -> SandboxProfile | None:
+    """Профиль песочницы плагина; None — только у плагинов процесса приложения."""
     if not plugin.sandboxed:
         return None
 
-    sandbox = _sandbox_section(raw_config, name)
+    profile = _sandbox_section(raw_config, name)
 
-    if sandbox is None and require:
-        msg = f"[sandbox] require = true, but [tool.{name}.sandbox] is missing"
+    if profile is None:
+        msg = f"[tool.{name}.sandbox] is missing: the plugin runs in a sandbox"
         raise RuntimeError(msg)
 
-    return sandbox
+    return profile
 
 
 def _plugin_tools(  # noqa: PLR0913 — состав загрузки секции задаётся целиком
     name: str,
     plugin: ToolPlugin,
     meta: PluginMeta,
-    sandbox: PluginSandbox | None,
+    profile: SandboxProfile | None,
     raw_config: DictConfig,
-    zygote_policy: ZygotePolicy | None,
+    zygote_policy: ZygotePolicy,
 ) -> list[BaseTool]:
     """Инструменты плагина: фабричные старого пути плюс функции модуля."""
     cfg: ConfigT = None
     if plugin.config_model is not None:
         cfg = bind(raw_config, f"tool.{name}", plugin.config_model)
 
-    built: list[BaseTool] = []
+    if profile is None:
+        return _enabled_tools(plugin, cfg, _no_launchers, meta)
 
-    if not plugin.sandboxed:
-        built = _enabled_tools(plugin, cfg, _no_launchers, meta)
+    launchers = _section_launchers(plugin, profile, zygote_policy, raw_config)
+    built = _enabled_tools(plugin, cfg, launchers, meta)
 
-    if sandbox is not None:
-        built = _enabled_tools(plugin, cfg, _launchers(sandbox.profile), meta)
-
-    built.extend(_module_tools(plugin, meta, sandbox, raw_config, zygote_policy))
+    built.extend(_module_tools(plugin, meta, profile, raw_config, zygote_policy))
     return built
+
+
+def _section_launchers(
+    plugin: ToolPlugin,
+    profile: SandboxProfile,
+    zygote_policy: ZygotePolicy,
+    raw_config: DictConfig,
+) -> LauncherFactory:
+    """Фабрика исполнителей фабричных инструментов: одна зигота секции на всех."""
+    launcher = _section_launcher(plugin, profile, zygote_policy, raw_config)
+
+    def factory(tool: str) -> ToolLauncher:
+        return launcher
+
+    return factory
 
 
 def _access_of(raw_config: DictConfig, tools: Sequence[BaseTool]) -> ToolAccess:
@@ -558,9 +528,7 @@ def _access_of(raw_config: DictConfig, tools: Sequence[BaseTool]) -> ToolAccess:
 
 
 def load_tools(raw_config: DictConfig) -> ToolRegistry:
-    sandbox_section = bind(raw_config, "sandbox", SandboxRequire)
-    require = sandbox_section.require
-    zygote_policy = sandbox_section.zygote
+    zygote_policy = bind(raw_config, "sandbox", SandboxRequire).zygote
 
     tools: list[BaseTool] = []
     for name, plugin in _PLUGINS.items():
@@ -568,13 +536,13 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
         if not meta.enable:
             continue
 
-        sandbox = _plugin_sandbox(name, plugin, raw_config, require)
-        built = _plugin_tools(name, plugin, meta, sandbox, raw_config, zygote_policy)
+        profile = _plugin_sandbox(name, plugin, raw_config)
+        built = _plugin_tools(name, plugin, meta, profile, raw_config, zygote_policy)
         tools.extend(built)
 
         # живой вывод есть только у процессов песочницы: кнопка потока
         # рисуется на шагах этих инструментов
-        if sandbox is not None:
+        if profile is not None:
             streamable: list[str] = []
             for tool in built:
                 streamable.append(tool.name)

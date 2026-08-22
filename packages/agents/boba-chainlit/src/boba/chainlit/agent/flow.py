@@ -14,6 +14,7 @@ PrefetchError — подготовка запросов или предвари�
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ from typing_extensions import override
 
 from boba.llm.chat import ResponseField
 from boba.toolkit.result import ErrorResult, ToolArtifact
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AgentGraphBuilder",
@@ -105,14 +108,14 @@ class PrefetchStage(Protocol):
     async def end(self, queries: Sequence[str]) -> None: ...
 
 
-class PassthroughRephraser:
+class PassthroughRephraser(Rephraser):
     """Поиск идёт по исходному запросу: переформулировщик профилю не задан."""
 
     async def rephrase(self, query: str) -> Sequence[str]:
         return [query]
 
 
-class LlmRephraser:
+class LlmRephraser(Rephraser):
     """Переформулировка маленькой моделью вызовом инструмента.
 
     Схему ответа модель заполняет через function calling: response_format
@@ -123,9 +126,7 @@ class LlmRephraser:
     METHOD: ClassVar[str] = "function_calling"
 
     def __init__(self, chat: BaseChatModel, system_prompt: str, queries: int) -> None:
-        self._chat = chat.with_structured_output(
-            QueryRephrasings, method=self.METHOD
-        )
+        self._chat = chat.with_structured_output(QueryRephrasings, method=self.METHOD)
         self._system_prompt = system_prompt
         self._queries = queries
 
@@ -244,17 +245,24 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
 
     @staticmethod
     def _checked(output: object) -> ToolMessage:
-        """Результат поиска; отказ инструмента роняет ход, а не тонет в контексте."""
+        """Результат поиска: отказ инструмента едет в контекст, а не роняет ход.
+
+        Модель получает ошибку тем же конвертом tool_result, что и удачный
+        ответ, и решает сама — переспросить, вызвать инструмент ещё раз или
+        ответить без него; пользователь видит крест на шаге ленты. Ход
+        останавливает только нарушение контракта самого слоя инструментов.
+        """
         if not isinstance(output, ToolMessage):
             got = type(output).__name__
             raise PrefetchError(f"prefetch tool returned {got} instead of ToolMessage")
 
         if output.status == "error":
-            raise PrefetchError(f"prefetch search failed: {output.content}")
+            logger.warning("prefetch %s failed: %s", output.name, output.content)
+            return output
 
         artifact = ToolArtifact.revive(output.artifact)
         if isinstance(artifact, ErrorResult):
-            raise PrefetchError(f"prefetch search failed: {artifact.message}")
+            logger.warning("prefetch %s failed: %s", output.name, artifact.message)
 
         return output
 

@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import types
 from typing import Any, ClassVar
@@ -15,19 +17,16 @@ from typing import Any, ClassVar
 import pytest
 
 from boba.llm.embedding import EmbedderFactory, LocalEmbedding
-from boba.toolkit.cpu import CpuBudget
 
 
 class FakeTextEmbedding:
     """Заглушка fastembed: запоминает batch_size и число потоков движка."""
 
     calls: ClassVar[list[dict[str, Any]]] = []
-    threads: ClassVar[int | None] = None
 
-    def __init__(self, model_name: str, cache_dir: str, threads: int | None) -> None:
+    def __init__(self, model_name: str, cache_dir: str) -> None:
         self.model_name = model_name
         self.cache_dir = cache_dir
-        FakeTextEmbedding.threads = threads
 
     def passage_embed(self, texts, **kwargs):
         FakeTextEmbedding.calls.append({"method": "passage", **kwargs})
@@ -90,22 +89,38 @@ class TestBatchSizeReachesModel:
             raise AssertionError('fake_fastembed.calls == [{"method": "query", "batch…')
 
 
-class TestThreadsFollowTheQuota:
-    """Потоки движка — по квоте запуска: иначе onnxruntime берёт ядра хоста
-    и под cgroup-квотой его пул дерётся сам с собой (замер: ×5 на одном ядре).
+class TestPoolFollowsTheAffinityMask:
+    """Размер пула движок берёт из маски ядер, которую ставит запуск по квоте.
+
+    Проверка держит факт, на котором стоит отказ от собственной ручки потоков:
+    onnxruntime уважает sched_setaffinity, поэтому лимит профиля достаточно
+    применить процессу.
     """
 
-    @pytest.mark.parametrize(("cores", "expected"), [("1", 1), ("4", 4)])
-    def test_threads_come_from_the_cpu_budget(
-        self,
-        fake_fastembed,
-        monkeypatch: pytest.MonkeyPatch,
-        cores: str,
-        expected: int,
-    ) -> None:
-        monkeypatch.setenv(CpuBudget.ENV_VAR, cores)
+    def test_onnxruntime_pool_shrinks_with_the_mask(self) -> None:
+        available = sorted(os.sched_getaffinity(0))
+        if len(available) < 4:
+            pytest.skip("на машине меньше четырёх ядер")
 
-        EmbedderFactory.build(_config(8))
+        script = (
+            "import os, sys\n"
+            "cores = int(sys.argv[1])\n"
+            "mask = sorted(os.sched_getaffinity(0))[:cores]\n"
+            "os.sched_setaffinity(0, set(mask))\n"
+            "import onnxruntime\n"
+            "onnxruntime.InferenceSession\n"
+            "print(len(os.listdir('/proc/self/task')))\n"
+        )
 
-        if fake_fastembed.threads != expected:
-            raise AssertionError("fake_fastembed.threads == expected")
+        counts: list[int] = []
+        for cores in ("1", "4"):
+            proc = subprocess.run(  # noqa: S603
+                [sys.executable, "-c", script, cores],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            counts.append(int(proc.stdout.strip()))
+
+        if counts[0] > counts[1]:
+            raise AssertionError(f"маска не влияет на число потоков: {counts}")

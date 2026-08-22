@@ -22,9 +22,7 @@ class TestConfigKeepsBatchSmall:
     def test_batch_size_is_bounded(self, raw_config, section: str) -> None:
         from boba.settings import bind
 
-        embedding = bind(
-            raw_config, path=f"{section}.embedding", model=_Embedding
-        ).root
+        embedding = bind(raw_config, path=f"{section}.embedding", model=_Embedding).root
 
         if not isinstance(embedding, LocalEmbedding):
             return

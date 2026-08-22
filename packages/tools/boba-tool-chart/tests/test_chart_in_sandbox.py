@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from importlib import reload
 from typing import Any
 
 import pytest
 from conftest import needs_sandbox, needs_userns, sandbox_profile
 
-from boba.sandbox import SandboxCaller, SandboxToolConfig
+from boba.sandbox import SandboxToolConfig
+from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import ChartResult
 from boba.toolkit.wrap import ToolProcessWrap
+
+ZYGOTE = ZygotePolicy(
+    start_timeout_sec=60.0,
+    max_start_attempts=1,
+    restart_backoff_sec=0.05,
+    healthy_after_sec=0.5,
+    stop_wait_sec=5.0,
+    call_poll_sec=0.05,
+)
 
 
 def _tool() -> Any:
@@ -21,35 +32,47 @@ def _tool() -> Any:
 
     module = reload(chart_module)
 
-    sandbox = SandboxToolConfig.model_validate(
-        {"profile": sandbox_profile(), "override": {}}
+    sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile()})
+    profile = sandbox.profile
+    supervisor = ZygoteRegistry.obtain(
+        "chart-test", profile, [chart_module.__name__], ZYGOTE
     )
-    launcher = SandboxCaller("chart-test", sandbox.effective(), dict)
+    launcher = ZygoteToolCaller("chart-test", supervisor, profile)
 
     ToolProcessWrap.guard_all(module.TOOLS, launcher)
     return module.visualize
 
 
-def _invoke(spec: str) -> Any:
+@dataclass(frozen=True)
+class Rendered:
+    """Ответ фасадного инструмента: текст для модели и артефакт."""
+
+    content: str
+    artifact: Any
+
+
+def _invoke(spec: str) -> Rendered:
+    """Вызов тела фасада: langchain в пакете инструмента не участвует."""
     tool = _tool()
 
     async def go() -> Any:
-        return await tool.ainvoke(
-            {
-                "args": {"spec": spec},
-                "id": "call-chart",
-                "name": "visualize",
-                "type": "tool_call",
-            }
-        )
+        body = tool.coroutine
+        if body is None:
+            raise AssertionError("у visualize нет асинхронного тела")
 
-    return asyncio.run(go())
+        return await body(spec=spec)
+
+    content, artifact = asyncio.run(go())
+    return Rendered(content=content, artifact=artifact)
 
 
 @needs_sandbox
 @needs_userns
 class TestChartInSandbox:
     """Схему графика проверяет plotly внутри песочницы."""
+
+    def teardown_method(self) -> None:
+        ZygoteRegistry.stop_all()
 
     def test_valid_spec_returns_title(self) -> None:
         spec = (

@@ -24,6 +24,7 @@ from boba.indexing import (
     Reader,
     ReaderId,
     ReconcileSummary,
+    Request,
     RequestSource,
     RunFinished,
     Section,
@@ -47,7 +48,7 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-class _Request:
+class _Request(Request):
     """Минимальный Request: только metadata, как требует протокол."""
 
     def __init__(self, page: str) -> None:

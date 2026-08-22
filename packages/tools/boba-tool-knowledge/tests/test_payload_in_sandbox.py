@@ -19,12 +19,10 @@ import pytest
 from conftest import needs_sandbox, needs_userns, sandbox_profile
 
 from boba.sandbox import (
-    SandboxCaller,
-    SandboxPayloadError,
-    SandboxRunner,
     SandboxToolConfig,
 )
-from boba.toolkit.launcher import ToolOutcome
+from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.toolkit.launcher import LauncherError, ToolOutcome
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
 _TESSDATA = "/usr/share/tessdata"
@@ -48,11 +46,28 @@ trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
 
-def _caller(docs_dir: Path | None = None, **kw: Any) -> SandboxCaller:
+DOC_MODULE = "boba.tool.doc.tools"
+
+ZYGOTE = ZygotePolicy(
+    start_timeout_sec=60.0,
+    max_start_attempts=1,
+    restart_backoff_sec=0.05,
+    healthy_after_sec=0.5,
+    stop_wait_sec=5.0,
+    call_poll_sec=0.05,
+)
+
+
+def _caller(docs_dir: Path | None = None, **kw: Any) -> ZygoteToolCaller:
+    """Зигота под каждый набор путей и лимитов: имя секции — ключ реестра."""
     sandbox = SandboxToolConfig.model_validate(
         {"profile": sandbox_profile(docs_dir, **kw), "override": {}}
     )
-    return SandboxCaller("doc-test", sandbox.effective(), dict)
+    profile = sandbox.profile
+
+    section = f"doc-test-{docs_dir}-{sorted(kw.items())}"
+    supervisor = ZygoteRegistry.obtain(section, profile, [DOC_MODULE], ZYGOTE)
+    return ZygoteToolCaller(section, supervisor, profile)
 
 
 def _cfg(**kw: Any) -> dict[str, Any]:
@@ -62,7 +77,7 @@ def _cfg(**kw: Any) -> dict[str, Any]:
 
 
 def _run_doc(
-    caller: SandboxCaller, tool: str, flags: dict[str, str], cfg: dict[str, Any]
+    caller: ZygoteToolCaller, tool: str, flags: dict[str, str], cfg: dict[str, Any]
 ) -> ToolOutcome:
     argv: list[str] = ["python3", "-m", "boba.tool.doc.tools", tool]
     for flag, value in flags.items():
@@ -85,6 +100,9 @@ def docs(tmp_path: Path) -> Path:
 @needs_userns
 class TestDocumentsInSandbox:
     """Инструменты doc: файл лежит в песочнице, парсит его liteparse оттуда."""
+
+    def teardown_method(self) -> None:
+        ZygoteRegistry.stop_all()
 
     def test_read_document(self, docs: Path) -> None:
         outcome = _run_doc(
@@ -148,9 +166,10 @@ class TestDocumentsInSandbox:
 
     def test_small_address_space_is_reported(self, docs: Path) -> None:
         """Заниженный RLIMIT_AS ломает pdfium — ошибка должна это объяснить."""
-        caller = _caller(docs, max_memory_bytes=512 * 1024 * 1024)
+        caller = _caller(docs, process_memory_bytes=512 * 1024 * 1024)
 
-        with pytest.raises(SandboxPayloadError) as failure:
+        # конкретный класс задаёт исполнитель; контракт слоя — LauncherError
+        with pytest.raises(LauncherError) as failure:
             _run_doc(
                 caller,
                 "read_document",
@@ -204,6 +223,9 @@ class TestDocumentsInSandbox:
 class TestOfficeNonAsciiNames:
     """Конвертация office-документов не должна зависеть от алфавита имени:
     содержимое обоих файлов одинаковое, единственная переменная — имя."""
+
+    def teardown_method(self) -> None:
+        ZygoteRegistry.stop_all()
 
     ASCII_NAME: ClassVar[str] = "user manual_v9.docx"
     CYRILLIC_NAME: ClassVar[str] = "Инструкция пользователя Магазина данных_v9.docx"
@@ -279,12 +301,16 @@ class TestRootfsContents:
         ],
     )
     def test_module_is_installed(self, module: str) -> None:
-        sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile(), "override": {}}
-        )
-        runner = SandboxRunner("rootfs-test", sandbox.effective(), dict)
-        outcome = runner.run(f"python3 -c 'import {module}'", stdin="")
-        if not (outcome.succeeded):
+        sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile()})
+        profile = sandbox.profile
+        supervisor = ZygoteRegistry.obtain("rootfs-test", profile, (), ZYGOTE)
+        caller = ZygoteToolCaller("rootfs-test", supervisor, profile)
+        try:
+            outcome = caller.call_text(f"python3 -c 'import {module}'", stdin="")
+        finally:
+            ZygoteRegistry.stop_all()
+
+        if outcome.result.exit_code != 0:
             raise AssertionError(
                 f"в песочнице нет {module}: пересобери — make deps "
                 f"(stderr: {outcome.result.stderr.strip()})"
@@ -299,12 +325,18 @@ class TestEmbedderInSandbox:
     WEIGHTS: str = "/var/cache/fastembed"
 
     def test_weights_are_bundled(self) -> None:
-        sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile(), "override": {}}
-        )
-        runner = SandboxRunner("kb-test", sandbox.effective(), dict)
-        outcome = runner.run(f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}", stdin="")
-        if not (outcome.succeeded):
+        sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile()})
+        profile = sandbox.profile
+        supervisor = ZygoteRegistry.obtain("kb-test", profile, (), ZYGOTE)
+        caller = ZygoteToolCaller("kb-test", supervisor, profile)
+        try:
+            outcome = caller.call_text(
+                f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}", stdin=""
+            )
+        finally:
+            ZygoteRegistry.stop_all()
+
+        if outcome.result.exit_code != 0:
             raise AssertionError(f"нет весов {self.WEIGHTS}: пересобери — make deps")
         if not (outcome.result.stdout.strip()):
             raise AssertionError("outcome.result.stdout.strip()")

@@ -32,6 +32,7 @@ ADMIN_LOGIN = "admin"
 GENERAL_PROMPT = "You are the general stand assistant"
 SEARCH_PROMPT = "You are the search stand assistant"
 
+
 def _app_language() -> str:
     """Язык интерфейса: его навязывает секция [UI] конфига chainlit.
 
@@ -84,7 +85,6 @@ class PanelSelector(StrEnum):
     @staticmethod
     def slider_of(field: str) -> str:
         return f"#{field}[role='slider'], #{field} [role='slider']"
-
 
 
 class Action(StrEnum):
@@ -198,6 +198,7 @@ CASES = (
         meta={"user_prompt": "Always answer in haiku"},
     ),
 )
+
 
 @pytest.fixture(autouse=True)
 def _fresh_settings(clean_llm_settings: None) -> None:

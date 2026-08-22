@@ -16,21 +16,23 @@ from typing import ClassVar
 import pytest
 
 from boba.toolkit.binaries import TrustedBinaries
-from boba.workspace.launcher import (
-    FileOperations,
+from boba.toolkit.images import (
     FuseMounter,
     ImageStore,
-    Launcher,
-    LauncherConfig,
-    LauncherExit,
     LauncherMarker,
     LauncherOptions,
     MountError,
     PartialCopy,
+    SparseCopier,
+)
+from boba.workspace.launcher import (
+    FileOperations,
+    Launcher,
+    LauncherExit,
+    MountingConfig,
     ReadHeader,
     ReadWindow,
     ResourceLimits,
-    SparseCopier,
     build_chain_argv,
 )
 
@@ -239,8 +241,8 @@ class TestImageStore:
     DEAD_PID: ClassVar[int] = 999_999
     """Pid, которого нет: владелец частичной копии умер, не докопировав её."""
 
-    LIVE_PID: ClassVar[int] = 1
-    """Заведомо живой владелец; свой pid не годится — его займёт материализация."""
+    OWN_PID: ClassVar[int] = 1
+    """Pid исполнителя вызова: в своём pid namespace он у всех равен 1."""
 
     def test_abandoned_partial_copy_removed_on_acquire(
         self, tmp_path: Path, template: Path
@@ -260,11 +262,12 @@ class TestImageStore:
         if partial.exists():
             raise AssertionError("not partial.exists()")
 
-    def test_partial_copy_of_a_live_owner_kept_on_acquire(
+    def test_partial_copy_with_a_live_pid_removed_on_acquire(
         self, tmp_path: Path, template: Path
     ) -> None:
+        """Pid в имени копии ничего не решает: под эксклюзивным локом её нет."""
         image = tmp_path / "img"
-        partial = Path(PartialCopy.render(str(image), self.LIVE_PID))
+        partial = Path(PartialCopy.render(str(image), self.OWN_PID))
         partial.write_bytes(b"copy in progress")
         store = self._store(template)
 
@@ -273,8 +276,8 @@ class TestImageStore:
         finally:
             store.release_all()
 
-        if not (partial.exists()):
-            raise AssertionError("partial.exists()")
+        if partial.exists():
+            raise AssertionError("копия под чужим pid всё равно должна быть убрана")
 
     def test_alien_name_is_not_a_partial_copy(self, tmp_path: Path) -> None:
         image = str(tmp_path / "img")
@@ -402,9 +405,7 @@ class TestFileOperations:
         if self._split(out) != (7, b""):
             raise AssertionError('self._split(out) == (7, b"")')
 
-    def test_stat_revision_changes_on_same_size_rewrite(
-        self, tmp_path: Path
-    ) -> None:
+    def test_stat_revision_changes_on_same_size_rewrite(self, tmp_path: Path) -> None:
         """Правка той же длины видна по версии: слежение канваса ловит её."""
         target = tmp_path / "f.txt"
         target.write_bytes(b"aaaa")
@@ -827,7 +828,6 @@ class TestChainOptions:
     @staticmethod
     def _argv(op: list[str], options: LauncherOptions) -> list[str]:
         return build_chain_argv(
-            extra_env={},
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             template="/t.ext4",
             op=op,
@@ -865,10 +865,10 @@ class TestChainOptions:
 
     def test_config_requires_all_timings(self) -> None:
         with pytest.raises(ValueError, match="mount_wait_sec"):
-            LauncherConfig.model_validate({})
+            MountingConfig.model_validate({})
 
     def test_config_maps_to_options(self) -> None:
-        cfg = LauncherConfig(
+        cfg = MountingConfig(
             mount_wait_sec=1.0,
             mount_poll_sec=0.1,
             shutdown_wait_sec=2.0,
@@ -894,7 +894,6 @@ class TestChainOptions:
             max_file_size_bytes=2048,
         )
         argv = build_chain_argv(
-            extra_env={},
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             template="/t.ext4",
             op=["read", "x"],

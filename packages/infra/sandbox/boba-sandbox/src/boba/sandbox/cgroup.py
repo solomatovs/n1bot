@@ -42,13 +42,14 @@ class GroupLimits:
 
     @classmethod
     def of_profile(cls, profile: SandboxProfile) -> GroupLimits:
+        limits = profile.limits
         return cls(
-            memory_bytes=profile.cgroup_memory_bytes,
-            cpu_percent=profile.cgroup_cpu_percent,
-            cpu_weight=profile.cgroup_cpu_weight,
-            pids_max=profile.cgroup_pids_max,
-            swap_max_bytes=profile.cgroup_swap_max_bytes,
-            oom_kill_all=profile.cgroup_oom_kill_all,
+            memory_bytes=limits.group_memory_bytes,
+            cpu_percent=limits.group_cpu_percent,
+            cpu_weight=limits.group_cpu_weight,
+            pids_max=limits.group_pids_max,
+            swap_max_bytes=limits.group_swap_bytes,
+            oom_kill_all=limits.group_oom_kill_all,
         )
 
     @property
@@ -231,7 +232,7 @@ class CgroupManager:
             limits = GroupLimits.of_profile(profile)
             if not limits.requested:
                 continue
-            manager = cls(profile.cgroup_base)
+            manager = cls(profile.host.cgroup_base)
             try:
                 leaf = manager.acquire(limits)
                 try:
@@ -244,7 +245,7 @@ class CgroupManager:
             logger.info(
                 "sandbox cgroup: profile %r ok in %s (%s)",
                 name,
-                profile.cgroup_base,
+                profile.host.cgroup_base,
                 limits.describe(),
             )
 

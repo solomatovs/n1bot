@@ -1,15 +1,12 @@
-"""Конвейер обёрток целиком: ToolCall-конверт -> обёртки -> тело функции.
+"""Конвейер обёрток приложения: ToolCall-конверт -> обёртки -> тело функции.
 
-Сборка повторяет загрузчик: ProcessWrap (локальный режим) -> InjectedConfig
--> ToolCallIdField -> ToolRunLogger; вызов — ainvoke полным ToolCall, как
-зовёт ToolNode агента.
+Сборка повторяет загрузчик поверх тела: InjectedConfig -> ToolCallIdField
+-> ToolRunLogger; вызов — ainvoke полным ToolCall, как зовёт ToolNode агента.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
-from enum import StrEnum
 from typing import Annotated, Any, ClassVar
 
 import pytest
@@ -18,11 +15,9 @@ from pydantic import BaseModel, Field, SecretStr
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
+from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
 from boba.chainlit.rendering.tool import MarkdownRendering, ToolResultView
 from boba.toolkit.channels import JournalChannel
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import (
     TextResult,
     ToolArtifact,
@@ -30,26 +25,12 @@ from boba.toolkit.result import (
     render_for_llm,
 )
 from boba.toolkit.stream import ToolChannelsTap
-from boba.toolkit.wrap import ToolProcessWrap
 
 
 class PipeConfig(BaseModel):
     SECTION: ClassVar[str] = "tool.pipe"
 
     token: SecretStr
-
-
-class PipeDownError(Exception):
-    """Ожидаемый отказ конвейерного фейка."""
-
-
-class PipeErrorKind(StrEnum):
-    DOWN = "pipe_down"
-
-
-EXPECTED: Mapping[type[Exception], PipeErrorKind] = {
-    PipeDownError: PipeErrorKind.DOWN,
-}
 
 
 @pytest.fixture(autouse=True)
@@ -66,15 +47,9 @@ def build_pipeline() -> Any:
         cfg: Annotated[PipeConfig, InjectedToolArg],
     ) -> tuple[str, ToolResult]:
         """Возвращает текст с секретом конфига."""
-        if text == "boom":
-            msg = "pipe backend is down"
-            raise PipeDownError(msg)
-
         artifact = TextResult(text=f"{text}|{cfg.token.get_secret_value()}")
         return render_for_llm(artifact), artifact
 
-    # EXPECTED ищется по модулю тела — у теста это модуль этого файла
-    ToolProcessWrap.guard_all(ToolMain.toolset(pipe_echo), None)
     InjectedConfig.bind_all(
         [pipe_echo],
         lambda name, annotation: PipeConfig(token=SecretStr("p1p3")),
@@ -109,17 +84,6 @@ class TestPipeline:
 
         if "hi|p1p3" not in str(message.content):
             raise AssertionError('"hi|p1p3" in str(message.content)')
-
-    def test_expected_error_kind_survives_the_pipeline(self) -> None:
-        pipe_echo = build_pipeline()
-
-        with pytest.raises(PayloadFailureError) as caught:
-            asyncio.run(pipe_echo.ainvoke(call_envelope("boom")))
-
-        if caught.value.kind != "pipe_down":
-            raise AssertionError('caught.value.kind == "pipe_down"')
-        if "pipe backend is down" not in str(caught.value):
-            raise AssertionError('"pipe backend is down" in str(caught.value)')
 
 
 class TestArtifactRendering:
@@ -161,7 +125,7 @@ class TestArtifactRendering:
             raise AssertionError("ToolArtifact.revive(legacy) is None")
 
 
-class _FakeStream:
+class _FakeStream(CallStream):
     """Журнал вызова для теста: приёмники каналов и заметка закрытия."""
 
     def __init__(self) -> None:

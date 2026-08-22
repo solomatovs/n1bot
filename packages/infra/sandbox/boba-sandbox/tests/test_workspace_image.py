@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from zygote_stand import ProfileFields, SandboxStand, ZygoteStand
 
 from boba.chainlit.data.storage import (
     ImageStorageClient,
@@ -22,15 +23,14 @@ from boba.chainlit.data.storage import (
     StorageNotFoundError,
 )
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.sandbox.caller import SandboxCaller
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxMountError
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.toolkit.binaries import TrustedBinaries
+from boba.toolkit.images import LauncherOptions
 from boba.toolkit.result import ShellResult
 from boba.workspace.launcher import (
     FUSE_DEVICE,
-    LauncherOptions,
     ReadWindow,
     ResourceLimits,
     build_chain_argv,
@@ -72,13 +72,14 @@ async def read_all(storage: StorageClient, object_key: str) -> bytes:
 def _storage_cfg(**kw: Any) -> LocalStorageConfig:
     """Тайминги лаунчера обязательны: дефолтов у конфига нет."""
     fields: dict[str, Any] = {
-        "launcher": {
+        "mounting": {
             "mount_wait_sec": 10.0,
             "mount_poll_sec": 0.05,
             "shutdown_wait_sec": 5.0,
             "lock_wait_sec": 10.0,
             "copy_chunk_bytes": 1 << 20,
         },
+        "mount_dir": "/tmp",  # noqa: S108
         "binaries": {"dirs": _bin_dirs()},
     }
     fields.update(kw)
@@ -121,51 +122,94 @@ def _image_tpl(tmp_path: Path) -> str:
 
 
 _PROFILE_BASE: dict[str, object] = {
-    "rootfs": "",
-    "ro_binds": (),
-    "rw_binds": (),
-    "rw_images": (),
-    "image_template": "",
-    "launcher": {
-        "mount_wait_sec": 10.0,
-        "mount_poll_sec": 0.05,
-        "shutdown_wait_sec": 5.0,
-        "lock_wait_sec": 10.0,
-        "copy_chunk_bytes": 1 << 20,
+    "host": {
+        "mounting": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.05,
+            "shutdown_wait_sec": 5.0,
+            "lock_wait_sec": 10.0,
+            "copy_chunk_bytes": 1 << 20,
+        },
+        "binaries": {"dirs": _bin_dirs()},
+        "stderr_tail_bytes": 4096,
+        "fail_tail_chars": 2000,
+        "kill_grace_sec": 5,
+        "cgroup_base": "",
     },
-    "binaries": {"dirs": _bin_dirs()},
-    "tmpfs": (),
-    "network": False,
-    "env_set": {},
-    "timeout_sec": 30,
-    "max_memory_bytes": 512 * 1024 * 1024,
-    "max_cpu_sec": 30,
-    "max_file_size_bytes": 64 * 1024 * 1024,
-    "max_open_files": 256,
-    "max_processes": 256,
-    "cgroup_base": "",
-    "oom_score_adj": 0,
-    "cwd": "",
+    "rootfs": {
+        "dir": "",
+    },
+    "mounts": {
+        "ro": (),
+        "rw": (),
+        "images": (),
+        "image_template": "",
+        "tmpfs": (),
+        "proc": "/proc",
+        "dev": "/dev",
+        "call_tmpfs": "/tmp",  # noqa: S108
+        "setup_ro": (),
+        "setup_rw": (),
+    },
+    "isolation": {
+        "network": False,
+        "env": {},
+        "max_processes": 256,
+        "reap_poll_sec": 0.05,
+    },
+    "limits": {
+        "timeout_sec": 30,
+        "process_memory_bytes": 512 * 1024 * 1024,
+        "process_cpu_sec": 30,
+        "process_file_bytes": 64 * 1024 * 1024,
+        "process_open_files": 256,
+        "process_oom_score_adj": 0,
+    },
+    "run": {
+        "shell": "/bin/bash",
+        "cwd": "",
+    },
 }
 
 
 def _profile(**kw: object) -> SandboxProfile:
-    return SandboxProfile.model_validate({**_PROFILE_BASE, **kw})
+    return SandboxProfile.model_validate(ProfileFields.merged(_PROFILE_BASE, kw))
 
 
 def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
+    """Bash на зиготе секции: обвязка образов объявлена биндами профиля."""
+    images_dir = f"{tmp_path}/ws"
+    os.makedirs(images_dir, exist_ok=True)
+
+    ro_binds, rw_binds = SandboxStand.image_binds(str(template), images_dir)
+
     profile_dto = _profile(
-        ro_binds=HOST_RO_BINDS,
-        rw_images=(f"{_image_tpl(tmp_path)}:/workspace",),
+        ro=(*HOST_RO_BINDS, *SandboxStand.host_python_binds(), *ro_binds),
+        rw=rw_binds,
+        images=(),
+        workspace={
+            "template": str(template),
+            "images": f"{tmp_path}/ws",
+            "mount": "/workspace",
+        },
         image_template=str(template),
         cwd="/workspace",
+        tmpfs=("/tmp:64M",),  # noqa: S108
+        env={
+            "PATH": SandboxStand.host_python_path(),
+            "HOME": "/tmp",  # noqa: S108
+            "LANG": "C.UTF-8",
+        },
         **profile_kw,
     )
 
-    def launchers(tool: str):
-        return SandboxCaller(
-            tool, profile_dto, lambda: {"user_id": "7", "thread_id": thread_id}
-        )
+    # у каждого теста свой tmp_path и свои лимиты: имя секции — ключ реестра
+    section = f"ws-{tmp_path.name}-{thread_id}-{profile_kw.get('timeout_sec', 0)}"
+    launchers = ZygoteStand.launchers(
+        section,
+        profile_dto,
+        path_vars=lambda: {"user_id": "7", "thread_id": thread_id},
+    )
 
     return build_bash_tool(OUTPUT_LIMITS, launchers)
 
@@ -187,8 +231,11 @@ def _storage(
 ) -> ImageStorageClient:
     cfg = _storage_cfg(
         kind="image",
-        image_path=_image_tpl(tmp_path),
-        image_template=str(template),
+        workspace={
+            "template": str(template),
+            "images": f"{tmp_path}/ws",
+            "mount": "/workspace",
+        },
         op_timeout_sec=op_timeout_sec,
     )
     client = StorageFactory.create(cfg)
@@ -209,8 +256,8 @@ def _launcher_options() -> LauncherOptions:
 
 
 class TestConfig:
-    def test_image_kind_requires_paths(self) -> None:
-        with pytest.raises(ValueError, match="image_path and image_template"):
+    def test_image_kind_requires_workspace(self) -> None:
+        with pytest.raises(ValueError, match="workspace record"):
             _storage_cfg(kind="image")
 
     def test_local_kind_requires_files_dir(self) -> None:
@@ -224,8 +271,7 @@ class TestConfig:
     def test_factory_picks_image_client(self) -> None:
         cfg = _storage_cfg(
             kind="image",
-            image_path="/ws/{user_id}.ext4",
-            image_template="/t.ext4",
+            workspace={"template": "/t.ext4", "images": "/ws", "mount": "/workspace"},
         )
         if not (isinstance(StorageFactory.create(cfg), ImageStorageClient)):
             raise AssertionError("isinstance(StorageFactory.create(cfg), ImageStorage…")
@@ -237,7 +283,7 @@ class TestConfig:
 
     def test_profile_images_require_template(self) -> None:
         with pytest.raises(ValueError, match="image_template is empty"):
-            _profile(rw_images=("/ws/a.ext4:/workspace",))
+            _profile(images=("/ws/a.ext4:/workspace",))
 
 
 class TestObjectKey:
@@ -245,8 +291,7 @@ class TestObjectKey:
     def _client() -> ImageStorageClient:
         cfg = _storage_cfg(
             kind="image",
-            image_path="/ws/{user_id}.ext4",
-            image_template="/t.ext4",
+            workspace={"template": "/t.ext4", "images": "/ws", "mount": "/workspace"},
         )
         client = StorageFactory.create(cfg)
         if not (isinstance(client, ImageStorageClient)):
@@ -280,20 +325,23 @@ class TestObjectKey:
 class TestRelativePaths:
     """bwrap на read-only корне не создаст точку монтирования по относительному пути."""
 
-    def test_config_makes_image_paths_absolute(self) -> None:
+    def test_workspace_image_path_is_built_from_user_id(self) -> None:
         cfg = _storage_cfg(
             kind="image",
-            image_path="./data/ws/{user_id}/{thread_id}.ext4",
-            image_template="./data/tpl.ext4",
+            workspace={
+                "template": "/data/tpl.ext4",
+                "images": "/data/ws",
+                "mount": "/workspace",
+            },
         )
-        if not (cfg.image_path.startswith("/")):
-            raise AssertionError('cfg.image_path.startswith("/")')
-        if not (cfg.image_template.startswith("/")):
-            raise AssertionError('cfg.image_template.startswith("/")')
+        if cfg.workspace is None:
+            raise AssertionError("workspace record is required for kind=image")
+
+        if cfg.workspace.image_of("7") != "/data/ws/7.ext4":
+            raise AssertionError(f"путь образа: {cfg.workspace.image_of('7')}")
 
     def test_relative_image_bound_by_absolute_path(self) -> None:
         argv = build_chain_argv(
-            extra_env={},
             images=[("./ws/a.ext4", "./ws/a.ext4.mnt")],
             template="./t.ext4",
             op=["write", "upload/x"],
@@ -320,7 +368,6 @@ class TestChainArgv:
     @staticmethod
     def _argv(**kw) -> list[str]:
         return build_chain_argv(
-            extra_env={},
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             template="/t.ext4",
             op=["write", "upload/x"],
@@ -334,7 +381,6 @@ class TestChainArgv:
     def test_limits_rendered_as_flags(self) -> None:
         limits = ResourceLimits(max_memory_bytes=64 * 1024 * 1024, max_cpu_sec=5)
         argv = build_chain_argv(
-            extra_env={},
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             template="/t.ext4",
             op=["write", "upload/x"],
@@ -538,6 +584,9 @@ class TestErrorBoundary:
 @needs_fuse
 class TestLiveImage:
     """Реальные монтирования: bash и storage поверх одного образа."""
+
+    def teardown_method(self) -> None:
+        ZygoteStand.stop()
 
     def test_write_persists_between_calls(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template)
@@ -839,19 +888,19 @@ class TestLiveImage:
             raise AssertionError('payload.stdout.strip() == "sandbox"')
 
     def test_memory_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, max_memory_bytes=64 * 1024 * 1024)
+        tool = _bash(tmp_path, template, process_memory_bytes=64 * 1024 * 1024)
         payload = _invoke(tool, "ulimit -v")
         if payload.stdout.strip() != str(64 * 1024):
             raise AssertionError("payload.stdout.strip() == str(64 * 1024)")
 
     def test_cpu_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, max_cpu_sec=5)
+        tool = _bash(tmp_path, template, process_cpu_sec=5)
         payload = _invoke(tool, "ulimit -t")
         if payload.stdout.strip() != "5":
             raise AssertionError('payload.stdout.strip() == "5"')
 
     def test_memory_limit_enforced(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, max_memory_bytes=64 * 1024 * 1024)
+        tool = _bash(tmp_path, template, process_memory_bytes=64 * 1024 * 1024)
         payload = _invoke(
             tool, "dd if=/dev/zero of=/dev/null bs=200M count=1 2>&1; echo rc=$?"
         )
@@ -859,14 +908,14 @@ class TestLiveImage:
             raise AssertionError('"rc=0" not in payload.stdout')
 
     def test_file_size_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, max_file_size_bytes=8 * 1024 * 1024)
+        tool = _bash(tmp_path, template, process_file_bytes=8 * 1024 * 1024)
         payload = _invoke(tool, "ulimit -f")
         # bash показывает RLIMIT_FSIZE в блоках по 1024 байта
         if payload.stdout.strip() != str(8 * 1024 * 1024 // 1024):
             raise AssertionError("payload.stdout.strip() == str(8 * 1024 * 1024 //…")
 
     def test_open_files_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, max_open_files=128)
+        tool = _bash(tmp_path, template, process_open_files=128)
         payload = _invoke(tool, "ulimit -n")
         if payload.stdout.strip() != "128":
             raise AssertionError('payload.stdout.strip() == "128"')
@@ -899,7 +948,7 @@ class TestLiveImage:
             raise AssertionError("0 < forked < 40")
 
     def test_file_size_limit_enforced(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, max_file_size_bytes=1024 * 1024)
+        tool = _bash(tmp_path, template, process_file_bytes=1024 * 1024)
         payload = _invoke(
             tool, "dd if=/dev/zero of=big bs=64k count=32 2>&1; echo rc=$?"
         )

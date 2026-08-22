@@ -10,8 +10,8 @@ from boba.chainlit.domain.keys import (
     AttachmentUrl,
     ObjectKey,
     ThreadDir,
+    WorkspaceMount,
 )
-from boba.sandbox import WORKSPACE_MOUNT
 
 USER = "7"
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -21,6 +21,16 @@ NAME = "report.pdf"
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
+
+
+MOUNT = "/workspace"
+"""Точка рабочего каталога; в приложении её задаёт профиль песочницы."""
+
+
+@pytest.fixture(autouse=True)
+def workspace_mount() -> None:
+    """В приложении точку ставит загрузчик инструментов из профиля."""
+    WorkspaceMount.configure(MOUNT)
 
 
 class TestPaths:
@@ -38,8 +48,8 @@ class TestPaths:
 
     def test_in_workspace_is_path_inside_sandbox(self) -> None:
         key = ObjectKey.build(USER, THREAD, NAME, "el-1")
-        if key.in_workspace() != f"{WORKSPACE_MOUNT}/{THREAD}/upload/{NAME}":
-            raise AssertionError('key.in_workspace() == f"{WORKSPACE_MOUNT}/{THREAD}/…')
+        if key.in_workspace() != f"{MOUNT}/{THREAD}/upload/{NAME}":
+            raise AssertionError('key.in_workspace() == f"{MOUNT}/{THREAD}/…')
 
     def test_parse_round_trip(self) -> None:
         key = ObjectKey.build(USER, THREAD, NAME, "el-1")
@@ -51,7 +61,7 @@ class TestFromWorkspace:
     """Путь, которым оперирует агент, -> ключ хранилища."""
 
     def test_absolute_sandbox_path(self) -> None:
-        path = f"{WORKSPACE_MOUNT}/{THREAD}/upload/{NAME}"
+        path = f"{MOUNT}/{THREAD}/upload/{NAME}"
         key = ObjectKey.from_workspace(USER, THREAD, path)
         if key.render() != f"{USER}/{THREAD}/upload/{NAME}":
             raise AssertionError('key.render() == f"{USER}/{THREAD}/upload/{NAME}"')
@@ -68,33 +78,29 @@ class TestFromWorkspace:
 
     def test_file_outside_upload_dir_rejected(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(USER, THREAD, f"{WORKSPACE_MOUNT}/{NAME}")
+            ObjectKey.from_workspace(USER, THREAD, f"{MOUNT}/{NAME}")
 
     def test_error_names_the_expected_path(self) -> None:
         """По тексту ошибки агент понимает, куда положить файл."""
         with pytest.raises(ValueError, match="attachments dir") as failure:
-            ObjectKey.from_workspace(USER, THREAD, f"{WORKSPACE_MOUNT}/{NAME}")
-        wanted = f"{WORKSPACE_MOUNT}/{THREAD}/{{mermaid|upload}}/{NAME}"
+            ObjectKey.from_workspace(USER, THREAD, f"{MOUNT}/{NAME}")
+        wanted = f"{MOUNT}/{THREAD}/{{mermaid|upload}}/{NAME}"
         if wanted not in str(failure.value):
             raise AssertionError(f"текст ошибки не подсказывает путь: {wanted}")
 
     def test_foreign_thread_rejected(self) -> None:
         other = "22222222-2222-2222-2222-222222222222"
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(
-                USER, THREAD, f"{WORKSPACE_MOUNT}/{other}/upload/{NAME}"
-            )
+            ObjectKey.from_workspace(USER, THREAD, f"{MOUNT}/{other}/upload/{NAME}")
 
     def test_parent_traversal_rejected(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(
-                USER, THREAD, f"{WORKSPACE_MOUNT}/{THREAD}/upload/.."
-            )
+            ObjectKey.from_workspace(USER, THREAD, f"{MOUNT}/{THREAD}/upload/..")
 
     def test_nested_path_rejected(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
             ObjectKey.from_workspace(
-                USER, THREAD, f"{WORKSPACE_MOUNT}/{THREAD}/upload/sub/{NAME}"
+                USER, THREAD, f"{MOUNT}/{THREAD}/upload/sub/{NAME}"
             )
 
     def test_bare_name_rejected(self) -> None:
@@ -119,8 +125,8 @@ class TestMermaidDir:
         key = ObjectKey.build(
             USER, THREAD, self.SPEC, "el-1", dir_thread=ThreadDir.MERMAID
         )
-        if key.in_workspace() != f"{WORKSPACE_MOUNT}/{THREAD}/mermaid/{self.SPEC}":
-            raise AssertionError('key.in_workspace() == f"{WORKSPACE_MOUNT}/{THREAD}/…')
+        if key.in_workspace() != f"{MOUNT}/{THREAD}/mermaid/{self.SPEC}":
+            raise AssertionError('key.in_workspace() == f"{MOUNT}/{THREAD}/…')
 
     def test_parse_round_trip(self) -> None:
         key = ObjectKey.build(
@@ -130,7 +136,7 @@ class TestMermaidDir:
             raise AssertionError("ObjectKey.parse(key.render()) == key")
 
     def test_from_workspace_accepts_mermaid_path(self) -> None:
-        path = f"{WORKSPACE_MOUNT}/{THREAD}/mermaid/{self.SPEC}"
+        path = f"{MOUNT}/{THREAD}/mermaid/{self.SPEC}"
         key = ObjectKey.from_workspace(USER, THREAD, path)
         if key.dir != ThreadDir.MERMAID:
             raise AssertionError("key.dir == ThreadDir.MERMAID")
@@ -149,7 +155,7 @@ class TestMermaidDir:
     def test_unknown_dir_rejected_in_workspace_path(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
             ObjectKey.from_workspace(
-                USER, THREAD, f"{WORKSPACE_MOUNT}/{THREAD}/other/{self.SPEC}"
+                USER, THREAD, f"{MOUNT}/{THREAD}/other/{self.SPEC}"
             )
 
 

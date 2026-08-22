@@ -40,7 +40,7 @@ def _bound(raw, sections) -> list[tuple[str, SandboxProfile]]:
     found: list[tuple[str, SandboxProfile]] = []
     for section in sections:
         sandbox = bind(raw, path=f"{section}.sandbox", model=SandboxToolConfig)
-        found.append((section, sandbox.effective()))
+        found.append((section, sandbox.profile))
     return found
 
 
@@ -53,25 +53,31 @@ class TestParserProfileLimits:
 
     def test_address_space_fits_pdfium(self, raw_config) -> None:
         for section, profile in _profiles(raw_config):
-            if profile.max_memory_bytes < MIN_ADDRESS_SPACE:
+            if profile.limits.process_memory_bytes < MIN_ADDRESS_SPACE:
                 raise AssertionError(
-                    f"[{section}]: max_memory_bytes={profile.max_memory_bytes} — "
+                    f"[{section}]: "
+                    f"process_memory_bytes={profile.limits.process_memory_bytes} — "
                     "pdfium резервирует больше 2G адресного пространства и упадёт"
                 )
 
     def test_enough_open_files(self, raw_config) -> None:
         for section, profile in _profiles(raw_config):
-            if profile.max_open_files < MIN_OPEN_FILES:
+            if profile.limits.process_open_files < MIN_OPEN_FILES:
                 raise AssertionError(
-                    f"[{section}]: max_open_files={profile.max_open_files} — "
+                    f"[{section}]: "
+                    f"process_open_files={profile.limits.process_open_files} — "
                     "pdfium не откроет свою библиотеку (Too many open files)"
                 )
 
     def test_enough_processes(self, raw_config) -> None:
+        """Потолок задач секции опционален; заданный — не ниже нужного payload'у."""
         for section, profile in _profiles(raw_config):
-            if profile.max_processes < MIN_PROCESSES:
+            if profile.isolation.max_processes is None:
+                continue
+
+            if profile.isolation.max_processes < MIN_PROCESSES:
                 raise AssertionError(
-                    f"[{section}]: max_processes={profile.max_processes} — "
+                    f"[{section}]: max_processes={profile.isolation.max_processes} — "
                     "payload запускает конвертеры отдельными процессами"
                 )
 
@@ -84,19 +90,20 @@ class TestParserProfileLimits:
             "tool.confluence": True,
         }
         for section, profile in _profiles(raw_config):
-            if profile.network is not expected[section]:
+            if profile.isolation.network is not expected[section]:
                 wanted = expected[section]
                 raise AssertionError(
-                    f"[{section}]: network={profile.network}, ожидалось {wanted}"
+                    f"[{section}]: network={profile.isolation.network}, "
+                    f"ожидалось {wanted}"
                 )
 
     def test_network_profiles_mount_resolver(self, raw_config) -> None:
         """Сеть без resolv.conf — это 'Temporary failure in name resolution'."""
         for section, profile in _bound(raw_config, _NETWORK_SECTIONS):
-            if not profile.network:
+            if not profile.isolation.network:
                 continue
             targets = set()
-            for spec in profile.ro_binds:
+            for spec in profile.mounts.ro:
                 targets.add(spec.target)
             missing = sorted(set(RESOLVER_FILES) - targets)
             if missing:

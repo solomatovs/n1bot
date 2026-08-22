@@ -311,9 +311,7 @@ class TestToolCallMarkdown:
     """Вход шага по объявлению: зеркало рендера результата."""
 
     def test_json_call_renders_pretty_json(self) -> None:
-        rendering = ToolCallMarkdown(
-            JsonCall(), {"path": "/workspace/a.png"}
-        ).render()
+        rendering = ToolCallMarkdown(JsonCall(), {"path": "/workspace/a.png"}).render()
 
         if rendering is None:
             raise AssertionError("rendering is not None")
@@ -489,7 +487,7 @@ class TestMultiResult:
         if "[1] " not in report:
             raise AssertionError('"[1] " in report')
         if '[{"blobs": 3}]' not in report:
-            raise AssertionError('выдача первой команды в отчёте')
+            raise AssertionError("выдача первой команды в отчёте")
         if "[2] DELETE 5" not in report:
             raise AssertionError('"[2] DELETE 5" in report')
 

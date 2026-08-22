@@ -34,11 +34,11 @@ from boba.chainlit.domain import session as session_module
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.domain.session import SessionKind
-from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.domain.turn import TurnContext, TurnPort
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
-from boba.workspace.launcher import LauncherConfig
+from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 ER_SPEC = "erDiagram\n    CUSTOMER ||--o{ ORDER : has"
@@ -192,13 +192,14 @@ class _StorageOnlyLayer:
 def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DiagramFiles:
     config = LocalStorageConfig(
         files_dir=str(tmp_path),
-        launcher=LauncherConfig(
+        mounting=MountingConfig(
             mount_wait_sec=1.0,
             mount_poll_sec=0.1,
             shutdown_wait_sec=1.0,
             lock_wait_sec=1.0,
             copy_chunk_bytes=65536,
         ),
+        mount_dir="/tmp",  # noqa: S108
         binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
     )
     storage = LocalStorageClient(config)
@@ -521,7 +522,7 @@ class TestViewerVerdict:
             raise AssertionError('"Parse error on line 5" in str(failure.value)')
 
 
-class FakeTurn:
+class FakeTurn(TurnPort):
     """Живой ход под тест: карточке нужен только id шага ответа."""
 
     answer_step_id = "answer-step"

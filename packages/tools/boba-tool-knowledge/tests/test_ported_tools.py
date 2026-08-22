@@ -168,38 +168,57 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-_SANDBOX = SandboxToolConfig.model_validate(
-    {
-        "profile": {
-            "rootfs": "",
-            "ro_binds": (),
-            "rw_binds": (),
-            "rw_images": (),
-            "image_template": "",
-            "launcher": {
-                "mount_wait_sec": 10.0,
-                "mount_poll_sec": 0.05,
-                "shutdown_wait_sec": 5.0,
-                "lock_wait_sec": 10.0,
-                "copy_chunk_bytes": 1 << 20,
-            },
-            "binaries": {"dirs": _bin_dirs()},
-            "tmpfs": ("/tmp:64M",),  # noqa: S108
-            "network": False,
-            "env_set": {"PATH": "/usr/bin:/bin"},
-            "timeout_sec": 30,
-            "max_memory_bytes": 512 * 1024 * 1024,
-            "max_cpu_sec": 30,
-            "max_file_size_bytes": 64 * 1024 * 1024,
-            "max_open_files": 1024,
-            "max_processes": 256,
-            "cgroup_base": "",
-            "oom_score_adj": 0,
-            "cwd": "/tmp",  # noqa: S108
+_PROFILE_RAW: dict[str, object] = {
+    "host": {
+        "mounting": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.05,
+            "shutdown_wait_sec": 5.0,
+            "lock_wait_sec": 10.0,
+            "copy_chunk_bytes": 1 << 20,
         },
-        "override": {},
-    }
-)
+        "binaries": {"dirs": _bin_dirs()},
+        "stderr_tail_bytes": 4096,
+        "fail_tail_chars": 2000,
+        "kill_grace_sec": 5,
+        "cgroup_base": "",
+    },
+    "rootfs": {
+        "dir": "",
+    },
+    "mounts": {
+        "ro": (),
+        "rw": (),
+        "images": (),
+        "image_template": "",
+        "tmpfs": ("/tmp:64M",),  # noqa: S108
+        "proc": "/proc",
+        "dev": "/dev",
+        "call_tmpfs": "/tmp",  # noqa: S108
+        "setup_ro": (),
+        "setup_rw": (),
+    },
+    "isolation": {
+        "network": False,
+        "env": {"PATH": "/usr/bin:/bin"},
+        "max_processes": 256,
+        "reap_poll_sec": 0.05,
+    },
+    "limits": {
+        "timeout_sec": 30,
+        "process_memory_bytes": 512 * 1024 * 1024,
+        "process_cpu_sec": 30,
+        "process_file_bytes": 64 * 1024 * 1024,
+        "process_open_files": 1024,
+        "process_oom_score_adj": 0,
+    },
+    "run": {
+        "shell": "/bin/bash",
+        "cwd": "/tmp",  # noqa: S108
+    },
+}
+
+_SANDBOX = SandboxToolConfig.model_validate({"profile": _PROFILE_RAW})
 
 
 class TestConfluenceTools:

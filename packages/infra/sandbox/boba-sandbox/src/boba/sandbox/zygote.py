@@ -18,13 +18,17 @@ import array
 import logging
 import os
 import select
+import shlex
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import ClassVar
 
@@ -33,25 +37,56 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.cancellation import current_cancellation
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.cgroup import CgroupManager, GroupLimits
+from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.runner import (
+    DeathReport,
+    FailureLog,
+    IncidentReason,
+    LifecycleJournal,
+    SandboxChainError,
+    SandboxLogRelay,
+    SandboxMountError,
+    StderrTee,
+)
+from boba.toolkit.binaries import SandboxBinary
 from boba.toolkit.channels import ToolChannel
+from boba.toolkit.images import LauncherMarker, MountError
 from boba.toolkit.launcher import (
     LauncherError,
     LaunchOutcome,
     RunResult,
+    ToolLauncher,
     ToolOutcome,
 )
 from boba.toolkit.protocol import REPLY, ToolCommand
-from boba.toolkit.stream import ChannelSinks, ToolChannelsTap
+from boba.toolkit.stream import (
+    ChannelSinks,
+    Chunk,
+    ChunkSink,
+    FdReader,
+    ToolChannelsTap,
+)
 from boba.toolkit.zygote import (
     CallExit,
     CallFd,
+    CallKind,
+    CallMounts,
     CallRequest,
     ChildLimits,
     ControlMark,
+    ImageMount,
+    ImageMounting,
+    WarmupCall,
     WarmupMessage,
-    ZygoteEnv,
+    ZygoteArgs,
     ZygoteWire,
+)
+from boba.workspace.launcher import (
+    LauncherMode,
+    ResourceLimits,
+    build_chain_argv,
+    require_fuse,
 )
 
 __all__ = [
@@ -95,15 +130,74 @@ class ZygoteState(StrEnum):
 
 
 class ZygotePolicy(BaseModel):
-    """Политика жизненного цикла: таймауты старта и лимит попыток."""
+    """Секция [sandbox.zygote]: как супервизор поднимает и перезапускает зиготу.
+
+    Зигота секции инструментов — резидентный процесс: приложение поднимает его
+    при старте и держит живым, форкая на каждый вызов. Эти четыре значения
+    описывают, сколько ждать готовности, сколько раз пробовать снова и когда
+    считать зиготу здоровой.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    start_timeout_sec: float = Field(gt=0)
-    max_start_attempts: int = Field(ge=1)
-    restart_backoff_sec: float = Field(ge=0)
-    healthy_after_sec: float = Field(ge=0)
-    """Прожила меньше — смерть считается неудачной попыткой старта."""
+    start_timeout_sec: float = Field(
+        gt=0,
+        description=(
+            "Сколько секунд ждать готовности зиготы: отсчёт идёт от запуска "
+            "процесса до сообщения ready, которое зигота шлёт после импорта "
+            "своих модулей и прогрева. Не уложилась — процесс убивается, а "
+            "попытка засчитывается как неудачная. Ориентир: холодный импорт "
+            "тяжёлой секции (kb с моделью эмбеддингов) занимает единицы секунд."
+        ),
+    )
+    max_start_attempts: int = Field(
+        ge=1,
+        description=(
+            "Сколько неудачных попыток старта подряд допускается. Когда они "
+            "исчерпаны, супервизор прекращает поднимать зиготу и переводит её "
+            "в состояние failed: инструменты этой секции отвечают ошибкой, "
+            "пока приложение не перезапустят. Без потолка сломанная секция "
+            "(ошибка импорта, битый конфиг прогрева) перезапускалась бы вечно."
+        ),
+    )
+    restart_backoff_sec: float = Field(
+        ge=0,
+        description=(
+            "Пауза между попытками старта. Зигота, падающая сразу после "
+            "запуска, без паузы крутила бы перезапуск десятки раз в секунду и "
+            "занимала бы процессор вместо того, чтобы дать администратору "
+            "увидеть причину в логе."
+        ),
+    )
+    stop_wait_sec: float = Field(
+        gt=0,
+        description=(
+            "Сколько секунд ждать, пока зигота выйдет сама после закрытия "
+            "сокета, прежде чем добить её сигналом. Штатный выход занимает "
+            "миллисекунды; ожидание нужно на случай, когда зигота доживает "
+            "последний вызов."
+        ),
+    )
+    call_poll_sec: float = Field(
+        gt=0,
+        description=(
+            "Шаг опроса дескрипторов вызова на стороне приложения: как часто "
+            "насос просыпается, если ни один канал не отдал данных. Определяет "
+            "точность срабатывания таймаута вызова."
+        ),
+    )
+    healthy_after_sec: float = Field(
+        ge=0,
+        description=(
+            "Сколько секунд зигота должна прожить после ready, чтобы её "
+            "последующая смерть считалась единичным сбоем: счётчик неудачных "
+            "попыток обнуляется, и супервизор поднимает её заново с полным "
+            "запасом попыток. Смерть раньше этого порога засчитывается как "
+            "неудачная попытка старта. Без такого правила зигота, прожившая "
+            "сутки и убитая OOM-killer'ом, тратила бы попытку навсегда, и "
+            "через несколько таких смертей здоровая секция осталась бы failed."
+        ),
+    )
 
 
 class ZygoteOutcome(BaseModel):
@@ -168,53 +262,168 @@ class _CallChannels:
 class ZygoteSupervisor:
     """Держит зиготу живой и прогоняет вызовы через её socketpair."""
 
-    WAIT_STOP_SEC: ClassVar[float] = 5.0
-    READ_CHUNK: ClassVar[int] = 65536
-
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         name: str,
         spawner: Spawner,
         policy: ZygotePolicy,
-        warmup_configs: Mapping[str, Mapping[str, object]] = {},
+        stderr_tail_bytes: int,
+        warmup_calls: Sequence[WarmupCall] = (),
+        modules: Sequence[str] = (),
+        root: str = "",
     ) -> None:
         self._name = name
         self._spawner = spawner
         self._policy = policy
-        self._warmup = WarmupMessage(
-            configs={name: dict(cfg) for name, cfg in warmup_configs.items()}
-        )
+        self._warmup = WarmupMessage(calls=tuple(warmup_calls))
+        self._modules = tuple(modules)
+        self._root = root
+        self._journal = LifecycleJournal(name)
+        self._tail_bytes = stderr_tail_bytes
+        self._stderr = _TailSink(stderr_tail_bytes)
+        self._calls_total = 0
+        self._in_flight: dict[str, float] = {}
+        self._born = 0.0
+        self._chain_lost = ""
 
         self._lock = threading.Lock()
+        self._settled = threading.Condition(self._lock)
         self._send_lock = threading.Lock()
         self._state = ZygoteState.STOPPED
         self._proc: subprocess.Popen[bytes] | None = None
         self._sock: socket.socket | None = None
         self._attempts = 0
         self._monitor: threading.Thread | None = None
+        self._spawns = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=f"zygote-spawn-{name}"
+        )
 
     @property
     def state(self) -> ZygoteState:
         return self._state
 
-    def start(self) -> None:
-        """Первый подъём; неудача всех попыток — ZygoteStartError."""
+    @property
+    def pid(self) -> int:
+        """Host-pid живой зиготы; 0 — процесса сейчас нет."""
+        proc = self._proc
+        if proc is None:
+            return 0
+
+        return proc.pid
+
+    def _report(self, proc: subprocess.Popen[bytes] | None) -> DeathReport:
+        """Снимок зиготы для журнала: код выхода, время жизни, счётчики, хвост."""
+        pid = 0
+        code: int | None = None
+        if proc is not None:
+            pid = proc.pid
+            code = proc.returncode
+
+        uptime = 0.0
+        if self._born:
+            uptime = time.monotonic() - self._born
+
+        return DeathReport(
+            pid=pid,
+            exit_code=code,
+            uptime_sec=uptime,
+            calls_total=self._calls_total,
+            in_flight=tuple(sorted(self._in_flight)),
+            stderr_tail=self._stderr.text().strip(),
+        )
+
+    def _pump_stderr(self, proc: subprocess.Popen[bytes]) -> None:
+        """Stderr зиготы в журнал приложения плюс хвост для отчёта о смерти.
+
+        Без этого последние слова умершей зиготы (и кадры цепочки запуска)
+        уходили в stderr приложения без всякой привязки к секции.
+        """
+        stream = proc.stderr
+        if stream is None:
+            return
+
+        relay = SandboxLogRelay(self._name, _RelayTee(None, self._stderr))
+        reader = FdReader(stream.fileno())
+
+        def pump() -> None:
+            while True:
+                chunk = reader.read()
+                if not chunk:
+                    break
+
+                self._watch_chain(bytes(chunk))
+                relay.feed(chunk)
+
+            relay.flush()
+
+        threading.Thread(
+            target=pump, name=f"zygote-stderr-{self._name}", daemon=True
+        ).start()
+
+    def _watch_chain(self, chunk: bytes) -> None:
+        """Кадр «корень отвалился» в stderr самой зиготы."""
+        marker = LauncherMarker.CHAIN_LOST.value.encode("utf-8")
+        if marker not in chunk:
+            return
+
+        text = chunk.decode("utf-8", errors="replace").strip()
+        self.chain_lost(text.rsplit(LauncherMarker.CHAIN_LOST.value, 1)[-1])
+
+    def chain_lost(self, detail: str) -> None:
+        """Корень секции отвалился: зигота гасится, монитор поднимает её заново.
+
+        Пока корень мёртв, любой вызов падает на монтировании и повторять его
+        бессмысленно, поэтому секция перезапускается целиком.
+        """
         with self._lock:
-            if self._state in (ZygoteState.READY, ZygoteState.STARTING):
+            proc = self._proc
+            if proc is None or self._chain_lost:
+                return
+
+            self._chain_lost = detail
+
+        logger.warning(
+            "zygote[%s]: root mount is gone (%s), restarting the section",
+            self._name,
+            detail.strip(),
+        )
+        proc.kill()
+
+    def start(self) -> None:
+        """Первый подъём; неудача всех попыток — ZygoteStartError.
+
+        Подъём идёт один: пришедшие следом ждут его исхода. Иначе вызов из
+        второго потока уходил бы в ещё не готовую зиготу.
+        """
+        with self._lock:
+            if self._state is ZygoteState.READY:
+                return
+
+            if self._state is ZygoteState.STARTING:
+                self._await_start()
                 return
 
             self._state = ZygoteState.STARTING
             self._attempts = 0
 
+        self._journal.open(IncidentReason.START, f"modules={len(self._modules)}")
+
         while True:
+            self._journal.attempt(
+                self._attempts + 1,
+                self._policy.max_start_attempts,
+                backoff_sec=0.0,
+            )
             if self._try_start():
                 self._watch()
                 return
 
-            with self._lock:
+            with self._settled:
                 self._attempts += 1
                 if self._attempts >= self._policy.max_start_attempts:
                     self._state = ZygoteState.FAILED
+                    self._settled.notify_all()
+                    self._journal.gave_up(self._attempts)
                     msg = (
                         f"zygote {self._name}: not ready after "
                         f"{self._attempts} attempt(s)"
@@ -223,9 +432,28 @@ class ZygoteSupervisor:
 
             time.sleep(self._policy.restart_backoff_sec)
 
+    def _await_start(self) -> None:
+        """Ждёт исхода чужого подъёма; вызывается под уже взятым локом."""
+        limit = self._policy.start_timeout_sec * self._policy.max_start_attempts
+        deadline = time.monotonic() + limit
+
+        while self._state is ZygoteState.STARTING:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+
+            self._settled.wait(left)
+
+        if self._state is ZygoteState.READY:
+            return
+
+        msg = f"zygote {self._name}: start by another caller ended as {self._state}"
+        raise ZygoteStartError(msg)
+
     def stop(self) -> None:
-        with self._lock:
+        with self._settled:
             self._state = ZygoteState.STOPPED
+            self._settled.notify_all()
             proc = self._proc
             sock = self._sock
             self._proc = None
@@ -235,13 +463,17 @@ class ZygoteSupervisor:
             sock.close()
 
         if proc is None:
+            self._spawns.shutdown(wait=False)
             return
 
         try:
-            proc.wait(timeout=self.WAIT_STOP_SEC)
+            proc.wait(timeout=self._policy.stop_wait_sec)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+        self._journal.stopped(self._report(proc))
+        self._spawns.shutdown(wait=False)
 
     def call(  # noqa: PLR0913
         self,
@@ -249,12 +481,17 @@ class ZygoteSupervisor:
         argv: Sequence[str],
         stdin_data: bytes,
         limits: ChildLimits,
-        sinks: Mapping[ToolChannel, Callable[[bytes], None]],
+        sinks: Mapping[ToolChannel, ChunkSink],
         *,
         isolate: bool,
-        tmp_bytes: int,
+        mounts: CallMounts,
         timeout_sec: float,
+        kill_grace_sec: float,
         cgroup_procs: str = "",
+        images: Sequence[ImageMount] = (),
+        mounting: ImageMounting | None = None,
+        cwd: str = "",
+        kind: CallKind = CallKind.MODULE,
     ) -> ZygoteOutcome:
         """Один вызов: запрос, handshake, насос каналов, код выхода."""
         with self._lock:
@@ -263,13 +500,21 @@ class ZygoteSupervisor:
                 msg = f"zygote {self._name} is not ready: {self._state}"
                 raise ZygoteUnavailableError(msg)
 
+        with self._lock:
+            self._calls_total += 1
+            self._in_flight[call_id] = time.monotonic()
+
         channels = _CallChannels()
         request = CallRequest(
             call_id=call_id,
+            kind=kind,
             argv=tuple(argv),
             limits=limits,
             isolate=isolate,
-            tmp_bytes=tmp_bytes,
+            mounts=mounts,
+            images=tuple(images),
+            mounting=mounting,
+            cwd=cwd,
         )
 
         try:
@@ -290,14 +535,27 @@ class ZygoteSupervisor:
             sinks=sinks,
             timeout_sec=timeout_sec,
             cgroup_procs=cgroup_procs,
+            poll_sec=self._policy.call_poll_sec,
+            kill_grace_sec=kill_grace_sec,
         )
 
         try:
             return pump.run(stdin_data)
         finally:
             channels.close_host_ends()
+            with self._lock:
+                self._in_flight.pop(call_id, None)
 
     def _try_start(self) -> bool:
+        """Запуск идёт на своём треде супервизора.
+
+        pdeathsig, которым держится `--die-with-parent`, срабатывает на смерть
+        треда-родителя, а не процесса: зигота, поднятая из временного треда
+        (пул, обработчик запроса), умирала бы вместе с ним.
+        """
+        return self._spawns.submit(self._spawn_once).result()
+
+    def _spawn_once(self) -> bool:
         host_sock, child_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
 
         try:
@@ -306,38 +564,47 @@ class ZygoteSupervisor:
         except OSError as exc:
             host_sock.close()
             child_sock.close()
-            logger.warning("zygote %s: spawn failed: %s", self._name, exc)
+            self._journal.failed(f"spawn failed: {exc}", self._stderr.text().strip())
             return False
 
         child_sock.close()
+
+        self._stderr = _TailSink(self._tail_bytes)
+        self._pump_stderr(proc)
+        self._journal.spawned(proc.pid, self._root, self._modules)
 
         host_sock.settimeout(self._policy.start_timeout_sec)
         try:
             ZygoteWire.send(host_sock, self._warmup)
             message, _fds = ZygoteWire.recv(host_sock)
         except (TimeoutError, OSError) as exc:
-            logger.warning("zygote %s: no ready: %s", self._name, exc)
+            tail = self._stderr.text().strip()
+            self._journal.failed(f"no ready message: {exc}", tail)
             self._abandon(proc, host_sock)
             return False
 
         if message.get("op") != "ready":
-            logger.warning("zygote %s: unexpected hello: %s", self._name, message)
+            self._journal.failed(
+                f"unexpected hello: {message}", self._stderr.text().strip()
+            )
             self._abandon(proc, host_sock)
             return False
 
         host_sock.settimeout(None)
 
-        with self._lock:
+        with self._settled:
             self._proc = proc
             self._sock = host_sock
             self._state = ZygoteState.READY
+            self._born = time.monotonic()
+            self._chain_lost = ""
+            self._settled.notify_all()
 
-        logger.info(
-            "zygote %s: ready, pid=%d warmup=%sms",
-            self._name,
-            proc.pid,
-            message.get("warmup_ms"),
-        )
+        warmup = message.get("warmup_ms")
+        if not isinstance(warmup, int):
+            warmup = 0
+
+        self._journal.ready(proc.pid, warmup)
         return True
 
     def _abandon(self, proc: subprocess.Popen[bytes], sock: socket.socket) -> None:
@@ -375,11 +642,14 @@ class ZygoteSupervisor:
 
                 self._state = ZygoteState.STARTING
 
-            logger.warning(
-                "zygote %s: died unexpectedly rc=%s, restarting",
-                self._name,
-                watched.returncode,
-            )
+            reason = IncidentReason.DIED
+            detail = ""
+            if self._chain_lost:
+                reason = IncidentReason.CHAIN_LOST
+                detail = self._chain_lost
+
+            self._journal.open(reason, detail)
+            self._journal.death(self._report(watched))
 
             self._restart_loop()
 
@@ -396,49 +666,72 @@ class ZygoteSupervisor:
                 if self._state is ZygoteState.STOPPED:
                     return
 
+            self._journal.attempt(
+                self._attempts + 1,
+                self._policy.max_start_attempts,
+                backoff_sec=self._policy.restart_backoff_sec,
+            )
             if self._try_start():
                 self._watch()
                 return
 
-            with self._lock:
+            with self._settled:
                 self._attempts += 1
                 if self._attempts >= self._policy.max_start_attempts:
                     self._state = ZygoteState.FAILED
-                    logger.error(
-                        "zygote %s: restart attempts exhausted (%d), giving up",
-                        self._name,
-                        self._attempts,
-                    )
+                    self._settled.notify_all()
+                    self._journal.gave_up(self._attempts)
                     return
+
+
+@dataclass(frozen=True)
+class _ReadSlot:
+    """Читаемый канал вызова: читатель дескриптора и приёмник порций."""
+
+    reader: FdReader
+    sink: ChunkSink
+
+    @classmethod
+    def of(cls, fd: int, sink: ChunkSink) -> _ReadSlot:
+        return cls(reader=FdReader(fd), sink=sink)
 
 
 class _CallPump:
     """Насос одного вызова: stdin, каналы, control-события, дедлайн, отмена."""
 
-    READ_CHUNK: ClassVar[int] = 65536
-    POLL_SEC: ClassVar[float] = 0.2
+    WRITE_CHUNK: ClassVar[int] = FdReader.CHUNK
 
     def __init__(  # noqa: PLR0913
         self,
         name: str,
         request: CallRequest,
         channels: _CallChannels,
-        sinks: Mapping[ToolChannel, Callable[[bytes], None]],
+        sinks: Mapping[ToolChannel, ChunkSink],
         timeout_sec: float,
         cgroup_procs: str,
+        poll_sec: float,
+        kill_grace_sec: float,
     ) -> None:
         self._name = name
         self._request = request
         self._channels = channels
         self._cgroup_procs = cgroup_procs
+        self._poll_sec = poll_sec
+        self._kill_grace_sec = kill_grace_sec
 
         self._started = time.monotonic()
         self._deadline = self._started + timeout_sec
 
-        self._slots: dict[int, Callable[[bytes], None]] = {
-            channels.stdout_r: sinks.get(ToolChannel.STDOUT, _discard),
-            channels.stderr_r: sinks.get(ToolChannel.STDERR, _discard),
-            channels.result_r: sinks.get(ToolChannel.RESULT, _discard),
+        self._slots: dict[int, _ReadSlot] = {
+            channels.stdout_r: _ReadSlot.of(
+                channels.stdout_r, sinks.get(ToolChannel.STDOUT, _discard)
+            ),
+            channels.stderr_r: _ReadSlot.of(
+                channels.stderr_r, sinks.get(ToolChannel.STDERR, _discard)
+            ),
+            channels.result_r: _ReadSlot.of(
+                channels.result_r, sinks.get(ToolChannel.RESULT, _discard)
+            ),
         }
         self._open_reads = set(self._slots)
 
@@ -452,19 +745,41 @@ class _CallPump:
 
         cancellation = current_cancellation()
 
-        with cancellation.abort_with(self._kill):
-            while self._exit_code is None or self._open_reads:
-                if cancellation.cancelled:
-                    self._kill()
+        try:
+            with cancellation.abort_with(self._kill):
+                while self._exit_code is None or self._open_reads:
+                    if cancellation.cancelled:
+                        self._kill()
 
-                if self._deadline_hit():
-                    break
+                    if self._deadline_hit():
+                        break
 
-                pending = self._step(pending)
+                    pending = self._step(pending)
+        except BaseException:
+            # сорвался приёмник вывода: без добивания исполнитель и его
+            # fuse2fs остались бы жить и держать образ пользователя
+            self._abort()
+            raise
 
         cancellation.raise_if_cancelled()
 
         return self._outcome()
+
+    def _abort(self) -> None:
+        """Добить исполнителя и дождаться выхода: образ должен отпуститься."""
+        self._kill()
+
+        for fd, slot in list(self._slots.items()):
+            self._slots[fd] = replace(slot, sink=_discard)
+
+        deadline = time.monotonic() + self._kill_grace_sec
+        pending = memoryview(b"")
+
+        while self._exit_code is None and time.monotonic() < deadline:
+            try:
+                pending = self._step(pending)
+            except (OSError, ZygoteCallError):
+                return
 
     def _deadline_hit(self) -> bool:
         """True — дедлайн истёк и ждать больше некого."""
@@ -486,7 +801,7 @@ class _CallPump:
         if pending.nbytes:
             wlist.append(self._channels.stdin_w)
 
-        ready_r, ready_w, _ = select.select(rlist, wlist, [], self.POLL_SEC)
+        ready_r, ready_w, _ = select.select(rlist, wlist, [], self._poll_sec)
 
         if ready_w:
             pending = self._feed(pending)
@@ -502,7 +817,7 @@ class _CallPump:
 
     def _feed(self, pending: memoryview) -> memoryview:
         try:
-            written = os.write(self._channels.stdin_w, pending[: self.READ_CHUNK])
+            written = os.write(self._channels.stdin_w, pending[: self.WRITE_CHUNK])
         except BrokenPipeError:
             self._channels.close_stdin()
             return memoryview(b"")
@@ -515,12 +830,13 @@ class _CallPump:
         return memoryview(b"")
 
     def _read(self, fd: int) -> None:
-        chunk = os.read(fd, self.READ_CHUNK)
+        slot = self._slots[fd]
+        chunk = slot.reader.read()
         if not chunk:
             self._open_reads.discard(fd)
             return
 
-        self._slots[fd](chunk)
+        slot.sink(chunk)
 
     def _control_event(self) -> None:
         """born с host-pid исполнителя либо exit с кодом; EOF — смерть зиготы."""
@@ -580,7 +896,7 @@ class _CallPump:
         )
 
 
-def _discard(_data: bytes) -> None:
+def _discard(_data: Chunk) -> None:
     """Приёмник канала без потребителя."""
 
 
@@ -591,66 +907,253 @@ def _kill_quietly(pid: int) -> None:
         return
 
 
+class ZygoteMounts:
+    """Пути образов, шаблона и fuse2fs внутри зиготы — по биндам профиля.
+
+    Точек монтирования компонент не выдумывает: всё, что ребёнок должен
+    видеть, объявлено биндами профиля, а хостовый путь переводится внутрь
+    через них. Нет покрывающего бинда — отказ с именем пути.
+    """
+
+    def __init__(self, profile: SandboxProfile) -> None:
+        self._profile = profile
+
+    def check(self) -> None:
+        """Предпосылки монтирования образов: объявлены биндами и существуют."""
+        self.fuse2fs_dir()
+
+        for spec in self._profile.mounts.images:
+            self.template(self._profile.mounts.image_template)
+            self.image(spec.host)
+            self._check_directory(spec.host)
+
+        workspace = self._profile.mounts.workspace
+        if workspace is None:
+            return
+
+        self.template(workspace.template)
+        self._inside(workspace.images, "workspace images directory")
+        self._check_directory(os.path.join(workspace.images, "probe"))
+
+    def template(self, host: str) -> str:
+        return self._inside(host, "image template")
+
+    def fuse2fs_dir(self) -> str:
+        fuse2fs = self._profile.host.binaries.resolve(SandboxBinary.FUSE2FS)
+        return os.path.dirname(self._inside(fuse2fs, "fuse2fs binary"))
+
+    def image(self, host: str) -> str:
+        return self._inside(host, "mounts.images entry")
+
+    def staging(self) -> tuple[str, ...]:
+        """Что исполнитель отцепит после монтирования: обвязка setup_* профиля.
+
+        Список код не выводит сам — его целиком объявляет профиль: шаблон
+        образа, бинарь fuse2fs и каталог образов пользователей нужны только
+        ради монтирования, и телу инструмента они не видны.
+        """
+        mounts = self._profile.mounts
+
+        paths: list[str] = []
+        for spec in (*mounts.setup_ro, *mounts.setup_rw):
+            if spec.target in paths:
+                continue
+
+            paths.append(spec.target)
+
+        return tuple(paths)
+
+    def _inside(self, host: str, what: str) -> str:
+        if not host:
+            msg = f"zygote profile mounts images, but {what} is empty"
+            raise ZygoteStartError(msg)
+
+        inside = self._profile.inside(host)
+        if inside:
+            return inside
+
+        msg = (
+            f"zygote: {what} {host!r} is not reachable inside the sandbox: "
+            f"declare a bind that covers it in mounts.setup_ro/setup_rw"
+        )
+        raise ZygoteStartError(msg)
+
+    @staticmethod
+    def _check_directory(image_host: str) -> None:
+        directory = os.path.dirname(image_host)
+        if "{" in directory:
+            return
+
+        if os.path.isdir(directory):
+            return
+
+        msg = f"zygote: images directory {directory!r} does not exist on the host"
+        raise ZygoteStartError(msg)
+
+
 class ZygoteSpawner:
     """Запуск процесса зиготы из профиля песочницы.
 
-    Требования к профилю проверяются при сборке: корень — премонтированный
-    каталог (образ на вызов зиготе монтировать нечем и незачем), tmpfs на
+    Корень образом монтируется цепочкой лаунчера один раз на жизнь зиготы:
+    внешний bwrap -> лаунчер (fuse2fs) -> вложенный bwrap с корнем из
+    монтирования -> зигота. Корень каталогом идёт прямым bwrap. tmpfs на
     /tmp обязателен — из него дети получают приватный размерный /tmp.
     """
 
-    TMP_PATH: ClassVar[str] = "/tmp"  # noqa: S108
     PYTHON: ClassVar[str] = "python3"
     MODULE: ClassVar[str] = "boba.toolkit.zygote"
 
-    def __init__(self, profile: SandboxProfile, modules: Sequence[str]) -> None:
+    APP_LOGGER: ClassVar[str] = "boba"
+    """Чей уровень наследует зигота: настройка живёт в конфиге приложения."""
+
+    def __init__(
+        self,
+        profile: SandboxProfile,
+        modules: Sequence[str],
+        policy: ZygotePolicy,
+    ) -> None:
+        self._policy = policy
+        # rw-образы рендерятся на вызов и монтируются ребёнком: зиготе нужен
+        # только их каталог на запись; остальной профиль переменных не имеет
+        bare = profile.model_copy(update={"rw_images": ()})
         try:
-            profile = profile.render({})
+            bare = bare.render({})
         except RuntimeError as exc:
             msg = f"zygote profile has per-call path variables: {exc}"
             raise ZygoteStartError(msg) from exc
 
-        if profile.rootfs_image:
-            msg = (
-                f"zygote profile carries rootfs_image {profile.rootfs_image!r}: "
-                f"a premounted rootfs directory is required"
-            )
-            raise ZygoteStartError(msg)
-
-        if not modules:
-            msg = "zygote spawner: no tool modules to warm"
-            raise ZygoteStartError(msg)
-
-        self._tmp_bytes = self._tmp_size(profile)
-        self._profile = profile
+        self._call_mounts = self.call_mounts(bare)
+        self._with_images = (
+            bool(profile.mounts.images) or profile.mounts.workspace is not None
+        )
+        self._mounts_rootfs = bool(bare.rootfs.image)
+        self._profile = bare
         self._modules = tuple(modules)
 
+        if self._with_images:
+            ZygoteMounts(profile).check()
+
+    def root_label(self) -> str:
+        """Чем секции служит корень: образом или готовым каталогом."""
+        if self._profile.rootfs.image:
+            return f"image {self._profile.rootfs.image}"
+
+        if self._profile.rootfs.dir:
+            return f"dir {self._profile.rootfs.dir}"
+
+        return "host"
+
     @property
-    def tmp_bytes(self) -> int:
-        return self._tmp_bytes
+    def mounts_rootfs(self) -> bool:
+        """Корень образом: зигота стартует цепочкой лаунчера, а не прямым bwrap."""
+        return self._mounts_rootfs
 
     def spawn(self, fd: int) -> subprocess.Popen[bytes]:
-        env = dict(self._profile.env_set)
-        env[ZygoteEnv.SOCKET_FD.value] = str(fd)
-        env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+        env = dict(self._profile.isolation.env)
 
-        command = [self.PYTHON, "-m", self.MODULE, *self._modules]
-        argv = build_zygote_argv(self._profile, command, env=env)
+        max_processes = self._profile.isolation.max_processes
+        if max_processes is None:
+            max_processes = 0
 
-        return subprocess.Popen(  # noqa: S603
+        args = ZygoteArgs(
+            socket_fd=fd,
+            max_processes=max_processes,
+            reap_poll_sec=self._profile.isolation.reap_poll_sec,
+            log_level=self.log_level(),
+            modules=self._modules,
+        )
+        command = [self.PYTHON, "-m", self.MODULE, *args.render()]
+
+        argv = self._argv(command, env, fd)
+
+        proc = subprocess.Popen(  # noqa: S603
             argv,
             stdin=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             pass_fds=(fd,),
             env=dict(os.environ),
         )
 
-    @classmethod
-    def _tmp_size(cls, profile: SandboxProfile) -> int:
-        for spec in profile.tmpfs:
-            if spec.path == cls.TMP_PATH:
-                return spec.size_bytes
+        self._pin_cpus(proc.pid)
 
-        msg = "zygote profile must mount tmpfs on /tmp: children clone its size"
+        return proc
+
+    @classmethod
+    def log_level(cls) -> str:
+        """Уровень логера приложения: у настройки один источник — его конфиг."""
+        level = logging.getLogger(cls.APP_LOGGER).getEffectiveLevel()
+
+        return logging.getLevelName(level)
+
+    def _pin_cpus(self, pid: int) -> None:
+        """Маска ядер зиготы по квоте профиля: прогрев греет столько же ядер.
+
+        Дети наследуют маску и правят её сами под свою квоту.
+        """
+        cores = self._profile.cpu_cores()
+        if not cores:
+            return
+
+        available = sorted(os.sched_getaffinity(0))
+        if len(available) <= cores:
+            return
+
+        os.sched_setaffinity(pid, set(available[:cores]))
+
+    def _argv(self, command: list[str], env: Mapping[str, str], fd: int) -> list[str]:
+        fuse = self._with_images or self._mounts_rootfs
+
+        if not self._mounts_rootfs:
+            return build_zygote_argv(self._profile, command, env=env, fuse=fuse)
+
+        require_fuse(self._profile.host.binaries)
+
+        # вложенный bwrap стартует уже смонтированным корнем, а не образом
+        mounted = self._profile.rootfs.model_copy(
+            update={"dir": self._profile.rootfs.mount, "image": ""}
+        )
+        inner = self._profile.model_copy(update={"rootfs": mounted})
+        inner_argv = build_zygote_argv(inner, command, env=env, fuse=fuse, nested=True)
+
+        # внешний bwrap держит / хоста read-only: пути записи он обязан знать,
+        # иначе вложенный bind не сделает их записываемыми
+        rw_paths: list[str] = []
+        for spec in (*self._profile.mounts.rw, *self._profile.mounts.setup_rw):
+            rw_paths.append(spec.host)
+
+        return build_chain_argv(
+            images=(),
+            ro_images=((self._profile.rootfs.image, self._profile.rootfs.mount),),
+            template=self._profile.mounts.image_template,
+            op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
+            python_bin=sys.executable,
+            options=self._profile.host.mounting.to_options(),
+            limits=ResourceLimits(),
+            binaries=self._profile.host.binaries,
+            pass_fds=(fd,),
+            rw_paths=rw_paths,
+            network=self._profile.isolation.network,
+            replace=True,
+        )
+
+    @staticmethod
+    def call_mounts(profile: SandboxProfile) -> CallMounts:
+        """Приватные точки вызова по профилю: procfs и tmpfs с её размером."""
+        if not profile.mounts.call_tmpfs:
+            return CallMounts(proc=profile.mounts.proc)
+
+        for spec in profile.mounts.tmpfs:
+            if spec.path == profile.mounts.call_tmpfs:
+                return CallMounts(
+                    proc=profile.mounts.proc,
+                    tmp=spec.path,
+                    tmp_bytes=spec.size_bytes,
+                )
+
+        msg = (
+            f"sandbox profile names call_tmpfs {profile.mounts.call_tmpfs!r}, "
+            f"but tmpfs has no such mountpoint"
+        )
         raise ZygoteStartError(msg)
 
 
@@ -660,36 +1163,71 @@ class _EnvelopeSink:
     def __init__(self) -> None:
         self._data = bytearray()
 
-    def feed(self, chunk: bytes) -> None:
+    def feed(self, chunk: Chunk) -> None:
         self._data.extend(chunk)
 
-    def data(self) -> bytes:
-        return bytes(self._data)
+    def data(self) -> bytearray:
+        """Конверт как есть: pydantic разбирает bytes-like без копии."""
+        return self._data
+
+
+class _Tee:
+    """Тройник двух приёмников одного канала."""
+
+    def __init__(self, first: ChunkSink, second: ChunkSink) -> None:
+        self._first = first
+        self._second = second
+
+    def feed(self, chunk: Chunk) -> None:
+        self._first(chunk)
+        self._second(chunk)
+
+
+class _RelayTee(StderrTee):
+    """Tee релея: сырые строки stderr — в журнал вызова и в свой приёмник."""
+
+    def __init__(
+        self, sinks: ChannelSinks | None, own: _BufferSink | _TailSink
+    ) -> None:
+        super().__init__(sinks, ToolChannel.STDERR)
+        self._own = own
+
+    def raw(self, line: str) -> None:
+        super().raw(line)
+        self._own.feed(f"{line}\n".encode())
+
+
+class _BufferSink:
+    """Канал целиком: stdout/stderr shell-команды отдаются как есть."""
+
+    def __init__(self) -> None:
+        self._data = bytearray()
+
+    def feed(self, chunk: Chunk) -> None:
+        self._data.extend(chunk)
+
+    def text(self) -> str:
+        return self._data.decode("utf-8", errors="replace")
 
 
 class _TailSink:
     """Хвост канала: объяснение сбоя, когда конверта нет."""
 
-    LIMIT: ClassVar[int] = 4096
-
-    def __init__(self) -> None:
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
         self._tail = bytearray()
 
-    def feed(self, chunk: bytes) -> None:
+    def feed(self, chunk: Chunk) -> None:
         self._tail.extend(chunk)
-        if len(self._tail) > self.LIMIT:
-            del self._tail[: len(self._tail) - self.LIMIT]
+        if len(self._tail) > self._limit:
+            del self._tail[: len(self._tail) - self._limit]
 
     def text(self) -> str:
-        return bytes(self._tail).decode("utf-8", errors="replace")
+        return self._tail.decode("utf-8", errors="replace")
 
 
-class ZygoteToolCaller:
-    """Реализация ToolLauncher поверх зиготы: команда модуля -> конверт.
-
-    call_text зиготой не обслуживается до этапа bash: текстовые команды идут
-    холодным путём.
-    """
+class ZygoteToolCaller(ToolLauncher):
+    """Реализация ToolLauncher поверх зиготы: команда модуля -> конверт."""
 
     ARGV_HEAD: ClassVar[int] = 3
     """python3 -m <module> — префикс команды модуля инструментов."""
@@ -699,51 +1237,73 @@ class ZygoteToolCaller:
         tool: str,
         supervisor: ZygoteSupervisor,
         profile: SandboxProfile,
+        path_vars: Callable[[], Mapping[str, str]] = dict,
     ) -> None:
         self._tool = tool
         self._supervisor = supervisor
         self._profile = profile
-        self._tmp_bytes = ZygoteSpawner._tmp_size(profile)
+        self._path_vars = path_vars
+        self._call_mounts = ZygoteSpawner.call_mounts(profile)
 
     @property
     def supervisor(self) -> ZygoteSupervisor:
         return self._supervisor
 
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
-        msg = f"zygote {self._tool}: call_text is not served by the zygote"
-        raise ZygoteCallError(msg)
+        """Shell-команда в изолированном ребёнке: stdout/stderr/rc как есть."""
+        stdout = _BufferSink()
+        stderr = _BufferSink()
+
+        relay = SandboxLogRelay(self._tool, _RelayTee(ToolChannelsTap.get(), stderr))
+        sinks = self._sinks(ToolChannel.STDOUT, stdout.feed, relay)
+
+        shell = self._profile.run.shell
+        if not shell:
+            msg = f"{self._tool}: profile declares no shell for text commands"
+            raise ZygoteCallError(msg)
+
+        argv = (shell, "-c", command)
+        try:
+            outcome = self._grouped_call(
+                ToolCommand(argv=argv, stdin=stdin.encode("utf-8")),
+                argv,
+                sinks,
+                kind=CallKind.SHELL,
+            )
+        finally:
+            relay.flush()
+
+        run = RunResult(
+            exit_code=outcome.exit_code,
+            stdout=stdout.text(),
+            stderr=stderr.text(),
+            duration_ms=outcome.duration_ms,
+            timed_out=outcome.timed_out,
+        )
+        self._raise_on_chain_lost(run)
+        self._raise_on_mount_error(run)
+
+        if run.exit_code != 0:
+            self._log_failure(run, self._profile.host.fail_tail_chars)
+
+        return LaunchOutcome(self._tool, run, self._diagnose(run, ""))
 
     def run_tool(self, command: ToolCommand) -> ToolOutcome:
         """Граница слоя: наружу только ошибки из контракта модуля."""
         argv_tail = self._argv_tail(command)
 
         envelope = _EnvelopeSink()
-        stderr_tail = _TailSink()
+        stderr_tail = _TailSink(self._profile.host.stderr_tail_bytes)
 
-        sinks: dict[ToolChannel, Callable[[bytes], None]] = {
-            ToolChannel.RESULT: envelope.feed,
-            ToolChannel.STDERR: stderr_tail.feed,
-        }
-
-        if journal := ToolChannelsTap.get():
-            sinks = self._teed(sinks, journal)
-
-        outcome = self._grouped_call(command, argv_tail, sinks)
-
-        reply_raw = envelope.data()
-        if not reply_raw:
-            msg = (
-                f"{self._tool}: no envelope on tool_result "
-                f"(rc={outcome.exit_code}, timed_out={outcome.timed_out}); "
-                f"tool_stderr={stderr_tail.text()!r}"
-            )
-            raise ZygoteCallError(msg)
+        relay = SandboxLogRelay(
+            self._tool, _RelayTee(ToolChannelsTap.get(), stderr_tail)
+        )
+        sinks = self._sinks(ToolChannel.RESULT, envelope.feed, relay)
 
         try:
-            reply = REPLY.validate_json(reply_raw)
-        except ValueError as exc:
-            msg = f"{self._tool}: envelope does not match contract: {exc}"
-            raise ZygoteCallError(msg) from exc
+            outcome = self._grouped_call(command, argv_tail, sinks)
+        finally:
+            relay.flush()
 
         run = RunResult(
             exit_code=outcome.exit_code,
@@ -752,26 +1312,93 @@ class ZygoteToolCaller:
             duration_ms=outcome.duration_ms,
             timed_out=outcome.timed_out,
         )
-        return ToolOutcome(reply=reply, run=run, diagnostic="")
+        self._raise_on_chain_lost(run)
+        self._raise_on_mount_error(run)
+
+        if run.exit_code != 0:
+            self._log_failure(run, self._profile.host.fail_tail_chars)
+
+        diagnostic = self._diagnose(run, stderr_tail.text())
+
+        reply_raw = envelope.data()
+        if not reply_raw:
+            msg = (
+                f"{self._tool}: no envelope on tool_result "
+                f"(rc={outcome.exit_code}, timed_out={outcome.timed_out}); "
+                f"tool_stderr={stderr_tail.text()!r}"
+            )
+            if diagnostic:
+                msg = f"{msg}; {diagnostic}"
+
+            raise ZygoteCallError(msg)
+
+        try:
+            reply = REPLY.validate_json(reply_raw)
+        except ValueError as exc:
+            msg = f"{self._tool}: envelope does not match contract: {exc}"
+            raise ZygoteCallError(msg) from exc
+
+        return ToolOutcome(reply=reply, run=run, diagnostic=diagnostic)
+
+    def _log_failure(self, result: RunResult, limit: int) -> None:
+        logger.warning("zygote[%s]: %s", self._tool, FailureLog.describe(result, limit))
+
+    def _raise_on_chain_lost(self, result: RunResult) -> None:
+        """Отвалившийся корень — отказ запуска, а не отказ инструмента."""
+        marker = LauncherMarker.CHAIN_LOST.value
+        if marker not in result.stderr:
+            return
+
+        detail = result.stderr.rsplit(marker, 1)[-1].strip()
+        self._supervisor.chain_lost(detail)
+
+        msg = f"sandbox: root mount of section {self._tool} is gone: {detail}"
+        raise SandboxChainError(msg)
+
+    @staticmethod
+    def _raise_on_mount_error(result: RunResult) -> None:
+        """Образ вызова не смонтирован: результата нет, это отказ запуска."""
+        if result.exit_code != MountError.EXIT_CODE:
+            return
+
+        if LauncherMarker.ERROR.value not in result.stderr:
+            return
+
+        msg = f"sandbox: image not mounted: {result.stderr.strip()}"
+        raise SandboxMountError(msg)
+
+    def _diagnose(self, result: RunResult, tool_stderr: str) -> str:
+        """Объяснение сбоя лимитами профиля; в разборе и хвост tool_stderr."""
+        rendered = self._profile.render(dict(self._path_vars()))
+
+        merged = replace(result, stderr=f"{result.stderr}\n{tool_stderr}")
+
+        diagnostic = SandboxDiagnostics.explain(merged, rendered)
+        if diagnostic:
+            logger.warning("zygote[%s]: %s", self._tool, diagnostic)
+
+        return diagnostic
 
     def _grouped_call(
         self,
         command: ToolCommand,
         argv_tail: tuple[str, ...],
-        sinks: Mapping[ToolChannel, Callable[[bytes], None]],
+        sinks: Mapping[ToolChannel, ChunkSink],
+        *,
+        kind: CallKind = CallKind.MODULE,
     ) -> ZygoteOutcome:
         """Вызов в собственном cgroup-leaf'е, если профиль его требует."""
         group = GroupLimits.of_profile(self._profile)
 
         if not group.requested:
-            return self._call(command, argv_tail, sinks, cgroup_procs="")
+            return self._call(command, argv_tail, sinks, cgroup_procs="", kind=kind)
 
-        manager = CgroupManager(self._profile.cgroup_base)
+        manager = CgroupManager(self._profile.host.cgroup_base)
         leaf = manager.acquire(group)
 
         try:
             procs = os.path.join(leaf, "cgroup.procs")
-            return self._call(command, argv_tail, sinks, cgroup_procs=procs)
+            return self._call(command, argv_tail, sinks, cgroup_procs=procs, kind=kind)
         finally:
             if note := manager.throttling(leaf):
                 logger.warning("zygote[%s]: %s", self._tool, note)
@@ -781,22 +1408,27 @@ class ZygoteToolCaller:
         self,
         command: ToolCommand,
         argv_tail: tuple[str, ...],
-        sinks: Mapping[ToolChannel, Callable[[bytes], None]],
+        sinks: Mapping[ToolChannel, ChunkSink],
         *,
         cgroup_procs: str,
+        kind: CallKind = CallKind.MODULE,
     ) -> ZygoteOutcome:
-        timeout_sec = self._profile.timeout_sec
+        timeout_sec = self._profile.limits.timeout_sec
         if timeout_sec is None:
             msg = f"zygote {self._tool}: profile without timeout_sec"
             raise ZygoteCallError(msg)
 
         limits = ChildLimits(
-            max_memory_bytes=self._profile.max_memory_bytes,
-            max_cpu_sec=self._profile.max_cpu_sec,
-            max_file_size_bytes=self._profile.max_file_size_bytes,
-            max_open_files=self._profile.max_open_files,
-            oom_score_adj=self._profile.oom_score_adj,
+            max_memory_bytes=self._profile.limits.process_memory_bytes,
+            max_cpu_sec=self._profile.limits.process_cpu_sec,
+            max_file_size_bytes=self._profile.limits.process_file_bytes,
+            max_open_files=self._profile.limits.process_open_files,
+            oom_score_adj=self._profile.limits.process_oom_score_adj,
+            cpu_cores=self._profile.cpu_cores(),
         )
+
+        rendered = self._profile.render(dict(self._path_vars()))
+        images = self._images_of(rendered)
 
         return self._supervisor.call(
             uuid.uuid4().hex,
@@ -805,9 +1437,59 @@ class ZygoteToolCaller:
             limits,
             sinks,
             isolate=True,
-            tmp_bytes=self._tmp_bytes,
+            mounts=self._call_mounts,
             timeout_sec=float(timeout_sec),
+            kill_grace_sec=self._profile.host.kill_grace_sec,
             cgroup_procs=cgroup_procs,
+            images=images,
+            mounting=self._mounting_of(images),
+            cwd=rendered.run.cwd,
+            kind=kind,
+        )
+
+    def _images_of(self, rendered: SandboxProfile) -> tuple[ImageMount, ...]:
+        """Образы вызова путями внутри зиготы: перевод через бинды профиля."""
+        mounts = ZygoteMounts(rendered)
+
+        images: list[ImageMount] = []
+        for spec in rendered.mounts.images:
+            images.append(
+                ImageMount(
+                    image=mounts.image(spec.host),
+                    target=spec.target,
+                    template=mounts.template(rendered.mounts.image_template),
+                )
+            )
+
+        workspace = rendered.mounts.workspace
+        if workspace is None:
+            return tuple(images)
+
+        user_id = dict(self._path_vars()).get("user_id", "")
+        images.append(
+            ImageMount(
+                image=mounts.image(workspace.image_of(user_id)),
+                target=workspace.mount,
+                template=mounts.template(workspace.template),
+            )
+        )
+
+        return tuple(images)
+
+    def _mounting_of(self, images: Sequence[ImageMount]) -> ImageMounting | None:
+        if not images:
+            return None
+
+        mounts = ZygoteMounts(self._profile)
+        launcher = self._profile.host.mounting
+        return ImageMounting(
+            fuse2fs_dir=mounts.fuse2fs_dir(),
+            staging=mounts.staging(),
+            mount_wait_sec=launcher.mount_wait_sec,
+            mount_poll_sec=launcher.mount_poll_sec,
+            shutdown_wait_sec=launcher.shutdown_wait_sec,
+            lock_wait_sec=launcher.lock_wait_sec,
+            copy_chunk_bytes=launcher.copy_chunk_bytes,
         )
 
     def _argv_tail(self, command: ToolCommand) -> tuple[str, ...]:
@@ -820,30 +1502,36 @@ class ZygoteToolCaller:
         return argv[self.ARGV_HEAD :]
 
     @staticmethod
-    def _teed(
-        sinks: dict[ToolChannel, Callable[[bytes], None]],
-        journal: ChannelSinks,
-    ) -> dict[ToolChannel, Callable[[bytes], None]]:
-        """Тройники: свои приёмники конверта и хвоста плюс журнал вызова."""
-        teed: dict[ToolChannel, Callable[[bytes], None]] = {}
-        for channel in (ToolChannel.STDOUT, ToolChannel.STDERR, ToolChannel.RESULT):
-            own = sinks.get(channel)
-            journal_sink = journal.sink_of(channel).feed
-            if own is None:
-                teed[channel] = journal_sink
-                continue
+    def _sinks(
+        own_channel: ToolChannel,
+        own: ChunkSink,
+        relay: SandboxLogRelay,
+    ) -> dict[ToolChannel, ChunkSink]:
+        """Приёмники вызова: stderr — через релей кадров, остальное — тройником.
 
-            def both(
-                chunk: bytes,
-                first: Callable[[bytes], None] = own,
-                second: Callable[[bytes], None] = journal_sink,
-            ) -> None:
-                first(chunk)
-                second(chunk)
+        Кадры `sandbox-mount:`/`sandbox-log:` из ребёнка поднимаются в журнал
+        приложения и не попадают ни в вывод команды, ни в хвост tool_stderr.
+        """
+        sinks: dict[ToolChannel, ChunkSink] = {
+            ToolChannel.STDERR: relay.feed,
+        }
 
-            teed[channel] = both
+        journal = ToolChannelsTap.get()
+        journal_sink: ChunkSink | None = None
+        if journal is not None:
+            journal_sink = journal.sink_of(own_channel).feed
 
-        return teed
+        if journal_sink is None:
+            sinks[own_channel] = own
+        else:
+            sinks[own_channel] = _Tee(own, journal_sink).feed
+
+        if journal is not None:
+            for channel in (ToolChannel.STDOUT, ToolChannel.RESULT):
+                if channel not in sinks:
+                    sinks[channel] = journal.sink_of(channel).feed
+
+        return sinks
 
 
 class ZygoteRegistry:
@@ -863,19 +1551,27 @@ class ZygoteRegistry:
         profile: SandboxProfile,
         modules: Sequence[str],
         policy: ZygotePolicy,
-        warmup_configs: Mapping[str, Mapping[str, object]] = {},
+        warmup_calls: Sequence[WarmupCall] = (),
     ) -> ZygoteSupervisor:
-        """Живой супервизор секции; при отсутствии — поднять и запомнить."""
-        with cls._lock:
-            existing = cls._entries.get(name)
-            if existing is not None and existing.state is not ZygoteState.STOPPED:
-                return existing
+        """Живой супервизор секции; при отсутствии — поднять и запомнить.
 
-            spawner = ZygoteSpawner(profile, modules)
-            supervisor = ZygoteSupervisor(
-                name, spawner.spawn, policy, warmup_configs
-            )
-            cls._entries[name] = supervisor
+        start() зовётся и для найденного супервизора: он идемпотентен и ждёт,
+        если зиготу в этот момент поднимает другой поток.
+        """
+        with cls._lock:
+            supervisor = cls._entries.get(name)
+            if supervisor is None or supervisor.state is ZygoteState.STOPPED:
+                spawner = ZygoteSpawner(profile, modules, policy)
+                supervisor = ZygoteSupervisor(
+                    name,
+                    spawner.spawn,
+                    policy,
+                    stderr_tail_bytes=profile.host.stderr_tail_bytes,
+                    warmup_calls=warmup_calls,
+                    modules=modules,
+                    root=spawner.root_label(),
+                )
+                cls._entries[name] = supervisor
 
         supervisor.start()
         return supervisor

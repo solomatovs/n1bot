@@ -17,11 +17,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 from fake_channel_tool import ChannelConfig
 from pydantic import SecretStr
+from zygote_stand import SandboxStand
 
 from boba.cancellation import ToolStopped, turn_cancellation
 from boba.sandbox.zygote import (
@@ -33,7 +34,8 @@ from boba.sandbox.zygote import (
 )
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.protocol import REPLY, ReplyOk
-from boba.toolkit.zygote import ChildLimits, ZygoteEnv
+from boba.toolkit.stream import Chunk
+from boba.toolkit.zygote import CallMounts, ChildLimits, WarmupCall, ZygoteArgs
 
 REPO = Path(__file__).resolve().parents[5]
 SANDBOX = REPO / "build" / "src" / "sandbox"
@@ -56,6 +58,8 @@ FAST = ZygotePolicy(
     max_start_attempts=3,
     restart_backoff_sec=0.05,
     healthy_after_sec=0.5,
+    stop_wait_sec=5.0,
+    call_poll_sec=0.05,
 )
 
 NO_LIMITS = ChildLimits()
@@ -67,23 +71,38 @@ class Recorder:
     def __init__(self) -> None:
         self.data = bytearray()
 
-    def feed(self, chunk: bytes) -> None:
+    def feed(self, chunk: Chunk) -> None:
         self.data.extend(chunk)
 
     def text(self) -> str:
         return bytes(self.data).decode("utf-8", errors="replace")
 
 
+WARMUP_CALLS = (
+    WarmupCall(
+        module="fake_channel_tool", hook="warm_cache", config={"greeting": "privet"}
+    ),
+)
+"""Конфиг прогрева фейкового модуля: без него зигота не поднимается."""
+
+
 def _plain_spawner(fd: int) -> subprocess.Popen[bytes]:
     """Зигота голым python'ом процесса тестов: без bwrap, без изоляции."""
     env = dict(os.environ)
-    env[ZygoteEnv.SOCKET_FD] = str(fd)
-    env["PYTHONPATH"] = os.pathsep.join(
-        [TESTS_DIR, env.get("PYTHONPATH", "")]
-    ).rstrip(os.pathsep)
+    env["PYTHONPATH"] = os.pathsep.join([TESTS_DIR, env.get("PYTHONPATH", "")]).rstrip(
+        os.pathsep
+    )
 
-    return subprocess.Popen(
-        [sys.executable, "-m", "boba.toolkit.zygote", "fake_channel_tool"],
+    args = ZygoteArgs(
+        socket_fd=fd,
+        max_processes=0,
+        reap_poll_sec=0.05,
+        log_level="INFO",
+        modules=("fake_channel_tool",),
+    )
+
+    return subprocess.Popen(  # noqa: S603
+        [sys.executable, "-m", "boba.toolkit.zygote", *args.render()],
         env=env,
         pass_fds=(fd,),
         stdin=subprocess.DEVNULL,
@@ -125,8 +144,9 @@ def _call_echo(
             ToolChannel.STDOUT: stdout.feed,
         },
         isolate=isolate,
-        tmp_bytes=16 * 1024 * 1024,
+        mounts=CallMounts(proc="/proc", tmp="/tmp", tmp_bytes=16 * 1024 * 1024),  # noqa: S108
         timeout_sec=timeout_sec,
+        kill_grace_sec=5.0,
     )
     return outcome, result, stderr
 
@@ -135,8 +155,18 @@ def _call_echo(
 def supervisor() -> Any:
     born: list[ZygoteSupervisor] = []
 
-    def make(spawner: Any, policy: ZygotePolicy = FAST) -> ZygoteSupervisor:
-        instance = ZygoteSupervisor("test", spawner, policy)
+    def make(
+        spawner: Any,
+        policy: ZygotePolicy = FAST,
+        warmup: Any = WARMUP_CALLS,
+    ) -> ZygoteSupervisor:
+        instance = ZygoteSupervisor(
+            "test",
+            spawner,
+            policy,
+            stderr_tail_bytes=4096,
+            warmup_calls=warmup,
+        )
         born.append(instance)
         return instance
 
@@ -246,8 +276,9 @@ class TestLifecycle:
                 NO_LIMITS,
                 {ToolChannel.RESULT: result.feed},
                 isolate=False,
-                tmp_bytes=16 * 1024 * 1024,
+                mounts=CallMounts(proc="/proc", tmp="/tmp", tmp_bytes=16 * 1024 * 1024),  # noqa: S108
                 timeout_sec=30.0,
+                kill_grace_sec=5.0,
             )
 
     def test_restart_after_death_mid_call(self, supervisor: Any) -> None:
@@ -317,6 +348,7 @@ class TestCall:
         zygote.start()
 
         with turn_cancellation() as cancellation:
+
             def cancel_soon() -> None:
                 time.sleep(0.7)
                 cancellation.cancel()
@@ -331,9 +363,7 @@ class TestCall:
         zygote.start()
 
         def one(index: int) -> str:
-            _, result, _ = _call_echo(
-                zygote, f"msg-{index}", call_id=f"t-par-{index}"
-            )
+            _, result, _ = _call_echo(zygote, f"msg-{index}", call_id=f"t-par-{index}")
             reply = REPLY.validate_json(bytes(result.data))
             if not isinstance(reply, ReplyOk):
                 raise AssertionError(f"reply={reply}")
@@ -352,17 +382,9 @@ class TestCall:
 class TestIsolated:
     """E2e в настоящем bwrap: зигота с CAP_SYS_ADMIN, дети изолированы."""
 
-    SRC_PACKAGES: ClassVar[tuple[str, ...]] = (
-        "core/boba-cancellation",
-        "core/boba-toolkit",
-    )
-
     def _bwrap_spawner(self, fd: int) -> subprocess.Popen[bytes]:
-        python_path = ":".join(
-            [
-                "/usr/src/infra/sandbox/boba-sandbox/tests",
-                *(f"/usr/src/{name}/src" for name in self.SRC_PACKAGES),
-            ]
+        python_path = SandboxStand.python_path(
+            "/usr/src/infra/sandbox/boba-sandbox/tests"
         )
 
         bwrap = shutil.which("bwrap")
@@ -373,28 +395,61 @@ class TestIsolated:
             bwrap,
             "--die-with-parent",
             "--unshare-user",
-            "--uid", "0", "--gid", "0",
-            "--cap-add", "CAP_SYS_ADMIN",
-            "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--cap-add",
+            "CAP_SYS_ADMIN",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
             "--unshare-net",
-            "--hostname", "zygote",
+            "--hostname",
+            "zygote",
             "--new-session",
-            "--ro-bind", str(ROOTFS), "/",
-            "--ro-bind", str(SANDBOX / "third" / "python"), "/usr/local",
-            "--ro-bind", str(SANDBOX / "site"),
+            "--ro-bind",
+            str(ROOTFS),
+            "/",
+            "--ro-bind",
+            str(SANDBOX / "third" / "python"),
+            "/usr/local",
+            "--ro-bind",
+            str(SANDBOX / "site"),
             "/usr/local/lib/python3.11/site-packages",
-            "--ro-bind", str(REPO / "packages"), "/usr/src",
-            "--proc", "/proc",
-            "--dev", "/dev",
-            "--tmpfs", "/tmp",  # noqa: S108
+            "--ro-bind",
+            str(REPO / "packages"),
+            "/usr/src",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",  # noqa: S108
             "--clearenv",
-            "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
-            "--setenv", "PYTHONPATH", python_path,
-            "--setenv", "HOME", "/tmp",  # noqa: S108
-            "--setenv", "LANG", "C.UTF-8",
-            "--setenv", str(ZygoteEnv.SOCKET_FD), str(fd),
+            "--setenv",
+            "PATH",
+            "/usr/local/bin:/usr/bin:/bin",
+            "--setenv",
+            "PYTHONPATH",
+            python_path,
+            "--setenv",
+            "HOME",
+            "/tmp",  # noqa: S108
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
             "--",
-            "python3", "-m", "boba.toolkit.zygote", "fake_channel_tool",
+            "python3",
+            "-m",
+            "boba.toolkit.zygote",
+            *ZygoteArgs(
+                socket_fd=fd,
+                max_processes=0,
+                reap_poll_sec=0.05,
+                log_level="INFO",
+                modules=("fake_channel_tool",),
+            ).render(),
         ]
 
         return subprocess.Popen(  # noqa: S603
@@ -431,8 +486,9 @@ class TestIsolated:
                 NO_LIMITS,
                 {ToolChannel.RESULT: result.feed},
                 isolate=True,
-                tmp_bytes=16 * 1024 * 1024,
+                mounts=CallMounts(proc="/proc", tmp="/tmp", tmp_bytes=16 * 1024 * 1024),  # noqa: S108
                 timeout_sec=30.0,
+                kill_grace_sec=5.0,
             )
             if outcome.exit_code != 0:
                 raise AssertionError(f"rc={outcome.exit_code}")
@@ -450,8 +506,8 @@ class TestIsolated:
             if seen["markers"] != [f"m{index}"]:
                 raise AssertionError(f"вызов {index} видит чужие файлы: {seen}")
 
-            if seen["pid"] != 1:
-                raise AssertionError(f"исполнитель не в своём pid ns: {seen}")
+            if seen["init"] != "python3" or seen["pid"] > 8:
+                raise AssertionError(f"тело не в своём pid ns: {seen}")
 
             if int(seen["cap_eff"], 16) != 0:
                 raise AssertionError(f"capabilities не сброшены: {seen}")

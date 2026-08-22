@@ -59,7 +59,7 @@ from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.llm.chat import ReasoningChatOpenAI
 from boba.llm.openai import OpenAiConfig, OpenAiHttp
-from boba.sandbox import CgroupManager, RootfsPremount
+from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 
@@ -80,12 +80,6 @@ def get_app_config(config_path: Path) -> AppConfig:
     config = bind(raw, path="app", model=AppConfig)
     # групповые лимиты проверяются на старте: отказ виден сразу, с именем профиля
     CgroupManager.probe_profiles(config.sandbox.profiles)
-
-    # корень песочницы монтируется однажды; отказ — отказ старта, не деградация
-    if config.sandbox.premount_dir:
-        premount = RootfsPremount(config.sandbox.premount_dir)
-        premount.mount_profiles(config.sandbox.profiles)
-        RootfsPremount.activate(premount)
 
     return config
 

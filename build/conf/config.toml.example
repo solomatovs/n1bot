@@ -277,17 +277,12 @@
 # хранилище вложений (upload файлов)
 [storage]
     kind           = "image"
-    image_path     = "${env.data}/workspace/{user_id}.ext4"
-    image_template = "${env.sandbox}/workspace.ext4"
+    workspace      = "${sandbox.workspace}"
     op_timeout_sec = 60
     public_prefix  = "${chainlit.url_prefix}/workspace"
     binaries       = "${sandbox.binaries}"
-    [storage.launcher]
-        mount_wait_sec    = 10.0
-        mount_poll_sec    = 0.002
-        shutdown_wait_sec = 5.0
-        lock_wait_sec     = 10.0
-        copy_chunk_bytes  = 1048576
+    mounting       = "${sandbox.mounting}"
+    mount_dir      = "/tmp"
 
 
 [stream_journal]
@@ -364,10 +359,38 @@
     # сколько uvicorn ждёт pong: без ответа соединение рвётся и вкладка уходит
     # в реконнект даже при живом ходе; 0 — не ждать
     ws_ping_timeout  = 20
+    shutdown_timeout_sec = 10
 
 
 [sandbox]
-    require = true
+    [sandbox.zygote]
+        start_timeout_sec   = 60.0
+        max_start_attempts  = 3
+        restart_backoff_sec = 1.0
+        healthy_after_sec   = 30.0
+        stop_wait_sec       = 5.0
+        call_poll_sec       = 0.2
+
+    [sandbox.host]
+        binaries          = "${sandbox.binaries}"
+        mounting          = "${sandbox.mounting}"
+        cgroup_base       = "${env.cgroup_base}"
+        stderr_tail_bytes = 4096
+        fail_tail_chars   = 2000
+        kill_grace_sec    = 5
+
+    [sandbox.mounting]
+        mount_wait_sec    = 10.0
+        mount_poll_sec    = 0.002
+        shutdown_wait_sec = 5.0
+        lock_wait_sec     = 10.0
+        copy_chunk_bytes  = 1048576
+
+    [sandbox.workspace]
+        template = "${env.sandbox}/workspace.ext4"
+        images   = "${env.data}/workspace"
+        mount    = "/workspace"
+
     [sandbox.binaries]
         dirs = ["${env.base}/third/bin", "/usr/bin", "/usr/sbin", "/bin", "/sbin"]
 
@@ -375,6 +398,13 @@
         krb       = "${env.krb}:${env.krb}"
         resolv    = "/etc/resolv.conf:/etc/resolv.conf"
         hosts     = "/etc/hosts:/etc/hosts"
+        template  = "${env.sandbox}/workspace.ext4:/mnt/workspace.ext4"
+        fuse2fs   = "${env.base}/third/bin/fuse2fs:/mnt/fuse2fs"
+        images    = "${env.data}/workspace:/mnt/images"
+
+    [sandbox.setup]
+        ro = ["${sandbox.bind.template}", "${sandbox.bind.fuse2fs}"]
+        rw = ["${sandbox.bind.images}"]
 
     [sandbox.binds]
         core = []
@@ -394,40 +424,90 @@
             "${sandbox.bind.krb}"
         ]
 
-    ## единственный профиль; инструменты меняют его через [tool.<name>.sandbox.override]
     [sandbox.profiles.base]
-        rootfs_image          = "${env.sandbox}/rootfs.ext4"
-        ro_binds              = "${sandbox.binds.core}"
-        rw_binds              = []
-        rw_images             = ["${env.data}/workspace/{user_id}.ext4:/workspace"]
-        image_template        = "${env.sandbox}/workspace.ext4"
-        tmpfs                 = ["/tmp:512M"]
-        network               = false
-        timeout_sec           = 86400
-        max_memory_bytes      = 1073741824
-        max_cpu_sec           = 86400
-        max_file_size_bytes   = 1073741824
-        max_open_files        = 1024
-        max_processes         = 256
-        cwd                   = "/workspace"
-        oom_score_adj         = 900
-        cgroup_base           = "${env.cgroup_base}"
-        cgroup_memory_bytes   = 1073741824
-        cgroup_cpu_percent    = 100
-        cgroup_cpu_weight     = 100
-        cgroup_pids_max       = 256
-        cgroup_swap_max_bytes = 0
-        cgroup_oom_kill_all   = true
-        binaries              = "${sandbox.binaries}"
-        [sandbox.profiles.base.launcher]
-            mount_wait_sec    = 10.0
-            mount_poll_sec    = 0.002
-            shutdown_wait_sec = 5.0
-            lock_wait_sec     = 10.0
-            copy_chunk_bytes  = 1048576
-        [sandbox.profiles.base.env_set]
-            HOME            = "/tmp"
-            LANG            = "C.UTF-8"
+        host = "${sandbox.host}"
+        [sandbox.profiles.base.rootfs]
+            image = "${env.sandbox}/rootfs.ext4"
+            dir   = ""
+            mount = "/tmp/boba-rootfs"
+        [sandbox.profiles.base.mounts]
+            ro             = "${sandbox.binds.core}"
+            rw             = []
+            setup_ro       = "${sandbox.setup.ro}"
+            setup_rw       = "${sandbox.setup.rw}"
+            tmpfs          = ["/tmp:512M", "/mnt:1M"]
+            call_tmpfs     = "/tmp"
+            proc           = "/proc"
+            dev            = "/dev"
+            workspace      = "${sandbox.workspace}"
+            images         = []
+            image_template = ""
+        [sandbox.profiles.base.isolation]
+            network       = false
+            max_processes = 256
+            reap_poll_sec = 0.1
+            [sandbox.profiles.base.isolation.env]
+                PATH = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+                HOME = "/tmp"
+                LANG = "C.UTF-8"
+        [sandbox.profiles.base.limits]
+            timeout_sec           = 86400
+            process_memory_bytes  = 1073741824
+            process_cpu_sec       = 86400
+            process_file_bytes    = 1073741824
+            process_open_files    = 1024
+            process_oom_score_adj = 900
+            group_memory_bytes    = 1073741824
+            group_swap_bytes      = 0
+            group_cpu_percent     = 100
+            group_cpu_weight      = 100
+            group_pids_max        = 256
+            group_oom_kill_all    = true
+        [sandbox.profiles.base.run]
+            cwd   = "/workspace"
+            shell = "/bin/bash"
+
+    [sandbox.profiles.docs]
+        extends = "${sandbox.profiles.base}"
+        [sandbox.profiles.docs.mounts]
+            ro = "${sandbox.binds.docs}"
+        [sandbox.profiles.docs.limits]
+            process_memory_bytes = 17179869184
+            group_memory_bytes   = 4294967296
+
+    [sandbox.profiles.render]
+        extends = "${sandbox.profiles.docs}"
+        [sandbox.profiles.render.run]
+            cwd = "/tmp"
+
+    [sandbox.profiles.net]
+        extends = "${sandbox.profiles.base}"
+        [sandbox.profiles.net.mounts]
+            ro = "${sandbox.binds.net}"
+        [sandbox.profiles.net.isolation]
+            network = true
+        [sandbox.profiles.net.limits]
+            process_memory_bytes = 4294967296
+            group_memory_bytes   = 2147483648
+        [sandbox.profiles.net.run]
+            cwd = "/tmp"
+
+    [sandbox.profiles.db]
+        extends = "${sandbox.profiles.net}"
+        [sandbox.profiles.db.mounts]
+            ro = "${sandbox.binds.pg}"
+        [sandbox.profiles.db.limits]
+            process_memory_bytes = 1073741824
+            group_memory_bytes   = 1073741824
+
+    [sandbox.profiles.kb]
+        extends = "${sandbox.profiles.net}"
+        [sandbox.profiles.kb.mounts]
+            ro = "${sandbox.binds.kb}"
+        [sandbox.profiles.kb.limits]
+            process_memory_bytes = 17179869184
+            group_memory_bytes   = 8589934592
+            group_cpu_percent    = 400
 
 
 [tool.bash]
@@ -435,8 +515,7 @@
     tools            = ["bash"]
     max_output_bytes = 65536
     [tool.bash.sandbox]
-        profile  = "${sandbox.profiles.base}"
-        override = {  }
+        profile = "${sandbox.profiles.base}"
 
 [tool.workflow]
     enable = true
@@ -451,20 +530,13 @@
     search_max_matches      = 50
     tools                   = ["read_document", "document_outline", "search_document"]
     [tool.doc.sandbox]
-        profile = "${sandbox.profiles.base}"
-        [tool.doc.sandbox.override]
-            ro_binds            = "${sandbox.binds.docs}"
+        profile = "${sandbox.profiles.docs}"
 
 [tool.chart]
     enable  = false
     tools   = ["visualize"]
     [tool.chart.sandbox]
-        profile = "${sandbox.profiles.base}"
-        [tool.chart.sandbox.override]
-            ro_binds            = "${sandbox.binds.docs}"
-            rw_images           = []
-            image_template      = ""
-            cwd                 = "/tmp"
+        profile = "${sandbox.profiles.render}"
 
 [web.public]
     timeout_sec       = 30.0
@@ -486,13 +558,7 @@
     tools           = ["web_fetch_page", "web_grep_page"]
     profiles        = { "<confluence.example.local>" = "${web.confluence}" }
     [tool.web.sandbox]
-        profile = "${sandbox.profiles.base}"
-        [tool.web.sandbox.override]
-            ro_binds            = "${sandbox.binds.net}"
-            rw_images           = []
-            image_template      = ""
-            network             = true
-            cwd                 = "/tmp"
+        profile = "${sandbox.profiles.net}"
 
 [tool.confluence]
     enable          = true
@@ -506,13 +572,7 @@
     body_format     = "view"
     max_text_chars  = 2000
     [tool.confluence.sandbox]
-        profile = "${sandbox.profiles.base}"
-        [tool.confluence.sandbox.override]
-            ro_binds            = "${sandbox.binds.net}"
-            rw_images           = []
-            image_template      = ""
-            network             = true
-            cwd                 = "/tmp"
+        profile = "${sandbox.profiles.net}"
 
 [tables.kb]
     pg_schema         = "kb"
@@ -575,17 +635,7 @@
     embedding               = "${embedding}"
     tables                  = "${tables.kb}"
     [tool.ingest.sandbox]
-        profile = "${sandbox.profiles.base}"
-        [tool.ingest.sandbox.override]
-            max_memory_bytes    = 17179869184
-            cgroup_memory_bytes = 8589934592
-            cgroup_cpu_percent  = 400
-            ro_binds            = "${sandbox.binds.kb}"
-            rw_images           = []
-            image_template      = ""
-            network             = true
-            cwd                 = "/tmp"
-
+        profile = "${sandbox.profiles.kb}"
 
 [tool.kb]
     enable     = true
@@ -595,16 +645,7 @@
     collection = "kb_confluence"
     tools      = ["kb_vector_search", "kb_fts_search"]
     [tool.kb.sandbox]
-        profile = "${sandbox.profiles.base}"
-        [tool.kb.sandbox.override]
-            max_memory_bytes    = 17179869184
-            cgroup_memory_bytes = 8589934592
-            cgroup_cpu_percent  = 400
-            ro_binds            = "${sandbox.binds.kb}"
-            rw_images           = []
-            image_template      = ""
-            network             = true
-            cwd                 = "/tmp"
+        profile = "${sandbox.profiles.kb}"
 
 [tool.pg]
     enable     = true
@@ -620,13 +661,7 @@
     profiles   = { main = "${postgres}" }
     connection = "${postgres}"
     [tool.pg.sandbox]
-        profile = "${sandbox.profiles.base}"
-        [tool.pg.sandbox.override]
-            ro_binds            = "${sandbox.binds.pg}"
-            rw_images           = []
-            image_template      = ""
-            network             = true
-            cwd                 = "/tmp"
+        profile = "${sandbox.profiles.db}"
 
 [tool.ch]
     enable     = true
@@ -640,13 +675,7 @@
     max_bytes  = 1000000
     profiles   = { main = "${clickhouse}" }
     [tool.ch.sandbox]
-        profile = "${sandbox.profiles.base}"
-        [tool.ch.sandbox.override]
-            ro_binds            = "${sandbox.binds.pg}"
-            rw_images           = []
-            image_template      = ""
-            network             = true
-            cwd                 = "/tmp"
+        profile = "${sandbox.profiles.db}"
 
 [tool.send_file]
     enable = true

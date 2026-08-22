@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from collections.abc import Sequence
 from typing import Annotated, ClassVar, Literal
@@ -20,7 +21,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.indexing.ports import Embedder
 from boba.llm.openai import OpenAiConfig, OpenAiHttp
-from boba.toolkit.cpu import CpuBudget
 from boba.toolkit.timing import Elapsed
 
 logger = logging.getLogger(__name__)
@@ -116,6 +116,12 @@ class LocalFastEmbedEmbedder(Embedder[str]):
     Модель одна на процесс, поэтому инференс уходит в поток под локом: loop
     остаётся свободен для остальных источников, а ONNX внутри и так занимает
     все выделенные ядра — параллельные прогоны только отнимали бы память.
+
+    Экземпляр переживает fork: веса достаются ребёнку через copy-on-write, но
+    рабочие потоки ONNX в ребёнка не переносятся, и счёт там идёт в один
+    поток (замер: 31 мс против 59 мс на один запрос). Для одиночного запроса
+    это дешевле повторной загрузки модели, батчи документов лучше считать в
+    процессе, который модель загрузил сам.
     """
 
     def __init__(self, cfg: LocalEmbedding) -> None:
@@ -126,23 +132,29 @@ class LocalFastEmbedEmbedder(Embedder[str]):
 
         logger.info("embedder: fastembed imported in %dms", imports.ms())
 
-        # onnxruntime считает ядра по хосту и cgroup-квоту не видит: без
-        # threads его пул дерётся сам с собой (на одном ядре — в 5 раз дольше)
-        threads = CpuBudget.cores()
-        logger.info("embedder: %s on %d threads", cfg.model, threads)
+        # размер пула onnxruntime берёт из маски доступных ядер, а её
+        # выставляет запуск по cgroup-квоте профиля
+        cores = len(os.sched_getaffinity(0))
+        logger.info("embedder: %s on %d core(s)", cfg.model, cores)
 
         load = Elapsed()
         self._model_name = cfg.model
         self._model = TextEmbedding(
             model_name=cfg.model,
             cache_dir=cfg.cache_dir,
-            threads=threads,
         )
         logger.info("embedder: %s loaded in %dms", cfg.model, load.ms())
 
         self._dim = cfg.dim
         self._batch_size = cfg.batch_size
         self._progress_every = cfg.progress_every
+        self._lock = threading.Lock()
+
+        # захваченный в момент fork замок остался бы захваченным в ребёнке
+        # навсегда: владелец в ребёнка не переносится
+        os.register_at_fork(after_in_child=self._reset_lock)
+
+    def _reset_lock(self) -> None:
         self._lock = threading.Lock()
 
     async def embed_documents(
@@ -154,9 +166,7 @@ class LocalFastEmbedEmbedder(Embedder[str]):
     async def embed_query(self, content: str) -> Sequence[float]:
         return await asyncio.to_thread(self._locked_query_embed, content)
 
-    def _locked_passage_embed(
-        self, contents: Sequence[str]
-    ) -> list[Sequence[float]]:
+    def _locked_passage_embed(self, contents: Sequence[str]) -> list[Sequence[float]]:
         with self._lock:
             return self._passage_embed(contents)
 
@@ -335,25 +345,15 @@ class OpenAiEmbedder(Embedder[str]):
 
 
 class EmbedderFactory:
-    """Собирает Embedder[str] из union-конфига; экземпляры кэшируются на процесс.
+    """Собирает Embedder[str] из union-конфига.
 
-    Кэш — опора зиготы: WARMUP поднимает модель в родителе, вызов в форке
-    получает тот же объект через copy-on-write вместо повторной загрузки.
+    Каждый вызов строит новый экземпляр: держать ли собранное между вызовами —
+    решает инструмент, которому это нужно, а не библиотека за его спиной.
     """
-
-    _cache: ClassVar[dict[str, Embedder[str]]] = {}
 
     @classmethod
     def build(cls, cfg: EmbeddingConfig) -> Embedder[str]:
-        key = cfg.model_dump_json()
-
-        if cached := cls._cache.get(key):
-            return cached
-
         if isinstance(cfg, LocalEmbedding):
-            built: Embedder[str] = LocalFastEmbedEmbedder(cfg)
-        else:
-            built = OpenAiEmbedder(cfg)
+            return LocalFastEmbedEmbedder(cfg)
 
-        cls._cache[key] = built
-        return built
+        return OpenAiEmbedder(cfg)

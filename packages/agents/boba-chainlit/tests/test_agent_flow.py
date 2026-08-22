@@ -22,6 +22,8 @@ from boba.chainlit.agent.flow import (
     PrefetchCall,
     PrefetchError,
     PrefetchGraphBuilder,
+    PrefetchStage,
+    Rephraser,
 )
 from boba.chainlit.infra.config import (
     AppConfig,
@@ -57,7 +59,7 @@ class ScriptedChat(GenericFakeChatModel):
         return self
 
 
-class FakeRephraser:
+class FakeRephraser(Rephraser):
     """Переформулировщик без сети: отдаёт заготовленные варианты."""
 
     def __init__(self, queries: Sequence[str]) -> None:
@@ -69,7 +71,7 @@ class FakeRephraser:
         return self.queries
 
 
-class RecordingStage:
+class RecordingStage(PrefetchStage):
     """Этап без ленты: запоминает, что подготовка открылась и закрылась."""
 
     def __init__(self) -> None:
@@ -83,7 +85,7 @@ class RecordingStage:
         self.closed.append(list(queries))
 
 
-class BrokenRephraser:
+class BrokenRephraser(Rephraser):
     """Переформулировщик, у которого недоступен провайдер."""
 
     async def rephrase(self, query: str) -> Sequence[str]:
@@ -490,9 +492,7 @@ class TestProviderAssembly:
         with pytest.raises(RuntimeError, match="not available"):
             _flow_tools(["kb_fts_search"], [fts_probe])
 
-    async def test_httpx_clients_carry_flow_client(
-        self, app_config: AppConfig
-    ) -> None:
+    async def test_httpx_clients_carry_flow_client(self, app_config: AppConfig) -> None:
         profile = self._selected(flow=self._flow()).config
         config = app_config.model_copy(update={"profiles": {"search": profile}})
 

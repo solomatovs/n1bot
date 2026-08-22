@@ -27,15 +27,26 @@ from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel, ConfigDict
+from zygote_stand import ProfileFields, SandboxStand
 
 from boba.cancellation import ToolStopped, TurnCancellation, turn_cancellation
 from boba.chainlit.data.storage import ImageStorageClient, StorageFactory
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.sandbox import SandboxCaller, SandboxMountError, SandboxProfile
+from boba.sandbox import SandboxProfile
 from boba.sandbox.cgroup import CgroupManager
-from boba.sandbox.runner import SandboxRunner
-from boba.toolkit.launcher import LaunchOutcome
-from boba.workspace.launcher import FUSE_DEVICE, PartialCopy, ReadWindow
+from boba.sandbox.zygote import (
+    ZygotePolicy,
+    ZygoteRegistry,
+    ZygoteSpawner,
+    ZygoteToolCaller,
+)
+from boba.toolkit.images import PartialCopy
+from boba.toolkit.launcher import LauncherError, LaunchOutcome
+from boba.toolkit.stream import Chunk, JournalChannel, StreamSink, ToolChannelsTap
+from boba.workspace.launcher import (
+    FUSE_DEVICE,
+    ReadWindow,
+)
 
 pytestmark = pytest.mark.load
 
@@ -47,6 +58,25 @@ needs_fuse = pytest.mark.skipif(
     or not os.path.exists(FUSE_DEVICE),
     reason="нужны bwrap, fuse2fs, mkfs.ext4 и /dev/fuse",
 )
+
+
+class BrokenSink(StreamSink):
+    """Приёмник журнала, который падает на первом же куске вывода."""
+
+    def feed(self, data: Chunk) -> None:
+        msg = "consumer is broken"
+        raise RuntimeError(msg)
+
+    def feed_text(self, text: str) -> None:
+        msg = "consumer is broken"
+        raise RuntimeError(msg)
+
+
+class BrokenSinks:
+    """Журнал вызова, у которого сломан любой канал."""
+
+    def sink_of(self, channel: JournalChannel) -> StreamSink:
+        return BrokenSink()
 
 
 class CgroupZone:
@@ -108,7 +138,7 @@ class Waiting:
 
 
 class ProcName(StrEnum):
-    """Процессы, которые стенд ищет в /proc по cmdline."""
+    """Процессы, которые стенд ищет в /proc по исполняемому файлу."""
 
     FUSE2FS = "fuse2fs"
     BWRAP = "bwrap"
@@ -121,7 +151,11 @@ class ProcTable:
 
     @classmethod
     def matching(cls, name: ProcName, needle: str) -> frozenset[int]:
-        """Pid'ы, чей cmdline упоминает и процесс, и путь стенда."""
+        """Pid'ы процесса name, в чьём cmdline есть путь стенда.
+
+        Имя ищется в argv[0], а не по всему cmdline: bwrap несёт путь
+        fuse2fs аргументом бинда и иначе считался бы fuse-демоном.
+        """
         found: set[int] = set()
 
         for entry in os.listdir(cls.PROC):
@@ -130,10 +164,11 @@ class ProcTable:
 
             pid = int(entry)
             cmdline = cls.cmdline(pid)
-            if name.value not in cmdline:
+            if needle not in cmdline:
                 continue
 
-            if needle not in cmdline:
+            argv0 = cmdline.split(" ")[0]
+            if os.path.basename(argv0) != name.value:
                 continue
 
             found.add(pid)
@@ -281,11 +316,28 @@ class ResourceCensus(BaseModel):
     LEAF_PREFIX: ClassVar[str] = "run-"
 
     @classmethod
+    def _call_children(cls) -> frozenset[int]:
+        """Потомки процесса тестов без резидентных зигот: считаем ресурсы вызова.
+
+        Зигота секции живёт между вызовами и поднимается лениво — в снимок
+        «до» она не попадает и иначе выглядела бы утечкой.
+        """
+        kids: set[int] = set()
+
+        for pid in ProcTable.children_of(os.getpid()):
+            if ZygoteSpawner.MODULE in ProcTable.cmdline(pid):
+                continue
+
+            kids.add(pid)
+
+        return frozenset(kids)
+
+    @classmethod
     def capture(cls, root: Path, cgroup_base: str = "") -> ResourceCensus:
         return cls(
             host_mounts=cls._host_mounts(root),
             fuse_daemons=ProcTable.matching(ProcName.FUSE2FS, str(root)),
-            children=ProcTable.children_of(os.getpid()),
+            children=cls._call_children(),
             stale_mounts=cls._stale_mounts(root),
             partial_copies=cls._partial_copies(root),
             held_locks=cls._held_locks(root),
@@ -493,67 +545,109 @@ class LoadStand:
         return self.images_dir / f"{user_id}.ext4"
 
     def profile(self, **overrides: object) -> SandboxProfile:
+        image_ro, image_rw = SandboxStand.image_binds(
+            str(self._template), str(self.images_dir)
+        )
+
         fields: dict[str, object] = {
-            "rootfs": "",
-            "ro_binds": self.HOST_RO_BINDS,
-            "rw_binds": (f"{self.signals_dir}:{self.SIGNALS_MOUNT}",),
-            "rw_images": (f"{self.image_template()}:{self.WORKSPACE}",),
-            "image_template": str(self._template),
-            "launcher": {
-                "mount_wait_sec": 30.0,
-                "mount_poll_sec": 0.05,
-                "shutdown_wait_sec": 5.0,
-                "lock_wait_sec": 60.0,
-                "copy_chunk_bytes": 1 << 20,
+            "host": {
+                "mounting": {
+                    "mount_wait_sec": 30.0,
+                    "mount_poll_sec": 0.05,
+                    "shutdown_wait_sec": 5.0,
+                    "lock_wait_sec": 60.0,
+                    "copy_chunk_bytes": 1 << 20,
+                },
+                "binaries": {"dirs": self._bin_dirs()},
+                "stderr_tail_bytes": 4096,
+                "fail_tail_chars": 2000,
+                "kill_grace_sec": 5,
+                "cgroup_base": "",
             },
-            "binaries": {"dirs": self._bin_dirs()},
-            "tmpfs": (),
-            "network": False,
-            "env_set": {"PATH": "/usr/bin:/bin"},
-            "timeout_sec": 120,
-            "max_memory_bytes": 512 * 1024 * 1024,
-            "max_cpu_sec": 120,
-            "max_file_size_bytes": 64 * 1024 * 1024,
-            "max_open_files": 256,
-            "max_processes": 256,
-            "cgroup_base": "",
-            "oom_score_adj": 0,
-            "cwd": self.WORKSPACE,
+            "rootfs": {
+                "dir": "",
+            },
+            "mounts": {
+                "ro": (
+                    *self.HOST_RO_BINDS,
+                    *SandboxStand.host_python_binds(),
+                    *image_ro,
+                ),
+                "rw": (f"{self.signals_dir}:{self.SIGNALS_MOUNT}", *image_rw),
+                "images": (),
+                "workspace": {
+                    "template": str(self._template),
+                    "images": str(self.images_dir),
+                    "mount": self.WORKSPACE,
+                },
+                "image_template": "",
+                "tmpfs": ("/tmp:64M",),  # noqa: S108
+                "proc": "/proc",
+                "dev": "/dev",
+                "call_tmpfs": "/tmp",  # noqa: S108
+                "setup_ro": (),
+                "setup_rw": (),
+            },
+            "isolation": {
+                "network": False,
+                "env": {"PATH": SandboxStand.host_python_path()},
+                "max_processes": 256,
+                "reap_poll_sec": 0.05,
+            },
+            "limits": {
+                "timeout_sec": 120,
+                "process_memory_bytes": 512 * 1024 * 1024,
+                "process_cpu_sec": 120,
+                "process_file_bytes": 64 * 1024 * 1024,
+                "process_open_files": 256,
+                "process_oom_score_adj": 0,
+            },
+            "run": {
+                "shell": "/bin/bash",
+                "cwd": self.WORKSPACE,
+            },
         }
-        fields.update(self._profile_kw)
-        fields.update(overrides)
-        return SandboxProfile.model_validate(fields)
+        merged = ProfileFields.merged(fields, self._profile_kw)
+
+        return SandboxProfile.model_validate(ProfileFields.merged(merged, overrides))
+
+    ZYGOTE: ClassVar[ZygotePolicy] = ZygotePolicy(
+        start_timeout_sec=60.0,
+        max_start_attempts=2,
+        restart_backoff_sec=0.1,
+        healthy_after_sec=1.0,
+        stop_wait_sec=5.0,
+        call_poll_sec=0.05,
+    )
 
     def caller(
         self,
         user_id: str,
         thread_id: str = "t1",
         **overrides: object,
-    ) -> SandboxCaller:
+    ) -> ZygoteToolCaller:
+        """Зигота под набор лимитов: имя секции — ключ реестра зигот."""
         profile = self.profile(**overrides)
 
         def path_vars() -> dict[str, str]:
             return {"user_id": user_id, "thread_id": thread_id}
 
-        return SandboxCaller("bash", profile, path_vars)
-
-    def runner(self, user_id: str, **overrides: object) -> SandboxRunner:
-        """Раннер напрямую: нужен там, где вызов должен получить свой sink."""
-        profile = self.profile(**overrides)
-
-        def path_vars() -> dict[str, str]:
-            return {"user_id": user_id, "thread_id": "t1"}
-
-        return SandboxRunner("bash", profile, path_vars)
+        section = f"bash-{sorted(overrides.items())}"
+        supervisor = ZygoteRegistry.obtain(section, profile, (), self.ZYGOTE)
+        return ZygoteToolCaller(section, supervisor, profile, path_vars)
 
     def storage(self) -> ImageStorageClient:
         cfg = LocalStorageConfig.model_validate(
             {
                 "kind": "image",
-                "image_path": self.image_template(),
-                "image_template": str(self._template),
+                "mount_dir": "/tmp",  # noqa: S108
+                "workspace": {
+                    "template": str(self._template),
+                    "images": str(self.images_dir),
+                    "mount": self.WORKSPACE,
+                },
                 "op_timeout_sec": 120,
-                "launcher": {
+                "mounting": {
                     "mount_wait_sec": 30.0,
                     "mount_poll_sec": 0.05,
                     "shutdown_wait_sec": 5.0,
@@ -567,6 +661,10 @@ class LoadStand:
         if not (isinstance(client, ImageStorageClient)):
             raise AssertionError("isinstance(client, ImageStorageClient)")
         return client
+
+    def warm(self, **overrides: object) -> None:
+        """Поднять зиготу секции до снимка ресурсов: она живёт между вызовами."""
+        self.caller("warm", "t1", **overrides)
 
     def census(self, cgroup_base: str = "") -> ResourceCensus:
         return ResourceCensus.capture(self._root, cgroup_base)
@@ -603,16 +701,8 @@ class LoadStand:
 
     @staticmethod
     def _bin_dirs() -> list[str]:
-        """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
-        dirs: list[str] = []
-
-        for entry in os.environ.get("PATH", "").split(os.pathsep):
-            if not entry.startswith("/"):
-                continue
-
-            dirs.append(entry)
-
-        return dirs
+        """В тестах каталоги даёт стенд; в проде их задаёт конфиг."""
+        return SandboxStand.bin_dirs()
 
 
 @pytest.fixture(autouse=True)
@@ -638,10 +728,16 @@ def template(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def stand(tmp_path: Path, template: Path) -> LoadStand:
+def stand(tmp_path: Path, template: Path) -> Iterator[LoadStand]:
+    """Зиготы гасятся вместе со стендом: реестр общий на процесс тестов."""
     stand = LoadStand(tmp_path / "stand", template)
     stand.images_dir.mkdir(parents=True, exist_ok=True)
-    return stand
+    stand.signals_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        yield stand
+    finally:
+        ZygoteRegistry.stop_all()
 
 
 @needs_fuse
@@ -655,6 +751,7 @@ class TestParallelLoad:
         return stand.caller(user_id).call_text(command, stdin="")
 
     def test_many_users_release_everything(self, stand: LoadStand) -> None:
+        stand.warm()
         before = stand.census()
         jobs: list[tuple[str, int]] = []
 
@@ -703,6 +800,7 @@ class TestParallelLoad:
         self, stand: LoadStand
     ) -> None:
         """Один пользователь, много потоков: вызовы сериализуются локом."""
+        stand.warm()
         before = stand.census()
 
         with ThreadPoolExecutor(max_workers=LoadScale.THREADS) as pool:
@@ -735,6 +833,7 @@ class TestParallelLoad:
 
     def test_storage_and_sandbox_share_image_under_load(self, stand: LoadStand) -> None:
         """Вложения и bash работают с одним образом: flock их разводит."""
+        stand.warm()
         before = stand.census()
         storage = stand.storage()
 
@@ -824,14 +923,16 @@ class TestAbnormalTermination:
     LONG_COMMAND: ClassVar[str] = "touch busy.txt; sleep 300"
 
     @staticmethod
-    def _report(caller: SandboxCaller, command: str) -> CallReport:
-        """Сбой монтирования — тоже исход вызова, а не поломка стенда."""
+    def _report(caller: ZygoteToolCaller, command: str) -> CallReport:
+        """Смерть цепочки — тоже исход вызова, а не поломка стенда."""
         try:
             return CallReport.of(caller.call_text(command, stdin=""))
-        except SandboxMountError as exc:
+        except LauncherError as exc:
             return CallReport.failed(exc)
 
     def test_timeout_kills_command_and_frees_image(self, stand: LoadStand) -> None:
+        stand.warm()
+        stand.warm(timeout_sec=1)
         before = stand.census()
 
         outcome = stand.caller("timeout", timeout_sec=1).call_text(
@@ -852,6 +953,7 @@ class TestAbnormalTermination:
 
     def test_cancelled_turn_frees_image(self, stand: LoadStand) -> None:
         """Остановка хода посреди работы команды: образ и демон отпущены."""
+        stand.warm()
         before = stand.census()
         marker = f"cancel-load-{uuid4().hex[:8]}"
         command = stand.started_command(marker, self.LONG_COMMAND)
@@ -873,15 +975,16 @@ class TestAbnormalTermination:
 
     def test_failing_output_consumer_frees_image(self, stand: LoadStand) -> None:
         """Потребитель потока падает: процесс добивается, образ отпускается."""
+        stand.warm()
         before = stand.census()
 
-        def sink(_: bytes) -> None:
-            msg = "consumer is broken"
-            raise RuntimeError(msg)
-
-        runner = stand.runner("sink")
-        with pytest.raises(RuntimeError, match="consumer is broken"):
-            runner.run("echo noise; sleep 300", stdin="", stdout_sink=sink)
+        caller = stand.caller("sink")
+        ToolChannelsTap.set(BrokenSinks())
+        try:
+            with pytest.raises(RuntimeError, match="consumer is broken"):
+                caller.call_text("echo noise; sleep 300", stdin="")
+        finally:
+            ToolChannelsTap.set(None)
 
         leak = stand.settle(before)
         if not (leak.empty):
@@ -892,7 +995,8 @@ class TestAbnormalTermination:
             raise AssertionError("again.result.exit_code == 0")
 
     def test_killed_bwrap_frees_image(self, stand: LoadStand) -> None:
-        """SIGKILL внешнему bwrap: цепочка гаснет вместе с ним."""
+        """SIGKILL bwrap зиготы: её вызовы гаснут, секция поднимается заново."""
+        stand.warm()
         before = stand.census()
         marker = f"bwrap-load-{uuid4().hex[:8]}"
         command = stand.started_command(marker, self.LONG_COMMAND)
@@ -907,6 +1011,7 @@ class TestAbnormalTermination:
 
         if report.exit_code == 0:
             raise AssertionError("report.exit_code != 0")
+
         survivors = ProcTable.wait_gone(tuple(daemons), Waiting.SETTLE_SEC)
         if survivors != ():
             raise AssertionError(f"fuse2fs survived its bwrap: {survivors}")
@@ -921,6 +1026,7 @@ class TestAbnormalTermination:
 
     def test_killed_fuse_daemon_does_not_hang_next_call(self, stand: LoadStand) -> None:
         """SIGKILL смонтированному fuse2fs: команда теряет точку, вызов не висит."""
+        stand.warm()
         before = stand.census()
         marker = f"fuse-load-{uuid4().hex[:8]}"
         watch = (
@@ -952,6 +1058,7 @@ class TestAbnormalTermination:
         self, stand: LoadStand, tmp_path: Path
     ) -> None:
         """SIGKILL всему приложению: образ отпущен, демоны и точки прибраны."""
+        stand.warm()
         before = stand.census()
         child = _ChildCall(stand, tmp_path)
         marker = f"host-load-{uuid4().hex[:8]}"
@@ -1009,6 +1116,7 @@ class TestAbnormalTermination:
 
     def test_parallel_load_survives_random_kills(self, stand: LoadStand) -> None:
         """Нагрузка вперемешку с убийствами: уцелевшие вызовы честны, мусора нет."""
+        stand.warm()
         before = stand.census()
 
         def call(index: int) -> CallReport:
@@ -1087,7 +1195,13 @@ class _ChildCall:
 import json
 import sys
 
-from boba.sandbox import SandboxCaller, SandboxProfile
+from boba.sandbox import SandboxProfile
+from boba.sandbox.zygote import (
+    ZygotePolicy,
+    ZygoteRegistry,
+    ZygoteSpawner,
+    ZygoteToolCaller,
+)
 
 profile = SandboxProfile.model_validate_json(sys.argv[1])
 user_id = sys.argv[2]
@@ -1099,7 +1213,17 @@ def path_vars():
 
 
 print("ready", flush=True)
-outcome = SandboxCaller("bash", profile, path_vars).call_text(command, stdin="")
+policy = ZygotePolicy(
+    start_timeout_sec=60.0,
+    max_start_attempts=2,
+    restart_backoff_sec=0.1,
+    healthy_after_sec=1.0,
+    stop_wait_sec=5.0,
+    call_poll_sec=0.05,
+)
+supervisor = ZygoteRegistry.obtain("bash", profile, (), policy)
+caller = ZygoteToolCaller("bash", supervisor, profile, path_vars)
+outcome = caller.call_text(command, stdin="")
 print(json.dumps({"rc": outcome.result.exit_code}), flush=True)
 '''
 
@@ -1186,16 +1310,23 @@ class TestGroupLimitsUnderLoad:
     def test_leaves_removed_after_parallel_calls(
         self, stand: LoadStand, cgroup_base: str
     ) -> None:
+        stand.warm(
+            cgroup_base=cgroup_base,
+            group_memory_bytes=512 * 1024 * 1024,
+            group_pids_max=64,
+            group_swap_bytes=0,
+            group_oom_kill_all=True,
+        )
         before = stand.census(cgroup_base)
 
         def call(index: int) -> LaunchOutcome:
             caller = stand.caller(
                 str(index),
                 cgroup_base=cgroup_base,
-                cgroup_memory_bytes=512 * 1024 * 1024,
-                cgroup_pids_max=64,
-                cgroup_swap_max_bytes=0,
-                cgroup_oom_kill_all=True,
+                group_memory_bytes=512 * 1024 * 1024,
+                group_pids_max=64,
+                group_swap_bytes=0,
+                group_oom_kill_all=True,
             )
             return caller.call_text(f"echo {index}", stdin="")
 
@@ -1211,14 +1342,21 @@ class TestGroupLimitsUnderLoad:
 
     def test_group_oom_releases_leaf(self, stand: LoadStand, cgroup_base: str) -> None:
         """Группа упирается в memory.max: её убивают, leaf исчезает."""
+        stand.warm(
+            cgroup_base=cgroup_base,
+            group_memory_bytes=64 * 1024 * 1024,
+            group_swap_bytes=0,
+            group_oom_kill_all=True,
+            process_memory_bytes=1024 * 1024 * 1024,
+        )
         before = stand.census(cgroup_base)
         caller = stand.caller(
             "oom",
             cgroup_base=cgroup_base,
-            cgroup_memory_bytes=64 * 1024 * 1024,
-            cgroup_swap_max_bytes=0,
-            cgroup_oom_kill_all=True,
-            max_memory_bytes=1024 * 1024 * 1024,
+            group_memory_bytes=64 * 1024 * 1024,
+            group_swap_bytes=0,
+            group_oom_kill_all=True,
+            process_memory_bytes=1024 * 1024 * 1024,
         )
 
         # tail держит окно в памяти целиком: 256 МБ против лимита в 64 МБ
@@ -1236,11 +1374,17 @@ class TestGroupLimitsUnderLoad:
         self, stand: LoadStand, cgroup_base: str
     ) -> None:
         """pids.max держит форк-бомбу и не оставляет leaf после вызова."""
+        stand.warm(
+            cgroup_base=cgroup_base,
+            group_pids_max=32,
+            max_processes=4096,
+            timeout_sec=30,
+        )
         before = stand.census(cgroup_base)
         caller = stand.caller(
             "pids",
             cgroup_base=cgroup_base,
-            cgroup_pids_max=32,
+            group_pids_max=32,
             max_processes=4096,
             timeout_sec=30,
         )
@@ -1263,8 +1407,8 @@ class TestCrashDebris:
     DEAD_PID: ClassVar[int] = 999_999
     """Pid, которого нет: так выглядит копия, брошенная умершим процессом."""
 
-    LIVE_PID: ClassVar[int] = 1
-    """Заведомо живой владелец копии: её докопирует он, а не текущий вызов."""
+    OWN_PID: ClassVar[int] = 1
+    """Pid исполнителя внутри его pid namespace: у каждого вызова он равен 1."""
 
     def test_partial_copy_from_a_crash_is_removed(self, stand: LoadStand) -> None:
         """Копию без живого владельца никто не докопирует — она удаляется."""
@@ -1281,10 +1425,10 @@ class TestCrashDebris:
         if partial.exists():
             raise AssertionError("брошенная частичная копия должна быть убрана")
 
-    def test_partial_copy_of_a_live_process_is_kept(self, stand: LoadStand) -> None:
-        """Копия живого процесса не наша: её докопирует владелец."""
+    def test_partial_copy_with_a_live_pid_is_removed(self, stand: LoadStand) -> None:
+        """Pid копии ничего не значит: под эксклюзивным локом владельца нет."""
         image = stand.image_of("live-debris")
-        partial = Path(PartialCopy.render(str(image), self.LIVE_PID))
+        partial = Path(PartialCopy.render(str(image), self.OWN_PID))
         partial.parent.mkdir(parents=True, exist_ok=True)
         partial.write_bytes(b"copy in progress")
 
@@ -1292,8 +1436,8 @@ class TestCrashDebris:
 
         if outcome.result.exit_code != 0:
             raise AssertionError("outcome.result.exit_code == 0")
-        if not (partial.exists()):
-            raise AssertionError("partial.exists()")
+        if partial.exists():
+            raise AssertionError("копия под чужим pid всё равно должна быть убрана")
 
     def test_abandoned_lock_file_does_not_block_calls(self, stand: LoadStand) -> None:
         """Файл лока переживает вызовы: значение имеет только сам flock."""

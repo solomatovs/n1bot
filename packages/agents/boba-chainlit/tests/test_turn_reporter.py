@@ -16,7 +16,13 @@ import pytest
 from langchain_core.messages import BaseMessage
 
 from boba.cancellation import StopReason
-from boba.chainlit.chat.turn import TurnMark, TurnRecord, TurnReporter, TurnState
+from boba.chainlit.chat.turn import (
+    TurnHistory,
+    TurnMark,
+    TurnRecord,
+    TurnReporter,
+    TurnState,
+)
 from boba.chainlit.domain.errors import UserInputError
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
@@ -32,7 +38,7 @@ THREAD = "thread-reporter"
 TURN_KEY = "msg-1"
 
 
-class RememberedHistory:
+class RememberedHistory(TurnHistory):
     """История в память: тесту важно, что и с какой пометкой записано.
 
     Перед записью уступает цикл событий, как настоящий I/O: отложенная отмена

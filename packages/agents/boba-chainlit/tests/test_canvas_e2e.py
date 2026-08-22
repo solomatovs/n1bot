@@ -829,9 +829,7 @@ async def test_fullscreen_covers_the_whole_window(panel: Any) -> None:
     if geometry["hosted"] is not True:
         raise AssertionError("сцена поднята не в корень приложения")
     if geometry["transformed"] is not False:
-        raise AssertionError(
-            "у сцены остался трансформированный предок: fixed съедет"
-        )
+        raise AssertionError("у сцены остался трансформированный предок: fixed съедет")
 
 
 async def test_fullscreen_covers_the_window_for_every_viewer(panel: Any) -> None:
@@ -952,7 +950,7 @@ async def test_fullscreen_covers_the_chat_underneath(panel: Any) -> None:
     if hit["background"] in ("rgba(0, 0, 0, 0)", "transparent"):
         raise AssertionError("фон полноэкранной сцены прозрачный")
     if int(hit["zIndex"]) < 10:
-        raise AssertionError(f'z-index сцены слишком мал: {hit["zIndex"]}')
+        raise AssertionError(f"z-index сцены слишком мал: {hit['zIndex']}")
 
 
 async def test_fullscreen_body_fills_the_height(panel: Any) -> None:
@@ -1330,9 +1328,7 @@ async def test_theme_change_redraws_the_diagram(panel: Any) -> None:
         "() => document.documentElement.classList.contains('dark')"
     )
 
-    await page.evaluate(
-        "() => document.documentElement.classList.toggle('dark')"
-    )
+    await page.evaluate("() => document.documentElement.classList.toggle('dark')")
     await page.wait_for_timeout(2500)
     after = await page.evaluate(read)
 
@@ -1361,8 +1357,8 @@ async def test_buttons_work_in_fullscreen(panel: Any) -> None:
 
     read = (
         "() => document.querySelector("
-        "'[data-canvas-panel][data-full=\"true\"] "
-        "div[style*=\"transform-origin\"]').style.transform"
+        '\'[data-canvas-panel][data-full="true"] '
+        'div[style*="transform-origin"]\').style.transform'
     )
     before = await page.evaluate(read)
 
@@ -1427,9 +1423,7 @@ async def test_download_saves_the_shown_file(panel: Any) -> None:
 
         saved = await pending.value
         if saved.suggested_filename != name:
-            raise AssertionError(
-                f"{name}: скачался как {saved.suggested_filename}"
-            )
+            raise AssertionError(f"{name}: скачался как {saved.suggested_filename}")
 
 
 async def test_download_works_in_fullscreen(panel: Any) -> None:

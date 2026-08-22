@@ -1,10 +1,8 @@
 """Обёртка запуска: тело инструмента исполняется отдельным процессом.
 
 Ставится первой, на нетронутое тело: захватывает адрес модуля, оригинальную
-схему и само тело. С launcher'ом вызов уезжает командой модуля инструментов
-через порт ToolLauncher; без него (секции песочницы нет — dev-режим) тело
-зовётся прямо в процессе, а ожидаемые исключения переводятся в тот же
-PayloadFailureError — kind отказа не зависит от места исполнения.
+схему и само тело; вызов уезжает командой модуля инструментов через порт
+ToolLauncher.
 
 Ошибки:
 PayloadFailureError — ожидаемый отказ тела (EXPECTED), отказ контракта
@@ -16,7 +14,7 @@ LauncherError — исполнитель не отдал конверт; под�
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -24,7 +22,6 @@ from pydantic import BaseModel
 
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
-    ExpectedErrors,
     ReplyError,
     ToolAddress,
     ToolArgv,
@@ -45,32 +42,21 @@ class ToolProcessWrap:
     """Подменяет тела инструмента переносом вызова в отдельный процесс."""
 
     @classmethod
-    def guard_all(
-        cls,
-        tools: Sequence[ToolLike],
-        launcher: ToolLauncher | None,
-    ) -> None:
+    def guard_all(cls, tools: Sequence[ToolLike], launcher: ToolLauncher) -> None:
         for tool in tools:
             cls._guard(tool, launcher)
 
     @classmethod
-    def _guard(cls, tool: ToolLike, launcher: ToolLauncher | None) -> None:
+    def _guard(cls, tool: ToolLike, launcher: ToolLauncher) -> None:
         address = ToolAddress.of(tool)
         schema = ToolArgv.schema_of(tool)
 
-        original_func = tool.func
-        original_coroutine = tool.coroutine
-
-        if launcher is None:
-            cls._guard_local(tool, original_func, original_coroutine)
-            return
-
         call = cls._process_call(address, schema, launcher)
 
-        if original_func is not None:
+        if tool.func is not None:
             cls._set_func(tool, call)
 
-        if original_coroutine is not None:
+        if tool.coroutine is not None:
 
             async def acall(**kwargs: object) -> object:
                 return await asyncio.to_thread(lambda: call(**kwargs))
@@ -101,62 +87,6 @@ class ToolProcessWrap:
             return reply.content, reply.artifact
 
         return call
-
-    @classmethod
-    def _guard_local(
-        cls,
-        tool: ToolLike,
-        original_func: Callable[..., Any] | None,
-        original_coroutine: Callable[..., Awaitable[Any]] | None,
-    ) -> None:
-        """Локальный режим: тело в процессе, EXPECTED — тем же kind'ом."""
-        if original_func is not None:
-            expected = ExpectedErrors.of_body(original_func)
-
-            def call(
-                *args: object,
-                _body: Callable[..., Any] = original_func,
-                _expected: Mapping[type[Exception], str] = expected,
-                **kwargs: object,
-            ) -> object:
-                try:
-                    return _body(*args, **kwargs)
-                except Exception as exc:
-                    cls._raise_expected(exc, _expected)
-                    raise
-
-            cls._set_func(tool, call)
-
-        if original_coroutine is not None:
-            aexpected = ExpectedErrors.of_body(original_coroutine)
-
-            async def acall(
-                *args: object,
-                _body: Callable[..., Awaitable[Any]] = original_coroutine,
-                _expected: Mapping[type[Exception], str] = aexpected,
-                **kwargs: object,
-            ) -> object:
-                try:
-                    return await _body(*args, **kwargs)
-                except Exception as exc:
-                    cls._raise_expected(exc, _expected)
-                    raise
-
-            cls._set_coroutine(tool, acall)
-
-    @staticmethod
-    def _raise_expected(
-        exc: Exception, expected: Mapping[type[Exception], str]
-    ) -> None:
-        """Ожидаемое исключение — единый конверт отказа; прочие проходят."""
-        if isinstance(exc, PayloadFailureError):
-            return
-
-        kind = ExpectedErrors.kind_of(exc, expected)
-        if kind is None:
-            return
-
-        raise PayloadFailureError(kind, str(exc)) from exc
 
     @staticmethod
     def _set_func(tool: ToolLike, body: Callable[..., Any]) -> None:

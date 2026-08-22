@@ -40,7 +40,7 @@ from boba.chainlit.domain.session import SessionKind
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import CustomElementResult, ErrorResult
-from boba.workspace.launcher import LauncherConfig
+from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 USER = "7"
@@ -51,7 +51,7 @@ def chainlit_context() -> None:
     """Заглушка сессионной фикстуры conftest: БД этим тестам не нужна."""
 
 
-class FakeViewer:
+class FakeViewer(CanvasViewer):
     """Вьювер под тест: берётся за своё расширение и запоминает показанное."""
 
     suffixes: ClassVar[frozenset[str]] = frozenset({".mmd"})
@@ -223,13 +223,14 @@ class _StorageOnlyLayer:
 def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStorageClient:
     config = LocalStorageConfig(
         files_dir=str(tmp_path),
-        launcher=LauncherConfig(
+        mounting=MountingConfig(
             mount_wait_sec=1.0,
             mount_poll_sec=0.1,
             shutdown_wait_sec=1.0,
             lock_wait_sec=1.0,
             copy_chunk_bytes=65536,
         ),
+        mount_dir="/tmp",  # noqa: S108
         binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
     )
     client = LocalStorageClient(config)
