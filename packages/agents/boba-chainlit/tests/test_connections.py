@@ -9,16 +9,19 @@ from typing import Literal
 
 import pytest
 from conftest import FakeSecret
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from boba.chainlit.connections import (
-    ConnectionKinds,
+    ConnectionKind,
     ConnectionsConfig,
-    GrantKinds,
+    GrantKind,
+    GrantTarget,
     SecretCipher,
     SecretCryptoError,
+    StoredConnection,
 )
 from boba.chainlit.data.models import Thread, User
+from boba.db.clickhouse import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.postgres import (
     PostgresConfig,
     PostgresOptionsConfig,
@@ -239,22 +242,29 @@ class TestRealProfiles:
             raise AssertionError("токен виден в model_dump_json")
 
 
-class TestConnectionKinds:
-    def test_postgres_kind(self) -> None:
-        if ConnectionKinds.model("postgres") is not PostgresConfig:
-            raise AssertionError('ConnectionKinds.model("postgres") is PostgresConfig')
+class TestConnectionKind:
+    def test_kind_of_postgres(self) -> None:
+        if ConnectionKind.of(_pg()) is not ConnectionKind.POSTGRES:
+            raise AssertionError("postgres profile must map to POSTGRES")
 
-    def test_web_kind(self) -> None:
-        if ConnectionKinds.model("web") is not HttpProfile:
-            raise AssertionError('ConnectionKinds.model("web") is HttpProfile')
+    def test_kind_of_clickhouse(self) -> None:
+        profile = ClickHouseConfig(
+            host="ch",
+            port=8123,
+            interface="http",
+            username="boba",
+            settings=ClickHouseSettingsConfig(),
+        )
+        if ConnectionKind.of(profile) is not ConnectionKind.CLICKHOUSE:
+            raise AssertionError("clickhouse profile must map to CLICKHOUSE")
+
+    def test_kind_of_web(self) -> None:
+        if ConnectionKind.of(HttpProfile()) is not ConnectionKind.WEB:
+            raise AssertionError("http profile must map to WEB")
 
     def test_unknown_kind_raises(self) -> None:
-        with pytest.raises(ValueError, match="unknown connection kind"):
-            ConnectionKinds.model("redis")
-
-    def test_kind_of_instance(self) -> None:
-        if ConnectionKinds.kind_of(_pg()) != "postgres":
-            raise AssertionError('ConnectionKinds.kind_of(_pg()) == "postgres"')
+        with pytest.raises(ValueError, match="redis"):
+            ConnectionKind("redis")
 
     def test_kind_is_part_of_the_model(self) -> None:
         if PostgresConfig.model_fields["kind"].default != "postgres":
@@ -262,9 +272,25 @@ class TestConnectionKinds:
         if HttpProfile.model_fields["kind"].default != "web":
             raise AssertionError('HttpProfile.model_fields["kind"].default == "web"')
 
-    def test_known_kinds(self) -> None:
-        if ConnectionKinds.known() != ("postgres", "web"):
-            raise AssertionError('ConnectionKinds.known() == ("postgres", "web")')
+    def test_stored_profile_is_picked_by_kind(self) -> None:
+        profile = {
+            "kind": "clickhouse",
+            "host": "ch",
+            "port": 8123,
+            "interface": "http",
+            "username": "boba",
+            "settings": {},
+        }
+        raw = {"id": 1, "name": "x", "profile": profile}
+        stored = StoredConnection.model_validate(raw)
+        if not isinstance(stored.profile, ClickHouseConfig):
+            raise AssertionError("profile must be validated by its kind")
+        if stored.kind is not ConnectionKind.CLICKHOUSE:
+            raise AssertionError("stored.kind must follow the profile")
+
+    def test_stored_profile_without_kind_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="kind"):
+            StoredConnection.model_validate({"id": 1, "name": "x", "profile": {}})
 
 
 class TestConnectionsConfig:
@@ -297,26 +323,28 @@ class TestConnectionsConfig:
             raise AssertionError('(cfg.db_schema, cfg.table) == ("chainlit", "connect…')
 
 
-class TestGrantKinds:
-    def test_known_kinds_are_table_names(self) -> None:
-        if GrantKinds.known_src() != ("connections",):
-            raise AssertionError('GrantKinds.known_src() == ("connections",)')
-        if GrantKinds.known_tgt() != ("roles", "users"):
-            raise AssertionError('GrantKinds.known_tgt() == ("roles", "users")')
+class TestGrantTarget:
+    def test_kinds_are_table_names(self) -> None:
+        if {k.value for k in GrantKind} != {"connections", "roles", "users"}:
+            raise AssertionError("grant kinds must name the linked tables")
 
-    def test_validate_passes_known(self) -> None:
-        if GrantKinds.validate_src("connections") != "connections":
-            raise AssertionError('GrantKinds.validate_src("connections") == "connecti…')
-        if GrantKinds.validate_tgt("roles") != "roles":
-            raise AssertionError('GrantKinds.validate_tgt("roles") == "roles"')
+    def test_user_target(self) -> None:
+        target = GrantTarget.user(7)
+        if (target.kind, target.id) != (GrantKind.USERS, 7):
+            raise AssertionError("user target must point into users")
 
-    def test_validate_src_rejects_unknown(self) -> None:
-        with pytest.raises(ValueError, match="unknown grant src_kind"):
-            GrantKinds.validate_src("roles")
+    def test_role_target(self) -> None:
+        target = GrantTarget.role(3)
+        if (target.kind, target.id) != (GrantKind.ROLES, 3):
+            raise AssertionError("role target must point into roles")
 
-    def test_validate_tgt_rejects_unknown(self) -> None:
-        with pytest.raises(ValueError, match="unknown grant tgt_kind"):
-            GrantKinds.validate_tgt("groups")
+    def test_connection_is_not_a_target(self) -> None:
+        with pytest.raises(ValueError, match="user or a role"):
+            GrantTarget(kind=GrantKind.CONNECTIONS, id=1)
+
+    def test_unknown_kind_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="kind"):
+            GrantTarget.model_validate({"kind": "groups", "id": 1})
 
 
 class TestUserIntId:

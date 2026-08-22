@@ -5,19 +5,29 @@ from boba.chainlit.connections.secrets import (
     SecretCryptoError,
 )
 from boba.chainlit.connections.store import (
-    ConnectionKinds,
+    ConnectionKind,
     ConnectionNotFoundError,
+    ConnectionProfile,
     ConnectionsConfig,
     ConnectionStore,
-    GrantKinds,
+    ConnectionStoreError,
+    GrantKind,
+    GrantTarget,
+    StoredConnection,
+    Subject,
 )
 
 __all__ = [
-    "ConnectionKinds",
+    "ConnectionKind",
     "ConnectionNotFoundError",
+    "ConnectionProfile",
     "ConnectionStore",
+    "ConnectionStoreError",
     "ConnectionsConfig",
-    "GrantKinds",
+    "GrantKind",
+    "GrantTarget",
     "SecretCipher",
     "SecretCryptoError",
+    "StoredConnection",
+    "Subject",
 ]
