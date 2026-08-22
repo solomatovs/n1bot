@@ -678,10 +678,9 @@ class ChatView:
                 step.input = rendering.markdown
                 step.show_input = rendering.show_input
 
-        step.output = ""
-        if not intent:
-            step.output = StepText.RUNNING
-
+        # фронт chainlit рисует секцию output (с inline-элементами, в том числе
+        # кнопкой живого вывода) только при непустом output шага
+        step.output = StepText.RUNNING
         step.start = utc_now()
 
         if button := self._stream_button(name, key):
