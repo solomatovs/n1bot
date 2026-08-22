@@ -337,8 +337,7 @@ ARG PYTHON_VERSION=3.11       \
     BOBA_DIR=/app/boba        \
     BOBA_VERSION=0.0.0        \
     BOBA_UID=1000             \
-    BOBA_GID=1000             \
-    ONNX_MODELS_DIR=/var/cache/onnx-genai
+    BOBA_GID=1000
 
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -367,7 +366,7 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY build/src/webassets/                                         ${BOBA_DIR}/app_root/public/vendor/
-COPY build/src/onnx-genai/                                        ${ONNX_MODELS_DIR}/
+COPY build/src/onnx-genai/                                        ${BOBA_DIR}/models/onnx-genai/
 
 RUN set -eu                                                        \
     && if [ ! -f /tmp/conf/ca-chain.crt ]; then                    \

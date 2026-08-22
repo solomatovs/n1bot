@@ -622,6 +622,7 @@ BUILD_INPUTS    :=                                   \
     $(DEPS_DIR)/uv/uv:deps                           \
     $(DEPS_DIR)/tessdata/eng.traineddata:deps        \
     $(DEPS_DIR)/fastembed:deps                       \
+    $(DEPS_DIR)/onnx-genai:deps                      \
     $(WEBASSETS_DIR)/katex/katex.min.css:webassets   \
     $(WEBASSETS_DIR)/inter/inter.css:webassets       \
     $(DEPS_DIR)/names-sandbox.txt:sandbox-names
@@ -720,6 +721,11 @@ dev: check-artifacts
 	mkdir -p "$$out/third"
 	rm -rf "$$out/third/bin"
 	cp -al "$(SANDBOX_DIR)/third/bin" "$$out/third/bin"
+
+	# локальные модели чата и переформулировщика: та же раскладка, что в образе
+	rm -rf "$$out/models/onnx-genai"
+	mkdir -p "$$out/models"
+	cp -al "$(DEPS_DIR)/onnx-genai" "$$out/models/onnx-genai"
 
 	# код инструментов в деве приезжает биндом поверх /usr/src образа:
 	# правка видна сразу, пересборка образа не нужна
