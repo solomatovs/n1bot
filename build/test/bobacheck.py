@@ -184,7 +184,9 @@ def t_model_loads_offline():
     name = sorted(os.listdir(MODELS_DIR))[0]
     model = og.Model(og.Config(os.path.join(MODELS_DIR, name)))
     tokenizer = og.Tokenizer(model)
-    if not tokenizer.encode("offline check"):
+    # encode отдаёт numpy-массив: истинность массива не определена, считаем длину
+    encoded = tokenizer.encode("offline check")
+    if len(encoded) == 0:
         raise RuntimeError(f"{name}: токенайзер не кодирует")
 
 

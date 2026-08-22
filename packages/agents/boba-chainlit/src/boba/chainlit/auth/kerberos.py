@@ -8,6 +8,7 @@ InternalServiceError — keytab/SPN/конфиг непригодны.
 import asyncio
 import base64
 import logging
+import os
 import re
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from enum import StrEnum
@@ -437,6 +438,9 @@ class KerberosAuth:
     _BUTTON_JS: ClassVar[Path] = Path(__file__).parent / "sso_button.js"
     """JS кнопки едет в wheel как package-data — см. pyproject boba-chainlit."""
 
+    _CUSTOM_AUTH_ENV: ClassVar[str] = "CHAINLIT_CUSTOM_AUTH"
+    """Флаг chainlit: вход обязателен, хотя свой колбэк авторизации не задан."""
+
     def __init__(self, url_prefix: str, config: KerberosAuthConfig):
         self._config = config
         # роуты без префикса (root_path учтёт роутер), middleware и кнопка — с полным
@@ -512,6 +516,10 @@ class KerberosAuth:
         return match.group("username")
 
     def install(self, chainlit_app: FastAPI) -> None:
+        # без password/header-колбэка chainlit считает, что логина нет, и пускает
+        # анонима; флаг включает обязательный вход без автозапроса /auth/header
+        os.environ[self._CUSTOM_AUTH_ENV] = "1"
+
         chainlit_app.add_middleware(
             SpnegoMiddleware,
             auth_path=self._sso_url,
