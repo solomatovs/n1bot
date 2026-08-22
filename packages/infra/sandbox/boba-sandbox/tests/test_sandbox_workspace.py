@@ -6,11 +6,11 @@ import os
 
 import pytest
 from langchain_core.messages import HumanMessage
+from zygote_stand import ProfileFields
 
-from boba.chainlit.domain.keys import ObjectKey
+from boba.chainlit.domain.keys import ObjectKey, WorkspaceMount
 from boba.chainlit.infra.providers import build_llm_view
-from boba.sandbox import WORKSPACE_MOUNT
-from boba.sandbox.argv import build_bwrap_argv
+from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.profile import BindSpec, SandboxProfile
 
 
@@ -37,62 +37,94 @@ def _rw_mounts(argv: list[str]) -> list[str]:
 
 
 _PROFILE_BASE: dict[str, object] = {
-    "rootfs": "",
-    "ro_binds": (),
-    "rw_binds": (),
-    "rw_images": (),
-    "image_template": "",
-    "launcher": {
-        "mount_wait_sec": 10.0,
-        "mount_poll_sec": 0.05,
-        "shutdown_wait_sec": 5.0,
-        "lock_wait_sec": 10.0,
-        "copy_chunk_bytes": 1 << 20,
+    "host": {
+        "mounting": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.05,
+            "shutdown_wait_sec": 5.0,
+            "lock_wait_sec": 10.0,
+            "copy_chunk_bytes": 1 << 20,
+        },
+        "binaries": {"dirs": _bin_dirs()},
+        "stderr_tail_bytes": 4096,
+        "fail_tail_chars": 2000,
+        "kill_grace_sec": 5,
+        "cgroup_base": "",
     },
-    "binaries": {"dirs": _bin_dirs()},
-    "tmpfs": (),
-    "network": False,
-    "env_set": {},
-    "timeout_sec": 30,
-    "max_memory_bytes": 512 * 1024 * 1024,
-    "max_cpu_sec": 30,
-    "max_file_size_bytes": 64 * 1024 * 1024,
-    "max_open_files": 256,
-    "max_processes": 256,
-    "cgroup_base": "",
-    "oom_score_adj": 0,
-    "cwd": "",
+    "rootfs": {
+        "dir": "",
+    },
+    "mounts": {
+        "setup_ro": (),
+        "setup_rw": (),
+        "ro": (),
+        "rw": (),
+        "images": (),
+        "image_template": "",
+        "tmpfs": (),
+        "proc": "/proc",
+        "dev": "/dev",
+        "call_tmpfs": "/tmp",  # noqa: S108
+    },
+    "isolation": {
+        "reap_poll_sec": 0.05,
+        "network": False,
+        "env": {},
+        "max_processes": 256,
+    },
+    "limits": {
+        "timeout_sec": 30,
+        "process_memory_bytes": 512 * 1024 * 1024,
+        "process_cpu_sec": 30,
+        "process_file_bytes": 64 * 1024 * 1024,
+        "process_open_files": 256,
+        "process_oom_score_adj": 0,
+    },
+    "run": {
+        "shell": "/bin/bash",
+        "cwd": "",
+    },
 }
 
 
 def _profile(**kw: object) -> SandboxProfile:
     """Все поля профиля обязательны; база даёт валидный минимум для тестов."""
-    return SandboxProfile.model_validate({**_PROFILE_BASE, **kw})
+    return SandboxProfile.model_validate(ProfileFields.merged(_PROFILE_BASE, kw))
+
+
+MOUNT = "/workspace"
+"""Точка рабочего каталога; в приложении её задаёт профиль песочницы."""
+
+
+@pytest.fixture(autouse=True)
+def workspace_mount() -> None:
+    """В приложении точку ставит загрузчик инструментов из профиля."""
+    WorkspaceMount.configure(MOUNT)
 
 
 class TestOnlyConfiguredMounts:
     WS = "/srv/workspace/7/thread-1"
 
     def test_no_rw_mounts_without_rw_binds(self) -> None:
-        argv = build_bwrap_argv(_profile(ro_binds=()), "true", env={})
+        argv = build_zygote_argv(_profile(ro=()), ["true"], env={})
         if _rw_mounts(argv) != []:
             raise AssertionError("_rw_mounts(argv) == []")
 
     def test_single_rw_mount_from_config(self) -> None:
-        profile = _profile(ro_binds=(), rw_binds=(self.WS,))
-        if _rw_mounts(build_bwrap_argv(profile, "true", env={})) != [self.WS]:
-            raise AssertionError('_rw_mounts(build_bwrap_argv(profile, "true", env={}…')
+        profile = _profile(ro=(), rw=(self.WS,))
+        if _rw_mounts(build_zygote_argv(profile, ["true"], env={})) != [self.WS]:
+            raise AssertionError("_rw_mounts(...) == [self.WS]")
 
     def test_project_root_is_not_mounted(self) -> None:
-        profile = _profile(ro_binds=(), rw_binds=(self.WS,))
-        argv = build_bwrap_argv(profile, "true", env={})
+        profile = _profile(ro=(), rw=(self.WS,))
+        argv = build_zygote_argv(profile, ["true"], env={})
         if "/app/docker/compose/boba" in _rw_mounts(argv):
             raise AssertionError('"/app/docker/compose/boba" not in _rw_mounts(argv)')
 
     def test_rootfs_stays_read_only(self) -> None:
-        argv = build_bwrap_argv(
-            _profile(rootfs="/srv/rootfs", ro_binds=()),
-            "true",
+        argv = build_zygote_argv(
+            _profile(rootfs={"dir": "/srv/rootfs"}, ro=()),
+            ["true"],
             env={},
         )
         i = argv.index("--ro-bind")
@@ -139,8 +171,10 @@ class TestProfileRender:
     TEMPLATE = "/srv/ws/{user_id}/{thread_id}:/workspace"
 
     def _rendered_host(self, user: str, thread: str) -> str:
-        profile = _profile(rw_binds=(self.TEMPLATE,), cwd="/workspace")
-        return profile.render({"user_id": user, "thread_id": thread}).rw_binds[0].host
+        profile = _profile(rw=(self.TEMPLATE,), cwd="/workspace")
+        rendered = profile.render({"user_id": user, "thread_id": thread})
+
+        return rendered.mounts.rw[0].host
 
     def test_threads_of_one_user_are_isolated(self) -> None:
         if self._rendered_host("7", "t1") == self._rendered_host("7", "t2"):
@@ -153,14 +187,14 @@ class TestProfileRender:
     def test_cwd_is_rendered(self) -> None:
         profile = _profile(cwd="/srv/ws/{user_id}/{thread_id}")
         rendered = profile.render({"user_id": "7", "thread_id": "t1"})
-        if rendered.cwd != "/srv/ws/7/t1":
-            raise AssertionError('rendered.cwd == "/srv/ws/7/t1"')
+        if rendered.run.cwd != "/srv/ws/7/t1":
+            raise AssertionError('rendered.run.cwd == "/srv/ws/7/t1"')
 
     def test_static_profile_needs_no_session(self) -> None:
-        profile = _profile(rw_binds=("/srv/shared",), cwd="/srv/shared")
+        profile = _profile(rw=("/srv/shared",), cwd="/srv/shared")
         rendered = profile.render({})
-        if rendered.rw_binds[0].host != "/srv/shared":
-            raise AssertionError('rendered.rw_binds[0].host == "/srv/shared"')
+        if rendered.mounts.rw[0].host != "/srv/shared":
+            raise AssertionError('rendered.mounts.rw[0].host == "/srv/shared"')
 
     def test_uploads_live_inside_the_chat_folder(self) -> None:
         key = ObjectKey.build("7", "t1", "report.pdf", "el-1").render()
@@ -212,8 +246,8 @@ class TestAttachmentPaths:
         key = ObjectKey.build("4", "t-1", "report.pdf", "el-1")
         if key.render() != "4/t-1/upload/report.pdf":
             raise AssertionError('key.render() == "4/t-1/upload/report.pdf"')
-        if f"{WORKSPACE_MOUNT}/{key.in_thread()}" != "/workspace/t-1/upload/report.pdf":
-            raise AssertionError('f"{WORKSPACE_MOUNT}/{key.in_thread()}" == ( "/works…')
+        if f"{MOUNT}/{key.in_thread()}" != "/workspace/t-1/upload/report.pdf":
+            raise AssertionError('f"{MOUNT}/{key.in_thread()}" == ( "/works…')
 
     def test_unnamed_element_falls_back_to_id(self) -> None:
         key = ObjectKey.build("4", "t-1", "", "el-1")

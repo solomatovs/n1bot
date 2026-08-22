@@ -1,62 +1,56 @@
-"""Запуск команды в песочнице: одна точка входа для всех инструментов.
+"""Кадры журнала песочницы и признаки её окружения.
 
-Ошибки: SandboxMountError — образ не смонтирован, команда не запускалась;
-SandboxLaunchError — окружение запуска подготовить не удалось (лимиты, cgroup,
-каталоги, доверенные бинари). Обе — LauncherError, других типов слой наружу
-не выпускает; ToolStopped из остановки хода проходит как есть.
+Запуск инструментов живёт в boba.sandbox.zygote; здесь остаётся то, чем
+пользуются все пути запуска: релей структурных кадров payload'а и лаунчера в
+журнал приложения, тройник stderr, описание упавшего запуска, журнал
+жизненного цикла зиготы и проверка наличия bwrap.
+
+Ошибки:
+SandboxMountError — образ вызова не смонтирован, команда не запускалась.
+SandboxLaunchError — окружение запуска подготовить не удалось.
+SandboxChainError — корень секции отвалился, вызов не запускался.
+Все три — LauncherError: других типов слой наружу не выпускает.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import shlex
-import sys
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
-from pathlib import Path
+import signal
+import time
+import uuid
+from collections.abc import Sequence
+from enum import StrEnum
 from typing import ClassVar
 
-from boba.sandbox.argv import build_bwrap_argv
-from boba.sandbox.cgroup import CgroupManager, GroupLimits
-from boba.sandbox.channels import ChannelSet
-from boba.sandbox.diagnostics import SandboxDiagnostics
-from boba.sandbox.process_runner import RunResult, run_subprocess
-from boba.sandbox.profile import BindSpec, SandboxProfile
+from pydantic import BaseModel, ConfigDict, Field
+
+from boba.sandbox.profile import SandboxProfile
 from boba.toolkit.binaries import SandboxBinary
-from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
-from boba.toolkit.cpu import CpuBudget
-from boba.toolkit.launcher import LauncherError, LaunchOutcome, LaunchPayload
-from boba.toolkit.payload import PayloadLogging
-from boba.toolkit.stream import ChannelSinks, ToolCallContext, ToolChannelsTap
-from boba.toolkit.timing import Elapsed
-from boba.workspace.launcher import (
-    RO_MOUNT_ROOT,
-    Launcher,
-    LauncherExit,
-    LauncherMarker,
-    LauncherMode,
-    ResourceLimits,
-    build_chain_argv,
-    require_fuse,
+from boba.toolkit.channels import JournalChannel, WrapChannel
+from boba.toolkit.images import LauncherMarker
+from boba.toolkit.launcher import LauncherError, LaunchPayload, RunResult
+from boba.toolkit.stream import (
+    ChannelSinks,
+    Chunk,
 )
 
 
 def has_bwrap(profile: SandboxProfile) -> bool:
     """Есть ли bubblewrap в доверенных каталогах: без него песочницу не поднять."""
-    return profile.binaries.has(SandboxBinary.BWRAP)
+    return profile.host.binaries.has(SandboxBinary.BWRAP)
 
-
-SandboxOutcome = LaunchOutcome
-"""Историческое имя результата запуска; тип задаёт порт."""
 
 __all__ = [
+    "DeathReport",
+    "FailureLog",
+    "IncidentReason",
+    "LifecycleJournal",
+    "LifecyclePhase",
+    "SandboxChainError",
     "SandboxLaunchError",
     "SandboxLogRelay",
     "SandboxMountError",
-    "SandboxOutcome",
-    "SandboxRunner",
     "StderrTee",
     "has_bwrap",
 ]
@@ -70,6 +64,230 @@ class SandboxMountError(LauncherError):
 
 class SandboxLaunchError(LauncherError):
     """Окружение запуска подготовить не удалось: команда не запускалась."""
+
+
+class SandboxChainError(LauncherError):
+    """Корень секции не смонтирован: вызов не запускался, секция встаёт заново."""
+
+
+class LifecyclePhase(StrEnum):
+    """Фазы восстановления: по ним журнал читается одной цепочкой."""
+
+    DETECTED = "detected"
+    RECOVERY = "recovery"
+    ATTEMPT = "attempt"
+    SPAWNED = "spawned"
+    READY = "ready"
+    FAILED = "failed"
+    GAVE_UP = "gave-up"
+    STOPPED = "stopped"
+
+
+class IncidentReason(StrEnum):
+    """Из-за чего началось восстановление."""
+
+    START = "first start"
+    DIED = "process died"
+    CHAIN_LOST = "root mount lost"
+
+
+class Elapsed:
+    """Длительность для журнала: секунды до минуты, дальше — минуты и часы."""
+
+    MINUTE: ClassVar[float] = 60.0
+    HOUR: ClassVar[float] = 3600.0
+
+    @classmethod
+    def of(cls, seconds: float) -> str:
+        if seconds < cls.MINUTE:
+            return f"{seconds:.1f}s"
+
+        if seconds < cls.HOUR:
+            minutes = int(seconds // cls.MINUTE)
+            rest = int(seconds - minutes * cls.MINUTE)
+
+            return f"{minutes}m{rest:02d}s"
+
+        hours = int(seconds // cls.HOUR)
+        left = seconds - hours * cls.HOUR
+
+        return f"{hours}h{int(left // cls.MINUTE):02d}m"
+
+
+class DeathReport(BaseModel):
+    """Что известно об умершей зиготе: без этого rc в журнале не говорит ничего."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pid: int
+    exit_code: int | None = Field(
+        default=None,
+        description="Код выхода; отрицательный — номер убившего сигнала.",
+    )
+    uptime_sec: float = Field(ge=0)
+    calls_total: int = Field(ge=0)
+    in_flight: tuple[str, ...] = ()
+    """Идентификаторы вызовов, застигнутых смертью: они получили ошибку."""
+    stderr_tail: str = ""
+
+    def describe(self) -> str:
+        """Строка отчёта: причина, время жизни, счётчики, последние слова."""
+        parts = [
+            f"pid={self.pid}",
+            self._exit(),
+            f"uptime {Elapsed.of(self.uptime_sec)}",
+        ]
+        parts.append(f"served {self.calls_total} calls")
+
+        if self.in_flight:
+            parts.append(
+                f"{len(self.in_flight)} in flight ({', '.join(self.in_flight)})"
+            )
+
+        line = ", ".join(parts)
+        if not self.stderr_tail:
+            return f"{line}; no stderr"
+
+        return f"{line}; stderr tail: {self.stderr_tail}"
+
+    def _exit(self) -> str:
+        if self.exit_code is None:
+            return "still running"
+
+        if self.exit_code >= 0:
+            return f"rc={self.exit_code}"
+
+        try:
+            name = signal.Signals(-self.exit_code).name
+        except ValueError:
+            return f"rc={self.exit_code}"
+
+        return f"killed by {name} (rc={self.exit_code})"
+
+
+class LifecycleJournal:
+    """Журнал жизненного цикла зиготы: инцидент, попытки и итог одной цепочкой.
+
+    Каждая строка несёт имя секции и короткий идентификатор инцидента, чтобы
+    восстановление собиралось из журнала приложения одним grep'ом.
+    """
+
+    ID_CHARS: ClassVar[int] = 6
+
+    def __init__(self, section: str) -> None:
+        self._section = section
+        self._incident = ""
+        self._opened = 0.0
+
+    @property
+    def incident(self) -> str:
+        """Идентификатор открытого инцидента; пустая строка — инцидента нет."""
+        return self._incident
+
+    def open(self, reason: IncidentReason, detail: str = "") -> str:
+        """Начало инцидента: дальше все строки идут под этим идентификатором."""
+        self._incident = uuid.uuid4().hex[: self.ID_CHARS]
+        self._opened = time.monotonic()
+
+        text = f"recovery started: reason={reason.value}"
+        if detail:
+            text = f"{text}, {detail}"
+
+        self._line(LifecyclePhase.RECOVERY, text, logging.WARNING)
+
+        return self._incident
+
+    def death(self, report: DeathReport) -> None:
+        """Отчёт о смерти: он объясняет, почему восстановление вообще началось."""
+        self._line(LifecyclePhase.DETECTED, report.describe(), logging.WARNING)
+
+    def attempt(self, number: int, total: int, backoff_sec: float) -> None:
+        text = f"attempt {number}/{total} after {Elapsed.of(backoff_sec)} backoff"
+        self._line(LifecyclePhase.ATTEMPT, text, logging.INFO)
+
+    def spawned(self, pid: int, root: str, modules: Sequence[str]) -> None:
+        listed = ", ".join(modules)
+        if not listed:
+            listed = "none"
+
+        text = f"pid={pid}, root={root}, modules={listed}"
+        self._line(LifecyclePhase.SPAWNED, text, logging.INFO)
+
+    def ready(self, pid: int, warmup_ms: int) -> None:
+        """Итог восстановления: сколько заняло целиком и сколько — прогрев."""
+        text = (
+            f"pid={pid}, warmup {Elapsed.of(warmup_ms / 1000)}, "
+            f"section is serving again after {Elapsed.of(self._since())}"
+        )
+        self._line(LifecyclePhase.READY, text, logging.WARNING)
+        self._incident = ""
+
+    def failed(self, cause: str, tail: str) -> None:
+        text = f"attempt failed: {cause}"
+        if tail:
+            text = f"{text}; stderr tail: {tail}"
+
+        self._line(LifecyclePhase.FAILED, text, logging.WARNING)
+
+    def gave_up(self, attempts: int) -> None:
+        text = (
+            f"gave up after {attempts} attempt(s) in {Elapsed.of(self._since())}: "
+            f"the section stays unavailable until the app restarts"
+        )
+        self._line(LifecyclePhase.GAVE_UP, text, logging.ERROR)
+        self._incident = ""
+
+    def stopped(self, report: DeathReport) -> None:
+        """Штатная остановка: тот же отчёт, но это не инцидент."""
+        self._line(LifecyclePhase.STOPPED, report.describe(), logging.INFO)
+        self._incident = ""
+
+    def _since(self) -> float:
+        if not self._opened:
+            return 0.0
+
+        return time.monotonic() - self._opened
+
+    def _line(self, phase: LifecyclePhase, text: str, level: int) -> None:
+        incident = self._incident
+        if not incident:
+            incident = "-"
+
+        logger.log(
+            level, "zygote[%s] %s %s: %s", self._section, incident, phase.value, text
+        )
+
+
+class FailureLog:
+    """Описание упавшего запуска для журнала: причина и хвост вывода."""
+
+    NO_OUTPUT: ClassVar[str] = "<no output>"
+
+    @classmethod
+    def describe(cls, result: RunResult, limit: int) -> str:
+        """Без причины и хвоста rc=1 в журнале не говорит ничего."""
+        if result.timed_out:
+            reason = f"timed out after {result.duration_ms}ms"
+        else:
+            reason = f"rc={result.exit_code}"
+
+        tail = cls.tail(result.stderr, limit)
+        if not tail:
+            tail = cls.tail(result.stdout, limit)
+
+        if not tail:
+            tail = cls.NO_OUTPUT
+
+        return f"failed ({reason}); output tail: {tail}"
+
+    @classmethod
+    def tail(cls, text: str, limit: int) -> str:
+        """Хвост вывода: начало обрезано, обрезка помечена многоточием."""
+        stripped = text.strip()
+        if len(stripped) <= limit:
+            return stripped
+
+        return f"…{stripped[-limit:]}"
 
 
 class StderrTee:
@@ -122,14 +340,14 @@ class SandboxLogRelay:
         self._tee = tee
         self._tail = bytearray()
 
-    def feed(self, data: bytes) -> None:
+    def feed(self, data: Chunk) -> None:
         """Приём байт по мере чтения: долгий инструмент не молчит до конца."""
         self._tail.extend(data)
         while True:
             index = self._tail.find(b"\n")
             if index < 0:
                 return
-            line = bytes(self._tail[:index]).decode("utf-8", errors="replace")
+            line = self._tail[:index].decode("utf-8", errors="replace")
             del self._tail[: index + 1]
             self._line(line)
 
@@ -137,7 +355,7 @@ class SandboxLogRelay:
         """Последняя строка без перевода тоже должна попасть в журнал."""
         if not self._tail:
             return
-        line = bytes(self._tail).decode("utf-8", errors="replace")
+        line = self._tail.decode("utf-8", errors="replace")
         self._tail.clear()
         self._line(line)
 
@@ -182,472 +400,3 @@ class SandboxLogRelay:
         if isinstance(resolved, int):
             return resolved
         return logging.INFO
-
-
-@dataclass(frozen=True, slots=True)
-class _ChainPlan:
-    """Что монтирует цепочка лаунчера: ro-корень, rw-образы и их точки."""
-
-    images: tuple[tuple[str, str], ...]
-    ro_images: tuple[tuple[str, str], ...]
-    inner: SandboxProfile
-    rw_paths: tuple[str, ...]
-
-    ROOTFS_MOUNT: ClassVar[str] = RO_MOUNT_ROOT
-    """Точка корневого образа: tmpfs цепочки, каталог установки только читаем."""
-
-    @classmethod
-    def of(cls, profile: SandboxProfile) -> _ChainPlan:
-        mounts: list[BindSpec] = []
-        images: list[tuple[str, str]] = []
-        for spec in profile.rw_images:
-            mnt = f"{spec.host}.mnt"
-            images.append((spec.host, mnt))
-            mounts.append(BindSpec(host=mnt, target=spec.target))
-
-        rw_paths: list[str] = []
-        for spec in profile.rw_binds:
-            rw_paths.append(spec.host)
-
-        ro_images: list[tuple[str, str]] = []
-        update: dict[str, object] = {"rw_binds": profile.rw_binds + tuple(mounts)}
-        if profile.rootfs_image:
-            ro_images.append((profile.rootfs_image, cls.ROOTFS_MOUNT))
-            # внутренний bwrap видит корень уже смонтированным каталогом
-            update["rootfs"] = cls.ROOTFS_MOUNT
-            update["rootfs_image"] = ""
-
-        return cls(
-            images=tuple(images),
-            ro_images=tuple(ro_images),
-            inner=profile.model_copy(update=update),
-            rw_paths=tuple(rw_paths),
-        )
-
-
-class SandboxRunner:
-    """Выполняет команду в уже собранном профиле песочницы."""
-
-    FAIL_TAIL_CHARS: ClassVar[int] = 2000
-
-    APP_LOGGER: ClassVar[str] = "boba"
-    """Чей уровень наследует payload: настройка живёт в конфиге приложения."""
-
-    def __init__(
-        self,
-        tool: str,
-        profile: SandboxProfile,
-        path_vars: Callable[[], Mapping[str, str]],
-    ) -> None:
-        self._tool = tool
-        self._profile = profile
-        self._path_vars = path_vars
-
-    def run(
-        self,
-        command: str,
-        stdin: str,
-        stdout_sink: Callable[[bytes], None] | None = None,
-    ) -> SandboxOutcome:
-        """Граница слоя: наружу уходят только ошибки из контракта модуля."""
-        try:
-            return self._run(command, stdin, stdout_sink)
-        except LauncherError:
-            raise
-        except Exception as exc:
-            msg = f"sandbox[{self._label()}]: launch failed: {exc}"
-            raise SandboxLaunchError(msg) from exc
-
-    def run_with_channels(
-        self,
-        argv_tail: Sequence[str],
-        stdin_data: bytes,
-        channels: ChannelSet,
-    ) -> SandboxOutcome:
-        """Канальный запуск: команда под преамбулой редиректа, fd — насосу.
-
-        Профиль с rw_images исполняется цепочкой лаунчера: дескрипторы
-        каналов проезжают её насквозь — их номера едут лаунчеру env-списком
-        (Launcher.PASS_FDS_ENV), и он передаёт их вложенному bwrap как есть.
-        """
-        try:
-            return self._run_with_channels(argv_tail, stdin_data, channels)
-        except LauncherError:
-            raise
-        except Exception as exc:
-            msg = f"sandbox[{self._label()}]: launch failed: {exc}"
-            raise SandboxLaunchError(msg) from exc
-
-    def _channel_argv(
-        self,
-        rendered: SandboxProfile,
-        argv_tail: Sequence[str],
-        channels: ChannelSet,
-        limits: ResourceLimits,
-    ) -> tuple[list[str], ResourceLimits | None]:
-        """Команда канального запуска: прямой bwrap либо цепочка лаунчера."""
-        env = self._env_of(rendered)
-        env.update(channels.env())
-
-        inner = f"{channels.redirect()}; exec {shlex.join(argv_tail)}"
-
-        if not rendered.rw_images and not rendered.rootfs_image:
-            return build_bwrap_argv(rendered, inner, env=env), limits
-
-        require_fuse(rendered.binaries)
-
-        plan = _ChainPlan.of(rendered)
-        inner_argv = build_bwrap_argv(plan.inner, inner, env=env, nested=True)
-
-        pass_fds = ",".join(str(fd) for fd in channels.child_fds.values())
-        argv = build_chain_argv(
-            images=plan.images,
-            ro_images=plan.ro_images,
-            template=rendered.image_template,
-            op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
-            python_bin=sys.executable,
-            options=rendered.launcher.to_options(),
-            limits=limits,
-            binaries=rendered.binaries,
-            extra_env={Launcher.PASS_FDS_ENV: pass_fds},
-            rw_paths=plan.rw_paths,
-            network=rendered.network,
-        )
-        # лимиты применяет лаунчер к самой команде; обвязку не душим
-        return argv, None
-
-    def _run_with_channels(
-        self,
-        argv_tail: Sequence[str],
-        stdin_data: bytes,
-        channels: ChannelSet,
-    ) -> SandboxOutcome:
-        prepared = Elapsed()
-        rendered = self._profile.render(dict(self._path_vars()))
-
-        self._prepare_dirs(rendered)
-        limits = self.limits_of(rendered)
-
-        argv, runner_limits = self._channel_argv(rendered, argv_tail, channels, limits)
-
-        name = self._label()
-        tee = StderrTee(ToolChannelsTap.get(), WrapChannel.STDERR)
-        relay = SandboxLogRelay(name, tee)
-        self._log_start(name, rendered, limits, shlex.join(argv_tail))
-
-        group = GroupLimits.of_profile(rendered)
-        cgroup_dir: str | None = None
-        manager: CgroupManager | None = None
-        if group.requested:
-            manager = CgroupManager(rendered.cgroup_base)
-            acquire = Elapsed()
-            cgroup_dir = manager.acquire(group)
-            logger.info(
-                "sandbox[%s]: cgroup %s acquired in %dms (%s)",
-                name,
-                cgroup_dir,
-                acquire.ms(),
-                group.describe(),
-            )
-
-        logger.info("sandbox[%s]: launch prepared in %dms", name, prepared.ms())
-
-        try:
-            result = run_subprocess(
-                argv,
-                stdin_data=stdin_data,
-                timeout_sec=rendered.timeout_sec,
-                cwd="/",
-                env=os.environ,
-                stdout_sink=None,
-                keep_stdout=True,
-                stderr_sink=relay.feed,
-                limits=runner_limits,
-                cgroup_dir=cgroup_dir,
-                pass_fds=tuple(channels.child_fds.values()),
-                channel_sinks=channels.sinks(),
-                on_spawn=channels.close_child_ends,
-            )
-        finally:
-            relay.flush()
-            channels.close()
-            if manager is not None and cgroup_dir is not None:
-                # счётчики читаются до удаления leaf'а: после release их нет
-                self._log_throttling(name, manager, cgroup_dir)
-                manager.release(cgroup_dir)
-
-        self._log_finish(name, result)
-        if result.timed_out or result.exit_code != 0:
-            self._log_failure(name, result)
-
-        diagnostic = SandboxDiagnostics.explain(result, rendered)
-        if diagnostic:
-            logger.warning("sandbox[%s]: %s", name, diagnostic)
-        return SandboxOutcome(name, result, diagnostic)
-
-    @staticmethod
-    def _log_throttling(name: str, manager: CgroupManager, leaf: str) -> None:
-        """Задушенный квотой запуск выглядит зависшим — это должно быть видно."""
-        note = manager.throttling(leaf)
-        if not note:
-            return
-
-        logger.warning("sandbox[%s]: %s", name, note)
-
-    def diagnose(self, result: RunResult, tool_stderr: str) -> str:
-        """Объяснение сбоя лимитами; в разборе участвует и хвост tool_stderr.
-
-        У канального запуска stderr инструмента едет отдельным каналом и в
-        result.stderr не попадает — без него маркеры памяти/лимитов не видны.
-        """
-        rendered = self._profile.render(dict(self._path_vars()))
-
-        merged = replace(result, stderr=f"{result.stderr}\n{tool_stderr}")
-
-        return SandboxDiagnostics.explain(merged, rendered)
-
-    def _run(
-        self,
-        command: str,
-        stdin: str,
-        stdout_sink: Callable[[bytes], None] | None,
-    ) -> SandboxOutcome:
-        prepared = Elapsed()
-        rendered = self._profile.render(dict(self._path_vars()))
-        self._prepare_dirs(rendered)
-
-        limits = self.limits_of(rendered)
-        argv, runner_limits = self._build_argv(rendered, command, limits)
-
-        name = self._label()
-        sinks = ToolChannelsTap.get()
-        relay = SandboxLogRelay(name, StderrTee(sinks, ToolChannel.STDERR))
-        self._log_start(name, rendered, limits, command)
-
-        # текстовый запуск: тело пишет в общий stdout процесса, поэтому в
-        # журнал канала stdout едет он сам, а вывод обвязки — своим каналом
-        out_sink = stdout_sink
-        keep_stdout = stdout_sink is None
-        if sinks is not None and stdout_sink is None:
-            out_sink = sinks.sink_of(ToolChannel.STDOUT).feed
-        group = GroupLimits.of_profile(rendered)
-        cgroup_dir: str | None = None
-        manager: CgroupManager | None = None
-        if group.requested:
-            manager = CgroupManager(rendered.cgroup_base)
-            acquire = Elapsed()
-            cgroup_dir = manager.acquire(group)
-            logger.info(
-                "sandbox[%s]: cgroup %s acquired in %dms (%s)",
-                name,
-                cgroup_dir,
-                acquire.ms(),
-                group.describe(),
-            )
-
-        logger.info("sandbox[%s]: launch prepared in %dms", name, prepared.ms())
-
-        try:
-            result = run_subprocess(
-                argv,
-                stdin_data=stdin.encode("utf-8"),
-                timeout_sec=rendered.timeout_sec,
-                cwd="/",
-                env=os.environ,
-                stdout_sink=out_sink,
-                keep_stdout=keep_stdout,
-                stderr_sink=relay.feed,
-                limits=runner_limits,
-                cgroup_dir=cgroup_dir,
-            )
-        finally:
-            relay.flush()
-            if manager is not None and cgroup_dir is not None:
-                self._log_throttling(name, manager, cgroup_dir)
-                manager.release(cgroup_dir)
-        result = self._drop_relayed(result)
-        self._log_finish(name, result)
-        if result.timed_out or result.exit_code != 0:
-            self._log_failure(name, result)
-        self._raise_on_mount_error(result)
-
-        diagnostic = SandboxDiagnostics.explain(result, rendered)
-        if diagnostic:
-            logger.warning("sandbox[%s]: %s", name, diagnostic)
-        return SandboxOutcome(name, result, diagnostic)
-
-    def _label(self) -> str:
-        """Профиль плюс имя инструмента: sandbox[confluence:confluence_search]."""
-        call = ToolCallContext.name()
-        if call and call != self._tool:
-            return f"{self._tool}:{call}"
-        return self._tool
-
-    @staticmethod
-    def _env_of(profile: SandboxProfile) -> dict[str, str]:
-        """env профиля, уровень логов и доля CPU: их знает только хост.
-
-        Нативные движки внутри считают ядра по хосту и не видят cgroup-квоту —
-        без этой подсказки их потоки дерутся за выделенную долю.
-        """
-        env = dict(profile.env_set)
-
-        level = logging.getLogger(SandboxRunner.APP_LOGGER).getEffectiveLevel()
-        env[PayloadLogging.LEVEL_ENV] = logging.getLevelName(level)
-
-        if cores := CpuBudget.of_percent(profile.cgroup_cpu_percent):
-            env[CpuBudget.ENV_VAR] = str(cores)
-
-        return env
-
-    @staticmethod
-    def limits_of(profile: SandboxProfile) -> ResourceLimits:
-        return ResourceLimits(
-            max_memory_bytes=profile.max_memory_bytes,
-            max_cpu_sec=profile.max_cpu_sec,
-            max_file_size_bytes=profile.max_file_size_bytes,
-            max_open_files=profile.max_open_files,
-            oom_score_adj=profile.oom_score_adj,
-        )
-
-    @staticmethod
-    def _prepare_dirs(profile: SandboxProfile) -> None:
-        for spec in profile.rw_binds:
-            Path(spec.host).mkdir(parents=True, exist_ok=True)
-        for spec in profile.rw_images:
-            Path(spec.host).parent.mkdir(parents=True, exist_ok=True)
-
-    def _build_argv(
-        self,
-        profile: SandboxProfile,
-        command: str,
-        limits: ResourceLimits,
-    ) -> tuple[list[str], ResourceLimits | None]:
-        env = self._env_of(profile)
-        if not profile.rw_images and not profile.rootfs_image:
-            argv = build_bwrap_argv(profile, command, env=env)
-            return argv, limits
-
-        require_fuse(profile.binaries)
-        plan = _ChainPlan.of(profile)
-
-        inner_argv = build_bwrap_argv(plan.inner, command, env=env, nested=True)
-        argv = build_chain_argv(
-            extra_env={},
-            images=plan.images,
-            ro_images=plan.ro_images,
-            template=profile.image_template,
-            op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
-            python_bin=sys.executable,
-            options=profile.launcher.to_options(),
-            limits=limits,
-            binaries=profile.binaries,
-            rw_paths=plan.rw_paths,
-            network=profile.network,
-        )
-        # лимиты применяет лаунчер к самой команде; обвязку не душим
-        return argv, None
-
-    @staticmethod
-    def _log_start(
-        profile: str,
-        rendered: SandboxProfile,
-        limits: ResourceLimits,
-        command: str,
-    ) -> None:
-        mounts: list[str] = []
-        for spec in rendered.rw_images:
-            mounts.append(f"{spec.host}(ext4)->{spec.target}")
-        for spec in rendered.rw_binds:
-            mounts.append(f"{spec.host}->{spec.target}")
-
-        root = rendered.rootfs
-        if rendered.rootfs_image:
-            root = f"{rendered.rootfs_image}(ext4)"
-
-        logger.info(
-            "sandbox[%s]: start; rootfs=%r cwd=%r network=%s rw=%s",
-            profile,
-            root,
-            rendered.cwd,
-            rendered.network,
-            mounts,
-        )
-        logger.info(
-            "sandbox[%s]: limits memory=%sB cpu=%ss file=%sB open_files=%s "
-            "processes=%s timeout=%ss oom_score_adj=%s group=[%s]",
-            profile,
-            limits.max_memory_bytes,
-            limits.max_cpu_sec,
-            limits.max_file_size_bytes,
-            limits.max_open_files,
-            rendered.max_processes,
-            rendered.timeout_sec,
-            limits.oom_score_adj,
-            GroupLimits.of_profile(rendered).describe(),
-        )
-        logger.info("sandbox[%s]: command %r", profile, command)
-
-    @staticmethod
-    def _log_finish(profile: str, result: RunResult) -> None:
-        first_output = "none"
-        if result.first_output_ms is not None:
-            first_output = f"{result.first_output_ms}ms"
-
-        logger.info(
-            "sandbox[%s]: finished rc=%s in %sms timed_out=%s "
-            "(spawn=%sms first_output=%s)",
-            profile,
-            result.exit_code,
-            result.duration_ms,
-            result.timed_out,
-            result.spawn_ms,
-            first_output,
-        )
-
-    @classmethod
-    def _log_failure(cls, profile: str, result: RunResult) -> None:
-        """Причина падения в лог: без неё rc=1 не говорит ничего."""
-        if result.timed_out:
-            reason = f"timed out after {result.duration_ms}ms"
-        else:
-            reason = f"rc={result.exit_code}"
-        tail = cls._tail(result.stderr)
-        if not tail:
-            tail = cls._tail(result.stdout)
-        if not tail:
-            tail = "<no output>"
-        logger.warning(
-            "sandbox[%s]: failed (%s); output tail: %s", profile, reason, tail
-        )
-
-    @classmethod
-    def _tail(cls, text: str) -> str:
-        stripped = text.strip()
-        if len(stripped) <= cls.FAIL_TAIL_CHARS:
-            return stripped
-        return "…" + stripped[-cls.FAIL_TAIL_CHARS :]
-
-    @staticmethod
-    def _drop_relayed(result: RunResult) -> RunResult:
-        """Залогированное релеем убираем: в stderr остаётся объяснение падения."""
-        kept: list[str] = []
-        for line in result.stderr.splitlines():
-            if SandboxLogRelay.relayed(line):
-                continue
-            kept.append(line)
-        stderr = "\n".join(kept)
-        if kept and result.stderr.endswith("\n"):
-            stderr += "\n"
-        return replace(result, stderr=stderr)
-
-    @staticmethod
-    def _raise_on_mount_error(result: RunResult) -> None:
-        if result.exit_code != LauncherExit.MOUNT_ERROR:
-            return
-
-        if LauncherMarker.ERROR.value not in result.stderr:
-            return
-
-        msg = f"sandbox: image not mounted: {result.stderr.strip()}"
-        raise SandboxMountError(msg)

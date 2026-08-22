@@ -39,6 +39,7 @@ from pydantic import (
 )
 
 import chainlit as cl
+from boba.chainlit.agent.toolrun.run_log import CallStream
 from boba.chainlit.canvas.journal import (
     JournalWindow,
     StreamJournalError,
@@ -57,10 +58,10 @@ from boba.chainlit.data.storage import (
 )
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import CanvasFileUrl, ObjectKey, StreamUrl
-from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.domain.turn import LiveStream, TurnContext
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolkit.result import CustomElementResult, DiagramResult
-from boba.toolkit.stream import StreamSink
+from boba.toolkit.stream import ChannelSinks, StreamSink
 from boba.workspace.launcher import ReadWindow
 from chainlit.data import get_data_layer
 
@@ -714,7 +715,7 @@ class StreamNote(StrEnum):
         return piece.note
 
 
-class ToolStream:
+class ToolStream(ChannelSinks, CallStream, LiveStream):
     """Живой вызов инструмента: рекордеры каналов плюс будильник слежения.
 
     Создаётся в потоке исполнения инструмента; свой event loop стрим не
@@ -998,7 +999,7 @@ class ToolStreams:
         cls._STREAMABLE.clear()
 
 
-class JournalWatchSource:
+class JournalWatchSource(WatchSource):
     """Слежение за журналом вызова: живой будит записью, закрытый статичен."""
 
     def __init__(
@@ -1043,7 +1044,7 @@ class JournalWatchSource:
         return self._live.attach_waker()
 
 
-class StorageStatSource:
+class StorageStatSource(WatchSource):
     """Слежение за файлом workspace: версия по размеру и времени записи.
 
     Одного размера мало — правка той же длины (переписанная строка, тот же
@@ -1073,7 +1074,7 @@ class StorageStatSource:
         return None
 
 
-class StorageHashSource:
+class StorageHashSource(WatchSource):
     """Слежение за маленьким текстовым файлом по содержимому.
 
     Спека диаграммы может меняться без смены размера, поэтому revision — хэш
@@ -1187,7 +1188,7 @@ class StorageWindows:
         )
 
 
-class FileViewer:
+class FileViewer(CanvasViewer):
     """База вьюверов: файл описывается ссылкой на storage, а не телом в памяти.
 
     Обновление файла ловит слежение панели по размеру: фронт перезагружает

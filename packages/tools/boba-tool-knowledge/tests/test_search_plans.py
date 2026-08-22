@@ -453,8 +453,9 @@ class TestListingPlan:
         async with bench.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    sql.SQL("select source_id from {} where collection = %s limit 1")
-                    .format(schema_cfg.chunks_ident()),
+                    sql.SQL(
+                        "select source_id from {} where collection = %s limit 1"
+                    ).format(schema_cfg.chunks_ident()),
                     (BIG,),
                     prepare=False,
                 )
@@ -490,9 +491,7 @@ async def _probe(conn: AsyncConnection, schema_cfg: PostgresStoreSchema) -> str:
         return row["vec"]
 
 
-async def _hit_titles(
-    conn: AsyncConnection, statement: Any, params: Any
-) -> list[str]:
+async def _hit_titles(conn: AsyncConnection, statement: Any, params: Any) -> list[str]:
     """Заголовки найденных строк: выдача больше не содержит идентификаторов."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(statement, params, prepare=False)

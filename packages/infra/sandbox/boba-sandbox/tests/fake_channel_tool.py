@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 from collections.abc import Mapping
@@ -19,7 +20,7 @@ from typing import Annotated, ClassVar, Final
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.facade import Injected, tool
+from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import TextResult, ToolResult, render_for_llm
 
 
@@ -37,22 +38,18 @@ class ChannelConfig(BaseModel):
 class FxWarmupConfig(BaseModel):
     """Конфиг прогрева: значение уезжает в кэш процесса до ready."""
 
-    SECTION: ClassVar[str] = "tool.fx.warmup"
-
     greeting: str
 
 
 class WarmCache:
-    """Кэш процесса: WARMUP кладёт, вызовы (дети форка) читают через COW."""
+    """Кэш процесса: прогрев кладёт, вызовы (дети форка) читают через COW."""
 
     value: ClassVar[str] = ""
 
 
-async def _warmup(cfg: FxWarmupConfig) -> None:
+@warmup
+async def warm_cache(cfg: FxWarmupConfig) -> None:
     WarmCache.value = f"warmed:{cfg.greeting}"
-
-
-WARMUP: Final = _warmup
 
 
 class FxDownError(Exception):
@@ -97,6 +94,19 @@ async def fx_echo(
 
 
 @tool
+async def fx_chatter() -> tuple[str, ToolResult]:
+    """Пишет в логер и печатает без flush: всё это идёт в stdout процесса."""
+    logger = logging.getLogger("fx")
+    logger.info("info line from the body")
+    logger.warning("warning line from the body")
+
+    print("print line from the body")
+
+    artifact = TextResult(text="chatter")
+    return "chatter", artifact
+
+
+@tool
 async def fx_warm_state() -> tuple[str, ToolResult]:
     """Отдаёт содержимое кэша процесса: тёплое — унаследовано от зиготы."""
     artifact = TextResult(text=WarmCache.value)
@@ -125,9 +135,13 @@ async def fx_probe_tmp(
     with open("/proc/sys/user/max_user_namespaces") as sysctl:
         userns_max = sysctl.read().strip()
 
+    with open("/proc/1/comm") as comm:
+        init_comm = comm.read().strip()
+
     state = {
         "markers": markers,
         "pid": os.getpid(),
+        "init": init_comm,
         "cap_eff": cap_eff,
         "userns_max": userns_max,
     }
@@ -139,7 +153,7 @@ EXPECTED: Mapping[type[Exception], FxErrorKind] = {
     FxDownError: FxErrorKind.DOWN,
 }
 
-TOOLS: Final = ToolMain.toolset(fx_echo, fx_probe_tmp, fx_warm_state)
+TOOLS: Final = ToolMain.toolset(fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

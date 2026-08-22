@@ -6,6 +6,7 @@ import asyncio
 import multiprocessing
 from collections.abc import Callable, Coroutine, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -23,6 +24,7 @@ from playwright.sync_api import (
     sync_playwright,
 )
 from psycopg import sql
+from psycopg.errors import InsufficientPrivilege
 
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
@@ -33,6 +35,7 @@ from ui.socket_log import SocketLog
 from ui.stand import (
     REPO_ROOT,
     StandConfig,
+    StandError,
     StandPaths,
     StandProcess,
     StandUrl,
@@ -42,6 +45,33 @@ from ui.stand import (
 DB_NAME = "boba_ui_test"
 TOKEN_DELAY_SEC = 0.03
 BOOT_TIMEOUT_SEC = 120.0
+
+
+class StandExtension(StrEnum):
+    """Расширения базы стенда: без них приложение не поднимается.
+
+    pgvector регистрируется хуком configure на каждом соединении пула KB, то
+    есть до первой миграции: без расширения соединение бракуется, и пул отдаёт
+    PoolTimeout вместо внятной причины.
+    """
+
+    VECTOR = "vector"
+    PG_TRGM = "pg_trgm"
+    UNACCENT = "unaccent"
+    BTREE_GIN = "btree_gin"
+
+    def statement(self) -> sql.Composed:
+        return sql.SQL("create extension if not exists {}").format(
+            sql.Identifier(self.value)
+        )
+
+    def manual_hint(self, database: str) -> str:
+        return (
+            f"stand database {database} has no {self.value} extension "
+            f"and the application role may not create it; "
+            f"run as a superuser: "
+            f"psql -d {database} -c 'create extension {self.value}'"
+        )
 
 
 async def _ensure_database(name: str) -> None:
@@ -65,6 +95,32 @@ async def _ensure_database(name: str) -> None:
                 )
     finally:
         await maintenance.close()
+
+    await _ensure_extensions(app_config, name)
+
+
+async def _ensure_extensions(app_config: AppConfig, name: str) -> None:
+    """Доводит базу стенда до расширений, которые приложение считает данностью."""
+    postgres = app_config.data_layer.postgres.model_copy(update={"dbname": name})
+    pool = AsyncPostgresPool(postgres)
+    await pool.open()
+    try:
+        async with pool.cursor() as cur:
+            for extension in StandExtension:
+                await cur.execute(
+                    "select 1 from pg_extension where extname = %s",
+                    (extension.value,),
+                )
+                installed = await cur.fetchone()
+                if installed:
+                    continue
+
+                try:
+                    await cur.execute(extension.statement())
+                except InsufficientPrivilege as exc:
+                    raise StandError(extension.manual_hint(name)) from exc
+    finally:
+        await pool.close()
 
 
 @pytest.fixture(scope="session")
@@ -93,9 +149,7 @@ class StandDatabase:
         built = build_app_config(config_path=StandPaths.BASE_CONFIG.under(REPO_ROOT))
         app_config = bind(built, path="app", model=AppConfig)
 
-        pool = app_config.data_layer.postgres.pool.model_copy(
-            update=self.POOL_OVERRIDE
-        )
+        pool = app_config.data_layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._postgres = app_config.data_layer.postgres.model_copy(
             update={"dbname": name, "pool": pool}
         )

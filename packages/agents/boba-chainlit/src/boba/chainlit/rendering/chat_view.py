@@ -821,4 +821,3 @@ class ChatView:
             default_open=False,
             auto_collapse=True,
         )
-

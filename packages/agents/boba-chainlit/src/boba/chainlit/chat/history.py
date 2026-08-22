@@ -27,7 +27,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
 from boba.chainlit.agent.flow import PrefetchCall
-from boba.chainlit.chat.turn import TurnMark, TurnRecord
+from boba.chainlit.chat.turn import TurnHistory, TurnMark, TurnRecord
 from boba.chainlit.rendering.chat_view import (
     ChatView,
     RecordingSink,
@@ -74,7 +74,7 @@ class PendingCall:
         return cls(name=str(name), args=cast("Mapping[str, Any]", args))
 
 
-class GraphTurnHistory:
+class GraphTurnHistory(TurnHistory):
     """Пишет записи хода в состояние графа: их читает и лента, и сам агент."""
 
     def __init__(self, graph: CompiledStateGraph, thread_id: str) -> None:
@@ -98,8 +98,8 @@ class ThreadMessages(Protocol):
 class TranscriptFeed:
     """Лента треда для слоя данных: история checkpointer'а разворачивается в шаги.
 
-    Реализует контракт ThreadFeed, объявленный слоем данных: отрисовка знает про
-    хранилище, а не наоборот.
+    Реализует ThreadFeed структурно: наследовать нельзя — слой отрисовки не
+    зависит от слоя данных, зависимость идёт в обратную сторону.
     """
 
     def __init__(self, messages: ThreadMessages) -> None:
@@ -116,7 +116,7 @@ class TranscriptFeed:
         return sink.steps
 
 
-class CheckpointMessages:
+class CheckpointMessages(ThreadMessages):
     """Читает сообщения треда из langgraph-checkpointer'а."""
 
     def __init__(self, saver: BaseCheckpointSaver) -> None:

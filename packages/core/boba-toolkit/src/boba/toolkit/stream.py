@@ -10,12 +10,13 @@
 
 from __future__ import annotations
 
+import io
 import threading
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable
 from contextvars import ContextVar, Token
-from typing import ClassVar, Protocol
+from typing import ClassVar, Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict
 
@@ -23,6 +24,9 @@ from boba.toolkit.channels import JournalChannel
 
 __all__ = [
     "ChannelSinks",
+    "Chunk",
+    "ChunkSink",
+    "FdReader",
     "StreamSink",
     "StreamWindow",
     "ToolCallContext",
@@ -31,12 +35,58 @@ __all__ = [
     "ToolStreamBuffer",
 ]
 
+Chunk: TypeAlias = bytes | memoryview
+"""Порция байтов канала.
+
+memoryview смотрит в буфер читателя и живёт до следующего чтения того же
+дескриптора: приёмник, который порцию хранит, обязан скопировать её сразу
+(`bytearray.extend`, `bytes(...)`, запись в файл), а не отложить объект.
+"""
+
+ChunkSink: TypeAlias = Callable[[Chunk], None]
+"""Куда читатель отдаёт порцию канала."""
+
+
+class FdReader:
+    """Чтение дескриптора в переиспользуемый буфер: одна аллокация на поток.
+
+    Единственный способ читать каналы процессов: `os.read` выделял бы новый
+    объект на каждую порцию, а порции идут десятками тысяч. Дескриптор
+    ожидается блокирующим и опрашивается через select — частичное чтение
+    штатно, `readinto` возвращает 0 только на EOF.
+    """
+
+    CHUNK: ClassVar[int] = 65536
+    """Ёмкость пайпа Linux: больший буфер лишь удорожает чтение."""
+
+    EMPTY: ClassVar[memoryview] = memoryview(b"")
+
+    def __init__(self, fd: int, chunk: int = CHUNK) -> None:
+        if chunk <= 0:
+            msg = f"chunk must be positive, got {chunk}"
+            raise ValueError(msg)
+
+        self._raw = io.FileIO(fd, "r", closefd=False)
+        self._view = memoryview(bytearray(chunk))
+
+    @property
+    def fd(self) -> int:
+        return self._raw.fileno()
+
+    def read(self) -> memoryview:
+        """Очередная порция; пустой view — EOF, дескриптор дочитан."""
+        got = self._raw.readinto(self._view)
+        if not got:
+            return self.EMPTY
+
+        return self._view[:got]
+
 
 class StreamSink(Protocol):
     """Приёмник живого вывода; запись не блокирует и не поднимает исключений."""
 
     @abstractmethod
-    def feed(self, data: bytes) -> None: ...
+    def feed(self, data: Chunk) -> None: ...
 
     @abstractmethod
     def feed_text(self, text: str) -> None: ...
@@ -53,7 +103,7 @@ class StreamWindow(BaseModel):
     note: str
 
 
-class ToolStreamBuffer:
+class ToolStreamBuffer(StreamSink):
     """Кольцевое окно байтов вывода: запись из потока инструмента без блокировок.
 
     feed и close зовут on_data после отпускания замка: колбэк будит читателя
@@ -74,16 +124,20 @@ class ToolStreamBuffer:
         self._closed = False
         self._note = ""
 
-    def feed(self, data: bytes) -> None:
+    def feed(self, data: Chunk) -> None:
         """Принять порцию вывода; лишнее вытесняется с головы окна."""
         if not data:
             return
 
+        # окно держит порцию до снятия снапшота, а буфер читателя уедет на
+        # следующем чтении — копия обязательна
+        kept = bytes(data)
+
         with self._lock:
             if self._closed:
                 return
-            self._chunks.append(data)
-            self._size += len(data)
+            self._chunks.append(kept)
+            self._size += len(kept)
             self._evict()
 
         self._on_data()

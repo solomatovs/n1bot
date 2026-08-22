@@ -7,51 +7,20 @@ import shutil
 from typing import Any
 
 import pytest
+from zygote_stand import SandboxStand, ZygoteStand
 
-from boba.sandbox import SandboxCaller, SandboxProfile
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
-from boba.toolkit.stream import StreamSink, ToolChannelsTap, ToolStreamBuffer
+from boba.toolkit.stream import (
+    ChannelSinks,
+    StreamSink,
+    ToolChannelsTap,
+    ToolStreamBuffer,
+)
 
-
-def _bin_dirs() -> list[str]:
-    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
-    dirs: list[str] = []
-
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if not entry.startswith("/"):
-            continue
-
-        dirs.append(entry)
-
-    return dirs
-
-
-_PROFILE_BASE: dict[str, Any] = {
-    "rootfs": "",
-    "ro_binds": ("/usr", "/bin", "/sbin", "/lib", "/lib64"),
-    "rw_binds": (),
-    "rw_images": (),
-    "image_template": "",
-    "launcher": {
-        "mount_wait_sec": 10.0,
-        "mount_poll_sec": 0.05,
-        "shutdown_wait_sec": 5.0,
-        "lock_wait_sec": 10.0,
-        "copy_chunk_bytes": 1 << 20,
-    },
-    "binaries": {"dirs": _bin_dirs()},
-    "tmpfs": ("/tmp:64M",),  # noqa: S108
-    "network": False,
-    "env_set": {"PATH": "/usr/bin:/bin", "HOME": "/tmp"},  # noqa: S108
+_PROFILE_OVERRIDES: dict[str, Any] = {
     "timeout_sec": 30,
-    "max_memory_bytes": 512 * 1024 * 1024,
-    "max_cpu_sec": 30,
-    "max_file_size_bytes": 64 * 1024 * 1024,
-    "max_open_files": 1024,
-    "max_processes": 256,
-    "cgroup_base": "",
-    "oom_score_adj": 0,
-    "cwd": "/tmp",  # noqa: S108
+    "process_memory_bytes": 512 * 1024 * 1024,
+    "process_cpu_sec": 30,
 }
 
 
@@ -61,7 +30,7 @@ def clean_tap() -> Any:
     ToolChannelsTap.set(None)
 
 
-class Windows:
+class Windows(ChannelSinks):
     """Журнал каналов вызова в памяти: окно на канал, заводится по обращению."""
 
     def __init__(self, window_bytes: int = 64 * 1024) -> None:
@@ -99,10 +68,13 @@ class Windows:
 class TestCallTextTap:
     """Текстовый запуск: stdout и stderr тела ложатся в свои каналы журнала."""
 
+    def teardown_method(self) -> None:
+        ZygoteStand.stop()
+
     @staticmethod
-    def _caller(**profile_kw: Any) -> SandboxCaller:
-        profile = SandboxProfile.model_validate({**_PROFILE_BASE, **profile_kw})
-        return SandboxCaller("bash", profile, dict)
+    def _caller(**profile_kw: Any) -> Any:
+        profile = SandboxStand.profile(**{**_PROFILE_OVERRIDES, **profile_kw})
+        return ZygoteStand.caller("bash", profile)
 
     def test_streams_go_to_their_own_channels_and_result_is_kept(self) -> None:
         windows = Windows()

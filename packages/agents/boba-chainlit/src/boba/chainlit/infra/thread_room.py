@@ -11,6 +11,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
+from boba.chainlit.canvas.panel import SignalTransport
 from chainlit.context import ChainlitContext, context_var, get_context
 from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio
@@ -104,7 +105,7 @@ class ThreadRoom:
         context_var.set(ChainlitContext(session, StickyLoadingEmitter(session)))
 
 
-class CanvasRoomTransport:
+class CanvasRoomTransport(SignalTransport):
     """Доставка сигналов канваса: window_message во все живые сокеты треда.
 
     Фронт chainlit пробрасывает window_message в window.postMessage — панель

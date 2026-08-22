@@ -33,8 +33,7 @@ logger = logging.getLogger(__name__)
 class TurnPort(Protocol):
     """Что инструменту нужно от хода: куда крепить созданный им элемент."""
 
-    @property
-    def answer_step_id(self) -> str | None: ...
+    answer_step_id: str | None
 
 
 class LiveStream(Protocol):

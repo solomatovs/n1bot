@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import InterpolationKeyError
+from zygote_stand import ProfileFields
 
 from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
 from boba.settings import bind
@@ -29,31 +30,53 @@ def _bin_dirs() -> list[str]:
 
 
 _PROFILE_BASE: dict[str, Any] = {
-    "rootfs": "",
-    "ro_binds": (),
-    "rw_binds": (),
-    "rw_images": (),
-    "image_template": "",
-    "launcher": {
-        "mount_wait_sec": 10.0,
-        "mount_poll_sec": 0.05,
-        "shutdown_wait_sec": 5.0,
-        "lock_wait_sec": 10.0,
-        "copy_chunk_bytes": 1 << 20,
+    "host": {
+        "mounting": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.05,
+            "shutdown_wait_sec": 5.0,
+            "lock_wait_sec": 10.0,
+            "copy_chunk_bytes": 1 << 20,
+        },
+        "binaries": {"dirs": _bin_dirs()},
+        "stderr_tail_bytes": 4096,
+        "fail_tail_chars": 2000,
+        "kill_grace_sec": 5,
+        "cgroup_base": "",
     },
-    "binaries": {"dirs": _bin_dirs()},
-    "tmpfs": (),
-    "network": False,
-    "env_set": {},
-    "timeout_sec": 30,
-    "max_memory_bytes": 512 * 1024 * 1024,
-    "max_cpu_sec": 30,
-    "max_file_size_bytes": 64 * 1024 * 1024,
-    "max_open_files": 256,
-    "max_processes": 256,
-    "cgroup_base": "",
-    "oom_score_adj": 0,
-    "cwd": "",
+    "rootfs": {
+        "dir": "",
+    },
+    "mounts": {
+        "setup_ro": (),
+        "setup_rw": (),
+        "ro": (),
+        "rw": (),
+        "images": (),
+        "image_template": "",
+        "tmpfs": (),
+        "proc": "/proc",
+        "dev": "/dev",
+        "call_tmpfs": "/tmp",  # noqa: S108
+    },
+    "isolation": {
+        "reap_poll_sec": 0.05,
+        "network": False,
+        "env": {},
+        "max_processes": 256,
+    },
+    "limits": {
+        "timeout_sec": 30,
+        "process_memory_bytes": 512 * 1024 * 1024,
+        "process_cpu_sec": 30,
+        "process_file_bytes": 64 * 1024 * 1024,
+        "process_open_files": 256,
+        "process_oom_score_adj": 0,
+    },
+    "run": {
+        "shell": "/bin/bash",
+        "cwd": "",
+    },
 }
 
 
@@ -63,12 +86,17 @@ def chainlit_context() -> None:
 
 
 def _profile(**kw: Any) -> SandboxProfile:
-    return SandboxProfile.model_validate({**_PROFILE_BASE, **kw})
+    return SandboxProfile.model_validate(ProfileFields.merged(_PROFILE_BASE, kw))
 
 
-def _tool_config(override: dict[str, Any], **profile_kw: Any) -> SandboxToolConfig:
+def _tool_config(**profile_kw: Any) -> SandboxToolConfig:
     profile = _profile(cwd="/workspace", **profile_kw)
-    return SandboxToolConfig.model_validate({"profile": profile, "override": override})
+    return SandboxToolConfig.model_validate({"profile": profile})
+
+
+def _raw_profile(**flat: Any) -> dict[str, Any]:
+    """Сырой словарь профиля: им пользуются проверки наследования."""
+    return ProfileFields.merged(_PROFILE_BASE, flat)
 
 
 class TestProfileRegistry:
@@ -78,15 +106,15 @@ class TestProfileRegistry:
         cfg = SandboxConfig.model_validate(
             {
                 "profiles": {
-                    "default": _profile(rootfs="/srv/rootfs-a"),
-                    "online": _profile(rootfs="/srv/rootfs-b", network=True),
+                    "default": _profile(rootfs={"dir": "/srv/rootfs-a"}),
+                    "online": _profile(rootfs={"dir": "/srv/rootfs-b"}, network=True),
                 },
             }
         )
-        if cfg.profiles["default"].rootfs != "/srv/rootfs-a":
-            raise AssertionError('cfg.profiles["default"].rootfs == "/srv/rootfs-a"')
-        if cfg.profiles["online"].network is not True:
-            raise AssertionError('cfg.profiles["online"].network is True')
+        if cfg.profiles["default"].rootfs.dir != "/srv/rootfs-a":
+            raise AssertionError('profiles["default"].rootfs.dir == "/srv/rootfs-a"')
+        if cfg.profiles["online"].isolation.network is not True:
+            raise AssertionError('profiles["online"].isolation.network is True')
 
     def test_empty_registry_rejected(self) -> None:
         with pytest.raises(ValueError, match="profiles"):
@@ -95,79 +123,92 @@ class TestProfileRegistry:
     def test_broken_profile_rejected(self) -> None:
         with pytest.raises(ValueError, match="max_processes"):
             SandboxConfig.model_validate(
-                {"profiles": {"bad": {**_PROFILE_BASE, "max_processes": 0}}}
+                {"profiles": {"bad": _raw_profile(max_processes=0)}}
             )
 
 
 class TestToolProfile:
-    """Инструмент получает профиль ссылкой; переопределения пишет админ."""
+    """Инструмент получает готовый профиль ссылкой и ничего в нём не правит."""
 
     def test_profile_comes_from_reference(self) -> None:
-        if _tool_config({}).effective().cwd != "/workspace":
-            raise AssertionError('_tool_config({}).effective().cwd == "/workspace"')
+        if _tool_config().profile.run.cwd != "/workspace":
+            raise AssertionError('_tool_config().profile.run.cwd == "/workspace"')
 
     def test_reference_may_be_a_plain_mapping(self) -> None:
         """OmegaConf подставляет узел профиля как словарь."""
-        cfg = SandboxToolConfig.model_validate(
-            {"profile": dict(_PROFILE_BASE), "override": {}}
-        )
-        if cfg.effective().max_processes != 256:
-            raise AssertionError("cfg.effective().max_processes == 256")
+        raw = _raw_profile(ro=("/srv/b",))
+        cfg = SandboxToolConfig.model_validate({"profile": raw})
 
-    def test_field_replaces_base(self) -> None:
-        if _tool_config({"cwd": "/other"}).effective().cwd != "/other":
-            raise AssertionError('_tool_config({"cwd": "/other"}).effective().cwd == …')
-
-    def test_untouched_fields_come_from_base(self) -> None:
-        if _tool_config({"cwd": "/other"}).effective().max_processes != 256:
-            raise AssertionError('_tool_config({"cwd": "/other"}).effective().max_pro…')
-
-    def test_mounts_are_parsed_from_strings(self) -> None:
-        eff = _tool_config({"ro_binds": ["/srv/payload:/opt/payload"]}).effective()
-        if not (
-            (eff.ro_binds[0].host, eff.ro_binds[0].target)
-            == (
-                "/srv/payload",
-                "/opt/payload",
-            )
-        ):
-            raise AssertionError("(eff.ro_binds[0].host, eff.ro_binds[0].target) == (…")
-
-    def test_list_is_replaced_not_appended(self) -> None:
-        cfg = _tool_config({"ro_binds": ["/srv/b"]}, ro_binds=("/srv/a",))
-        if [b.host for b in cfg.effective().ro_binds] != ["/srv/b"]:
-            raise AssertionError('[b.host for b in cfg.effective().ro_binds] == ["/sr…')
-
-    def test_any_field_may_be_overridden(self) -> None:
-        """Ограничений нет: решает администратор."""
-        eff = _tool_config({"network": True, "rootfs": "/srv/other"}).effective()
-        if eff.network is not True:
-            raise AssertionError("eff.network is True")
-        if eff.rootfs != "/srv/other":
-            raise AssertionError('eff.rootfs == "/srv/other"')
-
-    def test_base_profile_is_not_mutated(self) -> None:
-        cfg = _tool_config({"network": True})
-        cfg.effective()
-        if cfg.profile.network is not False:
-            raise AssertionError("cfg.profile.network is False")
-
-    def test_empty_override_returns_base(self) -> None:
-        cfg = _tool_config({})
-        if cfg.effective() is not cfg.profile:
-            raise AssertionError("cfg.effective() is cfg.profile")
-
-    def test_unknown_field_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Extra inputs"):
-            _tool_config({"нет-такого-поля": 1}).effective()
-
-    def test_invalid_value_rejected(self) -> None:
-        with pytest.raises(ValueError, match="max_processes"):
-            _tool_config({"max_processes": 0}).effective()
+        if cfg.profile.isolation.max_processes != 256:
+            raise AssertionError("cfg.profile.isolation.max_processes == 256")
+        if [b.host for b in cfg.profile.mounts.ro] != ["/srv/b"]:
+            raise AssertionError("mounts.ro == [/srv/b]")
 
     def test_missing_profile_rejected(self) -> None:
         with pytest.raises(ValueError, match="profile"):
-            SandboxToolConfig.model_validate({"override": {}})
+            SandboxToolConfig.model_validate({})
+
+
+class TestProfileInheritance:
+    """extends: профиль объявляется правкой другого, а не копией целиком."""
+
+    def test_named_field_replaces_the_base_one(self) -> None:
+        child = SandboxProfile.model_validate(
+            {"extends": _raw_profile(), "isolation": {"network": True}}
+        )
+
+        if child.isolation.network is not True:
+            raise AssertionError("child.isolation.network is True")
+
+    def test_untouched_fields_come_from_the_base(self) -> None:
+        """Правка одного поля группы не роняет остальные поля этой же группы."""
+        base = _raw_profile(ro=("/srv/b",))
+        child = SandboxProfile.model_validate(
+            {"extends": base, "isolation": {"network": True}}
+        )
+
+        if child.isolation.max_processes != 256:
+            raise AssertionError("child.isolation.max_processes == 256")
+        if [b.host for b in child.mounts.ro] != ["/srv/b"]:
+            raise AssertionError("mounts.ro == [/srv/b]")
+
+    def test_untouched_groups_come_from_the_base(self) -> None:
+        child = SandboxProfile.model_validate(
+            {"extends": _raw_profile(), "run": {"cwd": "/tmp"}}  # noqa: S108
+        )
+
+        if child.limits.process_memory_bytes != 512 * 1024 * 1024:
+            raise AssertionError("лимит памяти пришёл из базы")
+
+    def test_base_is_not_mutated(self) -> None:
+        base = _raw_profile()
+        SandboxProfile.model_validate({"extends": base, "isolation": {"network": True}})
+
+        if base["isolation"]["network"] is not False:
+            raise AssertionError("база профиля осталась прежней")
+
+    def test_chain_of_two_bases(self) -> None:
+        middle = {"extends": _raw_profile(), "isolation": {"network": True}}
+        child = SandboxProfile.model_validate(
+            {"extends": middle, "run": {"cwd": "/tmp"}}  # noqa: S108
+        )
+
+        if child.isolation.network is not True:
+            raise AssertionError("child.isolation.network is True")
+        if child.run.cwd != "/tmp":  # noqa: S108
+            raise AssertionError('child.run.cwd == "/tmp"')
+
+    def test_unknown_field_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Extra inputs"):
+            SandboxProfile.model_validate(
+                {"extends": _raw_profile(), "нет-такой-группы": 1}
+            )
+
+    def test_invalid_value_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_processes"):
+            SandboxProfile.model_validate(
+                {"extends": _raw_profile(), "isolation": {"max_processes": 0}}
+            )
 
 
 class TestProfileReference:
@@ -178,15 +219,15 @@ class TestProfileReference:
         return OmegaConf.create(
             {
                 "sandbox": {"profiles": {"default": dict(_PROFILE_BASE)}},
-                "tool": {"bash": {"sandbox": {"profile": reference, "override": {}}}},
+                "tool": {"bash": {"sandbox": {"profile": reference}}},
             }
         )
 
     def test_reference_is_resolved(self) -> None:
         raw = self._raw("${sandbox.profiles.default}")
         cfg = bind(raw, path="tool.bash.sandbox", model=SandboxToolConfig)
-        if cfg.effective().max_processes != 256:
-            raise AssertionError("cfg.effective().max_processes == 256")
+        if cfg.profile.isolation.max_processes != 256:
+            raise AssertionError("cfg.profile.isolation.max_processes == 256")
 
     def test_unknown_profile_fails_at_load(self) -> None:
         raw = self._raw("${sandbox.profiles.нет-такого}")
@@ -199,8 +240,8 @@ class TestComponentIsolation:
         """Порядок импорта не должен ломать пакет: цикла быть не может."""
         code = (
             "import boba.sandbox as s\n"
-            "if not (s.SandboxRunner and s.SandboxToolConfig):\n"
-            "    raise SystemExit('пакет собран без раннера или конфига')\n"
+            "if not (s.ZygoteToolCaller and s.SandboxToolConfig):\n"
+            "    raise SystemExit('пакет собран без вызывателя или конфига')\n"
             "print('ok')\n"
         )
         result = subprocess.run(  # noqa: S603

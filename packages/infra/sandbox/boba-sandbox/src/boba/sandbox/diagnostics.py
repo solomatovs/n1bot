@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from boba.sandbox.process_runner import RunResult
 from boba.sandbox.profile import SandboxProfile
+from boba.toolkit.launcher import RunResult
 
 __all__ = ["SandboxDiagnostics"]
 
@@ -81,12 +81,12 @@ class SandboxDiagnostics:
         if not result.timed_out:
             return ""
 
-        if profile.timeout_sec is None:
+        if profile.limits.timeout_sec is None:
             return ""
 
         return (
             f"Command aborted by the profile timeout: timeout_sec="
-            f"{profile.timeout_sec}s. Split the work into smaller steps or ask "
+            f"{profile.limits.timeout_sec}s. Split the work into smaller steps or ask "
             f"an administrator to raise timeout_sec."
         )
 
@@ -97,7 +97,8 @@ class SandboxDiagnostics:
         if not by_signal and not by_text:
             return ""
         return (
-            f"CPU time limit reached: max_cpu_sec={profile.max_cpu_sec}s, "
+            f"CPU time limit reached: "
+            f"process_cpu_sec={profile.limits.process_cpu_sec}s, "
             f"the process was killed by SIGXCPU. Optimise the computation or "
             f"process the data in chunks."
         )
@@ -109,8 +110,8 @@ class SandboxDiagnostics:
         if not by_signal and not by_text:
             return ""
         return (
-            f"File size limit exceeded: max_file_size_bytes="
-            f"{profile.max_file_size_bytes} bytes, the write was aborted by "
+            f"File size limit exceeded: process_file_bytes="
+            f"{profile.limits.process_file_bytes} bytes, the write was aborted by "
             f"SIGXFSZ. Write a smaller file or split it into parts."
         )
 
@@ -119,7 +120,8 @@ class SandboxDiagnostics:
         if not cls._matched(result.stderr, cls.FD_MARKERS):
             return ""
         return (
-            f"Open file limit reached: max_open_files={profile.max_open_files}. "
+            f"Open file limit reached: "
+            f"process_open_files={profile.limits.process_open_files}. "
             f"Close files right after use; the limit also counts "
             f"stdin/stdout/stderr."
         )
@@ -128,29 +130,38 @@ class SandboxDiagnostics:
     def _processes(cls, result: RunResult, profile: SandboxProfile) -> str:
         if not cls._matched(result.stderr, cls.PROCESS_MARKERS):
             return ""
-        limit = f"max_processes={profile.max_processes}"
-        if profile.cgroup_pids_max is not None:
-            limit += f" or cgroup_pids_max={profile.cgroup_pids_max} for the whole run"
+        limits: list[str] = []
+        if profile.isolation.max_processes is not None:
+            limits.append(
+                f"max_processes={profile.isolation.max_processes} for the section"
+            )
+
+        if profile.limits.group_pids_max is not None:
+            limits.append(f"group_pids_max={profile.limits.group_pids_max} for the run")
+
+        if not limits:
+            return ""
+
         return (
-            f"Process limit reached: {limit}. "
+            f"Process limit reached: {' or '.join(limits)}. "
             f"Start fewer parallel processes and pipelines."
         )
 
     @classmethod
     def _memory(cls, result: RunResult, profile: SandboxProfile) -> str:
-        """max_memory_bytes — RLIMIT_AS: парсеры документов резервируют гигабайты
+        """process_memory_bytes — RLIMIT_AS: парсеры документов резервируют гигабайты
         адресного пространства независимо от размера файла (pdfium ~2.3 ГБ)."""
         by_signal = result.exit_code in (cls.SIGKILL_CODE, cls.SIGABRT_CODE)
         by_text = cls._matched(result.stderr, cls.MEMORY_MARKERS)
         if not by_signal and not by_text:
             return ""
         limit = (
-            f"max_memory_bytes={profile.max_memory_bytes} bytes "
+            f"process_memory_bytes={profile.limits.process_memory_bytes} bytes "
             f"(RLIMIT_AS, per process)"
         )
-        if profile.cgroup_memory_bytes is not None:
+        if profile.limits.group_memory_bytes is not None:
             limit += (
-                f" or cgroup_memory_bytes={profile.cgroup_memory_bytes} bytes "
+                f" or group_memory_bytes={profile.limits.group_memory_bytes} bytes "
                 f"(cgroup memory.max, the whole run)"
             )
         return (
@@ -167,12 +178,12 @@ class SandboxDiagnostics:
         return (
             f"No space left in the working directory: its size is fixed by the "
             f"workspace image and does not grow. Delete unused files in "
-            f"{profile.cwd}."
+            f"{profile.run.cwd}."
         )
 
     @classmethod
     def _network(cls, result: RunResult, profile: SandboxProfile) -> str:
-        if profile.network:
+        if profile.isolation.network:
             return ""
         if not cls._matched(result.stderr, cls.NETWORK_MARKERS):
             return ""

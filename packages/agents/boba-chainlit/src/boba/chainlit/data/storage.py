@@ -37,7 +37,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chainlit.domain.keys import DirKey, ObjectKey
+from boba.sandbox import WorkspaceSpec
 from boba.workspace.launcher import (
+    ImageMountPoint,
     LauncherExit,
     LauncherMarker,
     LauncherMode,
@@ -45,7 +47,6 @@ from boba.workspace.launcher import (
     ReadWindow,
     ResourceLimits,
     build_chain_argv,
-    render_image_path,
     require_fuse,
 )
 from chainlit.data.storage_clients.base import BaseStorageClient
@@ -281,7 +282,7 @@ class StorageClient(BaseStorageClient, ABC):
 
     async def disk_source(self, path: str) -> AsyncGenerator[bytes, None]:
         """Файл локального диска как источник чанков для upload_stream."""
-        chunk_bytes = self._config.launcher.copy_chunk_bytes
+        chunk_bytes = self._config.mounting.copy_chunk_bytes
 
         async with aiofiles.open(path, "rb") as f:
             while True:
@@ -401,7 +402,7 @@ class LocalStorageClient(StorageClient):
         self, path: Path, window: ReadWindow, size: int
     ) -> AsyncGenerator[bytes, None]:
         """Отдаёт окно файла чанками: в памяти живёт один чанк, а не файл."""
-        chunk_bytes = self._config.launcher.copy_chunk_bytes
+        chunk_bytes = self._config.mounting.copy_chunk_bytes
         remaining = window.resolve_length(size)
 
         async with aiofiles.open(path, "rb") as f:
@@ -583,7 +584,7 @@ class ImageStorageClient(StorageClient):
         self, reader: LauncherRead, object_key: str
     ) -> AsyncGenerator[bytes, None]:
         """Тело окна из stdout лаунчера; простой дольше таймаута — зависание."""
-        chunk_bytes = self._config.launcher.copy_chunk_bytes
+        chunk_bytes = self._config.mounting.copy_chunk_bytes
         timeout = self._config.op_timeout_sec
 
         try:
@@ -623,8 +624,7 @@ class ImageStorageClient(StorageClient):
 
     async def _list_dir(self, prefix: str) -> Sequence[str]:
         key = DirKey.parse(prefix)
-        path_vars = {"user_id": key.user_id, "thread_id": key.thread_id}
-        image = render_image_path(self._config.image_path, path_vars)
+        image = self._workspace().image_of(key.user_id)
 
         op = [LauncherMode.LIST.value, key.in_thread()]
         rc, out, err = await self._op(image, op)
@@ -642,14 +642,19 @@ class ImageStorageClient(StorageClient):
 
         return tuple(names)
 
+    def _workspace(self) -> WorkspaceSpec:
+        """Запись workspace конфига; её отсутствие отсекает валидация секции."""
+        workspace = self._config.workspace
+        if workspace is None:
+            msg = "storage: kind=image without the workspace record"
+            raise StorageError(msg)
+
+        return workspace
+
     def _image_and_rel(self, object_key: str) -> tuple[str, str]:
         key = ObjectKey.parse(object_key)
-        image = render_image_path(
-            self._config.image_path,
-            {"user_id": key.user_id, "thread_id": key.thread_id},
-        )
         # образ общий на пользователя: thread_id остаётся частью пути внутри
-        return image, key.in_thread()
+        return self._workspace().image_of(key.user_id), key.in_thread()
 
     async def _spawn(
         self,
@@ -661,12 +666,11 @@ class ImageStorageClient(StorageClient):
         require_fuse(self._config.binaries)
         await aiofiles.os.makedirs(os.path.dirname(image), exist_ok=True)
         argv = build_chain_argv(
-            extra_env={},
-            images=[(image, image + ".mnt")],
-            template=self._config.image_template,
+            images=[(image, ImageMountPoint.under(self._config.mount_dir, image))],
+            template=self._workspace().template,
             op=op,
             python_bin=sys.executable,
-            options=self._config.launcher.to_options(),
+            options=self._config.mounting.to_options(),
             limits=ResourceLimits(),
             binaries=self._config.binaries,
         )

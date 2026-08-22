@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from boba.indexing import (
     Metadata,
     ReaderKeys,
+    Request,
     RequestSource,
     TransportKeys,
 )
@@ -53,7 +54,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass(frozen=True)
-class ConfluenceRequest:
+class ConfluenceRequest(Request):
     """Индексационный план запроса Confluence: чистый HTTP + metadata.
 
     Удовлетворяет Request-протокол (только metadata). source_id НЕ часть запроса:

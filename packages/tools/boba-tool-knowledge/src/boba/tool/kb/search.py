@@ -146,9 +146,7 @@ limit
 """
     """Полнотекстовый поиск."""
 
-    ITERATIVE_SCAN: ClassVar[LiteralString] = (
-        "set hnsw.iterative_scan = strict_order"
-    )
+    ITERATIVE_SCAN: ClassVar[LiteralString] = "set hnsw.iterative_scan = strict_order"
     """Итеративный индексный скан.
 
     Из документации pgvector (https://github.com/pgvector/pgvector):

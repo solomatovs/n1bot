@@ -14,12 +14,12 @@ OSError — syscall изоляции отказал; хост видит это 
 
 from __future__ import annotations
 
+import argparse
 import array
 import asyncio
 import ctypes
 import errno
 import importlib
-import inspect
 import json
 import logging
 import os
@@ -28,24 +28,35 @@ import select
 import signal
 import socket
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Mapping, Sequence
 from enum import IntEnum, StrEnum
 from types import ModuleType
-from typing import Any, ClassVar, get_type_hints
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field
 
+from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import ToolLike, ToolMain
+from boba.toolkit.facade import WarmupHooks
+from boba.toolkit.images import (
+    FuseMounter,
+    ImageStore,
+    LauncherMarker,
+    LauncherOptions,
+    MountError,
+    SparseCopier,
+)
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.timing import Elapsed, ProcessAge
 
 __all__ = [
     "CallExit",
+    "CallMounts",
     "CallRequest",
     "ChildLimits",
     "Isolation",
-    "ZygoteEnv",
+    "ZygoteArgs",
     "ZygoteMain",
     "ZygoteProtocolError",
     "ZygoteWire",
@@ -58,10 +69,59 @@ class ZygoteProtocolError(Exception):
     """Сообщение через сокет зиготы не соответствует контракту."""
 
 
-class ZygoteEnv(StrEnum):
-    """Переменные окружения процесса зиготы; их выставляет хост при spawn."""
+class ZygoteArgs(BaseModel):
+    """Аргументы запуска зиготы: всё, что задаёт профиль, приезжает в argv.
 
-    SOCKET_FD = "BOBA_ZYGOTE_FD"
+    Ничего не передаётся окружением: параметры видны в командной строке
+    процесса и разбираются один раз здесь.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    SOCKET_FD: ClassVar[str] = "--socket-fd"
+    MAX_PROCESSES: ClassVar[str] = "--max-processes"
+    REAP_POLL_SEC: ClassVar[str] = "--reap-poll-sec"
+    LOG_LEVEL: ClassVar[str] = "--log-level"
+
+    socket_fd: int = Field(ge=0)
+    max_processes: int = Field(ge=0)
+    """0 — потолок задач профилем не задан."""
+    reap_poll_sec: float = Field(gt=0)
+    log_level: str = Field(min_length=1)
+    """Уровень логера приложения: зигота и тела инструментов пишут им же."""
+    modules: tuple[str, ...] = ()
+
+    @classmethod
+    def parse(cls, argv: Sequence[str]) -> ZygoteArgs:
+        parser = argparse.ArgumentParser(prog="boba-zygote")
+        parser.add_argument(cls.SOCKET_FD, type=int, required=True)
+        parser.add_argument(cls.MAX_PROCESSES, type=int, default=0)
+        parser.add_argument(cls.REAP_POLL_SEC, type=float, required=True)
+        parser.add_argument(cls.LOG_LEVEL, type=str, required=True)
+        parser.add_argument("modules", nargs="*")
+
+        parsed = parser.parse_args(list(argv))
+        return cls(
+            socket_fd=parsed.socket_fd,
+            max_processes=parsed.max_processes,
+            reap_poll_sec=parsed.reap_poll_sec,
+            log_level=parsed.log_level,
+            modules=tuple(parsed.modules),
+        )
+
+    def render(self) -> list[str]:
+        """Аргументы командной строки в порядке разбора."""
+        return [
+            self.SOCKET_FD,
+            str(self.socket_fd),
+            self.MAX_PROCESSES,
+            str(self.max_processes),
+            self.REAP_POLL_SEC,
+            str(self.reap_poll_sec),
+            self.LOG_LEVEL,
+            self.log_level,
+            *self.modules,
+        ]
 
 
 class CloneFlag(IntEnum):
@@ -74,12 +134,14 @@ class CloneFlag(IntEnum):
 
 
 class MountFlag(IntEnum):
-    """Флаги mount(2) для приватного /tmp и ремоунта дерева."""
+    """Флаги mount(2)/umount2(2) для приватных точек вызова."""
 
     NOSUID = 0x2
     NODEV = 0x4
     REC = 0x4000
     PRIVATE = 0x40000
+    DETACH = 0x2
+    """MNT_DETACH: точка отцепляется от дерева, открытые файлы живут дальше."""
 
 
 class CallFd(IntEnum):
@@ -96,6 +158,13 @@ class CallFd(IntEnum):
         return len(cls)
 
 
+class CallKind(StrEnum):
+    """Что исполняет ребёнок: модуль инструментов либо shell-команду."""
+
+    MODULE = "module"
+    SHELL = "shell"
+
+
 class ControlMark(StrEnum):
     """Байтовые метки пер-вызовного control-сокета."""
 
@@ -107,7 +176,7 @@ class ControlMark(StrEnum):
 
 
 class ChildLimits(BaseModel):
-    """Rlimits вызова; 0 — не выставлять. Едут в запросе, применяет ребёнок."""
+    """Лимиты вызова; 0 — не выставлять. Едут в запросе, применяет ребёнок."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -116,8 +185,13 @@ class ChildLimits(BaseModel):
     max_file_size_bytes: int = 0
     max_open_files: int = 0
     oom_score_adj: int = 0
+    cpu_cores: int = 0
+    """Ядер по cgroup-квоте профиля: столько же ставится маской affinity."""
 
     def apply(self) -> None:
+        if self.cpu_cores:
+            self._pin_cpus()
+
         if self.max_memory_bytes:
             pair = (self.max_memory_bytes, self.max_memory_bytes)
             resource.setrlimit(resource.RLIMIT_AS, pair)
@@ -138,18 +212,96 @@ class ChildLimits(BaseModel):
             with open("/proc/self/oom_score_adj", "w") as f:
                 f.write(str(self.oom_score_adj))
 
+    def _pin_cpus(self) -> None:
+        """Маска ядер по квоте профиля.
+
+        cgroup-квоту нативные движки не видят и размер пула берут из маски
+        доступных ядер: без неё под квотой в одно ядро поднимается пул на всю
+        машину. Окно ядер сдвигается по pid, чтобы параллельные вызовы не
+        толпились на одних и тех же.
+        """
+        available = sorted(os.sched_getaffinity(0))
+        if len(available) <= self.cpu_cores:
+            return
+
+        start = (os.getpid() * self.cpu_cores) % len(available)
+        window = available[start : start + self.cpu_cores]
+
+        if len(window) < self.cpu_cores:
+            window += available[: self.cpu_cores - len(window)]
+
+        os.sched_setaffinity(0, set(window))
+
+
+class ImageMount(BaseModel):
+    """rw-образ вызова: файл, точка монтирования и шаблон первой копии."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    image: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    template: str = Field(min_length=1)
+    """Откуда копировать образ, если его ещё нет; путь внутри песочницы."""
+
+
+class ImageMounting(BaseModel):
+    """Как ребёнок монтирует образы: шаблон, тайминги, где лежит fuse2fs."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    fuse2fs_dir: str = Field(min_length=1)
+    staging: tuple[str, ...] = ()
+    """Пути обвязки образов: шаблон, fuse2fs и каталог образов пользователей.
+
+    Исполнитель монтирует по ним образ своего вызова и сразу отцепляет их от
+    себя: телу инструмента остаётся только его собственный workspace. Путь,
+    который пришёл частью большего монтирования (лежит в самом корне), не
+    отцепляется — прятать там нечего.
+    """
+    mount_wait_sec: float = Field(gt=0)
+    mount_poll_sec: float = Field(gt=0)
+    shutdown_wait_sec: float = Field(gt=0)
+    lock_wait_sec: float = Field(gt=0)
+    copy_chunk_bytes: int = Field(gt=0)
+
+    def options(self) -> LauncherOptions:
+        return LauncherOptions(
+            mount_wait_sec=self.mount_wait_sec,
+            mount_poll_sec=self.mount_poll_sec,
+            shutdown_wait_sec=self.shutdown_wait_sec,
+            lock_wait_sec=self.lock_wait_sec,
+            copy_chunk_bytes=self.copy_chunk_bytes,
+        )
+
+
+class CallMounts(BaseModel):
+    """Приватные точки вызова: что исполнитель перемонтирует себе."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    proc: str = ""
+    """Точка procfs из профиля; пусто — профиль её не объявил."""
+    tmp: str = ""
+    """Приватная tmpfs вызова из профиля; пусто — общая с зиготой."""
+    tmp_bytes: int = 0
+
 
 class CallRequest(BaseModel):
-    """Запрос вызова: argv тела, лимиты и режим изоляции."""
+    """Запрос вызова: argv тела, лимиты, изоляция, rw-образы и cwd."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     op: str = "call"
     call_id: str = Field(min_length=1)
+    kind: CallKind = CallKind.MODULE
     argv: tuple[str, ...] = Field(min_length=1)
     limits: ChildLimits
     isolate: bool
-    tmp_bytes: int = Field(gt=0)
+    mounts: CallMounts
+    images: tuple[ImageMount, ...] = ()
+    mounting: ImageMounting | None = None
+    """Параметры монтирования; None — образов у вызова нет."""
+    cwd: str = ""
 
 
 class CallExit(BaseModel):
@@ -162,13 +314,23 @@ class CallExit(BaseModel):
     code: int
 
 
+class WarmupCall(BaseModel):
+    """Один прогрев: чей хук звать и с каким конфигом."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    module: str = Field(min_length=1)
+    hook: str = Field(min_length=1)
+    config: dict[str, Any]
+
+
 class WarmupMessage(BaseModel):
-    """Первое сообщение хоста: конфиги WARMUP-хуков по именам модулей."""
+    """Первое сообщение хоста: прогревы модулей, объявленные их авторами."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     op: str = "warmup"
-    configs: dict[str, dict[str, Any]]
+    calls: tuple[WarmupCall, ...]
 
 
 class ZygoteReady(BaseModel):
@@ -243,6 +405,14 @@ class Isolation:
         return cls._libc
 
     @classmethod
+    def detach(cls, target: str) -> None:
+        """Отцепить точку от дерева вызова: тело её уже не увидит."""
+        rc = cls.libc().umount2(target.encode(), int(MountFlag.DETACH))
+        if rc != 0:
+            errno = ctypes.get_errno()
+            raise OSError(errno, f"umount2({target}) failed: {os.strerror(errno)}")
+
+    @classmethod
     def unshare(cls, flags: int) -> None:
         if cls.libc().unshare(flags) != 0:
             code = ctypes.get_errno()
@@ -280,28 +450,39 @@ class Isolation:
             raise OSError(code, f"capset: {os.strerror(code)}")
 
     @classmethod
-    def enter_call_namespaces(cls, tmp_bytes: int) -> None:
-        """Свои mount/ipc/uts ns, приватные /proc и /tmp; NEWPID ставит вызывающий."""
+    def enter_call_namespaces(cls, mounts: CallMounts) -> None:
+        """Своё дерево монтирований вызова; NEWPID ставит вызывающий.
+
+        Точки берутся из профиля: пустое значение означает, что профиль такой
+        точки не объявил и приватной её делать не из чего.
+        """
         cls.mount("none", "/", "", MountFlag.REC | MountFlag.PRIVATE, "")
-        cls.mount("proc", "/proc", "proc", MountFlag.NOSUID | MountFlag.NODEV, "")
-        cls.mount(
-            "tmpfs",
-            "/tmp",  # noqa: S108
-            "tmpfs",
-            MountFlag.NOSUID | MountFlag.NODEV,
-            f"size={tmp_bytes}",
-        )
+
+        if mounts.proc:
+            cls.mount(
+                "proc", mounts.proc, "proc", MountFlag.NOSUID | MountFlag.NODEV, ""
+            )
+
+        if mounts.tmp:
+            cls.mount(
+                "tmpfs",
+                mounts.tmp,
+                "tmpfs",
+                MountFlag.NOSUID | MountFlag.NODEV,
+                f"size={mounts.tmp_bytes}",
+            )
 
 
 class ZygoteMain:
     """Главный цикл зиготы: прогрев, приём запросов, fork и учёт детей."""
 
-    REAP_POLL_SEC: ClassVar[float] = 0.1
-
     USERNS_SYSCTL: ClassVar[str] = "/proc/sys/user/max_user_namespaces"
     """Вложенные userns запрещаются до первого вызова, как в цепочке лаунчера."""
 
-    def __init__(self, sock: socket.socket, tools: Sequence[ToolLike]) -> None:
+    def __init__(
+        self, sock: socket.socket, tools: Sequence[ToolLike], reap_poll_sec: float
+    ) -> None:
+        self._reap_poll_sec = reap_poll_sec
         self._sock = sock
         self._tools = tools
         self._children: dict[int, tuple[str, socket.socket]] = {}
@@ -319,16 +500,15 @@ class ZygoteMain:
             return
 
     @classmethod
-    def run(cls, module_names: Sequence[str]) -> int:
+    def run(cls, args: ZygoteArgs) -> int:
         """Вход процесса: прогрев модулей, ready, цикл обслуживания."""
-        PayloadLogging.setup()
+        PayloadLogging.setup(args.log_level)
 
-        raw_fd = os.environ.get(ZygoteEnv.SOCKET_FD)
-        if raw_fd is None:
-            print(f"{ZygoteEnv.SOCKET_FD} is not set", file=sys.stderr)  # noqa: T201
-            return 2
+        sock = socket.socket(fileno=args.socket_fd)
 
-        sock = socket.socket(fileno=int(raw_fd))
+        cls._cap_processes(args.max_processes)
+
+        module_names = args.modules
 
         warmup = Elapsed()
         tools: list[ToolLike] = []
@@ -350,54 +530,57 @@ class ZygoteMain:
 
         cls._block_new_userns()
 
-        main = cls(sock, tools)
+        main = cls(sock, tools, args.reap_poll_sec)
         ZygoteWire.send(sock, ZygoteReady(warmup_ms=warmup.ms()))
 
         return main.serve()
 
-    WARMUP_ATTRIBUTE: ClassVar[str] = "WARMUP"
-
     @classmethod
     def _run_warmups(cls, sock: socket.socket, modules: dict[str, ModuleType]) -> None:
-        """Первое сообщение хоста — конфиги WARMUP; хук исполняется до ready."""
+        """Первое сообщение хоста — прогревы; они исполняются до ready.
+
+        Хуки объявлены авторами инструментов через @warmup и лежат в реестре
+        фасада; хост присылает конфиг на каждый. Объявленный хук без конфига —
+        нарушение контракта: молча пропустить его нельзя, иначе прогрев
+        случался бы на каждом вызове.
+        """
         message, _fds = ZygoteWire.recv(sock)
         warmup = WarmupMessage.model_validate(message)
 
-        for name, module in modules.items():
-            hook = getattr(module, cls.WARMUP_ATTRIBUTE, None)
-            if hook is None:
-                continue
+        sent = {(call.module, call.hook): call for call in warmup.calls}
 
-            raw = warmup.configs.get(name)
-            if raw is None:
-                logger.warning(
-                    "zygote: module %s declares WARMUP but no config arrived, "
-                    "skipping the hook",
-                    name,
+        for name in modules:
+            for hook in WarmupHooks.of(name):
+                call = sent.pop((name, hook.name), None)
+                if call is None:
+                    msg = (
+                        f"module {name} declares warmup {hook.name!r}, but the "
+                        f"host sent no config for it"
+                    )
+                    raise ZygoteProtocolError(msg)
+
+                elapsed = Elapsed()
+                asyncio.run(hook.body(hook.config_model.model_validate(call.config)))
+                logger.info(
+                    "zygote: %s.%s warmed up in %dms", name, hook.name, elapsed.ms()
                 )
-                continue
 
-            elapsed = Elapsed()
-            asyncio.run(hook(cls._warmup_config(name, hook, raw)))
-            logger.info("zygote: %s warmed up in %dms", name, elapsed.ms())
+        for module, hook_name in sent:
+            msg = (
+                f"host sent warmup {hook_name!r} for module {module}, but no such "
+                f"hook is declared there"
+            )
+            raise ZygoteProtocolError(msg)
 
     @staticmethod
-    def _warmup_config(
-        name: str, hook: Callable[..., object], raw: dict[str, Any]
-    ) -> object:
-        """Конфиг хука: модель из аннотации его единственного параметра."""
-        parameters = list(inspect.signature(hook).parameters)
-        if len(parameters) != 1:
-            msg = f"module {name}: WARMUP must take exactly one config parameter"
-            raise ZygoteProtocolError(msg)
+    def _cap_processes(limit: int) -> None:
+        """Потолок задач на зиготу и всех её детей; дети наследуют rlimit."""
+        if not limit:
+            return
 
-        hints = get_type_hints(hook)
-        annotation = hints.get(parameters[0])
-        if annotation is None:
-            msg = f"module {name}: WARMUP parameter has no annotation"
-            raise ZygoteProtocolError(msg)
+        resource.setrlimit(resource.RLIMIT_NPROC, (limit, limit))
 
-        return TypeAdapter(annotation).validate_python(raw)
+        logger.info("zygote: RLIMIT_NPROC=%d for the zygote and its children", limit)
 
     @classmethod
     def _block_new_userns(cls) -> None:
@@ -418,7 +601,7 @@ class ZygoteMain:
     def serve(self) -> int:
         while True:
             ready, _, _ = select.select(
-                [self._sock, self._sigchld_r], [], [], self.REAP_POLL_SEC
+                [self._sock, self._sigchld_r], [], [], self._reap_poll_sec
             )
 
             if self._sigchld_r in ready:
@@ -457,8 +640,7 @@ class ZygoteMain:
             for fd in fds:
                 os.close(fd)
             msg = (
-                f"call {request.call_id}: expected {CallFd.count()} fds, "
-                f"got {len(fds)}"
+                f"call {request.call_id}: expected {CallFd.count()} fds, got {len(fds)}"
             )
             raise ZygoteProtocolError(msg)
 
@@ -533,13 +715,32 @@ class ZygoteMain:
 
             self._grandchild(request, fds)
         except BaseException as exc:
-            print(f"zygote child failed: {exc}", file=sys.stderr)  # noqa: T201
+            self._report_failure(exc)
             os._exit(126)
 
+    @staticmethod
+    def _report_failure(exc: BaseException) -> None:
+        """Отвалившийся корень отделяется от прочих сбоев отдельным маркером.
+
+        ENOTCONN на монтировании означает, что fuse-демон корня секции мёртв:
+        вызов не виноват и повторять его бессмысленно, пока хост не поднимет
+        зиготу заново.
+        """
+        if isinstance(exc, OSError) and exc.errno == errno.ENOTCONN:
+            marker = LauncherMarker.CHAIN_LOST
+            print(f"{marker}{exc}", file=sys.stderr, flush=True)  # noqa: T201
+            return
+
+        print(f"zygote child failed: {exc}", file=sys.stderr, flush=True)  # noqa: T201
+
     def _grandchild(self, request: CallRequest, fds: list[int]) -> None:
-        """Исполнитель: приватные /proc и /tmp, cgroup через хост, тело."""
+        """Исполнитель: приватные /proc и /tmp, cgroup через хост, образы, тело.
+
+        Порядок жёсткий: handshake до монтирования (fuse2fs-демон рождается
+        уже в cgroup-leaf вызова), монтирование до сброса capabilities.
+        """
         if request.isolate:
-            Isolation.enter_call_namespaces(request.tmp_bytes)
+            Isolation.enter_call_namespaces(request.mounts)
 
         os.dup2(fds[CallFd.STDIN], 0)
         os.dup2(fds[CallFd.STDOUT], 1)
@@ -550,13 +751,67 @@ class ZygoteMain:
         self._handshake(control)
         control.close()
 
+        mounts = _CallMounts.of(request)
+        try:
+            mounts.mount()
+        except MountError as exc:
+            # хост отличает несмонтированный образ от отказа тела по коду
+            print(  # noqa: T201
+                f"{LauncherMarker.ERROR}{exc}", file=sys.stderr, flush=True
+            )
+            os._exit(MountError.EXIT_CODE)
+
         request.limits.apply()
 
         if request.isolate:
             Isolation.drop_capabilities()
 
-        code = ToolMain.run(self._tools, list(request.argv))
+        if request.cwd:
+            os.chdir(request.cwd)
+
+        try:
+            code = self._run_body(request)
+        finally:
+            # записи доезжают до образа только после штатного выхода fuse2fs
+            mounts.shutdown()
+
         os._exit(code)
+
+    def _run_body(self, request: CallRequest) -> int:
+        """Тело — всегда дочерний процесс исполнителя, одна схема на все виды.
+
+        Исполнитель остаётся init своего pid ns: держит монтирования, ждёт
+        тело, гасит демон. Различие видов — одна строка внутри форка: shell
+        замещает себя командой, модуль исполняет тело в уже прогретом процессе.
+        """
+        pid = os.fork()
+        if pid == 0:
+            self._body(request)
+
+        _, status = os.waitpid(pid, 0)
+        return os.waitstatus_to_exitcode(status)
+
+    def _body(self, request: CallRequest) -> None:
+        # тело умирает вместе с исполнителем и без pid ns: в изоляции это и
+        # так гарантирует init, в голом запуске — только pdeathsig
+        FuseMounter.set_pdeathsig()
+
+        argv = list(request.argv)
+        if request.kind is CallKind.SHELL:
+            self._flush_streams()
+            os.execv(argv[0], argv)  # noqa: S606 — argv собран хостом, без shell
+
+        code = ToolMain.run(self._tools, argv)
+
+        # os._exit не сбрасывает буферы: печать тела иначе не доедет до канала
+        self._flush_streams()
+
+        os._exit(code)
+
+    @staticmethod
+    def _flush_streams() -> None:
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     @staticmethod
     def _handshake(control: socket.socket) -> None:
@@ -573,12 +828,75 @@ class ZygoteMain:
             raise ZygoteProtocolError(msg)
 
 
-def main(argv: Sequence[str]) -> int:
-    if not argv:
-        print("usage: python -m boba.toolkit.zygote <module> [...]", file=sys.stderr)  # noqa: T201
-        return errno.EINVAL
+class _CallMounts:
+    """rw-образы одного вызова: копия шаблона под локом, fuse2fs на точку."""
 
-    return ZygoteMain.run(list(argv))
+    def __init__(
+        self,
+        images: Sequence[ImageMount],
+        stores: Mapping[str, ImageStore],
+        mounter: FuseMounter | None,
+        staging: Sequence[str],
+    ) -> None:
+        self._images = tuple(images)
+        self._stores = dict(stores)
+        self._mounter = mounter
+        self._staging = tuple(staging)
+
+    @classmethod
+    def of(cls, request: CallRequest) -> _CallMounts:
+        if not request.images:
+            return cls((), {}, None, ())
+
+        mounting = request.mounting
+        if mounting is None:
+            msg = "call carries images but no mounting parameters"
+            raise ZygoteProtocolError(msg)
+
+        options = mounting.options()
+
+        # у каждого образа свой шаблон: workspace копируется с одного, а
+        # прочие rw_images профиля — со своего
+        stores: dict[str, ImageStore] = {}
+        for spec in request.images:
+            stores[spec.image] = ImageStore(
+                spec.template,
+                SparseCopier(options.copy_chunk_bytes),
+                options.lock_wait_sec,
+            )
+
+        binaries = TrustedBinaries(dirs=(mounting.fuse2fs_dir,))
+        mounter = FuseMounter(options, binaries, pass_fds=())
+        return cls(request.images, stores, mounter, mounting.staging)
+
+    def mount(self) -> None:
+        if self._mounter is None:
+            return
+
+        for spec in self._images:
+            self._stores[spec.image].acquire(spec.image)
+
+        for spec in self._images:
+            self._mounter.mount(spec.image, spec.target, readonly=False)
+
+        # чужие образы, шаблон и fuse2fs нужны были только на монтирование
+        for path in self._staging:
+            if not FuseMounter.is_mounted(path):
+                continue
+
+            Isolation.detach(path)
+
+    def shutdown(self) -> None:
+        if self._mounter is not None:
+            self._mounter.shutdown()
+
+        for store in self._stores.values():
+            store.release_all()
+
+
+def main(argv: Sequence[str]) -> int:
+    """Аргументы запуска зиготы; модули — тела инструментов её секции."""
+    return ZygoteMain.run(ZygoteArgs.parse(argv))
 
 
 if __name__ == "__main__":

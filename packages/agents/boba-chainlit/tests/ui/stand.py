@@ -75,6 +75,9 @@ class StandConfig:
     single_profile: bool = False
     """True — в конфиге остаётся один профиль: селектора в UI быть не должно."""
 
+    sandbox: bool = False
+    """True — инструменты песочницы остаются включёнными: боевой путь целиком."""
+
     SANDBOXED_TOOLS: tuple[str, ...] = (
         "bash",
         "doc",
@@ -284,7 +287,10 @@ class StandConfig:
         doc["app"]["auth"] = ["${auth.local}"]
 
     def _disable_sandbox_tools(self, doc: MutableMapping[str, Any]) -> None:
-        """Песочница стенду недоступна: остаются инструменты без bwrap."""
+        """Без песочницы остаются инструменты, которым она не нужна."""
+        if self.sandbox:
+            return
+
         tools = doc.get("tool")
         if not isinstance(tools, Mapping):
             return

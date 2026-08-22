@@ -25,7 +25,8 @@ from boba.cancellation import (
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
 from boba.chainlit.infra.plugins import as_structured_tool
-from boba.sandbox import SandboxCaller, SandboxProfile, SandboxToolConfig
+from boba.sandbox import SandboxProfile, SandboxToolConfig
+from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.toolkit.result import ErrorResult
 from boba.transport.http import CancellableHttpTransport, HttpProfile, HttpRequest
 
@@ -50,39 +51,78 @@ def chainlit_context() -> None:
 
 _HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
 
+_VENV = Path(__file__).resolve().parents[4] / ".venv"
+_PACKAGES = Path(__file__).resolve().parents[3]
+
+_ZYGOTE = ZygotePolicy(
+    start_timeout_sec=60.0,
+    max_start_attempts=1,
+    restart_backoff_sec=0.05,
+    healthy_after_sec=0.5,
+    stop_wait_sec=5.0,
+    call_poll_sec=0.05,
+)
+
+
+_PROFILE_RAW: dict[str, object] = {
+    "host": {
+        "mounting": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.05,
+            "shutdown_wait_sec": 5.0,
+            "lock_wait_sec": 10.0,
+            "copy_chunk_bytes": 1 << 20,
+        },
+        "binaries": {"dirs": _bin_dirs()},
+        "stderr_tail_bytes": 4096,
+        "fail_tail_chars": 2000,
+        "kill_grace_sec": 5,
+        "cgroup_base": "",
+    },
+    "rootfs": {
+        "dir": "",
+    },
+    "mounts": {
+        "ro": (*_HOST_RO_BINDS, str(_VENV), str(_PACKAGES)),
+        "rw": (),
+        "images": (),
+        "image_template": "",
+        "tmpfs": ("/tmp:16M",),  # noqa: S108
+        "proc": "/proc",
+        "dev": "/dev",
+        "call_tmpfs": "/tmp",  # noqa: S108
+        "setup_ro": (),
+        "setup_rw": (),
+    },
+    "isolation": {
+        "network": False,
+        "env": {
+            "PATH": f"{_VENV}/bin:/usr/bin:/bin",
+            "HOME": "/tmp",  # noqa: S108
+        },
+        "max_processes": 64,
+        "reap_poll_sec": 0.05,
+    },
+    "limits": {
+        "timeout_sec": 300,
+        "process_memory_bytes": 512 * 1024 * 1024,
+        "process_cpu_sec": 300,
+        "process_file_bytes": 64 * 1024 * 1024,
+        "process_open_files": 256,
+        "process_oom_score_adj": 0,
+    },
+    "run": {
+        "shell": "/bin/bash",
+        "cwd": "/tmp",  # noqa: S108
+    },
+}
+
 
 def _sandbox_config() -> SandboxToolConfig:
     """Минимальный профиль без образа: нужен лишь долгоживущий процесс."""
-    profile = SandboxProfile.model_validate(
-        {
-            "rootfs": "",
-            "ro_binds": _HOST_RO_BINDS,
-            "rw_binds": (),
-            "rw_images": (),
-            "image_template": "",
-            "launcher": {
-                "mount_wait_sec": 10.0,
-                "mount_poll_sec": 0.05,
-                "shutdown_wait_sec": 5.0,
-                "lock_wait_sec": 10.0,
-                "copy_chunk_bytes": 1 << 20,
-            },
-            "binaries": {"dirs": _bin_dirs()},
-            "tmpfs": ("/tmp:16M",),  # noqa: S108
-            "network": False,
-            "env_set": {"PATH": "/usr/bin:/bin"},
-            "timeout_sec": 300,
-            "max_memory_bytes": 512 * 1024 * 1024,
-            "max_cpu_sec": 300,
-            "max_file_size_bytes": 64 * 1024 * 1024,
-            "max_open_files": 256,
-            "max_processes": 64,
-            "cgroup_base": "",
-            "oom_score_adj": 0,
-            "cwd": "/tmp",  # noqa: S108
-        }
-    )
-    return SandboxToolConfig(profile=profile, override={})
+    profile = SandboxProfile.model_validate(_PROFILE_RAW)
+
+    return SandboxToolConfig(profile=profile)
 
 
 class TestTurnCancellation:
@@ -281,6 +321,9 @@ class TestSubprocessAbort:
     """Порог отсекает запасной proc.wait(timeout=5) в _pump: без прерывателя
     процесс тоже умирает, но лишь через пять секунд после остановки."""
 
+    def teardown_method(self) -> None:
+        ZygoteRegistry.stop_all()
+
     @classmethod
     def _running(cls) -> int:
         alive = 0
@@ -296,10 +339,13 @@ class TestSubprocessAbort:
         return alive
 
     def test_cancel_kills_running_process(self) -> None:
-        profile = _sandbox_config().effective()
+        profile = _sandbox_config().profile
 
-        def launcher(tool: str) -> SandboxCaller:
-            return SandboxCaller(tool, profile, dict)
+        supervisor = ZygoteRegistry.obtain("cancel-bash", profile, (), _ZYGOTE)
+        caller = ZygoteToolCaller("cancel-bash", supervisor, profile)
+
+        def launcher(tool: str) -> ZygoteToolCaller:
+            return caller
 
         tool_ = as_structured_tool(build_bash_tool(self.LIMITS, launcher))
         with turn_cancellation() as c:

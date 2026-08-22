@@ -25,7 +25,7 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
-from boba.llm.embedding import EmbedderFactory, EmbeddingConfig, EmbeddingError
+from boba.llm.embedding import EmbeddingConfig, EmbeddingError
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.models import SearchHit
 from boba.tool.kb.search import (
@@ -33,8 +33,9 @@ from boba.tool.kb.search import (
     ConfluenceCollection,
     KbSearch,
 )
+from boba.tool.kb.warm import WarmEmbedder
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.facade import Injected, tool
+from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import TableResult, ToolResult, pack_result
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
@@ -47,18 +48,14 @@ class KbWarmupConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    SECTION: ClassVar[str] = "tool.kb"
-
     embedding: EmbeddingConfig
 
 
-async def _warmup(cfg: KbWarmupConfig) -> None:
+@warmup
+async def warm_embedder(cfg: KbWarmupConfig) -> None:
     """Модель ONNX поднимается в зиготе: дети берут её через COW."""
-    embedder = EmbedderFactory.build(cfg.embedding)
+    embedder = WarmEmbedder.load(cfg.embedding)
     await embedder.embed_query("warm-up")
-
-
-WARMUP: Final = _warmup
 
 
 class KbToolConfig(SecretRevealing, PostgresKnowledgeBaseConfig):
@@ -115,7 +112,7 @@ class KbRows:
 async def _embed(cfg: KbToolConfig, query: str) -> tuple[list[float], int]:
     """Вектор запроса и его размерность — их ждёт SQL-шаблон."""
     build = Elapsed()
-    embedder = EmbedderFactory.build(cfg.embedding)
+    embedder = WarmEmbedder.of(cfg.embedding)
     logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.provider)
 
     embed = Elapsed()
@@ -142,10 +139,10 @@ async def _select(
     logger.info("kb connected in %dms", connect.ms())
 
     async with conn, conn.cursor(row_factory=dict_row) as cur:
+        query = Elapsed()
         if iterative:
             await cur.execute(sql.SQL(KbSearch.ITERATIVE_SCAN))
 
-        query = Elapsed()
         await cur.execute(statement, params)
         rows = await cur.fetchall()
         logger.info("kb query finished in %dms (%d rows)", query.ms(), len(rows))

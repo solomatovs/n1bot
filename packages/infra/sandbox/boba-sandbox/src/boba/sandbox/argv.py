@@ -1,4 +1,4 @@
-"""Pure builder: SandboxProfile + command -> argv для запуска bwrap."""
+"""Pure builder: SandboxProfile -> argv запуска зиготы под bwrap."""
 
 from __future__ import annotations
 
@@ -8,52 +8,9 @@ from typing import TypeVar
 
 from boba.sandbox.profile import BindSpec, SandboxProfile
 from boba.toolkit.binaries import SandboxBinary
+from boba.workspace.launcher import FUSE_DEVICE
 
-__all__ = ["WORKSPACE_MOUNT", "build_bwrap_argv", "build_zygote_argv"]
-
-
-WORKSPACE_MOUNT = "/workspace"
-"""Конвенция: target рабочей папки чата в rw_binds; сюда смотрят вложения."""
-
-
-def build_bwrap_argv(
-    profile: SandboxProfile,
-    command: str,
-    *,
-    env: Mapping[str, str],
-    nested: bool = False,
-) -> list[str]:
-    """nested — запуск внутри userns лаунчера образов: свой userns недоступен."""
-    argv = _bwrap_preamble(profile, nested)
-
-    if profile.rootfs:
-        argv += ["--ro-bind", profile.rootfs, "/"]
-
-    argv += ["--proc", "/proc", "--dev", "/dev"]
-
-    symlinks: list[tuple[str, str]] = []
-
-    for spec in profile.ro_binds:
-        argv += _bind_args("--ro-bind-try", spec, symlinks)
-
-    for spec in _dedup_preserve_order(profile.rw_binds):
-        argv += _bind_args("--bind-try", spec, symlinks)
-
-    for target, link_path in _dedup_preserve_order(symlinks):
-        argv += ["--symlink", target, link_path]
-
-    for spec in profile.tmpfs:
-        argv += ["--size", str(spec.size_bytes), "--tmpfs", spec.path]
-
-    argv += ["--clearenv"]
-    for name, value in env.items():
-        argv += ["--setenv", name, value]
-
-    argv += ["--chdir", profile.cwd or "/"]
-
-    guarded = f"ulimit -u {profile.max_processes} || exit 1; {command}"
-    argv += ["--", "/bin/bash", "-c", guarded]
-    return argv
+__all__ = ["build_zygote_argv"]
 
 
 def build_zygote_argv(
@@ -61,23 +18,23 @@ def build_zygote_argv(
     command: list[str],
     *,
     env: Mapping[str, str],
+    fuse: bool = False,
+    nested: bool = False,
 ) -> list[str]:
-    """bwrap для зиготы: capabilities в своём userns, команда без bash-guard.
+    """bwrap для зиготы: capabilities в userns, свой или лаунчера.
 
     CAP_SYS_ADMIN — unshare и mount детей, CAP_SYS_RESOURCE — запрет
-    вложенных userns записью max_user_namespaces=0. Guard `ulimit -u` не
-    ставится: процессы вызова ограничивает pids.max его cgroup-leaf'а.
+    вложенных userns записью max_user_namespaces=0. RLIMIT_NPROC зигота
+    ставит себе сама: потолок общий на неё и всех детей. nested — запуск
+    внутри userns лаунчера образов: он там уже создан, и создать свой
+    нельзя, зато капабилити лаунчера наследуются.
     """
-    bwrap_path = profile.binaries.resolve(SandboxBinary.BWRAP)
+    bwrap_path = profile.host.binaries.resolve(SandboxBinary.BWRAP)
 
     argv = [
         bwrap_path,
         "--die-with-parent",
-        "--unshare-user",
-        "--uid",
-        "0",
-        "--gid",
-        "0",
+        "--as-pid-1",
         "--cap-add",
         "CAP_SYS_ADMIN",
         "--cap-add",
@@ -86,63 +43,65 @@ def build_zygote_argv(
         "--unshare-ipc",
         "--unshare-uts",
         "--unshare-cgroup-try",
+        # внутреннее устройство телу не видно
         "--hostname",
-        "zygote",
+        "sandbox",
         "--new-session",
     ]
 
-    if profile.rootfs:
-        argv += ["--ro-bind", profile.rootfs, "/"]
+    if not nested:
+        argv[2:2] = ["--unshare-user", "--uid", "0", "--gid", "0"]
 
-    argv += ["--proc", "/proc", "--dev", "/dev"]
+    if profile.rootfs.dir:
+        argv += ["--ro-bind", profile.rootfs.dir, "/"]
+
+    argv += _system_mounts(profile)
+
+    if fuse:
+        argv += ["--dev-bind", FUSE_DEVICE, FUSE_DEVICE]
+
+    # tmpfs раньше биндов: на read-only корне bwrap не создаст точку
+    # монтирования, а поверх tmpfs — создаст
+    for spec in profile.mounts.tmpfs:
+        argv += ["--size", str(spec.size_bytes), "--tmpfs", spec.path]
 
     symlinks: list[tuple[str, str]] = []
 
-    for spec in profile.ro_binds:
+    ro_binds = (*profile.mounts.ro, *profile.mounts.setup_ro)
+    for spec in ro_binds:
         argv += _bind_args("--ro-bind-try", spec, symlinks)
 
-    for spec in _dedup_preserve_order(profile.rw_binds):
+    rw_binds = (*profile.mounts.rw, *profile.mounts.setup_rw)
+    for spec in _dedup_preserve_order(rw_binds):
         argv += _bind_args("--bind-try", spec, symlinks)
 
     for target, link_path in _dedup_preserve_order(symlinks):
         argv += ["--symlink", target, link_path]
 
-    for spec in profile.tmpfs:
-        argv += ["--size", str(spec.size_bytes), "--tmpfs", spec.path]
-
     argv += ["--clearenv"]
     for name, value in env.items():
         argv += ["--setenv", name, value]
 
-    if not profile.network:
+    # во вложенном запуске сеть уже отобрана внешним bwrap цепочки
+    if not profile.isolation.network and not nested:
         argv.append("--unshare-net")
 
-    argv += ["--chdir", profile.cwd or "/"]
+    # cwd профиля может быть точкой образа, которую смонтирует ребёнок
+    argv += ["--chdir", "/"]
     argv += ["--", *command]
     return argv
 
 
-def _bwrap_preamble(profile: SandboxProfile, nested: bool) -> list[str]:
-    bwrap_path = profile.binaries.resolve(SandboxBinary.BWRAP)
+def _system_mounts(profile: SandboxProfile) -> list[str]:
+    """procfs и devtmpfs там, где их просит профиль; пусто — не монтируются."""
+    argv: list[str] = []
 
-    argv = [
-        bwrap_path,
-        "--die-with-parent",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--hostname",
-        "sandbox",
-        "--unshare-cgroup-try",
-        "--new-session",
-    ]
-    if nested:
-        argv += ["--cap-drop", "ALL"]
-        return argv
-    argv.insert(2, "--unshare-user")
-    argv.append("--disable-userns")
-    if not profile.network:
-        argv.append("--unshare-net")
+    if profile.mounts.proc:
+        argv += ["--proc", profile.mounts.proc]
+
+    if profile.mounts.dev:
+        argv += ["--dev", profile.mounts.dev]
+
     return argv
 
 

@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 from liteparse.types import ParseError
 
-from boba.liteparse.engine import LocaleRetry
+from boba.liteparse.engine import DocumentParser, LocaleRetry
 
 
-class ParserStub:
+class ParserStub(DocumentParser):
     """Скриптованный parser: отдаёт исходы по очереди и пишет виденный LC_ALL."""
 
     def __init__(self, outcomes: list[Any]) -> None:

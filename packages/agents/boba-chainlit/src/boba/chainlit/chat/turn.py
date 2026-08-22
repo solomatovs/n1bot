@@ -31,12 +31,12 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
-from boba.chainlit.chat.tracing import AgentTracer
+from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import current_user_id
-from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.domain.turn import TurnContext, TurnPort
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.llm.chat import ResponseField
 from chainlit.step import Step, StepDict
@@ -92,7 +92,7 @@ class TurnOutcome(StrEnum):
     FAILED = "failed"
 
 
-class TurnState:
+class TurnState(TurnArtifacts):
     """Состояние хода: исход-машина set-once и незакрытые артефакты стрима."""
 
     def __init__(self) -> None:
@@ -299,7 +299,7 @@ class TurnReporter:
         await self._history.remember(record)
 
 
-class ChatTurn:
+class ChatTurn(TurnPort):
     """Один ход: стрим ответа под отменой, зарегистрированной на thread_id."""
 
     _REPORTS: ClassVar[set[asyncio.Future[None]]] = set()

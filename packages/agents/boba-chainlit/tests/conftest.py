@@ -15,10 +15,10 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from omegaconf import DictConfig
 from psycopg import sql
 
-from boba.chainlit.chat.history import TranscriptFeed
+from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain.keys import AttachmentLinks
+from boba.chainlit.domain.keys import AttachmentLinks, WorkspaceMount
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
@@ -53,7 +53,7 @@ class FakeUrl(StrEnum):
         return f"{cls.LOOPBACK_SCHEME}://{cls.LOOPBACK_HOST}:{port}{path}"
 
 
-class FakeThreadMessages:
+class FakeThreadMessages(ThreadMessages):
     """Источник истории для тестов: сообщения задаются на тред вручную."""
 
     def __init__(self) -> None:
@@ -78,6 +78,12 @@ class Seed:
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def workspace_mount() -> None:
+    """Точку рабочего каталога в приложении ставит загрузчик из профиля."""
+    WorkspaceMount.configure("/workspace")
 
 
 @pytest.fixture(scope="session")

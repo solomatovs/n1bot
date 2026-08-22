@@ -254,9 +254,7 @@ class TestRephraser:
         chainlit_context: None,
     ) -> None:
         """Модели нет у провайдера: отказ виден, а не превращается в пустоту."""
-        rephraser = _rephraser(
-            rephraser_config, clients, model="no/such-model-at-all"
-        )
+        rephraser = _rephraser(rephraser_config, clients, model="no/such-model-at-all")
 
         with pytest.raises((PrefetchError, OpenAIError)) as caught:
             await rephraser.rephrase(QUESTION)

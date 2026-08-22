@@ -157,10 +157,14 @@ def storage(
     root = tmp_path_factory.mktemp("image")
     fields: dict[str, Any] = {
         "kind": "image",
-        "image_path": f"{root}/ws/{{user_id}}.ext4",
-        "image_template": str(big_template),
+        "mount_dir": "/tmp",  # noqa: S108
+        "workspace": {
+            "template": str(big_template),
+            "images": f"{root}/ws",
+            "mount": "/workspace",
+        },
         "op_timeout_sec": 120,
-        "launcher": {
+        "mounting": {
             "mount_wait_sec": 10.0,
             "mount_poll_sec": 0.05,
             "shutdown_wait_sec": 5.0,
@@ -220,10 +224,14 @@ class TestStreamingReads:
         """Заливка 128 МиБ: в памяти живёт блок, а не файл."""
         fields: dict[str, Any] = {
             "kind": "image",
-            "image_path": f"{tmp_path}/ws/{{user_id}}.ext4",
-            "image_template": str(big_template),
+            "mount_dir": "/tmp",  # noqa: S108
+            "workspace": {
+                "template": str(big_template),
+                "images": f"{tmp_path}/ws",
+                "mount": "/workspace",
+            },
             "op_timeout_sec": 120,
-            "launcher": {
+            "mounting": {
                 "mount_wait_sec": 10.0,
                 "mount_poll_sec": 0.05,
                 "shutdown_wait_sec": 5.0,
@@ -409,10 +417,14 @@ class TestStreamingReads:
         """
         fields: dict[str, Any] = {
             "kind": "image",
-            "image_path": f"{tmp_path}/ws/{{user_id}}.ext4",
-            "image_template": str(big_template),
+            "mount_dir": "/tmp",  # noqa: S108
+            "workspace": {
+                "template": str(big_template),
+                "images": f"{tmp_path}/ws",
+                "mount": "/workspace",
+            },
             "op_timeout_sec": 30,
-            "launcher": {
+            "mounting": {
                 "mount_wait_sec": 10.0,
                 "mount_poll_sec": 0.05,
                 "shutdown_wait_sec": 5.0,

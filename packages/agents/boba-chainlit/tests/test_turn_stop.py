@@ -15,13 +15,13 @@ from boba.cancellation import (
     current_cancellation,
 )
 from boba.chainlit.chat.turn import ChatTurn
-from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.domain.turn import LiveStream, TurnContext, TurnPort
 from boba.toolkit.channels import CallOutcome
 
 THREAD = "thread-1"
 
 
-class FakeTurn:
+class FakeTurn(TurnPort):
     """Ход под тест: контексту достаточно порта с шагом ответа."""
 
     answer_step_id = "answer-step"
@@ -127,7 +127,7 @@ class TestRegistry:
 class TestLiveArtifacts:
     """Живые журналы и насос гаснут вместе с контекстом, файлы — нет."""
 
-    class FakeStream:
+    class FakeStream(LiveStream):
         def __init__(self) -> None:
             self.note: str | None = None
 

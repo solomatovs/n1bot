@@ -108,8 +108,7 @@ class Request(Protocol):
     чтобы identity не дрейфовала.
     """
 
-    @property
-    def metadata(self) -> Metadata: ...
+    metadata: Metadata
 
 
 ReqT = TypeVar("ReqT", bound=Request)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import string
 from collections.abc import Mapping
@@ -10,14 +11,21 @@ from typing import Any, ClassVar, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from boba.toolkit.binaries import TrustedBinaries
-from boba.workspace.launcher import LauncherConfig
+from boba.workspace.launcher import MountingConfig
 
 __all__ = [
     "BindSpec",
+    "IsolationSpec",
+    "LimitsSpec",
+    "MountsSpec",
+    "RootfsSpec",
+    "RunSpec",
     "SandboxConfig",
+    "SandboxHost",
     "SandboxProfile",
     "SandboxToolConfig",
     "TmpfsSpec",
+    "WorkspaceSpec",
 ]
 
 
@@ -127,248 +135,271 @@ class TmpfsSpec(BaseModel):
         return int(digits) * (factor or 1)
 
 
-class SandboxProfile(BaseModel):
-    """Параметры одной песочницы; LLM выбирает профиль по имени."""
+class WorkspaceSpec(BaseModel):
+    """Рабочий каталог чата: единственное описание workspace на всё приложение.
+
+    Из него выводится всё остальное: путь образа пользователя собирается из
+    каталога образов и его идентификатора, первый образ копируется с шаблона,
+    внутрь песочницы он монтируется в одну и ту же точку. Отдельных настроек
+    под каждый из этих путей нет — ошибиться и развести их невозможно.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    rootfs: str = Field(
-        default="",
+    SUFFIX: ClassVar[str] = ".ext4"
+    """Расширение образа пользователя; формат задаёт mkfs, а не администратор."""
+
+    template: str = Field(
+        min_length=1,
         description=(
-            "Каталог, монтируемый read-only как / песочницы; ro_binds "
-            "ложатся поверх. Пустая строка — корень берётся из rootfs_image "
-            "либо не монтируется вовсе."
+            "Шаблонный ext4-образ: с него копируется образ пользователя при "
+            "первом обращении. Собирается целью make sandbox-image."
         ),
     )
-    rootfs_image: str = Field(
-        default="",
+    images: str = Field(
+        min_length=1,
         description=(
-            "Ext4-образ корня, монтируемый read-only на время вызова; "
-            "внутри него уже лежат python, site-packages и код инструментов. "
-            "Собирается целью make sandbox-image. Взаимоисключим с rootfs."
+            "Каталог, где лежат образы пользователей. Имя файла компонент "
+            "собирает сам из идентификатора пользователя."
         ),
     )
-    ro_binds: tuple[BindSpec, ...] = Field(
+    mount: str = Field(
+        min_length=1,
         description=(
-            "Host-пути read-only, формат `host[:target]`; несуществующие "
-            "пропускаются. Рендерятся {user_id}/{thread_id}."
+            "Точка, куда образ пользователя монтируется внутри песочницы. "
+            "По ней же приложение строит пути вложений, видимые инструменту."
         ),
     )
-    rw_binds: tuple[BindSpec, ...] = Field(
-        description=(
-            "Host-пути read-write, формат `host[:target]`. Рендерятся "
-            "{user_id}/{thread_id}; host-путь создаётся при вызове."
-        ),
-    )
-    rw_images: tuple[BindSpec, ...] = Field(
-        description=(
-            "Ext4-образы read-write, формат `image[:target]`; монтируются "
-            "через fuse2fs на время вызова. Рендерятся {user_id}/{thread_id}."
-        ),
-    )
-    image_template: str = Field(
-        description=(
-            "Шаблонный ext4-образ; копируется в путь из rw_images при "
-            "первом вызове. Обязателен, если rw_images непуст."
-        ),
-    )
-    launcher: LauncherConfig = Field(
-        description="Тайминги и размеры операций лаунчера образов (rw_images).",
-    )
+
+    @field_validator("template", "images", "mount", mode="after")
+    @classmethod
+    def _canonical(cls, value: str) -> str:
+        """bwrap не примет относительный путь: корень песочницы read-only."""
+        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
+    def image_of(self, user_id: str) -> str:
+        """Путь образа пользователя на хосте."""
+        if not user_id:
+            msg = "workspace image requires a user id"
+            raise ValueError(msg)
+
+        return os.path.join(self.images, f"{user_id}{self.SUFFIX}")
+
+
+class SandboxHost(BaseModel):
+    """Секция [sandbox.host]: то, что живёт в приложении и внутрь не попадает.
+
+    Профиль ссылается на неё целиком; инструмент эти значения не меняет —
+    они описывают не песочницу, а обвязку вокруг неё.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     binaries: TrustedBinaries = Field(
         description=(
-            "Каталоги, откуда берутся bwrap и fuse2fs; $PATH не используется."
+            "Каталоги на хосте, откуда берутся bwrap и fuse2fs; $PATH не "
+            "используется. Внутрь песочницы едет только путь fuse2fs, и то "
+            "переведённый через бинды профиля."
         ),
     )
-    tmpfs: tuple[TmpfsSpec, ...] = Field(
+    mounting: MountingConfig = Field(
         description=(
-            "Mountpoints под tmpfs (in-memory), формат `dest:size`, "
-            "например `/tmp:256M`; размер обязателен."
-        ),
-    )
-    network: bool = Field(
-        description="False — `--unshare-net` (нет сети). True — сеть хоста.",
-    )
-    env_set: dict[str, str] = Field(
-        description=(
-            "Env внутри песочницы; host-env не наследуется. Для запуска "
-            "утилит обычно нужен 'PATH'."
-        ),
-    )
-    timeout_sec: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "Жёсткий таймаут выполнения процесса, сек. Отсутствие — "
-            "процесс не ограничен по времени."
-        ),
-    )
-    max_memory_bytes: int = Field(
-        gt=0,
-        description="Лимит памяти команды (RLIMIT_AS), байт; обязателен.",
-    )
-    max_cpu_sec: int = Field(
-        gt=0,
-        description="Лимит CPU-времени команды (RLIMIT_CPU), сек; обязателен.",
-    )
-    max_file_size_bytes: int = Field(
-        gt=0,
-        description=(
-            "Лимит размера создаваемого файла (RLIMIT_FSIZE), байт; "
-            "обязателен. Суммарный диск в rw_images ограничен самим образом."
-        ),
-    )
-    max_open_files: int = Field(
-        gt=0,
-        description="Лимит открытых дескрипторов (RLIMIT_NOFILE); обязателен.",
-    )
-    max_processes: int = Field(
-        gt=0,
-        description=(
-            "Лимит процессов на вызов (RLIMIT_NPROC); обязателен. "
-            "Ставится через `ulimit -u` внутри песочницы: выставленный "
-            "снаружи, он не даёт bwrap создать namespace."
+            "Тайминги и размеры операций монтирования образов: корня при "
+            "подъёме зиготы и образа пользователя на каждый вызов."
         ),
     )
     cgroup_base: str = Field(
         description=(
-            "Делегированный cgroup v2 каталог; в нём создаётся leaf на "
-            "каждый запуск. Обязателен, если задан любой cgroup_*-лимит."
+            "Делегированный cgroup v2 каталог на хосте: в нём приложение "
+            "создаёт leaf на каждый вызов и вписывает туда исполнителя. "
+            "Обязателен, если профиль задаёт хоть один group_*-лимит."
         ),
     )
-    cgroup_memory_bytes: int | None = Field(
-        default=None,
+    stderr_tail_bytes: int = Field(
         gt=0,
         description=(
-            "Лимит памяти всего запуска суммарно (cgroup memory.max), байт: "
-            "в отличие от max_memory_bytes не множится на число процессов. "
-            "Каждый cgroup_*-параметр независим: отсутствие в конфиге — "
-            "не контролируется; заданный обязан примениться, иначе "
-            "ошибка старта."
+            "Сколько последних байт stderr инструмента приложение держит в "
+            "памяти, чтобы объяснить отказ, когда конверта с результатом нет."
         ),
     )
-    cgroup_cpu_percent: int | None = Field(
-        default=None,
+    fail_tail_chars: int = Field(
         gt=0,
         description=(
-            "Потолок скорости CPU всего запуска (cgroup cpu.max) в процентах "
-            "одного ядра: 100 — ядро, 150 — полтора. Отсутствие — "
-            "не контролируется."
+            "Сколько последних символов вывода попадает в строку журнала об "
+            "отказе: длинный вывод в сообщении нечитаем."
         ),
     )
-    cgroup_cpu_weight: int | None = Field(
-        default=None,
-        ge=1,
-        le=10000,
-        description=(
-            "Вес CPU при конкуренции (cgroup cpu.weight), 1..10000; на "
-            "простаивающей машине не ограничивает. Отсутствие — "
-            "не контролируется."
-        ),
-    )
-    cgroup_pids_max: int | None = Field(
-        default=None,
+    kill_grace_sec: int = Field(
         gt=0,
         description=(
-            "Потолок числа процессов в группе (cgroup pids.max): в отличие "
-            "от max_processes (RLIMIT_NPROC, общий на uid) считает только "
-            "процессы этого запуска. Отсутствие — не контролируется."
-        ),
-    )
-    cgroup_swap_max_bytes: int | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Лимит свопа группы (cgroup memory.swap.max), байт; 0 — своп "
-            "запрещён, без него cgroup_memory_bytes дыряв: группа вытекает "
-            "в swap. Отсутствие — не контролируется."
-        ),
-    )
-    cgroup_oom_kill_all: bool | None = Field(
-        default=None,
-        description=(
-            "cgroup memory.oom.group: при OOM убивать всю группу разом, "
-            "а не один процесс — полуживой запуск бесполезен. "
-            "Отсутствие — поведение ядра по умолчанию (один процесс)."
-        ),
-    )
-    oom_score_adj: int = Field(
-        ge=0,
-        le=1000,
-        description=(
-            "oom_score_adj команды (0..1000): чем выше, тем охотнее OOM "
-            "killer убьёт её, а не сервер. 0 — не менять."
-        ),
-    )
-    cwd: str = Field(
-        description=(
-            "Рабочая директория внутри песочницы; поддерживает "
-            "{user_id}/{thread_id}. Пустая = '/'."
+            "Сколько секунд приложение ждёт выхода процесса после kill, "
+            "прежде чем считать его зависшим."
         ),
     )
 
-    @field_validator("rootfs", mode="after")
+    @field_validator("cgroup_base", mode="after")
     @classmethod
-    def _canonicalize_rootfs(cls, value: str) -> str:
+    def _absolute(cls, value: str) -> str:
         if not value:
             return value
-        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
 
-    @field_validator("rootfs_image", mode="after")
-    @classmethod
-    def _canonicalize_rootfs_image(cls, value: str) -> str:
-        if not value:
-            return value
-        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+        if not value.startswith("/"):
+            msg = f"sandbox: cgroup_base must be absolute, got {value!r}"
+            raise ValueError(msg)
 
-    @field_validator("image_template", mode="after")
+        return value
+
+
+class RootfsSpec(BaseModel):
+    """Корень песочницы: либо образ, либо готовый каталог."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    image: str = Field(
+        default="",
+        description=(
+            "Ext4-образ корня, монтируемый read-only на всю жизнь зиготы; "
+            "внутри уже лежат python, site-packages и код инструментов. "
+            "Собирается целью make sandbox-image. Взаимоисключим с dir."
+        ),
+    )
+    dir: str = Field(
+        default="",
+        description=(
+            "Готовый каталог, монтируемый read-only как / песочницы; бинды "
+            "ложатся поверх. Пусто — корень берётся из image либо не "
+            "монтируется вовсе."
+        ),
+    )
+    mount: str = Field(
+        default="",
+        description=(
+            "Куда цепочка запуска монтирует image перед тем, как сделать его "
+            "корнем: путь виден только процессам цепочки, тело получает его "
+            "уже как /. Обязателен, если задан image."
+        ),
+    )
+
+    @field_validator("image", "dir", mode="after")
     @classmethod
-    def _canonicalize_template(cls, value: str) -> str:
+    def _canonical(cls, value: str) -> str:
         if not value:
             return value
+
         return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
 
     @model_validator(mode="after")
-    def _validate_images(self) -> Self:
-        if self.rootfs and self.rootfs_image:
-            msg = "sandbox: rootfs and rootfs_image are mutually exclusive"
+    def _one_root(self) -> Self:
+        if self.dir and self.image:
+            msg = "sandbox: rootfs.dir and rootfs.image are mutually exclusive"
             raise ValueError(msg)
 
-        if self.rw_images and not self.image_template:
-            msg = "sandbox: rw_images is set, but image_template is empty"
+        if self.image and not self.mount:
+            msg = "sandbox: rootfs.image is set, but rootfs.mount is empty"
             raise ValueError(msg)
+
         return self
 
-    @model_validator(mode="after")
-    def _validate_cgroup(self) -> Self:
-        group_fields = (
-            self.cgroup_memory_bytes,
-            self.cgroup_cpu_percent,
-            self.cgroup_cpu_weight,
-            self.cgroup_pids_max,
-            self.cgroup_swap_max_bytes,
-            self.cgroup_oom_kill_all,
-        )
-        requested = any(value is not None for value in group_fields)
-        if requested and not self.cgroup_base:
-            msg = "sandbox: group limits are set, but cgroup_base is empty"
-            raise ValueError(msg)
-        if self.cgroup_base and not self.cgroup_base.startswith("/"):
-            msg = f"sandbox: cgroup_base must be absolute, got {self.cgroup_base!r}"
-            raise ValueError(msg)
-        return self
 
-    @field_validator("ro_binds", "rw_binds", "rw_images", mode="before")
+class MountsSpec(BaseModel):
+    """Что песочница монтирует и что из этого доезжает до тела инструмента.
+
+    ro и rw видны на всех уровнях, включая тело. setup_ro и setup_rw нужны
+    исполнителю только для монтирования образа вызова: смонтировав свой
+    образ, он отцепляет их от себя, и тело их не видит. Иначе тело видело бы
+    каталог образов всех пользователей.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ro: tuple[BindSpec, ...] = Field(
+        description=(
+            "Host-пути read-only, формат `host[:target]`; несуществующие "
+            "пропускаются. Рендерятся {user_id}/{thread_id}. Видны телу."
+        ),
+    )
+    rw: tuple[BindSpec, ...] = Field(
+        description=(
+            "Host-пути read-write, формат `host[:target]`. Рендерятся "
+            "{user_id}/{thread_id}. Видны телу."
+        ),
+    )
+    setup_ro: tuple[BindSpec, ...] = Field(
+        description=(
+            "Read-only обвязка монтирования: шаблон образа и бинарь fuse2fs. "
+            "Исполнитель отцепляет их перед запуском тела."
+        ),
+    )
+    setup_rw: tuple[BindSpec, ...] = Field(
+        description=(
+            "Read-write обвязка монтирования: каталог образов пользователей. "
+            "Исполнитель отцепляет её перед запуском тела."
+        ),
+    )
+    tmpfs: tuple[TmpfsSpec, ...] = Field(
+        description=(
+            "Mountpoints под tmpfs (in-memory), формат `dest:size`, например "
+            "`/tmp:256M`; размер обязателен."
+        ),
+    )
+    call_tmpfs: str = Field(
+        default="",
+        description=(
+            "Какая из точек tmpfs приватна для вызова: исполнитель "
+            "перемонтирует её себе, чтобы файлы одного вызова не видел "
+            "другой. Размер берётся из той же записи tmpfs. Пусто — вызовы "
+            "делят её содержимое."
+        ),
+    )
+    proc: str = Field(
+        default="",
+        description=(
+            "Куда монтировать procfs. Пусто — /proc не монтируется: без него "
+            "не работают python, bash и всё, что читает /proc/self."
+        ),
+    )
+    dev: str = Field(
+        default="",
+        description=(
+            "Куда монтировать минимальный devtmpfs (null, zero, random, tty). "
+            "Пусто — устройств в песочнице нет."
+        ),
+    )
+    workspace: WorkspaceSpec | None = Field(
+        default=None,
+        description=(
+            "Рабочий каталог чата одной записью: шаблон, каталог образов и "
+            "точка монтирования. Отсутствие — у секции нет своего workspace."
+        ),
+    )
+    images: tuple[BindSpec, ...] = Field(
+        description=(
+            "Произвольные ext4-образы read-write, формат `image[:target]`; "
+            "монтируются через fuse2fs на время вызова. Рендерятся "
+            "{user_id}/{thread_id}."
+        ),
+    )
+    image_template: str = Field(
+        default="",
+        description=(
+            "Шаблонный ext4-образ для images: копируется в путь образа при "
+            "первом вызове. Обязателен, если images непуст."
+        ),
+    )
+
+    @field_validator("ro", "rw", "setup_ro", "setup_rw", "images", mode="before")
     @classmethod
     def _parse_binds(cls, value: object) -> object:
         if not isinstance(value, (list, tuple)):
             return value
+
         parsed: list[object] = []
         for item in value:
             if isinstance(item, str):
                 parsed.append(BindSpec.parse(item))
             else:
                 parsed.append(item)
+
         return tuple(parsed)
 
     @field_validator("tmpfs", mode="before")
@@ -376,35 +407,363 @@ class SandboxProfile(BaseModel):
     def _parse_tmpfs(cls, value: object) -> object:
         if not isinstance(value, (list, tuple)):
             return value
+
         parsed: list[object] = []
         for item in value:
             if isinstance(item, str):
                 parsed.append(TmpfsSpec.parse(item))
             else:
                 parsed.append(item)
+
         return tuple(parsed)
+
+    @field_validator("image_template", mode="after")
+    @classmethod
+    def _canonical_template(cls, value: str) -> str:
+        if not value:
+            return value
+
+        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
+    @model_validator(mode="after")
+    def _template_for_images(self) -> Self:
+        if self.images and not self.image_template:
+            msg = "sandbox: mounts.images is set, but mounts.image_template is empty"
+            raise ValueError(msg)
+
+        return self
+
+    def all_binds(self) -> tuple[BindSpec, ...]:
+        """Все монтирования профиля: и видимые телу, и обвязка."""
+        return (*self.ro, *self.rw, *self.setup_ro, *self.setup_rw)
+
+
+class IsolationSpec(BaseModel):
+    """Изоляция секции: сеть, окружение, потолок задач."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    network: bool = Field(
+        description="False — `--unshare-net` (нет сети). True — сеть хоста.",
+    )
+    env: dict[str, str] = Field(
+        description=(
+            "Env внутри песочницы; host-env не наследуется. Для запуска "
+            "утилит обычно нужен 'PATH'."
+        ),
+    )
+    max_processes: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Общий потолок задач (RLIMIT_NPROC) на зиготу секции и всех её "
+            "детей: счётчик один на user namespace, потоки считаются наравне "
+            "с процессами. Ставится изнутри песочницы. Отсутствие — не "
+            "ограничивать; потолок на отдельный вызов задаёт group_pids_max."
+        ),
+    )
+    reap_poll_sec: float = Field(
+        gt=0,
+        description=(
+            "Шаг опроса внутри зиготы: как часто её цикл просыпается сам, "
+            "если не пришло ни сообщение от приложения, ни сигнал о смерти "
+            "ребёнка. Смерть ребёнка будит цикл немедленно."
+        ),
+    )
+
+
+class LimitsSpec(BaseModel):
+    """Лимиты вызова: process_* — каждому процессу, group_* — всей группе.
+
+    process_* ставит себе исполнитель через setrlimit, поэтому они действуют
+    на каждый процесс вызова отдельно. group_* приложение выставляет
+    cgroup-leaf'у и считает всю группу разом.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    timeout_sec: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Жёсткий таймаут вызова, сек: дедлайн считает приложение и "
+            "убивает исполнителя. Отсутствие — не ограничивать."
+        ),
+    )
+    process_memory_bytes: int = Field(
+        gt=0,
+        description="Лимит памяти процесса (RLIMIT_AS), байт; обязателен.",
+    )
+    process_cpu_sec: int = Field(
+        gt=0,
+        description="Лимит CPU-времени процесса (RLIMIT_CPU), сек; обязателен.",
+    )
+    process_file_bytes: int = Field(
+        gt=0,
+        description=(
+            "Лимит размера создаваемого файла (RLIMIT_FSIZE), байт; "
+            "обязателен. Суммарный диск образа ограничен самим образом."
+        ),
+    )
+    process_open_files: int = Field(
+        gt=0,
+        description="Лимит открытых дескрипторов (RLIMIT_NOFILE); обязателен.",
+    )
+    process_oom_score_adj: int = Field(
+        ge=0,
+        le=1000,
+        description=(
+            "oom_score_adj процессов вызова (0..1000): чем выше, тем охотнее "
+            "OOM killer убьёт их, а не сервер. 0 — не менять."
+        ),
+    )
+    group_memory_bytes: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Лимит памяти всей группы вызова (cgroup memory.max), байт: в "
+            "отличие от process_memory_bytes не множится на число процессов. "
+            "Отсутствие — не контролируется."
+        ),
+    )
+    group_swap_bytes: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Лимит свопа группы (cgroup memory.swap.max), байт; 0 — своп "
+            "запрещён, без него group_memory_bytes дыряв: группа вытекает в "
+            "swap. Отсутствие — не контролируется."
+        ),
+    )
+    group_cpu_percent: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Потолок скорости CPU группы (cgroup cpu.max) в процентах одного "
+            "ядра: 100 — ядро, 150 — полтора. По нему же считается маска "
+            "ядер зиготы и исполнителя. Отсутствие — не контролируется."
+        ),
+    )
+    group_cpu_weight: int | None = Field(
+        default=None,
+        ge=1,
+        le=10000,
+        description=(
+            "Вес CPU при конкуренции (cgroup cpu.weight), 1..10000; на "
+            "простаивающей машине не ограничивает."
+        ),
+    )
+    group_pids_max: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Потолок числа процессов в группе (cgroup pids.max): в отличие от "
+            "max_processes считает только процессы этого вызова."
+        ),
+    )
+    group_oom_kill_all: bool | None = Field(
+        default=None,
+        description=(
+            "cgroup memory.oom.group: при OOM убивать всю группу разом, а не "
+            "один процесс — полуживой вызов бесполезен."
+        ),
+    )
+
+    def group_requested(self) -> bool:
+        """Задан ли хоть один групповой лимит: иначе leaf не создаётся."""
+        values = (
+            self.group_memory_bytes,
+            self.group_swap_bytes,
+            self.group_cpu_percent,
+            self.group_cpu_weight,
+            self.group_pids_max,
+            self.group_oom_kill_all,
+        )
+        for value in values:  # noqa: SIM110
+            if value is not None:
+                return True
+
+        return False
+
+
+class RunSpec(BaseModel):
+    """Чем и где исполняется команда инструмента."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cwd: str = Field(
+        description=(
+            "Рабочая директория внутри песочницы; поддерживает "
+            "{user_id}/{thread_id}. Пустая — корень."
+        ),
+    )
+    shell: str = Field(
+        default="",
+        description=(
+            "Интерпретатор, которым исполняется команда bash-инструмента. "
+            "Обязателен для секций, где такой инструмент включён; путь "
+            "должен существовать внутри корня песочницы."
+        ),
+    )
 
     @field_validator("cwd", mode="after")
     @classmethod
     def _validate_cwd(cls, value: str) -> str:
         return BindSpec.check_vars(value)
 
+
+class SandboxProfile(BaseModel):
+    """Песочница одной секции инструментов, собранная из пяти групп настроек.
+
+    extends позволяет объявить профиль как правку другого: названные поля
+    заменяют унаследованные, остальные приходят из базы. Инструмент выбирает
+    готовый профиль ссылкой и ничего в нём не правит.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    GROUPS: ClassVar[tuple[str, ...]] = (
+        "host",
+        "rootfs",
+        "mounts",
+        "isolation",
+        "limits",
+        "run",
+    )
+    """Группы, которые сливаются при наследовании профиля."""
+
+    host: SandboxHost = Field(
+        description='Обвязка приложения ссылкой: host = "${sandbox.host}".',
+    )
+    rootfs: RootfsSpec = Field(description="Корень песочницы: образ либо каталог.")
+    mounts: MountsSpec = Field(description="Что монтируется и что видит тело.")
+    isolation: IsolationSpec = Field(description="Сеть, окружение, потолок задач.")
+    limits: LimitsSpec = Field(description="Лимиты процесса и группы вызова.")
+    run: RunSpec = Field(description="Рабочий каталог и интерпретатор команды.")
+
+    MAX_EXTENDS: ClassVar[int] = 8
+    """Потолок длины цепочки наследования: защита от ссылки профиля на себя."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _inherit(cls, value: object) -> object:
+        """extends — база профиля: названные группы правятся, прочие берутся из неё.
+
+        База сама может быть наследником, поэтому цепочка разворачивается до
+        профиля без extends.
+        """
+        if not isinstance(value, Mapping):
+            return value
+
+        raw = dict(value)
+        for _ in range(cls.MAX_EXTENDS):
+            base = raw.pop("extends", None)
+            if base is None:
+                return raw
+
+            if not isinstance(base, Mapping):
+                msg = "sandbox: extends must reference a profile table"
+                raise ValueError(msg)
+
+            raw = cls._merge(dict(base), raw)
+
+        msg = f"sandbox: extends chain is longer than {cls.MAX_EXTENDS} profiles"
+        raise ValueError(msg)
+
+    @classmethod
+    def _merge(cls, base: dict[str, Any], patch: Mapping[str, Any]) -> dict[str, Any]:
+        """Слияние на два уровня: группа -> поле; списки заменяются целиком."""
+        merged = dict(base)
+        for name, value in patch.items():
+            if name not in cls.GROUPS:
+                merged[name] = value
+                continue
+
+            group = merged.get(name)
+            if not isinstance(group, Mapping) or not isinstance(value, Mapping):
+                merged[name] = value
+                continue
+
+            updated = dict(group)
+            updated.update(value)
+            merged[name] = updated
+
+        return merged
+
+    @model_validator(mode="after")
+    def _validate_groups(self) -> Self:
+        if self.limits.group_requested() and not self.host.cgroup_base:
+            msg = "sandbox: group limits are set, but host.cgroup_base is empty"
+            raise ValueError(msg)
+
+        return self
+
     def render(self, variables: Mapping[str, str]) -> Self:
         """Профиль с подставленными значениями {user_id}/{thread_id}."""
-        cwd = ""
-        if self.cwd:
-            cwd = BindSpec.substitute(self.cwd, variables)
-        ro_binds = self._render_binds(self.ro_binds, variables)
-        rw_binds = self._render_binds(self.rw_binds, variables)
-        rw_images = self._render_binds(self.rw_images, variables)
-        return self.model_copy(
+        mounts = self.mounts.model_copy(
             update={
-                "ro_binds": ro_binds,
-                "rw_binds": rw_binds,
-                "rw_images": rw_images,
-                "cwd": cwd,
+                "ro": self._render_binds(self.mounts.ro, variables),
+                "rw": self._render_binds(self.mounts.rw, variables),
+                "setup_ro": self._render_binds(self.mounts.setup_ro, variables),
+                "setup_rw": self._render_binds(self.mounts.setup_rw, variables),
+                "images": self._render_binds(self.mounts.images, variables),
             }
         )
+
+        cwd = ""
+        if self.run.cwd:
+            cwd = BindSpec.substitute(self.run.cwd, variables)
+
+        run = self.run.model_copy(update={"cwd": cwd})
+
+        return self.model_copy(update={"mounts": mounts, "run": run})
+
+    def cpu_cores(self) -> int:
+        """Сколько ядер отдано вызову по cgroup-квоте; 0 — квоты нет.
+
+        Нативные движки (onnxruntime, BLAS) размер своего пула берут из маски
+        доступных ядер, а cgroup-квоту не видят: без маски они поднимают пул
+        по числу ядер машины и дерутся за выданную долю. Запуск переводит
+        квоту в число ядер и ставит процессу affinity.
+        """
+        percent = self.limits.group_cpu_percent
+        if percent is None:
+            return 0
+
+        return max(1, math.ceil(percent / 100))
+
+    def inside(self, host: str) -> str:
+        """Путь хоста внутри песочницы по биндам профиля.
+
+        Берётся самый длинный покрывающий бинд; пустая строка — ни один бинд
+        этот путь внутрь не приносит.
+        """
+        best = BindSpec(host="/", target="/")
+        found = False
+        for spec in self.mounts.all_binds():
+            if not self._covers(spec.host, host):
+                continue
+
+            if found and len(spec.host) <= len(best.host):
+                continue
+
+            best = spec
+            found = True
+
+        if not found:
+            return ""
+
+        if host == best.host:
+            return best.target
+
+        return os.path.join(best.target, os.path.relpath(host, best.host))
+
+    @staticmethod
+    def _covers(bind_host: str, path: str) -> bool:
+        if path == bind_host:
+            return True
+
+        return path.startswith(bind_host.rstrip("/") + "/")
 
     @staticmethod
     def _render_binds(
@@ -414,6 +773,7 @@ class SandboxProfile(BaseModel):
         rendered: list[BindSpec] = []
         for spec in specs:
             rendered.append(spec.render(variables))
+
         return tuple(rendered)
 
 
@@ -426,15 +786,6 @@ class SandboxConfig(BaseModel):
         min_length=1,
         description="Профили по имени; инструмент берёт нужный ссылкой.",
     )
-    premount_dir: str = Field(
-        default="",
-        description=(
-            "Каталог точек премонтированного корня: rootfs-образы монтируются "
-            "один раз при старте приложения, профили получают каталог вместо "
-            "образа и запускаются без цепочки лаунчера. Пусто — выключено, "
-            "каждый вызов монтирует корень сам."
-        ),
-    )
 
 
 class SandboxToolConfig(BaseModel):
@@ -445,25 +796,3 @@ class SandboxToolConfig(BaseModel):
     profile: SandboxProfile = Field(
         description='Профиль ссылкой: profile = "${sandbox.profiles.<name>}".',
     )
-    override: Mapping[str, Any] = Field(
-        description=(
-            "Поля профиля, заменяемые для этого инструмента; пустая таблица "
-            "означает «без изменений». Названное поле заменяет базовое целиком."
-        ),
-    )
-    zygote: bool = Field(
-        default=False,
-        description=(
-            "Обслуживать инструменты секции тёплой зиготой: резидентный "
-            "процесс с прогретыми импортами, fork на вызов. Требует "
-            "премонтированный корень и политику [sandbox.zygote]."
-        ),
-    )
-
-    def effective(self) -> SandboxProfile:
-        """Профиль запуска: база плюс то, что переопределил администратор."""
-        if not self.override:
-            return self.profile
-        merged = self.profile.model_dump()
-        merged.update(self.override)
-        return SandboxProfile.model_validate(merged)

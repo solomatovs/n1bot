@@ -25,7 +25,7 @@ from typing import ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.toolkit.channels import JournalChannel, JournalChannels
-from boba.toolkit.stream import StreamSink
+from boba.toolkit.stream import Chunk, StreamSink
 
 __all__ = [
     "CallLogUsage",
@@ -507,7 +507,7 @@ class StreamRecorder(StreamRecorderPort):
         with self._lock:
             return self._meta.note
 
-    def feed(self, data: bytes) -> None:
+    def feed(self, data: Chunk) -> None:
         if not data:
             return
 
@@ -524,7 +524,7 @@ class StreamRecorder(StreamRecorderPort):
 
         self._on_data()
 
-    def _append(self, data: bytes) -> str:
+    def _append(self, data: Chunk) -> str:
         """Дописать порцию под локом; непустая строка — причина закрытия."""
         try:
             # панель читает файл по смещению по ходу работы: буфер держать нельзя

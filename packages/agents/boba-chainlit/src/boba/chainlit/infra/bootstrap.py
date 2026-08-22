@@ -79,6 +79,7 @@ def run_app(config_path: Path):
             ssl_keyfile=c.chainlit.ssl_key,
             ssl_certfile=c.chainlit.ssl_cert,
             ssl_ca_certs=c.chainlit.ssl_ca_certs,
+            timeout_graceful_shutdown=c.chainlit.shutdown_timeout_sec,
         )
         server = uvicorn.Server(uv_config)
         await server.serve()

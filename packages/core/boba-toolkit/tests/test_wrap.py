@@ -1,4 +1,4 @@
-"""Обёртка запуска: локальный режим, песочный через порт, kind'ы отказов."""
+"""Обёртка запуска: вызов через порт, kind'ы отказов."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from boba.toolkit.launcher import (
     LaunchOutcome,
     PayloadFailureError,
     RunResult,
+    ToolLauncher,
     ToolOutcome,
 )
 from boba.toolkit.protocol import REPLY, ReplyError, ToolCommand
@@ -41,7 +42,7 @@ def fresh_tool():
     return ToolMain.toolset(fake_toolmod.fake_echo)[0]
 
 
-class RecordingLauncher:
+class RecordingLauncher(ToolLauncher):
     """Порт запуска в тестах: запоминает команду, отдаёт заданный конверт."""
 
     def __init__(self, reply_json: str) -> None:
@@ -60,44 +61,6 @@ class RecordingLauncher:
 
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
         raise NotImplementedError
-
-
-class TestLocalMode:
-    """Без launcher'а тело зовётся в процессе, EXPECTED — тем же kind'ом."""
-
-    def test_body_runs_and_returns(self) -> None:
-        tool = fresh_tool()
-        ToolProcessWrap.guard_all([tool], None)
-
-        if tool.coroutine is None:
-            raise AssertionError("tool.coroutine is not None")
-        content, artifact = run_body(tool.coroutine, text="hi", repeat=2, cfg=CFG)
-
-        if "hi hi|t0ken" not in content:
-            raise AssertionError('"hi hi|t0ken" in content')
-        if not (isinstance(artifact, TextResult)):
-            raise AssertionError("isinstance(artifact, TextResult)")
-
-    def test_expected_error_maps_to_kind(self) -> None:
-        tool = fresh_tool()
-        ToolProcessWrap.guard_all([tool], None)
-
-        if tool.coroutine is None:
-            raise AssertionError("tool.coroutine is not None")
-        with pytest.raises(PayloadFailureError) as caught:
-            run_body(tool.coroutine, text="boom", repeat=1, cfg=CFG)
-
-        if caught.value.kind != "fake_unavailable":
-            raise AssertionError('caught.value.kind == "fake_unavailable"')
-
-    def test_unexpected_error_passes_through(self) -> None:
-        tool = fresh_tool()
-        ToolProcessWrap.guard_all([tool], None)
-
-        if tool.coroutine is None:
-            raise AssertionError("tool.coroutine is not None")
-        with pytest.raises(RuntimeError):
-            run_body(tool.coroutine, text="crash", repeat=1, cfg=CFG)
 
 
 class TestSandboxMode:

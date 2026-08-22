@@ -30,6 +30,7 @@ from langchain_core.tracers.base import AsyncBaseTracer
 from pydantic import BaseModel, ConfigDict
 from typing_extensions import ParamSpec, override
 
+from boba.chainlit.agent.flow import PrefetchStage
 from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.rendering.chat_view import ChatView
@@ -323,7 +324,7 @@ class AgentTracer(AsyncBaseTracer):
         pass
 
 
-class TracedStage:
+class TracedStage(PrefetchStage):
     """Этап ленты, найденный по трасеру текущего прогона.
 
     Граф живёт всю сессию, а лента — один ход, поэтому ленту берём не из

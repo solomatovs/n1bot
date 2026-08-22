@@ -190,7 +190,11 @@ class ByteStream(Protocol):
 
 
 class ResponseStream(ByteStream):
-    """ByteStream поверх httpx-ответа; тело не буферизуется до запроса на чтение."""
+    """ByteStream поверх httpx-ответа; тело не буферизуется до запроса на чтение.
+
+    Индексатор принимает его как AsyncBinaryStream: этот протокол наследовать
+    нельзя — транспорт не зависит от boba-indexing.
+    """
 
     def __init__(self, resp: httpx.Response) -> None:
         self._resp = resp

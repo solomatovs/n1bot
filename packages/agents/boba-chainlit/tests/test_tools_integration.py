@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -18,13 +19,13 @@ import pytest
 from psycopg import sql
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
-from boba.chainlit.infra.plugins import as_structured_tool
+from boba.chainlit.infra.plugins import as_structured_tool, warmup_configs
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.db.postgres import AsyncPostgresPool
 from boba.sandbox import (
-    SandboxCaller,
     SandboxToolConfig,
 )
+from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.settings import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
@@ -99,6 +100,16 @@ trailer<</Root 1 0 R/Size 8>>
 WORKSPACE_PDF = "/workspace/integration.pdf"
 
 
+ZYGOTE = ZygotePolicy(
+    start_timeout_sec=60.0,
+    max_start_attempts=1,
+    restart_backoff_sec=0.05,
+    healthy_after_sec=0.5,
+    stop_wait_sec=5.0,
+    call_poll_sec=0.05,
+)
+
+
 class ToolSetup:
     """Сборка инструмента из конфига приложения для прогона вне chainlit."""
 
@@ -112,13 +123,27 @@ class ToolSetup:
         return {"user_id": USER_ID, "thread_id": THREAD_ID}
 
     @staticmethod
+    def caller(raw: Any, section: str, modules: Sequence[str] = ()) -> ZygoteToolCaller:
+        """Зигота секции конфига: тот же путь запуска, что в приложении."""
+        sandbox = bind(raw, path=f"tool.{section}.sandbox", model=SandboxToolConfig)
+        profile = sandbox.profile
+
+        supervisor = ZygoteRegistry.obtain(
+            section,
+            profile,
+            modules,
+            ZYGOTE,
+            warmup_calls=warmup_configs(section, modules, raw),
+        )
+        return ZygoteToolCaller(section, supervisor, profile, ToolSetup.path_vars)
+
+    @staticmethod
     def launchers(raw: Any, section: str) -> LauncherFactory:
-        """Исполнитель на профиле секции: окружение выбирает вызывающий."""
-        sandbox = bind(raw, path=f"{section}.sandbox", model=SandboxToolConfig)
-        profile = sandbox.effective()
+        """Фабрика исполнителей секции: одна зигота на все её инструменты."""
+        caller = ToolSetup.caller(raw, section)
 
         def launcher(tool: str) -> ToolLauncher:
-            return SandboxCaller(tool, profile, ToolSetup.path_vars)
+            return caller
 
         return launcher
 
@@ -151,6 +176,13 @@ class Call:
         return result
 
 
+@pytest.fixture(scope="module", autouse=True)
+def stop_zygotes():
+    """Зиготы секций гасятся после модуля, как это делает выход приложения."""
+    yield
+    ZygoteRegistry.stop_all()
+
+
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
@@ -159,7 +191,7 @@ def chainlit_context() -> None:
 @pytest.fixture(scope="module")
 def bash_tool(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.bash", BashToolConfig)
-    launchers = ToolSetup.launchers(raw_config, "tool.bash")
+    launchers = ToolSetup.launchers(raw_config, "bash")
 
     return as_structured_tool(build_bash_tool(cfg, launchers))
 
@@ -173,8 +205,7 @@ def doc_tools(raw_config):
 
     module = reload(doc_module)
 
-    sandbox = bind(raw_config, path="tool.doc.sandbox", model=SandboxToolConfig)
-    launcher = SandboxCaller("doc", sandbox.effective(), ToolSetup.path_vars)
+    launcher = ToolSetup.caller(raw_config, "doc", [module.__name__])
 
     functions = [as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
@@ -196,8 +227,7 @@ def chart_tool(raw_config):
 
     module = reload(chart_module)
 
-    sandbox = bind(raw_config, path="tool.chart.sandbox", model=SandboxToolConfig)
-    launcher = SandboxCaller("chart", sandbox.effective(), ToolSetup.path_vars)
+    launcher = ToolSetup.caller(raw_config, "chart", [module.__name__])
 
     visualize = as_structured_tool(module.visualize)
     ToolProcessWrap.guard_all(ToolMain.toolset(visualize), launcher)
@@ -213,8 +243,7 @@ def web_tools(raw_config):
 
     module = reload(web_module)
 
-    sandbox = bind(raw_config, path="tool.web.sandbox", model=SandboxToolConfig)
-    launcher = SandboxCaller("web", sandbox.effective(), ToolSetup.path_vars)
+    launcher = ToolSetup.caller(raw_config, "web", [module.__name__])
 
     functions = [as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
@@ -248,8 +277,7 @@ def confluence_tools(raw_config):
 
     module = reload(confluence_module)
 
-    sandbox = bind(raw_config, path="tool.confluence.sandbox", model=SandboxToolConfig)
-    launcher = SandboxCaller("confluence", sandbox.effective(), ToolSetup.path_vars)
+    launcher = ToolSetup.caller(raw_config, "confluence", [module.__name__])
 
     functions = [as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
@@ -271,8 +299,7 @@ def pg_tools(raw_config):
 
     module = reload(pg_module)
 
-    sandbox = bind(raw_config, path="tool.pg.sandbox", model=SandboxToolConfig)
-    launcher = SandboxCaller("pg", sandbox.effective(), ToolSetup.path_vars)
+    launcher = ToolSetup.caller(raw_config, "pg", [module.__name__])
 
     functions = [as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
@@ -345,8 +372,7 @@ def ingest_tools(raw_config, kb_collection: str):
 
     module = reload(ingest_module)
 
-    sandbox = bind(raw_config, path="tool.ingest.sandbox", model=SandboxToolConfig)
-    launcher = SandboxCaller("ingest", sandbox.effective(), ToolSetup.path_vars)
+    launcher = ToolSetup.caller(raw_config, "ingest", [module.__name__])
 
     functions = [as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
@@ -369,8 +395,7 @@ def kb_tools(raw_config, kb_collection: str):
 
     module = reload(kb_module)
 
-    sandbox = bind(raw_config, path="tool.kb.sandbox", model=SandboxToolConfig)
-    launcher = SandboxCaller("kb", sandbox.effective(), ToolSetup.path_vars)
+    launcher = ToolSetup.caller(raw_config, "kb", [module.__name__])
 
     functions = [as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
@@ -388,8 +413,8 @@ def kb_tools(raw_config, kb_collection: str):
 def workspace_image(raw_config):
     """Образ тестового пользователя: создаётся из шаблона и сносится после."""
     sandbox = ToolSetup.config(raw_config, "tool.bash.sandbox", SandboxToolConfig)
-    profile = sandbox.effective().render(ToolSetup.path_vars())
-    image = Path(profile.rw_images[0].host)
+    profile = sandbox.profile.render(ToolSetup.path_vars())
+    image = Path(profile.mounts.images[0].host)
     yield image
     for path in (image, Path(f"{image}.lock")):
         path.unlink(missing_ok=True)
