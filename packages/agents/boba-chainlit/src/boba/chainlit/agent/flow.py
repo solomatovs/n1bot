@@ -7,19 +7,21 @@ PlainGraphBuilder собирает обычный цикл модель-инст
 основная модель отвечает уже с готовым контекстом.
 
 Ошибки:
-PrefetchError — переформулировка сорвалась либо слой инструментов нарушил
-    контракт ответа; сорванный вызов поиска ход не роняет, его причина едет
-    к модели конвертом tool_result.
+PrefetchError — слой инструментов нарушил контракт ответа; сорванный вызов
+    поиска ход не роняет, его причина едет к модели конвертом tool_result,
+    а сорванная переформулировка откатывается на исходный запрос.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, Protocol
+from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
 from langchain.agents import create_agent
@@ -29,7 +31,6 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
     ToolCall,
     ToolMessage,
 )
@@ -37,10 +38,11 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import override
 
 from boba.llm.chat import ResponseField
+from boba.llm.generation import GenerationError, SchemaSpec, StructuredGenerator
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ErrorResult, ToolArtifact
@@ -60,8 +62,9 @@ __all__ = [
     "PrefetchMiddleware",
     "PrefetchStage",
     "PrefetchStamp",
-    "QueryRephrasings",
     "Rephraser",
+    "Rephrasings",
+    "RephrasingsParser",
 ]
 
 
@@ -69,13 +72,158 @@ class PrefetchError(Exception):
     """Подготовка контекста хода сорвалась."""
 
 
-class QueryRephrasings(BaseModel):
-    """Ответ переформулировщика: поисковые варианты запроса пользователя."""
+class Rephrasings(BaseModel):
+    """Ответ переформулировщика: поисковые варианты запроса пользователя.
 
-    queries: Annotated[
-        Sequence[str],
-        Field(min_length=1, description="Diverse search queries."),
-    ]
+    Варианты названы полями, а не элементами списка: маленькая модель по
+    безымянному массиву выдаёт один и тот же текст трижды, а по именам с
+    описаниями заполняет каждое поле по существу.
+    """
+
+    model_config = ConfigDict(
+        extra="ignore",
+        json_schema_extra={"additionalProperties": False},
+    )
+
+    keywords: str = Field(
+        min_length=3,
+        max_length=120,
+        description="Key terms and product names only, no question words.",
+    )
+
+    expanded: str = Field(
+        min_length=3,
+        max_length=120,
+        description="Full sentence with synonyms of the key terms.",
+    )
+
+    english: str = Field(
+        min_length=3,
+        max_length=120,
+        description="The same request in English.",
+    )
+
+    def queries(self) -> Sequence[str]:
+        """Непустые варианты без повторов; порядок объявления сохраняется."""
+        found: list[str] = []
+        for value in (self.keywords, self.expanded, self.english):
+            text = value.strip()
+            if not text:
+                continue
+
+            if text in found:
+                continue
+
+            found.append(text)
+
+        return found
+
+
+class RephrasingsParser:
+    """Разбор ответа переформулировщика: схема, любой json, построчный текст.
+
+    Схему держит грамматика локальной модели и объявление функции удалённой, но
+    инференсы без поддержки того и другого отвечают текстом — там же, где ответ
+    по существу верен. Каждая ступень разбирает свою форму, и до отката на
+    исходный запрос дело доходит только на бессмысленном ответе.
+    """
+
+    FENCE: ClassVar[re.Pattern[str]] = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+    NUMBERING: ClassVar[re.Pattern[str]] = re.compile(r"^\s*(?:[-*\d.)\s]+)")
+    OBJECT_START: ClassVar[str] = "{"
+    MAX_LENGTH: ClassVar[int] = 300
+
+    @classmethod
+    def parse(cls, raw: str) -> Sequence[str]:
+        text = cls._unfenced(raw)
+
+        by_schema = cls._of_schema(text)
+        if by_schema:
+            return by_schema
+
+        by_mapping = cls._of_mapping(text)
+        if by_mapping:
+            return by_mapping
+
+        # оборванный по лимиту токенов json запросом быть не может
+        if text.startswith(cls.OBJECT_START):
+            return ()
+
+        return cls._of_lines(text)
+
+    @classmethod
+    def _unfenced(cls, raw: str) -> str:
+        """Тело markdown-блока, если модель обернула json в ```json."""
+        found = cls.FENCE.search(raw)
+        if found is None:
+            return raw.strip()
+
+        return found.group(1).strip()
+
+    @staticmethod
+    def _of_schema(text: str) -> Sequence[str]:
+        try:
+            answer = Rephrasings.model_validate_json(text)
+        except ValidationError:
+            return ()
+
+        return answer.queries()
+
+    @classmethod
+    def _of_mapping(cls, text: str) -> Sequence[str]:
+        """Любой json-объект: годятся строковые значения и списки строк."""
+        try:
+            loaded = json.loads(text)
+        except json.JSONDecodeError:
+            return ()
+
+        if not isinstance(loaded, dict):
+            return ()
+
+        found: list[str] = []
+        for value in loaded.values():
+            cls._collect(value, found)
+
+        return found
+
+    @classmethod
+    def _collect(cls, value: object, found: list[str]) -> None:
+        if isinstance(value, str):
+            cls._append(value, found)
+            return
+
+        if not isinstance(value, list):
+            return
+
+        for item in value:
+            if not isinstance(item, str):
+                continue
+
+            cls._append(item, found)
+
+    @classmethod
+    def _of_lines(cls, text: str) -> Sequence[str]:
+        """Список строк: нумерация, маркеры и кавычки в запрос не идут."""
+        found: list[str] = []
+        for line in text.splitlines():
+            stripped = cls.NUMBERING.sub("", line).strip().strip('"')
+            cls._append(stripped, found)
+
+        return found
+
+    @classmethod
+    def _append(cls, value: str, found: list[str]) -> None:
+        text = value.strip()
+        if not text:
+            return
+
+        if len(text) > cls.MAX_LENGTH:
+            return
+
+        if text in found:
+            return
+
+        found.append(text)
 
 
 class PrefetchCall:
@@ -148,31 +296,35 @@ class PassthroughRephraser(Rephraser):
 
 
 class LlmRephraser(Rephraser):
-    """Переформулировка маленькой моделью вызовом инструмента.
+    """Переформулировка отдельной моделью; бэкенд задаёт профиль генерации.
 
-    Схему ответа модель заполняет через function calling: response_format
-    роутеры отклоняют, а разбирать свободный текст нечем — формат ответа
-    задаёт модель, а не мы.
+    Сорванная переформулировка ход не роняет: в инструменты уходит исходный
+    запрос, а причина остаётся в журнале. Поиск по одному запросу хуже поиска
+    по трём, но лучше отказа отвечать.
     """
 
-    METHOD: ClassVar[str] = "function_calling"
+    SCHEMA: ClassVar[SchemaSpec] = SchemaSpec(
+        name=Rephrasings.__name__,
+        description="Search variants of the user request.",
+        body=Rephrasings.model_json_schema(),
+    )
 
-    def __init__(self, chat: BaseChatModel, system_prompt: str, queries: int) -> None:
-        self._chat = chat.with_structured_output(QueryRephrasings, method=self.METHOD)
-        self._system_prompt = system_prompt
-        self._queries = queries
+    def __init__(self, generator: StructuredGenerator) -> None:
+        self._generator = generator
 
     async def rephrase(self, query: str) -> Sequence[str]:
-        order = f"Верни {self._queries} поисковых запроса"
-        prompt = f"{self._system_prompt}\n\n{order}"
-        messages = [SystemMessage(prompt), HumanMessage(query)]
+        try:
+            raw = await self._generator.generate(query, self.SCHEMA)
+        except GenerationError as exc:
+            logger.warning("rephraser failed, searching as is: %s", exc)
+            return [query]
 
-        answer = await self._chat.ainvoke(messages)
-        if not isinstance(answer, QueryRephrasings):
-            got = type(answer).__name__
-            raise PrefetchError(f"rephraser returned {got} instead of the schema")
+        rephrased = RephrasingsParser.parse(raw)
+        if not rephrased:
+            logger.warning("rephraser returned nothing usable: %r", raw[:200])
+            return [query]
 
-        return list(answer.queries)[: self._queries]
+        return rephrased
 
 
 class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):

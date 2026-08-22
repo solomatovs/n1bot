@@ -116,6 +116,7 @@ def _profile(**overrides: Any) -> SandboxProfile:
             },
             "binaries": {"dirs": _bin_dirs()},
             "stderr_tail_bytes": 4096,
+            "channel_limit_bytes": 67108864,
             "fail_tail_chars": 2000,
             "kill_grace_sec": 5,
             "cgroup_base": "",

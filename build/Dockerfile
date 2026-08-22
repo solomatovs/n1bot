@@ -231,11 +231,13 @@ FROM base AS app-site
 COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
 
 # приложение ставится по своему графу зависимостей: парсеры и эмбеддер
-# сюда не попадают — они объявлены как extra payload у tool-пакетов
+# сюда не попадают — они объявлены как extra payload у tool-пакетов.
+# generation ставится: переформулировщик считает локальную модель в процессе
+# приложения, а не в песочнице
 RUN set -eu                                                                   \
     && uv pip install --python "$(command -v python3)" --target /opt/app-site \
         --constraint /tmp/wheels/constraints.txt                              \
-        --find-links=/tmp/wheels boba-chainlit                                \
+        --find-links=/tmp/wheels boba-chainlit 'boba-llm[generation]'         \
     && rm -rf /tmp/wheels
 
 # фронт chainlit тянет шрифт и стили формул с CDN: в закрытом контуре их отдаёт
@@ -255,6 +257,7 @@ RUN set -eu                                                                     
 RUN set -eu                                                            \
     && export PYTHONPATH=/opt/app-site                                 \
     && python3 -c "import boba.chainlit; print('app-site ok')"         \
+    && python3 -c "import onnxruntime_genai; print('genai ok')"        \
     && python3 -c "import importlib.metadata as md;                    \
 print('\\n'.join(sorted(d.metadata['Name'] for d in md.distributions() \
 if d.metadata['Name'].startswith('boba-'))))" > /opt/app-packages.txt
@@ -334,7 +337,8 @@ ARG PYTHON_VERSION=3.11       \
     BOBA_DIR=/app/boba        \
     BOBA_VERSION=0.0.0        \
     BOBA_UID=1000             \
-    BOBA_GID=1000
+    BOBA_GID=1000             \
+    ONNX_MODELS_DIR=/var/cache/onnx-genai
 
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -363,6 +367,7 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY build/src/webassets/                                         ${BOBA_DIR}/app_root/public/vendor/
+COPY build/src/onnx-genai/                                        ${ONNX_MODELS_DIR}/
 
 RUN set -eu                                                        \
     && if [ ! -f /tmp/conf/ca-chain.crt ]; then                    \

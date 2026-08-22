@@ -18,6 +18,7 @@ from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
+from boba.chainlit.infra.tickets import KerberosTickets
 from boba.chainlit.agent.tools.send_file import build_send_file_tool
 from boba.chainlit.canvas.diagram import (
     DiagramToolConfig,
@@ -404,7 +405,10 @@ def _module_tools(
     launcher = _section_launcher(plugin, profile, zygote_policy, raw_config)
 
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
-    InjectedConfig.bind_all(functions, _config_resolver(raw_config))
+
+    resolve = _config_resolver(raw_config)
+    InjectedConfig.bind_all(functions, resolve)
+    KerberosTickets.bind_all(functions, InjectedConfig.values_of(functions, resolve))
 
     return functions
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-llm"
 version = "0.0.14.dev1"
-description = "Boba LLM providers: openai-совместимый транспорт, чат-модель, эмбеддеры (local/openai)."
+description = "Boba LLM providers: openai-совместимый транспорт, чат-модель, эмбеддеры и структурная генерация (local/openai)."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-indexing==0.0.14.dev1",
@@ -22,6 +22,9 @@ chat = [
 ]
 payload = [
     "fastembed>=0.4,<1",
+]
+generation = [
+    "onnxruntime-genai>=0.15,<1",
 ]
 
 [tool.setuptools.packages.find]

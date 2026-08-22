@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.krb import KeytabConfig
+from boba.krb import CcacheConfig, Kerberos, KeytabConfig
 from boba.toolkit.types import SecretRevealing
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
@@ -233,13 +233,38 @@ class PostgresConfig(BaseModel):
     ]
 
     # креды kerberos этого соединения; libpq keytab не принимает, его даёт libkrb5
-    kerberos: KeytabConfig | None = Field(
+    kerberos: Kerberos | None = Field(
         default=None,
         description=(
             "Keytab, принципал и свой ccache соединения; "
-            "в конфиге подключается ссылкой ${kerberos.<name>}."
+            "в конфиге подключается ссылкой ${kerberos.<name>}. "
+            "В песочницу этой же секцией уезжает только готовый тикет."
         ),
     )
+
+    @field_serializer("kerberos", when_used="json")
+    def _dump_kerberos(
+        self, value: KeytabConfig | CcacheConfig | None, info: SerializationInfo
+    ) -> dict[str, Any] | None:
+        """Дамп с раскрытыми секретами едет в песочницу: keytab туда не уезжает.
+
+        Тело инструмента получает готовый тикет приложения. Ключ принципала
+        остаётся на хосте: украденный тикет истекает, украденный keytab — нет.
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, CcacheConfig):
+            return value.model_dump(mode="json")
+
+        context = info.context
+        if not isinstance(context, Mapping):
+            return value.model_dump(mode="json")
+
+        if not context.get(PostgresConfig.REVEAL_SECRETS):
+            return value.model_dump(mode="json")
+
+        return value.sandboxed().model_dump(mode="json")
 
     @field_serializer("password", when_used="json")
     def _dump_password(

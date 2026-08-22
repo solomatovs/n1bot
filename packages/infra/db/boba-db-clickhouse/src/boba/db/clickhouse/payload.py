@@ -18,7 +18,7 @@ from gssapi.raw.misc import GSSError
 
 from boba.db.clickhouse.config import ClickHouseConfig
 from boba.db.clickhouse.errors import ClickHouseError
-from boba.krb import KerberosError, KeytabCredentials
+from boba.krb import ClientCredentials, KerberosError
 
 __all__ = ["PayloadClickHouse", "SpnegoHeaders"]
 
@@ -80,7 +80,7 @@ class PayloadClickHouse:
                 yield client
             return
 
-        credentials = KeytabCredentials(connection.kerberos)
+        credentials = ClientCredentials.of(connection.kerberos)
         headers = SpnegoHeaders(connection.service_name())
         try:
             async with (

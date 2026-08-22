@@ -22,6 +22,7 @@ from boba.chainlit.auth import AuthConfig
 from boba.chainlit.domain.config import LocalStorageConfig, RoleConfig, ToolGrant
 from boba.chainlit.domain.errors import RefusalError
 from boba.db.postgres import PostgresConfig
+from boba.llm.generation import GenerationConfig
 from boba.llm.openai import OpenAiConfig
 from boba.sandbox.profile import SandboxConfig
 from boba.toolkit.types import StringList
@@ -225,19 +226,6 @@ class PlainFlowConfig(BaseModel):
     kind: Literal[FlowKind.PLAIN] = FlowKind.PLAIN
 
 
-class RephraserConfig(LlmSettings):
-    """Секция [profiles.<name>.flow.rephraser]: модель, готовящая запросы поиска.
-
-    Параметры сэмплинга обязательны на деле, а не формально: роутеры
-    подставляют собственный потолок max_tokens, который модель не принимает.
-    """
-
-    queries: Annotated[
-        int,
-        Field(ge=1, description="Сколько поисковых запросов готовит модель."),
-    ]
-
-
 class PrefetchFlowConfig(BaseModel):
     """Flow с подготовкой контекста: поиск идёт до обращения к основной модели."""
 
@@ -253,11 +241,12 @@ class PrefetchFlowConfig(BaseModel):
         ),
     ]
 
-    rephraser: RephraserConfig | None = Field(
+    rephraser: GenerationConfig | None = Field(
         default=None,
         description=(
-            "Модель, переписывающая запрос пользователя в поисковые; секция "
-            "не задана — в инструменты уходит исходный запрос."
+            "Модель, переписывающая запрос пользователя в поисковые: локальный "
+            "ONNX-инференс либо openai-совместимый провайдер; секция не задана "
+            "— в инструменты уходит исходный запрос."
         ),
     )
 

@@ -22,12 +22,14 @@ import krb5
 from gssapi import Credentials
 from gssapi.raw.misc import GSSError
 
-from boba.krb.config import KeytabConfig
+from boba.krb.config import CcacheConfig, KeytabConfig
 from boba.krb.errors import CredentialsExpiredError, KerberosError, KeytabError
 from boba.toolkit.timing import Elapsed
 
 __all__ = [
+    "CcacheCredentials",
     "CcacheRegistry",
+    "ClientCredentials",
     "DelegatedCredentials",
     "KerberosCredentials",
     "KerberosEnv",
@@ -143,6 +145,78 @@ class KerberosCredentials(ABC):
         await self.ensure_async()
         async with KerberosEnv.applied_async(self.env()):
             yield
+
+
+class ClientCredentials:
+    """Выбор реализации клиентских кредов по их конфигу.
+
+    Соединению всё равно, откуда взялся тикет: приложение выпускает его
+    keytab'ом, тело инструмента получает готовым.
+    """
+
+    @staticmethod
+    def of(config: KeytabConfig | CcacheConfig) -> KerberosCredentials:
+        if isinstance(config, CcacheConfig):
+            return CcacheCredentials(config)
+
+        return KeytabCredentials(config)
+
+
+class CcacheCredentials(KerberosCredentials):
+    """Готовый тикет без keytab: креды тела инструмента в песочнице.
+
+    Выпустить новый TGT такие креды не могут — ключа принципала у них нет.
+    Просроченный тикет означает, что приложение перестало его обновлять, и
+    соединение начинать бессмысленно.
+    """
+
+    def __init__(self, config: CcacheConfig) -> None:
+        self._config = config
+        self._logger = logging.getLogger(CcacheCredentials.__name__)
+
+    @property
+    def principal(self) -> str:
+        return self._config.principal
+
+    @property
+    def ccache(self) -> str:
+        return self._config.ccache
+
+    def env(self) -> Mapping[str, str]:
+        values = {KerberosEnv.CCACHE: self._config.ccache}
+
+        if self._config.krb5_config is not None:
+            values[KerberosEnv.CONFIG] = self._config.krb5_config
+
+        return values
+
+    def ensure(self) -> None:
+        lifetime = self._lifetime()
+        if lifetime >= self._config.min_lifetime:
+            return
+
+        msg = (
+            f"ticket for {self._config.principal} has {lifetime}s left "
+            f"in {self._config.ccache}; the app must renew it"
+        )
+        raise CredentialsExpiredError(msg)
+
+    def _lifetime(self) -> int:
+        """Остаток тикета, сек; 0 — кэша нет, он пуст или просрочен."""
+        with KerberosEnv.applied(self.env()):
+            try:
+                creds = Credentials(
+                    usage="initiate",
+                    store={b"ccache": self._config.ccache.encode()},
+                )
+                lifetime = creds.lifetime
+            except GSSError:
+                return 0
+
+        if lifetime is None:
+            return 0
+
+        return int(lifetime)
 
 
 class KeytabCredentials(KerberosCredentials):

@@ -51,24 +51,47 @@ class InjectedConfig:
             cls._bind(tool, resolve)
 
     @classmethod
-    def _bind(cls, tool: BaseTool, resolve: ConfigResolver) -> None:
+    def values_of(
+        cls, tools: Sequence[BaseTool], resolve: ConfigResolver
+    ) -> list[object]:
+        """Конфиги, которые подставляются инструментам: их же видит песочница."""
+        values: list[object] = []
+        for tool in tools:
+            values.extend(cls._values(tool, resolve).values())
+
+        return values
+
+    @classmethod
+    def _values(cls, tool: BaseTool, resolve: ConfigResolver) -> dict[str, object]:
         if not isinstance(tool, StructuredTool):
+            return {}
+
+        schema = tool.args_schema
+        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+            return {}
+
+        injected = ToolArgv.injected_fields(schema)
+        if not injected:
+            return {}
+
+        values: dict[str, object] = {}
+        for name, annotation in injected.items():
+            values[name] = resolve(name, annotation)
+
+        return values
+
+    @classmethod
+    def _bind(cls, tool: BaseTool, resolve: ConfigResolver) -> None:
+        values = cls._values(tool, resolve)
+        if not values:
             return
 
         schema = tool.args_schema
         if not isinstance(schema, type) or not issubclass(schema, BaseModel):
             return
 
-        injected = ToolArgv.injected_fields(schema)
-        if not injected:
-            return
-
-        values: dict[str, object] = {}
-        for name, annotation in injected.items():
-            values[name] = resolve(name, annotation)
-
         ToolBody.hook_all([tool], cls._Partial(values))
-        tool.args_schema = cls._without(schema, set(injected))
+        tool.args_schema = cls._without(schema, set(values))
 
     @staticmethod
     def _without(schema: type[BaseModel], names: set[str]) -> type[BaseModel]:

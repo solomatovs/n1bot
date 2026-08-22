@@ -142,6 +142,7 @@ boba-db-pgvector    = { workspace = true }
 boba-db-clickhouse  = { workspace = true }
 boba-sandbox        = { workspace = true }
 boba-krb            = { workspace = true }
+boba-llm            = { workspace = true }
 boba-chainlit       = { workspace = true }
 
 [dependency-groups]
@@ -156,6 +157,7 @@ dev = [
     "lxml>=5.0",
     "clickhouse-connect[async]>=1.6,<2",
     "fastembed>=0.4,<1",
+    "onnxruntime-genai>=0.15,<1",
 ]
 
 [tool.uv]

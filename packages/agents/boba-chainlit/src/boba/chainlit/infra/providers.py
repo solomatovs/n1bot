@@ -1,13 +1,14 @@
 """Провайдеры зависимостей: конфиг, клиенты, хранилища и сам агент langgraph."""
 
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated
 
 import httpx
 from httpx import AsyncClient
 from langchain.agents.middleware import ModelRequest, wrap_model_call
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -58,6 +59,13 @@ from boba.chainlit.rendering.chat_view import StepText
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.llm.chat import ReasoningChatOpenAI
+from boba.llm.generation import (
+    LocalGeneration,
+    LocalOnnxGenerator,
+    OpenAiGeneration,
+    OpenAiStructuredGenerator,
+    StructuredGenerator,
+)
 from boba.llm.openai import OpenAiConfig, OpenAiHttp
 from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
@@ -222,10 +230,10 @@ async def httpx_clients(
         if not isinstance(flow, PrefetchFlowConfig):
             continue
 
-        if flow.rephraser is None:
+        if not isinstance(flow.rephraser, OpenAiGeneration):
             continue
 
-        clients[flow.client_key(name)] = _openai_client(flow.rephraser.provider)
+        clients[flow.client_key(name)] = _openai_client(flow.rephraser.openai)
 
     try:
         yield clients
@@ -386,63 +394,79 @@ def _flow_tools(names: Sequence[str], tools: Sequence[BaseTool]) -> list[BaseToo
     return selected
 
 
-def _graph_builder(
-    selected: SelectedProfile,
-    clients: dict[str, AsyncClient],
-    tools: Sequence[BaseTool],
+def rephrase_generators(
+    c: Annotated[AppConfig, Depends(get_app_config)],
+    clients: Annotated[dict[str, AsyncClient], Depends(httpx_clients)],
+) -> dict[str, StructuredGenerator]:
+    """Генератор переформулировок на профиль; живут до остановки приложения.
+
+    Локальная модель занимает сотни мегабайт и грузится секунду, поэтому
+    строится один раз на процесс, а не на сессию чата.
+    """
+    generators: dict[str, StructuredGenerator] = {}
+    for name, profile in c.profiles.items():
+        flow = profile.flow
+        if not isinstance(flow, PrefetchFlowConfig):
+            continue
+
+        cfg = flow.rephraser
+        if cfg is None:
+            continue
+
+        if isinstance(cfg, LocalGeneration):
+            generators[name] = LocalOnnxGenerator(cfg)
+            continue
+
+        client = clients[flow.client_key(name)]
+        generators[name] = OpenAiStructuredGenerator(cfg, client)
+
+    return generators
+
+
+def session_graph_builder(
+    generators: Annotated[
+        Mapping[str, StructuredGenerator], Depends(rephrase_generators)
+    ],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    tools: Annotated[Sequence[BaseTool], Depends(session_tools, scope="session")],
 ) -> AgentGraphBuilder:
     """Билдер графа хода по flow профиля."""
     flow = selected.config.flow
     if not isinstance(flow, PrefetchFlowConfig):
         return PlainGraphBuilder()
 
-    rephraser = _rephraser(flow, clients, selected.name)
+    rephraser = _rephraser(generators, selected.name)
     stage = TracedStage(StepText.PREFETCH.value)
     return PrefetchGraphBuilder(rephraser, _flow_tools(flow.tools, tools), stage)
 
 
 def _rephraser(
-    flow: PrefetchFlowConfig,
-    clients: dict[str, AsyncClient],
+    generators: Mapping[str, StructuredGenerator],
     profile: str,
 ) -> Rephraser:
     """Модель, готовящая поисковые запросы; без секции — запрос идёт как есть."""
-    cfg = flow.rephraser
-    if cfg is None:
+    generator = generators.get(profile)
+    if generator is None:
         return PassthroughRephraser()
 
-    # стрим переформулировщику не нужен: его ответ забирает не лента, а
-    # подготовка контекста, и рассуждения модели в ленту попадать не должны
-    chat = ReasoningChatOpenAI(
-        http_async_client=clients[flow.client_key(profile)],
-        model=cfg.model,
-        base_url=cfg.provider.base_url,
-        api_key=SecretStr(cfg.provider.api_key),
-        timeout=OpenAiHttp.timeout(cfg.provider),
-        max_retries=cfg.provider.max_retries,
-        disable_streaming=True,
-        **cfg.chat_kwargs(),
-    )
-
-    return LlmRephraser(chat, cfg.system_prompt, cfg.queries)
+    return LlmRephraser(generator)
 
 
-def langchain_agent(
+def session_chat(
     clients: Annotated[dict[str, AsyncClient], Depends(httpx_clients)],
-    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
-    tools: Annotated[list[BaseTool], Depends(session_tools, scope="session")],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],
-) -> CompiledStateGraph:
+) -> BaseChatModel:
+    """Чат-модель хода: транспорт профиля плюс настройки сессии."""
     # таймаут запроса клиент openai ставит поверх клиентского: без него в
     # httpx уходит None и фазы остаются без потолка
     stream_chunk_timeout = None
     if settings.provider.stream_chunk_timeout:
         stream_chunk_timeout = settings.provider.stream_chunk_timeout
 
-    chat = ReasoningChatOpenAI(
+    return ReasoningChatOpenAI(
         http_async_client=clients[selected.name],
         model=settings.model,
         base_url=settings.provider.base_url,
@@ -453,6 +477,18 @@ def langchain_agent(
         **settings.chat_kwargs(),
     )
 
+
+def langchain_agent(
+    chat: Annotated[BaseChatModel, Depends(session_chat, scope="session")],
+    builder: Annotated[
+        AgentGraphBuilder, Depends(session_graph_builder, scope="session")
+    ],
+    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+    tools: Annotated[list[BaseTool], Depends(session_tools, scope="session")],
+    settings: Annotated[
+        AgentSettings, Depends(session_agent_settings, scope="session")
+    ],
+) -> CompiledStateGraph:
     names: list[str] = []
     for tool in tools:
         names.append(tool.name)
@@ -465,4 +501,4 @@ def langchain_agent(
         history=build_history_view(frozenset(names), settings.history_messages),
     )
 
-    return _graph_builder(selected, clients, tools).build(spec)
+    return builder.build(spec)

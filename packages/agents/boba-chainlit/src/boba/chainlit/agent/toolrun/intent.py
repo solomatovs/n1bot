@@ -1,8 +1,10 @@
 """Подпись вызова для ленты синтетическим полем схемы.
 
-Поле ToolIntent.NAME добавляется в args_schema каждого инструмента, и его
-заполняет LLM: одна строка о том, что делает вызов. Тело инструмента про поле
-не знает — его снимает из kwargs обвязка ToolRunLogger, как и tool_call_id.
+Поле ToolIntent.NAME добавляется в args_schema каждого инструмента обязательным,
+и его заполняет LLM: одна строка о том, что делает вызов. Тело инструмента про
+поле не знает — его снимает из kwargs обвязка ToolRunLogger, как и tool_call_id.
+Вызов без подписи отклоняет валидация схемы: ошибка уходит модели тем же
+конвертом tool_result, что и любая другая, и ход продолжается.
 
 Ошибки: своих не выпускает.
 """
@@ -54,8 +56,10 @@ class ToolIntentField:
         for name, info in schema.model_fields.items():
             fields[name] = (info.annotation, info)
 
-        # потолок длины держит показ, а не схема: подпись не должна ронять вызов
-        declared = Field(default="", description=ToolIntent.DESCRIPTION)
-        fields[ToolIntent.NAME] = (Annotated[str, declared], "")
+        # обязательное: необязательное модель заполняла у одних инструментов и
+        # пропускала у других, и лента выходила разнородной. Потолок длины
+        # держит показ, а не схема: подпись не должна ронять вызов
+        declared = Field(description=ToolIntent.DESCRIPTION)
+        fields[ToolIntent.NAME] = (Annotated[str, declared], ...)
 
         tool.args_schema = create_model(schema.__name__, **fields)

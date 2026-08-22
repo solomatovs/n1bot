@@ -12,7 +12,7 @@ import psycopg
 
 from boba.db.postgres.async_pool import PostgresError
 from boba.db.postgres.config import PostgresConfig
-from boba.krb import KerberosError, KeytabCredentials
+from boba.krb import ClientCredentials, KerberosError
 from boba.toolkit.timing import Elapsed
 
 __all__ = ["PayloadPostgres"]
@@ -40,7 +40,7 @@ class PayloadPostgres:
             logger.info("postgres connected in %dms", elapsed.ms())
             return conn
 
-        credentials = KeytabCredentials(connection.kerberos)
+        credentials = ClientCredentials.of(connection.kerberos)
 
         try:
             async with credentials.applied_async():
