@@ -484,9 +484,17 @@ sandbox-workspace:
 
 
 .PHONY: fastembed
-fastembed: base
+fastembed:
 	@mkdir -p $(DEPS_DIR)/fastembed
 	echo "== веса fastembed: $(EMBED_MODELS) =="
+
+	# веса на месте — ни образа сборки, ни pip, ни сети
+	if $(MAKE) -f $(MAKEFILE) --no-print-directory fastembed-check > /dev/null 2>&1; then
+	    echo "  ✓ веса сходятся с $(FASTEMBED_MANIFEST)"
+	    exit 0
+	fi
+
+	$(MAKE) -f $(MAKEFILE) --no-print-directory base
 	docker run --rm                                                                       \
 	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                     \
 	  -e EMBED_MODELS="$(EMBED_MODELS)"                                                   \
@@ -538,9 +546,17 @@ fastembed-manifest:
 # модели переформулировщика: качаются один раз и уезжают в образ приложения,
 # а не в песочницу — генерация идёт в процессе chainlit
 .PHONY: onnx-genai
-onnx-genai: base
+onnx-genai:
 	@mkdir -p $(DEPS_DIR)/onnx-genai
 	echo "== модели переформулировщика: $(ONNX_MODELS) =="
+
+	# модели на месте — ни образа сборки, ни pip, ни сети
+	if $(MAKE) -f $(MAKEFILE) --no-print-directory onnx-genai-check > /dev/null 2>&1; then
+	    echo "  ✓ модели сходятся с $(ONNX_MANIFEST)"
+	    exit 0
+	fi
+
+	$(MAKE) -f $(MAKEFILE) --no-print-directory base
 	docker run --rm                                                                       \
 	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                     \
 	  -e HF_ENDPOINT="$(ONNX_HUB_URL)"                                                    \
@@ -554,6 +570,12 @@ onnx-genai: base
 	    for spec in $$ONNX_MODELS; do
 	      repo=$${spec%%:*}
 	      rest=$${spec#*:}
+	      # кэш huggingface живёт в контейнере: скачанное узнаём по каталогу модели,
+	      # иначе новая модель в списке тянула бы за собой все остальные
+	      if [ -f "/onnx/$${rest##*:}/genai_config.json" ]; then
+	        echo "  ✓ /onnx/$${rest##*:}"
+	        continue
+	      fi
 	      echo ">>> onnx-genai: $$repo"
 	      python3 -c "import pathlib, shutil, sys;
 	        from huggingface_hub import snapshot_download;
