@@ -7,6 +7,7 @@ InternalServiceError — keytab/SPN/конфиг непригодны.
 
 import asyncio
 import base64
+import html
 import logging
 import os
 import re
@@ -49,9 +50,10 @@ from boba.chainlit.domain.errors import (
     AuthorizationError,
     BaseError,
     ExternalServiceError,
+    FailureReport,
     InternalServiceError,
 )
-from boba.chainlit.domain.session import UserMetadataField
+from boba.chainlit.domain.session import LogLine, UserMetadataField
 from boba.krb import (
     AcceptConfig,
     CcacheRegistry,
@@ -73,6 +75,45 @@ class ButtonJsVar(StrEnum):
 
     SSO_URL = "__SSO_URL__"
     TRANSLATIONS_URL = "__TRANSLATIONS_URL__"
+
+
+class SsoLoginError(StrEnum):
+    """Коды исхода SSO для страницы логина chainlit: auth.login.errors.<code>."""
+
+    TICKET = "sso_ticket"
+    DENIED = "sso_denied"
+    FAILED = "sso_failed"
+
+    def login_url(self, login_url: str) -> str:
+        return f"{login_url}?error={self.value}"
+
+    def challenge_page(self, login_url: str) -> str:
+        """Тело 401: с тикетом браузер повторит запрос сам, без него уйдёт на логин."""
+        url = html.escape(self.login_url(login_url), quote=True)
+
+        return f'<!doctype html><meta http-equiv="refresh" content="0;url={url}">'
+
+
+class SsoUrls(BaseModel):
+    """Адреса SSO с учётом url_prefix: роут, скрипт кнопки, переводы, логин, чат."""
+
+    sso: str
+    js: str
+    translations: str
+    login: str
+    app: str
+
+    @classmethod
+    def of(cls, url_prefix: str, sso_path: str) -> "SsoUrls":
+        sso = f"{url_prefix}{sso_path}"
+
+        return cls(
+            sso=sso,
+            js=f"{sso}.js",
+            translations=f"{url_prefix}/project/translations",
+            login=f"{url_prefix}/login",
+            app=f"{url_prefix}/",
+        )
 
 
 class KerberosRolesInLdapMappingConfig(LdapRolesConfig):
@@ -222,13 +263,13 @@ class SpnegoMiddleware:
         self,
         app: ASGIApp,
         *,
-        auth_path: str,
+        urls: SsoUrls,
         config: KerberosAuthConfig,
         acceptor: SpnegoAcceptor,
         delegation: KerberosDelegation,
     ) -> None:
         self._app = app
-        self._auth_path = auth_path
+        self._urls = urls
         self._config = config
         self._acceptor = acceptor
         self._delegation = delegation
@@ -245,7 +286,7 @@ class SpnegoMiddleware:
 
         path = path.removesuffix("/").lower()
 
-        if path != self._auth_path:
+        if path != self._urls.sso:
             return await self._app(scope, receive, send)
 
         headers = Headers(scope=scope).mutablecopy()
@@ -333,7 +374,12 @@ class SpnegoMiddleware:
         client = self._client(Headers(scope=scope), scope)
         self._logger.log(level, "kerberos challenge [client=%s]: %s", client, reason)
 
-        response = Response(status_code=401, headers=self._negotiate)
+        response = Response(
+            content=SsoLoginError.TICKET.challenge_page(self._urls.login),
+            status_code=401,
+            headers=self._negotiate,
+            media_type="text/html",
+        )
         await response(scope, receive, send)
 
 
@@ -445,11 +491,7 @@ class KerberosAuth:
         self._config = config
         # роуты без префикса (root_path учтёт роутер), middleware и кнопка — с полным
         self._sso_path = config.sso_path
-        self._sso_url = f"{url_prefix}{config.sso_path}"
-        self._js_path = f"{self._sso_url}.js"
-        self._translations_url = f"{url_prefix}/project/translations"
-        self._app_url = f"{url_prefix}/"
-        self._login_url = f"{url_prefix}/login"
+        self._urls = SsoUrls.of(url_prefix, config.sso_path)
         self._provider = "kerberos"
         self._ad = ADDirectory
         self.acceptor = SpnegoAcceptor(config.accept)
@@ -522,13 +564,45 @@ class KerberosAuth:
 
         chainlit_app.add_middleware(
             SpnegoMiddleware,
-            auth_path=self._sso_url,
+            urls=self._urls,
             config=self._config,
             acceptor=self.acceptor,
             delegation=self.delegation,
         )
         self._install_routes(chainlit_app)
         self._install_button_js()
+
+    async def _sso_user(self, headers: Headers) -> cl.User | None:
+        """Пользователь после SPNEGO, заведённый в data layer."""
+        from chainlit.data import get_data_layer  # noqa: PLC0415
+
+        user = await self._build_user(headers)
+        if user is None:
+            return None
+
+        data_layer = get_data_layer()
+        if data_layer is None:
+            return user
+
+        try:
+            await data_layer.create_user(user)
+        except Exception as exc:
+            raise InternalServiceError(
+                internal_detail=f"failed to persist SSO user: {exc}",
+                user_detail=None,
+            ) from exc
+
+        return user
+
+    def _login_redirect(self, exc: BaseError) -> RedirectResponse:
+        """Исход SSO кодом на страницу логина: браузер пришёл навигацией, не fetch."""
+        self._logger.error("%s", LogLine.safe(FailureReport.of(exc).log))
+
+        code = SsoLoginError.FAILED
+        if isinstance(exc, AuthorizationError):
+            code = SsoLoginError.DENIED
+
+        return RedirectResponse(url=code.login_url(self._urls.login), status_code=303)
 
     async def _build_user(self, headers: Headers) -> cl.User | None:
         """По X-Remote-User строит cl.User: username из принципала + роли из AD."""
@@ -613,22 +687,17 @@ class KerberosAuth:
         async def auth_sso(request: Request) -> RedirectResponse:
             # сюда долетаем после успешного SPNEGO: заводим сессию chainlit (JWT-cookie)
             from chainlit.auth import create_jwt, set_auth_cookie  # noqa: PLC0415
-            from chainlit.data import get_data_layer  # noqa: PLC0415
 
-            user = await self._build_user(request.headers)
+            try:
+                user = await self._sso_user(request.headers)
+            except BaseError as exc:
+                return self._login_redirect(exc)
+
             if user is None:
-                return RedirectResponse(url=self._login_url, status_code=303)
+                url = SsoLoginError.TICKET.login_url(self._urls.login)
+                return RedirectResponse(url=url, status_code=303)
 
-            if data_layer := get_data_layer():
-                try:
-                    await data_layer.create_user(user)
-                except Exception as exc:
-                    raise InternalServiceError(
-                        internal_detail=f"failed to persist SSO user: {exc}",
-                        user_detail=None,
-                    ) from exc
-
-            resp = RedirectResponse(url=self._app_url, status_code=303)
+            resp = RedirectResponse(url=self._urls.app, status_code=303)
             set_auth_cookie(request, resp, create_jwt(user))
             return resp
 
@@ -636,23 +705,23 @@ class KerberosAuth:
             return Response(content=js, media_type="application/javascript")
 
         self._prepend_route(chainlit_app, self._sso_path, auth_sso)
-        self._prepend_route(chainlit_app, self._js_path, sso_js)
+        self._prepend_route(chainlit_app, self._urls.js, sso_js)
 
     def _install_button_js(self) -> None:
         """Подключает sso.js на странице логина через custom_js."""
         existing = cl_config.ui.custom_js
         if not existing:
-            cl_config.ui.custom_js = self._js_path
+            cl_config.ui.custom_js = self._urls.js
             return
 
-        if existing == self._js_path:
+        if existing == self._urls.js:
             return
 
         # слот один на приложение: занявший его скрипт обязан подгрузить sso.js
         self._logger.info(
             "custom_js already set (%s) — expecting it to load %s itself",
             existing,
-            self._js_path,
+            self._urls.js,
         )
 
     @staticmethod
@@ -670,6 +739,6 @@ class KerberosAuth:
     def _get_static_button(self) -> str:
         """JS кнопки SSO из файла-ресурса рядом с модулем; сервер знает только URL."""
         template = self._BUTTON_JS.read_text(encoding="utf-8")
-        with_sso = template.replace(ButtonJsVar.SSO_URL, self._sso_url)
+        with_sso = template.replace(ButtonJsVar.SSO_URL, self._urls.sso)
 
-        return with_sso.replace(ButtonJsVar.TRANSLATIONS_URL, self._translations_url)
+        return with_sso.replace(ButtonJsVar.TRANSLATIONS_URL, self._urls.translations)

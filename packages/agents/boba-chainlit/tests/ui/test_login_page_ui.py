@@ -14,6 +14,7 @@ import httpx
 import pytest
 from playwright.sync_api import Browser, BrowserContext, Page, expect
 
+from boba.chainlit.auth.kerberos import SsoLoginError
 from ui.conftest import BOOT_TIMEOUT_SEC
 from ui.stand import (
     REPO_ROOT,
@@ -106,6 +107,15 @@ def _placeholders(base_url: str) -> tuple[str, str]:
     return form["email"]["placeholder"], form["password"]["placeholder"]
 
 
+def _login_error(base_url: str, code: SsoLoginError) -> str:
+    """Текст баннера для кода ошибки из переводов сервера."""
+    response = httpx.get(f"{base_url}/project/translations", timeout=10.0)
+    response.raise_for_status()
+
+    errors = response.json()["translation"]["auth"]["login"]["errors"]
+    return errors[code.value]
+
+
 def _login_page(context: BrowserContext, base_url: str) -> Page:
     page = context.new_page()
     page.goto(f"{base_url}/login")
@@ -154,4 +164,19 @@ def test_sso_only_keeps_login_required(
 
     page.goto(f"{base_url}/")
     page.wait_for_url(f"{base_url}/login**")
+    expect(page.locator(SSO_BUTTON)).to_be_visible()
+
+
+def test_sso_without_ticket_returns_to_login(
+    anonymous: BrowserContext, sso_only_stand: StandProcess
+) -> None:
+    """Браузер без Kerberos-билета: 401 Negotiate уводит на логин с кодом ошибки."""
+    base_url = sso_only_stand.config.base_url
+    banner = _login_error(base_url, SsoLoginError.TICKET)
+
+    page = _login_page(anonymous, base_url)
+    page.click(SSO_BUTTON)
+
+    page.wait_for_url(SsoLoginError.TICKET.login_url(f"{base_url}/login"))
+    expect(page.get_by_text(banner)).to_be_visible()
     expect(page.locator(SSO_BUTTON)).to_be_visible()

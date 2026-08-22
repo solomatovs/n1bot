@@ -38,6 +38,9 @@
             },
             "errors": {
                 "default": "Unable to sign in",
+                "sso_ticket": "SSO sign-in failed: the browser did not present a Kerberos ticket",
+                "sso_denied": "Access denied: no roles are assigned to your account",
+                "sso_failed": "SSO sign-in error. Contact support",
                 "signin": "Try signing in with a different account",
                 "oauthSignin": "Try signing in with a different account",
                 "redirectUriMismatch": "The redirect URI is not matching the oauth app configuration",
