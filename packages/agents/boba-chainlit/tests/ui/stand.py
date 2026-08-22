@@ -56,6 +56,22 @@ class StandUrl(StrEnum):
         return f"{cls.SCHEME}://{cls.HOST}:{port}{path}"
 
 
+class StandAuth(StrEnum):
+    """Провайдеры входа стенда: форма логина, SSO или оба."""
+
+    LOCAL = "local"
+    LOCAL_SSO = "local+sso"
+    SSO = "sso"
+
+    @property
+    def local(self) -> bool:
+        return self in (StandAuth.LOCAL, StandAuth.LOCAL_SSO)
+
+    @property
+    def sso(self) -> bool:
+        return self in (StandAuth.SSO, StandAuth.LOCAL_SSO)
+
+
 @dataclass(frozen=True)
 class StandCredential:
     """Учётка стенда: читается из [auth.local] рабочего конфига."""
@@ -79,8 +95,8 @@ class StandConfig:
     sandbox: bool = False
     """True — инструменты песочницы остаются включёнными: боевой путь целиком."""
 
-    sso: bool = False
-    """True — рядом с [auth.local] поднимается [auth.kerberos]: логин с кнопкой SSO."""
+    auth: StandAuth = StandAuth.LOCAL
+    """Набор провайдеров входа стенда."""
 
     SANDBOXED_TOOLS: tuple[str, ...] = (
         "bash",
@@ -286,27 +302,32 @@ class StandConfig:
 
     def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""
-        doc["app"]["auth"] = ["${auth.local}"]
-        doc["auth"]["local"] = {
-            "type": "local",
-            "users": dict(self.STAND_USERS),
-            "roles": {login: list(roles) for login, roles in self.STAND_ROLES.items()},
-            "require_roles": True,
-        }
+        providers: list[str] = []
 
-        if not self.sso:
-            return
+        if self.auth.sso:
+            # keytab и SPN из рабочего конфига; маппинг ролей через LDAP стенду не нужен
+            providers.append("${auth.kerberos}")
+            doc["auth"]["kerberos"] = {
+                "type": "kerberos",
+                "principal_format": "{username}@${site.krb_realm}",
+                "accept": {
+                    "service_name": "HTTP/${site.krb_domain}@${site.krb_realm}",
+                    "keytab": "${site.krb_keytab}",
+                },
+            }
 
-        # keytab и SPN из рабочего конфига; маппинг ролей через LDAP стенду не нужен
-        doc["app"]["auth"] = ["${auth.kerberos}", "${auth.local}"]
-        doc["auth"]["kerberos"] = {
-            "type": "kerberos",
-            "principal_format": "{username}@${site.krb_realm}",
-            "accept": {
-                "service_name": "HTTP/${site.krb_domain}@${site.krb_realm}",
-                "keytab": "${site.krb_keytab}",
-            },
-        }
+        if self.auth.local:
+            providers.append("${auth.local}")
+            doc["auth"]["local"] = {
+                "type": "local",
+                "users": dict(self.STAND_USERS),
+                "roles": {
+                    login: list(roles) for login, roles in self.STAND_ROLES.items()
+                },
+                "require_roles": True,
+            }
+
+        doc["app"]["auth"] = providers
 
     def _disable_sandbox_tools(self, doc: MutableMapping[str, Any]) -> None:
         """Без песочницы остаются инструменты, которым она не нужна."""

@@ -5,6 +5,13 @@
   const SSO_URL = "__SSO_URL__";
   const TRANSLATIONS_URL = "__TRANSLATIONS_URL__";
   const BTN_ID = "sso-login-btn";
+  const BTN_CLASS = [
+    "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md",
+    "text-sm font-medium ring-offset-background transition-colors",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    "focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
+    "bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2 w-full",
+  ].join(" ");
   const PASSWORD_ID = "password";
   const PASSWORD_PLACEHOLDER_PATH = ["auth", "login", "form", "password", "placeholder"];
 
@@ -96,14 +103,13 @@
 
   const onLogin = () => /\/login\/?$/.test(browser.path());
 
-  function build(sample) {
-    // клон нативной кнопки: классы, вёрстка и тема наследуются автоматически
-    const btn = sample.cloneNode(true);
+  function build() {
+    // классы кнопки chainlit (shadcn Button default): без формы пароля клонировать нечего
+    const btn = browser.doc.createElement("button");
     btn.id = BTN_ID;
     btn.type = "button";
+    btn.className = BTN_CLASS;
     btn.textContent = "Войти через SSO";
-    btn.removeAttribute("disabled");
-    btn.removeAttribute("form");
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       fetch(SSO_URL, { credentials: "same-origin" })
@@ -136,12 +142,13 @@
     const form = browser.find("form");
     if (!form) return;
 
-    // образец стиля — нативная submit-кнопка формы
-    const sample =
-      form.querySelector('button[type="submit"]') || form.querySelector("button");
-    if (!sample) return;
-
-    sample.insertAdjacentElement("afterend", build(sample));
+    // под кнопкой «Войти», а без формы пароля (только kerberos) — в конец формы
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) {
+      submit.insertAdjacentElement("afterend", build());
+      return;
+    }
+    form.appendChild(build());
   }
 
   const obs = new MutationObserver(() => inject());

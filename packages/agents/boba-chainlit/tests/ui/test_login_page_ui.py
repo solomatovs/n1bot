@@ -1,7 +1,8 @@
-"""Страница логина со включённым SSO: кнопка и подсказки полей.
+"""Страница логина со включённым SSO: кнопка, подсказки полей, обязательный вход.
 
-Фронт chainlit ставит placeholder только полю логина; у пароля его
-подставляет sso.js из переводов, поэтому проверка идёт через браузер.
+Фронт chainlit ставит placeholder только полю логина и рисует форму пароля лишь
+при password-колбэке; без него вход всё равно обязателен, а кнопку SSO ставит
+sso.js — поэтому проверка идёт через браузер.
 """
 
 from __future__ import annotations
@@ -11,16 +12,48 @@ from pathlib import Path
 
 import httpx
 import pytest
-from playwright.sync_api import Browser, expect
+from playwright.sync_api import Browser, BrowserContext, Page, expect
 
 from ui.conftest import BOOT_TIMEOUT_SEC
-from ui.stand import REPO_ROOT, StandConfig, StandPaths, StandProcess, free_port
+from ui.stand import (
+    REPO_ROOT,
+    StandAuth,
+    StandConfig,
+    StandPaths,
+    StandProcess,
+    free_port,
+)
 
 pytestmark = pytest.mark.ui
 
 SSO_BUTTON = "#sso-login-btn"
 LOGIN_FIELD = "#email"
 PASSWORD_FIELD = "#password"
+SUBMIT_BUTTON = 'form button[type="submit"]'
+
+
+def _sso_stand(
+    workdir: Path, llm_port: int, db_name: str, auth: StandAuth, prefix: str
+) -> Iterator[StandProcess]:
+    """Стенд с [auth.kerberos]: без keytab на хосте его не собрать."""
+    keytab = StandPaths.KEYTAB.under(REPO_ROOT)
+    if not keytab.is_file():
+        pytest.skip(f"no service keytab at {keytab}")
+
+    config = StandConfig(
+        workdir=workdir,
+        app_port=free_port(),
+        llm_port=llm_port,
+        db_name=db_name,
+        url_prefix=prefix,
+        auth=auth,
+    )
+    process = StandProcess(config=config, log_path=workdir / "app.log")
+    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    try:
+        yield process
+    finally:
+        process.stop()
 
 
 @pytest.fixture(scope="session")
@@ -30,25 +63,38 @@ def sso_stand(
     fake_llm: None,
     stand_database: str,
 ) -> Iterator[StandProcess]:
-    """Стенд с [auth.kerberos]: без keytab на хосте его не собрать."""
-    keytab = StandPaths.KEYTAB.under(REPO_ROOT)
-    if not keytab.is_file():
-        pytest.skip(f"no service keytab at {keytab}")
-
-    config = StandConfig(
-        workdir=stand_workdir / "sso",
-        app_port=free_port(),
-        llm_port=llm_port,
-        db_name=stand_database,
-        url_prefix="/boba-sso",
-        sso=True,
+    yield from _sso_stand(
+        stand_workdir / "sso",
+        llm_port,
+        stand_database,
+        StandAuth.LOCAL_SSO,
+        "/boba-sso",
     )
-    process = StandProcess(config=config, log_path=stand_workdir / "sso-app.log")
-    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+
+
+@pytest.fixture(scope="session")
+def sso_only_stand(
+    stand_workdir: Path,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+) -> Iterator[StandProcess]:
+    yield from _sso_stand(
+        stand_workdir / "sso-only",
+        llm_port,
+        stand_database,
+        StandAuth.SSO,
+        "/boba-sso-only",
+    )
+
+
+@pytest.fixture
+def anonymous(browser: Browser) -> Iterator[BrowserContext]:
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
     try:
-        yield process
+        yield context
     finally:
-        process.stop()
+        context.close()
 
 
 def _placeholders(base_url: str) -> tuple[str, str]:
@@ -60,24 +106,52 @@ def _placeholders(base_url: str) -> tuple[str, str]:
     return form["email"]["placeholder"], form["password"]["placeholder"]
 
 
-def test_password_field_has_placeholder(
-    browser: Browser, sso_stand: StandProcess, stand_workdir: Path
+def _login_page(context: BrowserContext, base_url: str) -> Page:
+    page = context.new_page()
+    page.goto(f"{base_url}/login")
+    expect(page.locator(SSO_BUTTON)).to_be_visible()
+    return page
+
+
+def test_password_form_with_sso_button(
+    anonymous: BrowserContext, sso_stand: StandProcess, stand_workdir: Path
 ) -> None:
-    login_hint, password_hint = _placeholders(sso_stand.config.base_url)
+    base_url = sso_stand.config.base_url
+    login_hint, password_hint = _placeholders(base_url)
     assert login_hint
     assert password_hint
 
-    context = browser.new_context(viewport={"width": 1280, "height": 900})
-    try:
-        page = context.new_page()
-        page.goto(f"{sso_stand.config.base_url}/login")
+    page = _login_page(anonymous, base_url)
 
-        expect(page.locator(SSO_BUTTON)).to_be_visible()
-        expect(page.locator(LOGIN_FIELD)).to_have_attribute("placeholder", login_hint)
-        expect(page.locator(PASSWORD_FIELD)).to_have_attribute(
-            "placeholder", password_hint
-        )
+    expect(page.locator(SUBMIT_BUTTON)).to_be_visible()
+    expect(page.locator(LOGIN_FIELD)).to_have_attribute("placeholder", login_hint)
+    expect(page.locator(PASSWORD_FIELD)).to_have_attribute(
+        "placeholder", password_hint
+    )
 
-        page.screenshot(path=str(stand_workdir / "login.png"))
-    finally:
-        context.close()
+    page.screenshot(path=str(stand_workdir / "login.png"))
+
+
+def test_sso_only_keeps_login_required(
+    anonymous: BrowserContext, sso_only_stand: StandProcess, stand_workdir: Path
+) -> None:
+    base_url = sso_only_stand.config.base_url
+
+    auth_config = httpx.get(f"{base_url}/auth/config", timeout=10.0).json()
+    assert auth_config["requireLogin"] is True
+    assert auth_config["passwordAuth"] is False
+
+    user = httpx.get(f"{base_url}/user", timeout=10.0)
+    assert user.status_code == 401
+
+    page = _login_page(anonymous, base_url)
+
+    assert page.locator(SUBMIT_BUTTON).count() == 0
+    assert page.locator(LOGIN_FIELD).count() == 0
+    assert page.locator(PASSWORD_FIELD).count() == 0
+
+    page.screenshot(path=str(stand_workdir / "login-sso-only.png"))
+
+    page.goto(f"{base_url}/")
+    page.wait_for_url(f"{base_url}/login**")
+    expect(page.locator(SSO_BUTTON)).to_be_visible()
