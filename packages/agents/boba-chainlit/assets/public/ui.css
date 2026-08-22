@@ -24,3 +24,14 @@
   color: var(--accent-foreground);
   opacity: 1;
 }
+
+/* Заголовок шага ленты.
+
+   chainlit рисует его кнопкой, а у <button> в user-agent stylesheet стоит
+   text-align: center; класс AccordionTrigger его не перекрывает — justify-start
+   разносит flex-элементы, но не выравнивает строки внутри текста. Пока имя
+   умещается в строку, разницы не видно; длинное имя переносится, и обе строки
+   встают по центру — шаг выглядит съехавшим вправо. */
+button[id^='step-'] {
+  text-align: left;
+}
