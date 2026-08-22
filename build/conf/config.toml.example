@@ -369,7 +369,7 @@
         restart_backoff_sec = 1.0
         healthy_after_sec   = 30.0
         stop_wait_sec       = 5.0
-        call_poll_sec       = 0.2
+        call_poll_sec       = 0.01
 
     [sandbox.host]
         binaries          = "${sandbox.binaries}"
@@ -439,7 +439,6 @@
             call_tmpfs     = "/tmp"
             proc           = "/proc"
             dev            = "/dev"
-            workspace      = "${sandbox.workspace}"
             images         = []
             image_template = ""
         [sandbox.profiles.base.isolation]
@@ -464,11 +463,18 @@
             group_pids_max        = 256
             group_oom_kill_all    = true
         [sandbox.profiles.base.run]
-            cwd   = "/workspace"
+            cwd   = "/tmp"
             shell = "/bin/bash"
 
-    [sandbox.profiles.docs]
+    [sandbox.profiles.files]
         extends = "${sandbox.profiles.base}"
+        [sandbox.profiles.files.mounts]
+            workspace = "${sandbox.workspace}"
+        [sandbox.profiles.files.run]
+            cwd = "/workspace"
+
+    [sandbox.profiles.docs]
+        extends = "${sandbox.profiles.files}"
         [sandbox.profiles.docs.mounts]
             ro = "${sandbox.binds.docs}"
         [sandbox.profiles.docs.limits]
@@ -476,9 +482,12 @@
             group_memory_bytes   = 4294967296
 
     [sandbox.profiles.render]
-        extends = "${sandbox.profiles.docs}"
-        [sandbox.profiles.render.run]
-            cwd = "/tmp"
+        extends = "${sandbox.profiles.base}"
+        [sandbox.profiles.render.mounts]
+            ro = "${sandbox.binds.docs}"
+        [sandbox.profiles.render.limits]
+            process_memory_bytes = 17179869184
+            group_memory_bytes   = 4294967296
 
     [sandbox.profiles.net]
         extends = "${sandbox.profiles.base}"
@@ -515,7 +524,7 @@
     tools            = ["bash"]
     max_output_bytes = 65536
     [tool.bash.sandbox]
-        profile = "${sandbox.profiles.base}"
+        profile = "${sandbox.profiles.files}"
 
 [tool.workflow]
     enable = true

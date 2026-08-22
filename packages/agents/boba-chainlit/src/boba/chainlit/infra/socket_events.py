@@ -1,9 +1,13 @@
-"""Обёртки socket.io-хендлеров chainlit: журнал связи и loading после реконнекта.
+"""Обёртки socket.io-хендлеров chainlit: журнал связи, loading и кнопка Stop.
 
 chainlit на каждый connection_successful шлёт task_end, а «тихий» реконнект того
 же сокета не идёт через on_chat_resume — индикатор хода гаснет, пока ход жив.
 Обёртка возвращает task_start треду с живым ходом; connect, disconnect с причиной
 engine.io и восстановление сессии пишутся в журнал.
+
+Хендлер stop заменяется целиком: оригинал первым делом шлёт в ленту своё
+«Task manually stopped.», а об остановке отчитывается сам ход — вторая
+надпись в ленте лишняя.
 
 Ошибки:
 InternalServiceError — chainlit не зарегистрировал свои хендлеры сокета.
@@ -19,6 +23,8 @@ from typing import Any, ClassVar, cast
 
 from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.turn import TurnContext
+from chainlit.config import config as chainlit_config
+from chainlit.context import init_ws_context
 from chainlit.session import WebsocketSession
 
 __all__ = ["SocketEvents"]
@@ -33,6 +39,7 @@ class SocketEvent(StrEnum):
     DISCONNECT = "disconnect"
     CONNECTED = "connection_successful"
     TASK_START = "task_start"
+    STOP = "stop"
 
 
 @dataclass(frozen=True)
@@ -114,6 +121,7 @@ class SocketEvents:
         origin_connect = cls._origin(handlers, SocketEvent.CONNECT)
         origin_disconnect = cls._origin(handlers, SocketEvent.DISCONNECT)
         origin_connected = cls._origin(handlers, SocketEvent.CONNECTED)
+        cls._origin(handlers, SocketEvent.STOP)
 
         async def connect(
             sid: str, environ: dict[str, Any], auth: dict[str, Any]
@@ -145,15 +153,41 @@ class SocketEvents:
         sio.on(SocketEvent.CONNECT.value, connect, namespace=cls.NAMESPACE)
         sio.on(SocketEvent.DISCONNECT.value, disconnect, namespace=cls.NAMESPACE)
         sio.on(SocketEvent.CONNECTED.value, connected, namespace=cls.NAMESPACE)
+        sio.on(SocketEvent.STOP.value, cls._stop, namespace=cls.NAMESPACE)
 
         cls._installed = True
 
         logger.info(
-            "socket handlers wrapped: %s, %s, %s",
+            "socket handlers wrapped: %s, %s, %s, %s",
             SocketEvent.CONNECT.value,
             SocketEvent.DISCONNECT.value,
             SocketEvent.CONNECTED.value,
+            SocketEvent.STOP.value,
         )
+
+    @classmethod
+    async def _stop(cls, sid: str) -> None:
+        """Кнопка Stop: остановка хода, затем снятие задачи chainlit.
+
+        Порядок обязателен: ход помечает причину остановки сам, и только после
+        этого его задаче прилетает отмена — иначе ход прочитал бы её как обрыв
+        снаружи и отчитался бы другой формулировкой.
+        """
+        session = WebsocketSession.get(sid)
+        if session is None:
+            logger.info("socket stop without session: sid=%s", sid)
+            return
+
+        init_ws_context(session)
+
+        facts = SocketFacts.of_session(session)
+        logger.info("socket stop: %s", facts.line())
+
+        if chainlit_config.code.on_stop:
+            await chainlit_config.code.on_stop()
+
+        if session.current_task:
+            session.current_task.cancel()
 
     @classmethod
     async def _restore_loading(cls, sid: str) -> None:

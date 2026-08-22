@@ -69,7 +69,6 @@ from boba.toolkit.stream import (
 )
 from boba.toolkit.zygote import (
     CallExit,
-    CallFd,
     CallKind,
     CallMounts,
     CallRequest,
@@ -213,9 +212,10 @@ class ZygoteOutcome(BaseModel):
 
 
 class _CallChannels:
-    """Дескрипторы одного вызова: пайпы каналов, stdin и control-пара."""
+    """Дескрипторы одного вызова: пайпы каналов, stdin, control-пара и cgroup."""
 
-    def __init__(self) -> None:
+    def __init__(self, cgroup_fd: int = -1) -> None:
+        self.cgroup_fd = cgroup_fd
         self.stdin_r, self.stdin_w = os.pipe()
         self.stdout_r, self.stdout_w = os.pipe()
         self.stderr_r, self.stderr_w = os.pipe()
@@ -227,15 +227,18 @@ class _CallChannels:
         self._stdin_open = True
 
     def child_fds(self) -> list[int]:
-        """В порядке CallFd: так их ждёт зигота."""
-        table = {
-            CallFd.STDIN: self.stdin_r,
-            CallFd.STDOUT: self.stdout_w,
-            CallFd.STDERR: self.stderr_w,
-            CallFd.RESULT: self.result_w,
-            CallFd.CONTROL: self.control_child.fileno(),
-        }
-        return [table[index] for index in CallFd]
+        """В порядке CallFd: так их ждёт зигота; cgroup — последним и не всегда."""
+        listed = [
+            self.stdin_r,
+            self.stdout_w,
+            self.stderr_w,
+            self.result_w,
+            self.control_child.fileno(),
+        ]
+        if self.cgroup_fd >= 0:
+            listed.append(self.cgroup_fd)
+
+        return listed
 
     def close_child_ends(self) -> None:
         os.close(self.stdin_r)
@@ -487,7 +490,7 @@ class ZygoteSupervisor:
         mounts: CallMounts,
         timeout_sec: float,
         kill_grace_sec: float,
-        cgroup_procs: str = "",
+        cgroup_leaf: str = "",
         images: Sequence[ImageMount] = (),
         mounting: ImageMounting | None = None,
         cwd: str = "",
@@ -504,7 +507,11 @@ class ZygoteSupervisor:
             self._calls_total += 1
             self._in_flight[call_id] = time.monotonic()
 
-        channels = _CallChannels()
+        cgroup_fd = -1
+        if cgroup_leaf:
+            cgroup_fd = os.open(cgroup_leaf, os.O_RDONLY | os.O_DIRECTORY)
+
+        channels = _CallChannels(cgroup_fd)
         request = CallRequest(
             call_id=call_id,
             kind=kind,
@@ -515,6 +522,7 @@ class ZygoteSupervisor:
             images=tuple(images),
             mounting=mounting,
             cwd=cwd,
+            into_cgroup=cgroup_fd >= 0,
         )
 
         try:
@@ -527,6 +535,8 @@ class ZygoteSupervisor:
             raise ZygoteUnavailableError(msg) from exc
 
         channels.close_child_ends()
+        if cgroup_fd >= 0:
+            os.close(cgroup_fd)
 
         pump = _CallPump(
             name=self._name,
@@ -534,7 +544,6 @@ class ZygoteSupervisor:
             channels=channels,
             sinks=sinks,
             timeout_sec=timeout_sec,
-            cgroup_procs=cgroup_procs,
             poll_sec=self._policy.call_poll_sec,
             kill_grace_sec=kill_grace_sec,
         )
@@ -708,14 +717,12 @@ class _CallPump:
         channels: _CallChannels,
         sinks: Mapping[ToolChannel, ChunkSink],
         timeout_sec: float,
-        cgroup_procs: str,
         poll_sec: float,
         kill_grace_sec: float,
     ) -> None:
         self._name = name
         self._request = request
         self._channels = channels
-        self._cgroup_procs = cgroup_procs
         self._poll_sec = poll_sec
         self._kill_grace_sec = kill_grace_sec
 
@@ -849,19 +856,10 @@ class _CallPump:
 
         if data == ControlMark.BORN.bytes():
             self._child_pid = self._creds_pid(ancdata)
-            self._enter_cgroup()
-            self._channels.control_host.send(ControlMark.GO.bytes())
             return
 
         exit_message = CallExit.model_validate_json(data)
         self._exit_code = exit_message.code
-
-    def _enter_cgroup(self) -> None:
-        if not self._cgroup_procs:
-            return
-
-        with open(self._cgroup_procs, "w") as procs:
-            procs.write(str(self._child_pid))
 
     @staticmethod
     def _creds_pid(ancdata: list[tuple[int, int, bytes]]) -> int:
@@ -1391,14 +1389,13 @@ class ZygoteToolCaller(ToolLauncher):
         group = GroupLimits.of_profile(self._profile)
 
         if not group.requested:
-            return self._call(command, argv_tail, sinks, cgroup_procs="", kind=kind)
+            return self._call(command, argv_tail, sinks, cgroup_leaf="", kind=kind)
 
         manager = CgroupManager(self._profile.host.cgroup_base)
         leaf = manager.acquire(group)
 
         try:
-            procs = os.path.join(leaf, "cgroup.procs")
-            return self._call(command, argv_tail, sinks, cgroup_procs=procs, kind=kind)
+            return self._call(command, argv_tail, sinks, cgroup_leaf=leaf, kind=kind)
         finally:
             if note := manager.throttling(leaf):
                 logger.warning("zygote[%s]: %s", self._tool, note)
@@ -1410,7 +1407,7 @@ class ZygoteToolCaller(ToolLauncher):
         argv_tail: tuple[str, ...],
         sinks: Mapping[ToolChannel, ChunkSink],
         *,
-        cgroup_procs: str,
+        cgroup_leaf: str,
         kind: CallKind = CallKind.MODULE,
     ) -> ZygoteOutcome:
         timeout_sec = self._profile.limits.timeout_sec
@@ -1440,7 +1437,7 @@ class ZygoteToolCaller(ToolLauncher):
             mounts=self._call_mounts,
             timeout_sec=float(timeout_sec),
             kill_grace_sec=self._profile.host.kill_grace_sec,
-            cgroup_procs=cgroup_procs,
+            cgroup_leaf=cgroup_leaf,
             images=images,
             mounting=self._mounting_of(images),
             cwd=rendered.run.cwd,

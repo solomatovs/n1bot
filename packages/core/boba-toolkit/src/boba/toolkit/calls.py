@@ -5,13 +5,17 @@
 является его вход: скриптом с языком подсветки, обычным json или ничем.
 Рендер ленты выбирает форму match'ем по семейству, как и для результата.
 
+ToolIntent — общая для всех инструментов подпись вызова: строку пишет LLM,
+показывает её название шага ленты.
+
 Ошибки: своих не выпускает.
 """
 
 from __future__ import annotations
 
 from abc import ABC
-from typing import Annotated, ClassVar, Literal, TypeAlias
+from collections.abc import Mapping
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,6 +26,7 @@ __all__ = [
     "ToolCallView",
     "ToolCallViewBase",
     "ToolCallViews",
+    "ToolIntent",
 ]
 
 
@@ -64,6 +69,56 @@ ToolCallView: TypeAlias = Annotated[
     JsonCall | ScriptCall | HiddenCall,
     Field(discriminator="kind"),
 ]
+
+
+class ToolIntent:
+    """Подпись вызова инструмента: одна строка от LLM для названия шага.
+
+    Поле общее для всех инструментов и добавляется в схему приложением;
+    тела инструментов о нём не знают и в песочницу оно не уезжает.
+    """
+
+    NAME: ClassVar[str] = "intent"
+
+    DESCRIPTION: ClassVar[str] = (
+        "Short line shown to the user as the step title: what this call does "
+        "and why, in the language of the conversation. Keep it under ten words."
+    )
+
+    MAX_CHARS: ClassVar[int] = 160
+
+    ELLIPSIS: ClassVar[str] = "…"
+
+    @classmethod
+    def of(cls, args: Mapping[str, Any]) -> str:
+        """Подпись вызова; пустая строка — модель поле не заполнила."""
+        value = args.get(cls.NAME)
+        if not isinstance(value, str):
+            return ""
+
+        return cls._flat(value)
+
+    @classmethod
+    def without(cls, args: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Аргументы без подписи: во вход шага и в тело инструмента она не идёт."""
+        rest: dict[str, Any] = {}
+        for name, value in args.items():
+            if name == cls.NAME:
+                continue
+
+            rest[name] = value
+
+        return rest
+
+    @classmethod
+    def _flat(cls, value: str) -> str:
+        """Одна строка в пределах потолка: подпись живёт в названии шага."""
+        text = " ".join(value.split())
+        if len(text) <= cls.MAX_CHARS:
+            return text
+
+        clipped = text[: cls.MAX_CHARS].rstrip()
+        return f"{clipped}{cls.ELLIPSIS}"
 
 
 class ToolCallViews:

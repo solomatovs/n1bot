@@ -8,6 +8,7 @@ from boba.chainlit.agent.toolrun.access import (
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
+from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import (
     CallStream,
     StreamSource,
@@ -33,5 +34,6 @@ __all__ = [
     "ToolBody",
     "ToolCallIdField",
     "ToolErrorGuard",
+    "ToolIntentField",
     "ToolRunLogger",
 ]

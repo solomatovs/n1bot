@@ -342,9 +342,9 @@ class TestPrefetchStage:
         view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
         view.begin_turn(TURN)
 
-        stage = await view.begin_stage("context lookup")
+        stage = await view.begin_stage("context lookup", "rephrasing the question")
         inside = await view.tool_started("kb_fts_search", {"query": "kerberos"}, "c-1")
-        await view.end_stage(["kerberos"])
+        await view.end_stage(["kerberos"], 1500)
         outside = await view.tool_started("kb_fts_search", {"query": "later"}, "c-2")
 
         container = view.container_step
@@ -363,8 +363,8 @@ class TestPrefetchStage:
         view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
         view.begin_turn(TURN)
 
-        await view.begin_stage("context lookup")
-        await view.end_stage(["первый запрос", "второй запрос"])
+        stage = await view.begin_stage("context lookup", "rephrasing the question")
+        await view.end_stage(["первый запрос", "второй запрос"], 6400)
 
         if view.stage_step is not None:
             raise AssertionError("закрытый этап больше не принимает шаги")
@@ -373,16 +373,35 @@ class TestPrefetchStage:
         if output != "- первый запрос\n- второй запрос":
             raise AssertionError(f"подпись этапа: {output!r}")
 
+        if stage.name != "✔ context lookup · 6.4 s":
+            raise AssertionError(f"этап подписан длительностью: {stage.name!r}")
+
     @pytest.mark.anyio
     async def test_stage_id_is_derived_from_the_turn(self, http_context: None) -> None:
         """Live и сборка истории обязаны дать этапу один id."""
         view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
         view.begin_turn(TURN)
 
-        stage = await view.begin_stage("context lookup")
+        stage = await view.begin_stage("context lookup", "rephrasing the question")
 
         if stage.id != ChatView.derive_id(THREAD, TURN, StepRole.STAGE):
             raise AssertionError("id этапа выводится из ключа хода")
+
+    @pytest.mark.anyio
+    async def test_phase_changes_from_rephrasing_to_queries(
+        self, http_context: None
+    ) -> None:
+        """Пока запросов нет — этап называет фазу, потом показывает сами запросы."""
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        stage = await view.begin_stage("context lookup", "rephrasing the question")
+        if stage.output != "rephrasing the question":
+            raise AssertionError(f"первая фаза этапа: {stage.output!r}")
+
+        await view.stage_queries(["первый запрос", "второй запрос"])
+        if stage.output != "- первый запрос\n- второй запрос":
+            raise AssertionError(f"фаза поиска подписана запросами: {stage.output!r}")
 
 
 class TestStepElapsed:
@@ -439,3 +458,64 @@ class TestToolStepDuration:
 
         if step.name != "✔ kb_fts_search":
             raise AssertionError(step.name)
+
+
+class TestToolIntent:
+    """Подпись вызова от LLM: название шага вместо статуса running."""
+
+    @pytest.mark.anyio
+    async def test_intent_titles_the_running_step(self, http_context: None) -> None:
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        args = {"command": "ls -la", "intent": "смотрю содержимое каталога"}
+        step = await view.tool_started("bash", args, "call-1")
+
+        if step.name != "○ bash · смотрю содержимое каталога":
+            raise AssertionError(step.name)
+        if step.output:
+            raise AssertionError(f"running не пишется под подписью: {step.output!r}")
+
+    @pytest.mark.anyio
+    async def test_intent_survives_the_result(self, http_context: None) -> None:
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        args = {"query": "kerberos", "intent": "ищу настройку kerberos"}
+        step = await view.tool_started("kb_fts_search", args, "call-2")
+        await view.tool_finished(
+            step, TextResult(text="hits", elapsed_ms=240), "call-2"
+        )
+
+        if step.name != "✔ kb_fts_search · ищу настройку kerberos · 240 ms":
+            raise AssertionError(step.name)
+
+    @pytest.mark.anyio
+    async def test_intent_is_not_shown_among_arguments(
+        self, http_context: None
+    ) -> None:
+        """Подпись живёт в названии шага и во вход вызова не попадает."""
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        args = {"query": "kerberos", "intent": "ищу настройку kerberos"}
+        step = await view.tool_started("kb_fts_search", args, "call-3")
+
+        if step.input is None:
+            raise AssertionError("вход шага показан")
+        if "intent" in step.input:
+            raise AssertionError(f"вход шага без подписи: {step.input!r}")
+
+    @pytest.mark.anyio
+    async def test_call_without_intent_keeps_the_old_look(
+        self, http_context: None
+    ) -> None:
+        view = ChatView(THREAD, RecordingSink(), user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        step = await view.tool_started("kb_fts_search", {"query": "kerberos"}, "call-4")
+
+        if step.name != "○ kb_fts_search":
+            raise AssertionError(step.name)
+        if step.output != "running":
+            raise AssertionError(f"без подписи шаг остаётся running: {step.output!r}")

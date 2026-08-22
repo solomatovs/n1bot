@@ -46,6 +46,7 @@ from boba.toolkit.images import (
     LauncherOptions,
     MountError,
     SparseCopier,
+    trace,
 )
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.timing import Elapsed, ProcessAge
@@ -124,13 +125,36 @@ class ZygoteArgs(BaseModel):
         ]
 
 
+class SetupTiming:
+    """Тайминг подготовки вызова: по нему видно, какая фаза съела время.
+
+    Кадр уезжает в журнал приложения тем же каналом, что и ход монтирования,
+    поэтому медленный вызов разбирается без отдельной пробы.
+    """
+
+    def __init__(self) -> None:
+        self._total = Elapsed()
+        self._step = Elapsed()
+        self._marks: list[str] = []
+
+    def mark(self, name: str) -> None:
+        self._marks.append(f"{name} {self._step.ms()}ms")
+        self._step = Elapsed()
+
+    def report(self, call_id: str, phase: str = "setup") -> None:
+        listed = ", ".join(self._marks)
+        trace(f"call {call_id} {phase} {self._total.ms()}ms: {listed}")
+
+
 class CloneFlag(IntEnum):
-    """Флаги unshare(2), которые применяет ребёнок."""
+    """Флаги unshare(2)/clone3(2), которые применяет ребёнок."""
 
     NEWNS = 0x00020000
     NEWUTS = 0x04000000
     NEWIPC = 0x08000000
     NEWPID = 0x20000000
+    INTO_CGROUP = 0x200000000
+    """clone3: ребёнок рождается сразу в переданном cgroup, без миграции."""
 
 
 class MountFlag(IntEnum):
@@ -152,10 +176,13 @@ class CallFd(IntEnum):
     STDERR = 2
     RESULT = 3
     CONTROL = 4
+    CGROUP = 5
+    """Каталог cgroup-leaf'а; едет только когда у вызова есть групповые лимиты."""
 
     @classmethod
     def count(cls) -> int:
-        return len(cls)
+        """Обязательные дескрипторы: cgroup среди них нет."""
+        return len(cls) - 1
 
 
 class CallKind(StrEnum):
@@ -169,7 +196,6 @@ class ControlMark(StrEnum):
     """Байтовые метки пер-вызовного control-сокета."""
 
     BORN = "born"
-    GO = "go"
 
     def bytes(self) -> bytes:
         return self.value.encode("ascii")
@@ -302,6 +328,8 @@ class CallRequest(BaseModel):
     mounting: ImageMounting | None = None
     """Параметры монтирования; None — образов у вызова нет."""
     cwd: str = ""
+    into_cgroup: bool = False
+    """Шестым дескриптором приехал каталог cgroup-leaf'а вызова."""
 
 
 class CallExit(BaseModel):
@@ -411,6 +439,62 @@ class Isolation:
         if rc != 0:
             errno = ctypes.get_errno()
             raise OSError(errno, f"umount2({target}) failed: {os.strerror(errno)}")
+
+    class _CloneArgs(ctypes.Structure):
+        """Аргументы clone3(2) в порядке ядра; хвост не используется."""
+
+        _fields_: ClassVar = [
+            ("flags", ctypes.c_uint64),
+            ("pidfd", ctypes.c_uint64),
+            ("child_tid", ctypes.c_uint64),
+            ("parent_tid", ctypes.c_uint64),
+            ("exit_signal", ctypes.c_uint64),
+            ("stack", ctypes.c_uint64),
+            ("stack_size", ctypes.c_uint64),
+            ("tls", ctypes.c_uint64),
+            ("set_tid", ctypes.c_uint64),
+            ("set_tid_size", ctypes.c_uint64),
+            ("cgroup", ctypes.c_uint64),
+        ]
+
+    SYS_CLONE3: ClassVar[int] = 435
+    CHILD_EXIT_SIGNAL: ClassVar[int] = 17
+    """SIGCHLD: без него родитель не дождётся ребёнка обычным waitpid."""
+
+    @classmethod
+    def clone_into(cls, flags: int, cgroup_fd: int) -> int:
+        """clone3 с рождением ребёнка в готовом cgroup: 0 — это ребёнок.
+
+        Миграция уже работающего процесса в leaf стоит десятки миллисекунд на
+        каждый вызов; рождение внутри leaf'а обходится в доли миллисекунды.
+        Звать только из однопоточного процесса: послефорковое обслуживание
+        интерпретатора здесь не выполняется.
+        """
+        args = cls._CloneArgs(
+            flags=flags | CloneFlag.INTO_CGROUP,
+            exit_signal=cls.CHILD_EXIT_SIGNAL,
+            cgroup=cgroup_fd,
+        )
+        pid = cls.libc().syscall(
+            cls.SYS_CLONE3, ctypes.byref(args), ctypes.sizeof(args)
+        )
+        if pid < 0:
+            code = ctypes.get_errno()
+            raise OSError(code, f"clone3(into cgroup): {os.strerror(code)}")
+
+        return pid
+
+    CGROUP_PROCS: ClassVar[str] = "cgroup.procs"
+    SELF_PID: ClassVar[bytes] = b"0"
+
+    @classmethod
+    def join_cgroup(cls, cgroup_fd: int) -> None:
+        """Вписать себя в leaf через его дескриптор: cgroupfs внутри не смонтирован."""
+        fd = os.open(cls.CGROUP_PROCS, os.O_WRONLY, dir_fd=cgroup_fd)
+        try:
+            os.write(fd, cls.SELF_PID)
+        finally:
+            os.close(fd)
 
     @classmethod
     def unshare(cls, flags: int) -> None:
@@ -636,23 +720,29 @@ class ZygoteMain:
                 os.close(fd)
             raise
 
-        if len(fds) != CallFd.count():
+        expected = CallFd.count()
+        if request.into_cgroup:
+            expected += 1
+
+        if len(fds) != expected:
             for fd in fds:
                 os.close(fd)
-            msg = (
-                f"call {request.call_id}: expected {CallFd.count()} fds, got {len(fds)}"
-            )
+            msg = f"call {request.call_id}: expected {expected} fds, got {len(fds)}"
             raise ZygoteProtocolError(msg)
 
         control = socket.socket(fileno=fds[CallFd.CONTROL])
 
+        timing = SetupTiming()
         pid = os.fork()
         if pid == 0:
-            self._child(request, fds)
+            self._child(request, fds, timing)
             os._exit(127)
 
         for index in (CallFd.STDIN, CallFd.STDOUT, CallFd.STDERR, CallFd.RESULT):
             os.close(fds[index])
+
+        if request.into_cgroup:
+            os.close(fds[CallFd.CGROUP])
 
         self._children[pid] = (request.call_id, control)
         logger.info("zygote: call %s forked as pid %d", request.call_id, pid)
@@ -692,9 +782,12 @@ class ZygoteMain:
 
         self._reap()
 
-    def _child(self, request: CallRequest, fds: list[int]) -> None:
+    def _child(
+        self, request: CallRequest, fds: list[int], timing: SetupTiming
+    ) -> None:
         """Первый форк: изоляция namespace'ов и второй форк под NEWPID."""
         try:
+            timing.mark("fork")
             self._sock.close()
             signal.signal(signal.SIGCHLD, signal.SIG_DFL)
             os.close(self._sigchld_r)
@@ -702,18 +795,21 @@ class ZygoteMain:
 
             if request.isolate:
                 Isolation.unshare(
-                    CloneFlag.NEWNS
-                    | CloneFlag.NEWPID
-                    | CloneFlag.NEWIPC
-                    | CloneFlag.NEWUTS
+                    CloneFlag.NEWNS | CloneFlag.NEWIPC | CloneFlag.NEWUTS
                 )
 
-            pid = os.fork()
+            timing.mark("unshare")
+
+            pid, join_self = self._spawn_executor(request, fds)
             if pid != 0:
                 _, status = os.waitpid(pid, 0)
                 os._exit(os.waitstatus_to_exitcode(status) & 0xFF)
 
-            self._grandchild(request, fds)
+            if join_self:
+                Isolation.join_cgroup(fds[CallFd.CGROUP])
+
+            timing.mark("fork2")
+            self._grandchild(request, fds, timing)
         except BaseException as exc:
             self._report_failure(exc)
             os._exit(126)
@@ -733,7 +829,32 @@ class ZygoteMain:
 
         print(f"zygote child failed: {exc}", file=sys.stderr, flush=True)  # noqa: T201
 
-    def _grandchild(self, request: CallRequest, fds: list[int]) -> None:
+    @staticmethod
+    def _spawn_executor(request: CallRequest, fds: list[int]) -> tuple[int, bool]:
+        """Исполнитель вызова: pid namespace всегда, cgroup — если приехал fd.
+
+        Отдаёт pid и признак «вписаться в leaf самому»: рождение в cgroup
+        избавляет от миграции работающего процесса, которая стоит десятки
+        миллисекунд, но при отказе ядра остаётся запись через тот же
+        дескриптор. Форк здесь однопоточный — первый форк зиготы отсёк её
+        потоки, поэтому clone3 без послефоркового обслуживания безопасен.
+        """
+        if not request.isolate:
+            return os.fork(), False
+
+        if request.into_cgroup:
+            try:
+                return Isolation.clone_into(CloneFlag.NEWPID, fds[CallFd.CGROUP]), False
+            except OSError as exc:
+                trace(f"clone3 into cgroup refused ({exc}), falling back to fork")
+
+        Isolation.unshare(CloneFlag.NEWPID)
+
+        return os.fork(), request.into_cgroup
+
+    def _grandchild(
+        self, request: CallRequest, fds: list[int], timing: SetupTiming
+    ) -> None:
         """Исполнитель: приватные /proc и /tmp, cgroup через хост, образы, тело.
 
         Порядок жёсткий: handshake до монтирования (fuse2fs-демон рождается
@@ -741,6 +862,8 @@ class ZygoteMain:
         """
         if request.isolate:
             Isolation.enter_call_namespaces(request.mounts)
+
+        timing.mark("namespaces")
 
         os.dup2(fds[CallFd.STDIN], 0)
         os.dup2(fds[CallFd.STDOUT], 1)
@@ -750,6 +873,7 @@ class ZygoteMain:
         control = socket.socket(fileno=fds[CallFd.CONTROL])
         self._handshake(control)
         control.close()
+        timing.mark("handshake")
 
         mounts = _CallMounts.of(request)
         try:
@@ -761,6 +885,8 @@ class ZygoteMain:
             )
             os._exit(MountError.EXIT_CODE)
 
+        timing.mark("images")
+
         request.limits.apply()
 
         if request.isolate:
@@ -769,27 +895,51 @@ class ZygoteMain:
         if request.cwd:
             os.chdir(request.cwd)
 
+        timing.mark("limits")
+        timing.report(request.call_id)
+
+        timing = SetupTiming()
         try:
             code = self._run_body(request)
+            timing.mark("body")
         finally:
             # записи доезжают до образа только после штатного выхода fuse2fs
             mounts.shutdown()
 
+        timing.mark("unmount")
+        timing.report(request.call_id, phase="teardown")
+
         os._exit(code)
 
     def _run_body(self, request: CallRequest) -> int:
-        """Тело — всегда дочерний процесс исполнителя, одна схема на все виды.
+        """Тело своим процессом — только когда после него надо гасить демон.
 
-        Исполнитель остаётся init своего pid ns: держит монтирования, ждёт
-        тело, гасит демон. Различие видов — одна строка внутри форка: shell
-        замещает себя командой, модуль исполняет тело в уже прогретом процессе.
+        Исполнитель обязан пережить тело, если у вызова есть образ: записи
+        доезжают до образа лишь после штатного выхода fuse2fs. Без образов
+        ждать нечего, а лишний форк прогретой зиготы стоит десяток
+        миллисекунд, поэтому тело исполняется прямо здесь.
         """
+        if not request.images:
+            return self._body_here(request)
+
         pid = os.fork()
         if pid == 0:
             self._body(request)
 
         _, status = os.waitpid(pid, 0)
         return os.waitstatus_to_exitcode(status)
+
+    def _body_here(self, request: CallRequest) -> int:
+        """Тело в самом исполнителе: shell замещает процесс, модуль отдаёт код."""
+        argv = list(request.argv)
+        if request.kind is CallKind.SHELL:
+            self._flush_streams()
+            os.execv(argv[0], argv)  # noqa: S606 — argv собран хостом, без shell
+
+        code = ToolMain.run(self._tools, argv)
+        self._flush_streams()
+
+        return code
 
     def _body(self, request: CallRequest) -> None:
         # тело умирает вместе с исполнителем и без pid ns: в изоляции это и
@@ -815,17 +965,16 @@ class ZygoteMain:
 
     @staticmethod
     def _handshake(control: socket.socket) -> None:
-        """Хост узнаёт host-pid исполнителя и вписывает его в cgroup-leaf."""
+        """Хост узнаёт host-pid исполнителя: он нужен ему для kill и таймаута.
+
+        Ответа ждать нечего: в cgroup-leaf исполнитель попадает сам — рождением
+        внутри него либо записью через его дескриптор.
+        """
         creds = array.array("i", [os.getpid(), os.getuid(), os.getgid()])
         control.sendmsg(
             [ControlMark.BORN.bytes()],
             [(socket.SOL_SOCKET, socket.SCM_CREDENTIALS, creds.tobytes())],
         )
-
-        answer = control.recv(16)
-        if answer != ControlMark.GO.bytes():
-            msg = f"zygote handshake: expected go, got {answer!r}"
-            raise ZygoteProtocolError(msg)
 
 
 class _CallMounts:
