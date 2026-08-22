@@ -15,8 +15,10 @@ from pydantic import BaseModel, Field, SecretStr
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
+from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
 from boba.chainlit.rendering.tool import MarkdownRendering, ToolResultView
+from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.result import (
     TextResult,
@@ -55,6 +57,7 @@ def build_pipeline() -> Any:
         lambda name, annotation: PipeConfig(token=SecretStr("p1p3")),
     )
     ToolCallIdField.attach_all([pipe_echo])
+    ToolIntentField.attach_all([pipe_echo])
     ToolRunLogger.guard_all([pipe_echo], lambda tool, call_id: None)
 
     return pipe_echo
@@ -74,13 +77,25 @@ class TestPipeline:
         pipe_echo = build_pipeline()
 
         schema = pipe_echo.tool_call_schema
-        if list(schema.model_fields) != ["text"]:
-            raise AssertionError('list(schema.model_fields) == ["text"]')
+        if list(schema.model_fields) != ["text", ToolIntent.NAME]:
+            raise AssertionError(list(schema.model_fields))
 
     def test_tool_call_invocation_reaches_the_body(self) -> None:
         pipe_echo = build_pipeline()
 
         message = asyncio.run(pipe_echo.ainvoke(call_envelope("hi")))
+
+        if "hi|p1p3" not in str(message.content):
+            raise AssertionError('"hi|p1p3" in str(message.content)')
+
+    def test_intent_does_not_reach_the_body(self) -> None:
+        """Подпись вызова снимается обвязкой: тело о поле не знает."""
+        pipe_echo = build_pipeline()
+
+        envelope = call_envelope("hi")
+        envelope["args"] = {"text": "hi", ToolIntent.NAME: "показываю эхо"}
+
+        message = asyncio.run(pipe_echo.ainvoke(envelope))
 
         if "hi|p1p3" not in str(message.content):
             raise AssertionError('"hi|p1p3" in str(message.content)')

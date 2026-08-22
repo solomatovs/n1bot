@@ -90,9 +90,12 @@ class TestCallTextTap:
             raise AssertionError('"беда" in err')
         if "беда" in out:
             raise AssertionError('"беда" not in out')
-        # запуск без образов обвязке говорить не о чем: её канал пуст
-        if windows.text_of(WrapChannel.STDERR) != "":
-            raise AssertionError('windows.text_of(WrapChannel.STDERR) == ""')
+        # обвязка на каждом вызове отчитывается таймингом подготовки
+        wrap = windows.text_of(WrapChannel.STDERR)
+        if "setup" not in wrap:
+            raise AssertionError(f"в канале обвязки нет тайминга подготовки: {wrap!r}")
+        if "привет" in wrap:
+            raise AssertionError("вывод команды не должен попадать в канал обвязки")
         if "привет" not in outcome.result.stdout:
             raise AssertionError('"привет" in outcome.result.stdout')
         if "беда" not in outcome.result.stderr:

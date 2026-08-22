@@ -7,8 +7,9 @@ PlainGraphBuilder собирает обычный цикл модель-инст
 основная модель отвечает уже с готовым контекстом.
 
 Ошибки:
-PrefetchError — подготовка запросов или предварительный поиск сорвались,
-    ход завершается сбоем.
+PrefetchError — переформулировка сорвалась либо слой инструментов нарушил
+    контракт ответа; сорванный вызов поиска ход не роняет, его причина едет
+    к модели конвертом tool_result.
 """
 
 from __future__ import annotations
@@ -40,7 +41,10 @@ from pydantic import BaseModel, Field
 from typing_extensions import override
 
 from boba.llm.chat import ResponseField
+from boba.toolkit.calls import ToolIntent
+from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ErrorResult, ToolArtifact
+from boba.toolkit.timing import Elapsed
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,7 @@ __all__ = [
     "PrefetchGraphBuilder",
     "PrefetchMiddleware",
     "PrefetchStage",
+    "PrefetchStamp",
     "QueryRephrasings",
     "Rephraser",
 ]
@@ -91,6 +96,30 @@ class PrefetchCall:
         return call_id.startswith(cls.PREFIX)
 
 
+class PrefetchStamp:
+    """Длительность подготовки в сообщении её вызовов.
+
+    Этап ленты собственного сообщения не имеет: живой показ знает время по
+    часам хода, а сборка истории — только по сообщениям. Пометка на AIMessage
+    подготовки и даёт обеим лентам одну подпись.
+    """
+
+    KEY: ClassVar[str] = "prefetch_elapsed_ms"
+
+    @classmethod
+    def mark(cls, elapsed_ms: int) -> dict[str, Any]:
+        return {cls.KEY: elapsed_ms}
+
+    @classmethod
+    def of(cls, message: AIMessage) -> int:
+        """Длительность подготовки; 0 — сообщение её не несёт."""
+        value = message.additional_kwargs.get(cls.KEY)
+        if not isinstance(value, int):
+            return 0
+
+        return value
+
+
 class Rephraser(Protocol):
     """Порт переформулировки запроса пользователя в поисковые."""
 
@@ -105,7 +134,10 @@ class PrefetchStage(Protocol):
     async def begin(self) -> None: ...
 
     @abstractmethod
-    async def end(self, queries: Sequence[str]) -> None: ...
+    async def searching(self, queries: Sequence[str]) -> None: ...
+
+    @abstractmethod
+    async def end(self, queries: Sequence[str], elapsed_ms: int) -> None: ...
 
 
 class PassthroughRephraser(Rephraser):
@@ -173,10 +205,13 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         query = str(messages[-1].content)
 
         rephrased: Sequence[str] = ()
+        elapsed = Elapsed()
 
         await self._stage.begin()
         try:
             rephrased = await self._rephraser.rephrase(query)
+            await self._stage.searching(rephrased)
+
             calls = self._calls(rephrased)
             results = await self._invoke(calls)
         except PrefetchError:
@@ -184,22 +219,25 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         except Exception as exc:
             raise PrefetchError(f"prefetch failed: {exc}") from exc
         finally:
-            await self._stage.end(rephrased)
+            await self._stage.end(rephrased, elapsed.ms())
 
-        return {"messages": [self._request(calls), *results]}
+        return {"messages": [self._request(calls, elapsed.ms()), *results]}
 
     @staticmethod
-    def _request(calls: Sequence[ToolCall]) -> AIMessage:
+    def _request(calls: Sequence[ToolCall], elapsed_ms: int) -> AIMessage:
         """Вызовы подготовки как сообщение ассистента.
 
         Пустое поле рассуждений обязательно: провайдер в режиме размышления
         отклоняет сообщение с вызовами, у которого его нет, а подготовка
         ничего не обдумывала.
         """
+        marks: dict[str, Any] = {ResponseField.REASONING_CONTENT.value: ""}
+        marks.update(PrefetchStamp.mark(elapsed_ms))
+
         return AIMessage(
             content="",
             tool_calls=list(calls),
-            additional_kwargs={ResponseField.REASONING_CONTENT.value: ""},
+            additional_kwargs=marks,
         )
 
     @staticmethod
@@ -211,13 +249,17 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         return isinstance(messages[-1], HumanMessage)
 
     def _calls(self, queries: Sequence[str]) -> list[ToolCall]:
-        """ToolCall-конверты: каждая переформулировка в каждый инструмент flow."""
+        """ToolCall-конверты: каждая переформулировка в каждый инструмент flow.
+
+        Подпись вызова заполняет подготовка, а не модель: шаг ленты называет
+        запрос, с которым инструмент пошёл искать.
+        """
         calls: list[ToolCall] = []
         for query in queries:
             for tool in self._tools:
                 call = ToolCall(
                     name=tool.name,
-                    args={"query": query},
+                    args={"query": query, ToolIntent.NAME: query},
                     id=PrefetchCall.new_id(),
                     type="tool_call",
                 )
@@ -235,23 +277,28 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
             tool = by_name[call["name"]]
             pending.append(tool.ainvoke(call))
 
-        outputs = await asyncio.gather(*pending)
+        outputs = await asyncio.gather(*pending, return_exceptions=True)
 
         results: list[ToolMessage] = []
-        for output in outputs:
-            results.append(self._checked(output))
+        for call, output in zip(calls, outputs, strict=True):
+            results.append(self._checked(call, output))
 
         return results
 
-    @staticmethod
-    def _checked(output: object) -> ToolMessage:
+    @classmethod
+    def _checked(cls, call: ToolCall, output: object) -> ToolMessage:
         """Результат поиска: отказ инструмента едет в контекст, а не роняет ход.
 
         Модель получает ошибку тем же конвертом tool_result, что и удачный
         ответ, и решает сама — переспросить, вызвать инструмент ещё раз или
-        ответить без него; пользователь видит крест на шаге ленты. Ход
-        останавливает только нарушение контракта самого слоя инструментов.
+        ответить без него; пользователь видит крест на шаге ленты. Так же
+        обрабатывается сорванный вызов — негодные аргументы, падение тела:
+        ход продолжается, а причину читает модель. Останавливает ход только
+        нарушение контракта самого слоя инструментов.
         """
+        if isinstance(output, BaseException):
+            return cls._failed(call, output)
+
         if not isinstance(output, ToolMessage):
             got = type(output).__name__
             raise PrefetchError(f"prefetch tool returned {got} instead of ToolMessage")
@@ -265,6 +312,27 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
             logger.warning("prefetch %s failed: %s", output.name, artifact.message)
 
         return output
+
+    @staticmethod
+    def _failed(call: ToolCall, error: BaseException) -> ToolMessage:
+        """Сорванный вызов конвертом tool_result; отмена хода идёт наверх."""
+        if not isinstance(error, Exception):
+            raise error
+
+        name = call["name"]
+        logger.warning("prefetch %s failed: %s", name, FailureText.of(error))
+
+        call_id = call["id"]
+        if not call_id:
+            msg = f"prefetch call {name!r} has no id"
+            raise PrefetchError(msg)
+
+        return ToolMessage(
+            content=f"tool failed {name!r}: {FailureText.of(error)}",
+            tool_call_id=call_id,
+            name=name,
+            status="error",
+        )
 
 
 @dataclass(frozen=True)

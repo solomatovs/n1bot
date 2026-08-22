@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import Annotated, Any
 
 import pytest
+from chainlit.step import StepDict
 from httpx import AsyncClient
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -15,6 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field, ValidationError
 
+from boba.cancellation import StopReason, ToolStopped, turn_cancellation
 from boba.chainlit.agent.flow import (
     GraphSpec,
     PassthroughRephraser,
@@ -25,6 +28,10 @@ from boba.chainlit.agent.flow import (
     PrefetchStage,
     Rephraser,
 )
+from boba.chainlit.agent.toolrun.cancellation import CancellableTools
+from boba.chainlit.chat.tracing import AgentTracer, TracedStage
+from boba.chainlit.chat.turn import TurnState
+from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import (
     AppConfig,
     ChatProfileConfig,
@@ -38,6 +45,8 @@ from boba.chainlit.infra.providers import (
     build_history_view,
     httpx_clients,
 )
+from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepText
+from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact, pack_result
 
 pytestmark = pytest.mark.anyio
@@ -47,9 +56,21 @@ OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
 THREAD = RunnableConfig(configurable={"thread_id": "flow-thread"})
 
 
+FEED_THREAD = "33333333-3333-3333-3333-333333333333"
+FEED_TURN = "44444444-4444-4444-4444-444444444444"
+
+
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
+
+
+@pytest.fixture
+async def http_context() -> None:
+    """Step пишет в emitter сессии."""
+    from chainlit.context import init_http_context
+
+    init_http_context()
 
 
 class ScriptedChat(GenericFakeChatModel):
@@ -76,13 +97,19 @@ class RecordingStage(PrefetchStage):
 
     def __init__(self) -> None:
         self.opened = 0
+        self.searched: list[Sequence[str]] = []
         self.closed: list[Sequence[str]] = []
+        self.elapsed: list[int] = []
 
     async def begin(self) -> None:
         self.opened += 1
 
-    async def end(self, queries: Sequence[str]) -> None:
+    async def searching(self, queries: Sequence[str]) -> None:
+        self.searched.append(list(queries))
+
+    async def end(self, queries: Sequence[str], elapsed_ms: int) -> None:
         self.closed.append(list(queries))
+        self.elapsed.append(elapsed_ms)
 
 
 class BrokenRephraser(Rephraser):
@@ -120,6 +147,24 @@ async def failing_probe(
 
 
 @tool(response_format="content_and_artifact")
+async def slow_probe(
+    query: Annotated[str, Field(description="Search query.")],
+) -> tuple[str, Any]:
+    """Поиск, не успевающий закончиться до остановки хода."""
+    await asyncio.sleep(0.2)
+
+    return pack_result(TableResult(rows=[{"hit": f"slow:{query}"}]))
+
+
+@tool(response_format="content_and_artifact")
+async def strict_probe(
+    query: Annotated[str, Field(min_length=5, description="Search query.")],
+) -> tuple[str, Any]:
+    """Поиск, не принимающий короткий запрос."""
+    return pack_result(TableResult(rows=[{"hit": f"strict:{query}"}]))
+
+
+@tool(response_format="content_and_artifact")
 async def crashing_probe(
     query: Annotated[str, Field(description="Search query.")],
 ) -> tuple[str, Any]:
@@ -145,6 +190,15 @@ def _graph(builder: Any, answers: Sequence[str]) -> CompiledStateGraph:
         history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
     )
     return builder.build(spec)
+
+
+def _step_named(steps: Sequence[StepDict], name: str) -> StepDict | None:
+    """Шаг ленты, чьё название содержит имя; None — такого шага нет."""
+    for step in steps:
+        if name in str(step.get(StepField.NAME, "")):
+            return step
+
+    return None
 
 
 def _prefetch_calls(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
@@ -231,8 +285,49 @@ class TestPrefetchGraph:
         if stage.opened != 1:
             raise AssertionError(f"этап открывается один раз, а не {stage.opened}")
 
+        if stage.searched != [["variant one", "variant two"]]:
+            raise AssertionError(f"фаза поиска подписана запросами {stage.searched}")
+
         if stage.closed != [["variant one", "variant two"]]:
             raise AssertionError(f"этап закрыт запросами {stage.closed}")
+
+    async def test_search_phase_is_not_announced_when_rephrasing_fails(self) -> None:
+        """Переформулировщик сорвался — фаза поиска не наступила."""
+        stage = RecordingStage()
+        graph = _graph(
+            PrefetchGraphBuilder(BrokenRephraser(), [fts_probe], stage),
+            answers=["never reached"],
+        )
+
+        with pytest.raises(PrefetchError):
+            await graph.ainvoke(
+                {"messages": [HumanMessage("question")]},
+                config=THREAD,
+            )
+
+        if stage.searched:
+            raise AssertionError(f"фазы поиска не было, получено {stage.searched}")
+
+    async def test_prefetch_calls_carry_the_query_as_intent(self) -> None:
+        """Подпись вызова подготовки — сам поисковый запрос: его покажет лента."""
+        rephraser = FakeRephraser(["variant one"])
+        graph = _graph(
+            PrefetchGraphBuilder(rephraser, [fts_probe], RecordingStage()),
+            answers=["answered"],
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+
+        calls = _prefetch_calls(result["messages"])
+        if len(calls) != 1:
+            raise AssertionError(f"один запрос в один инструмент, got {len(calls)}")
+
+        intent = ToolIntent.of(calls[0]["args"])
+        if intent != "variant one":
+            raise AssertionError(f"подпись вызова: {intent!r}")
 
     async def test_stage_closes_when_preparation_fails(self) -> None:
         """Сбой подготовки не оставляет этап открытым висеть в ленте."""
@@ -309,31 +404,81 @@ class TestPrefetchGraph:
         if rephraser.asked != ["first question", "follow-up question"]:
             raise AssertionError(f"запросы каждого хода: {rephraser.asked}")
 
-    async def test_search_error_result_fails_the_turn(self) -> None:
+    async def test_search_error_result_reaches_the_model(self) -> None:
+        """Отказ инструмента едет в контекст: модель отвечает, ход не рвётся."""
         rephraser = FakeRephraser(["variant"])
         graph = _graph(
             PrefetchGraphBuilder(rephraser, [failing_probe], RecordingStage()),
-            answers=["never reached"],
+            answers=["answered anyway"],
         )
 
-        with pytest.raises(PrefetchError, match="database is down"):
-            await graph.ainvoke(
-                {"messages": [HumanMessage("question")]},
-                config=THREAD,
-            )
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+        messages = result["messages"]
 
-    async def test_search_crash_fails_the_turn(self) -> None:
+        replies = _tool_messages(messages)
+        if len(replies) != 1:
+            raise AssertionError(f"отказ доехал конвертом: {replies}")
+
+        revived = ToolArtifact.revive(replies[0].artifact)
+        if not isinstance(revived, ErrorResult):
+            raise AssertionError(f"в конверте отказ инструмента: {revived}")
+
+        if messages[-1].content != "answered anyway":
+            raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
+
+    async def test_search_crash_reaches_the_model(self) -> None:
+        """Упавшее тело инструмента ход не роняет: причина уходит модели."""
         rephraser = FakeRephraser(["variant"])
         graph = _graph(
             PrefetchGraphBuilder(rephraser, [crashing_probe], RecordingStage()),
-            answers=["never reached"],
+            answers=["answered anyway"],
         )
 
-        with pytest.raises(PrefetchError):
-            await graph.ainvoke(
-                {"messages": [HumanMessage("question")]},
-                config=THREAD,
-            )
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+        messages = result["messages"]
+
+        replies = _tool_messages(messages)
+        if len(replies) != 1:
+            raise AssertionError(f"сбой доехал конвертом: {replies}")
+
+        if replies[0].status != "error":
+            raise AssertionError(f"конверт помечен ошибкой: {replies[0].status}")
+
+        if "sandbox crashed" not in str(replies[0].content):
+            raise AssertionError(f"причина в тексте: {replies[0].content!r}")
+
+        if messages[-1].content != "answered anyway":
+            raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
+
+    async def test_bad_arguments_do_not_break_the_turn(self) -> None:
+        """Вызов с негодными аргументами: ошибка валидации уходит модели."""
+        rephraser = FakeRephraser(["x"])
+        graph = _graph(
+            PrefetchGraphBuilder(rephraser, [strict_probe], RecordingStage()),
+            answers=["answered anyway"],
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+        messages = result["messages"]
+
+        replies = _tool_messages(messages)
+        if len(replies) != 1:
+            raise AssertionError(f"сорванный вызов доехал конвертом: {replies}")
+
+        if replies[0].status != "error":
+            raise AssertionError(f"конверт помечен ошибкой: {replies[0].status}")
+
+        if messages[-1].content != "answered anyway":
+            raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
 
     async def test_rephraser_failure_fails_the_turn(self) -> None:
         graph = _graph(
@@ -346,6 +491,113 @@ class TestPrefetchGraph:
                 {"messages": [HumanMessage("question")]},
                 config=THREAD,
             )
+
+
+class TestPrefetchCancellation:
+    """Остановка хода во время подготовки: обрыв, а не отказ инструмента.
+
+    Инструменты обёрнуты тем же CancellableTools, что и в приложении: после
+    остановки их результат в контекст не идёт.
+    """
+
+    async def test_stop_breaks_the_turn_instead_of_feeding_the_model(self) -> None:
+        stage = RecordingStage()
+        guarded = CancellableTools.guard_all([slow_probe])
+        graph = _graph(
+            PrefetchGraphBuilder(FakeRephraser(["variant"]), guarded, stage),
+            answers=["never reached"],
+        )
+
+        with turn_cancellation() as cancellation:
+
+            async def stop_soon() -> None:
+                await asyncio.sleep(0.05)
+                cancellation.cancel(StopReason.USER_STOP)
+
+            stopper = asyncio.create_task(stop_soon())
+
+            with pytest.raises(ToolStopped):
+                await graph.ainvoke(
+                    {"messages": [HumanMessage("question")]},
+                    config=THREAD,
+                )
+
+            await stopper
+
+        if cancellation.reason is not StopReason.USER_STOP:
+            raise AssertionError(f"причина остановки: {cancellation.reason}")
+
+        if stage.closed != [["variant"]]:
+            raise AssertionError(f"этап закрыт даже на обрыве: {stage.closed}")
+
+    async def test_stop_before_the_call_refuses_to_start_it(self) -> None:
+        """Остановка до вызова: инструмент не стартует, ход обрывается."""
+        stage = RecordingStage()
+        guarded = CancellableTools.guard_all([slow_probe])
+        graph = _graph(
+            PrefetchGraphBuilder(FakeRephraser(["variant"]), guarded, stage),
+            answers=["never reached"],
+        )
+
+        with turn_cancellation() as cancellation:
+            cancellation.cancel(StopReason.USER_STOP)
+
+            with pytest.raises(ToolStopped):
+                await graph.ainvoke(
+                    {"messages": [HumanMessage("question")]},
+                    config=THREAD,
+                )
+
+        if stage.closed != [["variant"]]:
+            raise AssertionError(f"этап закрыт даже на обрыве: {stage.closed}")
+
+
+class TestPrefetchFeed:
+    """Подготовка в ленте: этап с фазами и шаги инструментов с подписями.
+
+    Стенд повторяет прод: граф зовут с колбэком AgentTracer, шаги копит
+    RecordingSink — так лента и получает вызовы подготовки.
+    """
+
+    async def test_prefetch_calls_are_drawn_inside_the_stage(
+        self, http_context: None
+    ) -> None:
+        sink = RecordingSink()
+        view = ChatView(FEED_THREAD, sink, user_name="Пользователь")
+        view.begin_turn(FEED_TURN)
+
+        graph = _graph(
+            PrefetchGraphBuilder(
+                FakeRephraser(["variant one"]),
+                [fts_probe],
+                TracedStage(StepText.PREFETCH.value),
+            ),
+            answers=["answered"],
+        )
+
+        config = RunnableConfig(
+            configurable={"thread_id": "feed-thread"},
+            callbacks=[AgentTracer(view, TurnState())],
+        )
+        await graph.ainvoke({"messages": [HumanMessage("question")]}, config=config)
+
+        stage = _step_named(sink.steps, StepText.PREFETCH.value)
+        if stage is None:
+            raise AssertionError(f"этап подготовки нарисован: {sink.steps}")
+
+        if stage.get(StepField.OUTPUT) != "- variant one":
+            raise AssertionError(f"этап подписан запросами: {stage}")
+
+        tool_step = _step_named(sink.steps, "fts_probe")
+        if tool_step is None:
+            raise AssertionError("вызов подготовки нарисован шагом")
+
+        if tool_step.get(StepField.PARENT_ID) != stage.get(StepField.ID):
+            raise AssertionError("шаг вызова лежит внутри этапа")
+
+        drawn = str(tool_step.get(StepField.NAME, ""))
+        if "variant one" not in drawn:
+            raise AssertionError(f"шаг назван подписью: {drawn!r}")
 
 
 class TestPlainGraph:

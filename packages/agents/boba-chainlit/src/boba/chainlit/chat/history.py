@@ -26,7 +26,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
-from boba.chainlit.agent.flow import PrefetchCall
+from boba.chainlit.agent.flow import PrefetchCall, PrefetchStamp
 from boba.chainlit.chat.turn import TurnHistory, TurnMark, TurnRecord
 from boba.chainlit.rendering.chat_view import (
     ChatView,
@@ -142,6 +142,7 @@ class ConversationTranscript:
         self._pending: dict[str, PendingCall] = {}
         self._turn = TurnDraft()
         self._stage_queries: list[str] = []
+        self._stage_elapsed = 0
 
     async def replay(self) -> None:
         for index, message in enumerate(self._messages):
@@ -160,8 +161,13 @@ class ConversationTranscript:
                     await self._open_stage(message)
                     await self._tool(message, key)
                 case AIMessage():
-                    if not self._prepares(message):
+                    prepares = self._prepares(message)
+                    if prepares:
+                        self._stage_elapsed = PrefetchStamp.of(message)
+
+                    if not prepares:
                         await self._close_stage()
+
                     await self._assistant(message, key)
                 case _:
                     continue
@@ -181,7 +187,9 @@ class ConversationTranscript:
             return
 
         if self._view.stage_step is None:
-            await self._view.begin_stage(StepText.PREFETCH.value)
+            await self._view.begin_stage(
+                StepText.PREFETCH.value, StepText.REPHRASING.value
+            )
 
         call = self._pending.get(message.tool_call_id)
         if call is None:
@@ -202,8 +210,9 @@ class ConversationTranscript:
         if self._view.stage_step is None:
             return
 
-        await self._view.end_stage(self._stage_queries)
+        await self._view.end_stage(self._stage_queries, self._stage_elapsed)
         self._stage_queries = []
+        self._stage_elapsed = 0
 
     async def _assistant(self, message: AIMessage, key: str) -> None:
         if self._is_error(message):

@@ -8,11 +8,13 @@ chainlit на каждый connection_successful шлёт task_end, а «тих�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
+from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
 
@@ -133,6 +135,58 @@ class TestLoadingSurvivesReconnect:
 
         if SocketEvent.TASK_START.value in session.names:
             raise AssertionError(f"task_start у пустого треда: {session.names}")
+
+
+class TestStopHandler:
+    """Кнопка Stop: ход останавливается, служебного сообщения chainlit нет."""
+
+    MESSAGE_EVENT: ClassVar[str] = "new_message"
+    """Событие, которым chainlit шлёт в ленту своё «Task manually stopped.»."""
+
+    async def test_stop_does_not_send_its_own_message(
+        self, session: EmittedEvents, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stop = await _handler(SocketEvent.STOP)
+        monkeypatch.setattr(chainlit_config.code, "on_stop", None, raising=False)
+
+        with TurnContext.open(THREAD, FakeTurn()):
+            await stop(SOCKET_ID)
+
+        if self.MESSAGE_EVENT in session.names:
+            raise AssertionError(f"в ленту ушло сообщение chainlit: {session.names}")
+
+    async def test_turn_is_stopped_before_the_task_is_cancelled(
+        self, session: EmittedEvents, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Причину остановки ставит ход, поэтому on_stop идёт первым."""
+        del session
+        stop = await _handler(SocketEvent.STOP)
+        order: list[str] = []
+
+        async def on_stop() -> None:
+            order.append("on_stop")
+
+        async def running() -> None:
+            await asyncio.sleep(60)
+
+        monkeypatch.setattr(chainlit_config.code, "on_stop", on_stop, raising=False)
+
+        task = asyncio.create_task(running())
+        task.add_done_callback(lambda _done: order.append("cancelled"))
+
+        current = WebsocketSession.get(SOCKET_ID)
+        if current is None:
+            raise AssertionError("сессия теста жива")
+
+        current.current_task = task
+
+        await stop(SOCKET_ID)
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        if order != ["on_stop", "cancelled"]:
+            raise AssertionError(f"порядок остановки: {order}")
 
 
 class TestConnectionJournal:

@@ -9,7 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
-from boba.chainlit.agent.flow import PrefetchCall
+from boba.chainlit.agent.flow import PrefetchCall, PrefetchStamp
 from boba.chainlit.chat.history import ConversationTranscript
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
@@ -391,7 +391,12 @@ class TestPrefetchStageReplay:
 
         return [
             HumanMessage(content="как настроить kerberos?", id="m1"),
-            AIMessage(content="", id="m2", tool_calls=calls),
+            AIMessage(
+                content="",
+                id="m2",
+                tool_calls=calls,
+                additional_kwargs=PrefetchStamp.mark(6400),
+            ),
             *replies,
             AIMessage(content="вот ответ", id="m3"),
         ]
@@ -432,6 +437,20 @@ class TestPrefetchStageReplay:
         expected = ChatView.stage_output(["kerberos postgres", "gss keytab"])
         if stage.get(StepField.OUTPUT) != expected:
             raise AssertionError(f"подпись этапа {stage.get(StepField.OUTPUT)!r}")
+
+    def test_stage_duration_survives_the_history(self) -> None:
+        """Длительность подготовки помечена в её сообщении и переживает перезаход."""
+        sink = self._replay(self._history())
+        steps = self._by_id(sink)
+
+        stage_id = ChatView.derive_id(THREAD, "m1", StepRole.STAGE)
+        if stage_id is None:
+            raise AssertionError("id этапа выводится из ключа хода")
+
+        stage = steps[stage_id]
+
+        if stage.get(StepField.NAME) != "✔ context lookup · 6.4 s":
+            raise AssertionError(f"название этапа {stage.get(StepField.NAME)!r}")
 
     def test_model_calls_stay_out_of_the_stage(self) -> None:
         """Вызовы, сделанные самой моделью, в этап не попадают."""

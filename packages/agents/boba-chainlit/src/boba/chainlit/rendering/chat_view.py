@@ -22,7 +22,7 @@ from boba.chainlit.rendering.tool import (
     ToolCallMarkdown,
     ToolResultView,
 )
-from boba.toolkit.calls import ToolCallViews
+from boba.toolkit.calls import ToolCallViews, ToolIntent
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolArtifact
 from chainlit.config import config as chainlit_config
@@ -42,6 +42,7 @@ __all__ = [
     "StepRole",
     "StepStatus",
     "StepText",
+    "ToolStepLabel",
     "TurnDraft",
     "TurnPulse",
 ]
@@ -61,6 +62,8 @@ class StepText(StrEnum):
     TOOL = "tool"
     PREFETCH = "context lookup"
     """Этап подготовки контекста: под ним лежат вызовы предварительного поиска."""
+    REPHRASING = "rephrasing the question"
+    """Первая фаза подготовки: поисковых запросов ещё нет."""
     STOPPED = "stopped by the user"
     ABORTED = "stopped"
     FINISHED = "finished"
@@ -129,6 +132,19 @@ class StepElapsed:
         minutes = elapsed_ms // cls.MINUTE_MS
         seconds = (elapsed_ms % cls.MINUTE_MS) / cls.SECOND_MS
         return f"{minutes} m {seconds:.0f} s"
+
+
+class ToolStepLabel:
+    """Название шага инструмента: имя тула и подпись вызова, если она пришла."""
+
+    SEPARATOR: ClassVar[str] = " · "
+
+    @classmethod
+    def of(cls, name: str, intent: str) -> str:
+        if not intent:
+            return name
+
+        return f"{name}{cls.SEPARATOR}{intent}"
 
 
 class StepRole(StrEnum):
@@ -587,27 +603,36 @@ class ChatView:
         step.start = utc_now()
         return step
 
-    async def begin_stage(self, name: str) -> Step:
+    async def begin_stage(self, name: str, phase: str) -> Step:
         """Открывает этап хода: шаги до его закрытия вкладываются внутрь."""
         await self._seal_answer()
 
         step = await self._child(
             StepStatus.IDLE.title(name), StepKind.RUN, self._turn.key, StepRole.STAGE
         )
-        step.output = StepText.RUNNING
+        step.output = phase
         step.start = utc_now()
         await self._sink.put(step)
 
         self._turn.stage = step
         return step
 
-    async def end_stage(self, queries: Sequence[str]) -> None:
+    async def stage_queries(self, queries: Sequence[str]) -> None:
+        """Подписывает открытый этап запросами: фаза подготовки сменилась."""
+        step = self._turn.stage
+        if step is None:
+            return
+
+        step.output = self.stage_output(queries)
+        await self._sink.put(step)
+
+    async def end_stage(self, queries: Sequence[str], elapsed_ms: int) -> None:
         """Закрывает этап и подписывает его запросами; без этапа закрывать нечего."""
         step = self._turn.seal_stage()
         if step is None:
             return
 
-        step.name = StepStatus.DONE.title(step.name.split(" ", 1)[-1])
+        step.name = StepStatus.DONE.timed(step.name.split(" ", 1)[-1], elapsed_ms)
         step.output = self.stage_output(queries)
         ended = utc_now()
         step.start = ended
@@ -634,16 +659,29 @@ class ChatView:
     ) -> Step:
         await self._seal_answer()
 
-        step = await self._child(
-            StepStatus.IDLE.title(name), StepKind.TOOL, key, StepRole.TOOL
-        )
-        self._tool_names[step.id] = name
+        call_args: Mapping[str, Any] = {}
+        intent = ""
         if args:
-            rendering = ToolCallMarkdown(ToolCallViews.of(name), args).render()
+            call_args = ToolIntent.without(args)
+            intent = ToolIntent.of(args)
+
+        label = ToolStepLabel.of(name, intent)
+
+        step = await self._child(
+            StepStatus.IDLE.title(label), StepKind.TOOL, key, StepRole.TOOL
+        )
+        self._tool_names[step.id] = label
+
+        if call_args:
+            rendering = ToolCallMarkdown(ToolCallViews.of(name), call_args).render()
             if rendering is not None:
                 step.input = rendering.markdown
                 step.show_input = rendering.show_input
-        step.output = StepText.RUNNING
+
+        step.output = ""
+        if not intent:
+            step.output = StepText.RUNNING
+
         step.start = utc_now()
 
         if button := self._stream_button(name, key):
