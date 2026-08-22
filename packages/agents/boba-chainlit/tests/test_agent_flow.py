@@ -8,7 +8,6 @@ from typing import Annotated, Any
 
 import pytest
 from chainlit.step import StepDict
-from httpx import AsyncClient
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -20,6 +19,7 @@ from pydantic import Field, ValidationError
 from boba.cancellation import StopReason, ToolStopped, turn_cancellation
 from boba.chainlit.agent.flow import (
     GraphSpec,
+    LlmRephraser,
     PassthroughRephraser,
     PlainGraphBuilder,
     PrefetchCall,
@@ -27,6 +27,7 @@ from boba.chainlit.agent.flow import (
     PrefetchGraphBuilder,
     PrefetchStage,
     Rephraser,
+    RephrasingsParser,
 )
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.chat.tracing import AgentTracer, TracedStage
@@ -41,17 +42,32 @@ from boba.chainlit.infra.config import (
 )
 from boba.chainlit.infra.providers import (
     _flow_tools,
-    _graph_builder,
     build_history_view,
     httpx_clients,
+    session_graph_builder,
 )
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepText
+from boba.llm.generation import (
+    GenerationError,
+    OpenAiGeneration,
+    SchemaSpec,
+    StructuredGenerator,
+)
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact, pack_result
 
 pytestmark = pytest.mark.anyio
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
+
+REPHRASER = {
+    "provider": "openai",
+    "openai": OPENAI,
+    "model": "small-model",
+    "system_prompt": "rephrase",
+    "max_tokens": 256,
+    "temperature": 0,
+}
 
 THREAD = RunnableConfig(configurable={"thread_id": "flow-thread"})
 
@@ -118,6 +134,26 @@ class BrokenRephraser(Rephraser):
     async def rephrase(self, query: str) -> Sequence[str]:
         msg = "provider is down"
         raise RuntimeError(msg)
+
+
+class FakeGenerator(StructuredGenerator):
+    """Генератор без сети: отдаёт заготовленный ответ модели."""
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.asked: list[str] = []
+
+    async def generate(self, user: str, schema: SchemaSpec) -> str:
+        self.asked.append(user)
+        return self.reply
+
+
+class BrokenGenerator(StructuredGenerator):
+    """Генератор, у которого недоступен провайдер."""
+
+    async def generate(self, user: str, schema: SchemaSpec) -> str:
+        msg = "provider is down"
+        raise GenerationError(msg)
 
 
 @tool(response_format="content_and_artifact")
@@ -222,6 +258,89 @@ def _tool_messages(messages: Sequence[BaseMessage]) -> list[ToolMessage]:
             found.append(message)
 
     return found
+
+
+class TestRephrasingsParser:
+    """Разбор ответа переформулировщика: схема, чужой json, голый текст."""
+
+    SCHEMA_ANSWER = (
+        '{"keywords": "kerberos cloudbeaver samba", '
+        '"expanded": "настройка kerberos в cloudbeaver через samba AD", '
+        '"english": "kerberos authentication in cloudbeaver with samba AD"}'
+    )
+
+    def test_schema_answer_gives_every_field(self) -> None:
+        parsed = RephrasingsParser.parse(self.SCHEMA_ANSWER)
+        if len(parsed) != 3:
+            raise AssertionError(f"три варианта, получено {parsed}")
+
+    def test_fenced_json_is_unwrapped(self) -> None:
+        fenced = f"```json\n{self.SCHEMA_ANSWER}\n```"
+        if RephrasingsParser.parse(fenced) != RephrasingsParser.parse(
+            self.SCHEMA_ANSWER
+        ):
+            raise AssertionError("markdown-блок разобран как голый json")
+
+    def test_foreign_json_gives_its_strings(self) -> None:
+        parsed = RephrasingsParser.parse('{"queries": ["first one", "second one"]}')
+        if list(parsed) != ["first one", "second one"]:
+            raise AssertionError(f"строки чужой схемы взяты как есть: {parsed}")
+
+    def test_plain_lines_are_taken_as_queries(self) -> None:
+        parsed = RephrasingsParser.parse('1. first one\n2. "second one"\n- third one')
+        if list(parsed) != ["first one", "second one", "third one"]:
+            raise AssertionError(f"нумерация и кавычки убраны: {parsed}")
+
+    def test_repeated_variants_are_dropped(self) -> None:
+        answer = (
+            '{"keywords": "same text", "expanded": "same text", "english": "same text"}'
+        )
+        if list(RephrasingsParser.parse(answer)) != ["same text"]:
+            raise AssertionError("повторы не размножают запросы")
+
+    def test_empty_answer_gives_nothing(self) -> None:
+        if RephrasingsParser.parse("   "):
+            raise AssertionError("пустой ответ разбирать нечем")
+
+    def test_truncated_json_gives_nothing(self) -> None:
+        """Ответ оборвался на лимите токенов: огрызок запросом быть не может."""
+        cut = '{"keywords": "kerberos cloudbeaver", "expanded": "настройка kerb'
+        if RephrasingsParser.parse(cut):
+            raise AssertionError("недописанный json в поиск не идёт")
+
+
+class TestLlmRephraser:
+    """Переформулировщик поверх генератора: любой ответ либо разобран, либо откат."""
+
+    async def test_schema_answer_becomes_queries(self) -> None:
+        generator = FakeGenerator(TestRephrasingsParser.SCHEMA_ANSWER)
+
+        queries = await LlmRephraser(generator).rephrase("исходный запрос")
+
+        if len(queries) != 3:
+            raise AssertionError(f"три варианта, получено {queries}")
+        if generator.asked != ["исходный запрос"]:
+            raise AssertionError(f"в модель ушёл запрос: {generator.asked}")
+
+    async def test_text_answer_is_used_as_well(self) -> None:
+        generator = FakeGenerator("first variant\nsecond variant")
+
+        queries = await LlmRephraser(generator).rephrase("исходный запрос")
+
+        if list(queries) != ["first variant", "second variant"]:
+            raise AssertionError(f"текстовый ответ разобран: {queries}")
+
+    async def test_broken_provider_searches_by_user_query(self) -> None:
+        queries = await LlmRephraser(BrokenGenerator()).rephrase("исходный запрос")
+
+        if list(queries) != ["исходный запрос"]:
+            raise AssertionError(f"откат на исходный запрос: {queries}")
+
+    async def test_unusable_answer_searches_by_user_query(self) -> None:
+        queries = await LlmRephraser(FakeGenerator("")).rephrase("исходный запрос")
+
+        if list(queries) != ["исходный запрос"]:
+            raise AssertionError(f"откат на исходный запрос: {queries}")
 
 
 class TestPrefetchGraph:
@@ -643,22 +762,17 @@ class TestFlowConfig:
             flow={
                 "kind": "prefetch",
                 "tools": ["kb_fts_search", "kb_vector_search"],
-                "rephraser": {
-                    "provider": OPENAI,
-                    "model": "small-model",
-                    "system_prompt": "rephrase",
-                    "queries": 3,
-                },
+                "rephraser": REPHRASER,
             },
         )
 
         flow = profile.flow
         if not isinstance(flow, PrefetchFlowConfig):
             raise AssertionError(f"flow is prefetch, got {flow}")
-        if flow.rephraser is None:
-            raise AssertionError("секция rephraser разобрана")
-        if flow.rephraser.queries != 3:
-            raise AssertionError(f"queries == 3, got {flow.rephraser.queries}")
+        if not isinstance(flow.rephraser, OpenAiGeneration):
+            raise AssertionError(f"openai rephraser expected, got {flow.rephraser}")
+        if flow.rephraser.model != "small-model":
+            raise AssertionError(f"model is parsed, got {flow.rephraser.model}")
 
     def test_flow_tool_outside_profile_is_config_error(self) -> None:
         with pytest.raises(ValidationError, match="flow tools"):
@@ -667,12 +781,7 @@ class TestFlowConfig:
                 flow={
                     "kind": "prefetch",
                     "tools": ["kb_fts_search"],
-                    "rephraser": {
-                        "provider": OPENAI,
-                        "model": "small-model",
-                        "system_prompt": "rephrase",
-                        "queries": 3,
-                    },
+                    "rephraser": REPHRASER,
                 },
             )
 
@@ -682,12 +791,7 @@ class TestFlowConfig:
             flow={
                 "kind": "prefetch",
                 "tools": ["kb_fts_search"],
-                "rephraser": {
-                    "provider": OPENAI,
-                    "model": "small-model",
-                    "system_prompt": "rephrase",
-                    "queries": 2,
-                },
+                "rephraser": REPHRASER,
             },
         )
         if not isinstance(profile.flow, PrefetchFlowConfig):
@@ -717,26 +821,21 @@ class TestProviderAssembly:
         flow: dict[str, Any] = {
             "kind": "prefetch",
             "tools": ["fts_probe"],
-            "rephraser": {
-                "provider": OPENAI,
-                "model": "small-model",
-                "system_prompt": "rephrase",
-                "queries": 2,
-            },
+            "rephraser": REPHRASER,
         }
         flow.update(kw)
         return flow
 
     def test_plain_profile_gets_plain_builder(self) -> None:
-        builder = _graph_builder(self._selected(), {"search": AsyncClient()}, [])
+        builder = session_graph_builder({}, self._selected(), [])
         if not isinstance(builder, PlainGraphBuilder):
             raise AssertionError(f"plain builder expected, got {type(builder)}")
 
     def test_prefetch_profile_gets_prefetch_builder(self) -> None:
         selected = self._selected(flow=self._flow())
-        clients = {"search": AsyncClient(), "search:flow": AsyncClient()}
+        generators = {"search": FakeGenerator("{}")}
 
-        builder = _graph_builder(selected, clients, [fts_probe])
+        builder = session_graph_builder(generators, selected, [fts_probe])
         if not isinstance(builder, PrefetchGraphBuilder):
             raise AssertionError(f"prefetch builder expected, got {type(builder)}")
 

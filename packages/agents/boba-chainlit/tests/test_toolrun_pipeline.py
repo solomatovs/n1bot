@@ -66,7 +66,7 @@ def build_pipeline() -> Any:
 def call_envelope(text: str) -> dict[str, Any]:
     return {
         "name": "pipe_echo",
-        "args": {"text": text},
+        "args": {"text": text, ToolIntent.NAME: "показываю эхо"},
         "id": "call-pipe-1",
         "type": "tool_call",
     }
@@ -88,12 +88,21 @@ class TestPipeline:
         if "hi|p1p3" not in str(message.content):
             raise AssertionError('"hi|p1p3" in str(message.content)')
 
+    def test_intent_is_required_of_the_model(self) -> None:
+        """Вызов без подписи не проходит валидацию схемы."""
+        pipe_echo = build_pipeline()
+
+        schema = pipe_echo.tool_call_schema
+        info = schema.model_fields[ToolIntent.NAME]
+
+        if not info.is_required():
+            raise AssertionError("подпись вызова обязательна для модели")
+
     def test_intent_does_not_reach_the_body(self) -> None:
         """Подпись вызова снимается обвязкой: тело о поле не знает."""
         pipe_echo = build_pipeline()
 
         envelope = call_envelope("hi")
-        envelope["args"] = {"text": "hi", ToolIntent.NAME: "показываю эхо"}
 
         message = asyncio.run(pipe_echo.ainvoke(envelope))
 

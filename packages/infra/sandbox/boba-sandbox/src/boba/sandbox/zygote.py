@@ -7,9 +7,11 @@
 Ошибки:
 ZygoteStartError — зигота не поднялась за отведённые попытки.
 ZygoteUnavailableError — вызов пришёл, когда зигота не готова.
-ZygoteCallError — зигота умерла посреди вызова, нарушила протокол либо
-    вызов не отдал конверт tool_result.
-Все три — LauncherError: наружу слой ничего сверх контракта порта не выпускает.
+ZygoteCallError — зигота умерла посреди вызова, нарушила протокол, не отдала
+    конверт tool_result либо превысила потолок канала.
+SandboxChainError — исполнитель сообщил, что корень секции не смонтирован.
+SandboxMountError — исполнитель сообщил, что образ вызова не смонтирован.
+Все пять — LauncherError: наружу слой ничего сверх контракта порта не выпускает.
 """
 
 from __future__ import annotations
@@ -51,7 +53,6 @@ from boba.sandbox.runner import (
 )
 from boba.toolkit.binaries import SandboxBinary
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.images import LauncherMarker, MountError
 from boba.toolkit.launcher import (
     LauncherError,
     LaunchOutcome,
@@ -72,10 +73,12 @@ from boba.toolkit.zygote import (
     CallKind,
     CallMounts,
     CallRequest,
+    CallSetupFailed,
     ChildLimits,
     ControlMark,
     ImageMount,
     ImageMounting,
+    SetupFailure,
     WarmupCall,
     WarmupMessage,
     ZygoteArgs,
@@ -209,6 +212,9 @@ class ZygoteOutcome(BaseModel):
     timed_out: bool
     child_pid: int
     """Host-pid исполнителя; 0 — исполнитель не родился."""
+    setup_failure: SetupFailure = SetupFailure.NONE
+    """Чем сорвалась подготовка вызова; NONE — тело было запущено."""
+    setup_detail: str = ""
 
 
 class _CallChannels:
@@ -354,7 +360,6 @@ class ZygoteSupervisor:
                 if not chunk:
                     break
 
-                self._watch_chain(bytes(chunk))
                 relay.feed(chunk)
 
             relay.flush()
@@ -362,15 +367,6 @@ class ZygoteSupervisor:
         threading.Thread(
             target=pump, name=f"zygote-stderr-{self._name}", daemon=True
         ).start()
-
-    def _watch_chain(self, chunk: bytes) -> None:
-        """Кадр «корень отвалился» в stderr самой зиготы."""
-        marker = LauncherMarker.CHAIN_LOST.value.encode("utf-8")
-        if marker not in chunk:
-            return
-
-        text = chunk.decode("utf-8", errors="replace").strip()
-        self.chain_lost(text.rsplit(LauncherMarker.CHAIN_LOST.value, 1)[-1])
 
     def chain_lost(self, detail: str) -> None:
         """Корень секции отвалился: зигота гасится, монитор поднимает её заново.
@@ -493,6 +489,7 @@ class ZygoteSupervisor:
         cgroup_leaf: str = "",
         images: Sequence[ImageMount] = (),
         mounting: ImageMounting | None = None,
+        staging: Sequence[str] = (),
         cwd: str = "",
         kind: CallKind = CallKind.MODULE,
     ) -> ZygoteOutcome:
@@ -521,6 +518,7 @@ class ZygoteSupervisor:
             mounts=mounts,
             images=tuple(images),
             mounting=mounting,
+            staging=tuple(staging),
             cwd=cwd,
             into_cgroup=cgroup_fd >= 0,
         )
@@ -745,6 +743,8 @@ class _CallPump:
         self._child_pid = 0
         self._exit_code: int | None = None
         self._timed_out = False
+        self._setup_failure = SetupFailure.NONE
+        self._setup_detail = ""
 
     def run(self, stdin_data: bytes) -> ZygoteOutcome:
         pending = memoryview(stdin_data)
@@ -858,8 +858,22 @@ class _CallPump:
             self._child_pid = self._creds_pid(ancdata)
             return
 
+        if self._setup_failed(data):
+            return
+
         exit_message = CallExit.model_validate_json(data)
         self._exit_code = exit_message.code
+
+    def _setup_failed(self, data: bytes) -> bool:
+        """Отчёт исполнителя о сорванной подготовке: тело до него не дожило."""
+        try:
+            report = CallSetupFailed.model_validate_json(data)
+        except ValueError:
+            return False
+
+        self._setup_failure = report.reason
+        self._setup_detail = report.detail
+        return True
 
     @staticmethod
     def _creds_pid(ancdata: list[tuple[int, int, bytes]]) -> int:
@@ -891,6 +905,8 @@ class _CallPump:
             duration_ms=int((time.monotonic() - self._started) * 1000),
             timed_out=self._timed_out,
             child_pid=self._child_pid,
+            setup_failure=self._setup_failure,
+            setup_detail=self._setup_detail,
         )
 
 
@@ -1155,14 +1171,34 @@ class ZygoteSpawner:
         raise ZygoteStartError(msg)
 
 
-class _EnvelopeSink:
-    """Конверт tool_result вызова: маленький канал копится целиком."""
+class _CappedBuffer:
+    """Канал целиком, но не длиннее потолка: конверт и вывод shell-команды.
 
-    def __init__(self) -> None:
+    Тело вызова живёт под лимитом памяти своей группы, а копится его вывод в
+    памяти приложения, на которую эти лимиты не распространяются: без
+    потолка тело выносит хост потоком в несколько гигабайт. Превышение
+    обрывает вызов — насос добивает исполнителя, а причина уезжает в чат и
+    модели обычной ошибкой инструмента.
+    """
+
+    def __init__(self, limit: int, channel: ToolChannel) -> None:
+        self._limit = limit
+        self._channel = channel
         self._data = bytearray()
 
     def feed(self, chunk: Chunk) -> None:
         self._data.extend(chunk)
+        if len(self._data) <= self._limit:
+            return
+
+        msg = (
+            f"sandbox: {self._channel.value} exceeded {self._limit} bytes; "
+            "the call was killed"
+        )
+        raise ZygoteCallError(msg)
+
+    def text(self) -> str:
+        return self._data.decode("utf-8", errors="replace")
 
     def data(self) -> bytearray:
         """Конверт как есть: pydantic разбирает bytes-like без копии."""
@@ -1185,7 +1221,7 @@ class _RelayTee(StderrTee):
     """Tee релея: сырые строки stderr — в журнал вызова и в свой приёмник."""
 
     def __init__(
-        self, sinks: ChannelSinks | None, own: _BufferSink | _TailSink
+        self, sinks: ChannelSinks | None, own: _CappedBuffer | _TailSink
     ) -> None:
         super().__init__(sinks, ToolChannel.STDERR)
         self._own = own
@@ -1193,19 +1229,6 @@ class _RelayTee(StderrTee):
     def raw(self, line: str) -> None:
         super().raw(line)
         self._own.feed(f"{line}\n".encode())
-
-
-class _BufferSink:
-    """Канал целиком: stdout/stderr shell-команды отдаются как есть."""
-
-    def __init__(self) -> None:
-        self._data = bytearray()
-
-    def feed(self, chunk: Chunk) -> None:
-        self._data.extend(chunk)
-
-    def text(self) -> str:
-        return self._data.decode("utf-8", errors="replace")
 
 
 class _TailSink:
@@ -1249,8 +1272,9 @@ class ZygoteToolCaller(ToolLauncher):
 
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
         """Shell-команда в изолированном ребёнке: stdout/stderr/rc как есть."""
-        stdout = _BufferSink()
-        stderr = _BufferSink()
+        limit = self._profile.host.channel_limit_bytes
+        stdout = _CappedBuffer(limit, ToolChannel.STDOUT)
+        stderr = _CappedBuffer(limit, ToolChannel.STDERR)
 
         relay = SandboxLogRelay(self._tool, _RelayTee(ToolChannelsTap.get(), stderr))
         sinks = self._sinks(ToolChannel.STDOUT, stdout.feed, relay)
@@ -1278,8 +1302,7 @@ class ZygoteToolCaller(ToolLauncher):
             duration_ms=outcome.duration_ms,
             timed_out=outcome.timed_out,
         )
-        self._raise_on_chain_lost(run)
-        self._raise_on_mount_error(run)
+        self._raise_on_setup_failure(outcome)
 
         if run.exit_code != 0:
             self._log_failure(run, self._profile.host.fail_tail_chars)
@@ -1290,7 +1313,9 @@ class ZygoteToolCaller(ToolLauncher):
         """Граница слоя: наружу только ошибки из контракта модуля."""
         argv_tail = self._argv_tail(command)
 
-        envelope = _EnvelopeSink()
+        envelope = _CappedBuffer(
+            self._profile.host.channel_limit_bytes, ToolChannel.RESULT
+        )
         stderr_tail = _TailSink(self._profile.host.stderr_tail_bytes)
 
         relay = SandboxLogRelay(
@@ -1310,8 +1335,7 @@ class ZygoteToolCaller(ToolLauncher):
             duration_ms=outcome.duration_ms,
             timed_out=outcome.timed_out,
         )
-        self._raise_on_chain_lost(run)
-        self._raise_on_mount_error(run)
+        self._raise_on_setup_failure(outcome)
 
         if run.exit_code != 0:
             self._log_failure(run, self._profile.host.fail_tail_chars)
@@ -1341,29 +1365,24 @@ class ZygoteToolCaller(ToolLauncher):
     def _log_failure(self, result: RunResult, limit: int) -> None:
         logger.warning("zygote[%s]: %s", self._tool, FailureLog.describe(result, limit))
 
-    def _raise_on_chain_lost(self, result: RunResult) -> None:
-        """Отвалившийся корень — отказ запуска, а не отказ инструмента."""
-        marker = LauncherMarker.CHAIN_LOST.value
-        if marker not in result.stderr:
-            return
+    def _raise_on_setup_failure(self, outcome: ZygoteOutcome) -> None:
+        """Подготовка сорвалась: об этом сказал исполнитель, а не тело.
 
-        detail = result.stderr.rsplit(marker, 1)[-1].strip()
-        self._supervisor.chain_lost(detail)
+        Отчёт приходит control-сокетом, которого у тела нет: печать в stderr
+        любых меток на решение хоста больше не влияет.
+        """
+        if outcome.setup_failure is SetupFailure.CHAIN_LOST:
+            self._supervisor.chain_lost(outcome.setup_detail)
 
-        msg = f"sandbox: root mount of section {self._tool} is gone: {detail}"
-        raise SandboxChainError(msg)
+            msg = (
+                f"sandbox: root mount of section {self._tool} is gone: "
+                f"{outcome.setup_detail}"
+            )
+            raise SandboxChainError(msg)
 
-    @staticmethod
-    def _raise_on_mount_error(result: RunResult) -> None:
-        """Образ вызова не смонтирован: результата нет, это отказ запуска."""
-        if result.exit_code != MountError.EXIT_CODE:
-            return
-
-        if LauncherMarker.ERROR.value not in result.stderr:
-            return
-
-        msg = f"sandbox: image not mounted: {result.stderr.strip()}"
-        raise SandboxMountError(msg)
+        if outcome.setup_failure is SetupFailure.MOUNT_ERROR:
+            msg = f"sandbox: image not mounted: {outcome.setup_detail}"
+            raise SandboxMountError(msg)
 
     def _diagnose(self, result: RunResult, tool_stderr: str) -> str:
         """Объяснение сбоя лимитами профиля; в разборе и хвост tool_stderr."""
@@ -1440,6 +1459,7 @@ class ZygoteToolCaller(ToolLauncher):
             cgroup_leaf=cgroup_leaf,
             images=images,
             mounting=self._mounting_of(images),
+            staging=ZygoteMounts(rendered).staging(),
             cwd=rendered.run.cwd,
             kind=kind,
         )
@@ -1481,7 +1501,6 @@ class ZygoteToolCaller(ToolLauncher):
         launcher = self._profile.host.mounting
         return ImageMounting(
             fuse2fs_dir=mounts.fuse2fs_dir(),
-            staging=mounts.staging(),
             mount_wait_sec=launcher.mount_wait_sec,
             mount_poll_sec=launcher.mount_poll_sec,
             shutdown_wait_sec=launcher.shutdown_wait_sec,

@@ -1,8 +1,17 @@
 """Kerberos для boba: креды из keytab, SPNEGO-accept, S4U-делегирование, PAC-SID."""
 
-from boba.krb.config import AcceptConfig, DelegationConfig, KeytabConfig
+from boba.krb.config import (
+    AcceptConfig,
+    CcacheConfig,
+    ClientKerberos,
+    DelegationConfig,
+    Kerberos,
+    KeytabConfig,
+)
 from boba.krb.credentials import (
+    CcacheCredentials,
     CcacheRegistry,
+    ClientCredentials,
     DelegatedCredentials,
     KerberosCredentials,
     KerberosEnv,
@@ -21,12 +30,17 @@ from boba.krb.pac import PacGroupSids
 
 __all__ = [
     "AcceptConfig",
+    "CcacheConfig",
+    "CcacheCredentials",
     "CcacheRegistry",
+    "ClientCredentials",
+    "ClientKerberos",
     "CredentialsExpiredError",
     "DelegatedCredentials",
     "DelegationConfig",
     "DelegationNotPermittedError",
     "InvalidTokenError",
+    "Kerberos",
     "KerberosCredentials",
     "KerberosDelegation",
     "KerberosEnv",

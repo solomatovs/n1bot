@@ -81,8 +81,9 @@ class ToolIntent:
     NAME: ClassVar[str] = "intent"
 
     DESCRIPTION: ClassVar[str] = (
-        "Short line shown to the user as the step title: what this call does "
-        "and why, in the language of the conversation. Keep it under ten words."
+        "Required for every call. Short line shown to the user as the step "
+        "title: what this call does and why, in the language of the "
+        "conversation. Keep it under ten words."
     )
 
     MAX_CHARS: ClassVar[int] = 160

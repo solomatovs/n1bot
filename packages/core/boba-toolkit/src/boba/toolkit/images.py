@@ -45,8 +45,6 @@ class LauncherMarker(StrEnum):
 
     LOG = "sandbox-mount: "
     ERROR = "sandbox-mount-error: "
-    CHAIN_LOST = "sandbox-chain-lost: "
-    """Корень секции больше не смонтирован: вызовы бесполезны до перезапуска."""
 
 
 def trace(message: str) -> None:

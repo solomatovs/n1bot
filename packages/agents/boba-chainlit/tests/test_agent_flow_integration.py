@@ -24,29 +24,35 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from omegaconf import DictConfig
-from openai import OpenAIError
 from pydantic import SecretStr
 
 from boba.chainlit.agent.flow import (
     GraphSpec,
     LlmRephraser,
     PrefetchCall,
-    PrefetchError,
     PrefetchGraphBuilder,
 )
 from boba.chainlit.infra.config import (
     AppConfig,
     PrefetchFlowConfig,
-    RephraserConfig,
     SelectedProfile,
 )
 from boba.chainlit.infra.plugins import load_tools
 from boba.chainlit.infra.providers import (
-    _graph_builder,
     build_history_view,
     httpx_clients,
+    rephrase_generators,
+    session_graph_builder,
 )
 from boba.llm.chat import ReasoningChatOpenAI
+from boba.llm.generation import (
+    GenerationConfig,
+    LocalGeneration,
+    LocalOnnxGenerator,
+    OpenAiGeneration,
+    OpenAiStructuredGenerator,
+    StructuredGenerator,
+)
 from boba.llm.openai import OpenAiHttp
 from boba.settings import bind
 from boba.toolkit.result import TableResult, ToolArtifact
@@ -100,7 +106,7 @@ def flow_config(app_config: AppConfig) -> PrefetchFlowConfig:
 
 
 @pytest.fixture(scope="module")
-def rephraser_config(flow_config: PrefetchFlowConfig) -> RephraserConfig:
+def rephraser_config(flow_config: PrefetchFlowConfig) -> GenerationConfig:
     """Секция переформулировщика; её отсутствие проверяется отдельным тестом."""
     if flow_config.rephraser is None:
         pytest.skip(f"[profiles.{PROFILE}.flow.rephraser] не задан")
@@ -174,33 +180,36 @@ def _graph(
         history=build_history_view(frozenset(names), settings.history_messages),
     )
 
-    builder = _graph_builder(selected, clients, tools)
+    generators = rephrase_generators(app_config, clients)
+    builder = session_graph_builder(generators, selected, tools)
     if not isinstance(builder, PrefetchGraphBuilder):
         pytest.fail(f"профиль {PROFILE} должен строить prefetch-граф, а не {builder}")
 
     return builder.build(spec)
 
 
+def _generator(
+    rephraser: GenerationConfig,
+    clients: dict[str, AsyncClient],
+    **overrides: Any,
+) -> StructuredGenerator:
+    """Генератор профиля; overrides подменяют поля его секции."""
+    cfg = rephraser.model_copy(update=overrides)
+
+    if isinstance(cfg, LocalGeneration):
+        return LocalOnnxGenerator(cfg)
+
+    client = clients[PrefetchFlowConfig.client_key(PROFILE)]
+    return OpenAiStructuredGenerator(cfg, client)
+
+
 def _rephraser(
-    rephraser: RephraserConfig,
+    rephraser: GenerationConfig,
     clients: dict[str, AsyncClient],
     **overrides: Any,
 ) -> LlmRephraser:
-    """Переформулировщик профиля; overrides подменяют поля его секции."""
-    cfg = rephraser.model_copy(update=overrides)
-
-    chat = ReasoningChatOpenAI(
-        http_async_client=clients[PrefetchFlowConfig.client_key(PROFILE)],
-        model=cfg.model,
-        base_url=cfg.provider.base_url,
-        api_key=SecretStr(cfg.provider.api_key),
-        timeout=OpenAiHttp.timeout(cfg.provider),
-        max_retries=0,
-        disable_streaming=True,
-        **cfg.chat_kwargs(),
-    )
-
-    return LlmRephraser(chat, cfg.system_prompt, cfg.queries)
+    """Переформулировщик профиля на его же генераторе."""
+    return LlmRephraser(_generator(rephraser, clients, **overrides))
 
 
 def _prefetch_calls(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
@@ -231,40 +240,38 @@ class TestRephraser:
 
     async def test_query_is_rephrased(
         self,
-        rephraser_config: RephraserConfig,
+        rephraser_config: GenerationConfig,
         clients: dict[str, AsyncClient],
         chainlit_context: None,
     ) -> None:
         queries = await _rephraser(rephraser_config, clients).rephrase(QUESTION)
 
-        if len(queries) != rephraser_config.queries:
-            raise AssertionError(
-                f"ждём {rephraser_config.queries} запросов, получено "
-                f"{len(queries)}: {queries}"
-            )
+        if not queries:
+            raise AssertionError("переформулировщик обязан дать хотя бы один запрос")
+
+        if list(queries) == [QUESTION]:
+            raise AssertionError("модель вернула исходный запрос: разбор не удался")
 
         for query in queries:
             if not query.strip():
                 raise AssertionError(f"пустой запрос в выдаче: {queries}")
 
-    async def test_unknown_model_fails(
+    async def test_unknown_model_searches_by_user_query(
         self,
-        rephraser_config: RephraserConfig,
+        rephraser_config: GenerationConfig,
         clients: dict[str, AsyncClient],
         chainlit_context: None,
     ) -> None:
-        """Модели нет у провайдера: отказ виден, а не превращается в пустоту."""
+        """Модели нет у провайдера: поиск идёт по исходному запросу, ход живёт."""
+        if isinstance(rephraser_config, LocalGeneration):
+            pytest.skip("подмена имени модели проверяется на удалённом провайдере")
+
         rephraser = _rephraser(rephraser_config, clients, model="no/such-model-at-all")
 
-        with pytest.raises((PrefetchError, OpenAIError)) as caught:
-            await rephraser.rephrase(QUESTION)
+        queries = await rephraser.rephrase(QUESTION)
 
-        if isinstance(caught.value, PrefetchError):
-            return
-
-        text = str(caught.value)
-        if "no/such-model-at-all" not in text and "model" not in text.lower():
-            raise AssertionError(f"отказ провайдера без причины: {text[:200]}")
+        if list(queries) != [QUESTION]:
+            raise AssertionError(f"откат на исходный запрос, получено {queries}")
 
 
 class TestPrefetchGraph:
@@ -275,7 +282,7 @@ class TestPrefetchGraph:
         self,
         app_config: AppConfig,
         flow_config: PrefetchFlowConfig,
-        rephraser_config: RephraserConfig,
+        rephraser_config: GenerationConfig,
         clients: dict[str, AsyncClient],
         session_tools: list[BaseTool],
     ) -> None:
@@ -287,9 +294,17 @@ class TestPrefetchGraph:
         messages = result["messages"]
 
         calls = _prefetch_calls(messages)
-        expected = rephraser_config.queries * len(flow_config.tools)
-        if len(calls) != expected:
-            raise AssertionError(f"ждём {expected} вызовов, получено {len(calls)}")
+        tools_count = len(flow_config.tools)
+        if not calls:
+            raise AssertionError("подготовка обязана вызвать поиск")
+
+        if len(calls) % tools_count != 0:
+            raise AssertionError(
+                f"каждый запрос идёт в каждый инструмент, получено {len(calls)} "
+                f"вызовов на {tools_count} инструмента"
+            )
+
+        expected = len(calls)
 
         called = set()
         for call in calls:
@@ -391,35 +406,40 @@ class TestPrefetchGraph:
             raise AssertionError("модель ответила пустотой")
 
     @pytest.mark.usefixtures("clients", "chainlit_context")
-    async def test_unreachable_provider_fails_the_turn(
+    async def test_unreachable_provider_searches_by_user_query(
         self,
         app_config: AppConfig,
         flow_config: PrefetchFlowConfig,
-        rephraser_config: RephraserConfig,
+        rephraser_config: GenerationConfig,
         session_tools: list[BaseTool],
     ) -> None:
-        """Переформулировщик недоступен: ход падает, а не отвечает без контекста."""
-        rephraser = rephraser_config.model_copy(
-            update={
-                "provider": rephraser_config.provider.model_copy(
-                    update={"base_url": "http://127.0.0.1:9/v1", "max_retries": 0}
-                )
-            }
+        """Переформулировщик недоступен: ход отвечает, поиск идёт по запросу."""
+        if not isinstance(rephraser_config, OpenAiGeneration):
+            pytest.skip("недоступный endpoint проверяется на удалённом провайдере")
+
+        unreachable = rephraser_config.openai.model_copy(
+            update={"base_url": "http://127.0.0.1:9/v1", "max_retries": 0}
         )
+        rephraser = rephraser_config.model_copy(update={"openai": unreachable})
         broken = flow_config.model_copy(update={"rephraser": rephraser})
         profile = app_config.profiles[PROFILE].model_copy(update={"flow": broken})
         config = app_config.model_copy(
             update={"profiles": {**app_config.profiles, PROFILE: profile}}
         )
 
-        generator = httpx_clients(config)
-        broken_clients = await anext(generator)
+        clients_gen = httpx_clients(config)
+        broken_clients = await anext(clients_gen)
         try:
             graph = _graph(config, broken_clients, session_tools)
-
-            with pytest.raises(PrefetchError):
-                await graph.ainvoke(
-                    {"messages": [HumanMessage(QUESTION)]}, config=THREAD
-                )
+            result = await graph.ainvoke(
+                {"messages": [HumanMessage(QUESTION)]}, config=THREAD
+            )
         finally:
-            await anext(generator, None)
+            await anext(clients_gen, None)
+
+        asked = set()
+        for call in _prefetch_calls(result["messages"]):
+            asked.add(call["args"]["query"])
+
+        if asked != {QUESTION}:
+            raise AssertionError(f"в поиск ушёл не исходный запрос: {asked}")

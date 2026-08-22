@@ -42,7 +42,6 @@ from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.images import (
     FuseMounter,
     ImageStore,
-    LauncherMarker,
     LauncherOptions,
     MountError,
     SparseCopier,
@@ -276,14 +275,6 @@ class ImageMounting(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     fuse2fs_dir: str = Field(min_length=1)
-    staging: tuple[str, ...] = ()
-    """Пути обвязки образов: шаблон, fuse2fs и каталог образов пользователей.
-
-    Исполнитель монтирует по ним образ своего вызова и сразу отцепляет их от
-    себя: телу инструмента остаётся только его собственный workspace. Путь,
-    который пришёл частью большего монтирования (лежит в самом корне), не
-    отцепляется — прятать там нечего.
-    """
     mount_wait_sec: float = Field(gt=0)
     mount_poll_sec: float = Field(gt=0)
     shutdown_wait_sec: float = Field(gt=0)
@@ -327,6 +318,14 @@ class CallRequest(BaseModel):
     images: tuple[ImageMount, ...] = ()
     mounting: ImageMounting | None = None
     """Параметры монтирования; None — образов у вызова нет."""
+    staging: tuple[str, ...] = ()
+    """Обвязка монтирования: шаблон, fuse2fs и каталог образов пользователей.
+
+    Исполнитель отцепляет её от себя всегда, а не только когда монтирует
+    образ: секции без workspace иначе оставляли телу инструмента каталог с
+    образами всех пользователей. Путь, пришедший частью большего
+    монтирования (лежит в самом корне), не отцепляется — прятать там нечего.
+    """
     cwd: str = ""
     into_cgroup: bool = False
     """Шестым дескриптором приехал каталог cgroup-leaf'а вызова."""
@@ -340,6 +339,32 @@ class CallExit(BaseModel):
     op: str = "exit"
     call_id: str = Field(min_length=1)
     code: int
+
+
+class SetupFailure(StrEnum):
+    """Чем сорвалась подготовка вызова до запуска тела."""
+
+    NONE = ""
+    CHAIN_LOST = "chain_lost"
+    """fuse-демон корня секции мёртв: виноват не вызов, а секция."""
+    MOUNT_ERROR = "mount_error"
+    """Образ вызова не смонтирован."""
+
+
+class CallSetupFailed(BaseModel):
+    """Отчёт исполнителя о сорванной подготовке: едет по control-сокету.
+
+    Тело инструмента этот сокет не получает — он закрывается до его запуска.
+    Раньше о том же говорили метки в stderr, и любое тело могло их напечатать:
+    поддельная метка `sandbox-chain-lost:` роняла зиготу всей секции.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: str = "setup_failed"
+    call_id: str = Field(min_length=1)
+    reason: SetupFailure
+    detail: str = ""
 
 
 class WarmupCall(BaseModel):
@@ -525,13 +550,48 @@ class Isolation:
 
     _CAP_VERSION_3: ClassVar[int] = 0x20080522
 
+    LAST_CAP: ClassVar[str] = "/proc/sys/kernel/cap_last_cap"
+
     @classmethod
     def drop_capabilities(cls) -> None:
+        """Тело остаётся без прав: bounding set, no_new_privs и сам capset.
+
+        Один capset обнуляет только наборы процесса, а bounding set остаётся
+        от зиготы (CAP_SYS_ADMIN, CAP_SYS_RESOURCE) — по нему права можно
+        вернуть, если тело когда-нибудь получит исполняемый файл с
+        capabilities или своё пространство пользователей.
+        """
+        cls._deny_new_privileges()
+        cls._drop_bounding_set()
+
         header = cls._CapHeader(cls._CAP_VERSION_3, 0)
         data = (cls._CapData * 2)()
         if cls.libc().capset(ctypes.byref(header), ctypes.byref(data)) != 0:
             code = ctypes.get_errno()
             raise OSError(code, f"capset: {os.strerror(code)}")
+
+    PR_SET_NO_NEW_PRIVS: ClassVar[int] = 38
+    PR_CAPBSET_DROP: ClassVar[int] = 24
+
+    @classmethod
+    def _deny_new_privileges(cls) -> None:
+        rc = cls.libc().prctl(cls.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+        if rc != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, f"prctl(NO_NEW_PRIVS): {os.strerror(code)}")
+
+    @classmethod
+    def _drop_bounding_set(cls) -> None:
+        with open(cls.LAST_CAP) as f:
+            last = int(f.read().strip())
+
+        for cap in range(last + 1):
+            rc = cls.libc().prctl(cls.PR_CAPBSET_DROP, cap, 0, 0, 0)
+            if rc == 0:
+                continue
+
+            code = ctypes.get_errno()
+            raise OSError(code, f"prctl(CAPBSET_DROP, {cap}): {os.strerror(code)}")
 
     @classmethod
     def enter_call_namespaces(cls, mounts: CallMounts) -> None:
@@ -811,23 +871,31 @@ class ZygoteMain:
             timing.mark("fork2")
             self._grandchild(request, fds, timing)
         except BaseException as exc:
-            self._report_failure(exc)
+            self._report_failure(request, fds, exc)
             os._exit(126)
 
-    @staticmethod
-    def _report_failure(exc: BaseException) -> None:
-        """Отвалившийся корень отделяется от прочих сбоев отдельным маркером.
+    @classmethod
+    def _report_failure(
+        cls, request: CallRequest, fds: list[int], exc: BaseException
+    ) -> None:
+        """Сбой подготовки: причина уходит хосту control-сокетом, а не в stderr.
 
-        ENOTCONN на монтировании означает, что fuse-демон корня секции мёртв:
-        вызов не виноват и повторять его бессмысленно, пока хост не поднимет
-        зиготу заново.
+        ENOTCONN означает, что fuse-демон корня секции мёртв: вызов не виноват
+        и повторять его бессмысленно, пока хост не поднимет зиготу заново.
+        Сообщение об этом хост принимает только с control-сокета, до которого
+        телу инструмента не дотянуться.
         """
-        if isinstance(exc, OSError) and exc.errno == errno.ENOTCONN:
-            marker = LauncherMarker.CHAIN_LOST
-            print(f"{marker}{exc}", file=sys.stderr, flush=True)  # noqa: T201
+        print(f"zygote child failed: {exc}", file=sys.stderr, flush=True)  # noqa: T201
+
+        if not isinstance(exc, OSError):
             return
 
-        print(f"zygote child failed: {exc}", file=sys.stderr, flush=True)  # noqa: T201
+        try:
+            control = socket.socket(fileno=fds[CallFd.CONTROL])
+        except OSError:
+            return
+
+        cls._fail_setup(control, request, cls._failure_of(exc), str(exc))
 
     @staticmethod
     def _spawn_executor(request: CallRequest, fds: list[int]) -> tuple[int, bool]:
@@ -852,6 +920,64 @@ class ZygoteMain:
 
         return os.fork(), request.into_cgroup
 
+    @classmethod
+    def _check_root(cls, control: socket.socket, request: CallRequest) -> None:
+        """Корень секции жив? Ответ нужен, пока control ещё у исполнителя.
+
+        Мёртвый fuse-демон корня виден только при обращении к файлам, а тело
+        обращается к ним уже после закрытия control: без этой проверки отказ
+        выглядел бы обычной ошибкой инструмента, и секция не восстановилась
+        бы. Одна операция над корнем стоит микросекунды.
+        """
+        try:
+            os.stat("/")
+        except OSError as exc:
+            cls._fail_setup(control, request, cls._failure_of(exc), str(exc))
+            os._exit(MountError.EXIT_CODE)
+
+    @staticmethod
+    def _failure_of(exc: OSError) -> SetupFailure:
+        """ENOTCONN на монтировании — мёртвый fuse-демон корня секции."""
+        if exc.errno == errno.ENOTCONN:
+            return SetupFailure.CHAIN_LOST
+
+        return SetupFailure.MOUNT_ERROR
+
+    @staticmethod
+    def _fail_setup(
+        control: socket.socket,
+        request: CallRequest,
+        reason: SetupFailure,
+        detail: str,
+    ) -> None:
+        """Отчёт о сорванной подготовке хосту; молчание тут не оставляем."""
+        report = CallSetupFailed(call_id=request.call_id, reason=reason, detail=detail)
+        try:
+            ZygoteWire.send(control, report)
+        except OSError as exc:
+            print(  # noqa: T201
+                f"zygote setup report not delivered: {exc}", file=sys.stderr, flush=True
+            )
+
+        control.close()
+
+    @staticmethod
+    def _close_inherited(request: CallRequest, fds: list[int]) -> None:
+        """Закрыть всё, что телу не принадлежит: leaf cgroup и копии каналов.
+
+        Дескриптор leaf'а даёт запись в memory.max и обход соседних групп,
+        поэтому переживать вход в cgroup он не должен.
+        """
+        if request.into_cgroup:
+            os.close(fds[CallFd.CGROUP])
+
+        for index in (CallFd.STDIN, CallFd.STDOUT, CallFd.STDERR):
+            fd = fds[index]
+            if fd in (0, 1, 2):
+                continue
+
+            os.close(fd)
+
     def _grandchild(
         self, request: CallRequest, fds: list[int], timing: SetupTiming
     ) -> None:
@@ -870,19 +996,22 @@ class ZygoteMain:
         os.dup2(fds[CallFd.STDERR], 2)
         os.environ[ToolChannel.RESULT.env_name] = str(fds[CallFd.RESULT])
 
+        self._close_inherited(request, fds)
+
         control = socket.socket(fileno=fds[CallFd.CONTROL])
         self._handshake(control)
-        control.close()
         timing.mark("handshake")
 
+        # control живёт до конца подготовки: по нему уходит отчёт о сбое,
+        # которому нельзя дать подделать телу инструмента
         mounts = _CallMounts.of(request)
         try:
             mounts.mount()
         except MountError as exc:
-            # хост отличает несмонтированный образ от отказа тела по коду
-            print(  # noqa: T201
-                f"{LauncherMarker.ERROR}{exc}", file=sys.stderr, flush=True
-            )
+            self._fail_setup(control, request, SetupFailure.MOUNT_ERROR, str(exc))
+            os._exit(MountError.EXIT_CODE)
+        except OSError as exc:
+            self._fail_setup(control, request, self._failure_of(exc), str(exc))
             os._exit(MountError.EXIT_CODE)
 
         timing.mark("images")
@@ -894,6 +1023,9 @@ class ZygoteMain:
 
         if request.cwd:
             os.chdir(request.cwd)
+
+        self._check_root(control, request)
+        control.close()
 
         timing.mark("limits")
         timing.report(request.call_id)
@@ -995,7 +1127,7 @@ class _CallMounts:
     @classmethod
     def of(cls, request: CallRequest) -> _CallMounts:
         if not request.images:
-            return cls((), {}, None, ())
+            return cls((), {}, None, request.staging)
 
         mounting = request.mounting
         if mounting is None:
@@ -1016,9 +1148,15 @@ class _CallMounts:
 
         binaries = TrustedBinaries(dirs=(mounting.fuse2fs_dir,))
         mounter = FuseMounter(options, binaries, pass_fds=())
-        return cls(request.images, stores, mounter, mounting.staging)
+        return cls(request.images, stores, mounter, request.staging)
 
     def mount(self) -> None:
+        if self._mounter is not None:
+            self._mount_images()
+
+        self._detach_staging()
+
+    def _mount_images(self) -> None:
         if self._mounter is None:
             return
 
@@ -1028,7 +1166,12 @@ class _CallMounts:
         for spec in self._images:
             self._mounter.mount(spec.image, spec.target, readonly=False)
 
-        # чужие образы, шаблон и fuse2fs нужны были только на монтирование
+    def _detach_staging(self) -> None:
+        """Обвязка монтирования уходит из вида тела в любом вызове.
+
+        Профиль без образов её всё равно получает от зиготы: без этого шага
+        телу оставался каталог с образами всех пользователей.
+        """
         for path in self._staging:
             if not FuseMounter.is_mounted(path):
                 continue

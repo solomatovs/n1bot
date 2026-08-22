@@ -79,6 +79,17 @@ EMBED_MODELS    ?= intfloat/multilingual-e5-large
 # суммы скачанных весов: библиотека тянет их сама, проверяем по факту
 FASTEMBED_MANIFEST := $(CONF_DIR)/fastembed.sha256
 
+# модели переформулировщика: onnxruntime-genai держит каждую каталогом
+# genai_config.json + веса + токенайзер, а формат ответа задаёт грамматика.
+# Запись: репозиторий:подкаталог:имя каталога, пустой подкаталог — корень.
+# Какую из скачанных берёт профиль, решает model_dir в config.toml
+ONNX_MODELS     ?= xiaoyao9184/Qwen3-0.6B-onnx-genai:cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/:qwen3-0.6b-int4 \
+    Hug0007/qwen3-1.7b-int4-onnx-genai::qwen3-1.7b-int4                                                               \
+    robinsmits/qwen3-4b-instruct-2507-onnx-int4::qwen3-4b-int4
+ONNX_HUB_URL    ?= https://huggingface.co
+# веса тянет huggingface_hub, поэтому целостность проверяется по факту загрузки
+ONNX_MANIFEST   := $(CONF_DIR)/onnx-genai.sha256
+
 # фронт chainlit тянет шрифт и стили формул с CDN; в закрытом контуре их
 # кладут в data/public/vendor, а ссылки в index.html переписывает Dockerfile
 WEBASSETS_DIR   := $(DEPS_DIR)/webassets
@@ -196,9 +207,9 @@ help:
 	echo ""
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(DEPS_DIR)"
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
-	echo "                 {uv,tessdata,fastembed,webassets,"
+	echo "                 {uv,tessdata,fastembed,onnx-genai,webassets,"
 	echo "                  sandbox/{rootfs.ext4,workspace.ext4},third/bin}"
-	echo "                 цели по отдельности: uv, tessdata, fastembed,"
+	echo "                 цели по отдельности: uv, tessdata, fastembed, onnx-genai,"
 	echo "                 webassets, sandbox-bin, sandbox-image, sandbox-workspace"
 	echo "  make build     собрать образ $(IMAGE)"
 	echo "  make test      проверить релиз внутри образа"
@@ -226,7 +237,7 @@ help:
 	echo "    http_proxy/https_proxy/no_proxy из env уходят в docker build"
 	echo "    Зеркала tarball'ов (иначе github/kernel.org/npm):"
 	echo "      UV_URL, BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, TESSDATA_REPO,"
-	echo "      KATEX_URL, INTER_URL, MERMAID_URL"
+	echo "      KATEX_URL, INTER_URL, MERMAID_URL, ONNX_HUB_URL"
 	echo ""
 	echo "  Переменные: INSTALL_DIR=$(INSTALL_DIR), DEST_DIR=$(DEST_DIR),"
 	echo "              BOBA_TAG=<тег>, NO_CACHE=1,"
@@ -310,7 +321,7 @@ sources:
 
 
 .PHONY: deps
-deps: uv tessdata fastembed webassets sandbox-bin sandbox-workspace sandbox-image
+deps: uv tessdata fastembed onnx-genai webassets sandbox-bin sandbox-workspace sandbox-image
 	@du -sh $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(SANDBOX_DIR)/*
 
 
@@ -524,6 +535,76 @@ fastembed-manifest:
 	echo ">>> $(FASTEMBED_MANIFEST): $$(grep -c '' "$(FASTEMBED_MANIFEST)") файлов"
 
 
+# модели переформулировщика: качаются один раз и уезжают в образ приложения,
+# а не в песочницу — генерация идёт в процессе chainlit
+.PHONY: onnx-genai
+onnx-genai: base
+	@mkdir -p $(DEPS_DIR)/onnx-genai
+	echo "== модели переформулировщика: $(ONNX_MODELS) =="
+	docker run --rm                                                                       \
+	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                     \
+	  -e HF_ENDPOINT="$(ONNX_HUB_URL)"                                                    \
+	  -e ONNX_MODELS="$(ONNX_MODELS)"                                                     \
+	  -e HTTP_PROXY -e HTTPS_PROXY -e NO_PROXY -e http_proxy -e https_proxy -e no_proxy   \
+	  $(CONF_OPTS)                                                                        \
+	  -v "$(DEPS_DIR)/onnx-genai":/onnx                                                   \
+	  --entrypoint sh $(BASE_IMAGE) -c '
+	    set -e
+	    pip3 install --no-cache-dir huggingface_hub
+	    for spec in $$ONNX_MODELS; do
+	      repo=$${spec%%:*}
+	      rest=$${spec#*:}
+	      echo ">>> onnx-genai: $$repo"
+	      python3 -c "import pathlib, shutil, sys;
+	        from huggingface_hub import snapshot_download;
+	        path, name = sys.argv[2], sys.argv[3];
+	        root = snapshot_download(sys.argv[1], allow_patterns=[path + \"*\"]);
+	        dst = pathlib.Path(\"/onnx\") / name;
+	        shutil.rmtree(dst, ignore_errors=True);
+	        shutil.copytree(pathlib.Path(root) / path, dst);
+	        print(dst)" "$$repo" "$${rest%%:*}" "$${rest##*:}"                            \
+	      || echo "!! $$repo не скачан — репозиторий недоступен или не в формате genai"
+	    done
+	    chown -R "$$HOST_UID:$$HOST_GID" /onnx'
+	$(MAKE) -f $(MAKEFILE) --no-print-directory onnx-genai-check
+
+
+# веса приезжают из сети внутрь контейнера, поэтому целостность проверяется
+# после загрузки: список сумм лежит рядом с остальными шаблонами сборки
+.PHONY: onnx-genai-check
+onnx-genai-check:
+	@if [ ! -f "$(ONNX_MANIFEST)" ]; then
+	    echo "нет $(ONNX_MANIFEST) — сними суммы: make onnx-genai-manifest" >&2
+	    exit 1
+	fi
+	cd "$(DEPS_DIR)/onnx-genai"
+	sha256sum -c --quiet "$(ONNX_MANIFEST)"
+
+	for spec in $(ONNX_MODELS); do
+	    name=$${spec##*:}
+	    if [ ! -f "$$name/genai_config.json" ]; then
+	        echo "нет $$name/genai_config.json — onnxruntime-genai не примет каталог" >&2
+	        exit 1
+	    fi
+	done
+
+	listed=$$(grep -c '' "$(ONNX_MANIFEST)")
+	actual=$$(find . -type f | wc -l)
+	if [ "$$listed" != "$$actual" ]; then
+	    echo "файлов моделей $$actual, а в манифесте $$listed" >&2
+	    exit 1
+	fi
+	echo "  ✓ модели сходятся с $(ONNX_MANIFEST) ($$listed файлов)"
+
+
+# переснять суммы: после смены ONNX_MODELS или ревизии их репозиториев
+.PHONY: onnx-genai-manifest
+onnx-genai-manifest:
+	@cd "$(DEPS_DIR)/onnx-genai"
+	find . -type f | sort | xargs sha256sum > "$(ONNX_MANIFEST)"
+	echo ">>> $(ONNX_MANIFEST): $$(grep -c '' "$(ONNX_MANIFEST)") файлов"
+
+
 .PHONY: base
 base: uv
 	@if [ "$$(printf '%s\n' "$(REQUIRES_PY)" "$(PYTHON_VERSION)" | sort -V | head -1)" != "$(REQUIRES_PY)" ]; then
@@ -662,8 +743,8 @@ dev: check-artifacts
 	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$$out/cgroup-init.sh"
 
 	if [ ! -f "$$out/conf/config.toml" ]; then
-	    cp "$(CONF_DIR)/config.toml.example" "$$out/conf/config.toml"
-	    echo "    conf/config.toml создан из шаблона — впиши секцию [site]"
+	    echo "нет $$out/conf/config.toml — положи конфиг приложения" >&2
+	    exit 1
 	fi
 
 	# umask каталога сборки даёт g+w, а TrustedBinaries такой third/bin
@@ -718,7 +799,7 @@ install-tree:
 	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
 
 	if [ ! -f "$(OUT)/conf/config.toml" ]; then
-	    cp "$(CONF_DIR)/config.toml.example" "$(OUT)/conf/config.toml"
+	    echo "    conf/config.toml в дереве нет — положи его при установке"
 	fi
 
 	$(MAKE) -f $(MAKEFILE) --no-print-directory tree-check OUT="$(OUT)"

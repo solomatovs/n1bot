@@ -24,7 +24,8 @@ def build_zygote_argv(
     """bwrap для зиготы: capabilities в userns, свой или лаунчера.
 
     CAP_SYS_ADMIN — unshare и mount детей, CAP_SYS_RESOURCE — запрет
-    вложенных userns записью max_user_namespaces=0. RLIMIT_NPROC зигота
+    вложенных userns записью max_user_namespaces=0, CAP_SETPCAP — сброс
+    bounding set перед запуском тела. RLIMIT_NPROC зигота
     ставит себе сама: потолок общий на неё и всех детей. nested — запуск
     внутри userns лаунчера образов: он там уже создан, и создать свой
     нельзя, зато капабилити лаунчера наследуются.
@@ -39,6 +40,8 @@ def build_zygote_argv(
         "CAP_SYS_ADMIN",
         "--cap-add",
         "CAP_SYS_RESOURCE",
+        "--cap-add",
+        "CAP_SETPCAP",
         "--unshare-pid",
         "--unshare-ipc",
         "--unshare-uts",

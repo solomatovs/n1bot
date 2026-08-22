@@ -18,7 +18,7 @@ from psycopg.rows import DictRow, dict_row
 
 from boba.cancellation import current_cancellation
 from boba.db.postgres.config import PostgresConfig
-from boba.krb import KerberosCredentials, KeytabCredentials
+from boba.krb import ClientCredentials, KerberosCredentials
 
 __all__ = [
     "AsyncPostgresPool",
@@ -119,7 +119,7 @@ class AsyncPostgresPool:
         if cfg.kerberos is None:
             return psycopg.AsyncConnection
 
-        return KerberosConnection.bound_to(KeytabCredentials(cfg.kerberos))
+        return KerberosConnection.bound_to(ClientCredentials.of(cfg.kerberos))
 
     async def open(self) -> None:
         """Открыть пул (установить фоновые соединения)."""

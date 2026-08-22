@@ -841,6 +841,9 @@ def build_chain_argv(  # noqa: PLR0913, PLR0912, C901 — линейная сб�
         # CAP_SYS_RESOURCE (в userns) — право обнулить max_user_namespaces
         "--cap-add",
         "CAP_SYS_RESOURCE",
+        # CAP_SETPCAP — исполнитель вызова сбрасывает им bounding set тела
+        "--cap-add",
+        "CAP_SETPCAP",
         "--unshare-pid",
         "--as-pid-1",
         "--unshare-ipc",

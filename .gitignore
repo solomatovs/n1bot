@@ -36,12 +36,12 @@ packages/**/dist/
 /build/conf/*
 !/build/conf/boba.env
 !/build/conf/boba-chainlit.service
-!/build/conf/config.toml.example
 !/build/conf/README.md
 !/build/conf/pip.conf.example
 !/build/conf/uv.toml.example
 !/build/conf/cgroup-init.sh
 !/build/conf/fastembed.sha256
+!/build/conf/onnx-genai.sha256
 !/build/conf/semgrep-boba/
 
 # статика фронта: кладётся make webassets, в образ идёт из build/src/webassets

@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.krb import KeytabConfig
+from boba.krb import CcacheConfig, Kerberos, KeytabConfig
 from boba.toolkit.types import SecretRevealing
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]
@@ -160,13 +160,34 @@ class ClickHouseConfig(BaseModel):
     ]
 
     # креды kerberos этого соединения; SPNEGO-токен строится по ним на каждый запрос
-    kerberos: KeytabConfig | None = Field(
+    kerberos: Kerberos | None = Field(
         default=None,
         description=(
             "Keytab, принципал и свой ccache соединения; "
-            "в конфиге подключается ссылкой ${kerberos.<name>}."
+            "в конфиге подключается ссылкой ${kerberos.<name>}. "
+            "В песочницу этой же секцией уезжает только готовый тикет."
         ),
     )
+
+    @field_serializer("kerberos", when_used="json")
+    def _dump_kerberos(
+        self, value: KeytabConfig | CcacheConfig | None, info: SerializationInfo
+    ) -> dict[str, Any] | None:
+        """Дамп с раскрытыми секретами едет в песочницу: keytab туда не уезжает."""
+        if value is None:
+            return None
+
+        if isinstance(value, CcacheConfig):
+            return value.model_dump(mode="json")
+
+        context = info.context
+        if not isinstance(context, Mapping):
+            return value.model_dump(mode="json")
+
+        if not context.get(ClickHouseConfig.REVEAL_SECRETS):
+            return value.model_dump(mode="json")
+
+        return value.sandboxed().model_dump(mode="json")
     krbsrvname: str | None = Field(
         default=None,
         description=(

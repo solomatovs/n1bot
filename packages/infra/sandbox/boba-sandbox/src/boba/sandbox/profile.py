@@ -222,6 +222,16 @@ class SandboxHost(BaseModel):
             "памяти, чтобы объяснить отказ, когда конверта с результатом нет."
         ),
     )
+    channel_limit_bytes: int = Field(
+        gt=0,
+        description=(
+            "Потолок на канал вызова, который приложение копит в своей памяти "
+            "целиком: конверт результата и вывод shell-команды. Лимиты памяти "
+            "песочницы на приложение не распространяются, поэтому без потолка "
+            "тело инструмента выносит хост потоком в несколько гигабайт. "
+            "Превышение обрывает вызов ошибкой инструмента."
+        ),
+    )
     fail_tail_chars: int = Field(
         gt=0,
         description=(
@@ -697,6 +707,30 @@ class SandboxProfile(BaseModel):
             raise ValueError(msg)
 
         return self
+
+    @model_validator(mode="after")
+    def _validate_setup_binds(self) -> Self:
+        """Обвязка монтирования объявляется только там, где есть что монтировать.
+
+        Она заносит внутрь каталог образов всех пользователей, поэтому
+        профилю без образов её объявлять нечем и незачем.
+        """
+        setup = (*self.mounts.setup_ro, *self.mounts.setup_rw)
+        if not setup:
+            return self
+
+        if self.mounts.images:
+            return self
+
+        if self.mounts.workspace is not None:
+            return self
+
+        listed = ", ".join(spec.target for spec in setup)
+        msg = (
+            "sandbox: setup_ro/setup_rw are declared, but the profile mounts "
+            f"no images: {listed}"
+        )
+        raise ValueError(msg)
 
     def render(self, variables: Mapping[str, str]) -> Self:
         """Профиль с подставленными значениями {user_id}/{thread_id}."""

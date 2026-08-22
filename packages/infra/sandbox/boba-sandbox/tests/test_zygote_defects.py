@@ -516,6 +516,85 @@ class TestRootMountRecovery:
                 raise AssertionError(f"в журнале нет {phase!r}:\n{journal}")
 
 
+class TestCallFdsAreNotInherited:
+    """Дефект: тело вызова наследовало дескриптор своего cgroup-leaf'а.
+
+    Рождение исполнителя прямо в leaf'е (clone3) требует открытого каталога
+    группы, и он переживал вход в тело: скрипт инструмента читал через него
+    memory.max, снимал себе лимит записью и ходил по соседним группам.
+    """
+
+    CGROUP_BASE: ClassVar[str] = "/sys/fs/cgroup/boba"
+
+    PROBE: ClassVar[str] = """
+for fd in /proc/self/fd/*; do
+  readlink "$fd"
+done
+"""
+    """Тело печатает, куда указывает каждый его дескриптор."""
+
+    needs_cgroup = pytest.mark.skipif(
+        not os.access(CGROUP_BASE, os.W_OK),
+        reason="нет делегированного /sys/fs/cgroup/boba (прогнать cgroup-init.sh)",
+    )
+
+    @needs_cgroup
+    def test_body_has_no_cgroup_descriptor(self, section: str) -> None:
+        profile = _profile(
+            cgroup_base=self.CGROUP_BASE,
+            group_memory_bytes=512 * 1024 * 1024,
+            group_swap_bytes=0,
+            group_pids_max=64,
+        )
+        caller = ZygoteStand.caller(section, profile)
+
+        outcome = caller.call_text(self.PROBE, stdin="")
+        if outcome.result.exit_code != 0:
+            raise AssertionError(f"rc={outcome.result.exit_code}")
+
+        targets: list[str] = []
+        for line in outcome.result.stdout.splitlines():
+            if not line.strip():
+                continue
+
+            targets.append(line.strip())
+
+        leaked: list[str] = []
+        for target in targets:
+            if "cgroup" not in target:
+                continue
+
+            leaked.append(target)
+
+        if leaked:
+            raise AssertionError(f"телу достался дескриптор cgroup: {leaked}")
+
+    @needs_cgroup
+    def test_body_cannot_lift_its_memory_limit(self, section: str) -> None:
+        """Через дескриптор leaf'а лимит снимался записью в memory.max."""
+        limit = 512 * 1024 * 1024
+        profile = _profile(
+            cgroup_base=self.CGROUP_BASE,
+            group_memory_bytes=limit,
+            group_swap_bytes=0,
+            group_pids_max=64,
+        )
+        caller = ZygoteStand.caller(section, profile)
+
+        attack = """
+for fd in /proc/self/fd/*; do
+  target=$(readlink "$fd")
+  case "$target" in
+    */boba/run-*) echo max > "$fd/memory.max" && echo lifted ;;
+  esac
+done
+echo done
+"""
+        outcome = caller.call_text(attack, stdin="")
+        if "lifted" in outcome.result.stdout:
+            raise AssertionError("тело сняло себе групповой лимит памяти")
+
+
 class TestPartialCopyCleanup:
     """Дефект: владельца частичной копии образа искали по pid из её имени.
 

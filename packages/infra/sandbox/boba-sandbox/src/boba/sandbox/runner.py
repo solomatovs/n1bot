@@ -394,9 +394,16 @@ class SandboxLogRelay:
         logger.log(level, "tool[%s] %s: %s", self._label, name, message)
         self._tee.raw(f"{name}: {message}")
 
-    @staticmethod
-    def _level_of(name: str) -> int:
+    BODY_MAX_LEVEL: ClassVar[int] = logging.WARNING
+    """Потолок уровня кадра из тела: тревогу мониторингу поднимает не инструмент."""
+
+    @classmethod
+    def _level_of(cls, name: str) -> int:
         resolved = logging.getLevelName(name.upper())
-        if isinstance(resolved, int):
-            return resolved
-        return logging.INFO
+        if not isinstance(resolved, int):
+            return logging.INFO
+
+        if resolved > cls.BODY_MAX_LEVEL:
+            return cls.BODY_MAX_LEVEL
+
+        return resolved

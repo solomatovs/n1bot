@@ -401,6 +401,9 @@ class TestIsolated:
             "0",
             "--cap-add",
             "CAP_SYS_ADMIN",
+            # исполнитель сбрасывает им bounding set тела, как в боевой цепочке
+            "--cap-add",
+            "CAP_SETPCAP",
             "--unshare-pid",
             "--unshare-ipc",
             "--unshare-uts",
