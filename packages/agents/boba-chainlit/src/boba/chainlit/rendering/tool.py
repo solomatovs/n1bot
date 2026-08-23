@@ -273,10 +273,8 @@ class ToolResultMarkdown:
 
     def render(self) -> str:  # noqa: PLR0911
         match self._result:
-            case TextResult(text=t, language=lang):
-                if lang:
-                    return Fence.around(t.strip("\n"), lang)
-                return t
+            case TextResult() as text:
+                return self._text_block(text)
             case JsonResult(payload=p):
                 return JsonBlock.block(p)
             case TableResult(rows=rows, note=note):
@@ -293,6 +291,28 @@ class ToolResultMarkdown:
                 return self._error_block(m)
             case _ as never:
                 assert_never(never)
+
+    @staticmethod
+    def _text_block(result: TextResult) -> str:
+        """Текст блоком с языком либо как есть, под ним подпись источника.
+
+        Пустой текст блока не получает: от пустой страницы и грепа без
+        совпадений остаётся одна подпись.
+        """
+        if not result.text.strip():
+            if result.note is None:
+                return ""
+
+            return NoteLine.render(result.note)
+
+        body = result.text
+        if result.language:
+            body = Fence.around(result.text.strip("\n"), result.language)
+
+        if result.note is None:
+            return body
+
+        return f"{body}\n\n{NoteLine.render(result.note)}"
 
     @staticmethod
     def _visual_block(

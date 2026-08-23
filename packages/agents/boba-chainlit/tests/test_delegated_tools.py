@@ -391,7 +391,7 @@ async def test_confluence_page_is_fetched_as_the_signed_in_principal(
         line_count=5,
     )
 
-    current = json.loads(result.payload["content"])
+    current = json.loads(result.text)
     if current.get("username") != ROLE_NAME:
         raise AssertionError(f"confluence must see the principal: {current}")
 

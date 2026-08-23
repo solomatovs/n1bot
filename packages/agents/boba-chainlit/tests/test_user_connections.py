@@ -452,8 +452,8 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
         line_offset=0,
         line_count=5,
     )
-    if SERVICE_USER not in str(result.payload):
-        raise AssertionError(f"clickhouse must see the principal: {result.payload}")
+    if SERVICE_USER not in result.text:
+        raise AssertionError(f"clickhouse must see the principal: {result.text}")
 
 
 async def test_call_outside_session_is_refused(pg_tools: dict[str, Any]) -> None:
