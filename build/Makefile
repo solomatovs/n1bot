@@ -217,7 +217,7 @@ help:
 	echo "                 без образа — им пользуются и отладка, и docker compose"
 	echo "  make release   дерево установки из готового образа:"
 	echo "                 RELEASE_IMAGE=$(RELEASE_IMAGE), OUT=$(OUT)"
-	echo "                 {conf,app_root,app,sandbox,third},"
+	echo "                 {conf,app_root,app,sandbox,third,models},"
 	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR), данные — в DATA_DIR=$(DATA_DIR)"
 	echo "  make sec       ruff, bandit, semgrep и pip-audit (MODE=all|sast|sca|rules)"
 	echo "                 MODE=full — охват и правила как у сканера ИБ, без порогов"
@@ -458,10 +458,11 @@ sandbox-names:
 	sed 's/^/    /' "$$dest"
 
 
-# корень песочницы одним ext4-файлом: python, site-packages, код инструментов,
-# tessdata и веса уже внутри, в рантайме монтируется read-only
+# корень песочницы одним ext4-файлом: python, site-packages, код инструментов
+# и tessdata внутри, в рантайме монтируется read-only. Веса эмбеддера внутрь
+# не идут: они приезжают биндом профиля kb из models/fastembed
 .PHONY: sandbox-image
-sandbox-image: version-check sandbox-names tessdata fastembed
+sandbox-image: version-check sandbox-names tessdata
 	@dest="$(SANDBOX_DIR)/rootfs.ext4"
 	echo "== образ корня песочницы =="
 	$(call docker-stage,sandbox-image,$(ROOTFS_EXT4_IMAGE))
@@ -700,6 +701,8 @@ RELEASE_PARTS   :=                                \
     sandbox/workspace.ext4:deps                   \
     third/bin/bwrap:deps                          \
     third/bin/fuse2fs:deps                        \
+    models/onnx-genai:build                       \
+    models/fastembed:build                        \
     app/bin:build                                 \
     app_root/public:build
 
@@ -744,10 +747,12 @@ dev: check-artifacts
 	rm -rf "$$out/third/bin"
 	cp -al "$(SANDBOX_DIR)/third/bin" "$$out/third/bin"
 
-	# локальные модели чата и переформулировщика: та же раскладка, что в образе
-	rm -rf "$$out/models/onnx-genai"
+	# локальные модели чата и переформулировщика плюс веса эмбеддера: та же
+	# раскладка, что в образе, веса едут в песочницу биндом профиля kb
+	rm -rf "$$out/models/onnx-genai" "$$out/models/fastembed"
 	mkdir -p "$$out/models"
 	cp -al "$(DEPS_DIR)/onnx-genai" "$$out/models/onnx-genai"
+	cp -al "$(DEPS_DIR)/fastembed" "$$out/models/fastembed"
 
 	# код инструментов в деве приезжает биндом поверх /usr/src образа:
 	# правка видна сразу, пересборка образа не нужна

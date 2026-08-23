@@ -320,11 +320,11 @@ class TestRootfsContents:
 @needs_sandbox
 @needs_userns
 class TestEmbedderInSandbox:
-    """Веса эмбеддера лежат в самом образе, монтировать их не нужно."""
+    """Веса эмбеддера приезжают в песочницу биндом профиля, а не образом."""
 
     WEIGHTS: str = "/var/cache/fastembed"
 
-    def test_weights_are_bundled(self) -> None:
+    def test_weights_are_mounted(self) -> None:
         sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile()})
         profile = sandbox.profile
         supervisor = ZygoteRegistry.obtain("kb-test", profile, (), ZYGOTE)
@@ -337,6 +337,8 @@ class TestEmbedderInSandbox:
             ZygoteRegistry.stop_all()
 
         if outcome.result.exit_code != 0:
-            raise AssertionError(f"нет весов {self.WEIGHTS}: пересобери — make deps")
+            raise AssertionError(
+                f"нет весов {self.WEIGHTS}: скачай — make fastembed"
+            )
         if not (outcome.result.stdout.strip()):
             raise AssertionError("outcome.result.stdout.strip()")

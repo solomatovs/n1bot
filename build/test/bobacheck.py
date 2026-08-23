@@ -193,6 +193,28 @@ def t_model_loads_offline():
 check("models present with genai_config.json", t_models_present)
 check("smallest model loads offline", t_model_loads_offline)
 
+# 7) веса эмбеддера: лежат рядом с моделями чата и едут в песочницу биндом
+print("== local fastembed weights ==")
+EMBED_DIR = os.path.join(os.environ["BOBA_BASE"], "models", "fastembed")
+
+
+def t_embed_weights_present():
+    if not os.path.isdir(EMBED_DIR):
+        raise RuntimeError(f"нет каталога {EMBED_DIR}")
+
+    names = []
+    for name in sorted(os.listdir(EMBED_DIR)):
+        if not name.startswith("models--"):
+            continue
+
+        names.append(name)
+
+    if not names:
+        raise RuntimeError(f"нет весов моделей в {EMBED_DIR}")
+
+
+check("weights present", t_embed_weights_present)
+
 print()
 if failures:
     print(f"RESULT: FAIL ({len(failures)}): {', '.join(failures)}")
