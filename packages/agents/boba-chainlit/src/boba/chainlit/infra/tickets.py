@@ -163,7 +163,15 @@ class TicketArming:
 
         source = self._source(section)
         issuer = ServiceTicketIssuer(section.min_lifetime)
-        ticket = await issuer.issue_async(source, profile.service_name())
+        service = profile.service_name()
+        ticket = await issuer.issue_async(source, service)
+
+        logger.info(
+            "kerberos: call ticket for %s -> %s (source: %s)",
+            ticket.principal,
+            service,
+            section.trace(),
+        )
 
         if isinstance(profile, HttpProfile):
             auth = profile.auth.model_copy(update={"kerberos": ticket})

@@ -217,12 +217,31 @@ class KerberosDelegation:
             return ""
 
         if tgt > 0:
-            return "a forwarded TGT arrived while constrained delegation is configured"
+            # перечень билетов в причине: по нему видно, есть ли рядом evidence
+            arrived = ", ".join(KerberosDelegation.tickets(ccache))
+            return (
+                "a forwarded TGT arrived while constrained delegation is "
+                f"configured (tickets: {arrived})"
+            )
 
         if evidence == 0:
             return "no evidence ticket (acceptor credentials without a service TGT?)"
 
         return ""
+
+    @staticmethod
+    def tickets(ccache: str) -> list[str]:
+        """Имена сервисов в ccache: диагностика того, что прислал клиент."""
+        try:
+            context = krb5.init_context()
+            cache = krb5.cc_resolve(context, ccache.encode())
+            names = [
+                krb5.unparse_name_flags(context, cred.server).decode() for cred in cache
+            ]
+        except krb5.Krb5Error as exc:
+            return [f"unreadable ccache: {exc}"]
+
+        return [name for name in names if CcacheLifetime.CONFIG_MARK not in name]
 
     @staticmethod
     def _destroy(ccache: str) -> None:

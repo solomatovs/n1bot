@@ -37,6 +37,8 @@ class Stand(BaseModel):
     SECTION: ClassVar[str] = "site"
     NETBIOS_SEPARATOR: ClassVar[str] = "\\"
 
+    ldap_url: str = Field(description="Контроллер домена стенда, ldaps://…")
+    ldap_base_dn: str
     ldap_bind_user: str = Field(description="Второй пользователь стенда, DOMAIN\\user.")
     ldap_bind_password: SecretStr
 

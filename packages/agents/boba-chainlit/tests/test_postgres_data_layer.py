@@ -15,6 +15,7 @@ from boba.chainlit.data import data_layer as data_layer_module
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.errors import DataRejectedError
 from boba.chainlit.domain.keys import ObjectKey
+from boba.chainlit.domain.session import UserMetadataField
 
 pytestmark = pytest.mark.anyio
 
@@ -37,11 +38,41 @@ async def test_create_and_get_user(layer: PostgresDataLayer):
         raise AssertionError("fetched is not None")
     if fetched.id != created.id:
         raise AssertionError("fetched.id == created.id")
+
     if fetched.identifier != "alice":
         raise AssertionError('fetched.identifier == "alice"')
 
     if await layer.get_user("does-not-exist") is not None:
         raise AssertionError('await layer.get_user("does-not-exist") is None')
+
+
+async def test_create_user_keeps_the_sign_in_label_on_the_caller(
+    layer: PostgresDataLayer,
+) -> None:
+    """Метка входа не хранится в users, но и не пропадает у вызывающего.
+
+    Из этого же объекта выпускается JWT сессии: стерев метку, вход остался бы
+    без делегированных кредов, хотя тикет уже захвачен.
+    """
+    user = ChainlitUser(
+        identifier="krb-label",
+        metadata={
+            UserMetadataField.PROVIDER: "KerberosAuth",
+            UserMetadataField.PRINCIPAL: "user@EXAMPLE.COM",
+            UserMetadataField.LOGIN: "label-of-this-sign-in",
+            UserMetadataField.ROLES: ["read"],
+        },
+    )
+
+    created = await layer.create_user(user)
+    if created is None:
+        raise AssertionError("user must be created")
+
+    if user.metadata.get(UserMetadataField.LOGIN) != "label-of-this-sign-in":
+        raise AssertionError(f"label must survive persisting: {user.metadata}")
+
+    if UserMetadataField.LOGIN in created.metadata:
+        raise AssertionError(f"label must not reach the users row: {created.metadata}")
 
 
 async def test_update_thread_and_author(seeded: Seed):

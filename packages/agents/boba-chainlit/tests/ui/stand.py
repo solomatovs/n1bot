@@ -14,7 +14,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Mapping, MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -96,6 +96,9 @@ class StandConfig:
 
     auth: StandAuth = StandAuth.LOCAL
     """Набор провайдеров входа стенда."""
+
+    sso_roles: dict[str, list[str]] = field(default_factory=dict)
+    """Роли SSO-входа по принципалу: без них вход отклоняется как безролевой."""
 
     SANDBOXED_TOOLS: tuple[str, ...] = (
         "bash",
@@ -312,6 +315,8 @@ class StandConfig:
                     "krb5_config": "${site.krb_config}",
                 },
             }
+            if self.sso_roles:
+                doc["auth"]["kerberos"]["roles"] = {"principal": dict(self.sso_roles)}
 
         if self.auth.local:
             providers.append("${auth.local}")

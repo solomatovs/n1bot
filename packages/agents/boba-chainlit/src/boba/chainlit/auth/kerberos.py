@@ -372,6 +372,13 @@ class SpnegoMiddleware:
         headers[self._config.login_header.lower()] = login
         scope["headers"] = headers.raw
 
+        self._logger.info(
+            "kerberos: sign-in label passed to the app [%s=%d chars] [path=%s]",
+            self._config.login_header,
+            len(login),
+            path,
+        )
+
         return await self._app(scope, receive, send)
 
     async def _refreshed(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -843,6 +850,15 @@ class KerberosAuth(SsoAdmission):
 
         if login := headers.get(self._config.login_header):
             metadata[UserMetadataField.LOGIN] = login
+            return metadata
+
+        # без метки сессия останется без делегированных кредов: ищем, где потерялась
+        self._logger.warning(
+            "kerberos: sign-in of %s carries no label [%s]; own headers seen: %s",
+            principal,
+            self._config.login_header,
+            [name for name in headers if name.startswith(self._config.header.lower())],
+        )
 
         return metadata
 

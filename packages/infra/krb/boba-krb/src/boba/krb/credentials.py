@@ -703,6 +703,11 @@ class CcacheRegistry:
         """Ожидание повторного входа: заводится до просьбы, чтобы не проспать её."""
         return self._waiters.arm(login)
 
+    def logins(self) -> list[str]:
+        """Метки живых входов: нужны журналу, чтобы сверить их с меткой сессии."""
+        with self._lock:
+            return list(self._by_login)
+
     def of_login(self, login: str) -> DelegatedCredentials | None:
         with self._lock:
             return self._by_login.get(login)

@@ -138,9 +138,15 @@ class _AuthBase(BaseModel):
     REVEAL_CONTEXT: ClassVar[str] = "reveal_secrets"
     """Ключ обязан совпадать с SecretRevealing.REVEAL_CONTEXT из toolkit."""
 
+    method: str = Field(description="Способ; вариант сужает его до литерала.")
+
     def httpx_auth(self, service: str) -> httpx.Auth | None:
         """Аутентификатор httpx; service (HTTP@host) нужен только negotiate."""
         raise NotImplementedError
+
+    def trace(self) -> str:
+        """Строка журнала: способ, а у kerberos — ещё и чей билет."""
+        return f"auth={self.method}"
 
     @classmethod
     def _reveal(cls, value: SecretStr, info: SerializationInfo) -> str | None:
@@ -235,6 +241,10 @@ class NegotiateAuth(_AuthBase):
             "на каждом запросе."
         ),
     )
+
+    def trace(self) -> str:
+        """Строка журнала: negotiate плюс описание kerberos-кредов."""
+        return f"auth=negotiate {self.kerberos.trace()}"
 
     def httpx_auth(self, service: str) -> httpx.Auth:
         return self.httpx_auth_at(service, None)

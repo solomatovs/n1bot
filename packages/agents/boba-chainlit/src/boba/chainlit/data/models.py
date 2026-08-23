@@ -155,9 +155,10 @@ class User(Row):
 
     @classmethod
     def from_chainlit(cls, user: ChainlitUser) -> Self:
+        # копия metadata: строка правит своё поле, а не словарь вызывающего
         return cls(
             identifier=user.identifier,
-            meta=user.metadata,
+            meta=dict(user.metadata),
         )
 
     def to_persisted(self) -> PersistedUser:

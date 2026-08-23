@@ -77,11 +77,16 @@ class PostgresAuthBase(BaseModel):
 
     REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
 
+    method: str = Field(description="Способ; вариант сужает его до литерала.")
     user: str = Field(min_length=1, description="Роль postgres, под которой входим.")
 
     def libpq(self) -> dict[str, Any]:
         """Ключи connect() этого варианта; реализация обязана их перечислить."""
         raise NotImplementedError
+
+    def trace(self) -> str:
+        """Строка журнала: способ и роль, под которой входим."""
+        return f"auth={self.method} user={self.user}"
 
     @classmethod
     def _reveal(cls, value: SecretStr, info: SerializationInfo) -> str | None:

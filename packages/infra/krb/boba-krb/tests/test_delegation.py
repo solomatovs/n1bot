@@ -14,7 +14,7 @@ from pathlib import Path
 
 import krb5
 import pytest
-from gssapi import Credentials, Name, NameType, SecurityContext
+from gssapi import Credentials, Name, NameType, RequirementFlag, SecurityContext
 from stand_site import Stand
 
 from boba.krb import (
@@ -86,6 +86,36 @@ class Browser:
         target = Name(SERVICE_SPN, NameType.kerberos_principal)
         # без флагов делегирования: TGT сервису не форвардится
         initiator = SecurityContext(name=target, creds=creds, usage="initiate", flags=0)
+        return initiator.step()
+
+    @staticmethod
+    def delegating_ticket(tmp_path: Path) -> bytes:
+        """AP-REQ с делегированием: так ведёт себя браузер, которому его включили.
+
+        KDC помечает билет ok-as-delegate, и клиент форвардит сервису свой TGT
+        вместо evidence-тикета — режим constrained такие креды не принимает.
+        """
+        context = krb5.init_context()
+        user = krb5.parse_name_flags(context, USER_PRINCIPAL.encode())
+        options = krb5.get_init_creds_opt_alloc(context)
+        krb5.get_init_creds_opt_set_forwardable(options, True)
+        tgt = krb5.get_init_creds_password(
+            context, user, options, _user_password().encode()
+        )
+        ccache = f"FILE:{tmp_path / 'delegating-browser'}"
+        cache = krb5.cc_resolve(context, ccache.encode())
+        krb5.cc_initialize(context, cache, user)
+        krb5.cc_store_cred(context, cache, tgt)
+
+        creds = Credentials(usage="initiate", store={b"ccache": ccache.encode()})
+        target = Name(SERVICE_SPN, NameType.kerberos_principal)
+        initiator = SecurityContext(
+            name=target,
+            creds=creds,
+            usage="initiate",
+            flags=int(RequirementFlag.delegate_to_peer)
+            | int(RequirementFlag.mutual_authentication),
+        )
         return initiator.step()
 
 
@@ -177,6 +207,82 @@ class TestConstrained:
         )
         if "forwarded TGT" not in reason:
             raise AssertionError(f"TGT must be rejected: {reason!r}")
+
+
+class TestBrowserDelegationIsRefused:
+    """Браузер с включённым делегированием шлёт TGT: constrained его не берёт.
+
+    Так выглядит рабочая станция, которой когда-то включили делегирование под
+    forwarded-режим: KDC ставит билету ok-as-delegate, клиент форвардит TGT, и
+    evidence-тикета в кредах не оказывается вовсе.
+    """
+
+    def test_forwarded_tgt_arrives_instead_of_evidence(
+        self, tmp_path: Path, krb5_env: None
+    ) -> None:
+        """Проверка сути: делегируя, клиент отдаёт именно TGT."""
+        delegation = _constrained(tmp_path)
+        acceptor = SpnegoAcceptor(_accept(), delegation)
+
+        identity = acceptor.accept(Browser.delegating_ticket(tmp_path))
+        if identity.delegated is None:
+            raise AssertionError("делегирующий клиент обязан прислать креды")
+
+        ccache = f"FILE:{tmp_path / 'delegated'}"
+        identity.delegated.store(
+            store={b"ccache": ccache.encode()}, usage="initiate", overwrite=True
+        )
+
+        servers = [server for _, server in _servers(ccache)]
+        if not any(server.startswith("krbtgt/") for server in servers):
+            raise AssertionError(f"ожидался форварднутый TGT: {servers}")
+
+        evidence = [server for server in servers if not server.startswith("krbtgt/")]
+        if evidence:
+            raise AssertionError(f"evidence-тикета тут быть не может: {evidence}")
+
+    def test_constrained_login_refuses_such_credentials(
+        self, tmp_path: Path, krb5_env: None
+    ) -> None:
+        """Вход состоится, но делегирования у него нет: метка входа пустая."""
+        delegation = _constrained(tmp_path)
+        registry = CcacheRegistry(
+            mode=DelegationMode.CONSTRAINED, renew=False, krb5_config=str(KRB5_CONF)
+        )
+        acceptor = SpnegoAcceptor(_accept(), delegation)
+        identity = acceptor.accept(Browser.delegating_ticket(tmp_path))
+
+        capture = KerberosDelegation(registry, _accept(), delegation)
+        login = capture.on_success_authenticated(identity)
+
+        if login:
+            raise AssertionError("forwarded TGT не должен становиться входом")
+
+    def test_reason_names_the_forwarded_tgt(self, tmp_path: Path) -> None:
+        """Причина отказа называет ровно то, что случилось: пришёл TGT."""
+        reason = KerberosDelegation.mismatch(
+            _user_ccache(tmp_path), USER_PRINCIPAL, DelegationMode.CONSTRAINED
+        )
+
+        if "forwarded TGT" not in reason:
+            raise AssertionError(f"причина должна называть TGT: {reason!r}")
+
+
+def _user_ccache(tmp_path: Path) -> str:
+    """Ccache с одним лишь TGT пользователя: то же, что приносит делегирование."""
+    context = krb5.init_context()
+    user = krb5.parse_name_flags(context, USER_PRINCIPAL.encode())
+    options = krb5.get_init_creds_opt_alloc(context)
+    krb5.get_init_creds_opt_set_forwardable(options, True)
+    tgt = krb5.get_init_creds_password(
+        context, user, options, _user_password().encode()
+    )
+
+    ccache = f"FILE:{tmp_path / 'user-tgt'}"
+    cache = krb5.cc_resolve(context, ccache.encode())
+    krb5.cc_initialize(context, cache, user)
+    krb5.cc_store_cred(context, cache, tgt)
+    return ccache
 
 
 class TestForwarded:

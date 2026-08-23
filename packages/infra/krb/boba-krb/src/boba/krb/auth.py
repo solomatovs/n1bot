@@ -132,6 +132,7 @@ class KerberosAuthBase(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    method: str = Field(description="Способ; вариант сужает его до литерала.")
     service: str | None = Field(
         default=None,
         description=(
@@ -149,6 +150,18 @@ class KerberosAuthBase(BaseModel):
         """Принципал, от чьего имени идёт соединение; у делегирования его нет."""
         msg = f"{type(self).__name__}: principal is known only at call time"
         raise KerberosError(msg)
+
+    def trace(self) -> str:
+        """Строка журнала: способ и под кем идём, без секретов."""
+        try:
+            principal = self.source_principal()
+        except KerberosError:
+            return f"auth={self.method}"
+
+        if self.service is None:
+            return f"auth={self.method} principal={principal}"
+
+        return f"auth={self.method} principal={principal} service={self.service}"
 
 
 class KeytabAuth(KerberosAuthBase):
