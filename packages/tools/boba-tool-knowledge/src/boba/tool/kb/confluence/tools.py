@@ -245,10 +245,15 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
     )
 
     limits = GrepLimits(context=context, limit=limit, clip_chars=cfg.max_text_chars)
-    rows, note = TextGrep.matched_rows(text, compiled, limits, f"page_id={page_id}")
+    report = TextGrep.report(text, compiled, limits, f"page_id={page_id}")
 
-    table = TableResult(rows=rows, note=note, metadata={"page_id": page_id})
-    return pack_result(table)
+    artifact = TextResult(
+        text=report.render(),
+        language=report.LANG,
+        note=report.note,
+        metadata={"page_id": page_id},
+    )
+    return pack_result(artifact)
 
 
 @tool

@@ -1,4 +1,7 @@
-"""Grep по строкам текста: компиляция шаблона, контекст, обрезка, сводка.
+"""Grep по строкам текста: компиляция шаблона, контекст, обрезка, показ.
+
+Выдача собирается в GrepReport и рисуется в форме ripgrep: номер строки,
+`:` у совпадения, `-` у контекста, `--` между несмежными группами.
 
 Ошибки: своих не выпускает; битый regex деградирует в литеральный поиск.
 """
@@ -7,11 +10,11 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from collections.abc import Iterator
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, field
+from typing import ClassVar
 
-__all__ = ["TextGrep"]
+__all__ = ["GrepLimits", "GrepMatch", "GrepReport", "TextGrep"]
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,110 @@ class GrepLimits:
     context: int
     limit: int
     clip_chars: int
+
+
+@dataclass
+class GrepMatch:
+    """Одно совпадение: его строка и собранный вокруг контекст."""
+
+    line: int
+    content: str
+    before: list[str] = field(default_factory=list)
+    after: list[str] = field(default_factory=list)
+
+    NUMBER_WIDTH: ClassVar[int] = 6
+
+    @property
+    def first_line(self) -> int:
+        """Номер первой показанной строки группы."""
+        return self.line - len(self.before)
+
+    @property
+    def last_line(self) -> int:
+        """Номер последней показанной строки группы."""
+        return self.line + len(self.after)
+
+    def clipped(self, limit: int) -> GrepMatch:
+        before: list[str] = []
+        for line in self.before:
+            before.append(line[:limit])
+
+        after: list[str] = []
+        for line in self.after:
+            after.append(line[:limit])
+
+        return GrepMatch(
+            line=self.line,
+            content=self.content[:limit],
+            before=before,
+            after=after,
+        )
+
+    def numbered_lines(self) -> Iterator[tuple[int, str]]:
+        """Строки группы по порядку с их номерами: контекст, совпадение, контекст."""
+        number = self.first_line
+        for line in self.before:
+            yield number, line
+            number += 1
+
+        yield self.line, self.content
+
+        number = self.line + 1
+        for line in self.after:
+            yield number, line
+            number += 1
+
+    @classmethod
+    def render_line(cls, number: int, content: str, *, matched: bool) -> str:
+        marker = "-"
+        if matched:
+            marker = ":"
+
+        return f"{number:>{cls.NUMBER_WIDTH}}{marker} {content}"
+
+
+@dataclass(frozen=True)
+class GrepReport:
+    """Совпадения одного поиска и сводка о нём."""
+
+    matches: Sequence[GrepMatch]
+    note: str
+
+    SEPARATOR: ClassVar[str] = "--"
+
+    LANG: ClassVar[str] = "text"
+    """Язык markdown-блока показа: нумерованные строки не чужой формат."""
+
+    def render(self) -> str:
+        """Текст выдачи; группы через `--`, пересекающиеся склеиваются в одну.
+
+        Строка печатается один раз даже когда попала в контекст соседа, а
+        маркер `:` получают все совпавшие строки, а не только начавшие группу.
+        """
+        matched_numbers = self._matched_numbers()
+        blocks: list[str] = []
+        printed = 0
+
+        for match in self.matches:
+            if printed > 0 and match.first_line > printed + 1:
+                blocks.append(self.SEPARATOR)
+
+            for number, content in match.numbered_lines():
+                if number <= printed:
+                    continue
+
+                matched = number in matched_numbers
+                blocks.append(GrepMatch.render_line(number, content, matched=matched))
+                printed = number
+
+        return "\n".join(blocks)
+
+    def _matched_numbers(self) -> set[int]:
+        numbers: set[int] = set()
+        for match in self.matches:
+            numbers.add(match.line)
+
+        return numbers
 
 
 class TextGrep:
@@ -41,73 +148,53 @@ class TextGrep:
     @staticmethod
     def iter_matches(
         text: str, compiled: re.Pattern[str], *, context: int
-    ) -> Iterator[dict[str, Any]]:
+    ) -> Iterator[GrepMatch]:
         before: deque[str] = deque(maxlen=context if context > 0 else 0)
-        after_needed: list[dict[str, Any]] = []
+        after_needed: list[GrepMatch] = []
         for number, line in enumerate(text.splitlines(), start=1):
-            for row in after_needed:
-                if len(row["after"]) < context:
-                    row["after"].append(line)
-            ready: list[dict[str, Any]] = []
-            for row in after_needed:
-                if len(row["after"]) >= context:
-                    ready.append(row)
-            for row in ready:
-                after_needed.remove(row)
-                yield row
+            for match in after_needed:
+                if len(match.after) < context:
+                    match.after.append(line)
+            ready: list[GrepMatch] = []
+            for match in after_needed:
+                if len(match.after) >= context:
+                    ready.append(match)
+            for match in ready:
+                after_needed.remove(match)
+                yield match
             if compiled.search(line):
-                row = {
-                    "line": number,
-                    "content": line,
-                    "before": list(before),
-                    "after": [],
-                }
+                match = GrepMatch(line=number, content=line, before=list(before))
                 if context > 0:
-                    after_needed.append(row)
+                    after_needed.append(match)
                 else:
-                    yield row
+                    yield match
             before.append(line)
-        for row in after_needed:
-            yield row
-
-    @staticmethod
-    def clip_row(row: dict[str, Any], limit: int) -> dict[str, Any]:
-        before: list[str] = []
-        for line in row["before"]:
-            before.append(line[:limit])
-        after: list[str] = []
-        for line in row["after"]:
-            after.append(line[:limit])
-        return {
-            "line": row["line"],
-            "content": row["content"][:limit],
-            "before": before,
-            "after": after,
-        }
+        for match in after_needed:
+            yield match
 
     @classmethod
-    def matched_rows(
+    def report(
         cls,
         text: str,
         compiled: re.Pattern[str],
         limits: GrepLimits,
         source: str,
-    ) -> tuple[list[dict[str, Any]], str]:
-        """Совпадения таблицей под лимитом строк плюс note об источнике."""
-        rows: list[dict[str, Any]] = []
-        for row in cls.iter_matches(text, compiled, context=limits.context):
-            if len(rows) >= limits.limit:
+    ) -> GrepReport:
+        """Совпадения под лимитом строк плюс note об источнике."""
+        matches: list[GrepMatch] = []
+        for match in cls.iter_matches(text, compiled, context=limits.context):
+            if len(matches) >= limits.limit:
                 break
 
-            rows.append(cls.clip_row(row, limits.clip_chars))
+            matches.append(match.clipped(limits.clip_chars))
 
-        return rows, cls.note(source, rows, limit=limits.limit)
+        return GrepReport(matches=matches, note=cls.note(source, matches, limits.limit))
 
     @staticmethod
-    def note(source: str, rows: list[dict[str, Any]], *, limit: int) -> str:
-        if not rows:
+    def note(source: str, matches: Sequence[GrepMatch], limit: int) -> str:
+        if not matches:
             return f"{source}: no matches found"
-        parts = [source, f"matches: {len(rows)}"]
-        if len(rows) >= limit:
-            parts.append(f"showing first {len(rows)} (more found)")
+        parts = [source, f"matches: {len(matches)}"]
+        if len(matches) >= limit:
+            parts.append(f"showing first {len(matches)} (more found)")
         return "; ".join(parts)

@@ -469,6 +469,39 @@ class TestTextResultLanguage:
             raise AssertionError("render_for_llm(result) == текст дампа")
 
 
+class TestTextResultNote:
+    """Подпись источника под текстом: окно строк страницы, сводка грепа."""
+
+    def test_note_goes_under_the_block(self) -> None:
+        result = TextResult(text="<p>hi</p>", language="html", note="url=x; lines 1-1")
+
+        rendered = ToolResultMarkdown(result).render()
+
+        if rendered != "```html\n<p>hi</p>\n```\n\n_url=x; lines 1-1_":
+            raise AssertionError(f"подпись под блоком, получено {rendered!r}")
+
+    def test_empty_text_leaves_only_the_note(self) -> None:
+        """Греп без совпадений: пустой блок в ленте не рисуется."""
+        result = TextResult(text="", language="text", note="url=x: no matches found")
+
+        rendered = ToolResultMarkdown(result).render()
+
+        if rendered != "_url=x: no matches found_":
+            raise AssertionError(f"одна подпись, получено {rendered!r}")
+
+    def test_llm_gets_the_note_after_the_text(self) -> None:
+        result = TextResult(text="page", note="url=x; lines 1-1 of 9")
+
+        if render_for_llm(result) != "page\n\nurl=x; lines 1-1 of 9":
+            raise AssertionError("подпись уходит в LLM отдельным абзацем")
+
+    def test_llm_gets_only_the_note_when_text_is_empty(self) -> None:
+        result = TextResult(text="", note="url=x: no matches found")
+
+        if render_for_llm(result) != "url=x: no matches found":
+            raise AssertionError("пустой текст не даёт пустых абзацев")
+
+
 class TestMultiResult:
     """Набор итогов: команды одного запроса рисуются своими же рендерами."""
 

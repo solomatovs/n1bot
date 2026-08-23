@@ -81,10 +81,18 @@ class TextResult(ToolResultBase):
     Пусто — текст уже markdown и рисуется как есть; заданный язык уводит
     его в блок (дамп csv, лог, вывод чужого формата).
     """
+    note: str | None = None
+    """Footer-контекст под текстом: источник, окно строк, усечение."""
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
     def llm_text(self) -> str:
-        return self.text
+        if self.note is None:
+            return self.text
+
+        if not self.text.strip():
+            return self.note
+
+        return f"{self.text}\n\n{self.note}"
 
 
 class JsonResult(ToolResultBase):

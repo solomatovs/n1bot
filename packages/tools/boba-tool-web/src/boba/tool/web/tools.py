@@ -13,7 +13,8 @@ ResultTooLargeError — содержимое превысило max_result_chars
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, ClassVar, Final
 
@@ -25,9 +26,8 @@ from boba.tool.web.connection import UnknownHostError, WebConnection
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
-    JsonResult,
     ResultTooLargeError,
-    TableResult,
+    TextResult,
     ToolResult,
     pack_result,
 )
@@ -57,13 +57,57 @@ class WebGrepConfig(SecretRevealing, WebConnection):
     max_text_chars: int = Field(
         default=2000,
         ge=1,
-        description="Потолок длины content/before/after на match.",
+        description="Потолок длины строки grep-выдачи: совпадения и контекста.",
     )
     max_result_chars: int = Field(
         default=1_000_000,
         ge=1,
         description="Потолок суммарного объёма результата (символов).",
     )
+
+
+class PageFormat(StrEnum):
+    """Формат содержимого страницы; он же язык markdown-блока показа."""
+
+    MARKDOWN = "markdown"
+    HTML = "html"
+
+    @classmethod
+    def of(cls, *, as_markdown: bool) -> PageFormat:
+        if as_markdown:
+            return cls.MARKDOWN
+
+        return cls.HTML
+
+
+@dataclass(frozen=True)
+class PageWindow:
+    """Окно строк страницы: показанный кусок и его место в документе."""
+
+    url: str
+    offset: int
+    lines: Sequence[str]
+    total: int
+
+    @classmethod
+    def of(cls, url: str, page: str, offset: int, count: int) -> PageWindow:
+        lines = page.splitlines()
+        window = lines[offset : offset + count]
+
+        return cls(url=url, offset=offset, lines=window, total=len(lines))
+
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+    def note(self) -> str:
+        """Сводка окна: источник и место среза в документе."""
+        if not self.lines:
+            return f"url={self.url}; no lines at offset {self.offset} of {self.total}"
+
+        first = self.offset + 1
+        last = self.offset + len(self.lines)
+
+        return f"url={self.url}; lines {first}-{last} of {self.total}"
 
 
 class WebPage:
@@ -137,24 +181,22 @@ async def web_fetch_page(  # noqa: PLR0913
     cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Скачивает URL соединением connection_name (см. web_connection_list) и
-    возвращает окно строк; total_lines — для пагинации."""
+    возвращает окно строк; строка под текстом называет срез и общее число
+    строк — по ней листай страницу дальше."""
     profile = cfg.resolve_for(connection_name, url)
 
     page = await WebPage.load(
         url, profile, as_markdown=as_markdown, max_chars=cfg.max_result_chars
     )
 
-    lines = page.splitlines()
-    window = lines[line_offset : line_offset + line_count]
+    window = PageWindow.of(url, page, line_offset, line_count)
 
-    payload = {
-        "content": "\n".join(window),
-        "source_url": url,
-        "total_lines": len(lines),
-        "returned_lines": len(window),
-    }
-
-    artifact = JsonResult(payload=payload)
+    artifact = TextResult(
+        text=window.text(),
+        language=PageFormat.of(as_markdown=as_markdown),
+        note=window.note(),
+        metadata={"url": url},
+    )
     return pack_result(artifact)
 
 
@@ -205,10 +247,15 @@ async def web_grep_page(  # noqa: PLR0913
     )
 
     limits = GrepLimits(context=context, limit=limit, clip_chars=cfg.max_text_chars)
-    rows, note = TextGrep.matched_rows(text, compiled, limits, f"url={url}")
+    report = TextGrep.report(text, compiled, limits, f"url={url}")
 
-    table = TableResult(rows=rows, note=note, metadata={"url": url})
-    return pack_result(table)
+    artifact = TextResult(
+        text=report.render(),
+        language=report.LANG,
+        note=report.note,
+        metadata={"url": url},
+    )
+    return pack_result(artifact)
 
 
 EXPECTED: Mapping[type[Exception], WebErrorKind] = {

@@ -704,12 +704,18 @@ class TestWebTools:
             line_offset=0,
             line_count=20,
         )
-        if result.payload["total_lines"] <= 0:
-            raise AssertionError('result.payload["total_lines"] > 0')
-        if result.payload["returned_lines"] > 20:
-            raise AssertionError('result.payload["returned_lines"] <= 20')
-        if result.payload["source_url"] != whitelisted_url:
-            raise AssertionError('result.payload["source_url"] == whitelisted_url')
+        if not (isinstance(result, TextResult)):
+            raise AssertionError("isinstance(result, TextResult)")
+        if result.language != "markdown":
+            raise AssertionError('result.language == "markdown"')
+        if len(result.text.splitlines()) > 20:
+            raise AssertionError("окно не длиннее line_count")
+        if result.note is None:
+            raise AssertionError("result.note is not None")
+        if whitelisted_url not in result.note:
+            raise AssertionError("подпись называет источник")
+        if " of " not in result.note:
+            raise AssertionError("подпись называет общее число строк")
 
     async def test_grep_page(self, web_tools, whitelisted_url) -> None:
         result = await Call.ok(
@@ -719,12 +725,16 @@ class TestWebTools:
             pattern="Confluence",
             limit=3,
         )
-        if not (isinstance(result, TableResult)):
-            raise AssertionError("isinstance(result, TableResult)")
-        if not (result.rows):
-            raise AssertionError("result.rows")
-        if "Confluence" not in result.rows[0]["content"]:
-            raise AssertionError('"Confluence" in result.rows[0]["content"]')
+        if not (isinstance(result, TextResult)):
+            raise AssertionError("isinstance(result, TextResult)")
+        if "Confluence" not in result.text:
+            raise AssertionError('"Confluence" in result.text')
+        if ": " not in result.text:
+            raise AssertionError("строки совпадений помечены ':'")
+        if result.note is None:
+            raise AssertionError("result.note is not None")
+        if "matches:" not in result.note:
+            raise AssertionError("подпись считает совпадения")
 
     async def test_host_outside_whitelist(self, web_tools) -> None:
         """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""
@@ -789,8 +799,12 @@ class TestConfluenceTools:
             case_insensitive=True,
             limit=3,
         )
-        if not (isinstance(result, TableResult)):
-            raise AssertionError("isinstance(result, TableResult)")
+        if not (isinstance(result, TextResult)):
+            raise AssertionError("isinstance(result, TextResult)")
+        if result.note is None:
+            raise AssertionError("result.note is not None")
+        if confluence_page["page_id"] not in result.note:
+            raise AssertionError("подпись называет страницу")
 
     async def test_unknown_page_reports_error(self, confluence_tools) -> None:
         """Несуществующая страница — объявленный отказ с kind'ом инструмента."""
