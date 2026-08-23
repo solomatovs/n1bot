@@ -27,13 +27,14 @@ from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel, ConfigDict
-from zygote_stand import ProfileFields, SandboxStand
+from zygote_stand import ROOTFS_IMAGE, ProfileFields, SandboxStand
 
 from boba.cancellation import ToolStopped, TurnCancellation, turn_cancellation
 from boba.chainlit.data.storage import ImageStorageClient, StorageFactory
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox import SandboxProfile
 from boba.sandbox.cgroup import CgroupManager
+from boba.sandbox.profile import SandboxMount
 from boba.sandbox.zygote import (
     ZygotePolicy,
     ZygoteRegistry,
@@ -49,6 +50,9 @@ from boba.workspace.launcher import (
 )
 
 pytestmark = pytest.mark.load
+
+_IMAGES_MOUNT = SandboxMount.SETUP_IMAGES.value
+"""Каталог образов внутри песочницы: его несёт в cmdline fuse2fs вызова."""
 
 
 needs_fuse = pytest.mark.skipif(
@@ -336,7 +340,7 @@ class ResourceCensus(BaseModel):
     def capture(cls, root: Path, cgroup_base: str = "") -> ResourceCensus:
         return cls(
             host_mounts=cls._host_mounts(root),
-            fuse_daemons=ProcTable.matching(ProcName.FUSE2FS, str(root)),
+            fuse_daemons=ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT),
             children=cls._call_children(),
             stale_mounts=cls._stale_mounts(root),
             partial_copies=cls._partial_copies(root),
@@ -483,17 +487,9 @@ class ResourceCensus(BaseModel):
 class LoadStand:
     """Стенд нагрузки: образ на пользователя, профиль и caller'ы к нему."""
 
-    HOST_RO_BINDS: ClassVar[tuple[str, ...]] = (
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/lib64",
-        "/etc/alternatives",
-    )
     WORKSPACE: ClassVar[str] = "/workspace"
-    SIGNALS_MOUNT: ClassVar[str] = "/signals"
-    """rw-bind под метки старта: команда отмечается в нём уже после монтирования."""
+    SIGNALS_MOUNT: ClassVar[str] = "/srv"
+    """rw-bind под метки старта: /mnt отцепляется вместе с обвязкой образа."""
 
     TEMPLATE_BYTES: ClassVar[int] = 16 * 1024 * 1024
 
@@ -545,10 +541,6 @@ class LoadStand:
         return self.images_dir / f"{user_id}.ext4"
 
     def profile(self, **overrides: object) -> SandboxProfile:
-        image_ro, image_rw = SandboxStand.image_binds(
-            str(self._template), str(self.images_dir)
-        )
-
         fields: dict[str, object] = {
             "host": {
                 "mounting": {
@@ -565,34 +557,19 @@ class LoadStand:
                 "kill_grace_sec": 5,
                 "cgroup_base": "",
             },
-            "rootfs": {
-                "dir": "",
-            },
+            "rootfs": str(ROOTFS_IMAGE),
             "mounts": {
-                "ro": (
-                    *self.HOST_RO_BINDS,
-                    *SandboxStand.host_python_binds(),
-                    *image_ro,
-                ),
-                "rw": (f"{self.signals_dir}:{self.SIGNALS_MOUNT}", *image_rw),
-                "images": (),
+                "ro": SandboxStand.image_ro_binds(),
+                "rw": (f"{self.signals_dir}:{self.SIGNALS_MOUNT}",),
                 "workspace": {
                     "template": str(self._template),
-                    "images": str(self.images_dir),
-                    "mount": self.WORKSPACE,
+                    "mount": f"{self.images_dir}/{{user_id}}.ext4:{self.WORKSPACE}",
                 },
-                "image_template": "",
-                "tmpfs": ("/tmp:64M",),  # noqa: S108
-                "proc": "/proc",
-                "dev": "/dev",
-                "call_tmpfs": "/tmp",  # noqa: S108
-                "setup_ro": (),
-                "setup_rw": (),
+                "tmp": "64M",
             },
             "isolation": {
                 "network": False,
-                "env": {"PATH": SandboxStand.host_python_path()},
-                "max_processes": 256,
+                "env": SandboxStand.image_env(),
                 "reap_poll_sec": 0.05,
             },
             "limits": {
@@ -644,8 +621,7 @@ class LoadStand:
                 "mount_dir": "/tmp",  # noqa: S108
                 "workspace": {
                     "template": str(self._template),
-                    "images": str(self.images_dir),
-                    "mount": self.WORKSPACE,
+                    "mount": f"{self.images_dir}/{{user_id}}.ext4:{self.WORKSPACE}",
                 },
                 "op_timeout_sec": 120,
                 "mounting": {
@@ -678,7 +654,7 @@ class LoadStand:
         deadline = time.monotonic() + timeout_sec
 
         while time.monotonic() < deadline:
-            daemons = ProcTable.matching(ProcName.FUSE2FS, str(self._root))
+            daemons = ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT)
             if daemons:
                 return next(iter(daemons))
 
@@ -1006,7 +982,7 @@ class TestAbnormalTermination:
             future = pool.submit(self._report, stand.caller("bwrap"), command)
             stand.wait_for_signal(marker)
             pid = stand.wait_for_bwrap()
-            daemons = ProcTable.matching(ProcName.FUSE2FS, str(stand.root))
+            daemons = ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT)
             os.kill(pid, signal.SIGKILL)
             report = future.result(timeout=Waiting.APPEAR_SEC)
 
@@ -1067,7 +1043,7 @@ class TestAbnormalTermination:
         proc = child.start(stand.started_command(marker, self.LONG_COMMAND))
         try:
             stand.wait_for_signal(marker)
-            daemons = ProcTable.matching(ProcName.FUSE2FS, str(stand.root))
+            daemons = ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT)
             if not (daemons):
                 raise AssertionError("fuse2fs of the child call was not found")
             proc.kill()
@@ -1150,7 +1126,7 @@ class TestAbnormalTermination:
     @staticmethod
     def _kill_some_daemons(stand: LoadStand) -> None:
         """Половина живых демонов уходит по SIGKILL, остальные работают."""
-        daemons = sorted(ProcTable.matching(ProcName.FUSE2FS, str(stand.root)))
+        daemons = sorted(ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT))
 
         for pid in daemons[::2]:
             with contextlib.suppress(ProcessLookupError):
@@ -1378,7 +1354,6 @@ class TestGroupLimitsUnderLoad:
         stand.warm(
             cgroup_base=cgroup_base,
             group_pids_max=32,
-            max_processes=4096,
             timeout_sec=30,
         )
         before = stand.census(cgroup_base)
@@ -1386,7 +1361,6 @@ class TestGroupLimitsUnderLoad:
             "pids",
             cgroup_base=cgroup_base,
             group_pids_max=32,
-            max_processes=4096,
             timeout_sec=30,
         )
 

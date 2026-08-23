@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
-from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.toolkit.launcher import RowStream
 from boba.toolkit.result import AffectedSqlResult, ToolArtifact, render_for_llm
@@ -49,9 +49,14 @@ class TestSqlProfiles:
         ):
             fake_profiles().resolve("нет-такого")
 
-    def test_profiles_are_required(self) -> None:
-        with pytest.raises(ValidationError, match="no profiles configured"):
-            FakeProfiles.model_validate({"profiles": {}})
+    def test_empty_profiles_resolve_nothing(self) -> None:
+        """Whitelist подставляет приложение на вызов: пустой — штатное состояние."""
+        empty = FakeProfiles.model_validate({"profiles": {}})
+        if empty.targets():
+            raise AssertionError("empty whitelist must list no targets")
+
+        with pytest.raises(UnknownConnectionError, match="allowed=\\[\\]"):
+            empty.resolve("main")
 
     def test_plain_dump_keeps_the_secret_masked(self) -> None:
         cfg = fake_profiles()

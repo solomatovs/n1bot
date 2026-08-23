@@ -19,7 +19,6 @@ from boba.chainlit.agent.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
 from boba.chainlit.agent.toolrun.wrapping import ToolAsyncBody
-from boba.chainlit.infra.tickets import KerberosTickets
 from boba.chainlit.agent.tools.send_file import build_send_file_tool
 from boba.chainlit.canvas.diagram import (
     DiagramToolConfig,
@@ -28,6 +27,8 @@ from boba.chainlit.canvas.diagram import (
 from boba.chainlit.canvas.panel import ToolStreams
 from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
+from boba.chainlit.connections.store import ConnectionKind, ConnectionsConfig
+from boba.chainlit.connections.whitelist import ConnectionKeying
 from boba.chainlit.domain.keys import WorkspaceMount
 from boba.chainlit.domain.session import (
     current_chat_profile,
@@ -36,6 +37,13 @@ from boba.chainlit.domain.session import (
     current_user_roles,
 )
 from boba.chainlit.infra.config import ProfilesSection, RolesSection
+from boba.chainlit.infra.tickets import ServiceTickets
+from boba.chainlit.infra.user_connections import (
+    RegistryRef,
+    StoreRef,
+    UserConnections,
+    UserConnectionsSpec,
+)
 from boba.sandbox import (
     SandboxProfile,
     SandboxToolConfig,
@@ -87,6 +95,9 @@ class ToolPlugin:
     """Функции уровня модуля новой модели: обёртка запуска ставится на них."""
     modules: tuple[str, ...] = ()
     """Модули тел module_tools: их прогревает зигота секции."""
+    connections: UserConnectionsSpec | None = None
+    """Whitelist соединений секции собирается из таблицы на вызов; None — секция
+    соединений пользователя не держит."""
 
 
 class SandboxRequire(BaseModel):
@@ -244,7 +255,7 @@ def _sandbox_section(raw_config: DictConfig, name: str) -> SandboxProfile | None
     profile = sandbox.profile
 
     if profile.mounts.workspace is not None:
-        WorkspaceMount.configure(profile.mounts.workspace.mount)
+        WorkspaceMount.configure(profile.mounts.workspace.mount.target)
 
     if not has_bwrap(profile):
         msg = (
@@ -322,11 +333,15 @@ _PLUGINS: dict[str, ToolPlugin] = {
         section="pg",
         module_tools=_module_toolset(PG_TOOLS),
         modules=_modules_of(PG_TOOLS),
+        connections=UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME),
     ),
     "ch": ToolPlugin(
         section="ch",
         module_tools=_module_toolset(CH_TOOLS),
         modules=_modules_of(CH_TOOLS),
+        connections=UserConnectionsSpec(
+            ConnectionKind.CLICKHOUSE, ConnectionKeying.NAME
+        ),
     ),
     "kb": ToolPlugin(
         section="kb",
@@ -347,6 +362,7 @@ _PLUGINS: dict[str, ToolPlugin] = {
         section="web",
         module_tools=_module_toolset(WEB_TOOLS),
         modules=_modules_of(WEB_TOOLS),
+        connections=UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME),
     ),
 }
 
@@ -380,12 +396,14 @@ class ToolRegistry:
         return allowed
 
 
-def _module_tools(
+def _module_tools(  # noqa: PLR0913 — состав загрузки секции задаётся целиком
     plugin: ToolPlugin,
     meta: PluginMeta,
     profile: SandboxProfile,
     raw_config: DictConfig,
     zygote_policy: ZygotePolicy,
+    store_ref: StoreRef,
+    registry_ref: RegistryRef,
 ) -> list[BaseTool]:
     """Функции модуля новой модели: обёртка запуска + partial конфига.
 
@@ -408,8 +426,13 @@ def _module_tools(
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     resolve = _config_resolver(raw_config)
+    if plugin.connections is not None:
+        UserConnections.bind_all(
+            functions, store_ref, registry_ref, plugin.connections, resolve
+        )
+
+    ServiceTickets.bind_all(functions, resolve)
     InjectedConfig.bind_all(functions, resolve)
-    KerberosTickets.bind_all(functions, InjectedConfig.values_of(functions, resolve))
 
     return functions
 
@@ -480,6 +503,8 @@ def _plugin_tools(  # noqa: PLR0913 — состав загрузки секци
     profile: SandboxProfile | None,
     raw_config: DictConfig,
     zygote_policy: ZygotePolicy,
+    store_ref: StoreRef,
+    registry_ref: RegistryRef,
 ) -> list[BaseTool]:
     """Инструменты плагина: фабричные старого пути плюс функции модуля."""
     cfg: ConfigT = None
@@ -492,7 +517,11 @@ def _plugin_tools(  # noqa: PLR0913 — состав загрузки секци
     launchers = _section_launchers(plugin, profile, zygote_policy, raw_config)
     built = _enabled_tools(plugin, cfg, launchers, meta)
 
-    built.extend(_module_tools(plugin, meta, profile, raw_config, zygote_policy))
+    built.extend(
+        _module_tools(
+            plugin, meta, profile, raw_config, zygote_policy, store_ref, registry_ref
+        )
+    )
     return built
 
 
@@ -533,7 +562,22 @@ def _access_of(raw_config: DictConfig, tools: Sequence[BaseTool]) -> ToolAccess:
     return ToolAccess(known, roles, profiles)
 
 
-def load_tools(raw_config: DictConfig) -> ToolRegistry:
+def _require_connections(raw_config: DictConfig, name: str) -> None:
+    """Секция с соединениями пользователя работает только при [connections]."""
+    cfg = bind(raw_config, "connections", ConnectionsConfig)
+    if cfg.enable:
+        return
+
+    msg = (
+        f"[tool.{name}] takes its connections from the connections table: "
+        "set [connections] enable = true"
+    )
+    raise RuntimeError(msg)
+
+
+def load_tools(
+    raw_config: DictConfig, store_ref: StoreRef, registry_ref: RegistryRef
+) -> ToolRegistry:
     zygote_policy = bind(raw_config, "sandbox", SandboxRequire).zygote
 
     tools: list[BaseTool] = []
@@ -542,8 +586,20 @@ def load_tools(raw_config: DictConfig) -> ToolRegistry:
         if not meta.enable:
             continue
 
+        if plugin.connections is not None:
+            _require_connections(raw_config, name)
+
         profile = _plugin_sandbox(name, plugin, raw_config)
-        built = _plugin_tools(name, plugin, meta, profile, raw_config, zygote_policy)
+        built = _plugin_tools(
+            name,
+            plugin,
+            meta,
+            profile,
+            raw_config,
+            zygote_policy,
+            store_ref,
+            registry_ref,
+        )
         tools.extend(built)
 
         # живой вывод есть только у процессов песочницы: кнопка потока

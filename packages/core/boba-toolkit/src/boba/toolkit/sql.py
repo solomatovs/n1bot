@@ -13,9 +13,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Generic, Self, TypeVar
+from typing import Annotated, Any, ClassVar, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.launcher import RowStream
 from boba.toolkit.result import ResultTooLargeError, TableResult
@@ -113,8 +113,16 @@ class SqlProfiles(BaseModel, Generic[TConn]):
     profiles: dict[str, TConn] = Field(
         default_factory=dict,
         description=(
-            "dict[connection_name, профиль соединения ссылкой]. "
-            "Ключ — значение tool-arg `connection_name`, по нему LLM выбирает БД."
+            "dict[connection_name, профиль соединения]. Ключ — значение tool-arg "
+            "`connection_name`, по нему LLM выбирает БД. Приложение собирает "
+            "whitelist из соединений пользователя на каждый вызов."
+        ),
+    )
+    names: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Имена соединений, доступных пользователю, без профилей: видны в "
+            "list_targets, а профиль приезжает только у выбранного соединения."
         ),
     )
     max_rows: int = Field(
@@ -131,19 +139,10 @@ class SqlProfiles(BaseModel, Generic[TConn]):
         ),
     )
 
-    @model_validator(mode="after")
-    def _validate(self) -> Self:
-        if not self.profiles:
-            section = type(self).SECTION
-            msg = (
-                f"{section}: no profiles configured. Reference one: "
-                f'[{section}.profiles] <name> = "${{<db>.<name>}}".'
-            )
-            raise ValueError(msg)
-        return self
-
     def targets(self) -> list[str]:
-        return sorted(self.profiles)
+        known = set(self.names)
+        known.update(self.profiles)
+        return sorted(known)
 
     def targets_table(self) -> TableResult:
         """Выдача list_targets: строка на каждое имя подключения."""

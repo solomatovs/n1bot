@@ -12,7 +12,20 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import ClassVar
 
-__all__ = ["FailureText"]
+__all__ = ["FailureText", "ToolRefusalError"]
+
+
+class ToolRefusalError(Exception):
+    """Отказ выполнения: текст готов для пользователя и LLM, причина не нужна.
+
+    Отказ — не сбой: инструмент не начал работу, потому что состояние сессии
+    или конфигурации этого не позволяет. Показывать к такому тексту цепочку
+    технических причин незачем — она только мешает и человеку, и модели.
+    """
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class FailureText:
@@ -32,7 +45,13 @@ class FailureText:
 
     @classmethod
     def of(cls, error: BaseException) -> str:
-        """Строка сбоя целиком: `Type: message <- Cause: message`."""
+        """Строка сбоя целиком: `Type: message <- Cause: message`.
+
+        У отказа цепочки нет: его текст и есть объяснение.
+        """
+        if isinstance(error, ToolRefusalError):
+            return str(error)
+
         links: list[str] = []
         for link in cls._chain(error):
             links.append(cls._one(link))

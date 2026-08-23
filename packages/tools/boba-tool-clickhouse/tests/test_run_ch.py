@@ -10,6 +10,7 @@ from typing import ClassVar
 
 import pytest
 
+from boba.db.clickhouse import ClickHouseConfig
 from boba.settings import bind
 from boba.tool.ch.tools import ChToolConfig, ch_list_tables, ch_query
 from boba.toolkit.entry import ToolMain
@@ -27,7 +28,10 @@ class RunArgs:
 
 @pytest.fixture(scope="module")
 def ch_cfg(raw_config) -> ChToolConfig:
-    return bind(raw_config, path="tool.ch", model=ChToolConfig)
+    """Лимиты из [tool.ch], whitelist — сервисный [clickhouse] под именем main."""
+    limits = bind(raw_config, path="tool.ch", model=ChToolConfig)
+    service = bind(raw_config, path="clickhouse", model=ClickHouseConfig)
+    return limits.model_copy(update={"profiles": {RunArgs.CONNECTION: service}})
 
 
 async def test_run_ch_query(ch_cfg: ChToolConfig) -> None:

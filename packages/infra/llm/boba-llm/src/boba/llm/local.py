@@ -614,7 +614,7 @@ class LocalChatProvider(ChatProvider):
         def run() -> None:
             try:
                 self._runtime.run(prompt, spec, on_piece, stop.is_set)
-            except BaseException as exc:  # noqa: BLE001 — переезд в loop
+            except BaseException as exc:
                 asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()
                 return
 

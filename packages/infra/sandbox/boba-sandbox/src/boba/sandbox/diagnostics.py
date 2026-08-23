@@ -130,20 +130,12 @@ class SandboxDiagnostics:
     def _processes(cls, result: RunResult, profile: SandboxProfile) -> str:
         if not cls._matched(result.stderr, cls.PROCESS_MARKERS):
             return ""
-        limits: list[str] = []
-        if profile.isolation.max_processes is not None:
-            limits.append(
-                f"max_processes={profile.isolation.max_processes} for the section"
-            )
-
-        if profile.limits.group_pids_max is not None:
-            limits.append(f"group_pids_max={profile.limits.group_pids_max} for the run")
-
-        if not limits:
+        if profile.limits.group_pids_max is None:
             return ""
 
         return (
-            f"Process limit reached: {' or '.join(limits)}. "
+            f"Process limit reached: group_pids_max="
+            f"{profile.limits.group_pids_max} for the run. "
             f"Start fewer parallel processes and pipelines."
         )
 

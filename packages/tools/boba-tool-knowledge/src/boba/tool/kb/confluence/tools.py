@@ -74,7 +74,7 @@ class ConfluenceHttp:
                 timeout=profile.timeout_sec,
                 verify=profile.ssl_verify,
                 follow_redirects=True,
-                auth=profile.auth.httpx_auth(),
+                auth=profile.httpx_auth(),
             ) as client:
                 response = await client.get(url)
                 response.raise_for_status()

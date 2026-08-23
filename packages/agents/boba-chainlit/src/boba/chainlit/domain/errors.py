@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from boba.toolkit.failure import FailureText
+from boba.toolkit.failure import FailureText, ToolRefusalError
 
 __all__ = [
     "AuthenticationError",
@@ -182,12 +182,8 @@ class AgentError(InternalServiceError):
     "Сломался сам граф/модель (не провайдер), частный случай InternalServiceError"
 
 
-class RefusalError(Exception):
-    """Отказ операции с классификацией kind; текст готов для пользователя и LLM."""
-
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
+class RefusalError(ToolRefusalError):
+    """Отказ операции приложения; текст готов для пользователя и LLM."""
 
 
 @dataclass(frozen=True)

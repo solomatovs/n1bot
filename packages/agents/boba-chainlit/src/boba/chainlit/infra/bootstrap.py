@@ -234,13 +234,19 @@ def _use_canvas_viewers() -> None:
     from boba.chainlit.infra.thread_room import CanvasRoomTransport  # noqa: PLC0415
 
     CanvasWatch.configure(CanvasRoomTransport())
-    load_tools(providers.get_raw_config())
+    load_tools(
+        providers.get_raw_config(),
+        providers.connection_store_ref,
+        providers.ccache_registry_ref,
+    )
 
 
 def _use_auth(config: AppConfig, container: Container) -> None:
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    ChainlitAuthInstaller(config.chainlit.url_prefix, config.auth).install(chainlit_app)
+    installer = ChainlitAuthInstaller(config.chainlit.url_prefix, config.auth)
+    kerberos = installer.install(chainlit_app)
+    container.provide(providers.kerberos_auth, kerberos)
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:

@@ -26,9 +26,16 @@ from playwright.sync_api import (
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
+from boba.chainlit.connections import (
+    ConnectionsConfig,
+    ConnectionStore,
+    GrantTarget,
+)
 from boba.chainlit.infra.config import AppConfig
+from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.settings import bind, build_app_config
+from boba.transport.http import HttpProfile
 from ui.chat_page import ChatPage
 from ui.fake_llm import serve
 from ui.socket_log import SocketLog
@@ -149,6 +156,7 @@ class StandDatabase:
         built = build_app_config(config_path=StandPaths.BASE_CONFIG.under(REPO_ROOT))
         app_config = bind(built, path="app", model=AppConfig)
 
+        self._built = built
         pool = app_config.data_layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._postgres = app_config.data_layer.postgres.model_copy(
             update={"dbname": name, "pool": pool}
@@ -186,6 +194,56 @@ class StandDatabase:
             raise RuntimeError(f"user {identifier} is not stored")
 
         return dict(row[0])
+
+    def seed_connections(self, llm_port: int) -> None:
+        """Соединения инструментов стенда: сервисные pg/ch под именем main и
+        web-профиль фейкового сервера, выданные всем ролям стенда.
+
+        Таблица чистится перед посевом: база стенда переживает прогоны.
+        Роли в таблице появляются на старте приложения — сеять после него.
+        """
+        self._run(self._seed_connections(llm_port))
+
+    async def _seed_connections(self, llm_port: int) -> None:
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        clickhouse = bind(self._built, path="clickhouse", model=ClickHouseConfig)
+        web = HttpProfile(base_url=StandUrl.of(llm_port), ssl_verify=False)
+
+        pool = AsyncPostgresPool(self._postgres)
+        await pool.open()
+        try:
+            store = ConnectionStore(connections, pool)
+
+            # строки прошлых прогонов могут не проходить нынешний валидатор
+            # профиля, поэтому чистятся мимо стора
+            async with pool.cursor() as cur:
+                await cur.execute(
+                    sql.SQL("delete from {}").format(
+                        sql.Identifier(connections.db_schema, connections.grants_table)
+                    )
+                )
+                await cur.execute(
+                    sql.SQL("delete from {}").format(
+                        sql.Identifier(connections.db_schema, connections.table)
+                    )
+                )
+
+            roles = await store.roles()
+            targets: list[GrantTarget] = []
+            for role_names in StandConfig.STAND_ROLES.values():
+                for role in role_names:
+                    targets.append(GrantTarget.role(roles[role]))
+
+            rows = [
+                await store.add("main", self._postgres),
+                await store.add("main", clickhouse),
+                await store.add("stand", web),
+            ]
+            for connection_id in rows:
+                for target in targets:
+                    await store.grant(connection_id, target)
+        finally:
+            await pool.close()
 
     async def _execute(
         self,

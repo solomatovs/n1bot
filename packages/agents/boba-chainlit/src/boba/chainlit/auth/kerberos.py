@@ -58,8 +58,10 @@ from boba.krb import (
     AcceptConfig,
     CcacheRegistry,
     CredentialsExpiredError,
-    DelegationConfig,
+    Delegation,
+    DelegationMode,
     DelegationNotPermittedError,
+    ForwardedDelegation,
     InvalidTokenError,
     KerberosDelegation,
     KerberosError,
@@ -164,9 +166,11 @@ class KerberosAuthConfig(BaseModel):
         default="X-Remote-User",
         description="Заголовок, куда кладётся принципал для header_auth_callback.",
     )
-    delegation: DelegationConfig = Field(
-        default_factory=DelegationConfig,
-        description="Параметры ccache для unconstrained режима делегирования",
+    delegation: Delegation = Field(
+        description=(
+            "Режим делегирования: forwarded (неограниченное, TGT от браузера) "
+            "или constrained (S4U2Proxy по msDS-AllowedToDelegateTo)."
+        ),
     )
     roles: KerberosRolesConfig | None = None
     ldap_roles: KerberosRolesInLdapConfig | None = None
@@ -182,6 +186,11 @@ class KerberosAuthConfig(BaseModel):
     def sids_header(self) -> str:
         "Заголовок с SID-ами групп из PAC; ставит SpnegoMiddleware."
         return f"{self.header}-Sids"
+
+    @property
+    def login_header(self) -> str:
+        "Заголовок с меткой SSO-входа, владеющего делегированным тикетом."
+        return f"{self.header}-Login"
 
 
 class KerberosErrorToDomain:
@@ -335,14 +344,16 @@ class SpnegoMiddleware:
             client,
         )
 
-        self._delegation.on_success_authenticated(identity)
+        login = self._delegation.on_success_authenticated(identity)
 
         header = self._config.header.lower()
         headers[header] = identity.principal
-        # заголовок с SID-ами перетираем всегда — клиентское значение не пройдёт
+        # заголовки с SID-ами и меткой входа перетираем всегда —
+        # клиентское значение не пройдёт
         headers[self._config.sids_header.lower()] = SidsHeader.render(
             identity.group_sids
         )
+        headers[self._config.login_header.lower()] = login
         scope["headers"] = headers.raw
 
         return await self._app(scope, receive, send)
@@ -494,8 +505,12 @@ class KerberosAuth:
         self._urls = SsoUrls.of(url_prefix, config.sso_path)
         self._provider = "kerberos"
         self._ad = ADDirectory
-        self.acceptor = SpnegoAcceptor(config.accept)
-        self.registry = CcacheRegistry(renew=config.delegation.renew)
+        self.acceptor = SpnegoAcceptor(config.accept, config.delegation)
+        self.registry = CcacheRegistry(
+            mode=DelegationMode(config.delegation.mode),
+            renew=self._renewing(config.delegation),
+            krb5_config=config.delegation.krb5_config,
+        )
         self.delegation = KerberosDelegation(
             registry=self.registry,
             config=config.accept,
@@ -527,6 +542,14 @@ class KerberosAuth:
 
         if ldap_roles := self._config.ldap_roles:
             self._kerberos_roles_in_ldap = KerberosRolesInLdapProvider(ldap_roles)
+
+    @staticmethod
+    def _renewing(delegation: Delegation) -> bool:
+        """Продление есть только у форвардного TGT."""
+        if isinstance(delegation, ForwardedDelegation):
+            return delegation.renew
+
+        return False
 
     @staticmethod
     def _username_from_principal(
@@ -610,9 +633,7 @@ class KerberosAuth:
         if not principal:
             return None
 
-        metadata: dict[str, Any] = {
-            UserMetadataField.PROVIDER: KerberosAuth.__name__,
-        }
+        metadata = self._sso_metadata(headers, principal)
 
         roles: list[str] = []
         excluded = False
@@ -655,6 +676,18 @@ class KerberosAuth:
         )
 
         return cl.User(identifier=username, metadata=metadata)
+
+    def _sso_metadata(self, headers: Headers, principal: str) -> dict[str, Any]:
+        """Metadata входа: провайдер, принципал и метка входа с тикетом."""
+        metadata: dict[str, Any] = {
+            UserMetadataField.PROVIDER: KerberosAuth.__name__,
+            UserMetadataField.PRINCIPAL: principal,
+        }
+
+        if login := headers.get(self._config.login_header):
+            metadata[UserMetadataField.LOGIN] = login
+
+        return metadata
 
     def _sid_mapping(self, headers: Headers) -> tuple[list[str], bool]:
         "Роли и исключение по SID группам из PAC; заголовок ставит middleware."

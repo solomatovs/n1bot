@@ -49,10 +49,22 @@ def chainlit_context() -> None:
     "механизм остановки не зависит от сессии chainlit"
 
 
-_HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
-
-_VENV = Path(__file__).resolve().parents[4] / ".venv"
+_SANDBOX = Path(__file__).resolve().parents[4] / "build" / "src" / "sandbox"
+_ROOTFS_IMAGE = _SANDBOX / "rootfs.ext4"
+_SITE_PACKAGES = "/usr/local/lib/python3.11/site-packages"
 _PACKAGES = Path(__file__).resolve().parents[3]
+
+_SRC_PACKAGES = ("core/boba-cancellation", "core/boba-toolkit")
+"""Пакеты, чей код нужен зиготе: их src приезжает биндом в /usr/src."""
+
+
+def _python_path() -> str:
+    parts: list[str] = []
+    for name in _SRC_PACKAGES:
+        parts.append(f"/usr/src/{name}/src")
+
+    return os.pathsep.join(parts)
+
 
 _ZYGOTE = ZygotePolicy(
     start_timeout_sec=60.0,
@@ -80,28 +92,23 @@ _PROFILE_RAW: dict[str, object] = {
         "kill_grace_sec": 5,
         "cgroup_base": "",
     },
-    "rootfs": {
-        "dir": "",
-    },
+    "rootfs": str(_ROOTFS_IMAGE),
     "mounts": {
-        "ro": (*_HOST_RO_BINDS, str(_VENV), str(_PACKAGES)),
+        "ro": (
+            f"{_SANDBOX / 'third' / 'python'}:/usr/local",
+            f"{_SANDBOX / 'site'}:{_SITE_PACKAGES}",
+            f"{_PACKAGES}:/usr/src",
+        ),
         "rw": (),
-        "images": (),
-        "image_template": "",
-        "tmpfs": ("/tmp:16M",),  # noqa: S108
-        "proc": "/proc",
-        "dev": "/dev",
-        "call_tmpfs": "/tmp",  # noqa: S108
-        "setup_ro": (),
-        "setup_rw": (),
+        "tmp": "16M",  # noqa: S108
     },
     "isolation": {
         "network": False,
         "env": {
-            "PATH": f"{_VENV}/bin:/usr/bin:/bin",
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "PYTHONPATH": _python_path(),
             "HOME": "/tmp",  # noqa: S108
         },
-        "max_processes": 64,
         "reap_poll_sec": 0.05,
     },
     "limits": {
@@ -120,7 +127,7 @@ _PROFILE_RAW: dict[str, object] = {
 
 
 def _sandbox_config() -> SandboxToolConfig:
-    """Минимальный профиль без образа: нужен лишь долгоживущий процесс."""
+    """Минимальный профиль: нужен лишь долгоживущий процесс в песочнице."""
     profile = SandboxProfile.model_validate(_PROFILE_RAW)
 
     return SandboxToolConfig(profile=profile)

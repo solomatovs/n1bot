@@ -40,7 +40,7 @@ from boba.cancellation import current_cancellation
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
-from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.profile import SandboxLayout, SandboxMount, SandboxProfile
 from boba.sandbox.runner import (
     DeathReport,
     FailureLog,
@@ -922,79 +922,45 @@ def _kill_quietly(pid: int) -> None:
 
 
 class ZygoteMounts:
-    """Пути образов, шаблона и fuse2fs внутри зиготы — по биндам профиля.
-
-    Точек монтирования компонент не выдумывает: всё, что ребёнок должен
-    видеть, объявлено биндами профиля, а хостовый путь переводится внутрь
-    через них. Нет покрывающего бинда — отказ с именем пути.
-    """
+    """Пути обвязки образа внутри зиготы: точки фиксированы SandboxLayout."""
 
     def __init__(self, profile: SandboxProfile) -> None:
         self._profile = profile
 
     def check(self) -> None:
-        """Предпосылки монтирования образов: объявлены биндами и существуют."""
-        self.fuse2fs_dir()
-
-        for spec in self._profile.mounts.images:
-            self.template(self._profile.mounts.image_template)
-            self.image(spec.host)
-            self._check_directory(spec.host)
+        """Предпосылки монтирования образов: бинарь есть, каталог образов есть."""
+        self._profile.host.binaries.resolve(SandboxBinary.FUSE2FS)
 
         workspace = self._profile.mounts.workspace
         if workspace is None:
             return
 
-        self.template(workspace.template)
-        self._inside(workspace.images, "workspace images directory")
-        self._check_directory(os.path.join(workspace.images, "probe"))
+        self._check_directory(workspace.images_dir())
 
-    def template(self, host: str) -> str:
-        return self._inside(host, "image template")
+    def template(self) -> str:
+        """Эталон образа внутри песочницы."""
+        return SandboxMount.SETUP_TEMPLATE.value
 
     def fuse2fs_dir(self) -> str:
-        fuse2fs = self._profile.host.binaries.resolve(SandboxBinary.FUSE2FS)
-        return os.path.dirname(self._inside(fuse2fs, "fuse2fs binary"))
+        return os.path.dirname(SandboxMount.SETUP_FUSE2FS.value)
 
     def image(self, host: str) -> str:
-        return self._inside(host, "mounts.images entry")
+        """Образ пользователя внутри песочницы по его хостовому пути."""
+        return SandboxLayout.image_inside(host)
 
     def staging(self) -> tuple[str, ...]:
-        """Что исполнитель отцепит после монтирования: обвязка setup_* профиля.
+        """Что исполнитель отцепит после монтирования: точки обвязки.
 
-        Список код не выводит сам — его целиком объявляет профиль: шаблон
-        образа, бинарь fuse2fs и каталог образов пользователей нужны только
-        ради монтирования, и телу инструмента они не видны.
+        Шаблон образа, бинарь fuse2fs и каталог образов пользователей нужны
+        только ради монтирования, и телу инструмента они не видны.
         """
-        mounts = self._profile.mounts
+        if self._profile.mounts.workspace is None:
+            return ()
 
-        paths: list[str] = []
-        for spec in (*mounts.setup_ro, *mounts.setup_rw):
-            if spec.target in paths:
-                continue
-
-            paths.append(spec.target)
-
-        return tuple(paths)
-
-    def _inside(self, host: str, what: str) -> str:
-        if not host:
-            msg = f"zygote profile mounts images, but {what} is empty"
-            raise ZygoteStartError(msg)
-
-        inside = self._profile.inside(host)
-        if inside:
-            return inside
-
-        msg = (
-            f"zygote: {what} {host!r} is not reachable inside the sandbox: "
-            f"declare a bind that covers it in mounts.setup_ro/setup_rw"
-        )
-        raise ZygoteStartError(msg)
+        return (SandboxMount.SETUP.value,)
 
     @staticmethod
-    def _check_directory(image_host: str) -> None:
-        directory = os.path.dirname(image_host)
+    def _check_directory(directory: str) -> None:
         if "{" in directory:
             return
 
@@ -1027,20 +993,23 @@ class ZygoteSpawner:
         policy: ZygotePolicy,
     ) -> None:
         self._policy = policy
-        # rw-образы рендерятся на вызов и монтируются ребёнком: зиготе нужен
-        # только их каталог на запись; остальной профиль переменных не имеет
-        bare = profile.model_copy(update={"rw_images": ()})
+        # образ workspace рендерится на вызов и монтируется ребёнком: зиготе
+        # нужен только его каталог; остальной профиль переменных не имеет
+        without_workspace = profile.mounts.model_copy(update={"workspace": None})
+        bare = profile.model_copy(update={"mounts": without_workspace})
         try:
             bare = bare.render({})
         except RuntimeError as exc:
             msg = f"zygote profile has per-call path variables: {exc}"
             raise ZygoteStartError(msg) from exc
 
-        self._call_mounts = self.call_mounts(bare)
-        self._with_images = (
-            bool(profile.mounts.images) or profile.mounts.workspace is not None
+        restored = bare.mounts.model_copy(
+            update={"workspace": profile.mounts.workspace}
         )
-        self._mounts_rootfs = bool(bare.rootfs.image)
+        bare = bare.model_copy(update={"mounts": restored})
+
+        self._call_mounts = self.call_mounts(bare)
+        self._with_images = profile.mounts.workspace is not None
         self._profile = bare
         self._modules = tuple(modules)
 
@@ -1048,30 +1017,14 @@ class ZygoteSpawner:
             ZygoteMounts(profile).check()
 
     def root_label(self) -> str:
-        """Чем секции служит корень: образом или готовым каталогом."""
-        if self._profile.rootfs.image:
-            return f"image {self._profile.rootfs.image}"
-
-        if self._profile.rootfs.dir:
-            return f"dir {self._profile.rootfs.dir}"
-
-        return "host"
-
-    @property
-    def mounts_rootfs(self) -> bool:
-        """Корень образом: зигота стартует цепочкой лаунчера, а не прямым bwrap."""
-        return self._mounts_rootfs
+        """Чем секции служит корень."""
+        return f"image {self._profile.rootfs}"
 
     def spawn(self, fd: int) -> subprocess.Popen[bytes]:
         env = dict(self._profile.isolation.env)
 
-        max_processes = self._profile.isolation.max_processes
-        if max_processes is None:
-            max_processes = 0
-
         args = ZygoteArgs(
             socket_fd=fd,
-            max_processes=max_processes,
             reap_poll_sec=self._profile.isolation.reap_poll_sec,
             log_level=self.log_level(),
             modules=self._modules,
@@ -1115,30 +1068,25 @@ class ZygoteSpawner:
         os.sched_setaffinity(pid, set(available[:cores]))
 
     def _argv(self, command: list[str], env: Mapping[str, str], fd: int) -> list[str]:
-        fuse = self._with_images or self._mounts_rootfs
-
-        if not self._mounts_rootfs:
-            return build_zygote_argv(self._profile, command, env=env, fuse=fuse)
-
         require_fuse(self._profile.host.binaries)
 
         # вложенный bwrap стартует уже смонтированным корнем, а не образом
-        mounted = self._profile.rootfs.model_copy(
-            update={"dir": self._profile.rootfs.mount, "image": ""}
+        inner_argv = build_zygote_argv(
+            self._profile, command, env=env, root=SandboxMount.ROOTFS.value
         )
-        inner = self._profile.model_copy(update={"rootfs": mounted})
-        inner_argv = build_zygote_argv(inner, command, env=env, fuse=fuse, nested=True)
 
         # внешний bwrap держит / хоста read-only: пути записи он обязан знать,
         # иначе вложенный bind не сделает их записываемыми
+        setup = self._profile.setup_binds()
+
         rw_paths: list[str] = []
-        for spec in (*self._profile.mounts.rw, *self._profile.mounts.setup_rw):
+        for spec in (*self._profile.mounts.rw, *setup.rw):
             rw_paths.append(spec.host)
 
         return build_chain_argv(
             images=(),
-            ro_images=((self._profile.rootfs.image, self._profile.rootfs.mount),),
-            template=self._profile.mounts.image_template,
+            ro_images=((self._profile.rootfs, SandboxMount.ROOTFS.value),),
+            template="",
             op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
             python_bin=sys.executable,
             options=self._profile.host.mounting.to_options(),
@@ -1152,23 +1100,12 @@ class ZygoteSpawner:
 
     @staticmethod
     def call_mounts(profile: SandboxProfile) -> CallMounts:
-        """Приватные точки вызова по профилю: procfs и tmpfs с её размером."""
-        if not profile.mounts.call_tmpfs:
-            return CallMounts(proc=profile.mounts.proc)
-
-        for spec in profile.mounts.tmpfs:
-            if spec.path == profile.mounts.call_tmpfs:
-                return CallMounts(
-                    proc=profile.mounts.proc,
-                    tmp=spec.path,
-                    tmp_bytes=spec.size_bytes,
-                )
-
-        msg = (
-            f"sandbox profile names call_tmpfs {profile.mounts.call_tmpfs!r}, "
-            f"but tmpfs has no such mountpoint"
+        """Приватные точки вызова: procfs и /tmp с размером из профиля."""
+        return CallMounts(
+            proc=SandboxMount.PROC.value,
+            tmp=SandboxMount.TMP.value,
+            tmp_bytes=profile.mounts.tmp,
         )
-        raise ZygoteStartError(msg)
 
 
 class _CappedBuffer:
@@ -1465,33 +1402,19 @@ class ZygoteToolCaller(ToolLauncher):
         )
 
     def _images_of(self, rendered: SandboxProfile) -> tuple[ImageMount, ...]:
-        """Образы вызова путями внутри зиготы: перевод через бинды профиля."""
-        mounts = ZygoteMounts(rendered)
-
-        images: list[ImageMount] = []
-        for spec in rendered.mounts.images:
-            images.append(
-                ImageMount(
-                    image=mounts.image(spec.host),
-                    target=spec.target,
-                    template=mounts.template(rendered.mounts.image_template),
-                )
-            )
-
+        """Образ workspace путями внутри зиготы; путь уже отрендерен профилем."""
         workspace = rendered.mounts.workspace
         if workspace is None:
-            return tuple(images)
+            return ()
 
-        user_id = dict(self._path_vars()).get("user_id", "")
-        images.append(
-            ImageMount(
-                image=mounts.image(workspace.image_of(user_id)),
-                target=workspace.mount,
-                template=mounts.template(workspace.template),
-            )
+        mounts = ZygoteMounts(rendered)
+        image = ImageMount(
+            image=mounts.image(workspace.mount.host),
+            target=workspace.mount.target,
+            template=mounts.template(),
         )
 
-        return tuple(images)
+        return (image,)
 
     def _mounting_of(self, images: Sequence[ImageMount]) -> ImageMounting | None:
         if not images:

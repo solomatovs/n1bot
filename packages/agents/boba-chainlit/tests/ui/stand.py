@@ -199,16 +199,6 @@ class StandConfig:
             }
         }
 
-        # web-инструменты стенда ходят на тот же фейковый сервер: whitelist
-        # рабочего конфига смотрит во внешние хосты, недоступные стенду
-        web = doc.get("tool", {}).get("web")
-        if isinstance(web, MutableMapping):
-            profiles = web.get("profiles")
-            if not isinstance(profiles, MutableMapping):
-                profiles = {}
-                web["profiles"] = profiles
-            profiles[StandUrl.HOST.value] = "${web.public}"
-
     def _use_test_profiles(self, doc: MutableMapping[str, Any]) -> None:
         """Профили и роли стенда: фиксированные, тесты знают их наизусть.
 
@@ -285,9 +275,11 @@ class StandConfig:
             doc["profiles"] = {"general": doc["profiles"]["general"]}
 
     def _use_test_database(self, doc: MutableMapping[str, Any]) -> None:
-        """Сервер и учётка — из конфига приложения; стенду — отдельная база."""
+        """Сервер и учётка — из конфига приложения; стенду — отдельная база.
+
+        Таблица соединений живёт там же: стенд сеет её после старта.
+        """
         doc["postgres"]["dbname"] = self.db_name
-        doc["connections"]["enable"] = False
 
     def _use_local_storage(self, doc: MutableMapping[str, Any]) -> None:
         files_dir = self.workdir / "files"
@@ -312,7 +304,13 @@ class StandConfig:
                 "principal_format": "{username}@${site.krb_realm}",
                 "accept": {
                     "service_name": "HTTP/${site.krb_domain}@${site.krb_realm}",
-                    "keytab": "${site.krb_keytab}",
+                    "keytab": "${site.krb_http_keytab}",
+                },
+                "delegation": {
+                    "mode": "constrained",
+                    "ccache_template": "MEMORY:agent-{login}",
+                    "service_ccache": "FILE:${site.krb_ccache_http}",
+                    "krb5_config": "${site.krb_config}",
                 },
             }
 

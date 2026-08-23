@@ -16,6 +16,7 @@ from boba.tool.doc.tools import (
     DocSearchRow,
     DocToolSection,
 )
+from boba.toolkit.entry import ToolArgv
 from boba.toolkit.result import TableResult, TextResult
 
 pytestmark = pytest.mark.anyio
@@ -203,9 +204,13 @@ class TestSchemas:
     _NAMES = ("read_document", "document_outline", "search_document")
 
     @staticmethod
-    def _schema(name: str) -> dict[str, Any]:
+    def _tool(name: str) -> Any:
         tools: dict[str, Any] = {t.name: t for t in TOOLS}
-        return tools[name].tool_call_schema.model_json_schema()
+        return tools[name]
+
+    @classmethod
+    def _schema(cls, name: str) -> dict[str, Any]:
+        return cls._tool(name).args_schema.model_json_schema()
 
     def test_all_tools_registered(self) -> None:
         if [t.name for t in TOOLS] != list(self._NAMES):
@@ -221,8 +226,10 @@ class TestSchemas:
 
     @pytest.mark.parametrize("name", _NAMES)
     def test_cfg_is_hidden_from_llm(self, name: str) -> None:
-        if "cfg" in self._schema(name)["properties"]:
-            raise AssertionError('"cfg" not in self._schema(name)["properties"]')
+        """cfg объявлен injected: обёртка запуска снимает его со схемы для LLM."""
+        injected = ToolArgv.injected_fields(self._tool(name).args_schema)
+        if "cfg" not in injected:
+            raise AssertionError('"cfg" in injected fields of the schema')
 
     @pytest.mark.parametrize("name", _NAMES)
     def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:

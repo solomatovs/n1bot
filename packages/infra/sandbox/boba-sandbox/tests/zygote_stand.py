@@ -97,7 +97,6 @@ class SandboxStand:
     IMAGE_MOUNTS: ClassVar[Mapping[str, str]] = {
         "template": "/mnt/workspace.ext4",
         "fuse2fs": "/mnt/fuse2fs",
-        "images": "/mnt/images",
     }
     """Точки образной обвязки, как их объявляет конфиг стенда."""
 
@@ -142,6 +141,25 @@ class SandboxStand:
         return os.pathsep.join(parts)
 
     @classmethod
+    def image_ro_binds(cls) -> tuple[str, ...]:
+        """Бинды кода стенда в корень-образ: точки в нём уже есть."""
+        return (
+            f"{SANDBOX / 'third' / 'python'}:/usr/local",
+            f"{SANDBOX / 'site'}:{cls.SITE_PACKAGES}",
+            f"{REPO / 'packages'}:/usr/src",
+        )
+
+    @classmethod
+    def image_env(cls) -> dict[str, str]:
+        """Env зиготы в корне-образе: интерпретатор и код приезжают биндами."""
+        return {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "PYTHONPATH": cls.python_path(),
+            "HOME": "/tmp",  # noqa: S108
+            "LANG": "C.UTF-8",
+        }
+
+    @classmethod
     def profile(cls, **overrides: Any) -> SandboxProfile:
         """Профиль стенда; плоские overrides раскладываются по группам сами.
 
@@ -164,33 +182,16 @@ class SandboxStand:
                 "fail_tail_chars": 2000,
                 "kill_grace_sec": 5,
             },
-            "rootfs": {"dir": str(ROOTFS), "image": "", "mount": ""},
+            "rootfs": str(ROOTFS_IMAGE),
             "mounts": {
-                "ro": (
-                    f"{SANDBOX / 'third' / 'python'}:/usr/local",
-                    f"{SANDBOX / 'site'}:{cls.SITE_PACKAGES}",
-                    f"{REPO / 'packages'}:/usr/src",
-                ),
+                "ro": cls.image_ro_binds(),
                 "rw": (),
-                "setup_ro": (),
-                "setup_rw": (),
-                "tmpfs": ("/tmp:64M",),  # noqa: S108
-                "call_tmpfs": "/tmp",  # noqa: S108
-                "proc": "/proc",
-                "dev": "/dev",
-                "images": (),
-                "image_template": "",
+                "tmp": "64M",  # noqa: S108
             },
             "isolation": {
                 "network": False,
-                "max_processes": 256,
                 "reap_poll_sec": 0.05,
-                "env": {
-                    "PATH": "/usr/local/bin:/usr/bin:/bin",
-                    "PYTHONPATH": cls.python_path(),
-                    "HOME": "/tmp",  # noqa: S108
-                    "LANG": "C.UTF-8",
-                },
+                "env": cls.image_env(),
             },
             "limits": {
                 "timeout_sec": 60,
@@ -207,64 +208,21 @@ class SandboxStand:
 
     @classmethod
     def image_profile(cls, tmp_path: Path, **overrides: Any) -> SandboxProfile:
-        """Профиль с образом workspace: обвязка монтирования объявлена явно.
-
-        Точки под tmpfs /mnt: на read-only корне bwrap точку не создаст.
-        """
+        """Профиль с образом workspace: обвязку монтирования ставит профиль."""
         template = cls.mkfs_template(tmp_path)
         images = tmp_path / "ws"
         images.mkdir(exist_ok=True)
 
-        fuse2fs = cls.fuse2fs()
-
         raw: dict[str, Any] = {
-            "setup_ro": (
-                f"{template}:{cls.IMAGE_MOUNTS['template']}",
-                f"{fuse2fs}:{cls.IMAGE_MOUNTS['fuse2fs']}",
-            ),
-            "setup_rw": (f"{images}:{cls.IMAGE_MOUNTS['images']}",),
             "workspace": {
                 "template": template,
-                "images": str(images),
-                "mount": "/workspace",
+                "mount": f"{images}/{{user_id}}.ext4:/workspace",
             },
-            "tmpfs": ("/tmp:64M", "/mnt:1M"),  # noqa: S108
+            "tmp": "64M",
             "cwd": "/workspace",
         }
         raw.update(overrides)
         return cls.profile(**raw)
-
-    VENV: ClassVar[Path] = REPO / ".venv"
-
-    @classmethod
-    def host_python_binds(cls) -> tuple[str, ...]:
-        """Бинды для профиля с хостовым корнем: venv-интерпретатор и свой код.
-
-        Зигота стартует `python3 -m boba.toolkit.zygote`, поэтому ей нужен
-        интерпретатор с установленными пакетами — на хостовом корне это venv
-        стенда, смонтированный своим же путём (в нём абсолютные пути .pth).
-        """
-        return (
-            f"{cls.VENV}:{cls.VENV}",
-            f"{REPO / 'packages'}:{REPO / 'packages'}",
-        )
-
-    @classmethod
-    def host_python_path(cls) -> str:
-        return f"{cls.VENV}/bin:/usr/local/bin:/usr/bin:/bin"
-
-    @classmethod
-    def image_binds(cls, template: str, images_dir: str) -> tuple[tuple[str, ...], ...]:
-        """Бинды образной обвязки хостовыми путями (host==target).
-
-        Годится профилям, чей корень собран из хостовых каталогов: там точку
-        монтирования bwrap создаёт сам. Возвращает (ro_binds, rw_binds).
-        """
-        fuse2fs = cls.fuse2fs()
-
-        ro = (f"{template}:{template}", f"{fuse2fs}:{fuse2fs}")
-        rw = (f"{images_dir}:{images_dir}",)
-        return ro, rw
 
     @staticmethod
     def mkfs_template(tmp_path: Path) -> str:

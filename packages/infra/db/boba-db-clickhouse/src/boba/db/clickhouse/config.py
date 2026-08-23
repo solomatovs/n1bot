@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.krb import CcacheConfig, Kerberos, KeytabConfig
+from boba.krb import Kerberos, KerberosDump
 from boba.toolkit.types import SecretRevealing
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]
@@ -171,23 +171,10 @@ class ClickHouseConfig(BaseModel):
 
     @field_serializer("kerberos", when_used="json")
     def _dump_kerberos(
-        self, value: KeytabConfig | CcacheConfig | None, info: SerializationInfo
+        self, value: Kerberos | None, info: SerializationInfo
     ) -> dict[str, Any] | None:
-        """Дамп с раскрытыми секретами едет в песочницу: keytab туда не уезжает."""
-        if value is None:
-            return None
-
-        if isinstance(value, CcacheConfig):
-            return value.model_dump(mode="json")
-
-        context = info.context
-        if not isinstance(context, Mapping):
-            return value.model_dump(mode="json")
-
-        if not context.get(ClickHouseConfig.REVEAL_SECRETS):
-            return value.model_dump(mode="json")
-
-        return value.sandboxed().model_dump(mode="json")
+        """Дамп с раскрытыми секретами едет в песочницу: только билет вызова."""
+        return KerberosDump.json(value, info.context, "clickhouse connection")
     krbsrvname: str | None = Field(
         default=None,
         description=(
@@ -244,6 +231,13 @@ class ClickHouseConfig(BaseModel):
             msg = (
                 "clickhouse connection: password и kerberos взаимоисключающи — "
                 "заголовок Negotiate замещает basic-аутентификацию"
+            )
+            raise ValueError(msg)
+
+        if self.connect_timeout is None:
+            msg = (
+                "clickhouse connection: секция kerberos требует connect_timeout — "
+                "GSS-обмен идёт под процессным локом"
             )
             raise ValueError(msg)
 

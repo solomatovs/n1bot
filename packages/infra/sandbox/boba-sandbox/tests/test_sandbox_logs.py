@@ -6,6 +6,7 @@ import logging
 import os
 
 import pytest
+from zygote_stand import ROOTFS_IMAGE
 
 from boba.sandbox.runner import SandboxLogRelay, StderrTee
 from boba.sandbox.zygote import ZygoteSpawner
@@ -259,26 +260,16 @@ _PROFILE_BASE: dict[str, object] = {
         "kill_grace_sec": 5,
         "cgroup_base": "",
     },
-    "rootfs": {
-        "dir": "",
-    },
+    "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
-        "setup_ro": (),
-        "setup_rw": (),
+        "tmp": "64M",
         "ro": (),
         "rw": (),
-        "images": (),
-        "image_template": "",
-        "tmpfs": (),
-        "proc": "/proc",
-        "dev": "/dev",
-        "call_tmpfs": "/tmp",  # noqa: S108
     },
     "isolation": {
         "reap_poll_sec": 0.05,
         "network": False,
         "env": {"PATH": "/usr/bin:/bin"},
-        "max_processes": 256,
     },
     "limits": {
         "timeout_sec": 30,
@@ -319,7 +310,6 @@ class TestLevelSource:
     def test_level_travels_in_zygote_arguments(self) -> None:
         args = ZygoteArgs(
             socket_fd=3,
-            max_processes=0,
             reap_poll_sec=0.05,
             log_level=self._level(logging.WARNING),
         )

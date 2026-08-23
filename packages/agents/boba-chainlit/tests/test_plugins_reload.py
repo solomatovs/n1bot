@@ -13,6 +13,7 @@ import pytest
 from pydantic import BaseModel
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
+from boba.chainlit.connections import ConnectionStore
 from boba.chainlit.infra.plugins import load_tools
 from boba.sandbox import ZygoteRegistry
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
@@ -33,6 +34,15 @@ def app_sandbox() -> Iterator[None]:
         ZygoteRegistry.stop_all()
 
 
+def _no_registry() -> None:
+    return None
+
+
+def _no_store() -> ConnectionStore:
+    msg = "connection store is not used by the reload test"
+    raise RuntimeError(msg)
+
+
 def _schema_fields(tool: object) -> set[str]:
     schema = getattr(tool, "args_schema", None)
     if not (isinstance(schema, type)):
@@ -43,8 +53,8 @@ def _schema_fields(tool: object) -> set[str]:
 
 
 def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
-    first = load_tools(raw_config)
-    second = load_tools(raw_config)
+    first = load_tools(raw_config, _no_store, _no_registry)
+    second = load_tools(raw_config, _no_store, _no_registry)
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
@@ -59,8 +69,8 @@ def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
 
 
 def test_module_singletons_stay_pristine(raw_config) -> None:
-    load_tools(raw_config)
-    load_tools(raw_config)
+    load_tools(raw_config, _no_store, _no_registry)
+    load_tools(raw_config, _no_store, _no_registry)
 
     for tool in PG_TOOLS:
         fields = _schema_fields(tool)

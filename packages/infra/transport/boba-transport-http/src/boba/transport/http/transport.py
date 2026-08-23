@@ -91,7 +91,7 @@ class HttpTransport:
             base_url=profile.base_url or "",
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
-            auth=profile.auth.httpx_auth(),
+            auth=profile.httpx_auth(),
         )
 
     async def __aenter__(self) -> HttpTransport:

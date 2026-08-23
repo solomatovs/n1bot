@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import InterpolationKeyError
-from zygote_stand import ProfileFields
+from zygote_stand import ROOTFS_IMAGE, ProfileFields
 
 from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
 from boba.settings import bind
@@ -45,26 +45,16 @@ _PROFILE_BASE: dict[str, Any] = {
         "kill_grace_sec": 5,
         "cgroup_base": "",
     },
-    "rootfs": {
-        "dir": "",
-    },
+    "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
-        "setup_ro": (),
-        "setup_rw": (),
+        "tmp": "64M",
         "ro": (),
         "rw": (),
-        "images": (),
-        "image_template": "",
-        "tmpfs": (),
-        "proc": "/proc",
-        "dev": "/dev",
-        "call_tmpfs": "/tmp",  # noqa: S108
     },
     "isolation": {
         "reap_poll_sec": 0.05,
         "network": False,
         "env": {},
-        "max_processes": 256,
     },
     "limits": {
         "timeout_sec": 30,
@@ -107,13 +97,13 @@ class TestProfileRegistry:
         cfg = SandboxConfig.model_validate(
             {
                 "profiles": {
-                    "default": _profile(rootfs={"dir": "/srv/rootfs-a"}),
-                    "online": _profile(rootfs={"dir": "/srv/rootfs-b"}, network=True),
+                    "default": _profile(rootfs="/srv/rootfs-a.ext4"),
+                    "online": _profile(rootfs="/srv/rootfs-b.ext4", network=True),
                 },
             }
         )
-        if cfg.profiles["default"].rootfs.dir != "/srv/rootfs-a":
-            raise AssertionError('profiles["default"].rootfs.dir == "/srv/rootfs-a"')
+        if cfg.profiles["default"].rootfs != "/srv/rootfs-a.ext4":
+            raise AssertionError('profiles["default"].rootfs == a.ext4')
         if cfg.profiles["online"].isolation.network is not True:
             raise AssertionError('profiles["online"].isolation.network is True')
 
@@ -122,9 +112,9 @@ class TestProfileRegistry:
             SandboxConfig.model_validate({"profiles": {}})
 
     def test_broken_profile_rejected(self) -> None:
-        with pytest.raises(ValueError, match="max_processes"):
+        with pytest.raises(ValueError, match="reap_poll_sec"):
             SandboxConfig.model_validate(
-                {"profiles": {"bad": _raw_profile(max_processes=0)}}
+                {"profiles": {"bad": _raw_profile(reap_poll_sec=0)}}
             )
 
 
@@ -140,8 +130,8 @@ class TestToolProfile:
         raw = _raw_profile(ro=("/srv/b",))
         cfg = SandboxToolConfig.model_validate({"profile": raw})
 
-        if cfg.profile.isolation.max_processes != 256:
-            raise AssertionError("cfg.profile.isolation.max_processes == 256")
+        if cfg.profile.isolation.reap_poll_sec != 0.05:
+            raise AssertionError("cfg.profile.isolation.reap_poll_sec == 0.05")
         if [b.host for b in cfg.profile.mounts.ro] != ["/srv/b"]:
             raise AssertionError("mounts.ro == [/srv/b]")
 
@@ -168,8 +158,8 @@ class TestProfileInheritance:
             {"extends": base, "isolation": {"network": True}}
         )
 
-        if child.isolation.max_processes != 256:
-            raise AssertionError("child.isolation.max_processes == 256")
+        if child.isolation.reap_poll_sec != 0.05:
+            raise AssertionError("child.isolation.reap_poll_sec == 0.05")
         if [b.host for b in child.mounts.ro] != ["/srv/b"]:
             raise AssertionError("mounts.ro == [/srv/b]")
 
@@ -206,9 +196,9 @@ class TestProfileInheritance:
             )
 
     def test_invalid_value_rejected(self) -> None:
-        with pytest.raises(ValueError, match="max_processes"):
+        with pytest.raises(ValueError, match="reap_poll_sec"):
             SandboxProfile.model_validate(
-                {"extends": _raw_profile(), "isolation": {"max_processes": 0}}
+                {"extends": _raw_profile(), "isolation": {"reap_poll_sec": 0}}
             )
 
 
@@ -227,8 +217,8 @@ class TestProfileReference:
     def test_reference_is_resolved(self) -> None:
         raw = self._raw("${sandbox.profiles.default}")
         cfg = bind(raw, path="tool.bash.sandbox", model=SandboxToolConfig)
-        if cfg.profile.isolation.max_processes != 256:
-            raise AssertionError("cfg.profile.isolation.max_processes == 256")
+        if cfg.profile.isolation.reap_poll_sec != 0.05:
+            raise AssertionError("cfg.profile.isolation.reap_poll_sec == 0.05")
 
     def test_unknown_profile_fails_at_load(self) -> None:
         raw = self._raw("${sandbox.profiles.нет-такого}")

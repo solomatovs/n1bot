@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from zygote_stand import ProfileFields, SandboxStand, ZygoteStand
+from zygote_stand import ROOTFS_IMAGE, ProfileFields, SandboxStand, ZygoteStand
 
 from boba.chainlit.data.storage import (
     ImageStorageClient,
@@ -137,25 +137,15 @@ _PROFILE_BASE: dict[str, object] = {
         "kill_grace_sec": 5,
         "cgroup_base": "",
     },
-    "rootfs": {
-        "dir": "",
-    },
+    "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
+        "tmp": "64M",
         "ro": (),
         "rw": (),
-        "images": (),
-        "image_template": "",
-        "tmpfs": (),
-        "proc": "/proc",
-        "dev": "/dev",
-        "call_tmpfs": "/tmp",  # noqa: S108
-        "setup_ro": (),
-        "setup_rw": (),
     },
     "isolation": {
         "network": False,
         "env": {},
-        "max_processes": 256,
         "reap_poll_sec": 0.05,
     },
     "limits": {
@@ -182,25 +172,13 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
     images_dir = f"{tmp_path}/ws"
     os.makedirs(images_dir, exist_ok=True)
 
-    ro_binds, rw_binds = SandboxStand.image_binds(str(template), images_dir)
-
-    profile_dto = _profile(
-        ro=(*HOST_RO_BINDS, *SandboxStand.host_python_binds(), *ro_binds),
-        rw=rw_binds,
-        images=(),
+    profile_dto = SandboxStand.profile(
         workspace={
             "template": str(template),
-            "images": f"{tmp_path}/ws",
-            "mount": "/workspace",
+            "mount": f"{images_dir}/{{user_id}}.ext4:/workspace",
         },
-        image_template=str(template),
         cwd="/workspace",
-        tmpfs=("/tmp:64M",),  # noqa: S108
-        env={
-            "PATH": SandboxStand.host_python_path(),
-            "HOME": "/tmp",  # noqa: S108
-            "LANG": "C.UTF-8",
-        },
+        tmp="64M",
         **profile_kw,
     )
 
@@ -234,8 +212,7 @@ def _storage(
         kind="image",
         workspace={
             "template": str(template),
-            "images": f"{tmp_path}/ws",
-            "mount": "/workspace",
+            "mount": f"{tmp_path}/ws/{{user_id}}.ext4:/workspace",
         },
         op_timeout_sec=op_timeout_sec,
     )
@@ -272,7 +249,7 @@ class TestConfig:
     def test_factory_picks_image_client(self) -> None:
         cfg = _storage_cfg(
             kind="image",
-            workspace={"template": "/t.ext4", "images": "/ws", "mount": "/workspace"},
+            workspace={"template": "/t.ext4", "mount": "/ws/{user_id}.ext4:/workspace"},
         )
         if not (isinstance(StorageFactory.create(cfg), ImageStorageClient)):
             raise AssertionError("isinstance(StorageFactory.create(cfg), ImageStorage…")
@@ -282,9 +259,13 @@ class TestConfig:
         if type(StorageFactory.create(cfg)) is not LocalStorageClient:
             raise AssertionError("type(StorageFactory.create(cfg)) is LocalStorageCli…")
 
-    def test_profile_images_require_template(self) -> None:
-        with pytest.raises(ValueError, match="image_template is empty"):
-            _profile(images=("/ws/a.ext4:/workspace",))
+    def test_workspace_image_must_be_personal(self) -> None:
+        """Без {user_id} все пользователи писали бы в один образ."""
+        with pytest.raises(ValueError, match="user_id"):
+            _storage_cfg(
+                kind="image",
+                workspace={"template": "/t.ext4", "mount": "/ws/all.ext4:/workspace"},
+            )
 
 
 class TestObjectKey:
@@ -292,7 +273,7 @@ class TestObjectKey:
     def _client() -> ImageStorageClient:
         cfg = _storage_cfg(
             kind="image",
-            workspace={"template": "/t.ext4", "images": "/ws", "mount": "/workspace"},
+            workspace={"template": "/t.ext4", "mount": "/ws/{user_id}.ext4:/workspace"},
         )
         client = StorageFactory.create(cfg)
         if not (isinstance(client, ImageStorageClient)):
@@ -331,8 +312,7 @@ class TestRelativePaths:
             kind="image",
             workspace={
                 "template": "/data/tpl.ext4",
-                "images": "/data/ws",
-                "mount": "/workspace",
+                "mount": "/data/ws/{user_id}.ext4:/workspace",
             },
         )
         if cfg.workspace is None:
@@ -920,33 +900,6 @@ class TestLiveImage:
         payload = _invoke(tool, "ulimit -n")
         if payload.stdout.strip() != "128":
             raise AssertionError('payload.stdout.strip() == "128"')
-
-    def test_process_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, max_processes=32)
-        payload = _invoke(tool, "ulimit -u")
-        if payload.stdout.strip() != "32":
-            raise AssertionError('payload.stdout.strip() == "32"')
-
-    def test_fork_bomb_capped(self, tmp_path: Path, template: Path) -> None:
-        code = (
-            "import os, time\n"
-            "count = 0\n"
-            "while count < 40:\n"
-            "    try:\n"
-            "        pid = os.fork()\n"
-            "    except OSError:\n"
-            "        break\n"
-            "    if pid == 0:\n"
-            "        time.sleep(3)\n"
-            "        os._exit(0)\n"
-            "    count += 1\n"
-            "print('forked', count)\n"
-        )
-        tool = _bash(tmp_path, template, max_processes=16, timeout_sec=60)
-        payload = _invoke(tool, "python3 -", stdin=code)
-        forked = int(payload.stdout.split()[1])
-        if not (0 < forked < 40):
-            raise AssertionError("0 < forked < 40")
 
     def test_file_size_limit_enforced(self, tmp_path: Path, template: Path) -> None:
         tool = _bash(tmp_path, template, process_file_bytes=1024 * 1024)

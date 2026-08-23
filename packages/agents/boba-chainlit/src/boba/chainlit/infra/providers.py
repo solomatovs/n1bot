@@ -28,6 +28,7 @@ from boba.chainlit.agent.flow import (
     PrefetchGraphBuilder,
     Rephraser,
 )
+from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
@@ -53,11 +54,12 @@ from boba.chainlit.infra.config import (
     SettingsView,
     UserMeta,
 )
-from boba.chainlit.infra.di import Depends
+from boba.chainlit.infra.di import Container, Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit.rendering.chat_view import StepText
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
+from boba.krb import CcacheRegistry
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import (
     GeneratorFactory,
@@ -154,10 +156,45 @@ def session_agent_settings(
     return view.agent()
 
 
+def kerberos_auth() -> KerberosAuth | None:
+    """SSO-провайдер kerberos; значение кладёт bootstrap после установки auth."""
+    msg = "kerberos_auth is provided by bootstrap, not produced"
+    raise RuntimeError(msg)
+
+
+def ccache_registry_ref() -> CcacheRegistry | None:
+    """Реестр делегированных тикетов; None — SSO kerberos не настроен."""
+    root = Container.root
+    if root is None:
+        msg = "DI container is not initialised"
+        raise RuntimeError(msg)
+
+    auth = root.resolved(kerberos_auth)
+    if auth is None:
+        return None
+
+    return auth.registry
+
+
+def connection_store_ref() -> ConnectionStore:
+    """Хранилище соединений для обвязок инструментов; зовётся на каждый вызов."""
+    root = Container.root
+    if root is None:
+        msg = "DI container is not initialised"
+        raise RuntimeError(msg)
+
+    store = root.resolved(connection_store)
+    if store is None:
+        msg = "[connections] is disabled: user connections are unavailable"
+        raise RuntimeError(msg)
+
+    return store
+
+
 def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> ToolRegistry:
-    return load_tools(raw)
+    return load_tools(raw, connection_store_ref, ccache_registry_ref)
 
 
 def session_tools(

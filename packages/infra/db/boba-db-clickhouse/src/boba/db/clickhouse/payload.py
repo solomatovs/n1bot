@@ -6,19 +6,16 @@
 
 from __future__ import annotations
 
-import base64
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import ClassVar
 
-import gssapi
 from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
-from gssapi.raw.misc import GSSError
 
 from boba.db.clickhouse.config import ClickHouseConfig
 from boba.db.clickhouse.errors import ClickHouseError
-from boba.krb import ClientCredentials, KerberosError
+from boba.krb import ClientCredentials, KerberosError, SpnegoNegotiate
 
 __all__ = ["PayloadClickHouse", "SpnegoHeaders"]
 
@@ -32,12 +29,10 @@ class SpnegoHeaders(dict[str, str]):
     каждым запросом — токен и выпускается здесь, в copy().
 
     Токен строится по кредам из окружения процесса (KRB5CCNAME/KRB5_CONFIG),
-    поэтому клиент живёт внутри KeytabCredentials.applied_async().
+    поэтому клиент живёт внутри KerberosCredentials.applied_async().
     """
 
-    SPNEGO: ClassVar[gssapi.OID] = gssapi.OID.from_int_seq("1.3.6.1.5.5.2")
-
-    HEADER: ClassVar[str] = "Authorization"
+    HEADER: ClassVar[str] = SpnegoNegotiate.HEADER
 
     def __init__(self, service_name: str) -> None:
         super().__init__()
@@ -50,20 +45,9 @@ class SpnegoHeaders(dict[str, str]):
 
     def _negotiate(self) -> str:
         try:
-            name = gssapi.Name(self._service_name, gssapi.NameType.hostbased_service)
-            context = gssapi.SecurityContext(
-                name=name, mech=self.SPNEGO, usage="initiate"
-            )
-            token = context.step()
-        except GSSError as e:
-            msg = f"spnego init for {self._service_name} failed: {e}"
-            raise ClickHouseError(msg) from e
-
-        if not token:
-            msg = f"spnego init for {self._service_name} produced no token"
-            raise ClickHouseError(msg)
-
-        return f"Negotiate {base64.b64encode(token).decode()}"
+            return SpnegoNegotiate.header(self._service_name)
+        except KerberosError as exc:
+            raise ClickHouseError(str(exc)) from exc
 
 
 class PayloadClickHouse:

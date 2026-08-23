@@ -10,7 +10,7 @@ import sys
 from uuid import uuid4
 
 import pytest
-from zygote_stand import ProfileFields
+from zygote_stand import ROOTFS_IMAGE, ProfileFields
 
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.profile import SandboxProfile
@@ -107,25 +107,15 @@ class TestProfileValidation:
                 "kill_grace_sec": 5,
                 "cgroup_base": "",
             },
-            "rootfs": {
-                "dir": "",
-            },
+            "rootfs": str(ROOTFS_IMAGE),
             "mounts": {
+                "tmp": "64M",
                 "ro": [],
                 "rw": [],
-                "images": [],
-                "image_template": "",
-                "tmpfs": [],
-                "proc": "/proc",
-                "dev": "/dev",
-                "call_tmpfs": "/tmp",  # noqa: S108
-                "setup_ro": (),
-                "setup_rw": (),
             },
             "isolation": {
                 "network": False,
                 "env": {},
-                "max_processes": 1,
                 "reap_poll_sec": 0.05,
             },
             "limits": {

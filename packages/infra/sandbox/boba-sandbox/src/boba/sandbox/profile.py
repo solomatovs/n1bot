@@ -6,11 +6,12 @@ import math
 import os
 import string
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from boba.toolkit.binaries import TrustedBinaries
+from boba.toolkit.binaries import SandboxBinary, TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 __all__ = [
@@ -18,12 +19,14 @@ __all__ = [
     "IsolationSpec",
     "LimitsSpec",
     "MountsSpec",
-    "RootfsSpec",
     "RunSpec",
     "SandboxConfig",
     "SandboxHost",
+    "SandboxLayout",
+    "SandboxMount",
     "SandboxProfile",
     "SandboxToolConfig",
+    "SetupBinds",
     "TmpfsSpec",
     "WorkspaceSpec",
 ]
@@ -113,7 +116,7 @@ class TmpfsSpec(BaseModel):
         if not sep:
             msg = f"tmpfs {raw!r}: size is required, use `dest:size` (256M, 1G)"
             raise ValueError(msg)
-        return cls(path=path, size_bytes=cls._parse_size(size))
+        return cls(path=path, size_bytes=cls.parse_size(size))
 
     @field_validator("path", mode="after")
     @classmethod
@@ -124,7 +127,7 @@ class TmpfsSpec(BaseModel):
         return os.path.normpath(value)
 
     @staticmethod
-    def _parse_size(raw: str) -> int:
+    def parse_size(raw: str) -> int:
         factors = {"K": 1024, "M": 1024**2, "G": 1024**3}
         text = raw.strip().upper()
         factor = factors.get(text[-1:], 0)
@@ -138,16 +141,19 @@ class TmpfsSpec(BaseModel):
 class WorkspaceSpec(BaseModel):
     """Рабочий каталог чата: единственное описание workspace на всё приложение.
 
-    Из него выводится всё остальное: путь образа пользователя собирается из
-    каталога образов и его идентификатора, первый образ копируется с шаблона,
-    внутрь песочницы он монтируется в одну и ту же точку. Отдельных настроек
-    под каждый из этих путей нет — ошибиться и развести их невозможно.
+    template — эталон, с которого снимается копия при первом обращении
+    пользователя. mount — сама копия и её точка внутри песочницы одной
+    записью `host:target`, где host обязан содержать {user_id}: иначе все
+    пользователи писали бы в один образ.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    SUFFIX: ClassVar[str] = ".ext4"
-    """Расширение образа пользователя; формат задаёт mkfs, а не администратор."""
+    USER_VAR: ClassVar[str] = "{user_id}"
+    """Что делает образ персональным; без него копия была бы общей."""
+
+    THREAD_VAR: ClassVar[str] = "{thread_id}"
+    """Образ один на пользователя: вложения видны во всех его чатах."""
 
     template: str = Field(
         min_length=1,
@@ -156,26 +162,49 @@ class WorkspaceSpec(BaseModel):
             "первом обращении. Собирается целью make sandbox-image."
         ),
     )
-    images: str = Field(
-        min_length=1,
+    mount: BindSpec = Field(
         description=(
-            "Каталог, где лежат образы пользователей. Имя файла компонент "
-            "собирает сам из идентификатора пользователя."
-        ),
-    )
-    mount: str = Field(
-        min_length=1,
-        description=(
-            "Точка, куда образ пользователя монтируется внутри песочницы. "
-            "По ней же приложение строит пути вложений, видимые инструменту."
+            "Образ пользователя и его точка монтирования, формат "
+            "`host:target`, например "
+            "`/var/lib/boba/workspace/{user_id}.ext4:/workspace`."
         ),
     )
 
-    @field_validator("template", "images", "mount", mode="after")
+    @field_validator("template", mode="after")
     @classmethod
     def _canonical(cls, value: str) -> str:
         """bwrap не примет относительный путь: корень песочницы read-only."""
         return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
+    @field_validator("mount", mode="before")
+    @classmethod
+    def _parse_mount(cls, value: object) -> object:
+        if isinstance(value, str):
+            return BindSpec.parse(value)
+
+        return value
+
+    @model_validator(mode="after")
+    def _image_is_personal(self) -> Self:
+        if self.THREAD_VAR in self.mount.host:
+            msg = (
+                f"sandbox: workspace.mount {self.mount.host!r} has "
+                f"{self.THREAD_VAR}: the image is one per user, not per thread"
+            )
+            raise ValueError(msg)
+
+        if self.USER_VAR not in self.mount.host:
+            msg = (
+                f"sandbox: workspace.mount {self.mount.host!r} has no "
+                f"{self.USER_VAR}: the image would be shared by all users"
+            )
+            raise ValueError(msg)
+
+        return self
+
+    def images_dir(self) -> str:
+        """Каталог, где лежат образы пользователей."""
+        return os.path.dirname(self.mount.host)
 
     def image_of(self, user_id: str) -> str:
         """Путь образа пользователя на хосте."""
@@ -183,7 +212,7 @@ class WorkspaceSpec(BaseModel):
             msg = "workspace image requires a user id"
             raise ValueError(msg)
 
-        return os.path.join(self.images, f"{user_id}{self.SUFFIX}")
+        return BindSpec.substitute(self.mount.host, {"user_id": user_id})
 
 
 class SandboxHost(BaseModel):
@@ -260,64 +289,93 @@ class SandboxHost(BaseModel):
         return value
 
 
-class RootfsSpec(BaseModel):
-    """Корень песочницы: либо образ, либо готовый каталог."""
+class SandboxMount(StrEnum):
+    """Точки, которые песочница монтирует сама; конфиг их не задаёт.
+
+    PROC и DEV обязательны: без них не работают python, bash и всё, что
+    читает /proc/self. TMP приватен вызову — исполнитель перемонтирует его
+    себе, размер приходит из профиля. SETUP_* видит только исполнитель,
+    монтирующий образ workspace: перед запуском тела он их отцепляет, иначе
+    тело видело бы каталог образов всех пользователей.
+    """
+
+    ROOTFS = "/tmp/boba-rootfs"  # noqa: S108
+    PROC = "/proc"
+    DEV = "/dev"
+    TMP = "/tmp"
+    SETUP = "/mnt"
+    SETUP_TEMPLATE = "/mnt/template.ext4"
+    SETUP_FUSE2FS = "/mnt/fuse2fs"
+    SETUP_IMAGES = "/mnt/images"
+
+    def under(self, name: str) -> str:
+        """Путь внутри этой точки."""
+        return os.path.join(self.value, name)
+
+
+class SetupBinds(BaseModel):
+    """Обвязка монтирования образа: что исполнитель заносит и потом отцепляет."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    image: str = Field(
-        default="",
-        description=(
-            "Ext4-образ корня, монтируемый read-only на всю жизнь зиготы; "
-            "внутри уже лежат python, site-packages и код инструментов. "
-            "Собирается целью make sandbox-image. Взаимоисключим с dir."
-        ),
-    )
-    dir: str = Field(
-        default="",
-        description=(
-            "Готовый каталог, монтируемый read-only как / песочницы; бинды "
-            "ложатся поверх. Пусто — корень берётся из image либо не "
-            "монтируется вовсе."
-        ),
-    )
-    mount: str = Field(
-        default="",
-        description=(
-            "Куда цепочка запуска монтирует image перед тем, как сделать его "
-            "корнем: путь виден только процессам цепочки, тело получает его "
-            "уже как /. Обязателен, если задан image."
-        ),
-    )
+    ro: tuple[BindSpec, ...]
+    rw: tuple[BindSpec, ...]
 
-    @field_validator("image", "dir", mode="after")
+
+class SandboxLayout:
+    """Монтирования, предопределённые песочницей.
+
+    Профиль задаёт размер tmp и запись workspace; сами точки, обвязка
+    образа, tmpfs под неё и путь образа внутри песочницы живут здесь и
+    больше нигде.
+    """
+
+    DIR_BYTES: ClassVar[int] = 1024 * 1024
+    """Размер tmpfs под обвязку: в ней лежат только точки монтирования."""
+
     @classmethod
-    def _canonical(cls, value: str) -> str:
-        if not value:
-            return value
+    def tmpfs(cls, tmp_bytes: int, staged: bool) -> tuple[TmpfsSpec, ...]:
+        """Все tmpfs секции: приватный /tmp и обвязка образа при workspace."""
+        specs: list[TmpfsSpec] = [
+            TmpfsSpec(path=SandboxMount.TMP.value, size_bytes=tmp_bytes)
+        ]
 
-        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+        if staged:
+            specs.append(
+                TmpfsSpec(path=SandboxMount.SETUP.value, size_bytes=cls.DIR_BYTES)
+            )
 
-    @model_validator(mode="after")
-    def _one_root(self) -> Self:
-        if self.dir and self.image:
-            msg = "sandbox: rootfs.dir and rootfs.image are mutually exclusive"
-            raise ValueError(msg)
+        return tuple(specs)
 
-        if self.image and not self.mount:
-            msg = "sandbox: rootfs.image is set, but rootfs.mount is empty"
-            raise ValueError(msg)
+    @classmethod
+    def setup_binds(cls, workspace: WorkspaceSpec, fuse2fs: str) -> SetupBinds:
+        """Эталон и fuse2fs read-only, каталог образов пользователей на запись."""
+        ro = (
+            BindSpec(
+                host=workspace.template, target=SandboxMount.SETUP_TEMPLATE.value
+            ),
+            BindSpec(host=fuse2fs, target=SandboxMount.SETUP_FUSE2FS.value),
+        )
+        rw = (
+            BindSpec(
+                host=workspace.images_dir(), target=SandboxMount.SETUP_IMAGES.value
+            ),
+        )
 
-        return self
+        return SetupBinds(ro=ro, rw=rw)
+
+    @classmethod
+    def image_inside(cls, image_host: str) -> str:
+        """Путь образа пользователя внутри песочницы: каталог образов фиксирован."""
+        return SandboxMount.SETUP_IMAGES.under(os.path.basename(image_host))
 
 
 class MountsSpec(BaseModel):
     """Что песочница монтирует и что из этого доезжает до тела инструмента.
 
-    ro и rw видны на всех уровнях, включая тело. setup_ro и setup_rw нужны
-    исполнителю только для монтирования образа вызова: смонтировав свой
-    образ, он отцепляет их от себя, и тело их не видит. Иначе тело видело бы
-    каталог образов всех пользователей.
+    ro и rw видны на всех уровнях, включая тело. Остальное — proc, dev,
+    приватный tmp и обвязку образа — песочница ставит сама: см.
+    SandboxMount и SandboxLayout.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -334,70 +392,22 @@ class MountsSpec(BaseModel):
             "{user_id}/{thread_id}. Видны телу."
         ),
     )
-    setup_ro: tuple[BindSpec, ...] = Field(
+    tmp: int = Field(
+        gt=0,
         description=(
-            "Read-only обвязка монтирования: шаблон образа и бинарь fuse2fs. "
-            "Исполнитель отцепляет их перед запуском тела."
-        ),
-    )
-    setup_rw: tuple[BindSpec, ...] = Field(
-        description=(
-            "Read-write обвязка монтирования: каталог образов пользователей. "
-            "Исполнитель отцепляет её перед запуском тела."
-        ),
-    )
-    tmpfs: tuple[TmpfsSpec, ...] = Field(
-        description=(
-            "Mountpoints под tmpfs (in-memory), формат `dest:size`, например "
-            "`/tmp:256M`; размер обязателен."
-        ),
-    )
-    call_tmpfs: str = Field(
-        default="",
-        description=(
-            "Какая из точек tmpfs приватна для вызова: исполнитель "
-            "перемонтирует её себе, чтобы файлы одного вызова не видел "
-            "другой. Размер берётся из той же записи tmpfs. Пусто — вызовы "
-            "делят её содержимое."
-        ),
-    )
-    proc: str = Field(
-        default="",
-        description=(
-            "Куда монтировать procfs. Пусто — /proc не монтируется: без него "
-            "не работают python, bash и всё, что читает /proc/self."
-        ),
-    )
-    dev: str = Field(
-        default="",
-        description=(
-            "Куда монтировать минимальный devtmpfs (null, zero, random, tty). "
-            "Пусто — устройств в песочнице нет."
+            "Размер /tmp, например `512M`: он приватен вызову и служит "
+            "единственным местом записи для тела без workspace."
         ),
     )
     workspace: WorkspaceSpec | None = Field(
         default=None,
         description=(
-            "Рабочий каталог чата одной записью: шаблон, каталог образов и "
-            "точка монтирования. Отсутствие — у секции нет своего workspace."
-        ),
-    )
-    images: tuple[BindSpec, ...] = Field(
-        description=(
-            "Произвольные ext4-образы read-write, формат `image[:target]`; "
-            "монтируются через fuse2fs на время вызова. Рендерятся "
-            "{user_id}/{thread_id}."
-        ),
-    )
-    image_template: str = Field(
-        default="",
-        description=(
-            "Шаблонный ext4-образ для images: копируется в путь образа при "
-            "первом вызове. Обязателен, если images непуст."
+            "Рабочий каталог чата: эталон и образ пользователя с точкой "
+            "монтирования. Отсутствие — у секции нет своего workspace."
         ),
     )
 
-    @field_validator("ro", "rw", "setup_ro", "setup_rw", "images", mode="before")
+    @field_validator("ro", "rw", mode="before")
     @classmethod
     def _parse_binds(cls, value: object) -> object:
         if not isinstance(value, (list, tuple)):
@@ -412,44 +422,21 @@ class MountsSpec(BaseModel):
 
         return tuple(parsed)
 
-    @field_validator("tmpfs", mode="before")
+    @field_validator("tmp", mode="before")
     @classmethod
-    def _parse_tmpfs(cls, value: object) -> object:
-        if not isinstance(value, (list, tuple)):
-            return value
+    def _parse_size(cls, value: object) -> object:
+        if isinstance(value, str):
+            return TmpfsSpec.parse_size(value)
 
-        parsed: list[object] = []
-        for item in value:
-            if isinstance(item, str):
-                parsed.append(TmpfsSpec.parse(item))
-            else:
-                parsed.append(item)
-
-        return tuple(parsed)
-
-    @field_validator("image_template", mode="after")
-    @classmethod
-    def _canonical_template(cls, value: str) -> str:
-        if not value:
-            return value
-
-        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
-
-    @model_validator(mode="after")
-    def _template_for_images(self) -> Self:
-        if self.images and not self.image_template:
-            msg = "sandbox: mounts.images is set, but mounts.image_template is empty"
-            raise ValueError(msg)
-
-        return self
+        return value
 
     def all_binds(self) -> tuple[BindSpec, ...]:
-        """Все монтирования профиля: и видимые телу, и обвязка."""
-        return (*self.ro, *self.rw, *self.setup_ro, *self.setup_rw)
+        """Монтирования профиля, видимые телу; обвязку ставит SandboxLayout."""
+        return (*self.ro, *self.rw)
 
 
 class IsolationSpec(BaseModel):
-    """Изоляция секции: сеть, окружение, потолок задач."""
+    """Изоляция секции: сеть и окружение."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -460,16 +447,6 @@ class IsolationSpec(BaseModel):
         description=(
             "Env внутри песочницы; host-env не наследуется. Для запуска "
             "утилит обычно нужен 'PATH'."
-        ),
-    )
-    max_processes: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Общий потолок задач (RLIMIT_NPROC) на зиготу секции и всех её "
-            "детей: счётчик один на user namespace, потоки считаются наравне "
-            "с процессами. Ставится изнутри песочницы. Отсутствие — не "
-            "ограничивать; потолок на отдельный вызов задаёт group_pids_max."
         ),
     )
     reap_poll_sec: float = Field(
@@ -567,8 +544,8 @@ class LimitsSpec(BaseModel):
         default=None,
         gt=0,
         description=(
-            "Потолок числа процессов в группе (cgroup pids.max): в отличие от "
-            "max_processes считает только процессы этого вызова."
+            "Потолок числа процессов в группе (cgroup pids.max): считает "
+            "процессы этого вызова."
         ),
     )
     group_oom_kill_all: bool | None = Field(
@@ -645,9 +622,16 @@ class SandboxProfile(BaseModel):
     host: SandboxHost = Field(
         description='Обвязка приложения ссылкой: host = "${sandbox.host}".',
     )
-    rootfs: RootfsSpec = Field(description="Корень песочницы: образ либо каталог.")
+    rootfs: str = Field(
+        min_length=1,
+        description=(
+            "Ext4-образ корня, монтируемый read-only на всю жизнь зиготы; "
+            "внутри уже лежат python, site-packages и код инструментов. "
+            "Собирается целью make sandbox-image."
+        ),
+    )
     mounts: MountsSpec = Field(description="Что монтируется и что видит тело.")
-    isolation: IsolationSpec = Field(description="Сеть, окружение, потолок задач.")
+    isolation: IsolationSpec = Field(description="Сеть и окружение.")
     limits: LimitsSpec = Field(description="Лимиты процесса и группы вызова.")
     run: RunSpec = Field(description="Рабочий каталог и интерпретатор команды.")
 
@@ -708,41 +692,18 @@ class SandboxProfile(BaseModel):
 
         return self
 
-    @model_validator(mode="after")
-    def _validate_setup_binds(self) -> Self:
-        """Обвязка монтирования объявляется только там, где есть что монтировать.
-
-        Она заносит внутрь каталог образов всех пользователей, поэтому
-        профилю без образов её объявлять нечем и незачем.
-        """
-        setup = (*self.mounts.setup_ro, *self.mounts.setup_rw)
-        if not setup:
-            return self
-
-        if self.mounts.images:
-            return self
-
-        if self.mounts.workspace is not None:
-            return self
-
-        listed = ", ".join(spec.target for spec in setup)
-        msg = (
-            "sandbox: setup_ro/setup_rw are declared, but the profile mounts "
-            f"no images: {listed}"
-        )
-        raise ValueError(msg)
-
     def render(self, variables: Mapping[str, str]) -> Self:
         """Профиль с подставленными значениями {user_id}/{thread_id}."""
-        mounts = self.mounts.model_copy(
-            update={
-                "ro": self._render_binds(self.mounts.ro, variables),
-                "rw": self._render_binds(self.mounts.rw, variables),
-                "setup_ro": self._render_binds(self.mounts.setup_ro, variables),
-                "setup_rw": self._render_binds(self.mounts.setup_rw, variables),
-                "images": self._render_binds(self.mounts.images, variables),
-            }
-        )
+        update: dict[str, Any] = {
+            "ro": self._render_binds(self.mounts.ro, variables),
+            "rw": self._render_binds(self.mounts.rw, variables),
+        }
+
+        if workspace := self.mounts.workspace:
+            rendered = workspace.mount.render(variables)
+            update["workspace"] = workspace.model_copy(update={"mount": rendered})
+
+        mounts = self.mounts.model_copy(update=update)
 
         cwd = ""
         if self.run.cwd:
@@ -751,6 +712,22 @@ class SandboxProfile(BaseModel):
         run = self.run.model_copy(update={"cwd": cwd})
 
         return self.model_copy(update={"mounts": mounts, "run": run})
+
+    def setup_binds(self) -> SetupBinds:
+        """Обвязка монтирования образа; пустая у секции без workspace."""
+        workspace = self.mounts.workspace
+        if workspace is None:
+            return SetupBinds(ro=(), rw=())
+
+        fuse2fs = self.host.binaries.resolve(SandboxBinary.FUSE2FS)
+
+        return SandboxLayout.setup_binds(workspace, fuse2fs)
+
+    def tmpfs(self) -> tuple[TmpfsSpec, ...]:
+        """Все tmpfs секции: приватный /tmp и обвязка образа при workspace."""
+        staged = self.mounts.workspace is not None
+
+        return SandboxLayout.tmpfs(self.mounts.tmp, staged)
 
     def cpu_cores(self) -> int:
         """Сколько ядер отдано вызову по cgroup-квоте; 0 — квоты нет.

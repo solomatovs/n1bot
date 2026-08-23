@@ -5,7 +5,8 @@ launcher'а приложения и у человека в терминале.
 
 Ошибки:
 WebRequestError — страница не скачалась (сеть, TLS, HTTP-статус).
-UnknownHostError — хост URL вне whitelist'а конфига.
+UnknownConnectionError — имя соединения вне whitelist'а.
+UnknownHostError — хост URL не покрыт выбранным соединением.
 ResultTooLargeError — содержимое превысило max_result_chars конфига.
 """
 
@@ -30,6 +31,7 @@ from boba.toolkit.result import (
     ToolResult,
     pack_result,
 )
+from boba.toolkit.sql import ConnectionName, UnknownConnectionError
 from boba.toolkit.types import SecretRevealing
 from boba.transport.http import HttpProfile
 
@@ -42,12 +44,13 @@ class WebErrorKind(StrEnum):
     """Ожидаемые отказы web-инструментов."""
 
     REQUEST_FAILED = "web_request_failed"
+    UNKNOWN_TARGET = "unknown_target"
     UNKNOWN_HOST = "unknown_host"
     RESULT_TOO_LARGE = "result_too_large"
 
 
 class WebGrepConfig(SecretRevealing, WebConnection):
-    """Конфиг web-инструментов: whitelist хостов и лимиты выдачи; [tool.web]."""
+    """Конфиг web-инструментов: whitelist соединений и лимиты выдачи; [tool.web]."""
 
     SECTION: ClassVar[str] = "tool.web"
 
@@ -83,7 +86,7 @@ class WebPage:
                 timeout=profile.timeout_sec,
                 verify=profile.ssl_verify,
                 follow_redirects=True,
-                auth=profile.auth.httpx_auth(),
+                auth=profile.httpx_auth(),
             ) as client:
                 response = await client.get(url)
                 response.raise_for_status()
@@ -106,8 +109,19 @@ class WebPage:
 
 
 @tool
-async def web_fetch_page(
+async def web_list_targets(
+    cfg: Annotated[WebGrepConfig, Injected],
+) -> tuple[str, ToolResult]:
+    """Доступные соединения web-инструментов: connection_name и хост, который
+    оно покрывает (точный либо шаблон *.domain). Выбери connection_name,
+    чей хост покрывает URL запроса."""
+    return pack_result(cfg.targets_table())
+
+
+@tool
+async def web_fetch_page(  # noqa: PLR0913
     url: Annotated[str, Field(min_length=1, description="URL для скачивания")],
+    connection_name: ConnectionName,
     as_markdown: Annotated[
         bool,
         Field(description="true — конвертирует HTML->Markdown"),
@@ -122,8 +136,9 @@ async def web_fetch_page(
     ],
     cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Скачивает URL и возвращает окно строк; total_lines — для пагинации."""
-    profile = cfg.resolve_profile(url)
+    """Скачивает URL соединением connection_name (см. web_list_targets) и
+    возвращает окно строк; total_lines — для пагинации."""
+    profile = cfg.resolve_for(connection_name, url)
 
     page = await WebPage.load(
         url, profile, as_markdown=as_markdown, max_chars=cfg.max_result_chars
@@ -149,6 +164,7 @@ async def web_grep_page(  # noqa: PLR0913
         str,
         Field(min_length=1, description="URL для скачивания."),
     ],
+    connection_name: ConnectionName,
     pattern: Annotated[
         str,
         Field(min_length=1, description="Python-regex; литерал при fixed_string=true."),
@@ -176,8 +192,9 @@ async def web_grep_page(  # noqa: PLR0913
     *,
     cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Найти совпадения pattern в содержимом страницы."""
-    profile = cfg.resolve_profile(url)
+    """Найти совпадения pattern в содержимом страницы, скачанной соединением
+    connection_name (см. web_list_targets)."""
+    profile = cfg.resolve_for(connection_name, url)
 
     text = await WebPage.load(
         url, profile, as_markdown=as_markdown, max_chars=cfg.max_result_chars
@@ -196,11 +213,12 @@ async def web_grep_page(  # noqa: PLR0913
 
 EXPECTED: Mapping[type[Exception], WebErrorKind] = {
     WebRequestError: WebErrorKind.REQUEST_FAILED,
+    UnknownConnectionError: WebErrorKind.UNKNOWN_TARGET,
     UnknownHostError: WebErrorKind.UNKNOWN_HOST,
     ResultTooLargeError: WebErrorKind.RESULT_TOO_LARGE,
 }
 
-TOOLS: Final = ToolMain.toolset(web_fetch_page, web_grep_page)
+TOOLS: Final = ToolMain.toolset(web_list_targets, web_fetch_page, web_grep_page)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

@@ -2,20 +2,27 @@
 
 from boba.krb.config import (
     AcceptConfig,
-    CcacheConfig,
     ClientKerberos,
-    DelegationConfig,
+    ConstrainedDelegation,
+    DelegatedConfig,
+    Delegation,
+    DelegationMode,
+    ForwardedDelegation,
     Kerberos,
+    KerberosDump,
+    KerberosKind,
     KeytabConfig,
+    TicketConfig,
 )
 from boba.krb.credentials import (
-    CcacheCredentials,
+    CcacheLifetime,
     CcacheRegistry,
     ClientCredentials,
     DelegatedCredentials,
     KerberosCredentials,
     KerberosEnv,
     KeytabCredentials,
+    TicketCredentials,
     UserCcache,
 )
 from boba.krb.delegation import KerberosDelegation, SpnegoAcceptor, SpnegoIdentity
@@ -27,29 +34,40 @@ from boba.krb.errors import (
     KeytabError,
 )
 from boba.krb.pac import PacGroupSids
+from boba.krb.spnego import SpnegoNegotiate
+from boba.krb.tickets import ServiceTicketIssuer
 
 __all__ = [
     "AcceptConfig",
-    "CcacheConfig",
-    "CcacheCredentials",
+    "CcacheLifetime",
     "CcacheRegistry",
     "ClientCredentials",
     "ClientKerberos",
+    "ConstrainedDelegation",
     "CredentialsExpiredError",
+    "DelegatedConfig",
     "DelegatedCredentials",
-    "DelegationConfig",
+    "Delegation",
+    "DelegationMode",
     "DelegationNotPermittedError",
+    "ForwardedDelegation",
     "InvalidTokenError",
     "Kerberos",
     "KerberosCredentials",
     "KerberosDelegation",
+    "KerberosDump",
     "KerberosEnv",
     "KerberosError",
+    "KerberosKind",
     "KeytabConfig",
     "KeytabCredentials",
     "KeytabError",
     "PacGroupSids",
+    "ServiceTicketIssuer",
     "SpnegoAcceptor",
     "SpnegoIdentity",
+    "SpnegoNegotiate",
+    "TicketConfig",
+    "TicketCredentials",
     "UserCcache",
 ]

@@ -10,6 +10,7 @@ requires-python = ">=3.11,<4"
 dependencies = [
     # остановка хода: прерыватель регистрируется в TurnCancellation
     "boba-cancellation==0.0.14.dev3",
+    "boba-krb==0.0.14.dev3",
     "httpx>=0.28,<1",
     # auth.py / connection.py: профили на pydantic BaseModel
     "pydantic>=2.10,<2.11",

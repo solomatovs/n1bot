@@ -8,6 +8,16 @@ langchain (chat, bridge) и локальным рантаймом (local) имп
 Ошибки: см. docstring'и модулей пакета.
 """
 
+from boba.llm.embedding import (
+    EmbedderFactory,
+    EmbeddingConfig,
+    EmbeddingError,
+    LocalEmbedding,
+    LocalFastEmbedEmbedder,
+    OpenAiEmbedder,
+    OpenAiEmbedding,
+)
+from boba.llm.openai import OpenAiConfig, OpenAiDumpConfig, OpenAiHttp
 from boba.llm.provider import (
     ChatBackendConfig,
     ChatDelta,
@@ -24,17 +34,6 @@ from boba.llm.provider import (
     ToolCallRequest,
     ToolSpec,
 )
-
-from boba.llm.embedding import (
-    EmbedderFactory,
-    EmbeddingConfig,
-    EmbeddingError,
-    LocalEmbedding,
-    LocalFastEmbedEmbedder,
-    OpenAiEmbedder,
-    OpenAiEmbedding,
-)
-from boba.llm.openai import OpenAiConfig, OpenAiDumpConfig, OpenAiHttp
 
 __all__ = [
     "ChatBackendConfig",

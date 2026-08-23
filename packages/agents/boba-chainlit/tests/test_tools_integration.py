@@ -20,8 +20,10 @@ from psycopg import sql
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.infra.plugins import as_structured_tool, warmup_configs
+from boba.chainlit.infra.tickets import ServiceTickets
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresConfig
+from boba.krb import KeytabConfig, KeytabCredentials, ServiceTicketIssuer
 from boba.sandbox import (
     SandboxToolConfig,
 )
@@ -29,6 +31,7 @@ from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.settings import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
+from boba.tool.pg.tools import PgToolConfig
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.calls import ScriptCall
@@ -44,6 +47,7 @@ from boba.toolkit.result import (
     ToolArtifact,
 )
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.transport.http import HttpProfile
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS = _REPO / "build" / "src" / "sandbox" / "rootfs"
@@ -98,6 +102,7 @@ trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
 WORKSPACE_PDF = "/workspace/integration.pdf"
+WEB_CONNECTION = "confluence"
 
 
 ZYGOTE = ZygotePolicy(
@@ -121,6 +126,33 @@ class ToolSetup:
     @staticmethod
     def path_vars() -> dict[str, str]:
         return {"user_id": USER_ID, "thread_id": THREAD_ID}
+
+    @staticmethod
+    def pg_config(raw: Any) -> PgToolConfig:
+        """[tool.pg] с whitelist'ом из сервисного [postgres]: в приложении
+        whitelist собирает обвязка из таблицы соединений, а kerberos-секция
+        едет внутрь билетом вызова — ccache сервиса в песочнице нет."""
+        limits = bind(raw, path="tool.pg", model=PgToolConfig)
+        service = bind(raw, path="postgres", model=PostgresConfig)
+
+        kerberos = service.kerberos
+        if isinstance(kerberos, KeytabConfig):
+            issuer = ServiceTicketIssuer(kerberos.min_lifetime)
+            source = KeytabCredentials.of(kerberos)
+            ticket = issuer.issue(source, service.service_name())
+            service = service.model_copy(update={"kerberos": ticket})
+
+        return limits.model_copy(update={"profiles": {"main": service}})
+
+    @staticmethod
+    def web_config(raw: Any) -> WebGrepConfig:
+        """[tool.web] с whitelist'ом из сервисного [web.confluence]."""
+        limits = bind(raw, path="tool.web", model=WebGrepConfig)
+        service = bind(raw, path="web.confluence", model=HttpProfile)
+        if service.base_url is None:
+            raise AssertionError("[web.confluence] has no base_url")
+
+        return limits.model_copy(update={"profiles": {WEB_CONNECTION: service}})
 
     @staticmethod
     def caller(raw: Any, section: str, modules: Sequence[str] = ()) -> ZygoteToolCaller:
@@ -249,7 +281,7 @@ def web_tools(raw_config):
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
-        return bind(raw_config, path=annotation.SECTION, model=annotation)
+        return ToolSetup.web_config(raw_config)
 
     InjectedConfig.bind_all(functions, resolve)
 
@@ -259,13 +291,8 @@ def web_tools(raw_config):
 @pytest.fixture(scope="module")
 def whitelisted_url(raw_config) -> str:
     """Адрес для web-тестов берётся из whitelist'а: другие хосты запрещены."""
-    cfg = bind(raw_config, path="tool.web", model=WebGrepConfig)
-    hosts = sorted(cfg.profiles)
-    if not (hosts):
-        raise AssertionError(
-            "[tool.web.profiles] пуст — web-инструментам некуда ходить"
-        )
-    return f"https://{hosts[0]}/"
+    host = ToolSetup.web_config(raw_config).profiles[WEB_CONNECTION].host()
+    return f"https://{host}/"
 
 
 @pytest.fixture(scope="module")
@@ -305,7 +332,7 @@ def pg_tools(raw_config):
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
-        return bind(raw_config, path=annotation.SECTION, model=annotation)
+        return ToolSetup.pg_config(raw_config)
 
     InjectedConfig.bind_all(functions, resolve)
 
@@ -381,6 +408,7 @@ def ingest_tools(raw_config, kb_collection: str):
         cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
         return cfg.model_copy(update={"collection": kb_collection})
 
+    ServiceTickets.bind_all(functions, resolve)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
@@ -404,6 +432,7 @@ def kb_tools(raw_config, kb_collection: str):
         cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
         return cfg.model_copy(update={"collection": kb_collection})
 
+    ServiceTickets.bind_all(functions, resolve)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
@@ -670,6 +699,7 @@ class TestWebTools:
         result = await Call.ok(
             web_tools["web_fetch_page"],
             url=whitelisted_url,
+            connection_name=WEB_CONNECTION,
             as_markdown=True,
             line_offset=0,
             line_count=20,
@@ -685,6 +715,7 @@ class TestWebTools:
         result = await Call.ok(
             web_tools["web_grep_page"],
             url=whitelisted_url,
+            connection_name=WEB_CONNECTION,
             pattern="Confluence",
             limit=3,
         )
@@ -701,6 +732,7 @@ class TestWebTools:
             await Call.result(
                 web_tools["web_fetch_page"],
                 url="https://example.com/",
+                connection_name=WEB_CONNECTION,
                 as_markdown=True,
                 line_offset=0,
                 line_count=5,
@@ -708,8 +740,9 @@ class TestWebTools:
 
         if caught.value.kind != "unknown_host":
             raise AssertionError('caught.value.kind == "unknown_host"')
-        if "whitelist" not in str(caught.value):
-            raise AssertionError('"whitelist" in str(caught.value)')
+        if "outside connection" not in str(caught.value):
+            msg = f"host refusal must name the connection: {caught.value}"
+            raise AssertionError(msg)
 
 
 class TestConfluenceTools:

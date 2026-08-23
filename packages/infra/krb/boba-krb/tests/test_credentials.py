@@ -59,8 +59,13 @@ class TestKeytabConfig:
             KeytabConfig(keytab="k", principal="p", ccache="./krb5cc")
 
     def test_ccache_unknown_type_rejected(self) -> None:
-        with pytest.raises(ValueError, match="неизвестный тип"):
+        with pytest.raises(ValueError, match="need FILE"):
             KeytabConfig(keytab="k", principal="p", ccache="WAT:./krb5cc")
+
+    def test_process_ccache_rejected(self) -> None:
+        """MEMORY/KEYRING видны всему процессу: TGT keytab живёт только в файле."""
+        with pytest.raises(ValueError, match="need FILE"):
+            KeytabConfig(keytab="k", principal="p", ccache="MEMORY:shared")
 
     def test_ccache_with_type_accepted(self) -> None:
         cfg = KeytabConfig(keytab="k", principal="p", ccache="FILE:./krb5cc")

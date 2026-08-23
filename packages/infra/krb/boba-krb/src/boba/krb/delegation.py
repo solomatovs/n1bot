@@ -1,9 +1,8 @@
-"""SPNEGO-accept по keytab сервиса и получение тикета к бэкенду от имени пользователя.
+"""SPNEGO-accept по keytab сервиса и захват делегированного тикета входа.
 
-Ошибки: KeytabError — keytab/SPN сервиса непригодны;
-InvalidTokenError — токен клиента битый, просроченный или неполный;
-CredentialsExpiredError — тикет пользователя истёк;
-DelegationNotPermittedError — делегирование запрещено политикой AD;
+Ошибки:
+KeytabError — keytab/SPN сервиса непригодны.
+InvalidTokenError — токен клиента битый, просроченный или неполный.
 KerberosError — прочие сбои GSSAPI.
 """
 
@@ -11,15 +10,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
+import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import ClassVar
 
+import krb5
 from gssapi import Credentials, Name, NameType, SecurityContext
 from gssapi.raw.misc import GSSError
 
-from boba.krb.config import AcceptConfig, DelegationConfig
-from boba.krb.credentials import CcacheRegistry, UserCcache
+from boba.krb.config import (
+    AcceptConfig,
+    Delegation,
+    DelegationMode,
+    ForwardedDelegation,
+)
+from boba.krb.credentials import CcacheLifetime, CcacheRegistry, UserCcache
 from boba.krb.errors import InvalidTokenError, KerberosError, KeytabError
 from boba.krb.pac import PacGroupSids
 
@@ -36,10 +42,16 @@ class SpnegoIdentity:
 
 
 class SpnegoAcceptor:
-    """accept-сторона SPNEGO: проверяет токен клиента ключом SPN из keytab сервиса."""
+    """accept-сторона SPNEGO: проверяет токен клиента ключом SPN из keytab сервиса.
 
-    def __init__(self, config: AcceptConfig) -> None:
+    В режиме constrained креды берутся на обе стороны (accept + initiate):
+    для S4U2Proxy сервису нужен собственный TGT из того же keytab, и MIT
+    отдаёт evidence-креды пользователя только такому acceptor'у.
+    """
+
+    def __init__(self, config: AcceptConfig, delegation: Delegation) -> None:
         self._config = config
+        self._delegation = delegation
         self._logger = logging.getLogger(SpnegoAcceptor.__name__)
 
     def accept(self, token: bytes) -> SpnegoIdentity:
@@ -70,19 +82,30 @@ class SpnegoAcceptor:
     def _context(self) -> SecurityContext:
         """accept-контекст на ключе SPN; сбой здесь — проблема keytab/SPN сервиса."""
         try:
-            name = Name(self._config.service_name, NameType.kerberos_principal)
-            creds = Credentials(
-                name=name,
-                usage="accept",
-                store={b"keytab": self._config.keytab},
-            )
-            return SecurityContext(creds=creds, usage="accept")
+            return SecurityContext(creds=self._credentials(), usage="accept")
         except GSSError as exc:
             msg = (
                 f"spnego accept creds {self._config.service_name} "
                 f"from {self._config.keytab}"
             )
             raise KeytabError(f"{msg}: {exc}") from exc
+
+    def _credentials(self) -> Credentials:
+        keytab = self._config.keytab.encode()
+
+        if isinstance(self._delegation, ForwardedDelegation):
+            name = Name(self._config.service_name, NameType.kerberos_principal)
+            return Credentials(name=name, usage="accept", store={b"keytab": keytab})
+
+        # имя не задаётся: SPN не может быть клиентом, ключ учётки берётся из keytab
+        return Credentials(
+            usage="both",
+            store={
+                b"keytab": keytab,
+                b"client_keytab": keytab,
+                b"ccache": self._delegation.service_ccache.encode(),
+            },
+        )
 
     def _group_sids(self, principal: str, ctx: SecurityContext) -> Sequence[str]:
         """SID-ы групп из PAC; пустой список, если PAC нет или он не разобрался."""
@@ -105,37 +128,41 @@ class SpnegoAcceptor:
 
 
 class KerberosDelegation:
-    "Стратегия по AD-учётке: захваченный при логине TGT либо S4U по keytab сервиса"
+    """Делегированные при логине креды складываются в ccache входа и регистрируются.
+
+    Содержимое ccache сверяется с режимом: forwarded требует TGT пользователя,
+    constrained — evidence-тикет и отсутствие TGT пользователя. Несовпадение —
+    вход без делегирования, причина в логе.
+    """
+
+    LOGIN_BYTES: ClassVar[int] = 18
+    """Длина случайной метки входа в байтах."""
 
     def __init__(
         self,
         registry: CcacheRegistry,
         config: AcceptConfig,
-        delegation: DelegationConfig,
+        delegation: Delegation,
     ) -> None:
         self._registry = registry
         self._config = config
         self._delegation = delegation
         self._logger = logging.getLogger(KerberosDelegation.__name__)
 
-    @staticmethod
-    def sanitize_principal(principal: str) -> str:
-        return re.sub(r"[^\w.@-]", "_", principal)
+    def on_success_authenticated(self, identity: SpnegoIdentity) -> str:
+        """Складывает делегированный тикет входа в свой ccache; итог — метка входа.
 
-    def captured(self, username: str) -> bool:
-        "Есть ли захваченный при логине ccache пользователя (форварднутый TGT)."
-        return self._registry.of(username) is not None
-
-    def on_success_authenticated(self, identity: SpnegoIdentity) -> None:
-        """Складывает делегированный тикет пользователя в его ccache."""
+        Пустая метка — делегированных кредов у входа нет.
+        """
         if identity.delegated is None:
             self._logger.warning(
                 "no delegated_credentials for %s (delegation not permitted in AD)",
                 identity.principal,
             )
-            return
+            return ""
 
-        ccache = self._ccache_of(identity.principal)
+        login = secrets.token_urlsafe(self.LOGIN_BYTES)
+        ccache = self._ccache_of(login)
 
         try:
             identity.delegated.store(
@@ -147,68 +174,58 @@ class KerberosDelegation:
             msg = f"failed to store delegated ccache {ccache}"
             raise KerberosError.of_gss(exc, msg) from exc
 
-        self._registry.register(UserCcache(identity.principal, ccache))
+        refusal = self.mismatch(ccache, identity.principal, self._registry.mode)
+        if refusal:
+            self._logger.error(
+                "kerberos: delegated credentials of %s rejected: %s",
+                identity.principal,
+                refusal,
+            )
+            self._destroy(ccache)
+            return ""
+
+        self._registry.register(UserCcache(identity.principal, ccache, login))
         self._logger.info(
-            "kerberos: captured delegated ticket %s -> %s", identity.principal, ccache
+            "kerberos: captured delegated credentials (%s) %s -> %s",
+            self._registry.mode.value,
+            identity.principal,
+            ccache,
         )
 
-    def _ccache_of(self, principal: str) -> str:
-        template = self._delegation.ccache_template
-        safe_principal = self.sanitize_principal(principal)
-
-        try:
-            return template.format(principal=safe_principal)
-        except (KeyError, IndexError) as exc:
-            raise KerberosError(f"bad ccache_template {template!r}: {exc}") from exc
-
-    async def credentials_for(self, username: str, target_spn: str) -> bytes:
-        """AP-REQ к target_spn от имени пользователя: делегированный тикет или S4U."""
-        credentials = self._registry.of(username)
-
-        if credentials is None:
-            return await asyncio.to_thread(self._s4u_token, username, target_spn)
-
-        await credentials.ensure_async()
-
-        return await asyncio.to_thread(self._init_token, credentials.ccache, target_spn)
+        return login
 
     @staticmethod
-    def _init_token(ccache: str, target_spn: str) -> bytes:
+    def mismatch(ccache: str, principal: str, mode: DelegationMode) -> str:
+        """Чем содержимое ccache не подходит режиму; пустая строка — подходит."""
+        tgt = CcacheLifetime.tgt(ccache, principal)
+        evidence = CcacheLifetime.evidence(ccache, principal)
+
+        if mode is DelegationMode.FORWARDED:
+            if tgt == 0:
+                return "no forwarded TGT (AD: service not trusted for delegation?)"
+
+            return ""
+
+        if tgt > 0:
+            return "a forwarded TGT arrived while constrained delegation is configured"
+
+        if evidence == 0:
+            return "no evidence ticket (acceptor credentials without a service TGT?)"
+
+        return ""
+
+    @staticmethod
+    def _destroy(ccache: str) -> None:
         try:
-            creds = Credentials(usage="initiate", store={b"ccache": ccache.encode()})
-            target = Name(target_spn, NameType.kerberos_principal)
-            ctx = SecurityContext(name=target, creds=creds, usage="initiate")
-            token = ctx.step()
-        except GSSError as exc:
-            raise KerberosError.of_gss(exc, f"initiate to {target_spn}") from exc
+            context = krb5.init_context()
+            krb5.cc_destroy(context, krb5.cc_resolve(context, ccache.encode()))
+        except krb5.Krb5Error:
+            return
 
-        # initiate обязан выдать AP-REQ для бэкенда; пустой токен = слать нечего
-        if not token:
-            msg = "gss step returned empty token on initiate side"
-            raise KerberosError(msg)
+    def _ccache_of(self, login: str) -> str:
+        template = self._delegation.ccache_template
 
-        return token
-
-    def _s4u_token(self, username: str, target_spn: str) -> bytes:
         try:
-            service = Credentials(
-                name=Name(self._config.service_name, NameType.kerberos_principal),
-                usage="both",
-                store={b"keytab": self._config.keytab},
-            )
-            user = Name(username, NameType.kerberos_principal)
-            user_creds = service.impersonate(user)
-            target = Name(target_spn, NameType.kerberos_principal)
-            # initiate этими creds → KDC делает S4U2Proxy и проверяет whitelist
-            ctx = SecurityContext(name=target, creds=user_creds, usage="initiate")
-            token = ctx.step()
-        except GSSError as exc:
-            msg = f"s4u {username} to {target_spn}"
-            raise KerberosError.of_gss(exc, msg) from exc
-
-        # initiate обязан выдать AP-REQ для бэкенда; пустой токен = слать нечего
-        if not token:
-            msg = "gss step returned empty token on initiate side (S4U)"
-            raise KerberosError(msg)
-
-        return token
+            return template.format(login=login)
+        except (KeyError, IndexError) as exc:
+            raise KerberosError(f"bad ccache_template {template!r}: {exc}") from exc
