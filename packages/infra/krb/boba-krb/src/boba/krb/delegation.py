@@ -25,7 +25,12 @@ from boba.krb.config import (
     DelegationMode,
     ForwardedDelegation,
 )
-from boba.krb.credentials import CcacheLifetime, CcacheRegistry, UserCcache
+from boba.krb.credentials import (
+    CcacheLifetime,
+    CcacheRegistry,
+    KerberosEnv,
+    UserCcache,
+)
 from boba.krb.errors import InvalidTokenError, KerberosError, KeytabError
 from boba.krb.pac import PacGroupSids
 
@@ -55,7 +60,18 @@ class SpnegoAcceptor:
         self._logger = logging.getLogger(SpnegoAcceptor.__name__)
 
     def accept(self, token: bytes) -> SpnegoIdentity:
-        """Проверяет токен и возвращает принципал клиента с его группами."""
+        """Проверяет токен и возвращает принципал клиента с его группами.
+
+        Весь обмен идёт под krb5.conf режима делегирования: в constrained
+        пустой ccache сервиса заставляет libkrb5 идти в KDC за собственным
+        TGT, а адрес KDC берётся только из конфига.
+        """
+        values = {KerberosEnv.CONFIG: self._delegation.krb5_config}
+
+        with KerberosEnv.applied(values):
+            return self._accepted(token)
+
+    def _accepted(self, token: bytes) -> SpnegoIdentity:
         ctx = self._context()
 
         try:
