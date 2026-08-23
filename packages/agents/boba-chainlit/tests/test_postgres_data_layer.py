@@ -13,7 +13,7 @@ from conftest import Seed
 
 from boba.chainlit.data import data_layer as data_layer_module
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.data.errors import DataRejectedError
+from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
 from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import UserMetadataField
 
@@ -44,6 +44,16 @@ async def test_create_and_get_user(layer: PostgresDataLayer):
 
     if await layer.get_user("does-not-exist") is not None:
         raise AssertionError('await layer.get_user("does-not-exist") is None')
+
+
+async def test_identifier_case_cannot_split_a_user(layer: PostgresDataLayer):
+    """Инвариант держит база: второе написание того же логина не вставится."""
+    created = await layer.create_user(ChainlitUser(identifier="maksimov.ma"))
+    if created is None:
+        raise AssertionError("created is not None")
+
+    with pytest.raises(DataUnavailableError):
+        await layer.create_user(ChainlitUser(identifier="Maksimov.MA"))
 
 
 async def test_create_user_keeps_the_sign_in_label_on_the_caller(

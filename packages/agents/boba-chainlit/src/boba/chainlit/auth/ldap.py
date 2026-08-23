@@ -38,7 +38,7 @@ from boba.chainlit.domain.errors import (
     ExternalServiceError,
     InternalServiceError,
 )
-from boba.chainlit.domain.session import UserMetadataField
+from boba.chainlit.domain.session import UserLogin, UserMetadataField
 
 
 class LDAPError(Exception):
@@ -394,8 +394,8 @@ class LdapAuth:
             bind_dn = self._config.bind_dn_template.format(username=username)
             search_filter = self._config.user_filter.format(username=username)
             search_base = self._config.base_dn
-            user_dn, member_of = await asyncio.to_thread(
-                self._ad.fetch_userdn_and_member_of,
+            user_dn, samaccountname, member_of = await asyncio.to_thread(
+                self._ad.fetch_userdn_samaccountname_member_of,
                 server=server,
                 bind_dn=bind_dn,
                 bind_password=password,
@@ -403,27 +403,33 @@ class LdapAuth:
                 search_filter=search_filter,
             )
 
-            if self._excluded_of(username, user_dn, member_of):
-                self._logger.warning("access denied for %s (excluded)", username)
+            # имя берём из каталога, а не из формы: набранный регистр на
+            # роли, запреты и строку users влиять не должен
+            login = UserLogin.of(samaccountname)
+
+            if self._excluded_of(samaccountname, user_dn, member_of):
+                self._logger.warning("access denied for %s (excluded)", login.key)
                 raise AuthorizationError("Access denied")
 
             metadata: dict[str, Any] = {
                 UserMetadataField.PROVIDER: LdapAuth.__name__,
             }
 
-            roles = self._roles_of(username, user_dn, member_of)
+            roles = self._roles_of(samaccountname, user_dn, member_of)
 
             requires_roles = self._config.require_roles
             if requires_roles and not roles:
-                self._logger.warning("access denied for %s (no roles mapped)", username)
+                self._logger.warning(
+                    "access denied for %s (no roles mapped)", login.key
+                )
                 raise AuthorizationError("Access denied")
 
             if roles:
                 metadata[UserMetadataField.ROLES] = roles
 
             return cl.User(
-                identifier=username,
-                display_name=username,
+                identifier=login.key,
+                display_name=login.display,
                 metadata=metadata,
             )
         except LDAPUserNotFoundError as e:

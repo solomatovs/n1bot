@@ -38,6 +38,8 @@ from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.domain.session import (
     current_chat_profile,
+    current_thread_id,
+    current_user_label,
     current_user_metadata,
     current_user_roles,
 )
@@ -236,18 +238,15 @@ async def connection_store(
 
 def _chainlit_dump_file(request: httpx.Request) -> str:
     """Имя файла дампа: пользователь и thread текущей chainlit-сессии."""
-    from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
-
-    try:
-        ctx = get_context()
-    except ChainlitContextException:
+    thread_id = current_thread_id()
+    if thread_id is None:
         return f"no-context-{request.url.host}.log"
 
-    who = "anon"
-    if user := getattr(ctx.session, "user", None):
-        who = user.identifier
+    who = current_user_label()
+    if not who:
+        who = "anon"
 
-    label = re.sub(r"[^\w.@-]", "_", f"{who}-{ctx.session.thread_id}")
+    label = re.sub(r"[^\w.@-]", "_", f"{who}-{thread_id}")
 
     return f"{label}-{request.url.host}.log"
 

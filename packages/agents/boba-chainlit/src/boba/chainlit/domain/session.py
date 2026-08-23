@@ -23,11 +23,13 @@ __all__ = [
     "LogLine",
     "LogUserMark",
     "SsoMarks",
+    "UserLogin",
     "UserMetadataField",
     "current_chat_profile",
     "current_language",
     "current_login_user",
     "current_thread_id",
+    "current_user",
     "current_user_id",
     "current_user_label",
     "current_user_metadata",
@@ -44,6 +46,25 @@ class UserMetadataField:
     LOGIN: Final = "sso_login"
     ROLES: Final = "roles"
     LLM: Final = "llm"
+
+
+@dataclass(frozen=True)
+class UserLogin:
+    """Логин входа: ключ строки users и его человеческий вид.
+
+    Регистр набора не заводит вторую личность: в identifier уходит key,
+    а исходное написание остаётся именем в интерфейсе. Источник логина
+    выбирает провайдер: ввод формы, sAMAccountName каталога, принципал.
+    """
+
+    key: str
+    display: str
+
+    @classmethod
+    def of(cls, raw: str) -> UserLogin:
+        name = raw.strip()
+
+        return cls(key=name.lower(), display=name)
 
 
 @dataclass(frozen=True)
@@ -129,7 +150,12 @@ class LogUserMark:
             self._current.reset(token)
 
 
-def _current_user() -> cl.User | cl.PersistedUser | None:
+def current_user() -> cl.User | cl.PersistedUser | None:
+    """Пользователь сессии chainlit; вне сессии — None.
+
+    Строка users, слитая всеми входами подряд: metadata здесь живут дольше
+    одного входа. Ровно этот вход описывает current_login_user().
+    """
     try:
         return cl.user_session.get("user")
     except ChainlitContextException:
@@ -155,12 +181,12 @@ def roles_of_user(user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
 
 
 def current_user_roles() -> frozenset[str]:
-    return roles_of_user(_current_user())
+    return roles_of_user(current_user())
 
 
 def current_user_metadata() -> dict[str, object]:
     """Metadata пользователя сессии; вне сессии — пустой словарь."""
-    user = _current_user()
+    user = current_user()
     if user is None:
         return {}
 
@@ -226,13 +252,13 @@ def current_login_user() -> cl.User | None:
 
 
 def current_user_id() -> str | None:
-    user = _current_user()
+    user = current_user()
     return getattr(user, "id", None)
 
 
 def current_user_label() -> str:
     """Логин для логов; пустая строка — запрос идёт вне сессии chainlit."""
-    user = _current_user()
+    user = current_user()
     if user is None:
         return ""
     identifier = getattr(user, "identifier", "")

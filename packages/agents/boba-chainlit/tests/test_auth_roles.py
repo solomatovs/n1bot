@@ -25,7 +25,7 @@ from boba.chainlit.auth.local import (
     RoleMappingConfig,
 )
 from boba.chainlit.domain.errors import AuthorizationError
-from boba.chainlit.domain.session import UserMetadataField
+from boba.chainlit.domain.session import UserLogin, UserMetadataField
 
 pytestmark = pytest.mark.anyio
 
@@ -176,3 +176,43 @@ def test_ldap_provider_excludes_by_any_source() -> None:
     )
     if provider.excluded_of(allowed) is not False:
         raise AssertionError("provider.excluded_of(allowed) is False")
+
+
+class TestUserLoginCanon:
+    """Регистр набранного логина не заводит вторую личность."""
+
+    def test_key_is_lowered_and_display_keeps_the_source(self) -> None:
+        login = UserLogin.of("  Maksimov.MA ")
+
+        if login.key != "maksimov.ma":
+            raise AssertionError(f"ключ в нижнем регистре, дано {login.key!r}")
+
+        if login.display != "Maksimov.MA":
+            raise AssertionError(f"вид как в источнике, дано {login.display!r}")
+
+    def test_different_case_gives_one_key(self) -> None:
+        keys = {UserLogin.of(name).key for name in ("MAKSIMOV.MA", "Maksimov.MA")}
+
+        if keys != {"maksimov.ma"}:
+            raise AssertionError(f"один ключ на все написания, дано {keys!r}")
+
+
+class TestLocalAuthIdentifier:
+    """LocalAuth: в базу уходит канон логина, в интерфейс — как в конфиге."""
+
+    async def test_identifier_is_the_canonical_login(self) -> None:
+        config = LocalAuthConfig(
+            users={"Maksimov.MA": "pw"},
+            roles=RoleMappingConfig({"Maksimov.MA": ["admin"]}),
+        )
+
+        user = await LocalAuth(config).password_auth("Maksimov.MA", "pw")
+
+        if user is None:
+            raise AssertionError("user is not None")
+
+        if user.identifier != "maksimov.ma":
+            raise AssertionError(f"identifier канонизирован, дано {user.identifier!r}")
+
+        if user.display_name != "Maksimov.MA":
+            raise AssertionError(f"display как в конфиге, дано {user.display_name!r}")
