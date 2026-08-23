@@ -1,21 +1,21 @@
 """Делегирование входа на живом KDC стенда: forwarded и constrained.
 
-Браузер моделируется initiate-контекстом пользователя `readonly` (TGT по
-паролю из [site]); сервис — accept по keytab boba-svc. Constrained требует
-на стенде `samba-tool delegation add-service boba-svc postgres/…` и снятого
-флага sensitive у boba-svc.
+Браузер моделируется initiate-контекстом второго пользователя стенда (TGT по
+паролю из конфига); сервис — accept по keytab приложения. Constrained требует
+на стенде выданного делегирования на целевой SPN и снятого флага sensitive
+у принципала приложения.
 """
 
 from __future__ import annotations
 
 import os
-import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 
 import krb5
 import pytest
 from gssapi import Credentials, Name, NameType, SecurityContext
+from stand_site import Stand
 
 from boba.krb import (
     AcceptConfig,
@@ -26,26 +26,25 @@ from boba.krb import (
     ForwardedDelegation,
     KerberosDelegation,
     KerberosEnv,
-    KeytabConfig,
+    KerberosWorkspace,
+    KeytabAuth,
     KeytabCredentials,
     ServiceTicketIssuer,
     SpnegoAcceptor,
     TicketCredentials,
 )
 
-_REPO = Path(__file__).resolve().parents[5]
-_KRB = _REPO / "compose" / "conf" / "krb"
-_CONFIG = _REPO / "compose" / "conf" / "config.toml"
-KRB5_CONF = _KRB / "krb5.conf"
-SERVICE_KEYTAB = _KRB / "boba-svc.keytab"
-SERVICE_SPN = "HTTP/loshara.com@LOSHARA.COM"
-SERVICE_PRINCIPAL = "boba-svc@LOSHARA.COM"
-USER_PRINCIPAL = "readonly@LOSHARA.COM"
-TARGET = "postgres@postgres-17.loshara.com"
+STAND = Stand.required()
+KRB5_CONF = Path(STAND.krb_config)
+SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
+SERVICE_SPN = f"HTTP/{STAND.krb_domain}@{STAND.krb_realm}"
+SERVICE_PRINCIPAL = STAND.service_principal
+USER_PRINCIPAL = STAND.reader_principal
+TARGET = STAND.pg_spn
 
 live_kdc = pytest.mark.skipif(
-    not SERVICE_KEYTAB.is_file() or not KRB5_CONF.is_file() or not _CONFIG.is_file(),
-    reason="нет keytab/krb5.conf/config.toml стенда",
+    not STAND.live(),
+    reason="нет keytab/krb5.conf стенда",
 )
 
 pytestmark = [live_kdc]
@@ -63,8 +62,7 @@ def krb5_env() -> Iterator[None]:
 
 
 def _user_password() -> str:
-    with _CONFIG.open("rb") as handle:
-        return str(tomllib.load(handle)["site"]["ldap_bind_password"])
+    return STAND.reader_password.get_secret_value()
 
 
 class Browser:
@@ -164,18 +162,18 @@ class TestConstrained:
         self, tmp_path: Path, krb5_env: None
     ) -> None:
         """Ccache с TGT пользователя не подходит режиму constrained."""
-        ccache = f"FILE:{tmp_path / 'forwarded'}"
-        KeytabCredentials.of(
-            KeytabConfig(
-                keytab=str(SERVICE_KEYTAB),
+        KerberosWorkspace.configure(str(KRB5_CONF), str(tmp_path / "cache"))
+        credentials = KeytabCredentials.of(
+            KeytabAuth(
+                method="kerberos_keytab",
                 principal=SERVICE_PRINCIPAL,
-                ccache=ccache,
-                krb5_config=str(KRB5_CONF),
+                keytab=str(SERVICE_KEYTAB),
             )
-        ).ensure()
+        )
+        credentials.ensure()
 
         reason = KerberosDelegation.mismatch(
-            ccache, SERVICE_PRINCIPAL, DelegationMode.CONSTRAINED
+            credentials.ccache, SERVICE_PRINCIPAL, DelegationMode.CONSTRAINED
         )
         if "forwarded TGT" not in reason:
             raise AssertionError(f"TGT must be rejected: {reason!r}")
@@ -202,18 +200,18 @@ class TestForwarded:
     def test_tgt_ccache_matches_forwarded_mode(
         self, tmp_path: Path, krb5_env: None
     ) -> None:
-        ccache = f"FILE:{tmp_path / 'tgt'}"
-        KeytabCredentials.of(
-            KeytabConfig(
-                keytab=str(SERVICE_KEYTAB),
+        KerberosWorkspace.configure(str(KRB5_CONF), str(tmp_path / "cache"))
+        credentials = KeytabCredentials.of(
+            KeytabAuth(
+                method="kerberos_keytab",
                 principal=SERVICE_PRINCIPAL,
-                ccache=ccache,
-                krb5_config=str(KRB5_CONF),
+                keytab=str(SERVICE_KEYTAB),
             )
-        ).ensure()
+        )
+        credentials.ensure()
 
         reason = KerberosDelegation.mismatch(
-            ccache, SERVICE_PRINCIPAL, DelegationMode.FORWARDED
+            credentials.ccache, SERVICE_PRINCIPAL, DelegationMode.FORWARDED
         )
         if reason:
             raise AssertionError(f"a TGT ccache must satisfy forwarded mode: {reason}")

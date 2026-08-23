@@ -21,8 +21,13 @@ from boba.chainlit.connections import (
     StoredConnection,
 )
 from boba.chainlit.data.models import Thread, User
-from boba.db.clickhouse import ClickHouseConfig, ClickHouseSettingsConfig
+from boba.db.clickhouse import (
+    ClickHouseConfig,
+    ClickHouseSettingsConfig,
+    NoPasswordAuth,
+)
 from boba.db.postgres import (
+    PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,
@@ -47,9 +52,10 @@ def _cipher() -> SecretCipher:
 def _pg(**kw) -> PostgresConfig:
     return PostgresConfig(
         host="db",
-        user="boba",
         dbname="n1bot",
-        gssencmode="disable",
+        auth=PasswordAuth(
+            method="password", user="boba", password=SecretStr(kw.pop("password", "x"))
+        ),
         options=PostgresOptionsConfig(),
         pool=PostgresPoolConfig(),
         **kw,
@@ -169,13 +175,16 @@ class TestDeepEncryption:
 
 class TestRealProfiles:
     def test_postgres_password_is_a_secret(self) -> None:
-        if not (isinstance(_pg(password=FakeSecret.DB).password, SecretStr)):
+        auth = _pg(password=FakeSecret.DB).auth
+        if not isinstance(auth, PasswordAuth) or not isinstance(
+            auth.password, SecretStr
+        ):
             raise AssertionError("пароль профиля должен быть SecretStr")
 
     def test_postgres_password_encrypted(self) -> None:
         sealed = _cipher().encrypt(_pg(password=FakeSecret.DB))
-        if not (SecretCipher.is_encrypted(sealed["password"])):
-            raise AssertionError('SecretCipher.is_encrypted(sealed["password"])')
+        if not (SecretCipher.is_encrypted(sealed["auth"]["password"])):
+            raise AssertionError("пароль в дампе не зашифрован")
         if FakeSecret.DB in json.dumps(sealed, ensure_ascii=False):
             raise AssertionError("пароль утёк в зашифрованный дамп")
 
@@ -253,7 +262,7 @@ class TestConnectionKind:
             host="ch",
             port=8123,
             interface="http",
-            username="boba",
+            auth=NoPasswordAuth(method="no_password", user="boba"),
             settings=ClickHouseSettingsConfig(),
         )
         if ConnectionKind.of(profile) is not ConnectionKind.CLICKHOUSE:
@@ -279,7 +288,7 @@ class TestConnectionKind:
             "host": "ch",
             "port": 8123,
             "interface": "http",
-            "username": "boba",
+            "auth": {"method": "no_password", "user": "boba"},
             "settings": {},
         }
         raw = {"id": 1, "name": "x", "profile": profile}

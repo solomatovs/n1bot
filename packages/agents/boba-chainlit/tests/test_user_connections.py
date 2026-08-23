@@ -18,6 +18,7 @@ from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
 from pydantic import SecretStr
+from stand_site import Stand
 from test_tools_integration import Call, ToolSetup
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
@@ -38,12 +39,12 @@ from boba.chainlit.infra.user_connections import (
     UserConnections,
     UserConnectionsSpec,
 )
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig
+from boba.db.postgres import AsyncPostgresPool, PasswordAuth, PostgresConfig
 from boba.krb import (
     CcacheRegistry,
-    DelegatedConfig,
+    DelegatedAuth,
     DelegationMode,
-    KeytabConfig,
+    KeytabAuth,
     KeytabCredentials,
     UserCcache,
 )
@@ -117,32 +118,30 @@ def service_pg(raw_config: Any) -> PostgresConfig:
     return bind(raw_config, path="postgres", model=PostgresConfig)
 
 
-_KRB = _REPO / "compose" / "conf" / "krb"
-SERVICE_PRINCIPAL = "boba-svc@LOSHARA.COM"
+STAND = Stand.required()
+SERVICE_PRINCIPAL = STAND.service_principal
+SERVICE_USER = STAND.krb_pg_user
 SERVICE_LOGIN = "login-e2e"
+CH_URL = f"http://{STAND.ch_addr}:{STAND.ch_port}"
 
 
 @pytest.fixture
 def registry(tmp_path: Path) -> CcacheRegistry:
     """Делегированный тикет входа: TGT сервисной учётки из keytab стенда."""
-    ccache = f"FILE:{tmp_path / 'delegated'}"
-    KeytabCredentials.of(
-        KeytabConfig(
-            keytab=str(_KRB / "boba-svc.keytab"),
+    credentials = KeytabCredentials.of(
+        KeytabAuth(
+            method="kerberos_keytab",
             principal=SERVICE_PRINCIPAL,
-            ccache=ccache,
-            krb5_config=str(_KRB / "krb5.conf"),
+            keytab=STAND.krb_pg_keytab,
         )
-    ).ensure()
+    )
+    credentials.ensure()
+    ccache = credentials.ccache
 
     built = CcacheRegistry(
-
         mode=DelegationMode.FORWARDED,
-
         renew=False,
-
-        krb5_config=str(_KRB / "krb5.conf"),
-
+        krb5_config=STAND.krb_config,
     )
     built.register(UserCcache(SERVICE_PRINCIPAL, ccache, SERVICE_LOGIN))
     return built
@@ -224,7 +223,7 @@ async def test_granted_connection_is_visible_and_works(
     await store.grant(connection_id, GrantTarget.user(int(user.id)))
     Session.enter(user)
 
-    targets = await Call.ok(pg_tools["pg_list_targets"])
+    targets = await Call.ok(pg_tools["pg_connection_list"])
     names = [row["connection_name"] for row in targets.rows]
     if names != ["main"]:
         raise AssertionError(f"whitelist must hold the granted row only: {names}")
@@ -248,7 +247,7 @@ async def test_role_grant_reaches_every_role_holder(
     await store.grant(connection_id, GrantTarget.role(roles[ROLE]))
     Session.enter(user)
 
-    targets = await Call.ok(pg_tools["pg_list_targets"])
+    targets = await Call.ok(pg_tools["pg_connection_list"])
     names = [row["connection_name"] for row in targets.rows]
     if names != ["shared"]:
         raise AssertionError(f"role grant must be visible: {names}")
@@ -266,7 +265,7 @@ async def test_stranger_sees_nothing(
     await store.grant(connection_id, GrantTarget.user(int(owner.id)))
     Session.enter(stranger)
 
-    targets = await Call.ok(pg_tools["pg_list_targets"])
+    targets = await Call.ok(pg_tools["pg_connection_list"])
     if targets.rows:
         raise AssertionError(f"stranger must see no connections: {targets.rows}")
 
@@ -289,13 +288,13 @@ async def test_revoke_applies_to_the_next_call(
     await store.grant(connection_id, target)
     Session.enter(user)
 
-    before = await Call.ok(pg_tools["pg_list_targets"])
+    before = await Call.ok(pg_tools["pg_connection_list"])
     if not before.rows:
         raise AssertionError("granted row must be visible before revoke")
 
     await store.revoke(connection_id, target)
 
-    after = await Call.ok(pg_tools["pg_list_targets"])
+    after = await Call.ok(pg_tools["pg_connection_list"])
     if after.rows:
         raise AssertionError("revoked row must disappear without a restart")
 
@@ -313,7 +312,7 @@ async def test_ambiguous_name_is_refused(
     await store.grant(second, GrantTarget.user(int(user.id)))
     Session.enter(user)
 
-    targets = await Call.ok(pg_tools["pg_list_targets"])
+    targets = await Call.ok(pg_tools["pg_connection_list"])
     if targets.rows:
         raise AssertionError(f"ambiguous name must not be listed: {targets.rows}")
 
@@ -332,7 +331,9 @@ async def test_delegated_connection_runs_as_the_session_principal(
 ) -> None:
     """Строка без ключей: в базу в песочнице идёт билет делегированного входа."""
     user = await Session.user(layer, "conn-delegated")
-    delegated = service_pg.model_copy(update={"kerberos": DelegatedConfig()})
+    delegated = service_pg.model_copy(
+        update={"auth": DelegatedAuth(method="kerberos_delegated")}
+    )
     connection_id = await store.add("mine", delegated)
     await store.grant(connection_id, GrantTarget.user(int(user.id)))
     Session.enter_sso(user, SERVICE_PRINCIPAL, SERVICE_LOGIN)
@@ -342,7 +343,7 @@ async def test_delegated_connection_runs_as_the_session_principal(
         connection_name="mine",
         sql="select current_user as who",
     )
-    if result.rows != [{"who": "boba-svc"}]:
+    if result.rows != [{"who": SERVICE_USER}]:
         raise AssertionError(f"query must run as the delegated principal: {result}")
 
 
@@ -353,7 +354,9 @@ async def test_delegated_connection_refuses_local_login(
     service_pg: PostgresConfig,
 ) -> None:
     user = await Session.user(layer, "conn-delegated-local")
-    delegated = service_pg.model_copy(update={"kerberos": DelegatedConfig()})
+    delegated = service_pg.model_copy(
+        update={"auth": DelegatedAuth(method="kerberos_delegated")}
+    )
     connection_id = await store.add("mine", delegated)
     await store.grant(connection_id, GrantTarget.user(int(user.id)))
     Session.enter(user)
@@ -377,9 +380,9 @@ async def test_unreachable_database_is_reported_by_the_body(
         update={
             "hostaddr": "127.0.0.1",
             "port": 1,
-            "kerberos": None,
-            "gssencmode": "disable",
-            "password": SecretStr("none"),
+            "auth": PasswordAuth(
+                method="password", user="boba", password=SecretStr("none")
+            ),
             "connect_timeout": 2,
         }
     )
@@ -429,12 +432,12 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
     """Web-строка negotiate/delegated: HTTP-интерфейс ClickHouse видит принципал."""
     user = await Session.user(layer, "conn-web-negotiate")
     row = HttpProfile(
-        base_url="http://172.18.0.50:8123",
+        base_url=CH_URL,
         ssl_verify=False,
         auth=NegotiateAuth(
             method="negotiate",
-            kerberos=DelegatedConfig(),
-            service_host="ch01.loshara.com",
+            kerberos=DelegatedAuth(method="kerberos_delegated"),
+            service_host=STAND.ch_host,
         ),
     )
     connection_id = await store.add("ch-http", row)
@@ -443,13 +446,13 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
 
     result = await Call.ok(
         web_tools["web_fetch_page"],
-        url="http://172.18.0.50:8123/?query=select%20currentUser()",
+        url=f"{CH_URL}/?query=select%20currentUser()",
         connection_name="ch-http",
         as_markdown=False,
         line_offset=0,
         line_count=5,
     )
-    if "boba-svc" not in str(result.payload):
+    if SERVICE_USER not in str(result.payload):
         raise AssertionError(f"clickhouse must see the principal: {result.payload}")
 
 
@@ -459,7 +462,7 @@ async def test_call_outside_session_is_refused(pg_tools: dict[str, Any]) -> None
     init_http_context(user=None)
 
     with pytest.raises(RefusalError) as caught:
-        await Call.result(pg_tools["pg_list_targets"])
+        await Call.result(pg_tools["pg_connection_list"])
 
     if caught.value.kind != ConnectionRefusal.NO_SESSION:
         raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")

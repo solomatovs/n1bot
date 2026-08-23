@@ -1,27 +1,34 @@
-"""Kerberos для boba: креды из keytab, SPNEGO-accept, S4U-делегирование, PAC-SID."""
+"""Kerberos для boba: способы аутентификации, SPNEGO-accept, делегирование, PAC."""
 
+from boba.krb.auth import (
+    DelegatedAuth,
+    KerberosAuth,
+    KerberosAuthBase,
+    KerberosMethod,
+    KerberosPasswordAuth,
+    KerberosWorkspace,
+    KerberosWorkspaceConfig,
+    KeytabAuth,
+    TicketAuth,
+)
 from boba.krb.config import (
     AcceptConfig,
-    ClientKerberos,
     ConstrainedDelegation,
-    DelegatedConfig,
     Delegation,
     DelegationMode,
     ForwardedDelegation,
-    Kerberos,
     KerberosDump,
-    KerberosKind,
-    KeytabConfig,
-    TicketConfig,
 )
 from boba.krb.credentials import (
     CcacheLifetime,
     CcacheRegistry,
     ClientCredentials,
     DelegatedCredentials,
+    IssuedCredentials,
     KerberosCredentials,
     KerberosEnv,
     KeytabCredentials,
+    PasswordCredentials,
     TicketCredentials,
     UserCcache,
 )
@@ -34,6 +41,7 @@ from boba.krb.errors import (
     KeytabError,
 )
 from boba.krb.pac import PacGroupSids
+from boba.krb.refresh import RefreshWaiters, RefreshWaiting
 from boba.krb.spnego import SpnegoNegotiate
 from boba.krb.tickets import ServiceTicketIssuer
 
@@ -42,32 +50,39 @@ __all__ = [
     "CcacheLifetime",
     "CcacheRegistry",
     "ClientCredentials",
-    "ClientKerberos",
     "ConstrainedDelegation",
     "CredentialsExpiredError",
-    "DelegatedConfig",
+    "DelegatedAuth",
     "DelegatedCredentials",
     "Delegation",
     "DelegationMode",
     "DelegationNotPermittedError",
     "ForwardedDelegation",
     "InvalidTokenError",
-    "Kerberos",
+    "IssuedCredentials",
+    "KerberosAuth",
+    "KerberosAuthBase",
     "KerberosCredentials",
     "KerberosDelegation",
     "KerberosDump",
     "KerberosEnv",
     "KerberosError",
-    "KerberosKind",
-    "KeytabConfig",
+    "KerberosMethod",
+    "KerberosPasswordAuth",
+    "KerberosWorkspace",
+    "KerberosWorkspaceConfig",
+    "KeytabAuth",
     "KeytabCredentials",
     "KeytabError",
     "PacGroupSids",
+    "PasswordCredentials",
+    "RefreshWaiters",
+    "RefreshWaiting",
     "ServiceTicketIssuer",
     "SpnegoAcceptor",
     "SpnegoIdentity",
     "SpnegoNegotiate",
-    "TicketConfig",
+    "TicketAuth",
     "TicketCredentials",
     "UserCcache",
 ]

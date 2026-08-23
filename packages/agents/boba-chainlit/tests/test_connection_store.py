@@ -20,9 +20,14 @@ from boba.chainlit.connections import (
     SecretCryptoError,
     Subject,
 )
-from boba.db.clickhouse import ClickHouseConfig, ClickHouseSettingsConfig
+from boba.db.clickhouse import (
+    ClickHouseConfig,
+    ClickHouseSettingsConfig,
+    NoPasswordAuth,
+)
 from boba.db.postgres import (
     AsyncPostgresPool,
+    PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,
@@ -46,10 +51,10 @@ def _config(key: SecretStr) -> ConnectionsConfig:
 def _pg(password: str) -> PostgresConfig:
     return PostgresConfig(
         host="db",
-        user="boba",
         dbname="n1bot",
-        gssencmode="disable",
-        password=SecretStr(password),
+        auth=PasswordAuth(
+            method="password", user="boba", password=SecretStr(password)
+        ),
         options=PostgresOptionsConfig(),
         pool=PostgresPoolConfig(),
     )
@@ -60,7 +65,7 @@ def _ch() -> ClickHouseConfig:
         host="ch",
         port=8123,
         interface="http",
-        username="boba",
+        auth=NoPasswordAuth(method="no_password", user="boba"),
         settings=ClickHouseSettingsConfig(),
     )
 
@@ -100,9 +105,9 @@ async def test_add_and_get_restores_profile(store: ConnectionStore) -> None:
         raise AssertionError("kind must follow the profile")
     if not isinstance(stored.profile, PostgresConfig):
         raise AssertionError("profile must come back as PostgresConfig")
-    if stored.profile.password is None:
-        raise AssertionError("password must be restored")
-    if stored.profile.password.get_secret_value() != FakeSecret.DB:
+    if not isinstance(stored.profile.auth, PasswordAuth):
+        raise AssertionError(f"auth must survive: {stored.profile.auth}")
+    if stored.profile.auth.password.get_secret_value() != FakeSecret.DB:
         raise AssertionError("password must be decrypted")
 
 
@@ -135,6 +140,51 @@ async def test_secret_is_ciphertext_in_the_table(
         raise AssertionError("row must exist")
     if FakeSecret.DB in json.dumps(row[0], ensure_ascii=False):
         raise AssertionError("password leaked into the table")
+
+
+async def test_data_keeps_only_meaningful_fields(
+    store: ConnectionStore, pool: AsyncPostgresPool
+) -> None:
+    """Дефолты в jsonb не едут: остаются дискриминатор и заданные поля."""
+    await store.add("main", _ch())
+
+    async with pool.cursor() as cur:
+        await cur.execute(
+            sql.SQL("select data from {}").format(
+                sql.Identifier(SCHEMA, "connections")
+            )
+        )
+        row = await cur.fetchone()
+
+    if row is None:
+        raise AssertionError("row must exist")
+
+    data = row[0]
+    if set(data) != {"kind", "host", "port", "interface", "auth"}:
+        raise AssertionError(f"only meaningful fields expected: {sorted(data)}")
+    if data["auth"] != {"method": "no_password", "user": "boba"}:
+        raise AssertionError(f"auth must stay minimal: {data['auth']}")
+
+
+async def test_kind_is_read_from_the_data(
+    store: ConnectionStore, pool: AsyncPostgresPool
+) -> None:
+    """Отдельной колонки kind нет: вид соединения живёт в data->>'kind'."""
+    connection_id = await store.add("main", _ch())
+
+    async with pool.cursor() as cur:
+        await cur.execute(
+            sql.SQL("select data ->> 'kind' from {} where id = %(id)s").format(
+                sql.Identifier(SCHEMA, "connections")
+            ),
+            {"id": connection_id},
+        )
+        row = await cur.fetchone()
+
+    if row is None:
+        raise AssertionError("row must exist")
+    if row[0] != ConnectionKind.CLICKHOUSE.value:
+        raise AssertionError(f"kind must come from the profile: {row[0]}")
 
 
 async def test_foreign_key_cannot_read_rows(

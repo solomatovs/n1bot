@@ -22,7 +22,7 @@ from pydantic import (
 
 from boba.krb import (
     ClientCredentials,
-    Kerberos,
+    KerberosAuth,
     KerberosCredentials,
     KerberosDump,
     KerberosError,
@@ -216,7 +216,7 @@ class NegotiateAuth(_AuthBase):
     """
 
     method: Literal["negotiate"]
-    kerberos: Kerberos = Field(
+    kerberos: KerberosAuth = Field(
         description="Креды: keytab, delegated или билет вызова.",
     )
     service_host: str | None = Field(
@@ -246,7 +246,7 @@ class NegotiateAuth(_AuthBase):
 
     @field_serializer("kerberos", when_used="json")
     def _dump_kerberos(
-        self, value: Kerberos, info: SerializationInfo
+        self, value: KerberosAuth, info: SerializationInfo
     ) -> dict[str, Any] | None:
         return KerberosDump.json(value, info.context, "web connection")
 

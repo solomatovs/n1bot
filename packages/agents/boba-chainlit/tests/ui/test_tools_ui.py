@@ -73,12 +73,12 @@ CASES: tuple[ToolCase, ...] = (
         expect="ui-probe-bash",
     ),
     ToolCase(
-        tool="pg_list_targets",
+        tool="pg_connection_list",
         arguments={},
         expect="main",
     ),
     ToolCase(
-        tool="ch_list_targets",
+        tool="ch_connection_list",
         arguments={},
         expect="main",
     ),
@@ -93,7 +93,7 @@ CASES: tuple[ToolCase, ...] = (
         expect="kb_vector_search",
     ),
     ToolCase(
-        tool="web_list_targets",
+        tool="web_connection_list",
         arguments={},
         expect="stand",
     ),

@@ -145,7 +145,7 @@ def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
         "mounts": {
             "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
             "rw": (),
-            "tmp": "256M",  # noqa: S108
+            "tmp": "256M",
         },
         "isolation": {
             "network": False,

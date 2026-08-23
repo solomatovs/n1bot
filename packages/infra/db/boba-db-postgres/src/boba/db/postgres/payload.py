@@ -12,7 +12,7 @@ import psycopg
 
 from boba.db.postgres.async_pool import PostgresError
 from boba.db.postgres.config import PostgresConfig
-from boba.krb import ClientCredentials, KerberosError
+from boba.krb import ClientCredentials, KerberosAuthBase, KerberosError
 from boba.toolkit.timing import Elapsed
 
 __all__ = ["PayloadPostgres"]
@@ -35,12 +35,12 @@ class PayloadPostgres:
         """Соединение по модели профиля; kerberos-профиль получает свой TGT."""
         elapsed = Elapsed()
 
-        if connection.kerberos is None:
+        if not isinstance(connection.auth, KerberosAuthBase):
             conn = await PayloadPostgres._connect(connection)
             logger.info("postgres connected in %dms", elapsed.ms())
             return conn
 
-        credentials = ClientCredentials.of(connection.kerberos)
+        credentials = ClientCredentials.of(connection.auth)
 
         try:
             async with credentials.applied_async():

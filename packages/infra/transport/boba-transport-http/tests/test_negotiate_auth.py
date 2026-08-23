@@ -6,48 +6,60 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from boba.krb import DelegatedConfig, KerberosCredentials, KerberosError, TicketConfig
+from boba.krb import DelegatedAuth, KerberosCredentials, KerberosError, TicketAuth
 from boba.transport.http import HttpProfile
 from boba.transport.http.auth import HttpxNegotiateAuth, NegotiateAuth
 
-REVEAL = {TicketConfig.REVEAL_SECRETS: True}
+REVEAL = {TicketAuth.REVEAL_SECRETS: True}
+
+
+def _delegated(login_path: str | None = None) -> NegotiateAuth:
+    """Профиль «идёт сам пользователь»: креды даёт вход в приложение."""
+    return NegotiateAuth(
+        method="negotiate",
+        kerberos=DelegatedAuth(method="kerberos_delegated"),
+        login_path=login_path,
+    )
 
 
 def _keytab() -> dict[str, object]:
     return {
-        "keytab": "/etc/boba/boba-svc.keytab",
-        "principal": "boba-svc@LOSHARA.COM",
-        "ccache": "FILE:/tmp/krb5cc_http",
+        "method": "kerberos_keytab",
+        "principal": "svc@EXAMPLE.COM",
+        "keytab": "/etc/boba/svc.keytab",
     }
 
 
 class TestNegotiateProfile:
     def test_service_name_comes_from_base_url(self) -> None:
-        auth = NegotiateAuth(method="negotiate", kerberos=DelegatedConfig())
-        profile = HttpProfile(base_url="https://Confl.loshara.com:8443/wiki", auth=auth)
-        if profile.service_name() != "HTTP@confl.loshara.com":
+        auth = _delegated()
+        profile = HttpProfile(base_url="https://Wiki.example.com:8443/wiki", auth=auth)
+        if profile.service_name() != "HTTP@wiki.example.com":
             raise AssertionError(profile.service_name())
 
     def test_negotiate_without_base_url_is_rejected(self) -> None:
-        auth = NegotiateAuth(method="negotiate", kerberos=DelegatedConfig())
+        auth = _delegated()
         with pytest.raises(ValidationError, match="needs base_url"):
             HttpProfile(auth=auth)
 
     def test_delegated_row_validates(self) -> None:
         raw = {
-            "base_url": "https://confl.loshara.com",
-            "auth": {"method": "negotiate", "kerberos": {"kind": "delegated"}},
+            "base_url": "https://wiki.example.com",
+            "auth": {
+                "method": "negotiate",
+                "kerberos": {"method": "kerberos_delegated"},
+            },
         }
         profile = HttpProfile.model_validate(raw)
         if not isinstance(profile.auth, NegotiateAuth):
             raise AssertionError("method=negotiate must build NegotiateAuth")
-        if not isinstance(profile.auth.kerberos, DelegatedConfig):
-            raise AssertionError("kind=delegated must build DelegatedConfig")
+        if not isinstance(profile.auth.kerberos, DelegatedAuth):
+            raise AssertionError("kind=delegated must build DelegatedAuth")
 
     def test_reveal_refuses_a_keytab(self) -> None:
         profile = HttpProfile.model_validate(
             {
-                "base_url": "https://confl.loshara.com",
+                "base_url": "https://wiki.example.com",
                 "auth": {"method": "negotiate", "kerberos": _keytab()},
             }
         )
@@ -55,11 +67,11 @@ class TestNegotiateProfile:
             profile.model_dump(mode="json", context=REVEAL)
 
     def test_ticket_travels_and_reads_back(self) -> None:
-        ticket = TicketConfig.of_bytes(
-            "u@LOSHARA.COM", "HTTP@confl.loshara.com", b"ccache", 60
-        )
+        ticket = TicketAuth.of_bytes(
+            "u@EXAMPLE.COM", "HTTP@wiki.example.com", b"ccache", 60
+)
         profile = HttpProfile(
-            base_url="https://confl.loshara.com",
+            base_url="https://wiki.example.com",
             auth=NegotiateAuth(method="negotiate", kerberos=ticket),
         )
         dumped = profile.model_dump(mode="json", context=REVEAL)
@@ -67,7 +79,7 @@ class TestNegotiateProfile:
 
         if not isinstance(restored.auth, NegotiateAuth):
             raise AssertionError("auth must survive the roundtrip")
-        if not isinstance(restored.auth.kerberos, TicketConfig):
+        if not isinstance(restored.auth.kerberos, TicketAuth):
             raise AssertionError("ticket must survive the roundtrip")
         if restored.auth.kerberos.ccache_bytes() != b"ccache":
             raise AssertionError("ticket bytes must survive the roundtrip")
@@ -75,7 +87,9 @@ class TestNegotiateProfile:
             raise AssertionError("negotiate profile must build HttpxNegotiateAuth")
 
     def test_ticket_is_masked_without_reveal(self) -> None:
-        ticket = TicketConfig.of_bytes("u@R", "HTTP@h", b"secret-bytes", 60)
+        ticket = TicketAuth.of_bytes(
+            "u@R", "HTTP@h", b"secret-bytes", 60
+)
         profile = HttpProfile(
             base_url="https://h",
             auth=NegotiateAuth(method="negotiate", kerberos=ticket),
@@ -203,13 +217,9 @@ class TestLoginServletFlow:
 
     def test_profile_builds_login_url(self) -> None:
         profile = HttpProfile(
-            base_url="https://confl.loshara.com/",
-            auth=NegotiateAuth(
-                method="negotiate",
-                kerberos=DelegatedConfig(),
-                login_path="/plugins/servlet/kerberos/ntlm/login",
-            ),
+            base_url="https://wiki.example.com/",
+            auth=_delegated(login_path="/plugins/servlet/kerberos/ntlm/login"),
         )
-        expected = "https://confl.loshara.com/plugins/servlet/kerberos/ntlm/login"
+        expected = "https://wiki.example.com/plugins/servlet/kerberos/ntlm/login"
         if profile.login_url() != expected:
             raise AssertionError(profile.login_url())

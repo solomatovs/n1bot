@@ -533,10 +533,6 @@ class LoadStand:
         msg = f"command {marker!r} did not start in {timeout_sec}s"
         raise AssertionError(msg)
 
-    def image_template(self) -> str:
-        """Образ общий на пользователя: {thread_id} в пути отсутствует."""
-        return f"{self.images_dir}/{{user_id}}.ext4"
-
     def image_of(self, user_id: str) -> Path:
         return self.images_dir / f"{user_id}.ext4"
 

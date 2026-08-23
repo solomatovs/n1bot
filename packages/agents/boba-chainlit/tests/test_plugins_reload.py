@@ -17,7 +17,7 @@ from boba.chainlit.connections import ConnectionStore
 from boba.chainlit.infra.plugins import load_tools
 from boba.sandbox import ZygoteRegistry
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
-from boba.tool.pg.tools import pg_list_targets
+from boba.tool.pg.tools import pg_connection_list
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +60,7 @@ def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
 
     by_name = {t.name: t for t in second.tools}
-    loaded = by_name["pg_list_targets"]
+    loaded = by_name["pg_connection_list"]
 
     if ToolCallIdField.NAME not in _schema_fields(loaded):
         raise AssertionError("ToolCallIdField.NAME in _schema_fields(loaded)")
@@ -80,7 +80,7 @@ def test_module_singletons_stay_pristine(raw_config) -> None:
         if "cfg" not in fields:
             raise AssertionError('"cfg" in fields')
 
-    origin = ToolMainBody.of(pg_list_targets)
+    origin = ToolMainBody.of(pg_connection_list)
     if origin.__module__ != "boba.tool.pg.tools":
         raise AssertionError('origin.__module__ == "boba.tool.pg.tools"')
 

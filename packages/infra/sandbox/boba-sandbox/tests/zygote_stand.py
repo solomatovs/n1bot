@@ -94,12 +94,6 @@ class SandboxStand:
     FUSE2FS: ClassVar[Path] = DEPLOY_BIN / "fuse2fs"
     """fuse2fs развёртывания: статический, работает и в корне образа, и на хосте."""
 
-    IMAGE_MOUNTS: ClassVar[Mapping[str, str]] = {
-        "template": "/mnt/workspace.ext4",
-        "fuse2fs": "/mnt/fuse2fs",
-    }
-    """Точки образной обвязки, как их объявляет конфиг стенда."""
-
     @classmethod
     def fuse2fs(cls) -> str:
         """fuse2fs развёртывания: тот же путь идёт и в бинды, и в binaries профиля.
@@ -186,7 +180,7 @@ class SandboxStand:
             "mounts": {
                 "ro": cls.image_ro_binds(),
                 "rw": (),
-                "tmp": "64M",  # noqa: S108
+                "tmp": "64M",
             },
             "isolation": {
                 "network": False,

@@ -12,17 +12,29 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 
+import krb5
 import pytest
+from stand_site import Stand
 
-from boba.krb import KerberosEnv, KeytabConfig, KeytabCredentials
+from boba.krb import (
+    CcacheRegistry,
+    DelegationMode,
+    KerberosEnv,
+    KerberosWorkspace,
+    KeytabAuth,
+    KeytabCredentials,
+    RefreshWaiters,
+    UserCcache,
+)
 
-_KRB = Path(__file__).resolve().parents[5] / "compose" / "conf" / "krb"
-KEYTAB = _KRB / "boba-svc.keytab"
-KRB5_CONF = _KRB / "krb5.conf"
-PRINCIPAL = "boba-svc@LOSHARA.COM"
+STAND = Stand.required()
+KEYTAB = Path(STAND.krb_pg_keytab)
+KRB5_CONF = Path(STAND.krb_config)
+PRINCIPAL = STAND.service_principal
+OTHER_PRINCIPAL = f"other@{STAND.krb_realm}"
 
 live_kdc = pytest.mark.skipif(
-    not KEYTAB.is_file() or not KRB5_CONF.is_file(),
+    not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
 )
 
@@ -44,33 +56,68 @@ def clean_env() -> Iterator[None]:
         os.environ[name] = value
 
 
-def config(ccache: Path) -> KeytabConfig:
-    return KeytabConfig(
+@pytest.fixture
+def keytab_copy(tmp_path: Path) -> Path:
+    """Тот же ключ другим файлом: источник кредов различается, принципал — нет."""
+    copy = tmp_path / "copy.keytab"
+    copy.write_bytes(KEYTAB.read_bytes())
+    return copy
+
+
+@pytest.fixture
+def workspace(tmp_path: Path) -> Path:
+    """Рабочий каталог kerberos теста: кэши раскладывает приложение."""
+    cache = tmp_path / "cache"
+    KerberosWorkspace.configure(str(KRB5_CONF), str(cache))
+    return cache
+
+
+def auth(principal: str = PRINCIPAL) -> KeytabAuth:
+    return KeytabAuth(
+        method="kerberos_keytab",
+        principal=principal,
         keytab=str(KEYTAB),
-        principal=PRINCIPAL,
-        ccache=f"FILE:{ccache}",
-        krb5_config=str(KRB5_CONF),
     )
 
 
-class TestKeytabConfig:
-    def test_ccache_without_type_rejected(self) -> None:
-        with pytest.raises(ValueError, match="без типа"):
-            KeytabConfig(keytab="k", principal="p", ccache="./krb5cc")
+def credentials(principal: str = PRINCIPAL) -> KeytabCredentials:
+    return KeytabCredentials.of(auth(principal))
 
-    def test_ccache_unknown_type_rejected(self) -> None:
-        with pytest.raises(ValueError, match="need FILE"):
-            KeytabConfig(keytab="k", principal="p", ccache="WAT:./krb5cc")
 
-    def test_process_ccache_rejected(self) -> None:
-        """MEMORY/KEYRING видны всему процессу: TGT keytab живёт только в файле."""
-        with pytest.raises(ValueError, match="need FILE"):
-            KeytabConfig(keytab="k", principal="p", ccache="MEMORY:shared")
 
-    def test_ccache_with_type_accepted(self) -> None:
-        cfg = KeytabConfig(keytab="k", principal="p", ccache="FILE:./krb5cc")
-        if cfg.ccache != "FILE:./krb5cc":
-            raise AssertionError('cfg.ccache == "FILE:./krb5cc"')
+
+class TestKerberosWorkspace:
+    """Кэш выделяет приложение: на принципал и источник — свой файл."""
+
+    def test_cache_is_a_file_named_after_the_principal(self, workspace: Path) -> None:
+        ccache = auth().ccache()
+        if not ccache.startswith(f"FILE:{workspace}/"):
+            raise AssertionError(ccache)
+        if PRINCIPAL not in ccache:
+            raise AssertionError(f"principal must be visible in {ccache}")
+
+    def test_same_credentials_get_the_same_cache(self, workspace: Path) -> None:
+        if auth().ccache() != auth().ccache():
+            raise AssertionError("one keytab and principal — one cache")
+
+    def test_other_principal_gets_another_cache(self, workspace: Path) -> None:
+        if auth().ccache() == auth(OTHER_PRINCIPAL).ccache():
+            raise AssertionError("principals must not share a cache")
+
+    def test_other_source_gets_another_cache(self, workspace: Path) -> None:
+        other = KeytabAuth(
+            method="kerberos_keytab", principal=PRINCIPAL, keytab="/other.keytab"
+        )
+        if auth().ccache() == other.ccache():
+            raise AssertionError("keytabs must not share a cache")
+
+    def test_directory_is_private(self, workspace: Path) -> None:
+        if workspace.stat().st_mode & 0o777 != 0o700:
+            raise AssertionError(oct(workspace.stat().st_mode))
+
+    def test_shared_instance_per_cache(self, workspace: Path) -> None:
+        if KeytabCredentials.of(auth()) is not KeytabCredentials.of(auth()):
+            raise AssertionError("one cache — one instance in the process")
 
 
 class TestKerberosEnv:
@@ -176,35 +223,36 @@ class TestKerberosEnv:
 @live_kdc
 class TestKeytabCredentials:
     def test_acquires_ticket_into_own_ccache(
-        self, tmp_path: Path, clean_env: None
+        self, workspace: Path, clean_env: None
     ) -> None:
-        credentials = KeytabCredentials(config(tmp_path / "cc"))
+        creds = credentials()
 
-        credentials.ensure()
+        creds.ensure()
 
-        if not ((tmp_path / "cc").is_file()):
-            raise AssertionError('(tmp_path / "cc").is_file()')
+        if not Path(creds.ccache.removeprefix("FILE:")).is_file():
+            raise AssertionError(f"ticket was not written to {creds.ccache}")
 
     def test_second_ensure_reuses_valid_ticket(
-        self, tmp_path: Path, clean_env: None
+        self, workspace: Path, clean_env: None
     ) -> None:
-        credentials = KeytabCredentials(config(tmp_path / "cc"))
+        creds = credentials()
 
-        credentials.ensure()
-        stamp = (tmp_path / "cc").stat().st_mtime_ns
-        credentials.ensure()
+        creds.ensure()
+        cache = Path(creds.ccache.removeprefix("FILE:"))
+        stamp = cache.stat().st_mtime_ns
+        creds.ensure()
 
-        if (tmp_path / "cc").stat().st_mtime_ns != stamp:
-            raise AssertionError('(tmp_path / "cc").stat().st_mtime_ns == stamp')
+        if cache.stat().st_mtime_ns != stamp:
+            raise AssertionError("a valid ticket must not be reacquired")
 
     def test_applied_exposes_own_environment(
-        self, tmp_path: Path, clean_env: None
+        self, workspace: Path, clean_env: None
     ) -> None:
-        credentials = KeytabCredentials(config(tmp_path / "cc"))
+        creds = credentials()
 
-        with credentials.applied():
-            if os.environ[KerberosEnv.CCACHE] != f"FILE:{tmp_path / 'cc'}":
-                raise AssertionError('os.environ[KerberosEnv.CCACHE] == f"FILE:{tmp_p…')
+        with creds.applied():
+            if os.environ[KerberosEnv.CCACHE] != creds.ccache:
+                raise AssertionError(os.environ[KerberosEnv.CCACHE])
             if os.environ[KerberosEnv.CLIENT_KEYTAB] != str(KEYTAB):
                 raise AssertionError("os.environ[KerberosEnv.CLIENT_KEYTAB] == str(KE…")
 
@@ -212,41 +260,167 @@ class TestKeytabCredentials:
             raise AssertionError("KerberosEnv.CCACHE not in os.environ")
 
     def test_concurrent_ensure_acquires_once(
-        self, tmp_path: Path, clean_env: None
+        self, workspace: Path, clean_env: None
     ) -> None:
         """Параллельные корутины не дублируют поход в KDC: ccache пишется один раз."""
-        credentials = KeytabCredentials(config(tmp_path / "cc"))
+        creds = credentials()
 
         async def main() -> None:
-            await asyncio.gather(*[credentials.ensure_async() for _ in range(8)])
+            await asyncio.gather(*[creds.ensure_async() for _ in range(8)])
 
         asyncio.run(main())
-        stamp = (tmp_path / "cc").stat().st_mtime_ns
+        cache = Path(creds.ccache.removeprefix("FILE:"))
+        stamp = cache.stat().st_mtime_ns
 
         asyncio.run(main())
 
-        if (tmp_path / "cc").stat().st_mtime_ns != stamp:
-            raise AssertionError('(tmp_path / "cc").stat().st_mtime_ns == stamp')
+        if cache.stat().st_mtime_ns != stamp:
+            raise AssertionError("a valid ticket must not be reacquired")
 
     def test_two_principals_keep_separate_ccaches(
-        self, tmp_path: Path, clean_env: None
+        self, workspace: Path, keytab_copy: Path, clean_env: None
     ) -> None:
         """Разные креды в одном процессе не мешают друг другу."""
-        first = KeytabCredentials(config(tmp_path / "cc_a"))
-        second = KeytabCredentials(config(tmp_path / "cc_b"))
+        first = credentials()
+        second = KeytabCredentials.of(
+            KeytabAuth(
+                method="kerberos_keytab",
+                principal=PRINCIPAL,
+                keytab=str(keytab_copy),
+            )
+        )
 
         async def main() -> None:
             async with first.applied_async():
-                if os.environ[KerberosEnv.CCACHE] != f"FILE:{tmp_path / 'cc_a'}":
-                    raise AssertionError('os.environ[KerberosEnv.CCACHE] == f"FILE:{t…')
+                if os.environ[KerberosEnv.CCACHE] != first.ccache:
+                    raise AssertionError(os.environ[KerberosEnv.CCACHE])
 
             async with second.applied_async():
-                if os.environ[KerberosEnv.CCACHE] != f"FILE:{tmp_path / 'cc_b'}":
-                    raise AssertionError('os.environ[KerberosEnv.CCACHE] == f"FILE:{t…')
+                if os.environ[KerberosEnv.CCACHE] != second.ccache:
+                    raise AssertionError(os.environ[KerberosEnv.CCACHE])
 
         asyncio.run(main())
 
-        if not ((tmp_path / "cc_a").is_file()):
-            raise AssertionError('(tmp_path / "cc_a").is_file()')
-        if not ((tmp_path / "cc_b").is_file()):
-            raise AssertionError('(tmp_path / "cc_b").is_file()')
+        if first.ccache == second.ccache:
+            raise AssertionError("different keytabs must not share a cache")
+
+        for creds in (first, second):
+            if not Path(creds.ccache.removeprefix("FILE:")).is_file():
+                raise AssertionError(f"ticket was not written to {creds.ccache}")
+
+
+class TestRefreshWaiters:
+    """Ожидание повторного входа: будит регистрация кредов, иначе таймаут."""
+
+    def test_notify_wakes_the_waiter(self) -> None:
+        waiters = RefreshWaiters()
+
+        async def main() -> bool:
+            with waiters.arm("login-1") as waiting:
+                waiters.notify("login-1")
+                return await waiting.wait(5.0)
+
+        if not asyncio.run(main()):
+            raise AssertionError("notify must wake the waiter")
+
+    def test_notify_before_the_wait_is_not_lost(self) -> None:
+        """Обмен успел раньше ожидания: заведённое заранее событие его удержит."""
+        waiters = RefreshWaiters()
+
+        async def main() -> bool:
+            with waiters.arm("login-early") as waiting:
+                waiters.notify("login-early")
+                await asyncio.sleep(0.01)
+                return await waiting.wait(0.05)
+
+        if not asyncio.run(main()):
+            raise AssertionError("an early refresh must still end the wait")
+
+    def test_timeout_reports_no_refresh(self) -> None:
+        waiters = RefreshWaiters()
+
+        async def main() -> bool:
+            with waiters.arm("login-2") as waiting:
+                return await waiting.wait(0.05)
+
+        if asyncio.run(main()):
+            raise AssertionError("nobody refreshed: wait must report a timeout")
+
+    def test_another_login_does_not_wake(self) -> None:
+        waiters = RefreshWaiters()
+
+        async def main() -> bool:
+            with waiters.arm("login-3") as waiting:
+                waiters.notify("login-4")
+                return await waiting.wait(0.05)
+
+        if asyncio.run(main()):
+            raise AssertionError("a foreign login must not wake the waiter")
+
+    def test_waiting_is_forgotten_when_released(self) -> None:
+        """Вкладку закрыли без logout: ожидание не должно копиться в процессе."""
+        waiters = RefreshWaiters()
+
+        async def main() -> None:
+            with waiters.arm("login-gone") as waiting:
+                await waiting.wait(0.01)
+
+        asyncio.run(main())
+
+        if waiters._events:
+            raise AssertionError(f"released waiting must be gone: {waiters._events}")
+
+    def test_registering_credentials_wakes_the_waiter(self, tmp_path: Path) -> None:
+        """Ожидание снимает сам факт регистрации: реестр будит без посредников."""
+        registry = CcacheRegistry(
+            mode=DelegationMode.FORWARDED,
+            renew=False,
+            krb5_config=str(KRB5_CONF),
+        )
+        ccache = f"FILE:{tmp_path / 'login'}"
+
+        async def main() -> bool:
+            with registry.arm_refresh("login-5") as waiting:
+                registry.register(UserCcache(PRINCIPAL, ccache, "login-5"))
+                return await waiting.wait(5.0)
+
+        if not asyncio.run(main()):
+            raise AssertionError("registration must wake the waiter of that login")
+
+
+@pytest.mark.integration
+@live_kdc
+class TestRegistryForgetsTickets:
+    """Тикет входа не переживает свой вход: ccache стирается, а не забывается."""
+
+    def test_drop_destroys_the_ccache(self, workspace: Path, tmp_path: Path) -> None:
+        registry = CcacheRegistry(
+            mode=DelegationMode.FORWARDED,
+            renew=False,
+            krb5_config=str(KRB5_CONF),
+        )
+        source = credentials()
+        source.ensure()
+
+        ccache = f"FILE:{tmp_path / 'login'}"
+        _copy_ccache(source.ccache, ccache)
+        path = Path(ccache.removeprefix("FILE:"))
+        if not path.is_file():
+            raise AssertionError("the sign-in ccache must exist before the drop")
+
+        registry.register(UserCcache(PRINCIPAL, ccache, "login-drop"))
+        registry.drop("login-drop")
+
+        if path.exists():
+            raise AssertionError("logout must destroy the ticket, not just forget it")
+
+
+def _copy_ccache(source: str, target: str) -> None:
+    """Тикет источника в свой ccache: так делегирование кладёт креды входа."""
+    context = krb5.init_context()
+    origin = krb5.cc_resolve(context, source.encode())
+    principal = krb5.cc_get_principal(context, origin)
+    cache = krb5.cc_resolve(context, target.encode())
+    krb5.cc_initialize(context, cache, principal)
+    for cred in origin:
+        krb5.cc_store_cred(context, cache, cred)

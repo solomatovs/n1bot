@@ -15,7 +15,12 @@ from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 
 from boba.db.clickhouse.config import ClickHouseConfig
 from boba.db.clickhouse.errors import ClickHouseError
-from boba.krb import ClientCredentials, KerberosError, SpnegoNegotiate
+from boba.krb import (
+    ClientCredentials,
+    KerberosAuthBase,
+    KerberosError,
+    SpnegoNegotiate,
+)
 
 __all__ = ["PayloadClickHouse", "SpnegoHeaders"]
 
@@ -59,12 +64,12 @@ class PayloadClickHouse:
         connection: ClickHouseConfig,
     ) -> AsyncGenerator[AsyncClient, None]:
         """Клиент на время операции; kerberos-окружение держится всё это время."""
-        if connection.kerberos is None:
+        if not isinstance(connection.auth, KerberosAuthBase):
             async with PayloadClickHouse._client(connection, None) as client:
                 yield client
             return
 
-        credentials = ClientCredentials.of(connection.kerberos)
+        credentials = ClientCredentials.of(connection.auth)
         headers = SpnegoHeaders(connection.service_name())
         try:
             async with (

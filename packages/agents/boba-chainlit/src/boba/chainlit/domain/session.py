@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -22,6 +22,7 @@ from chainlit.session import WebsocketSession
 __all__ = [
     "LogLine",
     "LogUserMark",
+    "SsoMarks",
     "UserMetadataField",
     "current_chat_profile",
     "current_language",
@@ -43,6 +44,37 @@ class UserMetadataField:
     LOGIN: Final = "sso_login"
     ROLES: Final = "roles"
     LLM: Final = "llm"
+
+
+@dataclass(frozen=True)
+class SsoMarks:
+    """Метки SSO-входа в подписанном JWT: чей тикет и какому входу он выдан."""
+
+    principal: str
+    login: str
+
+    @classmethod
+    def of_metadata(cls, metadata: Mapping[str, object]) -> SsoMarks | None:
+        """Метки из metadata пользователя; None — вход не нёс делегирования."""
+        principal = metadata.get(UserMetadataField.PRINCIPAL)
+        if not isinstance(principal, str) or not principal:
+            return None
+
+        login = metadata.get(UserMetadataField.LOGIN)
+        if not isinstance(login, str) or not login:
+            return None
+
+        return cls(principal=principal, login=login)
+
+    @classmethod
+    def of_token(cls, token: str) -> SsoMarks | None:
+        """Метки из JWT-cookie; None — токен негоден или вход не SSO."""
+        try:
+            user = decode_jwt(token)
+        except jwt.PyJWTError:
+            return None
+
+        return cls.of_metadata(user.metadata)
 
 
 class LogLine:

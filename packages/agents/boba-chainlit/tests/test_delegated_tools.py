@@ -5,7 +5,7 @@ constrained, как в конфиге), обвязка соединений вы
 строки, тело инструмента работает этим билетом внутри песочницы. Каждый тест
 спрашивает у самого сервиса, кем он видит клиента.
 
-Стенд: живой KDC, postgres, clickhouse и confluence домена; учётка boba-svc
+Стенд: живой KDC, postgres, clickhouse и confluence домена; учётка приложения
 заведена во всех трёх сервисах и значится в msDS-AllowedToDelegateTo.
 """
 
@@ -26,6 +26,7 @@ from chainlit.user import User as ChainlitUser
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
 from pydantic import SecretStr
+from stand_site import Stand
 from test_tools_integration import Call, ToolSetup
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
@@ -51,7 +52,7 @@ from boba.krb import (
     AcceptConfig,
     CcacheRegistry,
     ConstrainedDelegation,
-    DelegatedConfig,
+    DelegatedAuth,
     DelegationMode,
     KerberosDelegation,
     SpnegoAcceptor,
@@ -68,14 +69,14 @@ from boba.transport.http.auth import NegotiateAuth
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS = _REPO / "build" / "src" / "sandbox" / "rootfs"
-_KRB = _REPO / "compose" / "conf" / "krb"
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
-KRB5_CONF = _KRB / "krb5.conf"
-SERVICE_KEYTAB = _KRB / "boba-svc.keytab"
-SERVICE_SPN = "HTTP/loshara.com@LOSHARA.COM"
-PRINCIPAL = "readonly@LOSHARA.COM"
-ROLE_NAME = "readonly"
+STAND = Stand.required()
+KRB5_CONF = Path(STAND.krb_config)
+SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
+SERVICE_SPN = f"HTTP/{STAND.krb_domain}@{STAND.krb_realm}"
+PRINCIPAL = STAND.reader_principal
+ROLE_NAME = PRINCIPAL.split("@")[0]
 """Как принципал выглядит для сервисов: роль postgres, пользователь ch и confluence.
 
 Клиентом входа выступает обычный пользователь домена: у сервисной учётки
@@ -146,7 +147,8 @@ class Browser:
         principal = krb5.parse_name_flags(context, PRINCIPAL.encode())
         options = krb5.get_init_creds_opt_alloc(context)
         krb5.get_init_creds_opt_set_forwardable(options, True)
-        tgt = krb5.get_init_creds_password(context, principal, options, password.encode())
+        secret = password.encode()
+        tgt = krb5.get_init_creds_password(context, principal, options, secret)
 
         ccache = f"FILE:{tmp_path / 'browser'}"
         cache = krb5.cc_resolve(context, ccache.encode())
@@ -227,7 +229,7 @@ class Tools:
     """Инструменты секции с боевой обвязкой соединений пользователя."""
 
     @staticmethod
-    def of(
+    def of(  # noqa: PLR0913 — секция описывается всеми своими частями сразу
         raw_config: Any,
         store: ConnectionStore,
         registry: CcacheRegistry,
@@ -296,6 +298,11 @@ def web_tools(raw_config: Any, store: ConnectionStore, registry: CcacheRegistry)
     )
 
 
+def _delegated() -> DelegatedAuth:
+    """Строка «идёт сам пользователь»: креды даёт его вход в приложение."""
+    return DelegatedAuth(method="kerberos_delegated")
+
+
 async def _granted(
     store: ConnectionStore,
     session: PersistedUser,
@@ -309,13 +316,13 @@ async def _granted(
 @pytest.fixture
 def delegated_pg(raw_config: Any) -> PostgresConfig:
     service = bind(raw_config, path="postgres", model=PostgresConfig)
-    return service.model_copy(update={"kerberos": DelegatedConfig(), "user": None})
+    return service.model_copy(update={"auth": _delegated()})
 
 
 @pytest.fixture
 def delegated_ch(raw_config: Any) -> ClickHouseConfig:
     service = bind(raw_config, path="clickhouse", model=ClickHouseConfig)
-    return service.model_copy(update={"kerberos": DelegatedConfig()})
+    return service.model_copy(update={"auth": _delegated()})
 
 
 @pytest.fixture
@@ -329,7 +336,7 @@ def delegated_confluence(raw_config: Any) -> HttpProfile:
         timeout_sec=30.0,
         auth=NegotiateAuth(
             method="negotiate",
-            kerberos=DelegatedConfig(),
+            kerberos=DelegatedAuth(method="kerberos_delegated"),
             login_path=CONFLUENCE_LOGIN,
         ),
     )
@@ -404,9 +411,9 @@ async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — тр�
     await _granted(store, session, "ch-me", delegated_ch)
     await _granted(store, session, "confl", delegated_confluence)
 
-    pg_targets = await Call.ok(pg_tools["pg_list_targets"])
-    ch_targets = await Call.ok(ch_tools["ch_list_targets"])
-    web_targets = await Call.ok(web_tools["web_list_targets"])
+    pg_targets = await Call.ok(pg_tools["pg_connection_list"])
+    ch_targets = await Call.ok(ch_tools["ch_connection_list"])
+    web_targets = await Call.ok(web_tools["web_connection_list"])
 
     if [row["connection_name"] for row in pg_targets.rows] != ["pg-me"]:
         raise AssertionError(f"pg targets: {pg_targets.rows}")

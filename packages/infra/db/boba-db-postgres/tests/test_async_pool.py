@@ -50,7 +50,12 @@ def _patch_pool(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _cfg(**extra: Any) -> PostgresConfig:
     return PostgresConfig.model_validate(
-        {"host": "h", "user": "u", "dbname": "test", "gssencmode": "disable", **extra}
+        {
+            "host": "h",
+            "dbname": "test",
+            "auth": {"method": "trust", "user": "u"},
+            **extra,
+        }
     )
 
 

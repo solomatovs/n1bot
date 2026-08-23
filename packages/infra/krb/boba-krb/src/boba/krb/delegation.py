@@ -154,6 +154,13 @@ class KerberosDelegation:
 
         Пустая метка — делегированных кредов у входа нет.
         """
+        return self._capture(identity, secrets.token_urlsafe(self.LOGIN_BYTES))
+
+    def on_refresh_authenticated(self, identity: SpnegoIdentity, login: str) -> str:
+        """Повторный обмен той же сессии: креды ложатся под её метку входа."""
+        return self._capture(identity, login)
+
+    def _capture(self, identity: SpnegoIdentity, login: str) -> str:
         if identity.delegated is None:
             self._logger.warning(
                 "no delegated_credentials for %s (delegation not permitted in AD)",
@@ -161,7 +168,6 @@ class KerberosDelegation:
             )
             return ""
 
-        login = secrets.token_urlsafe(self.LOGIN_BYTES)
         ccache = self._ccache_of(login)
 
         try:
@@ -193,6 +199,10 @@ class KerberosDelegation:
         )
 
         return login
+
+    def knows(self, login: str) -> bool:
+        """Есть ли у этой метки живой вход: обмен продлевает, а не заводит вход."""
+        return self._registry.of_login(login) is not None
 
     @staticmethod
     def mismatch(ccache: str, principal: str, mode: DelegationMode) -> str:

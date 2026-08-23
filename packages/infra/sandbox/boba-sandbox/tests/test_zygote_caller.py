@@ -79,12 +79,6 @@ SLOW_START = ZygotePolicy(
 )
 """Корень образом: старт включает fuse2fs-монтирование rootfs.ext4."""
 
-IMAGE_MOUNTS = {
-    "template": "/mnt/workspace.ext4",
-    "fuse2fs": "/mnt/fuse2fs",
-}
-"""Точки образной обвязки в тестовом профиле, как их объявляет конфиг стенда."""
-
 WARMUP_CALLS = (
     WarmupCall(
         module="fake_channel_tool", hook="warm_cache", config={"greeting": "privet"}
@@ -127,7 +121,7 @@ def _profile(**overrides: Any) -> SandboxProfile:
                 f"{REPO / 'packages'}:/usr/src",
             ),
             "rw": (),
-            "tmp": "64M",  # noqa: S108
+            "tmp": "64M",
         },
         "isolation": {
             "network": False,

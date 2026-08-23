@@ -17,7 +17,7 @@ from boba.tool.kb.confluence.tools import (
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.tools import TOOLS as KB_TOOLS
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
-from boba.tool.pg.tools import PgToolConfig, pg_list_targets
+from boba.tool.pg.tools import PgToolConfig, pg_connection_list
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
     TableResult,
@@ -55,8 +55,7 @@ def pg_config() -> PgToolConfig:
                 "main": {
                     "host": "h",
                     "dbname": "d",
-                    "user": "u",
-                    "gssencmode": "disable",
+                    "auth": {"method": "trust", "user": "u"},
                 }
             },
             "sandbox": _SANDBOX,
@@ -70,8 +69,7 @@ def kb_config() -> PostgresKnowledgeBaseConfig:
             "connection": {
                 "host": "h",
                 "dbname": "d",
-                "user": "u",
-                "gssencmode": "disable",
+                "auth": {"method": "trust", "user": "u"},
             },
             "tables": {"pg_schema": "kb"},
             "embedding": {
@@ -105,7 +103,7 @@ class TestPgTools:
     pytestmark = pytest.mark.anyio
 
     _NAMES: ClassVar[list[str]] = [
-        "pg_list_targets",
+        "pg_connection_list",
         "pg_list_tables",
         "pg_describe_table",
         "pg_query",
@@ -117,8 +115,8 @@ class TestPgTools:
         if names != self._NAMES:
             raise AssertionError("names == self._NAMES")
 
-    async def test_list_targets_returns_whitelist(self) -> None:
-        body = ToolMain.toolset(pg_list_targets)[0].coroutine
+    async def test_connection_list_returns_whitelist(self) -> None:
+        body = ToolMain.toolset(pg_connection_list)[0].coroutine
         if body is None:
             raise AssertionError("body is not None")
         _content, artifact = await body(cfg=pg_config())
@@ -201,7 +199,7 @@ _PROFILE_RAW: dict[str, object] = {
     "mounts": {
         "ro": (),
         "rw": (),
-        "tmp": "64M",  # noqa: S108
+        "tmp": "64M",
     },
     "isolation": {
         "network": False,

@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    SecretStr,
     SerializationInfo,
     field_serializer,
     model_validator,
 )
 
-from boba.krb import Kerberos, KerberosDump
+from boba.db.clickhouse.auth import (
+    ClickHouseAuth,
+    ClickHouseKerberos,
+    ClickHouseLibch,
+)
+from boba.krb import KerberosAuthBase, KerberosDump
 from boba.toolkit.types import SecretRevealing
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]
@@ -75,7 +78,7 @@ class ClickHouseConfig(BaseModel):
 
     # не аргументы конструктора клиента: настройки сессии и креды kerberos
     NOT_CLIENT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"kind", "settings", "kerberos", "krbsrvname"}
+        {"kind", "settings", "auth"}
     )
 
     kind: Literal["clickhouse"] = Field(
@@ -90,14 +93,6 @@ class ClickHouseConfig(BaseModel):
         default=None, description="http или https; TLS включается именно здесь."
     )
     database: str | None = Field(default=None, description="База по умолчанию.")
-    username: str | None = Field(
-        default=None,
-        description="Пользователь ClickHouse; при kerberos не задаётся.",
-    )
-    password: SecretStr | None = Field(
-        default=None,
-        description="Пароль (секрет); маскируется в дампах и логах.",
-    )
 
     # поведение HTTP-клиента
     connect_timeout: int | None = Field(
@@ -134,12 +129,6 @@ class ClickHouseConfig(BaseModel):
         default=None, description="Проверять сертификат сервера в https."
     )
     ca_cert: str | None = Field(default=None, description="Корневой CA-сертификат.")
-    client_cert: str | None = Field(
-        default=None, description="Клиентский сертификат (.pem)."
-    )
-    client_cert_key: str | None = Field(
-        default=None, description="Приватный ключ клиентского сертификата."
-    )
     server_host_name: str | None = Field(
         default=None,
         description=(
@@ -159,46 +148,24 @@ class ClickHouseConfig(BaseModel):
         ),
     ]
 
-    # креды kerberos этого соединения; SPNEGO-токен строится по ним на каждый запрос
-    kerberos: Kerberos | None = Field(
-        default=None,
+    # способ аутентификации: одно поле, из него выводятся аргументы клиента
+    auth: ClickHouseAuth = Field(
         description=(
-            "Keytab, принципал и свой ccache соединения; "
-            "в конфиге подключается ссылкой ${kerberos.<name>}. "
-            "В песочницу этой же секцией уезжает только готовый тикет."
+            "Как аутентифицируемся: no_password | password | kerberos_keytab | "
+            "kerberos_password | kerberos_delegated. Поля задаёт сам вариант; "
+            "имя kerberos-сервиса живёт в нём же."
         ),
     )
 
-    @field_serializer("kerberos", when_used="json")
-    def _dump_kerberos(
-        self, value: Kerberos | None, info: SerializationInfo
+    @field_serializer("auth", when_used="json")
+    def _dump_auth(
+        self, value: ClickHouseAuth, info: SerializationInfo
     ) -> dict[str, Any] | None:
-        """Дамп с раскрытыми секретами едет в песочницу: только билет вызова."""
-        return KerberosDump.json(value, info.context, "clickhouse connection")
-    krbsrvname: str | None = Field(
-        default=None,
-        description=(
-            "Имя сервиса Kerberos, для HTTP-интерфейса ClickHouse — HTTP. "
-            "SPN собирается как <krbsrvname>@<server_host_name или host>."
-        ),
-    )
+        """Дамп с раскрытыми секретами едет в песочницу: kerberos — только билетом."""
+        if isinstance(value, KerberosAuthBase):
+            return KerberosDump.json(value, info.context, "clickhouse connection")
 
-    @field_serializer("password", when_used="json")
-    def _dump_password(
-        self, value: SecretStr | None, info: SerializationInfo
-    ) -> str | None:
-        """Пароль уходит в дамп только с REVEAL_SECRETS в контексте, иначе его нет."""
-        if value is None:
-            return None
-
-        context = info.context
-        if not isinstance(context, Mapping):
-            return None
-
-        if not context.get(ClickHouseConfig.REVEAL_SECRETS):
-            return None
-
-        return value.get_secret_value()
+        return value.model_dump(mode="json", context=info.context)
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
@@ -212,31 +179,12 @@ class ClickHouseConfig(BaseModel):
             msg = "clickhouse connection: interface обязателен (http или https)"
             raise ValueError(msg)
 
-        if self.kerberos is None:
-            if not self.username:
-                msg = (
-                    "clickhouse connection: username обязателен, когда секции "
-                    "kerberos нет"
-                )
-                raise ValueError(msg)
+        if not isinstance(self.auth, KerberosAuthBase):
             return self
-
-        if not self.krbsrvname:
-            msg = (
-                "clickhouse connection: секция kerberos требует krbsrvname "
-                '(для HTTP-интерфейса ClickHouse — krbsrvname = "HTTP")'
-            )
-            raise ValueError(msg)
-        if self.password is not None:
-            msg = (
-                "clickhouse connection: password и kerberos взаимоисключающи — "
-                "заголовок Negotiate замещает basic-аутентификацию"
-            )
-            raise ValueError(msg)
 
         if self.connect_timeout is None:
             msg = (
-                "clickhouse connection: секция kerberos требует connect_timeout — "
+                f"clickhouse connection: {self.auth.method} требует connect_timeout — "
                 "GSS-обмен идёт под процессным локом"
             )
             raise ValueError(msg)
@@ -244,11 +192,23 @@ class ClickHouseConfig(BaseModel):
         return self
 
     def service_name(self) -> str:
-        """SPN сервиса в форме hostbased: krbsrvname@<имя сервера>."""
-        if not self.krbsrvname:
-            msg = "clickhouse connection: krbsrvname не задан"
+        """SPN сервиса в форме hostbased: <service>@<имя сервера>."""
+        if not isinstance(self.auth, KerberosAuthBase):
+            msg = f"clickhouse connection: {self.auth.method} has no kerberos service"
             raise ValueError(msg)
-        return f"{self.krbsrvname}@{self.server_host_name or self.host}"
+
+        return f"{ClickHouseKerberos.service_of(self.auth)}@{self._spn_host()}"
+
+    def _spn_host(self) -> str:
+        """Хост в SPN: явное имя сервера, иначе адрес соединения."""
+        if self.server_host_name:
+            return self.server_host_name
+
+        if not self.host:
+            msg = "clickhouse connection: SPN нужен host или server_host_name"
+            raise ValueError(msg)
+
+        return self.host
 
     def client_settings(self) -> dict[str, Any]:
         """kwargs конструктора AsyncClient: адрес, TLS, таймауты и settings сессии."""
@@ -262,12 +222,9 @@ class ClickHouseConfig(BaseModel):
             if value is None:
                 continue
 
-            if isinstance(value, SecretStr):
-                client[name] = value.get_secret_value()
-                continue
-
             client[name] = value
 
+        client.update(ClickHouseLibch.of(self.auth))
         client["settings"] = self.settings.to_settings()
         return client
 

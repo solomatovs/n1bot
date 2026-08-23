@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from boba.chainlit.rendering.chat_view import StepText
 from ui.chat_page import ChatPage, StepKind
 from ui.fake_llm import ScenarioName
 from ui.socket_log import ChatEvent, SocketLog
@@ -117,8 +118,8 @@ class TestToolStep:
     def test_running_state_precedes_the_result(self, chat: ChatPage) -> None:
         """Первым приходит открытый шаг с подписью вызова, а не готовый вывод.
 
-        Состояние «идёт» показывает открытый шаг (кружок ○, нет end), подпись
-        вызова живёт в названии; вывод инструмента появляется только потом.
+        Состояние «идёт» показывает открытый шаг (кружок ○, нет end, маркер
+        running вместо вывода); результат инструмента приходит только потом.
         """
         chat.ask(f"{ScenarioName.TOOL.value} please")
         chat.await_idle()
@@ -132,7 +133,10 @@ class TestToolStep:
             raise AssertionError(first)
         if first.get("end") is not None:
             raise AssertionError(first)
-        if first.get("output"):
+
+        # секцию output фронт рисует только непустой: под ней живёт кнопка
+        # живого вывода, поэтому идущий шаг несёт маркер, а не результат
+        if first.get("output") != StepText.RUNNING.value:
             raise AssertionError(first)
 
         last = steps[-1]

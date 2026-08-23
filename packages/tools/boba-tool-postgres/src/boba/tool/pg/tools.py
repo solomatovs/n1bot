@@ -140,7 +140,7 @@ def _affected(cur: psycopg.AsyncCursor[Any]) -> AffectedSqlResult:
 
 
 @tool
-async def pg_list_targets(
+async def pg_connection_list(
     cfg: Annotated[PgToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Список доступных значений connection_name для postgres-инструментов."""
@@ -301,7 +301,7 @@ EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
 }
 
 TOOLS: Final = ToolMain.toolset(
-    pg_list_targets,
+    pg_connection_list,
     pg_list_tables,
     pg_describe_table,
     pg_query,

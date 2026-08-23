@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import (
@@ -15,8 +14,8 @@ from pydantic import (
     model_validator,
 )
 
-from boba.krb import DelegatedConfig, Kerberos, KerberosDump
-from boba.toolkit.types import SecretRevealing
+from boba.db.postgres.auth import PostgresAuth, PostgresKerberos, PostgresLibpq
+from boba.krb import KerberosAuthBase, KerberosDump
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 
@@ -98,21 +97,9 @@ class PostgresConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    GSS_OFF: ClassVar[str] = "disable"
-    """gssencmode без секции kerberos: libpq не ходит за чужим ccache."""
-
-    GSS_REQUIRED: ClassVar[str] = "require"
-    """gssencmode с секцией kerberos: сбой GSS не уходит в открытую попытку."""
-
-    DEFAULT_KRBSRVNAME: ClassVar[str] = "postgres"
-    """Имя сервиса kerberos по умолчанию у libpq."""
-
-    # ключ контекста сериализации: пароль раскрывается только в доверенный канал
-    REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
-
-    # не connect-параметры: конструктор пула, строка '-c k=v', креды kerberos
+    # не connect-параметры: конструктор пула, строка '-c k=v', способ авторизации
     NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"pool", "options", "kind", "kerberos"}
+        {"pool", "options", "kind", "auth"}
     )
 
     kind: Literal["postgres"] = Field(
@@ -125,15 +112,6 @@ class PostgresConfig(BaseModel):
     hostaddr: str | None = Field(default=None, description="IP хоста (без DNS).")
     port: int | None = Field(default=None, description="Порт (или сокет-суффикс).")
     dbname: str | None = Field(default=None, description="Имя БД.")
-    user: str | None = Field(default=None, description="Пользователь.")
-    password: SecretStr | None = Field(
-        default=None,
-        description="Пароль (секрет); маскируется в дампах и логах.",
-    )
-    passfile: str | None = Field(default=None, description="Путь к файлу паролей.")
-    require_auth: str | None = Field(
-        default=None, description="Требуемые методы аутентификации."
-    )
     channel_binding: str | None = Field(
         default=None, description="disable|prefer|require."
     )
@@ -163,9 +141,6 @@ class PostgresConfig(BaseModel):
     replication: str | None = Field(
         default=None, description="Режим репликации (true/database/false)."
     )
-    gssencmode: str | None = Field(
-        default=None, description="disable|prefer|require (GSSAPI шифрование)."
-    )
     sslmode: str | None = Field(
         default=None,
         description="disable|allow|prefer|require|verify-ca|verify-full.",
@@ -174,11 +149,6 @@ class PostgresConfig(BaseModel):
         default=None, description="postgres|direct (способ начала TLS)."
     )
     sslcompression: int | None = Field(default=None, description="Сжатие TLS (1/0).")
-    sslcert: str | None = Field(default=None, description="Клиентский сертификат.")
-    sslkey: str | None = Field(default=None, description="Клиентский приватный ключ.")
-    sslpassword: str | None = Field(
-        default=None, description="Пароль приватного ключа (секрет)."
-    )
     sslrootcert: str | None = Field(default=None, description="Корневой CA-сертификат.")
     sslcrl: str | None = Field(default=None, description="CRL-файл.")
     sslcrldir: str | None = Field(default=None, description="Каталог CRL.")
@@ -192,7 +162,6 @@ class PostgresConfig(BaseModel):
     ssl_max_protocol_version: str | None = Field(
         default=None, description="Макс. версия TLS."
     )
-    krbsrvname: str | None = Field(default=None, description="Имя сервиса Kerberos.")
     gsslib: str | None = Field(default=None, description="Библиотека GSSAPI.")
     gssdelegation: int | None = Field(
         default=None, description="Делегирование GSSAPI-креденшелов (1/0)."
@@ -238,58 +207,41 @@ class PostgresConfig(BaseModel):
         ),
     ]
 
-    # креды kerberos этого соединения; libpq keytab не принимает, его даёт libkrb5
-    kerberos: Kerberos | None = Field(
-        default=None,
+    # способ аутентификации: одно поле, из него выводятся ключи libpq
+    auth: PostgresAuth = Field(
         description=(
-            "Keytab, принципал и свой ccache соединения; "
-            "в конфиге подключается ссылкой ${kerberos.<name>}. "
-            "В песочницу этой же секцией уезжает только готовый тикет."
+            "Как аутентифицируемся: trust | password | certificate | "
+            "kerberos_keytab | kerberos_password | kerberos_delegated. "
+            "Поля задаёт сам вариант; gssencmode, require_auth, krbsrvname и "
+            "роль kerberos-варианта выводятся из него."
         ),
     )
 
     def service_name(self) -> str:
-        """SPN сервера в форме hostbased: <krbsrvname>@<host>; как его ищет libpq."""
+        """SPN сервера в форме hostbased: <service>@<host>; как его ищет libpq."""
         if not self.host:
             msg = "postgres connection: kerberos needs host, hostaddr is not enough"
             raise ValueError(msg)
 
-        name = self.krbsrvname
-        if not name:
-            name = self.DEFAULT_KRBSRVNAME
+        if not isinstance(self.auth, KerberosAuthBase):
+            msg = f"postgres connection: {self.auth.method} has no kerberos service"
+            raise ValueError(msg)
 
-        return f"{name}@{self.host}"
+        return f"{PostgresKerberos.service_of(self.auth)}@{self.host}"
 
-    @field_serializer("kerberos", when_used="json")
-    def _dump_kerberos(
-        self, value: Kerberos | None, info: SerializationInfo
+    @field_serializer("auth", when_used="json")
+    def _dump_auth(
+        self, value: PostgresAuth, info: SerializationInfo
     ) -> dict[str, Any] | None:
-        """Дамп с раскрытыми секретами едет в песочницу: только билет вызова."""
-        return KerberosDump.json(value, info.context, "postgres connection")
+        """Дамп с раскрытыми секретами едет в песочницу: kerberos — только билетом."""
+        if isinstance(value, KerberosAuthBase):
+            return KerberosDump.json(value, info.context, "postgres connection")
 
-    @field_serializer("password", when_used="json")
-    def _dump_password(
-        self, value: SecretStr | None, info: SerializationInfo
-    ) -> str | None:
-        """Пароль уходит в дамп только с REVEAL_SECRETS в контексте, иначе его нет."""
-        if value is None:
-            return None
-
-        context = info.context
-        if not isinstance(context, Mapping):
-            return None
-
-        if not context.get(PostgresConfig.REVEAL_SECRETS):
-            return None
-
-        return value.get_secret_value()
+        return value.model_dump(mode="json", context=info.context)
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
         # у делегированного соединения роль — принципал сессии, он известен на вызове
-        if not self.user and not isinstance(self.kerberos, DelegatedConfig):
-            msg = "postgres connection: user обязателен"
-            raise ValueError(msg)
         if not self.dbname:
             msg = "postgres connection: dbname обязателен"
             raise ValueError(msg)
@@ -303,28 +255,12 @@ class PostgresConfig(BaseModel):
             )
             raise ValueError(msg)
 
-        if self.kerberos is None:
-            if self.gssencmode != self.GSS_OFF:
-                msg = (
-                    "postgres connection: without a kerberos section libpq would "
-                    "use whatever ccache the process has; set "
-                    f'gssencmode = "{self.GSS_OFF}" explicitly'
-                )
-                raise ValueError(msg)
-
+        if not isinstance(self.auth, KerberosAuthBase):
             return self
-
-        if self.gssencmode != self.GSS_REQUIRED:
-            msg = (
-                "postgres connection: a kerberos section needs "
-                f'gssencmode = "{self.GSS_REQUIRED}"; with anything weaker a GSS '
-                "failure silently falls back to a plain connection attempt"
-            )
-            raise ValueError(msg)
 
         if self.connect_timeout is None:
             msg = (
-                "postgres connection: a kerberos section needs connect_timeout: "
+                f"postgres connection: {self.auth.method} needs connect_timeout: "
                 "the GSS handshake runs under a process-wide lock"
             )
             raise ValueError(msg)
@@ -351,6 +287,8 @@ class PostgresConfig(BaseModel):
                 continue
 
             conn[name] = value
+
+        conn.update(PostgresLibpq.of(self.auth))
 
         if opts := self.options.to_options(override_options):
             conn["options"] = opts

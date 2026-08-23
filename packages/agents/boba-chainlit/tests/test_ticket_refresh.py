@@ -13,16 +13,17 @@ from typing import Annotated, Any, ClassVar
 import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, create_model
+from stand_site import Stand
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.infra.tickets import ServiceTickets, TicketArming
 from boba.db.postgres.config import PostgresConfig
-from boba.krb import KeytabConfig, TicketConfig
+from boba.krb import KeytabAuth, TicketAuth
 from boba.toolkit.facade import Injected
 
-_KRB = Path(__file__).resolve().parents[4] / "compose" / "conf" / "krb"
-KEYTAB = _KRB / "boba-svc.keytab"
-KRB5_CONF = _KRB / "krb5.conf"
+STAND = Stand.required()
+KEYTAB = Path(STAND.krb_pg_keytab)
+KRB5_CONF = Path(STAND.krb_config)
 
 pytestmark = pytest.mark.anyio
 
@@ -47,34 +48,35 @@ class ToolConfig(BaseModel):
 class Fixtures:
     """Конфиг соединения с keytab-кредами и инструмент, которому он положен."""
 
-    PRINCIPAL: ClassVar[str] = "boba-svc@LOSHARA.COM"
+    PRINCIPAL: ClassVar[str] = STAND.service_principal
 
     @classmethod
-    def keytab(cls, ccache: Path) -> KeytabConfig:
-        return KeytabConfig(
-            keytab=str(KEYTAB),
+    def keytab(cls, ccache: Path) -> KeytabAuth:
+        return KeytabAuth(
+            method="kerberos_keytab",
             principal=cls.PRINCIPAL,
-            ccache=f"FILE:{ccache}",
-            krb5_config=str(KRB5_CONF),
+            keytab=str(KEYTAB),
         )
 
     @classmethod
     def connection(cls, ccache: Path) -> PostgresConfig:
         return PostgresConfig.model_validate(
             {
-                "host": "postgres-17.loshara.com",
-                "user": "boba-svc",
+                "host": STAND.pg_host,
                 "dbname": "boba",
-                "gssencmode": "require",
                 "connect_timeout": 5,
-                "kerberos": cls.keytab(ccache).model_dump(mode="json"),
+                "auth": cls.keytab(ccache).model_dump(mode="json"),
             }
         )
 
     @classmethod
     def plain(cls) -> PostgresConfig:
         return PostgresConfig.model_validate(
-            {"host": "h", "user": "u", "dbname": "d", "gssencmode": "disable"}
+            {
+                "host": "h",
+                "dbname": "d",
+                "auth": {"method": "trust", "user": "u"},
+            }
         )
 
     @staticmethod
@@ -114,9 +116,11 @@ class TestArmingIsNeededWhereKeytabLives:
             raise AssertionError("обвязка просится там, где kerberos нет")
 
     def test_ticket_section_needs_nothing(self) -> None:
-        ticket = TicketConfig.of_bytes(Fixtures.PRINCIPAL, "postgres@h", b"x", 60)
+        ticket = TicketAuth.of_bytes(
+            Fixtures.PRINCIPAL, "postgres@h", b"x", 60
+)
         armed = Fixtures.plain().model_copy(
-            update={"kerberos": ticket, "gssencmode": "require", "connect_timeout": 5}
+            update={"auth": ticket, "connect_timeout": 5}
         )
         if TicketArming.needs_arming(ToolConfig(connection=armed)):
             raise AssertionError("готовый билет перевыпускать не нужно")
@@ -132,9 +136,9 @@ class TestTicketReplacesKeytab:
         shipped = kwargs["cfg"]
         if not isinstance(shipped, ToolConfig):
             raise AssertionError(f"конфиг потерял тип: {type(shipped)}")
-        if not isinstance(shipped.connection.kerberos, TicketConfig):
+        if not isinstance(shipped.connection.auth, TicketAuth):
             raise AssertionError("телу ушёл не билет")
-        if shipped.connection.kerberos.service != "postgres@postgres-17.loshara.com":
+        if shipped.connection.auth.service != STAND.pg_spn:
             raise AssertionError("билет выпущен не к SPN соединения")
         if shipped.collection != "kb":
             raise AssertionError("остальные поля конфига должны остаться")
@@ -146,7 +150,7 @@ class TestTicketReplacesKeytab:
 
         await tool.ainvoke({"sql": "select 1"})
 
-        if not isinstance(config.connection.kerberos, KeytabConfig):
+        if not isinstance(config.connection.auth, KeytabAuth):
             raise AssertionError("базовый конфиг переписан билетом")
 
 
