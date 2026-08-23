@@ -65,11 +65,16 @@ class ClickHouseAuthBase(BaseModel, ABC):
 
     REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
 
+    method: str = Field(description="Способ; вариант сужает его до литерала.")
     user: str = Field(min_length=1, description="Пользователь ClickHouse.")
 
     @abstractmethod
     def client(self) -> dict[str, Any]:
         """Аргументы конструктора клиента; реализация обязана их перечислить."""
+
+    def trace(self) -> str:
+        """Строка журнала: способ и пользователь, под которым входим."""
+        return f"auth={self.method} user={self.user}"
 
 
 class NoPasswordAuth(ClickHouseAuthBase):

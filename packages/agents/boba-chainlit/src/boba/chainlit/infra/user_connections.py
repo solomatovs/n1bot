@@ -33,6 +33,7 @@ import jwt
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, ConfigDict
 
+import chainlit as cl
 from boba.chainlit.agent.toolrun.injected import ConfigResolver, ToolConfigError
 from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
 from boba.chainlit.auth.kerberos import KerberosAuth
@@ -147,9 +148,41 @@ class SsoLogin(BaseModel):
 
         found = cls.of_metadata(user.metadata)
         if not isinstance(found, SsoLogin):
+            cls._log_session(user)
             cls._refuse(found)
 
         return found
+
+    @staticmethod
+    def _log_session(user: cl.User) -> None:
+        """В лог — чем плох вход сессии: какие метки есть и когда выдан токен.
+
+        По сроку токена видно, тот ли это вход, которым пользователь только
+        что зашёл, или сессия держит токен прошлого входа.
+        """
+        from chainlit.context import context  # noqa: PLC0415
+
+        expires = "unknown"
+        session = ""
+        try:
+            token = context.session.token
+            session = context.session.id
+        except ChainlitContextException:
+            token = ""
+
+        if token:
+            # только для журнала: подпись проверил decode_jwt выше
+            claims = jwt.decode(token, options={"verify_signature": False})
+            expires = str(claims.get("exp", "unknown"))
+
+        logger.warning(
+            "kerberos: session %s signed in without delegation "
+            "[identifier=%s] [metadata=%s] [token expires=%s]",
+            session,
+            user.identifier,
+            sorted(user.metadata),
+            expires,
+        )
 
     @classmethod
     def of_token(cls, token: str) -> SsoLogin | None:
@@ -205,6 +238,35 @@ class SsoLogin(BaseModel):
     def _refuse(cls, reason: str) -> NoReturn:
         msg = f"{reason}; {cls.RETRY_HINT}"
         raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
+
+
+class ConnectionTrace:
+    """Как соединение выглядит в журнале: способ авторизации и под кем идём.
+
+    Пишется по профилю, который уже уехал бы в песочницу, поэтому у
+    делегированных строк здесь виден выпущенный билет вызова, а не строка
+    таблицы.
+    """
+
+    @staticmethod
+    def of(profile: ConnectionProfile) -> str:
+        if isinstance(profile, HttpProfile):
+            return f"{profile.auth.trace()} url={profile.base_url}"
+
+        return profile.auth.trace()
+
+
+class LoginMark:
+    """Метка входа в журнале: сама метка — ключ к тикету, целиком её не пишем."""
+
+    KEEP: ClassVar[int] = 8
+
+    @classmethod
+    def of(cls, login: str) -> str:
+        if len(login) <= cls.KEEP:
+            return login
+
+        return f"{login[: cls.KEEP]}…"
 
 
 class KerberosRefreshSignal:
@@ -269,9 +331,15 @@ class UserKerberos:
         if self._enough(registry.of_login(sso.login)):
             return
 
+        logger.info(
+            "kerberos: sign-in %s has no fresh ticket, asking the browser",
+            LoginMark.of(sso.login),
+        )
+
         # ожидание заводится до просьбы: обмен может пройти быстрее нас
         with registry.arm_refresh(sso.login) as waiting:
             if not await KerberosRefreshSignal.send():
+                logger.info("kerberos: nobody is listening for the refresh signal")
                 return
 
             refreshed = await waiting.wait(RefreshWaiters.TIMEOUT_SEC)
@@ -304,6 +372,13 @@ class UserKerberos:
 
         credentials = registry.of_login(sso.login)
         if credentials is None:
+            logger.warning(
+                "kerberos: session of %s asks for sign-in %s, "
+                "registry holds %s",
+                sso.principal,
+                LoginMark.of(sso.login),
+                [LoginMark.of(login) for login in registry.logins()],
+            )
             msg = (
                 f"the delegated Kerberos ticket of {sso.principal} is gone "
                 "(the application restarted or you signed out): sign in again; "
@@ -319,6 +394,12 @@ class UserKerberos:
             )
             raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
+        logger.info(
+            "kerberos: tool acts as %s [sign-in %s] [ticket %ds]",
+            credentials.principal,
+            LoginMark.of(sso.login),
+            credentials.lifetime(),
+        )
         return credentials
 
     def forget(self, token: str) -> None:
@@ -468,7 +549,15 @@ class UserConnections:
         shipped: dict[str, ConnectionProfile] = {}
         if picked is not None:
             profile = self._at_host(requested, picked.profile, kwargs)
-            shipped[requested] = await self._armed(self._labelled(profile, name))
+            armed = await self._armed(self._labelled(profile, name))
+            shipped[requested] = armed
+            logger.info(
+                "tool %s: connection %r (%s) %s",
+                name,
+                requested,
+                self._spec.kind.value,
+                ConnectionTrace.of(armed),
+            )
 
         update: dict[str, object] = {
             "profiles": shipped,
