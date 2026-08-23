@@ -55,7 +55,12 @@ from boba.chainlit.domain.errors import (
     FailureReport,
     InternalServiceError,
 )
-from boba.chainlit.domain.session import LogLine, SsoMarks, UserMetadataField
+from boba.chainlit.domain.session import (
+    LogLine,
+    SsoMarks,
+    UserLogin,
+    UserMetadataField,
+)
 from boba.krb import (
     AcceptConfig,
     CcacheRegistry,
@@ -800,7 +805,13 @@ class KerberosAuth(SsoAdmission):
             principal,
         )
 
-        return cl.User(identifier=username, metadata=metadata)
+        login = UserLogin.of(username)
+
+        return cl.User(
+            identifier=login.key,
+            display_name=login.display,
+            metadata=metadata,
+        )
 
     async def roles_of(self, principal: str, group_sids: Sequence[str]) -> list[str]:
         """Роли принципала по всем источникам; исключение — AuthorizationError.

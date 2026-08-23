@@ -22,6 +22,7 @@ from boba.chainlit.chat.settings import SettingsPanel
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn
 from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.fields import ThreadField
 from boba.chainlit.domain.session import (
     LogUserMark,
@@ -29,8 +30,10 @@ from boba.chainlit.domain.session import (
     current_chat_profile,
     current_language,
     current_thread_id,
+    current_user,
     current_user_id,
     current_user_label,
+    current_user_metadata,
     current_user_roles,
     roles_of_user,
 )
@@ -74,7 +77,13 @@ async def on_message(
     ],
     data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
 ):
-    thread_id = cl.context.session.thread_id
+    thread_id = current_thread_id()
+    if thread_id is None:
+        raise InternalServiceError(
+            internal_detail="on_message outside a chainlit thread",
+            user_detail=None,
+        )
+
     ThreadRoom.activate(thread_id)
 
     view = ChatView(thread_id, LiveSink())
@@ -154,17 +163,13 @@ def _session_view(config: AppConfig, registry: ChatProfiles) -> SettingsView:
     """Итоговые настройки сессии: профиль плюс личные настройки пользователя."""
     selected = _session_selected_profile(registry)
 
-    metadata = None
-    if user := cl.user_session.get("user"):
-        metadata = user.metadata
-
-    saved = UserMeta.of(metadata).overrides_for(selected.name)
+    saved = UserMeta.of(current_user_metadata()).overrides_for(selected.name)
     return SettingsView.of(config.settings, selected.config, saved)
 
 
 def _refresh_session_user_meta(profile: str, overrides: UserLlmOverrides) -> None:
     """Свежие настройки — в metadata пользователя сессии, без перелогина."""
-    user = cl.user_session.get("user")
+    user = current_user()
     if user is None:
         return
 

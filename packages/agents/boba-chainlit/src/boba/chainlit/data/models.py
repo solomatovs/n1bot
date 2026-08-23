@@ -183,6 +183,14 @@ class User(Row):
                 )
                 """
             ).format(table=cls.get_table_name(schema)),
+            # регистр логина не заводит вторую личность даже если запись
+            # придёт мимо UserLogin: инвариант держит база
+            sql.SQL(
+                """
+                create unique index if not exists idx_users_identifier_lower
+                    on {table} (lower(identifier))
+                """
+            ).format(table=cls.get_table_name(schema)),
         )
 
 
