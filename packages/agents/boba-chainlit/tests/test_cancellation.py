@@ -100,7 +100,7 @@ _PROFILE_RAW: dict[str, object] = {
             f"{_PACKAGES}:/usr/src",
         ),
         "rw": (),
-        "tmp": "16M",  # noqa: S108
+        "tmp": "16M",
     },
     "isolation": {
         "network": False,

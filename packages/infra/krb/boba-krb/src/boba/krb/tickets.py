@@ -27,7 +27,7 @@ import krb5
 from gssapi import Credentials, Name, NameType, SecurityContext
 from gssapi.raw.misc import GSSError
 
-from boba.krb.config import TicketConfig
+from boba.krb.auth import TicketAuth
 from boba.krb.credentials import KerberosCredentials
 from boba.krb.errors import CredentialsExpiredError, KerberosError
 from boba.toolkit.timing import Elapsed
@@ -49,11 +49,11 @@ class ServiceTicketIssuer:
 
     async def issue_async(
         self, source: KerberosCredentials, service: str
-    ) -> TicketConfig:
+    ) -> TicketAuth:
         """issue() без блокировки event loop: поход в KDC уходит в поток."""
         return await asyncio.to_thread(self.issue, source, service)
 
-    def issue(self, source: KerberosCredentials, service: str) -> TicketConfig:
+    def issue(self, source: KerberosCredentials, service: str) -> TicketAuth:
         elapsed = Elapsed()
 
         with source.applied():
@@ -67,7 +67,7 @@ class ServiceTicketIssuer:
             elapsed.ms(),
         )
 
-        return TicketConfig.of_bytes(
+        return TicketAuth.of_bytes(
             principal=source.principal,
             service=service,
             blob=blob,

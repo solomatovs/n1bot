@@ -11,10 +11,12 @@ import html
 import logging
 import os
 import re
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from abc import abstractmethod
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Protocol
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -53,7 +55,7 @@ from boba.chainlit.domain.errors import (
     FailureReport,
     InternalServiceError,
 )
-from boba.chainlit.domain.session import LogLine, UserMetadataField
+from boba.chainlit.domain.session import LogLine, SsoMarks, UserMetadataField
 from boba.krb import (
     AcceptConfig,
     CcacheRegistry,
@@ -76,6 +78,9 @@ class ButtonJsVar(StrEnum):
     """Плейсхолдеры sso_button.js, которые сервер заменяет на URL."""
 
     SSO_URL = "__SSO_URL__"
+    REFRESH_URL = "__REFRESH_URL__"
+    REFRESH_HEADER = "__REFRESH_HEADER__"
+    REFRESH_HEADER_VALUE = "__REFRESH_HEADER_VALUE__"
     TRANSLATIONS_URL = "__TRANSLATIONS_URL__"
 
 
@@ -97,9 +102,10 @@ class SsoLoginError(StrEnum):
 
 
 class SsoUrls(BaseModel):
-    """Адреса SSO с учётом url_prefix: роут, скрипт кнопки, переводы, логин, чат."""
+    """Адреса SSO с учётом url_prefix: роут, обновление, скрипт, логин, чат."""
 
     sso: str
+    refresh: str
     js: str
     translations: str
     login: str
@@ -111,6 +117,7 @@ class SsoUrls(BaseModel):
 
         return cls(
             sso=sso,
+            refresh=f"{sso}/refresh",
             js=f"{sso}.js",
             translations=f"{url_prefix}/project/translations",
             login=f"{url_prefix}/login",
@@ -193,6 +200,26 @@ class KerberosAuthConfig(BaseModel):
         return f"{self.header}-Login"
 
 
+class SsoAdmission(Protocol):
+    """Допуск принципала ко входу: роли этого входа либо отказ."""
+
+    @abstractmethod
+    async def roles_of(self, principal: str, group_sids: Sequence[str]) -> list[str]:
+        """Роли принципала; AuthorizationError — вход запрещён."""
+
+
+class SsoRefresh(StrEnum):
+    """Признак того, что обмен запросила своя страница, а не чужой сайт."""
+
+    HEADER = "x-boba-sso-refresh"
+    VALUE = "1"
+
+    @classmethod
+    def asked(cls, headers: Headers) -> bool:
+        """Заголовок ставит только свой fetch: кросс-сайтовый запрос его не несёт."""
+        return headers.get(cls.HEADER) == cls.VALUE
+
+
 class KerberosErrorToDomain:
     "Классификация ошибок kerberos-слоя в доменную ошибку."
 
@@ -265,23 +292,27 @@ class SidsHeader:
             yield part
 
 
-class SpnegoMiddleware:
-    "SPNEGO-accept на /auth/sso"
+@dataclass(frozen=True)
+class SsoRuntime:
+    """Части SSO, которыми работает middleware: адреса, приём, делегирование, допуск."""
 
-    def __init__(
-        self,
-        app: ASGIApp,
-        *,
-        urls: SsoUrls,
-        config: KerberosAuthConfig,
-        acceptor: SpnegoAcceptor,
-        delegation: KerberosDelegation,
-    ) -> None:
+    urls: SsoUrls
+    config: KerberosAuthConfig
+    acceptor: SpnegoAcceptor
+    delegation: KerberosDelegation
+    admission: SsoAdmission
+
+
+class SpnegoMiddleware:
+    "SPNEGO-accept на /auth/sso и молчаливый повторный обмен на /auth/sso/refresh"
+
+    def __init__(self, app: ASGIApp, *, sso: SsoRuntime) -> None:
         self._app = app
-        self._urls = urls
-        self._config = config
-        self._acceptor = acceptor
-        self._delegation = delegation
+        self._urls = sso.urls
+        self._config = sso.config
+        self._acceptor = sso.acceptor
+        self._delegation = sso.delegation
+        self._admission = sso.admission
         self._negotiate = {"WWW-Authenticate": "Negotiate"}
         self._logger = logging.getLogger(SpnegoMiddleware.__name__)
 
@@ -295,36 +326,21 @@ class SpnegoMiddleware:
 
         path = path.removesuffix("/").lower()
 
+        if path == self._urls.refresh:
+            return await self._refreshed(scope, receive, send)
+
         if path != self._urls.sso:
             return await self._app(scope, receive, send)
 
         headers = Headers(scope=scope).mutablecopy()
         client = self._client(headers, scope)
 
-        auth = headers.get("authorization")
-        if not auth:
-            # обычное начало handshake: токена ещё нет — это не ошибка
-            return await self._challenge(
-                scope, receive, send, "no Authorization header", logging.INFO
-            )
+        found = self._token_of(headers)
+        if isinstance(found, str):
+            # начало handshake токена не несёт — это не ошибка
+            return await self._challenge(scope, receive, send, found, logging.INFO)
 
-        scheme, _, value = auth.partition(" ")
-        if scheme.lower() != "negotiate":
-            return await self._challenge(
-                scope, receive, send, f"unexpected auth scheme {scheme!r}"
-            )
-
-        if not value:
-            return await self._challenge(
-                scope, receive, send, f"unexpected auth scheme {scheme!r}"
-            )
-
-        try:
-            token = base64.b64decode(value)
-        except ValueError as e:
-            return await self._challenge(
-                scope, receive, send, f"invalid base64 token: {e}"
-            )
+        token = found
 
         try:
             identity: SpnegoIdentity = await self._acceptor.accept_async(token)
@@ -357,6 +373,130 @@ class SpnegoMiddleware:
         scope["headers"] = headers.raw
 
         return await self._app(scope, receive, send)
+
+    async def _refreshed(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Повторный SPNEGO живой сессии: свежие креды под её же меткой входа.
+
+        JWT остаётся прежним: обновляется только тикет, на который он ссылается.
+        """
+        headers = Headers(scope=scope)
+        client = self._client(headers, scope)
+
+        allowed = self._refresh_marks(headers, client)
+        if isinstance(allowed, str):
+            await self._refusal(scope, receive, send, allowed)
+            return
+
+        marks = allowed
+        found = self._token_of(headers)
+        if isinstance(found, str):
+            # 401 с Negotiate: браузер домена повторит запрос с токеном сам
+            await self._ask_negotiate(scope, receive, send, found, client)
+            return
+
+        try:
+            identity: SpnegoIdentity = await self._acceptor.accept_async(found)
+        except InvalidTokenError as e:
+            await self._ask_negotiate(scope, receive, send, str(e), client)
+            return
+        except KerberosError as e:
+            self._logger.exception(
+                "kerberos: spnego refresh failed (keytab/SPN) [client=%s]", client
+            )
+            raise KerberosErrorToDomain.map(e) from e
+
+        if identity.principal != marks.principal:
+            reason = (
+                f"refresh token of {identity.principal} does not match the "
+                f"session of {marks.principal}"
+            )
+            await self._refusal(scope, receive, send, reason)
+            return
+
+        try:
+            await self._admission.roles_of(identity.principal, identity.group_sids)
+        except AuthorizationError:
+            await self._refusal(
+                scope, receive, send, f"{identity.principal} is no longer admitted"
+            )
+            return
+
+        login = self._delegation.on_refresh_authenticated(identity, marks.login)
+        if not login:
+            await self._refusal(
+                scope, receive, send, f"no delegated credentials for {marks.principal}"
+            )
+            return
+
+        self._logger.info(
+            "kerberos: refreshed delegated credentials [principal=%s] [client=%s]",
+            identity.principal,
+            client,
+        )
+
+        await Response(status_code=204)(scope, receive, send)
+
+    def _refresh_marks(self, headers: Headers, client: str) -> SsoMarks | str:
+        """Метки сессии, которой позволено обменяться, либо причина отказа."""
+        if not SsoRefresh.asked(headers):
+            # заголовок ставит только свой fetch: чужая страница обмен не запустит
+            return f"refresh without its own header [{client}]"
+
+        marks = self._session_marks(headers)
+        if marks is None:
+            return "request carries no signed sign-in"
+
+        # обмен продлевает живой вход; забытый logout'ом не воскрешает
+        if not self._delegation.knows(marks.login):
+            return f"sign-in of {marks.principal} is not active"
+
+        return marks
+
+    @staticmethod
+    def _session_marks(headers: Headers) -> SsoMarks | None:
+        """Метки входа из JWT-cookie запроса; None — сессии нет или она не SSO."""
+        from chainlit.auth.cookie import get_token_from_cookies  # noqa: PLC0415
+
+        cookies = Request(scope={"type": "http", "headers": headers.raw}).cookies
+        token = get_token_from_cookies(cookies)
+        if not token:
+            return None
+
+        return SsoMarks.of_token(token)
+
+    @staticmethod
+    def _token_of(headers: Headers) -> bytes | str:
+        """Токен Negotiate из заголовка либо причина, почему его нет."""
+        auth = headers.get("authorization")
+        if not auth:
+            return "no Authorization header"
+
+        scheme, _, value = auth.partition(" ")
+        if scheme.lower() != "negotiate":
+            return f"unexpected auth scheme {scheme!r}"
+
+        if not value:
+            return f"unexpected auth scheme {scheme!r}"
+
+        try:
+            return base64.b64decode(value)
+        except ValueError as e:
+            return f"invalid base64 token: {e}"
+
+    async def _ask_negotiate(
+        self, scope: Scope, receive: Receive, send: Send, reason: str, client: str
+    ) -> None:
+        """401 Negotiate без страницы логина: ответ читает скрипт, не человек."""
+        self._logger.info("kerberos refresh challenge [client=%s]: %s", client, reason)
+        response = Response(status_code=401, headers=self._negotiate)
+        await response(scope, receive, send)
+
+    async def _refusal(
+        self, scope: Scope, receive: Receive, send: Send, reason: str
+    ) -> None:
+        """403: повторный обмен не относится к этой сессии, повтор не поможет."""
+        self._logger.warning("kerberos refresh refused: %s", reason)
+        await Response(status_code=403)(scope, receive, send)
 
     def _client(self, headers: Headers, scope: Scope) -> str:
         "Лучший идентификатор клиента для логов: реальный IP за прокси, иначе peer."
@@ -486,7 +626,7 @@ class KerberosRolesInLdapProvider:
             yield from self._dn_roles_ex.exclude_of(user.dn)
 
 
-class KerberosAuth:
+class KerberosAuth(SsoAdmission):
     """SSO через Kerberos/SPNEGO: кнопка на /login ведёт на /auth/sso (SpnegoMiddleware)
 
     Собран на FastAPI без chainlit header-auth: вход по явной кнопке, не автоматом.
@@ -585,15 +725,19 @@ class KerberosAuth:
         # анонима; флаг включает обязательный вход без автозапроса /auth/header
         os.environ[self._CUSTOM_AUTH_ENV] = "1"
 
-        chainlit_app.add_middleware(
-            SpnegoMiddleware,
+        chainlit_app.add_middleware(SpnegoMiddleware, sso=self.runtime())
+        self._install_routes(chainlit_app)
+        self._install_button_js()
+
+    def runtime(self) -> SsoRuntime:
+        """Части SSO для middleware; тест собирает его тем же набором."""
+        return SsoRuntime(
             urls=self._urls,
             config=self._config,
             acceptor=self.acceptor,
             delegation=self.delegation,
+            admission=self,
         )
-        self._install_routes(chainlit_app)
-        self._install_button_js()
 
     async def _sso_user(self, headers: Headers) -> cl.User | None:
         """Пользователь после SPNEGO, заведённый в data layer."""
@@ -635,6 +779,28 @@ class KerberosAuth:
 
         metadata = self._sso_metadata(headers, principal)
 
+        raw_sids = headers.get(self._config.sids_header)
+        if raw_sids is None:
+            raw_sids = ""
+
+        roles = await self.roles_of(principal, SidsHeader.parse(raw_sids))
+
+        if roles:
+            metadata[UserMetadataField.ROLES] = roles
+
+        username = self._username_from_principal(
+            self._config.principal_format,
+            principal,
+        )
+
+        return cl.User(identifier=username, metadata=metadata)
+
+    async def roles_of(self, principal: str, group_sids: Sequence[str]) -> list[str]:
+        """Роли принципала по всем источникам; исключение — AuthorizationError.
+
+        Зовётся и при входе, и при повторном обмене: запрет в AD должен
+        отсекать обмен так же, как отсёк бы новый вход.
+        """
         roles: list[str] = []
         excluded = False
 
@@ -644,7 +810,7 @@ class KerberosAuth:
         if self._principal_roles_ex:
             excluded = any(self._principal_roles_ex.exclude_of(principal))
 
-        sid_roles, sid_excluded = self._sid_mapping(headers)
+        sid_roles, sid_excluded = self._sid_mapping(group_sids)
         roles.extend(sid_roles)
         if sid_excluded:
             excluded = True
@@ -660,22 +826,13 @@ class KerberosAuth:
             self._logger.warning("access denied for %s (excluded)", principal)
             raise AuthorizationError("Access denied")
 
-        roles = sorted(set(roles))
+        mapped = sorted(set(roles))
 
-        requires_roles = self._config.require_roles
-        if requires_roles and not roles:
+        if self._config.require_roles and not mapped:
             self._logger.warning("access denied for %s (no roles mapped)", principal)
             raise AuthorizationError("Access denied")
 
-        if roles:
-            metadata[UserMetadataField.ROLES] = roles
-
-        username = self._username_from_principal(
-            self._config.principal_format,
-            principal,
-        )
-
-        return cl.User(identifier=username, metadata=metadata)
+        return mapped
 
     def _sso_metadata(self, headers: Headers, principal: str) -> dict[str, Any]:
         """Metadata входа: провайдер, принципал и метка входа с тикетом."""
@@ -689,27 +846,21 @@ class KerberosAuth:
 
         return metadata
 
-    def _sid_mapping(self, headers: Headers) -> tuple[list[str], bool]:
-        "Роли и исключение по SID группам из PAC; заголовок ставит middleware."
+    def _sid_mapping(self, sids: Sequence[str]) -> tuple[list[str], bool]:
+        "Роли и исключение по SID групп из PAC; сами SID приходят от вызывающего."
         has_roles = self._sid_roles is not None
         has_exclusions = self._sid_roles_ex is not None
 
         if not has_roles and not has_exclusions:
             return [], False
 
-        raw_sids = headers.get(self._config.sids_header)
-        if raw_sids is None:
-            raw_sids = ""
-
-        sids = SidsHeader.parse(raw_sids)
-
         roles: list[str] = []
         if self._sid_roles:
-            roles = list(self._sid_roles.roles_of(sids))
+            roles = list(self._sid_roles.roles_of(list(sids)))
 
         excluded = False
         if self._sid_roles_ex:
-            excluded = any(self._sid_roles_ex.exclude_of(sids))
+            excluded = any(self._sid_roles_ex.exclude_of(list(sids)))
 
         return roles, excluded
 
@@ -773,5 +924,14 @@ class KerberosAuth:
         """JS кнопки SSO из файла-ресурса рядом с модулем; сервер знает только URL."""
         template = self._BUTTON_JS.read_text(encoding="utf-8")
         with_sso = template.replace(ButtonJsVar.SSO_URL, self._urls.sso)
+        with_refresh = with_sso.replace(ButtonJsVar.REFRESH_URL, self._urls.refresh)
+        with_header = with_refresh.replace(
+            ButtonJsVar.REFRESH_HEADER, SsoRefresh.HEADER
+        )
+        with_value = with_header.replace(
+            ButtonJsVar.REFRESH_HEADER_VALUE, SsoRefresh.VALUE
+        )
 
-        return with_sso.replace(ButtonJsVar.TRANSLATIONS_URL, self._urls.translations)
+        return with_value.replace(
+            ButtonJsVar.TRANSLATIONS_URL, self._urls.translations
+        )

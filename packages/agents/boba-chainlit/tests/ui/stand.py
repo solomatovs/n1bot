@@ -39,7 +39,6 @@ class StandPaths(StrEnum):
     ASSETS = "compose/chainlit"
     SANDBOX = "build/src/sandbox"
     PACKAGES = "packages"
-    KEYTAB = "compose/conf/krb/boba-svc.keytab"
 
     def under(self, root: Path) -> Path:
         return root / self.value

@@ -28,13 +28,15 @@ from boba.chainlit.connections.store import ConnectionProfile
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import PostgresConfig
 from boba.krb import (
-    DelegatedConfig,
-    Kerberos,
+    DelegatedAuth,
+    KerberosAuthBase,
     KerberosCredentials,
-    KeytabConfig,
+    KerberosPasswordAuth,
+    KeytabAuth,
     KeytabCredentials,
+    PasswordCredentials,
     ServiceTicketIssuer,
-    TicketConfig,
+    TicketAuth,
 )
 from boba.toolkit.entry import ToolArgv
 from boba.transport.http import HttpProfile
@@ -76,21 +78,25 @@ class TicketArming:
     def needs_arming(cls, value: object) -> bool:
         """Есть ли в значении kerberos-секция, которую нельзя отдавать наружу."""
         for profile in cls._profiles(value):
-            if isinstance(cls.section_of(profile), KeytabConfig | DelegatedConfig):
+            section = cls.section_of(profile)
+            if isinstance(section, KeytabAuth | KerberosPasswordAuth | DelegatedAuth):
                 return True
 
         return False
 
     @staticmethod
-    def section_of(profile: ConnectionProfile) -> Kerberos | None:
-        """Kerberos-секция профиля; у web она внутри negotiate-auth."""
+    def section_of(profile: ConnectionProfile) -> KerberosAuthBase | None:
+        """Kerberos-часть профиля: у web внутри NegotiateAuth, у баз — сам auth."""
         if isinstance(profile, HttpProfile):
             if isinstance(profile.auth, NegotiateAuth):
                 return profile.auth.kerberos
 
             return None
 
-        return profile.kerberos
+        if isinstance(profile.auth, KerberosAuthBase):
+            return profile.auth
+
+        return None
 
     @classmethod
     def _profiles(cls, value: object) -> Iterator[ConnectionProfile]:
@@ -152,7 +158,7 @@ class TicketArming:
         if section is None:
             return profile
 
-        if isinstance(section, TicketConfig):
+        if isinstance(section, TicketAuth):
             return profile
 
         source = self._source(section)
@@ -163,24 +169,21 @@ class TicketArming:
             auth = profile.auth.model_copy(update={"kerberos": ticket})
             return profile.model_copy(update={"auth": auth})
 
-        update: dict[str, object] = {"kerberos": ticket}
-        if isinstance(profile, PostgresConfig) and profile.user is None:
-            # libpq подставил бы имя процесса; роль — это имя принципала билета
-            update["user"] = self.role_of(source.principal)
+        return profile.model_copy(update={"auth": ticket})
 
-        return profile.model_copy(update=update)
-
-    @staticmethod
-    def role_of(principal: str) -> str:
-        """user@REALM -> user: имя роли postgres по принципалу билета."""
-        name, _, _ = principal.partition("@")
-        return name
-
-    def _source(self, section: KeytabConfig | DelegatedConfig) -> KerberosCredentials:
-        if isinstance(section, DelegatedConfig):
+    def _source(self, section: KerberosAuthBase) -> KerberosCredentials:
+        """Креды, которыми выпускается билет вызова; билет источником не бывает."""
+        if isinstance(section, DelegatedAuth):
             return self._delegation()
 
-        return KeytabCredentials.of(section)
+        if isinstance(section, KeytabAuth):
+            return KeytabCredentials.of(section)
+
+        if isinstance(section, KerberosPasswordAuth):
+            return PasswordCredentials.of(section)
+
+        msg = f"{type(section).__name__}: not a source of a call ticket"
+        raise ToolConfigError(msg)
 
 
 class ServiceTickets:

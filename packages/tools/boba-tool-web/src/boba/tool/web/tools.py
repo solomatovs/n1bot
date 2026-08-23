@@ -109,7 +109,7 @@ class WebPage:
 
 
 @tool
-async def web_list_targets(
+async def web_connection_list(
     cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Доступные соединения web-инструментов: connection_name и хост, который
@@ -136,7 +136,7 @@ async def web_fetch_page(  # noqa: PLR0913
     ],
     cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Скачивает URL соединением connection_name (см. web_list_targets) и
+    """Скачивает URL соединением connection_name (см. web_connection_list) и
     возвращает окно строк; total_lines — для пагинации."""
     profile = cfg.resolve_for(connection_name, url)
 
@@ -193,7 +193,7 @@ async def web_grep_page(  # noqa: PLR0913
     cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Найти совпадения pattern в содержимом страницы, скачанной соединением
-    connection_name (см. web_list_targets)."""
+    connection_name (см. web_connection_list)."""
     profile = cfg.resolve_for(connection_name, url)
 
     text = await WebPage.load(
@@ -218,7 +218,7 @@ EXPECTED: Mapping[type[Exception], WebErrorKind] = {
     ResultTooLargeError: WebErrorKind.RESULT_TOO_LARGE,
 }
 
-TOOLS: Final = ToolMain.toolset(web_list_targets, web_fetch_page, web_grep_page)
+TOOLS: Final = ToolMain.toolset(web_connection_list, web_fetch_page, web_grep_page)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

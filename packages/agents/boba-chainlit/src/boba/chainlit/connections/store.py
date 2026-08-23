@@ -290,9 +290,16 @@ class ConnectionStore:
                 create table if not exists {connections} (
                     id   integer generated always as identity primary key,
                     name text not null,
-                    kind text not null,
                     data jsonb not null default '{{}}'::jsonb
                 )
+                """
+            ).format(
+                connections=self._table(),
+            ),
+            sql.SQL(
+                """
+                create index if not exists idx_connections_kind
+                    on {connections} ((data ->> 'kind'))
                 """
             ).format(
                 connections=self._table(),
@@ -361,18 +368,15 @@ class ConnectionStore:
 
     async def add(self, name: str, profile: ConnectionProfile) -> int:
         """Новая строка connections; уникальность имени — забота вызывающего."""
-        kind = ConnectionKind.of(profile)
         payload = self._cipher.encrypt(profile)
         query = sql.SQL(
             """
             insert into {connections} (
                 name,
-                kind,
                 data
             )
             values (
                 %(name)s,
-                %(kind)s,
                 %(data)s
             )
             returning
@@ -381,7 +385,7 @@ class ConnectionStore:
         ).format(
             connections=self._table(),
         )
-        params = {"name": name, "kind": kind.value, "data": Jsonb(payload)}
+        params = {"name": name, "data": Jsonb(payload)}
 
         pool = await self._pool()
         async with self._guarded("add"), pool.cursor() as cur:
@@ -649,7 +653,7 @@ class ConnectionStore:
                 {connections} c
                 inner join granted on granted.connection_id = c.id
             where
-                c.kind = %(kind)s
+                c.data ->> 'kind' = %(kind)s
             order by
                 c.id
             """

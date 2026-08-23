@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.clickhouse.payload import SpnegoHeaders
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
-from boba.tool.ch.tools import ChToolConfig, ch_list_targets, ch_query
+from boba.tool.ch.tools import ChToolConfig, ch_connection_list, ch_query
 from boba.toolkit.entry import ExpectedErrors, ToolMain
 from boba.toolkit.result import TableResult
 from boba.toolkit.sql import UnknownConnectionError
@@ -24,7 +24,7 @@ def ch_config() -> ChToolConfig:
                     "host": "h",
                     "port": 8123,
                     "interface": "http",
-                    "username": "u",
+                    "auth": {"method": "no_password", "user": "u"},
                 }
             }
         }
@@ -34,7 +34,7 @@ def ch_config() -> ChToolConfig:
 @pytest.mark.anyio
 class TestChTools:
     _NAMES: ClassVar[list[str]] = [
-        "ch_list_targets",
+        "ch_connection_list",
         "ch_list_tables",
         "ch_describe_table",
         "ch_query",
@@ -45,8 +45,8 @@ class TestChTools:
         if names != self._NAMES:
             raise AssertionError("names == self._NAMES")
 
-    async def test_list_targets_returns_whitelist(self) -> None:
-        body = ToolMain.toolset(ch_list_targets)[0].coroutine
+    async def test_connection_list_returns_whitelist(self) -> None:
+        body = ToolMain.toolset(ch_connection_list)[0].coroutine
         if body is None:
             raise AssertionError("body is not None")
         _content, artifact = await body(cfg=ch_config())
@@ -80,9 +80,15 @@ class TestChTools:
 
 class TestClickHouseConfig:
     _KERBEROS: ClassVar[dict[str, str]] = {
+        "method": "kerberos_keytab",
+        "principal": "svc@EXAMPLE.COM",
         "keytab": "/etc/boba/krb5.keytab",
-        "principal": "boba-svc@LOSHARA.COM",
-        "ccache": "FILE:/tmp/krb5cc_boba_ch",
+        "service": "HTTP",
+    }
+    _PASSWORD: ClassVar[dict[str, str]] = {
+        "method": "password",
+        "user": "u",
+        "password": "s3cret",
     }
     _BASE: ClassVar[dict[str, Any]] = {
         "host": "ch",
@@ -91,10 +97,10 @@ class TestClickHouseConfig:
     }
 
     def test_client_settings_drop_none_and_reveal_password(self) -> None:
-        config = ClickHouseConfig.model_validate(
-            {**self._BASE, "username": "u", "password": "s3cret"}
-        )
+        config = ClickHouseConfig.model_validate({**self._BASE, "auth": self._PASSWORD})
         settings = config.client_settings()
+        if settings["username"] != "u":
+            raise AssertionError('settings["username"] == "u"')
         if settings["password"] != "s3cret":
             raise AssertionError('settings["password"] == "s3cret"')
         if "ca_cert" in settings:
@@ -103,49 +109,54 @@ class TestClickHouseConfig:
             raise AssertionError('settings["settings"] == {}')
 
     def test_password_is_masked_without_reveal_context(self) -> None:
-        config = ClickHouseConfig.model_validate(
-            {**self._BASE, "username": "u", "password": "s3cret"}
-        )
-        if config.model_dump(mode="json")["password"] is not None:
-            raise AssertionError('config.model_dump(mode="json")["password"] is None')
+        config = ClickHouseConfig.model_validate({**self._BASE, "auth": self._PASSWORD})
+        dumped = config.model_dump(mode="json")["auth"]
+        if dumped["password"] is not None:
+            raise AssertionError('dumped["password"] is None')
         revealed = config.model_dump(
             mode="json", context={ClickHouseConfig.REVEAL_SECRETS: True}
         )
-        if revealed["password"] != "s3cret":
-            raise AssertionError('revealed["password"] == "s3cret"')
+        if revealed["auth"]["password"] != "s3cret":
+            raise AssertionError('revealed["auth"]["password"] == "s3cret"')
 
-    def test_username_is_required_without_kerberos(self) -> None:
-        with pytest.raises(ValidationError, match="username обязателен"):
+    def test_auth_is_required(self) -> None:
+        with pytest.raises(ValidationError, match="auth"):
             ClickHouseConfig.model_validate(self._BASE)
 
-    def test_kerberos_requires_krbsrvname(self) -> None:
-        with pytest.raises(ValidationError, match="krbsrvname"):
-            ClickHouseConfig.model_validate({**self._BASE, "kerberos": self._KERBEROS})
+    def test_kerberos_requires_connect_timeout(self) -> None:
+        with pytest.raises(ValidationError, match="connect_timeout"):
+            ClickHouseConfig.model_validate({**self._BASE, "auth": self._KERBEROS})
 
-    def test_kerberos_and_password_are_exclusive(self) -> None:
-        with pytest.raises(ValidationError, match="взаимоисключающи"):
-            ClickHouseConfig.model_validate(
-                {
-                    **self._BASE,
-                    "kerberos": self._KERBEROS,
-                    "krbsrvname": "HTTP",
-                    "password": "s3cret",
-                }
-            )
+    def test_no_password_auth_sends_only_username(self) -> None:
+        config = ClickHouseConfig.model_validate(
+            {**self._BASE, "auth": {"method": "no_password", "user": "u"}}
+        )
+        settings = config.client_settings()
+        if settings["username"] != "u":
+            raise AssertionError('settings["username"] == "u"')
+        if "password" in settings:
+            raise AssertionError('"password" not in settings')
+
+    def test_kerberos_sends_no_username(self) -> None:
+        config = ClickHouseConfig.model_validate(
+            {**self._BASE, "auth": self._KERBEROS, "connect_timeout": 5}
+        )
+        settings = config.client_settings()
+        if "username" in settings or "password" in settings:
+            raise AssertionError("kerberos must not send basic credentials")
 
     def test_service_name_prefers_server_host_name(self) -> None:
         config = ClickHouseConfig.model_validate(
             {
                 **self._BASE,
-                "host": "172.18.0.50",
-                "server_host_name": "ch01.loshara.com",
-                "kerberos": self._KERBEROS,
-                "krbsrvname": "HTTP",
+                "host": "10.0.0.50",
+                "server_host_name": "ch01.example.com",
+                "auth": self._KERBEROS,
                 "connect_timeout": 5,
             }
         )
-        if config.service_name() != "HTTP@ch01.loshara.com":
-            raise AssertionError('config.service_name() == "HTTP@ch01.loshara.com"')
+        if config.service_name() != "HTTP@ch01.example.com":
+            raise AssertionError('config.service_name() == "HTTP@ch01.example.com"')
 
 
 class TestSpnegoHeaders:

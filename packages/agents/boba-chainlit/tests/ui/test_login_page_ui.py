@@ -13,14 +13,13 @@ from pathlib import Path
 import httpx
 import pytest
 from playwright.sync_api import Browser, BrowserContext, Page, expect
+from stand_site import Stand
 
 from boba.chainlit.auth.kerberos import SsoLoginError
 from ui.conftest import BOOT_TIMEOUT_SEC
 from ui.stand import (
-    REPO_ROOT,
     StandAuth,
     StandConfig,
-    StandPaths,
     StandProcess,
     free_port,
 )
@@ -37,7 +36,7 @@ def _sso_stand(
     workdir: Path, llm_port: int, db_name: str, auth: StandAuth, prefix: str
 ) -> Iterator[StandProcess]:
     """Стенд с [auth.kerberos]: без keytab на хосте его не собрать."""
-    keytab = StandPaths.KEYTAB.under(REPO_ROOT)
+    keytab = Path(Stand.required().krb_http_keytab)
     if not keytab.is_file():
         pytest.skip(f"no service keytab at {keytab}")
 

@@ -115,6 +115,16 @@ def workspace_mount() -> None:
     WorkspaceMount.configure("/workspace")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def kerberos_workspace(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Кэши билетов теста: приложение раскладывает их само, как в бою."""
+    from boba.krb import KerberosWorkspace
+
+    krb = Path(__file__).resolve().parents[4] / "compose" / "conf" / "krb"
+    cache = tmp_path_factory.mktemp("krb-cache")
+    KerberosWorkspace.configure(str(krb / "krb5.conf"), str(cache))
+
+
 @pytest.fixture(scope="session")
 def raw_config() -> DictConfig:
     """Собранный конфиг приложения до привязки к моделям."""

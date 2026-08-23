@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -17,30 +16,35 @@ import krb5
 import pytest
 from chainlit.auth.jwt import create_jwt
 from gssapi import Credentials, Name, NameType, SecurityContext
+from stand_site import Stand
 from starlette.datastructures import Headers
 
 from boba.chainlit.auth.kerberos import (
     KerberosAuth,
     KerberosAuthConfig,
+    KerberosRolesConfig,
     SpnegoMiddleware,
+    SsoRefresh,
+    SsoRuntime,
 )
+from boba.chainlit.auth.local import RoleExcludeConfig
 from boba.chainlit.domain.session import UserMetadataField
 from boba.chainlit.infra.user_connections import SsoLogin
-from boba.krb import KerberosEnv, ServiceTicketIssuer
+from boba.krb import KerberosEnv, RefreshWaiters, ServiceTicketIssuer
 from boba.settings import bind
 
-_REPO = Path(__file__).resolve().parents[4]
-_KRB = _REPO / "compose" / "conf" / "krb"
-KRB5_CONF = _KRB / "krb5.conf"
-SERVICE_KEYTAB = _KRB / "boba-svc.keytab"
-SERVICE_SPN = "HTTP/loshara.com@LOSHARA.COM"
-USER_PRINCIPAL = "readonly@LOSHARA.COM"
-TARGET = "postgres@postgres-17.loshara.com"
+STAND = Stand.required()
+KRB5_CONF = Path(STAND.krb_config)
+SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
+SERVICE_SPN = f"HTTP/{STAND.krb_domain}@{STAND.krb_realm}"
+USER_PRINCIPAL = STAND.reader_principal
+TARGET = STAND.pg_spn
 
 pytestmark = [
+    pytest.mark.integration,
     pytest.mark.anyio,
     pytest.mark.skipif(
-        not SERVICE_KEYTAB.is_file() or not KRB5_CONF.is_file(),
+        not STAND.live(),
         reason="нет keytab/krb5.conf локального AD",
     ),
 ]
@@ -64,13 +68,26 @@ def kerberos_auth(raw_config: Any, auth_token: str) -> KerberosAuth:
     return KerberosAuth("/boba", config)
 
 
+@pytest.fixture
+def excluding_auth(raw_config: Any, auth_token: str) -> KerberosAuth:
+    """Тот же SSO, но принципал стенда попал в список исключённых AD."""
+    config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
+    roles = config.roles
+    if roles is None:
+        roles = KerberosRolesConfig()
+
+    excluded = roles.model_copy(
+        update={"principal_ex": RoleExcludeConfig([USER_PRINCIPAL])}
+    )
+    return KerberosAuth("/boba", config.model_copy(update={"roles": excluded}))
+
+
 class Browser:
     """Клиентская сторона: TGT пользователя по паролю и AP-REQ к SPN сервиса."""
 
     @staticmethod
     def token(tmp_path: Path) -> bytes:
-        with (_REPO / "compose" / "conf" / "config.toml").open("rb") as handle:
-            password = str(tomllib.load(handle)["site"]["ldap_bind_password"])
+        password = STAND.reader_password.get_secret_value()
 
         context = krb5.init_context()
         user = krb5.parse_name_flags(context, USER_PRINCIPAL.encode())
@@ -103,13 +120,7 @@ class Sso:
         async def app(scope: Any, receive: Any, send: Any) -> None:
             captured["headers"] = Headers(scope=scope)
 
-        middleware = SpnegoMiddleware(
-            app,
-            urls=auth._urls,
-            config=auth._config,
-            acceptor=auth.acceptor,
-            delegation=auth.delegation,
-        )
+        middleware = SpnegoMiddleware(app, sso=auth.runtime())
         scope = {
             "type": "http",
             "path": auth._urls.sso,
@@ -132,6 +143,61 @@ class Sso:
             raise AssertionError("SPNEGO did not pass the request through")
 
         return found
+
+
+class Refresh:
+    """Прогон /auth/sso/refresh: молчаливый повторный обмен живой сессии."""
+
+    @staticmethod
+    async def status(
+        auth: KerberosAuth,
+        token: bytes,
+        jwt_cookie: str | None,
+        own_header: bool = True,
+        runtime: SsoRuntime | None = None,
+    ) -> int:
+        import base64
+
+        from chainlit.auth.cookie import _auth_cookie_name
+
+        async def app(scope: Any, receive: Any, send: Any) -> None:
+            raise AssertionError("refresh must not fall through to the application")
+
+        parts = runtime
+        if parts is None:
+            parts = auth.runtime()
+
+        middleware = SpnegoMiddleware(app, sso=parts)
+        headers = [(b"authorization", b"Negotiate " + base64.b64encode(token))]
+        if own_header:
+            headers.append((SsoRefresh.HEADER.encode(), SsoRefresh.VALUE.encode()))
+
+        if jwt_cookie is not None:
+            cookie = f"{_auth_cookie_name}={jwt_cookie}".encode()
+            headers.append((b"cookie", cookie))
+
+        scope = {
+            "type": "http",
+            "path": auth._urls.refresh,
+            "headers": headers,
+            "client": ("127.0.0.1", 1234),
+        }
+        captured: dict[str, int] = {}
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request"}
+
+        async def send(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                captured["status"] = int(message["status"])
+
+        await middleware(scope, receive, send)
+
+        status = captured.get("status")
+        if status is None:
+            raise AssertionError("refresh must answer the request itself")
+
+        return status
 
 
 async def test_sign_in_puts_principal_and_login_into_the_jwt(
@@ -181,3 +247,221 @@ async def test_stale_jwt_without_labels_is_refused(
 
     if SsoLogin.of_token(create_jwt(stale)) is not None:
         raise AssertionError("a sign-in without labels must not resolve")
+
+
+async def test_refresh_puts_new_credentials_under_the_same_login(
+    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+) -> None:
+    """Тикет входа на исходе, а сессия жива: обмен обновляет его под той же меткой."""
+    headers = await Sso.headers(kerberos_auth, Browser.token(tmp_path))
+    user = await kerberos_auth._build_user(headers)
+    if user is None:
+        raise AssertionError("SSO must build a user")
+
+    token = create_jwt(user)
+    sso = SsoLogin.of_token(token)
+    if sso is None:
+        raise AssertionError("JWT of the sign-in must carry the labels")
+
+    before = kerberos_auth.registry.of_login(sso.login)
+    if before is None:
+        raise AssertionError("the sign-in must hold credentials")
+
+    stamp = _ccache_stamp(before.ccache)
+
+    status = await Refresh.status(kerberos_auth, Browser.token(tmp_path), token)
+    if status != 204:
+        raise AssertionError(f"refresh must succeed: {status}")
+
+    credentials = kerberos_auth.registry.of_login(sso.login)
+    if credentials is None:
+        raise AssertionError("refresh must keep the credentials of that login")
+    if _ccache_stamp(credentials.ccache) == stamp:
+        raise AssertionError("refresh must write a fresh ticket")
+    if credentials.principal != USER_PRINCIPAL:
+        raise AssertionError(f"credentials must stay the user's: {credentials}")
+
+    ticket = ServiceTicketIssuer(min_lifetime=60).issue(credentials, TARGET)
+    if ticket.principal != USER_PRINCIPAL:
+        raise AssertionError(f"ticket must belong to the user: {ticket.principal}")
+
+
+async def test_refresh_without_a_session_is_refused(
+    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+) -> None:
+    """Токен без подписанного входа тикет не обновляет: обмен привязан к сессии."""
+    status = await Refresh.status(kerberos_auth, Browser.token(tmp_path), None)
+    if status != 403:
+        raise AssertionError(f"refresh without a session must be refused: {status}")
+
+
+async def test_refresh_of_another_principal_is_refused(
+    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+) -> None:
+    """Чужой SPNEGO-токен под чужой меткой входа: сессия остаётся при своём."""
+    import chainlit as cl
+
+    stranger = cl.User(
+        identifier="stranger",
+        metadata={
+            UserMetadataField.PROVIDER: KerberosAuth.__name__,
+            UserMetadataField.PRINCIPAL: f"stranger@{STAND.krb_realm}",
+            UserMetadataField.LOGIN: "login-of-a-stranger",
+            UserMetadataField.ROLES: ["read"],
+        },
+    )
+
+    status = await Refresh.status(
+        kerberos_auth, Browser.token(tmp_path), create_jwt(stranger)
+    )
+    if status != 403:
+        raise AssertionError(f"a foreign principal must be refused: {status}")
+
+    if kerberos_auth.registry.of_login("login-of-a-stranger") is not None:
+        raise AssertionError("refusal must leave no credentials behind")
+
+
+async def test_page_script_knows_where_to_refresh(kerberos_auth: KerberosAuth) -> None:
+    """Адрес обмена подставляет сервер: скрипт страницы не собирает его сам."""
+    script = kerberos_auth._get_static_button()
+
+    if kerberos_auth._urls.refresh not in script:
+        raise AssertionError("sso.js must carry the refresh url")
+    if SsoRefresh.HEADER not in script:
+        raise AssertionError("sso.js must mark its own request with the header")
+    if "__REFRESH" in script:
+        raise AssertionError("the placeholders must be replaced")
+
+
+def _ccache_stamp(ccache: str) -> tuple[str, ...]:
+    """Слепок содержимого ccache: по нему видно, что тикет переписан."""
+    context = krb5.init_context()
+    cache = krb5.cc_resolve(context, ccache.encode())
+    stamps: list[str] = []
+    for cred in cache:
+        server = krb5.unparse_name_flags(context, cred.server).decode()
+        stamps.append(f"{server}:{cred.ticket.hex()}")
+
+    return tuple(stamps)
+
+
+async def test_refresh_does_not_revive_a_signed_out_session(
+    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+) -> None:
+    """После logout метка мертва: обмен её не воскрешает, нужен новый вход."""
+    headers = await Sso.headers(kerberos_auth, Browser.token(tmp_path))
+    user = await kerberos_auth._build_user(headers)
+    if user is None:
+        raise AssertionError("SSO must build a user")
+
+    token = create_jwt(user)
+    sso = SsoLogin.of_token(token)
+    if sso is None:
+        raise AssertionError("JWT of the sign-in must carry the labels")
+
+    kerberos_auth.registry.drop(sso.login)
+
+    status = await Refresh.status(kerberos_auth, Browser.token(tmp_path), token)
+    if status != 403:
+        raise AssertionError(f"a signed-out label must be refused: {status}")
+
+    if kerberos_auth.registry.of_login(sso.login) is not None:
+        raise AssertionError("the refusal must leave the sign-in dead")
+
+
+async def test_refresh_without_its_own_header_is_refused(
+    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+) -> None:
+    """Запрос чужого сайта заголовок не несёт: обмена не будет даже с cookie."""
+    headers = await Sso.headers(kerberos_auth, Browser.token(tmp_path))
+    user = await kerberos_auth._build_user(headers)
+    if user is None:
+        raise AssertionError("SSO must build a user")
+
+    status = await Refresh.status(
+        kerberos_auth, Browser.token(tmp_path), create_jwt(user), own_header=False
+    )
+    if status != 403:
+        raise AssertionError(f"cross-site refresh must be refused: {status}")
+
+
+async def test_refresh_of_an_excluded_principal_is_refused(
+    kerberos_auth: KerberosAuth,
+    excluding_auth: KerberosAuth,
+    tmp_path: Path,
+    krb5_env: None,
+) -> None:
+    """Запрет в AD появился после входа: обмен спрашивает допуск заново."""
+    headers = await Sso.headers(kerberos_auth, Browser.token(tmp_path))
+    user = await kerberos_auth._build_user(headers)
+    if user is None:
+        raise AssertionError("SSO must build a user")
+
+    token = create_jwt(user)
+    sso = SsoLogin.of_token(token)
+    if sso is None:
+        raise AssertionError("JWT of the sign-in must carry the labels")
+
+    # вход и его тикет остаются прежними, меняется только политика допуска
+    runtime = kerberos_auth.runtime()
+    excluded = SsoRuntime(
+        urls=runtime.urls,
+        config=runtime.config,
+        acceptor=runtime.acceptor,
+        delegation=runtime.delegation,
+        admission=excluding_auth,
+    )
+
+    status = await Refresh.status(
+        kerberos_auth, Browser.token(tmp_path), token, runtime=excluded
+    )
+    if status != 403:
+        raise AssertionError(f"an excluded principal must be refused: {status}")
+
+
+async def test_refresh_wakes_the_waiting_tool_call(
+    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+) -> None:
+    """Вызов инструмента ждёт обмена: настоящий обмен снимает ожидание."""
+    headers = await Sso.headers(kerberos_auth, Browser.token(tmp_path))
+    user = await kerberos_auth._build_user(headers)
+    if user is None:
+        raise AssertionError("SSO must build a user")
+
+    token = create_jwt(user)
+    sso = SsoLogin.of_token(token)
+    if sso is None:
+        raise AssertionError("JWT of the sign-in must carry the labels")
+
+    with kerberos_auth.registry.arm_refresh(sso.login) as waiting:
+        status = await Refresh.status(kerberos_auth, Browser.token(tmp_path), token)
+        if status != 204:
+            raise AssertionError(f"refresh must succeed: {status}")
+
+        if not await waiting.wait(RefreshWaiters.TIMEOUT_SEC):
+            raise AssertionError("the refreshed sign-in must end the wait")
+
+
+async def test_a_failed_refresh_leaves_the_caller_waiting(
+    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+) -> None:
+    """Отказ обмена ожидание не снимает: вызов дождётся таймаута и объяснит отказ."""
+    headers = await Sso.headers(kerberos_auth, Browser.token(tmp_path))
+    user = await kerberos_auth._build_user(headers)
+    if user is None:
+        raise AssertionError("SSO must build a user")
+
+    token = create_jwt(user)
+    sso = SsoLogin.of_token(token)
+    if sso is None:
+        raise AssertionError("JWT of the sign-in must carry the labels")
+
+    with kerberos_auth.registry.arm_refresh(sso.login) as waiting:
+        status = await Refresh.status(
+            kerberos_auth, Browser.token(tmp_path), token, own_header=False
+        )
+        if status != 403:
+            raise AssertionError(f"cross-site refresh must be refused: {status}")
+
+        if await waiting.wait(0.2):
+            raise AssertionError("a refused refresh must not end the wait")

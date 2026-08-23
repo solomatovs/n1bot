@@ -7,11 +7,25 @@ extra `payload` и ставится только в песочницу.
 
 from __future__ import annotations
 
+from boba.db.clickhouse.auth import (
+    CertificateAuth,
+    ClickHouseAuth,
+    ClickHouseAuthError,
+    ClickHouseAuthMethod,
+    NoPasswordAuth,
+    PasswordAuth,
+)
 from boba.db.clickhouse.config import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.clickhouse.errors import ClickHouseError
 
 __all__ = [
+    "CertificateAuth",
+    "ClickHouseAuth",
+    "ClickHouseAuthError",
+    "ClickHouseAuthMethod",
     "ClickHouseConfig",
     "ClickHouseError",
     "ClickHouseSettingsConfig",
+    "NoPasswordAuth",
+    "PasswordAuth",
 ]

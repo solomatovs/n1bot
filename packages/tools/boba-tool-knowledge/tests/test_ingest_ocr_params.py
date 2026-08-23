@@ -16,8 +16,7 @@ def _config() -> IngestToolConfig:
             "connection": {
                 "host": "h",
                 "dbname": "d",
-                "user": "u",
-                "gssencmode": "disable",
+                "auth": {"method": "trust", "user": "u"},
             },
             "tables": {},
             "embedding": {

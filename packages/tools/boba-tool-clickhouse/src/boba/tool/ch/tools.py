@@ -173,7 +173,7 @@ async def _query_rows(
 
 
 @tool
-async def ch_list_targets(
+async def ch_connection_list(
     cfg: Annotated[ChToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Список доступных значений connection_name для ClickHouse-инструментов."""
@@ -253,7 +253,7 @@ EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
 }
 
 TOOLS: Final = ToolMain.toolset(
-    ch_list_targets,
+    ch_connection_list,
     ch_list_tables,
     ch_describe_table,
     ch_query,

@@ -46,12 +46,12 @@ def test_bind_reference_assembly() -> None:
         ConfigBuilder()
         .add_dict(
             {
-                "postgres": {"main": {"host": "172.18.0.9", "port": 5432}},
+                "postgres": {"main": {"host": "10.0.0.9", "port": 5432}},
                 "tool": {"pg": {"databases": {"main": "${postgres.main}"}}},
             }
         )
         .build()
     )
     pg = bind(cfg, "tool.pg", _Pg)
-    if pg.databases["main"].host != "172.18.0.9":
-        raise AssertionError('pg.databases["main"].host == "172.18.0.9"')
+    if pg.databases["main"].host != "10.0.0.9":
+        raise AssertionError('pg.databases["main"].host == "10.0.0.9"')

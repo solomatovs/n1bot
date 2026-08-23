@@ -20,6 +20,7 @@ from langchain_core.tools import StructuredTool
 from omegaconf import OmegaConf
 from psycopg import sql
 from pydantic import BaseModel, SecretStr, create_model
+from stand_site import Stand
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
@@ -39,15 +40,15 @@ from boba.chainlit.infra.user_connections import (
     UserConnectionsSpec,
     UserKerberos,
 )
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig
+from boba.db.postgres import AsyncPostgresPool, PostgresConfig, TrustAuth
 from boba.krb import (
     CcacheRegistry,
-    DelegatedConfig,
+    DelegatedAuth,
     DelegationMode,
     KerberosEnv,
-    KeytabConfig,
+    KeytabAuth,
     KeytabCredentials,
-    TicketConfig,
+    TicketAuth,
     TicketCredentials,
     UserCcache,
 )
@@ -60,15 +61,20 @@ from boba.transport.http.auth import NegotiateAuth
 
 pytestmark = pytest.mark.anyio
 
-_KRB = Path(__file__).resolve().parents[4] / "compose" / "conf" / "krb"
-KRB5_CONF = _KRB / "krb5.conf"
-SERVICE_KEYTAB = _KRB / "boba-svc.keytab"
-SERVICE_PRINCIPAL = "boba-svc@LOSHARA.COM"
-READER_PRINCIPAL = "readonly@LOSHARA.COM"
-"""Второй пользователь стенда: учётка ldap-bind, её пароль лежит в [site]."""
+STAND = Stand.required()
+KRB5_CONF = Path(STAND.krb_config)
+SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
+SERVICE_PRINCIPAL = STAND.service_principal
+SERVICE_USER = STAND.krb_pg_user
+READER_PRINCIPAL = STAND.reader_principal
+"""Второй пользователь стенда: учётка ldap-bind, её пароль лежит в конфиге."""
+
+CH_URL = f"http://{STAND.ch_addr}:{STAND.ch_port}"
+CH_WILDCARD_URL = f"http://*.{STAND.krb_domain}:{STAND.ch_port}"
+CH_HOST_URL = f"http://{STAND.ch_host}:{STAND.ch_port}"
 
 live_kdc = pytest.mark.skipif(
-    not SERVICE_KEYTAB.is_file() or not KRB5_CONF.is_file(),
+    not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
 )
 
@@ -102,22 +108,26 @@ def service_pg(raw_config: Any) -> PostgresConfig:
 @pytest.fixture
 def delegated_pg(service_pg: PostgresConfig) -> PostgresConfig:
     """Строка таблицы: в базу идёт сам пользователь, ключей у строки нет."""
-    return service_pg.model_copy(update={"kerberos": DelegatedConfig(), "user": None})
+    return service_pg.model_copy(
+        update={"auth": DelegatedAuth(method="kerberos_delegated")}
+    )
 
 
 class Tgt:
     """TGT в свой FILE-ccache: из keytab сервиса либо по паролю учётки."""
 
     @staticmethod
-    def from_keytab(ccache: str) -> None:
-        KeytabCredentials.of(
-            KeytabConfig(
-                keytab=str(SERVICE_KEYTAB),
+    def from_keytab() -> str:
+        """Кэш кредов приложения; путь выделяет рабочий каталог."""
+        credentials = KeytabCredentials.of(
+            KeytabAuth(
+                method="kerberos_keytab",
                 principal=SERVICE_PRINCIPAL,
-                ccache=ccache,
-                krb5_config=str(KRB5_CONF),
+                keytab=str(SERVICE_KEYTAB),
             )
-        ).ensure()
+        )
+        credentials.ensure()
+        return credentials.ccache
 
     @staticmethod
     def from_password(ccache: str, principal: str, password: str) -> None:
@@ -148,8 +158,7 @@ def registry(tmp_path: Path, raw_config: Any) -> CcacheRegistry:
         krb5_config=str(KRB5_CONF),
     )
 
-    service = f"FILE:{tmp_path / 'svc'}"
-    Tgt.from_keytab(service)
+    service = Tgt.from_keytab()
     built.register(UserCcache(SERVICE_PRINCIPAL, service, SERVICE_LOGIN))
 
     reader = f"FILE:{tmp_path / 'reader'}"
@@ -276,7 +285,7 @@ class Session:
         return token
 
 
-def _servers(ticket: TicketConfig) -> list[str]:
+def _servers(ticket: TicketAuth) -> list[str]:
     credentials = TicketCredentials(ticket)
     with credentials.applied():
         context = krb5.init_context()
@@ -290,7 +299,9 @@ async def test_only_requested_profile_is_shipped(
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
 ) -> None:
-    plain = service_pg.model_copy(update={"kerberos": None, "gssencmode": "disable"})
+    plain = service_pg.model_copy(
+        update={"auth": TrustAuth(method="trust", user="boba")}
+    )
     user = await Session.user(layer, "hook-plain", Session.local_metadata())
     first = await store.add("alpha", plain)
     second = await store.add("beta", plain)
@@ -305,7 +316,30 @@ async def test_only_requested_profile_is_shipped(
     if cfg.names != ["alpha", "beta"]:
         raise AssertionError(f"all granted names must ship: {cfg.names}")
     if cfg.targets() != ["alpha", "beta"]:
-        raise AssertionError("list_targets must see every granted name")
+        raise AssertionError("connection_list must see every granted name")
+
+
+async def test_client_label_names_the_user_and_the_tool(
+    raw_config: Any,
+    store: ConnectionStore,
+    layer: PostgresDataLayer,
+    service_pg: PostgresConfig,
+) -> None:
+    """Сервер видит, кто и чем подключился: application_name несёт логин и тул."""
+    plain = service_pg.model_copy(
+        update={"auth": TrustAuth(method="trust", user="boba")}
+    )
+    user = await Session.user(layer, "hook-label", Session.local_metadata())
+    await store.grant(await store.add("alpha", plain), GrantTarget.user(int(user.id)))
+    Session.enter(user, dict(user.metadata))
+
+    cfg = await Capture.config(Capture.tool(raw_config, store, None), "alpha")
+
+    shipped = cfg.profiles["alpha"]
+    if not isinstance(shipped, PostgresConfig):
+        raise AssertionError(f"postgres profile expected: {type(shipped)}")
+    if shipped.application_name != "boba:hook-label:capture":
+        raise AssertionError(f"unexpected client label: {shipped.application_name}")
 
 
 async def test_unrequested_call_ships_names_only(
@@ -314,7 +348,9 @@ async def test_unrequested_call_ships_names_only(
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
 ) -> None:
-    plain = service_pg.model_copy(update={"kerberos": None, "gssencmode": "disable"})
+    plain = service_pg.model_copy(
+        update={"auth": TrustAuth(method="trust", user="boba")}
+    )
     user = await Session.user(layer, "hook-names", Session.local_metadata())
     connection_id = await store.add("alpha", plain)
     await store.grant(connection_id, GrantTarget.user(int(user.id)))
@@ -342,8 +378,8 @@ async def test_keytab_row_ships_a_service_ticket_only(
 
     cfg = await Capture.config(Capture.tool(raw_config, store, None), "main")
 
-    shipped = cfg.profiles["main"].kerberos
-    if not isinstance(shipped, TicketConfig):
+    shipped = cfg.profiles["main"].auth
+    if not isinstance(shipped, TicketAuth):
         raise AssertionError(f"keytab row must ship a ticket: {type(shipped)}")
     if shipped.principal != SERVICE_PRINCIPAL:
         raise AssertionError("ticket must belong to the keytab principal")
@@ -372,12 +408,12 @@ async def test_delegated_row_uses_the_session_principal(
     cfg = await Capture.config(Capture.tool(raw_config, store, registry), "main")
 
     profile = cfg.profiles["main"]
-    shipped = profile.kerberos
-    if not isinstance(shipped, TicketConfig):
+    shipped = profile.auth
+    if not isinstance(shipped, TicketAuth):
         raise AssertionError(f"delegated row must ship a ticket: {type(shipped)}")
     if shipped.principal != SERVICE_PRINCIPAL:
         raise AssertionError("ticket must carry the session principal")
-    if not isinstance(profile, PostgresConfig) or profile.user != "boba-svc":
+    if profile.conn_settings()["user"] != SERVICE_USER:
         raise AssertionError(f"postgres role must follow the principal: {profile}")
 
     servers = _servers(shipped)
@@ -404,12 +440,12 @@ async def test_role_shared_delegated_row_gives_each_user_their_own_ticket(
     second = await Session.user(layer, "hook-role-b", second_meta)
 
     Session.enter(first, first_meta)
-    ticket_a = (await Capture.config(tool, "shared")).profiles["shared"].kerberos
+    ticket_a = (await Capture.config(tool, "shared")).profiles["shared"].auth
 
     Session.enter(second, second_meta)
-    ticket_b = (await Capture.config(tool, "shared")).profiles["shared"].kerberos
+    ticket_b = (await Capture.config(tool, "shared")).profiles["shared"].auth
 
-    if not isinstance(ticket_a, TicketConfig) or not isinstance(ticket_b, TicketConfig):
+    if not isinstance(ticket_a, TicketAuth) or not isinstance(ticket_b, TicketAuth):
         raise AssertionError("both users must receive tickets")
     if ticket_a.principal != SERVICE_PRINCIPAL:
         raise AssertionError("first user must act as their own principal")
@@ -449,7 +485,7 @@ async def test_delegated_row_refuses_unknown_principal(
     delegated_pg: PostgresConfig,
     registry: CcacheRegistry,
 ) -> None:
-    sso_meta = Session.sso_metadata("nobody@LOSHARA.COM", "login-x")
+    sso_meta = Session.sso_metadata(f"nobody@{STAND.krb_realm}", "login-x")
     user = await Session.user(layer, "hook-no-ticket", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(int(user.id)))
@@ -564,11 +600,11 @@ async def test_web_negotiate_row_ships_a_ticket(
     sso_meta = Session.sso_metadata(SERVICE_PRINCIPAL, SERVICE_LOGIN)
     user = await Session.user(layer, "hook-web-sso", sso_meta)
     row = HttpProfile(
-        base_url="http://172.18.0.50:8123",
+        base_url=CH_URL,
         auth=NegotiateAuth(
             method="negotiate",
-            kerberos=DelegatedConfig(),
-            service_host="ch01.loshara.com",
+            kerberos=DelegatedAuth(method="kerberos_delegated"),
+            service_host=STAND.ch_host,
         ),
     )
     connection_id = await store.add("ch-http", row)
@@ -577,7 +613,7 @@ async def test_web_negotiate_row_ships_a_ticket(
 
     tool = Capture.web_tool(raw_config, store, registry)
     kwargs = await tool.ainvoke(
-        {"url": "http://172.18.0.50:8123/?query=1", "connection_name": "ch-http"}
+        {"url": f"{CH_URL}/?query=1", "connection_name": "ch-http"}
     )
     cfg = kwargs["cfg"]
     if not isinstance(cfg, WebGrepConfig):
@@ -587,9 +623,9 @@ async def test_web_negotiate_row_ships_a_ticket(
     if not isinstance(shipped.auth, NegotiateAuth):
         raise AssertionError("negotiate auth must survive arming")
     ticket = shipped.auth.kerberos
-    if not isinstance(ticket, TicketConfig):
+    if not isinstance(ticket, TicketAuth):
         raise AssertionError(f"web row must ship a ticket: {type(ticket)}")
-    if ticket.service != "HTTP@ch01.loshara.com":
+    if ticket.service != STAND.ch_spn:
         raise AssertionError(f"unexpected ticket service: {ticket.service}")
     if ticket.principal != SERVICE_PRINCIPAL:
         raise AssertionError(f"unexpected ticket principal: {ticket.principal}")
@@ -602,38 +638,40 @@ async def test_wildcard_web_row_binds_the_requested_host(
     layer: PostgresDataLayer,
     registry: CcacheRegistry,
 ) -> None:
-    """Строка `*.loshara.com` покрывает ch01: SPN и base_url — от реального хоста."""
+    """Строка `*.domain` покрывает хост ch: SPN и base_url — от реального хоста."""
     sso_meta = Session.sso_metadata(SERVICE_PRINCIPAL, SERVICE_LOGIN)
     user = await Session.user(layer, "hook-web-wildcard", sso_meta)
     row = HttpProfile(
-        base_url="http://*.loshara.com:8123",
-        auth=NegotiateAuth(method="negotiate", kerberos=DelegatedConfig()),
+        base_url=CH_WILDCARD_URL,
+        auth=NegotiateAuth(
+            method="negotiate", kerberos=DelegatedAuth(method="kerberos_delegated")
+        ),
     )
-    connection_id = await store.add("any-loshara", row)
+    connection_id = await store.add("any-host", row)
     await store.grant(connection_id, GrantTarget.user(int(user.id)))
     Session.enter(user, sso_meta)
 
     tool = Capture.web_tool(raw_config, store, registry)
     request = {
-        "url": "http://ch01.loshara.com:8123/?query=1",
-        "connection_name": "any-loshara",
+        "url": f"{CH_HOST_URL}/?query=1",
+        "connection_name": "any-host",
     }
     kwargs = await tool.ainvoke(request)
     cfg = kwargs["cfg"]
     if not isinstance(cfg, WebGrepConfig):
         raise AssertionError(f"cfg must be WebGrepConfig: {type(cfg)}")
-    if cfg.hosts != {"any-loshara": "*.loshara.com"}:
-        raise AssertionError(f"list_targets must show the pattern: {cfg.hosts}")
+    if cfg.hosts != {"any-host": f"*.{STAND.krb_domain}"}:
+        raise AssertionError(f"connection_list must show the pattern: {cfg.hosts}")
 
-    shipped = cfg.profiles["any-loshara"]
-    if shipped.base_url != "http://ch01.loshara.com:8123":
+    shipped = cfg.profiles["any-host"]
+    if shipped.base_url != CH_HOST_URL:
         raise AssertionError(f"host must be bound into base_url: {shipped.base_url}")
     if not isinstance(shipped.auth, NegotiateAuth):
         raise AssertionError("negotiate auth must survive arming")
     ticket = shipped.auth.kerberos
-    if not isinstance(ticket, TicketConfig):
+    if not isinstance(ticket, TicketAuth):
         raise AssertionError(f"wildcard row must ship a ticket: {type(ticket)}")
-    if ticket.service != "HTTP@ch01.loshara.com":
+    if ticket.service != STAND.ch_spn:
         raise AssertionError(f"SPN must be the concrete host: {ticket.service}")
 
 
@@ -656,7 +694,7 @@ async def test_confluence_negotiate_row_logs_in_as_the_principal(
         ssl_verify=False,
         auth=NegotiateAuth(
             method="negotiate",
-            kerberos=DelegatedConfig(),
+            kerberos=DelegatedAuth(method="kerberos_delegated"),
             login_path="/plugins/servlet/kerberos/ntlm/login",
         ),
     )
@@ -692,13 +730,12 @@ class TestModelsStayTyped:
             "host": "h",
             "user": "u",
             "dbname": "d",
-            "gssencmode": "require",
             "connect_timeout": 5,
-            "kerberos": {"kind": "delegated"},
+            "auth": {"method": "kerberos_delegated"},
         }
         profile = PostgresConfig.model_validate(raw)
-        if not isinstance(profile.kerberos, DelegatedConfig):
-            raise AssertionError("kind=delegated must build DelegatedConfig")
+        if not isinstance(profile.auth, DelegatedAuth):
+            raise AssertionError("method=kerberos_delegated must build DelegatedAuth")
 
     async def test_base_model_is_untouched(self) -> None:
         if not issubclass(PgToolConfig, BaseModel):

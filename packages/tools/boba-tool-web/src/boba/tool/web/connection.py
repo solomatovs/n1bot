@@ -47,7 +47,7 @@ class WebConnection(BaseModel):
         default_factory=list,
         description=(
             "Имена соединений, доступных пользователю, без профилей: видны в "
-            "list_targets, а профиль приезжает только у выбранного соединения."
+            "connection_list, а профиль приезжает только у выбранного соединения."
         ),
     )
     hosts: dict[str, str] = Field(
@@ -61,7 +61,7 @@ class WebConnection(BaseModel):
         return sorted(known)
 
     def targets_table(self) -> TableResult:
-        """Выдача list_targets: имя соединения и хост (или шаблон) под ним."""
+        """Выдача connection_list: имя соединения и хост (или шаблон) под ним."""
         rows: list[dict[str, Any]] = []
         for target in self.targets():
             rows.append({"connection_name": target, "host": self._host_of(target)})

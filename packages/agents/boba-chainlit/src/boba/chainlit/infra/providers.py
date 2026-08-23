@@ -91,6 +91,8 @@ def get_app_config(config_path: Path) -> AppConfig:
     config = bind(raw, path="app", model=AppConfig)
     # групповые лимиты проверяются на старте: отказ виден сразу, с именем профиля
     CgroupManager.probe_profiles(config.sandbox.profiles)
+    # кэши билетов раскладывает приложение: строкам соединений пути не задают
+    config.krb.apply()
 
     return config
 

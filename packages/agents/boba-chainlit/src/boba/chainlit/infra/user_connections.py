@@ -23,11 +23,11 @@ UserConnectionsError — тело инструмента вызвано синх
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import wraps
-from typing import ClassVar, NoReturn
+from typing import ClassVar, NoReturn, cast
 
 import jwt
 from langchain_core.tools import BaseTool, StructuredTool
@@ -52,18 +52,32 @@ from boba.chainlit.domain.session import (
     UserMetadataField,
     current_login_user,
     current_user_id,
+    current_user_label,
     current_user_roles,
 )
 from boba.chainlit.infra.tickets import TicketArming
-from boba.krb import CcacheRegistry, KerberosCredentials, TicketConfig
+from boba.db.clickhouse import ClickHouseConfig
+from boba.db.postgres import PostgresConfig
+from boba.krb import (
+    CcacheRegistry,
+    DelegatedAuth,
+    DelegatedCredentials,
+    KerberosCredentials,
+    RefreshWaiters,
+    TicketAuth,
+)
 from boba.tool.web.connection import WebConnection
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.sql import SqlProfiles
 from boba.transport.http import HostPattern, HttpProfile
 from chainlit.auth.jwt import decode_jwt
+from chainlit.context import ChainlitContextException
+from chainlit.session import WebsocketSession
 
 __all__ = [
+    "ClientLabel",
     "ConnectionRefusal",
+    "KerberosRefreshSignal",
     "RegistryRef",
     "SsoLogin",
     "StoreRef",
@@ -193,6 +207,38 @@ class SsoLogin(BaseModel):
         raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
 
+class KerberosRefreshSignal:
+    """Просьба к фронту молча пройти SPNEGO ещё раз: сигнал в сокет сессии.
+
+    Адрес обмена знает сам скрипт страницы: сервер сообщает только повод.
+    """
+
+    TYPE: ClassVar[str] = "boba:kerberos-refresh"
+    EVENT: ClassVar[str] = "window_message"
+
+    @classmethod
+    async def send(cls) -> bool:
+        """True — сигнал ушёл в живой сокет; False — слушать некому."""
+        from chainlit.context import context  # noqa: PLC0415
+
+        try:
+            session = context.session
+        except ChainlitContextException:
+            return False
+
+        if not isinstance(session, WebsocketSession):
+            return False
+
+        payload = {"type": cls.TYPE}
+        try:
+            await cast("Awaitable[None]", session.emit(cls.EVENT, payload))
+        except Exception:
+            logger.warning("kerberos refresh signal failed", exc_info=True)
+            return False
+
+        return True
+
+
 class UserKerberos:
     """Делегированные креды SSO-входа текущей сессии.
 
@@ -200,8 +246,49 @@ class UserKerberos:
     способов входа, а JWT подписан приложением и описывает ровно этот вход.
     """
 
+    REFRESH_BELOW: ClassVar[int] = 300
+    """Остаток тикета входа (сек), ниже которого просим браузер обменяться заново."""
+
     def __init__(self, registry_ref: RegistryRef) -> None:
         self._registry_ref = registry_ref
+
+    async def ensure_fresh(self) -> None:
+        """Обновляет тикет входа молчаливым SPNEGO, пока сессия жива.
+
+        Тикет входа короче сессии: constrained-креды не продлеваются, а JWT
+        живёт дальше. Вместо повторного логина браузер домена проходит обмен
+        ещё раз — незаметно для пользователя. Не получилось — работу продолжит
+        credentials() и объяснит отказ.
+        """
+        sso = SsoLogin.of_session()
+
+        registry = self._registry_ref()
+        if registry is None:
+            return
+
+        if self._enough(registry.of_login(sso.login)):
+            return
+
+        # ожидание заводится до просьбы: обмен может пройти быстрее нас
+        with registry.arm_refresh(sso.login) as waiting:
+            if not await KerberosRefreshSignal.send():
+                return
+
+            refreshed = await waiting.wait(RefreshWaiters.TIMEOUT_SEC)
+
+        if refreshed:
+            logger.info("kerberos: sign-in %s refreshed its ticket", sso.principal)
+            return
+
+        logger.info("kerberos: sign-in %s did not refresh in time", sso.principal)
+
+    @classmethod
+    def _enough(cls, credentials: DelegatedCredentials | None) -> bool:
+        """Хватит ли тикета входа на вызов; чужие креды сюда не попадают."""
+        if credentials is None:
+            return False
+
+        return credentials.lifetime() >= cls.REFRESH_BELOW
 
     def credentials(self) -> KerberosCredentials:
         sso = SsoLogin.of_session()
@@ -245,6 +332,46 @@ class UserKerberos:
             return
 
         registry.drop(sso.login)
+
+
+class ClientLabel(BaseModel):
+    """Метка соединения для сервера: приложение, логин пользователя, инструмент.
+
+    Уходит в application_name postgres и client_name clickhouse, поэтому режется
+    до 63 байт — предела application_name.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    MAX_BYTES: ClassVar[int] = 63
+    SEPARATOR: ClassVar[str] = ":"
+    APPLICATION: ClassVar[str] = "boba"
+
+    application: str
+    login: str
+    tool: str
+
+    @classmethod
+    def of(cls, login: str, tool: str) -> ClientLabel:
+        return cls(application=cls.APPLICATION, login=login, tool=tool)
+
+    def render(self) -> str:
+        joined = self.SEPARATOR.join((self.application, self.login, self.tool))
+        raw = joined.encode("utf-8")
+        if len(raw) <= self.MAX_BYTES:
+            return joined
+
+        return raw[: self.MAX_BYTES].decode("utf-8", errors="ignore")
+
+    def applied(self, profile: ConnectionProfile) -> ConnectionProfile:
+        """Профиль с меткой в поле, которым сервер подписывает сессию."""
+        if isinstance(profile, PostgresConfig):
+            return profile.model_copy(update={"application_name": self.render()})
+
+        if isinstance(profile, ClickHouseConfig):
+            return profile.model_copy(update={"client_name": self.render()})
+
+        return profile
 
 
 class UserConnections:
@@ -341,7 +468,7 @@ class UserConnections:
         shipped: dict[str, ConnectionProfile] = {}
         if picked is not None:
             profile = self._at_host(requested, picked.profile, kwargs)
-            shipped[requested] = await self._armed(profile)
+            shipped[requested] = await self._armed(self._labelled(profile, name))
 
         update: dict[str, object] = {
             "profiles": shipped,
@@ -351,6 +478,15 @@ class UserConnections:
             update["hosts"] = self._hosts(whitelist.profiles)
 
         return self._base.model_copy(update=update)
+
+    @staticmethod
+    def _labelled(profile: ConnectionProfile, tool: str) -> ConnectionProfile:
+        """Профиль с меткой клиента; без логина сессии профиль идёт как есть."""
+        login = current_user_label()
+        if not login:
+            return profile
+
+        return ClientLabel.of(login, tool).applied(profile)
 
     @staticmethod
     def _at_host(
@@ -404,7 +540,10 @@ class UserConnections:
     async def _armed(self, profile: ConnectionProfile) -> ConnectionProfile:
         """Профиль с билетом вызова вместо kerberos-секции строки."""
         section = TicketArming.section_of(profile)
-        if isinstance(section, TicketConfig):
+        if isinstance(section, DelegatedAuth):
+            await self._kerberos.ensure_fresh()
+
+        if isinstance(section, TicketAuth):
             msg = (
                 "stored connection carries a ticket kerberos section: "
                 "only delegated or keytab credentials are allowed in the table"

@@ -11,32 +11,35 @@ from pathlib import Path
 import krb5
 import pytest
 from pydantic import SecretStr
+from stand_site import Stand
 
 from boba.krb import (
     ClientCredentials,
     CredentialsExpiredError,
-    DelegatedConfig,
+    DelegatedAuth,
     DelegatedCredentials,
     DelegationMode,
     KerberosEnv,
     KerberosError,
-    KeytabConfig,
+    KerberosWorkspace,
+    KeytabAuth,
     KeytabCredentials,
     ServiceTicketIssuer,
-    TicketConfig,
+    TicketAuth,
     TicketCredentials,
     UserCcache,
 )
 
-_KRB = Path(__file__).resolve().parents[5] / "compose" / "conf" / "krb"
-KEYTAB = _KRB / "boba-svc.keytab"
-KRB5_CONF = _KRB / "krb5.conf"
-PRINCIPAL = "boba-svc@LOSHARA.COM"
-SERVICE = "postgres@postgres-17.loshara.com"
-SERVER = "postgres/postgres-17.loshara.com@LOSHARA.COM"
+STAND = Stand.required()
+KEYTAB = Path(STAND.krb_pg_keytab)
+KRB5_CONF = Path(STAND.krb_config)
+PRINCIPAL = STAND.service_principal
+SERVICE = STAND.pg_spn
+SERVER = f"{STAND.pg_krbsrvname}/{STAND.pg_host}@{STAND.krb_realm}"
+OTHER_PRINCIPAL = f"other@{STAND.krb_realm}"
 
 live_kdc = pytest.mark.skipif(
-    not KEYTAB.is_file() or not KRB5_CONF.is_file(),
+    not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
 )
 
@@ -58,13 +61,18 @@ def clean_env() -> Iterator[None]:
         os.environ[name] = value
 
 
-def _source(ccache: Path) -> KeytabCredentials:
+@pytest.fixture(autouse=True)
+def workspace(tmp_path: Path) -> None:
+    """Кэши билетов теста живут в своём каталоге, как у приложения."""
+    KerberosWorkspace.configure(str(KRB5_CONF), str(tmp_path / "cache"))
+
+
+def _source() -> KeytabCredentials:
     return KeytabCredentials.of(
-        KeytabConfig(
-            keytab=str(KEYTAB),
+        KeytabAuth(
+            method="kerberos_keytab",
             principal=PRINCIPAL,
-            ccache=f"FILE:{ccache}",
-            krb5_config=str(KRB5_CONF),
+            keytab=str(KEYTAB),
         )
     )
 
@@ -78,21 +86,26 @@ def _servers(ccache: str) -> list[str]:
 class TestServerPrefix:
     def test_hostbased_to_principal_prefix(self) -> None:
         prefix = ServiceTicketIssuer.server_prefix(SERVICE)
-        if prefix != "postgres/postgres-17.loshara.com@":
+        if prefix != f"{STAND.pg_krbsrvname}/{STAND.pg_host}@":
             raise AssertionError("prefix must be service/host@")
 
     def test_service_without_host_rejected(self) -> None:
         with pytest.raises(KerberosError, match="service@host"):
-            ServiceTicketIssuer.server_prefix("postgres")
+            ServiceTicketIssuer.server_prefix(STAND.pg_krbsrvname)
 
 
 class TestTicketConfig:
     def test_ccache_must_be_base64(self) -> None:
         with pytest.raises(ValueError, match="base64"):
-            TicketConfig(principal="u@R", service=SERVICE, ccache=SecretStr("%%%"))
+            TicketAuth(
+                method="kerberos_ticket",
+                principal="u@R",
+                service=SERVICE,
+                ccache=SecretStr("%%%"),
+            )
 
     def test_blob_hidden_without_reveal(self) -> None:
-        ticket = TicketConfig.of_bytes("u@R", SERVICE, b"secret-bytes", 60)
+        ticket = TicketAuth.of_bytes("u@R", SERVICE, b"secret-bytes", 60)
         dump = json.dumps(ticket.model_dump(mode="json"))
         if base64.b64encode(b"secret-bytes").decode() in dump:
             raise AssertionError("ticket bytes leaked into a plain dump")
@@ -100,28 +113,28 @@ class TestTicketConfig:
             raise AssertionError("ticket bytes leaked into repr")
 
     def test_blob_revealed_for_the_sandbox(self) -> None:
-        ticket = TicketConfig.of_bytes("u@R", SERVICE, b"secret-bytes", 60)
-        reveal = {TicketConfig.REVEAL_SECRETS: True}
+        ticket = TicketAuth.of_bytes("u@R", SERVICE, b"secret-bytes", 60)
+        reveal = {TicketAuth.REVEAL_SECRETS: True}
         dump = ticket.model_dump(mode="json", context=reveal)
         if dump["ccache"] != base64.b64encode(b"secret-bytes").decode():
             raise AssertionError("revealed dump must carry the bytes")
-        if TicketConfig.model_validate(dump).ccache_bytes() != b"secret-bytes":
+        if TicketAuth.model_validate(dump).ccache_bytes() != b"secret-bytes":
             raise AssertionError("revealed dump must validate back")
 
 
 class TestDelegatedConfigStaysOutside:
     def test_body_refuses_delegated_section(self) -> None:
         with pytest.raises(KerberosError, match="resolved by the application"):
-            ClientCredentials.of(DelegatedConfig())
+            ClientCredentials.of(DelegatedAuth(method="kerberos_delegated"))
 
 
 @live_kdc
 class TestServiceTicketIssuer:
     def test_ccache_holds_only_the_service_ticket(
-        self, tmp_path: Path, clean_env: None
+        self, clean_env: None
     ) -> None:
         ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(tmp_path / "src"), SERVICE
+            _source(), SERVICE
         )
 
         credentials = TicketCredentials(ticket)
@@ -129,10 +142,10 @@ class TestServiceTicketIssuer:
             servers = _servers(credentials.ccache)
 
         if servers != [SERVER]:
-            raise AssertionError(f"ticket ccache must hold one ticket: {servers}")
+            raise AssertionError(f"one ticket expected: {servers}")
 
-    def test_source_keeps_its_tgt(self, tmp_path: Path, clean_env: None) -> None:
-        source = _source(tmp_path / "src")
+    def test_source_keeps_its_tgt(self, clean_env: None) -> None:
+        source = _source()
         ServiceTicketIssuer(min_lifetime=60).issue(source, SERVICE)
 
         servers = _servers(source.ccache)
@@ -140,22 +153,22 @@ class TestServiceTicketIssuer:
             raise AssertionError(f"source must keep its TGT: {servers}")
 
     def test_ticket_principal_and_service(
-        self, tmp_path: Path, clean_env: None
+        self, clean_env: None
     ) -> None:
         ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(tmp_path / "src"), SERVICE
+            _source(), SERVICE
         )
         if (ticket.principal, ticket.service) != (PRINCIPAL, SERVICE):
             raise AssertionError("ticket must name the source principal and the SPN")
 
     def test_relabelled_ccache_is_refused(
-        self, tmp_path: Path, clean_env: None
+        self, clean_env: None
     ) -> None:
         """Ccache под чужим принципалом билет за другого не выпускает."""
-        source = _source(tmp_path / "src")
+        source = _source()
         source.ensure()
         relabelled = DelegatedCredentials(
-            UserCcache("other@LOSHARA.COM", source.ccache, "login-1"),
+            UserCcache(OTHER_PRINCIPAL, source.ccache, "login-1"),
             mode=DelegationMode.FORWARDED,
             renew=False,
             krb5_config=str(KRB5_CONF),
@@ -164,20 +177,20 @@ class TestServiceTicketIssuer:
         with pytest.raises(CredentialsExpiredError, match="expired"):
             ServiceTicketIssuer(min_lifetime=60).issue(relabelled, SERVICE)
 
-    def test_unknown_service_is_refused(self, tmp_path: Path, clean_env: None) -> None:
+    def test_unknown_service_is_refused(self, clean_env: None) -> None:
         with pytest.raises(KerberosError):
             ServiceTicketIssuer(min_lifetime=60).issue(
-                _source(tmp_path / "src"), "nosuch@nowhere.loshara.com"
+                _source(), f"nosuch@nowhere.{STAND.krb_domain}"
             )
 
 
 @live_kdc
 class TestTicketCredentials:
     def test_applied_exposes_private_file(
-        self, tmp_path: Path, clean_env: None
+        self, clean_env: None
     ) -> None:
         ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(tmp_path / "src"), SERVICE
+            _source(), SERVICE
         )
         credentials = ClientCredentials.of(ticket)
         if not isinstance(credentials, TicketCredentials):
@@ -189,7 +202,7 @@ class TestTicketCredentials:
             if mode != 0o600:
                 raise AssertionError(f"ticket file must be private: {oct(mode)}")
             if KerberosEnv.CONFIG in os.environ:
-                raise AssertionError("krb5.conf is read from its standard path")
+                raise AssertionError("krb5.conf is the sandbox's own, not the host's")
 
         if os.path.exists(path):
             raise AssertionError("leaving applied() must remove the ticket file")
@@ -197,10 +210,10 @@ class TestTicketCredentials:
             raise AssertionError("leaving applied() must restore the environment")
 
     def test_ccache_is_unavailable_outside_applied(
-        self, tmp_path: Path, clean_env: None
+        self, clean_env: None
     ) -> None:
         ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(tmp_path / "src"), SERVICE
+            _source(), SERVICE
         )
         credentials = TicketCredentials(ticket)
 
@@ -209,7 +222,7 @@ class TestTicketCredentials:
 
     def test_expired_ticket_refused(self, tmp_path: Path, clean_env: None) -> None:
         ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(tmp_path / "src"), SERVICE
+            _source(), SERVICE
         )
         strict = ticket.model_copy(update={"min_lifetime": 10**9})
 
@@ -218,7 +231,7 @@ class TestTicketCredentials:
             credentials.ensure()
 
     def test_garbage_blob_has_no_lifetime(self) -> None:
-        ticket = TicketConfig.of_bytes("u@R", SERVICE, b"not a ccache", 60)
+        ticket = TicketAuth.of_bytes("u@R", SERVICE, b"not a ccache", 60)
 
         credentials = TicketCredentials(ticket)
         with pytest.raises(CredentialsExpiredError):

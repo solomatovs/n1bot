@@ -122,7 +122,7 @@ class SqlProfiles(BaseModel, Generic[TConn]):
         default_factory=list,
         description=(
             "Имена соединений, доступных пользователю, без профилей: видны в "
-            "list_targets, а профиль приезжает только у выбранного соединения."
+            "connection_list, а профиль приезжает только у выбранного соединения."
         ),
     )
     max_rows: int = Field(
@@ -145,7 +145,7 @@ class SqlProfiles(BaseModel, Generic[TConn]):
         return sorted(known)
 
     def targets_table(self) -> TableResult:
-        """Выдача list_targets: строка на каждое имя подключения."""
+        """Выдача connection_list: строка на каждое имя подключения."""
         rows: list[dict[str, Any]] = []
         for target in self.targets():
             rows.append({"connection_name": target})

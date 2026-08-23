@@ -23,7 +23,7 @@ from boba.chainlit.infra.plugins import as_structured_tool, warmup_configs
 from boba.chainlit.infra.tickets import ServiceTickets
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.db.postgres import AsyncPostgresPool, PostgresConfig
-from boba.krb import KeytabConfig, KeytabCredentials, ServiceTicketIssuer
+from boba.krb import KeytabAuth, KeytabCredentials, ServiceTicketIssuer
 from boba.sandbox import (
     SandboxToolConfig,
 )
@@ -135,12 +135,12 @@ class ToolSetup:
         limits = bind(raw, path="tool.pg", model=PgToolConfig)
         service = bind(raw, path="postgres", model=PostgresConfig)
 
-        kerberos = service.kerberos
-        if isinstance(kerberos, KeytabConfig):
-            issuer = ServiceTicketIssuer(kerberos.min_lifetime)
-            source = KeytabCredentials.of(kerberos)
+        auth = service.auth
+        if isinstance(auth, KeytabAuth):
+            issuer = ServiceTicketIssuer(auth.min_lifetime)
+            source = KeytabCredentials.of(auth)
             ticket = issuer.issue(source, service.service_name())
-            service = service.model_copy(update={"kerberos": ticket})
+            service = service.model_copy(update={"auth": ticket})
 
         return limits.model_copy(update={"profiles": {"main": service}})
 
@@ -576,7 +576,7 @@ class TestBashTool:
 
     async def test_network_is_unavailable(self, bash_tool, workspace_image) -> None:
         """Профиль bash без сети: имена не резолвятся, наружу хода нет."""
-        result = await Call.result(bash_tool, command="getent hosts confl.loshara.com")
+        result = await Call.result(bash_tool, command="getent hosts example.com")
         if result.ok:
             raise AssertionError("not result.ok")
 
@@ -806,8 +806,8 @@ class TestConfluenceTools:
 class TestPgTools:
     """pg: соединение, kerberos и SQL исполняются внутри песочницы."""
 
-    async def test_list_targets(self, pg_tools) -> None:
-        result = await Call.ok(pg_tools["pg_list_targets"])
+    async def test_connection_list(self, pg_tools) -> None:
+        result = await Call.ok(pg_tools["pg_connection_list"])
         targets = []
         for row in result.rows:
             targets.append(row["connection_name"])

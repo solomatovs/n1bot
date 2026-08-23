@@ -18,7 +18,7 @@ from psycopg.rows import DictRow, dict_row
 
 from boba.cancellation import current_cancellation
 from boba.db.postgres.config import PostgresConfig
-from boba.krb import ClientCredentials, KerberosCredentials
+from boba.krb import ClientCredentials, KerberosAuthBase, KerberosCredentials
 
 __all__ = [
     "AsyncPostgresPool",
@@ -105,34 +105,29 @@ class AsyncPostgresPool:
         self._loop_id: int | None = None
         self._loop_reported = False
 
-        krb = "off"
-        if cfg.kerberos is not None:
-            krb = cfg.kerberos.kind
-
         logger.info(
-            "AsyncPostgresPool created db=%s user=%s min_size=%d max_size=%s krb=%s",
+            "AsyncPostgresPool created db=%s auth=%s min_size=%d max_size=%s",
             cfg.dbname,
-            cfg.user,
+            cfg.auth.method,
             cfg.pool.min_size,
             cfg.pool.max_size,
-            krb,
         )
 
     @staticmethod
     def _connection_class(cfg: PostgresConfig) -> type[psycopg.AsyncConnection[Any]]:
-        """Соединение с собственным TGT, если у конфига есть секция kerberos."""
-        if cfg.kerberos is None:
+        """Соединение с собственным TGT, если авторизация kerberos."""
+        if not isinstance(cfg.auth, KerberosAuthBase):
             return psycopg.AsyncConnection
 
-        return KerberosConnection.bound_to(ClientCredentials.of(cfg.kerberos))
+        return KerberosConnection.bound_to(ClientCredentials.of(cfg.auth))
 
     async def open(self) -> None:
         """Открыть пул (установить фоновые соединения)."""
         self._loop_id = id(asyncio.get_running_loop())
         logger.info(
-            "AsyncPostgresPool open db=%s user=%s loop=%#x",
+            "AsyncPostgresPool open db=%s auth=%s loop=%#x",
             self._cfg.dbname,
-            self._cfg.user,
+            self._cfg.auth.method,
             self._loop_id,
         )
         await self._pool.open()

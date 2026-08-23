@@ -22,6 +22,7 @@ from boba.chainlit.auth import AuthConfig
 from boba.chainlit.domain.config import LocalStorageConfig, RoleConfig, ToolGrant
 from boba.chainlit.domain.errors import RefusalError
 from boba.db.postgres import PostgresConfig
+from boba.krb import KerberosWorkspaceConfig
 from boba.llm.generation import GenerationConfig
 from boba.llm.provider import ChatBackendConfig, ChatSampling
 from boba.sandbox.profile import SandboxConfig
@@ -926,6 +927,10 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    krb: Annotated[
+        KerberosWorkspaceConfig,
+        Field(description="Секция [krb]: krb5.conf и каталог кэшей билетов."),
+    ]
     chainlit: Annotated[
         ChainlitExtendConfig,
         Field(

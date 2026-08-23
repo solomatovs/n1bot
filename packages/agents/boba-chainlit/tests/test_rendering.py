@@ -416,8 +416,8 @@ class TestDeclaredViews:
             if ToolCallViews.of(name) != view:
                 raise AssertionError(f"ToolCallViews.of({name!r}) == {view!r}")
 
-        if ToolCallViews.of("pg_list_targets") != ToolCallViews.DEFAULT:
-            raise AssertionError("pg_list_targets остаётся на JsonCall")
+        if ToolCallViews.of("pg_connection_list") != ToolCallViews.DEFAULT:
+            raise AssertionError("pg_connection_list остаётся на JsonCall")
 
     def test_view_for_an_unknown_tool_name_fails_loudly(self) -> None:
         """Опечатка в views не должна тихо оставить инструмент на дефолте."""

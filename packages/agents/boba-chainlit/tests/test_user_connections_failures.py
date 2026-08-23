@@ -20,6 +20,7 @@ from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, create_model
+from stand_site import Stand
 
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
@@ -40,12 +41,12 @@ from boba.chainlit.infra.user_connections import (
     UserConnections,
     UserConnectionsSpec,
 )
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig
+from boba.db.postgres import AsyncPostgresPool, PasswordAuth, PostgresConfig
 from boba.krb import (
     CcacheRegistry,
-    DelegatedConfig,
+    DelegatedAuth,
     DelegationMode,
-    KeytabConfig,
+    KeytabAuth,
     KeytabCredentials,
     UserCcache,
 )
@@ -59,14 +60,15 @@ from boba.transport.http import HttpProfile
 
 pytestmark = pytest.mark.anyio
 
-_KRB = Path(__file__).resolve().parents[4] / "compose" / "conf" / "krb"
-KRB5_CONF = _KRB / "krb5.conf"
-SERVICE_KEYTAB = _KRB / "boba-svc.keytab"
-SERVICE_PRINCIPAL = "boba-svc@LOSHARA.COM"
+STAND = Stand.required()
+KRB5_CONF = Path(STAND.krb_config)
+SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
+SERVICE_PRINCIPAL = STAND.service_principal
 LOGIN = "login-failures"
+UNKNOWN_HOST = f"nowhere.{STAND.krb_domain}"
 
 live_kdc = pytest.mark.skipif(
-    not SERVICE_KEYTAB.is_file() or not KRB5_CONF.is_file(),
+    not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
 )
 
@@ -104,7 +106,9 @@ def service_pg(raw_config: Any) -> PostgresConfig:
 
 @pytest.fixture
 def delegated_pg(service_pg: PostgresConfig) -> PostgresConfig:
-    return service_pg.model_copy(update={"kerberos": DelegatedConfig()})
+    return service_pg.model_copy(
+        update={"auth": DelegatedAuth(method="kerberos_delegated")}
+    )
 
 
 class Registries:
@@ -112,24 +116,20 @@ class Registries:
 
     @staticmethod
     def healthy(tmp_path: Path) -> CcacheRegistry:
-        ccache = f"FILE:{tmp_path / 'tgt'}"
-        KeytabCredentials.of(
-            KeytabConfig(
-                keytab=str(SERVICE_KEYTAB),
+        credentials = KeytabCredentials.of(
+            KeytabAuth(
+                method="kerberos_keytab",
                 principal=SERVICE_PRINCIPAL,
-                ccache=ccache,
-                krb5_config=str(KRB5_CONF),
+                keytab=str(SERVICE_KEYTAB),
             )
-        ).ensure()
+        )
+        credentials.ensure()
+        ccache = credentials.ccache
 
         built = CcacheRegistry(
-
             mode=DelegationMode.FORWARDED,
-
             renew=False,
-
             krb5_config=str(KRB5_CONF),
-
         )
         built.register(UserCcache(SERVICE_PRINCIPAL, ccache, LOGIN))
         return built
@@ -141,41 +141,25 @@ class Registries:
         path.write_bytes(b"not a ccache")
 
         built = CcacheRegistry(
-
             mode=DelegationMode.FORWARDED,
-
             renew=False,
-
             krb5_config=str(KRB5_CONF),
-
         )
         built.register(UserCcache(SERVICE_PRINCIPAL, f"FILE:{path}", LOGIN))
         return built
 
     @staticmethod
     def dead_kdc(tmp_path: Path) -> CcacheRegistry:
-        """Годный TGT, но krb5.conf смотрит на мёртвый KDC."""
-        ccache = f"FILE:{tmp_path / 'tgt'}"
-        KeytabCredentials.of(
-            KeytabConfig(
-                keytab=str(SERVICE_KEYTAB),
-                principal=SERVICE_PRINCIPAL,
-                ccache=ccache,
-                krb5_config=str(KRB5_CONF),
-            )
-        ).ensure()
-
+        """KDC недоступен: пустой кэш входа и krb5.conf в никуда."""
         conf = tmp_path / "krb5-dead.conf"
         conf.write_text(Registries._dead_kdc_conf())
 
+        ccache = f"FILE:{tmp_path / 'empty'}"
+
         built = CcacheRegistry(
-
             mode=DelegationMode.FORWARDED,
-
             renew=False,
-
             krb5_config=str(conf),
-
         )
         built.register(UserCcache(SERVICE_PRINCIPAL, ccache, LOGIN))
         return built
@@ -436,7 +420,6 @@ class TestDelegationUnavailable:
 
         _expect(result, "CredentialsExpiredError", "expired", "sign in again")
 
-    @live_kdc
     async def test_kdc_unreachable(
         self, raw_config, store, layer, delegated_pg, tmp_path: Path
     ) -> None:
@@ -450,13 +433,13 @@ class TestDelegationUnavailable:
             connection_name="main",
         )
 
-        _expect(result, "KerberosError", "ticket to")
+        _expect(result, "CredentialsExpiredError", "expired")
 
     @live_kdc
     async def test_service_unknown_to_kdc(
         self, raw_config, store, layer, delegated_pg, tmp_path: Path
     ) -> None:
-        nowhere = delegated_pg.model_copy(update={"host": "nowhere.loshara.com"})
+        nowhere = delegated_pg.model_copy(update={"host": UNKNOWN_HOST})
         sso = Session.sso(SERVICE_PRINCIPAL, LOGIN)
         user = await Session.user(layer, "f-spn", sso)
         await _grant_delegated(store, nowhere, user)
@@ -467,14 +450,18 @@ class TestDelegationUnavailable:
             connection_name="main",
         )
 
-        _expect(result, "KerberosError", "nowhere.loshara.com")
+        _expect(result, "KerberosError", UNKNOWN_HOST)
 
     @live_kdc
     async def test_ticket_too_short_for_the_row(
         self, raw_config, store, layer, service_pg, tmp_path: Path
     ) -> None:
         strict = service_pg.model_copy(
-            update={"kerberos": DelegatedConfig(min_lifetime=10**9)}
+            update={
+                "auth": DelegatedAuth(
+                    method="kerberos_delegated", min_lifetime=10**9
+                )
+            }
         )
         sso = Session.sso(SERVICE_PRINCIPAL, LOGIN)
         user = await Session.user(layer, "f-short", sso)
@@ -574,9 +561,9 @@ class TestNoConnections:
         async with pool.cursor() as cur:
             await cur.execute(
                 sql.SQL(
-                    "insert into {} (name, kind, data) values (%s, %s, %s) returning id"
+                    "insert into {} (name, data) values (%s, %s) returning id"
                 ).format(sql.Identifier(SCHEMA, "connections")),
-                ("broken", "postgres", Jsonb({"kind": "postgres"})),
+                ("broken", Jsonb({"kind": "postgres"})),
             )
             row = await cur.fetchone()
         if row is None:
@@ -596,9 +583,9 @@ class TestNoConnections:
         user = await Session.user(layer, "f-key", Session.local())
         secret = service_pg.model_copy(
             update={
-                "password": SecretStr("s3cret"),
-                "kerberos": None,
-                "gssencmode": "disable",
+                "auth": PasswordAuth(
+                    method="password", user="boba", password=SecretStr("s3cret")
+                )
             }
         )
         connection_id = await store.add("main", secret)
@@ -615,37 +602,37 @@ class TestNoConnections:
         _expect(result, "SecretCryptoError", "not decrypted")
 
     @pytest.mark.parametrize(
-        "section",
+        "auth",
         [
             {
-                "keytab": str(SERVICE_KEYTAB),
+                "method": "kerberos_keytab",
                 "principal": SERVICE_PRINCIPAL,
+                "keytab": str(SERVICE_KEYTAB),
                 "ccache": "MEMORY:stolen",
             },
-            {"kind": "ccache", "principal": SERVICE_PRINCIPAL, "ccache": "FILE:/x"},
+            {"method": "kerberos_ticket", "principal": SERVICE_PRINCIPAL},
+            {"method": "magic", "user": "u"},
         ],
-        ids=["keytab-with-process-ccache", "host-ccache-section"],
+        ids=["keytab-with-own-ccache", "ticket-in-the-table", "unknown-method"],
     )
-    async def test_row_with_foreign_ccache_is_not_a_profile(
-        self, raw_config, store, layer, pool: AsyncPostgresPool, section
+    async def test_row_with_a_bad_auth_is_not_a_profile(
+        self, raw_config, store, layer, pool: AsyncPostgresPool, auth
     ) -> None:
-        """Строка, тянущая процессный или хостовый ccache, профилем не считается."""
-        user = await Session.user(layer, "f-foreign-ccache", Session.local())
+        """Путь кэша, внутренний билет и неизвестный метод профилем не считаются."""
+        user = await Session.user(layer, "f-bad-auth", Session.local())
         data = {
             "kind": "postgres",
             "host": "h",
-            "user": "u",
             "dbname": "d",
-            "gssencmode": "require",
             "connect_timeout": 5,
-            "kerberos": section,
+            "auth": auth,
         }
         async with pool.cursor() as cur:
             await cur.execute(
                 sql.SQL(
-                    "insert into {} (name, kind, data) values (%s, %s, %s) returning id"
+                    "insert into {} (name, data) values (%s, %s) returning id"
                 ).format(sql.Identifier(SCHEMA, "connections")),
-                ("main", "postgres", Jsonb(data)),
+                ("main", Jsonb(data)),
             )
             row = await cur.fetchone()
         if row is None:
@@ -662,14 +649,13 @@ class TestNoConnections:
     async def test_keytab_file_missing(
         self, raw_config, store, layer, service_pg, tmp_path: Path
     ) -> None:
-        missing = KeytabConfig(
-            keytab=str(tmp_path / "absent.keytab"),
+        missing = KeytabAuth(
+            method="kerberos_keytab",
             principal=SERVICE_PRINCIPAL,
-            ccache=f"FILE:{tmp_path / 'cc'}",
-            krb5_config=str(KRB5_CONF),
+            keytab=str(tmp_path / "absent.keytab"),
         )
         user = await Session.user(layer, "f-keytab", Session.local())
-        row = service_pg.model_copy(update={"kerberos": missing})
+        row = service_pg.model_copy(update={"auth": missing})
         await store.grant(await store.add("main", row), GrantTarget.user(int(user.id)))
         Session.enter(user, Session.local())
 
@@ -703,7 +689,7 @@ class TestNoConnections:
         self, raw_config, store, layer
     ) -> None:
         user = await Session.user(layer, "f-web-host", Session.local())
-        row = HttpProfile(base_url="https://*.loshara.com", ssl_verify=False)
+        row = HttpProfile(base_url="https://*.example.com", ssl_verify=False)
         await store.grant(await store.add("lab", row), GrantTarget.user(int(user.id)))
         Session.enter(user, Session.local())
 
@@ -717,7 +703,7 @@ class TestNoConnections:
             result,
             ConnectionRefusal.HOST_NOT_ALLOWED,
             "outside connection 'lab'",
-            "*.loshara.com",
+            "*.example.com",
         )
 
 

@@ -17,11 +17,11 @@ from boba.db.clickhouse.config import ClickHouseConfig
 from boba.db.postgres.config import PostgresConfig
 from boba.krb import (
     ClientCredentials,
-    DelegatedConfig,
+    DelegatedAuth,
     KerberosError,
-    KeytabConfig,
+    KeytabAuth,
     KeytabCredentials,
-    TicketConfig,
+    TicketAuth,
     TicketCredentials,
 )
 
@@ -29,35 +29,33 @@ from boba.krb import (
 class Fixtures:
     """Значения соединения: конкретика теста в одном месте."""
 
-    KEYTAB: ClassVar[str] = "/etc/boba/boba-svc.keytab"
-    CCACHE: ClassVar[str] = "FILE:/tmp/krb5cc_pg"
-    PRINCIPAL: ClassVar[str] = "boba-svc@LOSHARA.COM"
+    KEYTAB: ClassVar[str] = "/etc/boba/svc.keytab"
+    PRINCIPAL: ClassVar[str] = "svc@EXAMPLE.COM"
     KRB5: ClassVar[str] = "/etc/boba/krb5.conf"
-    SERVICE: ClassVar[str] = "postgres@pg.loshara.com"
+    SERVICE: ClassVar[str] = "postgres@pg.example.com"
 
     @classmethod
-    def keytab(cls) -> KeytabConfig:
-        return KeytabConfig(
-            keytab=cls.KEYTAB,
+    def keytab(cls) -> KeytabAuth:
+        return KeytabAuth(
+            method="kerberos_keytab",
             principal=cls.PRINCIPAL,
-            ccache=cls.CCACHE,
-            krb5_config=cls.KRB5,
+            keytab=cls.KEYTAB,
         )
 
     @classmethod
-    def ticket(cls) -> TicketConfig:
-        return TicketConfig.of_bytes(cls.PRINCIPAL, cls.SERVICE, b"ccache", 60)
+    def ticket(cls) -> TicketAuth:
+        return TicketAuth.of_bytes(
+            cls.PRINCIPAL, cls.SERVICE, b"ccache", 60
+)
 
     @classmethod
-    def postgres(cls, kerberos: object) -> PostgresConfig:
+    def postgres(cls, auth: object) -> PostgresConfig:
         return PostgresConfig.model_validate(
             {
-                "host": "pg.loshara.com",
-                "user": "boba-svc",
+                "host": "pg.example.com",
                 "dbname": "boba",
-                "gssencmode": "require",
                 "connect_timeout": 5,
-                "kerberos": kerberos,
+                "auth": auth,
             }
         )
 
@@ -65,13 +63,12 @@ class Fixtures:
     def clickhouse(cls, kerberos: object) -> ClickHouseConfig:
         return ClickHouseConfig.model_validate(
             {
-                "host": "ch.loshara.com",
+                "host": "ch.example.com",
                 "port": 8123,
                 "interface": "http",
                 "database": "default",
-                "krbsrvname": "HTTP",
                 "connect_timeout": 5,
-                "kerberos": kerberos,
+                "auth": kerberos,
             }
         )
 
@@ -88,7 +85,7 @@ class TestKeytabStaysWithTheApp:
 
         with pytest.raises(ValueError, match="may not leave the application"):
             config.model_dump(
-                mode="json", context={PostgresConfig.REVEAL_SECRETS: True}
+                mode="json", context={TicketAuth.REVEAL_SECRETS: True}
             )
 
     def test_clickhouse_reveal_refuses_a_keytab(self) -> None:
@@ -96,7 +93,7 @@ class TestKeytabStaysWithTheApp:
 
         with pytest.raises(ValueError, match="may not leave the application"):
             config.model_dump(
-                mode="json", context={ClickHouseConfig.REVEAL_SECRETS: True}
+                mode="json", context={TicketAuth.REVEAL_SECRETS: True}
             )
 
     def test_host_dump_keeps_the_keytab(self) -> None:
@@ -104,29 +101,29 @@ class TestKeytabStaysWithTheApp:
         config = Fixtures.postgres(Fixtures.keytab().model_dump(mode="json"))
         dumped = config.model_dump(mode="json")
 
-        if "keytab" not in dumped["kerberos"]:
+        if "keytab" not in dumped["auth"]:
             raise AssertionError(f"хост остался без keytab: {dumped['kerberos']}")
 
     def test_ticket_travels_and_reads_back(self) -> None:
         config = Fixtures.postgres(Fixtures.ticket())
         dumped = config.model_dump(
-            mode="json", context={PostgresConfig.REVEAL_SECRETS: True}
+            mode="json", context={TicketAuth.REVEAL_SECRETS: True}
         )
         restored = PostgresConfig.model_validate(dumped)
 
-        if not isinstance(restored.kerberos, TicketConfig):
-            raise AssertionError(f"телу достались {type(restored.kerberos).__name__}")
-        if restored.kerberos.ccache_bytes() != b"ccache":
+        if not isinstance(restored.auth, TicketAuth):
+            raise AssertionError(f"телу достались {type(restored.auth).__name__}")
+        if restored.auth.ccache_bytes() != b"ccache":
             raise AssertionError("байты билета не доехали")
 
-        credentials = ClientCredentials.of(restored.kerberos)
+        credentials = ClientCredentials.of(restored.auth)
         if not isinstance(credentials, TicketCredentials):
             raise AssertionError(f"выбрана реализация {type(credentials).__name__}")
 
     def test_ticket_is_masked_without_reveal(self) -> None:
         dumped = Fixtures.postgres(Fixtures.ticket()).model_dump(mode="json")
 
-        if dumped["kerberos"]["ccache"] != "**********":
+        if dumped["auth"]["ccache"] != "**********":
             raise AssertionError(f"байты билета в обычном дампе: {dumped['kerberos']}")
 
     def test_host_config_keeps_keytab_credentials(self) -> None:
@@ -137,30 +134,41 @@ class TestKeytabStaysWithTheApp:
     def test_body_refuses_a_delegated_section(self) -> None:
         """Секция «идёт сам пользователь» — для приложения, телу она не креды."""
         with pytest.raises(KerberosError, match="resolved by the application"):
-            ClientCredentials.of(DelegatedConfig())
+            ClientCredentials.of(DelegatedAuth(method="kerberos_delegated"))
 
 
-class TestGssModesAreExplicit:
-    """libpq без своих кредов не ходит за чужим ccache, со своими — не деградирует."""
+class TestGssModesAreDerived:
+    """gssencmode и require_auth выводит вариант авторизации, а не конфиг."""
 
-    def test_no_kerberos_requires_gss_off(self) -> None:
-        with pytest.raises(ValueError, match='gssencmode = "disable"'):
+    def test_password_turns_gss_off(self) -> None:
+        config = PostgresConfig.model_validate(
+            {
+                "host": "h",
+                "dbname": "d",
+                "auth": {"method": "password", "user": "u", "password": "p"},
+            }
+        )
+        settings = config.conn_settings()
+        if settings["gssencmode"] != "disable":
+            raise AssertionError(settings)
+        if settings["require_auth"] != "scram-sha-256":
+            raise AssertionError(settings)
+
+    def test_kerberos_requires_gss(self) -> None:
+        config = Fixtures.postgres(Fixtures.keytab().model_dump(mode="json"))
+        settings = config.conn_settings()
+        if settings["gssencmode"] != "require":
+            raise AssertionError(settings)
+        if settings["require_auth"] != "gss":
+            raise AssertionError(settings)
+        if settings["user"] != "svc":
+            raise AssertionError(settings)
+
+    def test_unknown_method_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="method"):
             PostgresConfig.model_validate(
-                {"host": "h", "user": "u", "dbname": "d", "gssencmode": "prefer"}
+                {"host": "h", "dbname": "d", "auth": {"method": "magic"}}
             )
-
-    def test_no_kerberos_without_mode_is_rejected(self) -> None:
-        """Умолчание libpq — prefer: без явного disable конфиг не принимается."""
-        with pytest.raises(ValueError, match='gssencmode = "disable"'):
-            PostgresConfig.model_validate({"host": "h", "user": "u", "dbname": "d"})
-
-    def test_kerberos_requires_gss_required(self) -> None:
-        raw = Fixtures.postgres(Fixtures.keytab().model_dump(mode="json"))
-        weakened = raw.model_dump(mode="json")
-        weakened["gssencmode"] = "prefer"
-
-        with pytest.raises(ValueError, match='gssencmode = "require"'):
-            PostgresConfig.model_validate(weakened)
 
     def test_kerberos_requires_connect_timeout(self) -> None:
         raw = Fixtures.postgres(Fixtures.keytab().model_dump(mode="json"))

@@ -1,9 +1,13 @@
-// Кнопка «Войти через SSO» и placeholder пароля на странице логина;
-// __SSO_URL__ и __TRANSLATIONS_URL__ подставляет сервер.
+// Кнопка «Войти через SSO», placeholder пароля и молчаливое обновление тикета;
+// __SSO_URL__, __REFRESH_URL__ и __TRANSLATIONS_URL__ подставляет сервер.
 (() => {
   "use strict";
   const SSO_URL = "__SSO_URL__";
+  const REFRESH_URL = "__REFRESH_URL__";
   const TRANSLATIONS_URL = "__TRANSLATIONS_URL__";
+  const REFRESH_SIGNAL = "boba:kerberos-refresh";
+  const REFRESH_HEADER = "__REFRESH_HEADER__";
+  const REFRESH_HEADER_VALUE = "__REFRESH_HEADER_VALUE__";
   const BTN_ID = "sso-login-btn";
   const BTN_CLASS = [
     "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md",
@@ -141,6 +145,35 @@
     }
     form.appendChild(build());
   }
+
+  // сервер просит обменяться заново: браузер домена делает это без участия пользователя
+  let refreshing = false;
+
+  function refresh() {
+    if (refreshing) return;
+    refreshing = true;
+    const headers = {};
+    headers[REFRESH_HEADER] = REFRESH_HEADER_VALUE;
+    // заголовок метит запрос как свой: кросс-сайтовый запрос его не поставит
+    fetch(REFRESH_URL, { credentials: "include", headers: headers })
+      .catch(() => {})
+      .then(() => {
+        refreshing = false;
+      });
+  }
+
+  function onSignal(event) {
+    // сигнал приходит только от своей страницы: чужое окно обмен не запускает
+    if (event.source !== browser.win) return;
+    if (event.origin !== browser.win.location.origin) return;
+    const data = event.data;
+    if (!data || typeof data !== "object") return;
+    if (data.type !== REFRESH_SIGNAL) return;
+    refresh();
+  }
+
+  const win = browser.win;
+  if (win) win.addEventListener("message", onSignal);
 
   const obs = new MutationObserver(() => inject());
   const root = browser.root();
