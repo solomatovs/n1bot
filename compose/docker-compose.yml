@@ -10,6 +10,7 @@ services:
     env_file: ./conf/boba.env
     volumes:
       - ./conf:/app/boba/conf:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ${BOBA_DATA_DIR:-./data}:/app/boba/data:rw
       - ./app_root:/app/boba/app_root:rw
       - /sys/fs/cgroup/boba.slice:/cgroup:rw
