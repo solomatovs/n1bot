@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-liteparse"
-version = "0.0.14.dev2"
+version = "0.0.14.dev3"
 description = "Boba liteparse: движок парсинга документов поверх нативного liteparse; исполняется только в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-text==0.0.14.dev2",
+    "boba-text==0.0.14.dev3",
     "pydantic>=2.10,<2.11",
     "liteparse>=2,<3",
 ]
