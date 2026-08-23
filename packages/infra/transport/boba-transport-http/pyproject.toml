@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-transport-http"
-version = "0.0.14.dev3"
+version = "0.0.14.dev4"
 description = "Boba HTTP transport: HttpRequest + HttpTransport + auth callables (PatAuth/BasicAuth) на httpx."
 requires-python = ">=3.11,<4"
 dependencies = [
     # остановка хода: прерыватель регистрируется в TurnCancellation
-    "boba-cancellation==0.0.14.dev3",
-    "boba-krb==0.0.14.dev3",
+    "boba-cancellation==0.0.14.dev4",
+    "boba-krb==0.0.14.dev4",
     "httpx>=0.28,<1",
     # auth.py / connection.py: профили на pydantic BaseModel
     "pydantic>=2.10,<2.11",
