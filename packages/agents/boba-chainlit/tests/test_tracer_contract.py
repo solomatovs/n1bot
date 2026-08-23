@@ -19,11 +19,11 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 import httpx
-from conftest import fake_openai_chat
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.emitter import BaseChainlitEmitter
 from chainlit.session import HTTPSession
+from conftest import fake_openai_chat
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool

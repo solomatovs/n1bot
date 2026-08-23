@@ -160,8 +160,7 @@ def storage(
         "mount_dir": "/tmp",  # noqa: S108
         "workspace": {
             "template": str(big_template),
-            "images": f"{root}/ws",
-            "mount": "/workspace",
+            "mount": f"{root}/ws/{{user_id}}.ext4:/workspace",
         },
         "op_timeout_sec": 120,
         "mounting": {
@@ -227,8 +226,7 @@ class TestStreamingReads:
             "mount_dir": "/tmp",  # noqa: S108
             "workspace": {
                 "template": str(big_template),
-                "images": f"{tmp_path}/ws",
-                "mount": "/workspace",
+                "mount": f"{tmp_path}/ws/{{user_id}}.ext4:/workspace",
             },
             "op_timeout_sec": 120,
             "mounting": {
@@ -420,8 +418,7 @@ class TestStreamingReads:
             "mount_dir": "/tmp",  # noqa: S108
             "workspace": {
                 "template": str(big_template),
-                "images": f"{tmp_path}/ws",
-                "mount": "/workspace",
+                "mount": f"{tmp_path}/ws/{{user_id}}.ext4:/workspace",
             },
             "op_timeout_sec": 30,
             "mounting": {

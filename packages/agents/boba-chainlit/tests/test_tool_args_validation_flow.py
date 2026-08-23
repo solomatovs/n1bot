@@ -25,6 +25,7 @@ from langgraph.graph.state import CompiledStateGraph
 from omegaconf import DictConfig
 
 from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.connections import ConnectionStore
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import load_tools
 from boba.chainlit.infra.providers import build_history_view
@@ -104,12 +105,21 @@ def app_sandbox() -> Iterator[None]:
         ZygoteRegistry.stop_all()
 
 
+def _no_registry() -> None:
+    return None
+
+
+def _no_store() -> ConnectionStore:
+    msg = "the flow under test does not reach user connections"
+    raise RuntimeError(msg)
+
+
 @pytest.fixture(scope="module")
 def session_tools(
     raw_config: DictConfig, app_config: AppConfig, app_sandbox: None
 ) -> list[BaseTool]:
     """Инструменты профиля, собранные боевым загрузчиком."""
-    registry = load_tools(raw_config)
+    registry = load_tools(raw_config, _no_store, _no_registry)
     roles = frozenset(app_config.roles)
     return registry.for_session(roles, PROFILE)
 

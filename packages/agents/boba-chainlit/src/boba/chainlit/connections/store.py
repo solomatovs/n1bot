@@ -4,7 +4,8 @@ connections — чистое хранилище профилей, без вла�
 имени; связь с пользователями и ролями живёт только в grants.
 
 Ошибки:
-ConnectionStoreError — база отказала или строка не сохранилась.
+ConnectionStoreError — база отказала, строка не сохранилась или её jsonb
+    не разбирается как профиль.
 ConnectionNotFoundError — в connections нет строки с таким id.
 SecretCryptoError — секрет строки не расшифровался ключом конфига.
 """
@@ -29,12 +30,13 @@ from pydantic import (
     Field,
     SecretStr,
     TypeAdapter,
+    ValidationError,
     field_validator,
 )
 
 from boba.chainlit.connections.secrets import SecretCipher
 from boba.db.clickhouse import ClickHouseConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig
+from boba.db.postgres import AsyncPostgresPool, PostgresConfig, PostgresError
 from boba.transport.http import HttpProfile
 
 logger = logging.getLogger(__name__)
@@ -247,10 +249,10 @@ class ConnectionStore:
 
     @asynccontextmanager
     async def _guarded(self, action: str) -> AsyncIterator[None]:
-        """Граница слоя: отказ базы уходит наружу как ConnectionStoreError."""
+        """Граница слоя: отказ базы или пула уходит наружу как ConnectionStoreError."""
         try:
             yield
-        except psycopg.Error as exc:
+        except (psycopg.Error, PostgresError) as exc:
             msg = f"connections: {action} failed"
             raise ConnectionStoreError(msg) from exc
 
@@ -598,33 +600,56 @@ class ConnectionStore:
         """Соединения вида kind, выданные пользователю лично или любой его роли."""
         query = sql.SQL(
             """
+            with
+                subject_roles as (
+                    select
+                        r.id
+                    from
+                        {roles} r
+                    where
+                        r.role = any(%(roles)s)
+                ),
+                user_grants as (
+                    select
+                        g.src_kind_id as connection_id
+                    from
+                        {grants} g
+                    where
+                        g.src_kind = %(src_kind)s
+                        and g.tgt_kind = %(users_kind)s
+                        and g.tgt_kind_id = %(user_id)s
+                ),
+                role_grants as (
+                    select
+                        g.src_kind_id as connection_id
+                    from
+                        {grants} g
+                        inner join subject_roles sr on
+                            g.tgt_kind_id = sr.id
+                    where
+                        g.src_kind = %(src_kind)s
+                        and g.tgt_kind = %(roles_kind)s
+                ),
+                granted as (
+                    select
+                        connection_id
+                    from
+                        user_grants
+                    union
+                    select
+                        connection_id
+                    from
+                        role_grants
+                )
             select
                 c.id,
                 c.name,
                 c.data
             from
                 {connections} c
+                inner join granted on granted.connection_id = c.id
             where
                 c.kind = %(kind)s
-                and exists (
-                    select
-                        1
-                    from
-                        {grants} g
-                        left join {roles} r on
-                            g.tgt_kind = %(roles_kind)s
-                            and g.tgt_kind_id = r.id
-                    where
-                        g.src_kind = %(src_kind)s
-                        and g.src_kind_id = c.id
-                        and (
-                            (
-                                g.tgt_kind = %(users_kind)s
-                                and g.tgt_kind_id = %(user_id)s
-                            )
-                            or r.role = any(%(roles)s)
-                        )
-                )
             order by
                 c.id
             """
@@ -659,5 +684,13 @@ class ConnectionStore:
         }
 
     def _stored(self, row: dict[str, Any]) -> StoredConnection:
-        profile = self._PROFILE.validate_python(self._cipher.decrypt(row["data"]))
+        try:
+            profile = self._PROFILE.validate_python(self._cipher.decrypt(row["data"]))
+        except ValidationError as exc:
+            msg = (
+                f"connections: row #{row['id']} {row['name']!r} is not a valid "
+                "connection profile"
+            )
+            raise ConnectionStoreError(msg) from exc
+
         return StoredConnection(id=int(row["id"]), name=row["name"], profile=profile)

@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping
 from typing import TypeVar
 
-from boba.sandbox.profile import BindSpec, SandboxProfile
+from boba.sandbox.profile import BindSpec, SandboxMount, SandboxProfile
 from boba.toolkit.binaries import SandboxBinary
 from boba.workspace.launcher import FUSE_DEVICE
 
@@ -18,17 +18,15 @@ def build_zygote_argv(
     command: list[str],
     *,
     env: Mapping[str, str],
-    fuse: bool = False,
-    nested: bool = False,
+    root: str,
 ) -> list[str]:
-    """bwrap для зиготы: capabilities в userns, свой или лаунчера.
+    """bwrap для зиготы внутри userns лаунчера образов.
 
     CAP_SYS_ADMIN — unshare и mount детей, CAP_SYS_RESOURCE — запрет
     вложенных userns записью max_user_namespaces=0, CAP_SETPCAP — сброс
-    bounding set перед запуском тела. RLIMIT_NPROC зигота
-    ставит себе сама: потолок общий на неё и всех детей. nested — запуск
-    внутри userns лаунчера образов: он там уже создан, и создать свой
-    нельзя, зато капабилити лаунчера наследуются.
+    bounding set перед запуском тела. Свой userns не создаётся: цепочка
+    лаунчера уже в нём, зато его капабилити наследуются. root — точка,
+    куда цепочка смонтировала образ корня; сеть отбирает внешний bwrap.
     """
     bwrap_path = profile.host.binaries.resolve(SandboxBinary.BWRAP)
 
@@ -50,31 +48,29 @@ def build_zygote_argv(
         "--hostname",
         "sandbox",
         "--new-session",
+        "--ro-bind",
+        root,
+        "/",
     ]
 
-    if not nested:
-        argv[2:2] = ["--unshare-user", "--uid", "0", "--gid", "0"]
+    argv += ["--proc", SandboxMount.PROC.value]
+    argv += ["--dev", SandboxMount.DEV.value]
 
-    if profile.rootfs.dir:
-        argv += ["--ro-bind", profile.rootfs.dir, "/"]
-
-    argv += _system_mounts(profile)
-
-    if fuse:
-        argv += ["--dev-bind", FUSE_DEVICE, FUSE_DEVICE]
+    argv += ["--dev-bind", FUSE_DEVICE, FUSE_DEVICE]
 
     # tmpfs раньше биндов: на read-only корне bwrap не создаст точку
     # монтирования, а поверх tmpfs — создаст
-    for spec in profile.mounts.tmpfs:
+    for spec in profile.tmpfs():
         argv += ["--size", str(spec.size_bytes), "--tmpfs", spec.path]
 
+    setup = profile.setup_binds()
     symlinks: list[tuple[str, str]] = []
 
-    ro_binds = (*profile.mounts.ro, *profile.mounts.setup_ro)
+    ro_binds = (*profile.mounts.ro, *setup.ro)
     for spec in ro_binds:
         argv += _bind_args("--ro-bind-try", spec, symlinks)
 
-    rw_binds = (*profile.mounts.rw, *profile.mounts.setup_rw)
+    rw_binds = (*profile.mounts.rw, *setup.rw)
     for spec in _dedup_preserve_order(rw_binds):
         argv += _bind_args("--bind-try", spec, symlinks)
 
@@ -85,26 +81,9 @@ def build_zygote_argv(
     for name, value in env.items():
         argv += ["--setenv", name, value]
 
-    # во вложенном запуске сеть уже отобрана внешним bwrap цепочки
-    if not profile.isolation.network and not nested:
-        argv.append("--unshare-net")
-
     # cwd профиля может быть точкой образа, которую смонтирует ребёнок
     argv += ["--chdir", "/"]
     argv += ["--", *command]
-    return argv
-
-
-def _system_mounts(profile: SandboxProfile) -> list[str]:
-    """procfs и devtmpfs там, где их просит профиль; пусто — не монтируются."""
-    argv: list[str] = []
-
-    if profile.mounts.proc:
-        argv += ["--proc", profile.mounts.proc]
-
-    if profile.mounts.dev:
-        argv += ["--dev", profile.mounts.dev]
-
     return argv
 
 

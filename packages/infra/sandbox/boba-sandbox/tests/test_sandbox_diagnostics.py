@@ -18,8 +18,6 @@ from boba.toolkit.launcher import RunResult
 from boba.toolkit.result import ShellResult
 from boba.workspace.launcher import FUSE_DEVICE
 
-HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
-
 OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024)
 
 needs_sandbox = pytest.mark.skipif(
@@ -115,9 +113,10 @@ class TestDiagnosticText:
 
     def test_process_limit_named(self) -> None:
         result = _result(stderr="bash: fork: retry: Resource temporarily unavailable")
-        text = _explain(result, _profile(max_processes=10))
-        if "max_processes=10" not in text:
-            raise AssertionError('"max_processes=10" in text')
+        profile = _profile(cgroup_base="/sys/fs/cgroup/boba", group_pids_max=10)
+        text = _explain(result, profile)
+        if "group_pids_max=10" not in text:
+            raise AssertionError('"group_pids_max=10" in text')
 
     def test_memory_limit_named(self) -> None:
         result = _result(stderr="MemoryError")
@@ -211,13 +210,6 @@ class TestDiagnosticAppearsLive:
             raise AssertionError("payload.exit_code != 0")
         if "process_open_files=10" not in payload.diagnostic:
             raise AssertionError('"process_open_files=10" in payload.diagnostic')
-
-    def test_processes(self) -> None:
-        command = "for i in $(seq 1 300); do sleep 5 & done; wait"
-        tool = _tool("dg-procs", _profile(max_processes=64, timeout_sec=20))
-        payload = _invoke(tool, command)
-        if "max_processes=64" not in payload.diagnostic:
-            raise AssertionError(f"нет упоминания лимита: {payload.diagnostic!r}")
 
     def test_file_size(self) -> None:
         tool = _tool("dg-fsize", _profile(process_file_bytes=1024 * 1024))

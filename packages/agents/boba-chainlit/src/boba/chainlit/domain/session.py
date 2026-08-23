@@ -10,8 +10,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Final
 
+import jwt
+
 import chainlit as cl
 from boba.chainlit.domain.errors import RefusalError
+from chainlit.auth.jwt import decode_jwt
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContextException
 from chainlit.session import WebsocketSession
@@ -22,6 +25,7 @@ __all__ = [
     "UserMetadataField",
     "current_chat_profile",
     "current_language",
+    "current_login_user",
     "current_thread_id",
     "current_user_id",
     "current_user_label",
@@ -35,6 +39,8 @@ class UserMetadataField:
     "Ключи metadata у cl.User; контракт chainlit."
 
     PROVIDER: Final = "provider"
+    PRINCIPAL: Final = "principal"
+    LOGIN: Final = "sso_login"
     ROLES: Final = "roles"
     LLM: Final = "llm"
 
@@ -164,6 +170,27 @@ def current_chat_profile() -> str | None:
         return None
 
     return str(value)
+
+
+def current_login_user() -> cl.User | None:
+    """Пользователь, каким его выпустил вход: из подписанного JWT сессии.
+
+    В сессии лежит строка users, чьи metadata сливаются всеми входами
+    подряд; JWT же подписан приложением и описывает ровно этот вход.
+    None — сессии нет, токена нет или он не проходит проверку подписи/срока.
+    """
+    try:
+        token = cl.context.session.token
+    except ChainlitContextException:
+        return None
+
+    if not token:
+        return None
+
+    try:
+        return decode_jwt(token)
+    except jwt.PyJWTError:
+        return None
 
 
 def current_user_id() -> str | None:

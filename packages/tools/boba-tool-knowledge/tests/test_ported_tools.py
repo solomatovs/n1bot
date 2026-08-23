@@ -6,6 +6,7 @@ import os
 from typing import Any, ClassVar
 
 import pytest
+from conftest import ROOTFS_IMAGE
 
 from boba.sandbox import SandboxToolConfig
 from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS
@@ -50,7 +51,14 @@ def _no_launcher(tool: str) -> Any:
 def pg_config() -> PgToolConfig:
     return PgToolConfig.model_validate(
         {
-            "profiles": {"main": {"host": "h", "dbname": "d", "user": "u"}},
+            "profiles": {
+                "main": {
+                    "host": "h",
+                    "dbname": "d",
+                    "user": "u",
+                    "gssencmode": "disable",
+                }
+            },
             "sandbox": _SANDBOX,
         }
     )
@@ -59,7 +67,12 @@ def pg_config() -> PgToolConfig:
 def kb_config() -> PostgresKnowledgeBaseConfig:
     return PostgresKnowledgeBaseConfig.model_validate(
         {
-            "connection": {"host": "h", "dbname": "d", "user": "u"},
+            "connection": {
+                "host": "h",
+                "dbname": "d",
+                "user": "u",
+                "gssencmode": "disable",
+            },
             "tables": {"pg_schema": "kb"},
             "embedding": {
                 "provider": "local",
@@ -184,25 +197,15 @@ _PROFILE_RAW: dict[str, object] = {
         "kill_grace_sec": 5,
         "cgroup_base": "",
     },
-    "rootfs": {
-        "dir": "",
-    },
+    "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
         "ro": (),
         "rw": (),
-        "images": (),
-        "image_template": "",
-        "tmpfs": ("/tmp:64M",),  # noqa: S108
-        "proc": "/proc",
-        "dev": "/dev",
-        "call_tmpfs": "/tmp",  # noqa: S108
-        "setup_ro": (),
-        "setup_rw": (),
+        "tmp": "64M",  # noqa: S108
     },
     "isolation": {
         "network": False,
         "env": {"PATH": "/usr/bin:/bin"},
-        "max_processes": 256,
         "reap_poll_sec": 0.05,
     },
     "limits": {

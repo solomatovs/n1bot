@@ -46,6 +46,15 @@ def _tool_call(name: str, args: dict) -> dict:
     return {"args": args, "id": f"call-{name}", "name": name, "type": "tool_call"}
 
 
+_WORKSPACE = "/workspace"
+"""Рабочий каталог теста внутри песочницы: точка есть в корне-образе."""
+
+_ROOT = "/tmp/boba-rootfs"  # noqa: S108
+"""Точка, куда цепочка лаунчера смонтировала корень: её получает билдер argv."""
+
+_SANDBOX = Path(__file__).resolve().parents[4] / "build" / "src" / "sandbox"
+_ROOTFS_IMAGE = _SANDBOX / "rootfs.ext4"
+
 _PROFILE_BASE: dict[str, object] = {
     "host": {
         "mounting": {
@@ -62,26 +71,16 @@ _PROFILE_BASE: dict[str, object] = {
         "kill_grace_sec": 5,
         "cgroup_base": "",
     },
-    "rootfs": {
-        "dir": "",
-    },
+    "rootfs": str(_ROOTFS_IMAGE),
     "mounts": {
-        "setup_ro": (),
-        "setup_rw": (),
         "ro": (),
         "rw": (),
-        "images": (),
-        "image_template": "",
-        "tmpfs": ("/tmp:64M",),  # noqa: S108
-        "proc": "/proc",
-        "dev": "/dev",
-        "call_tmpfs": "/tmp",  # noqa: S108
+        "tmp": "64M",
     },
     "isolation": {
         "reap_poll_sec": 0.05,
         "network": False,
         "env": {},
-        "max_processes": 256,
     },
     "limits": {
         "timeout_sec": 30,
@@ -145,16 +144,31 @@ def _profile(**kw: Any) -> SandboxProfile:
     return SandboxProfile.model_validate(_merged(_PROFILE_BASE, kw))
 
 
-_HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
-
-_VENV = Path(__file__).resolve().parents[4] / ".venv"
+_SITE_PACKAGES = "/usr/local/lib/python3.11/site-packages"
 _PACKAGES = Path(__file__).resolve().parents[3]
 
-_PYTHON_BINDS = (str(_VENV), str(_PACKAGES))
-"""Зиготе нужен интерпретатор с пакетами: на хостовом корне это venv стенда."""
+_PYTHON_BINDS = (
+    f"{_SANDBOX / 'third' / 'python'}:/usr/local",
+    f"{_SANDBOX / 'site'}:{_SITE_PACKAGES}",
+    f"{_PACKAGES}:/usr/src",
+)
+"""Интерпретатор и код в корень-образ: точки монтирования в нём уже есть."""
+
+_SRC_PACKAGES = ("core/boba-cancellation", "core/boba-toolkit")
+"""Пакеты, чей код нужен зиготе: их src приезжает биндом в /usr/src."""
+
+
+def _python_path() -> str:
+    parts: list[str] = []
+    for name in _SRC_PACKAGES:
+        parts.append(f"/usr/src/{name}/src")
+
+    return os.pathsep.join(parts)
+
 
 _SANDBOX_ENV = {
-    "PATH": f"{_VENV}/bin:/usr/local/bin:/usr/bin:/bin",
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "PYTHONPATH": _python_path(),
     "HOME": "/tmp",  # noqa: S108
     "LANG": "C.UTF-8",
 }
@@ -186,10 +200,6 @@ class TestProfileValidation:
         with pytest.raises(ValueError, match="process_open_files"):
             _profile(process_open_files=0)
 
-    def test_zero_process_limit_rejected(self) -> None:
-        with pytest.raises(ValueError, match="max_processes"):
-            _profile(max_processes=0)
-
     def test_all_fields_required(self) -> None:
         with pytest.raises(ValueError, match="Field required"):
             SandboxProfile.model_validate({})
@@ -201,13 +211,11 @@ class TestBwrapArgv:
     _WS = "/srv/workspace"
 
     def test_starts_with_bwrap_and_unshare_flags(self) -> None:
-        argv = build_zygote_argv(_profile(), ["echo", "hi"], env={})
+        argv = build_zygote_argv(_profile(), ["echo", "hi"], env={}, root=_ROOT)
         if not (argv[0].endswith("bwrap")):
             raise AssertionError('argv[0].endswith("bwrap")')
         if "--die-with-parent" not in argv:
             raise AssertionError('"--die-with-parent" in argv')
-        if "--unshare-user" not in argv:
-            raise AssertionError('"--unshare-user" in argv')
         if "--unshare-pid" not in argv:
             raise AssertionError('"--unshare-pid" in argv')
         if "--new-session" not in argv:
@@ -215,7 +223,7 @@ class TestBwrapArgv:
 
     def test_userns_creation_is_closed_by_capability(self) -> None:
         """Вложенные userns закрывает сама зигота: ей нужен CAP_SYS_RESOURCE."""
-        argv = build_zygote_argv(_profile(), ["true"], env={})
+        argv = build_zygote_argv(_profile(), ["true"], env={}, root=_ROOT)
 
         caps: list[str] = []
         for index, arg in enumerate(argv):
@@ -226,22 +234,18 @@ class TestBwrapArgv:
             raise AssertionError('"CAP_SYS_RESOURCE" in caps')
 
     def test_neutral_hostname(self) -> None:
-        argv = build_zygote_argv(_profile(), ["true"], env={})
+        argv = build_zygote_argv(_profile(), ["true"], env={}, root=_ROOT)
         if argv[argv.index("--hostname") + 1] != "sandbox":
             raise AssertionError('argv[argv.index("--hostname") + 1] == "sandbox"')
 
-    def test_network_disabled_adds_unshare_net(self) -> None:
-        argv = build_zygote_argv(_profile(network=False), ["true"], env={})
-        if "--unshare-net" not in argv:
-            raise AssertionError('"--unshare-net" in argv')
-
-    def test_network_enabled_omits_unshare_net(self) -> None:
-        argv = build_zygote_argv(_profile(network=True), ["true"], env={})
+    def test_network_is_left_to_the_outer_bwrap(self) -> None:
+        """Зигота стартует внутри цепочки: сеть у неё отобрал внешний bwrap."""
+        argv = build_zygote_argv(_profile(network=False), ["true"], env={}, root=_ROOT)
         if "--unshare-net" in argv:
             raise AssertionError('"--unshare-net" not in argv')
 
     def test_no_implicit_rw_binds(self) -> None:
-        argv = build_zygote_argv(_profile(), ["true"], env={})
+        argv = build_zygote_argv(_profile(), ["true"], env={}, root=_ROOT)
         if "--bind-try" in argv:
             raise AssertionError('"--bind-try" not in argv')
         if "--bind" in argv:
@@ -249,14 +253,14 @@ class TestBwrapArgv:
 
     def test_rw_bind_same_path(self) -> None:
         profile = _profile(rw=(self._WS,), cwd=self._WS)
-        argv = build_zygote_argv(profile, ["true"], env={})
+        argv = build_zygote_argv(profile, ["true"], env={}, root=_ROOT)
         i = argv.index("--bind-try")
         if argv[i + 1 : i + 3] != [self._WS, self._WS]:
             raise AssertionError("argv[i + 1 : i + 3] == [self._WS, self._WS]")
 
     def test_rw_bind_with_explicit_target(self) -> None:
         profile = _profile(rw=(f"{self._WS}:/workspace",), cwd="/workspace")
-        argv = build_zygote_argv(profile, ["true"], env={})
+        argv = build_zygote_argv(profile, ["true"], env={}, root=_ROOT)
         i = argv.index("--bind-try")
         if argv[i + 1 : i + 3] != [self._WS, "/workspace"]:
             raise AssertionError('argv[i + 1 : i + 3] == [self._WS, "/workspace"]')
@@ -264,36 +268,27 @@ class TestBwrapArgv:
     def test_zygote_starts_at_root(self) -> None:
         """cwd профиля — дело вызова: точку образа монтирует исполнитель."""
         profile = _profile(rw=(f"{self._WS}:/workspace",), cwd="/workspace")
-        argv = build_zygote_argv(profile, ["true"], env={})
+        argv = build_zygote_argv(profile, ["true"], env={}, root=_ROOT)
         if argv[argv.index("--chdir") + 1] != "/":
             raise AssertionError('argv[argv.index("--chdir") + 1] == "/"')
 
-    def test_tmpfs_without_size_rejected(self) -> None:
-        """Размер обязателен: неявного «без лимита» больше нет."""
-        with pytest.raises(ValueError, match="size is required"):
-            _profile(tmpfs=("/tmp",))  # noqa: S108
-
-    def test_tmpfs_size_precedes_mount(self) -> None:
-        argv = build_zygote_argv(_profile(tmpfs=("/tmp:64M",)), ["true"], env={})  # noqa: S108
+    def test_tmp_size_precedes_mount(self) -> None:
+        argv = build_zygote_argv(_profile(tmp="64M"), ["true"], env={}, root=_ROOT)
         i = argv.index("--size")
         if argv[i + 1] != str(64 * 1024**2):
             raise AssertionError("argv[i + 1] == str(64 * 1024**2)")
         if argv[i + 2 : i + 4] != ["--tmpfs", "/tmp"]:  # noqa: S108
             raise AssertionError('argv[i + 2 : i + 4] == ["--tmpfs", "/tmp"]')
 
-    def test_tmpfs_bad_size_rejected(self) -> None:
+    def test_tmp_bad_size_rejected(self) -> None:
         with pytest.raises(ValueError, match="invalid size"):
-            _profile(tmpfs=("/tmp:64X",))  # noqa: S108
+            _profile(tmp="64X")
 
     def test_rootfs_mounted_as_root_before_proc_dev(self) -> None:
-        argv = build_zygote_argv(
-            _profile(rootfs={"dir": "/srv/rootfs"}, ro=()),
-            ["true"],
-            env={},
-        )
+        argv = build_zygote_argv(_profile(ro=()), ["true"], env={}, root=_ROOT)
         i = argv.index("--ro-bind")
-        if argv[i + 1 : i + 3] != ["/srv/rootfs", "/"]:
-            raise AssertionError('argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]')
+        if argv[i + 1 : i + 3] != [_ROOT, "/"]:
+            raise AssertionError("argv[i + 1 : i + 3] == [_ROOT, /]")
         if i >= argv.index("--proc"):
             raise AssertionError('i < argv.index("--proc")')
         if i >= argv.index("--dev"):
@@ -304,6 +299,7 @@ class TestBwrapArgv:
             _profile(),
             ["true"],
             env={"PATH": "/usr/bin:/bin"},
+            root=_ROOT,
         )
         if "--clearenv" not in argv:
             raise AssertionError('"--clearenv" in argv')
@@ -312,16 +308,10 @@ class TestBwrapArgv:
             raise AssertionError('argv[i + 1 : i + 3] == ["PATH", "/usr/bin:/bin"]')
 
     def test_command_goes_after_separator(self) -> None:
-        argv = build_zygote_argv(_profile(), ["echo", "hi"], env={})
+        argv = build_zygote_argv(_profile(), ["echo", "hi"], env={}, root=_ROOT)
         sep = argv.index("--")
         if argv[sep + 1 :] != ["echo", "hi"]:
             raise AssertionError('argv[sep + 1 :] == ["echo", "hi"]')
-
-    def test_process_limit_stays_out_of_argv(self) -> None:
-        """RLIMIT_NPROC ставит себе сама зигота: в argv bwrap его нет."""
-        argv = build_zygote_argv(_profile(max_processes=64), ["echo", "hi"], env={})
-        if "ulimit" in " ".join(argv):
-            raise AssertionError('"ulimit" not in " ".join(argv)')
 
 
 @pytest.mark.skipif(
@@ -345,16 +335,17 @@ class TestBashTool:
     ):
         ws = str(workspace_root)
         base = profile or _profile()
-        ro_binds = (*_HOST_RO_BINDS, *_PYTHON_BINDS)
         parsed: list[BindSpec] = []
-        for item in ro_binds:
+        for item in _PYTHON_BINDS:
             parsed.append(BindSpec.parse(item))
 
+        # точку rw-бинда даёт tmpfs /mnt: на корне-образе её не создать
+        workspace = BindSpec.parse(f"{ws}:{_WORKSPACE}")
         mounts = base.mounts.model_copy(
-            update={"ro": tuple(parsed), "rw": (BindSpec.parse(ws),)}
+            update={"ro": tuple(parsed), "rw": (workspace,)}
         )
         isolation = base.isolation.model_copy(update={"env": dict(_SANDBOX_ENV)})
-        run = base.run.model_copy(update={"cwd": ws})
+        run = base.run.model_copy(update={"cwd": _WORKSPACE})
         profile_dto = base.model_copy(
             update={"mounts": mounts, "isolation": isolation, "run": run}
         )
@@ -365,7 +356,7 @@ class TestBashTool:
         if output is None:
             output = cls.LIMITS
 
-        tmp_size = profile.mounts.tmpfs[0].size_bytes
+        tmp_size = profile.mounts.tmp
         section = f"bash-{workspace_root.name}-{profile.limits.timeout_sec}-{tmp_size}"
         supervisor = ZygoteRegistry.obtain(section, profile, (), _ZYGOTE)
         caller = ZygoteToolCaller(section, supervisor, profile)
@@ -391,8 +382,8 @@ class TestBashTool:
 
     def test_cwd_is_workspace_root(self, tmp_path: Path) -> None:
         payload = self._invoke(self._make_tool(tmp_path), command="pwd")
-        if payload.stdout.rstrip() != str(tmp_path.resolve()):
-            raise AssertionError("payload.stdout.rstrip() == str(tmp_path.resolve(…")
+        if payload.stdout.rstrip() != _WORKSPACE:
+            raise AssertionError("payload.stdout.rstrip() == _WORKSPACE")
 
     def test_workspace_writes_persist_on_host(self, tmp_path: Path) -> None:
         payload = self._invoke(
@@ -471,7 +462,7 @@ class TestBashTool:
 
     def test_tmpfs_size_limit_enforced(self, tmp_path: Path) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path, _profile(tmpfs=("/tmp:1M",))),  # noqa: S108
+            self._make_tool(tmp_path, _profile(tmp="1M")),
             command="dd if=/dev/zero of=/tmp/blob bs=1M count=4 2>&1; echo rc=$?",
         )
         if "rc=0" in payload.stdout:
@@ -481,7 +472,7 @@ class TestBashTool:
         """Бинды зиготы статичны: пути на вызов живут только в rw_images."""
         template = f"{tmp_path}/{{user_id}}/{{thread_id}}"
         profile_dto = _profile(
-            ro=(*_HOST_RO_BINDS, *_PYTHON_BINDS),
+            ro=_PYTHON_BINDS,
             rw=(template,),
             env=dict(_SANDBOX_ENV),
             cwd=template,

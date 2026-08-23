@@ -6,7 +6,10 @@ import os
 
 import pytest
 from langchain_core.messages import HumanMessage
-from zygote_stand import ProfileFields
+from zygote_stand import ROOTFS_IMAGE, ProfileFields
+
+_ROOT = "/tmp/boba-rootfs"  # noqa: S108
+"""Точка, куда цепочка лаунчера смонтировала корень."""
 
 from boba.chainlit.domain.keys import ObjectKey, WorkspaceMount
 from boba.chainlit.infra.providers import build_llm_view
@@ -52,26 +55,16 @@ _PROFILE_BASE: dict[str, object] = {
         "kill_grace_sec": 5,
         "cgroup_base": "",
     },
-    "rootfs": {
-        "dir": "",
-    },
+    "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
-        "setup_ro": (),
-        "setup_rw": (),
+        "tmp": "64M",
         "ro": (),
         "rw": (),
-        "images": (),
-        "image_template": "",
-        "tmpfs": (),
-        "proc": "/proc",
-        "dev": "/dev",
-        "call_tmpfs": "/tmp",  # noqa: S108
     },
     "isolation": {
         "reap_poll_sec": 0.05,
         "network": False,
         "env": {},
-        "max_processes": 256,
     },
     "limits": {
         "timeout_sec": 30,
@@ -107,30 +100,26 @@ class TestOnlyConfiguredMounts:
     WS = "/srv/workspace/7/thread-1"
 
     def test_no_rw_mounts_without_rw_binds(self) -> None:
-        argv = build_zygote_argv(_profile(ro=()), ["true"], env={})
+        argv = build_zygote_argv(_profile(ro=()), ["true"], env={}, root=_ROOT)
         if _rw_mounts(argv) != []:
             raise AssertionError("_rw_mounts(argv) == []")
 
     def test_single_rw_mount_from_config(self) -> None:
         profile = _profile(ro=(), rw=(self.WS,))
-        if _rw_mounts(build_zygote_argv(profile, ["true"], env={})) != [self.WS]:
+        if _rw_mounts(build_zygote_argv(profile, ["true"], env={}, root=_ROOT)) != [self.WS]:
             raise AssertionError("_rw_mounts(...) == [self.WS]")
 
     def test_project_root_is_not_mounted(self) -> None:
         profile = _profile(ro=(), rw=(self.WS,))
-        argv = build_zygote_argv(profile, ["true"], env={})
+        argv = build_zygote_argv(profile, ["true"], env={}, root=_ROOT)
         if "/app/docker/compose/boba" in _rw_mounts(argv):
             raise AssertionError('"/app/docker/compose/boba" not in _rw_mounts(argv)')
 
     def test_rootfs_stays_read_only(self) -> None:
-        argv = build_zygote_argv(
-            _profile(rootfs={"dir": "/srv/rootfs"}, ro=()),
-            ["true"],
-            env={},
-        )
+        argv = build_zygote_argv(_profile(ro=()), ["true"], env={}, root=_ROOT)
         i = argv.index("--ro-bind")
-        if argv[i + 1 : i + 3] != ["/srv/rootfs", "/"]:
-            raise AssertionError('argv[i + 1 : i + 3] == ["/srv/rootfs", "/"]')
+        if argv[i + 1 : i + 3] != [_ROOT, "/"]:
+            raise AssertionError("argv[i + 1 : i + 3] == [_ROOT, /]")
 
 
 class TestBindSpec:

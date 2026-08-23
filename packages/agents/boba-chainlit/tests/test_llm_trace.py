@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Iterator
 
 import httpx
 import pytest
+from conftest import fake_openai_chat
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -23,7 +24,6 @@ from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
 from boba.llm.bridge import ProviderChatModel
-from conftest import fake_openai_chat
 
 pytestmark = pytest.mark.anyio
 

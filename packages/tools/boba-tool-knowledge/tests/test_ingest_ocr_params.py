@@ -13,7 +13,12 @@ from boba.tool.kb.confluence.ingest_tools import IngestToolConfig
 def _config() -> IngestToolConfig:
     return IngestToolConfig.model_validate(
         {
-            "connection": {"host": "h", "dbname": "d", "user": "u"},
+            "connection": {
+                "host": "h",
+                "dbname": "d",
+                "user": "u",
+                "gssencmode": "disable",
+            },
             "tables": {},
             "embedding": {
                 "provider": "local",

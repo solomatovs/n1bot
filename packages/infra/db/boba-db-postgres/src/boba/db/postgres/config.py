@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.krb import CcacheConfig, Kerberos, KeytabConfig
+from boba.krb import DelegatedConfig, Kerberos, KerberosDump
 from boba.toolkit.types import SecretRevealing
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
@@ -98,8 +98,14 @@ class PostgresConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    # режимы gssencmode, при которых libpq идёт в KDC и соединению нужен свой TGT
-    GSS_MODES: ClassVar[frozenset[str]] = frozenset({"prefer", "require"})
+    GSS_OFF: ClassVar[str] = "disable"
+    """gssencmode без секции kerberos: libpq не ходит за чужим ccache."""
+
+    GSS_REQUIRED: ClassVar[str] = "require"
+    """gssencmode с секцией kerberos: сбой GSS не уходит в открытую попытку."""
+
+    DEFAULT_KRBSRVNAME: ClassVar[str] = "postgres"
+    """Имя сервиса kerberos по умолчанию у libpq."""
 
     # ключ контекста сериализации: пароль раскрывается только в доверенный канал
     REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
@@ -242,29 +248,24 @@ class PostgresConfig(BaseModel):
         ),
     )
 
+    def service_name(self) -> str:
+        """SPN сервера в форме hostbased: <krbsrvname>@<host>; как его ищет libpq."""
+        if not self.host:
+            msg = "postgres connection: kerberos needs host, hostaddr is not enough"
+            raise ValueError(msg)
+
+        name = self.krbsrvname
+        if not name:
+            name = self.DEFAULT_KRBSRVNAME
+
+        return f"{name}@{self.host}"
+
     @field_serializer("kerberos", when_used="json")
     def _dump_kerberos(
-        self, value: KeytabConfig | CcacheConfig | None, info: SerializationInfo
+        self, value: Kerberos | None, info: SerializationInfo
     ) -> dict[str, Any] | None:
-        """Дамп с раскрытыми секретами едет в песочницу: keytab туда не уезжает.
-
-        Тело инструмента получает готовый тикет приложения. Ключ принципала
-        остаётся на хосте: украденный тикет истекает, украденный keytab — нет.
-        """
-        if value is None:
-            return None
-
-        if isinstance(value, CcacheConfig):
-            return value.model_dump(mode="json")
-
-        context = info.context
-        if not isinstance(context, Mapping):
-            return value.model_dump(mode="json")
-
-        if not context.get(PostgresConfig.REVEAL_SECRETS):
-            return value.model_dump(mode="json")
-
-        return value.sandboxed().model_dump(mode="json")
+        """Дамп с раскрытыми секретами едет в песочницу: только билет вызова."""
+        return KerberosDump.json(value, info.context, "postgres connection")
 
     @field_serializer("password", when_used="json")
     def _dump_password(
@@ -285,7 +286,8 @@ class PostgresConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        if not self.user:
+        # у делегированного соединения роль — принципал сессии, он известен на вызове
+        if not self.user and not isinstance(self.kerberos, DelegatedConfig):
             msg = "postgres connection: user обязателен"
             raise ValueError(msg)
         if not self.dbname:
@@ -301,13 +303,29 @@ class PostgresConfig(BaseModel):
             )
             raise ValueError(msg)
 
-        if self.gssencmode in self.GSS_MODES and self.kerberos is None:
-            modes = ", ".join(sorted(self.GSS_MODES))
+        if self.kerberos is None:
+            if self.gssencmode != self.GSS_OFF:
+                msg = (
+                    "postgres connection: without a kerberos section libpq would "
+                    "use whatever ccache the process has; set "
+                    f'gssencmode = "{self.GSS_OFF}" explicitly'
+                )
+                raise ValueError(msg)
+
+            return self
+
+        if self.gssencmode != self.GSS_REQUIRED:
             msg = (
-                f"postgres connection: gssencmode={self.gssencmode!r} требует "
-                f"секцию kerberos (keytab/principal/ccache); задайте её ссылкой "
-                f'kerberos = "${{kerberos.<name>}}" или поставьте '
-                f'gssencmode = "disable". Режимы, требующие секцию: {modes}'
+                "postgres connection: a kerberos section needs "
+                f'gssencmode = "{self.GSS_REQUIRED}"; with anything weaker a GSS '
+                "failure silently falls back to a plain connection attempt"
+            )
+            raise ValueError(msg)
+
+        if self.connect_timeout is None:
+            msg = (
+                "postgres connection: a kerberos section needs connect_timeout: "
+                "the GSS handshake runs under a process-wide lock"
             )
             raise ValueError(msg)
 

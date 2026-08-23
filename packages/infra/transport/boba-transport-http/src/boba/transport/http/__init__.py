@@ -10,7 +10,7 @@ from boba.transport.http.auth import (
     NoneAuth,
     WebAuth,
 )
-from boba.transport.http.connection import HttpProfile
+from boba.transport.http.connection import HostPattern, HttpProfile
 from boba.transport.http.transport import (
     ByteStream,
     CancellableHttpTransport,
@@ -27,6 +27,7 @@ __all__ = [
     "ByteStream",
     "CancellableHttpTransport",
     "DigestAuth",
+    "HostPattern",
     "HttpProfile",
     "HttpRequest",
     "HttpResponse",

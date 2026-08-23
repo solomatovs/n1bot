@@ -104,13 +104,18 @@ class AsyncPostgresPool:
         self._closed = False
         self._loop_id: int | None = None
         self._loop_reported = False
+
+        krb = "off"
+        if cfg.kerberos is not None:
+            krb = cfg.kerberos.kind
+
         logger.info(
             "AsyncPostgresPool created db=%s user=%s min_size=%d max_size=%s krb=%s",
             cfg.dbname,
             cfg.user,
             cfg.pool.min_size,
             cfg.pool.max_size,
-            cfg.kerberos.principal if cfg.kerberos else "off",
+            krb,
         )
 
     @staticmethod

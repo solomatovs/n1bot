@@ -49,6 +49,7 @@ def _pg(**kw) -> PostgresConfig:
         host="db",
         user="boba",
         dbname="n1bot",
+        gssencmode="disable",
         options=PostgresOptionsConfig(),
         pool=PostgresPoolConfig(),
         **kw,
@@ -230,7 +231,7 @@ class TestRealProfiles:
 
     def test_httpx_auth_still_built(self) -> None:
         bearer = BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER))
-        if bearer.httpx_auth() is None:
+        if bearer.httpx_auth("") is None:
             raise AssertionError("bearer.httpx_auth() is not None")
 
     def test_token_masked_in_dump(self) -> None:

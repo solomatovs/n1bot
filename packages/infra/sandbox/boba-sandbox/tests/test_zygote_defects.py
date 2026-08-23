@@ -474,12 +474,7 @@ class TestRootMountRecovery:
     def test_dead_root_daemon_restarts_the_section(
         self, section: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        image_root = {
-            "dir": "",
-            "image": str(ROOTFS_IMAGE),
-            "mount": "/tmp/boba-rootfs",  # noqa: S108
-        }
-        profile = _profile(rootfs=image_root)
+        profile = _profile(rootfs=str(ROOTFS_IMAGE))
         caller = ZygoteStand.caller(section, profile)
 
         warm = caller.call_text("echo warm", stdin="")

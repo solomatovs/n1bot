@@ -19,8 +19,8 @@ from typing import Any, ClassVar
 import pytest
 
 from ui.chat_page import ChatPage, StepKind
-from ui.fake_llm import ScenarioName
 from ui.conftest import StandDatabase
+from ui.fake_llm import ScenarioName
 from ui.stand import StandConfig, StandProcess, free_port
 
 pytestmark = pytest.mark.ui
@@ -93,9 +93,15 @@ CASES: tuple[ToolCase, ...] = (
         expect="kb_vector_search",
     ),
     ToolCase(
+        tool="web_list_targets",
+        arguments={},
+        expect="stand",
+    ),
+    ToolCase(
         tool="web_fetch_page",
         arguments={
             "url": "http://127.0.0.1:{llm_port}/page",
+            "connection_name": "stand",
             "as_markdown": True,
             "line_offset": 0,
             "line_count": 50,
@@ -125,6 +131,8 @@ def sandbox_stand(
     process = StandProcess(config=config, log_path=stand_workdir / "sandbox-app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
     try:
+        # роли стенда в таблице появляются на старте: гранты кладутся после него
+        StandDatabase(stand_database).seed_connections(llm_port)
         yield process
     finally:
         process.stop()

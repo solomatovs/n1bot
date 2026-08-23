@@ -70,14 +70,14 @@ class TestParserProfileLimits:
                 )
 
     def test_enough_processes(self, raw_config) -> None:
-        """Потолок задач секции опционален; заданный — не ниже нужного payload'у."""
+        """Потолок процессов вызова опционален; заданный — не ниже нужного."""
         for section, profile in _profiles(raw_config):
-            if profile.isolation.max_processes is None:
+            if profile.limits.group_pids_max is None:
                 continue
 
-            if profile.isolation.max_processes < MIN_PROCESSES:
+            if profile.limits.group_pids_max < MIN_PROCESSES:
                 raise AssertionError(
-                    f"[{section}]: max_processes={profile.isolation.max_processes} — "
+                    f"[{section}]: group_pids_max={profile.limits.group_pids_max} — "
                     "payload запускает конвертеры отдельными процессами"
                 )
 

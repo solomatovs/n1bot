@@ -48,6 +48,7 @@ def _pg(password: str) -> PostgresConfig:
         host="db",
         user="boba",
         dbname="n1bot",
+        gssencmode="disable",
         password=SecretStr(password),
         options=PostgresOptionsConfig(),
         pool=PostgresPoolConfig(),

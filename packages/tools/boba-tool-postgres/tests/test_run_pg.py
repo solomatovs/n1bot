@@ -10,6 +10,7 @@ from typing import ClassVar
 
 import pytest
 
+from boba.db.postgres import PostgresConfig
 from boba.settings import bind
 from boba.tool.pg.tools import PgToolConfig, pg_copy, pg_list_tables, pg_query
 from boba.toolkit.entry import ToolMain
@@ -27,7 +28,10 @@ class RunArgs:
 
 @pytest.fixture(scope="module")
 def pg_cfg(raw_config) -> PgToolConfig:
-    return bind(raw_config, path="tool.pg", model=PgToolConfig)
+    """Лимиты из [tool.pg], whitelist — сервисный [postgres] под именем main."""
+    limits = bind(raw_config, path="tool.pg", model=PgToolConfig)
+    service = bind(raw_config, path="postgres", model=PostgresConfig)
+    return limits.model_copy(update={"profiles": {RunArgs.CONNECTION: service}})
 
 
 async def test_run_pg_query(pg_cfg: PgToolConfig) -> None:

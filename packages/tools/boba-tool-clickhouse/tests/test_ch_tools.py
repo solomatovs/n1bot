@@ -72,9 +72,10 @@ class TestChTools:
         if kind != "unknown_target":
             raise AssertionError('kind == "unknown_target"')
 
-    def test_profiles_are_required(self) -> None:
-        with pytest.raises(ValidationError, match="no profiles configured"):
-            ChToolConfig.model_validate({"profiles": {}})
+    def test_empty_profiles_are_allowed(self) -> None:
+        """Whitelist подставляет приложение на вызов: пустой — штатное состояние."""
+        if ChToolConfig.model_validate({"profiles": {}}).targets():
+            raise AssertionError("empty whitelist must list no targets")
 
 
 class TestClickHouseConfig:
@@ -140,6 +141,7 @@ class TestClickHouseConfig:
                 "server_host_name": "ch01.loshara.com",
                 "kerberos": self._KERBEROS,
                 "krbsrvname": "HTTP",
+                "connect_timeout": 5,
             }
         )
         if config.service_name() != "HTTP@ch01.loshara.com":

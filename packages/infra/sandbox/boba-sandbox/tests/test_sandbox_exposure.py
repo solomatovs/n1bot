@@ -189,6 +189,33 @@ class TestKeytabStaysOutside:
             raise AssertionError("телу доступен keytab:\n" + "\n".join(exposed))
 
 
+class TestServiceCcacheStaysOutside:
+    """Ни одна секция не видит ccache сервисной учётки.
+
+    Билет к соединению приезжает телу в stdin вызова; общий файл ccache
+    с TGT дал бы любому вызову сходить куда угодно от имени приложения.
+    """
+
+    PATTERN: ClassVar[str] = "krb5cc_*"
+
+    def test_no_section_sees_a_service_ccache(
+        self, sections: list[SandboxSection], caller_of: CallerFactory
+    ) -> None:
+        exposed: list[str] = []
+        for section in sections:
+            caller = caller_of(section)
+            outcome = caller.call_text(FileHunt.script(self.PATTERN), stdin="")
+
+            found = outcome.result.stdout.strip()
+            if not found:
+                continue
+
+            exposed.append(f"{section.name}: {found[:200]}")
+
+        if exposed:
+            raise AssertionError("телу доступен ccache сервиса:\n" + "\n".join(exposed))
+
+
 class TestBodyHasNoCapabilities:
     """Дефект: bounding set тела оставался от зиготы (CAP_SYS_ADMIN и прочее).
 

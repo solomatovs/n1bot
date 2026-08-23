@@ -168,6 +168,8 @@ class PostgresDataLayer(AttachmentDataLayer):
     @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
         model = User.from_chainlit(user)
+        # метка SSO-входа живёт в JWT сессии, в строке users ей не место
+        model.meta.pop(UserMetadataField.LOGIN, None)
         query = sql.SQL(
             """
             insert into {users} (

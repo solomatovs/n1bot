@@ -95,7 +95,6 @@ def _plain_spawner(fd: int) -> subprocess.Popen[bytes]:
 
     args = ZygoteArgs(
         socket_fd=fd,
-        max_processes=0,
         reap_poll_sec=0.05,
         log_level="INFO",
         modules=("fake_channel_tool",),
@@ -448,7 +447,6 @@ class TestIsolated:
             "boba.toolkit.zygote",
             *ZygoteArgs(
                 socket_fd=fd,
-                max_processes=0,
                 reap_poll_sec=0.05,
                 log_level="INFO",
                 modules=("fake_channel_tool",),

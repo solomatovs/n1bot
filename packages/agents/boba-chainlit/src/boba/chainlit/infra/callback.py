@@ -34,6 +34,7 @@ from boba.chainlit.domain.session import (
     current_user_roles,
     roles_of_user,
 )
+from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
     AppConfig,
     ChatProfiles,
@@ -50,8 +51,10 @@ from boba.chainlit.infra.providers import (
     langchain_agent,
 )
 from boba.chainlit.infra.thread_room import ThreadRoom
+from boba.chainlit.infra.user_connections import UserKerberos
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
+from chainlit.auth.cookie import get_token_from_cookies
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
 from chainlit.input_widget import Tab
@@ -260,6 +263,10 @@ async def on_settings_update(
 
 @cl.on_logout
 def on_logout(request: Request, response: Response):
+    # делегированный тикет входа гаснет вместе с сессией, не дожидаясь срока JWT
+    if token := get_token_from_cookies(request.cookies):
+        UserKerberos(providers.ccache_registry_ref).forget(token)
+
     for cookie_name in request.cookies:
         response.delete_cookie(cookie_name)
 

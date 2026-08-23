@@ -18,6 +18,7 @@ from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from boba.toolkit.failure import ToolRefusalError
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
 __all__ = [
@@ -58,6 +59,10 @@ class ErrorKind:
     def of(error: Exception) -> str:
         if isinstance(error, PayloadFailureError):
             return error.kind
+
+        if isinstance(error, ToolRefusalError):
+            return error.kind
+
         return type(error).__name__
 
 

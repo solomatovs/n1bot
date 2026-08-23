@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import resource
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -83,7 +82,6 @@ SLOW_START = ZygotePolicy(
 IMAGE_MOUNTS = {
     "template": "/mnt/workspace.ext4",
     "fuse2fs": "/mnt/fuse2fs",
-    "images": "/mnt/images",
 }
 """Точки образной обвязки в тестовом профиле, как их объявляет конфиг стенда."""
 
@@ -121,10 +119,7 @@ def _profile(**overrides: Any) -> SandboxProfile:
             "kill_grace_sec": 5,
             "cgroup_base": "",
         },
-        "rootfs": {
-            "dir": str(ROOTFS),
-            "image": "",
-        },
+        "rootfs": str(ROOTFS_IMAGE),
         "mounts": {
             "ro": (
                 f"{SANDBOX / 'third' / 'python'}:/usr/local",
@@ -132,14 +127,7 @@ def _profile(**overrides: Any) -> SandboxProfile:
                 f"{REPO / 'packages'}:/usr/src",
             ),
             "rw": (),
-            "images": (),
-            "image_template": "",
-            "tmpfs": ("/tmp:64M",),  # noqa: S108
-            "proc": "/proc",
-            "dev": "/dev",
-            "call_tmpfs": "/tmp",  # noqa: S108
-            "setup_ro": (),
-            "setup_rw": (),
+            "tmp": "64M",  # noqa: S108
         },
         "isolation": {
             "network": False,
@@ -149,7 +137,6 @@ def _profile(**overrides: Any) -> SandboxProfile:
                 "HOME": "/tmp",  # noqa: S108
                 "LANG": "C.UTF-8",
             },
-            "max_processes": 256,
             "reap_poll_sec": 0.05,
         },
         "limits": {
@@ -332,22 +319,20 @@ class TestRunTool:
 
 class TestSpawner:
     def test_rootfs_image_is_accepted(self) -> None:
-        """Корень образом — штатный профиль: зигота монтирует его сама."""
+        """Корень образом — единственный профиль: зигота монтирует его сама."""
         profile = _profile(
-            rootfs={"dir": "", "image": str(ROOTFS_IMAGE), "mount": "/tmp/boba-rootfs"},  # noqa: S108
+            rootfs=str(ROOTFS_IMAGE),
         )
 
         spawner = ZygoteSpawner(profile, ["fake_channel_tool"], FAST)
 
-        if not spawner.mounts_rootfs:
-            raise AssertionError("профиль с образом корня требует цепочки лаунчера")
+        if spawner.root_label() != f"image {ROOTFS_IMAGE}":
+            raise AssertionError(f"корень секции не образом: {spawner.root_label()!r}")
 
-    def test_missing_tmpfs_is_refused(self) -> None:
-        """Приватный /tmp ребёнка требует tmpfs-размера в профиле."""
-        profile = _profile(tmpfs=())
-
-        with pytest.raises(LauncherError, match="tmpfs"):
-            ZygoteSpawner(profile, ["fake_channel_tool"], FAST)
+    def test_tmp_size_is_required(self) -> None:
+        """Приватный /tmp ребёнка требует размера: нулевого tmp не бывает."""
+        with pytest.raises(ValueError, match="tmp"):
+            _profile(tmp=0)
 
 
 class CgroupZone:
@@ -505,35 +490,17 @@ def _mkfs_template(tmp_path: Path) -> str:
 
 
 def _image_profile(tmp_path: Path, **overrides: Any) -> SandboxProfile:
-    """Профиль с rw-образом: шаблон, fuse2fs и каталог образов — явные бинды.
-
-    Точки под tmpfs /mnt: на read-only корне bwrap точку не создаст.
-    """
+    """Профиль с образом workspace: обвязку монтирования ставит профиль."""
     template = _mkfs_template(tmp_path)
     images = tmp_path / "ws"
     images.mkdir(exist_ok=True)
 
-    fuse2fs = SandboxStand.fuse2fs()
-
-    base = _profile()
-    ro_binds: list[str] = []
-    for spec in base.mounts.ro:
-        ro_binds.append(f"{spec.host}:{spec.target}")
-
-    ro_binds.append(f"{template}:{IMAGE_MOUNTS['template']}")
-    ro_binds.append(f"{fuse2fs}:{IMAGE_MOUNTS['fuse2fs']}")
-
     raw: dict[str, Any] = {
-        "ro": tuple(ro_binds),
-        "rw": (f"{images}:{IMAGE_MOUNTS['images']}",),
-        "images": (),
         "workspace": {
             "template": template,
-            "images": str(images),
-            "mount": "/workspace",
+            "mount": f"{images}/{{user_id}}.ext4:/workspace",
         },
-        "image_template": template,
-        "tmpfs": ("/tmp:64M", "/mnt:1M"),  # noqa: S108
+        "tmp": "64M",
         "cwd": "/workspace",
     }
     raw.update(overrides)
@@ -634,14 +601,14 @@ class TestImageRootfs:
 
     def _caller(self, name: str, tmp_path: Path) -> ZygoteToolCaller:
         profile = _profile(
-            rootfs={"dir": "", "image": str(ROOTFS_IMAGE), "mount": "/tmp/boba-rootfs"},  # noqa: S108
+            rootfs=str(ROOTFS_IMAGE),
         )
         return self._on_profile(name, profile)
 
     def _image_caller(self, name: str, tmp_path: Path) -> ZygoteToolCaller:
         profile = _image_profile(
             tmp_path,
-            rootfs={"dir": "", "image": str(ROOTFS_IMAGE), "mount": "/tmp/boba-rootfs"},  # noqa: S108
+            rootfs=str(ROOTFS_IMAGE),
         )
         return self._on_profile(name, profile)
 
@@ -797,44 +764,3 @@ class TestShell:
         if "0000000000000000" not in stdout:
             raise AssertionError(f"capabilities не сброшены: {stdout!r}")
 
-
-class TestProcessCap:
-    """max_processes — общий потолок задач зиготы и всех её детей."""
-
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
-
-    def _caller(self, name: str, tmp_path: Path, processes: int | None) -> Any:
-        profile = _image_profile(tmp_path, timeout_sec=10, max_processes=processes)
-        supervisor = ZygoteRegistry.obtain(name, profile, (), FAST)
-        return ZygoteToolCaller(name, supervisor, profile, lambda: {"user_id": "7"})
-
-    def test_limit_is_inherited_by_calls(self, tmp_path: Path) -> None:
-        caller = self._caller("fx-nproc", tmp_path, 64)
-
-        outcome = caller.call_text("ulimit -u", stdin="")
-
-        if outcome.result.stdout.strip() != "64":
-            raise AssertionError(f"лимит не унаследован: {outcome.result.stdout!r}")
-
-    def test_absent_limit_keeps_the_inherited_one(self, tmp_path: Path) -> None:
-        """Без настройки зигота лимит не трогает: у детей он хостовый."""
-        caller = self._caller("fx-nproc-off", tmp_path, None)
-        inherited, _ = resource.getrlimit(resource.RLIMIT_NPROC)
-
-        outcome = caller.call_text("ulimit -u", stdin="")
-
-        if outcome.result.stdout.strip() != str(inherited):
-            raise AssertionError(f"лимит подменён без настройки: {outcome.result!r}")
-
-    def test_fork_beyond_the_cap_is_refused(self, tmp_path: Path) -> None:
-        """Потолок общий: вызов не может наплодить задач сверх него."""
-        caller = self._caller("fx-nproc-cap", tmp_path, 12)
-
-        outcome = caller.call_text(
-            "for i in $(seq 1 60); do sleep 5 & done; wait", stdin=""
-        )
-
-        stderr = outcome.result.stderr
-        if "Resource temporarily unavailable" not in stderr:
-            raise AssertionError(f"fork-бомба не упёрлась в потолок: {stderr!r}")

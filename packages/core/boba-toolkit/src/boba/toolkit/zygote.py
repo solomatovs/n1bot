@@ -79,13 +79,10 @@ class ZygoteArgs(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     SOCKET_FD: ClassVar[str] = "--socket-fd"
-    MAX_PROCESSES: ClassVar[str] = "--max-processes"
     REAP_POLL_SEC: ClassVar[str] = "--reap-poll-sec"
     LOG_LEVEL: ClassVar[str] = "--log-level"
 
     socket_fd: int = Field(ge=0)
-    max_processes: int = Field(ge=0)
-    """0 — потолок задач профилем не задан."""
     reap_poll_sec: float = Field(gt=0)
     log_level: str = Field(min_length=1)
     """Уровень логера приложения: зигота и тела инструментов пишут им же."""
@@ -95,7 +92,6 @@ class ZygoteArgs(BaseModel):
     def parse(cls, argv: Sequence[str]) -> ZygoteArgs:
         parser = argparse.ArgumentParser(prog="boba-zygote")
         parser.add_argument(cls.SOCKET_FD, type=int, required=True)
-        parser.add_argument(cls.MAX_PROCESSES, type=int, default=0)
         parser.add_argument(cls.REAP_POLL_SEC, type=float, required=True)
         parser.add_argument(cls.LOG_LEVEL, type=str, required=True)
         parser.add_argument("modules", nargs="*")
@@ -103,7 +99,6 @@ class ZygoteArgs(BaseModel):
         parsed = parser.parse_args(list(argv))
         return cls(
             socket_fd=parsed.socket_fd,
-            max_processes=parsed.max_processes,
             reap_poll_sec=parsed.reap_poll_sec,
             log_level=parsed.log_level,
             modules=tuple(parsed.modules),
@@ -114,8 +109,6 @@ class ZygoteArgs(BaseModel):
         return [
             self.SOCKET_FD,
             str(self.socket_fd),
-            self.MAX_PROCESSES,
-            str(self.max_processes),
             self.REAP_POLL_SEC,
             str(self.reap_poll_sec),
             self.LOG_LEVEL,
@@ -650,8 +643,6 @@ class ZygoteMain:
 
         sock = socket.socket(fileno=args.socket_fd)
 
-        cls._cap_processes(args.max_processes)
-
         module_names = args.modules
 
         warmup = Elapsed()
@@ -715,16 +706,6 @@ class ZygoteMain:
                 f"hook is declared there"
             )
             raise ZygoteProtocolError(msg)
-
-    @staticmethod
-    def _cap_processes(limit: int) -> None:
-        """Потолок задач на зиготу и всех её детей; дети наследуют rlimit."""
-        if not limit:
-            return
-
-        resource.setrlimit(resource.RLIMIT_NPROC, (limit, limit))
-
-        logger.info("zygote: RLIMIT_NPROC=%d for the zygote and its children", limit)
 
     @classmethod
     def _block_new_userns(cls) -> None:

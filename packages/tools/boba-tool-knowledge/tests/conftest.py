@@ -18,6 +18,7 @@ from boba.sandbox import SandboxProfile
 REPO = Path(__file__).resolve().parents[4]
 SANDBOX = REPO / "build" / "src" / "sandbox"
 ROOTFS = SANDBOX / "rootfs"
+ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
 
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
 
@@ -152,20 +153,11 @@ def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
             "kill_grace_sec": 5,
             "cgroup_base": "",
         },
-        "rootfs": {
-            "dir": str(ROOTFS),
-        },
+        "rootfs": str(ROOTFS_IMAGE),
         "mounts": {
             "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
             "rw": (),
-            "images": (),
-            "image_template": "",
-            "tmpfs": ("/tmp:256M",),  # noqa: S108
-            "proc": "/proc",
-            "dev": "/dev",
-            "call_tmpfs": "/tmp",  # noqa: S108
-            "setup_ro": (),
-            "setup_rw": (),
+            "tmp": "256M",  # noqa: S108
         },
         "isolation": {
             "network": False,
@@ -175,7 +167,6 @@ def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
                 "HOME": "/tmp",  # noqa: S108
                 "LANG": "C.UTF-8",
             },
-            "max_processes": 256,
             "reap_poll_sec": 0.05,
         },
         "limits": {

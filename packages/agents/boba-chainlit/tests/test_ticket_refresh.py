@@ -1,24 +1,35 @@
-"""Обновление kerberos-тикета перед вызовом инструмента.
+"""Билет вызова вместо keytab в статическом конфиге инструмента.
 
-Тело инструмента получает готовый тикет и продлить его не может, поэтому
-обвязка обязана стоять на всех инструментах секции, чей конфиг несёт
-keytab-креды. Тест держит связку: обходчик находит креды в конфиге любой
-вложенности, а обвязка ложится на тела.
-
-Ошибки: своих не выпускает.
+Тело инструмента получает готовый билет, keytab остаётся у приложения:
+обвязка ServiceTickets обязана стоять на всех инструментах секции, чей
+injected-конфиг несёт keytab-секцию любой вложенности, и только на них.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Any, ClassVar
 
 import pytest
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
-from boba.chainlit.infra.tickets import KerberosTickets
+from boba.chainlit.agent.toolrun.injected import InjectedConfig
+from boba.chainlit.infra.tickets import ServiceTickets, TicketArming
 from boba.db.postgres.config import PostgresConfig
-from boba.krb import KeytabConfig
+from boba.krb import KeytabConfig, TicketConfig
+from boba.toolkit.facade import Injected
+
+_KRB = Path(__file__).resolve().parents[4] / "compose" / "conf" / "krb"
+KEYTAB = _KRB / "boba-svc.keytab"
+KRB5_CONF = _KRB / "krb5.conf"
+
+pytestmark = pytest.mark.anyio
+
+live_kdc = pytest.mark.skipif(
+    not KEYTAB.is_file() or not KRB5_CONF.is_file(),
+    reason="нет keytab/krb5.conf локального AD",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -26,84 +37,124 @@ def chainlit_context() -> None:
     """Проверка работает с моделями конфига: сессия приложения ей не нужна."""
 
 
+class ToolConfig(BaseModel):
+    """Конфиг секции: соединение лежит вложенно, как у kb/ingest."""
+
+    connection: PostgresConfig
+    collection: str = "kb"
+
+
 class Fixtures:
     """Конфиг соединения с keytab-кредами и инструмент, которому он положен."""
 
     PRINCIPAL: ClassVar[str] = "boba-svc@LOSHARA.COM"
-    CCACHE: ClassVar[str] = "FILE:/tmp/krb5cc_probe"  # noqa: S108
 
     @classmethod
-    def keytab(cls) -> KeytabConfig:
+    def keytab(cls, ccache: Path) -> KeytabConfig:
         return KeytabConfig(
-            keytab="/etc/boba/boba-svc.keytab",
+            keytab=str(KEYTAB),
             principal=cls.PRINCIPAL,
-            ccache=cls.CCACHE,
+            ccache=f"FILE:{ccache}",
+            krb5_config=str(KRB5_CONF),
         )
 
     @classmethod
-    def connection(cls) -> PostgresConfig:
+    def connection(cls, ccache: Path) -> PostgresConfig:
         return PostgresConfig.model_validate(
             {
-                "host": "pg.loshara.com",
+                "host": "postgres-17.loshara.com",
                 "user": "boba-svc",
                 "dbname": "boba",
                 "gssencmode": "require",
-                "kerberos": cls.keytab().model_dump(mode="json"),
+                "connect_timeout": 5,
+                "kerberos": cls.keytab(ccache).model_dump(mode="json"),
             }
         )
 
     @classmethod
-    def tool_config(cls) -> BaseModel:
-        """Конфиг секции: соединения лежат словарём профилей, как у pg."""
+    def plain(cls) -> PostgresConfig:
+        return PostgresConfig.model_validate(
+            {"host": "h", "user": "u", "dbname": "d", "gssencmode": "disable"}
+        )
 
-        class ToolConfig(BaseModel):
-            profiles: dict[str, PostgresConfig]
+    @staticmethod
+    def tool(config: BaseModel) -> StructuredTool:
+        schema = create_model(
+            "ProbeArgs",
+            sql=(str, ...),
+            cfg=(Annotated[type(config), Injected], ...),
+        )
 
-        return ToolConfig(profiles={"main": cls.connection()})
+        async def body(**kwargs: object) -> dict[str, object]:
+            return kwargs
 
-    @classmethod
-    def tool(cls) -> StructuredTool:
-        class Args(BaseModel):
-            sql: Annotated[str, "запрос"]
-
-        async def body(sql: str) -> str:
-            return sql
-
-        return StructuredTool(
+        tool = StructuredTool(
             name="probe_query",
             description="проба",
-            args_schema=Args,
+            args_schema=schema,
             coroutine=body,
         )
 
+        def resolve(name: str, annotation: Any) -> object:
+            return config
 
-class TestTicketsAreBound:
-    """Обвязка ставится там, где в конфиге есть keytab, и только там."""
+        ServiceTickets.bind_all([tool], resolve)
+        InjectedConfig.bind_all([tool], resolve)
+        return tool
 
-    def test_walker_finds_nested_credentials(self) -> None:
-        found = list(KerberosTickets.keytabs_of([Fixtures.tool_config()]))  # noqa: SLF001
 
-        if len(found) != 1:
-            raise AssertionError(f"креды не найдены в конфиге секции: {found}")
+class TestArmingIsNeededWhereKeytabLives:
+    def test_nested_keytab_is_found(self, tmp_path: Path) -> None:
+        config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
+        if not TicketArming.needs_arming(config):
+            raise AssertionError("keytab во вложенном профиле не найден")
 
-        if found[0].principal != Fixtures.PRINCIPAL:
-            raise AssertionError(f"найдены чужие креды: {found[0]}")
+    def test_plain_config_needs_nothing(self) -> None:
+        if TicketArming.needs_arming(ToolConfig(connection=Fixtures.plain())):
+            raise AssertionError("обвязка просится там, где kerberos нет")
 
-    def test_body_is_wrapped(self) -> None:
-        tool = Fixtures.tool()
-        before = tool.coroutine
+    def test_ticket_section_needs_nothing(self) -> None:
+        ticket = TicketConfig.of_bytes(Fixtures.PRINCIPAL, "postgres@h", b"x", 60)
+        armed = Fixtures.plain().model_copy(
+            update={"kerberos": ticket, "gssencmode": "require", "connect_timeout": 5}
+        )
+        if TicketArming.needs_arming(ToolConfig(connection=armed)):
+            raise AssertionError("готовый билет перевыпускать не нужно")
 
-        KerberosTickets.bind_all([tool], [Fixtures.tool_config()])
 
-        if tool.coroutine is before:
-            raise AssertionError("обвязка обновления тикета не поставлена")
+@live_kdc
+class TestTicketReplacesKeytab:
+    async def test_body_receives_a_ticket(self, tmp_path: Path) -> None:
+        config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
 
-    def test_config_without_kerberos_is_left_alone(self) -> None:
-        tool = Fixtures.tool()
-        before = tool.coroutine
+        kwargs = await Fixtures.tool(config).ainvoke({"sql": "select 1"})
 
-        plain: dict[str, Any] = {"max_rows": 100}
-        KerberosTickets.bind_all([tool], [plain])
+        shipped = kwargs["cfg"]
+        if not isinstance(shipped, ToolConfig):
+            raise AssertionError(f"конфиг потерял тип: {type(shipped)}")
+        if not isinstance(shipped.connection.kerberos, TicketConfig):
+            raise AssertionError("телу ушёл не билет")
+        if shipped.connection.kerberos.service != "postgres@postgres-17.loshara.com":
+            raise AssertionError("билет выпущен не к SPN соединения")
+        if shipped.collection != "kb":
+            raise AssertionError("остальные поля конфига должны остаться")
 
-        if tool.coroutine is not before:
+    async def test_static_config_keeps_its_keytab(self, tmp_path: Path) -> None:
+        """Обвязка не портит базовый конфиг: следующий вызов выпустит новый билет."""
+        config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
+        tool = Fixtures.tool(config)
+
+        await tool.ainvoke({"sql": "select 1"})
+
+        if not isinstance(config.connection.kerberos, KeytabConfig):
+            raise AssertionError("базовый конфиг переписан билетом")
+
+
+class TestPlainConfigIsLeftAlone:
+    async def test_body_receives_the_config_as_is(self) -> None:
+        config = ToolConfig(connection=Fixtures.plain())
+
+        kwargs = await Fixtures.tool(config).ainvoke({"sql": "select 1"})
+
+        if kwargs["cfg"] is not config:
             raise AssertionError("обвязка поставлена там, где kerberos не нужен")

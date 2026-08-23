@@ -1,9 +1,11 @@
-"""Kerberos-креды процесса: TGT из keytab в свой ccache и переключение KRB5*-окружения.
+"""Kerberos-креды процесса: TGT из keytab в свой ccache, делегированные тикеты
+входов, билет одного вызова и переключение KRB5*-окружения.
 
 Ошибки:
-KeytabError — keytab недоступен или не содержит принципала;
-CredentialsExpiredError — тикет истёк и не продлевается;
-KerberosError — прочие сбои GSSAPI/krb5.
+KeytabError — keytab недоступен, не содержит принципала или ccache уже занят
+    другим принципалом.
+CredentialsExpiredError — тикет истёк и не продлевается.
+KerberosError — прочие сбои GSSAPI/krb5; билет вызова вне applied().
 """
 
 from __future__ import annotations
@@ -11,39 +13,50 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import tempfile
 import threading
+import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Generator, Mapping
+from collections.abc import AsyncGenerator, Generator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import ClassVar
 
 import krb5
-from gssapi import Credentials
-from gssapi.raw.misc import GSSError
 
-from boba.krb.config import CcacheConfig, KeytabConfig
+from boba.krb.config import (
+    DelegatedConfig,
+    DelegationMode,
+    KeytabConfig,
+    TicketConfig,
+)
 from boba.krb.errors import CredentialsExpiredError, KerberosError, KeytabError
 from boba.toolkit.timing import Elapsed
 
 __all__ = [
-    "CcacheCredentials",
+    "CcacheLifetime",
     "CcacheRegistry",
     "ClientCredentials",
     "DelegatedCredentials",
     "KerberosCredentials",
     "KerberosEnv",
     "KeytabCredentials",
+    "TicketCredentials",
     "UserCcache",
 ]
 
 
 @dataclass(frozen=True)
 class UserCcache:
-    """Принципал пользователя и его ccache (значение KRB5CCNAME) — для tools."""
+    """Делегированный тикет одного SSO-входа: принципал, ccache и метка входа.
+
+    login — случайная метка входа; она же лежит в подписанном JWT сессии,
+    так что тикет достаётся только сессии, созданной этим входом.
+    """
 
     principal: str
     ccache: str
+    login: str
 
 
 class KerberosEnv:
@@ -77,12 +90,35 @@ class KerberosEnv:
     async def applied_async(
         cls, values: Mapping[str, str]
     ) -> AsyncGenerator[None, None]:
-        "То же для корутин: ожидание лока уходит в поток, event loop не блокируется."
-        await asyncio.to_thread(cls._lock.acquire)
+        """То же для корутин: ожидание лока уходит в поток, loop не блокируется.
+
+        Отмена во время ожидания не теряет лок: поток всё равно его захватит,
+        и колбэк тут же отпустит.
+        """
+        loop = asyncio.get_running_loop()
+        waiter = loop.run_in_executor(None, cls._lock.acquire)
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            waiter.add_done_callback(cls._release_abandoned)
+            raise
+
         try:
             with cls._swapped(values):
                 yield
         finally:
+            cls._lock.release()
+
+    @classmethod
+    def _release_abandoned(cls, waiter: asyncio.Future[bool]) -> None:
+        """Лок, захваченный уже после отмены ожидающего, отпускается сразу."""
+        if waiter.cancelled():
+            return
+
+        if waiter.exception() is not None:
+            return
+
+        if waiter.result():
             cls._lock.release()
 
     @classmethod
@@ -101,6 +137,64 @@ class KerberosEnv:
                     os.environ.pop(name, None)
                     continue
                 os.environ[name] = old
+
+
+class CcacheLifetime:
+    """Остаток кредов принципала в ccache по krb5 API: окружение не читается.
+
+    gssapi для той же проверки сам бы сделал kinit из KRB5_CLIENT_KTNAME
+    чужого потока; krb5 только читает кэш. TGT и evidence-тикет (билет
+    пользователя к самому сервису, основа S4U2Proxy) считаются раздельно.
+    """
+
+    TGT_PREFIX: ClassVar[str] = "krbtgt/"
+    CONFIG_MARK: ClassVar[str] = "X-CACHECONF:"
+
+    @classmethod
+    def tgt(cls, ccache: str, principal: str) -> int:
+        """Секунды до конца TGT принципала; 0 — нет, чужой, пуст или просрочен."""
+        return cls._remaining(ccache, principal, tgt=True)
+
+    @classmethod
+    def evidence(cls, ccache: str, principal: str) -> int:
+        """Секунды до конца сервисных билетов принципала без учёта TGT."""
+        return cls._remaining(ccache, principal, tgt=False)
+
+    @classmethod
+    def _remaining(cls, ccache: str, principal: str, *, tgt: bool) -> int:
+        try:
+            context = krb5.init_context()
+            cache = krb5.cc_resolve(context, ccache.encode())
+            endtimes = list(cls._endtimes(context, cache, principal, tgt))
+        except krb5.Krb5Error:
+            return 0
+
+        if not endtimes:
+            return 0
+
+        remaining = max(endtimes) - int(time.time())
+        if remaining < 0:
+            return 0
+
+        return remaining
+
+    @classmethod
+    def _endtimes(
+        cls, context: krb5.Context, cache: krb5.CCache, principal: str, tgt: bool
+    ) -> Iterator[int]:
+        for cred in cache:
+            server = krb5.unparse_name_flags(context, cred.server).decode()
+            if cls.CONFIG_MARK in server:
+                continue
+
+            if server.startswith(cls.TGT_PREFIX) != tgt:
+                continue
+
+            client = krb5.unparse_name_flags(context, cred.client).decode()
+            if client != principal:
+                continue
+
+            yield cred.times.endtime
 
 
 class KerberosCredentials(ABC):
@@ -150,29 +244,42 @@ class KerberosCredentials(ABC):
 class ClientCredentials:
     """Выбор реализации клиентских кредов по их конфигу.
 
-    Соединению всё равно, откуда взялся тикет: приложение выпускает его
-    keytab'ом, тело инструмента получает готовым.
+    Приложение работает keytab'ом, тело инструмента — готовым билетом
+    вызова; делегированную секцию разрешает только приложение.
     """
 
     @staticmethod
-    def of(config: KeytabConfig | CcacheConfig) -> KerberosCredentials:
-        if isinstance(config, CcacheConfig):
-            return CcacheCredentials(config)
+    def of(
+        config: KeytabConfig | DelegatedConfig | TicketConfig,
+    ) -> KerberosCredentials:
+        if isinstance(config, TicketConfig):
+            return TicketCredentials(config)
 
-        return KeytabCredentials(config)
+        if isinstance(config, DelegatedConfig):
+            msg = (
+                "delegated kerberos credentials are resolved by the application: "
+                "the connection body expects a ticket"
+            )
+            raise KerberosError(msg)
+
+        return KeytabCredentials.of(config)
 
 
-class CcacheCredentials(KerberosCredentials):
-    """Готовый тикет без keytab: креды тела инструмента в песочнице.
+class TicketCredentials(KerberosCredentials):
+    """Сервисный билет одного вызова: байты ccache в приватном файле.
 
-    Выпустить новый TGT такие креды не могут — ключа принципала у них нет.
-    Просроченный тикет означает, что приложение перестало его обновлять, и
-    соединение начинать бессмысленно.
+    Файл существует только внутри applied(): создаётся в каталоге временных
+    файлов (в песочнице — приватный tmpfs вызова) и убирается на выходе.
+    TGT в ccache нет: выпустить билет к другому сервису тело не может.
     """
 
-    def __init__(self, config: CcacheConfig) -> None:
+    FILE_TYPE: ClassVar[str] = "FILE"
+    PREFIX: ClassVar[str] = "krb5cc_ticket_"
+
+    def __init__(self, config: TicketConfig) -> None:
         self._config = config
-        self._logger = logging.getLogger(CcacheCredentials.__name__)
+        self._path: str | None = None
+        self._logger = logging.getLogger(TicketCredentials.__name__)
 
     @property
     def principal(self) -> str:
@@ -180,56 +287,126 @@ class CcacheCredentials(KerberosCredentials):
 
     @property
     def ccache(self) -> str:
-        return self._config.ccache
+        if self._path is None:
+            msg = "ticket ccache exists only inside applied()"
+            raise KerberosError(msg)
+
+        return f"{self.FILE_TYPE}:{self._path}"
 
     def env(self) -> Mapping[str, str]:
-        values = {KerberosEnv.CCACHE: self._config.ccache}
-
-        if self._config.krb5_config is not None:
-            values[KerberosEnv.CONFIG] = self._config.krb5_config
-
-        return values
+        """Только ccache: krb5.conf лежит в песочнице по стандартному пути."""
+        return {KerberosEnv.CCACHE: self.ccache}
 
     def ensure(self) -> None:
+        """Проверка билета вне applied(): файл живёт только на время проверки."""
+        if self._path is not None:
+            self._check()
+            return
+
+        with self._materialized():
+            self._check()
+
+    @contextmanager
+    def applied(self) -> Generator[None, None, None]:
+        with self._materialized():
+            self._check()
+            with KerberosEnv.applied(self.env()):
+                yield
+
+    @asynccontextmanager
+    async def applied_async(self) -> AsyncGenerator[None, None]:
+        with self._materialized():
+            await asyncio.to_thread(self._check)
+            async with KerberosEnv.applied_async(self.env()):
+                yield
+
+    @contextmanager
+    def _materialized(self) -> Generator[None, None, None]:
+        descriptor, path = tempfile.mkstemp(prefix=self.PREFIX)
+        try:
+            os.write(descriptor, self._config.ccache_bytes())
+        finally:
+            os.close(descriptor)
+
+        self._path = path
+        try:
+            yield
+        finally:
+            self._path = None
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                self._logger.warning("ticket file %s vanished before cleanup", path)
+
+    def _check(self) -> None:
         lifetime = self._lifetime()
         if lifetime >= self._config.min_lifetime:
             return
 
         msg = (
-            f"ticket for {self._config.principal} has {lifetime}s left "
-            f"in {self._config.ccache}; the app must renew it"
+            f"ticket for {self._config.principal} to {self._config.service} "
+            f"has {lifetime}s left; the app must issue a new one"
         )
         raise CredentialsExpiredError(msg)
 
     def _lifetime(self) -> int:
-        """Остаток тикета, сек; 0 — кэша нет, он пуст или просрочен."""
-        with KerberosEnv.applied(self.env()):
-            try:
-                creds = Credentials(
-                    usage="initiate",
-                    store={b"ccache": self._config.ccache.encode()},
-                )
-                lifetime = creds.lifetime
-            except GSSError:
-                return 0
-
-        if lifetime is None:
+        """Остаток сервисного билета, сек; 0 — файл пуст, битый или просрочен."""
+        try:
+            context = krb5.init_context()
+            cache = krb5.cc_resolve(context, self.ccache.encode())
+            endtimes = [cred.times.endtime for cred in cache]
+        except krb5.Krb5Error:
             return 0
 
-        return int(lifetime)
+        if not endtimes:
+            return 0
+
+        remaining = min(endtimes) - int(time.time())
+        if remaining < 0:
+            return 0
+
+        return remaining
 
 
 class KeytabCredentials(KerberosCredentials):
     """TGT принципала из явного keytab в собственный ccache.
 
     Соединение не рассчитывает на чужой krb5-кэш: тикета нет или он истекает —
-    выпускается новый прямо из keytab.
+    выпускается новый прямо из keytab. Экземпляр один на процесс для каждого
+    (keytab, principal, ccache): конкурирующих kinit в один файл не бывает.
     """
+
+    _instances: ClassVar[dict[tuple[str, str, str], KeytabCredentials]] = {}
+    _owners: ClassVar[dict[str, str]] = {}
+    _registry_lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(self, config: KeytabConfig) -> None:
         self._config = config
         self._lock = threading.Lock()
         self._logger = logging.getLogger(KeytabCredentials.__name__)
+
+    @classmethod
+    def of(cls, config: KeytabConfig) -> KeytabCredentials:
+        """Общий экземпляр кредов конфига; ccache под другим принципалом — отказ."""
+        key = (config.keytab, config.principal, config.ccache)
+
+        with cls._registry_lock:
+            owner = cls._owners.get(config.ccache)
+            if owner is None:
+                cls._owners[config.ccache] = config.principal
+            elif owner != config.principal:
+                msg = (
+                    f"ccache {config.ccache!r} already serves {owner}; "
+                    f"{config.principal} may not share it"
+                )
+                raise KeytabError(msg)
+
+            found = cls._instances.get(key)
+            if found is None:
+                found = cls(config)
+                cls._instances[key] = found
+
+            return found
 
     @property
     def principal(self) -> str:
@@ -260,21 +437,7 @@ class KeytabCredentials(KerberosCredentials):
                 self._acquire()
 
     def _lifetime(self) -> int:
-        """Остаток TGT в своём ccache, сек; 0 — кэша нет, он пуст или просрочен."""
-        try:
-            creds = Credentials(
-                usage="initiate",
-                store={b"ccache": self._config.ccache.encode()},
-            )
-            lifetime = creds.lifetime
-        except GSSError:
-            # пустой или отсутствующий ccache — штатное состояние до первого kinit
-            return 0
-
-        if lifetime is None:
-            return 0
-
-        return int(lifetime)
+        return CcacheLifetime.tgt(self._config.ccache, self._config.principal)
 
     def _acquire(self) -> None:
         """kinit из keytab: свежий TGT замещает содержимое ccache."""
@@ -310,15 +473,29 @@ class KeytabCredentials(KerberosCredentials):
 
 
 class DelegatedCredentials(KerberosCredentials):
-    """Делегированный при логине тикет пользователя в его ccache.
+    """Делегированные при логине креды пользователя в ccache входа.
 
-    Из keytab не выпускается: тикет приходит от клиента, при истечении продлевается,
-    а непродлеваемый требует повторного логина.
+    Forwarded: в ccache TGT пользователя, пока жив — продлевается заранее.
+    Constrained: в ccache evidence-тикет пользователя и TGT сервиса; билеты
+    к бэкендам KDC выдаёт по S4U2Proxy, продлевать нечего. Истёкшие креды
+    требуют повторного логина.
     """
 
-    def __init__(self, user: UserCcache, *, renew: bool) -> None:
+    RENEW_BELOW: ClassVar[int] = 300
+    """Остаток TGT (сек), ниже которого запрашивается продление."""
+
+    def __init__(
+        self,
+        user: UserCcache,
+        *,
+        mode: DelegationMode,
+        renew: bool,
+        krb5_config: str,
+    ) -> None:
         self._user = user
+        self._mode = mode
         self._renew = renew
+        self._krb5_config = krb5_config
         self._lock = threading.Lock()
         self._logger = logging.getLogger(DelegatedCredentials.__name__)
 
@@ -330,37 +507,51 @@ class DelegatedCredentials(KerberosCredentials):
     def ccache(self) -> str:
         return self._user.ccache
 
+    @property
+    def login(self) -> str:
+        return self._user.login
+
+    @property
+    def mode(self) -> DelegationMode:
+        return self._mode
+
     def env(self) -> Mapping[str, str]:
-        return {KerberosEnv.CCACHE: self._user.ccache}
+        return {
+            KerberosEnv.CCACHE: self._user.ccache,
+            KerberosEnv.CONFIG: self._krb5_config,
+        }
+
+    def lifetime(self) -> int:
+        """Остаток делегированных кредов, сек; 0 — истекли или не читаются."""
+        if self._mode is DelegationMode.FORWARDED:
+            return CcacheLifetime.tgt(self._user.ccache, self._user.principal)
+
+        return CcacheLifetime.evidence(self._user.ccache, self._user.principal)
 
     def ensure(self) -> None:
         with self._lock:
-            if self._lifetime() > 0:
+            lifetime = self.lifetime()
+            if lifetime == 0:
+                msg = (
+                    f"delegated ticket for {self._user.principal} expired: "
+                    "sign in again"
+                )
+                raise CredentialsExpiredError(msg)
+
+            if self._mode is not DelegationMode.FORWARDED:
+                return
+
+            if lifetime >= self.RENEW_BELOW:
                 return
 
             if not self._renew:
-                msg = f"delegated ticket for {self._user.principal} expired"
-                raise CredentialsExpiredError(msg)
+                return
 
-            self._renew_ticket()
-
-    def _lifetime(self) -> int:
-        try:
-            creds = Credentials(
-                usage="initiate",
-                store={b"ccache": self._user.ccache.encode()},
-            )
-            lifetime = creds.lifetime
-        except GSSError:
-            return 0
-
-        if lifetime is None:
-            return 0
-
-        return int(lifetime)
+            with KerberosEnv.applied(self.env()):
+                self._renew_ticket()
 
     def _renew_ticket(self) -> None:
-        """Продлевает renewable-TGT в ccache пользователя."""
+        """Продлевает ещё живой renewable-TGT в ccache пользователя."""
         elapsed = Elapsed()
         try:
             context = krb5.init_context()
@@ -370,7 +561,7 @@ class DelegatedCredentials(KerberosCredentials):
             krb5.cc_initialize(context, cache, principal)
             krb5.cc_store_cred(context, cache, creds)
         except krb5.Krb5Error as exc:
-            msg = f"renew delegated ticket for {self._user.principal}"
+            msg = f"renew delegated ticket for {self._user.principal}: sign in again"
             raise CredentialsExpiredError(f"{msg}: {exc}") from exc
 
         self._logger.info(
@@ -381,42 +572,52 @@ class DelegatedCredentials(KerberosCredentials):
 
 
 class CcacheRegistry:
-    """Реестр делегированных тикетов пользователей: принципал - его креды."""
+    """Реестр делегированных тикетов по метке входа.
 
-    def __init__(self, *, renew: bool) -> None:
+    Метка входа — ключ сессии. Истёкшие входы выметаются при каждой новой
+    регистрации: тикет без logout'а не живёт в процессе дольше своего срока.
+    """
+
+    def __init__(
+        self, *, mode: DelegationMode, renew: bool, krb5_config: str
+    ) -> None:
+        self._mode = mode
         self._renew = renew
-        self._entries: dict[str, DelegatedCredentials] = {}
+        self._krb5_config = krb5_config
+        self._by_login: dict[str, DelegatedCredentials] = {}
         self._lock = threading.Lock()
 
+    @property
+    def mode(self) -> DelegationMode:
+        return self._mode
+
     def register(self, user: UserCcache) -> DelegatedCredentials:
-        """Сохраняет тикет принципала, замещая прежний."""
-        credentials = DelegatedCredentials(user, renew=self._renew)
+        """Сохраняет креды входа, попутно забывая истёкшие."""
+        credentials = DelegatedCredentials(
+            user,
+            mode=self._mode,
+            renew=self._renew,
+            krb5_config=self._krb5_config,
+        )
 
         with self._lock:
-            self._entries[user.principal] = credentials
+            for login in list(self._expired()):
+                del self._by_login[login]
+
+            self._by_login[user.login] = credentials
 
         return credentials
 
-    def of(self, principal: str) -> DelegatedCredentials | None:
-        """Креды принципала или None, если тикет не захватывался."""
+    def of_login(self, login: str) -> DelegatedCredentials | None:
         with self._lock:
-            return self._entries.get(principal)
+            return self._by_login.get(login)
 
-    def drop(self, principal: str) -> None:
-        """Убирает тикет принципала."""
+    def drop(self, login: str) -> None:
+        """Забывает тикет входа; неизвестная метка — не ошибка."""
         with self._lock:
-            self._entries.pop(principal, None)
+            self._by_login.pop(login, None)
 
-    async def renew(self, principal: str) -> bool:
-        """Продлевает тикет принципала; False — не удалось, запись снята."""
-        credentials = self.of(principal)
-        if credentials is None:
-            return False
-
-        try:
-            await credentials.ensure_async()
-        except KerberosError:
-            self.drop(principal)
-            return False
-
-        return True
+    def _expired(self) -> Iterator[str]:
+        for login, credentials in self._by_login.items():
+            if credentials.lifetime() == 0:
+                yield login
