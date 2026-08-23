@@ -303,7 +303,6 @@ COPY --from=python-dist /opt/python/usr/local  /tree/usr/local/
 COPY --from=sandbox-site /opt/site             /tree/usr/local/lib/python${PYTHON_VERSION}/site-packages/
 COPY --from=sandbox-site /opt/code-sandbox     /tree/usr/src/
 COPY build/src/tessdata/                       /tree/usr/share/tessdata/
-COPY build/src/fastembed/                      /tree/var/cache/fastembed/
 
 # точки монтирования на read-only корне bwrap не создаёт: и путь релиза,
 # и путь дерева исходников заводим заранее
@@ -367,6 +366,9 @@ COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY build/src/webassets/                                         ${BOBA_DIR}/app_root/public/vendor/
 COPY build/src/onnx-genai/                                        ${BOBA_DIR}/models/onnx-genai/
+# веса эмбеддера лежат рядом с моделями чата, а в песочницу едут биндом
+# профиля kb: образ корня от них не растёт и не пересобирается при их смене
+COPY build/src/fastembed/                                         ${BOBA_DIR}/models/fastembed/
 
 RUN set -eu                                                        \
     && if [ ! -f /tmp/conf/ca-chain.crt ]; then                    \

@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-pgvector"
-version = "0.0.15.dev1"
+version = "0.0.14.dev2"
 description = "KB-store поверх postgres+pgvector: адаптеры boba.indexing.store, bootstrap схемы и миграции."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-db-postgres==0.0.15.dev1",
-    "boba-indexing==0.0.15.dev1",
+    "boba-db-postgres==0.0.14.dev2",
+    "boba-indexing==0.0.14.dev2",
     "pgvector>=0.3,<1",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
