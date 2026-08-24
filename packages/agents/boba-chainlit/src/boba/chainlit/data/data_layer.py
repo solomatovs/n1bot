@@ -135,6 +135,8 @@ class PostgresDataLayer(AttachmentDataLayer):
 
     @data_boundary
     async def get_user(self, identifier: str) -> PersistedUser | None:
+        # регистр не заводит вторую личность: поиск идёт тем же ключом,
+        # что держит уникальность, и попадает в его индекс
         query = sql.SQL(
             """
             select
@@ -142,7 +144,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             from
                 {users}
             where
-                identifier = %s
+                identifier = lower(%s)
             limit
                 1
             """
@@ -178,7 +180,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             values (
                 {ph}
             )
-            on conflict (identifier) do update set
+            on conflict (lower(identifier)) do update set
                 meta = coalesce({users}.meta, '{{}}'::jsonb) || excluded.meta
             returning
                 {cols}

@@ -13,7 +13,7 @@ from conftest import Seed
 
 from boba.chainlit.data import data_layer as data_layer_module
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
+from boba.chainlit.data.errors import DataRejectedError
 from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import UserMetadataField
 
@@ -47,13 +47,34 @@ async def test_create_and_get_user(layer: PostgresDataLayer):
 
 
 async def test_identifier_case_cannot_split_a_user(layer: PostgresDataLayer):
-    """Инвариант держит база: второе написание того же логина не вставится."""
-    created = await layer.create_user(ChainlitUser(identifier="maksimov.ma"))
+    """Любое написание логина попадает в одну строку с каноничным ключом."""
+    created = await layer.create_user(
+        ChainlitUser(identifier="maksimov.ma", metadata={"roles": ["DEV"]})
+    )
     if created is None:
         raise AssertionError("created is not None")
 
-    with pytest.raises(DataUnavailableError):
-        await layer.create_user(ChainlitUser(identifier="Maksimov.MA"))
+    again = await layer.create_user(
+        ChainlitUser(identifier="Maksimov.MA", metadata={"provider": "LdapAuth"})
+    )
+    if again is None:
+        raise AssertionError("again is not None")
+
+    if again.id != created.id:
+        raise AssertionError("второе написание не заводит вторую строку")
+
+    if again.identifier != "maksimov.ma":
+        raise AssertionError(f"ключ остаётся каноничным, дано {again.identifier!r}")
+
+    if again.metadata.get("roles") != ["DEV"]:
+        raise AssertionError("metadata прежнего входа сохраняются")
+
+    fetched = await layer.get_user("MAKSIMOV.MA")
+    if fetched is None:
+        raise AssertionError("поиск не зависит от регистра")
+
+    if fetched.id != created.id:
+        raise AssertionError("найдена та же строка")
 
 
 async def test_create_user_keeps_the_sign_in_label_on_the_caller(
