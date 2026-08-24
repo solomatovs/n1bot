@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.toolkit.calls import ToolCallView, ToolCallViews
 from boba.toolkit.channels import ToolChannel
+from boba.toolkit.failure import ValidationText
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.timing import Elapsed, ProcessAge
@@ -295,7 +296,12 @@ class ToolArgv:
             if cls._texty(annotation):
                 return TypeAdapter(annotation).validate_python(raw)
             return TypeAdapter(annotation).validate_json(raw)
-        except (ValidationError, ValueError) as exc:
+        except ValidationError as exc:
+            # значение не пересказываем: в cfg инструмента едут пароли и токены,
+            # а traceback печатает причину сам, мимо FailureText
+            msg = f"invalid value for {name!r}: {ValidationText.of(exc)}"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from None
+        except ValueError as exc:
             msg = f"invalid value for {name!r}: {exc}"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 

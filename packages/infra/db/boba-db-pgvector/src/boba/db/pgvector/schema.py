@@ -25,29 +25,34 @@ class KbSchema:
     async def _ensure_schema(self, conn: AsyncConnection) -> None:
         """Схема под таблицы KB; без прав на CREATE считаем, что её завёл админ."""
         name = self._cfg.tables.pg_schema
-        try:
-            await conn.execute(
-                sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(name)),
-                prepare=False,
-            )
-        except InsufficientPrivilege:
-            logger.info(
-                "no permission for CREATE SCHEMA %r, "
-                "assuming an administrator created it",
-                name,
-            )
+        await conn.execute(
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(name)),
+            prepare=False,
+        )
 
     async def setup(self) -> None:
         """Создать схему, применить миграции и векторный индекс под модель."""
         pool = await KbPool.open(self._cfg.connection)
         async with pool.connection() as conn:
-            await self._ensure_schema(conn)
-            await Migrations.apply_bootstrap(conn, schema_cfg=self._cfg.tables)
+            try:
+                await self._ensure_schema(conn)
+                await Migrations.apply_bootstrap(conn, schema_cfg=self._cfg.tables)
+            except InsufficientPrivilege:
+                logger.info(
+                    "no permission operation"
+                    "assuming an administrator created it",
+                )
 
         async with pool.connection() as conn:
-            await Migrations.ensure_vector_index(
-                conn, dim=self._dim, schema_cfg=self._cfg.tables
-            )
+            try:
+                await Migrations.ensure_vector_index(
+                    conn, dim=self._dim, schema_cfg=self._cfg.tables
+                )
+            except InsufficientPrivilege:
+                logger.info(
+                    "no permission operation"
+                    "assuming an administrator created it",
+                )
 
         logger.info(
             "KB schema ready: schema=%s chunks=%s dim=%d",
