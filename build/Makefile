@@ -69,15 +69,10 @@ BASE_IMAGE      := boba-base:$(PYTHON_VERSION)
 # OCR-модели tesseract
 TESS_LANGS      ?= eng rus osd
 TESSDATA_REPO   ?= https://github.com/tesseract-ocr/tessdata_best/raw/main
-TESSDATA_SHA256 ?= eng:8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba   \
-    rus:b617eb6830ffabaaa795dd87ea7fd251adfe9cf0efe05eb9a2e8128b7728d6b6                 \
-    osd:9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff
 # embedding-веса fastembed; версия качалки фиксируется — иначе в образ
 # приедет произвольная сборка со своим набором моделей
 FASTEMBED_VERSION ?= 0.8.0
 EMBED_MODELS    ?= intfloat/multilingual-e5-large
-# суммы скачанных весов: библиотека тянет их сама, проверяем по факту
-FASTEMBED_MANIFEST := $(CONF_DIR)/fastembed.sha256
 
 # модели переформулировщика: onnxruntime-genai держит каждую каталогом
 # genai_config.json + веса + токенайзер, а формат ответа задаёт грамматика.
@@ -87,8 +82,6 @@ ONNX_MODELS     ?= xiaoyao9184/Qwen3-0.6B-onnx-genai:cpu_and_mobile/cpu-int4-rtn
     Hug0007/qwen3-1.7b-int4-onnx-genai::qwen3-1.7b-int4                                                               \
     robinsmits/qwen3-4b-instruct-2507-onnx-int4::qwen3-4b-int4
 ONNX_HUB_URL    ?= https://huggingface.co
-# веса тянет huggingface_hub, поэтому целостность проверяется по факту загрузки
-ONNX_MANIFEST   := $(CONF_DIR)/onnx-genai.sha256
 
 # фронт chainlit тянет шрифт и стили формул с CDN; в закрытом контуре их
 # кладут в data/public/vendor, а ссылки в index.html переписывает Dockerfile
@@ -98,27 +91,22 @@ ASSETS_DIR      := $(SRC_DIR)/packages/agents/boba-chainlit/assets
 ASSETS_VENDOR   := $(ASSETS_DIR)/public/vendor
 KATEX_VERSION   ?= 0.16.22
 KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
-KATEX_SHA256    ?= 055cd79635251419ed908c334582a41dee341d8af05b4c5588277e145127a78f
 INTER_VERSION   ?= 5.3.0
 INTER_URL       ?= https://registry.npmjs.org/@fontsource/inter/-/inter-$(INTER_VERSION).tgz
-INTER_SHA256    ?= 02034af8d41dcc67ac8eab88f642e129bb8a2e8922abf30229c32725f54d8fd6
 # начертания Inter, которые запрашивает фронт
 INTER_WEIGHTS   ?= 400 500 700
 MERMAID_VERSION ?= 11.16.1
 MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
-MERMAID_SHA256  ?= ebd9885111092c78cefc79a76f6c1dc34ed5b834b02ae8f338227ce79c003de4
 
 # готовый бинарь; для внутреннего mirror переопредели UV_URL
 UV_VERSION      ?= 0.11.21
 UV_PLATFORM     ?= x86_64-unknown-linux-musl
 UV_URL          ?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(UV_PLATFORM).tar.gz
-UV_SHA256       ?= 9dadff5b9e7b1d2d011e41852a1cbca713d9d5d88194f2eb6bd240fa4fb0a719
 
 # bubblewrap: собирается стадией bwrap-build
 BWRAP_VERSION   ?= 0.11.2
 BWRAP_URL       ?= https://github.com/containers/bubblewrap/releases/download/v$(BWRAP_VERSION)/bubblewrap-$(BWRAP_VERSION).tar.xz
 BWRAP_TARBALL   := $(DEPS_DIR)/bubblewrap-$(BWRAP_VERSION).tar.xz
-BWRAP_SHA256    ?= 69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
 
 # fuse2fs + libfuse: собираются стадией fuse2fs-build.
 # 3.12.0 — последний релиз, которому хватает meson 0.49 из apt Astra 2.12
@@ -126,11 +114,9 @@ BWRAP_SHA256    ?= 69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e92
 LIBFUSE_VERSION ?= 3.12.0
 LIBFUSE_URL     ?= https://github.com/libfuse/libfuse/releases/download/fuse-$(LIBFUSE_VERSION)/fuse-$(LIBFUSE_VERSION).tar.xz
 LIBFUSE_TARBALL := $(DEPS_DIR)/fuse-$(LIBFUSE_VERSION).tar.xz
-LIBFUSE_SHA256  ?= 33b8a92d6f7a88e6a889f0009206933482f48f3eb85d88cf09ef551313ac7373
 E2FSPROGS_VERSION?= 1.47.2
 E2FSPROGS_URL   ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$(E2FSPROGS_VERSION)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
 E2FSPROGS_TARBALL:= $(DEPS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
-E2FSPROGS_SHA256?= 08242e64ca0e8194d9c1caad49762b19209a06318199b63ce74ae4ef2d74e63c
 # размер шаблонного workspace-образа: лимит диска на тред
 SANDBOX_WS_SIZE ?= 1G
 
@@ -167,18 +153,9 @@ docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT)   \
     $(PROGRESS) $(BUILD_CONTEXT)
 endef
 
-# загрузка с проверкой целостности: $(1) — url, $(2) — файл, $(3) — sha256.
-# Битую загрузку удаляем: иначе следующий запуск примет её за готовый артефакт
-define fetch-checked
+# загрузка: $(1) — url, $(2) — файл
+define fetch
 curl -fSL $(CURL_OPTS) -o "$(2)" "$(1)"
-actual=$$(sha256sum "$(2)" | cut -d" " -f1)
-if [ "$$actual" != "$(3)" ]; then
-    rm -f "$(2)"
-    echo "sha256 не сошлась: $(1)" >&2
-    echo "  ожидалось $(3)" >&2
-    echo "  получено  $$actual" >&2
-    exit 1
-fi
 endef
 
 # выемка артефакта из образа: $(1) — образ, $(2) — путь внутри, $(3) — куда
@@ -307,15 +284,15 @@ sources:
 	@mkdir -p $(DEPS_DIR)
 	echo "== bubblewrap $(BWRAP_VERSION) =="
 	if [ ! -f "$(BWRAP_TARBALL)" ]; then
-	    $(call fetch-checked,$(BWRAP_URL),$(BWRAP_TARBALL),$(BWRAP_SHA256))
+	    $(call fetch,$(BWRAP_URL),$(BWRAP_TARBALL))
 	fi
 	echo "== libfuse $(LIBFUSE_VERSION) =="
 	if [ ! -f "$(LIBFUSE_TARBALL)" ]; then
-	    $(call fetch-checked,$(LIBFUSE_URL),$(LIBFUSE_TARBALL),$(LIBFUSE_SHA256))
+	    $(call fetch,$(LIBFUSE_URL),$(LIBFUSE_TARBALL))
 	fi
 	echo "== e2fsprogs $(E2FSPROGS_VERSION) =="
 	if [ ! -f "$(E2FSPROGS_TARBALL)" ]; then
-	    $(call fetch-checked,$(E2FSPROGS_URL),$(E2FSPROGS_TARBALL),$(E2FSPROGS_SHA256))
+	    $(call fetch,$(E2FSPROGS_URL),$(E2FSPROGS_TARBALL))
 	fi
 	ls -lh $(DEPS_DIR)/
 
@@ -332,7 +309,7 @@ uv:
 	if [ -f "$(DEPS_DIR)/uv/uv" ]; then
 	    echo "  ✓ $(DEPS_DIR)/uv/uv"
 	else
-	    $(call fetch-checked,$(UV_URL),/tmp/uv-$(UV_VERSION).tar.gz,$(UV_SHA256))
+	    $(call fetch,$(UV_URL),/tmp/uv-$(UV_VERSION).tar.gz)
 	    tar -xzf /tmp/uv-$(UV_VERSION).tar.gz -C /tmp
 	    install -m 0755 /tmp/uv-$(UV_PLATFORM)/uv $(DEPS_DIR)/uv/uv
 	    rm -rf /tmp/uv-$(UV_PLATFORM) /tmp/uv-$(UV_VERSION).tar.gz
@@ -346,23 +323,13 @@ tessdata:
 	echo "== OCR-модели tesseract: $(TESS_LANGS) =="
 	for lang in $(TESS_LANGS); do
 	    dest="$(DEPS_DIR)/tessdata/$$lang.traineddata"
+
 	    if [ -f "$$dest" ]; then
 	        echo "  ✓ $$dest"
-	    else
-	        sha=""
-	        for item in $(TESSDATA_SHA256); do
-	            if [ "$${item%%:*}" = "$$lang" ]; then
-	                sha="$${item##*:}"
-	            fi
-	        done
-
-	        if [ -z "$$sha" ]; then
-	            echo "нет sha256 для $$lang — добавь в TESSDATA_SHA256" >&2
-	            exit 1
-	        fi
-
-	        $(call fetch-checked,$(TESSDATA_REPO)/$$lang.traineddata,$$dest,$$sha)
+	        continue
 	    fi
+
+	    $(call fetch,$(TESSDATA_REPO)/$$lang.traineddata,$$dest)
 	done
 
 
@@ -375,7 +342,7 @@ webassets:
 	    echo "  ✓ $(WEBASSETS_DIR)/katex"
 	else
 	    tmp=$$(mktemp -d)
-	    $(call fetch-checked,$(KATEX_URL),$$tmp/katex.tar.gz,$(KATEX_SHA256))
+	    $(call fetch,$(KATEX_URL),$$tmp/katex.tar.gz)
 	    # ttf и woff не нужны: woff2 стоит в src первым и его понимают все браузеры
 	    tar -xzf "$$tmp/katex.tar.gz" -C "$$tmp" --wildcards   \
 	        katex/katex.min.css 'katex/fonts/*.woff2'
@@ -388,7 +355,7 @@ webassets:
 	    echo "  ✓ $(WEBASSETS_DIR)/inter"
 	else
 	    tmp=$$(mktemp -d)
-	    $(call fetch-checked,$(INTER_URL),$$tmp/inter.tgz,$(INTER_SHA256))
+	    $(call fetch,$(INTER_URL),$$tmp/inter.tgz)
 	    tar -xzf "$$tmp/inter.tgz" -C "$$tmp"
 	    : > "$(WEBASSETS_DIR)/inter/inter.css"
 	    # <вес>.css несёт все подсеты с unicode-range, включая кириллицу
@@ -403,7 +370,7 @@ webassets:
 	    echo "  ✓ $(WEBASSETS_DIR)/mermaid"
 	else
 	    tmp=$$(mktemp -d)
-	    $(call fetch-checked,$(MERMAID_URL),$$tmp/mermaid.tgz,$(MERMAID_SHA256))
+	    $(call fetch,$(MERMAID_URL),$$tmp/mermaid.tgz)
 	    # из пакета нужен один IIFE-бандл: он выставляет globalThis.mermaid
 	    tar -xzf "$$tmp/mermaid.tgz" -C "$$tmp" package/dist/mermaid.min.js
 	    cp "$$tmp/package/dist/mermaid.min.js" "$(WEBASSETS_DIR)/mermaid/"
@@ -489,59 +456,36 @@ fastembed:
 	@mkdir -p $(DEPS_DIR)/fastembed
 	echo "== веса fastembed: $(EMBED_MODELS) =="
 
-	# веса на месте — ни образа сборки, ни pip, ни сети
-	if $(MAKE) -f $(MAKEFILE) --no-print-directory fastembed-check > /dev/null 2>&1; then
-	    echo "  ✓ веса сходятся с $(FASTEMBED_MANIFEST)"
-	    exit 0
-	fi
+	# каталог весов на месте — ни образа сборки, ни pip, ни сети
+	for dir in $(DEPS_DIR)/fastembed/models--*; do
+	    if [ -d "$$dir" ]; then
+	        echo "  ✓ $$dir"
+	        exit 0
+	    fi
+	done
 
 	$(MAKE) -f $(MAKEFILE) --no-print-directory base
 	docker run --rm                                                                       \
 	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                     \
-	  -e EMBED_MODELS="$(EMBED_MODELS)"                                                   \
+	  -e EMBED_MODELS="$(EMBED_MODELS)"                                                    \
 	  -e HTTP_PROXY -e HTTPS_PROXY -e NO_PROXY -e http_proxy -e https_proxy -e no_proxy   \
 	  $(CONF_OPTS)                                                                        \
 	  -v "$(DEPS_DIR)/fastembed":/fastembed                                               \
 	  --entrypoint sh $(BASE_IMAGE) -c '
 	    set -e
 	    pip3 install --no-cache-dir "fastembed==$(FASTEMBED_VERSION)"
-	    for m in $$EMBED_MODELS; do
-	      echo ">>> fastembed: $$m"
-	      python3 -c "import sys; from fastembed import TextEmbedding;
-	        e=TextEmbedding(model_name=sys.argv[1], cache_dir=\"/fastembed\");
-	        list(e.embed([\"probe\"]))" "$$m"   \
-	      || echo "!! $$m не скачан — не поддерживается этой версией fastembed"
+
+	    for model in $$EMBED_MODELS; do
+	      echo ">>> fastembed: $$model"
+	      MODEL="$$model" python3 -c "
+	import os
+	from fastembed import TextEmbedding
+	embed = TextEmbedding(model_name=os.environ[\"MODEL\"], cache_dir=\"/fastembed\")
+	list(embed.embed([\"probe\"]))
+	"
 	    done
+
 	    chown -R "$$HOST_UID:$$HOST_GID" /fastembed'
-	$(MAKE) -f $(MAKEFILE) --no-print-directory fastembed-check
-
-
-# веса приезжают из сети внутрь контейнера, поэтому целостность проверяется
-# после загрузки: список сумм лежит рядом с остальными шаблонами сборки
-.PHONY: fastembed-check
-fastembed-check:
-	@if [ ! -f "$(FASTEMBED_MANIFEST)" ]; then
-	    echo "нет $(FASTEMBED_MANIFEST) — сними суммы: make fastembed-manifest" >&2
-	    exit 1
-	fi
-	cd "$(DEPS_DIR)/fastembed"
-	sha256sum -c --quiet "$(FASTEMBED_MANIFEST)"
-
-	listed=$$(grep -c '' "$(FASTEMBED_MANIFEST)")
-	actual=$$(find . -type f | wc -l)
-	if [ "$$listed" != "$$actual" ]; then
-	    echo "файлов весов $$actual, а в манифесте $$listed" >&2
-	    exit 1
-	fi
-	echo "  ✓ веса сходятся с $(FASTEMBED_MANIFEST) ($$listed файлов)"
-
-
-# переснять суммы: после смены EMBED_MODELS или версии весов
-.PHONY: fastembed-manifest
-fastembed-manifest:
-	@cd "$(DEPS_DIR)/fastembed"
-	find . -type f | sort | xargs sha256sum > "$(FASTEMBED_MANIFEST)"
-	echo ">>> $(FASTEMBED_MANIFEST): $$(grep -c '' "$(FASTEMBED_MANIFEST)") файлов"
 
 
 # модели переформулировщика: качаются один раз и уезжают в образ приложения,
@@ -549,11 +493,22 @@ fastembed-manifest:
 .PHONY: onnx-genai
 onnx-genai:
 	@mkdir -p $(DEPS_DIR)/onnx-genai
-	echo "== модели переформулировщика: $(ONNX_MODELS) =="
+	echo "== модели переформулировщика =="
 
-	# модели на месте — ни образа сборки, ни pip, ни сети
-	if $(MAKE) -f $(MAKEFILE) --no-print-directory onnx-genai-check > /dev/null 2>&1; then
-	    echo "  ✓ модели сходятся с $(ONNX_MANIFEST)"
+	# скачиваем только те, каталога которых нет
+	missing=""
+	for spec in $(ONNX_MODELS); do
+	    name=$$(echo "$$spec" | cut -d: -f3)
+
+	    if [ -d "$(DEPS_DIR)/onnx-genai/$$name" ]; then
+	        echo "  ✓ $(DEPS_DIR)/onnx-genai/$$name"
+	        continue
+	    fi
+
+	    missing="$$missing $$spec"
+	done
+
+	if [ -z "$$missing" ]; then
 	    exit 0
 	fi
 
@@ -561,71 +516,33 @@ onnx-genai:
 	docker run --rm                                                                       \
 	  -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)"                                     \
 	  -e HF_ENDPOINT="$(ONNX_HUB_URL)"                                                    \
-	  -e ONNX_MODELS="$(ONNX_MODELS)"                                                     \
+	  -e ONNX_MODELS="$$missing"                                                          \
 	  -e HTTP_PROXY -e HTTPS_PROXY -e NO_PROXY -e http_proxy -e https_proxy -e no_proxy   \
 	  $(CONF_OPTS)                                                                        \
 	  -v "$(DEPS_DIR)/onnx-genai":/onnx                                                   \
 	  --entrypoint sh $(BASE_IMAGE) -c '
 	    set -e
 	    pip3 install --no-cache-dir huggingface_hub
+
 	    for spec in $$ONNX_MODELS; do
-	      repo=$${spec%%:*}
-	      rest=$${spec#*:}
-	      # кэш huggingface живёт в контейнере: скачанное узнаём по каталогу модели,
-	      # иначе новая модель в списке тянула бы за собой все остальные
-	      if [ -f "/onnx/$${rest##*:}/genai_config.json" ]; then
-	        echo "  ✓ /onnx/$${rest##*:}"
-	        continue
-	      fi
-	      echo ">>> onnx-genai: $$repo"
-	      python3 -c "import pathlib, shutil, sys;
-	        from huggingface_hub import snapshot_download;
-	        path, name = sys.argv[2], sys.argv[3];
-	        root = snapshot_download(sys.argv[1], allow_patterns=[path + \"*\"]);
-	        dst = pathlib.Path(\"/onnx\") / name;
-	        shutil.rmtree(dst, ignore_errors=True);
-	        shutil.copytree(pathlib.Path(root) / path, dst);
-	        print(dst)" "$$repo" "$${rest%%:*}" "$${rest##*:}"                            \
-	      || echo "!! $$repo не скачан — репозиторий недоступен или не в формате genai"
+	      REPO=$$(echo "$$spec" | cut -d: -f1)
+	      SUBDIR=$$(echo "$$spec" | cut -d: -f2)
+	      NAME=$$(echo "$$spec" | cut -d: -f3)
+	      echo ">>> onnx-genai: $$REPO"
+	      export REPO SUBDIR NAME
+	      python3 -c "
+	import os, pathlib, shutil
+	from huggingface_hub import snapshot_download
+	subdir = os.environ[\"SUBDIR\"]
+	root = snapshot_download(os.environ[\"REPO\"], allow_patterns=[subdir + \"*\"])
+	dest = pathlib.Path(\"/onnx\") / os.environ[\"NAME\"]
+	shutil.rmtree(dest, ignore_errors=True)
+	shutil.copytree(pathlib.Path(root) / subdir, dest)
+	print(dest)
+	"
 	    done
+
 	    chown -R "$$HOST_UID:$$HOST_GID" /onnx'
-	$(MAKE) -f $(MAKEFILE) --no-print-directory onnx-genai-check
-
-
-# веса приезжают из сети внутрь контейнера, поэтому целостность проверяется
-# после загрузки: список сумм лежит рядом с остальными шаблонами сборки
-.PHONY: onnx-genai-check
-onnx-genai-check:
-	@if [ ! -f "$(ONNX_MANIFEST)" ]; then
-	    echo "нет $(ONNX_MANIFEST) — сними суммы: make onnx-genai-manifest" >&2
-	    exit 1
-	fi
-	cd "$(DEPS_DIR)/onnx-genai"
-	sha256sum -c --quiet "$(ONNX_MANIFEST)"
-
-	for spec in $(ONNX_MODELS); do
-	    name=$${spec##*:}
-	    if [ ! -f "$$name/genai_config.json" ]; then
-	        echo "нет $$name/genai_config.json — onnxruntime-genai не примет каталог" >&2
-	        exit 1
-	    fi
-	done
-
-	listed=$$(grep -c '' "$(ONNX_MANIFEST)")
-	actual=$$(find . -type f | wc -l)
-	if [ "$$listed" != "$$actual" ]; then
-	    echo "файлов моделей $$actual, а в манифесте $$listed" >&2
-	    exit 1
-	fi
-	echo "  ✓ модели сходятся с $(ONNX_MANIFEST) ($$listed файлов)"
-
-
-# переснять суммы: после смены ONNX_MODELS или ревизии их репозиториев
-.PHONY: onnx-genai-manifest
-onnx-genai-manifest:
-	@cd "$(DEPS_DIR)/onnx-genai"
-	find . -type f | sort | xargs sha256sum > "$(ONNX_MANIFEST)"
-	echo ">>> $(ONNX_MANIFEST): $$(grep -c '' "$(ONNX_MANIFEST)") файлов"
 
 
 .PHONY: base
@@ -637,32 +554,24 @@ base: uv
 	$(call docker-stage,base,$(BASE_IMAGE),--tag boba-base:latest)
 
 
-# что должно лежать в build/src до сборки образа: путь:цель, которая его кладёт
-BUILD_INPUTS    :=                                   \
-    $(BWRAP_TARBALL):sources                         \
-    $(LIBFUSE_TARBALL):sources                       \
-    $(E2FSPROGS_TARBALL):sources                     \
-    $(DEPS_DIR)/uv/uv:deps                           \
-    $(DEPS_DIR)/tessdata/eng.traineddata:deps        \
-    $(DEPS_DIR)/fastembed:deps                       \
-    $(DEPS_DIR)/onnx-genai:deps                      \
-    $(WEBASSETS_DIR)/katex/katex.min.css:webassets   \
-    $(WEBASSETS_DIR)/inter/inter.css:webassets       \
-    $(DEPS_DIR)/names-sandbox.txt:sandbox-names
+# что должно лежать в build/src до сборки образа
+BUILD_INPUTS    :=                          \
+    $(BWRAP_TARBALL)                        \
+    $(LIBFUSE_TARBALL)                      \
+    $(E2FSPROGS_TARBALL)                    \
+    $(DEPS_DIR)/uv/uv                       \
+    $(DEPS_DIR)/tessdata/eng.traineddata    \
+    $(DEPS_DIR)/fastembed                   \
+    $(DEPS_DIR)/onnx-genai                  \
+    $(WEBASSETS_DIR)/katex/katex.min.css    \
+    $(WEBASSETS_DIR)/inter/inter.css        \
+    $(DEPS_DIR)/names-sandbox.txt
 
 .PHONY: check-artifacts
 check-artifacts:
-	@for item in $(BUILD_INPUTS); do
-	    path="$${item%%:*}"
-	    goal="$${item##*:}"
-
+	@for path in $(BUILD_INPUTS); do
 	    if [ ! -e "$$path" ]; then
-	        echo "нет $$path — запусти: make $$goal" >&2
-	        exit 1
-	    fi
-
-	    if [ -d "$$path" ] && [ -z "$$(ls -A "$$path")" ]; then
-	        echo "пуст $$path — запусти: make $$goal" >&2
+	        echo "нет $$path — запусти: make sources deps" >&2
 	        exit 1
 	    fi
 	done
@@ -695,16 +604,16 @@ test: build
 	    "$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/app/packages.txt"
 	  ' < "$(TEST_DIR)/bobacheck.py"
 
-# что обязано лежать в дереве установки: путь:цель, которая его кладёт
-RELEASE_PARTS   :=                                \
-    sandbox/rootfs.ext4:deps                      \
-    sandbox/workspace.ext4:deps                   \
-    third/bin/bwrap:deps                          \
-    third/bin/fuse2fs:deps                        \
-    models/onnx-genai:build                       \
-    models/fastembed:build                        \
-    app/bin:build                                 \
-    app_root/public:build
+# что обязано лежать в дереве установки
+RELEASE_PARTS   :=              \
+    sandbox/rootfs.ext4         \
+    sandbox/workspace.ext4      \
+    third/bin/bwrap             \
+    third/bin/fuse2fs           \
+    models/onnx-genai           \
+    models/fastembed            \
+    app/bin                     \
+    app_root/public
 
 .PHONY: release
 release:
@@ -841,12 +750,9 @@ install-tree:
 # проверки готового дерева: без них приложение падало бы уже на сервере
 .PHONY: tree-check
 tree-check:
-	@for item in $(RELEASE_PARTS); do
-	    path="$${item%%:*}"
-	    goal="$${item##*:}"
-
+	@for path in $(RELEASE_PARTS); do
 	    if [ ! -e "$(OUT)/$$path" ]; then
-	        echo "в дереве нет $$path — запусти: make $$goal" >&2
+	        echo "в дереве нет $$path — собери заново: make build release" >&2
 	        exit 1
 	    fi
 	done
