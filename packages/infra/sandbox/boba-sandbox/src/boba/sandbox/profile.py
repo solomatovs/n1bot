@@ -88,12 +88,28 @@ class BindSpec(BaseModel):
 
     @staticmethod
     def substitute(template: str, variables: Mapping[str, str]) -> str:
+        """Подстановка значений вызова; чего нет — то и названо в отказе.
+
+        Пустой набор значит вызов вне сессии, неполный — сессия есть, но
+        чего-то в ней не хватает: например, вход не сохранён в базе, и у
+        пользователя нет id.
+        """
         try:
             return template.format_map(dict(variables))
         except KeyError as e:
+            missing = e.args[0]
+
+            if not variables:
+                msg = (
+                    f"sandbox: variable {{{missing}}} in path {template!r} "
+                    f"is unavailable: the call has no chainlit session"
+                )
+                raise RuntimeError(msg) from e
+
+            known = ", ".join(sorted(variables))
             msg = (
-                f"sandbox: variable {{{e.args[0]}}} in path {template!r} "
-                f"is unavailable: no chainlit session"
+                f"sandbox: variable {{{missing}}} in path {template!r} "
+                f"is unavailable in this session (known: {known})"
             )
             raise RuntimeError(msg) from e
 

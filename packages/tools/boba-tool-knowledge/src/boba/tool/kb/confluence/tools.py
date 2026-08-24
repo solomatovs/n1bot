@@ -25,6 +25,7 @@ from boba.tool.kb.confluence.request_sources import ConfluenceRest
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
+from boba.toolkit.sql import RowOffset
 from boba.toolkit.types import LLMStringList, SecretRevealing
 from boba.transport.http import HttpProfile
 
@@ -148,6 +149,28 @@ class CqlSearch:
         return f"({text_block}) and ({space_block})"
 
     @staticmethod
+    def page_note(data: Mapping[str, Any], offset: int, shown: int) -> str:
+        """Навигация по выдаче: что показано и с какого offset брать дальше.
+
+        totalSize отдаёт не всякая версия Confluence: без него о продолжении
+        судим по тому, отдал ли сервер полную страницу.
+        """
+        if not shown:
+            return f"nothing found at offset {offset}"
+
+        first = offset + 1
+        last = offset + shown
+        total = data.get("totalSize")
+
+        if not isinstance(total, int):
+            return f"rows {first}-{last}; next offset={last}"
+
+        if last >= total:
+            return f"rows {first}-{last} of {total}; end of result"
+
+        return f"rows {first}-{last} of {total}; next offset={last}"
+
+    @staticmethod
     def hit_row(hit: dict[str, Any], base: str, snippet_chars: int) -> dict[str, Any]:
         html = ConfluenceJson.body_html(hit, "view")
         excerpt = ConfluencePageText.excerpt_of(html, snippet_chars)
@@ -257,7 +280,7 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
 
 
 @tool
-async def confluence_search(
+async def confluence_search(  # noqa: PLR0913 — окно выдачи задаёт вызов
     query: Annotated[
         str,
         Field(min_length=1, description="Строка полнотекстового поиска в Confluence."),
@@ -273,19 +296,23 @@ async def confluence_search(
     ] = None,
     limit: Annotated[
         int,
-        Field(ge=1, description="Максимум найденных страниц."),
+        Field(ge=1, description="Сколько найденных страниц вернуть на странице."),
     ] = 20,
     snippet_chars: Annotated[
         int,
         Field(ge=1, description=CqlSearch.SNIPPET_DESC),
     ] = CqlSearch.SNIPPET_DEFAULT,
     *,
+    offset: RowOffset,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Ищет страницы в Confluence через CQL и возвращает таблицу hits."""
+    """Ищет страницы в Confluence через CQL и возвращает таблицу hits.
+
+    Выдача постраничная: сколько показано и как листать, сказано в note.
+    """
     cql = CqlSearch.build_cql(query=query, spaces=spaces)
     path = ConfluenceRest.cql_search_path(
-        cql, limit=limit, expand="body.view,version,space"
+        cql, limit=limit, start=offset, expand="body.view,version,space"
     )
 
     data = json.loads(await ConfluenceHttp.get(cfg, path))
@@ -297,11 +324,7 @@ async def confluence_search(
     for hit in data.get("results") or []:
         rows.append(CqlSearch.hit_row(hit, base, snippet_chars))
 
-    note = f"found: {len(rows)}"
-    if not rows:
-        note = "nothing found"
-
-    table = TableResult(rows=rows, note=note)
+    table = TableResult(rows=rows, note=CqlSearch.page_note(data, offset, len(rows)))
     return pack_result(table)
 
 

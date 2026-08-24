@@ -114,6 +114,7 @@ class ConfluenceRest:
         cql: str,
         *,
         limit: int = DEFAULT_PAGE_LIMIT,
+        start: int = 0,
         expand: str | None = None,
     ) -> str:
         expand_q = ""
@@ -121,7 +122,10 @@ class ConfluenceRest:
             expand_q = f"&expand={expand}"
 
         cql_q = quote(cql, safe="")
-        return f"/rest/api/content/search?cql={cql_q}&limit={limit}{expand_q}"
+        return (
+            f"/rest/api/content/search?cql={cql_q}"
+            f"&limit={limit}&start={start}{expand_q}"
+        )
 
     @staticmethod
     def extract_host(base_url: str) -> str:

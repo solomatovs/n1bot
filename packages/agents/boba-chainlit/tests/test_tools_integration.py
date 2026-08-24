@@ -480,6 +480,7 @@ async def confluence_page(confluence_tools) -> dict[str, str]:
         query="данные",
         limit=10,
         snippet_chars=200,
+        offset=0,
     )
     for row in found.rows:
         if row["title"].count(".") == 0:
@@ -499,6 +500,7 @@ async def confluence_attachment_ref(confluence_tools) -> dict[str, str]:
         query="docx",
         limit=20,
         snippet_chars=100,
+        offset=0,
     )
     for row in found.rows:
         if not row["title"].endswith(".docx"):
@@ -773,6 +775,7 @@ class TestConfluenceTools:
             query="данные",
             limit=5,
             snippet_chars=200,
+            offset=0,
         )
         if not (result.rows):
             raise AssertionError("result.rows")
@@ -833,6 +836,9 @@ class TestPgTools:
             pg_tools["pg_list_tables"],
             connection_name="main",
             pg_schema="pg_catalog",
+            offset=0,
+            max_rows=50,
+            max_chars=20000,
         )
         if not (result.rows):
             raise AssertionError("result.rows")
@@ -841,7 +847,13 @@ class TestPgTools:
 
     async def test_system_schemas_are_not_hidden(self, pg_tools) -> None:
         """Каталог не прячется: системные схемы видны наравне с остальными."""
-        result = await Call.ok(pg_tools["pg_list_tables"], connection_name="main")
+        result = await Call.ok(
+            pg_tools["pg_list_tables"],
+            connection_name="main",
+            offset=0,
+            max_rows=50,
+            max_chars=20000,
+        )
         schemas = set()
         for row in result.rows:
             schemas.add(row["schema"])
@@ -854,6 +866,9 @@ class TestPgTools:
             connection_name="main",
             pg_schema="pg_catalog",
             table_pattern="pg_cl%",
+            offset=0,
+            max_rows=50,
+            max_chars=20000,
         )
         if not (result.rows):
             raise AssertionError("result.rows")
@@ -867,6 +882,9 @@ class TestPgTools:
             connection_name="main",
             pg_schema="pg_catalog",
             table_pattern="pg_class",
+            offset=0,
+            max_rows=50,
+            max_chars=20000,
         )
         first = tables.rows[0]
         result = await Call.ok(
@@ -874,11 +892,65 @@ class TestPgTools:
             connection_name="main",
             table=first["table_name"],
             pg_schema=first["schema"],
+            offset=0,
+            max_rows=50,
+            max_chars=20000,
         )
         if not (result.rows):
             raise AssertionError("result.rows")
         if set(result.rows[0]) < {"column_name", "type", "nullable", "primary_key"}:
             raise AssertionError('set(result.rows[0]) >= {"column_name", "type", "nul…')
+
+    async def test_pages_do_not_overlap(self, pg_tools) -> None:
+        """Окно листается: вторая страница продолжает первую, а не повторяет."""
+        first = await Call.ok(
+            pg_tools["pg_list_tables"],
+            connection_name="main",
+            pg_schema="pg_catalog",
+            offset=0,
+            max_rows=2,
+            max_chars=20000,
+        )
+        if len(first.rows) != 2:
+            raise AssertionError(f"страница ровно по окну, дано {len(first.rows)}")
+
+        if "next offset=2" not in str(first.note):
+            raise AssertionError(f"note зовёт дальше, дано {first.note!r}")
+
+        second = await Call.ok(
+            pg_tools["pg_list_tables"],
+            connection_name="main",
+            pg_schema="pg_catalog",
+            offset=2,
+            max_rows=2,
+            max_chars=20000,
+        )
+        if "rows 3-4" not in str(second.note):
+            raise AssertionError(f"вторая страница нумеруется, дано {second.note!r}")
+
+        names = set()
+        for row in first.rows:
+            names.add(row["table_name"])
+
+        for row in second.rows:
+            if row["table_name"] in names:
+                raise AssertionError(f"строка {row['table_name']!r} пришла дважды")
+
+    async def test_char_limit_cuts_the_page(self, pg_tools) -> None:
+        """Потолок символов обрывает страницу, остаток достаётся следующей."""
+        result = await Call.ok(
+            pg_tools["pg_list_tables"],
+            connection_name="main",
+            pg_schema="pg_catalog",
+            offset=0,
+            max_rows=100,
+            max_chars=300,
+        )
+        if len(result.rows) >= 100:
+            raise AssertionError("узкий потолок обязан оборвать набор")
+
+        if "next offset=" not in str(result.note):
+            raise AssertionError(f"note зовёт за остатком, дано {result.note!r}")
 
     async def test_query_returns_rows(self, pg_tools) -> None:
         result = await Call.ok(

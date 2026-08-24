@@ -37,7 +37,12 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.sql import (
     ConnectionName,
+    MaxChars,
+    MaxRows,
     RowBudget,
+    RowOffset,
+    RowPage,
+    RowWindow,
     SqlErrorKind,
     SqlProfiles,
     UnknownConnectionError,
@@ -109,6 +114,29 @@ async def _query_rows(
     return pack_result(MultiResult(items=tuple(results)))
 
 
+async def _catalog_page(
+    connection: PostgresConfig,
+    query: PgCatalogQuery,
+    window: RowWindow,
+) -> tuple[str, ToolResult]:
+    """Каталожный запрос страницей окна: границы выдачи назначает вызов.
+
+    Порядок строк задан самим запросом, поэтому окно повторяемо: тот же
+    offset вернёт тот же кусок, пока каталог не изменился.
+    """
+    page = RowPage(window)
+
+    conn = await PayloadPostgres.connect_config(connection)
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(query.text.encode(conn.info.encoding), query.params or None)
+
+        for row in await cur.fetchmany(window.probe()):
+            if not page.add(row):
+                break
+
+    return pack_result(page.table())
+
+
 async def _fetch_table(
     cur: psycopg.AsyncCursor[Any],
     cfg: PgToolConfig,
@@ -148,7 +176,7 @@ async def pg_connection_list(
 
 
 @tool
-async def pg_list_tables(
+async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаёт вызов
     connection_name: ConnectionName,
     pg_schema: Annotated[
         str | None,
@@ -170,23 +198,28 @@ async def pg_list_tables(
         ),
     ] = None,
     *,
+    offset: RowOffset,
+    max_rows: MaxRows,
+    max_chars: MaxChars,
     cfg: Annotated[PgToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Таблицы и view подключения из pg_catalog.
 
     Колонки: schema, table_name, kind, approx_rows, owner, total_bytes,
     comment. kind: r таблица, p партиционированная, v view,
-    m материализованное view, f сторонняя таблица. Сложные условия по
-    каталогу пишутся запросом к pg_catalog через pg_query.
+    m материализованное view, f сторонняя таблица. Выдача постраничная:
+    сколько показано и как листать дальше, сказано в note. Сложные условия
+    по каталогу пишутся запросом к pg_catalog через pg_query.
     """
     connection = cfg.resolve(connection_name)
+    window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
 
     query = PgCatalog.tables(pg_schema, table_pattern)
-    return await _query_rows(connection, query, cfg)
+    return await _catalog_page(connection, query, window)
 
 
 @tool
-async def pg_describe_table(
+async def pg_describe_table(  # noqa: PLR0913 — окно выдачи задаёт вызов
     connection_name: ConnectionName,
     table: Annotated[
         str,
@@ -202,17 +235,22 @@ async def pg_describe_table(
         ),
     ] = None,
     *,
+    offset: RowOffset,
+    max_rows: MaxRows,
+    max_chars: MaxChars,
     cfg: Annotated[PgToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Схема таблицы из pg_catalog: колонки, нативные типы, ключи.
 
     Колонки: schema, position, column_name, type, nullable,
-    default_expression, identity, generated, primary_key, comment.
+    default_expression, identity, generated, primary_key, comment. Широкая
+    таблица приходит частями: как листать, сказано в note.
     """
     connection = cfg.resolve(connection_name)
+    window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
 
     query = PgCatalog.columns(table, pg_schema)
-    return await _query_rows(connection, query, cfg)
+    return await _catalog_page(connection, query, window)
 
 
 @tool

@@ -56,6 +56,9 @@ async def test_run_pg_list_tables(pg_cfg: PgToolConfig) -> None:
         connection_name=RunArgs.CONNECTION,
         pg_schema="public",
         table_pattern=None,
+        offset=0,
+        max_rows=50,
+        max_chars=20000,
         cfg=pg_cfg,
     )
 

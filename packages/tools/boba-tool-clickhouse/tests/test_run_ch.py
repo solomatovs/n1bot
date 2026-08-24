@@ -53,7 +53,12 @@ async def test_run_ch_list_tables(ch_cfg: ChToolConfig) -> None:
         raise AssertionError("body is not None")
 
     content, _artifact = await body(
-        connection_name=RunArgs.CONNECTION, ch_database=None, cfg=ch_cfg
+        connection_name=RunArgs.CONNECTION,
+        ch_database=None,
+        offset=0,
+        max_rows=50,
+        max_chars=20000,
+        cfg=ch_cfg,
     )
 
     print(content)
