@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from chainlit.user import User as ChainlitUser
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
@@ -14,6 +15,7 @@ from boba.chainlit.agent.toolrun.access import (
 from boba.chainlit.domain.config import RoleConfig, ToolGrant
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry
 from boba.chainlit.infra.providers import build_llm_view
+from boba.chainlit.infra.session import ChainlitSession
 
 
 @pytest.fixture(autouse=True)
@@ -176,6 +178,14 @@ class TestRegistryFiltering:
             raise AssertionError('for_session({"ADM"}, None) == []')
 
 
+class _AccessSession:
+    """Сессия в объёме, который читает гвардия доступа: роли и профиль."""
+
+    def __init__(self, roles: set[str], profile: str | None) -> None:
+        self.user = ChainlitUser(identifier="tester", metadata={"roles": sorted(roles)})
+        self.chat_profile = profile
+
+
 class TestAccessGuard:
     @staticmethod
     def _guarded(roles: set[str], profile: str | None):
@@ -189,9 +199,8 @@ class TestAccessGuard:
             roles={"ADM": RoleConfig(tools=["query"])},
             profiles={"general": ToolGrant(tools=["*"])},
         )
-        guarded = ToolAccessGuard.guard_all(
-            [query], access, lambda: roles, lambda: profile
-        )
+        session = ChainlitSession(_AccessSession(roles, profile))
+        guarded = ToolAccessGuard.guard_all([query], access, lambda: session)
         return guarded[0]
 
     def test_allowed_role_runs(self) -> None:

@@ -30,15 +30,8 @@ from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
 from boba.chainlit.connections.store import ConnectionKind, ConnectionsConfig
 from boba.chainlit.connections.whitelist import ConnectionKeying
 from boba.chainlit.domain.keys import WorkspaceMount
-from boba.chainlit.domain.session import (
-    current_chat_profile,
-    current_thread_id,
-    current_user,
-    current_user_id,
-    current_user_label,
-    current_user_roles,
-)
 from boba.chainlit.infra.config import ProfilesSection, RolesSection
+from boba.chainlit.infra.session import current_session, session_source_ref
 from boba.chainlit.infra.tickets import ServiceTickets
 from boba.chainlit.infra.user_connections import (
     RegistryRef,
@@ -131,28 +124,28 @@ def _build_send_file_tools(
     cfg: None,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return [build_send_file_tool()]
+    return [build_send_file_tool(session_source_ref())]
 
 
 def _build_diagram_tools(
     cfg: DiagramToolConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return build_diagram_tools(cfg)
+    return build_diagram_tools(cfg, session_source_ref())
 
 
 def _build_canvas_tools(
     cfg: CanvasToolConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return build_canvas_tools(cfg)
+    return build_canvas_tools(cfg, session_source_ref())
 
 
 def _build_stream_logs_tools(
     cfg: None,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return build_stream_logs_tools(cfg)
+    return build_stream_logs_tools(cfg, session_source_ref())
 
 
 def _modules_of(tools: Sequence[ToolLike]) -> tuple[str, ...]:
@@ -208,8 +201,9 @@ def stream_source(tool: str, call_id: str) -> CallStream | None:
     if not ToolStreams.streamable(tool):
         return None
 
-    thread_id = current_thread_id()
-    user_id = current_user_id()
+    session = current_session()
+    thread_id = session.thread_id
+    user_id = session.user_id
     if thread_id is None or user_id is None:
         return None
 
@@ -223,7 +217,8 @@ def _sandbox_path_vars() -> dict[str, str]:
     create_user не прошёл, живёт в сессии как cl.User, и образ workspace
     такому вызову не собрать.
     """
-    values = {"user_id": current_user_id(), "thread_id": current_thread_id()}
+    session = current_session()
+    values = {"user_id": session.user_id, "thread_id": session.thread_id}
 
     ready: dict[str, str] = {}
     for name, value in values.items():
@@ -232,10 +227,10 @@ def _sandbox_path_vars() -> dict[str, str]:
 
         ready[name] = str(value)
 
-    if current_user() is not None and "user_id" not in ready:
+    if current_session().user is not None and "user_id" not in ready:
         logger.error(
             "sandbox: session user %r has no id: the sign-in was not persisted",
-            current_user_label(),
+            current_session().label,
         )
 
     return ready
@@ -636,7 +631,7 @@ def load_tools(
     ToolIntentField.attach_all(tools)
     ToolRunLogger.guard_all(tools, stream_source)
     CancellableTools.guard_all(tools)
-    ToolAccessGuard.guard_all(tools, access, current_user_roles, current_chat_profile)
+    ToolAccessGuard.guard_all(tools, access, current_session)
     ToolErrorGuard.guard_all(tools)
     ToolAsyncBody.ensure_all(tools)
     return ToolRegistry(tools=tools, access=access)

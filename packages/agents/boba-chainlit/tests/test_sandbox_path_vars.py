@@ -11,8 +11,8 @@ from chainlit.user import User as ChainlitUser
 from starlette.requests import Request
 from starlette.responses import Response
 
-from boba.chainlit.infra.callback import on_logout
 from boba.chainlit.infra.plugins import _sandbox_path_vars
+from boba.chainlit.infra.session import session_source_ref
 from boba.sandbox import BindSpec
 
 pytestmark = pytest.mark.anyio
@@ -86,6 +86,26 @@ class TestSandboxPathVars:
             raise AssertionError(f"отказ перечисляет, что есть: {message}")
 
 
+@pytest.fixture
+def logout():
+    """Хендлер выхода из callback.
+
+    Импорт модуля ставит chainlit-хендлеры на весь процесс, включая
+    data_layer: он тянет DI-контейнер, которого в тестах нет, — поэтому
+    регистрация снимается сразу после теста.
+    """
+    from chainlit.config import config as chainlit_config
+
+    saved = chainlit_config.code.data_layer
+
+    from boba.chainlit.infra.callback import on_logout
+
+    try:
+        yield on_logout
+    finally:
+        chainlit_config.code.data_layer = saved
+
+
 class TestLogoutCookies:
     """Выход чистит только свои куки: домен общий с другими приложениями."""
 
@@ -112,24 +132,24 @@ class TestLogoutCookies:
 
         return names
 
-    def test_reserved_cookie_name_does_not_break_logout(self) -> None:
+    async def test_reserved_cookie_name_does_not_break_logout(self, logout) -> None:
         """'Path' среди присланных кук http.cookies ставить не даёт."""
         request = self._request({"Path": "/", "access_token": "jwt", "grafana": "x"})
         response = Response()
 
-        on_logout(request, response)
+        logout(request, response)
 
         deleted = self._deleted(response)
         if "Path" in deleted:
             raise AssertionError("зарезервированное имя трогать нельзя")
 
-    def test_only_auth_cookies_are_cleared(self) -> None:
+    async def test_only_auth_cookies_are_cleared(self, logout) -> None:
         request = self._request(
             {"access_token": "jwt", "access_token_0": "chunk", "grafana_session": "x"}
         )
         response = Response()
 
-        on_logout(request, response)
+        logout(request, response)
 
         deleted = self._deleted(response)
         if "grafana_session" in deleted:
@@ -137,3 +157,28 @@ class TestLogoutCookies:
 
         if not {"access_token", "access_token_0"} <= deleted:
             raise AssertionError(f"свои куки сняты, дано {deleted!r}")
+
+
+class TestSessionSourceStrictness:
+    """Источник сессий берётся из корневого контейнера, иначе это ошибка."""
+
+    async def test_container_is_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Нет корня — значит ref позвали там, где контейнера ещё нет."""
+        from boba.chainlit.infra.di import Container
+
+        monkeypatch.setattr(Container, "root", None)
+
+        with pytest.raises(RuntimeError, match="DI container is not initialised"):
+            session_source_ref()
+
+    async def test_source_comes_from_the_container(self) -> None:
+        """Ref отдаёт ровно тот источник, который положили в контейнер."""
+        from boba.chainlit.infra.di import Container
+        from boba.chainlit.infra.providers import session_source
+
+        root = Container.root
+        if root is None:
+            raise AssertionError("корневой контейнер ставит фикстура")
+
+        if session_source_ref() is not root.resolved(session_source):
+            raise AssertionError("источник берётся из контейнера, а не создаётся")

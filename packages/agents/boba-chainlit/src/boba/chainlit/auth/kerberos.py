@@ -61,6 +61,7 @@ from boba.chainlit.domain.session import (
     UserLogin,
     UserMetadataField,
 )
+from boba.chainlit.infra.session import ChainlitSession
 from boba.krb import (
     AcceptConfig,
     CcacheRegistry,
@@ -474,7 +475,7 @@ class SpnegoMiddleware:
         if not token:
             return None
 
-        return SsoMarks.of_token(token)
+        return ChainlitSession.marks_of_token(token)
 
     @staticmethod
     def _token_of(headers: Headers) -> bytes | str:

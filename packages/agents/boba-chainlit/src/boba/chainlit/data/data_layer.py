@@ -1,5 +1,4 @@
 """PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
-
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Protocol
@@ -34,7 +33,7 @@ from boba.chainlit.domain.keys import (
     ElementProps,
     ObjectKey,
 )
-from boba.chainlit.domain.session import UserMetadataField, current_user_id
+from boba.chainlit.domain.session import SessionSource, UserMetadataField
 from boba.db.postgres import AsyncPostgresPool
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
@@ -90,19 +89,21 @@ class PostgresDataLayer(AttachmentDataLayer):
 
     _MODELS: ClassVar[tuple[type[Row], ...]] = (User, Thread, Element, Feedback)
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — зависимости слоя вносятся сборкой
         self,
         pool: AsyncPostgresPool,
         schema: str,
         storage: StorageClient,
         feed: ThreadFeed,
         links: AttachmentLinks,
+        sessions: SessionSource,
     ) -> None:
         self._pool = pool
         self._schema = schema
         self._storage = storage
         self._feed = feed
         self._links = links
+        self._sessions = sessions
 
     @property
     def links(self) -> AttachmentLinks:
@@ -135,8 +136,6 @@ class PostgresDataLayer(AttachmentDataLayer):
 
     @data_boundary
     async def get_user(self, identifier: str) -> PersistedUser | None:
-        # регистр не заводит вторую личность: поиск идёт тем же ключом,
-        # что держит уникальность, и попадает в его индекс
         query = sql.SQL(
             """
             select
@@ -144,7 +143,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             from
                 {users}
             where
-                identifier = lower(%s)
+                identifier = %s
             limit
                 1
             """
@@ -170,7 +169,6 @@ class PostgresDataLayer(AttachmentDataLayer):
     @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
         model = User.from_chainlit(user)
-        # метка SSO-входа живёт в JWT сессии, в строке users ей не место
         model.meta.pop(UserMetadataField.LOGIN, None)
         query = sql.SQL(
             """
@@ -180,7 +178,7 @@ class PostgresDataLayer(AttachmentDataLayer):
             values (
                 {ph}
             )
-            on conflict (lower(identifier)) do update set
+            on conflict (identifier) do update set
                 meta = coalesce({users}.meta, '{{}}'::jsonb) || excluded.meta
             returning
                 {cols}
@@ -871,7 +869,7 @@ class PostgresDataLayer(AttachmentDataLayer):
 
     def _session_user_id(self) -> str:
         """Владелец файлов вложений — пользователь текущей сессии chainlit."""
-        user_id = current_user_id()
+        user_id = self._sessions.current().user_id
         if user_id is None:
             raise DataBrokenError("_session_user_id", "no chainlit session")
 

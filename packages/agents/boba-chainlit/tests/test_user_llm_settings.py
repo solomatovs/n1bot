@@ -14,7 +14,6 @@ from psycopg.rows import dict_row
 from boba.chainlit.chat.panel_text import PanelText, PanelTextError
 from boba.chainlit.chat.settings import PanelTab, SettingsPanel
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.domain.session import current_language
 from boba.chainlit.infra.config import (
     AppConfig,
     ChatProfileConfig,
@@ -25,6 +24,7 @@ from boba.chainlit.infra.config import (
     UserMeta,
     UserSetting,
 )
+from boba.chainlit.infra.session import current_session
 from boba.db.postgres import AsyncPostgresPool
 
 pytestmark = pytest.mark.anyio
@@ -490,8 +490,8 @@ class TestPanelLanguage:
 
         monkeypatch.setattr(chainlit_config.ui, "language", "ru-RU")
 
-        if current_language() != "ru-RU":
-            raise AssertionError(f"language: {current_language()!r}")
+        if current_session().language != "ru-RU":
+            raise AssertionError(f"language: {current_session().language!r}")
 
     def test_without_forced_language_falls_to_session(
         self, monkeypatch: pytest.MonkeyPatch
@@ -501,8 +501,8 @@ class TestPanelLanguage:
         monkeypatch.setattr(chainlit_config.ui, "language", None)
 
         # вне ws-сессии языка нет: панель возьмёт язык по умолчанию
-        if current_language() != "":
-            raise AssertionError(f"language: {current_language()!r}")
+        if current_session().language != "":
+            raise AssertionError(f"language: {current_session().language!r}")
 
 
 class TestUserMeta:

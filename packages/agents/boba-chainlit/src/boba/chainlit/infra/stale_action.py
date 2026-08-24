@@ -1,4 +1,5 @@
 """Отсев действий фронта, адресованных закрытой websocket-сессии.
+from boba.chainlit.infra.session import session_source_ref
 
 Ошибки: своих не выпускает; запрос с живой сессией уходит дальше как есть.
 """
@@ -10,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from chainlit.session import WebsocketSession
+from boba.chainlit.infra.session import session_source_ref
 
 __all__ = ["StaleActionMiddleware"]
 
@@ -71,7 +72,7 @@ class StaleActionMiddleware:
         if envelope is None:
             return await self._app(scope, self._replay(body), send)
 
-        if WebsocketSession.get_by_id(envelope.session_id) is not None:
+        if session_source_ref().by_id(envelope.session_id).present:
             return await self._app(scope, self._replay(body), send)
 
         self._logger.info(

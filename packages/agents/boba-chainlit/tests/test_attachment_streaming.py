@@ -24,6 +24,7 @@ from httpx import AsyncClient
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.data.upload import SessionFiles, UploadPolicy, UploadRoute
 from boba.chainlit.domain.keys import ObjectKey
+from boba.chainlit.infra.session import ChainlitSession
 
 pytestmark = pytest.mark.anyio
 
@@ -171,7 +172,10 @@ async def served(
     await storage.upload_stream(key.render(), payload.source())
 
     file_id = SessionFiles.register(
-        session, key, mime="application/octet-stream", size=payload.size
+        ChainlitSession(session),
+        key,
+        mime="application/octet-stream",
+        size=payload.size,
     )
 
     app = FastAPI()

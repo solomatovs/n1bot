@@ -8,12 +8,11 @@ import plotly.graph_objects as go
 import pytest
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser
-from conftest import FakeUrl, Seed
+from conftest import FakeUrl, Seed, use_session
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from boba.chainlit.agent.tools.send_file import WorkspaceFile
-from boba.chainlit.data import data_layer as data_layer_module
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.data.upload import AttachmentServing, UploadPolicy
 from boba.chainlit.domain.keys import (
@@ -67,7 +66,7 @@ async def test_persisted_plotly_chart_is_served_as_json(
     monkeypatch: pytest.MonkeyPatch,
 ):
     layer = seeded.layer
-    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    use_session(monkeypatch, user_id=seeded.user.id)
     element = await create_chart_element(seeded)
 
     url = AttachmentUrl(
@@ -114,7 +113,7 @@ async def test_bot_file_is_shown_without_copying(
 ):
     """Тул send_file заводит элемент на готовый файл: содержимое не копируется."""
     layer = seeded.layer
-    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    use_session(monkeypatch, user_id=seeded.user.id)
 
     # файл уже в каталоге вложений треда — его туда положил агент через bash
     key = ObjectKey.build(seeded.user.id, seeded.thread_id, REPORT_NAME, "el")
@@ -184,7 +183,7 @@ async def test_attachment_range_is_served_partially(
 ):
     """Range — транспорт оконного чтения: вьюверы канваса тянут файл кусками."""
     layer = seeded.layer
-    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    use_session(monkeypatch, user_id=seeded.user.id)
 
     key = ObjectKey.build(seeded.user.id, seeded.thread_id, REPORT_NAME, "el")
     await storage.upload_file(
@@ -237,7 +236,7 @@ async def test_foreign_user_gets_no_file(
     monkeypatch: pytest.MonkeyPatch,
 ):
     layer = seeded.layer
-    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    use_session(monkeypatch, user_id=seeded.user.id)
     element = await create_chart_element(seeded)
 
     stranger = PersistedUser(
@@ -266,7 +265,7 @@ async def test_diagram_from_mermaid_dir_is_served(
 ) -> None:
     """Файл из mermaid/ отдаётся по своей ссылке: раньше отдача звала upload/."""
     layer = seeded.layer
-    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    use_session(monkeypatch, user_id=seeded.user.id)
     key = ObjectKey.build(
         seeded.user.id,
         seeded.thread_id,

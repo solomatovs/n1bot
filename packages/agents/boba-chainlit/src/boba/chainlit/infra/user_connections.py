@@ -23,11 +23,11 @@ UserConnectionsError — тело инструмента вызвано синх
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import wraps
-from typing import ClassVar, NoReturn, cast
+from typing import ClassVar, NoReturn
 
 import jwt
 from langchain_core.tools import BaseTool, StructuredTool
@@ -49,13 +49,8 @@ from boba.chainlit.connections.whitelist import (
     ConnectionWhitelist,
 )
 from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.session import (
-    UserMetadataField,
-    current_login_user,
-    current_user_id,
-    current_user_label,
-    current_user_roles,
-)
+from boba.chainlit.domain.session import UserMetadataField
+from boba.chainlit.infra.session import current_session
 from boba.chainlit.infra.tickets import TicketArming
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import PostgresConfig
@@ -72,8 +67,6 @@ from boba.toolkit.entry import ToolArgv
 from boba.toolkit.sql import SqlProfiles
 from boba.transport.http import HostPattern, HttpProfile
 from chainlit.auth.jwt import decode_jwt
-from chainlit.context import ChainlitContextException
-from chainlit.session import WebsocketSession
 
 __all__ = [
     "ClientLabel",
@@ -142,7 +135,7 @@ class SsoLogin(BaseModel):
         Ошибки: RefusalError NO_DELEGATION — сессия создана не SSO-входом
         с делегированием; текст называет причину и что сделать.
         """
-        user = current_login_user()
+        user = current_session().login_user()
         if user is None:
             cls._refuse("this session has no signed sign-in")
 
@@ -160,15 +153,10 @@ class SsoLogin(BaseModel):
         По сроку токена видно, тот ли это вход, которым пользователь только
         что зашёл, или сессия держит токен прошлого входа.
         """
-        from chainlit.context import context  # noqa: PLC0415
-
+        current = current_session()
         expires = "unknown"
-        session = ""
-        try:
-            token = context.session.token
-            session = context.session.id
-        except ChainlitContextException:
-            token = ""
+        session = current.id
+        token = current.token
 
         if token:
             # только для журнала: подпись проверил decode_jwt выше
@@ -281,24 +269,13 @@ class KerberosRefreshSignal:
     @classmethod
     async def send(cls) -> bool:
         """True — сигнал ушёл в живой сокет; False — слушать некому."""
-        from chainlit.context import context  # noqa: PLC0415
-
-        try:
-            session = context.session
-        except ChainlitContextException:
-            return False
-
-        if not isinstance(session, WebsocketSession):
-            return False
-
         payload = {"type": cls.TYPE}
+
         try:
-            await cast("Awaitable[None]", session.emit(cls.EVENT, payload))
+            return await current_session().emit(cls.EVENT, payload)
         except Exception:
             logger.warning("kerberos refresh signal failed", exc_info=True)
             return False
-
-        return True
 
 
 class UserKerberos:
@@ -571,7 +548,7 @@ class UserConnections:
     @staticmethod
     def _labelled(profile: ConnectionProfile, tool: str) -> ConnectionProfile:
         """Профиль с меткой клиента; без логина сессии профиль идёт как есть."""
-        login = current_user_label()
+        login = current_session().label
         if not login:
             return profile
 
@@ -614,7 +591,7 @@ class UserConnections:
 
     @staticmethod
     def _subject() -> Subject:
-        user_id = current_user_id()
+        user_id = current_session().user_id
         if not user_id:
             raise RefusalError(ConnectionRefusal.NO_SESSION, "no chainlit user session")
 
@@ -624,7 +601,7 @@ class UserConnections:
             msg = f"user id {user_id!r} is not the users.id integer"
             raise ToolConfigError(msg) from exc
 
-        return Subject(user_id=numeric, roles=sorted(current_user_roles()))
+        return Subject(user_id=numeric, roles=sorted(current_session().roles))
 
     async def _armed(self, profile: ConnectionProfile) -> ConnectionProfile:
         """Профиль с билетом вызова вместо kerberos-секции строки."""

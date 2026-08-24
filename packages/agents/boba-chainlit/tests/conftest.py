@@ -2,7 +2,7 @@
 
 import os
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -20,6 +20,7 @@ from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.domain.keys import AttachmentLinks, WorkspaceMount
 from boba.chainlit.infra.config import AppConfig
+from boba.chainlit.infra.session import ChainlitSession, ChainlitSessions
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.llm.bridge import ProviderChatModel
@@ -227,6 +228,7 @@ async def layer(
         storage=storage,
         feed=TranscriptFeed(thread_messages),
         links=AttachmentLinks(app_config.storage.public_prefix),
+        sessions=ChainlitSessions(),
     )
     await data_layer.setup()
     return data_layer
@@ -288,3 +290,78 @@ async def seeded(
         messages=messages,
         answer_step_id=answer_step_id,
     )
+
+
+SESSIONS = ChainlitSessions()
+"""Источник сессий для тестов: подмену ставит use_session на класс."""
+
+
+class SessionStub:
+    """Сессия в объёме, который читает ChainlitSession: пользователь и тред.
+
+    Тесты подставляют её вместо живой сессии chainlit, чтобы проверять
+    код, которому нужны только user_id и thread_id.
+    """
+
+    def __init__(
+        self,
+        user_id: str | None,
+        thread_id: str | None,
+        chat_profile: str | None = None,
+        identifier: str | None = None,
+    ) -> None:
+        self.id = "session-stub"
+        self.thread_id = thread_id
+        self.chat_profile = chat_profile
+        self.user = None
+        if user_id is None and identifier is None:
+            return
+
+        name = identifier
+        if name is None:
+            name = f"user-{user_id}"
+
+        self.user = PersistedUser(
+            id=user_id or "0",
+            identifier=name,
+            createdAt="2026-01-01T00:00:00Z",
+            metadata={},
+        )
+
+
+def use_session(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    user_id: str | None = None,
+    thread_id: str | None = None,
+    chat_profile: str | None = None,
+    identifier: str | None = None,
+) -> ChainlitSession:
+    """Подменяет сессию текущего вызова на подставную; отдаёт её обёртку."""
+    stub = SessionStub(user_id, thread_id, chat_profile, identifier)
+    session = ChainlitSession(stub)
+    # подменяется источник, а не отдельные функции: так стенд попадает во
+    # все пути — и в DI-провайдер, и в ref мест вне графа
+    monkeypatch.setattr(ChainlitSessions, "current", lambda self: session)
+
+    return session
+
+
+@pytest.fixture(autouse=True)
+def di_root() -> Iterator[None]:
+    """Корневой контейнер с источником сессий, как его собирает приложение.
+
+    Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
+    не режим работы.
+    """
+    from boba.chainlit.infra.di import Container
+    from boba.chainlit.infra.providers import session_source
+
+    previous = Container.root
+    root = Container(level="app")
+    root.provide(session_source, ChainlitSessions())
+    Container.set_root(root)
+    try:
+        yield
+    finally:
+        Container.set_root(previous)

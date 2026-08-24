@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,7 +34,7 @@ from boba.chainlit.canvas.panel import (
 )
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.session import RequiredSession
+from boba.chainlit.domain.session import SessionSource
 from boba.chainlit.rendering.errors import show_error
 from boba.toolkit.result import ErrorResult, ToolResult, pack_result
 
@@ -76,6 +76,9 @@ class CanvasPrompt(StrEnum):
 class CanvasOpener:
     """Показ панели: единый код для тула и клика по ссылке в переписке."""
 
+    def __init__(self, sessions: SessionSource) -> None:
+        self._sessions = sessions
+
     async def open(self, path: str) -> tuple[str, ToolResult]:
         """Вызов тула: показать файл; представление для ленты отдаёт вьювер."""
         try:
@@ -113,9 +116,8 @@ class CanvasOpener:
 
         return described
 
-    @staticmethod
-    def _session() -> tuple[str, str]:
-        session = RequiredSession.of()
+    def _session(self) -> tuple[str, str]:
+        session = self._sessions.current().require()
         return session.user_id, session.thread_id
 
     @staticmethod
@@ -127,10 +129,29 @@ class CanvasOpener:
 
 
 class CanvasActions:
-    """Обработчики действий фронта над файлами панели."""
+    """Обработчики действий фронта над файлами панели.
 
-    @staticmethod
-    async def open(action: cl.Action) -> None:
+    Источник сессий приходит при установке обработчиков: действие приходит
+    из уже открытой панели того же пользователя.
+    """
+
+    _sessions: ClassVar[SessionSource | None] = None
+
+    @classmethod
+    def use(cls, sessions: SessionSource) -> None:
+        """Ставит источник сессий обработчикам действий панели."""
+        cls._sessions = sessions
+
+    @classmethod
+    def _opener(cls) -> CanvasOpener:
+        if cls._sessions is None:
+            msg = "canvas actions are not wired: call CanvasActions.use(...)"
+            raise RuntimeError(msg)
+
+        return CanvasOpener(cls._sessions)
+
+    @classmethod
+    async def open(cls, action: cl.Action) -> None:
         """Клик по файлу в списке или по ссылке в ленте: сфокусировать файл."""
         path = action.payload.get(CanvasAction.PATH.value)
         if not path:
@@ -138,12 +159,12 @@ class CanvasActions:
             return
 
         try:
-            await CanvasOpener().show(str(path))
+            await cls._opener().show(str(path))
         except RefusalError as e:
             await show_error(f"Failed to open the canvas: {e}")
 
-    @staticmethod
-    async def content(action: cl.Action) -> dict[str, Any]:
+    @classmethod
+    async def content(cls, action: cl.Action) -> dict[str, Any]:
         """Смена файла в открытой панели: фронт берёт описание и рисует сам.
 
         Панель здесь не трогается — иначе chainlit пересоздал бы её и проиграл
@@ -158,7 +179,7 @@ class CanvasActions:
         refresh = bool(action.payload.get("refresh"))
 
         try:
-            described = await CanvasOpener().content(str(path), watch=not refresh)
+            described = await cls._opener().content(str(path), watch=not refresh)
         except RefusalError as e:
             await show_error(f"Failed to open the canvas: {e}")
             return {}
@@ -166,8 +187,11 @@ class CanvasActions:
         return described.props()
 
 
-def build_canvas_tools(cfg: CanvasToolConfig) -> list[BaseTool]:
-    opener = CanvasOpener()
+def build_canvas_tools(
+    cfg: CanvasToolConfig, sessions: SessionSource
+) -> list[BaseTool]:
+    opener = CanvasOpener(sessions)
+    CanvasActions.use(sessions)
 
     # вьюверы общего вида — забота самой панели; диаграммы регистрирует diagram
     CanvasRegistry.register(ImageViewer())

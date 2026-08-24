@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Protocol
 
 from langchain_core.tools import BaseTool
 
@@ -82,6 +83,20 @@ class ToolAccess:
         return False
 
 
+class AccessFacts(Protocol):
+    """Что гвардия спрашивает о вызывающем: его роли и профиль чата.
+
+    Объявлено здесь, а не взято из сессии приложения: toolrun живёт без
+    зависимостей на chainlit, и источник фактов ему подаёт вызывающий.
+    """
+
+    @property
+    def roles(self) -> Iterable[str]: ...
+
+    @property
+    def chat_profile(self) -> str | None: ...
+
+
 class ToolAccessGuard:
     """Проверка прав в момент вызова инструмента."""
 
@@ -89,12 +104,10 @@ class ToolAccessGuard:
         def __init__(
             self,
             access: ToolAccess,
-            roles_source: Callable[[], Iterable[str]],
-            profile_source: Callable[[], str | None],
+            facts_source: Callable[[], AccessFacts],
         ) -> None:
             self._access = access
-            self._roles_source = roles_source
-            self._profile_source = profile_source
+            self._facts_source = facts_source
 
         def before(
             self,
@@ -102,8 +115,9 @@ class ToolAccessGuard:
             args: tuple[object, ...],
             kwargs: dict[str, object],
         ) -> None:
-            roles = self._roles_source()
-            profile = self._profile_source()
+            facts = self._facts_source()
+            roles = facts.roles
+            profile = facts.chat_profile
             if self._access.allowed(name, roles, profile):
                 return
 
@@ -121,8 +135,8 @@ class ToolAccessGuard:
         cls,
         tools: Sequence[BaseTool],
         access: ToolAccess,
-        roles_source: Callable[[], Iterable[str]],
-        profile_source: Callable[[], str | None],
+        facts_source: Callable[[], AccessFacts],
     ) -> list[BaseTool]:
-        hooks = cls._Hooks(access, roles_source, profile_source)
+        """Права проверяются на вызове: факты берутся источником, не полями."""
+        hooks = cls._Hooks(access, facts_source)
         return ToolBody.hook_all(tools, hooks)
