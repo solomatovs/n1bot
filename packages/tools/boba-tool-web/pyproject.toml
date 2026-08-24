@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-web"
-version = "0.0.14.dev5"
+version = "0.0.14.dev6"
 description = "Инструменты web: скачивание и grep страницы целиком внутри песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-text==0.0.14.dev5",
-    "boba-toolkit==0.0.14.dev5",
-    "boba-transport-http==0.0.14.dev5",
+    "boba-text==0.0.14.dev6",
+    "boba-toolkit==0.0.14.dev6",
+    "boba-transport-http==0.0.14.dev6",
     "httpx",
     "pydantic>=2.10,<2.11",
 ]
