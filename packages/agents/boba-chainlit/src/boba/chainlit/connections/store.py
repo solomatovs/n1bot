@@ -37,6 +37,7 @@ from pydantic import (
 from boba.chainlit.connections.secrets import SecretCipher
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresConfig, PostgresError
+from boba.toolkit.failure import ValidationText
 from boba.transport.http import HttpProfile
 
 logger = logging.getLogger(__name__)
@@ -691,10 +692,13 @@ class ConnectionStore:
         try:
             profile = self._PROFILE.validate_python(self._cipher.decrypt(row["data"]))
         except ValidationError as exc:
+            # from None: в input_value разобранной строки лежит пароль, а
+            # traceback печатает причину сам, мимо FailureText
+            details = ValidationText.of(exc)
             msg = (
                 f"connections: row #{row['id']} {row['name']!r} is not a valid "
-                "connection profile"
+                f"connection profile: {details}"
             )
-            raise ConnectionStoreError(msg) from exc
+            raise ConnectionStoreError(msg) from None
 
         return StoredConnection(id=int(row["id"]), name=row["name"], profile=profile)
