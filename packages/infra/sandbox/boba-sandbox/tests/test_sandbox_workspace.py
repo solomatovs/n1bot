@@ -156,6 +156,20 @@ class TestBindSpec:
         with pytest.raises(RuntimeError, match="no chainlit session"):
             spec.render({})
 
+    def test_half_filled_session_names_what_it_has(self) -> None:
+        """Сессия есть, но пользователь без id: отказ не врёт про её отсутствие."""
+        spec = BindSpec.parse("/srv/ws/{user_id}.ext4")
+
+        with pytest.raises(RuntimeError) as caught:
+            spec.render({"thread_id": "t1"})
+
+        message = str(caught.value)
+        if "no chainlit session" in message:
+            raise AssertionError(f"причина названа неверно: {message}")
+
+        if "known: thread_id" not in message:
+            raise AssertionError(f"отказ перечисляет, что есть: {message}")
+
 
 class TestProfileRender:
     TEMPLATE = "/srv/ws/{user_id}/{thread_id}:/workspace"

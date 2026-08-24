@@ -32,7 +32,12 @@ from boba.toolkit.result import (
 from boba.toolkit.sql import (
     CatalogQuery,
     ConnectionName,
+    MaxChars,
+    MaxRows,
     RowBudget,
+    RowOffset,
+    RowPage,
+    RowWindow,
     SqlErrorKind,
     SqlProfiles,
     UnknownConnectionError,
@@ -145,6 +150,46 @@ async def _collect_blocks(
                 return
 
 
+async def _collect_page(
+    blocks: Any,
+    names: Sequence[str],
+    page: RowPage,
+) -> None:
+    """Строки из блоков стрима в страницу; набранное окно обрывает чтение."""
+    async for block in blocks:
+        for values in cast("Sequence[Sequence[Any]]", block):
+            row = dict(zip(names, values, strict=True))
+            if not page.add(row):
+                return
+
+
+async def _catalog_page(
+    connection: ClickHouseConfig,
+    query: CatalogQuery[ChParams],
+    window: RowWindow,
+) -> tuple[str, ToolResult]:
+    """Каталожный запрос страницей окна: границы выдачи назначает вызов."""
+    parameters = query.params
+    if not parameters:
+        parameters = None
+
+    page = RowPage(window)
+
+    async with PayloadClickHouse.opened_config(connection) as client:
+        try:
+            stream = await client.query_row_block_stream(
+                query.text, parameters=parameters
+            )
+            async with stream as blocks:
+                names: Sequence[str] = cast("Any", blocks.source).column_names
+                await _collect_page(blocks, names, page)
+        except DriverError as exc:
+            msg = f"query failed: {type(exc).__name__}: {exc}"
+            raise ClickHouseError(msg) from exc
+
+    return pack_result(page.table())
+
+
 async def _query_rows(
     connection: ClickHouseConfig,
     query: CatalogQuery[ChParams],
@@ -181,7 +226,7 @@ async def ch_connection_list(
 
 
 @tool
-async def ch_list_tables(
+async def ch_list_tables(  # noqa: PLR0913 — окно выдачи задаёт вызов
     connection_name: ConnectionName,
     ch_database: Annotated[
         str | None,
@@ -194,16 +239,23 @@ async def ch_list_tables(
         ),
     ] = None,
     *,
+    offset: RowOffset,
+    max_rows: MaxRows,
+    max_chars: MaxChars,
     cfg: Annotated[ChToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Список таблиц/view подключения. Колонки: database, table, engine."""
-    connection = cfg.resolve(connection_name)
+    """Список таблиц/view подключения. Колонки: database, table, engine.
 
-    return await _query_rows(connection, ChCatalog.tables(ch_database), cfg)
+    Выдача постраничная: сколько показано и как листать, сказано в note.
+    """
+    connection = cfg.resolve(connection_name)
+    window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
+
+    return await _catalog_page(connection, ChCatalog.tables(ch_database), window)
 
 
 @tool
-async def ch_describe_table(
+async def ch_describe_table(  # noqa: PLR0913 — окно выдачи задаёт вызов
     connection_name: ConnectionName,
     table: Annotated[
         str,
@@ -216,12 +268,21 @@ async def ch_describe_table(
         ),
     ] = None,
     *,
+    offset: RowOffset,
+    max_rows: MaxRows,
+    max_chars: MaxChars,
     cfg: Annotated[ChToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Схема таблицы: колонки, типы, default-выражения, комментарии."""
-    connection = cfg.resolve(connection_name)
+    """Схема таблицы: колонки, типы, default-выражения, комментарии.
 
-    return await _query_rows(connection, ChCatalog.columns(table, ch_database), cfg)
+    Широкая таблица приходит частями: как листать, сказано в note.
+    """
+    connection = cfg.resolve(connection_name)
+    window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
+
+    return await _catalog_page(
+        connection, ChCatalog.columns(table, ch_database), window
+    )
 
 
 @tool

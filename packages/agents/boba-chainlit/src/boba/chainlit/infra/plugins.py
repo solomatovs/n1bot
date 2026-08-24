@@ -33,7 +33,9 @@ from boba.chainlit.domain.keys import WorkspaceMount
 from boba.chainlit.domain.session import (
     current_chat_profile,
     current_thread_id,
+    current_user,
     current_user_id,
+    current_user_label,
     current_user_roles,
 )
 from boba.chainlit.infra.config import ProfilesSection, RolesSection
@@ -215,9 +217,28 @@ def stream_source(tool: str, call_id: str) -> CallStream | None:
 
 
 def _sandbox_path_vars() -> dict[str, str]:
-    """Значения {user_id}/{thread_id} для путей профиля на момент вызова."""
+    """Значения {user_id}/{thread_id} для путей профиля на момент вызова.
+
+    id есть только у пользователя, сохранённого слоем данных: вход, чей
+    create_user не прошёл, живёт в сессии как cl.User, и образ workspace
+    такому вызову не собрать.
+    """
     values = {"user_id": current_user_id(), "thread_id": current_thread_id()}
-    return {name: str(value) for name, value in values.items() if value}
+
+    ready: dict[str, str] = {}
+    for name, value in values.items():
+        if not value:
+            continue
+
+        ready[name] = str(value)
+
+    if current_user() is not None and "user_id" not in ready:
+        logger.error(
+            "sandbox: session user %r has no id: the sign-in was not persisted",
+            current_user_label(),
+        )
+
+    return ready
 
 
 def _enabled_tools(

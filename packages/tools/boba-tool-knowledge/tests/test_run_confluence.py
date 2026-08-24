@@ -49,7 +49,9 @@ async def test_run_confluence_search(confluence_cfg: ConfluenceToolsConfig) -> N
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(query=RunArgs.QUERY, limit=5, cfg=confluence_cfg)
+    content, _artifact = await body(
+        query=RunArgs.QUERY, limit=5, offset=0, cfg=confluence_cfg
+    )
 
     print(content)
 

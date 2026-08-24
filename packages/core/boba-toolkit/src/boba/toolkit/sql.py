@@ -23,7 +23,12 @@ from boba.toolkit.result import ResultTooLargeError, TableResult
 __all__ = [
     "CatalogQuery",
     "ConnectionName",
+    "MaxChars",
+    "MaxRows",
     "RowBudget",
+    "RowOffset",
+    "RowPage",
+    "RowWindow",
     "SqlErrorKind",
     "SqlProfiles",
     "UnknownConnectionError",
@@ -41,6 +46,36 @@ class SqlErrorKind(StrEnum):
 
 ConnectionName = Annotated[str, Field(min_length=1, description="Имя подключения")]
 """LLM-аргумент connection_name: выбор БД по whitelist'у профилей."""
+
+RowOffset = Annotated[
+    int,
+    Field(
+        ge=0,
+        description=(
+            "Сколько строк пропустить: 0 — первая страница. Следующую бери "
+            "тем же вызовом со значением next offset из note предыдущей."
+        ),
+    ),
+]
+"""LLM-аргумент offset: начало окна выдачи."""
+
+MaxRows = Annotated[
+    int,
+    Field(ge=1, description="Сколько строк вернуть на этой странице."),
+]
+"""LLM-аргумент max_rows: высота окна выдачи."""
+
+MaxChars = Annotated[
+    int,
+    Field(
+        ge=1,
+        description=(
+            "Потолок символов страницы: набор строк обрывается на нём, "
+            "остаток достаётся следующим offset."
+        ),
+    ),
+]
+"""LLM-аргумент max_chars: вес окна выдачи."""
 
 
 class RowBudget:
@@ -91,6 +126,89 @@ class RowBudget:
         return TableResult(rows=self._rows, note=note)
 
 
+class RowWindow(BaseModel):
+    """Окно выдачи, которым правит LLM: что пропустить и сколько отдать.
+
+    Модель листает сама: следующая страница — тот же вызов с offset,
+    сдвинутым на max_rows. Потолка со стороны приложения нет, границы
+    выдачи целиком в этих трёх числах.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    offset: int = Field(ge=0)
+    max_rows: int = Field(ge=1)
+    max_chars: int = Field(ge=1)
+
+    def probe(self) -> int:
+        """Сколько строк тянуть у драйвера: окно, а сверху разведочная строка.
+
+        Лишняя строка не показывается: по ней видно, что данные не кончились.
+        """
+        return self.offset + self.max_rows + 1
+
+
+class RowPage:
+    """Страница выборки по окну: пропуск, накопление и навигация в note.
+
+    Останавливается мягко — по строкам или по символам, — потому что предел
+    выдачи назначила сама модель и продолжение достаётся следующим вызовом.
+    """
+
+    def __init__(self, window: RowWindow) -> None:
+        self._window = window
+        self._rows: list[dict[str, Any]] = []
+        self._skipped = 0
+        self._chars = 0
+        self._more = False
+
+    @property
+    def more(self) -> bool:
+        """Данные за окном остались: следующий вызов их достанет."""
+        return self._more
+
+    def add(self, row: Mapping[str, Any]) -> bool:
+        """Взять строку; False — окно набрано, читать дальше незачем."""
+        if self._skipped < self._window.offset:
+            self._skipped += 1
+            return True
+
+        if len(self._rows) >= self._window.max_rows:
+            self._more = True
+            return False
+
+        plain = RowStream.plain(row)
+        chars = len(RowStream.encode(plain))
+
+        if self._rows and self._chars + chars > self._window.max_chars:
+            self._more = True
+            return False
+
+        self._chars += chars
+        self._rows.append(plain)
+
+        return True
+
+    def table(self) -> TableResult:
+        """Собранная страница; note объясняет модели, как листать дальше."""
+        return TableResult(rows=self._rows, note=self._note())
+
+    def _note(self) -> str:
+        if not self._rows:
+            return f"no rows at offset {self._window.offset}"
+
+        first = self._window.offset + 1
+        last = self._window.offset + len(self._rows)
+        shown = f"rows {first}-{last}"
+
+        if not self._more:
+            return f"{shown}; end of result"
+
+        # продолжать надо с непоказанной строки: набор мог оборваться
+        # по символам раньше, чем набралось max_rows
+        return f"{shown}; more rows available, next offset={last}"
+
+
 TConn = TypeVar("TConn", bound=BaseModel)
 """Профиль соединения коннектора: PostgresConfig, ClickHouseConfig, ..."""
 
@@ -128,14 +246,18 @@ class SqlProfiles(BaseModel, Generic[TConn]):
     max_rows: int = Field(
         default=100,
         ge=1,
-        description="Ограничение по кол-ву строк.",
+        description=(
+            "Ограничение по кол-ву строк для pg_query/ch_query: там окно "
+            "выдачи пишется в самом SQL, а не аргументами вызова."
+        ),
     )
     max_bytes: int = Field(
         default=1_000_000,
         ge=1,
         description=(
-            "Hardlimit на суммарный размер собранного результата (символов). "
-            "Превышение -> ошибка LLM «добавьте LIMIT»."
+            "Hardlimit на суммарный размер выдачи pg_query/ch_query (символов). "
+            "Превышение -> ошибка LLM «добавьте LIMIT». Инструменты со своим "
+            "окном (list_tables, describe_table) сюда не смотрят."
         ),
     )
 
