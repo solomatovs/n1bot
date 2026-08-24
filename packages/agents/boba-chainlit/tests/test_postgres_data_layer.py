@@ -9,11 +9,10 @@ from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import User as ChainlitUser
-from conftest import Seed
+from conftest import Seed, use_session
 
-from boba.chainlit.data import data_layer as data_layer_module
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.data.errors import DataRejectedError
+from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
 from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.domain.session import UserMetadataField
 
@@ -47,34 +46,29 @@ async def test_create_and_get_user(layer: PostgresDataLayer):
 
 
 async def test_identifier_case_cannot_split_a_user(layer: PostgresDataLayer):
-    """Любое написание логина попадает в одну строку с каноничным ключом."""
+    """Канон логина ставит вход; хранилище лишь не даёт завести двойника.
+
+    Второе написание того же логина означает, что мимо авторизатора прошёл
+    неканоничный identifier: такое падает, а не сливается молча.
+    """
     created = await layer.create_user(
         ChainlitUser(identifier="maksimov.ma", metadata={"roles": ["DEV"]})
     )
     if created is None:
         raise AssertionError("created is not None")
 
-    again = await layer.create_user(
-        ChainlitUser(identifier="Maksimov.MA", metadata={"provider": "LdapAuth"})
-    )
-    if again is None:
-        raise AssertionError("again is not None")
+    with pytest.raises(DataUnavailableError):
+        await layer.create_user(ChainlitUser(identifier="Maksimov.MA"))
 
-    if again.id != created.id:
-        raise AssertionError("второе написание не заводит вторую строку")
-
-    if again.identifier != "maksimov.ma":
-        raise AssertionError(f"ключ остаётся каноничным, дано {again.identifier!r}")
-
-    if again.metadata.get("roles") != ["DEV"]:
-        raise AssertionError("metadata прежнего входа сохраняются")
-
-    fetched = await layer.get_user("MAKSIMOV.MA")
+    fetched = await layer.get_user("maksimov.ma")
     if fetched is None:
-        raise AssertionError("поиск не зависит от регистра")
+        raise AssertionError("канонный логин находится")
 
     if fetched.id != created.id:
-        raise AssertionError("найдена та же строка")
+        raise AssertionError("та же строка")
+
+    if await layer.get_user("MAKSIMOV.MA") is not None:
+        raise AssertionError("хранилище ищет ровно то, что дал вход")
 
 
 async def test_create_user_keeps_the_sign_in_label_on_the_caller(
@@ -173,7 +167,7 @@ async def test_create_get_delete_element(
     seeded: Seed, files_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):
     layer = seeded.layer
-    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    use_session(monkeypatch, user_id=seeded.user.id)
 
     element = Text(
         thread_id=seeded.thread_id,
@@ -212,7 +206,7 @@ async def test_element_uploaded_by_route_keeps_its_stored_content(
 ):
     """Вложение пользователя уже в хранилище: слой пишет строку и не трогает файл."""
     layer = seeded.layer
-    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    use_session(monkeypatch, user_id=seeded.user.id)
 
     # так выглядит element после загрузки: путь из реестра сессии, копии на диске нет
     element = Text(
@@ -247,7 +241,7 @@ async def test_custom_element_keeps_props_out_of_storage(
     стоит монтирования образа пользователя.
     """
     layer = seeded.layer
-    monkeypatch.setattr(data_layer_module, "current_user_id", lambda: seeded.user.id)
+    use_session(monkeypatch, user_id=seeded.user.id)
 
     element = CustomElement(
         thread_id=seeded.thread_id,

@@ -1,4 +1,12 @@
-"""Данные текущей сессии chainlit: пользователь, тред."""
+"""Сессия чата в терминах домена: контракт, требования и метки входа.
+
+Транспорта здесь нет: chainlit живёт в реализации (infra/session.py), а
+логика знает только этот протокол. Так работа с сессией остаётся в одном
+месте, не таща за собой веб-фреймворк.
+
+Ошибки:
+RefusalError — требование сессии не выполнено, kind из SessionKind.
+"""
 
 from __future__ import annotations
 
@@ -8,33 +16,20 @@ from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, Final
+from typing import ClassVar, Final, Protocol
 
-import jwt
-
-import chainlit as cl
 from boba.chainlit.domain.errors import RefusalError
-from chainlit.auth.jwt import decode_jwt
-from chainlit.config import config as chainlit_config
-from chainlit.context import ChainlitContextException
-from chainlit.session import WebsocketSession
 
 __all__ = [
     "LogLine",
     "LogUserMark",
+    "RequiredSession",
+    "Session",
+    "SessionKind",
+    "SessionSource",
     "SsoMarks",
     "UserLogin",
     "UserMetadataField",
-    "current_chat_profile",
-    "current_language",
-    "current_login_user",
-    "current_thread_id",
-    "current_user",
-    "current_user_id",
-    "current_user_label",
-    "current_user_metadata",
-    "current_user_roles",
-    "roles_of_user",
 ]
 
 
@@ -86,16 +81,6 @@ class SsoMarks:
             return None
 
         return cls(principal=principal, login=login)
-
-    @classmethod
-    def of_token(cls, token: str) -> SsoMarks | None:
-        """Метки из JWT-cookie; None — токен негоден или вход не SSO."""
-        try:
-            user = decode_jwt(token)
-        except jwt.PyJWTError:
-            return None
-
-        return cls.of_metadata(user.metadata)
 
 
 class LogLine:
@@ -150,128 +135,54 @@ class LogUserMark:
             self._current.reset(token)
 
 
-def current_user() -> cl.User | cl.PersistedUser | None:
-    """Пользователь сессии chainlit; вне сессии — None.
+class Session(Protocol):
+    """Что доменная логика спрашивает у сессии чата.
 
-    Строка users, слитая всеми входами подряд: metadata здесь живут дольше
-    одного входа. Ровно этот вход описывает current_login_user().
+    Реализация живёт в infra и знает про chainlit; здесь — только смысл:
+    кто пришёл, в каком треде и с какими правами.
     """
-    try:
-        return cl.user_session.get("user")
-    except ChainlitContextException:
-        return None
+
+    @property
+    def present(self) -> bool:
+        """Есть ли за обёрткой живая сессия."""
+        ...
+
+    @property
+    def user_id(self) -> str | None:
+        """id строки users; None — вход не сохранён слоем данных."""
+        ...
+
+    @property
+    def thread_id(self) -> str | None: ...
+
+    @property
+    def identifier(self) -> str:
+        """Логин, каким его записал вход; пустая строка — пользователя нет."""
+        ...
+
+    @property
+    def label(self) -> str:
+        """Имя для журнала; пустая строка — вызов идёт вне сессии."""
+        ...
+
+    @property
+    def roles(self) -> frozenset[str]: ...
+
+    @property
+    def chat_profile(self) -> str | None: ...
+
+    @property
+    def metadata(self) -> Mapping[str, object]: ...
+
+    def require(self) -> RequiredSession:
+        """Пользователь и тред; без них операция отказывает."""
+        ...
 
 
-def roles_of_user(user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
-    """Роли пользователя из metadata; годится и вне контекста сессии."""
-    if user is None:
-        return frozenset()
+class SessionSource(Protocol):
+    """Откуда берётся сессия текущего вызова."""
 
-    metadata = user.metadata
-    if metadata is None:
-        metadata = {}
-
-    roles = metadata.get(UserMetadataField.ROLES)
-    if not roles:
-        roles = []
-    if isinstance(roles, str):
-        return frozenset({roles})
-
-    return frozenset(str(r) for r in roles)
-
-
-def current_user_roles() -> frozenset[str]:
-    return roles_of_user(current_user())
-
-
-def current_user_metadata() -> dict[str, object]:
-    """Metadata пользователя сессии; вне сессии — пустой словарь."""
-    user = current_user()
-    if user is None:
-        return {}
-
-    metadata = user.metadata
-    if metadata is None:
-        return {}
-
-    return dict(metadata)
-
-
-def current_language() -> str:
-    """Язык интерфейса: навязанный конфигом chainlit либо язык вкладки.
-
-    Тот же порядок, что у самого chainlit (config.ui.language or language):
-    иначе панель говорила бы не на языке остального интерфейса.
-    """
-    if forced := chainlit_config.ui.language:
-        return forced
-
-    try:
-        session = cl.context.session
-    except ChainlitContextException:
-        return ""
-
-    if not isinstance(session, WebsocketSession):
-        return ""
-
-    return session.language
-
-
-def current_chat_profile() -> str | None:
-    """Имя профиля чата текущей сессии; None — профиль не выбран."""
-    try:
-        value = cl.user_session.get("chat_profile")
-    except ChainlitContextException:
-        return None
-
-    if not value:
-        return None
-
-    return str(value)
-
-
-def current_login_user() -> cl.User | None:
-    """Пользователь, каким его выпустил вход: из подписанного JWT сессии.
-
-    В сессии лежит строка users, чьи metadata сливаются всеми входами
-    подряд; JWT же подписан приложением и описывает ровно этот вход.
-    None — сессии нет, токена нет или он не проходит проверку подписи/срока.
-    """
-    try:
-        token = cl.context.session.token
-    except ChainlitContextException:
-        return None
-
-    if not token:
-        return None
-
-    try:
-        return decode_jwt(token)
-    except jwt.PyJWTError:
-        return None
-
-
-def current_user_id() -> str | None:
-    user = current_user()
-    return getattr(user, "id", None)
-
-
-def current_user_label() -> str:
-    """Логин для логов; пустая строка — запрос идёт вне сессии chainlit."""
-    user = current_user()
-    if user is None:
-        return ""
-    identifier = getattr(user, "identifier", "")
-    if identifier:
-        return str(identifier)
-    return str(getattr(user, "id", ""))
-
-
-def current_thread_id() -> str | None:
-    try:
-        return cl.context.session.thread_id
-    except ChainlitContextException:
-        return None
+    def current(self) -> Session: ...
 
 
 class SessionKind(StrEnum):
@@ -283,21 +194,23 @@ class SessionKind(StrEnum):
 
 @dataclass(frozen=True)
 class RequiredSession:
-    """Пользователь и тред текущей сессии; без них операция отказывает.
+    """Пользователь и тред сессии; без них операция отказывает.
 
-    Ошибки: RefusalError с kind из SessionKind.
+    Собирается ChatSession.require(): требование к сессии живёт там же,
+    где и сама сессия.
     """
 
     user_id: str
     thread_id: str
 
     @classmethod
-    def of(cls) -> RequiredSession:
-        user_id = current_user_id()
+    def of(cls, session: Session) -> RequiredSession:
+        """Требование к переданной сессии; отказ называет, чего не хватило."""
+        user_id = session.user_id
         if not user_id:
             raise RefusalError(SessionKind.NO_SESSION, "no chainlit user session")
 
-        thread_id = current_thread_id()
+        thread_id = session.thread_id
         if not thread_id:
             raise RefusalError(SessionKind.NO_THREAD, "no active thread")
 

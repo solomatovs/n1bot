@@ -50,6 +50,7 @@ from boba.chainlit.data.storage import (
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chainlit.domain.fields import ElementField, FileField
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
+from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
@@ -583,7 +584,9 @@ class SessionFiles:
     """Префикс подмонтированного приложения; ссылка без него уйдёт в корень домена."""
 
     @classmethod
-    def register(cls, session: Any, key: ObjectKey, *, mime: str, size: int) -> str:
+    def register(
+        cls, session: ChainlitSession, key: ObjectKey, *, mime: str, size: int
+    ) -> str:
         """Регистрирует объект хранилища как файл сессии; отдаёт его id."""
         file_id = str(uuid.uuid4())
         suffix = mimetypes.guess_extension(mime) or ""
@@ -599,7 +602,7 @@ class SessionFiles:
         return file_id
 
     @classmethod
-    def url_for(cls, session: Any, file_id: str) -> str:
+    def url_for(cls, session: ChainlitSession, file_id: str) -> str:
         """Ссылка на файл сессии — тот же вид, что строит фронт по chainlit_key."""
         prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
         return f"{prefix}/project/file/{file_id}?session_id={session.id}"
@@ -761,7 +764,7 @@ class UploadRoute:
 
     def _validate(
         self,
-        session: Any,
+        session: ChainlitSession,
         part: MultipartFile,
         request: Request,
         ask_parent_id: str | None,
@@ -769,7 +772,7 @@ class UploadRoute:
         """Проверки chainlit по заголовкам: тело ещё не прочитано."""
         from chainlit.server import validate_file_upload  # noqa: PLC0415
 
-        spec = session.files_spec.get(ask_parent_id, None)
+        spec = session.file_spec(ask_parent_id)
         if not spec and ask_parent_id:
             raise HTTPException(status_code=404, detail="Parent message not found")
 
@@ -805,30 +808,35 @@ class UploadRoute:
         }
 
     @staticmethod
-    def _session(session_id: str, current_user: Any) -> Any:
-        from chainlit.session import WebsocketSession  # noqa: PLC0415
-
-        session = None
-        if session_id:
-            session = WebsocketSession.get_by_id(session_id)
-        if not session:
+    def _session(session_id: str, current_user: Any) -> ChainlitSession:
+        session = session_source_ref().by_id(session_id)
+        if not session.present:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        if current_user and (
-            not session.user or session.user.identifier != current_user.identifier
-        ):
+        if not current_user:
+            return session
+
+        if session.identifier != current_user.identifier:
             raise HTTPException(
                 status_code=401, detail="This session belongs to another user"
             )
+
         return session
 
     @staticmethod
-    def _user_id(session: Any) -> str:
-        user = session.user
-        identifier = getattr(user, "id", None) or getattr(user, "identifier", None)
-        if not identifier:
-            raise HTTPException(status_code=401, detail="Session has no user")
-        return str(identifier)
+    def _user_id(session: ChainlitSession) -> str:
+        """Ключ вложений — id строки users; логин в него не подставляется.
+
+        Логин у пользователя меняется (регистр, переименование в каталоге),
+        и подстановка увела бы часть вложений в чужой префикс.
+        """
+        user_id = session.user_id
+        if not user_id:
+            raise HTTPException(
+                status_code=401, detail="Session has no persisted user"
+            )
+
+        return str(user_id)
 
 
 class AttachmentServing:

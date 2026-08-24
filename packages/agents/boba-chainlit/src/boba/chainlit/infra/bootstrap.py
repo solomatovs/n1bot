@@ -22,6 +22,7 @@ from boba.chainlit.infra.config import (
 from boba.chainlit.infra.di import Container
 from boba.chainlit.infra.error_middleware import DomainErrorMiddleware
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
+from boba.chainlit.infra.session import current_session
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
 from boba.sandbox.zygote import ZygoteRegistry
@@ -252,6 +253,7 @@ def _use_auth(config: AppConfig, container: Container) -> None:
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
+    container.provide(providers.session_source, providers.session_source())
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
     container.eager(providers.kb_schema)
@@ -265,21 +267,14 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
 
 
 def _get_or_create_session_container():
-    from chainlit.context import ChainlitContextException, get_context  # noqa: PLC0415
-    from chainlit.user_session import user_session  # noqa: PLC0415
-
-    try:
-        get_context()
-    except ChainlitContextException:
+    session = current_session()
+    if not session.present:
         return None
 
-    container = user_session.get(Container.SESSION_KEY)
+    container = session.value(Container.SESSION_KEY)
     if container is None:
         container = Container(level="session", parent=Container.root)
-        user_session.set(
-            Container.SESSION_KEY,
-            container,
-        )
+        session.remember(Container.SESSION_KEY, container)
 
     if not isinstance(container, Container):
         raise ValueError(
@@ -291,7 +286,6 @@ def _get_or_create_session_container():
 
 def _close_container_if_session_end() -> None:
     from chainlit.config import config as cl_config  # noqa: PLC0415
-    from chainlit.user_session import user_session  # noqa: PLC0415
 
     prev = cl_config.code.on_chat_end
 
@@ -301,7 +295,7 @@ def _close_container_if_session_end() -> None:
             if prev:
                 await prev()
         finally:
-            if container := user_session.get(Container.SESSION_KEY):
+            if container := current_session().value(Container.SESSION_KEY):
                 await container.aclose()
 
     cl_config.code.on_chat_end = on_chat_end

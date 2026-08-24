@@ -35,7 +35,7 @@ from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.session import current_user_id
+from boba.chainlit.domain.session import SessionSource
 from boba.chainlit.domain.turn import TurnContext, TurnPort
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.llm.chat import ResponseField
@@ -349,12 +349,14 @@ class ChatTurn(TurnPort):
         return ChatView.derive_id(self._thread_id, self._key, StepRole.ANSWER)
 
     @staticmethod
-    def human_message(msg: cl.Message) -> HumanMessage:
+    def human_message(msg: cl.Message, sessions: SessionSource) -> HumanMessage:
         """Сообщение пользователя; пути вложений — как их видит песочница."""
         attachments: list[dict[str, str]] = []
+        user_id = sessions.current().user_id
+
         for element in msg.elements or []:
             key = ObjectKey.build(
-                current_user_id(), element.thread_id, element.name, element.id
+                user_id, element.thread_id, element.name, element.id
             )
             name = element.name
             if not name:

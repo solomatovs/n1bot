@@ -25,7 +25,7 @@ from boba.chainlit.canvas.journal import (
 )
 from boba.chainlit.canvas.panel import ToolStreams
 from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.session import RequiredSession
+from boba.chainlit.domain.session import SessionSource
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 
 __all__ = [
@@ -118,7 +118,7 @@ class StreamLogsOps:
     thread_id: str
 
     @classmethod
-    def resolve(cls) -> StreamLogsOps:
+    def resolve(cls, sessions: SessionSource) -> StreamLogsOps:
         """Собрать сессию вызова; нет журнала или сессии — отказ для LLM."""
         journal = StreamJournalHub.get()
         if journal is None:
@@ -127,7 +127,7 @@ class StreamLogsOps:
                 "stream journal is disabled in the app config",
             )
 
-        session = RequiredSession.of()
+        session = sessions.current().require()
         return cls(
             journal=journal,
             user_id=session.user_id,
@@ -163,12 +163,12 @@ class StreamLogsOps:
         return f"journals of thread {thread_id} deleted, freed {freed} bytes"
 
 
-def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
+def build_stream_logs_tools(cfg: None, sessions: SessionSource) -> list[BaseTool]:
     @tool(response_format="content_and_artifact")
     def stream_logs_usage() -> tuple[str, ToolResult]:
         """Показать занятость тома журналов вывода инструментов."""
         try:
-            text = StreamLogsOps.resolve().usage_text()
+            text = StreamLogsOps.resolve(sessions).usage_text()
         except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
         except StreamJournalError as e:
@@ -187,7 +187,7 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
     ) -> tuple[str, ToolResult]:
         """Удалить журналы вывода инструментов одного треда."""
         try:
-            text = StreamLogsOps.resolve().purge(thread_id)
+            text = StreamLogsOps.resolve(sessions).purge(thread_id)
         except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
         except StreamJournalError as e:

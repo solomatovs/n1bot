@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from conftest import SESSIONS, use_session
 from pydantic import BaseModel
 
 from boba.chainlit.canvas import diagram as diagram_module
@@ -30,7 +31,6 @@ from boba.chainlit.canvas.panel import (
     RenderVerdicts,
 )
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain import session as session_module
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.domain.session import SessionKind
@@ -114,12 +114,12 @@ class TestMermaidSpec:
 
 class TestToolInterface:
     def test_tool_names(self) -> None:
-        tools = build_diagram_tools(DiagramToolConfig(max_chars=1000))
+        tools = build_diagram_tools(DiagramToolConfig(max_chars=1000), SESSIONS)
         if [t.name for t in tools] != ["diagram_save"]:
             raise AssertionError('[t.name for t in tools] == ["diagram_save"]')
 
     def test_save_schema_fields(self) -> None:
-        save = build_diagram_tools(DiagramToolConfig(max_chars=1000))[0]
+        save = build_diagram_tools(DiagramToolConfig(max_chars=1000), SESSIONS)[0]
         schema = cast(type[BaseModel], save.tool_call_schema)
         if set(schema.model_fields) != {"name", "spec"}:
             raise AssertionError('set(schema.model_fields) == {"name", "spec"}')
@@ -127,7 +127,7 @@ class TestToolInterface:
     def test_build_registers_viewer(self) -> None:
         """Канвас узнаёт про .mmd только отсюда — иначе файл некому показать."""
         CanvasRegistry.reset()
-        build_diagram_tools(DiagramToolConfig(max_chars=1000))
+        build_diagram_tools(DiagramToolConfig(max_chars=1000), SESSIONS)
 
         viewer = CanvasRegistry.viewer_for("orders.mmd")
 
@@ -143,29 +143,27 @@ class TestRefusal:
     @pytest.mark.anyio
     async def test_save_without_session(self) -> None:
         with pytest.raises(RefusalError) as failure:
-            await DiagramFiles(1000).save("x.mmd", ER_SPEC)
+            await DiagramFiles(1000, SESSIONS).save("x.mmd", ER_SPEC)
 
         if failure.value.kind != SessionKind.NO_SESSION:
             raise AssertionError("failure.value.kind == SessionKind.NO_SESSION")
 
     @pytest.mark.anyio
     async def test_save_bad_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(session_module, "current_user_id", lambda: "7")
-        monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
+        use_session(monkeypatch, user_id="7", thread_id=THREAD)
 
         with pytest.raises(DiagramRefusedError) as failure:
-            await DiagramFiles(1000).save("x.mmd", "не mermaid вовсе")
+            await DiagramFiles(1000, SESSIONS).save("x.mmd", "не mermaid вовсе")
 
         if failure.value.kind != DiagramErrorKind.INVALID_SPEC:
             raise AssertionError("failure.value.kind == DiagramErrorKind.INVALID_SPEC")
 
     @pytest.mark.anyio
     async def test_save_over_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(session_module, "current_user_id", lambda: "7")
-        monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
+        use_session(monkeypatch, user_id="7", thread_id=THREAD)
 
         with pytest.raises(DiagramRefusedError) as failure:
-            await DiagramFiles(10).save("x.mmd", ER_SPEC)
+            await DiagramFiles(10, SESSIONS).save("x.mmd", ER_SPEC)
 
         if failure.value.kind != DiagramErrorKind.INVALID_SPEC:
             raise AssertionError("failure.value.kind == DiagramErrorKind.INVALID_SPEC")
@@ -205,11 +203,10 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DiagramFiles:
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)
 
-    monkeypatch.setattr(session_module, "current_user_id", lambda: "7")
-    monkeypatch.setattr(session_module, "current_thread_id", lambda: THREAD)
+    use_session(monkeypatch, user_id="7", thread_id=THREAD)
     monkeypatch.setattr(DiagramFiles, "_layer", staticmethod(lambda: layer))
 
-    return DiagramFiles(1000)
+    return DiagramFiles(1000, SESSIONS)
 
 
 class TestSaveAndView:
@@ -567,7 +564,7 @@ class TestSaveToolEndToEnd:
 
     async def _call(self, spec: str, verdict: dict[str, Any], panel: list[Any]) -> Any:
         """Зовёт тул как агент — tool_call, иначе artifact до вызывающего не дойдёт."""
-        save = build_diagram_tools(DiagramToolConfig(max_chars=32000))[0]
+        save = build_diagram_tools(DiagramToolConfig(max_chars=32000), SESSIONS)[0]
         request = {
             "name": "diagram_save",
             "args": {"name": "orders.mmd", "spec": spec},

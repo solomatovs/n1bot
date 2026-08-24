@@ -37,7 +37,7 @@ from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageError, StorageNotFoundError
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.session import RequiredSession
+from boba.chainlit.domain.session import SessionSource
 from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.toolkit.calls import ScriptCall, ToolCallViews
@@ -302,8 +302,9 @@ class DiagramEntry(BaseModel):
 class DiagramFiles:
     """Спеки mermaid в каталоге mermaid/ треда: проверка, сохранение, чтение."""
 
-    def __init__(self, max_chars: int) -> None:
+    def __init__(self, max_chars: int, sessions: SessionSource) -> None:
         self._max_chars = max_chars
+        self._sessions = sessions
 
     async def save(self, name: str, spec: str) -> ObjectKey:
         """Проверить спеку и записать файл; отказ — DiagramRefusedError."""
@@ -339,9 +340,8 @@ class DiagramFiles:
         except DiagramSpecError as e:
             raise DiagramRefusedError(DiagramErrorKind.INVALID_SPEC, str(e)) from e
 
-    @staticmethod
-    def _session() -> tuple[str, str]:
-        session = RequiredSession.of()
+    def _session(self) -> tuple[str, str]:
+        session = self._sessions.current().require()
         return session.user_id, session.thread_id
 
     @staticmethod
@@ -532,8 +532,10 @@ class DiagramCard:
         await element.send(for_id=for_id)
 
 
-def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
-    files = DiagramFiles(cfg.max_chars)
+def build_diagram_tools(
+    cfg: DiagramToolConfig, sessions: SessionSource
+) -> list[BaseTool]:
+    files = DiagramFiles(cfg.max_chars, sessions)
     card = DiagramCard(files)
     # клик по карточке открывает файл в канвасе: вьювер знает про .mmd отсюда
     CanvasRegistry.register(MermaidViewer(files))

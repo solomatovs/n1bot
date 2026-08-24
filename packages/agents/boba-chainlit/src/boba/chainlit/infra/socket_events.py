@@ -23,9 +23,9 @@ from typing import Any, ClassVar, cast
 
 from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
-from chainlit.session import WebsocketSession
 
 __all__ = ["SocketEvents"]
 
@@ -55,8 +55,8 @@ class SocketFacts:
     @classmethod
     def of(cls, sid: str) -> SocketFacts:
         """Факты по сокету; сессии ещё (или уже) нет — поля пустые."""
-        session = WebsocketSession.get(sid)
-        if session is None:
+        session = session_source_ref().of_socket(sid)
+        if not session.present:
             return cls(
                 sid=sid,
                 session_id="",
@@ -68,7 +68,7 @@ class SocketFacts:
         return cls.of_session(session)
 
     @classmethod
-    def of_session(cls, session: WebsocketSession) -> SocketFacts:
+    def of_session(cls, session: ChainlitSession) -> SocketFacts:
         """Факты по известной сессии сокета."""
         thread_id = session.thread_id
         if not thread_id:
@@ -173,12 +173,13 @@ class SocketEvents:
         этого его задаче прилетает отмена — иначе ход прочитал бы её как обрыв
         снаружи и отчитался бы другой формулировкой.
         """
-        session = WebsocketSession.get(sid)
-        if session is None:
+        session = session_source_ref().of_socket(sid)
+        socket = session.websocket
+        if socket is None:
             logger.info("socket stop without session: sid=%s", sid)
             return
 
-        init_ws_context(session)
+        init_ws_context(socket)
 
         facts = SocketFacts.of_session(session)
         logger.info("socket stop: %s", facts.line())
@@ -186,14 +187,14 @@ class SocketEvents:
         if chainlit_config.code.on_stop:
             await chainlit_config.code.on_stop()
 
-        if session.current_task:
-            session.current_task.cancel()
+        if socket.current_task:
+            socket.current_task.cancel()
 
     @classmethod
     async def _restore_loading(cls, sid: str) -> None:
         """Возвращает индикатор хода: chainlit гасит его на каждом реконнекте."""
-        session = WebsocketSession.get(sid)
-        if session is None:
+        session = session_source_ref().of_socket(sid)
+        if not session.present:
             logger.warning("socket ready without session: sid=%s", sid)
             return
 

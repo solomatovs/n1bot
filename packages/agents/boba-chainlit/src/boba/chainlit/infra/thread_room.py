@@ -1,4 +1,5 @@
 """Рассылка событий хода во все живые сокеты треда.
+from boba.chainlit.infra.session import current_session, session_source_ref
 
 Ход живёт дольше сокета: вкладку обновили, а стрим продолжается. ThreadEmitter
 решает адресатов в момент эмиссии — каждое событие уходит всем живым сессиям
@@ -12,10 +13,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 from boba.chainlit.canvas.panel import SignalTransport
-from chainlit.context import ChainlitContext, context_var, get_context
+from boba.chainlit.domain.errors import InternalServiceError
+from boba.chainlit.infra.session import current_session, session_source_ref
+from chainlit.context import ChainlitContext, context_var
 from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio
-from chainlit.session import WebsocketSession, ws_sessions_id
+from chainlit.session import WebsocketSession
 
 __all__ = [
     "CanvasRoomTransport",
@@ -80,19 +83,22 @@ class ThreadRoom:
     def sessions(thread_id: str) -> list[WebsocketSession]:
         """Сессии треда с живым сокетом; умершие ждут таймаута chainlit."""
         sessions: list[WebsocketSession] = []
-        for session in list(ws_sessions_id.values()):
-            if session.thread_id != thread_id:
+        for session in session_source_ref().in_thread(thread_id):
+            socket = session.websocket
+            if socket is None:
                 continue
+
             if not sio.manager.is_connected(session.socket_id, "/"):
                 continue
-            sessions.append(session)
+
+            sessions.append(socket)
+
         return sessions
 
     @staticmethod
     def activate(thread_id: str) -> None:
         """Подменяет контекст текущей задачи: эмиссии хода видят все вкладки."""
-        current = get_context()
-        session = cast("WebsocketSession", current.session)
+        session = ThreadRoom._websocket()
         emitter = ThreadEmitter(session, thread_id)
         context_var.set(ChainlitContext(session, emitter))
         logger.info("broadcast on thread %s: session=%s", thread_id, session.id)
@@ -100,9 +106,20 @@ class ThreadRoom:
     @staticmethod
     def keep_loading() -> None:
         """Глушит task_end обёртки chainlit вокруг текущего хендлера."""
-        current = get_context()
-        session = cast("WebsocketSession", current.session)
+        session = ThreadRoom._websocket()
         context_var.set(ChainlitContext(session, StickyLoadingEmitter(session)))
+
+    @staticmethod
+    def _websocket() -> WebsocketSession:
+        """Сокетная сессия вызова; без неё рассылать ход некуда."""
+        session = current_session().websocket
+        if session is None:
+            raise InternalServiceError(
+                internal_detail="thread room needs a websocket session",
+                user_detail=None,
+            )
+
+        return session
 
 
 class CanvasRoomTransport(SignalTransport):

@@ -7,13 +7,14 @@ import logging
 from typing import Any
 
 import pytest
+from conftest import use_session
 
-from boba.chainlit.infra import log_context
 from boba.chainlit.infra.log_context import (
     RequestUserContext,
     RequestUserMiddleware,
     UserLogContext,
 )
+from boba.chainlit.infra.session import ChainlitSession
 
 
 @pytest.fixture(autouse=True)
@@ -41,18 +42,19 @@ class TestUserInEveryRecord:
     def test_user_label_taken_from_session(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(log_context, "current_user_label", lambda: "ivanov")
+        use_session(monkeypatch, user_id="7", identifier="ivanov")
         if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
             raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUTE) =…")
 
     def test_broken_session_does_not_break_logging(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom() -> str:
+        def boom(_: ChainlitSession) -> str:
             msg = "нет контекста"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr(log_context, "current_user_label", boom)
+        monkeypatch.setattr(ChainlitSession, "label", property(boom))
+
         if getattr(self._record(), UserLogContext.ATTRIBUTE) != UserLogContext.UNKNOWN:
             raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUTE) =…")
 
@@ -64,7 +66,7 @@ class TestUserInEveryRecord:
             raise AssertionError("logging.getLogRecordFactory() is factory")
 
     def test_format_with_user_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(log_context, "current_user_label", lambda: "petrov")
+        use_session(monkeypatch, user_id="7", identifier="petrov")
         formatter = logging.Formatter("[%(user)s] %(message)s")
         if formatter.format(self._record()) != "[petrov] сообщение":
             raise AssertionError('formatter.format(self._record()) == "[petrov] сообщ…')
@@ -80,7 +82,7 @@ class TestUserInEveryRecord:
     def test_session_wins_over_request_context(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(log_context, "current_user_label", lambda: "ivanov")
+        use_session(monkeypatch, user_id="7", identifier="ivanov")
         token = RequestUserContext.set("sidorov")
         try:
             if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":

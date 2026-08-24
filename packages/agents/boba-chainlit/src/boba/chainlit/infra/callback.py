@@ -27,15 +27,6 @@ from boba.chainlit.domain.fields import ThreadField
 from boba.chainlit.domain.session import (
     LogUserMark,
     UserMetadataField,
-    current_chat_profile,
-    current_language,
-    current_thread_id,
-    current_user,
-    current_user_id,
-    current_user_label,
-    current_user_metadata,
-    current_user_roles,
-    roles_of_user,
 )
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
@@ -52,6 +43,11 @@ from boba.chainlit.infra.providers import (
     chat_profiles_registry,
     get_app_config,
     langchain_agent,
+)
+from boba.chainlit.infra.session import (
+    ChainlitSession,
+    current_session,
+    session_source_ref,
 )
 from boba.chainlit.infra.thread_room import ThreadRoom
 from boba.chainlit.infra.user_connections import UserKerberos
@@ -77,7 +73,7 @@ async def on_message(
     ],
     data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
 ):
-    thread_id = current_thread_id()
+    thread_id = current_session().thread_id
     if thread_id is None:
         raise InternalServiceError(
             internal_detail="on_message outside a chainlit thread",
@@ -103,7 +99,7 @@ async def on_message(
             await rewind.apply(msg.id, msg.content)
             await rewind.refresh_view()
 
-        state_log = LlmStateLog(LogUserMark(current_user_label(), thread_id))
+        state_log = LlmStateLog(LogUserMark(current_session().label, thread_id))
         run_config = RunnableConfig(
             callbacks=[turn.tracer, state_log],
             configurable={"thread_id": thread_id},
@@ -112,7 +108,7 @@ async def on_message(
         stream = cast(
             "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
             graph.astream(
-                {"messages": [ChatTurn.human_message(msg)]},
+                {"messages": [ChatTurn.human_message(msg, session_source_ref())]},
                 stream_mode="messages",
                 config=run_config,
             ),
@@ -134,7 +130,7 @@ async def set_chat_profiles(
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
 ) -> list[cl.ChatProfile]:
     """Профили, видимые ролям пользователя; выбор профиля обязателен."""
-    roles = roles_of_user(user)
+    roles = ChainlitSession.roles_of(user)
 
     profiles: list[cl.ChatProfile] = []
     for name, profile in registry.visible_for(roles).items():
@@ -156,20 +152,22 @@ async def set_chat_profiles(
 
 
 def _session_selected_profile(registry: ChatProfiles) -> SelectedProfile:
-    return registry.resolve(current_chat_profile(), current_user_roles())
+    session = current_session()
+
+    return registry.resolve(session.chat_profile, session.roles)
 
 
 def _session_view(config: AppConfig, registry: ChatProfiles) -> SettingsView:
     """Итоговые настройки сессии: профиль плюс личные настройки пользователя."""
     selected = _session_selected_profile(registry)
 
-    saved = UserMeta.of(current_user_metadata()).overrides_for(selected.name)
+    saved = UserMeta.of(current_session().metadata).overrides_for(selected.name)
     return SettingsView.of(config.settings, selected.config, saved)
 
 
 def _refresh_session_user_meta(profile: str, overrides: UserLlmOverrides) -> None:
     """Свежие настройки — в metadata пользователя сессии, без перелогина."""
-    user = current_user()
+    user = current_session().user
     if user is None:
         return
 
@@ -188,18 +186,20 @@ def _refresh_session_user_meta(profile: str, overrides: UserLlmOverrides) -> Non
 
 async def _reset_session_container() -> None:
     """Закрывает DI-контейнер сессии: следующий ход соберёт агента заново."""
-    container = cl.user_session.get(Container.SESSION_KEY)
+    session = current_session()
+
+    container = session.value(Container.SESSION_KEY)
     if isinstance(container, Container):
         await container.aclose()
 
-    cl.user_session.set(Container.SESSION_KEY, None)
+    session.remember(Container.SESSION_KEY, None)
 
 
 def _session_settings(app_config: AppConfig, registry: ChatProfiles) -> list[Tab]:
     """Вкладки панели настроек сессии; пусто — профиль ничего не открывает."""
     panel = SettingsPanel(
         _session_view(app_config, registry),
-        PanelText(app_config.chainlit.root, current_language()),
+        PanelText(app_config.chainlit.root, current_session().language),
     )
     return panel.tabs()
 
@@ -211,13 +211,13 @@ async def on_chat_start(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
 ):
-    session = cl.context.session
+    session = current_session()
     logger.info(
         "chat start: session=%s, thread=%s, profile=%s, language=%s",
         session.id,
         session.thread_id,
         session.chat_profile or "none",
-        current_language() or "browser",
+        session.language or "browser",
     )
 
     # профиль без разрешённых настроек панель не показывает
@@ -239,11 +239,11 @@ async def on_settings_update(
 
     panel = SettingsPanel(
         _session_view(app_config, registry),
-        PanelText(app_config.chainlit.root, current_language()),
+        PanelText(app_config.chainlit.root, current_session().language),
     )
     overrides = panel.parse(settings).overrides
 
-    user_id = current_user_id()
+    user_id = current_session().user_id
     if user_id is None:
         logger.warning("settings update without a user session, ignored")
         return
@@ -280,7 +280,7 @@ def on_logout(request: Request, response: Response):
 @cl.on_stop
 async def on_stop():
     """Кнопка Stop: обрываем ход треда, а не надеемся на отмену задачи chainlit."""
-    thread_id = current_thread_id()
+    thread_id = current_session().thread_id
     if thread_id is None:
         return
     if not ChatTurn.stop(thread_id):
@@ -319,11 +319,11 @@ async def on_canvas_stream(action: cl.Action) -> dict[str, Any]:
 
     Пользователь и тред берутся из сессии: чужой журнал по payload недостижим.
     """
-    thread_id = current_thread_id()
+    thread_id = current_session().thread_id
     if thread_id is None:
         return {}
 
-    user_id = current_user_id()
+    user_id = current_session().user_id
     if user_id is None:
         return {}
 
@@ -341,11 +341,11 @@ async def on_canvas_stream(action: cl.Action) -> dict[str, Any]:
 @chainlit_error_ctx_handler
 async def on_canvas_stream_window(action: cl.Action) -> dict[str, Any]:
     """Окно журнала или файла по смещению: панель не подменяется."""
-    thread_id = current_thread_id()
+    thread_id = current_session().thread_id
     if thread_id is None:
         return {}
 
-    user_id = current_user_id()
+    user_id = current_session().user_id
     if user_id is None:
         return {}
 
@@ -356,7 +356,7 @@ async def on_canvas_stream_window(action: cl.Action) -> dict[str, Any]:
 @chainlit_error_ctx_handler
 async def on_canvas_leave(action: cl.Action) -> None:
     """Панель закрыта или сменила файл: слежение прежнего показа снимается."""
-    thread_id = current_thread_id()
+    thread_id = current_session().thread_id
     if thread_id is None:
         return
 
@@ -396,7 +396,7 @@ async def on_chat_resume(thread_dict: ThreadDict):
         thread_id,
         turn_state,
         room,
-        cl.context.session.id,
+        current_session().id,
     )
 
     if turn is None:

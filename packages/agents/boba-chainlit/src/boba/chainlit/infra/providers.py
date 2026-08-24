@@ -36,13 +36,7 @@ from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.storage import StorageClient, StorageFactory
 from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.keys import AttachmentLinks
-from boba.chainlit.domain.session import (
-    current_chat_profile,
-    current_thread_id,
-    current_user_label,
-    current_user_metadata,
-    current_user_roles,
-)
+from boba.chainlit.domain.session import SessionSource
 from boba.chainlit.infra.config import (
     AgentSettings,
     AppConfig,
@@ -58,6 +52,7 @@ from boba.chainlit.infra.config import (
 )
 from boba.chainlit.infra.di import Container, Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
+from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
@@ -137,7 +132,9 @@ def session_profile(
     Ошибки:
     RefusalError — профиль не выбран или недоступен ролям пользователя.
     """
-    return registry.resolve(current_chat_profile(), current_user_roles())
+    session = current_session()
+
+    return registry.resolve(session.chat_profile, session.roles)
 
 
 def session_settings_view(
@@ -145,7 +142,7 @@ def session_settings_view(
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> SettingsView:
     """Профиль сессии, поверх которого легли личные настройки пользователя."""
-    meta = UserMeta.of(current_user_metadata())
+    meta = UserMeta.of(current_session().metadata)
     return SettingsView.of(
         app_config.settings,
         selected.config,
@@ -180,6 +177,11 @@ def ccache_registry_ref() -> CcacheRegistry | None:
     return auth.registry
 
 
+def session_source() -> SessionSource:
+    """Источник сессий приложения; реализация знает про chainlit."""
+    return ChainlitSessions()
+
+
 def connection_store_ref() -> ConnectionStore:
     """Хранилище соединений для обвязок инструментов; зовётся на каждый вызов."""
     root = Container.root
@@ -205,7 +207,7 @@ def session_tools(
     registry: Annotated[ToolRegistry, Depends(tool_registry)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> list[BaseTool]:
-    return registry.for_session(current_user_roles(), selected.name)
+    return registry.for_session(current_session().roles, selected.name)
 
 
 async def kb_schema(
@@ -238,11 +240,11 @@ async def connection_store(
 
 def _chainlit_dump_file(request: httpx.Request) -> str:
     """Имя файла дампа: пользователь и thread текущей chainlit-сессии."""
-    thread_id = current_thread_id()
+    thread_id = current_session().thread_id
     if thread_id is None:
         return f"no-context-{request.url.host}.log"
 
-    who = current_user_label()
+    who = current_session().label
     if not who:
         who = "anon"
 
@@ -372,6 +374,7 @@ async def chainlit_data_layer(
             storage=storage,
             feed=TranscriptFeed(CheckpointMessages(saver)),
             links=AttachmentLinks(storage_cfg.public_prefix),
+            sessions=session_source(),
         )
         await layer.setup()
         yield layer

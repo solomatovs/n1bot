@@ -1,5 +1,4 @@
 """Пользователь сессии в каждой строке лога через фабрику LogRecord."""
-
 from __future__ import annotations
 
 import logging
@@ -9,11 +8,8 @@ from typing import Any, ClassVar
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from boba.chainlit.domain.session import (
-    LogUserMark,
-    current_thread_id,
-    current_user_label,
-)
+from boba.chainlit.domain.session import LogUserMark
+from boba.chainlit.infra.session import current_session
 
 __all__ = ["RequestUserContext", "RequestUserMiddleware", "UserLogContext"]
 
@@ -112,7 +108,7 @@ class UserLogContext:
 
         # логирование не имеет права падать из-за отсутствия контекста
         try:
-            label = current_user_label()
+            label = current_session().label
         except Exception:
             label = ""
 
@@ -127,7 +123,7 @@ class UserLogContext:
     @classmethod
     def _thread(cls) -> str:
         try:
-            thread_id = current_thread_id()
+            thread_id = current_session().thread_id
         except Exception:
             return ""
         if not thread_id:

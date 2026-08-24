@@ -20,7 +20,7 @@ from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageError, StorageNotFoundError
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ElementProps, ObjectKey
-from boba.chainlit.domain.session import RequiredSession
+from boba.chainlit.domain.session import SessionSource
 from boba.chainlit.domain.turn import TurnContext
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
@@ -81,9 +81,11 @@ class FileAttachment:
     FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
 
     @classmethod
-    async def attach(cls, path: str, tool_call_id: str) -> ToolResult:
+    async def attach(
+        cls, path: str, tool_call_id: str, sessions: SessionSource
+    ) -> ToolResult:
         try:
-            target = cls._resolve(path, tool_call_id)
+            target = cls._resolve(path, tool_call_id, sessions)
             await cls._require_file(target.key)
         except RefusalError as e:
             return ErrorResult(message=str(e), error_kind=e.kind)
@@ -111,8 +113,10 @@ class FileAttachment:
             ) from e
 
     @classmethod
-    def _resolve(cls, path: str, tool_call_id: str) -> AttachmentTarget:
-        session = RequiredSession.of()
+    def _resolve(
+        cls, path: str, tool_call_id: str, sessions: SessionSource
+    ) -> AttachmentTarget:
+        session = sessions.current().require()
         user_id = session.user_id
         thread_id = session.thread_id
 
@@ -172,7 +176,7 @@ class FileAttachment:
         return layer
 
 
-def build_send_file_tool() -> BaseTool:
+def build_send_file_tool(sessions: SessionSource) -> BaseTool:
     @tool(response_format="content_and_artifact")
     async def send_file(
         path: Annotated[
@@ -182,6 +186,8 @@ def build_send_file_tool() -> BaseTool:
         tool_call_id: Annotated[str, InjectedToolCallId],
     ) -> tuple[str, ToolResult]:
         """Отправить пользователю файл из workspace вложением в чат."""
-        return pack_result(await FileAttachment.attach(path, tool_call_id))
+        return pack_result(
+            await FileAttachment.attach(path, tool_call_id, sessions)
+        )
 
     return send_file
