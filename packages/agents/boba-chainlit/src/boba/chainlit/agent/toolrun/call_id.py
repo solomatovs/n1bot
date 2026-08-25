@@ -11,10 +11,11 @@ ToolCall-конвертом — так его и зовёт ToolNode агент�
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, ClassVar
 
-from langchain_core.tools import BaseTool, InjectedToolCallId, StructuredTool
-from pydantic import BaseModel, create_model
+from langchain_core.tools import BaseTool, InjectedToolCallId
+
+from boba.chainlit.agent.toolrun.wrapping import ToolSchema
 
 __all__ = ["ToolCallIdField"]
 
@@ -41,20 +42,12 @@ class ToolCallIdField:
 
     @classmethod
     def _attach(cls, tool: BaseTool) -> None:
-        if not isinstance(tool, StructuredTool):
-            return
-
-        schema = tool.args_schema
-        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+        schema = ToolSchema.of(tool)
+        if schema is None:
             return
 
         if cls.NAME in schema.model_fields:
             return
 
-        fields: dict[str, Any] = {}
-        for name, info in schema.model_fields.items():
-            fields[name] = (info.annotation, info)
-
-        fields[cls.NAME] = (Annotated[str | None, InjectedToolCallId()], None)
-
-        tool.args_schema = create_model(schema.__name__, **fields)
+        field = (Annotated[str | None, InjectedToolCallId()], None)
+        tool.args_schema = ToolSchema.rebuild(schema, {cls.NAME: field}, ())

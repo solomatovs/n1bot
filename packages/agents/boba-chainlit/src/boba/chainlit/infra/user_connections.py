@@ -16,7 +16,7 @@ RefusalError — вызов вне сессии chainlit, соединение �
 ConnectionStoreError — таблица соединений недоступна.
 KerberosError — билет к соединению не выпущен, вызов начинать нечем.
 ToolConfigError — профиль строки непригоден для песочницы.
-UserConnectionsError — тело инструмента вызвано синхронно: whitelist
+InjectedAsyncOnlyError — тело инструмента вызвано синхронно: whitelist
     собирается только в async-теле.
 """
 
@@ -26,15 +26,17 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import wraps
 from typing import ClassVar, NoReturn
 
 import jwt
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
-from boba.chainlit.agent.toolrun.injected import ConfigResolver, ToolConfigError
-from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.chainlit.agent.toolrun.injected import (
+    AsyncInjected,
+    ConfigResolver,
+    ToolConfigError,
+)
 from boba.chainlit.connections.store import (
     ConnectionKind,
     ConnectionProfile,
@@ -65,7 +67,6 @@ from boba.krb import (
     TicketAuth,
 )
 from boba.tool.web.connection import WebConnection
-from boba.toolkit.entry import ToolArgv
 from boba.toolkit.sql import SqlProfiles
 from boba.transport.http import HostPattern, HttpProfile
 from chainlit.auth.jwt import decode_jwt
@@ -78,7 +79,6 @@ __all__ = [
     "SsoLogin",
     "StoreRef",
     "UserConnections",
-    "UserConnectionsError",
     "UserConnectionsSpec",
     "UserKerberos",
 ]
@@ -90,10 +90,6 @@ StoreRef = Callable[[], ConnectionStore]
 
 RegistryRef = Callable[[], CcacheRegistry | None]
 """Реестр делегированных тикетов; None — SSO kerberos не настроен."""
-
-
-class UserConnectionsError(Exception):
-    """Обвязка поставлена, но тело вызвано путём, где whitelist не собрать."""
 
 
 class WebArg(StrEnum):
@@ -375,7 +371,7 @@ class ClientLabel(BaseModel):
         return profile
 
 
-class UserConnections:
+class UserConnections(AsyncInjected):
     """Обвязка одного инструмента: профили субъекта в injected-конфиг на вызов."""
 
     def __init__(
@@ -386,10 +382,10 @@ class UserConnections:
         param: str,
         base: BaseModel,
     ) -> None:
+        super().__init__(param, base)
         self._store_ref = store_ref
         self._kerberos = kerberos
         self._spec = spec
-        self._param = param
         self._base = base
         self._arming = TicketArming(kerberos.credentials)
 
@@ -408,48 +404,21 @@ class UserConnections:
         с неё не сняли.
         """
         kerberos = UserKerberos(registry_ref)
-        for tool in tools:
-            cls._bind(tool, store_ref, kerberos, spec, resolve)
 
-    @classmethod
-    def _bind(
-        cls,
-        tool: BaseTool,
-        store_ref: StoreRef,
-        kerberos: UserKerberos,
-        spec: UserConnectionsSpec,
-        resolve: ConfigResolver,
-    ) -> None:
-        if not isinstance(tool, StructuredTool):
-            return
+        def make(param: str, base: object) -> AsyncInjected:
+            if not isinstance(base, BaseModel):
+                raise ToolConfigError(f"{param}: injected value is not a model")
 
-        schema = tool.args_schema
-        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
-            return
+            return cls(store_ref, kerberos, spec, param, base)
 
-        for param, annotation in ToolArgv.injected_fields(schema).items():
-            base = resolve(param, annotation)
-            if not isinstance(base, SqlProfiles | WebConnection):
-                continue
+        cls.bind_each(tools, resolve, cls._accepts, make)
 
-            hook = cls(store_ref, kerberos, spec, param, base)
-            ToolBody.wrap_all([tool], hook._wrap, hook._wrap_async)
+    @staticmethod
+    def _accepts(base: object) -> bool:
+        return isinstance(base, SqlProfiles | WebConnection)
 
-    def _wrap(self, call: SyncCall, name: str) -> SyncCall:
-        @wraps(call)
-        def guarded(*args: object, **kwargs: object) -> object:
-            msg = f"tool {name!r}: user connections are built in the async body only"
-            raise UserConnectionsError(msg)
-
-        return guarded
-
-    def _wrap_async(self, call: AsyncCall, name: str) -> AsyncCall:
-        @wraps(call)
-        async def guarded(*args: object, **kwargs: object) -> object:
-            kwargs[self._param] = await self._config(name, kwargs)
-            return await call(*args, **kwargs)
-
-        return guarded
+    async def value(self, name: str, kwargs: dict[str, object]) -> object:
+        return await self._config(name, kwargs)
 
     async def _config(self, name: str, kwargs: dict[str, object]) -> BaseModel:
         subject = self._subject()

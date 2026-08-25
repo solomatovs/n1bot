@@ -100,6 +100,15 @@ class ToolIntent:
         return cls._flat(value)
 
     @classmethod
+    def pop(cls, kwargs: dict[str, object]) -> str:
+        """Снять подпись из kwargs вызова; не приехала — пустая строка."""
+        value = kwargs.pop(cls.NAME, None)
+        if not isinstance(value, str):
+            return ""
+
+        return value
+
+    @classmethod
     def without(cls, args: Mapping[str, Any]) -> Mapping[str, Any]:
         """Аргументы без подписи: во вход шага и в тело инструмента она не идёт."""
         rest: dict[str, Any] = {}
