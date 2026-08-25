@@ -33,10 +33,10 @@ import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
 from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.domain.context import CallContext
-from boba.chainlit.domain.errors import FailureReport
+from boba.chainlit.domain.errors import FailureReport, RefusalError
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.run import RunPort, RunRegistry
+from boba.chainlit.domain.run import ElementTarget, RunPort, RunRefusal, RunRegistry
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.llm.chat import ResponseField
 from chainlit.step import Step, StepDict
@@ -343,10 +343,17 @@ class ChatTurn(RunPort):
 
         return turn
 
-    @property
-    def answer_step_id(self) -> str | None:
-        """id шага ответа: к нему цепляются вложения, созданные инструментами."""
-        return ChatView.derive_id(self._thread_id, self._key, StepRole.ANSWER)
+    def element_target(self, tool_call_id: str) -> ElementTarget:
+        """Элемент вызова крепится к шагу ответа хода."""
+        for_id = ChatView.derive_id(self._thread_id, self._key, StepRole.ANSWER)
+        if not for_id:
+            raise RefusalError(RunRefusal.NO_TURN, "the turn has no answer step")
+
+        element_id = ChatView.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
+        if not element_id:
+            raise RefusalError(RunRefusal.NO_TOOL_CALL, "tool call without id")
+
+        return ElementTarget(for_id=for_id, element_id=element_id)
 
     @staticmethod
     def human_message(msg: cl.Message, user_id: str) -> HumanMessage:

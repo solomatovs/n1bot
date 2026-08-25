@@ -125,7 +125,7 @@ async def test_validate_and_save(client: AsyncClient, app_config: AppConfig) -> 
         str(WorkflowUrl.VALIDATE), json={"profile": profile, "spec": SPEC}
     )
     assert valid.status_code == 200, valid.text
-    assert [stage["tasks"] for stage in valid.json()["stages"]] == [
+    assert [stage["tasks"] for stage in valid.json()["graph"]["stages"]] == [
         ["first"],
         ["second"],
     ]

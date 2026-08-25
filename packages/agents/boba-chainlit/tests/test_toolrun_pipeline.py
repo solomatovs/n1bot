@@ -10,7 +10,6 @@ import asyncio
 from typing import Annotated, Any, ClassVar
 
 import pytest
-from conftest import no_call_scope
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.tools import InjectedToolArg, tool
 from pydantic import BaseModel, Field, SecretStr
@@ -18,7 +17,7 @@ from pydantic import BaseModel, Field, SecretStr
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
-from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
+from boba.chainlit.agent.toolrun.run_log import CallStream, NoCallScope, ToolRunLogger
 from boba.chainlit.agent.toolrun.wrapping import ToolAsyncBody
 from boba.chainlit.rendering.tool import MarkdownRendering, ToolResultView
 from boba.toolkit.calls import ToolIntent
@@ -61,7 +60,7 @@ def build_pipeline() -> Any:
     )
     ToolCallIdField.attach_all([pipe_echo])
     ToolIntentField.attach_all([pipe_echo])
-    ToolRunLogger.guard_all([pipe_echo], lambda tool, call_id: None, no_call_scope)
+    ToolRunLogger.guard_all([pipe_echo], lambda tool, call_id: None, NoCallScope.enter)
 
     return pipe_echo
 
@@ -195,7 +194,7 @@ class TestChannelTap:
 
         ToolCallIdField.attach_all([tap_probe])
         ToolRunLogger.guard_all(
-            [tap_probe], lambda tool, call_id: stream, no_call_scope
+            [tap_probe], lambda tool, call_id: stream, NoCallScope.enter
         )
 
         await tap_probe.ainvoke(

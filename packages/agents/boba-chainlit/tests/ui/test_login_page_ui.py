@@ -134,9 +134,7 @@ def test_password_form_with_sso_button(
 
     expect(page.locator(SUBMIT_BUTTON)).to_be_visible()
     expect(page.locator(LOGIN_FIELD)).to_have_attribute("placeholder", login_hint)
-    expect(page.locator(PASSWORD_FIELD)).to_have_attribute(
-        "placeholder", password_hint
-    )
+    expect(page.locator(PASSWORD_FIELD)).to_have_attribute("placeholder", password_hint)
 
     page.screenshot(path=str(stand_workdir / "login.png"))
 

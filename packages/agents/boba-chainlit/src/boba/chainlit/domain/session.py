@@ -27,7 +27,6 @@ __all__ = [
     "Session",
     "SessionSource",
     "SignInProvider",
-    "SsoMarks",
     "UserLogin",
     "UserMetadataField",
 ]
@@ -107,72 +106,6 @@ class LoginTemplate:
     def username_of(cls, text: str, principal: str) -> str:
         """Логин из принципала по шаблону; несоответствие — TemplateError."""
         return FieldTemplate.parse(text).extract(principal, cls.FIELD)
-
-
-@dataclass(frozen=True)
-class SsoMarks:
-    """Метки SSO-входа в подписанном JWT: чей тикет и какому входу он выдан."""
-
-    principal: str
-    login: str
-
-    @classmethod
-    def of_metadata(cls, metadata: Mapping[str, object]) -> SsoMarks | None:
-        """Метки из metadata пользователя; None — вход не нёс делегирования."""
-        if metadata.get(UserMetadataField.PROVIDER) != SignInProvider.KERBEROS:
-            return None
-
-        principal = metadata.get(UserMetadataField.PRINCIPAL)
-        if not isinstance(principal, str) or not principal:
-            return None
-
-        login = metadata.get(UserMetadataField.LOGIN)
-        if not isinstance(login, str) or not login:
-            return None
-
-        return cls(principal=principal, login=login)
-
-    @classmethod
-    def absence_reason(cls, metadata: Mapping[str, object]) -> str:
-        """Почему у входа нет меток делегирования; текст готов для отказа."""
-        provider = metadata.get(UserMetadataField.PROVIDER)
-        if provider != SignInProvider.KERBEROS:
-            return (
-                f"you signed in with {cls._provider_name(provider)}, and this "
-                "connection acts in the database on your behalf: sign in with "
-                "the Kerberos SSO button instead"
-            )
-
-        principal = metadata.get(UserMetadataField.PRINCIPAL)
-        if not isinstance(principal, str):
-            return cls._no_principal()
-
-        if not principal:
-            return cls._no_principal()
-
-        return (
-            f"the Kerberos sign-in of {principal} carried no delegated ticket: "
-            "either Active Directory does not allow this service to act for "
-            "you, or the browser sent no ticket; sign in again from a "
-            "domain-joined browser"
-        )
-
-    @staticmethod
-    def _no_principal() -> str:
-        return (
-            "your Kerberos sign-in predates delegated connections "
-            "(the session token names no principal): sign out and sign in again"
-        )
-
-    @staticmethod
-    def _provider_name(provider: object) -> str:
-        if not isinstance(provider, str):
-            return "no known provider"
-
-        if not provider:
-            return "no known provider"
-
-        return provider
 
 
 class LogLine:

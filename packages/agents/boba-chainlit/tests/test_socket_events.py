@@ -17,9 +17,9 @@ import pytest
 from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
-from conftest import make_context
+from conftest import FakeTurn, make_context
 
-from boba.chainlit.domain.run import RunPort, RunRegistry
+from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
 
 pytestmark = pytest.mark.anyio
@@ -27,12 +27,6 @@ pytestmark = pytest.mark.anyio
 THREAD = "thread-socket-1"
 SESSION_ID = "session-socket-1"
 SOCKET_ID = "socket-socket-1"
-
-
-class FakeTurn(RunPort):
-    """Ход под тест: реестру достаточно порта с шагом ответа."""
-
-    answer_step_id = "answer-step"
 
 
 class EmittedEvents:

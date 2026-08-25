@@ -18,8 +18,8 @@ from boba.chainlit.connections import (
     ConnectionStore,
     GrantTarget,
     SecretCryptoError,
-    Subject,
 )
+from boba.chainlit.domain.context import Subject
 from boba.db.clickhouse import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
@@ -52,9 +52,7 @@ def _pg(password: str) -> PostgresConfig:
     return PostgresConfig(
         host="db",
         dbname="n1bot",
-        auth=PasswordAuth(
-            method="password", user="boba", password=SecretStr(password)
-        ),
+        auth=PasswordAuth(method="password", user="boba", password=SecretStr(password)),
         options=PostgresOptionsConfig(),
         pool=PostgresPoolConfig(),
     )
@@ -74,6 +72,12 @@ def _web(token: str) -> HttpProfile:
     return HttpProfile(
         base_url="https://confl",
         auth=BearerAuth(method="bearer", token=SecretStr(token)),
+    )
+
+
+def _subject(user_id: int, roles: list[str]) -> Subject:
+    return Subject(
+        user_id=user_id, login=f"user-{user_id}", roles=frozenset(roles), profile="test"
     )
 
 
@@ -130,9 +134,7 @@ async def test_secret_is_ciphertext_in_the_table(
 
     async with pool.cursor() as cur:
         await cur.execute(
-            sql.SQL("select data from {}").format(
-                sql.Identifier(SCHEMA, "connections")
-            )
+            sql.SQL("select data from {}").format(sql.Identifier(SCHEMA, "connections"))
         )
         row = await cur.fetchone()
 
@@ -150,9 +152,7 @@ async def test_data_keeps_only_meaningful_fields(
 
     async with pool.cursor() as cur:
         await cur.execute(
-            sql.SQL("select data from {}").format(
-                sql.Identifier(SCHEMA, "connections")
-            )
+            sql.SQL("select data from {}").format(sql.Identifier(SCHEMA, "connections"))
         )
         row = await cur.fetchone()
 
@@ -270,7 +270,7 @@ async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None
     await store.grant(web, GrantTarget.user(1))
     await store.grant(ch, GrantTarget.user(1))
 
-    reader = Subject(user_id=1, roles=["read"])
+    reader = _subject(1, ["read"])
     pg_rows = await store.for_subject(reader, ConnectionKind.POSTGRES)
     if [row.id for row in pg_rows] != [personal, shared]:
         raise AssertionError(f"reader must see personal and role rows: {pg_rows}")
@@ -283,11 +283,11 @@ async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None
     if [row.id for row in ch_rows] != [ch]:
         raise AssertionError("clickhouse rows must be selectable")
 
-    stranger = Subject(user_id=2, roles=[])
+    stranger = _subject(2, [])
     if await store.for_subject(stranger, ConnectionKind.POSTGRES):
         raise AssertionError("stranger must see nothing")
 
-    writer = Subject(user_id=2, roles=["wrt"])
+    writer = _subject(2, ["wrt"])
     if [row.id for row in await store.for_subject(writer, ConnectionKind.POSTGRES)] != [
         other_role
     ]:
@@ -306,9 +306,7 @@ async def test_for_subject_lists_doubly_granted_row_once(
     await store.grant(connection_id, GrantTarget.user(1))
     await store.grant(connection_id, GrantTarget.role(roles["read"]))
 
-    rows = await store.for_subject(
-        Subject(user_id=1, roles=["read"]), ConnectionKind.POSTGRES
-    )
+    rows = await store.for_subject(_subject(1, ["read"]), ConnectionKind.POSTGRES)
 
     if [row.id for row in rows] != [connection_id]:
         raise AssertionError("row granted twice must be listed once")
@@ -317,7 +315,7 @@ async def test_for_subject_lists_doubly_granted_row_once(
 async def test_revoke_takes_effect_immediately(store: ConnectionStore) -> None:
     connection_id = await store.add("main", _pg(FakeSecret.DB))
     await store.grant(connection_id, GrantTarget.user(1))
-    subject = Subject(user_id=1, roles=[])
+    subject = _subject(1, [])
 
     if not await store.for_subject(subject, ConnectionKind.POSTGRES):
         raise AssertionError("granted row must be visible")

@@ -10,7 +10,9 @@
 прерывают зарегистрированные прерыватели; обрывать ли саму корутину
 запуска, решает владелец — task_abort подключается отдельно.
 
-Ошибки: своих не выпускает; ToolStopped поднимает raise_if_cancelled отмены.
+Ошибки:
+RefusalError(RunRefusal) — инструменту чата нужен живой ход, а его нет.
+ToolStopped поднимает raise_if_cancelled отмены.
 """
 
 from __future__ import annotations
@@ -21,21 +23,51 @@ import threading
 from abc import abstractmethod
 from collections.abc import Callable, Coroutine, Generator, Iterator
 from contextlib import contextmanager
+from enum import StrEnum
 from typing import ClassVar, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation, StopReason
 from boba.chainlit.domain.context import CallContext
+from boba.chainlit.domain.errors import RefusalError
 from boba.toolkit.channels import CallOutcome
 
-__all__ = ["BackgroundRuns", "LiveStream", "RunPort", "RunRegistry"]
+__all__ = [
+    "BackgroundRuns",
+    "ElementTarget",
+    "LiveStream",
+    "RunPort",
+    "RunRefusal",
+    "RunRegistry",
+]
 
 logger = logging.getLogger(__name__)
+
+
+class RunRefusal(StrEnum):
+    """Отказы владельца запуска инструменту чата."""
+
+    NO_TURN = "no_turn"
+    NO_TOOL_CALL = "no_tool_call"
+
+
+class ElementTarget(BaseModel):
+    """Куда крепится элемент, созданный инструментом: шаг ответа и id элемента."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    for_id: str = Field(min_length=1)
+    element_id: str = Field(min_length=1)
 
 
 class RunPort(Protocol):
     """Что инструменту нужно от владельца запуска: куда крепить его элемент."""
 
-    answer_step_id: str | None
+    @abstractmethod
+    def element_target(self, tool_call_id: str) -> ElementTarget:
+        """Адрес элемента вызова; отказ — RefusalError(RunRefusal)."""
+        ...
 
 
 class LiveStream(Protocol):
@@ -132,6 +164,15 @@ class RunRegistry:
             return None
 
         return registry.port
+
+    @classmethod
+    def require_port(cls, scope_id: str) -> RunPort:
+        """Владелец с лентой чата; без него — RefusalError(RunRefusal.NO_TURN)."""
+        port = cls.port_of(scope_id)
+        if port is None:
+            raise RefusalError(RunRefusal.NO_TURN, "the turn is already finished")
+
+        return port
 
     @classmethod
     def stop(cls, scope_id: str, reason: StopReason) -> bool:

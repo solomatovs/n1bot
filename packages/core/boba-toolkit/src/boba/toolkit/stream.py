@@ -15,7 +15,7 @@ import threading
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
 from typing import ClassVar, Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict
@@ -29,8 +29,6 @@ __all__ = [
     "FdReader",
     "StreamSink",
     "StreamWindow",
-    "ToolCallContext",
-    "ToolCallInfo",
     "ToolChannelsTap",
     "ToolStreamBuffer",
 ]
@@ -207,45 +205,3 @@ class ToolChannelsTap:
     @classmethod
     def get(cls) -> ChannelSinks | None:
         return cls._SINKS.get()
-
-
-class ToolCallInfo(BaseModel):
-    """Вызов инструмента: имя и идентификатор из протокола LLM-провайдера."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    name: str
-    call_id: str = ""
-    """Пустая строка — вызов пришёл без tool_call_id (прямой вызов, тест)."""
-
-
-class ToolCallContext:
-    """Текущий вызов инструмента в контексте выполнения.
-
-    Ставит обвязка вызова, читает исполнитель — метка идёт в его логи.
-    """
-
-    _CALL: ClassVar[ContextVar[ToolCallInfo | None]] = ContextVar(
-        "tool_call_info", default=None
-    )
-
-    @classmethod
-    def set(cls, call: ToolCallInfo) -> Token[ToolCallInfo | None]:
-        return cls._CALL.set(call)
-
-    @classmethod
-    def reset(cls, token: Token[ToolCallInfo | None]) -> None:
-        cls._CALL.reset(token)
-
-    @classmethod
-    def get(cls) -> ToolCallInfo | None:
-        return cls._CALL.get()
-
-    @classmethod
-    def name(cls) -> str:
-        """Имя текущего вызова; пустая строка — вызова в контексте нет."""
-        call = cls._CALL.get()
-        if call is None:
-            return ""
-
-        return call.name

@@ -14,7 +14,6 @@ from boba.chainlit.connections.store import (
     GrantKind,
     GrantTarget,
     StoredConnection,
-    Subject,
 )
 
 __all__ = [
@@ -29,5 +28,4 @@ __all__ = [
     "SecretCipher",
     "SecretCryptoError",
     "StoredConnection",
-    "Subject",
 ]

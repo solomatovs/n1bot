@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from conftest import make_context, use_session
+from conftest import FakeTurn, make_context, use_session
 from pydantic import BaseModel
 
+from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
+from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.canvas import diagram as diagram_module
 from boba.chainlit.canvas.diagram import (
     DiagramEntry,
@@ -30,12 +32,14 @@ from boba.chainlit.canvas.panel import (
     RenderStatus,
     RenderVerdicts,
 )
+from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.domain.context import ContextKind
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.run import RunPort, RunRegistry
+from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.infra.config import LocalStorageConfig
+from boba.chainlit.infra.plugins import tool_call_scope
 from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
 from boba.workspace.launcher import MountingConfig
@@ -204,7 +208,7 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DiagramFiles:
     layer = _StorageOnlyLayer(storage)
 
     use_session(monkeypatch, user_id="7", thread_id=THREAD)
-    monkeypatch.setattr(DiagramFiles, "_layer", staticmethod(lambda: layer))
+    monkeypatch.setattr(AttachmentDataLayer, "require", classmethod(lambda cls: layer))
 
     return DiagramFiles(1000)
 
@@ -267,7 +271,7 @@ class TestSaveAndView:
         self, files: DiagramFiles, http_context: None, fast_verdict: None
     ) -> None:
         """Пользовательский .mmd из upload/ показывается тем же вьювером."""
-        storage = files._layer().storage
+        storage = AttachmentDataLayer.require().storage
         await storage.upload_file(
             object_key=f"7/{THREAD}/upload/mine.mmd",
             data=ER_SPEC,
@@ -343,7 +347,7 @@ class TestEntry:
 
     @pytest.mark.anyio
     async def test_read_binary_file(self, files: DiagramFiles) -> None:
-        storage = files._layer().storage
+        storage = AttachmentDataLayer.require().storage
         await storage.upload_file(
             object_key=f"7/{THREAD}/mermaid/bin.mmd",
             data=b"\xff\xfe\x00\x01",
@@ -367,7 +371,7 @@ class TestEntry:
         Файл в mermaid/ пишет bash, поэтому он может быть сколь угодно велик,
         а спека целиком уезжает в props элемента и в LLM.
         """
-        storage = files._layer().storage
+        storage = AttachmentDataLayer.require().storage
         oversized = "flowchart LR\n" + "  A --> B\n" * 4000
         await storage.upload_file(
             object_key=f"7/{THREAD}/mermaid/huge.mmd",
@@ -519,12 +523,6 @@ class TestViewerVerdict:
             raise AssertionError('"Parse error on line 5" in str(failure.value)')
 
 
-class FakeTurn(RunPort):
-    """Живой ход под тест: карточке нужен только id шага ответа."""
-
-    answer_step_id = "answer-step"
-
-
 class TestSaveToolEndToEnd:
     """diagram_save целиком: сохранить, карточку в ленту, вердикт — с панели.
 
@@ -563,8 +561,14 @@ class TestSaveToolEndToEnd:
         return pushed
 
     async def _call(self, spec: str, verdict: dict[str, Any], panel: list[Any]) -> Any:
-        """Зовёт тул как агент — tool_call, иначе artifact до вызывающего не дойдёт."""
+        """Зовёт тул как агент — tool_call, иначе artifact до вызывающего не дойдёт.
+
+        Та же обвязка, что ставит load_tools: id вызова со схемы уходит в
+        контекст, и карточка получает адрес элемента по нему.
+        """
         save = build_diagram_tools(DiagramToolConfig(max_chars=32000))[0]
+        ToolCallIdField.attach_all([save])
+        ToolRunLogger.guard_all([save], lambda tool, call_id: None, tool_call_scope)
         request = {
             "name": "diagram_save",
             "args": {"name": "orders.mmd", "spec": spec},

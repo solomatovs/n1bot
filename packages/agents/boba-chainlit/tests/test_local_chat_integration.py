@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import pytest
-from conftest import no_call_scope
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -26,7 +25,7 @@ from pydantic import Field
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
+from boba.chainlit.agent.toolrun.run_log import NoCallScope, ToolRunLogger
 from boba.chainlit.agent.toolrun.wrapping import ToolAsyncBody
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
@@ -114,7 +113,7 @@ class TestLocalChatTurn:
         tools = [kb_probe]
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(tools, lambda tool, call_id: None, no_call_scope)
+        ToolRunLogger.guard_all(tools, lambda tool, call_id: None, NoCallScope.enter)
         ToolAsyncBody.ensure_all(tools)
 
         agent = create_agent(

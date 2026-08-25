@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 import pytest
-from conftest import make_context
+from conftest import FakeTurn, make_context
 
 from boba.cancellation import (
     StopReason,
@@ -16,16 +16,10 @@ from boba.cancellation import (
     current_cancellation,
 )
 from boba.chainlit.chat.turn import ChatTurn
-from boba.chainlit.domain.run import LiveStream, RunPort, RunRegistry
+from boba.chainlit.domain.run import LiveStream, RunRegistry
 from boba.toolkit.channels import CallOutcome
 
 THREAD = "thread-1"
-
-
-class FakeTurn(RunPort):
-    """Ход под тест: контексту достаточно порта с шагом ответа."""
-
-    answer_step_id = "answer-step"
 
 
 @pytest.fixture(autouse=True)

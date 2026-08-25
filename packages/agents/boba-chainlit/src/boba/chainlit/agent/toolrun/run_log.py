@@ -15,7 +15,6 @@ import logging
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Sequence
-from contextvars import Token
 from dataclasses import dataclass
 from typing import ClassVar, Protocol, TypeAlias
 
@@ -27,15 +26,16 @@ from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import CallOutcome, JournalChannel
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolResultBase
-from boba.toolkit.stream import (
-    StreamSink,
-    ToolCallContext,
-    ToolCallInfo,
-    ToolChannelsTap,
-)
+from boba.toolkit.stream import StreamSink, ToolChannelsTap
 from boba.toolkit.timing import Elapsed
 
-__all__ = ["CallStream", "StreamSource", "ToolRunLogger"]
+__all__ = [
+    "CallScopeSource",
+    "CallStream",
+    "NoCallScope",
+    "StreamSource",
+    "ToolRunLogger",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +58,24 @@ CallScopeSource = Callable[[str], Callable[[], None]]
 """Ставит контекст вызова по call_id на время вызова; итог — как его снять."""
 
 
+class NoCallScope:
+    """Источник контекста вызова там, где контекста нет: ставить и снимать нечего."""
+
+    @staticmethod
+    def enter(call_id: str) -> Callable[[], None]:
+        return NoCallScope.leave
+
+    @staticmethod
+    def leave() -> None:
+        return None
+
+
 @dataclass
 class _CallScope:
     """Контекст одного вызова: журнал, таймер и исход для закрытия журнала."""
 
     name: str
     started: float
-    token: Token[ToolCallInfo | None]
     leave_call: Callable[[], None]
     """Снимает контекст вызова, поставленный источником на время вызова."""
     stream: CallStream | None
@@ -96,7 +107,6 @@ class ToolRunLogger:
             ToolRunLogger._log_start(name, args, kwargs)
             ToolIntent.pop(kwargs)
 
-            token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
             leave_call = self._call_scope(call_id)
             journal_open = Elapsed()
             stream = ToolRunLogger._open_stream(name, call_id, self._stream_source)
@@ -111,7 +121,6 @@ class ToolRunLogger:
             return _CallScope(
                 name=name,
                 started=time.monotonic(),
-                token=token,
                 leave_call=leave_call,
                 stream=stream,
                 note=str(CallOutcome.FAILED),
@@ -133,7 +142,6 @@ class ToolRunLogger:
                 ctx.stream.close(ctx.note)
 
             ctx.leave_call()
-            ToolCallContext.reset(ctx.token)
 
     @classmethod
     def guard_all(

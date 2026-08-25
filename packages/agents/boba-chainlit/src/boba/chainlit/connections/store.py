@@ -35,6 +35,7 @@ from pydantic import (
 )
 
 from boba.chainlit.connections.secrets import SecretCipher
+from boba.chainlit.domain.context import Subject
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresConfig, PostgresError
 from boba.toolkit.failure import ValidationText
@@ -52,7 +53,6 @@ __all__ = [
     "GrantKind",
     "GrantTarget",
     "StoredConnection",
-    "Subject",
 ]
 
 
@@ -193,15 +193,6 @@ class GrantTarget(BaseModel):
     @classmethod
     def role(cls, role_id: int) -> GrantTarget:
         return cls(kind=GrantKind.ROLES, id=role_id)
-
-
-class Subject(BaseModel):
-    """Кто спрашивает соединения: пользователь и имена его ролей."""
-
-    model_config = ConfigDict(frozen=True)
-
-    user_id: int
-    roles: Sequence[str] = ()
 
 
 class StoredConnection(BaseModel):
@@ -669,7 +660,7 @@ class ConnectionStore:
             "users_kind": GrantKind.USERS.value,
             "roles_kind": GrantKind.ROLES.value,
             "user_id": subject.user_id,
-            "roles": list(subject.roles),
+            "roles": sorted(subject.roles),
         }
 
         pool = await self._pool()

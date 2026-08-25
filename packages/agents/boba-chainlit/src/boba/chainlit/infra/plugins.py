@@ -18,7 +18,7 @@ from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
-from boba.chainlit.agent.toolrun.run_log import CallStream, ToolRunLogger
+from boba.chainlit.agent.toolrun.run_log import CallStream, NoCallScope, ToolRunLogger
 from boba.chainlit.agent.toolrun.wrapping import ToolAsyncBody
 from boba.chainlit.agent.tools.send_file import build_send_file_tool
 from boba.chainlit.canvas.diagram import (
@@ -231,7 +231,7 @@ def tool_call_scope(call_id: str) -> Callable[[], None]:
     """
     context = CallContext.peek()
     if context is None:
-        return _leave_nothing
+        return NoCallScope.leave
 
     token = CallContext.push(context.as_tool_call(call_id))
 
@@ -239,10 +239,6 @@ def tool_call_scope(call_id: str) -> Callable[[], None]:
         CallContext.pop(token)
 
     return leave
-
-
-def _leave_nothing() -> None:
-    return None
 
 
 def _sandbox_path_vars() -> dict[str, str]:

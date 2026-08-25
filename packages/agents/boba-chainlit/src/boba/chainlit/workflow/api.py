@@ -22,7 +22,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.domain.context import Scope, ScopeKind
+from boba.chainlit.domain.context import Scope
 from boba.chainlit.domain.keys import WorkflowUrl
 from boba.chainlit.infra.config import ChatProfiles
 from boba.chainlit.infra.tool_api import ApiIdentity
@@ -178,7 +178,7 @@ class WorkflowApi:
         service = await self._resolved()
 
         run_id = service.new_run_id()
-        context = identity.context(Scope(kind=ScopeKind.WORKFLOW, id=str(run_id)))
+        context = identity.context(Scope.workflow(run_id))
         stored = await self._guarded(service.get(identity.subject, workflow_id))
         started = await self._guarded(service.start(context, stored, run_id))
 

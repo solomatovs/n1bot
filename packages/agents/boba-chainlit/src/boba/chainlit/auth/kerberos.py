@@ -46,6 +46,7 @@ from boba.chainlit.auth.local import (
     RoleExcludeConfig,
     RoleMappingConfig,
 )
+from boba.chainlit.domain.context import DelegatedTicket
 from boba.chainlit.domain.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -58,7 +59,6 @@ from boba.chainlit.domain.session import (
     LoginTemplate,
     LogLine,
     SignInProvider,
-    SsoMarks,
     UserLogin,
     UserMetadataField,
 )
@@ -456,7 +456,7 @@ class SpnegoMiddleware:
 
         await Response(status_code=204)(scope, receive, send)
 
-    def _refresh_marks(self, headers: Headers, client: str) -> SsoMarks | str:
+    def _refresh_marks(self, headers: Headers, client: str) -> DelegatedTicket | str:
         """Метки сессии, которой позволено обменяться, либо причина отказа."""
         if not SsoRefresh.asked(headers):
             # заголовок ставит только свой fetch: чужая страница обмен не запустит
@@ -473,7 +473,7 @@ class SpnegoMiddleware:
         return marks
 
     @staticmethod
-    def _session_marks(headers: Headers) -> SsoMarks | None:
+    def _session_marks(headers: Headers) -> DelegatedTicket | None:
         """Метки входа из JWT-cookie запроса; None — сессии нет или она не SSO."""
         from chainlit.auth.cookie import get_token_from_cookies  # noqa: PLC0415
 
@@ -482,7 +482,7 @@ class SpnegoMiddleware:
         if not token:
             return None
 
-        return ChainlitSession.marks_of_token(token)
+        return ChainlitSession.ticket_of_token(token)
 
     @staticmethod
     def _token_of(headers: Headers) -> bytes | str:

@@ -37,13 +37,11 @@ from boba.chainlit.domain.context import (
     Credential,
     DelegatedTicket,
     HumanInitiator,
-    NoUserCredential,
     Scope,
     Subject,
 )
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.run import RunRegistry
-from boba.chainlit.domain.session import SsoMarks
 from boba.chainlit.infra.config import ChatProfiles
 from boba.chainlit.infra.plugins import ToolRegistry
 from boba.chainlit.infra.session import ChainlitSession
@@ -116,10 +114,13 @@ class ApiIdentity:
         roles = ChainlitSession.roles_of(user)
         selected = cls._profile(profiles, profile, roles)
 
-        subject = Subject(
-            user_id=int(user.id), login=user.identifier, roles=roles, profile=selected
-        )
-        return cls(user, subject, cls._credential(user))
+        try:
+            subject = Subject.of_user(user.id, user.identifier, roles, selected)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+        credential = DelegatedTicket.credential_of(ChainlitSession.metadata_of(user))
+        return cls(user, subject, credential)
 
     def context(self, scope: Scope) -> CallContext:
         """Контекст вызова человека через API в заданной области."""
@@ -147,17 +148,6 @@ class ApiIdentity:
             return profiles.resolve_or_default(name, roles).name
         except RefusalError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-    @staticmethod
-    def _credential(user: PersistedUser) -> Credential:
-        """Ссылка на билет входа по меткам пользователя; иначе — причина отказа."""
-        metadata = ChainlitSession.metadata_of(user)
-
-        marks = SsoMarks.of_metadata(metadata)
-        if marks is not None:
-            return DelegatedTicket(principal=marks.principal, sso_login=marks.login)
-
-        return NoUserCredential(reason=SsoMarks.absence_reason(metadata))
 
 
 class ToolCalling:

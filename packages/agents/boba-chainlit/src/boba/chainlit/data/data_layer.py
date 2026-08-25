@@ -36,6 +36,7 @@ from boba.chainlit.domain.keys import (
 )
 from boba.chainlit.domain.session import SessionSource, UserMetadataField
 from boba.db.postgres import AsyncPostgresPool
+from chainlit.data import get_data_layer
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
 from chainlit.element import CustomElement, ElementDict
@@ -83,6 +84,16 @@ class AttachmentDataLayer(BaseDataLayer, ABC):
     @property
     @abstractmethod
     def storage(self) -> StorageClient: ...
+
+    @classmethod
+    def require(cls) -> "AttachmentDataLayer":
+        """Слой данных приложения, адресующий вложения; иной — ошибка сборки."""
+        layer = get_data_layer()
+        if not isinstance(layer, cls):
+            msg = f"data layer does not address attachments: {type(layer)}"
+            raise RuntimeError(msg)
+
+        return layer
 
 
 class PostgresDataLayer(AttachmentDataLayer):

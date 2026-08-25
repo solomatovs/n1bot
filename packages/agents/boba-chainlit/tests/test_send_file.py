@@ -53,7 +53,7 @@ class TestRefusal:
 
     @staticmethod
     async def _attach(path: str) -> ErrorResult:
-        result = await FileAttachment.attach(path, "call_1")
+        result = await FileAttachment.attach(path)
         if not (isinstance(result, ErrorResult)):
             raise AssertionError("isinstance(result, ErrorResult)")
         return result

@@ -33,7 +33,6 @@ from boba.chainlit.domain.context import (
 from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.session import (
     Session,
-    SsoMarks,
     UserMetadataField,
 )
 from chainlit.auth.jwt import decode_jwt
@@ -221,12 +220,7 @@ class ChainlitSession(Session):
                 user_detail=None,
             )
 
-        subject = Subject(
-            user_id=self._numeric_user_id(),
-            login=self.label,
-            roles=self.roles,
-            profile=profile,
-        )
+        subject = self._subject(profile)
 
         return ChatCallContext(
             subject=subject,
@@ -237,8 +231,8 @@ class ChainlitSession(Session):
             surface=self,
         )
 
-    def _numeric_user_id(self) -> int:
-        """id строки users; вход без сохранённой строки контекста не получает."""
+    def _subject(self, profile: str) -> Subject:
+        """Субъект по строке users; без сохранённой строки контекста нет."""
         user_id = self.user_id
         if not user_id:
             raise InternalServiceError(
@@ -250,11 +244,10 @@ class ChainlitSession(Session):
             )
 
         try:
-            return int(user_id)
+            return Subject.of_user(user_id, self.label, self.roles, profile)
         except ValueError as exc:
             raise InternalServiceError(
-                internal_detail=f"user id {user_id!r} is not the users.id integer",
-                user_detail=None,
+                internal_detail=str(exc), user_detail=None
             ) from exc
 
     def _credential(self) -> Credential:
@@ -263,11 +256,7 @@ class ChainlitSession(Session):
         if user is None:
             return NoUserCredential(reason="this session has no signed sign-in")
 
-        marks = SsoMarks.of_metadata(user.metadata)
-        if marks is not None:
-            return DelegatedTicket(principal=marks.principal, sso_login=marks.login)
-
-        return NoUserCredential(reason=SsoMarks.absence_reason(user.metadata))
+        return DelegatedTicket.credential_of(user.metadata)
 
     @staticmethod
     def user_of_token(token: str) -> cl.User | None:
@@ -281,13 +270,13 @@ class ChainlitSession(Session):
             return None
 
     @classmethod
-    def marks_of_token(cls, token: str) -> SsoMarks | None:
-        """Метки SSO-входа из JWT-cookie; None — токен негоден или вход не SSO."""
+    def ticket_of_token(cls, token: str) -> DelegatedTicket | None:
+        """Ссылка на билет входа из JWT-cookie; None — токен негоден или вход не SSO."""
         user = cls.user_of_token(token)
         if user is None:
             return None
 
-        return SsoMarks.of_metadata(user.metadata)
+        return DelegatedTicket.of_metadata(user.metadata)
 
     @staticmethod
     def metadata_of(user: cl.User | cl.PersistedUser | None) -> Mapping[str, object]:

@@ -20,6 +20,7 @@ from boba.workflow import (
     Stage,
     TaskState,
     TaskStatus,
+    WorkflowGraph,
     WorkflowSpec,
 )
 
@@ -78,15 +79,14 @@ def _state(spec: WorkflowSpec, status: RunStatus) -> RunState:
                 finished_at=datetime(2026, 8, 25, 12, 0, 5, tzinfo=UTC),
             )
 
-    return RunState(
+    graph = WorkflowGraph(
         spec=spec,
         stages=(
             Stage(id="stage:dump", tasks=("dump", "load")),
             Stage(id="stage:ids", tasks=("ids",)),
         ),
-        status=status,
-        tasks=tasks,
     )
+    return RunState(graph=graph, status=status, tasks=tasks)
 
 
 async def test_setup_is_idempotent(store: WorkflowStore) -> None:
@@ -165,7 +165,7 @@ async def test_run_lifecycle(store: WorkflowStore) -> None:
         raise AssertionError(started)
     if started.initiator != {"kind": "human", "via": "api"}:
         raise AssertionError(started.initiator)
-    if WorkflowSpec.parse_yaml(started.spec) != spec:
+    if started.state.graph.spec != spec:
         raise AssertionError("the run keeps a snapshot of the spec")
 
     await store.update_run(run_id, _state(spec, RunStatus.DONE))
@@ -226,5 +226,5 @@ async def test_snapshot_is_independent_of_the_definition(store: WorkflowStore) -
     await store.save(OWNER, changed, {})
 
     run = await store.get_run(OWNER, run_id)
-    if WorkflowSpec.parse_yaml(run.spec).description != "copy batch":
+    if run.state.graph.spec.description != "copy batch":
         raise AssertionError("editing the definition must not touch the run")
