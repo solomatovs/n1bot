@@ -55,13 +55,14 @@ class CatalogBuilder:
 
     @staticmethod
     def _args(tool: BaseTool) -> Iterator[ToolArg]:
-        """Аргументы, которые видит модель; intent — служебный, не аргумент."""
+        """Аргументы, которые видит модель; intent задача задаёт по желанию."""
         schema = tool.tool_call_schema
         if not isinstance(schema, type) or not issubclass(schema, BaseModel):
             return
 
         for name, field in schema.model_fields.items():
             if name == ToolIntent.NAME:
+                yield ToolArg(name=name, required=False)
                 continue
 
             yield ToolArg(name=name, required=field.is_required())

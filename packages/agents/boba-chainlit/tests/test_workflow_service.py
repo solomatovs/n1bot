@@ -35,6 +35,7 @@ from boba.chainlit.workflow.tools import (
     build_workflow_tools,
 )
 from boba.db.postgres import AsyncPostgresPool
+from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import ErrorResult, MultiResult, TextResult, pack_result
 from boba.workflow import RunStatus, TaskStatus
 
@@ -145,7 +146,7 @@ edges:
 VALUES = """
 name: values
 tasks:
-  first: {tool: echo, args: {text: hello}}
+  first: {tool: echo, args: {text: hello, intent: say hello}}
   second: {tool: echo, args: {text: "{{ first }} world"}}
   third: {tool: echo}
 edges:
@@ -358,6 +359,9 @@ class TestTools:
         by_name = {
             t.name: t for t in build_workflow_tools(WorkflowToolConfig(), source)
         }
+        view = ToolCallViews.of("workflow_save")
+        assert isinstance(view, ScriptCall)
+        assert view.lang == "yaml"
 
         saved = await by_name["workflow_save"].ainvoke({"spec": VALUES})
         assert "saved" in saved
@@ -378,7 +382,9 @@ class TestTools:
         assert report.ok
         assert report.metadata[ReportKey.STATUS] == "done"
         assert "third=done" in report.metadata[ReportKey.TASKS]
-        assert [item.metadata[ReportKey.TASK] for item in report.items] == [
+        summary, *rest = report.items
+        assert "third: done" in summary.llm_text()
+        assert [item.metadata[ReportKey.TASK] for item in rest] == [
             "first",
             "second",
             "third",

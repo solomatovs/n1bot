@@ -23,7 +23,7 @@ import psycopg
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from boba.db.postgres import AsyncPostgresPool, PostgresConfig, PostgresError
 from boba.workflow import RunState, RunStatus, WorkflowSpec
@@ -116,8 +116,10 @@ class StoredRun(BaseModel):
     started_at: datetime
     finished_at: datetime | None
 
+    @computed_field
     @property
     def status(self) -> RunStatus:
+        """Статус — проекция состояния; в JSON уходит рядом с ним."""
         return self.state.status
 
 

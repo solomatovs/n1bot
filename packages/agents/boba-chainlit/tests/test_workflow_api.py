@@ -115,7 +115,8 @@ async def test_catalog_lists_tools(client: AsyncClient, app_config: AppConfig) -
     catalog = reply.json()
     assert catalog["echo"]["availability"] == "available"
     assert catalog["canvas_open"]["availability"] == "chat_only"
-    assert [arg["name"] for arg in catalog["slow"]["args"]] == ["label", "delay"]
+    args = {arg["name"]: arg["required"] for arg in catalog["slow"]["args"]}
+    assert args == {"label": True, "delay": True, "intent": False}
 
 
 async def test_validate_and_save(client: AsyncClient, app_config: AppConfig) -> None:

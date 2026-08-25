@@ -21,6 +21,7 @@ from boba.chainlit.domain.context import CallContext
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.workflow.service import RunOutcome, WorkflowService
 from boba.chainlit.workflow.store import StoredWorkflow
+from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
     ErrorResult,
     MultiResult,
@@ -49,7 +50,8 @@ class WorkflowPrompt(StrEnum):
         "Edge kinds: 'a -> b' (b after a), 'a.result -> b.args.q' (result of a "
         "substituted into argument q of b; a set argument must mention "
         "'{{ a }}'), '[b, c] -> d' (d after both). Tools and their arguments "
-        "are the ones available to you; chat-only tools cannot be used."
+        "are the ones available to you; chat-only tools cannot be used. A task "
+        "may set 'intent' in args (a one-line caption); otherwise it is derived."
     )
     NAME = "Name of a saved workflow, as returned by workflow_save or workflow_list."
     SAVE = (
@@ -78,6 +80,7 @@ class RunReport:
 
     @classmethod
     def of(cls, outcome: RunOutcome) -> ToolResult:
+        """Первый элемент — сводка по задачам, дальше результаты в порядке спеки."""
         items: list[ToolResult] = []
         marks: list[str] = []
         for name, task in outcome.state.tasks.items():
@@ -88,15 +91,28 @@ class RunReport:
 
             items.append(cls._labelled(name, task.status, result))
 
+        summary = TextResult(text=cls._summary(outcome))
         return MultiResult(
             ok=outcome.state.ok,
-            items=items,
+            items=[summary, *items],
             metadata={
                 ReportKey.RUN_ID: str(outcome.run.id),
                 ReportKey.STATUS: outcome.state.status.value,
                 ReportKey.TASKS: ", ".join(marks),
             },
         )
+
+    @staticmethod
+    def _summary(outcome: RunOutcome) -> str:
+        lines = [f"workflow run {outcome.run.id}: {outcome.state.status.value}"]
+        for name, task in outcome.state.tasks.items():
+            line = f"- {name}: {task.status.value}"
+            if task.error:
+                line = f"{line}: {task.error}"
+
+            lines.append(line)
+
+        return "\n".join(lines)
 
     @staticmethod
     def _labelled(name: str, status: TaskStatus, result: ToolResult) -> ToolResult:
@@ -126,6 +142,9 @@ class WorkflowListing:
 def build_workflow_tools(
     cfg: WorkflowToolConfig, service: ServiceSource
 ) -> list[BaseTool]:
+    # спека — yaml: шаг ленты показывает её кодом, а не json-аргументами
+    ToolCallViews.register("workflow_save", ScriptCall(arg="spec", lang="yaml"))
+
     @tool(response_format="content_and_artifact")
     async def workflow_save(
         spec: Annotated[str, Field(min_length=1, description=WorkflowPrompt.SPEC)],
