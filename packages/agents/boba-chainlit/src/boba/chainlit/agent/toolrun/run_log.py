@@ -54,6 +54,10 @@ StreamSource: TypeAlias = Callable[[str, str], "CallStream | None"]
 """(имя инструмента, call_id) -> журнал вызова; None — вызов не потоковый."""
 
 
+CallScopeSource = Callable[[str], Callable[[], None]]
+"""Ставит контекст вызова по call_id на время вызова; итог — как его снять."""
+
+
 @dataclass
 class _CallScope:
     """Контекст одного вызова: журнал, таймер и исход для закрытия журнала."""
@@ -61,6 +65,8 @@ class _CallScope:
     name: str
     started: float
     token: Token[ToolCallInfo | None]
+    leave_call: Callable[[], None]
+    """Снимает контекст вызова, поставленный источником на время вызова."""
     stream: CallStream | None
     note: str
 
@@ -74,8 +80,11 @@ class ToolRunLogger:
     """Длина кортежа (content, artifact) у tool'ов с content_and_artifact."""
 
     class _Hooks(CallHooks["_CallScope"]):
-        def __init__(self, stream_source: StreamSource) -> None:
+        def __init__(
+            self, stream_source: StreamSource, call_scope: CallScopeSource
+        ) -> None:
             self._stream_source = stream_source
+            self._call_scope = call_scope
 
         def before(
             self,
@@ -88,6 +97,7 @@ class ToolRunLogger:
             ToolIntentField.pop(kwargs)
 
             token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
+            leave_call = self._call_scope(call_id)
             journal_open = Elapsed()
             stream = ToolRunLogger._open_stream(name, call_id, self._stream_source)
             if stream is not None:
@@ -102,6 +112,7 @@ class ToolRunLogger:
                 name=name,
                 started=time.monotonic(),
                 token=token,
+                leave_call=leave_call,
                 stream=stream,
                 note=str(CallOutcome.FAILED),
             )
@@ -121,6 +132,7 @@ class ToolRunLogger:
                 ToolChannelsTap.set(None)
                 ctx.stream.close(ctx.note)
 
+            ctx.leave_call()
             ToolCallContext.reset(ctx.token)
 
     @classmethod
@@ -128,8 +140,9 @@ class ToolRunLogger:
         cls,
         tools: Sequence[BaseTool],
         stream_source: StreamSource,
+        call_scope: CallScopeSource,
     ) -> list[BaseTool]:
-        return ToolBody.hook_all(tools, cls._Hooks(stream_source))
+        return ToolBody.hook_all(tools, cls._Hooks(stream_source, call_scope))
 
     @staticmethod
     def _open_stream(

@@ -22,7 +22,7 @@ import jwt
 import chainlit as cl
 from boba.cancellation import RunCancellation
 from boba.chainlit.domain.context import (
-    CallContext,
+    ChatCallContext,
     ChatInitiator,
     Credential,
     DelegatedTicket,
@@ -208,7 +208,7 @@ class ChainlitSession(Session):
         await cast("Awaitable[None]", socket.emit(event, dict(payload)))
         return True
 
-    def call_context(self, turn_id: str, profile: str) -> CallContext:
+    def call_context(self, turn_id: str, profile: str) -> ChatCallContext:
         """Контекст хода чата из сессии; чего не хватает — InternalServiceError.
 
         profile — имя профиля, по которому собран агент сессии: реестр
@@ -228,12 +228,13 @@ class ChainlitSession(Session):
             profile=profile,
         )
 
-        return CallContext(
+        return ChatCallContext(
             subject=subject,
             scope=Scope.chat(thread_id),
             initiator=ChatInitiator(thread_id=thread_id, turn_id=turn_id),
             credential=self._credential(),
             cancellation=RunCancellation(),
+            surface=self,
         )
 
     def _numeric_user_id(self) -> int:

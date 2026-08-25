@@ -35,7 +35,7 @@ from boba.chainlit.canvas.panel import (
 )
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageError, StorageNotFoundError
-from boba.chainlit.domain.context import CallContext
+from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.domain.run import RunRegistry
@@ -342,7 +342,7 @@ class DiagramFiles:
     @staticmethod
     def _scope() -> tuple[str, str]:
         """Пользователь и тред области вызова; вне контекста — RefusalError."""
-        context = CallContext.current()
+        context = ChatCallContext.require()
         return context.subject.user_key, context.scope.id
 
     @staticmethod

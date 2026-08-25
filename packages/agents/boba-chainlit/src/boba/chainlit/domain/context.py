@@ -6,16 +6,17 @@
 инициатор — за след «кто нажал».
 
 Ошибки:
-RefusalError — вызов идёт вне контекста, kind ContextKind.NO_CONTEXT.
+RefusalError — вызов идёт вне контекста (ContextKind.NO_CONTEXT) либо
+    инструменту чата достался контекст не чата (ContextKind.CHAT_ONLY).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -25,7 +26,9 @@ from boba.chainlit.domain.session import LogUserMark
 
 __all__ = [
     "CallContext",
+    "ChatCallContext",
     "ChatInitiator",
+    "ChatSurface",
     "ContextKind",
     "Credential",
     "DelegatedTicket",
@@ -44,6 +47,7 @@ class ContextKind(StrEnum):
     """Отказы контекста вызова."""
 
     NO_CONTEXT = "no_context"
+    CHAT_ONLY = "chat_only"
 
 
 class ScopeKind(StrEnum):
@@ -206,8 +210,28 @@ class CallContext(BaseModel):
         """Снять контекст: пользуются тесты."""
         cls._CURRENT.set(None)
 
+    @classmethod
+    def push(cls, context: CallContext) -> Token[CallContext | None]:
+        """Ставит производный контекст на время вызова; снимает pop."""
+        return cls._CURRENT.set(context)
+
+    @classmethod
+    def pop(cls, token: Token[CallContext | None]) -> None:
+        cls._CURRENT.reset(token)
+
     def log_mark(self) -> LogUserMark:
         return LogUserMark(self.subject.login, self.scope.id)
+
+    def as_tool_call(self, tool_call_id: str) -> CallContext:
+        """Контекст вызова инструмента моделью: инициатор — llm, остальное то же.
+
+        Вне хода чата инициатор не меняется: инструмент запустил не модель.
+        """
+        if not isinstance(self.initiator, ChatInitiator):
+            return self
+
+        llm = LlmInitiator(thread_id=self.scope.id, tool_call_id=tool_call_id)
+        return self.model_copy(update={"initiator": llm})
 
     @contextmanager
     def applied(self) -> Iterator[CallContext]:
@@ -218,3 +242,33 @@ class CallContext(BaseModel):
                 yield self
         finally:
             self._CURRENT.reset(token)
+
+
+@runtime_checkable
+class ChatSurface(Protocol):
+    """Куда ход чата шлёт события фронту: сокет сессии или рассылка треда."""
+
+    async def emit(self, event: str, payload: Mapping[str, Any]) -> bool:
+        """True — событие ушло живому слушателю; False — слушать некому."""
+        ...
+
+
+class ChatCallContext(CallContext):
+    """Контекст хода чата: вдобавок к общему — поверхность для событий фронту.
+
+    Инструменты, которым нужен чат (панель, карточки, вложения), требуют
+    именно его; вне чата они отказывают, а не молчат.
+    """
+
+    surface: ChatSurface
+
+    @classmethod
+    def require(cls) -> ChatCallContext:
+        """Контекст чата; вызов вне чата — RefusalError(CHAT_ONLY)."""
+        context = cls.current()
+        if not isinstance(context, ChatCallContext):
+            raise RefusalError(
+                ContextKind.CHAT_ONLY, "this tool works only inside a chat turn"
+            )
+
+        return context

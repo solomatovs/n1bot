@@ -48,7 +48,7 @@ from boba.chainlit.canvas.panel import (
     WatchSource,
 )
 from boba.chainlit.domain.run import RunPort, RunRegistry
-from boba.chainlit.infra.plugins import stream_source
+from boba.chainlit.infra.plugins import stream_source, tool_call_scope
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
     ChatView,
@@ -174,7 +174,7 @@ class TestJournalThroughWrapper:
             return "done"
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all([fake_bash], stream_source)
+        ToolRunLogger.guard_all([fake_bash], stream_source, tool_call_scope)
         return fake_bash, seen
 
     async def _invoke(self, *, streamable: bool = True) -> list[object]:
@@ -246,7 +246,7 @@ class TestJournalThroughWrapper:
             raise RuntimeError(msg)
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all([fake_bash], stream_source)
+        ToolRunLogger.guard_all([fake_bash], stream_source, tool_call_scope)
 
         async def scenario() -> None:
             with pytest.raises(RuntimeError):
@@ -287,7 +287,7 @@ class TestJournalThroughWrapper:
             return "done"
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all([fake_bash], stream_source)
+        ToolRunLogger.guard_all([fake_bash], stream_source, tool_call_scope)
 
         async def scenario() -> None:
             first = fake_bash.ainvoke(

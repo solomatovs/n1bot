@@ -47,6 +47,7 @@ def run_app(config_path: Path):
     _use_stream_journal(c)
 
     _use_canvas_viewers()
+    _use_tool_api(c)
 
     _use_auth(c, container)
 
@@ -240,6 +241,42 @@ def _use_canvas_viewers() -> None:
         providers.connection_store_ref,
         providers.ccache_registry_ref,
     )
+
+
+def _use_tool_api(c: AppConfig) -> None:
+    """REST-запуск инструмента человеком: реестр тот же, что у сессий чата."""
+    from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
+    from boba.chainlit.domain.errors import InternalServiceError  # noqa: PLC0415
+    from boba.chainlit.domain.keys import ToolCallUrl  # noqa: PLC0415
+    from boba.chainlit.infra.config import ChatProfiles  # noqa: PLC0415
+    from boba.chainlit.infra.di import Depends  # noqa: PLC0415
+    from boba.chainlit.infra.plugins import ToolRegistry  # noqa: PLC0415
+    from boba.chainlit.infra.tool_api import ToolCalling  # noqa: PLC0415
+    from chainlit.data import get_data_layer  # noqa: PLC0415
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    async def registry() -> ToolRegistry:
+        root = Container.root
+        if root is None:
+            msg = "DI container is not initialised: tool registry is unavailable"
+            raise RuntimeError(msg)
+
+        return await root.resolve(Depends(providers.tool_registry))
+
+    def data_layer() -> PostgresDataLayer:
+        layer = get_data_layer()
+        if not isinstance(layer, PostgresDataLayer):
+            raise InternalServiceError(
+                internal_detail=f"data layer is not PostgresDataLayer: {type(layer)}",
+                user_detail="Thread storage is not available",
+            )
+        return layer
+
+    calling = ToolCalling(registry, ChatProfiles(c.profiles), data_layer)
+    chainlit_app.add_api_route(
+        ToolCallUrl.ROUTE, calling.serve, methods=["POST"], include_in_schema=False
+    )
+    chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 
 
 def _use_auth(config: AppConfig, container: Container) -> None:

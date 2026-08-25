@@ -27,6 +27,7 @@ __all__ = [
     "ObjectKey",
     "StreamUrl",
     "ThreadDir",
+    "ToolCallUrl",
 ]
 
 
@@ -369,3 +370,9 @@ class StreamUrl:
         prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
         name = quote(channel.value, safe="")
         return f"{prefix}/stream/{thread_id}/{call_id}?channel={name}"
+
+
+class ToolCallUrl:
+    """Адрес REST-запуска инструмента: имя в пути, остальное в теле."""
+
+    ROUTE: ClassVar[str] = "/tools/{name}"

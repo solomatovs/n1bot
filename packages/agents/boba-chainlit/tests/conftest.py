@@ -2,7 +2,7 @@
 
 import os
 import secrets
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -324,6 +324,15 @@ def use_context(  # noqa: PLR0913 — личность собирается по
     install_context(monkeypatch, context)
 
     return context
+
+
+def no_call_scope(call_id: str) -> Callable[[], None]:
+    """Источник контекста вызова для обвязок в тестах без контекста."""
+    return _leave_nothing
+
+
+def _leave_nothing() -> None:
+    return None
 
 
 def enter_context(profile: str = TEST_PROFILE) -> CallContext:
