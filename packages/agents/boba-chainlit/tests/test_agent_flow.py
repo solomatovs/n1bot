@@ -310,6 +310,17 @@ class TestRephrasingsParser:
         if RephrasingsParser.parse(cut):
             raise AssertionError("недописанный json в поиск не идёт")
 
+    def test_json_in_prose_with_nested_fence_and_tilde_fence(self) -> None:
+        """Объект берётся целиком: вложенные ``` и ~~~-обёртка разбору не мешают."""
+        nested = self.SCHEMA_ANSWER.replace("samba AD", "samba ```AD```")
+        wrapped = f"Варианты:\n~~~json\n{nested}\n~~~\nи ещё текст"
+
+        parsed = RephrasingsParser.parse(wrapped)
+        if len(parsed) != 3:
+            raise AssertionError(f"три варианта, получено {parsed}")
+        if not any("```AD```" in item for item in parsed):
+            raise AssertionError(f"вложенный fence сохранён в значении: {parsed}")
+
 
 class TestLlmRephraser:
     """Переформулировщик поверх генератора: любой ответ либо разобран, либо откат."""

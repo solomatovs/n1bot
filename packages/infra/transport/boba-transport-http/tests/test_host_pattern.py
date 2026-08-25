@@ -23,6 +23,15 @@ class TestHostPattern:
         if pattern.matches("evil-example.com"):
             raise AssertionError("suffix must match on a label boundary")
 
+    def test_matching_ignores_case_on_both_sides(self) -> None:
+        pattern = HostPattern(value="*.Example.COM")
+        if pattern.value != "*.example.com":
+            raise AssertionError("config host must be lowercased")
+        if not pattern.matches("Wiki.EXAMPLE.com"):
+            raise AssertionError("mixed-case host must match")
+        if not HostPattern(value="Wiki.Example.com").matches("wiki.example.com"):
+            raise AssertionError("exact host must match regardless of case")
+
     def test_host_of_url_is_lowercase(self) -> None:
         host = HostPattern.host_of("https://Wiki.EXAMPLE.com:8443/x")
         if host != "wiki.example.com":

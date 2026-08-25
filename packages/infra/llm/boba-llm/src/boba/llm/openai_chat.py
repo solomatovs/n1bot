@@ -20,6 +20,11 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 import httpx
+from httpx_sse import ServerSentEvent
+
+# декодер построчный, а не EventSource: вотчдог паузы считает каждую строку,
+# включая keepalive-комментарии прокси, и content-type сервера не проверяется
+from httpx_sse._decoders import SSEDecoder
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.llm.provider import (
@@ -72,13 +77,6 @@ class WireField(StrEnum):
     SEED = "seed"
     STOP = "stop"
     REASONING_EFFORT = "reasoning_effort"
-
-
-class SseLine(StrEnum):
-    """Служебные части SSE-потока."""
-
-    DATA_PREFIX = "data: "
-    DONE = "[DONE]"
 
 
 class WireFunctionDelta(BaseModel):
@@ -181,7 +179,15 @@ class StreamAssembly:
         if delta.content:
             self._content.append(delta.content)
 
-        for call in delta.tool_calls:
+        self._grow_calls(delta.tool_calls)
+
+        if not delta.content and not reasoning:
+            return None
+
+        return ChatDelta(content=delta.content, reasoning=reasoning)
+
+    def _grow_calls(self, calls: Sequence[WireCallDelta]) -> None:
+        for call in calls:
             growing = self._calls.setdefault(call.index, GrowingCall())
             if call.id:
                 growing.id = call.id
@@ -189,11 +195,6 @@ class StreamAssembly:
                 growing.name += call.function.name
             if call.function.arguments:
                 growing.arguments += call.function.arguments
-
-        if not delta.content and not reasoning:
-            return None
-
-        return ChatDelta(content=delta.content, reasoning=reasoning)
 
     def reply(self) -> ChatReply:
         calls: list[ToolCallRequest] = []
@@ -241,6 +242,9 @@ class OpenAiChatProvider(ChatProvider):
     ENDPOINT: ClassVar[str] = "chat/completions"
 
     RETRY_STATUSES: ClassVar[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
+
+    SSE_DONE: ClassVar[str] = "[DONE]"
+    """Данные последнего события потока."""
 
     def __init__(
         self,
@@ -360,23 +364,36 @@ class OpenAiChatProvider(ChatProvider):
 
             if response.is_error:
                 body = await response.aread()
-                msg = (
-                    f"chat endpoint returned {response.status_code}: "
-                    f"{body[:500]!r}"
-                )
+                msg = f"chat endpoint returned {response.status_code}: {body[:500]!r}"
                 raise ChatProviderError(msg)
 
+            decoder = SSEDecoder()
             lines = response.aiter_lines()
             while True:
                 line = await self._next_line(lines)
                 if line is None:
-                    return
+                    break
 
-                chunk = self._parse_line(line)
+                event = decoder.decode(line)
+                if event is None:
+                    continue
+
+                chunk = self._parse_event(event)
                 if chunk is None:
                     continue
 
                 yield chunk
+
+            # поток оборвался без пустой строки: недосланное событие всё же отдаём
+            trailing = decoder.decode("")
+            if trailing is None:
+                return
+
+            chunk = self._parse_event(trailing)
+            if chunk is None:
+                return
+
+            yield chunk
 
     async def _next_line(self, lines: AsyncIterator[str]) -> str | None:
         """Очередная строка SSE под вотчдогом паузы между чанками."""
@@ -392,13 +409,13 @@ class OpenAiChatProvider(ChatProvider):
             raise ChatProviderError(msg) from exc
 
     @classmethod
-    def _parse_line(cls, line: str) -> WireChunk | None:
-        stripped = line.strip()
-        if not stripped.startswith(SseLine.DATA_PREFIX.value):
+    def _parse_event(cls, event: ServerSentEvent) -> WireChunk | None:
+        """Чанк из события; [DONE] и пустые данные чанком не являются."""
+        body = event.data.strip()
+        if not body:
             return None
 
-        body = stripped[len(SseLine.DATA_PREFIX.value) :].strip()
-        if body == SseLine.DONE.value:
+        if body == cls.SSE_DONE:
             return None
 
         try:

@@ -6,6 +6,7 @@
 
 Ошибки:
 RefusalError — требование сессии не выполнено, kind из SessionKind.
+TemplateError — шаблон входа без {username} либо принципал не по шаблону.
 """
 
 from __future__ import annotations
@@ -19,10 +20,12 @@ from enum import StrEnum
 from typing import ClassVar, Final, Protocol
 
 from boba.chainlit.domain.errors import RefusalError
+from boba.toolkit.template import FieldTemplate, TemplateError
 
 __all__ = [
     "LogLine",
     "LogUserMark",
+    "LoginTemplate",
     "RequiredSession",
     "Session",
     "SessionKind",
@@ -60,6 +63,35 @@ class UserLogin:
         name = raw.strip()
 
         return cls(key=name.lower(), display=name)
+
+
+class LoginTemplate:
+    """Шаблоны входа с полем {username}: формат принципала, bind DN, LDAP-фильтр.
+
+    Одно место для подстановки логина в шаблон и обратного разбора логина из
+    принципала; провайдеры входа сами шаблоны не разбирают.
+    """
+
+    FIELD: ClassVar[str] = "username"
+
+    @classmethod
+    def check(cls, text: str) -> str:
+        """Валидатор конфига: шаблон разбирается и содержит {username}."""
+        try:
+            FieldTemplate.parse(text).having(cls.FIELD)
+        except TemplateError as exc:
+            raise ValueError(str(exc)) from exc
+
+        return text
+
+    @classmethod
+    def render(cls, text: str, username: str) -> str:
+        return FieldTemplate.parse(text).render({cls.FIELD: username})
+
+    @classmethod
+    def username_of(cls, text: str, principal: str) -> str:
+        """Логин из принципала по шаблону; несоответствие — TemplateError."""
+        return FieldTemplate.parse(text).extract(principal, cls.FIELD)
 
 
 @dataclass(frozen=True)
