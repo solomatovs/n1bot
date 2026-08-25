@@ -14,6 +14,7 @@ pythonpath = [
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/krb/boba-krb/src",
     "packages/core/boba-cancellation/src",
+    "packages/core/boba-workflow/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
@@ -55,6 +56,7 @@ extraPaths = [
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/krb/boba-krb/src",
     "packages/core/boba-cancellation/src",
+    "packages/core/boba-workflow/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
@@ -124,6 +126,7 @@ members = [
 [tool.uv.sources]
 boba-settings       = { workspace = true }
 boba-cancellation   = { workspace = true }
+boba-workflow       = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }
