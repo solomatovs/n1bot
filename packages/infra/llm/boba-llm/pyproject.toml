@@ -11,6 +11,7 @@ dependencies = [
     "boba-indexing==0.0.14.dev8",
     "boba-toolkit==0.0.14.dev8",
     "httpx[http2]>=0.28,<1",
+    "httpx-sse>=0.4,<1",
     "pydantic>=2.10,<2.11",
 ]
 
