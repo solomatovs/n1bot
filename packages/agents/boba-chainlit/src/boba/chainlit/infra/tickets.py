@@ -9,7 +9,7 @@ Keytab остаётся у приложения, делегированный TG
 Ошибки:
 KerberosError — билет к соединению не выпущен, вызов начинать нечем.
 ToolConfigError — секция требует делегирования, а источника кредов нет.
-ServiceTicketsError — тело инструмента вызвано синхронно: билет выпускается
+InjectedAsyncOnlyError — тело инструмента вызвано синхронно: билет выпускается
     только в async-теле.
 """
 
@@ -17,13 +17,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from functools import wraps
 
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
-from boba.chainlit.agent.toolrun.injected import ConfigResolver, ToolConfigError
-from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
+from boba.chainlit.agent.toolrun.injected import (
+    AsyncInjected,
+    ConfigResolver,
+    ToolConfigError,
+)
 from boba.chainlit.connections.store import ConnectionProfile
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import PostgresConfig
@@ -38,20 +40,15 @@ from boba.krb import (
     ServiceTicketIssuer,
     TicketAuth,
 )
-from boba.toolkit.entry import ToolArgv
 from boba.transport.http import HttpProfile
 from boba.transport.http.auth import NegotiateAuth
 
-__all__ = ["DelegationSource", "ServiceTickets", "ServiceTicketsError", "TicketArming"]
+__all__ = ["DelegationSource", "ServiceTickets", "TicketArming"]
 
 logger = logging.getLogger(__name__)
 
 DelegationSource = Callable[[], KerberosCredentials]
 """Делегированные креды текущего вызова; зовётся, когда секция их требует."""
-
-
-class ServiceTicketsError(Exception):
-    """Обвязка поставлена, но тело вызвано путём, где билет не выпустить."""
 
 
 class TicketArming:
@@ -194,12 +191,11 @@ class TicketArming:
         raise ToolConfigError(msg)
 
 
-class ServiceTickets:
+class ServiceTickets(AsyncInjected):
     """Обвязка секции: статический injected-конфиг с keytab едет билетом вызова."""
 
     def __init__(self, param: str, base: object) -> None:
-        self._param = param
-        self._base = base
+        super().__init__(param, base)
         self._arming = TicketArming(TicketArming.no_delegation)
 
     @classmethod
@@ -209,43 +205,7 @@ class ServiceTickets:
         Зовётся до InjectedConfig: injected-поля читаются со схемы, пока их
         с неё не сняли.
         """
-        for tool in tools:
-            cls._bind(tool, resolve)
+        cls.bind_each(tools, resolve, TicketArming.needs_arming, cls)
 
-    @classmethod
-    def _bind(cls, tool: BaseTool, resolve: ConfigResolver) -> None:
-        if not isinstance(tool, StructuredTool):
-            return
-
-        schema = tool.args_schema
-        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
-            return
-
-        for param, annotation in ToolArgv.injected_fields(schema).items():
-            base = resolve(param, annotation)
-            if not TicketArming.needs_arming(base):
-                continue
-
-            hook = cls(param, base)
-            ToolBody.wrap_all([tool], hook._wrap, hook._wrap_async)
-            logger.info(
-                "tool %s: kerberos section of %s is issued as a call ticket",
-                tool.name,
-                param,
-            )
-
-    def _wrap(self, call: SyncCall, name: str) -> SyncCall:
-        @wraps(call)
-        def guarded(*args: object, **kwargs: object) -> object:
-            msg = f"tool {name!r}: call tickets are issued in the async body only"
-            raise ServiceTicketsError(msg)
-
-        return guarded
-
-    def _wrap_async(self, call: AsyncCall, name: str) -> AsyncCall:
-        @wraps(call)
-        async def guarded(*args: object, **kwargs: object) -> object:
-            kwargs[self._param] = await self._arming.arm(self._base)
-            return await call(*args, **kwargs)
-
-        return guarded
+    async def value(self, name: str, kwargs: dict[str, object]) -> object:
+        return await self._arming.arm(self._base)

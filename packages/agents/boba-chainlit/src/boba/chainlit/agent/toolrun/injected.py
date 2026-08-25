@@ -1,25 +1,39 @@
-"""Подстановка Injected-конфига в kwargs вызова и правка схемы инструмента.
+"""Подстановка injected-конфига в kwargs вызова и правка схемы инструмента.
 
-Ставится сразу поверх обёртки запуска: partial кладёт значения в kwargs до
-того, как обёртка разложит их на argv и stdin. Заодно injected-поля снимаются
-с args_schema — langchain валидирует вход по полной схеме до тела, и
-обязательный injected-параметр без значения ронял бы вызов.
+InjectedConfig ставится сразу поверх обёртки запуска: partial кладёт
+статические значения в kwargs до того, как обёртка разложит их на argv и
+stdin, и снимает injected-поля с args_schema — langchain валидирует вход по
+схеме до тела. AsyncInjected — база обвязок, которым значение нужно
+дождаться на каждом вызове (билет, соединения субъекта): они ставятся до
+InjectedConfig, пока injected-поля ещё на схеме.
 
-Ошибки: ToolConfigError — у injected-параметра нет значения у загрузчика.
+Ошибки:
+ToolConfigError — у injected-параметра нет значения у загрузчика.
+InjectedAsyncOnlyError — тело с ожидаемым значением вызвано синхронно.
 """
 
 from __future__ import annotations
 
+import logging
+from abc import abstractmethod
 from collections.abc import Callable, Sequence
 from typing import Any, TypeAlias
 
-from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel, create_model
+from langchain_core.tools import BaseTool
 
-from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
+from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
 from boba.toolkit.entry import ToolArgv
 
-__all__ = ["ConfigResolver", "InjectedConfig", "ToolConfigError"]
+__all__ = [
+    "AsyncInjected",
+    "ConfigResolver",
+    "InjectedAsyncOnlyError",
+    "InjectedConfig",
+    "InjectedValues",
+    "ToolConfigError",
+]
+
+logger = logging.getLogger(__name__)
 
 ConfigResolver: TypeAlias = Callable[[str, Any], object]
 """(имя параметра, аннотация) -> значение; собирает загрузчик из конфига."""
@@ -27,6 +41,83 @@ ConfigResolver: TypeAlias = Callable[[str, Any], object]
 
 class ToolConfigError(Exception):
     """Injected-параметру инструмента нечего подставить."""
+
+
+class InjectedAsyncOnlyError(Exception):
+    """Обвязка поставлена, но тело вызвано путём, где значение не дождаться."""
+
+
+class InjectedValues:
+    """Значения injected-параметров одного инструмента по его схеме."""
+
+    @staticmethod
+    def of(tool: BaseTool, resolve: ConfigResolver) -> dict[str, object]:
+        schema = ToolSchema.of(tool)
+        if schema is None:
+            return {}
+
+        injected = ToolArgv.injected_fields(schema)
+
+        values: dict[str, object] = {}
+        for name, annotation in injected.items():
+            values[name] = resolve(name, annotation)
+
+        return values
+
+
+class AsyncInjected(CallHooks[None]):
+    """Обвязка с ожидаемым значением одного injected-параметра на вызов."""
+
+    def __init__(self, param: str, base: object) -> None:
+        self._param = param
+        self._base = base
+
+    @property
+    def param(self) -> str:
+        return self._param
+
+    @abstractmethod
+    async def value(self, name: str, kwargs: dict[str, object]) -> object:
+        """Значение параметра для этого вызова."""
+
+    def before(
+        self,
+        name: str,
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> None:
+        msg = f"tool {name!r}: {self._param} is built in the async body only"
+        raise InjectedAsyncOnlyError(msg)
+
+    async def before_async(
+        self,
+        name: str,
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> None:
+        kwargs[self._param] = await self.value(name, kwargs)
+
+    @classmethod
+    def bind_each(
+        cls,
+        tools: Sequence[BaseTool],
+        resolve: ConfigResolver,
+        accepts: Callable[[object], bool],
+        make: Callable[[str, object], AsyncInjected],
+    ) -> None:
+        """Ставит обвязку make(param, base) на каждый подходящий injected-параметр."""
+        for tool in tools:
+            for param, base in InjectedValues.of(tool, resolve).items():
+                if not accepts(base):
+                    continue
+
+                ToolBody.hook_all([tool], make(param, base))
+                logger.info(
+                    "tool %s: %s of %s is built per call",
+                    tool.name,
+                    param,
+                    cls.__name__,
+                )
 
 
 class InjectedConfig:
@@ -51,56 +142,14 @@ class InjectedConfig:
             cls._bind(tool, resolve)
 
     @classmethod
-    def values_of(
-        cls, tools: Sequence[BaseTool], resolve: ConfigResolver
-    ) -> list[object]:
-        """Конфиги, которые подставляются инструментам: их же видит песочница."""
-        values: list[object] = []
-        for tool in tools:
-            values.extend(cls._values(tool, resolve).values())
-
-        return values
-
-    @classmethod
-    def _values(cls, tool: BaseTool, resolve: ConfigResolver) -> dict[str, object]:
-        if not isinstance(tool, StructuredTool):
-            return {}
-
-        schema = tool.args_schema
-        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
-            return {}
-
-        injected = ToolArgv.injected_fields(schema)
-        if not injected:
-            return {}
-
-        values: dict[str, object] = {}
-        for name, annotation in injected.items():
-            values[name] = resolve(name, annotation)
-
-        return values
-
-    @classmethod
     def _bind(cls, tool: BaseTool, resolve: ConfigResolver) -> None:
-        values = cls._values(tool, resolve)
+        values = InjectedValues.of(tool, resolve)
         if not values:
             return
 
-        schema = tool.args_schema
-        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+        schema = ToolSchema.of(tool)
+        if schema is None:
             return
 
         ToolBody.hook_all([tool], cls._Partial(values))
-        tool.args_schema = cls._without(schema, set(values))
-
-    @staticmethod
-    def _without(schema: type[BaseModel], names: set[str]) -> type[BaseModel]:
-        """Схема без injected-полей: вход от LLM валидируется по остатку."""
-        fields: dict[str, Any] = {}
-        for name, info in schema.model_fields.items():
-            if name in names:
-                continue
-
-            fields[name] = (info.annotation, info)
-
-        return create_model(schema.__name__, **fields)
+        tool.args_schema = ToolSchema.rebuild(schema, {}, values)

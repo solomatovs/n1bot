@@ -4,7 +4,7 @@
 (ToolCallIdField), исход и длительность. Поэтому она же открывает журнал
 живого вывода через переданный stream_source, ставит приёмники каналов в тап
 исполнителя и закрывает журнал по исходу вызова. Здесь же снимается подпись
-вызова (ToolIntentField): её показывает лента, телу инструмента она не нужна.
+вызова (ToolIntent): её показывает лента, телу инструмента она не нужна.
 
 Ошибки: своих не выпускает; исключение тела проходит наверх как есть.
 """
@@ -22,8 +22,8 @@ from typing import ClassVar, Protocol, TypeAlias
 from langchain_core.tools import BaseTool
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
+from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import CallOutcome, JournalChannel
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolResultBase
@@ -94,7 +94,7 @@ class ToolRunLogger:
         ) -> _CallScope:
             call_id = ToolCallIdField.pop(kwargs)
             ToolRunLogger._log_start(name, args, kwargs)
-            ToolIntentField.pop(kwargs)
+            ToolIntent.pop(kwargs)
 
             token = ToolCallContext.set(ToolCallInfo(name=name, call_id=call_id))
             leave_call = self._call_scope(call_id)

@@ -253,6 +253,24 @@ class ToolArgv:
 
         return schema
 
+    @staticmethod
+    def section_of(name: str, annotation: Any) -> str:
+        """Секция toml, из которой собирается injected-модель параметра."""
+        section = getattr(annotation, "SECTION", None)
+        if not isinstance(section, str):
+            msg = f"injected parameter {name!r} has no SECTION on its model"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        if not isinstance(annotation, type):
+            msg = f"injected parameter {name!r} is not a pydantic model"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        if not issubclass(annotation, BaseModel):
+            msg = f"injected parameter {name!r} is not a pydantic model"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        return section
+
     @classmethod
     def injected_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
         """Injected-параметры схемы: имя -> аннотация."""
@@ -553,14 +571,7 @@ class ToolMain:
 
         payload: dict[str, Any] = {}
         for name, annotation in injected.items():
-            section = getattr(annotation, "SECTION", None)
-            if not isinstance(section, str):
-                msg = (
-                    f"injected parameter {name!r} has no SECTION; "
-                    f"it cannot be built from --config"
-                )
-                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
-
+            section = ToolArgv.section_of(name, annotation)
             model = bind(raw, section, annotation)
             payload[name] = ToolArgv.reveal(annotation, model)
 

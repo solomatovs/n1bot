@@ -58,7 +58,7 @@ from boba.tool.kb.tools import TOOLS as KB_TOOLS
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.tool.web.tools import TOOLS as WEB_TOOLS
-from boba.toolkit.entry import ToolAddress, ToolArgv, ToolLike, ToolMain
+from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool, WarmupHooks
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
@@ -312,14 +312,10 @@ def _config_resolver(raw_config: DictConfig) -> Callable[[str, Any], object]:
     """Значения injected-параметров: модель собирается из своей секции."""
 
     def resolve(param: str, annotation: Any) -> object:
-        section = getattr(annotation, "SECTION", None)
-        if not isinstance(section, str):
-            msg = f"injected parameter {param!r} has no SECTION on its model"
-            raise ToolConfigError(msg)
-
-        if not isinstance(annotation, type) or not issubclass(annotation, BaseModel):
-            msg = f"injected parameter {param!r} is not a pydantic model"
-            raise ToolConfigError(msg)
+        try:
+            section = ToolArgv.section_of(param, annotation)
+        except ToolEntryError as exc:
+            raise ToolConfigError(str(exc)) from exc
 
         return bind(raw_config, section, annotation)
 
