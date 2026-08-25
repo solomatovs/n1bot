@@ -24,7 +24,7 @@ from uuid import uuid4
 import pytest
 from fake_channel_tool import ChannelConfig, fx_chatter
 from pydantic import SecretStr
-from zygote_stand import ROOTFS, ROOTFS_IMAGE, SandboxStand, ZygoteStand
+from zygote_stand import ROOTFS_IMAGE, SandboxStand, ZygoteStand
 
 from boba.sandbox import SandboxProfile
 from boba.sandbox.zygote import ZygoteRegistry, ZygoteSpawner, ZygoteState
@@ -42,7 +42,7 @@ from boba.toolkit.stream import (
 from boba.toolkit.zygote import WarmupCall
 
 needs_sandbox = pytest.mark.skipif(
-    shutil.which("bwrap") is None or not (ROOTFS / "bin" / "sh").exists(),
+    shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
     reason="нет bwrap или артефактов песочницы (собрать: make deps)",
 )
 needs_userns = pytest.mark.skipif(

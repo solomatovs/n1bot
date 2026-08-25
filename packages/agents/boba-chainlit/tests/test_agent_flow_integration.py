@@ -59,7 +59,7 @@ from boba.settings import bind
 from boba.toolkit.result import TableResult, ToolArtifact
 
 _REPO = Path(__file__).resolve().parents[4]
-_ROOTFS = _REPO / "build" / "src" / "sandbox" / "rootfs"
+_ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"
 
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
@@ -74,7 +74,7 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
     pytest.mark.skipif(
-        shutil.which("bwrap") is None or not (_ROOTFS / "bin" / "sh").exists(),
+        shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
         reason="нет bwrap или артефактов песочницы (собрать: make deps)",
     ),
     pytest.mark.skipif(

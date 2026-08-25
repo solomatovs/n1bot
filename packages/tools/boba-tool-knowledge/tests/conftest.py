@@ -17,7 +17,6 @@ from boba.sandbox import SandboxProfile
 
 REPO = Path(__file__).resolve().parents[4]
 SANDBOX = REPO / "build" / "src" / "sandbox"
-ROOTFS = SANDBOX / "rootfs"
 ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
 
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
@@ -26,7 +25,7 @@ ADDRESS_SPACE = 16 * 1024 * 1024 * 1024
 """RLIMIT_AS профиля парсера: pdfium резервирует ~2.3G независимо от документа."""
 
 needs_sandbox = pytest.mark.skipif(
-    shutil.which("bwrap") is None or not (ROOTFS / "bin" / "sh").exists(),
+    shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
     reason="нет bwrap или артефактов песочницы (собрать: make deps)",
 )
 needs_userns = pytest.mark.skipif(
@@ -66,19 +65,32 @@ SRC_PACKAGES = (
 """Пакеты, чей код нужен телу инструмента внутри песочницы."""
 
 
+def _base_dir() -> Path:
+    """Каталог развёртывания (BOBA_BASE): оттуда приложение берёт .pth и модели."""
+    base = os.environ.get("BOBA_BASE")
+    if not base:
+        raise RuntimeError("BOBA_BASE не задан — тесты песочницы берут пути из него")
+
+    return Path(base)
+
+
 class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site."""
 
     @staticmethod
     def ro_binds(docs_dir: Path | None) -> list[str]:
+        """Те же бинды, что у [sandbox.bind] приложения: код, .pth, веса эмбеддера.
+
+        Python и tessdata лежат в самом образе rootfs.ext4; веса и код идут
+        с хоста, как в бою.
+        """
+        base = _base_dir()
         site_packages = "/usr/local/lib/python3.11/site-packages"
         binds = [
-            f"{SANDBOX / 'third' / 'python'}:/usr/local",
-            f"{SANDBOX / 'site'}:{site_packages}",
-            f"{SANDBOX / 'third' / 'fastembed'}:/var/cache/fastembed",
-            f"{SANDBOX / 'third' / 'tessdata'}:/usr/share/tessdata",
+            f"{REPO / 'packages'}:/usr/src",
+            f"{base / 'sandbox' / 'boba-src.pth'}:{site_packages}/boba-src.pth",
+            f"{base / 'models' / 'fastembed'}:/var/cache/fastembed",
         ]
-        binds.append(f"{REPO / 'packages'}:/usr/src")
         if docs_dir is not None:
             binds.append(f"{docs_dir}:/workspace")
         return binds

@@ -46,7 +46,7 @@ ROOTFS = SANDBOX / "rootfs"
 ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
 
 needs_sandbox = pytest.mark.skipif(
-    shutil.which("bwrap") is None or not (ROOTFS / "bin" / "sh").exists(),
+    shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
     reason="нет bwrap или артефактов песочницы (собрать: make deps)",
 )
 needs_userns = pytest.mark.skipif(

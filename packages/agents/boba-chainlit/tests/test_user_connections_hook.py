@@ -74,6 +74,10 @@ CH_URL = f"http://{STAND.ch_addr}:{STAND.ch_port}"
 CH_WILDCARD_URL = f"http://*.{STAND.krb_domain}:{STAND.ch_port}"
 CH_HOST_URL = f"http://{STAND.ch_host}:{STAND.ch_port}"
 
+needs_ch = pytest.mark.skipif(
+    not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
+)
+
 live_kdc = pytest.mark.skipif(
     not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
@@ -591,6 +595,7 @@ async def test_logout_forgets_the_delegated_ticket(
 
 
 @live_kdc
+@needs_ch
 async def test_web_negotiate_row_ships_a_ticket(
     raw_config: Any,
     store: ConnectionStore,
@@ -633,6 +638,7 @@ async def test_web_negotiate_row_ships_a_ticket(
 
 
 @live_kdc
+@needs_ch
 async def test_wildcard_web_row_binds_the_requested_host(
     raw_config: Any,
     store: ConnectionStore,

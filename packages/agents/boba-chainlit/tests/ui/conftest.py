@@ -22,6 +22,7 @@ from playwright.sync_api import (
     Browser,
     BrowserContext,
     Page,
+    Playwright,
     ViewportSize,
     WebSocket,
     sync_playwright,
@@ -151,6 +152,12 @@ async def _ensure_extensions(app_config: AppConfig, name: str) -> None:
                     raise StandError(extension.manual_hint(name)) from exc
     finally:
         await pool.close()
+
+
+def run_blocking(work: Coroutine[Any, Any, Any]) -> Any:
+    """Коротина в своём потоке: в главном loop занят sync-playwright."""
+    with ThreadPoolExecutor(max_workers=1) as runner:
+        return runner.submit(asyncio.run, work).result()
 
 
 @pytest.fixture(scope="session")
@@ -287,9 +294,7 @@ class StandDatabase:
 
     @staticmethod
     def _run(work: Coroutine[Any, Any, Any]) -> Any:
-        # свой поток: у сессии pytest может быть уже запущенный event loop
-        with ThreadPoolExecutor(max_workers=1) as runner:
-            return runner.submit(asyncio.run, work).result()
+        return run_blocking(work)
 
 
 @pytest.fixture
@@ -444,13 +449,24 @@ def solo_stand(
 
 
 @pytest.fixture(scope="session")
-def browser() -> Iterator[Browser]:
-    with sync_playwright() as playwright:
-        instance = playwright.chromium.launch(args=["--no-sandbox"])
-        try:
-            yield instance
-        finally:
-            instance.close()
+def playwright() -> Iterator[Playwright]:
+    """Один sync-playwright на сессию.
+
+    Sync API держит запущенный asyncio-loop в главном потоке, пока жив:
+    второй sync_playwright() и asyncio.run() в этом потоке падают. Браузеры
+    с другими аргументами поднимаются из этого же экземпляра.
+    """
+    with sync_playwright() as instance:
+        yield instance
+
+
+@pytest.fixture(scope="session")
+def browser(playwright: Playwright) -> Iterator[Browser]:
+    instance = playwright.chromium.launch(args=["--no-sandbox"])
+    try:
+        yield instance
+    finally:
+        instance.close()
 
 
 @pytest.fixture
