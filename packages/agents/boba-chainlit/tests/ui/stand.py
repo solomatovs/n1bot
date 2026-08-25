@@ -246,7 +246,7 @@ class StandConfig:
                 "default": True,
                 "roles": ["*"],
                 "tools": ["*"],
-                "backend": { "provider": "openai", "openai": "${openai.main}" },
+                "backend": {"provider": "openai", "openai": "${openai.main}"},
                 "model": "fake-model-general",
                 "models": ["fake-model-general", "fake-model-alt"],
                 "settings": ["*"],
@@ -262,7 +262,7 @@ class StandConfig:
                 "default": False,
                 "roles": ["*"],
                 "tools": ["diagram_save", "canvas_open"],
-                "backend": { "provider": "openai", "openai": "${openai.main}" },
+                "backend": {"provider": "openai", "openai": "${openai.main}"},
                 "model": "fake-model-search",
                 "models": ["fake-model-search"],
                 "settings": ["temperature", "top_p", "history_messages", "user_prompt"],
@@ -410,15 +410,24 @@ class StandProcess:
         except subprocess.TimeoutExpired:
             self.process.kill()
 
-    def complaints(self) -> list[str]:
-        """Строки лога стенда об ошибках: ход обязан проходить без них."""
+    def log_lines(self) -> int:
+        """Сколько строк в логе стенда сейчас: отметка начала хода."""
+        if not self.log_path.is_file():
+            return 0
+
+        text = self.log_path.read_text(encoding="utf-8", errors="replace")
+        return len(text.splitlines())
+
+    def complaints(self, since_line: int = 0) -> list[str]:
+        """Строки лога стенда об ошибках начиная с отметки: ход обязан
+        проходить без них, а чужие ходы в общем логе не считаются."""
         if not self.log_path.is_file():
             return []
 
         text = self.log_path.read_text(encoding="utf-8", errors="replace")
 
         found: list[str] = []
-        for line in text.splitlines():
+        for line in text.splitlines()[since_line:]:
             for marker in self.COMPLAINT_MARKERS:
                 if marker in line:
                     found.append(line)

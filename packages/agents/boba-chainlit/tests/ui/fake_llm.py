@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 __all__ = [
     "FakeLlmApp",
+    "FakePage",
+    "FakeRoute",
     "Scenario",
     "ScenarioError",
     "ScenarioName",
@@ -32,6 +35,38 @@ __all__ = [
 
 class ScenarioError(Exception):
     """Запрошен сценарий, которого нет."""
+
+
+class FakeRoute(StrEnum):
+    """Маршруты фейкового сервера: провайдер модели и страницы для web-тулов."""
+
+    HEALTH = "/health"
+    PAGE = "/page"
+    LINES = "/lines"
+    RESET = "/reset"
+    REQUESTS = "/requests"
+    COMPLETIONS = "/v1/chat/completions"
+
+
+class FakePage(StrEnum):
+    """Тела страниц стенда: web-инструменты читают их по whitelist'у."""
+
+    HTML = "<html><body><h1>stand page</h1><p>fake llm serves html</p></body></html>"
+    LINES = "stand line one\nstand line two\nstand line three"
+
+    @property
+    def media_type(self) -> str:
+        if self is FakePage.HTML:
+            return "text/html"
+
+        return "text/plain"
+
+    @property
+    def route(self) -> FakeRoute:
+        if self is FakePage.HTML:
+            return FakeRoute.PAGE
+
+        return FakeRoute.LINES
 
 
 class ScenarioName(StrEnum):
@@ -80,7 +115,9 @@ class ToolCallSpec:
     def __post_init__(self) -> None:
         parsed = json.loads(self.arguments)
         if not isinstance(parsed, dict):
-            raise ScenarioError(f"tool call arguments are not an object: {self.arguments}")
+            raise ScenarioError(
+                f"tool call arguments are not an object: {self.arguments}"
+            )
 
         if self.INTENT_FIELD not in parsed:
             parsed[self.INTENT_FIELD] = f"stand call of {self.name}"
@@ -144,7 +181,11 @@ class ScenarioBook:
 
     @classmethod
     def _call(cls, text: str) -> Scenario:
-        """Инструмент и аргументы диктует сам тест: `scenario:call {json}`."""
+        """Инструмент и аргументы диктует сам тест: `scenario:call {json}`.
+
+        Id вызова несёт хеш сообщения: два вызова одного инструмента в одном
+        треде получают разные шаги ленты, а не перезаписывают один.
+        """
         _, _, tail = text.partition(ScenarioName.CALL.value)
         try:
             request = json.loads(tail.strip())
@@ -157,8 +198,9 @@ class ScenarioBook:
             msg = f"scenario:call without tool name: {tail[:120]!r}"
             raise ScenarioError(msg)
 
+        digest = hashlib.sha1(tail.encode("utf-8")).hexdigest()[:8]  # noqa: S324
         call = ToolCallSpec(
-            call_id=f"call_{name}",
+            call_id=f"call_{name}_{digest}",
             name=str(name),
             arguments=json.dumps(request.get("arguments", {})),
         )
@@ -253,38 +295,41 @@ class FakeLlmApp:
     def asgi(self) -> FastAPI:
         app = FastAPI()
 
-        @app.get("/health")
+        @app.get(FakeRoute.HEALTH.value)
         async def health() -> dict[str, str]:
             return {"status": "ok"}
 
-        @app.get("/page")
+        @app.get(FakeRoute.PAGE.value)
         async def page() -> Response:
             """Страница для web-инструментов стенда: whitelist указывает сюда."""
-            return Response(
-                "<html><body><h1>stand page</h1><p>fake llm serves html</p></body></html>",
-                media_type="text/html",
-            )
+            return Response(FakePage.HTML.value, media_type=FakePage.HTML.media_type)
 
-        @app.post("/reset")
+        @app.get(FakeRoute.LINES.value)
+        async def lines() -> Response:
+            """Многострочный текст: окно строк и grep web-инструментов."""
+            return Response(FakePage.LINES.value, media_type=FakePage.LINES.media_type)
+
+        @app.post(FakeRoute.RESET.value)
         async def reset() -> dict[str, str]:
             """Сброс счётчика ходов и журнала: тест начинает с чистого листа."""
             self.turns_done.clear()
             self.requests.clear()
             return {"status": "ok"}
 
-        @app.get("/requests")
+        @app.get(FakeRoute.REQUESTS.value)
         async def recorded() -> JSONResponse:
             """Журнал полных запросов провайдеру: тест сверяет параметры модели."""
             return JSONResponse({"requests": self.requests})
 
-        @app.post("/v1/chat/completions")
+        @app.post(FakeRoute.COMPLETIONS.value)
         async def completions(request: Request) -> Response:
             payload = await request.json()
             self.requests.append(payload)
             text = self._last_user_text(payload)
             name = ScenarioName.of(text)
-            index = self.turns_done.get(name.value, 0)
-            self.turns_done[name.value] = index + 1
+            key = self._turn_key(name, text)
+            index = self.turns_done.get(key, 0)
+            self.turns_done[key] = index + 1
             script = ScenarioBook.of(name, text).turn(index)
 
             if not payload.get("stream"):
@@ -296,6 +341,17 @@ class FakeLlmApp:
             )
 
         return app
+
+    @staticmethod
+    def _turn_key(name: ScenarioName, text: str) -> str:
+        """Ключ счётчика ходов: у продиктованного вызова — само сообщение.
+
+        Иначе второй вызов в том же чате получил бы не tool_call, а ответ.
+        """
+        if name is ScenarioName.CALL:
+            return text
+
+        return name.value
 
     @staticmethod
     def _last_user_text(payload: dict[str, Any]) -> str:

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import time
 from collections.abc import Callable, Coroutine, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -20,6 +22,7 @@ from playwright.sync_api import (
     Browser,
     BrowserContext,
     Page,
+    ViewportSize,
     WebSocket,
     sync_playwright,
 )
@@ -37,7 +40,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.settings import bind, build_app_config
 from boba.transport.http import HttpProfile
 from ui.chat_page import ChatPage
-from ui.fake_llm import serve
+from ui.fake_llm import FakeRoute, serve
 from ui.socket_log import SocketLog
 from ui.stand import (
     REPO_ROOT,
@@ -104,6 +107,26 @@ async def _ensure_database(name: str) -> None:
         await maintenance.close()
 
     await _ensure_extensions(app_config, name)
+    await _drop_connections(built, app_config, name)
+
+
+async def _drop_connections(built: Any, app_config: AppConfig, name: str) -> None:
+    """Сносит таблицы соединений: база стенда переживает прогоны, а их DDL
+    меняется — приложение пересоздаёт таблицы на старте по текущей схеме."""
+    connections = bind(built, path="connections", model=ConnectionsConfig)
+    postgres = app_config.data_layer.postgres.model_copy(update={"dbname": name})
+    pool = AsyncPostgresPool(postgres)
+    await pool.open()
+    try:
+        async with pool.cursor() as cur:
+            for table in (connections.grants_table, connections.table):
+                await cur.execute(
+                    sql.SQL("drop table if exists {} cascade").format(
+                        sql.Identifier(connections.db_schema, table)
+                    )
+                )
+    finally:
+        await pool.close()
 
 
 async def _ensure_extensions(app_config: AppConfig, name: str) -> None:
@@ -323,11 +346,12 @@ def fake_llm(llm_port: int) -> Iterator[None]:
 
 
 def _await_llm(port: int) -> None:
-    url = StandUrl.of(port, "/health")
+    url = StandUrl.of(port, FakeRoute.HEALTH.value)
     for _ in range(100):
         try:
             response = httpx.get(url, timeout=1.0)
         except httpx.HTTPError:
+            time.sleep(0.1)
             continue
 
         if response.status_code == 200:
@@ -436,7 +460,7 @@ def chat(
     auth_cookies: list[SetCookieParam],
     llm_port: int,
 ) -> Iterator[ChatPage]:
-    httpx.post(StandUrl.of(llm_port, "/reset"), timeout=5.0)
+    httpx.post(StandUrl.of(llm_port, FakeRoute.RESET.value), timeout=5.0)
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     context.add_cookies(auth_cookies)
     page: Page = context.new_page()
@@ -450,18 +474,20 @@ def chat(
         context.close()
 
 
-OpenChat = Callable[[StandProcess, str], ChatPage]
+@dataclass
+class ChatOpener:
+    """Открывает вкладки чата и закрывает их разом: свой стенд и логин на каждую."""
 
+    browser: Browser
+    llm_port: int
+    contexts: list[BrowserContext] = field(default_factory=list)
 
-@pytest.fixture
-def open_chat(browser: Browser, llm_port: int) -> Iterator[OpenChat]:
-    """Фабрика вкладок: свой стенд и логин на каждую (роли и одиночный профиль)."""
-    contexts: list[BrowserContext] = []
+    VIEWPORT: ClassVar[ViewportSize] = {"width": 1280, "height": 900}
 
-    def factory(stand: StandProcess, login: str = "") -> ChatPage:
-        httpx.post(StandUrl.of(llm_port, "/reset"), timeout=5.0)
-        context = browser.new_context(viewport={"width": 1280, "height": 900})
-        contexts.append(context)
+    def open(self, stand: StandProcess, login: str = "") -> ChatPage:
+        httpx.post(StandUrl.of(self.llm_port, FakeRoute.RESET.value), timeout=5.0)
+        context = self.browser.new_context(viewport=self.VIEWPORT)
+        self.contexts.append(context)
         context.add_cookies(login_cookies(stand, login))
         page: Page = context.new_page()
         log = SocketLog()
@@ -470,11 +496,34 @@ def open_chat(browser: Browser, llm_port: int) -> Iterator[OpenChat]:
         chat_page.open()
         return chat_page
 
-    try:
-        yield factory
-    finally:
-        for context in contexts:
+    def close(self) -> None:
+        for context in self.contexts:
             context.close()
+
+        self.contexts.clear()
+
+
+OpenChat = Callable[[StandProcess, str], ChatPage]
+
+
+@pytest.fixture
+def open_chat(browser: Browser, llm_port: int) -> Iterator[OpenChat]:
+    """Фабрика вкладок теста: роли и одиночный профиль открывают свои."""
+    opener = ChatOpener(browser=browser, llm_port=llm_port)
+    try:
+        yield opener.open
+    finally:
+        opener.close()
+
+
+@pytest.fixture(scope="module")
+def module_chats(browser: Browser, llm_port: int) -> Iterator[ChatOpener]:
+    """Вкладки на модуль: фикстуры-подготовки держат чат дольше одного теста."""
+    opener = ChatOpener(browser=browser, llm_port=llm_port)
+    try:
+        yield opener
+    finally:
+        opener.close()
 
 
 def _watch_sockets(page: Page, log: SocketLog) -> None:

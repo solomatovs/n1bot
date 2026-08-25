@@ -39,8 +39,11 @@ class StepField(StrEnum):
     ID = "id"
     TYPE = "type"
     NAME = "name"
+    INPUT = "input"
     OUTPUT = "output"
     PARENT_ID = "parentId"
+    THREAD_ID = "threadId"
+    IS_ERROR = "isError"
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,47 @@ class SocketLog:
             found.append(frame.payload)
 
         return found
+
+    def last_step(self, step_type: str) -> dict[str, Any] | None:
+        """Итоговая нагрузка последнего созданного шага указанного типа.
+
+        Шаг приходит несколько раз (new_message, затем update_message):
+        побеждает последняя отправка того шага, что появился позже всех.
+        """
+        latest: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for frame in self.frames:
+            if frame.event not in (ChatEvent.NEW_MESSAGE, ChatEvent.UPDATE_MESSAGE):
+                continue
+
+            if frame.step_type != step_type:
+                continue
+
+            if not isinstance(frame.payload, dict):
+                continue
+
+            step_id = frame.step_id
+            if step_id not in latest:
+                order.append(step_id)
+
+            latest[step_id] = frame.payload
+
+        if not order:
+            return None
+
+        return latest[order[-1]]
+
+    def thread_id(self) -> str:
+        """Тред вкладки: его несёт каждый шаг, присланный сервером."""
+        for frame in self.frames:
+            if not isinstance(frame.payload, dict):
+                continue
+
+            value = frame.payload.get(StepField.THREAD_ID.value)
+            if value:
+                return str(value)
+
+        raise FrameError("no step with a thread id in the socket log")
 
     def has_step_named(self, name: str) -> bool:
         """Был ли шаг с таким именем: так тест узнаёт служебный ход chainlit."""

@@ -186,12 +186,30 @@ class ChatPage:
         self._expand(step_type)
         return self.page.locator(Selector.of_type(step_type)).first
 
+    def expand_last_tool(self) -> Locator:
+        """Раскрывает последний ход и его последний шаг инструмента.
+
+        В одном чате ходов несколько, а раскрытие первого шага показало бы
+        давно прошедший вызов.
+        """
+        self._expand_last(StepKind.RUN.value)
+        self._expand_last(StepKind.TOOL.value)
+        return self.page.locator(Selector.of_type(StepKind.TOOL.value)).last
+
     def _expand(self, step_type: str) -> None:
         node = self.page.locator(Selector.of_type(step_type))
         if not node.count():
             raise ChatPageError(f"step {step_type} is not drawn\n{self.dom()[:2000]}")
 
         node.first.click()
+        self.page.wait_for_timeout(300)
+
+    def _expand_last(self, step_type: str) -> None:
+        node = self.page.locator(Selector.of_type(step_type))
+        if not node.count():
+            raise ChatPageError(f"step {step_type} is not drawn\n{self.dom()[:2000]}")
+
+        node.last.click()
         self.page.wait_for_timeout(300)
 
     def await_step(self, step_type: str, timeout_ms: float | None = None) -> Locator:
