@@ -90,15 +90,20 @@ class TestPipeline:
         if "hi|p1p3" not in str(message.content):
             raise AssertionError('"hi|p1p3" in str(message.content)')
 
-    def test_intent_is_required_of_the_model(self) -> None:
-        """Вызов без подписи не проходит валидацию схемы."""
+    def test_intent_is_offered_but_optional(self) -> None:
+        """Подпись видна модели, но вызов без неё проходит: шаг зовётся именем тула."""
         pipe_echo = build_pipeline()
 
         schema = pipe_echo.tool_call_schema
         info = schema.model_fields[ToolIntent.NAME]
+        if info.is_required():
+            raise AssertionError("подпись вызова не должна ронять вызов")
 
-        if not info.is_required():
-            raise AssertionError("подпись вызова обязательна для модели")
+        envelope = call_envelope("hi")
+        envelope["args"] = ToolIntent.without(envelope["args"])
+        message = asyncio.run(pipe_echo.ainvoke(envelope))
+        if "hi|p1p3" not in str(message.content):
+            raise AssertionError(str(message.content))
 
     def test_intent_does_not_reach_the_body(self) -> None:
         """Подпись вызова снимается обвязкой: тело о поле не знает."""

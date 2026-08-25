@@ -30,6 +30,7 @@ from boba.chainlit.agent.invoke import (
 )
 from boba.chainlit.domain.context import CallContext
 from boba.chainlit.domain.run import RunRegistry
+from boba.toolkit.calls import ToolIntent
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ErrorResult, ToolResult
 from boba.workflow import (
@@ -112,10 +113,15 @@ class WorkflowRunner:
 
     @staticmethod
     def call_of(graph: WorkflowGraph, task: str, args: Mapping[str, Any]) -> ToolCall:
+        """Подпись вызова — из задачи, если задана, иначе «workflow: задача»."""
         spec = graph.spec.tasks[task]
-        intent = f"{graph.spec.name}: {task}"
+        intent = ToolIntent.of(args)
+        if not intent:
+            intent = f"{graph.spec.name}: {task}"
 
-        return ToolInvoker.call(spec.tool, args, intent, CallIdPrefix.WORKFLOW)
+        return ToolInvoker.call(
+            spec.tool, ToolIntent.without(args), intent, CallIdPrefix.WORKFLOW
+        )
 
 
 class _RunSession:
