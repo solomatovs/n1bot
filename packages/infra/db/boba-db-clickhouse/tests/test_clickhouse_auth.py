@@ -32,7 +32,14 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
     pytest.mark.skipif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
+    pytest.mark.skipif(
+        not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
+    ),
 ]
+
+needs_ch_keytab = pytest.mark.skipif(
+    not STAND.krb_ch_keytab, reason="в конфиге стенда нет keytab clickhouse"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -82,15 +89,14 @@ async def test_password_auth_logs_in_as_its_own_user() -> None:
         pytest.skip("в конфиге стенда нет пользователя clickhouse с паролем")
 
     profile = _profile(
-        PasswordAuth(
-            method="password", user=STAND.ch_user, password=STAND.ch_password
-        )
+        PasswordAuth(method="password", user=STAND.ch_user, password=STAND.ch_password)
     )
 
     if await _current_user(profile) != STAND.ch_user:
         raise AssertionError("password auth must log in as its own user")
 
 
+@needs_ch_keytab
 async def test_keytab_auth_logs_in_as_the_service_principal() -> None:
     """method = kerberos_keytab: пользователя сервер берёт из заголовка Negotiate."""
     if await _current_user(_profile(_keytab())) != STAND.krb_ch_user:
@@ -121,6 +127,7 @@ async def test_kerberos_password_auth_logs_in_as_that_user() -> None:
         raise AssertionError("kerberos password auth must log in as that user")
 
 
+@needs_ch_keytab
 async def test_ticket_auth_logs_in_as_the_ticket_owner() -> None:
     """method = kerberos_ticket: в песочницу уезжает билет, им и ходим."""
     source = KeytabCredentials.of(_keytab())

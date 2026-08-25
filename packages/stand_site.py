@@ -48,8 +48,11 @@ class Stand(BaseModel):
     krb_http_keytab: str = Field(description="Keytab принципала SSO-приёма.")
     krb_pg_user: str
     krb_pg_keytab: str
-    krb_ch_user: str
-    krb_ch_keytab: str
+    krb_ch_user: str = Field(
+        default="",
+        description="Принципал clickhouse по keytab; пусто — тесты пропускаются.",
+    )
+    krb_ch_keytab: str = ""
 
     pg_host: str
     pg_addr: str
@@ -62,13 +65,14 @@ class Stand(BaseModel):
     pg_probe_password: SecretStr = SecretStr("")
 
     ch_host: str
-    ch_addr: str
-    ch_port: int
-    ch_database: str
-    ch_krbsrvname: str
-    ch_user: str = Field(
-        default="", description="Пользователь clickhouse с паролем."
+    ch_addr: str = Field(
+        default="",
+        description="Адрес clickhouse; пусто — тесты пропускаются (ch живёт в базе).",
     )
+    ch_port: int
+    ch_database: str = ""
+    ch_krbsrvname: str = ""
+    ch_user: str = Field(default="", description="Пользователь clickhouse с паролем.")
     ch_password: SecretStr = SecretStr("")
 
     confluence_url: str

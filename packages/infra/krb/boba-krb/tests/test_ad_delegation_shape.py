@@ -101,9 +101,10 @@ def test_backends_are_listed_for_delegation(service_account: dict[str, Any]) -> 
 
     expected = {
         f"{STAND.pg_krbsrvname}/{STAND.pg_host}".lower(),
-        f"{STAND.ch_krbsrvname}/{STAND.ch_host}".lower(),
         f"HTTP/{STAND.confluence_host}".lower(),
     }
+    if STAND.ch_krbsrvname:
+        expected.add(f"{STAND.ch_krbsrvname}/{STAND.ch_host}".lower())
 
     missing = expected - allowed
     if missing:

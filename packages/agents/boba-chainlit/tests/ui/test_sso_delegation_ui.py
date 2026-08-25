@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import http.server
 import json
@@ -25,13 +24,13 @@ from typing import ClassVar
 import httpx
 import krb5
 import pytest
-from playwright.sync_api import Browser, BrowserContext, Page, expect, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright, expect
 from stand_site import Stand
 
 from boba.krb import KerberosPasswordAuth
 from boba.transport.http import HttpProfile, HttpRequest, HttpTransport
 from boba.transport.http.auth import NegotiateAuth
-from ui.conftest import BOOT_TIMEOUT_SEC
+from ui.conftest import BOOT_TIMEOUT_SEC, run_blocking
 from ui.stand import StandAuth, StandConfig, StandProcess, free_port
 
 pytestmark = pytest.mark.ui
@@ -151,7 +150,7 @@ def sso_stand(
 
 
 @pytest.fixture(scope="module")
-def kerberos_browser(user_ccache: str) -> Iterator[Browser]:
+def kerberos_browser(user_ccache: str, playwright: Playwright) -> Iterator[Browser]:
     """Chromium, который умеет Negotiate: свой ccache и доверие домену стенда."""
     domain = STAND.krb_domain
     args = [
@@ -165,13 +164,12 @@ def kerberos_browser(user_ccache: str) -> Iterator[Browser]:
         "KRB5_CONFIG": STAND.krb_config,
     }
 
-    with sync_playwright() as playwright:
-        # channel: headless-shell собран вовсе без сетевой аутентификации
-        instance = playwright.chromium.launch(channel="chromium", args=args, env=env)
-        try:
-            yield instance
-        finally:
-            instance.close()
+    # channel: headless-shell собран вовсе без сетевой аутентификации
+    instance = playwright.chromium.launch(channel="chromium", args=args, env=env)
+    try:
+        yield instance
+    finally:
+        instance.close()
 
 
 @pytest.fixture(scope="module")
@@ -237,7 +235,7 @@ def _visit(profile: HttpProfile, request: HttpRequest) -> None:
             await got.stream.read()
 
     try:
-        asyncio.run(run())
+        run_blocking(run())
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code != 303:
             raise
