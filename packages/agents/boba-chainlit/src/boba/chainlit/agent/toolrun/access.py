@@ -84,9 +84,9 @@ class ToolAccess:
 
 
 class AccessFacts(Protocol):
-    """Что гвардия спрашивает о вызывающем: его роли и профиль чата.
+    """Что гвардия спрашивает о вызывающем: его роли и профиль.
 
-    Объявлено здесь, а не взято из сессии приложения: toolrun живёт без
+    Объявлено здесь, а не взято из контекста приложения: toolrun живёт без
     зависимостей на chainlit, и источник фактов ему подаёт вызывающий.
     """
 
@@ -94,7 +94,7 @@ class AccessFacts(Protocol):
     def roles(self) -> Iterable[str]: ...
 
     @property
-    def chat_profile(self) -> str | None: ...
+    def profile(self) -> str: ...
 
 
 class ToolAccessGuard:
@@ -117,17 +117,17 @@ class ToolAccessGuard:
         ) -> None:
             facts = self._facts_source()
             roles = facts.roles
-            profile = facts.chat_profile
+            profile = facts.profile
             if self._access.allowed(name, roles, profile):
                 return
 
             logger.warning(
-                "access denied to tool %r (user roles: %s, chat profile: %s)",
+                "access denied to tool %r (user roles: %s, profile: %s)",
                 name,
                 sorted(roles) or "none",
                 profile or "none",
             )
-            msg = f"tool {name!r} is not available for your role and chat profile"
+            msg = f"tool {name!r} is not available for your role and profile"
             raise ToolAccessDeniedError(msg)
 
     @classmethod

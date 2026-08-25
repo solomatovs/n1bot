@@ -40,6 +40,7 @@ from boba.chainlit.domain.errors import (
 )
 from boba.chainlit.domain.session import (
     LoginTemplate,
+    SignInProvider,
     UserLogin,
     UserMetadataField,
 )
@@ -422,7 +423,7 @@ class LdapAuth:
                 raise AuthorizationError("Access denied")
 
             metadata: dict[str, Any] = {
-                UserMetadataField.PROVIDER: LdapAuth.__name__,
+                UserMetadataField.PROVIDER: SignInProvider.LDAP.value,
             }
 
             roles = self._roles_of(samaccountname, user_dn, member_of)

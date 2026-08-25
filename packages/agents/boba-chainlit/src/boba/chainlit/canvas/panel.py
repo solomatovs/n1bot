@@ -58,7 +58,7 @@ from boba.chainlit.data.storage import (
 )
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import CanvasFileUrl, ObjectKey, StreamUrl
-from boba.chainlit.domain.turn import LiveStream, TurnContext
+from boba.chainlit.domain.run import LiveStream, RunRegistry
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolkit.result import CustomElementResult, DiagramResult
 from boba.toolkit.stream import ChannelSinks, StreamSink
@@ -827,7 +827,7 @@ class ToolStreams:
 
     Потоковыми считаются инструменты, отмеченные при сборке реестра тулов, —
     только они запускают процессы, чей вывод есть смысл журналировать; без
-    настроенного журнала потоков нет вовсе. Живые стримы живут в TurnContext
+    настроенного журнала потоков нет вовсе. Живые стримы живут в RunRegistry
     и закрываются вместе с ходом; файлы журнала переживают ход.
 
     Стрим открывает обвязка ToolRunLogger в потоке инструмента: call_id
@@ -851,9 +851,9 @@ class ToolStreams:
         return StreamJournalHub.get()
 
     @classmethod
-    def live_threads(cls) -> frozenset[str]:
+    def live_scopes(cls) -> frozenset[str]:
         """Треды с живыми потоками: их нельзя удалять инструментом уборки."""
-        return TurnContext.live_threads()
+        return RunRegistry.live_scopes()
 
     @classmethod
     def mark_streamable(cls, names: Iterable[str]) -> None:
@@ -875,10 +875,10 @@ class ToolStreams:
         if journal is None:
             return None
 
-        context = TurnContext.active(thread_id)
+        context = RunRegistry.active(thread_id)
         if context is None:
             logger.warning(
-                "stream journal skipped call %s of %s: no active turn",
+                "stream journal skipped call %s of %s: no active run",
                 call_id,
                 tool_name,
             )
@@ -886,7 +886,7 @@ class ToolStreams:
 
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            stream = ToolStream(key, tool_name, journal, TurnContext.live_prefixes())
+            stream = ToolStream(key, tool_name, journal, RunRegistry.live_prefixes())
         except (StreamJournalError, ValidationError):
             logger.warning(
                 "stream journal refused call %s of %s",
@@ -901,7 +901,7 @@ class ToolStreams:
 
     @classmethod
     def get(cls, thread_id: str, call_id: str) -> ToolStream | None:
-        context = TurnContext.active(thread_id)
+        context = RunRegistry.active(thread_id)
         if context is None:
             return None
 

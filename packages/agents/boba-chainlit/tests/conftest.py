@@ -2,7 +2,8 @@
 
 import os
 import secrets
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -15,12 +16,24 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from omegaconf import DictConfig
 from psycopg import sql
 
+from boba.cancellation import RunCancellation
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.domain.context import (
+    CallContext,
+    ChatInitiator,
+    NoUserCredential,
+    Scope,
+    Subject,
+)
 from boba.chainlit.domain.keys import AttachmentLinks, WorkspaceMount
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.session import ChainlitSession, ChainlitSessions
+from boba.chainlit.infra.session import (
+    ChainlitSession,
+    ChainlitSessions,
+    current_session,
+)
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.llm.bridge import ProviderChatModel
@@ -102,7 +115,6 @@ def fake_openai_chat(
 
     provider = OpenAiChatProvider(cfg, client, model)
     return ProviderChatModel(provider=provider, sampling=sampling, model_name=model)
-
 
 
 @pytest.fixture(scope="session")
@@ -247,10 +259,83 @@ def auth_token(app_config: AppConfig) -> str:
 
 
 @pytest.fixture(autouse=True)
-async def chainlit_context(auth_token: str) -> None:
+async def chainlit_context(auth_token: str) -> AsyncIterator[None]:
+    """Сессия chainlit теста; после него — пустая.
+
+    Async-тесты живут в одном контексте раннера anyio, и поставленная сессия
+    пережила бы тест: следующий должен видеть «сессии нет», пока не поставит
+    свою.
+    """
     from chainlit.context import init_http_context
 
+    CallContext.reset()
     init_http_context(user=ChainlitUser(identifier=AUTH_USER), auth_token=auth_token)
+    yield
+    CallContext.reset()
+    init_http_context()
+
+
+TEST_TURN = "test-turn"
+"""Метка хода в контекстах вызова, которые ставят тесты."""
+
+TEST_PROFILE = "test"
+"""Профиль контекста вызова, если тест не назвал свой."""
+
+
+@pytest.fixture(autouse=True)
+def call_context_cleared() -> Iterator[None]:
+    """Контекст вызова — contextvar: без сброса он утёк бы между sync-тестами."""
+    CallContext.reset()
+    yield
+    CallContext.reset()
+
+
+def install_context(monkeypatch: pytest.MonkeyPatch, context: CallContext) -> None:
+    """Ставит контекст вызова на время теста в любом контексте исполнения.
+
+    Async-тесты живут в одном контексте раннера anyio, и set() на contextvar
+    пережил бы тест; подмена самой переменной снимается monkeypatch'ем.
+    """
+    current: ContextVar[CallContext | None] = ContextVar(
+        "boba_call_context", default=context
+    )
+    monkeypatch.setattr(CallContext, "_CURRENT", current)
+
+
+def use_context(  # noqa: PLR0913 — личность собирается по частям, как в сессии
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    thread_id: str,
+    user_id: int = 7,
+    login: str = "tester",
+    roles: Iterable[str] = (),
+    profile: str = TEST_PROFILE,
+) -> CallContext:
+    """Ставит контекст вызова хода чата напрямую, без сессии chainlit."""
+    context = CallContext(
+        subject=Subject(
+            user_id=user_id, login=login, roles=frozenset(roles), profile=profile
+        ),
+        scope=Scope.chat(thread_id),
+        initiator=ChatInitiator(thread_id=thread_id, turn_id=TEST_TURN),
+        credential=NoUserCredential(reason="the test context carries no ticket"),
+        cancellation=RunCancellation(),
+    )
+    install_context(monkeypatch, context)
+
+    return context
+
+
+def enter_context(profile: str = TEST_PROFILE) -> CallContext:
+    """Контекст вызова из текущей сессии chainlit — как его собирает on_message.
+
+    Сессии нужны тред, сохранённый пользователь и профиль: тест готовит их
+    через init_http_context(user=..., thread_id=...) и chat_profile.
+    """
+    context = current_session().call_context(TEST_TURN, profile)
+    CallContext._CURRENT.set(context)
+
+    return context
 
 
 @pytest.fixture
@@ -337,12 +422,23 @@ def use_session(
     chat_profile: str | None = None,
     identifier: str | None = None,
 ) -> ChainlitSession:
-    """Подменяет сессию текущего вызова на подставную; отдаёт её обёртку."""
-    stub = SessionStub(user_id, thread_id, chat_profile, identifier)
+    """Подменяет сессию текущего вызова на подставную; отдаёт её обёртку.
+
+    Полная личность — пользователь и тред — даёт и контекст вызова, как
+    его собрал бы ход чата; без неё контекста нет, и инструменты отказывают.
+    """
+    profile = chat_profile
+    if profile is None:
+        profile = TEST_PROFILE
+
+    stub = SessionStub(user_id, thread_id, profile, identifier)
     session = ChainlitSession(stub)
     # подменяется источник, а не отдельные функции: так стенд попадает во
     # все пути — и в DI-провайдер, и в ref мест вне графа
     monkeypatch.setattr(ChainlitSessions, "current", lambda self: session)
+
+    if user_id is not None and thread_id is not None:
+        install_context(monkeypatch, session.call_context(TEST_TURN, profile))
 
     return session
 

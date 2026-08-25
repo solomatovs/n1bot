@@ -35,10 +35,10 @@ from boba.chainlit.canvas.panel import (
 )
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageError, StorageNotFoundError
+from boba.chainlit.domain.context import CallContext
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.session import SessionSource
-from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
@@ -302,13 +302,12 @@ class DiagramEntry(BaseModel):
 class DiagramFiles:
     """Спеки mermaid в каталоге mermaid/ треда: проверка, сохранение, чтение."""
 
-    def __init__(self, max_chars: int, sessions: SessionSource) -> None:
+    def __init__(self, max_chars: int) -> None:
         self._max_chars = max_chars
-        self._sessions = sessions
 
     async def save(self, name: str, spec: str) -> ObjectKey:
         """Проверить спеку и записать файл; отказ — DiagramRefusedError."""
-        user_id, thread_id = self._session()
+        user_id, thread_id = self._scope()
         parsed = self._parse(spec)
 
         key = ObjectKey.build(
@@ -340,9 +339,11 @@ class DiagramFiles:
         except DiagramSpecError as e:
             raise DiagramRefusedError(DiagramErrorKind.INVALID_SPEC, str(e)) from e
 
-    def _session(self) -> tuple[str, str]:
-        session = self._sessions.current().require()
-        return session.user_id, session.thread_id
+    @staticmethod
+    def _scope() -> tuple[str, str]:
+        """Пользователь и тред области вызова; вне контекста — RefusalError."""
+        context = CallContext.current()
+        return context.subject.user_key, context.scope.id
 
     @staticmethod
     def _key(user_id: str, thread_id: str, path: str) -> ObjectKey:
@@ -490,7 +491,7 @@ class DiagramCard:
 
     @staticmethod
     def _targets(thread_id: str, tool_call_id: str) -> tuple[str, str]:
-        turn = TurnContext.turn_of(thread_id)
+        turn = RunRegistry.port_of(thread_id)
         if turn is None:
             raise DiagramRefusedError(
                 DiagramErrorKind.NO_TURN, "the turn is already finished"
@@ -532,10 +533,8 @@ class DiagramCard:
         await element.send(for_id=for_id)
 
 
-def build_diagram_tools(
-    cfg: DiagramToolConfig, sessions: SessionSource
-) -> list[BaseTool]:
-    files = DiagramFiles(cfg.max_chars, sessions)
+def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
+    files = DiagramFiles(cfg.max_chars)
     card = DiagramCard(files)
     # клик по карточке открывает файл в канвасе: вьювер знает про .mmd отсюда
     CanvasRegistry.register(MermaidViewer(files))

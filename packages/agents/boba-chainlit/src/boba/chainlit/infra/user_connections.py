@@ -33,10 +33,8 @@ import jwt
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, ConfigDict
 
-import chainlit as cl
 from boba.chainlit.agent.toolrun.injected import ConfigResolver, ToolConfigError
 from boba.chainlit.agent.toolrun.wrapping import AsyncCall, SyncCall, ToolBody
-from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.connections.store import (
     ConnectionKind,
     ConnectionProfile,
@@ -48,8 +46,9 @@ from boba.chainlit.connections.whitelist import (
     ConnectionKeying,
     ConnectionWhitelist,
 )
+from boba.chainlit.domain.context import CallContext, DelegatedTicket
 from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.session import UserMetadataField
+from boba.chainlit.domain.session import SsoMarks
 from boba.chainlit.infra.session import current_session
 from boba.chainlit.infra.tickets import TicketArming
 from boba.db.clickhouse import ClickHouseConfig
@@ -103,7 +102,6 @@ class WebArg(StrEnum):
 class ConnectionRefusal(StrEnum):
     """Отказы сборки whitelist'а."""
 
-    NO_SESSION = "no_session"
     AMBIGUOUS = "ambiguous_connection"
     NO_DELEGATION = "no_delegated_credentials"
     HOST_NOT_ALLOWED = "host_not_allowed"
@@ -129,48 +127,23 @@ class SsoLogin(BaseModel):
     login: str
 
     @classmethod
-    def of_session(cls) -> SsoLogin:
-        """Вход текущей сессии; строка users тут не при чём — только JWT.
+    def of_context(cls) -> SsoLogin:
+        """Вход субъекта текущего вызова по ссылке на билет из контекста.
 
-        Ошибки: RefusalError NO_DELEGATION — сессия создана не SSO-входом
-        с делегированием; текст называет причину и что сделать.
+        Ошибки: RefusalError NO_DELEGATION — у вызова нет делегированного
+        билета; текст называет причину и что сделать.
         """
-        user = current_session().login_user()
-        if user is None:
-            cls._refuse("this session has no signed sign-in")
+        context = CallContext.current()
+        credential = context.credential
+        if not isinstance(credential, DelegatedTicket):
+            logger.warning(
+                "kerberos: %s asked for a delegated ticket without one: %s",
+                context.subject.login,
+                credential.reason,
+            )
+            cls._refuse(credential.reason)
 
-        found = cls.of_metadata(user.metadata)
-        if not isinstance(found, SsoLogin):
-            cls._log_session(user)
-            cls._refuse(found)
-
-        return found
-
-    @staticmethod
-    def _log_session(user: cl.User) -> None:
-        """В лог — чем плох вход сессии: какие метки есть и когда выдан токен.
-
-        По сроку токена видно, тот ли это вход, которым пользователь только
-        что зашёл, или сессия держит токен прошлого входа.
-        """
-        current = current_session()
-        expires = "unknown"
-        session = current.id
-        token = current.token
-
-        if token:
-            # только для журнала: подпись проверил decode_jwt выше
-            claims = jwt.decode(token, options={"verify_signature": False})
-            expires = str(claims.get("exp", "unknown"))
-
-        logger.warning(
-            "kerberos: session %s signed in without delegation "
-            "[identifier=%s] [metadata=%s] [token expires=%s]",
-            session,
-            user.identifier,
-            sorted(user.metadata),
-            expires,
-        )
+        return cls(principal=credential.principal, login=credential.sso_login)
 
     @classmethod
     def of_token(cls, token: str) -> SsoLogin | None:
@@ -180,47 +153,11 @@ class SsoLogin(BaseModel):
         except jwt.PyJWTError:
             return None
 
-        found = cls.of_metadata(user.metadata)
-        if not isinstance(found, SsoLogin):
+        marks = SsoMarks.of_metadata(user.metadata)
+        if marks is None:
             return None
 
-        return found
-
-    @classmethod
-    def of_metadata(cls, metadata: Mapping[str, object]) -> SsoLogin | str:
-        """Метки входа либо причина, почему их нет; причина готова для показа."""
-        provider = metadata.get(UserMetadataField.PROVIDER)
-        if provider != KerberosAuth.__name__:
-            return (
-                f"you signed in with {cls._provider_name(provider)}, and this "
-                "connection acts in the database on your behalf: sign in with "
-                "the Kerberos SSO button instead"
-            )
-
-        principal = metadata.get(UserMetadataField.PRINCIPAL)
-        if not isinstance(principal, str) or not principal:
-            return (
-                "your Kerberos sign-in predates delegated connections "
-                "(the session token names no principal): sign out and sign in again"
-            )
-
-        login = metadata.get(UserMetadataField.LOGIN)
-        if not isinstance(login, str) or not login:
-            return (
-                f"the Kerberos sign-in of {principal} carried no delegated ticket: "
-                "either Active Directory does not allow this service to act for "
-                "you, or the browser sent no ticket; sign in again from a "
-                "domain-joined browser"
-            )
-
-        return cls(principal=principal, login=login)
-
-    @staticmethod
-    def _provider_name(provider: object) -> str:
-        if isinstance(provider, str) and provider:
-            return provider
-
-        return "no known provider"
+        return cls(principal=marks.principal, login=marks.login)
 
     @classmethod
     def _refuse(cls, reason: str) -> NoReturn:
@@ -299,7 +236,7 @@ class UserKerberos:
         ещё раз — незаметно для пользователя. Не получилось — работу продолжит
         credentials() и объяснит отказ.
         """
-        sso = SsoLogin.of_session()
+        sso = SsoLogin.of_context()
 
         registry = self._registry_ref()
         if registry is None:
@@ -336,7 +273,7 @@ class UserKerberos:
         return credentials.lifetime() >= cls.REFRESH_BELOW
 
     def credentials(self) -> KerberosCredentials:
-        sso = SsoLogin.of_session()
+        sso = SsoLogin.of_context()
 
         registry = self._registry_ref()
         if registry is None:
@@ -350,8 +287,7 @@ class UserKerberos:
         credentials = registry.of_login(sso.login)
         if credentials is None:
             logger.warning(
-                "kerberos: session of %s asks for sign-in %s, "
-                "registry holds %s",
+                "kerberos: session of %s asks for sign-in %s, registry holds %s",
                 sso.principal,
                 LoginMark.of(sso.login),
                 [LoginMark.of(login) for login in registry.logins()],
@@ -547,10 +483,8 @@ class UserConnections:
 
     @staticmethod
     def _labelled(profile: ConnectionProfile, tool: str) -> ConnectionProfile:
-        """Профиль с меткой клиента; без логина сессии профиль идёт как есть."""
-        login = current_session().label
-        if not login:
-            return profile
+        """Профиль с меткой клиента: логин субъекта вызова."""
+        login = CallContext.current().subject.login
 
         return ClientLabel.of(login, tool).applied(profile)
 
@@ -591,17 +525,9 @@ class UserConnections:
 
     @staticmethod
     def _subject() -> Subject:
-        user_id = current_session().user_id
-        if not user_id:
-            raise RefusalError(ConnectionRefusal.NO_SESSION, "no chainlit user session")
+        subject = CallContext.current().subject
 
-        try:
-            numeric = int(user_id)
-        except ValueError as exc:
-            msg = f"user id {user_id!r} is not the users.id integer"
-            raise ToolConfigError(msg) from exc
-
-        return Subject(user_id=numeric, roles=sorted(current_session().roles))
+        return Subject(user_id=subject.user_id, roles=sorted(subject.roles))
 
     async def _armed(self, profile: ConnectionProfile) -> ConnectionProfile:
         """Профиль с билетом вызова вместо kerberos-секции строки."""

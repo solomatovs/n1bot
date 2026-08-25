@@ -24,8 +24,8 @@ from boba.chainlit.canvas.journal import (
     VaultUsage,
 )
 from boba.chainlit.canvas.panel import ToolStreams
+from boba.chainlit.domain.context import CallContext
 from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.session import SessionSource
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 
 __all__ = [
@@ -118,8 +118,8 @@ class StreamLogsOps:
     thread_id: str
 
     @classmethod
-    def resolve(cls, sessions: SessionSource) -> StreamLogsOps:
-        """Собрать сессию вызова; нет журнала или сессии — отказ для LLM."""
+    def resolve(cls) -> StreamLogsOps:
+        """Собрать область вызова; нет журнала или контекста — отказ для LLM."""
         journal = StreamJournalHub.get()
         if journal is None:
             raise StreamLogsRefusedError(
@@ -127,11 +127,11 @@ class StreamLogsOps:
                 "stream journal is disabled in the app config",
             )
 
-        session = sessions.current().require()
+        context = CallContext.current()
         return cls(
             journal=journal,
-            user_id=session.user_id,
-            thread_id=session.thread_id,
+            user_id=context.subject.user_key,
+            thread_id=context.scope.id,
         )
 
     def usage_text(self) -> str:
@@ -147,7 +147,7 @@ class StreamLogsOps:
                 "the current thread cannot be purged",
             )
 
-        if thread_id in ToolStreams.live_threads():
+        if thread_id in ToolStreams.live_scopes():
             raise StreamLogsRefusedError(
                 StreamLogsErrorKind.LIVE_THREAD,
                 f"thread {thread_id} has running tools, try later",
@@ -163,12 +163,12 @@ class StreamLogsOps:
         return f"journals of thread {thread_id} deleted, freed {freed} bytes"
 
 
-def build_stream_logs_tools(cfg: None, sessions: SessionSource) -> list[BaseTool]:
+def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
     @tool(response_format="content_and_artifact")
     def stream_logs_usage() -> tuple[str, ToolResult]:
         """Показать занятость тома журналов вывода инструментов."""
         try:
-            text = StreamLogsOps.resolve(sessions).usage_text()
+            text = StreamLogsOps.resolve().usage_text()
         except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
         except StreamJournalError as e:
@@ -187,7 +187,7 @@ def build_stream_logs_tools(cfg: None, sessions: SessionSource) -> list[BaseTool
     ) -> tuple[str, ToolResult]:
         """Удалить журналы вывода инструментов одного треда."""
         try:
-            text = StreamLogsOps.resolve(sessions).purge(thread_id)
+            text = StreamLogsOps.resolve().purge(thread_id)
         except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
         except StreamJournalError as e:

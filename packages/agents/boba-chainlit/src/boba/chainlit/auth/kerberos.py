@@ -57,6 +57,7 @@ from boba.chainlit.domain.errors import (
 from boba.chainlit.domain.session import (
     LoginTemplate,
     LogLine,
+    SignInProvider,
     SsoMarks,
     UserLogin,
     UserMetadataField,
@@ -199,7 +200,7 @@ class KerberosAuthConfig(BaseModel):
     @field_validator("principal_format")
     @classmethod
     def _principal_format_has_username(cls, value: str) -> str:
-        return LoginTemplate.check(value)
+        return LoginTemplate.check_principal(value)
 
     @property
     def sids_header(self) -> str:
@@ -850,7 +851,7 @@ class KerberosAuth(SsoAdmission):
     def _sso_metadata(self, headers: Headers, principal: str) -> dict[str, Any]:
         """Metadata входа: провайдер, принципал и метка входа с тикетом."""
         metadata: dict[str, Any] = {
-            UserMetadataField.PROVIDER: KerberosAuth.__name__,
+            UserMetadataField.PROVIDER: SignInProvider.KERBEROS.value,
             UserMetadataField.PRINCIPAL: principal,
         }
 

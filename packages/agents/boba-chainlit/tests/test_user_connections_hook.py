@@ -16,6 +16,7 @@ import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
+from conftest import enter_context
 from langchain_core.tools import StructuredTool
 from omegaconf import OmegaConf
 from psycopg import sql
@@ -80,6 +81,8 @@ live_kdc = pytest.mark.skipif(
 
 SCHEMA = "connections_hook"
 ROLE = "analyst"
+THREAD = "44444444-4444-4444-4444-444444444444"
+PROFILE = "test"
 
 
 def _key() -> SecretStr:
@@ -194,9 +197,7 @@ class Capture:
             return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
         spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
-        UserConnections.bind_all(
-            [tool], lambda: store, lambda: registry, spec, resolve
-        )
+        UserConnections.bind_all([tool], lambda: store, lambda: registry, spec, resolve)
         InjectedConfig.bind_all([tool], resolve)
         return tool
 
@@ -223,9 +224,7 @@ class Capture:
             return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
         spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
-        UserConnections.bind_all(
-            [tool], lambda: store, lambda: registry, spec, resolve
-        )
+        UserConnections.bind_all([tool], lambda: store, lambda: registry, spec, resolve)
         InjectedConfig.bind_all([tool], resolve)
         return tool
 
@@ -281,7 +280,9 @@ class Session:
         token = create_jwt(
             ChainlitUser(identifier=user.identifier, metadata=login_metadata)
         )
-        init_http_context(user=user, auth_token=token)
+        context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
+        context.session.chat_profile = PROFILE
+        enter_context()
         return token
 
 

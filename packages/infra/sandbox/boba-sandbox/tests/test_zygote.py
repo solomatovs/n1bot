@@ -24,7 +24,7 @@ from fake_channel_tool import ChannelConfig
 from pydantic import SecretStr
 from zygote_stand import SandboxStand
 
-from boba.cancellation import ToolStopped, turn_cancellation
+from boba.cancellation import ToolStopped, run_cancellation
 from boba.sandbox.zygote import (
     ZygoteCallError,
     ZygotePolicy,
@@ -346,7 +346,7 @@ class TestCall:
         zygote = supervisor(_plain_spawner)
         zygote.start()
 
-        with turn_cancellation() as cancellation:
+        with run_cancellation() as cancellation:
 
             def cancel_soon() -> None:
                 time.sleep(0.7)

@@ -29,7 +29,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 from zygote_stand import ROOTFS_IMAGE, ProfileFields, SandboxStand
 
-from boba.cancellation import ToolStopped, TurnCancellation, turn_cancellation
+from boba.cancellation import ToolStopped, RunCancellation, run_cancellation
 from boba.chainlit.data.storage import ImageStorageClient, StorageFactory
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox import SandboxProfile
@@ -931,7 +931,7 @@ class TestAbnormalTermination:
         marker = f"cancel-load-{uuid4().hex[:8]}"
         command = stand.started_command(marker, self.LONG_COMMAND)
 
-        with turn_cancellation() as cancellation:
+        with run_cancellation() as cancellation:
             stopper = _Stopper(stand, cancellation, marker)
             stopper.start()
             with pytest.raises(ToolStopped):
@@ -1133,7 +1133,7 @@ class _Stopper:
     """Останавливает ход, как только команда отметилась в rw-bind."""
 
     def __init__(
-        self, stand: LoadStand, cancellation: TurnCancellation, marker: str
+        self, stand: LoadStand, cancellation: RunCancellation, marker: str
     ) -> None:
         self._stand = stand
         self._cancellation = cancellation

@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from boba.chainlit.domain.context import CallContext
 from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.infra.session import current_session
 
@@ -105,6 +106,9 @@ class UserLogContext:
     def _label(cls) -> str:
         if mark := LogUserMark.current():
             return mark
+
+        if context := CallContext.peek():
+            return context.log_mark().label
 
         # логирование не имеет права падать из-за отсутствия контекста
         try:

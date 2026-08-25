@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
+from conftest import enter_context
 from psycopg import sql
 from pydantic import SecretStr
 from stand_site import Stand
@@ -31,6 +32,7 @@ from boba.chainlit.connections import (
 )
 from boba.chainlit.connections.whitelist import ConnectionKeying
 from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.domain.context import CallContext, ContextKind
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.session import UserMetadataField
 from boba.chainlit.infra.plugins import as_structured_tool
@@ -65,6 +67,8 @@ _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
 SCHEMA = "connections_e2e"
 ROLE = "analyst"
+THREAD = "44444444-4444-4444-4444-444444444444"
+PROFILE = "test"
 
 
 def _cgroup_delegated() -> bool:
@@ -166,9 +170,7 @@ def pg_tools(
         return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
     spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
-    UserConnections.bind_all(
-        functions, lambda: store, lambda: registry, spec, resolve
-    )
+    UserConnections.bind_all(functions, lambda: store, lambda: registry, spec, resolve)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
@@ -194,7 +196,9 @@ class Session:
     def enter(user: PersistedUser) -> None:
         from chainlit.context import init_http_context
 
-        init_http_context(user=user)
+        context = init_http_context(user=user, thread_id=THREAD)
+        context.session.chat_profile = PROFILE
+        enter_context()
 
     @staticmethod
     def enter_sso(user: PersistedUser, principal: str, login: str) -> None:
@@ -209,7 +213,9 @@ class Session:
             UserMetadataField.LOGIN: login,
         }
         token = create_jwt(ChainlitUser(identifier=user.identifier, metadata=metadata))
-        init_http_context(user=user, auth_token=token)
+        context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
+        context.session.chat_profile = PROFILE
+        enter_context()
 
 
 async def test_granted_connection_is_visible_and_works(
@@ -416,9 +422,7 @@ def web_tools(
         return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
     spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
-    UserConnections.bind_all(
-        functions, lambda: store, lambda: registry, spec, resolve
-    )
+    UserConnections.bind_all(functions, lambda: store, lambda: registry, spec, resolve)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
@@ -460,9 +464,10 @@ async def test_call_outside_session_is_refused(pg_tools: dict[str, Any]) -> None
     from chainlit.context import init_http_context
 
     init_http_context(user=None)
+    CallContext.reset()
 
     with pytest.raises(RefusalError) as caught:
         await Call.result(pg_tools["pg_connection_list"])
 
-    if caught.value.kind != ConnectionRefusal.NO_SESSION:
+    if caught.value.kind != ContextKind.NO_CONTEXT:
         raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")

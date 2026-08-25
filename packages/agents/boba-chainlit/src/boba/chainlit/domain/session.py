@@ -1,11 +1,10 @@
-"""Сессия чата в терминах домена: контракт, требования и метки входа.
+"""Сессия чата в терминах домена: контракт, метки входа и лога.
 
 Транспорта здесь нет: chainlit живёт в реализации (infra/session.py), а
 логика знает только этот протокол. Так работа с сессией остаётся в одном
 месте, не таща за собой веб-фреймворк.
 
 Ошибки:
-RefusalError — требование сессии не выполнено, kind из SessionKind.
 TemplateError — шаблон входа без {username} либо принципал не по шаблону.
 """
 
@@ -19,17 +18,15 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Final, Protocol
 
-from boba.chainlit.domain.errors import RefusalError
 from boba.toolkit.template import FieldTemplate, TemplateError
 
 __all__ = [
     "LogLine",
     "LogUserMark",
     "LoginTemplate",
-    "RequiredSession",
     "Session",
-    "SessionKind",
     "SessionSource",
+    "SignInProvider",
     "SsoMarks",
     "UserLogin",
     "UserMetadataField",
@@ -44,6 +41,14 @@ class UserMetadataField:
     LOGIN: Final = "sso_login"
     ROLES: Final = "roles"
     LLM: Final = "llm"
+
+
+class SignInProvider(StrEnum):
+    """Значение metadata[provider]: каким провайдером выпущен вход."""
+
+    KERBEROS = "KerberosAuth"
+    LDAP = "LdapAuth"
+    LOCAL = "LocalAuth"
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,16 @@ class LoginTemplate:
         return text
 
     @classmethod
+    def check_principal(cls, text: str) -> str:
+        """Валидатор формата принципала: {username} ровно один и извлекаем."""
+        try:
+            FieldTemplate.parse(text).single(cls.FIELD)
+        except TemplateError as exc:
+            raise ValueError(str(exc)) from exc
+
+        return text
+
+    @classmethod
     def render(cls, text: str, username: str) -> str:
         return FieldTemplate.parse(text).render({cls.FIELD: username})
 
@@ -104,6 +119,9 @@ class SsoMarks:
     @classmethod
     def of_metadata(cls, metadata: Mapping[str, object]) -> SsoMarks | None:
         """Метки из metadata пользователя; None — вход не нёс делегирования."""
+        if metadata.get(UserMetadataField.PROVIDER) != SignInProvider.KERBEROS:
+            return None
+
         principal = metadata.get(UserMetadataField.PRINCIPAL)
         if not isinstance(principal, str) or not principal:
             return None
@@ -113,6 +131,48 @@ class SsoMarks:
             return None
 
         return cls(principal=principal, login=login)
+
+    @classmethod
+    def absence_reason(cls, metadata: Mapping[str, object]) -> str:
+        """Почему у входа нет меток делегирования; текст готов для отказа."""
+        provider = metadata.get(UserMetadataField.PROVIDER)
+        if provider != SignInProvider.KERBEROS:
+            return (
+                f"you signed in with {cls._provider_name(provider)}, and this "
+                "connection acts in the database on your behalf: sign in with "
+                "the Kerberos SSO button instead"
+            )
+
+        principal = metadata.get(UserMetadataField.PRINCIPAL)
+        if not isinstance(principal, str):
+            return cls._no_principal()
+
+        if not principal:
+            return cls._no_principal()
+
+        return (
+            f"the Kerberos sign-in of {principal} carried no delegated ticket: "
+            "either Active Directory does not allow this service to act for "
+            "you, or the browser sent no ticket; sign in again from a "
+            "domain-joined browser"
+        )
+
+    @staticmethod
+    def _no_principal() -> str:
+        return (
+            "your Kerberos sign-in predates delegated connections "
+            "(the session token names no principal): sign out and sign in again"
+        )
+
+    @staticmethod
+    def _provider_name(provider: object) -> str:
+        if not isinstance(provider, str):
+            return "no known provider"
+
+        if not provider:
+            return "no known provider"
+
+        return provider
 
 
 class LogLine:
@@ -141,6 +201,10 @@ class LogUserMark:
 
     def __init__(self, user: str, thread_id: str) -> None:
         self._label = self.compose(user, thread_id)
+
+    @property
+    def label(self) -> str:
+        return self._label
 
     @classmethod
     def compose(cls, user: str, thread_id: str) -> str:
@@ -206,44 +270,8 @@ class Session(Protocol):
     @property
     def metadata(self) -> Mapping[str, object]: ...
 
-    def require(self) -> RequiredSession:
-        """Пользователь и тред; без них операция отказывает."""
-        ...
-
 
 class SessionSource(Protocol):
     """Откуда берётся сессия текущего вызова."""
 
     def current(self) -> Session: ...
-
-
-class SessionKind(StrEnum):
-    """Отказы требований сессии: операции нужны пользователь и тред."""
-
-    NO_SESSION = "no_session"
-    NO_THREAD = "no_thread"
-
-
-@dataclass(frozen=True)
-class RequiredSession:
-    """Пользователь и тред сессии; без них операция отказывает.
-
-    Собирается ChatSession.require(): требование к сессии живёт там же,
-    где и сама сессия.
-    """
-
-    user_id: str
-    thread_id: str
-
-    @classmethod
-    def of(cls, session: Session) -> RequiredSession:
-        """Требование к переданной сессии; отказ называет, чего не хватило."""
-        user_id = session.user_id
-        if not user_id:
-            raise RefusalError(SessionKind.NO_SESSION, "no chainlit user session")
-
-        thread_id = session.thread_id
-        if not thread_id:
-            raise RefusalError(SessionKind.NO_THREAD, "no active thread")
-
-        return cls(user_id=str(user_id), thread_id=thread_id)
