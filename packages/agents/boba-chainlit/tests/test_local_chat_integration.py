@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import pytest
+from conftest import no_call_scope
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -113,7 +114,7 @@ class TestLocalChatTurn:
         tools = [kb_probe]
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(tools, lambda tool, call_id: None)
+        ToolRunLogger.guard_all(tools, lambda tool, call_id: None, no_call_scope)
         ToolAsyncBody.ensure_all(tools)
 
         agent = create_agent(

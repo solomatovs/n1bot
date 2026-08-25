@@ -10,6 +10,7 @@ import asyncio
 from typing import Annotated, Any, ClassVar
 
 import pytest
+from conftest import no_call_scope
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.tools import InjectedToolArg, tool
 from pydantic import BaseModel, Field, SecretStr
@@ -60,7 +61,7 @@ def build_pipeline() -> Any:
     )
     ToolCallIdField.attach_all([pipe_echo])
     ToolIntentField.attach_all([pipe_echo])
-    ToolRunLogger.guard_all([pipe_echo], lambda tool, call_id: None)
+    ToolRunLogger.guard_all([pipe_echo], lambda tool, call_id: None, no_call_scope)
 
     return pipe_echo
 
@@ -193,7 +194,9 @@ class TestChannelTap:
             return render_for_llm(artifact), artifact
 
         ToolCallIdField.attach_all([tap_probe])
-        ToolRunLogger.guard_all([tap_probe], lambda tool, call_id: stream)
+        ToolRunLogger.guard_all(
+            [tap_probe], lambda tool, call_id: stream, no_call_scope
+        )
 
         await tap_probe.ainvoke(
             {

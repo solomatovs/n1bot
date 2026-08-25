@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 import pytest
-from conftest import use_session
+from conftest import use_context, use_session
 from pydantic import BaseModel
 
 from boba.chainlit.agent.tools.send_file import FileAttachment, build_send_file_tool
@@ -65,6 +65,17 @@ class TestRefusal:
             raise AssertionError('refusal.error_kind == "no_context"')
         if refusal.ok is not False:
             raise AssertionError("refusal.ok is False")
+
+    @pytest.mark.anyio
+    async def test_outside_chat_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Контекст есть, но не чата (workflow, REST): вложение слать некуда."""
+        use_context(monkeypatch, thread_id=THREAD)
+
+        refusal = await self._attach(f"/workspace/{THREAD}/upload/report.pdf")
+        if refusal.error_kind != "chat_only":
+            raise AssertionError(refusal.error_kind)
 
     @pytest.mark.anyio
     async def test_without_active_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:

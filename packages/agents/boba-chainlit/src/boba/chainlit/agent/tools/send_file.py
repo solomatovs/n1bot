@@ -18,7 +18,7 @@ from pydantic import Field
 import chainlit as cl
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageError, StorageNotFoundError
-from boba.chainlit.domain.context import CallContext
+from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ElementProps, ObjectKey
 from boba.chainlit.domain.run import RunRegistry
@@ -112,7 +112,7 @@ class FileAttachment:
 
     @classmethod
     def _resolve(cls, path: str, tool_call_id: str) -> AttachmentTarget:
-        context = CallContext.current()
+        context = ChatCallContext.require()
         user_id = context.subject.user_key
         thread_id = context.scope.id
 

@@ -32,7 +32,7 @@ from boba.chainlit.canvas.panel import (
     PdfViewer,
     VideoViewer,
 )
-from boba.chainlit.domain.context import CallContext
+from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.rendering.errors import show_error
@@ -88,7 +88,7 @@ class CanvasScope(BaseModel):
 
     @classmethod
     def of_context(cls) -> CanvasScope:
-        context = CallContext.current()
+        context = ChatCallContext.require()
 
         return cls(user_id=context.subject.user_key, thread_id=context.scope.id)
 

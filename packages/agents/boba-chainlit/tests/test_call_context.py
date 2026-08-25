@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import pytest
-from conftest import use_context
+from conftest import use_context, use_session
 from pydantic import ValidationError
 
-from boba.chainlit.domain.context import CallContext, ContextKind, Scope, ScopeKind
+from boba.chainlit.domain.context import (
+    CallContext,
+    ChatCallContext,
+    ChatSurface,
+    ContextKind,
+    HumanInitiator,
+    LlmInitiator,
+    Scope,
+    ScopeKind,
+)
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.session import LoginTemplate, LogUserMark
 
@@ -53,6 +62,43 @@ class TestCurrent:
             raise AssertionError(subject)
         if subject.user_key != "7":
             raise AssertionError(subject.user_key)
+
+
+class TestChatContext:
+    def test_plain_context_is_not_a_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        use_context(monkeypatch, thread_id=THREAD)
+
+        with pytest.raises(RefusalError) as caught:
+            ChatCallContext.require()
+
+        if caught.value.kind != ContextKind.CHAT_ONLY:
+            raise AssertionError(caught.value.kind)
+
+    def test_session_context_is_a_chat_with_a_surface(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        use_session(monkeypatch, user_id="7", thread_id=THREAD)
+
+        context = ChatCallContext.require()
+        if not isinstance(context.surface, ChatSurface):
+            raise AssertionError("chat context carries a surface")
+
+    def test_tool_call_derives_llm_initiator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        context = use_context(monkeypatch, thread_id=THREAD)
+
+        derived = context.as_tool_call("call-1")
+        if not isinstance(derived.initiator, LlmInitiator):
+            raise AssertionError(derived.initiator)
+        if derived.initiator.tool_call_id != "call-1":
+            raise AssertionError(derived.initiator)
+        if derived.subject is not context.subject:
+            raise AssertionError("subject is shared")
+
+        human = derived.model_copy(update={"initiator": HumanInitiator(via="api")})
+        if human.as_tool_call("call-2") is not human:
+            raise AssertionError("only the chat initiator turns into llm")
 
 
 class TestScope:

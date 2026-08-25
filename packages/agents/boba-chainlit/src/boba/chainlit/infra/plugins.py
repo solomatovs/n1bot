@@ -94,6 +94,9 @@ class ToolPlugin:
     connections: UserConnectionsSpec | None = None
     """Whitelist соединений секции собирается из таблицы на вызов; None — секция
     соединений пользователя не держит."""
+    chat_only: bool = False
+    """True — инструментам нужна поверхность чата (панель, карточки, вложения):
+    вне хода чата они отказывают, в каталог workflow не попадают."""
 
 
 class SandboxRequire(BaseModel):
@@ -209,6 +212,27 @@ def stream_source(tool: str, call_id: str) -> CallStream | None:
     return ToolStreams.begin(context.subject.user_key, context.scope.id, call_id, tool)
 
 
+def tool_call_scope(call_id: str) -> Callable[[], None]:
+    """Контекст вызова инструмента моделью на время вызова: инициатор llm.
+
+    Без контекста ставить нечего — снимать тоже.
+    """
+    context = CallContext.peek()
+    if context is None:
+        return _leave_nothing
+
+    token = CallContext.push(context.as_tool_call(call_id))
+
+    def leave() -> None:
+        CallContext.pop(token)
+
+    return leave
+
+
+def _leave_nothing() -> None:
+    return None
+
+
 def _sandbox_path_vars() -> dict[str, str]:
     """Значения {user_id}/{thread_id} для путей профиля на момент вызова.
 
@@ -314,17 +338,20 @@ _PLUGINS: dict[str, ToolPlugin] = {
     ),
     "send_file": ToolPlugin(
         section="send_file",
+        chat_only=True,
         build=_build_send_file_tools,
         sandboxed=False,
     ),
     "diagram": ToolPlugin(
         section="diagram",
+        chat_only=True,
         config_model=DiagramToolConfig,
         build=_build_diagram_tools,
         sandboxed=False,
     ),
     "canvas": ToolPlugin(
         section="canvas",
+        chat_only=True,
         config_model=CanvasToolConfig,
         build=_build_canvas_tools,
         sandboxed=False,
@@ -378,6 +405,8 @@ class ToolRegistry:
 
     tools: list[BaseTool]
     access: ToolAccess
+    chat_only: frozenset[str] = frozenset()
+    """Имена инструментов, работающих только в ходе чата."""
 
     def for_session(
         self,
@@ -586,6 +615,7 @@ def load_tools(
     zygote_policy = bind(raw_config, "sandbox", SandboxRequire).zygote
 
     tools: list[BaseTool] = []
+    chat_only: set[str] = set()
     for name, plugin in _PLUGINS.items():
         meta = bind(raw_config, f"tool.{name}", PluginMeta)
         if not meta.enable:
@@ -607,6 +637,10 @@ def load_tools(
         )
         tools.extend(built)
 
+        if plugin.chat_only:
+            for tool in built:
+                chat_only.add(tool.name)
+
         # живой вывод есть только у процессов песочницы: кнопка потока
         # рисуется на шагах этих инструментов
         if profile is not None:
@@ -618,9 +652,9 @@ def load_tools(
     access = _access_of(raw_config, tools)
     ToolCallIdField.attach_all(tools)
     ToolIntentField.attach_all(tools)
-    ToolRunLogger.guard_all(tools, stream_source)
+    ToolRunLogger.guard_all(tools, stream_source, tool_call_scope)
     CancellableTools.guard_all(tools)
     ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
     ToolErrorGuard.guard_all(tools)
     ToolAsyncBody.ensure_all(tools)
-    return ToolRegistry(tools=tools, access=access)
+    return ToolRegistry(tools=tools, access=access, chat_only=frozenset(chat_only))

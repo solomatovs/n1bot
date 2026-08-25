@@ -46,10 +46,13 @@ from boba.chainlit.connections.whitelist import (
     ConnectionKeying,
     ConnectionWhitelist,
 )
-from boba.chainlit.domain.context import CallContext, DelegatedTicket
+from boba.chainlit.domain.context import (
+    CallContext,
+    ChatCallContext,
+    DelegatedTicket,
+)
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.session import SsoMarks
-from boba.chainlit.infra.session import current_session
 from boba.chainlit.infra.tickets import TicketArming
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import PostgresConfig
@@ -208,8 +211,12 @@ class KerberosRefreshSignal:
         """True — сигнал ушёл в живой сокет; False — слушать некому."""
         payload = {"type": cls.TYPE}
 
+        context = CallContext.current()
+        if not isinstance(context, ChatCallContext):
+            return False
+
         try:
-            return await current_session().emit(cls.EVENT, payload)
+            return await context.surface.emit(cls.EVENT, payload)
         except Exception:
             logger.warning("kerberos refresh signal failed", exc_info=True)
             return False
