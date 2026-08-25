@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,7 +11,8 @@ from langchain_core.tools import BaseTool, StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
-from boba.chainlit.agent.toolrun.access import ToolAccess, ToolAccessGuard
+from boba.access import ToolAccess
+from boba.chainlit.agent.toolrun.access import ToolAccessGuard
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
@@ -39,6 +40,7 @@ from boba.chainlit.infra.user_connections import (
     UserConnections,
     UserConnectionsSpec,
 )
+from boba.chainlit.workflow.tools import WorkflowToolConfig, build_workflow_tools
 from boba.sandbox import (
     BindSpec,
     SandboxProfile,
@@ -150,6 +152,16 @@ def _build_stream_logs_tools(
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
     return build_stream_logs_tools(cfg)
+
+
+def _build_workflow_tools(
+    cfg: WorkflowToolConfig,
+    launchers: LauncherFactory,
+) -> list[BaseTool]:
+    """Сервис берётся из контейнера на вызов: providers импортируют этот модуль."""
+    from boba.chainlit.infra.providers import workflow_service_ref  # noqa: PLC0415
+
+    return build_workflow_tools(cfg, workflow_service_ref)
 
 
 def _modules_of(tools: Sequence[ToolLike]) -> tuple[str, ...]:
@@ -361,6 +373,12 @@ _PLUGINS: dict[str, ToolPlugin] = {
         build=_build_stream_logs_tools,
         sandboxed=False,
     ),
+    "workflow": ToolPlugin(
+        section="workflow",
+        config_model=WorkflowToolConfig,
+        build=_build_workflow_tools,
+        sandboxed=False,
+    ),
     "pg": ToolPlugin(
         section="pg",
         module_tools=_module_toolset(PG_TOOLS),
@@ -405,20 +423,11 @@ class ToolRegistry:
 
     tools: list[BaseTool]
     access: ToolAccess
-    chat_only: frozenset[str] = frozenset()
-    """Имена инструментов, работающих только в ходе чата."""
 
-    def for_session(
-        self,
-        user_roles: Iterable[str],
-        profile: str | None,
-    ) -> list[BaseTool]:
+    def for_session(self, user_roles: Iterable[str], profile: str) -> list[BaseTool]:
+        """Инструменты хода чата: всё, что решение допускает в чате."""
         roles = frozenset(user_roles)
-
-        allowed: list[BaseTool] = []
-        for tool in self.tools:
-            if self.access.allowed(tool.name, roles, profile):
-                allowed.append(tool)
+        allowed = list(self._select(roles, profile, headless=False))
 
         logger.info(
             "tools available: %d of %d (roles: %s, chat profile: %s)",
@@ -428,6 +437,31 @@ class ToolRegistry:
             profile or "none",
         )
         return allowed
+
+    def for_headless(
+        self, user_roles: Iterable[str], profile: str
+    ) -> dict[str, BaseTool]:
+        """Инструменты вне чата (REST, workflow, планировщик) по именам."""
+        roles = frozenset(user_roles)
+
+        by_name: dict[str, BaseTool] = {}
+        for tool in self._select(roles, profile, headless=True):
+            by_name[tool.name] = tool
+
+        return by_name
+
+    def _select(
+        self, roles: frozenset[str], profile: str, *, headless: bool
+    ) -> Iterator[BaseTool]:
+        for tool in self.tools:
+            decision = self.access.decide(tool.name, roles, profile)
+            if headless:
+                admitted = decision.headless
+            else:
+                admitted = decision.in_chat
+
+            if admitted:
+                yield tool
 
 
 def _module_tools(  # noqa: PLR0913 — состав загрузки секции задаётся целиком
@@ -574,26 +608,15 @@ def _section_launchers(
     return factory
 
 
-def _access_of(raw_config: DictConfig, tools: Sequence[BaseTool]) -> ToolAccess:
+def _access_of(
+    raw_config: DictConfig, tools: Sequence[BaseTool], chat_only: Iterable[str]
+) -> ToolAccess:
     """Права из [roles.*]/[profiles.*]; опечатка в имени инструмента — отказ старта."""
     roles = bind(raw_config, "roles", RolesSection).root
     profiles = bind(raw_config, "profiles", ProfilesSection).root
-
     known = frozenset(tool.name for tool in tools)
 
-    for role_name, grant in roles.items():
-        missing = grant.unknown(known)
-        if missing:
-            msg = f"[roles.{role_name}]: unknown tools {missing}"
-            raise RuntimeError(msg)
-
-    for profile_name, profile in profiles.items():
-        missing = profile.unknown(known)
-        if missing:
-            msg = f"[profiles.{profile_name}]: unknown tools {missing}"
-            raise RuntimeError(msg)
-
-    return ToolAccess(known, roles, profiles)
+    return ToolAccess(known, roles, profiles, chat_only)
 
 
 def _require_connections(raw_config: DictConfig, name: str) -> None:
@@ -649,7 +672,7 @@ def load_tools(
                 streamable.append(tool.name)
             ToolStreams.mark_streamable(streamable)
 
-    access = _access_of(raw_config, tools)
+    access = _access_of(raw_config, tools, chat_only)
     ToolCallIdField.attach_all(tools)
     ToolIntentField.attach_all(tools)
     ToolRunLogger.guard_all(tools, stream_source, tool_call_scope)
@@ -657,4 +680,4 @@ def load_tools(
     ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
     ToolErrorGuard.guard_all(tools)
     ToolAsyncBody.ensure_all(tools)
-    return ToolRegistry(tools=tools, access=access, chat_only=frozenset(chat_only))
+    return ToolRegistry(tools=tools, access=access)

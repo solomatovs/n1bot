@@ -823,9 +823,7 @@ class ZygoteMain:
 
         self._reap()
 
-    def _child(
-        self, request: CallRequest, fds: list[int], timing: SetupTiming
-    ) -> None:
+    def _child(self, request: CallRequest, fds: list[int], timing: SetupTiming) -> None:
         """Первый форк: изоляция namespace'ов и второй форк под NEWPID."""
         try:
             timing.mark("fork")
@@ -835,9 +833,7 @@ class ZygoteMain:
             os.close(self._sigchld_w)
 
             if request.isolate:
-                Isolation.unshare(
-                    CloneFlag.NEWNS | CloneFlag.NEWIPC | CloneFlag.NEWUTS
-                )
+                Isolation.unshare(CloneFlag.NEWNS | CloneFlag.NEWIPC | CloneFlag.NEWUTS)
 
             timing.mark("unshare")
 

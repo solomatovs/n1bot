@@ -11,6 +11,8 @@ dependencies = [
     "boba-settings==0.0.14.dev8",
     "boba-toolkit==0.0.14.dev8",
     "boba-cancellation==0.0.14.dev8",
+    "boba-workflow==0.0.14.dev8",
+    "boba-access==0.0.14.dev8",
     "boba-tool-shell==0.0.14.dev8",
     "boba-tool-chart==0.0.14.dev8",
     "boba-tool-web==0.0.14.dev8",

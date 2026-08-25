@@ -48,6 +48,7 @@ def run_app(config_path: Path):
 
     _use_canvas_viewers()
     _use_tool_api(c)
+    _use_workflow_api(c)
 
     _use_auth(c, container)
 
@@ -249,19 +250,9 @@ def _use_tool_api(c: AppConfig) -> None:
     from boba.chainlit.domain.errors import InternalServiceError  # noqa: PLC0415
     from boba.chainlit.domain.keys import ToolCallUrl  # noqa: PLC0415
     from boba.chainlit.infra.config import ChatProfiles  # noqa: PLC0415
-    from boba.chainlit.infra.di import Depends  # noqa: PLC0415
-    from boba.chainlit.infra.plugins import ToolRegistry  # noqa: PLC0415
     from boba.chainlit.infra.tool_api import ToolCalling  # noqa: PLC0415
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
-
-    async def registry() -> ToolRegistry:
-        root = Container.root
-        if root is None:
-            msg = "DI container is not initialised: tool registry is unavailable"
-            raise RuntimeError(msg)
-
-        return await root.resolve(Depends(providers.tool_registry))
 
     def data_layer() -> PostgresDataLayer:
         layer = get_data_layer()
@@ -272,11 +263,24 @@ def _use_tool_api(c: AppConfig) -> None:
             )
         return layer
 
-    calling = ToolCalling(registry, ChatProfiles(c.profiles), data_layer)
+    calling = ToolCalling(
+        providers.tool_registry_ref, ChatProfiles(c.profiles), data_layer
+    )
     chainlit_app.add_api_route(
         ToolCallUrl.ROUTE, calling.serve, methods=["POST"], include_in_schema=False
     )
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+
+
+def _use_workflow_api(c: AppConfig) -> None:
+    """REST workflow: определения, запуск и остановка со страницы."""
+    from boba.chainlit.infra.config import ChatProfiles  # noqa: PLC0415
+    from boba.chainlit.workflow.api import WorkflowApi  # noqa: PLC0415
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    WorkflowApi(providers.workflow_service_ref, ChatProfiles(c.profiles)).mount(
+        chainlit_app
+    )
 
 
 def _use_auth(config: AppConfig, container: Container) -> None:
@@ -295,6 +299,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.langchain_checkpoint_saver)
     container.eager(providers.kb_schema)
     container.eager(providers.connection_store)
+    container.eager(providers.workflow_store)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.local_chat_runtimes)
     Container.set_root(container)

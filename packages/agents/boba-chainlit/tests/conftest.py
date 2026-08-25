@@ -326,6 +326,24 @@ def use_context(  # noqa: PLR0913 — личность собирается по
     return context
 
 
+def make_context(
+    thread_id: str, cancellation: RunCancellation | None = None
+) -> CallContext:
+    """Контекст хода чата для реестра запусков; ставить его тест не обязан."""
+    if cancellation is None:
+        cancellation = RunCancellation()
+
+    return CallContext(
+        subject=Subject(
+            user_id=7, login="tester", roles=frozenset(), profile=TEST_PROFILE
+        ),
+        scope=Scope.chat(thread_id),
+        initiator=ChatInitiator(thread_id=thread_id, turn_id=TEST_TURN),
+        credential=NoUserCredential(reason="the test context carries no ticket"),
+        cancellation=cancellation,
+    )
+
+
 def no_call_scope(call_id: str) -> Callable[[], None]:
     """Источник контекста вызова для обвязок в тестах без контекста."""
     return _leave_nothing

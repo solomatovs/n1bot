@@ -18,11 +18,10 @@ from typing import Any, ClassVar, cast
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
-from conftest import use_context
+from conftest import make_context, use_context
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
-from boba.cancellation import RunCancellation
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.canvas.journal import (
@@ -99,7 +98,7 @@ class TurnScope:
     @classmethod
     def start(cls) -> None:
         cls.end()
-        cls._SCOPE = RunRegistry.open(THREAD, cls.Port(), RunCancellation())
+        cls._SCOPE = RunRegistry.open(make_context(THREAD), cls.Port())
         cls._SCOPE.__enter__()
 
     @classmethod

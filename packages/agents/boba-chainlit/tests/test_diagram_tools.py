@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from conftest import use_session
+from conftest import make_context, use_session
 from pydantic import BaseModel
 
-from boba.cancellation import RunCancellation
 from boba.chainlit.canvas import diagram as diagram_module
 from boba.chainlit.canvas.diagram import (
     DiagramEntry,
@@ -536,7 +535,7 @@ class TestSaveToolEndToEnd:
     @pytest.fixture(autouse=True)
     def active_turn(self) -> Any:
         """Карточка цепляется к шагу ответа: без живого хода её некуда деть."""
-        scope = RunRegistry.open(THREAD, cast(Any, FakeTurn()), RunCancellation())
+        scope = RunRegistry.open(make_context(THREAD), cast(Any, FakeTurn()))
         scope.__enter__()
         yield
         scope.__exit__(None, None, None)

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from boba.access import ToolAvailability
 from boba.workflow import (
     PortDirection,
     ToolArg,
-    ToolAvailability,
     ToolCatalog,
     ToolFacts,
     ToolPort,

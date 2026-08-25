@@ -1,6 +1,7 @@
 """Провайдеры зависимостей: конфиг, клиенты, хранилища и сам агент langgraph."""
 
 import re
+import socket
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated
@@ -54,6 +55,8 @@ from boba.chainlit.infra.di import Container, Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
+from boba.chainlit.workflow.service import WorkflowService
+from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.krb import CcacheRegistry
@@ -203,6 +206,31 @@ def tool_registry(
     return load_tools(raw, connection_store_ref, ccache_registry_ref)
 
 
+async def tool_registry_ref() -> ToolRegistry:
+    """Реестр инструментов из корневого контейнера: для вызовов вне сессии."""
+    root = Container.root
+    if root is None:
+        msg = "DI container is not initialised: tool registry is unavailable"
+        raise RuntimeError(msg)
+
+    return await root.resolve(Depends(tool_registry))
+
+
+async def workflow_service_ref() -> WorkflowService:
+    """Сервис workflow из корневого контейнера; зовётся на каждый вызов."""
+    root = Container.root
+    if root is None:
+        msg = "DI container is not initialised"
+        raise RuntimeError(msg)
+
+    service = await root.resolve(Depends(workflow_service))
+    if service is None:
+        msg = "[workflow] is disabled: workflows are unavailable"
+        raise RuntimeError(msg)
+
+    return service
+
+
 def session_tools(
     registry: Annotated[ToolRegistry, Depends(tool_registry)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
@@ -219,6 +247,32 @@ async def kb_schema(
         return
     cfg = bind(raw, "tool.kb", PostgresKnowledgeBaseConfig)
     await KbSchema(cfg, dim=cfg.embedding.dim).setup()
+
+
+async def workflow_store(
+    raw: Annotated[DictConfig, Depends(get_raw_config)],
+) -> WorkflowStore | None:
+    """Хранилище workflow и их запусков; None — секция [workflow] выключена."""
+    cfg = bind(raw, "workflow", WorkflowConfig)
+    if not cfg.enable:
+        return None
+
+    store = WorkflowStore(cfg)
+    await store.setup()
+
+    return store
+
+
+def workflow_service(
+    store: Annotated[WorkflowStore | None, Depends(workflow_store)],
+    config: Annotated[AppConfig, Depends(get_app_config)],
+) -> WorkflowService | None:
+    """Сервис workflow; инстанс — host:port, чтобы различать запуски реплик."""
+    if store is None:
+        return None
+
+    instance = f"{socket.gethostname()}:{config.chainlit.port}"
+    return WorkflowService(store, tool_registry_ref, instance)
 
 
 async def connection_store(
@@ -561,9 +615,7 @@ def session_chat_provider(
 
 
 def session_chat(
-    provider: Annotated[
-        ChatProvider, Depends(session_chat_provider, scope="session")
-    ],
+    provider: Annotated[ChatProvider, Depends(session_chat_provider, scope="session")],
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],

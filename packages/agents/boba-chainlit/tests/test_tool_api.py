@@ -17,12 +17,12 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from langchain_core.tools import tool
 
-from boba.chainlit.agent.toolrun.access import ToolAccess
+from boba.access import ProfileGrant, ToolAccess
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.domain.config import RoleConfig, ToolGrant
+from boba.chainlit.domain.config import RoleConfig
 from boba.chainlit.domain.context import CallContext, HumanInitiator, ScopeKind
 from boba.chainlit.domain.keys import ToolCallUrl
 from boba.chainlit.infra.config import AppConfig, ChatProfiles
@@ -90,11 +90,10 @@ def _registry(probe: Probe, app_config: AppConfig) -> ToolRegistry:
     access = ToolAccess(
         tool_names=names,
         roles=roles,
-        profiles={_profile(app_config): ToolGrant(tools=["*"])},
+        profiles={_profile(app_config): ProfileGrant(tools=["*"], roles=["*"])},
+        chat_only=["canvas_open"],
     )
-    return ToolRegistry(
-        tools=tools, access=access, chat_only=frozenset({"canvas_open"})
-    )
+    return ToolRegistry(tools=tools, access=access)
 
 
 def _calling(probe: Probe, seed: Seed, app_config: AppConfig) -> ToolCalling:
@@ -166,7 +165,7 @@ class TestServe:
                 "canvas_open", _body(seeded, app_config), user
             )
 
-        if caught.value.status_code != 400:
+        if caught.value.status_code != 404:
             raise AssertionError(caught.value.status_code)
 
     async def test_foreign_thread_is_not_found(

@@ -1,4 +1,5 @@
 """Пользователь сессии в каждой строке лога через фабрику LogRecord."""
+
 from __future__ import annotations
 
 import logging
