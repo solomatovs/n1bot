@@ -23,9 +23,9 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from email.message import Message
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar
-from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -223,6 +223,19 @@ class FileHeader(StrEnum):
     CONTENT_DISPOSITION = "Content-Disposition"
     ACCEPT_RANGES = "Accept-Ranges"
     RANGE = "Range"
+
+
+class ContentDisposition:
+    """Значение Content-Disposition: имя по RFC 2231, не-ASCII — через filename*."""
+
+    INLINE: ClassVar[str] = "inline"
+
+    @classmethod
+    def inline(cls, name: str) -> str:
+        message = Message()
+        message.add_header(FileHeader.CONTENT_DISPOSITION, cls.INLINE, filename=name)
+
+        return str(message[FileHeader.CONTENT_DISPOSITION])
 
 
 @dataclass(frozen=True, slots=True)
@@ -707,17 +720,17 @@ class UploadRoute:
         if not record or SessionFiles.OBJECT_KEY not in record:
             raise HTTPException(status_code=404, detail="File not found")
 
-        name = quote(str(record[FileField.NAME]))
+        name = str(record[FileField.NAME])
         logger.info(
             "upload: serving %s from storage (%s)",
-            record[FileField.NAME],
+            name,
             record[SessionFiles.OBJECT_KEY],
         )
         return await self._files.respond(
             str(record[SessionFiles.OBJECT_KEY]),
             mime=str(record[FileField.TYPE]),
             range_header=request.headers.get(FileHeader.RANGE, ""),
-            content_disposition=f'inline; filename="{name}"',
+            content_disposition=ContentDisposition.inline(name),
         )
 
     async def _store(self, key: ObjectKey, part: MultipartFile) -> int:
@@ -832,9 +845,7 @@ class UploadRoute:
         """
         user_id = session.user_id
         if not user_id:
-            raise HTTPException(
-                status_code=401, detail="Session has no persisted user"
-            )
+            raise HTTPException(status_code=401, detail="Session has no persisted user")
 
         return str(user_id)
 

@@ -31,6 +31,7 @@ import logging
 from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from urllib.parse import urlsplit
 
 from boba.indexing import (
     Metadata,
@@ -82,8 +83,10 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
         await self._http.close()
 
     def source_id(self, request: ConfluenceRequest) -> SourceId:
+        """URL запроса без query и фрагмента: одна страница — один id."""
         resolved = self._http.resolve_url(request.http)
-        return SourceId(resolved.split("?", 1)[0])
+        bare = urlsplit(resolved)._replace(query="", fragment="")
+        return SourceId(bare.geturl())
 
     async def fetch(self, request: ConfluenceRequest) -> AsyncIterator[RawDocument]:
         async with self._http.fetch(request.http) as resp:

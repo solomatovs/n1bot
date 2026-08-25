@@ -13,7 +13,7 @@ from typing import ClassVar, Literal, Self
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from boba.transport.http.auth import NegotiateAuth, NoneAuth, WebAuth
 
@@ -29,6 +29,12 @@ class HostPattern(BaseModel):
 
     value: str
 
+    @field_validator("value")
+    @classmethod
+    def _lowercase(cls, value: str) -> str:
+        """Имена хостов регистронезависимы: конфиг приводится к виду host_of."""
+        return value.lower()
+
     @property
     def wildcard(self) -> bool:
         return self.value.startswith(self.WILDCARD)
@@ -42,13 +48,14 @@ class HostPattern(BaseModel):
         return self.value[len(self.WILDCARD) - 1 :]
 
     def matches(self, host: str) -> bool:
+        lowered = host.lower()
         if not self.wildcard:
-            return host == self.value
+            return lowered == self.value
 
-        if host == self.suffix[1:]:
+        if lowered == self.suffix[1:]:
             return False
 
-        return host.endswith(self.suffix)
+        return lowered.endswith(self.suffix)
 
     @staticmethod
     def host_of(url: str) -> str:
@@ -108,7 +115,6 @@ class HttpProfile(BaseModel):
 
     HTTP_SERVICE: ClassVar[str] = "HTTP"
     """Имя kerberos-сервиса веб-серверов; SPN вида HTTP/host."""
-
 
     @model_validator(mode="after")
     def _negotiate_needs_host(self) -> Self:

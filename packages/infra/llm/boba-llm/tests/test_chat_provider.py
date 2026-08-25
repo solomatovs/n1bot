@@ -118,7 +118,10 @@ class TestLocalReplyParser:
             raise AssertionError(reply.content)
         if reply.reasoning or reply.tool_calls:
             raise AssertionError("ни рассуждений, ни вызовов")
-        if "".join(d.content for d in deltas) != reply.content[: len("".join(d.content for d in deltas))]:
+        if (
+            "".join(d.content for d in deltas)
+            != reply.content[: len("".join(d.content for d in deltas))]
+        ):
             raise AssertionError("дельты — префикс финала")
 
 
@@ -224,6 +227,44 @@ async def _events(provider: ChatProvider, request: ChatRequest) -> list:
 REQUEST = ChatRequest(messages=[ChatTurn(role=ChatRole.USER, content="hi")])
 
 
+class TestSseGrammar:
+    """Поток разбирается по грамматике SSE, а не по префиксу `data: `."""
+
+    async def test_no_space_multiline_data_comments_and_event_names(self) -> None:
+        first = json.dumps(_delta_chunk({"content": "от"}))
+        head = '{"choices": [{"delta": '
+        tail = '{"content": "вет"}}]}'
+        body = (
+            ": keepalive\n\n"
+            f"data:{first}\n\n"
+            f"event: chunk\ndata: {head}\ndata: {tail}\n\n"
+            "id: 7\ndata: [DONE]\n\n"
+        ).encode()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=body)
+
+        events = await _events(_provider(handler), REQUEST)
+
+        reply = events[-1]
+        if not isinstance(reply, ChatReply):
+            raise AssertionError("финал потока — ChatReply")
+        if reply.content != "ответ":
+            raise AssertionError(reply.content)
+
+    async def test_event_without_trailing_blank_line_is_delivered(self) -> None:
+        body = f"data: {json.dumps(_delta_chunk({'content': 'x'}))}\n".encode()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=body)
+
+        events = await _events(_provider(handler), REQUEST)
+
+        reply = events[-1]
+        if not isinstance(reply, ChatReply) or reply.content != "x":
+            raise AssertionError(events)
+
+
 class TestOpenAiChatProvider:
     """Wire-формат: SSE-дельты, склейка вызовов, usage, повторы, не-стрим."""
 
@@ -245,11 +286,7 @@ class TestOpenAiChatProvider:
                     }
                 ),
                 _delta_chunk(
-                    {
-                        "tool_calls": [
-                            {"index": 0, "function": {"arguments": ' "x"}'}}
-                        ]
-                    }
+                    {"tool_calls": [{"index": 0, "function": {"arguments": ' "x"}'}}]}
                 ),
                 {
                     "choices": [{"delta": {}}],

@@ -23,7 +23,7 @@ from ldap3.core.exceptions import (
     LDAPStartTLSError,
     LDAPStrongerAuthRequiredResult,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import chainlit as cl
 from boba.chainlit.auth.local import (
@@ -38,7 +38,11 @@ from boba.chainlit.domain.errors import (
     ExternalServiceError,
     InternalServiceError,
 )
-from boba.chainlit.domain.session import UserLogin, UserMetadataField
+from boba.chainlit.domain.session import (
+    LoginTemplate,
+    UserLogin,
+    UserMetadataField,
+)
 
 
 class LDAPError(Exception):
@@ -245,6 +249,12 @@ class LdapAuthConfig(BaseModel):
     bind_dn_template: str = Field(
         description="LDAP bind user; {username} подставляется",
     )
+
+    @field_validator("user_filter", "bind_dn_template")
+    @classmethod
+    def _template_has_username(cls, value: str) -> str:
+        return LoginTemplate.check(value)
+
     roles: LdapRolesConfig = Field(
         default=LdapRolesConfig(),
         description="Мапперы учеток и ролей",
@@ -391,8 +401,8 @@ class LdapAuth:
         # личность подтверждаем bind'ом под пользователем
         try:
             server = self._config.server
-            bind_dn = self._config.bind_dn_template.format(username=username)
-            search_filter = self._config.user_filter.format(username=username)
+            bind_dn = LoginTemplate.render(self._config.bind_dn_template, username)
+            search_filter = LoginTemplate.render(self._config.user_filter, username)
             search_base = self._config.base_dn
             user_dn, samaccountname, member_of = await asyncio.to_thread(
                 self._ad.fetch_userdn_samaccountname_member_of,

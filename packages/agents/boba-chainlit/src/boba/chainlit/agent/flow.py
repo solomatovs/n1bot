@@ -128,14 +128,13 @@ class RephrasingsParser:
     исходный запрос дело доходит только на бессмысленном ответе.
     """
 
-    FENCE: ClassVar[re.Pattern[str]] = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
     NUMBERING: ClassVar[re.Pattern[str]] = re.compile(r"^\s*(?:[-*\d.)\s]+)")
     OBJECT_START: ClassVar[str] = "{"
     MAX_LENGTH: ClassVar[int] = 300
 
     @classmethod
     def parse(cls, raw: str) -> Sequence[str]:
-        text = cls._unfenced(raw)
+        text = cls._json_text(raw)
 
         by_schema = cls._of_schema(text)
         if by_schema:
@@ -152,13 +151,27 @@ class RephrasingsParser:
         return cls._of_lines(text)
 
     @classmethod
-    def _unfenced(cls, raw: str) -> str:
-        """Тело markdown-блока, если модель обернула json в ```json."""
-        found = cls.FENCE.search(raw)
-        if found is None:
-            return raw.strip()
+    def _json_text(cls, raw: str) -> str:
+        """Первый законченный json-объект в любой обёртке; без него — текст как есть."""
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(raw):
+            if char != cls.OBJECT_START:
+                continue
 
-        return found.group(1).strip()
+            try:
+                value, end = decoder.raw_decode(raw, index)
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(value, dict):
+                continue
+
+            if not value:
+                continue
+
+            return raw[index:end]
+
+        return raw.strip()
 
     @staticmethod
     def _of_schema(text: str) -> Sequence[str]:
