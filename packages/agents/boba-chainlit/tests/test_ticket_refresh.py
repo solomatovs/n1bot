@@ -116,9 +116,7 @@ class TestArmingIsNeededWhereKeytabLives:
             raise AssertionError("обвязка просится там, где kerberos нет")
 
     def test_ticket_section_needs_nothing(self) -> None:
-        ticket = TicketAuth.of_bytes(
-            Fixtures.PRINCIPAL, "postgres@h", b"x", 60
-)
+        ticket = TicketAuth.of_bytes(Fixtures.PRINCIPAL, "postgres@h", b"x", 60)
         armed = Fixtures.plain().model_copy(
             update={"auth": ticket, "connect_timeout": 5}
         )

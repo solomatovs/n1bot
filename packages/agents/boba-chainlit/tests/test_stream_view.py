@@ -18,7 +18,7 @@ from typing import Any, ClassVar, cast
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
-from conftest import make_context, use_context
+from conftest import FakeTurn, make_context, use_context
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
@@ -46,7 +46,7 @@ from boba.chainlit.canvas.panel import (
     WatchProbe,
     WatchSource,
 )
-from boba.chainlit.domain.run import RunPort, RunRegistry
+from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.infra.plugins import stream_source, tool_call_scope
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -92,13 +92,10 @@ class TurnScope:
 
     _SCOPE: ClassVar[Any] = None
 
-    class Port(RunPort):
-        answer_step_id = "answer-1"
-
     @classmethod
     def start(cls) -> None:
         cls.end()
-        cls._SCOPE = RunRegistry.open(make_context(THREAD), cls.Port())
+        cls._SCOPE = RunRegistry.open(make_context(THREAD), FakeTurn())
         cls._SCOPE.__enter__()
 
     @classmethod

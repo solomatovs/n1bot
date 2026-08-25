@@ -48,9 +48,9 @@ def test_example_stages_and_order() -> None:
     assert graph.stages[-1] is check
 
     assert graph.stage_of("dump") is stream
-    assert [edge.render() for edge in graph.value_inputs("check")] == [
-        "ids.result -> check.args.query"
-    ]
+    (binding,) = graph.bindings_of("check")
+    assert binding.sources == ("ids",)
+    assert graph.sources_of("check") == frozenset({"ids"})
 
 
 def test_stream_fan_out_and_fan_in() -> None:
@@ -89,8 +89,29 @@ def test_two_placeholders_in_one_argument() -> None:
         }
     )
 
-    assert len(graph.value_inputs("c")) == 2
+    (binding,) = graph.bindings_of("c")
+    assert binding.sources == ("a", "b")
+    assert binding.template == "{{ a }} union {{ b }}"
+    assert graph.args_of("c", {"a": "1", "b": "2"}) == {"query": "1 union 2"}
     assert graph.stages[-1].tasks == ("c",)
+
+
+def test_unset_argument_takes_the_source_whole() -> None:
+    graph = build(
+        {
+            "name": "w",
+            "tasks": {
+                "a": {"tool": "pg_query", "args": {"query": "x"}},
+                "c": {"tool": "ch_query"},
+            },
+            "edges": ["a.result -> c.args.query"],
+        }
+    )
+
+    (binding,) = graph.bindings_of("c")
+    assert binding.template == ""
+    assert graph.args_of("c", {"a": "rows"}) == {"query": "rows"}
+    assert graph.bindings_of("a") == ()
 
 
 def test_module_tool_ports() -> None:

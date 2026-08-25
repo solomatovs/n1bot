@@ -26,9 +26,8 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, NoReturn
+from typing import ClassVar
 
-import jwt
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
@@ -41,7 +40,6 @@ from boba.chainlit.connections.store import (
     ConnectionKind,
     ConnectionProfile,
     ConnectionStore,
-    Subject,
 )
 from boba.chainlit.connections.whitelist import (
     AmbiguousConnectionError,
@@ -54,7 +52,7 @@ from boba.chainlit.domain.context import (
     DelegatedTicket,
 )
 from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.session import SsoMarks
+from boba.chainlit.infra.session import ChainlitSession
 from boba.chainlit.infra.tickets import TicketArming
 from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import PostgresConfig
@@ -69,14 +67,12 @@ from boba.krb import (
 from boba.tool.web.connection import WebConnection
 from boba.toolkit.sql import SqlProfiles
 from boba.transport.http import HostPattern, HttpProfile
-from chainlit.auth.jwt import decode_jwt
 
 __all__ = [
     "ClientLabel",
     "ConnectionRefusal",
     "KerberosRefreshSignal",
     "RegistryRef",
-    "SsoLogin",
     "StoreRef",
     "UserConnections",
     "UserConnectionsSpec",
@@ -112,56 +108,6 @@ class UserConnectionsSpec:
 
     kind: ConnectionKind
     keying: ConnectionKeying
-
-
-class SsoLogin(BaseModel):
-    """Метки SSO-входа из подписанного JWT: чей тикет и какому входу он выдан."""
-
-    model_config = ConfigDict(frozen=True)
-
-    RETRY_HINT: ClassVar[str] = "retrying will not help until you sign in again"
-    """Хвост отказа: агенту незачем повторять вызов, дело в самом входе."""
-
-    principal: str
-    login: str
-
-    @classmethod
-    def of_context(cls) -> SsoLogin:
-        """Вход субъекта текущего вызова по ссылке на билет из контекста.
-
-        Ошибки: RefusalError NO_DELEGATION — у вызова нет делегированного
-        билета; текст называет причину и что сделать.
-        """
-        context = CallContext.current()
-        credential = context.credential
-        if not isinstance(credential, DelegatedTicket):
-            logger.warning(
-                "kerberos: %s asked for a delegated ticket without one: %s",
-                context.subject.login,
-                credential.reason,
-            )
-            cls._refuse(credential.reason)
-
-        return cls(principal=credential.principal, login=credential.sso_login)
-
-    @classmethod
-    def of_token(cls, token: str) -> SsoLogin | None:
-        """Метки входа из JWT-cookie; None — не SSO-вход или токен негоден."""
-        try:
-            user = decode_jwt(token)
-        except jwt.PyJWTError:
-            return None
-
-        marks = SsoMarks.of_metadata(user.metadata)
-        if marks is None:
-            return None
-
-        return cls(principal=marks.principal, login=marks.login)
-
-    @classmethod
-    def _refuse(cls, reason: str) -> NoReturn:
-        msg = f"{reason}; {cls.RETRY_HINT}"
-        raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
 
 class ConnectionTrace:
@@ -228,8 +174,27 @@ class UserKerberos:
     REFRESH_BELOW: ClassVar[int] = 300
     """Остаток тикета входа (сек), ниже которого просим браузер обменяться заново."""
 
+    RETRY_HINT: ClassVar[str] = "retrying will not help until you sign in again"
+    """Хвост отказа: агенту незачем повторять вызов, дело в самом входе."""
+
     def __init__(self, registry_ref: RegistryRef) -> None:
         self._registry_ref = registry_ref
+
+    @classmethod
+    def _ticket(cls) -> DelegatedTicket:
+        """Ссылка на билет субъекта текущего вызова; без неё — NO_DELEGATION."""
+        context = CallContext.current()
+        credential = context.credential
+        if isinstance(credential, DelegatedTicket):
+            return credential
+
+        logger.warning(
+            "kerberos: %s asked for a delegated ticket without one: %s",
+            context.subject.login,
+            credential.reason,
+        )
+        msg = f"{credential.reason}; {cls.RETRY_HINT}"
+        raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
     async def ensure_fresh(self) -> None:
         """Обновляет тикет входа молчаливым SPNEGO, пока сессия жива.
@@ -239,7 +204,7 @@ class UserKerberos:
         ещё раз — незаметно для пользователя. Не получилось — работу продолжит
         credentials() и объяснит отказ.
         """
-        sso = SsoLogin.of_context()
+        sso = self._ticket()
 
         registry = self._registry_ref()
         if registry is None:
@@ -276,7 +241,7 @@ class UserKerberos:
         return credentials.lifetime() >= cls.REFRESH_BELOW
 
     def credentials(self) -> KerberosCredentials:
-        sso = SsoLogin.of_context()
+        sso = self._ticket()
 
         registry = self._registry_ref()
         if registry is None:
@@ -298,7 +263,7 @@ class UserKerberos:
             msg = (
                 f"the delegated Kerberos ticket of {sso.principal} is gone "
                 "(the application restarted or you signed out): sign in again; "
-                f"{SsoLogin.RETRY_HINT}"
+                f"{self.RETRY_HINT}"
             )
             raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
@@ -306,7 +271,7 @@ class UserKerberos:
             msg = (
                 f"the delegated ticket belongs to {credentials.principal} while "
                 f"this session is {sso.principal}: sign out and sign in again; "
-                f"{SsoLogin.RETRY_HINT}"
+                f"{self.RETRY_HINT}"
             )
             raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
@@ -320,7 +285,7 @@ class UserKerberos:
 
     def forget(self, token: str) -> None:
         """Logout: тикет входа забывается, даже если JWT ещё не истёк."""
-        sso = SsoLogin.of_token(token)
+        sso = ChainlitSession.ticket_of_token(token)
         if sso is None:
             return
 
@@ -421,7 +386,7 @@ class UserConnections(AsyncInjected):
         return await self._config(name, kwargs)
 
     async def _config(self, name: str, kwargs: dict[str, object]) -> BaseModel:
-        subject = self._subject()
+        subject = CallContext.current().subject
         rows = await self._store_ref().for_subject(subject, self._spec.kind)
         whitelist = ConnectionWhitelist.of(rows, self._spec.keying)
 
@@ -498,12 +463,6 @@ class UserConnections(AsyncInjected):
                 hosts[name] = profile.host()
 
         return hosts
-
-    @staticmethod
-    def _subject() -> Subject:
-        subject = CallContext.current().subject
-
-        return Subject(user_id=subject.user_id, roles=sorted(subject.roles))
 
     async def _armed(self, profile: ConnectionProfile) -> ConnectionProfile:
         """Профиль с билетом вызова вместо kerberos-секции строки."""

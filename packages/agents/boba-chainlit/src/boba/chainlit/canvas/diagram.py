@@ -14,7 +14,7 @@ import uuid
 from enum import StrEnum
 from typing import Annotated, ClassVar, Self
 
-from langchain_core.tools import BaseTool, InjectedToolCallId, tool
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
@@ -38,8 +38,7 @@ from boba.chainlit.data.storage import StorageError, StorageNotFoundError
 from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.run import RunRegistry
-from boba.chainlit.rendering.chat_view import ChatView, StepRole
+from boba.chainlit.domain.run import ElementTarget, RunRegistry
 from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
     DiagramResult,
@@ -49,7 +48,6 @@ from boba.toolkit.result import (
     pack_result,
 )
 from boba.workspace.launcher import ReadWindow
-from chainlit.data import get_data_layer
 
 __all__ = [
     "DiagramCard",
@@ -77,8 +75,6 @@ class DiagramSpecError(ValueError):
 class DiagramErrorKind(StrEnum):
     """Коды отказов тулов диаграмм: уезжают в ErrorResult.error_kind."""
 
-    NO_TURN = "no_turn"
-    NO_TOOL_CALL = "no_tool_call"
     INVALID_SPEC = "invalid_diagram_spec"
     BAD_PATH = "bad_path"
     FILE_NOT_FOUND = "file_not_found"
@@ -318,7 +314,7 @@ class DiagramFiles:
             dir_thread=ThreadDir.MERMAID,
         )
 
-        await self._layer().storage.upload_file(
+        await AttachmentDataLayer.require().storage.upload_file(
             object_key=key.render(),
             data=parsed.text,
             mime=DiagramMarker.MIME,
@@ -381,7 +377,7 @@ class DiagramFiles:
     async def _collect(self, key: ObjectKey) -> bytes:
         """Читает файл потоком; слишком большой отвергается по размеру, до тела."""
         max_bytes = self._max_chars * self.UTF8_MAX_CHAR_BYTES
-        storage = self._layer().storage
+        storage = AttachmentDataLayer.require().storage
 
         async with await storage.open_stream(key.render(), ReadWindow.entire()) as body:
             if body.stat.size > max_bytes:
@@ -395,14 +391,6 @@ class DiagramFiles:
                 collected.extend(chunk)
 
         return bytes(collected)
-
-    @staticmethod
-    def _layer() -> AttachmentDataLayer:
-        layer = get_data_layer()
-        if not isinstance(layer, AttachmentDataLayer):
-            msg = f"data layer does not address attachments: {type(layer)}"
-            raise RuntimeError(msg)
-        return layer
 
 
 class MermaidViewer(FileViewer):
@@ -482,42 +470,16 @@ class DiagramCard:
     def __init__(self, files: DiagramFiles) -> None:
         self._files = files
 
-    async def publish(self, key: ObjectKey, tool_call_id: str) -> None:
+    async def publish(self, key: ObjectKey) -> None:
         """Показать карточку в ленте; переживает перезагрузку треда."""
         text = await self._files.read(key)
-        for_id, element_id = self._targets(key.thread_id, tool_call_id)
+        context = ChatCallContext.require()
+        port = RunRegistry.require_port(key.thread_id)
+        target = port.element_target(context.tool_call_id())
 
-        await self._emit(key, text, for_id, element_id)
+        await self._emit(key, text, target)
 
-    @staticmethod
-    def _targets(thread_id: str, tool_call_id: str) -> tuple[str, str]:
-        turn = RunRegistry.port_of(thread_id)
-        if turn is None:
-            raise DiagramRefusedError(
-                DiagramErrorKind.NO_TURN, "the turn is already finished"
-            )
-
-        for_id = turn.answer_step_id
-        if not for_id:
-            raise DiagramRefusedError(
-                DiagramErrorKind.NO_TURN, "the turn has no answer step"
-            )
-
-        element_id = ChatView.derive_id(thread_id, tool_call_id, StepRole.ELEMENT)
-        if not element_id:
-            raise DiagramRefusedError(
-                DiagramErrorKind.NO_TOOL_CALL, "tool call without id"
-            )
-
-        return for_id, element_id
-
-    async def _emit(
-        self,
-        key: ObjectKey,
-        text: str,
-        for_id: str,
-        element_id: str,
-    ) -> None:
+    async def _emit(self, key: ObjectKey, text: str, target: ElementTarget) -> None:
         entry = DiagramEntry.of(key, text)
         content = CanvasContent(
             kind=CanvasKind.MERMAID,
@@ -528,9 +490,9 @@ class DiagramCard:
         props = {**content.props(), "preview": True}
 
         element = cl.CustomElement(name=self.ELEMENT, props=props)
-        element.id = element_id
+        element.id = target.element_id
         element.thread_id = key.thread_id
-        await element.send(for_id=for_id)
+        await element.send(for_id=target.for_id)
 
 
 def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
@@ -550,7 +512,6 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
             str,
             Field(min_length=1, description=DiagramPrompt.SPEC),
         ],
-        tool_call_id: Annotated[str, InjectedToolCallId],
     ) -> tuple[str, ToolResult]:
         """Сохранить спеку mermaid файлом в workspace, показать её в панели
         канваса и оставить карточку в переписке.
@@ -580,7 +541,7 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
             return pack_result(ErrorResult(message=message, error_kind=e.kind))
 
         try:
-            await card.publish(key, tool_call_id)
+            await card.publish(key)
         except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
 

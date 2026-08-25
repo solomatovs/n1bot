@@ -22,9 +22,9 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.cancellation import RunCancellation, StopReason
+from boba.cancellation import StopReason
 from boba.chainlit.agent.invoke import ToolInvoker
-from boba.chainlit.domain.context import CallContext, Scope, ScopeKind, Subject
+from boba.chainlit.domain.context import CallContext, Scope, Subject
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.run import BackgroundRuns, RunRegistry
 from boba.chainlit.workflow.catalog import CatalogBuilder
@@ -221,7 +221,7 @@ class WorkflowService:
     async def execute(self, context: CallContext, started: StartedRun) -> RunOutcome:
         """Исполнение записанного запуска; Stop вызывающего останавливает и его."""
         run_id = started.record.id
-        run_context = self._run_context(context, run_id)
+        run_context = context.in_scope(Scope.workflow(run_id))
         runner = WorkflowRunner(started.invoker, WorkflowRunner.utc_now)
         sink = _StoreSink(self._store, run_id)
 
@@ -245,14 +245,3 @@ class WorkflowService:
             return False
 
         return RunRegistry.stop(str(run_id), StopReason.USER_STOP)
-
-    @staticmethod
-    def _run_context(context: CallContext, run_id: UUID) -> CallContext:
-        """Контекст запуска: тот же субъект и инициатор, своя область и отмена."""
-        return CallContext(
-            subject=context.subject,
-            scope=Scope(kind=ScopeKind.WORKFLOW, id=str(run_id)),
-            initiator=context.initiator,
-            credential=context.credential,
-            cancellation=RunCancellation(),
-        )

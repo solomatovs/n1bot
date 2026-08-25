@@ -1,6 +1,7 @@
 """Домен workflow: спека, граф стадий, автомат запуска. Без I/O."""
 
 from boba.workflow.graph import (
+    ArgBinding,
     RunState,
     RunStatus,
     Stage,
@@ -30,6 +31,7 @@ from boba.workflow.spec import (
 )
 
 __all__ = [
+    "ArgBinding",
     "ArgTemplate",
     "Edge",
     "EdgeKind",

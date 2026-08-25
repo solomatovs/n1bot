@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import pytest
-from conftest import no_call_scope
 from langchain_core.tools import StructuredTool, tool
 
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.run_log import StreamSource, ToolRunLogger
+from boba.chainlit.agent.toolrun.run_log import NoCallScope, StreamSource, ToolRunLogger
 from boba.sandbox.runner import FailureLog
 from boba.toolkit.launcher import RunResult
 from boba.toolkit.result import TextResult, ToolArtifact, pack_result
-from boba.toolkit.stream import ToolCallContext
 
 LOGGER_NAME = "boba.chainlit.agent.toolrun.run_log"
 
@@ -45,7 +44,7 @@ class TestToolRunLogger:
 
     def test_success_logs_start_and_ok(self, caplog: pytest.LogCaptureFixture) -> None:
         tool = self._tool(lambda query: "done")
-        ToolRunLogger.guard_all([tool], NO_STREAMS, no_call_scope)
+        ToolRunLogger.guard_all([tool], NO_STREAMS, NoCallScope.enter)
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             if tool.func is None:
                 raise AssertionError("tool.func is not None")
@@ -65,7 +64,7 @@ class TestToolRunLogger:
             raise RuntimeError(msg)
 
         tool = self._tool(boom)
-        ToolRunLogger.guard_all([tool], NO_STREAMS, no_call_scope)
+        ToolRunLogger.guard_all([tool], NO_STREAMS, NoCallScope.enter)
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             if tool.func is None:
                 raise AssertionError("tool.func is not None")
@@ -79,29 +78,42 @@ class TestToolRunLogger:
         if "RuntimeError: нет соединения" not in warning[0].getMessage():
             raise AssertionError('"RuntimeError: нет соединения" in warning[0].getMes…')
 
-    def test_context_set_inside_and_reset_after(self) -> None:
-        seen: list[str] = []
+    def test_call_scope_entered_inside_and_left_after(self) -> None:
+        """Источник контекста вызова входит до тела и выходит после него."""
+        entered: list[str] = []
+        left: list[str] = []
+        inside: list[int] = []
+
+        def scope(call_id: str) -> Callable[[], None]:
+            entered.append(call_id)
+
+            def leave() -> None:
+                left.append(call_id)
+
+            return leave
 
         def probe(query: str) -> str:
-            seen.append(ToolCallContext.name())
+            inside.append(len(entered) - len(left))
             return "ok"
 
         tool = self._tool(probe)
-        ToolRunLogger.guard_all([tool], NO_STREAMS, no_call_scope)
+        ToolRunLogger.guard_all([tool], NO_STREAMS, scope)
         if tool.func is None:
             raise AssertionError("tool.func is not None")
-        tool.func(query="q")
-        if seen != ["probe"]:
-            raise AssertionError('seen == ["probe"]')
-        if ToolCallContext.get() is not None:
-            raise AssertionError("ToolCallContext.get() is None")
+        tool.func(query="q", boba_tool_call_id="call-1")
+        if entered != ["call-1"]:
+            raise AssertionError(entered)
+        if inside != [1]:
+            raise AssertionError(inside)
+        if left != ["call-1"]:
+            raise AssertionError(left)
 
     def test_async_tool_wrapped(self, caplog: pytest.LogCaptureFixture) -> None:
         async def probe(query: str) -> str:
-            return ToolCallContext.name()
+            return "probe"
 
         tool = self._tool(lambda query: "sync", probe)
-        ToolRunLogger.guard_all([tool], NO_STREAMS, no_call_scope)
+        ToolRunLogger.guard_all([tool], NO_STREAMS, NoCallScope.enter)
 
         async def invoke() -> object:
             if tool.coroutine is None:
@@ -179,7 +191,7 @@ class TestElapsedInResult:
             return pack_result(TextResult(text=f"found {query}"))
 
         ToolCallIdField.attach_all([slow_probe])
-        ToolRunLogger.guard_all([slow_probe], NO_STREAMS, no_call_scope)
+        ToolRunLogger.guard_all([slow_probe], NO_STREAMS, NoCallScope.enter)
 
         message = await slow_probe.ainvoke(
             {
@@ -207,7 +219,7 @@ class TestElapsedInResult:
             return f"plain {query}"
 
         ToolCallIdField.attach_all([plain_probe])
-        ToolRunLogger.guard_all([plain_probe], NO_STREAMS, no_call_scope)
+        ToolRunLogger.guard_all([plain_probe], NO_STREAMS, NoCallScope.enter)
 
         message = await plain_probe.ainvoke(
             {

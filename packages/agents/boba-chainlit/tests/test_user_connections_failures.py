@@ -38,9 +38,9 @@ from boba.chainlit.domain.session import UserMetadataField
 from boba.chainlit.infra.plugins import load_tools
 from boba.chainlit.infra.user_connections import (
     ConnectionRefusal,
-    SsoLogin,
     UserConnections,
     UserConnectionsSpec,
+    UserKerberos,
 )
 from boba.db.postgres import AsyncPostgresPool, PasswordAuth, PostgresConfig
 from boba.krb import (
@@ -515,7 +515,7 @@ class TestRefusalText:
             connection_name="main",
         )
 
-        for phrase in ("LocalAuth", "Kerberos SSO button", SsoLogin.RETRY_HINT):
+        for phrase in ("LocalAuth", "Kerberos SSO button", UserKerberos.RETRY_HINT):
             if phrase not in result.message:
                 raise AssertionError(f"{phrase!r} not in {result.message!r}")
 

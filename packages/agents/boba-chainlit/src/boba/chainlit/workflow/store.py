@@ -111,12 +111,14 @@ class StoredRun(BaseModel):
     user_id: int
     initiator: Mapping[str, Any]
     profile: str
-    spec: str
-    status: RunStatus
     state: RunState
     instance: str
     started_at: datetime
     finished_at: datetime | None
+
+    @property
+    def status(self) -> RunStatus:
+        return self.state.status
 
 
 class WorkflowStore:
@@ -206,7 +208,6 @@ class WorkflowStore:
                     user_id     integer not null,
                     initiator   jsonb not null,
                     profile     text not null,
-                    spec        text not null,
                     status      text not null,
                     state       jsonb not null,
                     instance    text not null,
@@ -225,6 +226,24 @@ class WorkflowStore:
                 """
                 create index if not exists idx_workflow_runs_status
                     on {runs} (status)
+                """
+            ).format(runs=self._runs()),
+            sql.SQL("alter table {runs} drop column if exists spec").format(
+                runs=self._runs()
+            ),
+            sql.SQL(
+                """
+                update {runs}
+                set state = jsonb_build_object(
+                    'graph', jsonb_build_object(
+                        'spec', state -> 'spec',
+                        'stages', state -> 'stages',
+                        'bindings', '{{}}'::jsonb
+                    ),
+                    'status', state -> 'status',
+                    'tasks', state -> 'tasks'
+                )
+                where state ? 'spec'
                 """
             ).format(runs=self._runs()),
         )
@@ -334,20 +353,19 @@ class WorkflowStore:
         state: RunState,
         instance: str,
     ) -> StoredRun:
-        """Запись о запуске в момент старта: спека — снимок из состояния."""
+        """Запись о запуске в момент старта; граф — в снимке состояния."""
         query = sql.SQL(
             """
             insert into {runs} (
-                id, workflow_id, user_id, initiator, profile, spec, status, state,
-                instance
+                id, workflow_id, user_id, initiator, profile, status, state, instance
             )
             values (
                 %(id)s, %(workflow_id)s, %(user_id)s, %(initiator)s, %(profile)s,
-                %(spec)s, %(status)s, %(state)s, %(instance)s
+                %(status)s, %(state)s, %(instance)s
             )
             returning
-                id, workflow_id, user_id, initiator, profile, spec, status, state,
-                instance, started_at, finished_at
+                id, workflow_id, user_id, initiator, profile, state, instance,
+                started_at, finished_at
             """
         ).format(runs=self._runs())
         params = {
@@ -356,7 +374,6 @@ class WorkflowStore:
             "user_id": user_id,
             "initiator": Jsonb(dict(initiator)),
             "profile": profile,
-            "spec": state.spec.render_yaml(),
             "status": state.status.value,
             "state": Jsonb(state.model_dump(mode="json")),
             "instance": instance,
@@ -406,8 +423,8 @@ class WorkflowStore:
         query = sql.SQL(
             """
             select
-                id, workflow_id, user_id, initiator, profile, spec, status, state,
-                instance, started_at, finished_at
+                id, workflow_id, user_id, initiator, profile, state, instance,
+                started_at, finished_at
             from
                 {runs}
             where 1=1
@@ -431,8 +448,8 @@ class WorkflowStore:
         query = sql.SQL(
             """
             select
-                id, workflow_id, user_id, initiator, profile, spec, status, state,
-                instance, started_at, finished_at
+                id, workflow_id, user_id, initiator, profile, state, instance,
+                started_at, finished_at
             from
                 {runs}
             where

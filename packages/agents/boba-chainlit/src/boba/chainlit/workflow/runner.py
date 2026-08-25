@@ -33,7 +33,6 @@ from boba.chainlit.domain.run import RunRegistry
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ErrorResult, ToolResult
 from boba.workflow import (
-    ArgTemplate,
     RunState,
     Stage,
     TaskStatus,
@@ -237,22 +236,12 @@ class _RunSession:
         return TaskOutcome.of_failure(error)
 
     def _args_of(self, name: str) -> dict[str, Any]:
-        """Аргументы задачи: свои плюс значения по входящим рёбрам."""
-        args: dict[str, Any] = dict(self._graph.spec.tasks[name].args)
+        """Аргументы задачи: спека плюс тексты результатов по привязкам графа."""
+        texts: dict[str, str] = {}
+        for source in self._graph.sources_of(name):
+            texts[source] = self._results[source].llm_text()
 
-        sources: dict[str, dict[str, str]] = {}
-        for edge in self._graph.value_inputs(name):
-            values = sources.setdefault(edge.dst.name, {})
-            values[edge.src.task] = self._results[edge.src.task].llm_text()
-
-        for arg, values in sources.items():
-            if arg in args:
-                args[arg] = ArgTemplate.render(str(args[arg]), values)
-                continue
-
-            args[arg] = next(iter(values.values()))
-
-        return args
+        return self._graph.args_of(name, texts)
 
     def _log(self, name: str, outcome: TaskOutcome) -> None:
         if outcome.status is TaskStatus.DONE:

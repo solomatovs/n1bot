@@ -11,9 +11,9 @@ from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.access import ToolAvailability
 from boba.workflow.spec import (
@@ -204,7 +204,7 @@ class _Checker:
         self._templates: dict[PortRef, frozenset[str]] = {}
         self._used_ports: set[PortRef] = set()
 
-    def run(self) -> tuple[Stage, ...]:
+    def run(self) -> tuple[tuple[Stage, ...], Mapping[str, tuple[ArgBinding, ...]]]:
         self._tasks()
         self._edges()
         self._ports_connected()
@@ -216,7 +216,31 @@ class _Checker:
         ordered = self._order(stages)
         self._raise_if_any()
 
-        return ordered
+        return ordered, self._bindings()
+
+    def _bindings(self) -> Mapping[str, tuple[ArgBinding, ...]]:
+        """Привязки рёбер-значений к аргументам, готовые к подстановке на запуске."""
+        bindings: dict[str, tuple[ArgBinding, ...]] = {}
+        for task_name, args in self._bound_args.items():
+            items = list(self._task_bindings(task_name, args))
+            if items:
+                bindings[task_name] = tuple(items)
+
+        return bindings
+
+    def _task_bindings(
+        self, task_name: str, args: Mapping[str, set[str]]
+    ) -> Iterator[ArgBinding]:
+        task = self._spec.tasks[task_name]
+        for arg, sources in args.items():
+            if not sources:
+                continue
+
+            template = ""
+            if arg in task.args:
+                template = str(task.args[arg])
+
+            yield ArgBinding(arg=arg, sources=tuple(sorted(sources)), template=template)
 
     def _raise_if_any(self) -> None:
         if not self._issues:
@@ -560,18 +584,67 @@ class _Checker:
             self._issue(IssueCode.CYCLE, "", f"tasks form a cycle: {exc.args[1]}")
 
 
+class ArgBinding(BaseModel):
+    """Аргумент задачи, который заполняют рёбра-значения.
+
+    template — заданное в спеке значение-шаблон с именами источников; пустой
+    template — аргумент не задан, и единственный источник подставляется целиком.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    arg: str
+    sources: tuple[str, ...] = Field(min_length=1)
+    template: str = ""
+
+    def value(self, texts: Mapping[str, str]) -> str:
+        """Значение аргумента по текстам результатов источников."""
+        if not self.template:
+            return texts[self.sources[0]]
+
+        values: dict[str, str] = {}
+        for source in self.sources:
+            values[source] = texts[source]
+
+        return ArgTemplate.render(self.template, values)
+
+
 class WorkflowGraph(BaseModel):
-    """Проверенная спека со стадиями в порядке запуска."""
+    """Проверенная спека: стадии в порядке запуска и привязки аргументов."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     spec: WorkflowSpec
     stages: tuple[Stage, ...]
+    bindings: Mapping[str, tuple[ArgBinding, ...]] = Field(default_factory=dict)
 
     @classmethod
     def build(cls, spec: WorkflowSpec, catalog: ToolCatalog) -> WorkflowGraph:
-        stages = _Checker(spec, catalog).run()
-        return cls(spec=spec, stages=stages)
+        stages, bindings = _Checker(spec, catalog).run()
+        return cls(spec=spec, stages=stages, bindings=bindings)
+
+    def bindings_of(self, task: str) -> tuple[ArgBinding, ...]:
+        bound = self.bindings.get(task)
+        if bound is None:
+            return ()
+
+        return bound
+
+    def sources_of(self, task: str) -> frozenset[str]:
+        """Задачи, чьи результаты нужны аргументам task."""
+        sources: set[str] = set()
+        for binding in self.bindings_of(task):
+            sources.update(binding.sources)
+
+        return frozenset(sources)
+
+    def args_of(self, task: str, texts: Mapping[str, str]) -> dict[str, Any]:
+        """Аргументы вызова: свои из спеки плюс подстановки по привязкам."""
+        args: dict[str, Any] = dict(self.spec.tasks[task].args)
+        for binding in self.bindings_of(task):
+            args[binding.arg] = binding.value(texts)
+
+        return args
 
     def stage_of(self, task: str) -> Stage:
         for stage in self.stages:
@@ -579,20 +652,6 @@ class WorkflowGraph(BaseModel):
                 return stage
 
         raise KeyError(task)
-
-    def value_inputs(self, task: str) -> tuple[Edge, ...]:
-        """Рёбра-значения, входящие в задачу: что подставить в аргументы."""
-        edges: list[Edge] = []
-        for edge in self.spec.edges:
-            if edge.kind is not EdgeKind.VALUE:
-                continue
-
-            if edge.dst.task != task:
-                continue
-
-            edges.append(edge)
-
-        return tuple(edges)
 
 
 class TaskStatus(StrEnum):
@@ -646,12 +705,11 @@ class TaskState(BaseModel):
 
 
 class RunState(BaseModel):
-    """Снимок запуска: спека, стадии, статусы задач."""
+    """Снимок запуска: граф, статус и состояние задач."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    spec: WorkflowSpec
-    stages: tuple[Stage, ...]
+    graph: WorkflowGraph
     status: RunStatus
     tasks: Mapping[str, TaskState]
 
@@ -762,8 +820,7 @@ class WorkflowPlan:
 
     def snapshot(self) -> RunState:
         return RunState(
-            spec=self._graph.spec,
-            stages=self._graph.stages,
+            graph=self._graph,
             status=self._status(),
             tasks=dict(self._tasks),
         )

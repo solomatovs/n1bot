@@ -29,7 +29,7 @@ from boba.chainlit.auth.kerberos import (
 )
 from boba.chainlit.auth.local import RoleExcludeConfig
 from boba.chainlit.domain.session import UserMetadataField
-from boba.chainlit.infra.user_connections import SsoLogin
+from boba.chainlit.infra.session import ChainlitSession
 from boba.krb import KerberosEnv, RefreshWaiters, ServiceTicketIssuer
 from boba.settings import bind
 
@@ -102,9 +102,7 @@ class Browser:
 
         creds = Credentials(usage="initiate", store={b"ccache": ccache.encode()})
         target = Name(SERVICE_SPN, NameType.kerberos_principal)
-        initiator = SecurityContext(
-            name=target, creds=creds, usage="initiate", flags=0
-        )
+        initiator = SecurityContext(name=target, creds=creds, usage="initiate", flags=0)
         return initiator.step()
 
 
@@ -124,9 +122,7 @@ class Sso:
         scope = {
             "type": "http",
             "path": auth._urls.sso,
-            "headers": [
-                (b"authorization", b"Negotiate " + base64.b64encode(token))
-            ],
+            "headers": [(b"authorization", b"Negotiate " + base64.b64encode(token))],
             "client": ("127.0.0.1", 1234),
         }
 
@@ -216,7 +212,7 @@ async def test_sign_in_puts_principal_and_login_into_the_jwt(
     if not metadata.get(UserMetadataField.ROLES):
         raise AssertionError(f"roles must be mapped: {metadata}")
 
-    sso = SsoLogin.of_token(create_jwt(user))
+    sso = ChainlitSession.ticket_of_token(create_jwt(user))
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the labels")
     if sso.principal != USER_PRINCIPAL:
@@ -245,7 +241,7 @@ async def test_stale_jwt_without_labels_is_refused(
         },
     )
 
-    if SsoLogin.of_token(create_jwt(stale)) is not None:
+    if ChainlitSession.ticket_of_token(create_jwt(stale)) is not None:
         raise AssertionError("a sign-in without labels must not resolve")
 
 
@@ -259,7 +255,7 @@ async def test_refresh_puts_new_credentials_under_the_same_login(
         raise AssertionError("SSO must build a user")
 
     token = create_jwt(user)
-    sso = SsoLogin.of_token(token)
+    sso = ChainlitSession.ticket_of_token(token)
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the labels")
 
@@ -355,7 +351,7 @@ async def test_refresh_does_not_revive_a_signed_out_session(
         raise AssertionError("SSO must build a user")
 
     token = create_jwt(user)
-    sso = SsoLogin.of_token(token)
+    sso = ChainlitSession.ticket_of_token(token)
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the labels")
 
@@ -398,7 +394,7 @@ async def test_refresh_of_an_excluded_principal_is_refused(
         raise AssertionError("SSO must build a user")
 
     token = create_jwt(user)
-    sso = SsoLogin.of_token(token)
+    sso = ChainlitSession.ticket_of_token(token)
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the labels")
 
@@ -429,7 +425,7 @@ async def test_refresh_wakes_the_waiting_tool_call(
         raise AssertionError("SSO must build a user")
 
     token = create_jwt(user)
-    sso = SsoLogin.of_token(token)
+    sso = ChainlitSession.ticket_of_token(token)
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the labels")
 
@@ -452,7 +448,7 @@ async def test_a_failed_refresh_leaves_the_caller_waiting(
         raise AssertionError("SSO must build a user")
 
     token = create_jwt(user)
-    sso = SsoLogin.of_token(token)
+    sso = ChainlitSession.ticket_of_token(token)
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the labels")
 

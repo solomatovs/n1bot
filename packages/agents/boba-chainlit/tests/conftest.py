@@ -2,11 +2,12 @@
 
 import os
 import secrets
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 from uuid import uuid4
 
 import pytest
@@ -27,7 +28,9 @@ from boba.chainlit.domain.context import (
     Scope,
     Subject,
 )
+from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.keys import AttachmentLinks, WorkspaceMount
+from boba.chainlit.domain.run import ElementTarget, RunPort, RunRefusal
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
     ChainlitSession,
@@ -302,6 +305,30 @@ def install_context(monkeypatch: pytest.MonkeyPatch, context: CallContext) -> No
     monkeypatch.setattr(CallContext, "_CURRENT", current)
 
 
+def make_context(  # noqa: PLR0913 — личность собирается по частям, как в сессии
+    thread_id: str,
+    cancellation: RunCancellation | None = None,
+    *,
+    user_id: int = 7,
+    login: str = "tester",
+    roles: Iterable[str] = (),
+    profile: str = TEST_PROFILE,
+) -> CallContext:
+    """Контекст хода чата, как его собирает on_message, без сессии chainlit."""
+    if cancellation is None:
+        cancellation = RunCancellation()
+
+    return CallContext(
+        subject=Subject(
+            user_id=user_id, login=login, roles=frozenset(roles), profile=profile
+        ),
+        scope=Scope.chat(thread_id),
+        initiator=ChatInitiator(thread_id=thread_id, turn_id=TEST_TURN),
+        credential=NoUserCredential(reason="the test context carries no ticket"),
+        cancellation=cancellation,
+    )
+
+
 def use_context(  # noqa: PLR0913 — личность собирается по частям, как в сессии
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -311,46 +338,27 @@ def use_context(  # noqa: PLR0913 — личность собирается по
     roles: Iterable[str] = (),
     profile: str = TEST_PROFILE,
 ) -> CallContext:
-    """Ставит контекст вызова хода чата напрямую, без сессии chainlit."""
-    context = CallContext(
-        subject=Subject(
-            user_id=user_id, login=login, roles=frozenset(roles), profile=profile
-        ),
-        scope=Scope.chat(thread_id),
-        initiator=ChatInitiator(thread_id=thread_id, turn_id=TEST_TURN),
-        credential=NoUserCredential(reason="the test context carries no ticket"),
-        cancellation=RunCancellation(),
+    """Ставит контекст вызова хода чата на время теста."""
+    context = make_context(
+        thread_id, user_id=user_id, login=login, roles=roles, profile=profile
     )
     install_context(monkeypatch, context)
 
     return context
 
 
-def make_context(
-    thread_id: str, cancellation: RunCancellation | None = None
-) -> CallContext:
-    """Контекст хода чата для реестра запусков; ставить его тест не обязан."""
-    if cancellation is None:
-        cancellation = RunCancellation()
+class FakeTurn(RunPort):
+    """Ход под тест: реестру достаточно порта, который адресует элемент вызова."""
 
-    return CallContext(
-        subject=Subject(
-            user_id=7, login="tester", roles=frozenset(), profile=TEST_PROFILE
-        ),
-        scope=Scope.chat(thread_id),
-        initiator=ChatInitiator(thread_id=thread_id, turn_id=TEST_TURN),
-        credential=NoUserCredential(reason="the test context carries no ticket"),
-        cancellation=cancellation,
-    )
+    ANSWER_STEP: ClassVar[str] = "answer-step"
 
+    def element_target(self, tool_call_id: str) -> ElementTarget:
+        if not tool_call_id:
+            raise RefusalError(RunRefusal.NO_TOOL_CALL, "tool call without id")
 
-def no_call_scope(call_id: str) -> Callable[[], None]:
-    """Источник контекста вызова для обвязок в тестах без контекста."""
-    return _leave_nothing
-
-
-def _leave_nothing() -> None:
-    return None
+        return ElementTarget(
+            for_id=self.ANSWER_STEP, element_id=f"element-{tool_call_id}"
+        )
 
 
 def enter_context(profile: str = TEST_PROFILE) -> CallContext:
