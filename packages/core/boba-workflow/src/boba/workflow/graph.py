@@ -15,6 +15,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
+from boba.access import ToolAvailability
 from boba.workflow.spec import (
     ArgTemplate,
     Edge,
@@ -36,7 +37,6 @@ __all__ = [
     "TaskState",
     "TaskStatus",
     "ToolArg",
-    "ToolAvailability",
     "ToolCatalog",
     "ToolFacts",
     "ToolPort",
@@ -44,14 +44,6 @@ __all__ = [
     "WorkflowPlan",
     "WorkflowPlanError",
 ]
-
-
-class ToolAvailability(StrEnum):
-    """Доступен ли инструмент субъекту для задач workflow."""
-
-    AVAILABLE = "available"
-    DENIED = "denied"
-    CHAT_ONLY = "chat_only"
 
 
 class ToolArg(BaseModel):

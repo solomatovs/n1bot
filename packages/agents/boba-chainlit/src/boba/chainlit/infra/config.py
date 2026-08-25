@@ -18,8 +18,9 @@ from pydantic import (
     model_validator,
 )
 
+from boba.access import ProfileGrant, ToolGrant
 from boba.chainlit.auth import AuthConfig
-from boba.chainlit.domain.config import LocalStorageConfig, RoleConfig, ToolGrant
+from boba.chainlit.domain.config import LocalStorageConfig, RoleConfig
 from boba.chainlit.domain.errors import RefusalError
 from boba.db.postgres import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
@@ -255,7 +256,7 @@ class UserSetting(StrEnum):
     USER_PROMPT = "user_prompt"
 
 
-class ChatProfileConfig(AgentSettings, ToolGrant):
+class ChatProfileConfig(AgentSettings, ProfileGrant):
     """Секция [profiles.<name>]: режим работы бота, выбираемый пользователем."""
 
     display_name: Annotated[
@@ -276,11 +277,6 @@ class ChatProfileConfig(AgentSettings, ToolGrant):
     default: bool = Field(
         default=False,
         description="Профиль, предвыбранный в интерфейсе; ровно один в конфиге.",
-    )
-
-    roles: StringList = Field(
-        default=[],
-        description="Роли, которым профиль виден; '*' — всем.",
     )
 
     models: StringList = Field(
@@ -373,15 +369,6 @@ class ChatProfileConfig(AgentSettings, ToolGrant):
             raise ValueError(msg)
 
         return self
-
-    def visible_for(self, user_roles: frozenset[str]) -> bool:
-        if not user_roles:
-            return False
-
-        if ToolGrant.WILDCARD in self.roles:
-            return True
-
-        return bool(frozenset(self.roles) & user_roles)
 
 
 class ProfilesSection(RootModel[dict[str, ChatProfileConfig]]):
@@ -479,6 +466,29 @@ class ChatProfiles:
             ProfileRefusal.PROFILE_NOT_SELECTED,
             "select a chat profile to start the chat",
         )
+
+    def resolve_or_default(
+        self,
+        name: str | None,
+        user_roles: frozenset[str],
+    ) -> SelectedProfile:
+        """Как resolve, но без имени берётся профиль по умолчанию: для API и страниц."""
+        if name is not None:
+            return self.resolve(name, user_roles)
+
+        visible = self.visible_for(user_roles)
+        if not visible:
+            raise RefusalError(
+                ProfileRefusal.NO_PROFILE_ACCESS,
+                "no chat profile is available for your roles",
+            )
+
+        for profile_name, profile in visible.items():
+            if profile.default:
+                return SelectedProfile(name=profile_name, config=profile)
+
+        first = next(iter(visible))
+        return SelectedProfile(name=first, config=visible[first])
 
 
 class NumberBounds(BaseModel):

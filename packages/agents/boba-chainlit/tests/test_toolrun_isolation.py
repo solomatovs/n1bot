@@ -28,6 +28,7 @@ class TestToolrunIsolation:
     ALLOWED_PREFIXES: ClassVar[tuple[str, ...]] = (
         "boba.chainlit.agent.toolrun",
         "boba.toolkit",
+        "boba.access",
         "boba.cancellation",
         "langchain_core",
     )

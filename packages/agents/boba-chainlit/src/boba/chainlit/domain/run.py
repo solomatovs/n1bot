@@ -1,13 +1,14 @@
 """Реестр идущих запусков: один запуск на область (scope.id).
 
-Запуск открывает его владелец — ход чата, раннер workflow; всё, что живёт
-ровно один запуск, лежит здесь: отмена, порт владельца, живые журналы
+Запуск открывает его владелец — ход чата, REST-вызов, раннер workflow —
+контекстом вызова; всё, что живёт ровно один запуск, лежит здесь: контекст,
+отмена, порт владельца (у headless-запусков его нет), живые журналы
 вызовов. Инструменты и отрисовка находят запуск только через реестр,
 закрытие записи — единственный finally, гасящий всё сразу.
 
 Остановка адресуется scope.id и работает из любого потока: синхронный код
-прерывают зарегистрированные прерыватели, асинхронный — отмена задачи
-запуска, зарегистрированная как прерыватель при открытии.
+прерывают зарегистрированные прерыватели; обрывать ли саму корутину
+запуска, решает владелец — task_abort подключается отдельно.
 
 Ошибки: своих не выпускает; ToolStopped поднимает raise_if_cancelled отмены.
 """
@@ -18,14 +19,15 @@ import asyncio
 import logging
 import threading
 from abc import abstractmethod
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Coroutine, Generator, Iterator
 from contextlib import contextmanager
 from typing import ClassVar, Protocol
 
 from boba.cancellation import RunCancellation, StopReason
+from boba.chainlit.domain.context import CallContext
 from boba.toolkit.channels import CallOutcome
 
-__all__ = ["LiveStream", "RunPort", "RunRegistry"]
+__all__ = ["BackgroundRuns", "LiveStream", "RunPort", "RunRegistry"]
 
 logger = logging.getLogger(__name__)
 
@@ -61,50 +63,60 @@ class RunRegistry:
     _LOCK: ClassVar[threading.Lock] = threading.Lock()
     _ACTIVE: ClassVar[dict[str, RunRegistry]] = {}
 
-    def __init__(
-        self,
-        scope_id: str,
-        port: RunPort,
-        cancellation: RunCancellation,
-    ) -> None:
-        self._scope_id = scope_id
+    def __init__(self, context: CallContext, port: RunPort | None) -> None:
+        self._context = context
         self._port = port
-        self._cancellation = cancellation
         self._streams: dict[str, LiveStream] = {}
 
     @property
     def scope_id(self) -> str:
-        return self._scope_id
+        return self._context.scope.id
 
     @property
-    def port(self) -> RunPort:
-        """Владелец, открывший запуск."""
+    def context(self) -> CallContext:
+        """Контекст вызова, под которым открыт запуск."""
+        return self._context
+
+    @property
+    def port(self) -> RunPort | None:
+        """Владелец с лентой чата; None — запуск headless."""
         return self._port
 
     @property
     def cancellation(self) -> RunCancellation:
         """Отмена запуска; та же, что опубликована в contextvar исполнения."""
-        return self._cancellation
+        return self._context.cancellation
 
     @classmethod
     @contextmanager
     def open(
-        cls, scope_id: str, port: RunPort, cancellation: RunCancellation
+        cls, context: CallContext, port: RunPort | None = None
     ) -> Generator[RunRegistry, None, None]:
-        """Открывает запуск области: отмена в контексте исполнения, запись в реестре.
+        """Открывает запуск области: контекст и отмена в исполнении, запись в реестре.
 
         Закрытие снимает запись и закрывает живые журналы вызовов — файлы
         журнала переживают запуск, живые объекты нет.
         """
-        with cancellation.published():
-            registry = cls(scope_id, port, cancellation)
+        with context.applied(), context.cancellation.published():
+            registry = cls(context, port)
             cls._register(registry)
             try:
-                with cls._task_abort(cancellation):
-                    yield registry
+                yield registry
             finally:
                 cls._release(registry)
                 registry._close_live()
+
+    @classmethod
+    @contextmanager
+    def task_abort(cls, cancellation: RunCancellation) -> Generator[None, None, None]:
+        """Отмена корутины запуска как прерыватель: выбор владельца, не реестра."""
+        abort = cls._task_canceller()
+        if abort is None:
+            yield
+            return
+
+        with cancellation.abort_with(abort):
+            yield
 
     @classmethod
     def active(cls, scope_id: str) -> RunRegistry | None:
@@ -150,7 +162,7 @@ class RunRegistry:
             live: list[str] = []
             for registry in cls._ACTIVE.values():
                 if registry._streams:
-                    live.append(registry._scope_id)
+                    live.append(registry.scope_id)
 
             return frozenset(live)
 
@@ -175,23 +187,23 @@ class RunRegistry:
     @classmethod
     def _register(cls, registry: RunRegistry) -> None:
         with cls._LOCK:
-            stale = cls._ACTIVE.get(registry._scope_id)
-            cls._ACTIVE[registry._scope_id] = registry
+            stale = cls._ACTIVE.get(registry.scope_id)
+            cls._ACTIVE[registry.scope_id] = registry
 
         if stale is None:
             return
 
         # новый запуск той же области: предыдущий дорабатывать незачем
         logger.warning(
-            "scope %s already had an active run; stopping it", registry._scope_id
+            "scope %s already had an active run; stopping it", registry.scope_id
         )
         stale.cancellation.cancel(StopReason.SUPERSEDED)
 
     @classmethod
     def _release(cls, registry: RunRegistry) -> None:
         with cls._LOCK:
-            if cls._ACTIVE.get(registry._scope_id) is registry:
-                del cls._ACTIVE[registry._scope_id]
+            if cls._ACTIVE.get(registry.scope_id) is registry:
+                del cls._ACTIVE[registry.scope_id]
 
     def _close_live(self) -> None:
         """Конец запуска: живые журналы закрываются, файлы журнала остаются."""
@@ -202,18 +214,6 @@ class RunRegistry:
         for stream in streams:
             if not stream.closed:
                 stream.close(CallOutcome.STOPPED.value)
-
-    @classmethod
-    @contextmanager
-    def _task_abort(cls, cancellation: RunCancellation) -> Generator[None, None, None]:
-        """Отмена задачи запуска как прерыватель: асинхронный мир тоже обрывается."""
-        abort = cls._task_canceller()
-        if abort is None:
-            yield
-            return
-
-        with cancellation.abort_with(abort):
-            yield
 
     @staticmethod
     def _task_canceller() -> Callable[[], None] | None:
@@ -231,3 +231,30 @@ class RunRegistry:
             loop.call_soon_threadsafe(task.cancel)
 
         return cancel_task
+
+
+class BackgroundRuns:
+    """Запуски в фоне процесса: держит задачи, чтобы их не забрал сборщик, и
+    журналирует сбой — молча фоновые запуски не умирают."""
+
+    def __init__(self) -> None:
+        self._tasks: set[asyncio.Task[object]] = set()
+
+    def launch(self, name: str, work: Coroutine[object, object, object]) -> None:
+        task = asyncio.create_task(work, name=name)
+        self._tasks.add(task)
+        task.add_done_callback(self._settle)
+
+    @property
+    def live(self) -> int:
+        return len(self._tasks)
+
+    def _settle(self, task: asyncio.Task[object]) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            logger.warning("background run %s was cancelled", task.get_name())
+            return
+
+        error = task.exception()
+        if error is not None:
+            logger.error("background run %s crashed", task.get_name(), exc_info=error)

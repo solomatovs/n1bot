@@ -452,8 +452,9 @@ class ChatTurn(RunPort):
     async def _run(
         self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
     ) -> None:
-        cancellation = CallContext.current().cancellation
-        with RunRegistry.open(self._thread_id, self, cancellation):
+        context = CallContext.current()
+        cancellation = context.cancellation
+        with RunRegistry.open(context, self), RunRegistry.task_abort(cancellation):
             try:
                 await cl.context.emitter.task_start()
                 # контейнер до первого чанка: запрос в модель уходит с первой

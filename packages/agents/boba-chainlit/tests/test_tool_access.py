@@ -1,4 +1,4 @@
-"""Тесты доступа к инструментам: пересечение ролей и профиля, отказ на вызове."""
+"""Доступ к инструментам в приложении: фильтр реестра, гвардия на вызове, история."""
 
 from __future__ import annotations
 
@@ -6,12 +6,9 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from boba.chainlit.agent.toolrun.access import (
-    ToolAccess,
-    ToolAccessDeniedError,
-    ToolAccessGuard,
-)
-from boba.chainlit.domain.config import RoleConfig, ToolGrant
+from boba.access import ProfileGrant, ToolAccess
+from boba.chainlit.agent.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
+from boba.chainlit.domain.config import RoleConfig
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry
 from boba.chainlit.infra.providers import build_llm_view
 
@@ -33,102 +30,6 @@ class TestPluginMetaNotation:
         meta = PluginMeta(enable=True)
         if meta.tools != []:
             raise AssertionError("meta.tools == []")
-
-
-class TestToolGrant:
-    def test_named_tool_covered(self) -> None:
-        grant = ToolGrant(tools=["query"])
-        if grant.covers("query") is not True:
-            raise AssertionError('grant.covers("query") is True')
-
-    def test_other_tool_not_covered(self) -> None:
-        grant = ToolGrant(tools=["query"])
-        if grant.covers("list_targets") is not False:
-            raise AssertionError('grant.covers("list_targets") is False')
-
-    def test_wildcard_covers_everything(self) -> None:
-        grant = ToolGrant(tools=["*"])
-        if grant.covers("whatever") is not True:
-            raise AssertionError('grant.covers("whatever") is True')
-
-    def test_empty_grant_covers_nothing(self) -> None:
-        grant = ToolGrant(tools=[])
-        if grant.covers("query") is not False:
-            raise AssertionError('grant.covers("query") is False')
-
-    def test_unknown_reports_typos(self) -> None:
-        grant = ToolGrant(tools=["query", "no_such", "*"])
-        if grant.unknown(frozenset({"query"})) != ["no_such"]:
-            raise AssertionError('grant.unknown(...) == ["no_such"]')
-
-
-class TestToolAccess:
-    ACCESS = ToolAccess(
-        tool_names=["query", "list_targets", "visualize"],
-        roles={
-            "ADM": RoleConfig(tools=["*"]),
-            "DEV": RoleConfig(tools=["list_targets", "visualize"]),
-            "EMPTY": RoleConfig(tools=[]),
-        },
-        profiles={
-            "general": ToolGrant(tools=["*"]),
-            "search": ToolGrant(tools=["list_targets"]),
-        },
-    )
-
-    def test_role_and_profile_both_cover(self) -> None:
-        if self.ACCESS.allowed("query", {"ADM"}, "general") is not True:
-            raise AssertionError('allowed("query", {"ADM"}, "general") is True')
-
-    def test_profile_cuts_role_wildcard(self) -> None:
-        if self.ACCESS.allowed("query", {"ADM"}, "search") is not False:
-            raise AssertionError('allowed("query", {"ADM"}, "search") is False')
-
-    def test_role_cuts_profile_wildcard(self) -> None:
-        if self.ACCESS.allowed("query", {"DEV"}, "general") is not False:
-            raise AssertionError('allowed("query", {"DEV"}, "general") is False')
-
-    def test_any_role_intersection_is_enough(self) -> None:
-        if self.ACCESS.allowed("query", {"DEV", "ADM"}, "general") is not True:
-            raise AssertionError('allowed("query", {"DEV","ADM"}, "general") is True')
-
-    def test_no_profile_denies(self) -> None:
-        if self.ACCESS.allowed("query", {"ADM"}, None) is not False:
-            raise AssertionError('allowed("query", {"ADM"}, None) is False')
-
-    def test_unknown_profile_denies(self) -> None:
-        if self.ACCESS.allowed("query", {"ADM"}, "ghost") is not False:
-            raise AssertionError('allowed("query", {"ADM"}, "ghost") is False')
-
-    def test_unknown_role_denies(self) -> None:
-        if self.ACCESS.allowed("query", {"GHOST"}, "general") is not False:
-            raise AssertionError('allowed("query", {"GHOST"}, "general") is False')
-
-    def test_no_roles_denies_even_wildcard_profile(self) -> None:
-        if self.ACCESS.allowed("query", set(), "general") is not False:
-            raise AssertionError('allowed("query", set(), "general") is False')
-
-    def test_empty_role_grant_denies(self) -> None:
-        if self.ACCESS.allowed("query", {"EMPTY"}, "general") is not False:
-            raise AssertionError('allowed("query", {"EMPTY"}, "general") is False')
-
-    def test_unknown_tool_denied(self) -> None:
-        if self.ACCESS.allowed("no_such_tool", {"ADM"}, "general") is not False:
-            raise AssertionError('allowed("no_such_tool", ...) is False')
-
-    def test_names_for_intersection(self) -> None:
-        names = self.ACCESS.names_for({"DEV"}, "general")
-        if names != {"list_targets", "visualize"}:
-            raise AssertionError('names == {"list_targets", "visualize"}')
-
-    def test_names_for_narrow_profile(self) -> None:
-        names = self.ACCESS.names_for({"ADM"}, "search")
-        if names != {"list_targets"}:
-            raise AssertionError('names == {"list_targets"}')
-
-    def test_names_without_profile_empty(self) -> None:
-        if self.ACCESS.names_for({"ADM"}, None) != set():
-            raise AssertionError("names_for({'ADM'}, None) == set()")
 
 
 class TestRegistryFiltering:
@@ -153,7 +54,7 @@ class TestRegistryFiltering:
                 "ADM": RoleConfig(tools=["*"]),
                 "DEV": RoleConfig(tools=["list_targets"]),
             },
-            profiles={"general": ToolGrant(tools=["*"])},
+            profiles={"general": ProfileGrant(tools=["*"], roles=["*"])},
         )
         return ToolRegistry(tools=self._tools(), access=access)
 
@@ -172,8 +73,8 @@ class TestRegistryFiltering:
             raise AssertionError('for_session(set(), "general") == []')
 
     def test_no_profile_no_tools(self) -> None:
-        if self._registry().for_session({"ADM"}, None) != []:
-            raise AssertionError('for_session({"ADM"}, None) == []')
+        if self._registry().for_session({"ADM"}, "") != []:
+            raise AssertionError('for_session({"ADM"}, "") == []')
 
 
 class _AccessFacts:
@@ -197,7 +98,7 @@ class TestAccessGuard:
         access = ToolAccess(
             tool_names=["query"],
             roles={"ADM": RoleConfig(tools=["query"])},
-            profiles={"general": ToolGrant(tools=["*"])},
+            profiles={"general": ProfileGrant(tools=["*"], roles=["*"])},
         )
         facts = _AccessFacts(roles, profile)
         guarded = ToolAccessGuard.guard_all([query], access, lambda: facts)

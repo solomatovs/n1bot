@@ -3,15 +3,13 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-workflow"
+name = "boba-access"
 version = "0.0.14.dev8"
-description = "Boba workflow: граф вычислений над инструментами — спека, стадии, порядок, автомат запуска."
+description = "Boba access: права на инструменты — гранты ролей и профилей, одно решение о доступности."
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.10,<3",
-    "pyyaml>=6.0,<7",
-    "jinja2>=3.1,<4",
-    "boba-access==0.0.14.dev8",
+    "boba-toolkit==0.0.14.dev8",
 ]
 
 [tool.setuptools.packages.find]

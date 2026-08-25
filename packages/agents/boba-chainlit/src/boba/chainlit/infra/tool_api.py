@@ -2,13 +2,14 @@
 
 POST /tools/{name}: тред, профиль, intent и аргументы в теле, пользователь —
 из cookie входа. Контекст вызова собирается здесь под HumanInitiator(api);
-инструменты чата (chat_only) недоступны — эмитить им некуда.
+видимость инструментов — headless-решение ToolAccess, инструменты чата
+недоступны.
 
 Ошибки (HTTP):
 401 — вход не сохранён слоем данных.
 403 — профиль недоступен ролям пользователя.
-404 — тред не пользователя, инструмент не собран или не разрешён.
-400 — инструмент работает только в чате.
+404 — тред не пользователя, инструмент не собран, не разрешён или только
+    для чата.
 503 — слой данных недоступен.
 """
 
@@ -16,16 +17,19 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from enum import StrEnum
-from typing import Annotated, Any, ClassVar
-from uuid import UUID, uuid4
+from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import Depends, HTTPException
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation
+from boba.chainlit.agent.invoke import (
+    CallIdPrefix,
+    InvokeReply,
+    ToolInvoker,
+    ToolUnavailableError,
+)
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
 from boba.chainlit.domain.context import (
@@ -38,17 +42,16 @@ from boba.chainlit.domain.context import (
     Subject,
 )
 from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.run import RunPort, RunRegistry
+from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.domain.session import SsoMarks
 from boba.chainlit.infra.config import ChatProfiles
 from boba.chainlit.infra.plugins import ToolRegistry
 from boba.chainlit.infra.session import ChainlitSession
 from boba.toolkit.calls import ToolIntent
-from boba.toolkit.result import ErrorResult, ToolArtifact
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser, User
 
-__all__ = ["HeadlessPort", "ToolCallBody", "ToolCallReply", "ToolCalling"]
+__all__ = ["ApiIdentity", "ToolCallBody", "ToolCallReply", "ToolCalling"]
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +59,6 @@ RegistrySource = Callable[[], Awaitable[ToolRegistry]]
 """Реестр инструментов приложения; собирается контейнером на первый запрос."""
 
 LayerSource = Callable[[], PostgresDataLayer]
-
-
-class ApiErrorKind(StrEnum):
-    """Коды отказов, которые API добавляет к результатам инструментов."""
-
-    NO_RESULT = "no_result"
 
 
 class ToolCallBody(BaseModel):
@@ -86,36 +83,81 @@ class ToolCallReply(BaseModel):
     result: Mapping[str, Any]
 
     @classmethod
-    def of(cls, message: ToolMessage, call_id: str) -> ToolCallReply:
-        result = ToolArtifact.revive(message.artifact)
-        if result is None:
-            result = ErrorResult(
-                message="the tool returned no result",
-                error_kind=ApiErrorKind.NO_RESULT,
-            )
-
+    def of(cls, reply: InvokeReply, call_id: str) -> ToolCallReply:
         return cls(
             call_id=call_id,
-            ok=result.ok,
-            content=str(message.content),
-            result=result.model_dump(mode="json"),
+            ok=reply.ok,
+            content=reply.content,
+            result=reply.result.model_dump(mode="json"),
         )
 
 
-class HeadlessPort(RunPort):
-    """Владелец запуска без ленты чата: крепить элементы некуда."""
+class ApiIdentity:
+    """Кто зовёт API: сохранённый пользователь, субъект под профилем, секреты.
 
-    answer_step_id = None
+    Ошибки — HTTPException: 401 без сохранённого входа, 403 профиль недоступен.
+    """
 
-
-class ApiCall:
-    """Идентификаторы вызовов через API: отличимы от вызовов модели."""
-
-    PREFIX: ClassVar[str] = "api-"
+    def __init__(
+        self, user: PersistedUser, subject: Subject, credential: Credential
+    ) -> None:
+        self.user = user
+        self.subject = subject
+        self.credential = credential
 
     @classmethod
-    def new_id(cls) -> str:
-        return f"{cls.PREFIX}{uuid4().hex}"
+    def resolve(
+        cls,
+        current_user: User | PersistedUser | None,
+        profile: str | None,
+        profiles: ChatProfiles,
+    ) -> ApiIdentity:
+        user = cls._persisted(current_user)
+        roles = ChainlitSession.roles_of(user)
+        selected = cls._profile(profiles, profile, roles)
+
+        subject = Subject(
+            user_id=int(user.id), login=user.identifier, roles=roles, profile=selected
+        )
+        return cls(user, subject, cls._credential(user))
+
+    def context(self, scope: Scope) -> CallContext:
+        """Контекст вызова человека через API в заданной области."""
+        return CallContext(
+            subject=self.subject,
+            scope=scope,
+            initiator=HumanInitiator(via="api"),
+            credential=self.credential,
+            cancellation=RunCancellation(),
+        )
+
+    @staticmethod
+    def _persisted(current_user: User | PersistedUser | None) -> PersistedUser:
+        if not isinstance(current_user, PersistedUser):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        return current_user
+
+    @staticmethod
+    def _profile(
+        profiles: ChatProfiles, name: str | None, roles: frozenset[str]
+    ) -> str:
+        """Названный профиль обязан быть виден ролям; без имени — по умолчанию."""
+        try:
+            return profiles.resolve_or_default(name, roles).name
+        except RefusalError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @staticmethod
+    def _credential(user: PersistedUser) -> Credential:
+        """Ссылка на билет входа по меткам пользователя; иначе — причина отказа."""
+        metadata = ChainlitSession.metadata_of(user)
+
+        marks = SsoMarks.of_metadata(metadata)
+        if marks is not None:
+            return DelegatedTicket(principal=marks.principal, sso_login=marks.login)
+
+        return NoUserCredential(reason=SsoMarks.absence_reason(metadata))
 
 
 class ToolCalling:
@@ -137,30 +179,15 @@ class ToolCalling:
         body: ToolCallBody,
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
     ) -> ToolCallReply:
-        user = self._persisted(current_user)
-        roles = ChainlitSession.roles_of(user)
-        profile = self._profile(body.profile, roles)
+        identity = ApiIdentity.resolve(current_user, body.profile, self._profiles)
 
         thread_id = str(body.thread_id)
-        await self._own_thread(user, thread_id)
+        await self._own_thread(identity.user, thread_id)
 
-        tool = await self._tool(name, roles, profile)
-        context = self._context(user, roles, profile, thread_id)
+        invoker = await self._invoker(identity.subject)
+        context = identity.context(Scope.chat(thread_id))
 
-        return await self._run(tool, body, context)
-
-    @staticmethod
-    def _persisted(current_user: User | PersistedUser | None) -> PersistedUser:
-        if not isinstance(current_user, PersistedUser):
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
-        return current_user
-
-    def _profile(self, name: str, roles: frozenset[str]) -> str:
-        try:
-            return self._profiles.resolve(name, roles).name
-        except RefusalError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return await self._run(invoker, name, body, context)
 
     async def _own_thread(self, user: PersistedUser, thread_id: str) -> None:
         try:
@@ -173,78 +200,31 @@ class ToolCalling:
         if author != user.identifier:
             raise HTTPException(status_code=404, detail="Thread not found")
 
-    async def _tool(self, name: str, roles: frozenset[str], profile: str) -> BaseTool:
+    async def _invoker(self, subject: Subject) -> ToolInvoker:
         registry = await self._registry()
 
-        if name in registry.chat_only:
-            raise HTTPException(
-                status_code=400, detail=f"tool {name!r} works only inside a chat"
-            )
-
-        for tool in registry.for_session(roles, profile):
-            if tool.name == name:
-                return tool
-
-        raise HTTPException(status_code=404, detail=f"tool {name!r} is not available")
-
-    @classmethod
-    def _context(
-        cls,
-        user: PersistedUser,
-        roles: frozenset[str],
-        profile: str,
-        thread_id: str,
-    ) -> CallContext:
-        subject = Subject(
-            user_id=int(user.id),
-            login=user.identifier,
-            roles=roles,
-            profile=profile,
-        )
-
-        return CallContext(
-            subject=subject,
-            scope=Scope.chat(thread_id),
-            initiator=HumanInitiator(via="api"),
-            credential=cls._credential(user),
-            cancellation=RunCancellation(),
-        )
-
-    @staticmethod
-    def _credential(user: PersistedUser) -> Credential:
-        """Ссылка на билет входа по меткам пользователя; иначе — причина отказа."""
-        metadata = ChainlitSession.metadata_of(user)
-
-        marks = SsoMarks.of_metadata(metadata)
-        if marks is not None:
-            return DelegatedTicket(principal=marks.principal, sso_login=marks.login)
-
-        return NoUserCredential(reason=SsoMarks.absence_reason(metadata))
+        return ToolInvoker(registry.for_headless(subject.roles, subject.profile))
 
     @staticmethod
     async def _run(
-        tool: BaseTool, body: ToolCallBody, context: CallContext
+        invoker: ToolInvoker, name: str, body: ToolCallBody, context: CallContext
     ) -> ToolCallReply:
-        call_id = ApiCall.new_id()
-        args: dict[str, Any] = dict(body.args)
-        args[ToolIntent.NAME] = body.intent
-        call = ToolCall(name=tool.name, args=args, id=call_id, type="tool_call")
+        try:
+            invoker.tool(name)
+        except ToolUnavailableError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        call = invoker.call(name, body.args, body.intent, CallIdPrefix.API)
+        call_id = str(call["id"])
 
         logger.info(
             "api tool call: %s by %s in thread %s",
-            tool.name,
+            name,
             context.subject.login,
             context.scope.id,
         )
 
-        with (
-            context.applied(),
-            RunRegistry.open(context.scope.id, HeadlessPort(), context.cancellation),
-        ):
-            message = await tool.ainvoke(call)
+        with RunRegistry.open(context):
+            reply = await invoker.invoke(call)
 
-        if not isinstance(message, ToolMessage):
-            msg = f"tool {tool.name!r} returned {type(message).__name__}"
-            raise HTTPException(status_code=500, detail=msg)
-
-        return ToolCallReply.of(message, call_id)
+        return ToolCallReply.of(reply, call_id)

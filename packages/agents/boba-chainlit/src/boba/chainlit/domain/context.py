@@ -12,7 +12,7 @@ RefusalError — вызов идёт вне контекста (ContextKind.NO_C
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from enum import StrEnum
@@ -230,11 +230,13 @@ class CallContext(BaseModel):
         if not isinstance(self.initiator, ChatInitiator):
             return self
 
-        llm = LlmInitiator(thread_id=self.scope.id, tool_call_id=tool_call_id)
+        llm = LlmInitiator(
+            thread_id=self.initiator.thread_id, tool_call_id=tool_call_id
+        )
         return self.model_copy(update={"initiator": llm})
 
     @contextmanager
-    def applied(self) -> Iterator[CallContext]:
+    def applied(self) -> Generator[CallContext, None, None]:
         """Ставит контекст и метку лога на время блока."""
         token = self._CURRENT.set(self)
         try:

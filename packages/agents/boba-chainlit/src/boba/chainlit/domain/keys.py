@@ -376,3 +376,16 @@ class ToolCallUrl:
     """Адрес REST-запуска инструмента: имя в пути, остальное в теле."""
 
     ROUTE: ClassVar[str] = "/tools/{name}"
+
+
+class WorkflowUrl(StrEnum):
+    """Адреса REST workflow: определения и запуски; профиль — в теле или query."""
+
+    CATALOG = "/workflows/catalog"
+    VALIDATE = "/workflows/validate"
+    WORKFLOWS = "/workflows"
+    WORKFLOW = "/workflows/{workflow_id}"
+    RUN = "/workflows/{workflow_id}/run"
+    RUNS = "/workflow-runs"
+    RUN_ONE = "/workflow-runs/{run_id}"
+    STOP = "/workflow-runs/{run_id}/stop"

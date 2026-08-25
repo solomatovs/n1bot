@@ -17,8 +17,8 @@ import pytest
 from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
+from conftest import make_context
 
-from boba.cancellation import RunCancellation
 from boba.chainlit.domain.run import RunPort, RunRegistry
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
 
@@ -115,7 +115,7 @@ class TestLoadingSurvivesReconnect:
         """Реконнект при живом ходе: за task_end приходит task_start."""
         connected = await _handler(SocketEvent.CONNECTED)
 
-        with RunRegistry.open(THREAD, FakeTurn(), RunCancellation()):
+        with RunRegistry.open(make_context(THREAD), FakeTurn()):
             await connected(SOCKET_ID)
 
         if SocketEvent.TASK_START.value not in session.names:
@@ -150,7 +150,7 @@ class TestStopHandler:
         stop = await _handler(SocketEvent.STOP)
         monkeypatch.setattr(chainlit_config.code, "on_stop", None, raising=False)
 
-        with RunRegistry.open(THREAD, FakeTurn(), RunCancellation()):
+        with RunRegistry.open(make_context(THREAD), FakeTurn()):
             await stop(SOCKET_ID)
 
         if self.MESSAGE_EVENT in session.names:
@@ -204,7 +204,7 @@ class TestConnectionJournal:
         journal = caplog.at_level(
             logging.INFO, logger="boba.chainlit.infra.socket_events"
         )
-        with journal, RunRegistry.open(THREAD, FakeTurn(), RunCancellation()):
+        with journal, RunRegistry.open(make_context(THREAD), FakeTurn()):
             await disconnect(SOCKET_ID, reason)
 
         written = "\n".join(record.getMessage() for record in caplog.records)

@@ -1,4 +1,5 @@
 """PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Protocol

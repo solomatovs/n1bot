@@ -59,6 +59,7 @@ class ToolAsyncBody:
 
         return body
 
+
 CallCtx = TypeVar("CallCtx")
 """Контекст вызова, который обвязка заводит в before и читает в остальном."""
 
