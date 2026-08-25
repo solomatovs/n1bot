@@ -65,6 +65,12 @@ class FieldTemplate(BaseModel):
 
         return self
 
+    def single(self, field: str) -> Self:
+        """Поле присутствует ровно один раз и других полей нет: годится для extract."""
+        self._around(field)
+
+        return self
+
     def render(self, values: Mapping[str, str]) -> str:
         try:
             return self.text.format_map(dict(values))

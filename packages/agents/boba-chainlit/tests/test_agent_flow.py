@@ -16,7 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field, ValidationError
 
-from boba.cancellation import StopReason, ToolStopped, turn_cancellation
+from boba.cancellation import StopReason, ToolStopped, run_cancellation
 from boba.chainlit.agent.flow import (
     GraphSpec,
     LlmRephraser,
@@ -640,7 +640,7 @@ class TestPrefetchCancellation:
             answers=["never reached"],
         )
 
-        with turn_cancellation() as cancellation:
+        with run_cancellation() as cancellation:
 
             async def stop_soon() -> None:
                 await asyncio.sleep(0.05)
@@ -671,7 +671,7 @@ class TestPrefetchCancellation:
             answers=["never reached"],
         )
 
-        with turn_cancellation() as cancellation:
+        with run_cancellation() as cancellation:
             cancellation.cancel(StopReason.USER_STOP)
 
             with pytest.raises(ToolStopped):

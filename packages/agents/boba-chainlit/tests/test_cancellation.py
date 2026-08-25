@@ -17,10 +17,10 @@ from conftest import FakeUrl
 from langchain_core.tools import tool
 
 from boba.cancellation import (
+    RunCancellation,
     ToolStopped,
-    TurnCancellation,
     current_cancellation,
-    turn_cancellation,
+    run_cancellation,
 )
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
@@ -133,13 +133,13 @@ def _sandbox_config() -> SandboxToolConfig:
     return SandboxToolConfig(profile=profile)
 
 
-class TestTurnCancellation:
+class TestRunCancellation:
     def test_not_cancelled_initially(self) -> None:
-        if TurnCancellation().cancelled is not False:
-            raise AssertionError("TurnCancellation().cancelled is False")
+        if RunCancellation().cancelled is not False:
+            raise AssertionError("RunCancellation().cancelled is False")
 
     def test_cancel_sets_flag_and_raises(self) -> None:
-        c = TurnCancellation()
+        c = RunCancellation()
         c.cancel()
         if c.cancelled is not True:
             raise AssertionError("c.cancelled is True")
@@ -147,7 +147,7 @@ class TestTurnCancellation:
             c.raise_if_cancelled()
 
     def test_abort_is_called_on_cancel(self) -> None:
-        c = TurnCancellation()
+        c = RunCancellation()
         called: list[str] = []
         with c.abort_with(lambda: called.append("aborted")):
             if called != []:
@@ -157,7 +157,7 @@ class TestTurnCancellation:
             raise AssertionError('called == ["aborted"]')
 
     def test_abort_unregistered_after_block(self) -> None:
-        c = TurnCancellation()
+        c = RunCancellation()
         called: list[str] = []
         with c.abort_with(lambda: called.append("aborted")):
             pass
@@ -166,13 +166,13 @@ class TestTurnCancellation:
             raise AssertionError("called == []")
 
     def test_abort_with_refuses_to_start_when_cancelled(self) -> None:
-        c = TurnCancellation()
+        c = RunCancellation()
         c.cancel()
         with pytest.raises(ToolStopped), c.abort_with(lambda: None):
             pass
 
     def test_failing_abort_does_not_block_others(self) -> None:
-        c = TurnCancellation()
+        c = RunCancellation()
         called: list[str] = []
 
         def boom() -> None:
@@ -184,7 +184,7 @@ class TestTurnCancellation:
             raise AssertionError('called == ["second"]')
 
     def test_cancel_is_idempotent(self) -> None:
-        c = TurnCancellation()
+        c = RunCancellation()
         called: list[str] = []
         with c.abort_with(lambda: called.append("x")):
             c.cancel()
@@ -194,7 +194,7 @@ class TestTurnCancellation:
 
     def test_visible_from_worker_thread(self) -> None:
         "инструменты исполняются в тред-пуле langchain — флаг обязан доезжать"
-        with turn_cancellation() as c:
+        with run_cancellation() as c:
             ctx = copy_context()
             c.cancel()
             with ThreadPoolExecutor(1) as pool:
@@ -203,7 +203,7 @@ class TestTurnCancellation:
                     raise AssertionError("seen.result() is True")
 
     def test_wait_returns_true_when_cancelled(self) -> None:
-        c = TurnCancellation()
+        c = RunCancellation()
         threading.Timer(0.05, c.cancel).start()
         if c.wait(5.0) is not True:
             raise AssertionError("c.wait(5.0) is True")
@@ -231,7 +231,7 @@ class TestToolGuard:
 
     def test_refuses_to_start_after_cancel(self) -> None:
         echo, _ = self._tools()
-        with turn_cancellation() as c:
+        with run_cancellation() as c:
             c.cancel()
             with pytest.raises(ToolStopped):
                 echo.invoke({"text": "hi"})
@@ -239,7 +239,7 @@ class TestToolGuard:
     def test_result_after_cancel_is_stopped_not_error(self) -> None:
         "ErrorResult из-за оборванного транспорта не должен доехать до ленты"
         _, swallowing = self._tools()
-        with turn_cancellation() as c:
+        with run_cancellation() as c:
 
             def _run() -> object:
                 c.cancel()
@@ -296,12 +296,12 @@ class TestHttpAbort:
             ):
                 return len(await resp.stream.read())
 
-        async def stop_after(c: TurnCancellation, delay: float) -> None:
+        async def stop_after(c: RunCancellation, delay: float) -> None:
             await asyncio.to_thread(threading.Event().wait, delay)
             c.cancel()
 
         async def scenario() -> float:
-            with turn_cancellation() as c:
+            with run_cancellation() as c:
                 task = asyncio.ensure_future(read_all())
                 await stop_after(c, 1.0)
                 started = time.monotonic()
@@ -356,7 +356,7 @@ class TestSubprocessAbort:
             return caller
 
         tool_ = as_structured_tool(build_bash_tool(self.LIMITS, launcher))
-        with turn_cancellation() as c:
+        with run_cancellation() as c:
             ctx = copy_context()
             with ThreadPoolExecutor(1) as pool:
                 future = pool.submit(

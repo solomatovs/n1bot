@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import pytest
+from conftest import use_context
 from langchain_core.messages import BaseMessage
 
 from boba.cancellation import StopReason
@@ -212,11 +213,13 @@ class TestStopped:
 class TestFailedTurnKeepsHistory:
     """Регрессия: cancel(FAILED) отменяет задачу хода — отчёт обязан выжить.
 
-    Прерыватель TurnContext на cancel снимает задачу самого хода; если запись
+    Прерыватель RunRegistry на cancel снимает задачу самого хода; если запись
     истории идёт после отмены, она молча гибнет на первом же await.
     """
 
-    async def test_history_is_written_despite_the_cancellation(self) -> None:
+    async def test_history_is_written_despite_the_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from boba.chainlit.chat.turn import ChatTurn
 
         async def failing_stream() -> AsyncIterator[tuple[BaseMessage, dict[str, Any]]]:
@@ -232,9 +235,11 @@ class TestFailedTurnKeepsHistory:
             key=TURN_KEY,
         )
 
-        task = asyncio.create_task(turn.run(failing_stream()))
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # контекст вызова ставится до создания задачи: она копирует его при старте
+        with use_context(monkeypatch, thread_id=THREAD).applied():
+            task = asyncio.create_task(turn.run(failing_stream()))
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
         if len(history.records) != 1:
             raise AssertionError("len(history.records) == 1")
@@ -288,7 +293,9 @@ class TestPulseOfTheTurn:
         yield
 
     async def _run(
-        self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
+        self,
+        stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> ChatView:
         from boba.chainlit.chat.turn import ChatTurn
 
@@ -300,20 +307,25 @@ class TestPulseOfTheTurn:
             key=TURN_KEY,
         )
 
-        task = asyncio.create_task(turn.run(stream))
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        with use_context(monkeypatch, thread_id=THREAD).applied():
+            task = asyncio.create_task(turn.run(stream))
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
         return view
 
-    async def test_finished_turn_clears_the_pulse(self) -> None:
-        view = await self._run(self._silent_stream())
+    async def test_finished_turn_clears_the_pulse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view = await self._run(self._silent_stream(), monkeypatch)
 
         if view.pulse_step is not None:
             raise AssertionError("finished turn leaves no pulse")
 
-    async def test_failed_turn_clears_the_pulse(self) -> None:
-        view = await self._run(self._failing_stream())
+    async def test_failed_turn_clears_the_pulse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view = await self._run(self._failing_stream(), monkeypatch)
 
         if view.pulse_step is not None:
             raise AssertionError("failed turn leaves no pulse")

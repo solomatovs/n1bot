@@ -22,7 +22,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, cast
 
 from boba.chainlit.domain.errors import InternalServiceError
-from boba.chainlit.domain.turn import TurnContext
+from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
@@ -76,7 +76,7 @@ class SocketFacts:
 
         turn_alive = False
         if thread_id:
-            turn_alive = TurnContext.active(thread_id) is not None
+            turn_alive = RunRegistry.active(thread_id) is not None
 
         return cls(
             sid=session.socket_id,

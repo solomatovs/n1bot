@@ -18,7 +18,8 @@ from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
 
-from boba.chainlit.domain.turn import TurnContext, TurnPort
+from boba.cancellation import RunCancellation
+from boba.chainlit.domain.run import RunPort, RunRegistry
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
 
 pytestmark = pytest.mark.anyio
@@ -28,7 +29,7 @@ SESSION_ID = "session-socket-1"
 SOCKET_ID = "socket-socket-1"
 
 
-class FakeTurn(TurnPort):
+class FakeTurn(RunPort):
     """Ход под тест: реестру достаточно порта с шагом ответа."""
 
     answer_step_id = "answer-step"
@@ -62,7 +63,7 @@ def chainlit_context() -> None:
 @pytest.fixture(autouse=True)
 def clean_contexts() -> None:
     "чистый реестр ходов на тест"
-    TurnContext.reset()
+    RunRegistry.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +115,7 @@ class TestLoadingSurvivesReconnect:
         """Реконнект при живом ходе: за task_end приходит task_start."""
         connected = await _handler(SocketEvent.CONNECTED)
 
-        with TurnContext.open(THREAD, FakeTurn()):
+        with RunRegistry.open(THREAD, FakeTurn(), RunCancellation()):
             await connected(SOCKET_ID)
 
         if SocketEvent.TASK_START.value not in session.names:
@@ -149,7 +150,7 @@ class TestStopHandler:
         stop = await _handler(SocketEvent.STOP)
         monkeypatch.setattr(chainlit_config.code, "on_stop", None, raising=False)
 
-        with TurnContext.open(THREAD, FakeTurn()):
+        with RunRegistry.open(THREAD, FakeTurn(), RunCancellation()):
             await stop(SOCKET_ID)
 
         if self.MESSAGE_EVENT in session.names:
@@ -203,7 +204,7 @@ class TestConnectionJournal:
         journal = caplog.at_level(
             logging.INFO, logger="boba.chainlit.infra.socket_events"
         )
-        with journal, TurnContext.open(THREAD, FakeTurn()):
+        with journal, RunRegistry.open(THREAD, FakeTurn(), RunCancellation()):
             await disconnect(SOCKET_ID, reason)
 
         written = "\n".join(record.getMessage() for record in caplog.records)

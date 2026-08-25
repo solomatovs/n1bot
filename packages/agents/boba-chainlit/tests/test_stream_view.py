@@ -18,9 +18,11 @@ from typing import Any, ClassVar, cast
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
+from conftest import use_context
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
+from boba.cancellation import RunCancellation
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.canvas.journal import (
@@ -45,7 +47,7 @@ from boba.chainlit.canvas.panel import (
     WatchProbe,
     WatchSource,
 )
-from boba.chainlit.domain.turn import TurnContext, TurnPort
+from boba.chainlit.domain.run import RunPort, RunRegistry
 from boba.chainlit.infra.plugins import stream_source
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -91,13 +93,13 @@ class TurnScope:
 
     _SCOPE: ClassVar[Any] = None
 
-    class Port(TurnPort):
+    class Port(RunPort):
         answer_step_id = "answer-1"
 
     @classmethod
     def start(cls) -> None:
         cls.end()
-        cls._SCOPE = TurnContext.open(THREAD, cls.Port())
+        cls._SCOPE = RunRegistry.open(THREAD, cls.Port(), RunCancellation())
         cls._SCOPE.__enter__()
 
     @classmethod
@@ -110,7 +112,7 @@ class TurnScope:
 
 
 @pytest.fixture(autouse=True)
-def chainlit_context(tmp_path: Path) -> Any:
+def chainlit_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Контекст с thread_id и user сессии, журнал в каталоге на время теста."""
     session = SimpleNamespace(
         id="session-1",
@@ -122,6 +124,7 @@ def chainlit_context(tmp_path: Path) -> Any:
         client_type="webapp",
     )
     token = context_var.set(cast("ChainlitContext", SimpleNamespace(session=session)))
+    use_context(monkeypatch, thread_id=THREAD, user_id=int(USER))
     ToolStreams.reset()
     ToolStreams.configure(
         StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
@@ -129,7 +132,7 @@ def chainlit_context(tmp_path: Path) -> Any:
     TurnScope.start()
     yield
     TurnScope.end()
-    TurnContext.reset()
+    RunRegistry.reset()
     ToolStreams.reset()
     CanvasWatch.reset()
     ToolChannelsTap.set(None)

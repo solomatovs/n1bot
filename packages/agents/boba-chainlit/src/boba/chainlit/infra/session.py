@@ -2,14 +2,17 @@
 
 Здесь единственное место, знающее, как chainlit хранит сессию: контекст
 вызова, реестр сокетов, user_session и JWT входа. Логика приложения
-работает с протоколом Session, инфраструктура — с этим классом.
+работает с протоколом Session, инфраструктура — с этим классом; контекст
+вызова для хода чата собирается тоже здесь.
 
 Ошибки:
-RefusalError — требование сессии не выполнено (через RequiredSession).
+InternalServiceError — контекст вызова не собрать: у сессии нет треда,
+    сохранённого пользователя или выбранного профиля.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -17,8 +20,18 @@ from typing import Any, cast
 import jwt
 
 import chainlit as cl
+from boba.cancellation import RunCancellation
+from boba.chainlit.domain.context import (
+    CallContext,
+    ChatInitiator,
+    Credential,
+    DelegatedTicket,
+    NoUserCredential,
+    Scope,
+    Subject,
+)
+from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.session import (
-    RequiredSession,
     Session,
     SsoMarks,
     UserMetadataField,
@@ -34,6 +47,8 @@ __all__ = [
     "current_session",
     "session_source_ref",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class ChainlitSession(Session):
@@ -193,8 +208,65 @@ class ChainlitSession(Session):
         await cast("Awaitable[None]", socket.emit(event, dict(payload)))
         return True
 
-    def require(self) -> RequiredSession:
-        return RequiredSession.of(self)
+    def call_context(self, turn_id: str, profile: str) -> CallContext:
+        """Контекст хода чата из сессии; чего не хватает — InternalServiceError.
+
+        profile — имя профиля, по которому собран агент сессии: реестр
+        профилей резолвит его по ролям, сессия хранит лишь сырой выбор.
+        """
+        thread_id = self.thread_id
+        if not thread_id:
+            raise InternalServiceError(
+                internal_detail="call context needs a chainlit thread",
+                user_detail=None,
+            )
+
+        subject = Subject(
+            user_id=self._numeric_user_id(),
+            login=self.label,
+            roles=self.roles,
+            profile=profile,
+        )
+
+        return CallContext(
+            subject=subject,
+            scope=Scope.chat(thread_id),
+            initiator=ChatInitiator(thread_id=thread_id, turn_id=turn_id),
+            credential=self._credential(),
+            cancellation=RunCancellation(),
+        )
+
+    def _numeric_user_id(self) -> int:
+        """id строки users; вход без сохранённой строки контекста не получает."""
+        user_id = self.user_id
+        if not user_id:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"call context needs a persisted user: sign-in {self.label!r} "
+                    "has no users row"
+                ),
+                user_detail=None,
+            )
+
+        try:
+            return int(user_id)
+        except ValueError as exc:
+            raise InternalServiceError(
+                internal_detail=f"user id {user_id!r} is not the users.id integer",
+                user_detail=None,
+            ) from exc
+
+    def _credential(self) -> Credential:
+        """Ссылка на делегированный билет входа по JWT сессии; иначе — причина."""
+        user = self.login_user()
+        if user is None:
+            return NoUserCredential(reason="this session has no signed sign-in")
+
+        marks = SsoMarks.of_metadata(user.metadata)
+        if marks is not None:
+            return DelegatedTicket(principal=marks.principal, sso_login=marks.login)
+
+        return NoUserCredential(reason=SsoMarks.absence_reason(user.metadata))
 
     @staticmethod
     def user_of_token(token: str) -> cl.User | None:

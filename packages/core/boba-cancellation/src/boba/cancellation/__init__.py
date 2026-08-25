@@ -1,11 +1,11 @@
-"""Остановка хода: флаг отмены, прерыватели и публикация отмены в контексте.
+"""Остановка запуска: флаг отмены, прерыватели и публикация отмены в контексте.
 
 Отмена работает в двух мирах сразу. Синхронный код (песочница, libpq, http)
 прерывается зарегистрированными прерывателями, асинхронный — отменой задачи
-хода, которую владелец хода регистрирует как прерыватель. Реестр активных
-ходов живёт у владельца (TurnContext чата), здесь — только примитивы.
+запуска, которую владелец регистрирует как прерыватель. Реестр активных
+запусков живёт у владельца (RunRegistry приложения), здесь — только примитивы.
 
-Ошибки: ToolStopped — работа прервана остановкой хода.
+Ошибки: ToolStopped — работа прервана остановкой запуска.
 """
 
 from __future__ import annotations
@@ -20,16 +20,16 @@ from enum import StrEnum
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "RunCancellation",
     "StopReason",
     "ToolStopped",
-    "TurnCancellation",
     "current_cancellation",
-    "turn_cancellation",
+    "run_cancellation",
 ]
 
 
 class StopReason(StrEnum):
-    """Почему ход остановлен; текст для пользователя выбирает интерфейс."""
+    """Почему запуск остановлен; текст для пользователя выбирает интерфейс."""
 
     USER_STOP = "user_stop"
     ABORTED = "aborted"
@@ -41,8 +41,8 @@ class ToolStopped(BaseException):
     """Инструмент прерван остановкой; BaseException — мимо except Exception."""
 
 
-class TurnCancellation:
-    """Флаг остановки хода и прерыватели (proc.kill, conn.cancel, task.cancel)."""
+class RunCancellation:
+    """Флаг остановки запуска и прерыватели (proc.kill, conn.cancel, task.cancel)."""
 
     def __init__(self) -> None:
         self._event = threading.Event()
@@ -57,7 +57,7 @@ class TurnCancellation:
 
     @property
     def reason(self) -> StopReason | None:
-        """Причина остановки; None — ход не останавливали."""
+        """Причина остановки; None — запуск не останавливали."""
         return self._reason
 
     def cancel(self, reason: StopReason = StopReason.USER_STOP) -> None:
@@ -78,7 +78,7 @@ class TurnCancellation:
             raise ToolStopped
 
     def wait(self, timeout: float) -> bool:
-        "ждёт отмены не дольше timeout; True — ход остановлен"
+        "ждёт отмены не дольше timeout; True — запуск остановлен"
         return self._event.wait(timeout)
 
     @contextmanager
@@ -95,26 +95,31 @@ class TurnCancellation:
             with self._lock:
                 self._aborts.pop(key, None)
 
+    @contextmanager
+    def published(self) -> Generator[RunCancellation, None, None]:
+        "публикует эту отмену в контексте исполнения на время блока"
+        token = _CURRENT.set(self)
+        try:
+            yield self
+        finally:
+            _CURRENT.reset(token)
 
-_NEVER_CANCELLED = TurnCancellation()
 
-_CURRENT: ContextVar[TurnCancellation] = ContextVar(
-    "boba_turn_cancellation",
+_NEVER_CANCELLED = RunCancellation()
+
+_CURRENT: ContextVar[RunCancellation] = ContextVar(
+    "boba_run_cancellation",
     default=_NEVER_CANCELLED,
 )
 
 
-def current_cancellation() -> TurnCancellation:
-    "отмена текущего хода; вне хода — объект, который никогда не отменяется"
+def current_cancellation() -> RunCancellation:
+    "отмена текущего запуска; вне запуска — объект, который никогда не отменяется"
     return _CURRENT.get()
 
 
 @contextmanager
-def turn_cancellation() -> Generator[TurnCancellation, None, None]:
-    "открывает ход: публикует свежий TurnCancellation в контексте"
-    cancellation = TurnCancellation()
-    token = _CURRENT.set(cancellation)
-    try:
+def run_cancellation() -> Generator[RunCancellation, None, None]:
+    "открывает запуск: публикует свежую RunCancellation в контексте"
+    with RunCancellation().published() as cancellation:
         yield cancellation
-    finally:
-        _CURRENT.reset(token)

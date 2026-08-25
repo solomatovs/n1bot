@@ -16,6 +16,7 @@ from typing import Any
 
 import chainlit as cl
 import pytest
+from conftest import use_context
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -85,7 +86,9 @@ class ScriptedChat(GenericFakeChatModel):
 
 
 @pytest.fixture
-async def chainlit_context(app_config: AppConfig) -> None:
+async def chainlit_context(
+    app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Сессия с ролями и профилем: их читают guard'ы доступа к инструментам."""
     from chainlit.context import init_http_context
 
@@ -94,6 +97,13 @@ async def chainlit_context(app_config: AppConfig) -> None:
 
     context = init_http_context(user=user)
     context.session.chat_profile = PROFILE
+    use_context(
+        monkeypatch,
+        thread_id="args-validation",
+        roles=roles,
+        profile=PROFILE,
+        login="args-validation",
+    )
 
 
 @pytest.fixture(scope="module")

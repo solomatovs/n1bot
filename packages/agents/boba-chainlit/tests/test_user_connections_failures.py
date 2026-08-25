@@ -15,6 +15,7 @@ from typing import Annotated, Any
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
+from conftest import enter_context
 from langchain_core.tools import StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
@@ -74,6 +75,8 @@ live_kdc = pytest.mark.skipif(
 
 SCHEMA = "connections_failures"
 ROLE = "analyst"
+THREAD = "44444444-4444-4444-4444-444444444444"
+PROFILE = "test"
 
 
 def _key() -> SecretStr:
@@ -231,7 +234,9 @@ class Session:
         token = create_jwt(
             ChainlitUser(identifier=user.identifier, metadata=login_metadata)
         )
-        init_http_context(user=user, auth_token=token)
+        context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
+        context.session.chat_profile = PROFILE
+        enter_context()
 
 
 class Guarded:
@@ -279,9 +284,7 @@ class Guarded:
             response_format="content_and_artifact",
         )
 
-        UserConnections.bind_all(
-            [tool], lambda: store, lambda: registry, spec, resolve
-        )
+        UserConnections.bind_all([tool], lambda: store, lambda: registry, spec, resolve)
         InjectedConfig.bind_all([tool], resolve)
         ToolErrorGuard.guard_all([tool])
         return tool
@@ -458,9 +461,7 @@ class TestDelegationUnavailable:
     ) -> None:
         strict = service_pg.model_copy(
             update={
-                "auth": DelegatedAuth(
-                    method="kerberos_delegated", min_lifetime=10**9
-                )
+                "auth": DelegatedAuth(method="kerberos_delegated", min_lifetime=10**9)
             }
         )
         sso = Session.sso(SERVICE_PRINCIPAL, LOGIN)

@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 import chainlit as cl
 from boba.chainlit.domain.errors import AuthorizationError
-from boba.chainlit.domain.session import UserLogin, UserMetadataField
+from boba.chainlit.domain.session import SignInProvider, UserLogin, UserMetadataField
 
 
 class RoleMappingConfig(RootModel[dict[str, list[str]]]):
@@ -103,7 +103,7 @@ class LocalAuth:
             raise AuthorizationError("Access denied")
 
         metadata: dict[str, Any] = {
-            UserMetadataField.PROVIDER: LocalAuth.__name__,
+            UserMetadataField.PROVIDER: SignInProvider.LOCAL.value,
         }
 
         roles: list[str] = []

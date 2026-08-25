@@ -15,7 +15,7 @@ from boba.chainlit.canvas.panel import (
     RenderVerdicts,
     StreamActions,
 )
-from boba.chainlit.canvas.tools import CanvasActions
+from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
 from boba.chainlit.chat.history import GraphTurnHistory, ThreadRewind
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import SettingsPanel
@@ -24,10 +24,7 @@ from boba.chainlit.chat.turn import ChatTurn
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.fields import ThreadField
-from boba.chainlit.domain.session import (
-    LogUserMark,
-    UserMetadataField,
-)
+from boba.chainlit.domain.session import UserMetadataField
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
     AppConfig,
@@ -43,12 +40,9 @@ from boba.chainlit.infra.providers import (
     chat_profiles_registry,
     get_app_config,
     langchain_agent,
+    session_profile,
 )
-from boba.chainlit.infra.session import (
-    ChainlitSession,
-    current_session,
-    session_source_ref,
-)
+from boba.chainlit.infra.session import ChainlitSession, current_session
 from boba.chainlit.infra.thread_room import ThreadRoom
 from boba.chainlit.infra.user_connections import UserKerberos
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
@@ -72,8 +66,10 @@ async def on_message(
         Depends(langchain_agent, scope="session"),
     ],
     data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ):
-    thread_id = current_session().thread_id
+    session = current_session()
+    thread_id = session.thread_id
     if thread_id is None:
         raise InternalServiceError(
             internal_detail="on_message outside a chainlit thread",
@@ -94,29 +90,38 @@ async def on_message(
     # сбой в любом месте хода — включая подготовку — отчитывается ходом же:
     # чат, история и журнал получают одну формулировку
     try:
-        rewind = ThreadRewind(graph, data_layer, thread_id)
-        if await rewind.is_edit(msg.id):
-            await rewind.apply(msg.id, msg.content)
-            await rewind.refresh_view()
-
-        state_log = LlmStateLog(LogUserMark(current_session().label, thread_id))
-        run_config = RunnableConfig(
-            callbacks=[turn.tracer, state_log],
-            configurable={"thread_id": thread_id},
-        )
-
-        stream = cast(
-            "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
-            graph.astream(
-                {"messages": [ChatTurn.human_message(msg, session_source_ref())]},
-                stream_mode="messages",
-                config=run_config,
-            ),
-        )
-
-        await turn.run(stream)
+        # профиль — тот, по которому собран агент сессии, а не сырой выбор вкладки
+        context = session.call_context(msg.id, selected.name)
     except Exception as e:
         await turn.crash(e)
+        return
+
+    with context.applied():
+        try:
+            rewind = ThreadRewind(graph, data_layer, thread_id)
+            if await rewind.is_edit(msg.id):
+                await rewind.apply(msg.id, msg.content)
+                await rewind.refresh_view()
+
+            state_log = LlmStateLog(context.log_mark())
+            run_config = RunnableConfig(
+                callbacks=[turn.tracer, state_log],
+                configurable={"thread_id": thread_id},
+            )
+
+            human = ChatTurn.human_message(msg, context.subject.user_key)
+            stream = cast(
+                "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
+                graph.astream(
+                    {"messages": [human]},
+                    stream_mode="messages",
+                    config=run_config,
+                ),
+            )
+
+            await turn.run(stream)
+        except Exception as e:
+            await turn.crash(e)
 
 
 chainlit_config.code.on_message = wrap_user_function(on_message)
@@ -295,18 +300,40 @@ def get_data_layer(
     return data_layer
 
 
+def _session_canvas_scope() -> CanvasScope | None:
+    """Чьи файлы показывает панель — по сессии; None — сессия без треда или входа."""
+    thread_id = current_session().thread_id
+    if thread_id is None:
+        return None
+
+    user_id = current_session().user_id
+    if user_id is None:
+        return None
+
+    return CanvasScope(user_id=str(user_id), thread_id=thread_id)
+
+
 @cl.action_callback(CanvasAction.OPEN)
 @chainlit_error_ctx_handler
 async def on_canvas_open(action: cl.Action) -> None:
     """Клик по ссылке в переписке открывает панель без участия агента."""
-    await CanvasActions.open(action)
+    scope = _session_canvas_scope()
+    if scope is None:
+        logger.warning("canvas open without a thread session: %s", action.payload)
+        return
+
+    await CanvasActions.open(action, scope)
 
 
 @cl.action_callback(CanvasAction.CONTENT)
 @chainlit_error_ctx_handler
 async def on_canvas_content(action: cl.Action) -> dict[str, Any]:
     """Панель уже открыта: отдаём описание файла, не подменяя элемент."""
-    return await CanvasActions.content(action)
+    scope = _session_canvas_scope()
+    if scope is None:
+        return {}
+
+    return await CanvasActions.content(action, scope)
 
 
 @cl.action_callback(CanvasAction.SHOW)

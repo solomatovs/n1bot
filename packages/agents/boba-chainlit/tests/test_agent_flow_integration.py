@@ -17,6 +17,7 @@ from typing import Any
 
 import chainlit as cl
 import pytest
+from conftest import use_context
 from httpx import AsyncClient
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -115,7 +116,9 @@ def rephraser_config(flow_config: PrefetchFlowConfig) -> GenerationConfig:
 
 
 @pytest.fixture
-async def chainlit_context(app_config: AppConfig) -> None:
+async def chainlit_context(
+    app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Сессия с ролями и профилем: их читают guard'ы доступа к инструментам.
 
     Профиль живёт на самой сессии: user_session перечитывает его оттуда при
@@ -128,6 +131,13 @@ async def chainlit_context(app_config: AppConfig) -> None:
 
     context = init_http_context(user=user)
     context.session.chat_profile = PROFILE
+    use_context(
+        monkeypatch,
+        thread_id="flow-integration",
+        roles=roles,
+        profile=PROFILE,
+        login="flow-integration",
+    )
 
 
 def _no_registry() -> None:

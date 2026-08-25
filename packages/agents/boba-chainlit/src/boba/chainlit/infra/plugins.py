@@ -29,9 +29,9 @@ from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
 from boba.chainlit.connections.store import ConnectionKind, ConnectionsConfig
 from boba.chainlit.connections.whitelist import ConnectionKeying
+from boba.chainlit.domain.context import CallContext
 from boba.chainlit.domain.keys import WorkspaceMount
 from boba.chainlit.infra.config import ProfilesSection, RolesSection
-from boba.chainlit.infra.session import current_session, session_source_ref
 from boba.chainlit.infra.tickets import ServiceTickets
 from boba.chainlit.infra.user_connections import (
     RegistryRef,
@@ -40,6 +40,7 @@ from boba.chainlit.infra.user_connections import (
     UserConnectionsSpec,
 )
 from boba.sandbox import (
+    BindSpec,
     SandboxProfile,
     SandboxToolConfig,
     has_bwrap,
@@ -124,28 +125,28 @@ def _build_send_file_tools(
     cfg: None,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return [build_send_file_tool(session_source_ref())]
+    return [build_send_file_tool()]
 
 
 def _build_diagram_tools(
     cfg: DiagramToolConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return build_diagram_tools(cfg, session_source_ref())
+    return build_diagram_tools(cfg)
 
 
 def _build_canvas_tools(
     cfg: CanvasToolConfig,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return build_canvas_tools(cfg, session_source_ref())
+    return build_canvas_tools(cfg)
 
 
 def _build_stream_logs_tools(
     cfg: None,
     launchers: LauncherFactory,
 ) -> list[BaseTool]:
-    return build_stream_logs_tools(cfg, session_source_ref())
+    return build_stream_logs_tools(cfg)
 
 
 def _modules_of(tools: Sequence[ToolLike]) -> tuple[str, ...]:
@@ -197,43 +198,31 @@ def as_structured_tool(tool: ToolLike) -> BaseTool:
 
 
 def stream_source(tool: str, call_id: str) -> CallStream | None:
-    """Журнал живого вывода вызова; тред и пользователь — из сессии."""
+    """Журнал живого вывода вызова; область и субъект — из контекста вызова."""
     if not ToolStreams.streamable(tool):
         return None
 
-    session = current_session()
-    thread_id = session.thread_id
-    user_id = session.user_id
-    if thread_id is None or user_id is None:
+    context = CallContext.peek()
+    if context is None:
         return None
 
-    return ToolStreams.begin(str(user_id), thread_id, call_id, tool)
+    return ToolStreams.begin(context.subject.user_key, context.scope.id, call_id, tool)
 
 
 def _sandbox_path_vars() -> dict[str, str]:
     """Значения {user_id}/{thread_id} для путей профиля на момент вызова.
 
-    id есть только у пользователя, сохранённого слоем данных: вход, чей
-    create_user не прошёл, живёт в сессии как cl.User, и образ workspace
-    такому вызову не собрать.
+    Вне контекста вызова значений нет: профиль с такими переменными
+    отказывает рендером, называя недостающую.
     """
-    session = current_session()
-    values = {"user_id": session.user_id, "thread_id": session.thread_id}
+    context = CallContext.peek()
+    if context is None:
+        return {}
 
-    ready: dict[str, str] = {}
-    for name, value in values.items():
-        if not value:
-            continue
-
-        ready[name] = str(value)
-
-    if current_session().user is not None and "user_id" not in ready:
-        logger.error(
-            "sandbox: session user %r has no id: the sign-in was not persisted",
-            current_session().label,
-        )
-
-    return ready
+    return {
+        BindSpec.VARS[0]: context.subject.user_key,
+        BindSpec.VARS[1]: context.scope.id,
+    }
 
 
 def _enabled_tools(
@@ -631,7 +620,7 @@ def load_tools(
     ToolIntentField.attach_all(tools)
     ToolRunLogger.guard_all(tools, stream_source)
     CancellableTools.guard_all(tools)
-    ToolAccessGuard.guard_all(tools, access, current_session)
+    ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
     ToolErrorGuard.guard_all(tools)
     ToolAsyncBody.ensure_all(tools)
     return ToolRegistry(tools=tools, access=access)

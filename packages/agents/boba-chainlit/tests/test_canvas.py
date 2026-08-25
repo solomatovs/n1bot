@@ -8,11 +8,12 @@ from urllib.parse import quote
 
 import chainlit as cl
 import pytest
-from conftest import SESSIONS, use_session
+from conftest import use_session
 from pydantic import BaseModel
 
 from boba.chainlit.canvas import panel as rendering_canvas
 from boba.chainlit.canvas.panel import (
+    CanvasAction,
     CanvasContent,
     CanvasError,
     CanvasErrorKind,
@@ -25,7 +26,9 @@ from boba.chainlit.canvas.panel import (
 )
 from boba.chainlit.canvas.tools import (
     AudioViewer,
+    CanvasActions,
     CanvasOpener,
+    CanvasScope,
     CanvasToolConfig,
     ImageViewer,
     LogViewer,
@@ -35,8 +38,8 @@ from boba.chainlit.canvas.tools import (
     build_canvas_tools,
 )
 from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.domain.context import CallContext, ContextKind
 from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.session import SessionKind
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import CustomElementResult, ErrorResult
@@ -157,13 +160,13 @@ class TestPanel:
 
 class TestToolInterface:
     def test_tool_name(self) -> None:
-        tools = build_canvas_tools(CanvasToolConfig(), SESSIONS)
+        tools = build_canvas_tools(CanvasToolConfig())
         if [t.name for t in tools] != ["canvas_open"]:
             raise AssertionError('[t.name for t in tools] == ["canvas_open"]')
 
     def test_build_registers_file_viewers(self) -> None:
         """PNG от bash/python-тулов обязан показываться — ход из бага."""
-        build_canvas_tools(CanvasToolConfig(), SESSIONS)
+        build_canvas_tools(CanvasToolConfig())
 
         if not (isinstance(CanvasRegistry.viewer_for("график.png"), ImageViewer)):
             raise AssertionError('isinstance(CanvasRegistry.viewer_for("график.png"),…')
@@ -181,7 +184,7 @@ class TestToolInterface:
             raise AssertionError('CanvasRegistry.viewer_for("data.bin") is None')
 
     def test_schema_fields(self) -> None:
-        tool = build_canvas_tools(CanvasToolConfig(), SESSIONS)[0]
+        tool = build_canvas_tools(CanvasToolConfig())[0]
         schema = cast(type[BaseModel], tool.tool_call_schema)
         if set(schema.model_fields) != {"path"}:
             raise AssertionError('set(schema.model_fields) == {"path"}')
@@ -192,20 +195,20 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_without_session(self) -> None:
-        opener = CanvasOpener(SESSIONS)
+        opener = CanvasOpener()
 
         _, result = await opener.open(f"/workspace/{THREAD}/mermaid/a.mmd")
 
         if not (isinstance(result, ErrorResult)):
             raise AssertionError("isinstance(result, ErrorResult)")
-        if result.error_kind != SessionKind.NO_SESSION:
-            raise AssertionError("result.error_kind == SessionKind.NO_SESSION")
+        if result.error_kind != ContextKind.NO_CONTEXT:
+            raise AssertionError("result.error_kind == ContextKind.NO_CONTEXT")
 
     @pytest.mark.anyio
     async def test_path_outside_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
         use_session(monkeypatch, user_id=USER, thread_id=THREAD)
 
-        _, result = await CanvasOpener(SESSIONS).open("/etc/passwd")
+        _, result = await CanvasOpener().open("/etc/passwd")
 
         if not (isinstance(result, ErrorResult)):
             raise AssertionError("isinstance(result, ErrorResult)")
@@ -254,7 +257,9 @@ class TestShow:
         CanvasRegistry.register(viewer)
         await storage.upload_file(f"{USER}/{THREAD}/mermaid/a.mmd", "erDiagram")
 
-        opened = await CanvasOpener(SESSIONS).show(f"/workspace/{THREAD}/mermaid/a.mmd")
+        opened = await CanvasOpener().show(
+            f"/workspace/{THREAD}/mermaid/a.mmd", CanvasScope.of_context()
+        )
 
         if opened.label != "a.mmd":
             raise AssertionError('opened.label == "a.mmd"')
@@ -292,8 +297,12 @@ class TestShow:
         monkeypatch.setattr(rendering_canvas.cl.CustomElement, "send", capture)
         monkeypatch.setattr(rendering_canvas.cl, "ElementSidebar", Sidebar)
 
-        await CanvasOpener(SESSIONS).show(f"/workspace/{THREAD}/upload/a.png")
-        await CanvasOpener(SESSIONS).show(f"/workspace/{THREAD}/upload/b.png")
+        await CanvasOpener().show(
+            f"/workspace/{THREAD}/upload/a.png", CanvasScope.of_context()
+        )
+        await CanvasOpener().show(
+            f"/workspace/{THREAD}/upload/b.png", CanvasScope.of_context()
+        )
 
         if [e.props["label"] for e in shown] != ["a.png", "b.png"]:
             raise AssertionError('[e.props["label"] for e in shown] == ["a.png", "b.p…')
@@ -393,10 +402,10 @@ class TestFileViewers:
         self, storage: LocalStorageClient, http_context: None
     ) -> None:
         """Сценарий из бага: bash сгенерировал png — canvas_open обязан показать."""
-        build_canvas_tools(CanvasToolConfig(), SESSIONS)
+        build_canvas_tools(CanvasToolConfig())
         await storage.upload_file(f"{USER}/{THREAD}/upload/график.png", self.PNG)
 
-        content, result = await CanvasOpener(SESSIONS).open(
+        content, result = await CanvasOpener().open(
             f"/workspace/{THREAD}/upload/график.png"
         )
 
@@ -604,3 +613,22 @@ class TestFileWindowAction:
 
         if answer != {}:
             raise AssertionError("answer == {}")
+
+
+class TestActionsWithoutCallContext:
+    """Действия фронта идут из сессии чата: контекста вызова у клика нет."""
+
+    @pytest.mark.anyio
+    async def test_content_action_needs_no_call_context(self) -> None:
+        CallContext.reset()
+        action = cl.Action(
+            name=CanvasAction.CONTENT.value,
+            payload={CanvasAction.PATH.value: f"/workspace/{THREAD}/upload/a.log"},
+        )
+
+        described = await CanvasActions.content(
+            action, CanvasScope(user_id=USER, thread_id=THREAD)
+        )
+
+        if described.get("path") != f"/workspace/{THREAD}/upload/a.log":
+            raise AssertionError(f"описание файла из сессии: {described}")

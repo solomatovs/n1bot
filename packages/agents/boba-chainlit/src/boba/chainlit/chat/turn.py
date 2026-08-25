@@ -4,10 +4,10 @@
 повторные не порождают второго отчёта. Отчёт по исходу — чат, история агента,
 журнал сервера — делает TurnReporter из одного разбора FailureReport; любой
 исход закрывает незавершённые шаги, запись истории не зависит от ленты.
-ChatTurn гоняет стрим под отменой TurnContext и отчитывается ровно одним
+ChatTurn гоняет стрим под отменой RunRegistry и отчитывается ровно одним
 исходом; crash() покрывает сбои вокруг стрима — до него и после.
 
-Ход обрывается только по кнопке Stop: отмену держит TurnContext по thread_id.
+Ход обрывается только по кнопке Stop: отмену держит RunRegistry по thread_id.
 Разрыв связи ход не трогает — ответ пользователь увидит в истории.
 
 Ошибки:
@@ -32,11 +32,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
 from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
+from boba.chainlit.domain.context import CallContext
 from boba.chainlit.domain.errors import FailureReport
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.session import SessionSource
-from boba.chainlit.domain.turn import TurnContext, TurnPort
+from boba.chainlit.domain.run import RunPort, RunRegistry
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.llm.chat import ResponseField
 from chainlit.step import Step, StepDict
@@ -299,7 +299,7 @@ class TurnReporter:
         await self._history.remember(record)
 
 
-class ChatTurn(TurnPort):
+class ChatTurn(RunPort):
     """Один ход: стрим ответа под отменой, зарегистрированной на thread_id."""
 
     _REPORTS: ClassVar[set[asyncio.Future[None]]] = set()
@@ -332,12 +332,12 @@ class ChatTurn(TurnPort):
     @classmethod
     def stop(cls, thread_id: str) -> bool:
         """Кнопка Stop: обрывает ход немедленно; False — останавливать нечего."""
-        return TurnContext.stop(thread_id, StopReason.USER_STOP)
+        return RunRegistry.stop(thread_id, StopReason.USER_STOP)
 
     @classmethod
     def active(cls, thread_id: str) -> ChatTurn | None:
         """Живой ход треда; None — тред ничем не занят."""
-        turn = TurnContext.turn_of(thread_id)
+        turn = RunRegistry.port_of(thread_id)
         if not isinstance(turn, ChatTurn):
             return None
 
@@ -349,15 +349,12 @@ class ChatTurn(TurnPort):
         return ChatView.derive_id(self._thread_id, self._key, StepRole.ANSWER)
 
     @staticmethod
-    def human_message(msg: cl.Message, sessions: SessionSource) -> HumanMessage:
+    def human_message(msg: cl.Message, user_id: str) -> HumanMessage:
         """Сообщение пользователя; пути вложений — как их видит песочница."""
         attachments: list[dict[str, str]] = []
-        user_id = sessions.current().user_id
 
         for element in msg.elements or []:
-            key = ObjectKey.build(
-                user_id, element.thread_id, element.name, element.id
-            )
+            key = ObjectKey.build(user_id, element.thread_id, element.name, element.id)
             name = element.name
             if not name:
                 name = element.id
@@ -455,8 +452,8 @@ class ChatTurn(TurnPort):
     async def _run(
         self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
     ) -> None:
-        with TurnContext.open(self._thread_id, self) as context:
-            cancellation = context.cancellation
+        cancellation = CallContext.current().cancellation
+        with RunRegistry.open(self._thread_id, self, cancellation):
             try:
                 await cl.context.emitter.task_start()
                 # контейнер до первого чанка: запрос в модель уходит с первой

@@ -23,6 +23,7 @@ import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
+from conftest import enter_context
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
 from pydantic import SecretStr
@@ -85,6 +86,8 @@ accept и initiate совпадают, и evidence-креды KDC для неё 
 
 SCHEMA = "delegated_tools"
 ROLE = "analyst"
+THREAD = "44444444-4444-4444-4444-444444444444"
+PROFILE = "test"
 CONFLUENCE_LOGIN = "/plugins/servlet/kerberos/ntlm/login"
 
 
@@ -157,9 +160,7 @@ class Browser:
 
         creds = Credentials(usage="initiate", store={b"ccache": ccache.encode()})
         target = Name(SERVICE_SPN, NameType.kerberos_principal)
-        initiator = SecurityContext(
-            name=target, creds=creds, usage="initiate", flags=0
-        )
+        initiator = SecurityContext(name=target, creds=creds, usage="initiate", flags=0)
         return initiator.step()
 
 
@@ -221,7 +222,9 @@ async def session(
         raise AssertionError("user was not created")
 
     token = create_jwt(ChainlitUser(identifier=user.identifier, metadata=metadata))
-    init_http_context(user=user, auth_token=token)
+    context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
+    context.session.chat_profile = PROFILE
+    enter_context()
     return user
 
 
