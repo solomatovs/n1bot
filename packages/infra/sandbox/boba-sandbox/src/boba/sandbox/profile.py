@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import os
-import string
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, ClassVar, Self
@@ -12,6 +11,7 @@ from typing import Any, ClassVar, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from boba.toolkit.binaries import SandboxBinary, TrustedBinaries
+from boba.toolkit.template import FieldTemplate, TemplateError
 from boba.workspace.launcher import MountingConfig
 
 __all__ = [
@@ -69,21 +69,11 @@ class BindSpec(BaseModel):
     @staticmethod
     def check_vars(template: str) -> str:
         try:
-            parsed = list(string.Formatter().parse(template))
-        except ValueError as e:
+            FieldTemplate.parse(template).only(BindSpec.VARS)
+        except TemplateError as e:
             msg = f"invalid path template {template!r}: {e}"
             raise ValueError(msg) from e
-        fields: list[str] = []
-        for _, name, _, _ in parsed:
-            if name is not None:
-                fields.append(name)
-        unknown = sorted(set(fields) - set(BindSpec.VARS))
-        if unknown:
-            msg = (
-                f"unknown variables {unknown} in path {template!r} "
-                f"(known: {', '.join(BindSpec.VARS)})"
-            )
-            raise ValueError(msg)
+
         return template
 
     @staticmethod
@@ -367,9 +357,7 @@ class SandboxLayout:
     def setup_binds(cls, workspace: WorkspaceSpec, fuse2fs: str) -> SetupBinds:
         """Эталон и fuse2fs read-only, каталог образов пользователей на запись."""
         ro = (
-            BindSpec(
-                host=workspace.template, target=SandboxMount.SETUP_TEMPLATE.value
-            ),
+            BindSpec(host=workspace.template, target=SandboxMount.SETUP_TEMPLATE.value),
             BindSpec(host=fuse2fs, target=SandboxMount.SETUP_FUSE2FS.value),
         )
         rw = (

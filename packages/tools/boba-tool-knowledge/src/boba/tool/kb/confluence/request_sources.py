@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from pydantic import BaseModel
 
@@ -82,7 +82,9 @@ class ConfluenceRest:
             f"body.{body_format},version,ancestors,space,metadata.labels,"
             "children.attachment.version,children.attachment.extensions"
         )
-        return f"/rest/api/content/{page_id}?expand={expand}"
+        segment = ConfluenceRest._segment(page_id)
+        query = ConfluenceRest._query({"expand": expand})
+        return f"/rest/api/content/{segment}?{query}"
 
     @staticmethod
     def space_list_path(
@@ -91,15 +93,14 @@ class ConfluenceRest:
         expand: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> str:
-        type_filter = ""
+        params: dict[str, object] = {"limit": limit, "start": 0}
         if space_type != "any":
-            type_filter = f"&type={space_type}"
+            params["type"] = space_type
 
-        expand_q = ""
         if expand:
-            expand_q = f"&expand={expand}"
+            params["expand"] = expand
 
-        return f"/rest/api/space?limit={limit}&start=0{type_filter}{expand_q}"
+        return f"/rest/api/space?{ConfluenceRest._query(params)}"
 
     @staticmethod
     def space_pages_path(
@@ -107,7 +108,9 @@ class ConfluenceRest:
         *,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> str:
-        return f"/rest/api/space/{space_key}/content?type=page&limit={limit}&start=0"
+        segment = ConfluenceRest._segment(space_key)
+        query = ConfluenceRest._query({"type": "page", "limit": limit, "start": 0})
+        return f"/rest/api/space/{segment}/content?{query}"
 
     @staticmethod
     def cql_search_path(
@@ -117,15 +120,21 @@ class ConfluenceRest:
         start: int = 0,
         expand: str | None = None,
     ) -> str:
-        expand_q = ""
+        params: dict[str, object] = {"cql": cql, "limit": limit, "start": start}
         if expand:
-            expand_q = f"&expand={expand}"
+            params["expand"] = expand
 
-        cql_q = quote(cql, safe="")
-        return (
-            f"/rest/api/content/search?cql={cql_q}"
-            f"&limit={limit}&start={start}{expand_q}"
-        )
+        return f"/rest/api/content/search?{ConfluenceRest._query(params)}"
+
+    @staticmethod
+    def _segment(value: str) -> str:
+        """Сегмент пути: id и ключи идут от LLM, `/`, `?`, `#` в них — просто байты."""
+        return quote(value, safe="")
+
+    @staticmethod
+    def _query(params: Mapping[str, object]) -> str:
+        """Query-строка; запятая в expand остаётся запятой, как ждёт Confluence."""
+        return urlencode(params, quote_via=quote, safe=",")
 
     @staticmethod
     def extract_host(base_url: str) -> str:

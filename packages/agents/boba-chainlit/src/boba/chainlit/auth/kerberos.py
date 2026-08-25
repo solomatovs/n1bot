@@ -10,7 +10,6 @@ import base64
 import html
 import logging
 import os
-import re
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -19,7 +18,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
@@ -56,6 +55,7 @@ from boba.chainlit.domain.errors import (
     InternalServiceError,
 )
 from boba.chainlit.domain.session import (
+    LoginTemplate,
     LogLine,
     SsoMarks,
     UserLogin,
@@ -77,6 +77,7 @@ from boba.krb import (
     SpnegoAcceptor,
     SpnegoIdentity,
 )
+from boba.toolkit.template import TemplateError
 from chainlit.config import config as cl_config
 
 
@@ -194,6 +195,11 @@ class KerberosAuthConfig(BaseModel):
             "если пользователю не замапилась ни одна роль."
         ),
     )
+
+    @field_validator("principal_format")
+    @classmethod
+    def _principal_format_has_username(cls, value: str) -> str:
+        return LoginTemplate.check(value)
 
     @property
     def sids_header(self) -> str:
@@ -710,28 +716,16 @@ class KerberosAuth(SsoAdmission):
         principal: str,
     ) -> str:
         """user@REALM | DOMAIN\\user -> sAMAccountName по шаблону с {username}."""
-        placeholder = "{username}"
-        if placeholder not in principal_format:
+        try:
+            return LoginTemplate.username_of(principal_format, principal)
+        except TemplateError as exc:
             raise InternalServiceError(
                 internal_detail=(
-                    f"principal_format {principal_format!r} не содержит {placeholder}"
+                    f"principal {principal!r} does not match "
+                    f"principal_format {principal_format!r}: {exc}"
                 ),
                 user_detail=None,
-            )
-
-        head, tail = principal_format.split(placeholder, 1)
-        pattern = re.compile(f"^{re.escape(head)}(?P<username>.+?){re.escape(tail)}$")
-        match = pattern.match(principal)
-        if not match:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"principal {principal!r} не соответствует формату "
-                    f"{principal_format!r}"
-                ),
-                user_detail=None,
-            )
-
-        return match.group("username")
+            ) from exc
 
     def install(self, chainlit_app: FastAPI) -> None:
         # без password/header-колбэка chainlit считает, что логина нет, и пускает
@@ -960,6 +954,4 @@ class KerberosAuth(SsoAdmission):
             ButtonJsVar.REFRESH_HEADER_VALUE, SsoRefresh.VALUE
         )
 
-        return with_value.replace(
-            ButtonJsVar.TRANSLATIONS_URL, self._urls.translations
-        )
+        return with_value.replace(ButtonJsVar.TRANSLATIONS_URL, self._urls.translations)
