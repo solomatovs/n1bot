@@ -19,6 +19,7 @@ from boba.chainlit.domain.keys import WorkflowUrl
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ToolRegistry
 from boba.chainlit.workflow.api import WorkflowApi
+from boba.chainlit.workflow.events import RunEvents
 from boba.chainlit.workflow.service import WorkflowService
 from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
 from boba.db.postgres import AsyncPostgresPool
@@ -68,7 +69,7 @@ def app(store: WorkflowStore, user: PersistedUser, app_config: AppConfig) -> Fas
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"], profile=_profile(app_config))
 
-    service = WorkflowService(store, registry, "test:0")
+    service = WorkflowService(store, registry, "test:0", RunEvents())
 
     async def source() -> WorkflowService:
         return service

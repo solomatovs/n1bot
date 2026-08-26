@@ -98,6 +98,10 @@ INTER_WEIGHTS   ?= 400 500 700
 MERMAID_VERSION ?= 11.16.1
 MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
 
+# страница workflow собирается node'ом образа: на хосте node не нужен
+NODE_IMAGE      ?= dmp/nodejs:22
+WEB_DIR         := $(SRC_DIR)/packages/agents/boba-chainlit
+
 # готовый бинарь; для внутреннего mirror переопредели UV_URL
 UV_VERSION      ?= 0.11.21
 UV_PLATFORM     ?= x86_64-unknown-linux-musl
@@ -183,6 +187,7 @@ help:
 	@echo "Сборка boba $(VERSION) из дерева пакетов $(SRC_DIR) -> $(IMAGE)"
 	echo ""
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(DEPS_DIR)"
+	echo "  make web       страница workflow: npm ci/check/build в $(NODE_IMAGE) -> assets/public/workflow"
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
 	echo "                 {uv,tessdata,fastembed,onnx-genai,webassets,"
 	echo "                  sandbox/{rootfs.ext4,workspace.ext4},third/bin}"
@@ -335,6 +340,19 @@ tessdata:
 
 # статика фронта: KaTeX (формулы), Inter (шрифт UI), mermaid (диаграммы) локально
 .PHONY: webassets
+web:
+	@echo "== workflow page: $(NODE_IMAGE) =="
+	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
+	    -v "$(WEB_DIR):/pkg" -w /pkg/web/workflow $(NODE_IMAGE) \
+	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
+	@du -sh $(WEB_DIR)/assets/public/workflow
+	# dev app_root держит копию public (симлинк chainlit отвергает как выход
+	# за пределы public): обновляем её, если dev-дерево уже собрано
+	if [ -d "$(BASE_DIR)/app_root/public" ]; then
+	    rm -rf "$(BASE_DIR)/app_root/public/workflow"
+	    cp -a "$(WEB_DIR)/assets/public/workflow" "$(BASE_DIR)/app_root/public/workflow"
+	fi
+
 webassets:
 	@mkdir -p $(WEBASSETS_DIR)/katex/fonts $(WEBASSETS_DIR)/inter/files $(WEBASSETS_DIR)/mermaid
 	echo "== katex $(KATEX_VERSION) =="

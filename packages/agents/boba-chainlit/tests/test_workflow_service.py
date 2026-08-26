@@ -23,6 +23,7 @@ from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.domain.config import RoleConfig
 from boba.chainlit.domain.context import CallContext, LlmInitiator, ScopeKind, Subject
 from boba.chainlit.infra.plugins import ToolRegistry, stream_source, tool_call_scope
+from boba.chainlit.workflow.events import RunEvents
 from boba.chainlit.workflow.service import (
     WorkflowError,
     WorkflowRefusal,
@@ -125,7 +126,7 @@ def service(store: WorkflowStore, probe: Probe) -> WorkflowService:
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"])
 
-    return WorkflowService(store, registry, "test:0")
+    return WorkflowService(store, registry, "test:0", RunEvents())
 
 
 @pytest.fixture
@@ -200,7 +201,7 @@ class TestSave:
         async def registry() -> ToolRegistry:
             return _registry(probe, ["echo"])
 
-        limited = WorkflowService(store, registry, "test:0")
+        limited = WorkflowService(store, registry, "test:0", RunEvents())
         with pytest.raises(WorkflowError) as caught:
             await limited.save(context.subject, PARALLEL, {})
 
@@ -291,7 +292,7 @@ class TestRun:
         async def registry() -> ToolRegistry:
             return _registry(probe, granted)
 
-        service = WorkflowService(store, registry, "test:0")
+        service = WorkflowService(store, registry, "test:0", RunEvents())
         stored = await service.save(context.subject, VALUES, {})
         granted[:] = ["slow"]
 

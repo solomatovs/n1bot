@@ -1568,6 +1568,54 @@ class TestStreamLogsTools:
         feed.call(call, expect)
 
 
+class TestWorkflowTools:
+    """workflow_*: спека yaml сохраняется, список её показывает, запуск гонит bash."""
+
+    SPEC: ClassVar[str] = (
+        "name: ui-flow\n"
+        "tasks:\n"
+        "  first: {tool: bash, args: {command: echo UI_FLOW_ONE}}\n"
+        "  second: {tool: bash, args: {command: echo UI_FLOW_TWO}}\n"
+        "edges:\n"
+        "  - first -> second\n"
+    )
+
+    def test_save_shows_yaml_and_confirms(self, module_feed: ToolFeed) -> None:
+        call = ToolCall(
+            tool="workflow_save",
+            arguments={"spec": self.SPEC},
+            view=ScriptCall(arg="spec", lang="yaml"),
+        )
+        expect = ToolExpect(
+            patterns=[r"^workflow 'ui-flow' saved \(id \d+\); tools: bash$"],
+            dom=["ui-flow", "saved"],
+        )
+        module_feed.call(call, expect)
+
+    def test_list_names_the_saved_workflow(self, module_feed: ToolFeed) -> None:
+        call = ToolCall(tool="workflow_list")
+        expect = ToolExpect(
+            patterns=[r"^- ui-flow \(id \d+\): tools bash$"],
+            dom=["ui-flow"],
+        )
+        module_feed.call(call, expect)
+
+    def test_run_reports_every_task(self, module_feed: ToolFeed) -> None:
+        """Обе задачи bash отработали, сводка называет каждую и её статус."""
+        call = ToolCall(tool="workflow_run", arguments={"name": "ui-flow"})
+        expect = ToolExpect(
+            patterns=[
+                r"workflow run [0-9a-f-]+: done",
+                r"- first: done",
+                r"- second: done",
+                r"UI_FLOW_ONE",
+                r"UI_FLOW_TWO",
+            ],
+            dom=["first: done", "second: done", "UI_FLOW_TWO"],
+        )
+        module_feed.call(call, expect, timeout_sec=TURN_TIMEOUT_SEC * 2)
+
+
 class TestCoverage:
     """Прогон вызвал каждый инструмент, который стенд отдаёт модели."""
 

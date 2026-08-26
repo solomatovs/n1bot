@@ -55,6 +55,7 @@ from boba.chainlit.infra.di import Container, Depends
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
+from boba.chainlit.workflow.events import RunEvents
 from boba.chainlit.workflow.service import WorkflowService
 from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
 from boba.db.pgvector.schema import KbSchema
@@ -272,7 +273,7 @@ def workflow_service(
         return None
 
     instance = f"{socket.gethostname()}:{config.chainlit.port}"
-    return WorkflowService(store, tool_registry_ref, instance)
+    return WorkflowService(store, tool_registry_ref, instance, RunEvents())
 
 
 async def connection_store(

@@ -1,0 +1,45 @@
+:root {
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --radius: 8px;
+  --radius-sm: 5px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --header-h: 52px;
+
+  --bg: #0f1115;
+  --bg-elev: #161a21;
+  --bg-hover: #1d222b;
+  --border: #262c36;
+  --border-strong: #3a4250;
+  --fg: #e6e9ef;
+  --fg-muted: #9aa4b2;
+  --fg-faint: #5f6977;
+  --accent: #5b8def;
+  --accent-fg: #ffffff;
+
+  --status-pending: #5f6977;
+  --status-running: #5b8def;
+  --status-done: #3ccf7a;
+  --status-failed: #ef5b5b;
+  --status-skipped: #b58d3c;
+  --status-stopped: #a07bd8;
+
+  --edge-control: #7b8797;
+  --edge-value: #5b8def;
+  --edge-stream: #3ccf7a;
+}
+
+:root[data-theme="light"] {
+  --bg: #f7f8fa;
+  --bg-elev: #ffffff;
+  --bg-hover: #eef1f5;
+  --border: #d9dee6;
+  --border-strong: #b9c1cc;
+  --fg: #1a1f27;
+  --fg-muted: #4f5966;
+  --fg-faint: #8a93a0;
+}

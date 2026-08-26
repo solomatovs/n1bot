@@ -44,3 +44,7 @@ packages/**/dist/
 
 # статика фронта: кладётся make webassets, в образ идёт из build/src/webassets
 packages/agents/boba-chainlit/assets/public/vendor/
+
+# страница workflow: зависимости и сборка (собирает Dockerfile / make web)
+packages/agents/boba-chainlit/web/workflow/node_modules/
+packages/agents/boba-chainlit/assets/public/workflow/
