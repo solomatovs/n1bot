@@ -16,24 +16,9 @@ from psycopg import sql
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.cancellation import StopReason
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
-from boba.chainlit.agent.toolrun.intent import ToolIntentField
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.infra.plugins import ToolRegistry, stream_source, tool_call_scope
-from boba.chainlit.workflow.service import (
-    WorkflowError,
-    WorkflowRefusal,
-    WorkflowService,
-)
-from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
-from boba.chainlit.workflow.tools import (
-    ReportKey,
-    WorkflowToolConfig,
-    build_workflow_tools,
-)
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, LlmInitiator, ScopeKind, Subject
+from boba.runtime.plugins import CallSurface
 from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
     ErrorResult,
@@ -42,8 +27,24 @@ from boba.toolkit.result import (
     TextResult,
     pack_result,
 )
+from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.errors import ToolErrorGuard
+from boba.toolrun.intent import ToolIntentField
+from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.run_log import ToolRunLogger
 from boba.workflow import RunStatus, TaskStatus
 from boba.workflow.events import RunEvents
+from boba.workflow_engine.service import (
+    WorkflowError,
+    WorkflowRefusal,
+    WorkflowService,
+)
+from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
+from boba.workflow_engine.tools import (
+    ReportKey,
+    WorkflowToolConfig,
+    build_workflow_tools,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -90,7 +91,9 @@ class Probe:
         tools = [slow, echo, fail, canvas_open]
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(tools, stream_source, tool_call_scope)
+        ToolRunLogger.guard_all(
+            tools, CallSurface.stream_source, CallSurface.tool_call_scope
+        )
         ToolErrorGuard.guard_all(tools)
         return tools
 

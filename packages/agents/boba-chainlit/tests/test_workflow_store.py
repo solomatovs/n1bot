@@ -8,7 +8,6 @@ from uuid import uuid4
 import pytest
 from psycopg import sql
 
-from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
 from boba.db.postgres import AsyncPostgresPool
 from boba.workflow import (
     RunState,
@@ -20,6 +19,7 @@ from boba.workflow import (
     WorkflowSpec,
 )
 from boba.workflow.records import WorkflowNotFoundError
+from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 pytestmark = pytest.mark.anyio
 

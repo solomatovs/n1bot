@@ -23,10 +23,10 @@ from boba.canvas.journal import (
     StreamStorePort,
     VaultUsage,
 )
-from boba.chainlit.canvas.panel import ToolStreams
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
+from boba.toolrun.streams import ToolStreams
 
 __all__ = [
     "StreamLogsErrorKind",

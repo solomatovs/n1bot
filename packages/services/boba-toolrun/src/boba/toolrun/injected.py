@@ -21,8 +21,8 @@ from typing import Any, TypeAlias
 
 from langchain_core.tools import BaseTool
 
-from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
 from boba.toolkit.entry import ToolArgv
+from boba.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
 
 __all__ = [
     "AsyncInjected",

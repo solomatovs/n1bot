@@ -24,15 +24,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit.domain.keys import WorkflowUrl
 from boba.chainlit.infra.tool_api import ApiIdentity
-from boba.chainlit.workflow.service import (
-    WorkflowError,
-    WorkflowRefusal,
-    WorkflowService,
-)
 from boba.chat.profiles import ChatProfiles
 from boba.identity.context import Scope
 from boba.workflow import RunState, ToolFacts
 from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowStoreError
+from boba.workflow_engine.service import (
+    WorkflowError,
+    WorkflowRefusal,
+    WorkflowService,
+)
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser, User
 

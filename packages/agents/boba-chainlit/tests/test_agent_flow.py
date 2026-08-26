@@ -29,7 +29,6 @@ from boba.chainlit.agent.flow import (
     Rephraser,
     RephrasingsParser,
 )
-from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.chat.tracing import AgentTracer, TracedStage
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
@@ -55,6 +54,7 @@ from boba.chat.profiles import (
 )
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact, pack_result
+from boba.toolrun.cancellation import CancellableTools
 
 pytestmark = pytest.mark.anyio
 

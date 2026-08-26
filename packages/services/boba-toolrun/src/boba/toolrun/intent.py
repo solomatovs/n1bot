@@ -16,8 +16,8 @@ from typing import Annotated
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
-from boba.chainlit.agent.toolrun.wrapping import ToolSchema
 from boba.toolkit.calls import ToolIntent
+from boba.toolrun.wrapping import ToolSchema
 
 __all__ = ["ToolIntentField"]
 

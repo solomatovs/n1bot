@@ -12,7 +12,7 @@ from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
-from boba.chainlit.infra.plugins import as_structured_tool
+from boba.runtime.plugins import ToolBridge
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.profile import (
     BindSpec,
@@ -365,7 +365,9 @@ class TestBashTool:
         supervisor = ZygoteRegistry.obtain(section, profile, (), _ZYGOTE)
         caller = ZygoteToolCaller(section, supervisor, profile)
 
-        return as_structured_tool(build_bash_tool(output, lambda tool: caller))
+        return ToolBridge.as_structured_tool(
+            build_bash_tool(output, lambda tool: caller)
+        )
 
     @staticmethod
     def _invoke(tool, **args) -> ShellResult:

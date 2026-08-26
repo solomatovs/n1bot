@@ -24,15 +24,8 @@ from fastapi import Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation
-from boba.chainlit.agent.invoke import (
-    CallIdPrefix,
-    InvokeReply,
-    ToolInvoker,
-    ToolUnavailableError,
-)
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
-from boba.chainlit.infra.plugins import ToolRegistry
 from boba.chainlit.infra.session import ChainlitSession
 from boba.chat.profiles import ChatProfiles
 from boba.identity.context import (
@@ -46,6 +39,13 @@ from boba.identity.context import (
 from boba.identity.errors import RefusalError
 from boba.identity.run import RunRegistry
 from boba.toolkit.calls import ToolIntent
+from boba.toolrun.invoke import (
+    CallIdPrefix,
+    InvokeReply,
+    ToolInvoker,
+    ToolUnavailableError,
+)
+from boba.toolrun.registry import ToolRegistry
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser, User
 

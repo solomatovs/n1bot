@@ -22,7 +22,7 @@ from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.domain.fields import ThreadField
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.di import Container, Depends, di_inject
+from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
 from boba.chainlit.infra.providers import (
     chainlit_data_layer,
     chat_profiles_registry,
@@ -32,7 +32,6 @@ from boba.chainlit.infra.providers import (
 )
 from boba.chainlit.infra.session import ChainlitSession, current_session
 from boba.chainlit.infra.thread_room import ThreadRoom
-from boba.chainlit.infra.user_connections import UserKerberos
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
 from boba.chat.profiles import (
@@ -42,8 +41,10 @@ from boba.chat.profiles import (
     UserLlmOverrides,
     UserMeta,
 )
+from boba.connection_broker.user_connections import UserKerberos
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import UserMetadataField
+from boba.runtime.di import Container, Depends, di_inject
 from chainlit.auth.cookie import clear_auth_cookie, get_token_from_cookies
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
@@ -272,7 +273,9 @@ async def on_settings_update(
 def on_logout(request: Request, response: Response):
     # делегированный тикет входа гаснет вместе с сессией, не дожидаясь срока JWT
     if token := get_token_from_cookies(request.cookies):
-        UserKerberos(providers.ccache_registry_ref).forget(token)
+        sso = ChainlitSession.ticket_of_token(token)
+        if sso is not None:
+            UserKerberos(providers.ccache_registry_ref, ChatRefreshSignal()).forget(sso)
 
     # только свои: на домене живут и чужие приложения, а среди присланных
     # кук попадаются имена, которых http.cookies не принимает ('Path')

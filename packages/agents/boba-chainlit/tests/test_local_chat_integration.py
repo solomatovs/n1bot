@@ -23,10 +23,6 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.intent import ToolIntentField
-from boba.chainlit.agent.toolrun.run_log import NoCallScope, ToolRunLogger
-from boba.chainlit.agent.toolrun.wrapping import ToolAsyncBody
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
@@ -37,6 +33,10 @@ from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.local import OnnxChatRuntime
 from boba.settings import bind, build_app_config
 from boba.toolkit.calls import ToolIntent
+from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.intent import ToolIntentField
+from boba.toolrun.run_log import NoCallScope, ToolRunLogger
+from boba.toolrun.wrapping import ToolAsyncBody
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

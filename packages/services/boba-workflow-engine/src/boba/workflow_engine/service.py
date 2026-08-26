@@ -23,14 +23,11 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import StopReason
-from boba.chainlit.agent.invoke import ToolInvoker
-from boba.chainlit.workflow.catalog import CatalogBuilder
-from boba.chainlit.workflow.runner import WorkflowRunner
-from boba.chainlit.workflow.store import WorkflowStore
 from boba.identity.context import CallContext, Scope, Subject
 from boba.identity.errors import RefusalError
 from boba.identity.run import BackgroundRuns, RunRegistry
 from boba.toolkit.result import ToolResult
+from boba.toolrun.invoke import ToolInvoker
 from boba.workflow import (
     RunState,
     ToolCatalog,
@@ -42,9 +39,12 @@ from boba.workflow import (
 from boba.workflow.events import RunEvents, RunSnapshot
 from boba.workflow.ports import RunSink
 from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowNotFoundError
+from boba.workflow_engine.catalog import CatalogBuilder
+from boba.workflow_engine.runner import WorkflowRunner
+from boba.workflow_engine.store import WorkflowStore
 
 if TYPE_CHECKING:
-    from boba.chainlit.infra.plugins import ToolRegistry
+    from boba.toolrun.registry import ToolRegistry
 
 __all__ = [
     "RunOutcome",

@@ -1,7 +1,7 @@
 """Prefetch-flow целиком на боевом конфиге (pytest -m integration).
 
 Граф собирается той же цепочкой провайдеров, что и в приложении: инструменты
-приходят из load_tools и работают в песочнице, переформулировщик и основная
+приходят из ChatPlugins.load и работают в песочнице, переформулировщик и основная
 модель ходят к провайдеру из конфига.
 
 Cgroup-лимиты сняты: pytest живёт вне делегированного cgroup.
@@ -32,9 +32,8 @@ from boba.chainlit.agent.flow import (
     PrefetchCall,
     PrefetchGraphBuilder,
 )
-from boba.chainlit.connections import ConnectionStore
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.plugins import load_tools
+from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import (
     build_history_view,
     httpx_clients,
@@ -48,6 +47,7 @@ from boba.chat.generation import (
     StructuredGenerator,
 )
 from boba.chat.profiles import PrefetchFlowConfig, SelectedProfile
+from boba.connection_broker.store import ConnectionStore
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import LocalOnnxGenerator, OpenAiStructuredGenerator
 from boba.llm.local import OnnxChatRuntime
@@ -148,7 +148,7 @@ def _no_store() -> ConnectionStore:
 @pytest.fixture(scope="module")
 def session_tools(raw_config: DictConfig, app_config: AppConfig) -> list[BaseTool]:
     """Инструменты профиля, собранные боевым загрузчиком."""
-    registry = load_tools(raw_config, _no_store, _no_registry)
+    registry = ChatPlugins.load(raw_config, _no_store, _no_registry)
     roles = frozenset(app_config.roles)
     return registry.for_session(roles, PROFILE)
 

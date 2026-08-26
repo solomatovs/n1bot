@@ -22,7 +22,7 @@ from boba.toolkit.result import Produces
 from boba.workflow import ToolArg, ToolCatalog, ToolFacts
 
 if TYPE_CHECKING:
-    from boba.chainlit.infra.plugins import ToolRegistry
+    from boba.toolrun.registry import ToolRegistry
 
 __all__ = ["CatalogBuilder"]
 

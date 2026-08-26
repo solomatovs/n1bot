@@ -20,6 +20,10 @@ pythonpath = [
     "packages/core/boba-chat/src",
     "packages/core/boba-identity/src",
     "packages/core/boba-canvas/src",
+    "packages/services/boba-toolrun/src",
+    "packages/services/boba-connection-broker/src",
+    "packages/services/boba-workflow-engine/src",
+    "packages/services/boba-runtime/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
@@ -67,6 +71,10 @@ extraPaths = [
     "packages/core/boba-chat/src",
     "packages/core/boba-identity/src",
     "packages/core/boba-canvas/src",
+    "packages/services/boba-toolrun/src",
+    "packages/services/boba-connection-broker/src",
+    "packages/services/boba-workflow-engine/src",
+    "packages/services/boba-runtime/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
@@ -131,6 +139,7 @@ members = [
     "packages/agents/*",
     "packages/tools/*",
     "packages/infra/*/*",
+    "packages/services/*",
 ]
 
 [tool.uv.sources]
@@ -142,6 +151,10 @@ boba-connections    = { workspace = true }
 boba-chat           = { workspace = true }
 boba-identity       = { workspace = true }
 boba-canvas         = { workspace = true }
+boba-toolrun        = { workspace = true }
+boba-connection-broker = { workspace = true }
+boba-workflow-engine = { workspace = true }
+boba-runtime = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }

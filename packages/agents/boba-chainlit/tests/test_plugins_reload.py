@@ -1,4 +1,4 @@
-"""Повторный load_tools: модульные TOOLS-синглтоны остаются нетронутыми.
+"""Повторный ChatPlugins.load: модульные TOOLS-синглтоны остаются нетронутыми.
 
 Загрузчик зовётся не один раз за процесс (bootstrap, DI-провайдер на сессию);
 обвязки обязаны ставиться на копии — иначе второй проход видит уже пришитое
@@ -12,12 +12,12 @@ from collections.abc import Iterator
 import pytest
 from pydantic import BaseModel
 
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.connections import ConnectionStore
-from boba.chainlit.infra.plugins import load_tools
+from boba.chainlit.infra.plugins import ChatPlugins
+from boba.connection_broker.store import ConnectionStore
 from boba.sandbox import ZygoteRegistry
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import pg_connection_list
+from boba.toolrun.call_id import ToolCallIdField
 
 
 @pytest.fixture(autouse=True)
@@ -53,8 +53,8 @@ def _schema_fields(tool: object) -> set[str]:
 
 
 def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
-    first = load_tools(raw_config, _no_store, _no_registry)
-    second = load_tools(raw_config, _no_store, _no_registry)
+    first = ChatPlugins.load(raw_config, _no_store, _no_registry)
+    second = ChatPlugins.load(raw_config, _no_store, _no_registry)
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
@@ -69,8 +69,8 @@ def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
 
 
 def test_module_singletons_stay_pristine(raw_config) -> None:
-    load_tools(raw_config, _no_store, _no_registry)
-    load_tools(raw_config, _no_store, _no_registry)
+    ChatPlugins.load(raw_config, _no_store, _no_registry)
+    ChatPlugins.load(raw_config, _no_store, _no_registry)
 
     for tool in PG_TOOLS:
         fields = _schema_fields(tool)

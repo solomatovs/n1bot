@@ -14,7 +14,6 @@ from literalai.observability.step import TrueStepType
 
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction
-from boba.chainlit.canvas.panel import ToolStreams
 from boba.chainlit.rendering.tool import (
     ChartRendering,
     CustomElementRendering,
@@ -26,6 +25,7 @@ from boba.chainlit.rendering.tool import (
 from boba.toolkit.calls import ToolCallViews, ToolIntent
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolArtifact
+from boba.toolrun.streams import ToolStreams
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
 from chainlit.element import CustomElement

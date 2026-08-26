@@ -15,11 +15,11 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, create_model
 from stand_site import Stand
 
-from boba.chainlit.agent.toolrun.injected import InjectedConfig
-from boba.chainlit.infra.tickets import ServiceTickets, TicketArming
+from boba.connection_broker.tickets import ServiceTickets, TicketArming
 from boba.connections.kerberos import KeytabAuth, TicketAuth
 from boba.connections.postgres import PostgresConfig
 from boba.toolkit.facade import Injected
+from boba.toolrun.injected import InjectedConfig
 
 STAND = Stand.required()
 KEYTAB = Path(STAND.krb_pg_keytab)

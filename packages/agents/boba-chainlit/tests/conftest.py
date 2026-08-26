@@ -486,8 +486,8 @@ def di_root() -> Iterator[None]:
     Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
     не режим работы.
     """
-    from boba.chainlit.infra.di import Container
     from boba.chainlit.infra.providers import session_source
+    from boba.runtime.di import Container
 
     previous = Container.root
     root = Container(level="app")

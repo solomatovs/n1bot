@@ -23,11 +23,12 @@ from psycopg import sql
 from pydantic import BaseModel, SecretStr, create_model
 from stand_site import Stand
 
-from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.infra.user_connections import UserConnections, UserKerberos
+from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
+from boba.chainlit.infra.session import ChainlitSession
+from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.user_connections import UserConnections, UserKerberos
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import (
     DelegatedAuth,
@@ -53,6 +54,7 @@ from boba.settings import bind
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.facade import Injected
+from boba.toolrun.injected import InjectedConfig
 from boba.transport.http import HttpxAuth
 
 pytestmark = pytest.mark.anyio
@@ -196,7 +198,9 @@ class Capture:
             return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
         spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
-        UserConnections.bind_all([tool], lambda: store, lambda: registry, spec, resolve)
+        UserConnections.bind_all(
+            [tool], lambda: store, lambda: registry, spec, resolve, ChatRefreshSignal()
+        )
         InjectedConfig.bind_all([tool], resolve)
         return tool
 
@@ -223,7 +227,9 @@ class Capture:
             return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
         spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
-        UserConnections.bind_all([tool], lambda: store, lambda: registry, spec, resolve)
+        UserConnections.bind_all(
+            [tool], lambda: store, lambda: registry, spec, resolve, ChatRefreshSignal()
+        )
         InjectedConfig.bind_all([tool], resolve)
         return tool
 
@@ -578,7 +584,9 @@ async def test_logout_forgets_the_delegated_ticket(
 
     await Capture.config(tool, "main")
 
-    UserKerberos(lambda: registry).forget(token)
+    ticket = ChainlitSession.ticket_of_token(token)
+    assert ticket is not None
+    UserKerberos(lambda: registry, ChatRefreshSignal()).forget(ticket)
 
     with pytest.raises(RefusalError) as caught:
         await Capture.config(tool, "main")

@@ -7,9 +7,10 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.chainlit.agent.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
-from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry
 from boba.chainlit.infra.providers import build_llm_view
+from boba.runtime.plugins import PluginMeta
+from boba.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
+from boba.toolrun.registry import ToolRegistry
 
 
 @pytest.fixture(autouse=True)

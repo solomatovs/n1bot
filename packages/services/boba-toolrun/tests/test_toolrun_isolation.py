@@ -14,7 +14,7 @@ from typing import ClassVar
 
 import pytest
 
-TOOLRUN = Path(__file__).resolve().parents[1] / "src/boba/chainlit/agent/toolrun"
+TOOLRUN = Path(__file__).resolve().parents[1] / "src/boba/toolrun"
 
 MODULES = sorted(p for p in TOOLRUN.glob("*.py") if p.name != "__init__.py")
 
@@ -26,10 +26,12 @@ def chainlit_context() -> None:
 
 class TestToolrunIsolation:
     ALLOWED_PREFIXES: ClassVar[tuple[str, ...]] = (
-        "boba.chainlit.agent.toolrun",
+        "boba.toolrun",
         "boba.toolkit",
         "boba.access",
         "boba.cancellation",
+        "boba.identity",
+        "boba.canvas",
         "langchain_core",
     )
 

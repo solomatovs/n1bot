@@ -21,11 +21,6 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
-from boba.chainlit.agent.toolrun.injected import (
-    AsyncInjected,
-    ConfigResolver,
-    ToolConfigError,
-)
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import (
@@ -42,6 +37,11 @@ from boba.krb import (
     KeytabCredentials,
     PasswordCredentials,
     ServiceTicketIssuer,
+)
+from boba.toolrun.injected import (
+    AsyncInjected,
+    ConfigResolver,
+    ToolConfigError,
 )
 
 __all__ = ["DelegationSource", "ServiceTickets", "TicketArming"]

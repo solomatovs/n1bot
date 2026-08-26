@@ -20,14 +20,14 @@ from typing import ClassVar, Protocol, TypeAlias
 
 from langchain_core.tools import BaseTool
 
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import CallOutcome, JournalChannel
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolResultBase
 from boba.toolkit.stream import StreamSink, ToolChannelsTap
 from boba.toolkit.timing import Elapsed
+from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = [
     "CallScopeSource",
