@@ -906,6 +906,59 @@ button {
   color: var(--error);
 }
 
+/* --- структурный JSON: аргументы в узле и инспекторе --- */
+
+.json {
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.json__row {
+  display: flex;
+  gap: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json[data-clipped="true"] .json__row {
+  white-space: nowrap;
+}
+
+.json[data-clipped="true"] .json__row > :last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.json__key {
+  color: var(--signal);
+  flex: none;
+}
+
+.json__open,
+.json__close,
+.json__empty {
+  color: var(--muted);
+}
+
+.json__string {
+  color: var(--ink);
+}
+
+.json__number {
+  color: var(--ember);
+}
+
+.json__boolean {
+  color: var(--think);
+}
+
+.json__null {
+  color: var(--faint);
+}
+
 /* --- узлы графа запуска --- */
 
 .stage-node {
@@ -1259,6 +1312,16 @@ button {
 
 .editor-node__port--right {
   text-align: right;
+}
+
+.editor-node__args {
+  padding: 4px 10px;
+  border-top: 1px solid var(--hairline);
+}
+
+.editor-node__args .json {
+  font-size: var(--fs-micro);
+  line-height: 16px;
 }
 
 .form .field {

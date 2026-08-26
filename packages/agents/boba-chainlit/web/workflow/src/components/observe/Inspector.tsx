@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 
 import { formatDuration, formatInstant } from "../../model/time";
 import type { RunState } from "../../model/workflow";
+import { JsonView } from "../JsonView";
 import { StatusPill } from "../StatusPill";
 
 type Props = {
@@ -45,7 +46,9 @@ export function Inspector({ run, task, onClose }: Props): ReactElement {
             )}
           </dl>
           <h4 className="eyebrow">args</h4>
-          <pre className="inspector__code">{JSON.stringify(spec.args, null, 2)}</pre>
+          <div className="inspector__code">
+            <JsonView value={spec.args} clip={0} />
+          </div>
           {state.error !== "" && (
             <>
               <h4 className="eyebrow">error</h4>

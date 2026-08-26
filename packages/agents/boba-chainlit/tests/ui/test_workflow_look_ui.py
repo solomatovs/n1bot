@@ -108,6 +108,10 @@ class Sel:
     PILL: ClassVar[str] = ".pill"
     INSPECTOR: ClassVar[str] = ".inspector"
     INSPECTOR_CODE: ClassVar[str] = ".inspector__code"
+    JSON_KEY: ClassVar[str] = ".json__key"
+    JSON_STRING: ClassVar[str] = ".json__string"
+    JSON_BRACE: ClassVar[str] = ".json__open"
+    NODE_ARGS: ClassVar[str] = ".editor-node__args"
     BUILDER: ClassVar[str] = ".builder"
     BUILDER_LABEL: ClassVar[str] = ".builder__label"
     MENU_LIST: ClassVar[str] = ".menu__list"
@@ -456,6 +460,13 @@ class TestObserve:
         assert Css.of(inspector, "box-shadow") != "none"
         code = inspector.locator(Sel.INSPECTOR_CODE).first
         assert "geist mono" in Css.of(code, "font-family").lower()
+        key = code.locator(Sel.JSON_KEY).first
+        expect(key).to_have_text("command")
+        assert Css.of(key, "color") == tokens.rgb("signal")
+        assert Css.of(code.locator(Sel.JSON_BRACE).first, "color") == tokens.rgb(
+            "muted"
+        )
+        assert Css.of(code.locator(Sel.JSON_STRING).first, "color") == tokens.rgb("ink")
         expect(inspector).to_contain_text("echo LOOK_ONE")
 
         page.get_by_role("button", name="Close inspector").click()
@@ -569,6 +580,17 @@ class TestBuild:
         assert Css.of(issue.locator(".issues__code"), "color") == tokens.rgb("error")
         assert Css.of(node, "border-top-color") == tokens.rgb("error")
 
+        # аргументы показываются в узле структурно: ключ цветом, строка в одну линию
+        before = Css.box(node).height
+        page.locator(Sel.ARG_COMMAND).fill("echo " + "x" * 40)
+        args = node.locator(Sel.NODE_ARGS)
+        expect(args.locator(Sel.JSON_KEY).first).to_have_text("command")
+        assert Css.of(args.locator(Sel.JSON_KEY).first, "color") == tokens.rgb("signal")
+        expect(args.locator(Sel.JSON_STRING).first).to_have_text(re.compile("…$"))
+        assert Css.of(args, "border-top-color") == tokens.rgb("hairline")
+        assert "geist mono" in Css.of(args.locator(".json"), "font-family").lower()
+        assert Css.box(node).height > before
+
     def test_yaml_mode_and_notices(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
@@ -679,7 +701,7 @@ class TestResponsive:
         assert box.x == 56
         assert box.width <= NARROW["width"] * 0.85 + 1
 
-        listing.locator(Sel.ITEM_ON).click()
+        narrow_page.locator(Sel.ITEM_ON).click()
         expect(listing).not_to_have_class(re.compile("list--open"))
 
         # узкий экран: инспектор занимает всю сцену, кроме рейла

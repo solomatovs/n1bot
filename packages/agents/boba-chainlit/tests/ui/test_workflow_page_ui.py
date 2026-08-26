@@ -241,6 +241,8 @@ def test_finished_run_loads_lists_once(page: Page, stand: StandProcess) -> None:
     page.on("request", lambda request: list_requests.append(request.url))
     page.wait_for_timeout(3000)
 
-    listed = [url for url in list_requests if "/workflows" in url or "/workflow-runs?" in url]
+    listed = [
+        url for url in list_requests if "/workflows" in url or "/workflow-runs?" in url
+    ]
     assert listed == []
     expect(page.locator(Selector.TASK_NODE)).to_have_count(2)

@@ -6,7 +6,7 @@ import logging.config
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from engineio.payload import Payload
@@ -28,6 +28,9 @@ from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
 from boba.sandbox.zygote import ZygoteRegistry
 from chainlit.user import PersistedUser, User
+
+if TYPE_CHECKING:
+    from boba.chainlit.workflow.page import WorkflowPageConfig
 
 
 def run_app(config_path: Path):
@@ -278,15 +281,18 @@ def _use_workflow_api(c: AppConfig) -> None:
     """Workflow: REST, живые снимки по socket.io и страница SPA."""
     from boba.chainlit.infra.config import ChatProfiles  # noqa: PLC0415
     from boba.chainlit.workflow.api import WorkflowApi  # noqa: PLC0415
-    from boba.chainlit.workflow.page import WorkflowPage  # noqa: PLC0415
+    from boba.chainlit.workflow.page import WorkflowPageConfig  # noqa: PLC0415
     from boba.chainlit.workflow.socket import WorkflowNamespace  # noqa: PLC0415
+    from boba.settings.bind import bind  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
     from chainlit.server import sio  # noqa: PLC0415
     from chainlit.socket import _authenticate_connection  # noqa: PLC0415
 
     profiles = ChatProfiles(c.profiles)
     WorkflowApi(providers.workflow_service_ref, profiles).mount(chainlit_app)
-    WorkflowPage(c.chainlit.root, c.chainlit.url_prefix).mount(chainlit_app)
+    _use_workflow_page(
+        c, bind(providers.get_raw_config(), "workflow", WorkflowPageConfig)
+    )
 
     async def authenticate(environ: dict[str, Any]) -> User | PersistedUser | None:
         user, _token = await _authenticate_connection(environ)
@@ -295,6 +301,22 @@ def _use_workflow_api(c: AppConfig) -> None:
     sio.register_namespace(
         WorkflowNamespace(providers.workflow_service_ref, profiles, authenticate)
     )
+
+
+def _use_workflow_page(c: AppConfig, page: "WorkflowPageConfig") -> None:
+    """Страница workflow: сборка из public либо прокси vite dev-сервера."""
+    from boba.chainlit.domain.config import DevPage  # noqa: PLC0415
+    from boba.chainlit.workflow.page import (  # noqa: PLC0415
+        WorkflowDevPage,
+        WorkflowPage,
+    )
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    if isinstance(page.page, DevPage):
+        WorkflowDevPage(page.page.url, c.chainlit.url_prefix).mount(chainlit_app)
+        return
+
+    WorkflowPage(c.chainlit.root, c.chainlit.url_prefix).mount(chainlit_app)
 
 
 def _use_auth(config: AppConfig, container: Container) -> None:

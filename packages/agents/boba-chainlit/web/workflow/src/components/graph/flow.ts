@@ -1,7 +1,8 @@
-import { MarkerType, type Edge as FlowEdge, type Node as FlowNode } from "@xyflow/react";
+import { MarkerType, Position, type Edge as FlowEdge, type Node as FlowNode } from "@xyflow/react";
 
 import { layoutGraph, type LaidEdge } from "../../model/layout";
 import { phaseColor } from "../../model/summary";
+import { sideHandle } from "./geometry";
 import { formatDuration } from "../../model/time";
 import type { RunState, TaskState } from "../../model/workflow";
 import type { StageFlowNode } from "./StageNode";
@@ -43,7 +44,8 @@ export function flowOf(run: RunState, selectedTask: string | null): RunFlow {
       id: box.stage,
       type: "stage",
       position: box.position,
-      style: { width: box.size.width, height: box.size.height },
+      width: box.size.width,
+      height: box.size.height,
       draggable: false,
       selectable: false,
       data: {
@@ -64,7 +66,12 @@ export function flowOf(run: RunState, selectedTask: string | null): RunFlow {
       parentId: box.stage,
       extent: "parent",
       position: box.position,
-      style: { width: box.size.width, height: box.size.height },
+      width: box.size.width,
+      height: box.size.height,
+      handles: [
+        sideHandle("target", Position.Left, 0, box.size.height / 2),
+        sideHandle("source", Position.Right, box.size.width, box.size.height / 2),
+      ],
       data: {
         task: box.task,
         tool: spec?.tool ?? "?",

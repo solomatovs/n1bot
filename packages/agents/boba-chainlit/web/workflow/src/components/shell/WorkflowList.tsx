@@ -9,10 +9,11 @@ type Props = {
   runs: StoredRun[];
   selected: string | null;
   open: boolean;
+  onPick: () => void;
 };
 
 /** Список workflow: фильтр, «+ New workflow», инструменты пилюлями, число запусков. */
-export function WorkflowList({ workflows, runs, selected, open }: Props): ReactElement {
+export function WorkflowList({ workflows, runs, selected, open, onPick }: Props): ReactElement {
   const [filter, setFilter] = useState("");
   const shown = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -39,7 +40,7 @@ export function WorkflowList({ workflows, runs, selected, open }: Props): ReactE
         aria-label="filter workflows"
       />
       <div className="list__scroll">
-        <Link to="/build/new" className="list__new">
+        <Link to="/build/new" className="list__new" onClick={onPick}>
           + New workflow
         </Link>
         {shown.length === 0 && <div className="empty">No workflows in this filter.</div>}
@@ -50,6 +51,7 @@ export function WorkflowList({ workflows, runs, selected, open }: Props): ReactE
               key={item.id}
               to={`/build/${item.id}`}
               className={`item${String(item.id) === selected ? " item--on" : ""}`}
+              onClick={onPick}
             >
               <span className="item__dot" style={{ "--status-color": "var(--signal)" } as React.CSSProperties} />
               <span className="item__name">{item.name}</span>

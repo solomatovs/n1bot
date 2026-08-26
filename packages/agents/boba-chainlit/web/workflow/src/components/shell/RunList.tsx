@@ -9,6 +9,7 @@ type Props = {
   runs: StoredRun[];
   selected: string | null;
   open: boolean;
+  onPick: () => void;
 };
 
 type Group = {
@@ -53,7 +54,7 @@ function failedCount(run: StoredRun): number {
 }
 
 /** Список запусков: фильтр, группы по workflow, статус точкой, выбранный — подсвечен. */
-export function RunList({ runs, selected, open }: Props): ReactElement {
+export function RunList({ runs, selected, open, onPick }: Props): ReactElement {
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
@@ -101,7 +102,9 @@ export function RunList({ runs, selected, open }: Props): ReactElement {
               <span className="list__group-count">{group.runs.length}</span>
             </button>
             {!collapsed.has(group.name) &&
-              group.runs.map((run) => <RunItem key={run.id} run={run} selected={run.id === selected} />)}
+              group.runs.map((run) => (
+                <RunItem key={run.id} run={run} selected={run.id === selected} onPick={onPick} />
+              ))}
           </div>
         ))}
       </div>
@@ -109,10 +112,23 @@ export function RunList({ runs, selected, open }: Props): ReactElement {
   );
 }
 
-function RunItem({ run, selected }: { run: StoredRun; selected: boolean }): ReactElement {
+function RunItem({
+  run,
+  selected,
+  onPick,
+}: {
+  run: StoredRun;
+  selected: boolean;
+  onPick: () => void;
+}): ReactElement {
   const failed = failedCount(run);
   return (
-    <Link to={`/observe/${run.id}`} className={`item${selected ? " item--on" : ""}`} data-status={run.status}>
+    <Link
+      to={`/observe/${run.id}`}
+      className={`item${selected ? " item--on" : ""}`}
+      data-status={run.status}
+      onClick={onPick}
+    >
       <span
         className="item__dot"
         data-status={run.status}

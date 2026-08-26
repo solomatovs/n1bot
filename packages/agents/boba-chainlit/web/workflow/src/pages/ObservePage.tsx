@@ -1,5 +1,5 @@
 import { Square } from "lucide-react";
-import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { useServices } from "../app";
@@ -64,14 +64,7 @@ export function ObservePage(): ReactElement {
     };
   }, [api, runId]);
 
-  const socket = useMemo(() => new RunSocket(urls), [urls]);
-  useEffect(
-    () => () => {
-      socket.close();
-    },
-    [socket],
-  );
-
+  // сокет живёт вместе с подпиской: StrictMode и смена запуска пересоздают оба
   const reloadLists = shell.reload;
   useEffect(() => {
     if (runId === undefined) {
@@ -98,8 +91,14 @@ export function ObservePage(): ReactElement {
       finishedRef.current = finished;
     };
 
-    return socket.subscribe(runId, applySnapshot, setNotice);
-  }, [socket, runId, reloadLists]);
+    const socket = new RunSocket(urls);
+    const unsubscribe = socket.subscribe(runId, applySnapshot, setNotice);
+
+    return () => {
+      unsubscribe();
+      socket.close();
+    };
+  }, [urls, runId, reloadLists]);
 
   const stop = useCallback(async () => {
     if (runId === undefined) {
