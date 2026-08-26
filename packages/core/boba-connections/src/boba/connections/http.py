@@ -1,23 +1,156 @@
-"""Переиспользуемый транспортный профиль: timeout/ssl/retry/auth, url даёт consumer.
+"""HTTP-профиль соединения: base_url, timeout/ssl/retry и способ auth.
 
 Хост base_url может быть шаблоном `*.domain`: профиль покрывает поддомены
 любой глубины, но не сам domain; перед запросом профиль привязывается к
-конкретному хосту URL.
+конкретному хосту URL. Аутентификатор httpx по профилю строит
+boba.transport.http.HttpxAuth.
 
 Ошибки: своих не выпускает.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal, Self
+from collections.abc import Mapping
+from typing import Annotated, Any, ClassVar, Literal, Self
 from urllib.parse import urlparse
 
-import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
-from boba.transport.http.auth import NegotiateAuth, NoneAuth, WebAuth
+from boba.connections.kerberos import KerberosAuth, KerberosDump
 
-__all__ = ["HostPattern", "HttpProfile"]
+__all__ = [
+    "BasicAuth",
+    "BearerAuth",
+    "DigestAuth",
+    "HostPattern",
+    "HttpProfile",
+    "NegotiateAuth",
+    "NoneAuth",
+    "WebAuth",
+]
+
+
+class _AuthBase(BaseModel):
+    """Общая база: запрет лишних полей; аутентификатор строит транспорт."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    REVEAL_CONTEXT: ClassVar[str] = "reveal_secrets"
+    """Ключ обязан совпадать с SecretRevealing.REVEAL_CONTEXT из toolkit."""
+
+    method: str = Field(description="Способ; вариант сужает его до литерала.")
+
+    def trace(self) -> str:
+        """Строка журнала: способ, а у kerberos — ещё и чей билет."""
+        return f"auth={self.method}"
+
+    @classmethod
+    def _reveal(cls, value: SecretStr, info: SerializationInfo) -> str | None:
+        """Секрет уходит в дамп только с REVEAL_CONTEXT в контексте."""
+        context = info.context
+        if not isinstance(context, Mapping):
+            return None
+
+        if not context.get(cls.REVEAL_CONTEXT):
+            return None
+
+        return value.get_secret_value()
+
+
+class NoneAuth(_AuthBase):
+    """Anonymous-доступ. method='none' обязан быть прописан явно."""
+
+    method: Literal["none"]
+
+
+class BasicAuth(_AuthBase):
+    """HTTP Basic: user и password."""
+
+    method: Literal["basic"]
+    user: str = Field(min_length=1)
+    password: SecretStr = Field(min_length=1)
+
+    @field_serializer("password", when_used="json")
+    def _dump_password(self, value: SecretStr, info: SerializationInfo) -> str | None:
+        return self._reveal(value, info)
+
+
+class BearerAuth(_AuthBase):
+    """Authorization: Bearer <token>."""
+
+    method: Literal["bearer"]
+    token: SecretStr = Field(min_length=1)
+
+    @field_serializer("token", when_used="json")
+    def _dump_token(self, value: SecretStr, info: SerializationInfo) -> str | None:
+        return self._reveal(value, info)
+
+
+class DigestAuth(_AuthBase):
+    """HTTP Digest: user и password."""
+
+    method: Literal["digest"]
+    user: str = Field(min_length=1)
+    password: SecretStr = Field(min_length=1)
+
+    @field_serializer("password", when_used="json")
+    def _dump_password(self, value: SecretStr, info: SerializationInfo) -> str | None:
+        return self._reveal(value, info)
+
+
+class NegotiateAuth(_AuthBase):
+    """Kerberos/SPNEGO: Authorization: Negotiate по kerberos-секции профиля.
+
+    В конфиге — keytab сервиса либо delegated (идёт сам пользователь);
+    в песочницу уезжает билет одного вызова к HTTP@host профиля.
+    """
+
+    method: Literal["negotiate"]
+    kerberos: KerberosAuth = Field(
+        description="Креды: keytab, delegated или билет вызова.",
+    )
+    service_host: str | None = Field(
+        default=None,
+        description=(
+            "Хост SPN (HTTP/<service_host>), если он отличается от хоста "
+            "base_url: адрес по IP, reverse proxy. None — хост base_url."
+        ),
+    )
+    login_path: str | None = Field(
+        default=None,
+        description=(
+            "Путь login-сервлета, если сервис принимает Negotiate только там "
+            "(Confluence Kerberos SSO: /plugins/servlet/kerberos/ntlm/login); "
+            "сессионная cookie оттуда едет в остальные запросы. None — Negotiate "
+            "на каждом запросе."
+        ),
+    )
+
+    def trace(self) -> str:
+        """Строка журнала: negotiate плюс описание kerberos-кредов."""
+        return f"auth=negotiate {self.kerberos.trace()}"
+
+    @field_serializer("kerberos", when_used="json")
+    def _dump_kerberos(
+        self, value: KerberosAuth, info: SerializationInfo
+    ) -> dict[str, Any] | None:
+        return KerberosDump.json(value, info.context, "web connection")
+
+
+WebAuth = Annotated[
+    NoneAuth | BasicAuth | BearerAuth | DigestAuth | NegotiateAuth,
+    Field(discriminator="method"),
+]
+"""Discriminated union по method — точная диагностика ошибок валидации."""
 
 
 class HostPattern(BaseModel):
@@ -178,13 +311,6 @@ class HttpProfile(BaseModel):
             raise ValueError(msg)
 
         return f"{self.HTTP_SERVICE}@{host}"
-
-    def httpx_auth(self) -> httpx.Auth | None:
-        """Аутентификатор httpx профиля; negotiate получает SPN и login-URL."""
-        if isinstance(self.auth, NegotiateAuth):
-            return self.auth.httpx_auth_at(self.service_name(), self.login_url())
-
-        return self.auth.httpx_auth("")
 
     def login_url(self) -> str | None:
         """URL login-сервлета negotiate-профиля; None — сервлета нет."""

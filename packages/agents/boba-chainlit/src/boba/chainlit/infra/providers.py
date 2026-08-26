@@ -58,19 +58,16 @@ from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.workflow.events import RunEvents
 from boba.chainlit.workflow.service import WorkflowService
 from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
+from boba.chat.generation import LocalGeneration, OpenAiGeneration, StructuredGenerator
+from boba.chat.openai import OpenAiConfig
+from boba.chat.provider import ChatProvider, LocalChatConfig, OpenAiChatConfig
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.krb import CcacheRegistry
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
-from boba.llm.generation import (
-    GeneratorFactory,
-    LocalGeneration,
-    OpenAiGeneration,
-    StructuredGenerator,
-)
+from boba.llm.generation import GeneratorFactory
 from boba.llm.local import OnnxChatRuntime
-from boba.llm.openai import OpenAiConfig, OpenAiHttp
-from boba.llm.provider import ChatProvider, LocalChatConfig, OpenAiChatConfig
+from boba.llm.openai import OpenAiHttp
 from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig

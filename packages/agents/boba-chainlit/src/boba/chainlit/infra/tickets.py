@@ -27,21 +27,22 @@ from boba.chainlit.agent.toolrun.injected import (
     ToolConfigError,
 )
 from boba.chainlit.connections.store import ConnectionProfile
-from boba.db.clickhouse import ClickHouseConfig
-from boba.db.postgres import PostgresConfig
-from boba.krb import (
+from boba.connections.clickhouse import ClickHouseConfig
+from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.connections.kerberos import (
     DelegatedAuth,
     KerberosAuthBase,
-    KerberosCredentials,
     KerberosPasswordAuth,
     KeytabAuth,
+    TicketAuth,
+)
+from boba.connections.postgres import PostgresConfig
+from boba.krb import (
+    KerberosCredentials,
     KeytabCredentials,
     PasswordCredentials,
     ServiceTicketIssuer,
-    TicketAuth,
 )
-from boba.transport.http import HttpProfile
-from boba.transport.http.auth import NegotiateAuth
 
 __all__ = ["DelegationSource", "ServiceTickets", "TicketArming"]
 

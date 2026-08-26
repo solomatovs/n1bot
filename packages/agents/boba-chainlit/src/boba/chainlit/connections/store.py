@@ -36,10 +36,11 @@ from pydantic import (
 
 from boba.chainlit.connections.secrets import SecretCipher
 from boba.chainlit.domain.context import Subject
-from boba.db.clickhouse import ClickHouseConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig, PostgresError
+from boba.connections.clickhouse import ClickHouseConfig
+from boba.connections.http import HttpProfile
+from boba.connections.postgres import PostgresConfig
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.toolkit.failure import ValidationText
-from boba.transport.http import HttpProfile
 
 logger = logging.getLogger(__name__)
 

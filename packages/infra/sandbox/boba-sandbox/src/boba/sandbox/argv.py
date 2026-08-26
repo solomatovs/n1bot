@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import TypeVar
 
 from boba.sandbox.profile import BindSpec, SandboxMount, SandboxProfile
-from boba.toolkit.binaries import SandboxBinary
+from boba.workspace.binaries import SandboxBinary
 from boba.workspace.launcher import FUSE_DEVICE
 
 __all__ = ["build_zygote_argv"]

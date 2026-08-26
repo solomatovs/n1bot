@@ -40,8 +40,8 @@ from boba.chainlit.domain.keys import ObjectKey, ThreadDir
 from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.infra.plugins import tool_call_scope
-from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
+from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"

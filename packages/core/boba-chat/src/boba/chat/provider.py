@@ -24,7 +24,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.llm.openai import OpenAiConfig
+from boba.chat.openai import OpenAiConfig
 
 __all__ = [
     "ChatBackendConfig",

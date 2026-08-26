@@ -1,24 +1,6 @@
 """Kerberos для boba: способы аутентификации, SPNEGO-accept, делегирование, PAC."""
 
-from boba.krb.auth import (
-    DelegatedAuth,
-    KerberosAuth,
-    KerberosAuthBase,
-    KerberosMethod,
-    KerberosPasswordAuth,
-    KerberosWorkspace,
-    KerberosWorkspaceConfig,
-    KeytabAuth,
-    TicketAuth,
-)
-from boba.krb.config import (
-    AcceptConfig,
-    ConstrainedDelegation,
-    Delegation,
-    DelegationMode,
-    ForwardedDelegation,
-    KerberosDump,
-)
+from boba.krb.auth import KerberosWorkspace, KerberosWorkspaceConfig
 from boba.krb.credentials import (
     CcacheLifetime,
     CcacheRegistry,
@@ -46,32 +28,20 @@ from boba.krb.spnego import SpnegoNegotiate
 from boba.krb.tickets import ServiceTicketIssuer
 
 __all__ = [
-    "AcceptConfig",
     "CcacheLifetime",
     "CcacheRegistry",
     "ClientCredentials",
-    "ConstrainedDelegation",
     "CredentialsExpiredError",
-    "DelegatedAuth",
     "DelegatedCredentials",
-    "Delegation",
-    "DelegationMode",
     "DelegationNotPermittedError",
-    "ForwardedDelegation",
     "InvalidTokenError",
     "IssuedCredentials",
-    "KerberosAuth",
-    "KerberosAuthBase",
     "KerberosCredentials",
     "KerberosDelegation",
-    "KerberosDump",
     "KerberosEnv",
     "KerberosError",
-    "KerberosMethod",
-    "KerberosPasswordAuth",
     "KerberosWorkspace",
     "KerberosWorkspaceConfig",
-    "KeytabAuth",
     "KeytabCredentials",
     "KeytabError",
     "PacGroupSids",
@@ -82,7 +52,6 @@ __all__ = [
     "SpnegoAcceptor",
     "SpnegoIdentity",
     "SpnegoNegotiate",
-    "TicketAuth",
     "TicketCredentials",
     "UserCcache",
 ]

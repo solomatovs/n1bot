@@ -17,7 +17,8 @@ from typing import Any, Protocol
 import httpx
 
 from boba.cancellation import current_cancellation
-from boba.transport.http.connection import HttpProfile
+from boba.connections.http import HttpProfile
+from boba.transport.http import HttpxAuth
 
 __all__ = [
     "ByteStream",
@@ -91,7 +92,7 @@ class HttpTransport:
             base_url=profile.base_url or "",
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
-            auth=profile.httpx_auth(),
+            auth=HttpxAuth.of(profile),
         )
 
     async def __aenter__(self) -> HttpTransport:

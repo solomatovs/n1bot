@@ -19,6 +19,7 @@ from typing import Annotated, Any, ClassVar, Final, Literal
 import httpx
 from pydantic import ConfigDict, Field
 
+from boba.connections.http import HttpProfile
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.tool.kb.confluence.request_sources import ConfluenceRest
@@ -27,7 +28,7 @@ from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 from boba.toolkit.sql import RowOffset
 from boba.toolkit.types import LLMStringList, SecretRevealing
-from boba.transport.http import HttpProfile
+from boba.transport.http import HttpxAuth
 
 _PAGE_ID_DESCRIPTION = "ID страницы Confluence (из URL `viewpage.action?pageId=<id>`)."
 
@@ -75,7 +76,7 @@ class ConfluenceHttp:
                 timeout=profile.timeout_sec,
                 verify=profile.ssl_verify,
                 follow_redirects=True,
-                auth=profile.httpx_auth(),
+                auth=HttpxAuth.of(profile),
             ) as client:
                 response = await client.get(url)
                 response.raise_for_status()

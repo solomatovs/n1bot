@@ -19,14 +19,16 @@ import pytest
 from pydantic import SecretStr
 from stand_site import Stand
 
-from boba.krb import (
-    KerberosWorkspace,
-    KeytabAuth,
-    KeytabCredentials,
-    ServiceTicketIssuer,
+from boba.connections.http import (
+    BasicAuth,
+    BearerAuth,
+    HttpProfile,
+    NegotiateAuth,
+    NoneAuth,
 )
-from boba.transport.http import HttpProfile, HttpRequest, HttpTransport
-from boba.transport.http.auth import BasicAuth, BearerAuth, NegotiateAuth, NoneAuth
+from boba.connections.kerberos import KeytabAuth
+from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
+from boba.transport.http import HttpRequest, HttpTransport
 
 STAND = Stand.required()
 
@@ -142,9 +144,7 @@ async def test_bearer_auth_names_the_token_owner() -> None:
     if not STAND.confluence_token.get_secret_value():
         pytest.skip("в конфиге стенда нет токена confluence")
 
-    profile = _confluence(
-        BearerAuth(method="bearer", token=STAND.confluence_token)
-    )
+    profile = _confluence(BearerAuth(method="bearer", token=STAND.confluence_token))
 
     status, body = await _body(profile, HttpRequest(url=CONFLUENCE_ME))
 
@@ -162,9 +162,7 @@ async def test_bearer_auth_with_a_wrong_token_stays_anonymous() -> None:
     Сам сервер анонима пускает (200), поэтому проверяется не код, а то, кем
     он нас видит: доступ под владельцем токена не достаётся.
     """
-    profile = _confluence(
-        BearerAuth(method="bearer", token=SecretStr("not-a-token"))
-    )
+    profile = _confluence(BearerAuth(method="bearer", token=SecretStr("not-a-token")))
 
     status, body = await _body(profile, HttpRequest(url=CONFLUENCE_ME))
     if status != 200:
@@ -178,9 +176,7 @@ async def test_bearer_auth_with_a_wrong_token_stays_anonymous() -> None:
 async def test_negotiate_keytab_logs_in_as_the_service_principal() -> None:
     """method = negotiate + keytab: SPNEGO к HTTP/host, сессия — принципала."""
     profile = _confluence(
-        NegotiateAuth(
-            method="negotiate", kerberos=_keytab(), login_path=LOGIN_SERVLET
-        )
+        NegotiateAuth(method="negotiate", kerberos=_keytab(), login_path=LOGIN_SERVLET)
     )
 
     status, body = await _body(profile, HttpRequest(url=CONFLUENCE_ME))
@@ -200,9 +196,7 @@ async def test_negotiate_ticket_logs_in_as_the_ticket_owner() -> None:
         source, STAND.confluence_spn
     )
     profile = _confluence(
-        NegotiateAuth(
-            method="negotiate", kerberos=ticket, login_path=LOGIN_SERVLET
-        )
+        NegotiateAuth(method="negotiate", kerberos=ticket, login_path=LOGIN_SERVLET)
     )
 
     status, body = await _body(profile, HttpRequest(url=CONFLUENCE_ME))

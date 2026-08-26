@@ -8,6 +8,8 @@ version = "0.0.14.dev8"
 description = "Chainlit2 web UI app for the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-chat==0.0.14.dev8",
+    "boba-connections==0.0.14.dev8",
     "boba-settings==0.0.14.dev8",
     "boba-toolkit==0.0.14.dev8",
     "boba-cancellation==0.0.14.dev8",

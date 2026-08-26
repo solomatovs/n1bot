@@ -10,7 +10,7 @@ from boba.chainlit.connections.whitelist import (
     ConnectionKeying,
     ConnectionWhitelist,
 )
-from boba.transport.http import HttpProfile
+from boba.connections.http import HttpProfile
 
 
 @pytest.fixture(autouse=True)

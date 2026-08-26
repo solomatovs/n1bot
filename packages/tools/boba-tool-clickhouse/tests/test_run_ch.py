@@ -10,7 +10,7 @@ from typing import ClassVar
 
 import pytest
 
-from boba.db.clickhouse import ClickHouseConfig
+from boba.connections.clickhouse import ClickHouseConfig
 from boba.settings import bind
 from boba.tool.ch.tools import ChToolConfig, ch_list_tables, ch_query
 from boba.toolkit.entry import ToolMain

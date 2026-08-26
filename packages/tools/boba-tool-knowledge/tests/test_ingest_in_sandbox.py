@@ -11,12 +11,12 @@ from conftest import needs_sandbox, needs_userns, sandbox_profile
 from omegaconf import DictConfig
 
 from boba.sandbox import SandboxToolConfig
+from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.settings import bind
 from boba.tool.kb.confluence.ingest_tools import IngestWarmupConfig
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.protocol import ReplyError, ToolCommand
-from boba.toolkit.zygote import WarmupCall
 
 MODULE = "boba.tool.kb.confluence.ingest_tools"
 

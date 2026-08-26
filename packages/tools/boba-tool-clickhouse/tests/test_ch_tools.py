@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import ValidationError
 
-from boba.db.clickhouse import ClickHouseConfig
+from boba.connections.clickhouse import ClickHouseConfig
 from boba.db.clickhouse.payload import SpnegoHeaders
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.ch.tools import ChToolConfig, ch_connection_list, ch_query

@@ -10,8 +10,8 @@ from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from boba.toolkit.binaries import SandboxBinary, TrustedBinaries
 from boba.toolkit.template import FieldTemplate, TemplateError
+from boba.workspace.binaries import SandboxBinary, TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 __all__ = [

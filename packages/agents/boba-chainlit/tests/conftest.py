@@ -38,11 +38,11 @@ from boba.chainlit.infra.session import (
     current_session,
 )
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
+from boba.chat.openai import OpenAiConfig
+from boba.chat.provider import ChatSampling, OpenAiChatConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.llm.bridge import ProviderChatModel
-from boba.llm.openai import OpenAiConfig
 from boba.llm.openai_chat import OpenAiChatProvider
-from boba.llm.provider import ChatSampling, OpenAiChatConfig
 from boba.settings import bind, build_app_config
 
 TEST_DB = "boba_chainlit_test"

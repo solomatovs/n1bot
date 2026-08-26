@@ -42,8 +42,8 @@ from pydantic import (
     SecretStr,
     TypeAdapter,
 )
-from pydantic_core import CoreSchema
 from pydantic.fields import FieldInfo
+from pydantic_core import CoreSchema
 
 __all__ = [
     "ArgPlacement",

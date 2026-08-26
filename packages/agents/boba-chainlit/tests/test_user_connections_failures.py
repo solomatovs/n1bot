@@ -42,22 +42,17 @@ from boba.chainlit.infra.user_connections import (
     UserConnectionsSpec,
     UserKerberos,
 )
-from boba.db.postgres import AsyncPostgresPool, PasswordAuth, PostgresConfig
-from boba.krb import (
-    CcacheRegistry,
-    DelegatedAuth,
-    DelegationMode,
-    KeytabAuth,
-    KeytabCredentials,
-    UserCcache,
-)
+from boba.connections.http import HttpProfile
+from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
+from boba.connections.postgres import PasswordAuth, PostgresConfig
+from boba.db.postgres import AsyncPostgresPool
+from boba.krb import CcacheRegistry, KeytabCredentials, UserCcache
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.facade import Injected
 from boba.toolkit.result import ErrorResult, ToolArtifact
-from boba.transport.http import HttpProfile
 
 pytestmark = pytest.mark.anyio
 

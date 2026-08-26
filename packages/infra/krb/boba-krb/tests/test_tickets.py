@@ -13,19 +13,21 @@ import pytest
 from pydantic import SecretStr
 from stand_site import Stand
 
+from boba.connections.kerberos import (
+    DelegatedAuth,
+    DelegationMode,
+    KeytabAuth,
+    TicketAuth,
+)
 from boba.krb import (
     ClientCredentials,
     CredentialsExpiredError,
-    DelegatedAuth,
     DelegatedCredentials,
-    DelegationMode,
     KerberosEnv,
     KerberosError,
     KerberosWorkspace,
-    KeytabAuth,
     KeytabCredentials,
     ServiceTicketIssuer,
-    TicketAuth,
     TicketCredentials,
     UserCcache,
 )
@@ -130,12 +132,8 @@ class TestDelegatedConfigStaysOutside:
 
 @live_kdc
 class TestServiceTicketIssuer:
-    def test_ccache_holds_only_the_service_ticket(
-        self, clean_env: None
-    ) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+    def test_ccache_holds_only_the_service_ticket(self, clean_env: None) -> None:
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
 
         credentials = TicketCredentials(ticket)
         with credentials.applied():
@@ -152,18 +150,12 @@ class TestServiceTicketIssuer:
         if not any(server.startswith("krbtgt/") for server in servers):
             raise AssertionError(f"source must keep its TGT: {servers}")
 
-    def test_ticket_principal_and_service(
-        self, clean_env: None
-    ) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+    def test_ticket_principal_and_service(self, clean_env: None) -> None:
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
         if (ticket.principal, ticket.service) != (PRINCIPAL, SERVICE):
             raise AssertionError("ticket must name the source principal and the SPN")
 
-    def test_relabelled_ccache_is_refused(
-        self, clean_env: None
-    ) -> None:
+    def test_relabelled_ccache_is_refused(self, clean_env: None) -> None:
         """Ccache под чужим принципалом билет за другого не выпускает."""
         source = _source()
         source.ensure()
@@ -186,12 +178,8 @@ class TestServiceTicketIssuer:
 
 @live_kdc
 class TestTicketCredentials:
-    def test_applied_exposes_private_file(
-        self, clean_env: None
-    ) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+    def test_applied_exposes_private_file(self, clean_env: None) -> None:
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
         credentials = ClientCredentials.of(ticket)
         if not isinstance(credentials, TicketCredentials):
             raise AssertionError("ticket config must build TicketCredentials")
@@ -209,21 +197,15 @@ class TestTicketCredentials:
         if KerberosEnv.CCACHE in os.environ:
             raise AssertionError("leaving applied() must restore the environment")
 
-    def test_ccache_is_unavailable_outside_applied(
-        self, clean_env: None
-    ) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+    def test_ccache_is_unavailable_outside_applied(self, clean_env: None) -> None:
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
         credentials = TicketCredentials(ticket)
 
         with pytest.raises(KerberosError, match="inside applied"):
             _ = credentials.ccache
 
     def test_expired_ticket_refused(self, tmp_path: Path, clean_env: None) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
         strict = ticket.model_copy(update={"min_lifetime": 10**9})
 
         credentials = TicketCredentials(strict)

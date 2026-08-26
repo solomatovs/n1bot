@@ -17,8 +17,8 @@ from stand_site import Stand
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.infra.tickets import ServiceTickets, TicketArming
-from boba.db.postgres.config import PostgresConfig
-from boba.krb import KeytabAuth, TicketAuth
+from boba.connections.kerberos import KeytabAuth, TicketAuth
+from boba.connections.postgres import PostgresConfig
 from boba.toolkit.facade import Injected
 
 STAND = Stand.required()

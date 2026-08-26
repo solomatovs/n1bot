@@ -15,8 +15,8 @@ from typing import ClassVar
 
 import pytest
 
-from boba.toolkit.binaries import TrustedBinaries
-from boba.toolkit.images import (
+from boba.workspace.binaries import TrustedBinaries
+from boba.workspace.images import (
     FuseMounter,
     ImageStore,
     LauncherMarker,

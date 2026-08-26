@@ -8,6 +8,7 @@ import pytest
 from fake_toolmod import FakeConfig
 from pydantic import SecretStr
 
+from boba.sandbox.wrap import ToolProcessWrap, WrapErrorKind
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import (
     LaunchOutcome,
@@ -18,7 +19,6 @@ from boba.toolkit.launcher import (
 )
 from boba.toolkit.protocol import REPLY, ReplyError, ToolCommand
 from boba.toolkit.result import TextResult
-from boba.toolkit.wrap import ToolProcessWrap, WrapErrorKind
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 

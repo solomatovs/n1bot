@@ -19,7 +19,7 @@ import krb5
 from gssapi import Credentials, Name, NameType, SecurityContext
 from gssapi.raw.misc import GSSError
 
-from boba.krb.config import (
+from boba.connections.kerberos import (
     AcceptConfig,
     Delegation,
     DelegationMode,
@@ -31,7 +31,7 @@ from boba.krb.credentials import (
     KerberosEnv,
     UserCcache,
 )
-from boba.krb.errors import InvalidTokenError, KerberosError, KeytabError
+from boba.krb.errors import GssErrors, InvalidTokenError, KerberosError, KeytabError
 from boba.krb.pac import PacGroupSids
 
 __all__ = ["KerberosDelegation", "SpnegoAcceptor", "SpnegoIdentity"]
@@ -194,7 +194,7 @@ class KerberosDelegation:
             )
         except GSSError as exc:
             msg = f"failed to store delegated ccache {ccache}"
-            raise KerberosError.of_gss(exc, msg) from exc
+            raise GssErrors.of(exc, msg) from exc
 
         refusal = self.mismatch(ccache, identity.principal, self._registry.mode)
         if refusal:

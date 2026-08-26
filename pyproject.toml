@@ -16,6 +16,8 @@ pythonpath = [
     "packages/core/boba-cancellation/src",
     "packages/core/boba-workflow/src",
     "packages/core/boba-access/src",
+    "packages/core/boba-connections/src",
+    "packages/core/boba-chat/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
@@ -59,6 +61,8 @@ extraPaths = [
     "packages/core/boba-cancellation/src",
     "packages/core/boba-workflow/src",
     "packages/core/boba-access/src",
+    "packages/core/boba-connections/src",
+    "packages/core/boba-chat/src",
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
@@ -130,6 +134,8 @@ boba-settings       = { workspace = true }
 boba-cancellation   = { workspace = true }
 boba-workflow       = { workspace = true }
 boba-access         = { workspace = true }
+boba-connections    = { workspace = true }
+boba-chat           = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }

@@ -35,11 +35,13 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import ToolLike, ToolMain
 from boba.toolkit.facade import WarmupHooks
-from boba.toolkit.images import (
+from boba.toolkit.payload import PayloadLogging
+from boba.toolkit.timing import Elapsed, ProcessAge
+from boba.workspace.binaries import TrustedBinaries
+from boba.workspace.images import (
     FuseMounter,
     ImageStore,
     LauncherOptions,
@@ -47,8 +49,6 @@ from boba.toolkit.images import (
     SparseCopier,
     trace,
 )
-from boba.toolkit.payload import PayloadLogging
-from boba.toolkit.timing import Elapsed, ProcessAge
 
 __all__ = [
     "CallExit",

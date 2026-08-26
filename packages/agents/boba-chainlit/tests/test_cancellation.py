@@ -25,10 +25,11 @@ from boba.cancellation import (
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
 from boba.chainlit.infra.plugins import as_structured_tool
+from boba.connections.http import HttpProfile
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.toolkit.result import ErrorResult
-from boba.transport.http import CancellableHttpTransport, HttpProfile, HttpRequest
+from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 
 def _bin_dirs() -> list[str]:
@@ -54,7 +55,11 @@ _ROOTFS_IMAGE = _SANDBOX / "rootfs.ext4"
 _SITE_PACKAGES = "/usr/local/lib/python3.11/site-packages"
 _PACKAGES = Path(__file__).resolve().parents[3]
 
-_SRC_PACKAGES = ("core/boba-cancellation", "core/boba-toolkit")
+_SRC_PACKAGES = (
+    "core/boba-cancellation",
+    "core/boba-toolkit",
+    "infra/sandbox/boba-sandbox",
+)
 """Пакеты, чей код нужен зиготе: их src приезжает биндом в /usr/src."""
 
 

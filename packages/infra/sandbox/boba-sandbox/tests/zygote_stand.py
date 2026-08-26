@@ -14,12 +14,12 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from boba.sandbox import SandboxProfile
+from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
     ZygotePolicy,
     ZygoteRegistry,
     ZygoteToolCaller,
 )
-from boba.toolkit.zygote import WarmupCall
 
 REPO = Path(__file__).resolve().parents[5]
 SANDBOX = REPO / "build" / "src" / "sandbox"
@@ -88,6 +88,7 @@ class SandboxStand:
     SRC_PACKAGES: ClassVar[tuple[str, ...]] = (
         "core/boba-cancellation",
         "core/boba-toolkit",
+        "infra/sandbox/boba-sandbox",
     )
     """Пакеты, чей код нужен зиготе стенда: их src уезжает в PYTHONPATH."""
 

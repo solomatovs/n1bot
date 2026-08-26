@@ -41,15 +41,12 @@ from boba.chainlit.infra.user_connections import (
     UserConnections,
     UserConnectionsSpec,
 )
-from boba.db.postgres import AsyncPostgresPool, PasswordAuth, PostgresConfig
-from boba.krb import (
-    CcacheRegistry,
-    DelegatedAuth,
-    DelegationMode,
-    KeytabAuth,
-    KeytabCredentials,
-    UserCcache,
-)
+from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
+from boba.connections.postgres import PasswordAuth, PostgresConfig
+from boba.db.postgres import AsyncPostgresPool
+from boba.krb import CcacheRegistry, KeytabCredentials, UserCcache
+from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
 from boba.tool.pg.tools import PgToolConfig
@@ -57,9 +54,6 @@ from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.sql import SqlErrorKind
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.transport.http import HttpProfile
-from boba.transport.http.auth import NegotiateAuth
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"

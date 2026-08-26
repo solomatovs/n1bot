@@ -27,7 +27,7 @@ from httpx_sse import ServerSentEvent
 from httpx_sse._decoders import SSEDecoder
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from boba.llm.provider import (
+from boba.chat.provider import (
     ChatDelta,
     ChatEvent,
     ChatProvider,

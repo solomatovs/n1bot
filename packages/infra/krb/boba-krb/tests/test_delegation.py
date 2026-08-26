@@ -17,17 +17,19 @@ import pytest
 from gssapi import Credentials, Name, NameType, RequirementFlag, SecurityContext
 from stand_site import Stand
 
-from boba.krb import (
+from boba.connections.kerberos import (
     AcceptConfig,
-    CcacheLifetime,
-    CcacheRegistry,
     ConstrainedDelegation,
     DelegationMode,
     ForwardedDelegation,
+    KeytabAuth,
+)
+from boba.krb import (
+    CcacheLifetime,
+    CcacheRegistry,
     KerberosDelegation,
     KerberosEnv,
     KerberosWorkspace,
-    KeytabAuth,
     KeytabCredentials,
     ServiceTicketIssuer,
     SpnegoAcceptor,

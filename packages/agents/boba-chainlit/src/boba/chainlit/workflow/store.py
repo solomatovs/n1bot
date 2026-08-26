@@ -25,7 +25,8 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig, PostgresError
+from boba.connections.postgres import PostgresConfig
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.workflow import RunState, RunStatus, WorkflowSpec
 
 __all__ = [

@@ -22,11 +22,15 @@ from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.infra.plugins import as_structured_tool, warmup_configs
 from boba.chainlit.infra.tickets import ServiceTickets
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig
-from boba.krb import KeytabAuth, KeytabCredentials, ServiceTicketIssuer
+from boba.connections.http import HttpProfile
+from boba.connections.kerberos import KeytabAuth
+from boba.connections.postgres import PostgresConfig
+from boba.db.postgres import AsyncPostgresPool
+from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.sandbox import (
     SandboxToolConfig,
 )
+from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.settings import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
@@ -46,8 +50,6 @@ from boba.toolkit.result import (
     TextResult,
     ToolArtifact,
 )
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.transport.http import HttpProfile
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"

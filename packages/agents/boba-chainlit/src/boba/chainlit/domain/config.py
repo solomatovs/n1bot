@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.access import ToolGrant
 from boba.sandbox import WorkspaceSpec
-from boba.toolkit.binaries import TrustedBinaries
+from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 __all__ = ["LocalStorageConfig", "RoleConfig"]

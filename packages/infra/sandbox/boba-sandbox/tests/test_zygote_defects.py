@@ -27,10 +27,10 @@ from pydantic import SecretStr
 from zygote_stand import ROOTFS_IMAGE, SandboxStand, ZygoteStand
 
 from boba.sandbox import SandboxProfile
+from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygoteRegistry, ZygoteSpawner, ZygoteState
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
-from boba.toolkit.images import PartialCopy
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.protocol import ReplyOk, ToolCommand
 from boba.toolkit.stream import (
@@ -39,7 +39,7 @@ from boba.toolkit.stream import (
     StreamSink,
     ToolChannelsTap,
 )
-from boba.toolkit.zygote import WarmupCall
+from boba.workspace.images import PartialCopy
 
 needs_sandbox = pytest.mark.skipif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),

@@ -26,9 +26,9 @@ from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxMountError
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
-from boba.toolkit.binaries import TrustedBinaries
-from boba.toolkit.images import LauncherOptions
 from boba.toolkit.result import ShellResult
+from boba.workspace.binaries import TrustedBinaries
+from boba.workspace.images import LauncherOptions
 from boba.workspace.launcher import (
     FUSE_DEVICE,
     ReadWindow,

@@ -11,7 +11,7 @@ from boba.chainlit.infra.config import (
     ChatProfiles,
     ProfileRefusal,
 )
-from boba.llm.provider import ChatSampling, OpenAiChatConfig
+from boba.chat.provider import ChatSampling, OpenAiChatConfig
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
 

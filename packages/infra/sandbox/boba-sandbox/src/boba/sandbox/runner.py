@@ -26,14 +26,14 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.sandbox.profile import SandboxProfile
-from boba.toolkit.binaries import SandboxBinary
 from boba.toolkit.channels import JournalChannel, WrapChannel
-from boba.toolkit.images import LauncherMarker
 from boba.toolkit.launcher import LauncherError, LaunchPayload, RunResult
 from boba.toolkit.stream import (
     ChannelSinks,
     Chunk,
 )
+from boba.workspace.binaries import SandboxBinary
+from boba.workspace.images import LauncherMarker
 
 
 def has_bwrap(profile: SandboxProfile) -> bool:

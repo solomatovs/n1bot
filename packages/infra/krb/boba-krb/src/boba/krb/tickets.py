@@ -27,9 +27,9 @@ import krb5
 from gssapi import Credentials, Name, NameType, SecurityContext
 from gssapi.raw.misc import GSSError
 
-from boba.krb.auth import TicketAuth
+from boba.connections.kerberos import TicketAuth
 from boba.krb.credentials import KerberosCredentials
-from boba.krb.errors import CredentialsExpiredError, KerberosError
+from boba.krb.errors import CredentialsExpiredError, GssErrors, KerberosError
 from boba.toolkit.timing import Elapsed
 
 __all__ = ["ServiceTicketIssuer"]
@@ -88,7 +88,7 @@ class ServiceTicketIssuer:
             context = SecurityContext(name=target, creds=creds, usage="initiate")
             context.step()
         except GSSError as exc:
-            raise KerberosError.of_gss(exc, f"ticket to {principal}") from exc
+            raise GssErrors.of(exc, f"ticket to {principal}") from exc
 
     @classmethod
     def principal_of(cls, service: str) -> str:

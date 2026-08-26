@@ -21,19 +21,25 @@ from boba.chainlit.connections import (
     StoredConnection,
 )
 from boba.chainlit.data.models import Thread, User
-from boba.db.clickhouse import (
+from boba.connections.clickhouse import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
     NoPasswordAuth,
 )
-from boba.db.postgres import (
+from boba.connections.http import (
+    BasicAuth,
+    BearerAuth,
+    DigestAuth,
+    HttpProfile,
+    NoneAuth,
+)
+from boba.connections.postgres import (
     PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,
 )
-from boba.transport.http import HttpProfile
-from boba.transport.http.auth import BasicAuth, BearerAuth, DigestAuth, NoneAuth
+from boba.transport.http import HttpxAuth
 
 
 @pytest.fixture(autouse=True)
@@ -240,8 +246,8 @@ class TestRealProfiles:
 
     def test_httpx_auth_still_built(self) -> None:
         bearer = BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER))
-        if bearer.httpx_auth("") is None:
-            raise AssertionError("bearer.httpx_auth() is not None")
+        if HttpxAuth.of_auth(bearer, "", None) is None:
+            raise AssertionError("HttpxAuth.of(bearer) is not None")
 
     def test_token_masked_in_dump(self) -> None:
         profile = HttpProfile(

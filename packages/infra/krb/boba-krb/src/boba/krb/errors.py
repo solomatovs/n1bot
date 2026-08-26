@@ -4,7 +4,7 @@
 CredentialsExpiredError — тикет истёк и не продлевается;
 DelegationNotPermittedError — делегирование запрещено политикой AD;
 InvalidTokenError — клиент прислал непригодный SPNEGO-токен;
-KerberosError — прочие сбои GSSAPI/krb5.
+KerberosError — прочие сбои GSSAPI/krb5 (база — boba.connections.kerberos).
 """
 
 from __future__ import annotations
@@ -18,20 +18,23 @@ from gssapi.exceptions import (
 )
 from gssapi.raw.misc import GSSError
 
+from boba.connections.kerberos import KerberosError
+
 __all__ = [
     "CredentialsExpiredError",
     "DelegationNotPermittedError",
+    "GssErrors",
     "InvalidTokenError",
     "KerberosError",
     "KeytabError",
 ]
 
 
-class KerberosError(Exception):
-    """Базовая ошибка kerberos-слоя; наружу не выходит ничего сверх наследников."""
+class GssErrors:
+    """Перевод GSSError в ошибки слоя; база KerberosError живёт в boba.connections."""
 
     @staticmethod
-    def of_gss(exc: GSSError, context: str) -> KerberosError:
+    def of(exc: GSSError, context: str) -> KerberosError:
         """Классифицирует GSSError в ошибку слоя."""
         if isinstance(exc, (ExpiredCredentialsError, ExpiredContextError)):
             return CredentialsExpiredError(f"{context}: {exc}")

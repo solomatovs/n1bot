@@ -13,12 +13,12 @@ from pydantic import (
     model_validator,
 )
 
-from boba.db.clickhouse.auth import (
+from boba.connections.clickhouse.auth import (
     ClickHouseAuth,
     ClickHouseKerberos,
     ClickHouseLibch,
 )
-from boba.krb import KerberosAuthBase, KerberosDump
+from boba.connections.kerberos import KerberosAuthBase, KerberosDump
 from boba.toolkit.types import SecretRevealing
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]

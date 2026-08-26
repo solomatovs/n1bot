@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import BinaryIO, ClassVar
 
-from boba.toolkit.binaries import SandboxBinary, TrustedBinaries
+from boba.workspace.binaries import SandboxBinary, TrustedBinaries
 
 __all__ = [
     "FuseMounter",

@@ -63,14 +63,16 @@ from boba.chainlit.domain.session import (
     UserMetadataField,
 )
 from boba.chainlit.infra.session import ChainlitSession
-from boba.krb import (
+from boba.connections.kerberos import (
     AcceptConfig,
-    CcacheRegistry,
-    CredentialsExpiredError,
     Delegation,
     DelegationMode,
-    DelegationNotPermittedError,
     ForwardedDelegation,
+)
+from boba.krb import (
+    CcacheRegistry,
+    CredentialsExpiredError,
+    DelegationNotPermittedError,
     InvalidTokenError,
     KerberosDelegation,
     KerberosError,

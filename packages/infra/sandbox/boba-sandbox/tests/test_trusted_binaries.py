@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from boba.toolkit.binaries import (
+from boba.workspace.binaries import (
     SandboxBinary,
     TrustedBinaries,
     UntrustedBinaryError,

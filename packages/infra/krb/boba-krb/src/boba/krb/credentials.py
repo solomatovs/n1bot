@@ -24,15 +24,15 @@ from typing import ClassVar
 
 import krb5
 
-from boba.krb.auth import (
+from boba.connections.kerberos import (
     DelegatedAuth,
+    DelegationMode,
     KerberosAuth,
     KerberosPasswordAuth,
-    KerberosWorkspace,
     KeytabAuth,
     TicketAuth,
 )
-from boba.krb.config import DelegationMode
+from boba.krb.auth import KerberosWorkspace
 from boba.krb.errors import CredentialsExpiredError, KerberosError, KeytabError
 from boba.krb.refresh import RefreshWaiters, RefreshWaiting
 from boba.toolkit.timing import Elapsed
@@ -454,7 +454,9 @@ class KeytabCredentials(IssuedCredentials):
     """TGT принципала из явного keytab в собственный ccache."""
 
     def __init__(self, auth: KeytabAuth) -> None:
-        super().__init__(auth.principal, auth.ccache(), auth.min_lifetime)
+        super().__init__(
+            auth.principal, KerberosWorkspace.ccache_for(auth), auth.min_lifetime
+        )
         self._auth = auth
 
     @classmethod
@@ -486,10 +488,7 @@ class KeytabCredentials(IssuedCredentials):
             creds = krb5.get_init_creds_keytab(context, principal, options, keytab)
             self._store(context, creds)
         except krb5.Krb5Error as exc:
-            msg = (
-                f"kinit {self._principal} from {self._auth.keytab} "
-                f"to {self._ccache}"
-            )
+            msg = f"kinit {self._principal} from {self._auth.keytab} to {self._ccache}"
             raise KeytabError(f"{msg}: {exc}") from exc
 
         self._logger.info(
@@ -505,7 +504,9 @@ class PasswordCredentials(IssuedCredentials):
     """TGT принципала по паролю учётной записи в собственный ccache."""
 
     def __init__(self, auth: KerberosPasswordAuth) -> None:
-        super().__init__(auth.principal, auth.ccache(), auth.min_lifetime)
+        super().__init__(
+            auth.principal, KerberosWorkspace.ccache_for(auth), auth.min_lifetime
+        )
         self._auth = auth
 
     @classmethod
@@ -662,9 +663,7 @@ class CcacheRegistry:
     Регистрация будит тех, кто ждал повторного входа этой метки.
     """
 
-    def __init__(
-        self, *, mode: DelegationMode, renew: bool, krb5_config: str
-    ) -> None:
+    def __init__(self, *, mode: DelegationMode, renew: bool, krb5_config: str) -> None:
         self._mode = mode
         self._renew = renew
         self._krb5_config = krb5_config

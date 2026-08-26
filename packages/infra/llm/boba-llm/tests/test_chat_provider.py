@@ -16,11 +16,8 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
-from boba.llm.local import LocalReplyParser, QwenDialogRender
-from boba.llm.openai import OpenAiConfig
-from boba.llm.openai_chat import OpenAiChatProvider
-from boba.llm.provider import (
+from boba.chat.openai import OpenAiConfig
+from boba.chat.provider import (
     ChatDelta,
     ChatProvider,
     ChatProviderError,
@@ -33,6 +30,9 @@ from boba.llm.provider import (
     ToolCallRequest,
     ToolSpec,
 )
+from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
+from boba.llm.local import LocalReplyParser, QwenDialogRender
+from boba.llm.openai_chat import OpenAiChatProvider
 
 pytestmark = pytest.mark.anyio
 
