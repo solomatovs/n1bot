@@ -62,10 +62,11 @@ export function Shell({ mode }: Props): ReactElement {
     [workflows, runs, loading, error, reload],
   );
 
-  // на узком экране список — ящик: переход по записи его закрывает
-  useEffect(() => {
+  // на узком экране список — ящик: выбор записи его закрывает
+  const closeList = useCallback(() => {
     setListOpen(false);
-  }, [runId, workflowId, mode]);
+  }, []);
+  useEffect(closeList, [closeList, runId, workflowId, mode]);
 
   const currentRun = runs.find((run) => run.id === runId) ?? null;
   const currentWorkflow = workflows.find((item) => String(item.id) === workflowId) ?? null;
@@ -85,13 +86,14 @@ export function Shell({ mode }: Props): ReactElement {
         <div className="shell__body">
           <Rail mode={mode} />
           {mode === "observe" ? (
-            <RunList runs={runs} selected={runId ?? null} open={listOpen} />
+            <RunList runs={runs} selected={runId ?? null} open={listOpen} onPick={closeList} />
           ) : (
             <WorkflowList
               workflows={workflows}
               runs={runs}
               selected={workflowId ?? null}
               open={listOpen}
+              onPick={closeList}
             />
           )}
           <Outlet />

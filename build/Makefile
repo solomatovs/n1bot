@@ -188,6 +188,9 @@ help:
 	echo ""
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(DEPS_DIR)"
 	echo "  make web       страница workflow: npm ci/check/build в $(NODE_IMAGE) -> assets/public/workflow"
+	echo "  make web-dev   vite dev-сервер страницы в контейнере $(WEB_DEV_NAME) (127.0.0.1:$(WEB_DEV_PORT));"
+	echo "                 приложение с BOBA_WORKFLOW_PAGE=http://127.0.0.1:$(WEB_DEV_PORT) проксирует его,"
+	echo "                 бандл не нужен; make web-dev-stop — остановить"
 	echo "  make deps      бинарные зависимости -> $(DEPS_DIR)/"
 	echo "                 {uv,tessdata,fastembed,onnx-genai,webassets,"
 	echo "                  sandbox/{rootfs.ext4,workspace.ext4},third/bin}"
@@ -338,6 +341,30 @@ tessdata:
 	done
 
 
+# dev-сервер страницы workflow: контейнер с vite и HMR, приложение проксирует
+# его под {BOBA_URL_PREFIX}/workflow-dev; повторный вызов ничего не делает
+WEB_DEV_NAME    ?= boba-web-dev
+WEB_DEV_PORT    ?= 5173
+BOBA_URL_PREFIX ?= /boba-debug
+.PHONY: web-dev web-dev-stop
+web-dev:
+	running=$$(docker ps --filter name=^$(WEB_DEV_NAME)$$ --format '{{.Label "boba.url_prefix"}}')
+	if [ "$$running" = "$(BOBA_URL_PREFIX)" ]; then
+	    echo "  ✓ $(WEB_DEV_NAME) is running on 127.0.0.1:$(WEB_DEV_PORT) under $(BOBA_URL_PREFIX)"
+	    exit 0
+	fi
+	docker rm -f $(WEB_DEV_NAME) >/dev/null 2>&1 || true
+	docker run -d --name $(WEB_DEV_NAME) --entrypoint /bin/sh \
+	    --label boba.url_prefix=$(BOBA_URL_PREFIX) \
+	    -u "$$(id -u):$$(id -g)" -e HOME=/tmp -e BOBA_URL_PREFIX=$(BOBA_URL_PREFIX) \
+	    -p 127.0.0.1:$(WEB_DEV_PORT):5173 \
+	    -v "$(WEB_DIR):/pkg" -w /pkg/web/workflow $(NODE_IMAGE) \
+	    -c '[ -d node_modules ] || npm ci --no-audit --no-fund; exec npm run dev'
+	@echo "== $(WEB_DEV_NAME): vite on 127.0.0.1:$(WEB_DEV_PORT), logs: docker logs -f $(WEB_DEV_NAME) =="
+
+web-dev-stop:
+	docker rm -f $(WEB_DEV_NAME) >/dev/null 2>&1 || true
+
 # статика фронта: KaTeX (формулы), Inter (шрифт UI), mermaid (диаграммы) локально
 .PHONY: webassets
 web:
@@ -348,9 +375,9 @@ web:
 	@du -sh $(WEB_DIR)/assets/public/workflow
 	# dev app_root держит копию public (симлинк chainlit отвергает как выход
 	# за пределы public): обновляем её, если dev-дерево уже собрано
-	if [ -d "$(BASE_DIR)/app_root/public" ]; then
-	    rm -rf "$(BASE_DIR)/app_root/public/workflow"
-	    cp -a "$(WEB_DIR)/assets/public/workflow" "$(BASE_DIR)/app_root/public/workflow"
+	if [ -d "$(SRC_DIR)/compose/app_root/public" ]; then
+	    rm -rf "$(SRC_DIR)/compose/app_root/public/workflow"
+	    cp -a "$(WEB_DIR)/assets/public/workflow" "$(SRC_DIR)/compose/app_root/public/workflow"
 	fi
 
 webassets:

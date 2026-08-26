@@ -1,9 +1,10 @@
-import { MarkerType, type Connection, type Edge as FlowEdge } from "@xyflow/react";
+import { MarkerType, Position, type Connection, type Edge as FlowEdge, type NodeHandle } from "@xyflow/react";
 
 import type { TaskPositions } from "../../model/layout";
 import { edgeId, edgeKindOf, type EditableEdge, type EditableTask, type EditableWorkflow } from "../../model/spec";
 import type { ToolCatalog } from "../../model/workflow";
-import { editorNodeHeight, type EditorTaskData, type EditorTaskFlowNode } from "./EditorTaskNode";
+import { sideHandle } from "../graph/geometry";
+import { editorNodeHeight, editorPorts, type EditorTaskData, type EditorTaskFlowNode } from "./EditorTaskNode";
 import { portOfHandle } from "./handles";
 
 /** Модель редактора → узлы и рёбра React Flow и обратно из жестов пользователя. */
@@ -39,6 +40,7 @@ export function taskData(task: EditableTask, catalog: ToolCatalog, selected: str
     name: task.name,
     tool: task.tool,
     argNames: [...argNames],
+    args: task.args,
     readPorts,
     writePorts,
     selected: task.name === selected,
@@ -59,10 +61,25 @@ export function editorNodes(
       id: task.name,
       type: "editorTask",
       position: positions[task.name] ?? { x: 0, y: 0 },
-      style: { width: EDITOR_NODE_WIDTH, height: editorNodeHeight(data) },
+      width: EDITOR_NODE_WIDTH,
+      height: editorNodeHeight(data),
+      handles: editorHandles(data),
       data,
     };
   });
+}
+
+function editorHandles(data: EditorTaskData): NodeHandle[] {
+  const { inputs, outputs } = editorPorts(data);
+  const handles: NodeHandle[] = [];
+  for (const port of inputs) {
+    handles.push(sideHandle("target", Position.Left, 0, port.top, port.id));
+  }
+  for (const port of outputs) {
+    handles.push(sideHandle("source", Position.Right, EDITOR_NODE_WIDTH, port.top, port.id));
+  }
+
+  return handles;
 }
 
 export function editorEdges(workflow: EditableWorkflow): FlowEdge[] {
