@@ -5,7 +5,7 @@ import contextvars
 import datetime
 import logging
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import httpcore
@@ -125,7 +125,7 @@ class DumpChannel:
         return self._current.get()
 
     @contextlib.contextmanager
-    def activate(self, path: Path) -> typing.Iterator[HttpDump]:
+    def activate(self, path: Path) -> Generator[HttpDump]:
         with HttpDump(path) as dump:
             prev = self._current.get()
             self._current.set(dump)
