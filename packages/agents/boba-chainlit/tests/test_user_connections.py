@@ -24,27 +24,20 @@ from test_tools_integration import Call, ToolSetup
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.connections import (
-    ConnectionKind,
-    ConnectionsConfig,
-    ConnectionStore,
-    GrantTarget,
-)
-from boba.chainlit.connections.whitelist import ConnectionKeying
+from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.domain.context import CallContext, ContextKind
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.session import UserMetadataField
 from boba.chainlit.infra.plugins import as_structured_tool
-from boba.chainlit.infra.user_connections import (
-    ConnectionRefusal,
-    UserConnections,
-    UserConnectionsSpec,
-)
+from boba.chainlit.infra.user_connections import UserConnections
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
+from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
 from boba.connections.postgres import PasswordAuth, PostgresConfig
+from boba.connections.profile import ConnectionKind, GrantTarget
+from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import CallContext, ContextKind
+from boba.identity.errors import RefusalError
+from boba.identity.session import UserMetadataField
 from boba.krb import CcacheRegistry, KeytabCredentials, UserCcache
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry

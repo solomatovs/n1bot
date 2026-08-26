@@ -20,9 +20,9 @@ from ui.fake_llm import FakeLlmApp, ScenarioName
 from uvicorn.logging import DefaultFormatter
 
 from boba.chainlit.chat.tracing import LlmStateLog
-from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
+from boba.identity.session import LogUserMark
 from boba.llm.bridge import ProviderChatModel
 
 pytestmark = pytest.mark.anyio

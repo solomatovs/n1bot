@@ -1,5 +1,6 @@
 """Домен workflow: спека, граф стадий, автомат запуска. Без I/O."""
 
+from boba.workflow.events import RunEvents, RunListener, RunSnapshot
 from boba.workflow.graph import (
     ArgBinding,
     RunState,
@@ -14,6 +15,13 @@ from boba.workflow.graph import (
     WorkflowGraph,
     WorkflowPlan,
     WorkflowPlanError,
+)
+from boba.workflow.ports import RunSink, WorkflowRepository
+from boba.workflow.records import (
+    StoredRun,
+    StoredWorkflow,
+    WorkflowNotFoundError,
+    WorkflowStoreError,
 )
 from boba.workflow.spec import (
     ArgTemplate,
@@ -40,10 +48,16 @@ __all__ = [
     "PortDirection",
     "PortKind",
     "PortRef",
+    "RunEvents",
+    "RunListener",
+    "RunSink",
+    "RunSnapshot",
     "RunState",
     "RunStatus",
     "SpecIssue",
     "Stage",
+    "StoredRun",
+    "StoredWorkflow",
     "TaskSpec",
     "TaskState",
     "TaskStatus",
@@ -52,8 +66,11 @@ __all__ = [
     "ToolFacts",
     "ToolPort",
     "WorkflowGraph",
+    "WorkflowNotFoundError",
     "WorkflowPlan",
     "WorkflowPlanError",
+    "WorkflowRepository",
     "WorkflowSpec",
     "WorkflowSpecError",
+    "WorkflowStoreError",
 ]

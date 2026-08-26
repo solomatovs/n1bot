@@ -14,14 +14,14 @@ from psycopg import sql
 from test_tool_api import _profile, _profiles, _roles
 from test_workflow_service import ROLE, Probe, _registry
 
-from boba.chainlit.domain.context import CallContext
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ToolRegistry
-from boba.chainlit.workflow.events import RunEvents
 from boba.chainlit.workflow.service import WorkflowService
 from boba.chainlit.workflow.socket import WorkflowNamespace, WorkflowSocketEvent
 from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import CallContext
+from boba.workflow.events import RunEvents
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

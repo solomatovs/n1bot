@@ -1,46 +1,16 @@
-from collections.abc import Iterable
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
-from boba.chainlit.domain.errors import AuthorizationError
-from boba.chainlit.domain.session import SignInProvider, UserLogin, UserMetadataField
-
-
-class RoleMappingConfig(RootModel[dict[str, list[str]]]):
-    """Фиксированный мапер пользователь - список ролей"""
-
-    def roles_of(self, key: str) -> list[str]:
-        return self.root.get(key, [])
-
-
-class RoleExcludeConfig(RootModel[list[str]]):
-    """Фиксированный список исключённых пользователей/ролей"""
-
-    def exclude_of(self, key: str) -> Iterable[bool]:
-        for x in self.root:
-            yield x == key
-
-
-class LocalUserRolesProvider:
-    """Локальный провайдер пользователь - список ролей"""
-
-    def __init__(self, mapping: RoleMappingConfig):
-        self._mapping = mapping
-
-    def roles_of(self, username: str) -> Iterable[str]:
-        yield from self._mapping.roles_of(username)
-
-
-class LocalExcludeUserProvider:
-    """Локальный список пользователей, которым запрещён вход"""
-
-    def __init__(self, mapping: RoleExcludeConfig):
-        self._mapping = mapping
-
-    def exclude_of(self, username: str) -> Iterable[bool]:
-        yield from self._mapping.exclude_of(username)
+from boba.identity.errors import AuthorizationError
+from boba.identity.roles import (
+    LocalExcludeUserProvider,
+    LocalUserRolesProvider,
+    RoleExcludeConfig,
+    RoleMappingConfig,
+)
+from boba.identity.session import SignInProvider, UserLogin, UserMetadataField
 
 
 class LocalAuthConfig(BaseModel):

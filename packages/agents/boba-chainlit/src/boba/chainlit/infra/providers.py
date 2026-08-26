@@ -35,34 +35,35 @@ from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.storage import StorageClient, StorageFactory
-from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.keys import AttachmentLinks
-from boba.chainlit.domain.session import SessionSource
 from boba.chainlit.infra.config import (
-    AgentSettings,
     AppConfig,
-    ChatProfiles,
     CheckpointerConfig,
     DataLayerConfig,
     LocalStorageConfig,
+)
+from boba.chainlit.infra.di import Container, Depends
+from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
+from boba.chainlit.infra.session import ChainlitSessions, current_session
+from boba.chainlit.rendering.chat_view import StepText
+from boba.chainlit.workflow.service import WorkflowService
+from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
+from boba.chat.generation import LocalGeneration, OpenAiGeneration, StructuredGenerator
+from boba.chat.openai import OpenAiConfig
+from boba.chat.profiles import (
+    AgentSettings,
+    ChatProfiles,
     PrefetchFlowConfig,
     RolesSection,
     SelectedProfile,
     SettingsView,
     UserMeta,
 )
-from boba.chainlit.infra.di import Container, Depends
-from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
-from boba.chainlit.infra.session import ChainlitSessions, current_session
-from boba.chainlit.rendering.chat_view import StepText
-from boba.chainlit.workflow.events import RunEvents
-from boba.chainlit.workflow.service import WorkflowService
-from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
-from boba.chat.generation import LocalGeneration, OpenAiGeneration, StructuredGenerator
-from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatProvider, LocalChatConfig, OpenAiChatConfig
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.errors import InternalServiceError
+from boba.identity.session import SessionSource
 from boba.krb import CcacheRegistry
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import GeneratorFactory
@@ -71,6 +72,7 @@ from boba.llm.openai import OpenAiHttp
 from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
+from boba.workflow.events import RunEvents
 
 _RAW_CONFIG: dict[str, DictConfig] = {}
 

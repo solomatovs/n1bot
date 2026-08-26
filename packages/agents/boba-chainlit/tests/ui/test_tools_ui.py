@@ -24,7 +24,7 @@ from typing import Any, ClassVar
 import httpx
 import pytest
 
-from boba.chainlit.canvas.diagram import DiagramPrompt
+from boba.canvas.diagram import DiagramPrompt
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.liteparse.engine import LiteParseEngine
 from boba.settings import bind, build_app_config

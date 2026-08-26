@@ -11,15 +11,7 @@ import pytest
 from conftest import FakeSecret
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
-from boba.chainlit.connections import (
-    ConnectionKind,
-    ConnectionsConfig,
-    GrantKind,
-    GrantTarget,
-    SecretCipher,
-    SecretCryptoError,
-    StoredConnection,
-)
+from boba.chainlit.connections import ConnectionsConfig
 from boba.chainlit.data.models import Thread, User
 from boba.connections.clickhouse import (
     ClickHouseConfig,
@@ -39,6 +31,13 @@ from boba.connections.postgres import (
     PostgresOptionsConfig,
     PostgresPoolConfig,
 )
+from boba.connections.profile import (
+    ConnectionKind,
+    GrantKind,
+    GrantTarget,
+    StoredConnection,
+)
+from boba.connections.secrets import SecretCipher, SecretCryptoError
 from boba.transport.http import HttpxAuth
 
 

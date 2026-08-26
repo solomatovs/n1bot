@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.connections import StoredConnection
-from boba.chainlit.connections.whitelist import (
+from boba.connections.http import HttpProfile
+from boba.connections.profile import StoredConnection
+from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionKeying,
     ConnectionWhitelist,
 )
-from boba.connections.http import HttpProfile
 
 
 @pytest.fixture(autouse=True)

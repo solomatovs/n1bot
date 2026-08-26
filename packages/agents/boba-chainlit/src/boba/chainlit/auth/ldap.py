@@ -2,7 +2,6 @@ import asyncio
 import logging
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any, Literal
 
 from ldap3 import (
@@ -26,57 +25,35 @@ from ldap3.core.exceptions import (
 from pydantic import BaseModel, Field, field_validator
 
 import chainlit as cl
-from boba.chainlit.auth.local import (
-    LocalExcludeUserProvider,
-    LocalUserRolesProvider,
-    RoleExcludeConfig,
-    RoleMappingConfig,
+from boba.identity.directory import (
+    LDAPAccessDeniedError,
+    LDAPConfigError,
+    LDAPError,
+    LDAPInvalidCredentialsError,
+    LDAPServerUnavailableError,
+    LDAPUserNotFoundError,
 )
-from boba.chainlit.domain.errors import (
+from boba.identity.errors import (
     AuthenticationError,
     AuthorizationError,
     ExternalServiceError,
     InternalServiceError,
 )
-from boba.chainlit.domain.session import (
+from boba.identity.roles import (
+    DnExcludeUserProvider,
+    DnUserRolesProvider,
+    LdapRolesConfig,
+    LocalExcludeUserProvider,
+    LocalUserRolesProvider,
+    MemberOfExcludeUserProvider,
+    MemberOfUserRolesProvider,
+)
+from boba.identity.session import (
     LoginTemplate,
     SignInProvider,
     UserLogin,
     UserMetadataField,
 )
-
-
-class LDAPError(Exception):
-    "База ошибок каталога; транспортно-нейтральна, домен мапят вызывающие."
-
-
-class LDAPServerUnavailableError(LDAPError):
-    "Каталог недоступен (сокет/сеть/TLS/таймаут) — не наша вина."
-
-
-class LDAPInvalidCredentialsError(LDAPError):
-    "bind отклонён: неверные креды (юзер или сервис-аккаунт — решает вызывающий)."
-
-
-class LDAPAccessDeniedError(LDAPError):
-    "Недостаточно прав на операцию (insufficient access)."
-
-
-class LDAPConfigError(LDAPError):
-    "Кривой конфиг: несуществующий base DN, неверный DN/фильтр/сервер/TLS-политика."
-
-
-class LDAPUserNotFoundError(LDAPError):
-    "Поиск выполнен, но запись пользователя не найдена."
-
-
-@dataclass(frozen=True)
-class ADUserEntry:
-    """Атрибуты пользователя из AD для маппинга ролей/исключений."""
-
-    dn: str
-    samaccountname: str
-    member_of: list[str]
 
 
 class ADDirectory:
@@ -206,33 +183,6 @@ class LdapCredentialConfig(BaseModel):
     bind_password: str = Field(description="Пароль сервисной учётки (секрет).")
 
 
-class LdapRolesConfig(BaseModel):
-    samaccountname: RoleMappingConfig | None = Field(
-        default=None,
-        description="",
-    )
-    samaccountname_ex: RoleExcludeConfig | None = Field(
-        default=None,
-        description="Логины, которым запрещён вход (403).",
-    )
-    member_of: RoleMappingConfig | None = Field(
-        default=None,
-        description="",
-    )
-    member_of_ex: RoleExcludeConfig | None = Field(
-        default=None,
-        description="Группы, членам которых запрещён вход (403).",
-    )
-    dn: RoleMappingConfig | None = Field(
-        default=None,
-        description="",
-    )
-    dn_ex: RoleExcludeConfig | None = Field(
-        default=None,
-        description="DN пользователей, которым запрещён вход (403).",
-    )
-
-
 class LdapAuthConfig(BaseModel):
     """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
 
@@ -267,68 +217,6 @@ class LdapAuthConfig(BaseModel):
             "если пользователю не замапилась ни одна роль."
         ),
     )
-
-
-class SAMAccountNameUserRolesProvider:
-    """Мапер sAMAccountName - список ролей"""
-
-    def __init__(self, mapping: RoleMappingConfig):
-        self._mapping = mapping
-
-    def roles_of(self, samaccountname: str) -> Iterable[str]:
-        yield from self._mapping.roles_of(samaccountname)
-
-
-class SAMAccountNameExcludeUserProvider:
-    """Список sAMAccountName, которым запрещён вход"""
-
-    def __init__(self, mapping: RoleExcludeConfig):
-        self._mapping = mapping
-
-    def exclude_of(self, samaccountname: str) -> Iterable[bool]:
-        yield from self._mapping.exclude_of(samaccountname)
-
-
-class MemberOfUserRolesProvider:
-    """Мапер групп memberOf - список ролей"""
-
-    def __init__(self, mapping: RoleMappingConfig):
-        self._mapping = mapping
-
-    def roles_of(self, member_of: list[str]) -> Iterable[str]:
-        for m in member_of:
-            yield from self._mapping.roles_of(m)
-
-
-class MemberOfExcludeUserProvider:
-    """Список групп memberOf, членам которых запрещён вход"""
-
-    def __init__(self, mapping: RoleExcludeConfig):
-        self._mapping = mapping
-
-    def exclude_of(self, member_of: list[str]) -> Iterable[bool]:
-        for m in member_of:
-            yield from self._mapping.exclude_of(m)
-
-
-class DnUserRolesProvider:
-    """Мапер DN пользователя - список ролей"""
-
-    def __init__(self, mapping: RoleMappingConfig):
-        self._mapping = mapping
-
-    def roles_of(self, dn: str) -> Iterable[str]:
-        return self._mapping.roles_of(dn)
-
-
-class DnExcludeUserProvider:
-    """Список DN пользователей, которым запрещён вход"""
-
-    def __init__(self, mapping: RoleExcludeConfig):
-        self._mapping = mapping
-
-    def exclude_of(self, dn: str) -> Iterable[bool]:
-        yield from self._mapping.exclude_of(dn)
 
 
 class LdapAuth:

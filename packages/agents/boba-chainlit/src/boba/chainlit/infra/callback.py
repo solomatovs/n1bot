@@ -10,11 +10,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
-from boba.chainlit.canvas.panel import (
-    CanvasAction,
-    RenderVerdicts,
-    StreamActions,
-)
+from boba.canvas.canvas import CanvasAction, RenderVerdicts
+from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
 from boba.chainlit.chat.history import GraphTurnHistory, ThreadRewind
 from boba.chainlit.chat.panel_text import PanelText
@@ -22,18 +19,9 @@ from boba.chainlit.chat.settings import SettingsPanel
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.domain.errors import InternalServiceError
 from boba.chainlit.domain.fields import ThreadField
-from boba.chainlit.domain.session import UserMetadataField
 from boba.chainlit.infra import providers
-from boba.chainlit.infra.config import (
-    AppConfig,
-    ChatProfiles,
-    SelectedProfile,
-    SettingsView,
-    UserLlmOverrides,
-    UserMeta,
-)
+from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.di import Container, Depends, di_inject
 from boba.chainlit.infra.providers import (
     chainlit_data_layer,
@@ -47,6 +35,15 @@ from boba.chainlit.infra.thread_room import ThreadRoom
 from boba.chainlit.infra.user_connections import UserKerberos
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
+from boba.chat.profiles import (
+    ChatProfiles,
+    SelectedProfile,
+    SettingsView,
+    UserLlmOverrides,
+    UserMeta,
+)
+from boba.identity.errors import InternalServiceError
+from boba.identity.session import UserMetadataField
 from chainlit.auth.cookie import clear_auth_cookie, get_token_from_cookies
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer

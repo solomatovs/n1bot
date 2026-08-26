@@ -12,9 +12,9 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
-from boba.chainlit.canvas.panel import SignalTransport
-from boba.chainlit.domain.errors import InternalServiceError
+from boba.canvas.canvas import SignalTransport
 from boba.chainlit.infra.session import current_session, session_source_ref
+from boba.identity.errors import InternalServiceError
 from chainlit.context import ChainlitContext, context_var
 from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio

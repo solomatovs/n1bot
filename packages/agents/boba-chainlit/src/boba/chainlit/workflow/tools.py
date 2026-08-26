@@ -17,10 +17,9 @@ from typing import Annotated
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.domain.context import CallContext
-from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.workflow.service import RunOutcome, WorkflowService
-from boba.chainlit.workflow.store import StoredWorkflow
+from boba.identity.context import CallContext
+from boba.identity.errors import RefusalError
 from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
     ErrorResult,
@@ -30,6 +29,7 @@ from boba.toolkit.result import (
     pack_result,
 )
 from boba.workflow import TaskStatus
+from boba.workflow.records import StoredWorkflow
 
 __all__ = ["WorkflowPrompt", "WorkflowToolConfig", "build_workflow_tools"]
 

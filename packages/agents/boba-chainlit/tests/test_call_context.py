@@ -6,18 +6,17 @@ import pytest
 from conftest import use_context, use_session
 from pydantic import ValidationError
 
-from boba.chainlit.domain.context import (
+from boba.chainlit.domain.context import ChatCallContext, ChatSurface
+from boba.identity.context import (
     CallContext,
-    ChatCallContext,
-    ChatSurface,
     ContextKind,
     HumanInitiator,
     LlmInitiator,
     Scope,
     ScopeKind,
 )
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.session import LoginTemplate, LogUserMark
+from boba.identity.errors import RefusalError
+from boba.identity.session import LoginTemplate, LogUserMark
 
 THREAD = "55555555-5555-5555-5555-555555555555"
 

@@ -21,9 +21,10 @@ from conftest import FakeUrl
 from fastapi import FastAPI
 from httpx import AsyncClient
 
+from boba.canvas.keys import ObjectKey
+from boba.canvas.transfer import UploadPolicy
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.data.upload import SessionFiles, UploadPolicy, UploadRoute
-from boba.chainlit.domain.keys import ObjectKey
+from boba.chainlit.data.upload import SessionFiles, UploadRoute
 from boba.chainlit.infra.session import ChainlitSession
 
 pytestmark = pytest.mark.anyio

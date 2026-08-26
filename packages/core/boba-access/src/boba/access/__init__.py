@@ -22,6 +22,7 @@ from boba.toolkit.types import StringList
 __all__ = [
     "AccessSubject",
     "ProfileGrant",
+    "RoleConfig",
     "ToolAccess",
     "ToolAccessError",
     "ToolAvailability",
@@ -209,3 +210,7 @@ class ToolAccess:
         stray = sorted(self._chat_only - self._tool_names)
         if stray:
             raise ToolAccessError(f"chat-only tools are not built: {stray}")
+
+
+class RoleConfig(ToolGrant):
+    """Секция [roles.<ROLE>]: что роль разрешает своему обладателю."""

@@ -21,8 +21,8 @@ import jwt
 
 import chainlit as cl
 from boba.cancellation import RunCancellation
-from boba.chainlit.domain.context import (
-    ChatCallContext,
+from boba.chainlit.domain.context import ChatCallContext
+from boba.identity.context import (
     ChatInitiator,
     Credential,
     DelegatedTicket,
@@ -30,8 +30,8 @@ from boba.chainlit.domain.context import (
     Scope,
     Subject,
 )
-from boba.chainlit.domain.errors import InternalServiceError
-from boba.chainlit.domain.session import (
+from boba.identity.errors import InternalServiceError
+from boba.identity.session import (
     Session,
     UserMetadataField,
 )

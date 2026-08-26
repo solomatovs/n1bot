@@ -14,8 +14,9 @@ from psycopg.rows import dict_row
 from boba.chainlit.chat.panel_text import PanelText, PanelTextError
 from boba.chainlit.chat.settings import PanelTab, SettingsPanel
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.infra.config import (
-    AppConfig,
+from boba.chainlit.infra.config import AppConfig
+from boba.chainlit.infra.session import current_session
+from boba.chat.profiles import (
     ChatProfileConfig,
     ReasoningEffort,
     SettingsBounds,
@@ -24,7 +25,6 @@ from boba.chainlit.infra.config import (
     UserMeta,
     UserSetting,
 )
-from boba.chainlit.infra.session import current_session
 from boba.db.postgres import AsyncPostgresPool
 
 pytestmark = pytest.mark.anyio

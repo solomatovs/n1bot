@@ -10,16 +10,11 @@ from typing import ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from boba.access import ToolGrant
 from boba.sandbox import WorkspaceSpec
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
-__all__ = ["LocalStorageConfig", "RoleConfig"]
-
-
-class RoleConfig(ToolGrant):
-    """Секция [roles.<ROLE>]: что роль разрешает своему обладателю."""
+__all__ = ["LocalStorageConfig"]
 
 
 class LocalStorageConfig(BaseModel):

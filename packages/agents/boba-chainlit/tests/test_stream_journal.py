@@ -10,16 +10,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from boba.chainlit.canvas.journal import (
-    DirVault,
+from boba.canvas.journal import (
     JournalFile,
     JournalWindow,
     LogName,
-    StreamJournal,
     StreamJournalError,
     StreamKey,
-    StreamRecorder,
 )
+from boba.chainlit.canvas.journal import DirVault, StreamJournal, StreamRecorder
 from boba.toolkit.channels import ToolChannel
 
 KEY = StreamKey(user_id="7", thread_id="t-1", call_id="call-1")

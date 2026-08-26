@@ -16,7 +16,7 @@ from typing import Any, TypeVar
 
 from typing_extensions import ParamSpec
 
-from boba.chainlit.domain.errors import (
+from boba.identity.errors import (
     BaseError,
     HttpErrorMessage,
     ViewErrorMessage,

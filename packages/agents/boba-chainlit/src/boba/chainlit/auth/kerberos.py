@@ -10,12 +10,11 @@ import base64
 import html
 import logging
 import os
-from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol
+from typing import Any, ClassVar, Literal
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator
@@ -25,43 +24,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import chainlit as cl
-from boba.chainlit.auth.ldap import (
-    ADDirectory,
-    ADUserEntry,
-    DnExcludeUserProvider,
-    DnUserRolesProvider,
-    LDAPError,
-    LDAPInvalidCredentialsError,
-    LdapRolesConfig,
-    LDAPServerUnavailableError,
-    LDAPUserNotFoundError,
-    MemberOfExcludeUserProvider,
-    MemberOfUserRolesProvider,
-    SAMAccountNameExcludeUserProvider,
-    SAMAccountNameUserRolesProvider,
-)
-from boba.chainlit.auth.local import (
-    LocalExcludeUserProvider,
-    LocalUserRolesProvider,
-    RoleExcludeConfig,
-    RoleMappingConfig,
-)
-from boba.chainlit.domain.context import DelegatedTicket
-from boba.chainlit.domain.errors import (
-    AuthenticationError,
-    AuthorizationError,
-    BaseError,
-    ExternalServiceError,
-    FailureReport,
-    InternalServiceError,
-)
-from boba.chainlit.domain.session import (
-    LoginTemplate,
-    LogLine,
-    SignInProvider,
-    UserLogin,
-    UserMetadataField,
-)
+from boba.chainlit.auth.ldap import ADDirectory
 from boba.chainlit.infra.session import ChainlitSession
 from boba.connections.kerberos import (
     AcceptConfig,
@@ -69,6 +32,43 @@ from boba.connections.kerberos import (
     DelegationMode,
     ForwardedDelegation,
 )
+from boba.identity.context import DelegatedTicket
+from boba.identity.directory import (
+    ADUserEntry,
+    LDAPError,
+    LDAPInvalidCredentialsError,
+    LDAPServerUnavailableError,
+    LDAPUserNotFoundError,
+)
+from boba.identity.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    BaseError,
+    ExternalServiceError,
+    FailureReport,
+    InternalServiceError,
+)
+from boba.identity.roles import (
+    DnExcludeUserProvider,
+    DnUserRolesProvider,
+    LdapRolesConfig,
+    LocalExcludeUserProvider,
+    LocalUserRolesProvider,
+    MemberOfExcludeUserProvider,
+    MemberOfUserRolesProvider,
+    RoleExcludeConfig,
+    RoleMappingConfig,
+    SAMAccountNameExcludeUserProvider,
+    SAMAccountNameUserRolesProvider,
+)
+from boba.identity.session import (
+    LoginTemplate,
+    LogLine,
+    SignInProvider,
+    UserLogin,
+    UserMetadataField,
+)
+from boba.identity.sso import SidsHeader, SsoAdmission
 from boba.krb import (
     CcacheRegistry,
     CredentialsExpiredError,
@@ -215,14 +215,6 @@ class KerberosAuthConfig(BaseModel):
         return f"{self.header}-Login"
 
 
-class SsoAdmission(Protocol):
-    """Допуск принципала ко входу: роли этого входа либо отказ."""
-
-    @abstractmethod
-    async def roles_of(self, principal: str, group_sids: Sequence[str]) -> list[str]:
-        """Роли принципала; AuthorizationError — вход запрещён."""
-
-
 class SsoRefresh(StrEnum):
     """Признак того, что обмен запросила своя страница, а не чужой сайт."""
 
@@ -286,25 +278,6 @@ class SidExcludeUserProvider:
     def exclude_of(self, sids: list[str]) -> Iterable[bool]:
         for s in sids:
             yield from self._mapping.exclude_of(s)
-
-
-class SidsHeader:
-    "Формат заголовка со списком SID: сериализация и разбор в одном месте."
-
-    @staticmethod
-    def render(sids: Iterable[str]) -> str:
-        return ",".join(sids)
-
-    @staticmethod
-    def parse(raw: str) -> list[str]:
-        return list(SidsHeader._parts(raw))
-
-    @staticmethod
-    def _parts(raw: str) -> Iterator[str]:
-        for part in raw.split(","):
-            if not part:
-                continue
-            yield part
 
 
 @dataclass(frozen=True)

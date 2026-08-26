@@ -31,10 +31,10 @@ from pydantic import BaseModel, ConfigDict
 from typing_extensions import ParamSpec, override
 
 from boba.chainlit.agent.flow import PrefetchStage
-from boba.chainlit.domain.errors import FailureReport
-from boba.chainlit.domain.session import LogUserMark
 from boba.chainlit.rendering.chat_view import ChatView, StepText
 from boba.chainlit.rendering.errors import show_error
+from boba.identity.errors import FailureReport
+from boba.identity.session import LogUserMark
 from boba.llm.chat import GeneratedMessage, ReasoningText
 from chainlit.context import context_var
 from chainlit.step import Step

@@ -25,22 +25,9 @@ from stand_site import Stand
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.connections import (
-    ConnectionKind,
-    ConnectionsConfig,
-    ConnectionStore,
-    GrantTarget,
-)
-from boba.chainlit.connections.whitelist import ConnectionKeying
+from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.session import UserMetadataField
-from boba.chainlit.infra.user_connections import (
-    ConnectionRefusal,
-    UserConnections,
-    UserConnectionsSpec,
-    UserKerberos,
-)
+from boba.chainlit.infra.user_connections import UserConnections, UserKerberos
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import (
     DelegatedAuth,
@@ -48,8 +35,13 @@ from boba.connections.kerberos import (
     KeytabAuth,
     TicketAuth,
 )
+from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
 from boba.connections.postgres import PostgresConfig, TrustAuth
+from boba.connections.profile import ConnectionKind, GrantTarget
+from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.errors import RefusalError
+from boba.identity.session import UserMetadataField
 from boba.krb import (
     CcacheRegistry,
     KerberosEnv,

@@ -170,11 +170,11 @@ def _use_file_serving(c: AppConfig) -> None:
         UploadPolicy,
         UploadRoute,
     )
-    from boba.chainlit.domain.errors import InternalServiceError  # noqa: PLC0415
     from boba.chainlit.domain.keys import (  # noqa: PLC0415
         AttachmentUrl,
         CanvasFileUrl,
     )
+    from boba.identity.errors import InternalServiceError  # noqa: PLC0415
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
@@ -252,10 +252,10 @@ def _use_canvas_viewers() -> None:
 def _use_tool_api(c: AppConfig) -> None:
     """REST-запуск инструмента человеком: реестр тот же, что у сессий чата."""
     from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
-    from boba.chainlit.domain.errors import InternalServiceError  # noqa: PLC0415
     from boba.chainlit.domain.keys import ToolCallUrl  # noqa: PLC0415
-    from boba.chainlit.infra.config import ChatProfiles  # noqa: PLC0415
     from boba.chainlit.infra.tool_api import ToolCalling  # noqa: PLC0415
+    from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
+    from boba.identity.errors import InternalServiceError  # noqa: PLC0415
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
@@ -279,10 +279,10 @@ def _use_tool_api(c: AppConfig) -> None:
 
 def _use_workflow_api(c: AppConfig) -> None:
     """Workflow: REST, живые снимки по socket.io и страница SPA."""
-    from boba.chainlit.infra.config import ChatProfiles  # noqa: PLC0415
     from boba.chainlit.workflow.api import WorkflowApi  # noqa: PLC0415
     from boba.chainlit.workflow.page import WorkflowPageConfig  # noqa: PLC0415
     from boba.chainlit.workflow.socket import WorkflowNamespace  # noqa: PLC0415
+    from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
     from boba.settings.bind import bind  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
     from chainlit.server import sio  # noqa: PLC0415

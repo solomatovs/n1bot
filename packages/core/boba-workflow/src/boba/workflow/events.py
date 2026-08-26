@@ -15,7 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.workflow import RunState, RunStatus
+from boba.workflow.graph import RunState, RunStatus
 
 __all__ = ["RunEvents", "RunListener", "RunSnapshot"]
 

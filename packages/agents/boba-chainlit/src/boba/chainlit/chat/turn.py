@@ -31,13 +31,13 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
+from boba.canvas.keys import ObjectKey
 from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
-from boba.chainlit.domain.context import CallContext
-from boba.chainlit.domain.errors import FailureReport, RefusalError
 from boba.chainlit.domain.fields import StepField, ThreadField
-from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.run import ElementTarget, RunPort, RunRefusal, RunRegistry
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
+from boba.identity.context import CallContext
+from boba.identity.errors import FailureReport, RefusalError
+from boba.identity.run import ElementTarget, RunPort, RunRefusal, RunRegistry
 from boba.llm.chat import ResponseField
 from chainlit.step import Step, StepDict
 from chainlit.types import ThreadDict

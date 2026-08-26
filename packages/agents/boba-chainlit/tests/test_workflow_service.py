@@ -14,16 +14,13 @@ from conftest import TEST_PROFILE, use_context
 from langchain_core.tools import tool
 from psycopg import sql
 
-from boba.access import ProfileGrant, ToolAccess
+from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.cancellation import StopReason
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.domain.config import RoleConfig
-from boba.chainlit.domain.context import CallContext, LlmInitiator, ScopeKind, Subject
 from boba.chainlit.infra.plugins import ToolRegistry, stream_source, tool_call_scope
-from boba.chainlit.workflow.events import RunEvents
 from boba.chainlit.workflow.service import (
     WorkflowError,
     WorkflowRefusal,
@@ -36,6 +33,7 @@ from boba.chainlit.workflow.tools import (
     build_workflow_tools,
 )
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import CallContext, LlmInitiator, ScopeKind, Subject
 from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
     ErrorResult,
@@ -45,6 +43,7 @@ from boba.toolkit.result import (
     pack_result,
 )
 from boba.workflow import RunStatus, TaskStatus
+from boba.workflow.events import RunEvents
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

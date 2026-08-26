@@ -18,19 +18,11 @@ from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.cancellation import RunCancellation
+from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain.context import (
-    CallContext,
-    ChatInitiator,
-    NoUserCredential,
-    Scope,
-    Subject,
-)
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.keys import AttachmentLinks, WorkspaceMount
-from boba.chainlit.domain.run import ElementTarget, RunPort, RunRefusal
+from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
     ChainlitSession,
@@ -41,6 +33,15 @@ from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import (
+    CallContext,
+    ChatInitiator,
+    NoUserCredential,
+    Scope,
+    Subject,
+)
+from boba.identity.errors import RefusalError
+from boba.identity.run import ElementTarget, RunPort, RunRefusal
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
 from boba.settings import bind, build_app_config

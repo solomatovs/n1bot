@@ -17,15 +17,15 @@ from typing import Annotated
 from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
-from boba.chainlit.canvas.journal import (
+from boba.canvas.journal import (
     StreamJournalError,
     StreamJournalHub,
     StreamStorePort,
     VaultUsage,
 )
 from boba.chainlit.canvas.panel import ToolStreams
-from boba.chainlit.domain.context import CallContext
-from boba.chainlit.domain.errors import RefusalError
+from boba.identity.context import CallContext
+from boba.identity.errors import RefusalError
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 
 __all__ = [

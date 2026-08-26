@@ -29,8 +29,8 @@ from typing import ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation, StopReason
-from boba.chainlit.domain.context import CallContext
-from boba.chainlit.domain.errors import RefusalError
+from boba.identity.context import CallContext
+from boba.identity.errors import RefusalError
 from boba.toolkit.channels import CallOutcome
 
 __all__ = [

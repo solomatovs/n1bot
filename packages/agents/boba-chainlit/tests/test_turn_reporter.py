@@ -24,7 +24,6 @@ from boba.chainlit.chat.turn import (
     TurnReporter,
     TurnState,
 )
-from boba.chainlit.domain.errors import UserInputError
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
     ChatView,
@@ -32,6 +31,7 @@ from boba.chainlit.rendering.chat_view import (
     StepStatus,
     StepText,
 )
+from boba.identity.errors import UserInputError
 
 pytestmark = pytest.mark.anyio
 

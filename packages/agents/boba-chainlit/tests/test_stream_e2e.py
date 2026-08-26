@@ -32,7 +32,8 @@ from test_canvas_e2e import (
 
 __all__ = ["anyio_backend", "app_server", "panel"]
 
-from boba.chainlit.canvas.journal import DirVault, StreamJournal, StreamKey
+from boba.canvas.journal import StreamKey
+from boba.chainlit.canvas.journal import DirVault, StreamJournal
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool

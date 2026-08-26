@@ -15,7 +15,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.chainlit.connections.store import ConnectionProfile, StoredConnection
+from boba.connections.profile import ConnectionProfile, StoredConnection
 
 __all__ = [
     "AmbiguousConnectionError",

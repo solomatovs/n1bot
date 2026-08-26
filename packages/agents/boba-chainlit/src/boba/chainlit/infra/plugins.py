@@ -12,6 +12,8 @@ from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
 from boba.access import ToolAccess
+from boba.canvas.diagram import DiagramToolConfig
+from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.agent.toolrun.access import ToolAccessGuard
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.cancellation import CancellableTools
@@ -21,26 +23,19 @@ from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import CallStream, NoCallScope, ToolRunLogger
 from boba.chainlit.agent.toolrun.wrapping import ToolAsyncBody
 from boba.chainlit.agent.tools.send_file import build_send_file_tool
-from boba.chainlit.canvas.diagram import (
-    DiagramToolConfig,
-    build_diagram_tools,
-)
+from boba.chainlit.canvas.diagram import build_diagram_tools
 from boba.chainlit.canvas.panel import ToolStreams
 from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
-from boba.chainlit.connections.store import ConnectionKind, ConnectionsConfig
-from boba.chainlit.connections.whitelist import ConnectionKeying
-from boba.chainlit.domain.context import CallContext
-from boba.chainlit.domain.keys import WorkspaceMount
-from boba.chainlit.infra.config import ProfilesSection, RolesSection
+from boba.chainlit.connections.store import ConnectionsConfig
 from boba.chainlit.infra.tickets import ServiceTickets
-from boba.chainlit.infra.user_connections import (
-    RegistryRef,
-    StoreRef,
-    UserConnections,
-    UserConnectionsSpec,
-)
+from boba.chainlit.infra.user_connections import RegistryRef, StoreRef, UserConnections
 from boba.chainlit.workflow.tools import WorkflowToolConfig, build_workflow_tools
+from boba.chat.profiles import ProfilesSection, RolesSection
+from boba.connections.marks import UserConnectionsSpec
+from boba.connections.profile import ConnectionKind
+from boba.connections.whitelist import ConnectionKeying
+from boba.identity.context import CallContext
 from boba.sandbox import (
     BindSpec,
     SandboxProfile,

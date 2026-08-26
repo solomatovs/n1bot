@@ -12,7 +12,8 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
 
-from boba.chainlit.canvas.journal import StreamJournalError, StreamJournalHub
+from boba.canvas.journal import StreamJournalError, StreamJournalHub
+from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.data.errors import (
     DataBrokenError,
     DataRejectedError,
@@ -29,13 +30,9 @@ from boba.chainlit.data.models import (
 )
 from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
-from boba.chainlit.domain.keys import (
-    AttachmentLinks,
-    ElementProps,
-    ObjectKey,
-)
-from boba.chainlit.domain.session import SessionSource, UserMetadataField
+from boba.chainlit.domain.keys import AttachmentLinks
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.session import SessionSource, UserMetadataField
 from chainlit.data import get_data_layer
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message

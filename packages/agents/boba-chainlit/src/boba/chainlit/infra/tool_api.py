@@ -32,7 +32,10 @@ from boba.chainlit.agent.invoke import (
 )
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
-from boba.chainlit.domain.context import (
+from boba.chainlit.infra.plugins import ToolRegistry
+from boba.chainlit.infra.session import ChainlitSession
+from boba.chat.profiles import ChatProfiles
+from boba.identity.context import (
     CallContext,
     Credential,
     DelegatedTicket,
@@ -40,11 +43,8 @@ from boba.chainlit.domain.context import (
     Scope,
     Subject,
 )
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.run import RunRegistry
-from boba.chainlit.infra.config import ChatProfiles
-from boba.chainlit.infra.plugins import ToolRegistry
-from boba.chainlit.infra.session import ChainlitSession
+from boba.identity.errors import RefusalError
+from boba.identity.run import RunRegistry
 from boba.toolkit.calls import ToolIntent
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser, User

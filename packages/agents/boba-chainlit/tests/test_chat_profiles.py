@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.infra.config import (
+from boba.chat.profiles import (
     AgentSettings,
     ChatProfileConfig,
     ChatProfiles,
     ProfileRefusal,
 )
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
+from boba.identity.errors import RefusalError
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
 

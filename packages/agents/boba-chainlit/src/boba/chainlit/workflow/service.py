@@ -24,18 +24,12 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import StopReason
 from boba.chainlit.agent.invoke import ToolInvoker
-from boba.chainlit.domain.context import CallContext, Scope, Subject
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.run import BackgroundRuns, RunRegistry
 from boba.chainlit.workflow.catalog import CatalogBuilder
-from boba.chainlit.workflow.events import RunEvents, RunSnapshot
-from boba.chainlit.workflow.runner import RunSink, WorkflowRunner
-from boba.chainlit.workflow.store import (
-    StoredRun,
-    StoredWorkflow,
-    WorkflowNotFoundError,
-    WorkflowStore,
-)
+from boba.chainlit.workflow.runner import WorkflowRunner
+from boba.chainlit.workflow.store import WorkflowStore
+from boba.identity.context import CallContext, Scope, Subject
+from boba.identity.errors import RefusalError
+from boba.identity.run import BackgroundRuns, RunRegistry
 from boba.toolkit.result import ToolResult
 from boba.workflow import (
     RunState,
@@ -45,6 +39,9 @@ from boba.workflow import (
     WorkflowSpec,
     WorkflowSpecError,
 )
+from boba.workflow.events import RunEvents, RunSnapshot
+from boba.workflow.ports import RunSink
+from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowNotFoundError
 
 if TYPE_CHECKING:
     from boba.chainlit.infra.plugins import ToolRegistry

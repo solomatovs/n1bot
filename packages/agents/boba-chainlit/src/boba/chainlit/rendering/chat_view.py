@@ -13,7 +13,8 @@ from uuid import UUID, uuid5
 from literalai.observability.step import TrueStepType
 
 from boba.cancellation import StopReason
-from boba.chainlit.canvas.panel import CanvasAction, ToolStreams
+from boba.canvas.canvas import CanvasAction
+from boba.chainlit.canvas.panel import ToolStreams
 from boba.chainlit.rendering.tool import (
     ChartRendering,
     CustomElementRendering,

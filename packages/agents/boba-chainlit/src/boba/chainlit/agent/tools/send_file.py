@@ -16,12 +16,12 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
 import chainlit as cl
+from boba.canvas.keys import ElementProps, ObjectKey
+from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.data.storage import StorageError, StorageNotFoundError
 from boba.chainlit.domain.context import ChatCallContext
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.keys import ElementProps, ObjectKey
-from boba.chainlit.domain.run import ElementTarget, RunRegistry
+from boba.identity.errors import RefusalError
+from boba.identity.run import ElementTarget, RunRegistry
 from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
 
 __all__ = [

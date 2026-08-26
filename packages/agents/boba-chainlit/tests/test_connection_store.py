@@ -11,15 +11,7 @@ from conftest import FakeSecret
 from psycopg import sql
 from pydantic import SecretStr
 
-from boba.chainlit.connections import (
-    ConnectionKind,
-    ConnectionNotFoundError,
-    ConnectionsConfig,
-    ConnectionStore,
-    GrantTarget,
-    SecretCryptoError,
-)
-from boba.chainlit.domain.context import Subject
+from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.connections.clickhouse import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
@@ -32,7 +24,14 @@ from boba.connections.postgres import (
     PostgresOptionsConfig,
     PostgresPoolConfig,
 )
+from boba.connections.profile import (
+    ConnectionKind,
+    ConnectionNotFoundError,
+    GrantTarget,
+)
+from boba.connections.secrets import SecretCryptoError
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import Subject
 
 pytestmark = pytest.mark.anyio
 

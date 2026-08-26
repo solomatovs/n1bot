@@ -10,8 +10,10 @@ from chainlit.auth import get_current_user
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from boba.chainlit.data.storage import LocalStorageClient, StorageFullError
-from boba.chainlit.data.upload import UploadPolicy, UploadRoute
+from boba.canvas.storage import StorageFullError
+from boba.canvas.transfer import UploadPolicy
+from boba.chainlit.data.storage import LocalStorageClient
+from boba.chainlit.data.upload import UploadRoute
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio

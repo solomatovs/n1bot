@@ -26,7 +26,6 @@ from boba.chainlit.agent.toolrun.injected import (
     ConfigResolver,
     ToolConfigError,
 )
-from boba.chainlit.connections.store import ConnectionProfile
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import (
@@ -37,6 +36,7 @@ from boba.connections.kerberos import (
     TicketAuth,
 )
 from boba.connections.postgres import PostgresConfig
+from boba.connections.profile import ConnectionProfile
 from boba.krb import (
     KerberosCredentials,
     KeytabCredentials,

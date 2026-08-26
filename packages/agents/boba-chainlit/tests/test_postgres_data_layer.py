@@ -11,10 +11,10 @@ from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import User as ChainlitUser
 from conftest import Seed, use_session
 
+from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
-from boba.chainlit.domain.keys import ObjectKey
-from boba.chainlit.domain.session import UserMetadataField
+from boba.identity.session import UserMetadataField
 
 pytestmark = pytest.mark.anyio
 
