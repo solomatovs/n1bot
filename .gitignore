@@ -17,6 +17,7 @@ uv.lock
 
 packages/**/build/
 packages/**/dist/
+!packages/agents/boba-chainlit/web/workflow/src/**
 
 .ruff_cache
 .pytest_cache
@@ -45,6 +46,10 @@ packages/**/dist/
 # статика фронта: кладётся make webassets, в образ идёт из build/src/webassets
 packages/agents/boba-chainlit/assets/public/vendor/
 
-# страница workflow: зависимости и сборка (собирает Dockerfile / make web)
+# страница workflow: зависимости, кэши и сборка (собирает Dockerfile / make web)
 packages/agents/boba-chainlit/web/workflow/node_modules/
+packages/agents/boba-chainlit/web/workflow/.vite/
+packages/agents/boba-chainlit/web/workflow/.eslintcache
+packages/agents/boba-chainlit/web/workflow/coverage/
+packages/agents/boba-chainlit/web/workflow/*.tsbuildinfo
 packages/agents/boba-chainlit/assets/public/workflow/

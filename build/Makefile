@@ -342,15 +342,18 @@ tessdata:
 
 
 # dev-сервер страницы workflow: контейнер с vite и HMR, приложение проксирует
-# его под {BOBA_URL_PREFIX}/workflow-dev; повторный вызов ничего не делает
+# его под {BOBA_URL_PREFIX}/workflow-dev; живой контейнер не трогается,
+# неотвечающий пересоздаётся; цель ждёт готовности vite
 WEB_DEV_NAME    ?= boba-web-dev
 WEB_DEV_PORT    ?= 5173
 BOBA_URL_PREFIX ?= /boba-debug
+WEB_DEV_URL      = http://127.0.0.1:$(WEB_DEV_PORT)$(BOBA_URL_PREFIX)/workflow-dev/
+WEB_DEV_WAIT    ?= 180
 .PHONY: web-dev web-dev-stop
 web-dev:
-	running=$$(docker ps --filter name=^$(WEB_DEV_NAME)$$ --format '{{.Label "boba.url_prefix"}}')
-	if [ "$$running" = "$(BOBA_URL_PREFIX)" ]; then
-	    echo "  ✓ $(WEB_DEV_NAME) is running on 127.0.0.1:$(WEB_DEV_PORT) under $(BOBA_URL_PREFIX)"
+	@running=$$(docker ps --filter name=^$(WEB_DEV_NAME)$$ --format '{{.Label "boba.url_prefix"}}')
+	if [ "$$running" = "$(BOBA_URL_PREFIX)" ] && curl -sf -m 3 -o /dev/null "$(WEB_DEV_URL)"; then
+	    echo "  ✓ $(WEB_DEV_NAME) is running: $(WEB_DEV_URL)"
 	    exit 0
 	fi
 	docker rm -f $(WEB_DEV_NAME) >/dev/null 2>&1 || true
@@ -359,8 +362,18 @@ web-dev:
 	    -u "$$(id -u):$$(id -g)" -e HOME=/tmp -e BOBA_URL_PREFIX=$(BOBA_URL_PREFIX) \
 	    -p 127.0.0.1:$(WEB_DEV_PORT):5173 \
 	    -v "$(WEB_DIR):/pkg" -w /pkg/web/workflow $(NODE_IMAGE) \
-	    -c '[ -d node_modules ] || npm ci --no-audit --no-fund; exec npm run dev'
-	@echo "== $(WEB_DEV_NAME): vite on 127.0.0.1:$(WEB_DEV_PORT), logs: docker logs -f $(WEB_DEV_NAME) =="
+	    -c '[ -d node_modules ] || npm ci --no-audit --no-fund; exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort --base $(BOBA_URL_PREFIX)/workflow-dev/'
+	for i in $$(seq $(WEB_DEV_WAIT)); do
+	    if curl -sf -m 3 -o /dev/null "$(WEB_DEV_URL)"; then
+	        echo "== $(WEB_DEV_NAME): vite is ready at $(WEB_DEV_URL), logs: docker logs -f $(WEB_DEV_NAME) =="
+	        exit 0
+	    fi
+	    if [ -z "$$(docker ps -q --filter name=^$(WEB_DEV_NAME)$$)" ]; then
+	        echo "== $(WEB_DEV_NAME) exited; last log lines: =="; docker logs --tail 30 $(WEB_DEV_NAME); exit 1
+	    fi
+	    sleep 1
+	done
+	echo "== $(WEB_DEV_NAME): vite did not answer at $(WEB_DEV_URL) in $(WEB_DEV_WAIT)s =="; docker logs --tail 30 $(WEB_DEV_NAME); exit 1
 
 web-dev-stop:
 	docker rm -f $(WEB_DEV_NAME) >/dev/null 2>&1 || true
