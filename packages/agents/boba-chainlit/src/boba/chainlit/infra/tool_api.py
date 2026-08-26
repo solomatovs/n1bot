@@ -23,20 +23,16 @@ from uuid import UUID
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.cancellation import RunCancellation
-from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
-from boba.chainlit.infra.session import ChainlitSession
+from boba.chainlit.infra.api_auth import ChainlitUsers
 from boba.chat.profiles import ChatProfiles
+from boba.chat.threads import DataRejectedError, DataUnavailableError, ThreadOwnership
+from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.context import (
     CallContext,
-    Credential,
-    DelegatedTicket,
-    HumanInitiator,
     Scope,
     Subject,
 )
-from boba.identity.errors import RefusalError
+from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.run import RunRegistry
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.invoke import (
@@ -49,14 +45,14 @@ from boba.toolrun.registry import ToolRegistry
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser, User
 
-__all__ = ["ApiIdentity", "ToolCallBody", "ToolCallReply", "ToolCalling"]
+__all__ = ["ApiIdentity", "CurrentUser", "ToolCallBody", "ToolCallReply", "ToolCalling"]
 
 logger = logging.getLogger(__name__)
 
 RegistrySource = Callable[[], Awaitable[ToolRegistry]]
 """Реестр инструментов приложения; собирается контейнером на первый запрос."""
 
-LayerSource = Callable[[], PostgresDataLayer]
+LayerSource = Callable[[], ThreadOwnership]
 
 
 class ToolCallBody(BaseModel):
@@ -91,63 +87,34 @@ class ToolCallReply(BaseModel):
 
 
 class ApiIdentity:
-    """Кто зовёт API: сохранённый пользователь, субъект под профилем, секреты.
-
-    Ошибки — HTTPException: 401 без сохранённого входа, 403 профиль недоступен.
-    """
-
-    def __init__(
-        self, user: PersistedUser, subject: Subject, credential: Credential
-    ) -> None:
-        self.user = user
-        self.subject = subject
-        self.credential = credential
-
-    @classmethod
-    def resolve(
-        cls,
-        current_user: User | PersistedUser | None,
-        profile: str | None,
-        profiles: ChatProfiles,
-    ) -> ApiIdentity:
-        user = cls._persisted(current_user)
-        roles = ChainlitSession.roles_of(user)
-        selected = cls._profile(profiles, profile, roles)
-
-        try:
-            subject = Subject.of_user(user.id, user.identifier, roles, selected)
-        except ValueError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-        credential = DelegatedTicket.credential_of(ChainlitSession.metadata_of(user))
-        return cls(user, subject, credential)
-
-    def context(self, scope: Scope) -> CallContext:
-        """Контекст вызова человека через API в заданной области."""
-        return CallContext(
-            subject=self.subject,
-            scope=scope,
-            initiator=HumanInitiator(via="api"),
-            credential=self.credential,
-            cancellation=RunCancellation(),
-        )
+    """Вход вызова API: 401 без сохранённого входа, 403 если профиль недоступен."""
 
     @staticmethod
-    def _persisted(current_user: User | PersistedUser | None) -> PersistedUser:
-        if not isinstance(current_user, PersistedUser):
+    async def current(
+        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+    ) -> AuthenticatedUser | None:
+        """Зависимость FastAPI: пользователь входа из cookie chainlit."""
+        return ChainlitUsers.of(current_user)
+
+    @staticmethod
+    def resolve(
+        user: AuthenticatedUser | None, profile: str | None, profiles: ChatProfiles
+    ) -> ApiSubject:
+        if user is None:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-        return current_user
-
-    @staticmethod
-    def _profile(
-        profiles: ChatProfiles, name: str | None, roles: frozenset[str]
-    ) -> str:
-        """Названный профиль обязан быть виден ролям; без имени — по умолчанию."""
         try:
-            return profiles.resolve_or_default(name, roles).name
+            selected = profiles.resolve_or_default(profile, user.roles).name
         except RefusalError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+        try:
+            return ApiSubject.of(user, selected)
+        except AuthenticationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+CurrentUser = Annotated[AuthenticatedUser | None, Depends(ApiIdentity.current)]
 
 
 class ToolCalling:
@@ -167,19 +134,19 @@ class ToolCalling:
         self,
         name: str,
         body: ToolCallBody,
-        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+        current_user: CurrentUser,
     ) -> ToolCallReply:
         identity = ApiIdentity.resolve(current_user, body.profile, self._profiles)
 
         thread_id = str(body.thread_id)
-        await self._own_thread(identity.user, thread_id)
+        await self._own_thread(identity.subject.login, thread_id)
 
         invoker = await self._invoker(identity.subject)
         context = identity.context(Scope.chat(thread_id))
 
         return await self._run(invoker, name, body, context)
 
-    async def _own_thread(self, user: PersistedUser, thread_id: str) -> None:
+    async def _own_thread(self, login: str, thread_id: str) -> None:
         try:
             author = await self._data_layer().get_thread_author(thread_id)
         except DataRejectedError as exc:
@@ -187,7 +154,7 @@ class ToolCalling:
         except DataUnavailableError as exc:
             raise HTTPException(status_code=503, detail="Data layer is down") from exc
 
-        if author != user.identifier:
+        if author != login:
             raise HTTPException(status_code=404, detail="Thread not found")
 
     async def _invoker(self, subject: Subject) -> ToolInvoker:

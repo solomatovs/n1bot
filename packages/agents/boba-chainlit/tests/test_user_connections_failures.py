@@ -15,7 +15,7 @@ from typing import Annotated, Any
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from conftest import enter_context
+from conftest import StubRefs, enter_context
 from langchain_core.tools import StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
@@ -713,6 +713,6 @@ class TestStartup:
 
         try:
             with pytest.raises(RuntimeError, match=r"\[connections\] enable = true"):
-                ChatPlugins.load(disabled, lambda: None, lambda: None)  # type: ignore[arg-type]
+                ChatPlugins.load(disabled, StubRefs.of(lambda: None, lambda: None))  # type: ignore[arg-type]
         finally:
             ZygoteRegistry.stop_all()

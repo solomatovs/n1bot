@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from boba.chainlit.auth.ldap import LdapAuthConfig
+from boba.chainlit.auth.config import LdapAuthConfig
 from boba.identity.session import LoginTemplate
 from boba.toolkit.template import TemplateError
 

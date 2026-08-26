@@ -22,19 +22,19 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.chainlit.infra.tool_api import ApiIdentity
 from boba.chat.profiles import ChatProfiles
+from boba.identity.api import AuthenticatedUser
 from boba.identity.context import Subject
 from boba.identity.errors import RefusalError
 from boba.workflow.events import RunSnapshot
 from boba.workflow_engine.service import WorkflowService
-from chainlit.user import PersistedUser, User
 
-__all__ = ["Authenticator", "WorkflowNamespace", "WorkflowSocketEvent"]
+__all__ = ["SocketAuthenticator", "WorkflowNamespace", "WorkflowSocketEvent"]
 
 logger = logging.getLogger(__name__)
 
 ServiceSource = Callable[[], Awaitable[WorkflowService]]
 
-Authenticator = Callable[[dict[str, Any]], Awaitable[User | PersistedUser | None]]
+SocketAuthenticator = Callable[[dict[str, Any]], Awaitable[AuthenticatedUser | None]]
 """WSGI environ подключения -> пользователь входа; None — cookie негодна."""
 
 
@@ -74,7 +74,7 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         self,
         service: ServiceSource,
         profiles: ChatProfiles,
-        authenticate: Authenticator,
+        authenticate: SocketAuthenticator,
     ) -> None:
         super().__init__(self.NAME)
         self._service = service

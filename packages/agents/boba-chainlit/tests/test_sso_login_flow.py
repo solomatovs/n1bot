@@ -19,10 +19,9 @@ from gssapi import Credentials, Name, NameType, SecurityContext
 from stand_site import Stand
 from starlette.datastructures import Headers
 
+from boba.chainlit.auth.config import KerberosAuthConfig, KerberosRolesConfig
 from boba.chainlit.auth.kerberos import (
     KerberosAuth,
-    KerberosAuthConfig,
-    KerberosRolesConfig,
     SpnegoMiddleware,
     SsoRefresh,
     SsoRuntime,

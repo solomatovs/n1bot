@@ -15,8 +15,8 @@ from boba.chainlit.chat import tracing as tracer_module
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.data.errors import DataLayerError
 from boba.chainlit.rendering.chat_view import ChatView
+from boba.chat.threads import DataLayerError
 
 
 @pytest.fixture(autouse=True)

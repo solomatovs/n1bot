@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from boba.chainlit.auth import ChainlitAuthInstaller
+from boba.chainlit.auth.installer import ChainlitAuthInstaller
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
     AppConfig,
@@ -22,12 +22,12 @@ from boba.chainlit.infra.config import (
 )
 from boba.chainlit.infra.error_middleware import DomainErrorMiddleware
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
-from boba.chainlit.infra.session import current_session
+from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
+from boba.identity.api import AuthenticatedUser
 from boba.runtime.di import Container
 from boba.sandbox.zygote import ZygoteRegistry
-from chainlit.user import PersistedUser, User
 
 if TYPE_CHECKING:
     from boba.chainlit.workflow.page import WorkflowPageConfig
@@ -242,11 +242,7 @@ def _use_canvas_viewers() -> None:
     from boba.chainlit.infra.thread_room import CanvasRoomTransport  # noqa: PLC0415
 
     CanvasWatch.configure(CanvasRoomTransport())
-    ChatPlugins.load(
-        providers.get_raw_config(),
-        providers.connection_store_ref,
-        providers.ccache_registry_ref,
-    )
+    ChatPlugins.load(providers.get_raw_config(), providers.runtime_refs())
 
 
 def _use_tool_api(c: AppConfig) -> None:
@@ -268,9 +264,8 @@ def _use_tool_api(c: AppConfig) -> None:
             )
         return layer
 
-    calling = ToolCalling(
-        providers.tool_registry_ref, ChatProfiles(c.profiles), data_layer
-    )
+    refs = providers.runtime_refs()
+    calling = ToolCalling(refs.tool_registry, ChatProfiles(c.profiles), data_layer)
     chainlit_app.add_api_route(
         ToolCallUrl.ROUTE, calling.serve, methods=["POST"], include_in_schema=False
     )
@@ -279,6 +274,7 @@ def _use_tool_api(c: AppConfig) -> None:
 
 def _use_workflow_api(c: AppConfig) -> None:
     """Workflow: REST, живые снимки по socket.io и страница SPA."""
+    from boba.chainlit.infra.api_auth import ChainlitUsers  # noqa: PLC0415
     from boba.chainlit.workflow.api import WorkflowApi  # noqa: PLC0415
     from boba.chainlit.workflow.page import WorkflowPageConfig  # noqa: PLC0415
     from boba.chainlit.workflow.socket import WorkflowNamespace  # noqa: PLC0415
@@ -288,18 +284,19 @@ def _use_workflow_api(c: AppConfig) -> None:
     from chainlit.server import sio  # noqa: PLC0415
     from chainlit.socket import _authenticate_connection  # noqa: PLC0415
 
+    refs = providers.runtime_refs()
     profiles = ChatProfiles(c.profiles)
-    WorkflowApi(providers.workflow_service_ref, profiles).mount(chainlit_app)
+    WorkflowApi(refs.workflow_service, profiles).mount(chainlit_app)
     _use_workflow_page(
         c, bind(providers.get_raw_config(), "workflow", WorkflowPageConfig)
     )
 
-    async def authenticate(environ: dict[str, Any]) -> User | PersistedUser | None:
+    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
         user, _token = await _authenticate_connection(environ)
-        return user
+        return ChainlitUsers.of(user)
 
     sio.register_namespace(
-        WorkflowNamespace(providers.workflow_service_ref, profiles, authenticate)
+        WorkflowNamespace(refs.workflow_service, profiles, authenticate)
     )
 
 
@@ -330,7 +327,9 @@ def _use_auth(config: AppConfig, container: Container) -> None:
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
-    container.provide(providers.session_source, providers.session_source())
+    sessions = ChainlitSessions()
+    ChainlitSessions.install(sessions)
+    container.provide(providers.session_source, sessions)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
     container.eager(providers.kb_schema)

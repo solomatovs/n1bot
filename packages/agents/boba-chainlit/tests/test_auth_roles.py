@@ -9,14 +9,17 @@ from __future__ import annotations
 import pytest
 from conftest import FakeSecret
 
-from boba.chainlit.auth.kerberos import (
+from boba.chainlit.auth.config import (
     KerberosRolesInLdapConfig,
     KerberosRolesInLdapMappingConfig,
+    LocalAuthConfig,
+)
+from boba.chainlit.auth.kerberos import (
     KerberosRolesInLdapProvider,
     SidExcludeUserProvider,
     SidUserRolesProvider,
 )
-from boba.chainlit.auth.local import LocalAuth, LocalAuthConfig
+from boba.chainlit.auth.local import LocalAuth
 from boba.identity.directory import ADUserEntry
 from boba.identity.errors import AuthorizationError
 from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig

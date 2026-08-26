@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from chainlit.auth import get_current_user
-from chainlit.user import PersistedUser
+from chainlit.auth import create_jwt, get_current_user
+from chainlit.user import PersistedUser, User
 from conftest import Seed
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
@@ -19,7 +20,9 @@ from langchain_core.tools import tool
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.chainlit.domain.keys import ToolCallUrl
+from boba.chainlit.infra.api_auth import ChainlitAuthenticator, ChainlitUsers
 from boba.chainlit.infra.config import AppConfig
+from boba.chainlit.infra.session import ChainlitSession
 from boba.chainlit.infra.tool_api import ToolCallBody, ToolCalling
 from boba.chat.profiles import ChatProfiles
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
@@ -132,7 +135,7 @@ class TestServe:
         user = _tester(seeded, app_config)
 
         reply = await _calling(probe, seeded, app_config).serve(
-            "probe", _body(seeded, app_config), user
+            "probe", _body(seeded, app_config), ChainlitUsers.of(user)
         )
 
         if not reply.ok or "seen x" not in reply.content:
@@ -165,7 +168,7 @@ class TestServe:
 
         with pytest.raises(HTTPException) as caught:
             await _calling(Probe(), seeded, app_config).serve(
-                "canvas_open", _body(seeded, app_config), user
+                "canvas_open", _body(seeded, app_config), ChainlitUsers.of(user)
             )
 
         if caught.value.status_code != 404:
@@ -178,7 +181,9 @@ class TestServe:
         body = _body(seeded, app_config, thread_id=str(uuid4()))
 
         with pytest.raises(HTTPException) as caught:
-            await _calling(Probe(), seeded, app_config).serve("probe", body, user)
+            await _calling(Probe(), seeded, app_config).serve(
+                "probe", body, ChainlitUsers.of(user)
+            )
 
         if caught.value.status_code != 404:
             raise AssertionError(caught.value.status_code)
@@ -190,7 +195,9 @@ class TestServe:
         body = _body(seeded, app_config, profile="no-such-profile")
 
         with pytest.raises(HTTPException) as caught:
-            await _calling(Probe(), seeded, app_config).serve("probe", body, user)
+            await _calling(Probe(), seeded, app_config).serve(
+                "probe", body, ChainlitUsers.of(user)
+            )
 
         if caught.value.status_code != 403:
             raise AssertionError(caught.value.status_code)
@@ -203,7 +210,7 @@ class TestServe:
 
         with pytest.raises(HTTPException) as caught:
             await _calling(Probe(), seeded, app_config).serve(
-                "probe", _body(seeded, app_config), user
+                "probe", _body(seeded, app_config), ChainlitUsers.of(user)
             )
 
         if caught.value.status_code not in (403, 404):
@@ -251,3 +258,32 @@ class TestRoute:
             raise AssertionError(malformed.text)
         if len(probe.seen) != 1:
             raise AssertionError("exactly one call reached the tool")
+
+
+class TestAuthenticator:
+    """JWT chainlit -> пользователь входа со строкой users."""
+
+    async def test_persisted_user_by_token(
+        self, seeded: Seed, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if not os.environ.get("CHAINLIT_AUTH_SECRET"):
+            monkeypatch.setenv("CHAINLIT_AUTH_SECRET", "stand-secret")
+
+        tester = _tester(seeded, app_config)
+        login = User(identifier=tester.identifier, metadata=dict(tester.metadata))
+        authenticator = ChainlitAuthenticator(lambda: seeded.layer)
+
+        user = await authenticator.user_of_token(create_jwt(login))
+
+        if user is None:
+            raise AssertionError("persisted user expected")
+        if user.id != tester.id:
+            raise AssertionError((user.id, tester.id))
+        stored = await seeded.layer.get_user(tester.identifier)
+        if stored is None:
+            raise AssertionError("users row expected")
+        if user.roles != ChainlitSession.roles_of(stored):
+            raise AssertionError((user.roles, stored.metadata))
+
+        if await authenticator.user_of_token("not-a-token") is not None:
+            raise AssertionError("garbage token must not authenticate")

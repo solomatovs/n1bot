@@ -16,15 +16,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Annotated, Any, TypeVar
+from typing import Any, TypeVar
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit.domain.keys import WorkflowUrl
-from boba.chainlit.infra.tool_api import ApiIdentity
+from boba.chainlit.infra.tool_api import ApiIdentity, CurrentUser
 from boba.chat.profiles import ChatProfiles
+from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.context import Scope
 from boba.workflow import RunState, ToolFacts
 from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowStoreError
@@ -33,8 +34,6 @@ from boba.workflow_engine.service import (
     WorkflowRefusal,
     WorkflowService,
 )
-from chainlit.auth import get_current_user
-from chainlit.user import PersistedUser, User
 
 __all__ = ["WorkflowApi", "WorkflowBody"]
 
@@ -43,8 +42,6 @@ logger = logging.getLogger(__name__)
 ServiceSource = Callable[[], Awaitable[WorkflowService]]
 
 T = TypeVar("T")
-
-CurrentUser = Annotated[User | PersistedUser | None, Depends(get_current_user)]
 
 
 class WorkflowBody(BaseModel):
@@ -211,8 +208,8 @@ class WorkflowApi:
         return Stopped(stopped=stopped)
 
     def _identity(
-        self, current_user: User | PersistedUser | None, profile: str | None
-    ) -> ApiIdentity:
+        self, current_user: AuthenticatedUser | None, profile: str | None
+    ) -> ApiSubject:
         return ApiIdentity.resolve(current_user, profile, self._profiles)
 
     async def _resolved(self) -> WorkflowService:

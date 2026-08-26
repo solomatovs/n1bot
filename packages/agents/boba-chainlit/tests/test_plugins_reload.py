@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from conftest import StubRefs
 from pydantic import BaseModel
 
 from boba.chainlit.infra.plugins import ChatPlugins
@@ -53,8 +54,8 @@ def _schema_fields(tool: object) -> set[str]:
 
 
 def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
-    first = ChatPlugins.load(raw_config, _no_store, _no_registry)
-    second = ChatPlugins.load(raw_config, _no_store, _no_registry)
+    first = ChatPlugins.load(raw_config, StubRefs.of(_no_store, _no_registry))
+    second = ChatPlugins.load(raw_config, StubRefs.of(_no_store, _no_registry))
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
@@ -69,8 +70,8 @@ def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
 
 
 def test_module_singletons_stay_pristine(raw_config) -> None:
-    ChatPlugins.load(raw_config, _no_store, _no_registry)
-    ChatPlugins.load(raw_config, _no_store, _no_registry)
+    ChatPlugins.load(raw_config, StubRefs.of(_no_store, _no_registry))
+    ChatPlugins.load(raw_config, StubRefs.of(_no_store, _no_registry))
 
     for tool in PG_TOOLS:
         fields = _schema_fields(tool)

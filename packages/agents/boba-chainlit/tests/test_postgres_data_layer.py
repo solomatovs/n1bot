@@ -13,7 +13,7 @@ from conftest import Seed, use_session
 
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.data.errors import DataRejectedError, DataUnavailableError
+from boba.chat.threads import DataRejectedError, DataUnavailableError
 from boba.identity.session import UserMetadataField
 
 pytestmark = pytest.mark.anyio

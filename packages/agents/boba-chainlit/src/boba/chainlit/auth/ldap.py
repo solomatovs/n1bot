@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any, Literal
+from typing import Any
 
 from ldap3 import (
     Connection,
@@ -22,9 +22,9 @@ from ldap3.core.exceptions import (
     LDAPStartTLSError,
     LDAPStrongerAuthRequiredResult,
 )
-from pydantic import BaseModel, Field, field_validator
 
 import chainlit as cl
+from boba.chainlit.auth.config import LdapAuthConfig
 from boba.identity.directory import (
     LDAPAccessDeniedError,
     LDAPConfigError,
@@ -42,7 +42,6 @@ from boba.identity.errors import (
 from boba.identity.roles import (
     DnExcludeUserProvider,
     DnUserRolesProvider,
-    LdapRolesConfig,
     LocalExcludeUserProvider,
     LocalUserRolesProvider,
     MemberOfExcludeUserProvider,
@@ -176,47 +175,6 @@ class ADDirectory:
         for group_dn, role in group_dn_and_roles.items():
             if group_dn in member_of:
                 yield role
-
-
-class LdapCredentialConfig(BaseModel):
-    bind_dn: str = Field(description="DN сервисной учётки для поиска пользователя.")
-    bind_password: str = Field(description="Пароль сервисной учётки (секрет).")
-
-
-class LdapAuthConfig(BaseModel):
-    """Логин/пароль с проверкой bind'ом в AD; роль — из групп AD (как kerberos)."""
-
-    type: Literal["ldap"] = "ldap"
-    server: str = Field(
-        description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
-    )
-    base_dn: str = Field(
-        description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
-    )
-    user_filter: str = Field(
-        default="(sAMAccountName={username})",
-        description="LDAP-фильтр поиска пользователя; {username} подставляется.",
-    )
-    bind_dn_template: str = Field(
-        description="LDAP bind user; {username} подставляется",
-    )
-
-    @field_validator("user_filter", "bind_dn_template")
-    @classmethod
-    def _template_has_username(cls, value: str) -> str:
-        return LoginTemplate.check(value)
-
-    roles: LdapRolesConfig = Field(
-        default=LdapRolesConfig(),
-        description="Мапперы учеток и ролей",
-    )
-    require_roles: bool = Field(
-        default=True,
-        description=(
-            "403 после успешной аутентификации, "
-            "если пользователю не замапилась ни одна роль."
-        ),
-    )
 
 
 class LdapAuth:

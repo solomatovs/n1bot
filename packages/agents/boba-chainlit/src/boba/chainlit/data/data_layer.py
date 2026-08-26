@@ -14,12 +14,6 @@ from psycopg.types.json import Jsonb
 
 from boba.canvas.journal import StreamJournalError, StreamJournalHub
 from boba.canvas.keys import ElementProps, ObjectKey
-from boba.chainlit.data.errors import (
-    DataBrokenError,
-    DataRejectedError,
-    DataUnavailableError,
-    data_boundary,
-)
 from boba.chainlit.data.models import (
     Codec,
     Element,
@@ -31,6 +25,14 @@ from boba.chainlit.data.models import (
 from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
 from boba.chainlit.domain.keys import AttachmentLinks
+from boba.chainlit.infra.api_auth import PersistedUsers
+from boba.chat.threads import (
+    DataBrokenError,
+    DataRejectedError,
+    DataUnavailableError,
+    ThreadOwnership,
+    data_boundary,
+)
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import SessionSource, UserMetadataField
 from chainlit.data import get_data_layer
@@ -93,7 +95,7 @@ class AttachmentDataLayer(BaseDataLayer, ABC):
         return layer
 
 
-class PostgresDataLayer(AttachmentDataLayer):
+class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, PersistedUsers):
     """Хранилище chainlit (users/threads/elements/feedbacks) на psycopg-пуле."""
 
     _MODELS: ClassVar[tuple[type[Row], ...]] = (User, Thread, Element, Feedback)

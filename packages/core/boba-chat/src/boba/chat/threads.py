@@ -1,20 +1,20 @@
-"""Контракт ошибок слоя данных: наружу выходят только эти типы.
+"""Треды чата: порт владения тредом и контракт ошибок слоя данных.
 
-Ошибки: DataUnavailableError — хранилище недоступно или ответило некорректно;
-DataRejectedError — запрос слою данных невозможен на этих данных; DataBrokenError —
-нарушен инвариант самого слоя.
+Ошибки:
+DataUnavailableError — хранилище недоступно или ответило некорректно.
+DataRejectedError — запрос слою данных невозможен на этих данных.
+DataBrokenError — нарушен инвариант самого слоя.
 
-Всё чужое (psycopg, файловая система, журнал потоков) упаковывается здесь и
-никогда не доходит до вызывающего в исходном виде.
+Всё чужое (psycopg, файловая система, журнал потоков) упаковывается на границе
+слоя данных и никогда не доходит до вызывающего в исходном виде.
 """
 
 from __future__ import annotations
 
 import functools
+from abc import abstractmethod
 from collections.abc import Callable, Coroutine
-from typing import Any, TypeVar
-
-from typing_extensions import ParamSpec
+from typing import Any, ParamSpec, Protocol, TypeVar
 
 from boba.identity.errors import (
     BaseError,
@@ -27,6 +27,7 @@ __all__ = [
     "DataLayerError",
     "DataRejectedError",
     "DataUnavailableError",
+    "ThreadOwnership",
     "data_boundary",
 ]
 
@@ -74,6 +75,14 @@ class DataBrokenError(DataLayerError):
 
     STATUS: int = 500
     USER_TEXT: str = "Internal storage error"
+
+
+class ThreadOwnership(Protocol):
+    """Автор треда чата: по нему API проверяет, что тред принадлежит вызывающему."""
+
+    @abstractmethod
+    async def get_thread_author(self, thread_id: str) -> str:
+        """DataRejectedError — треда нет; DataUnavailableError — хранилище лежит."""
 
 
 def data_boundary(

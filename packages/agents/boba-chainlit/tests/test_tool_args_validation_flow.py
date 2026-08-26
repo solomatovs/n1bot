@@ -16,7 +16,7 @@ from typing import Any
 
 import chainlit as cl
 import pytest
-from conftest import use_context
+from conftest import StubRefs, use_context
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -129,7 +129,7 @@ def session_tools(
     raw_config: DictConfig, app_config: AppConfig, app_sandbox: None
 ) -> list[BaseTool]:
     """Инструменты профиля, собранные боевым загрузчиком."""
-    registry = ChatPlugins.load(raw_config, _no_store, _no_registry)
+    registry = ChatPlugins.load(raw_config, StubRefs.of(_no_store, _no_registry))
     roles = frozenset(app_config.roles)
     return registry.for_session(roles, PROFILE)
 

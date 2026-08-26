@@ -13,15 +13,16 @@ InternalServiceError — контекст вызова не собрать: у �
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Iterable, Mapping
+from collections.abc import Awaitable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import jwt
 
 import chainlit as cl
 from boba.cancellation import RunCancellation
 from boba.chainlit.domain.context import ChatCallContext
+from boba.identity.api import AuthenticatedUser
 from boba.identity.context import (
     ChatInitiator,
     Credential,
@@ -33,7 +34,6 @@ from boba.identity.context import (
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import (
     Session,
-    UserMetadataField,
 )
 from chainlit.auth.jwt import decode_jwt
 from chainlit.config import config as chainlit_config
@@ -293,25 +293,26 @@ class ChainlitSession(Session):
     @classmethod
     def roles_of(cls, user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
         """Роли пользователя из metadata; годится и вне контекста сессии."""
-        roles = cls.metadata_of(user).get(UserMetadataField.ROLES)
-        if not roles:
-            return frozenset()
-
-        if isinstance(roles, str):
-            return frozenset({roles})
-
-        if not isinstance(roles, Iterable):
-            return frozenset()
-
-        names: set[str] = set()
-        for role in roles:
-            names.add(str(role))
-
-        return frozenset(names)
+        return AuthenticatedUser.roles_in(cls.metadata_of(user))
 
 
 class ChainlitSessions:
     """Источник сессий chainlit: контекст вызова, реестр сокетов и тред."""
+
+    _installed: ClassVar[ChainlitSessions | None] = None
+
+    @classmethod
+    def install(cls, source: ChainlitSessions) -> None:
+        cls._installed = source
+
+    @classmethod
+    def installed(cls) -> ChainlitSessions:
+        """Отсутствие источника — ошибка сборки: позвали раньше bootstrap."""
+        if cls._installed is None:
+            msg = "session source is not installed: bootstrap has not run"
+            raise RuntimeError(msg)
+
+        return cls._installed
 
     def current(self) -> ChainlitSession:
         """Сессия текущего вызова; вне контекста chainlit — пустая обёртка."""
@@ -348,29 +349,8 @@ class ChainlitSessions:
 
 
 def session_source_ref() -> ChainlitSessions:
-    """Источник сессий для мест вне DI-графа: тела инструментов, журнал.
-
-    Контейнер поднят раньше их всех, поэтому источник берётся из корня, а
-    не прокидывается через десяток фабрик. Провайдер импортируется лениво:
-    providers собирает реестр инструментов, который сам зовёт эту функцию.
-
-    Отсутствие корня — ошибка сборки, а не режим работы: значит функцию
-    позвали там, где контейнера ещё нет.
-    """
-    from boba.chainlit.infra.providers import session_source  # noqa: PLC0415
-    from boba.runtime.di import Container  # noqa: PLC0415
-
-    root = Container.root
-    if root is None:
-        msg = "DI container is not initialised: session source is unavailable"
-        raise RuntimeError(msg)
-
-    source = root.resolved(session_source)
-    if not isinstance(source, ChainlitSessions):
-        msg = f"session source is {type(source).__name__}, expected ChainlitSessions"
-        raise RuntimeError(msg)
-
-    return source
+    """Источник сессий для мест вне DI-графа: ставит bootstrap на старте."""
+    return ChainlitSessions.installed()
 
 
 def current_session() -> ChainlitSession:

@@ -21,6 +21,7 @@ dependencies = [
     "boba-settings==0.0.14.dev8",
     "boba-toolkit==0.0.14.dev8",
     "boba-toolrun==0.0.14.dev8",
+    "boba-workflow-engine==0.0.14.dev8",
 ]
 
 [tool.setuptools.packages.find]

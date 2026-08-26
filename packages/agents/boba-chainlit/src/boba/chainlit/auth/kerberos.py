@@ -14,20 +14,23 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel
 from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import chainlit as cl
+from boba.chainlit.auth.config import (
+    KerberosAuthConfig,
+    KerberosRolesInLdapConfig,
+)
 from boba.chainlit.auth.ldap import ADDirectory
 from boba.chainlit.infra.session import ChainlitSession
 from boba.connections.kerberos import (
-    AcceptConfig,
     Delegation,
     DelegationMode,
     ForwardedDelegation,
@@ -51,7 +54,6 @@ from boba.identity.errors import (
 from boba.identity.roles import (
     DnExcludeUserProvider,
     DnUserRolesProvider,
-    LdapRolesConfig,
     LocalExcludeUserProvider,
     LocalUserRolesProvider,
     MemberOfExcludeUserProvider,
@@ -133,86 +135,6 @@ class SsoUrls(BaseModel):
             login=f"{url_prefix}/login",
             app=f"{url_prefix}/",
         )
-
-
-class KerberosRolesInLdapMappingConfig(LdapRolesConfig):
-    """Мапинг ролей/исключений по атрибутам AD; поля наследуются от LdapRolesConfig."""
-
-
-class KerberosRolesInLdapConfig(BaseModel):
-    server: str = Field(
-        description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
-    )
-    base_dn: str = Field(
-        description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
-    )
-    bind_dn: str
-    bind_password: str
-    mapping: KerberosRolesInLdapMappingConfig = Field(
-        default=KerberosRolesInLdapMappingConfig(),
-    )
-
-
-class KerberosRolesConfig(BaseModel):
-    principal: RoleMappingConfig | None = None
-    principal_ex: RoleExcludeConfig | None = None
-    sid: RoleMappingConfig | None = Field(
-        default=None,
-        description="Мапер SID группы из PAC kerberos-тикета - роли.",
-    )
-    sid_ex: RoleExcludeConfig | None = Field(
-        default=None,
-        description="SID групп из PAC, членам которых запрещён вход (403).",
-    )
-
-
-class KerberosAuthConfig(BaseModel):
-    """SSO через Kerberos/SPNEGO: тикет валидирует middleware, роль — из групп AD."""
-
-    type: Literal["kerberos"] = "kerberos"
-
-    accept: AcceptConfig = Field(
-        description=(
-            "SPN и keytab сервиса для SPNEGO-accept; "
-            "в конфиге подключается ссылкой ${kerberos.<name>}."
-        ),
-    )
-    principal_format: str
-    sso_path: str = Field(default="/auth/sso")
-    header: str = Field(
-        default="X-Remote-User",
-        description="Заголовок, куда кладётся принципал для header_auth_callback.",
-    )
-    delegation: Delegation = Field(
-        description=(
-            "Режим делегирования: forwarded (неограниченное, TGT от браузера) "
-            "или constrained (S4U2Proxy по msDS-AllowedToDelegateTo)."
-        ),
-    )
-    roles: KerberosRolesConfig | None = None
-    ldap_roles: KerberosRolesInLdapConfig | None = None
-    require_roles: bool = Field(
-        default=True,
-        description=(
-            "403 после успешной аутентификации, "
-            "если пользователю не замапилась ни одна роль."
-        ),
-    )
-
-    @field_validator("principal_format")
-    @classmethod
-    def _principal_format_has_username(cls, value: str) -> str:
-        return LoginTemplate.check_principal(value)
-
-    @property
-    def sids_header(self) -> str:
-        "Заголовок с SID-ами групп из PAC; ставит SpnegoMiddleware."
-        return f"{self.header}-Sids"
-
-    @property
-    def login_header(self) -> str:
-        "Заголовок с меткой SSO-входа, владеющего делегированным тикетом."
-        return f"{self.header}-Login"
 
 
 class SsoRefresh(StrEnum):
