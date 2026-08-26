@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
@@ -13,11 +13,11 @@ from boba.chainlit.canvas.diagram import build_diagram_tools
 from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
 from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
-from boba.connection_broker.user_connections import RegistryRef, StoreRef
 from boba.connections.marks import UserConnectionsSpec
 from boba.connections.profile import ConnectionKind
 from boba.connections.whitelist import ConnectionKeying
 from boba.runtime.plugins import ToolBridge, ToolLoader, ToolPlugin
+from boba.runtime.refs import RuntimeRefs
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.chart.tools import TOOLS as CHART_TOOLS
 from boba.tool.doc.tools import TOOLS as DOC_TOOLS
@@ -39,17 +39,19 @@ class ChatPlugins:
     """Таблица плагинов приложения чата и загрузка реестра инструментов."""
 
     @classmethod
-    def load(
-        cls, raw_config: DictConfig, store_ref: StoreRef, registry_ref: RegistryRef
-    ) -> ToolRegistry:
+    def load(cls, raw_config: DictConfig, refs: RuntimeRefs) -> ToolRegistry:
         loader = ToolLoader(
-            raw_config, cls.table(), store_ref, registry_ref, ChatRefreshSignal()
+            raw_config,
+            cls.table(refs),
+            refs.connection_store,
+            refs.ccache_registry,
+            ChatRefreshSignal(),
         )
 
         return loader.load()
 
     @classmethod
-    def table(cls) -> Mapping[str, ToolPlugin]:
+    def table(cls, refs: RuntimeRefs) -> Mapping[str, ToolPlugin]:
         return {
             "bash": ToolPlugin(
                 section="bash",
@@ -86,7 +88,7 @@ class ChatPlugins:
             "workflow": ToolPlugin(
                 section="workflow",
                 config_model=WorkflowToolConfig,
-                build=cls._workflow,
+                build=cls._workflow_builder(refs),
                 sandboxed=False,
             ),
             "pg": cls._connected(
@@ -146,10 +148,14 @@ class ChatPlugins:
         return build_stream_logs_tools(cfg)
 
     @staticmethod
-    def _workflow(
-        cfg: WorkflowToolConfig, launchers: LauncherFactory
-    ) -> list[BaseTool]:
-        """Сервис берётся из контейнера на вызов: providers импортируют этот модуль."""
-        from boba.chainlit.infra.providers import workflow_service_ref  # noqa: PLC0415
+    def _workflow_builder(
+        refs: RuntimeRefs,
+    ) -> Callable[[WorkflowToolConfig, LauncherFactory], list[BaseTool]]:
+        """Сервис workflow берётся из входов приложения на каждый вызов."""
 
-        return build_workflow_tools(cfg, workflow_service_ref)
+        def build(
+            cfg: WorkflowToolConfig, launchers: LauncherFactory
+        ) -> list[BaseTool]:
+            return build_workflow_tools(cfg, refs.workflow_service)
+
+        return build

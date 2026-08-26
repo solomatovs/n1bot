@@ -1,47 +1,13 @@
-from typing import Any, Literal
-
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
 
 import chainlit as cl
+from boba.chainlit.auth.config import LocalAuthConfig
 from boba.identity.errors import AuthorizationError
 from boba.identity.roles import (
     LocalExcludeUserProvider,
     LocalUserRolesProvider,
-    RoleExcludeConfig,
-    RoleMappingConfig,
 )
 from boba.identity.session import SignInProvider, UserLogin, UserMetadataField
-
-
-class LocalAuthConfig(BaseModel):
-    """Авторизация по статической таблице логин/пароль из конфига."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    type: Literal["local"] = "local"
-
-    users: dict[str, str] = Field(
-        default_factory=dict,
-        description="Таблица логин→пароль; совпадение выдаёт роль admin.",
-    )
-
-    roles: RoleMappingConfig | None = Field(
-        default=None,
-        description="Источник ролей для пользователей",
-    )
-
-    roles_ex: RoleExcludeConfig | None = Field(
-        default=None,
-        description="Список логинов, которым запрещён вход (403).",
-    )
-
-    require_roles: bool = Field(
-        default=True,
-        description=(
-            "403 после успешной аутентификации, "
-            "если пользователю не замапилась ни одна роль."
-        ),
-    )
 
 
 class LocalAuth:

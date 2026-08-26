@@ -14,7 +14,7 @@ from pydantic import (
 )
 
 from boba.access import RoleConfig
-from boba.chainlit.auth import AuthConfig
+from boba.chainlit.auth.config import AuthConfig
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chat.profiles import (
     ChatProfileConfig,

@@ -68,6 +68,7 @@ from boba.llm.local import OnnxChatRuntime
 from boba.llm.openai import OpenAiHttp
 from boba.runtime.di import Container, Depends
 from boba.runtime.plugins import PluginMeta
+from boba.runtime.refs import RuntimeRefs
 from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
@@ -202,10 +203,20 @@ def connection_store_ref() -> ConnectionStore:
     return store
 
 
+def runtime_refs() -> RuntimeRefs:
+    """Входы приложения для api и обвязок: ссылки в корневой контейнер."""
+    return RuntimeRefs(
+        tool_registry=tool_registry_ref,
+        workflow_service=workflow_service_ref,
+        connection_store=connection_store_ref,
+        ccache_registry=ccache_registry_ref,
+    )
+
+
 def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> ToolRegistry:
-    return ChatPlugins.load(raw, connection_store_ref, ccache_registry_ref)
+    return ChatPlugins.load(raw, runtime_refs())
 
 
 async def tool_registry_ref() -> ToolRegistry:

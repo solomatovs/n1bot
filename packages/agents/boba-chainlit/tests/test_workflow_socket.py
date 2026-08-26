@@ -8,15 +8,17 @@ from uuid import uuid4
 
 import pytest
 import socketio
-from chainlit.user import PersistedUser, User
+from chainlit.user import PersistedUser
 from conftest import Seed, use_context
 from psycopg import sql
 from test_tool_api import _profile, _profiles, _roles
 from test_workflow_service import ROLE, Probe, _registry
 
+from boba.chainlit.infra.api_auth import ChainlitUsers
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.workflow.socket import WorkflowNamespace, WorkflowSocketEvent
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.api import AuthenticatedUser
 from boba.identity.context import CallContext
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow.events import RunEvents
@@ -94,9 +96,9 @@ def namespace(
     async def source() -> WorkflowService:
         return service
 
-    async def authenticate(environ: dict[str, Any]) -> User | PersistedUser | None:
+    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
         if environ.get("signed"):
-            return user
+            return ChainlitUsers.of(user)
 
         return None
 

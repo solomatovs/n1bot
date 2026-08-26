@@ -32,6 +32,7 @@ from boba.chainlit.infra.session import (
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
+from boba.connection_broker.user_connections import RegistryRef, StoreRef
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import (
     CallContext,
@@ -44,7 +45,10 @@ from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
+from boba.runtime.refs import RuntimeRefs
 from boba.settings import bind, build_app_config
+from boba.toolrun.registry import ToolRegistry
+from boba.workflow_engine.service import WorkflowService
 
 TEST_DB = "boba_chainlit_test"
 AUTH_USER = "test-user"
@@ -491,9 +495,32 @@ def di_root() -> Iterator[None]:
 
     previous = Container.root
     root = Container(level="app")
-    root.provide(session_source, ChainlitSessions())
+    sessions = ChainlitSessions()
+    ChainlitSessions.install(sessions)
+    root.provide(session_source, sessions)
     Container.set_root(root)
     try:
         yield
     finally:
         Container.set_root(previous)
+
+
+class StubRefs:
+    """Входы приложения для стендов загрузки инструментов без реестра и workflow."""
+
+    @staticmethod
+    def of(store: StoreRef, registry: RegistryRef) -> RuntimeRefs:
+        async def no_registry() -> ToolRegistry:
+            msg = "tool registry is not part of this stand"
+            raise RuntimeError(msg)
+
+        async def no_service() -> WorkflowService:
+            msg = "workflow service is not part of this stand"
+            raise RuntimeError(msg)
+
+        return RuntimeRefs(
+            tool_registry=no_registry,
+            workflow_service=no_service,
+            connection_store=store,
+            ccache_registry=registry,
+        )
