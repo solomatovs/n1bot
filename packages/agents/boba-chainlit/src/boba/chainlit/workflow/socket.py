@@ -20,12 +20,12 @@ import socketio
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from boba.chainlit.domain.context import Subject
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.infra.config import ChatProfiles
 from boba.chainlit.infra.tool_api import ApiIdentity
-from boba.chainlit.workflow.events import RunSnapshot
 from boba.chainlit.workflow.service import WorkflowService
+from boba.chat.profiles import ChatProfiles
+from boba.identity.context import Subject
+from boba.identity.errors import RefusalError
+from boba.workflow.events import RunSnapshot
 from chainlit.user import PersistedUser, User
 
 __all__ = ["Authenticator", "WorkflowNamespace", "WorkflowSocketEvent"]

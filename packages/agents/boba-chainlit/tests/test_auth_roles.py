@@ -14,18 +14,14 @@ from boba.chainlit.auth.kerberos import (
     KerberosRolesInLdapMappingConfig,
     KerberosRolesInLdapProvider,
     SidExcludeUserProvider,
-    SidsHeader,
     SidUserRolesProvider,
 )
-from boba.chainlit.auth.ldap import ADUserEntry
-from boba.chainlit.auth.local import (
-    LocalAuth,
-    LocalAuthConfig,
-    RoleExcludeConfig,
-    RoleMappingConfig,
-)
-from boba.chainlit.domain.errors import AuthorizationError
-from boba.chainlit.domain.session import UserLogin, UserMetadataField
+from boba.chainlit.auth.local import LocalAuth, LocalAuthConfig
+from boba.identity.directory import ADUserEntry
+from boba.identity.errors import AuthorizationError
+from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
+from boba.identity.session import UserLogin, UserMetadataField
+from boba.identity.sso import SidsHeader
 
 pytestmark = pytest.mark.anyio
 

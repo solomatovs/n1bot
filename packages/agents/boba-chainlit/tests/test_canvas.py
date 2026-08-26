@@ -11,19 +11,20 @@ import pytest
 from conftest import use_session
 from pydantic import BaseModel
 
-from boba.chainlit.canvas import panel as rendering_canvas
-from boba.chainlit.canvas.panel import (
+from boba.canvas.canvas import (
     CanvasAction,
     CanvasContent,
     CanvasError,
     CanvasErrorKind,
     CanvasKind,
-    CanvasPanel,
     CanvasPush,
     CanvasRegistry,
     CanvasViewer,
     OpenedCanvas,
 )
+from boba.canvas.keys import ObjectKey
+from boba.chainlit.canvas import panel as rendering_canvas
+from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.tools import (
     AudioViewer,
     CanvasActions,
@@ -38,9 +39,8 @@ from boba.chainlit.canvas.tools import (
     build_canvas_tools,
 )
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain.context import CallContext, ContextKind
-from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
+from boba.identity.context import CallContext, ContextKind
 from boba.toolkit.result import CustomElementResult, ErrorResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig

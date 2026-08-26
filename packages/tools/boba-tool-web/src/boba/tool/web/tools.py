@@ -22,8 +22,8 @@ import httpx
 from pydantic import Field
 
 from boba.connections.http import HttpProfile
+from boba.connections.web import UnknownHostError, WebConnection
 from boba.text.grep import GrepLimits, TextGrep
-from boba.tool.web.connection import UnknownHostError, WebConnection
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (

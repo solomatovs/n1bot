@@ -15,7 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from boba.chainlit.infra.config import UserSetting
+from boba.chat.profiles import UserSetting
 
 __all__ = ["PanelText", "PanelTextError"]
 

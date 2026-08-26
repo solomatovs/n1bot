@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-identity"
+version = "0.0.14.dev8"
+description = "Boba identity: субъект, область и контекст вызова, сессия, ошибки слоёв, реестр запусков — без I/O."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "pydantic>=2.10,<3",
+    "boba-cancellation==0.0.14.dev8",
+    "boba-toolkit==0.0.14.dev8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

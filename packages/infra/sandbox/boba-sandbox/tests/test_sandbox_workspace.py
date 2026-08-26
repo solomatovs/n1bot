@@ -11,7 +11,7 @@ from zygote_stand import ROOTFS_IMAGE, ProfileFields
 _ROOT = "/tmp/boba-rootfs"  # noqa: S108
 """Точка, куда цепочка лаунчера смонтировала корень."""
 
-from boba.chainlit.domain.keys import ObjectKey, WorkspaceMount
+from boba.canvas.keys import ObjectKey, WorkspaceMount
 from boba.chainlit.infra.providers import build_llm_view
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.profile import BindSpec, SandboxProfile

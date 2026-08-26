@@ -17,17 +17,17 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from langchain_core.tools import tool
 
-from boba.access import ProfileGrant, ToolAccess
+from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.intent import ToolIntentField
 from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.domain.config import RoleConfig
-from boba.chainlit.domain.context import CallContext, HumanInitiator, ScopeKind
 from boba.chainlit.domain.keys import ToolCallUrl
-from boba.chainlit.infra.config import AppConfig, ChatProfiles
+from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ToolRegistry, stream_source, tool_call_scope
 from boba.chainlit.infra.tool_api import ToolCallBody, ToolCalling
+from boba.chat.profiles import ChatProfiles
+from boba.identity.context import CallContext, HumanInitiator, ScopeKind
 from boba.toolkit.result import TextResult, pack_result
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]

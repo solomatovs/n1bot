@@ -22,21 +22,17 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.domain.context import Scope
 from boba.chainlit.domain.keys import WorkflowUrl
-from boba.chainlit.infra.config import ChatProfiles
 from boba.chainlit.infra.tool_api import ApiIdentity
 from boba.chainlit.workflow.service import (
     WorkflowError,
     WorkflowRefusal,
     WorkflowService,
 )
-from boba.chainlit.workflow.store import (
-    StoredRun,
-    StoredWorkflow,
-    WorkflowStoreError,
-)
+from boba.chat.profiles import ChatProfiles
+from boba.identity.context import Scope
 from boba.workflow import RunState, ToolFacts
+from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowStoreError
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser, User
 

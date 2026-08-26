@@ -17,8 +17,7 @@ import binascii
 import logging
 from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
-from enum import StrEnum
-from typing import Annotated, Any, ClassVar, TypeAlias
+from typing import Any, ClassVar
 
 import psycopg
 from psycopg import sql
@@ -34,35 +33,28 @@ from pydantic import (
     field_validator,
 )
 
-from boba.chainlit.connections.secrets import SecretCipher
-from boba.chainlit.domain.context import Subject
-from boba.connections.clickhouse import ClickHouseConfig
-from boba.connections.http import HttpProfile
 from boba.connections.postgres import PostgresConfig
+from boba.connections.profile import (
+    ConnectionKind,
+    ConnectionNotFoundError,
+    ConnectionProfile,
+    ConnectionRepository,
+    ConnectionStoreError,
+    GrantKind,
+    GrantTarget,
+    StoredConnection,
+)
+from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.identity.context import Subject
 from boba.toolkit.failure import ValidationText
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ConnectionKind",
-    "ConnectionNotFoundError",
-    "ConnectionProfile",
     "ConnectionStore",
-    "ConnectionStoreError",
     "ConnectionsConfig",
-    "GrantKind",
-    "GrantTarget",
-    "StoredConnection",
 ]
-
-
-class ConnectionStoreError(Exception):
-    """База отказала или строка не сохранилась."""
-
-
-class ConnectionNotFoundError(ConnectionStoreError):
-    """В таблице connections нет строки с таким id."""
 
 
 class ConnectionsConfig(BaseModel):
@@ -143,74 +135,7 @@ class ConnectionsConfig(BaseModel):
         return self.connection
 
 
-ConnectionProfile: TypeAlias = Annotated[
-    PostgresConfig | ClickHouseConfig | HttpProfile,
-    Field(discriminator="kind"),
-]
-"""Рабочая модель соединения; jsonb строки разбирается по полю kind."""
-
-
-class ConnectionKind(StrEnum):
-    """Виды соединений: значение — дискриминатор kind рабочей модели."""
-
-    POSTGRES = "postgres"
-    CLICKHOUSE = "clickhouse"
-    WEB = "web"
-
-    @classmethod
-    def of(cls, profile: ConnectionProfile) -> ConnectionKind:
-        return cls(profile.kind)
-
-
-class GrantKind(StrEnum):
-    """Стороны связи в grants: значение — имя таблицы, kind_id — id в ней."""
-
-    CONNECTIONS = "connections"
-    ROLES = "roles"
-    USERS = "users"
-
-
-class GrantTarget(BaseModel):
-    """Кому выдано соединение: пользователю или роли по id в их таблице."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: GrantKind
-    id: int
-
-    @field_validator("kind")
-    @classmethod
-    def _target_only(cls, value: GrantKind) -> GrantKind:
-        if value is GrantKind.CONNECTIONS:
-            msg = "grant target must be a user or a role, not a connection"
-            raise ValueError(msg)
-
-        return value
-
-    @classmethod
-    def user(cls, user_id: int) -> GrantTarget:
-        return cls(kind=GrantKind.USERS, id=user_id)
-
-    @classmethod
-    def role(cls, role_id: int) -> GrantTarget:
-        return cls(kind=GrantKind.ROLES, id=role_id)
-
-
-class StoredConnection(BaseModel):
-    """Строка connections с расшифрованным профилем."""
-
-    model_config = ConfigDict(frozen=True)
-
-    id: int
-    name: str
-    profile: ConnectionProfile
-
-    @property
-    def kind(self) -> ConnectionKind:
-        return ConnectionKind.of(self.profile)
-
-
-class ConnectionStore:
+class ConnectionStore(ConnectionRepository):
     """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст."""
 
     _PROFILE: ClassVar[TypeAdapter[ConnectionProfile]] = TypeAdapter(ConnectionProfile)

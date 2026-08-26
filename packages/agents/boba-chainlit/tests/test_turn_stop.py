@@ -16,7 +16,7 @@ from boba.cancellation import (
     current_cancellation,
 )
 from boba.chainlit.chat.turn import ChatTurn
-from boba.chainlit.domain.run import LiveStream, RunRegistry
+from boba.identity.run import LiveStream, RunRegistry
 from boba.toolkit.channels import CallOutcome
 
 THREAD = "thread-1"

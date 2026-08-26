@@ -22,31 +22,27 @@ from conftest import FakeTurn, make_context, use_context
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.canvas.journal import (
-    DirVault,
-    JournalWindow,
-    StreamJournal,
-    StreamJournalHub,
-    StreamKey,
-)
-from boba.chainlit.canvas.panel import (
+from boba.canvas.canvas import (
     CanvasContent,
     CanvasKind,
-    CanvasPanel,
     CanvasSignal,
     CanvasWatch,
-    JournalWatchSource,
     SignalTransport,
-    StreamActions,
     StreamPath,
-    ToolStream,
-    ToolStreams,
     WatchProbe,
     WatchSource,
 )
-from boba.chainlit.domain.run import RunRegistry
+from boba.canvas.journal import JournalWindow, StreamJournalHub, StreamKey
+from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
+from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
+from boba.chainlit.canvas.journal import DirVault, StreamJournal
+from boba.chainlit.canvas.panel import (
+    CanvasPanel,
+    JournalWatchSource,
+    StreamActions,
+    ToolStream,
+    ToolStreams,
+)
 from boba.chainlit.infra.plugins import stream_source, tool_call_scope
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -54,6 +50,7 @@ from boba.chainlit.rendering.chat_view import (
     RecordingSink,
     StepRole,
 )
+from boba.identity.run import RunRegistry
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
 from boba.toolkit.stream import ToolChannelsTap
 

@@ -6,9 +6,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from boba.access import ProfileGrant, ToolAccess
+from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.chainlit.agent.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
-from boba.chainlit.domain.config import RoleConfig
 from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry
 from boba.chainlit.infra.providers import build_llm_view
 
@@ -176,7 +175,7 @@ class TestHistoryHidesForeignTools:
             raise AssertionError('[m.content for m in view[:-1]] == ["вопрос 19", "от…')
 
     def test_history_window_default_matches_config(self) -> None:
-        from boba.chainlit.infra.config import AgentSettings
+        from boba.chat.profiles import AgentSettings
 
         default = AgentSettings.model_fields["history_messages"].default
         view = build_llm_view(self._long_history(100), None)

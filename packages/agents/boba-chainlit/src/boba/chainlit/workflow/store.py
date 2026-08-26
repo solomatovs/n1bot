@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -23,30 +22,25 @@ import psycopg
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresError
-from boba.workflow import RunState, RunStatus, WorkflowSpec
+from boba.workflow import RunState, WorkflowSpec
+from boba.workflow.ports import WorkflowRepository
+from boba.workflow.records import (
+    StoredRun,
+    StoredWorkflow,
+    WorkflowNotFoundError,
+    WorkflowStoreError,
+)
 
 __all__ = [
-    "StoredRun",
-    "StoredWorkflow",
     "WorkflowConfig",
-    "WorkflowNotFoundError",
     "WorkflowStore",
-    "WorkflowStoreError",
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class WorkflowStoreError(Exception):
-    """Хранилище workflow недоступно или отказало."""
-
-
-class WorkflowNotFoundError(WorkflowStoreError):
-    """У владельца нет определения или запуска с таким id."""
 
 
 class WorkflowConfig(BaseModel):
@@ -83,48 +77,7 @@ class WorkflowConfig(BaseModel):
         return self.connection
 
 
-class StoredWorkflow(BaseModel):
-    """Определение workflow, каким его хранит таблица."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: int
-    user_id: int
-    name: str
-    spec: str
-    """YAML как сохранили: исходник для LLM, редактора и diff."""
-    tools: tuple[str, ...]
-    """Инструменты спеки: поиск «кто использует pg_query» без разбора YAML."""
-    layout: Mapping[str, Any]
-    """Позиции узлов редактора; пусто — страница раскладывает сама."""
-    created_at: datetime
-    updated_at: datetime
-
-
-class StoredRun(BaseModel):
-    """Запуск workflow: снимок спеки, кто и от чьего имени, состояние."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: UUID
-    workflow_id: int | None
-    """None — определение удалили; запуск и его логи остаются."""
-    user_id: int
-    initiator: Mapping[str, Any]
-    profile: str
-    state: RunState
-    instance: str
-    started_at: datetime
-    finished_at: datetime | None
-
-    @computed_field
-    @property
-    def status(self) -> RunStatus:
-        """Статус — проекция состояния; в JSON уходит рядом с ним."""
-        return self.state.status
-
-
-class WorkflowStore:
+class WorkflowStore(WorkflowRepository):
     """CRUD над workflows/workflow_runs; всё чтение и запись — под владельцем."""
 
     def __init__(

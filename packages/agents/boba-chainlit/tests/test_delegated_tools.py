@@ -32,21 +32,10 @@ from test_tools_integration import Call, ToolSetup
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.connections import (
-    ConnectionKind,
-    ConnectionProfile,
-    ConnectionsConfig,
-    ConnectionStore,
-    GrantTarget,
-)
-from boba.chainlit.connections.whitelist import ConnectionKeying
+from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.domain.session import UserMetadataField
 from boba.chainlit.infra.plugins import as_structured_tool
-from boba.chainlit.infra.user_connections import (
-    UserConnections,
-    UserConnectionsSpec,
-)
+from boba.chainlit.infra.user_connections import UserConnections
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import (
@@ -55,8 +44,12 @@ from boba.connections.kerberos import (
     DelegatedAuth,
     DelegationMode,
 )
+from boba.connections.marks import UserConnectionsSpec
 from boba.connections.postgres import PostgresConfig
+from boba.connections.profile import ConnectionKind, ConnectionProfile, GrantTarget
+from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.session import UserMetadataField
 from boba.krb import CcacheRegistry, KerberosDelegation, SpnegoAcceptor
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry

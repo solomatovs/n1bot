@@ -5,13 +5,8 @@ from __future__ import annotations
 import pytest
 from conftest import FakeUrl
 
-from boba.chainlit.domain.keys import (
-    AttachmentLinks,
-    AttachmentUrl,
-    ObjectKey,
-    ThreadDir,
-    WorkspaceMount,
-)
+from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
+from boba.chainlit.domain.keys import AttachmentLinks, AttachmentUrl
 
 USER = "7"
 THREAD = "11111111-1111-1111-1111-111111111111"

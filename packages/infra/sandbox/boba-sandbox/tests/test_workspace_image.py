@@ -18,10 +18,9 @@ from boba.chainlit.data.storage import (
     ImageStorageClient,
     LocalStorageClient,
     StorageClient,
-    StorageError,
     StorageFactory,
-    StorageNotFoundError,
 )
+from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxMountError

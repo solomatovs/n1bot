@@ -6,8 +6,8 @@ from collections.abc import Callable
 from typing import Any
 
 import chainlit as cl
-from boba.chainlit.domain.errors import BaseError, FailureReport
-from boba.chainlit.domain.session import LogLine
+from boba.identity.errors import BaseError, FailureReport
+from boba.identity.session import LogLine
 
 __all__ = ["chainlit_error_ctx_handler", "show_error"]
 

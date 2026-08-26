@@ -19,10 +19,10 @@ from boba.chainlit.domain.keys import WorkflowUrl
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ToolRegistry
 from boba.chainlit.workflow.api import WorkflowApi
-from boba.chainlit.workflow.events import RunEvents
 from boba.chainlit.workflow.service import WorkflowService
 from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
 from boba.db.postgres import AsyncPostgresPool
+from boba.workflow.events import RunEvents
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

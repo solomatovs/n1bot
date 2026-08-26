@@ -20,7 +20,7 @@ import pytest
 
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import PanelTab
-from boba.chainlit.infra.config import UserSetting
+from boba.chat.profiles import UserSetting
 from ui.chat_page import ChatPage, StepKind
 from ui.conftest import LlmMetaReader
 from ui.fake_llm import ScenarioName

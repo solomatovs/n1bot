@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.domain.errors import (
+from boba.identity.errors import (
     AuthenticationError,
     ExternalServiceError,
     FailureReport,

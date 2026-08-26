@@ -17,25 +17,27 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
-from boba.chainlit.canvas.panel import (
-    AudioViewer,
+from boba.canvas.canvas import (
     CanvasAction,
     CanvasContent,
     CanvasError,
     CanvasErrorKind,
-    CanvasPanel,
     CanvasRegistry,
+    OpenedCanvas,
+)
+from boba.canvas.keys import ObjectKey
+from boba.chainlit.canvas.panel import (
+    AudioViewer,
+    CanvasPanel,
     ImageViewer,
     LogViewer,
     MarkdownViewer,
-    OpenedCanvas,
     PdfViewer,
     VideoViewer,
 )
 from boba.chainlit.domain.context import ChatCallContext
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.rendering.errors import show_error
+from boba.identity.errors import RefusalError
 from boba.toolkit.result import ErrorResult, ToolResult, pack_result
 
 __all__ = [

@@ -10,36 +10,38 @@ import pytest
 from conftest import FakeTurn, make_context, use_session
 from pydantic import BaseModel
 
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
-from boba.chainlit.canvas import diagram as diagram_module
-from boba.chainlit.canvas.diagram import (
-    DiagramEntry,
-    DiagramErrorKind,
-    DiagramFiles,
-    DiagramRefusedError,
-    DiagramSpecError,
-    DiagramToolConfig,
-    MermaidSpec,
-    MermaidViewer,
-    build_diagram_tools,
-)
-from boba.chainlit.canvas.panel import (
+from boba.canvas.canvas import (
     CanvasError,
     CanvasErrorKind,
-    CanvasPanel,
     CanvasRegistry,
     RenderStatus,
     RenderVerdicts,
 )
+from boba.canvas.diagram import (
+    DiagramEntry,
+    DiagramErrorKind,
+    DiagramRefusedError,
+    DiagramSpecError,
+    DiagramToolConfig,
+    MermaidSpec,
+)
+from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
+from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
+from boba.chainlit.canvas import diagram as diagram_module
+from boba.chainlit.canvas.diagram import (
+    DiagramFiles,
+    MermaidViewer,
+    build_diagram_tools,
+)
+from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain.context import ContextKind
-from boba.chainlit.domain.errors import RefusalError
-from boba.chainlit.domain.keys import ObjectKey, ThreadDir
-from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.infra.plugins import tool_call_scope
+from boba.identity.context import ContextKind
+from boba.identity.errors import RefusalError
+from boba.identity.run import RunRegistry
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig

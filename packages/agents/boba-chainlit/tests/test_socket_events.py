@@ -19,8 +19,8 @@ from chainlit.server import sio
 from chainlit.session import WebsocketSession
 from conftest import FakeTurn, make_context
 
-from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
+from boba.identity.run import RunRegistry
 
 pytestmark = pytest.mark.anyio
 

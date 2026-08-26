@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 from boba.chainlit.chat.panel_text import PanelText
-from boba.chainlit.infra.config import (
+from boba.chat.profiles import (
     AgentSettings,
     NumberBounds,
     ReasoningEffort,

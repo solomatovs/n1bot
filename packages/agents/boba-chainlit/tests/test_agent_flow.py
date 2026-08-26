@@ -33,13 +33,7 @@ from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.chat.tracing import AgentTracer, TracedStage
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
-from boba.chainlit.infra.config import (
-    AppConfig,
-    ChatProfileConfig,
-    PlainFlowConfig,
-    PrefetchFlowConfig,
-    SelectedProfile,
-)
+from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
     _flow_tools,
     build_history_view,
@@ -52,6 +46,12 @@ from boba.chat.generation import (
     OpenAiGeneration,
     SchemaSpec,
     StructuredGenerator,
+)
+from boba.chat.profiles import (
+    ChatProfileConfig,
+    PlainFlowConfig,
+    PrefetchFlowConfig,
+    SelectedProfile,
 )
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact, pack_result

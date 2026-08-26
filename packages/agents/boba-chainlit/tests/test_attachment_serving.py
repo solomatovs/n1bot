@@ -12,15 +12,12 @@ from conftest import FakeUrl, Seed, use_session
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from boba.canvas.keys import ElementProps, ObjectKey, ThreadDir
+from boba.canvas.transfer import UploadPolicy
 from boba.chainlit.agent.tools.send_file import WorkspaceFile
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.data.upload import AttachmentServing, UploadPolicy
-from boba.chainlit.domain.keys import (
-    AttachmentUrl,
-    ElementProps,
-    ObjectKey,
-    ThreadDir,
-)
+from boba.chainlit.data.upload import AttachmentServing
+from boba.chainlit.domain.keys import AttachmentUrl
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 
 pytestmark = pytest.mark.anyio

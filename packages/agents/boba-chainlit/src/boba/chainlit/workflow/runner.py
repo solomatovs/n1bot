@@ -18,7 +18,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any
 
 from langchain_core.messages import ToolCall
 
@@ -28,8 +28,8 @@ from boba.chainlit.agent.invoke import (
     InvokeReply,
     ToolInvoker,
 )
-from boba.chainlit.domain.context import CallContext
-from boba.chainlit.domain.run import RunRegistry
+from boba.identity.context import CallContext
+from boba.identity.run import RunRegistry
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ErrorResult, ToolResult
@@ -40,6 +40,7 @@ from boba.workflow import (
     WorkflowGraph,
     WorkflowPlan,
 )
+from boba.workflow.ports import RunSink
 
 __all__ = ["RunSink", "TaskOutcome", "WorkflowRunError", "WorkflowRunner"]
 
@@ -48,12 +49,6 @@ logger = logging.getLogger(__name__)
 
 class WorkflowRunError(Exception):
     """Раннер не может продолжать: контракт инструментов или автомата нарушен."""
-
-
-class RunSink(Protocol):
-    """Куда уходят снимки состояния по ходу запуска."""
-
-    async def snapshot(self, state: RunState) -> None: ...
 
 
 class TaskOutcome:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.data.upload import ContentDisposition
+from boba.canvas.transfer import ContentDisposition
 
 pytestmark = pytest.mark.anyio
 

@@ -33,11 +33,7 @@ from boba.chainlit.agent.flow import (
     PrefetchGraphBuilder,
 )
 from boba.chainlit.connections import ConnectionStore
-from boba.chainlit.infra.config import (
-    AppConfig,
-    PrefetchFlowConfig,
-    SelectedProfile,
-)
+from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import load_tools
 from boba.chainlit.infra.providers import (
     build_history_view,
@@ -51,6 +47,7 @@ from boba.chat.generation import (
     OpenAiGeneration,
     StructuredGenerator,
 )
+from boba.chat.profiles import PrefetchFlowConfig, SelectedProfile
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import LocalOnnxGenerator, OpenAiStructuredGenerator
 from boba.llm.local import OnnxChatRuntime

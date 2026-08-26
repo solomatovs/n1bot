@@ -27,9 +27,9 @@ from boba.chainlit.auth.kerberos import (
     SsoRefresh,
     SsoRuntime,
 )
-from boba.chainlit.auth.local import RoleExcludeConfig
-from boba.chainlit.domain.session import UserMetadataField
 from boba.chainlit.infra.session import ChainlitSession
+from boba.identity.roles import RoleExcludeConfig
+from boba.identity.session import UserMetadataField
 from boba.krb import KerberosEnv, RefreshWaiters, ServiceTicketIssuer
 from boba.settings import bind
 

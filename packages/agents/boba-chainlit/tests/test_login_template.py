@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from boba.chainlit.auth.ldap import LdapAuthConfig
-from boba.chainlit.domain.session import LoginTemplate
+from boba.identity.session import LoginTemplate
 from boba.toolkit.template import TemplateError
 
 pytestmark = pytest.mark.anyio

@@ -7,14 +7,14 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from boba.cancellation import RunCancellation
-from boba.chainlit.domain.context import (
+from boba.chainlit.infra.plugins import _sandbox_path_vars
+from boba.identity.context import (
     CallContext,
     ChatInitiator,
     NoUserCredential,
     Scope,
     Subject,
 )
-from boba.chainlit.infra.plugins import _sandbox_path_vars
 from boba.sandbox import BindSpec
 
 pytestmark = pytest.mark.anyio

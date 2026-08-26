@@ -21,9 +21,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, cast
 
-from boba.chainlit.domain.errors import InternalServiceError
-from boba.chainlit.domain.run import RunRegistry
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
+from boba.identity.errors import InternalServiceError
+from boba.identity.run import RunRegistry
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
 

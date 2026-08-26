@@ -9,6 +9,9 @@ description = "Boba chat: конверты и порт LLM-провайдера,
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.10,<3",
+    "boba-access==0.0.14.dev8",
+    "boba-identity==0.0.14.dev8",
+    "boba-toolkit==0.0.14.dev8",
 ]
 
 [tool.setuptools.packages.find]
