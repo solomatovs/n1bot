@@ -118,6 +118,17 @@ async def test_catalog_lists_tools(client: AsyncClient, app_config: AppConfig) -
     assert catalog["canvas_open"]["availability"] == "chat_only"
     args = {arg["name"]: arg["required"] for arg in catalog["slow"]["args"]}
     assert args == {"label": True, "delay": True, "intent": False}
+    views = {arg["name"]: arg["view"] for arg in catalog["slow"]["args"]}
+    assert views["label"] == {
+        "kind": "text",
+        "placement": "body",
+        "multiline": False,
+        "placeholder": "",
+    }
+    assert views["delay"]["kind"] == "number"
+    assert views["intent"] == {"kind": "intent", "placement": "header"}
+    assert catalog["slow"]["results"] == []
+    assert catalog["echo"]["results"] == ["text"]
 
 
 async def test_validate_and_save(client: AsyncClient, app_config: AppConfig) -> None:

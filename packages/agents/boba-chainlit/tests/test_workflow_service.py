@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 from conftest import TEST_PROFILE, use_context
@@ -37,7 +37,13 @@ from boba.chainlit.workflow.tools import (
 )
 from boba.db.postgres import AsyncPostgresPool
 from boba.toolkit.calls import ScriptCall, ToolCallViews
-from boba.toolkit.result import ErrorResult, MultiResult, TextResult, pack_result
+from boba.toolkit.result import (
+    ErrorResult,
+    MultiResult,
+    Produces,
+    TextResult,
+    pack_result,
+)
 from boba.workflow import RunStatus, TaskStatus
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -66,7 +72,9 @@ class Probe:
             return pack_result(TextResult(text=f"done {label}"))
 
         @tool(response_format="content_and_artifact")
-        async def echo(text: str) -> tuple[str, Any]:
+        async def echo(
+            text: str,
+        ) -> Annotated[tuple[str, Any], Produces.of(TextResult)]:
             """Отдаёт text."""
             return pack_result(TextResult(text=text))
 
@@ -235,6 +243,8 @@ class TestRun:
 
         assert outcome.state.status is RunStatus.DONE
         a, b, c = (outcome.state.tasks[name] for name in ("a", "b", "c"))
+        assert a.result is not None
+        assert a.result.kind == "text"
         assert a.started_at is not None
         assert b.started_at is not None
         assert abs((a.started_at - b.started_at).total_seconds()) < 0.2

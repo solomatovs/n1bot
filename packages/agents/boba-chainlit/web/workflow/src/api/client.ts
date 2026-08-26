@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z } from "zod";
 
 import type { PageUrls } from "../config";
 import {
@@ -9,6 +9,8 @@ import {
   StoredRunSchema,
   StoredWorkflowSchema,
   ToolCatalogSchema,
+  looseViews,
+  withKnownResults,
   type RunState,
   type StoredRun,
   type StoredWorkflow,
@@ -31,8 +33,9 @@ type Method = "GET" | "POST" | "DELETE";
 export class WorkflowApi {
   constructor(private readonly urls: PageUrls) {}
 
-  catalog(): Promise<ToolCatalog> {
-    return this.call("GET", "/workflows/catalog", undefined, ToolCatalogSchema);
+  async catalog(): Promise<ToolCatalog> {
+    const raw = await this.call("GET", "/workflows/catalog", undefined, z.unknown());
+    return ToolCatalogSchema.parse(looseViews(raw));
   }
 
   validate(spec: string): Promise<RunState> {
@@ -61,12 +64,14 @@ export class WorkflowApi {
     return reply.run_id;
   }
 
-  listRuns(limit = 50): Promise<StoredRun[]> {
-    return this.call("GET", `/workflow-runs?limit=${limit}`, undefined, StoredRunSchema.array());
+  async listRuns(limit = 50): Promise<StoredRun[]> {
+    const raw = await this.call("GET", `/workflow-runs?limit=${limit}`, undefined, z.array(z.unknown()));
+    return StoredRunSchema.array().parse(raw.map(withKnownResults));
   }
 
-  getRun(runId: string): Promise<StoredRun> {
-    return this.call("GET", `/workflow-runs/${runId}`, undefined, StoredRunSchema);
+  async getRun(runId: string): Promise<StoredRun> {
+    const raw = await this.call("GET", `/workflow-runs/${runId}`, undefined, z.unknown());
+    return StoredRunSchema.parse(withKnownResults(raw));
   }
 
   async stop(runId: string): Promise<boolean> {

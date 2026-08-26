@@ -906,6 +906,105 @@ button {
   color: var(--error);
 }
 
+/* --- итог задачи: строка на узле и разбор по kind в инспекторе --- */
+
+.task-node__result {
+  font-size: var(--fs-micro);
+  color: var(--signal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-node[data-status="failed"] .task-node__result {
+  color: var(--error);
+}
+
+.result-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.result-view__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+}
+
+.result-view__figure {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.result-view__detail {
+  color: var(--muted);
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.result__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.result__note {
+  font-size: var(--fs-micro);
+  color: var(--faint);
+}
+
+.result__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s4);
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+}
+
+.result__fact {
+  display: flex;
+  gap: 6px;
+}
+
+.result__fact dt {
+  color: var(--muted);
+}
+
+.result__fact dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.result__scroll {
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+}
+
+.table--result {
+  min-width: 100%;
+}
+
+.result__stream {
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.result__item {
+  padding-left: var(--s3);
+  border-left: 2px solid var(--hairline);
+}
+
 /* --- структурный JSON: аргументы в узле и инспекторе --- */
 
 .json {
@@ -1276,8 +1375,12 @@ button {
 }
 
 .editor-node__header {
-  padding: 6px 10px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
 }
 
 .editor-node__eyebrow {
@@ -1290,38 +1393,130 @@ button {
 .editor-node__name {
   font-size: var(--fs-ui);
   font-weight: 600;
+  line-height: 1.2;
 }
 
-.editor-node__ports {
-  display: flex;
-  justify-content: space-between;
-  padding: 4px 8px;
-}
-
-.editor-node__column {
-  display: flex;
-  flex-direction: column;
-}
-
-.editor-node__port {
-  height: 18px;
-  line-height: 18px;
+.editor-node__intent {
+  font-family: var(--font-sans);
+  font-size: var(--fs-micro);
   color: var(--muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.editor-node__port--right {
-  text-align: right;
+.editor-node__rows {
+  padding: 4px 0;
 }
 
-.editor-node__args {
-  padding: 4px 10px;
+.arg-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  padding: 0 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.arg-row--right {
+  justify-content: flex-end;
+}
+
+.arg-row__key {
+  color: var(--signal);
+  flex: none;
+}
+
+.arg-row--port .arg-row__key {
+  color: var(--muted);
+}
+
+.arg-row__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+
+.arg-row__value--empty {
+  color: var(--faint);
+}
+
+.arg-row[data-required="true"] .arg-row__value--empty {
+  color: var(--error);
+}
+
+.arg-row__value--bound {
+  color: var(--edge-value);
+}
+
+.arg-row__value--number {
+  color: var(--ember);
+}
+
+.arg-row__value--bool {
+  color: var(--think);
+}
+
+.arg-row__value--secret {
+  color: var(--faint);
+  letter-spacing: 0.1em;
+}
+
+.arg-row__value--json .json {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.arg-row__value--json .json__row {
+  display: inline-flex;
+}
+
+.editor-node__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
   border-top: 1px solid var(--hairline);
+  color: var(--muted);
 }
 
-.editor-node__args .json {
+.editor-node__results {
+  display: flex;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.editor-node__result {
+  color: var(--muted);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+}
+
+.input--code {
+  min-height: 7em;
+  tab-size: 2;
+}
+
+.field__hint {
+  font-family: var(--font-sans);
   font-size: var(--fs-micro);
-  line-height: 16px;
+  color: var(--faint);
+}
+
+.field__bound {
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+  color: var(--edge-value);
 }
 
 .form .field {

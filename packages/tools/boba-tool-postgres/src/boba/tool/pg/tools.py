@@ -23,12 +23,13 @@ from pydantic import Field
 
 from boba.db.postgres import PayloadPostgres, PostgresConfig, PostgresError
 from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
-from boba.toolkit.calls import ScriptCall
+from boba.toolkit.calls import ConnectionArg, ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     AffectedSqlResult,
     MultiResult,
+    Produces,
     ResultTooLargeError,
     TableResult,
     TextResult,
@@ -48,6 +49,8 @@ from boba.toolkit.sql import (
     UnknownConnectionError,
 )
 from boba.toolkit.types import SecretRevealing
+
+PgConnection = Annotated[ConnectionName, ConnectionArg(family="postgres")]
 
 
 class CopyDump:
@@ -170,14 +173,14 @@ def _affected(cur: psycopg.AsyncCursor[Any]) -> AffectedSqlResult:
 @tool
 async def pg_connection_list(
     cfg: Annotated[PgToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Список доступных значений connection_name для postgres-инструментов."""
     return pack_result(cfg.targets_table())
 
 
 @tool
 async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection_name: ConnectionName,
+    connection_name: PgConnection,
     pg_schema: Annotated[
         str | None,
         Field(
@@ -202,7 +205,7 @@ async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
     max_rows: MaxRows,
     max_chars: MaxChars,
     cfg: Annotated[PgToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Таблицы и view подключения из pg_catalog.
 
     Колонки: schema, table_name, kind, approx_rows, owner, total_bytes,
@@ -220,7 +223,7 @@ async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
 
 @tool
 async def pg_describe_table(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection_name: ConnectionName,
+    connection_name: PgConnection,
     table: Annotated[
         str,
         Field(min_length=1, description="Имя таблицы (без схемы)"),
@@ -239,7 +242,7 @@ async def pg_describe_table(  # noqa: PLR0913 — окно выдачи зада
     max_rows: MaxRows,
     max_chars: MaxChars,
     cfg: Annotated[PgToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Схема таблицы из pg_catalog: колонки, нативные типы, ключи.
 
     Колонки: schema, position, column_name, type, nullable,
@@ -255,7 +258,7 @@ async def pg_describe_table(  # noqa: PLR0913 — окно выдачи зада
 
 @tool
 async def pg_query(
-    connection_name: ConnectionName,
+    connection_name: PgConnection,
     sql: Annotated[
         str,
         Field(
@@ -271,7 +274,9 @@ async def pg_query(
         ),
     ],
     cfg: Annotated[PgToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[
+    tuple[str, ToolResult], Produces.of(TableResult, AffectedSqlResult, MultiResult)
+]:
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
     connection = cfg.resolve(connection_name)
 
@@ -280,7 +285,7 @@ async def pg_query(
 
 @tool
 async def pg_copy(
-    connection_name: ConnectionName,
+    connection_name: PgConnection,
     sql: Annotated[
         str,
         Field(
@@ -295,7 +300,7 @@ async def pg_copy(
         ),
     ],
     cfg: Annotated[PgToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TextResult)]:
     """Выгрузить данные стейтментом COPY ... TO STDOUT как есть."""
     connection = cfg.resolve(connection_name)
 

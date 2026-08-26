@@ -4,6 +4,7 @@ import type { ReactElement } from "react";
 import { formatDuration, formatInstant } from "../../model/time";
 import type { RunState } from "../../model/workflow";
 import { JsonView } from "../JsonView";
+import { ResultView } from "../results/ResultView";
 import { StatusPill } from "../StatusPill";
 
 type Props = {
@@ -49,7 +50,13 @@ export function Inspector({ run, task, onClose }: Props): ReactElement {
           <div className="inspector__code">
             <JsonView value={spec.args} clip={0} />
           </div>
-          {state.error !== "" && (
+          {state.result !== null && (
+            <>
+              <h4 className="eyebrow">result</h4>
+              <ResultView result={state.result} />
+            </>
+          )}
+          {state.error !== "" && (state.result === null || state.result.ok) && (
             <>
               <h4 className="eyebrow">error</h4>
               <pre className="inspector__code inspector__code--error">{state.error}</pre>
