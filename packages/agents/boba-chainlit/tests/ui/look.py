@@ -15,7 +15,7 @@ from playwright.sync_api import Locator, Page
 
 from ui.stand import REPO_ROOT
 
-__all__ = ["Box", "Css", "Tokens", "no_horizontal_scroll"]
+__all__ = ["Box", "Css", "Tokens", "close", "fluid", "no_horizontal_scroll"]
 
 
 class Tokens:
@@ -43,7 +43,10 @@ class Tokens:
 
         return cls(dark, light)
 
+    REF: ClassVar[re.Pattern[str]] = re.compile(r"^var\(--([a-z0-9-]+)\)$")
+
     def raw(self, name: str, theme: str = "dark") -> str:
+        """Значение токена; ссылка var(--x) раскрывается до самого значения."""
         values = self._dark
         if theme == "light":
             values = {**self._dark, **self._light}
@@ -52,7 +55,11 @@ class Tokens:
         if value is None:
             raise KeyError(f"no token --{name} in tokens.css")
 
-        return value
+        reference = self.REF.match(value)
+        if reference is None:
+            return value
+
+        return self.raw(reference.group(1), theme)
 
     def rgb(self, name: str, theme: str = "dark") -> str:
         """Цвет токена в записи getComputedStyle: rgb(r, g, b)."""
@@ -125,6 +132,16 @@ class Css:
             return 1.0
 
         return float(match.group(1))
+
+
+def close(actual: float, expected: float, slack: float = 0.5) -> bool:
+    """Сравнение CSS-пикселей: браузер отдаёт дробные значения раскладки."""
+    return abs(actual - expected) <= slack
+
+
+def fluid(minimum: float, share: float, viewport: float, maximum: float) -> float:
+    """Значение clamp(min, share*vw, max) в CSS-пикселях для данного viewport."""
+    return min(max(minimum, share * viewport), maximum)
 
 
 def no_horizontal_scroll(page: Page) -> bool:

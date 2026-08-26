@@ -1,6 +1,7 @@
 import { MarkerType, type Edge as FlowEdge, type Node as FlowNode } from "@xyflow/react";
 
 import { layoutGraph, type LaidEdge } from "../../model/layout";
+import { phaseColor } from "../../model/summary";
 import { formatDuration } from "../../model/time";
 import type { RunState, TaskState } from "../../model/workflow";
 import type { StageFlowNode } from "./StageNode";
@@ -20,7 +21,7 @@ const EDGE_STYLE: Record<LaidEdge["kind"], { color: string; dash: string; animat
 };
 
 function stageTitle(stageId: string): string {
-  return stageId.replace(/^stage:/, "stage · ");
+  return stageId.replace(/^stage:/, "");
 }
 
 function finished(state: TaskState | undefined): boolean {
@@ -35,7 +36,8 @@ export function flowOf(run: RunState, selectedTask: string | null): RunFlow {
   const layout = layoutGraph(run.graph);
 
   const stageNodes: StageFlowNode[] = layout.stages.map((box) => {
-    const stage = run.graph.stages.find((candidate) => candidate.id === box.stage);
+    const index = run.graph.stages.findIndex((candidate) => candidate.id === box.stage);
+    const stage = run.graph.stages[index];
     const tasks = stage?.tasks ?? [];
     return {
       id: box.stage,
@@ -48,6 +50,7 @@ export function flowOf(run: RunState, selectedTask: string | null): RunFlow {
         title: stageTitle(box.stage),
         done: tasks.filter((task) => finished(run.tasks[task])).length,
         total: tasks.length,
+        color: phaseColor(Math.max(index, 0)),
       },
     };
   });

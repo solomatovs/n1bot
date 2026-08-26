@@ -41,7 +41,7 @@ export function ThemeToggle(): ReactElement {
   }, [theme]);
 
   return (
-    <button type="button" className="btn" onClick={toggle} title="Theme">
+    <button type="button" className="icon-btn" onClick={toggle} title="Theme" aria-label="Theme">
       {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
     </button>
   );

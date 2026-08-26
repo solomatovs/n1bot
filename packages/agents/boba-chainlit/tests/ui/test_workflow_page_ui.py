@@ -1,4 +1,4 @@
-"""Страница workflow в браузере: редактор → запуск → живые статусы узлов → Stop."""
+"""Страница workflow в браузере: билдер → запуск → живые статусы → Stop → списки."""
 
 from __future__ import annotations
 
@@ -43,17 +43,23 @@ tasks:
 class Selector:
     """Селекторы страницы: одно место, чтобы разметка менялась в одном."""
 
-    BRAND: ClassVar[str] = ".header__brand"
+    BRAND: ClassVar[str] = ".topbar__brand"
+    RAIL_ITEM: ClassVar[str] = ".rail__item"
+    LIST_NEW: ClassVar[str] = ".list__new"
+    LIST_ITEM: ClassVar[str] = ".list .item"
+    LIST_ITEM_ON: ClassVar[str] = ".list .item--on"
+    CRUMB_CURRENT: ClassVar[str] = ".crumbs__current"
     YAML_TEXT: ClassVar[str] = 'textarea[aria-label="workflow yaml"]'
-    NOTICE: ClassVar[str] = ".run-header .notice"
+    NOTICE: ClassVar[str] = "[data-notice]"
     ISSUE: ClassVar[str] = ".issues__item"
-    RUN_STATUS: ClassVar[str] = ".run-header .badge"
+    RUN_STATUS: ClassVar[str] = ".vitals__badge"
     TASK_NODE: ClassVar[str] = ".task-node"
     EDITOR_NODE: ClassVar[str] = ".editor-node"
-    TIMELINE_ROW: ClassVar[str] = ".timeline__row"
+    TIMELINE_ROW: ClassVar[str] = ".tl__row"
+    TIMELINE_BAR: ClassVar[str] = ".tl__bar"
     INSPECTOR: ClassVar[str] = ".inspector"
-    PALETTE_TOOL: ClassVar[str] = ".palette__tool"
     ARG_COMMAND: ClassVar[str] = 'textarea[aria-label="arg command"]'
+    TABLE: ClassVar[str] = ".table"
 
 
 class BrowserLog:
@@ -88,7 +94,7 @@ def stand(workflow_stand: StandProcess) -> StandProcess:
 
 @pytest.fixture
 def page(browser: Browser, stand: StandProcess) -> Iterator[Page]:
-    context = browser.new_context()
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
     context.add_cookies(login_cookies(stand))
     opened = context.new_page()
     opened.set_default_timeout(PAGE_TIMEOUT_MS)
@@ -99,48 +105,65 @@ def page(browser: Browser, stand: StandProcess) -> Iterator[Page]:
         context.close()
 
 
-def _open_editor(page: Page, stand: StandProcess) -> None:
-    page.goto(f"{stand.config.base_url}/workflow/new", wait_until="domcontentloaded")
-    expect(page.locator(Selector.BRAND)).to_have_text("Boba · Workflow")
-
-
-def _apply_yaml(page: Page, spec: str) -> None:
-    """Вкладка YAML: текст спеки целиком, затем Apply — граф перестраивается."""
-    _button(page, "YAML").click()
-    page.locator(Selector.YAML_TEXT).fill(spec)
-    _button(page, "Apply YAML").click()
-    expect(page.locator(Selector.NOTICE)).to_contain_text("yaml applied")
-    _button(page, "Graph").click()
+def _open(page: Page, stand: StandProcess, path: str) -> None:
+    page.goto(f"{stand.config.base_url}/workflow{path}", wait_until="domcontentloaded")
+    expect(page.locator(Selector.BRAND)).to_contain_text("Workflow")
 
 
 def _button(page: Page, label: str):
     return page.get_by_role("button", name=label, exact=True)
 
 
-def test_palette_and_form_build_a_task(page: Page, stand: StandProcess) -> None:
-    """Узел из палитры, аргумент в форме — и всё это видно во вкладке YAML."""
-    _open_editor(page, stand)
+def _apply_yaml(page: Page, spec: str) -> None:
+    """Режим YAML билдера: текст спеки целиком, Apply, обратно в граф."""
+    _button(page, "YAML").click()
+    page.locator(Selector.YAML_TEXT).fill(spec)
+    _button(page, "Apply YAML").click()
+    expect(page.locator(Selector.NOTICE)).to_contain_text("yaml applied")
+    _button(page, "YAML").click()
 
-    page.locator(Selector.PALETTE_TOOL, has_text="bash").first.click()
+
+def test_shell_navigation(page: Page, stand: StandProcess) -> None:
+    """Рейл переключает History/Workflows, сегмент Observe/Build — то же самое."""
+    _open(page, stand, "/observe")
+    expect(page.locator(Selector.RAIL_ITEM)).to_have_count(2)
+    expect(page.locator(".list[aria-label='runs']")).to_be_visible()
+
+    page.get_by_role("link", name="Workflows").first.click()
+    expect(page).to_have_url(re.compile(r"/workflow/build$"))
+    expect(page.locator(".list[aria-label='workflows']")).to_be_visible()
+    expect(page.locator(Selector.LIST_NEW)).to_have_text("+ New workflow")
+
+    page.get_by_role("link", name="Observe").click()
+    expect(page).to_have_url(re.compile(r"/workflow/observe$"))
+
+
+def test_tool_menu_and_form_build_a_task(page: Page, stand: StandProcess) -> None:
+    """Узел из меню «+ Tool», аргумент в форме — и всё это видно в YAML."""
+    _open(page, stand, "/build/new")
+
+    _button(page, "Tool").click()
+    page.get_by_role("menuitem", name="bash").click()
     expect(page.locator(Selector.EDITOR_NODE)).to_have_count(1)
     page.locator(Selector.ARG_COMMAND).fill("echo FORM_ONE")
 
-    page.locator(Selector.PALETTE_TOOL, has_text="bash").first.click()
+    _button(page, "Tool").click()
+    page.get_by_role("menuitem", name="bash").click()
     expect(page.locator(Selector.EDITOR_NODE)).to_have_count(2)
 
     _button(page, "YAML").click()
     yaml_text = page.locator(Selector.YAML_TEXT).input_value()
     assert "command: echo FORM_ONE" in yaml_text
     assert "bash_2:" in yaml_text
+    _button(page, "YAML").click()
 
-    _button(page, "Graph").click()
     _button(page, "Validate").click()
     expect(page.locator(Selector.ISSUE)).to_contain_text("required argument: command")
     expect(page.locator(f'{Selector.EDITOR_NODE}[data-issue="true"]')).to_have_count(1)
 
 
-def test_editor_validates_saves_and_runs_live(page: Page, stand: StandProcess) -> None:
-    _open_editor(page, stand)
+def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) -> None:
+    _open(page, stand, "/build/new")
     _apply_yaml(page, QUICK_SPEC)
     expect(page.locator(Selector.EDITOR_NODE)).to_have_count(2)
 
@@ -149,23 +172,32 @@ def test_editor_validates_saves_and_runs_live(page: Page, stand: StandProcess) -
 
     _button(page, "Save").click()
     expect(page.locator(Selector.NOTICE)).to_contain_text('saved "ui-page-flow"')
-    expect(page).to_have_url(re.compile(r"/workflow/w/\d+$"))
+    expect(page).to_have_url(re.compile(r"/workflow/build/\d+$"))
+    expect(page.locator(Selector.CRUMB_CURRENT)).to_have_text("ui-page-flow")
+    expect(page.locator(Selector.LIST_ITEM_ON)).to_contain_text("ui-page-flow")
 
     _button(page, "Run").click()
-    expect(page).to_have_url(re.compile(r"/workflow/run/[0-9a-f-]+$"))
+    expect(page).to_have_url(re.compile(r"/workflow/observe/[0-9a-f-]+$"))
 
     # статусы приходят по сокету: узлы доходят до done без перезагрузки
     expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
-    done_nodes = page.locator(f'{Selector.TASK_NODE}[data-status="done"]')
-    expect(done_nodes).to_have_count(2)
-    expect(page.locator(Selector.TIMELINE_ROW)).to_have_count(2)
+    expect(page.locator(f'{Selector.TASK_NODE}[data-status="done"]')).to_have_count(2)
+    expect(page.locator(Selector.LIST_ITEM_ON)).to_contain_text("ui-page-flow")
 
+    page.get_by_role("tab", name="Timeline").click()
+    expect(page.locator(Selector.TIMELINE_ROW)).to_have_count(2)
+    expect(page.locator(Selector.TIMELINE_BAR)).to_have_count(2)
+
+    page.get_by_role("tab", name="Table").click()
+    expect(page.locator(f"{Selector.TABLE} tbody tr")).to_have_count(2)
+
+    page.get_by_role("tab", name="Grid").click()
     page.locator(Selector.TASK_NODE).first.click()
     expect(page.locator(Selector.INSPECTOR)).to_contain_text("echo PAGE_ONE")
 
 
 def test_stop_button_stops_a_running_workflow(page: Page, stand: StandProcess) -> None:
-    _open_editor(page, stand)
+    _open(page, stand, "/build/new")
     _apply_yaml(page, LONG_SPEC)
     _button(page, "Save").click()
     expect(page.locator(Selector.NOTICE)).to_contain_text('saved "ui-page-long"')
@@ -182,8 +214,33 @@ def test_stop_button_stops_a_running_workflow(page: Page, stand: StandProcess) -
     )
 
 
-def test_list_shows_saved_workflows_and_runs(page: Page, stand: StandProcess) -> None:
-    page.goto(f"{stand.config.base_url}/workflow/", wait_until="domcontentloaded")
+def test_lists_show_saved_workflows_and_runs(page: Page, stand: StandProcess) -> None:
+    _open(page, stand, "/observe")
+    runs = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
+    expect(runs.first).to_be_visible()
+    runs.first.click()
+    expect(page).to_have_url(re.compile(r"/workflow/observe/[0-9a-f-]+$"))
+    expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
 
-    expect(page.get_by_role("link", name="ui-page-flow").first).to_be_visible()
-    expect(page.locator("table").nth(1)).to_contain_text("ui-page-flow")
+    _open(page, stand, "/build")
+    item = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
+    expect(item.first).to_contain_text("runs")
+    item.first.click()
+    expect(page).to_have_url(re.compile(r"/workflow/build/\d+$"))
+    expect(page.locator(Selector.EDITOR_NODE)).to_have_count(2)
+
+
+def test_finished_run_loads_lists_once(page: Page, stand: StandProcess) -> None:
+    """Снимок законченного запуска не крутит перезапрос списков по кругу."""
+    _open(page, stand, "/observe")
+    page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
+    expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
+    expect(page.locator(Selector.TASK_NODE).first).to_be_visible()
+
+    list_requests: list[str] = []
+    page.on("request", lambda request: list_requests.append(request.url))
+    page.wait_for_timeout(3000)
+
+    listed = [url for url in list_requests if "/workflows" in url or "/workflow-runs?" in url]
+    assert listed == []
+    expect(page.locator(Selector.TASK_NODE)).to_have_count(2)
