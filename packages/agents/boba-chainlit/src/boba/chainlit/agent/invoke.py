@@ -18,6 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import ToolCall, ToolMessage
+from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
@@ -128,9 +129,16 @@ class ToolInvoker:
         return ToolCall(name=name, args=call_args, id=prefix.new_id(), type="tool_call")
 
     async def invoke(self, call: ToolCall) -> InvokeReply:
+        """Вызов вне дерева колбэков вызывающего: из хода чата задачи workflow
+        в ленту не попадают, их итог несёт отчёт самого запуска."""
         tool = self.tool(call["name"])
 
-        message = await tool.ainvoke(call)
+        detached = var_child_runnable_config.set(None)
+        try:
+            message = await tool.ainvoke(call)
+        finally:
+            var_child_runnable_config.reset(detached)
+
         if not isinstance(message, ToolMessage):
             got = type(message).__name__
             raise ToolContractError(f"tool {call['name']!r} returned {got}")

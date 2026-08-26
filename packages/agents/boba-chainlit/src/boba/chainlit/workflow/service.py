@@ -28,6 +28,7 @@ from boba.chainlit.domain.context import CallContext, Scope, Subject
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.domain.run import BackgroundRuns, RunRegistry
 from boba.chainlit.workflow.catalog import CatalogBuilder
+from boba.chainlit.workflow.events import RunEvents, RunSnapshot
 from boba.chainlit.workflow.runner import RunSink, WorkflowRunner
 from boba.chainlit.workflow.store import (
     StoredRun,
@@ -93,14 +94,18 @@ class StartedRun(BaseModel):
 
 
 class _StoreSink(RunSink):
-    """Снимки состояния уходят в запись запуска."""
+    """Снимок сначала в запись запуска, затем слушателям."""
 
-    def __init__(self, store: WorkflowStore, run_id: UUID) -> None:
+    def __init__(self, store: WorkflowStore, events: RunEvents, run_id: UUID) -> None:
         self._store = store
+        self._events = events
         self._run_id = run_id
 
     async def snapshot(self, state: RunState) -> None:
         await self._store.update_run(self._run_id, state)
+        await self._events.publish(
+            RunSnapshot(run_id=self._run_id, status=state.status, state=state)
+        )
 
 
 class WorkflowService:
@@ -111,11 +116,18 @@ class WorkflowService:
         store: WorkflowStore,
         registry: RegistrySource,
         instance: str,
+        events: RunEvents,
     ) -> None:
         self._store = store
         self._registry = registry
         self._instance = instance
+        self._events = events
         self._background = BackgroundRuns()
+
+    @property
+    def events(self) -> RunEvents:
+        """Шина снимков: сокет страницы подписывается на неё."""
+        return self._events
 
     @property
     def instance(self) -> str:
@@ -223,7 +235,7 @@ class WorkflowService:
         run_id = started.record.id
         run_context = context.in_scope(Scope.workflow(run_id))
         runner = WorkflowRunner(started.invoker, WorkflowRunner.utc_now)
-        sink = _StoreSink(self._store, run_id)
+        sink = _StoreSink(self._store, self._events, run_id)
 
         with context.cancellation.abort_with(run_context.cancellation.cancel):
             state, results = await runner.run(started.graph, run_context, sink)

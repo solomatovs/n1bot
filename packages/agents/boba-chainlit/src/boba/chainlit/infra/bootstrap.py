@@ -6,6 +6,7 @@ import logging.config
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from engineio.payload import Payload
@@ -26,6 +27,7 @@ from boba.chainlit.infra.session import current_session
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
 from boba.sandbox.zygote import ZygoteRegistry
+from chainlit.user import PersistedUser, User
 
 
 def run_app(config_path: Path):
@@ -273,13 +275,25 @@ def _use_tool_api(c: AppConfig) -> None:
 
 
 def _use_workflow_api(c: AppConfig) -> None:
-    """REST workflow: определения, запуск и остановка со страницы."""
+    """Workflow: REST, живые снимки по socket.io и страница SPA."""
     from boba.chainlit.infra.config import ChatProfiles  # noqa: PLC0415
     from boba.chainlit.workflow.api import WorkflowApi  # noqa: PLC0415
+    from boba.chainlit.workflow.page import WorkflowPage  # noqa: PLC0415
+    from boba.chainlit.workflow.socket import WorkflowNamespace  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
+    from chainlit.server import sio  # noqa: PLC0415
+    from chainlit.socket import _authenticate_connection  # noqa: PLC0415
 
-    WorkflowApi(providers.workflow_service_ref, ChatProfiles(c.profiles)).mount(
-        chainlit_app
+    profiles = ChatProfiles(c.profiles)
+    WorkflowApi(providers.workflow_service_ref, profiles).mount(chainlit_app)
+    WorkflowPage(c.chainlit.root, c.chainlit.url_prefix).mount(chainlit_app)
+
+    async def authenticate(environ: dict[str, Any]) -> User | PersistedUser | None:
+        user, _token = await _authenticate_connection(environ)
+        return user
+
+    sio.register_namespace(
+        WorkflowNamespace(providers.workflow_service_ref, profiles, authenticate)
     )
 
 

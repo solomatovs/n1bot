@@ -389,3 +389,4 @@ class WorkflowUrl(StrEnum):
     RUNS = "/workflow-runs"
     RUN_ONE = "/workflow-runs/{run_id}"
     STOP = "/workflow-runs/{run_id}/stop"
+    PAGE = "/workflow/{path:path}"

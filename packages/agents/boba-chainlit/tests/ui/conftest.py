@@ -449,6 +449,27 @@ def solo_stand(
 
 
 @pytest.fixture(scope="session")
+def workflow_stand(
+    stand_workdir: Path, llm_port: int, fake_llm: None, stand_database: str
+) -> Iterator[StandProcess]:
+    """Стенд страницы workflow: запуски гонят bash, нужна песочница."""
+    config = StandConfig(
+        workdir=stand_workdir / "sandbox-workflow",
+        app_port=free_port(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        url_prefix="/boba-workflow",
+        sandbox=True,
+    )
+    process = StandProcess(config=config, log_path=stand_workdir / "workflow-app.log")
+    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    try:
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture(scope="session")
 def playwright() -> Iterator[Playwright]:
     """Один sync-playwright на сессию.
 

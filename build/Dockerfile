@@ -2,6 +2,7 @@ ARG PYTHON_VERSION=3.11
 ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
+ARG NODE_IMAGE=dmp/nodejs:22
 
 FROM ${PYTHON_IMAGE} AS python-dist
 FROM ${GCC_IMAGE} AS base
@@ -329,6 +330,18 @@ RUN set -eu                                                           \
 
 # runtime image for docker-compose
 # and make extract copy to server host
+# страница workflow: Vite-сборка на node образа; registry — по npmrc образа
+FROM ${NODE_IMAGE} AS web-build
+
+# outDir сборки — ../../assets/public/workflow от проекта, как в дереве исходников
+COPY packages/agents/boba-chainlit/web/workflow/ /src/web/workflow/
+WORKDIR /src/web/workflow
+RUN set -eu                                    \
+    && npm ci --no-audit --no-fund             \
+    && npm run check                           \
+    && npm run build
+
+
 FROM ${GLIBC_IMAGE} AS runtime
 
 ARG PYTHON_VERSION=3.11       \
@@ -364,6 +377,7 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/config.toml   ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
+COPY --from=web-build /src/assets/public/workflow/                ${BOBA_DIR}/app_root/public/workflow/
 COPY build/src/webassets/                                         ${BOBA_DIR}/app_root/public/vendor/
 COPY build/src/onnx-genai/                                        ${BOBA_DIR}/models/onnx-genai/
 # веса эмбеддера лежат рядом с моделями чата, а в песочницу едут биндом
