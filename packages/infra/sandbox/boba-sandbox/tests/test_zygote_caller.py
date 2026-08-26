@@ -20,6 +20,7 @@ from pydantic import SecretStr
 from zygote_stand import ProfileFields, SandboxStand
 
 from boba.sandbox import SandboxProfile
+from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
     ZygotePolicy,
     ZygoteRegistry,
@@ -38,7 +39,6 @@ from boba.toolkit.stream import (
     StreamSink,
     ToolChannelsTap,
 )
-from boba.toolkit.zygote import WarmupCall
 
 REPO = Path(__file__).resolve().parents[5]
 SANDBOX = REPO / "build" / "src" / "sandbox"
@@ -757,4 +757,3 @@ class TestShell:
 
         if "0000000000000000" not in stdout:
             raise AssertionError(f"capabilities не сброшены: {stdout!r}")
-

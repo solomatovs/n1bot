@@ -21,6 +21,7 @@ from typing import Annotated, ClassVar, Final
 import httpx
 from pydantic import Field
 
+from boba.connections.http import HttpProfile
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.web.connection import UnknownHostError, WebConnection
 from boba.toolkit.entry import ToolMain
@@ -33,7 +34,7 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.sql import ConnectionName, UnknownConnectionError
 from boba.toolkit.types import SecretRevealing
-from boba.transport.http import HttpProfile
+from boba.transport.http import HttpxAuth
 
 
 class WebRequestError(Exception):
@@ -130,7 +131,7 @@ class WebPage:
                 timeout=profile.timeout_sec,
                 verify=profile.ssl_verify,
                 follow_redirects=True,
-                auth=profile.httpx_auth(),
+                auth=HttpxAuth.of(profile),
             ) as client:
                 response = await client.get(url)
                 response.raise_for_status()

@@ -43,6 +43,7 @@ from boba.toolkit.result import (
     TextResult,
     ToolResult,
 )
+from boba.transport.http import HttpxAuth
 from ui.chat_page import ChatPage, StepKind
 from ui.conftest import ChatOpener, StandDatabase
 from ui.fake_llm import FakePage, FakeRoute, ScenarioName
@@ -522,7 +523,7 @@ class ConfluenceSite:
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
             follow_redirects=True,
-            auth=profile.httpx_auth(),
+            auth=HttpxAuth.of(profile),
         )
 
     @classmethod

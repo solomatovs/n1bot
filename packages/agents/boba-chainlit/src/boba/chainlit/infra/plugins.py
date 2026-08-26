@@ -47,6 +47,8 @@ from boba.sandbox import (
     SandboxToolConfig,
     has_bwrap,
 )
+from boba.sandbox.guest import WarmupCall
+from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.settings import bind
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
@@ -62,8 +64,6 @@ from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, 
 from boba.toolkit.facade import PayloadTool, WarmupHooks
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolkit.zygote import WarmupCall
 
 __all__ = [
     "PluginMeta",

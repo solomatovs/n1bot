@@ -39,8 +39,7 @@ class KbSchema:
                 await Migrations.apply_bootstrap(conn, schema_cfg=self._cfg.tables)
             except InsufficientPrivilege:
                 logger.info(
-                    "no permission operation"
-                    "assuming an administrator created it",
+                    "no permission operationassuming an administrator created it",
                 )
 
         async with pool.connection() as conn:
@@ -50,8 +49,7 @@ class KbSchema:
                 )
             except InsufficientPrivilege:
                 logger.info(
-                    "no permission operation"
-                    "assuming an administrator created it",
+                    "no permission operationassuming an administrator created it",
                 )
 
         logger.info(

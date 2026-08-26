@@ -30,9 +30,7 @@ from boba.sandbox.zygote import (
 )
 from boba.settings import bind
 
-needs_bwrap = pytest.mark.skipif(
-    shutil.which("bwrap") is None, reason="нет bubblewrap"
-)
+needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="нет bubblewrap")
 needs_userns = pytest.mark.skipif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
 )

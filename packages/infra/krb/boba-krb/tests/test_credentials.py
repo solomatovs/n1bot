@@ -16,12 +16,11 @@ import krb5
 import pytest
 from stand_site import Stand
 
+from boba.connections.kerberos import DelegationMode, KeytabAuth
 from boba.krb import (
     CcacheRegistry,
-    DelegationMode,
     KerberosEnv,
     KerberosWorkspace,
-    KeytabAuth,
     KeytabCredentials,
     RefreshWaiters,
     UserCcache,
@@ -84,31 +83,31 @@ def credentials(principal: str = PRINCIPAL) -> KeytabCredentials:
     return KeytabCredentials.of(auth(principal))
 
 
-
-
 class TestKerberosWorkspace:
     """Кэш выделяет приложение: на принципал и источник — свой файл."""
 
     def test_cache_is_a_file_named_after_the_principal(self, workspace: Path) -> None:
-        ccache = auth().ccache()
+        ccache = KerberosWorkspace.ccache_for(auth())
         if not ccache.startswith(f"FILE:{workspace}/"):
             raise AssertionError(ccache)
         if PRINCIPAL not in ccache:
             raise AssertionError(f"principal must be visible in {ccache}")
 
     def test_same_credentials_get_the_same_cache(self, workspace: Path) -> None:
-        if auth().ccache() != auth().ccache():
+        if KerberosWorkspace.ccache_for(auth()) != KerberosWorkspace.ccache_for(auth()):
             raise AssertionError("one keytab and principal — one cache")
 
     def test_other_principal_gets_another_cache(self, workspace: Path) -> None:
-        if auth().ccache() == auth(OTHER_PRINCIPAL).ccache():
+        if KerberosWorkspace.ccache_for(auth()) == KerberosWorkspace.ccache_for(
+            auth(OTHER_PRINCIPAL)
+        ):
             raise AssertionError("principals must not share a cache")
 
     def test_other_source_gets_another_cache(self, workspace: Path) -> None:
         other = KeytabAuth(
             method="kerberos_keytab", principal=PRINCIPAL, keytab="/other.keytab"
         )
-        if auth().ccache() == other.ccache():
+        if KerberosWorkspace.ccache_for(auth()) == KerberosWorkspace.ccache_for(other):
             raise AssertionError("keytabs must not share a cache")
 
     def test_directory_is_private(self, workspace: Path) -> None:

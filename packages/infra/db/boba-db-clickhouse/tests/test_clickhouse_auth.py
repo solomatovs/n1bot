@@ -16,15 +16,10 @@ import pytest
 from pydantic import SecretStr
 from stand_site import Stand
 
-from boba.db.clickhouse import ClickHouseConfig, PasswordAuth
+from boba.connections.clickhouse import ClickHouseConfig, PasswordAuth
+from boba.connections.kerberos import KerberosPasswordAuth, KeytabAuth
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.krb import (
-    KerberosPasswordAuth,
-    KerberosWorkspace,
-    KeytabAuth,
-    KeytabCredentials,
-    ServiceTicketIssuer,
-)
+from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
 
 STAND = Stand.required()
 

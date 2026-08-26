@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 import pytest
 from conftest import ROOTFS_IMAGE
 
+from boba.connections.http import HttpProfile
 from boba.sandbox import SandboxToolConfig
 from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS
 from boba.tool.kb.confluence.tools import (
@@ -23,7 +24,6 @@ from boba.toolkit.result import (
     TableResult,
     ToolArtifact,
 )
-from boba.transport.http import HttpProfile
 
 # порт 1 закрыт всегда: тест проверяет ошибку соединения, а не адрес
 DEAD_URL = "{}://{}:1".format("http", "127.0.0.1")

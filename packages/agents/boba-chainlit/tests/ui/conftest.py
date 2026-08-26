@@ -36,10 +36,10 @@ from boba.chainlit.connections import (
     GrantTarget,
 )
 from boba.chainlit.infra.config import AppConfig
-from boba.db.clickhouse import ClickHouseConfig
+from boba.connections.clickhouse import ClickHouseConfig
+from boba.connections.http import HttpProfile
 from boba.db.postgres import AsyncPostgresPool
 from boba.settings import bind, build_app_config
-from boba.transport.http import HttpProfile
 from ui.chat_page import ChatPage
 from ui.fake_llm import FakeRoute, serve
 from ui.socket_log import SocketLog

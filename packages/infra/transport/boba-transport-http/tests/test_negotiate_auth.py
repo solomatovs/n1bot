@@ -6,9 +6,11 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from boba.krb import DelegatedAuth, KerberosCredentials, KerberosError, TicketAuth
-from boba.transport.http import HttpProfile
-from boba.transport.http.auth import HttpxNegotiateAuth, NegotiateAuth
+from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.connections.kerberos import DelegatedAuth, TicketAuth
+from boba.krb import KerberosCredentials, KerberosError
+from boba.transport.http import HttpxAuth
+from boba.transport.http.auth import HttpxNegotiateAuth
 
 REVEAL = {TicketAuth.REVEAL_SECRETS: True}
 
@@ -69,7 +71,7 @@ class TestNegotiateProfile:
     def test_ticket_travels_and_reads_back(self) -> None:
         ticket = TicketAuth.of_bytes(
             "u@EXAMPLE.COM", "HTTP@wiki.example.com", b"ccache", 60
-)
+        )
         profile = HttpProfile(
             base_url="https://wiki.example.com",
             auth=NegotiateAuth(method="negotiate", kerberos=ticket),
@@ -83,13 +85,11 @@ class TestNegotiateProfile:
             raise AssertionError("ticket must survive the roundtrip")
         if restored.auth.kerberos.ccache_bytes() != b"ccache":
             raise AssertionError("ticket bytes must survive the roundtrip")
-        if not isinstance(restored.httpx_auth(), HttpxNegotiateAuth):
+        if not isinstance(HttpxAuth.of(restored), HttpxNegotiateAuth):
             raise AssertionError("negotiate profile must build HttpxNegotiateAuth")
 
     def test_ticket_is_masked_without_reveal(self) -> None:
-        ticket = TicketAuth.of_bytes(
-            "u@R", "HTTP@h", b"secret-bytes", 60
-)
+        ticket = TicketAuth.of_bytes("u@R", "HTTP@h", b"secret-bytes", 60)
         profile = HttpProfile(
             base_url="https://h",
             auth=NegotiateAuth(method="negotiate", kerberos=ticket),
@@ -102,7 +102,7 @@ class TestNegotiateProfile:
         profile = HttpProfile.model_validate(
             {"base_url": "https://x", "auth": {"method": "bearer", "token": "t"}}
         )
-        if profile.httpx_auth() is None:
+        if HttpxAuth.of(profile) is None:
             raise AssertionError("bearer auth must still be built")
 
 

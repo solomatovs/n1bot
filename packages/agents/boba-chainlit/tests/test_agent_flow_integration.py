@@ -45,15 +45,14 @@ from boba.chainlit.infra.providers import (
     rephrase_generators,
     session_graph_builder,
 )
-from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
-from boba.llm.generation import (
+from boba.chat.generation import (
     GenerationConfig,
     LocalGeneration,
-    LocalOnnxGenerator,
     OpenAiGeneration,
-    OpenAiStructuredGenerator,
     StructuredGenerator,
 )
+from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
+from boba.llm.generation import LocalOnnxGenerator, OpenAiStructuredGenerator
 from boba.llm.local import OnnxChatRuntime
 from boba.settings import bind
 from boba.toolkit.result import TableResult, ToolArtifact

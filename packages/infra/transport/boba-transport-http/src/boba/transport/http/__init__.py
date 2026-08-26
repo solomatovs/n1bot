@@ -1,16 +1,8 @@
-"boba.transport.http — чистый HTTP-транспорт: HttpProfile + HttpRequest -> HttpResponse"
+"boba.transport.http — HTTP-транспорт: запрос -> ответ и аутентификаторы httpx"
 
 from __future__ import annotations
 
-from boba.transport.http.auth import (
-    BasicAuth,
-    BearerAuth,
-    DigestAuth,
-    HttpxBearerAuth,
-    NoneAuth,
-    WebAuth,
-)
-from boba.transport.http.connection import HostPattern, HttpProfile
+from boba.transport.http.auth import HttpxAuth, HttpxBearerAuth, HttpxNegotiateAuth
 from boba.transport.http.transport import (
     ByteStream,
     CancellableHttpTransport,
@@ -22,19 +14,14 @@ from boba.transport.http.transport import (
 )
 
 __all__ = [
-    "BasicAuth",
-    "BearerAuth",
     "ByteStream",
     "CancellableHttpTransport",
-    "DigestAuth",
-    "HostPattern",
-    "HttpProfile",
     "HttpRequest",
     "HttpResponse",
     "HttpTransport",
+    "HttpxAuth",
     "HttpxBearerAuth",
-    "NoneAuth",
+    "HttpxNegotiateAuth",
     "ResponseStream",
     "RetryPolicy",
-    "WebAuth",
 ]

@@ -13,15 +13,13 @@ from typing import ClassVar
 
 import pytest
 
-from boba.db.clickhouse.config import ClickHouseConfig
-from boba.db.postgres.config import PostgresConfig
+from boba.connections.clickhouse import ClickHouseConfig
+from boba.connections.kerberos import DelegatedAuth, KeytabAuth, TicketAuth
+from boba.connections.postgres import PostgresConfig
 from boba.krb import (
     ClientCredentials,
-    DelegatedAuth,
     KerberosError,
-    KeytabAuth,
     KeytabCredentials,
-    TicketAuth,
     TicketCredentials,
 )
 
@@ -44,9 +42,7 @@ class Fixtures:
 
     @classmethod
     def ticket(cls) -> TicketAuth:
-        return TicketAuth.of_bytes(
-            cls.PRINCIPAL, cls.SERVICE, b"ccache", 60
-)
+        return TicketAuth.of_bytes(cls.PRINCIPAL, cls.SERVICE, b"ccache", 60)
 
     @classmethod
     def postgres(cls, auth: object) -> PostgresConfig:
@@ -84,17 +80,13 @@ class TestKeytabStaysWithTheApp:
         config = Fixtures.postgres(Fixtures.keytab().model_dump(mode="json"))
 
         with pytest.raises(ValueError, match="may not leave the application"):
-            config.model_dump(
-                mode="json", context={TicketAuth.REVEAL_SECRETS: True}
-            )
+            config.model_dump(mode="json", context={TicketAuth.REVEAL_SECRETS: True})
 
     def test_clickhouse_reveal_refuses_a_keytab(self) -> None:
         config = Fixtures.clickhouse(Fixtures.keytab().model_dump(mode="json"))
 
         with pytest.raises(ValueError, match="may not leave the application"):
-            config.model_dump(
-                mode="json", context={TicketAuth.REVEAL_SECRETS: True}
-            )
+            config.model_dump(mode="json", context={TicketAuth.REVEAL_SECRETS: True})
 
     def test_host_dump_keeps_the_keytab(self) -> None:
         """Дамп без раскрытия секретов — конфиг хоста, keytab ему нужен."""

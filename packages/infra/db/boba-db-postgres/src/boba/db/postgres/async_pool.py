@@ -17,8 +17,9 @@ import psycopg
 from psycopg.rows import DictRow, dict_row
 
 from boba.cancellation import current_cancellation
-from boba.db.postgres.config import PostgresConfig
-from boba.krb import ClientCredentials, KerberosAuthBase, KerberosCredentials
+from boba.connections.kerberos import KerberosAuthBase
+from boba.connections.postgres import PostgresConfig
+from boba.krb import ClientCredentials, KerberosCredentials
 
 __all__ = [
     "AsyncPostgresPool",

@@ -47,7 +47,7 @@ from boba.chainlit.infra.providers import (
     session_graph_builder,
 )
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepText
-from boba.llm.generation import (
+from boba.chat.generation import (
     GenerationError,
     OpenAiGeneration,
     SchemaSpec,

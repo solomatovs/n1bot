@@ -16,7 +16,7 @@ from typing import ClassVar
 import gssapi
 from gssapi.raw.misc import GSSError
 
-from boba.krb.errors import KerberosError
+from boba.krb.errors import GssErrors, KerberosError
 
 __all__ = ["SpnegoNegotiate"]
 
@@ -35,7 +35,7 @@ class SpnegoNegotiate:
             context = gssapi.SecurityContext(name=name, mech=cls.MECH, usage="initiate")
             token = context.step()
         except GSSError as exc:
-            raise KerberosError.of_gss(exc, f"spnego init for {service}") from exc
+            raise GssErrors.of(exc, f"spnego init for {service}") from exc
 
         if not token:
             msg = f"spnego init for {service} produced no token"

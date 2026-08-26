@@ -8,13 +8,13 @@ from typing import Any
 import httpx
 import pytest
 
+from boba.chat.openai import OpenAiConfig
 from boba.llm.embedding import (
     EmbedderFactory,
     EmbeddingError,
     OpenAiEmbedder,
     OpenAiEmbedding,
 )
-from boba.llm.openai import OpenAiConfig
 
 pytestmark = pytest.mark.anyio
 

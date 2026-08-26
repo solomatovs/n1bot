@@ -32,9 +32,9 @@ from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
+from boba.chat.provider import ChatSampling, LocalChatConfig
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.local import OnnxChatRuntime
-from boba.llm.provider import ChatSampling, LocalChatConfig
 from boba.settings import bind, build_app_config
 from boba.toolkit.calls import ToolIntent
 

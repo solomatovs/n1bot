@@ -22,10 +22,10 @@ from boba.access import ProfileGrant, ToolGrant
 from boba.chainlit.auth import AuthConfig
 from boba.chainlit.domain.config import LocalStorageConfig, RoleConfig
 from boba.chainlit.domain.errors import RefusalError
-from boba.db.postgres import PostgresConfig
+from boba.chat.generation import GenerationConfig
+from boba.chat.provider import ChatBackendConfig, ChatSampling
+from boba.connections.postgres import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
-from boba.llm.generation import GenerationConfig
-from boba.llm.provider import ChatBackendConfig, ChatSampling
 from boba.sandbox.profile import SandboxConfig
 from boba.toolkit.types import StringList
 

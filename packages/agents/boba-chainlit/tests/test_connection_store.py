@@ -20,20 +20,19 @@ from boba.chainlit.connections import (
     SecretCryptoError,
 )
 from boba.chainlit.domain.context import Subject
-from boba.db.clickhouse import (
+from boba.connections.clickhouse import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
     NoPasswordAuth,
 )
-from boba.db.postgres import (
-    AsyncPostgresPool,
+from boba.connections.http import BearerAuth, HttpProfile
+from boba.connections.postgres import (
     PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,
 )
-from boba.transport.http import HttpProfile
-from boba.transport.http.auth import BearerAuth
+from boba.db.postgres import AsyncPostgresPool
 
 pytestmark = pytest.mark.anyio
 

@@ -20,12 +20,13 @@ from typing import BinaryIO, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.binaries import (
+from boba.toolkit.timing import Elapsed, ProcessAge
+from boba.workspace.binaries import (
     SandboxBinary,
     TrustedBinaries,
     UntrustedBinaryError,
 )
-from boba.toolkit.images import (
+from boba.workspace.images import (
     FuseMounter,
     ImageStore,
     LauncherMarker,
@@ -34,7 +35,6 @@ from boba.toolkit.images import (
     SparseCopier,
     trace,
 )
-from boba.toolkit.timing import Elapsed, ProcessAge
 
 __all__ = [
     "FUSE_DEVICE",

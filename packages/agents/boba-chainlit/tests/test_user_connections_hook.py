@@ -41,15 +41,19 @@ from boba.chainlit.infra.user_connections import (
     UserConnectionsSpec,
     UserKerberos,
 )
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig, TrustAuth
-from boba.krb import (
-    CcacheRegistry,
+from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.connections.kerberos import (
     DelegatedAuth,
     DelegationMode,
-    KerberosEnv,
     KeytabAuth,
-    KeytabCredentials,
     TicketAuth,
+)
+from boba.connections.postgres import PostgresConfig, TrustAuth
+from boba.db.postgres import AsyncPostgresPool
+from boba.krb import (
+    CcacheRegistry,
+    KerberosEnv,
+    KeytabCredentials,
     TicketCredentials,
     UserCcache,
 )
@@ -57,8 +61,7 @@ from boba.settings import bind
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.facade import Injected
-from boba.transport.http import HttpProfile
-from boba.transport.http.auth import NegotiateAuth
+from boba.transport.http import HttpxAuth
 
 pytestmark = pytest.mark.anyio
 
@@ -721,7 +724,7 @@ async def test_confluence_negotiate_row_logs_in_as_the_principal(
     armed = cfg.profiles["confl"]
 
     # стенд с self-signed сертификатом
-    async with httpx.AsyncClient(verify=False, auth=armed.httpx_auth()) as client:  # noqa: S501
+    async with httpx.AsyncClient(verify=False, auth=HttpxAuth.of(armed)) as client:  # noqa: S501
         response = await client.get(f"{base_url}/rest/api/user/current")
 
     if response.status_code != httpx.codes.OK:

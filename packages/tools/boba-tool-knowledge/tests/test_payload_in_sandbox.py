@@ -337,8 +337,6 @@ class TestEmbedderInSandbox:
             ZygoteRegistry.stop_all()
 
         if outcome.result.exit_code != 0:
-            raise AssertionError(
-                f"нет весов {self.WEIGHTS}: скачай — make fastembed"
-            )
+            raise AssertionError(f"нет весов {self.WEIGHTS}: скачай — make fastembed")
         if not (outcome.result.stdout.strip()):
             raise AssertionError("outcome.result.stdout.strip()")

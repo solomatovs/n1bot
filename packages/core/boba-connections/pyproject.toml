@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-connections"
+version = "0.0.14.dev8"
+description = "Boba connections: профили внешних систем (postgres, clickhouse, http, kerberos) и правила доступа к ним — модели без I/O."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "pydantic>=2.10,<3",
+    "boba-toolkit==0.0.14.dev8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -154,7 +154,11 @@ _PYTHON_BINDS = (
 )
 """Интерпретатор и код в корень-образ: точки монтирования в нём уже есть."""
 
-_SRC_PACKAGES = ("core/boba-cancellation", "core/boba-toolkit")
+_SRC_PACKAGES = (
+    "core/boba-cancellation",
+    "core/boba-toolkit",
+    "infra/sandbox/boba-sandbox",
+)
 """Пакеты, чей код нужен зиготе: их src приезжает биндом в /usr/src."""
 
 

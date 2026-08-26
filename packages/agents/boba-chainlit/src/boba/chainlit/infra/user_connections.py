@@ -54,19 +54,18 @@ from boba.chainlit.domain.context import (
 from boba.chainlit.domain.errors import RefusalError
 from boba.chainlit.infra.session import ChainlitSession
 from boba.chainlit.infra.tickets import TicketArming
-from boba.db.clickhouse import ClickHouseConfig
-from boba.db.postgres import PostgresConfig
+from boba.connections.clickhouse import ClickHouseConfig
+from boba.connections.http import HostPattern, HttpProfile
+from boba.connections.kerberos import DelegatedAuth, TicketAuth
+from boba.connections.postgres import PostgresConfig
 from boba.krb import (
     CcacheRegistry,
-    DelegatedAuth,
     DelegatedCredentials,
     KerberosCredentials,
     RefreshWaiters,
-    TicketAuth,
 )
 from boba.tool.web.connection import WebConnection
 from boba.toolkit.sql import SqlProfiles
-from boba.transport.http import HostPattern, HttpProfile
 
 __all__ = [
     "ClientLabel",

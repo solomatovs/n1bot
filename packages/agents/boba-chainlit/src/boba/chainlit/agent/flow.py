@@ -41,8 +41,8 @@ from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import override
 
+from boba.chat.generation import GenerationError, SchemaSpec, StructuredGenerator
 from boba.llm.chat import ResponseField
-from boba.llm.generation import GenerationError, SchemaSpec, StructuredGenerator
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ErrorResult, ToolArtifact

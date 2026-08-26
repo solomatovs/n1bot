@@ -25,6 +25,7 @@ from pydantic import SecretStr
 from zygote_stand import SandboxStand
 
 from boba.cancellation import ToolStopped, run_cancellation
+from boba.sandbox.guest import CallMounts, ChildLimits, WarmupCall, ZygoteArgs
 from boba.sandbox.zygote import (
     ZygoteCallError,
     ZygotePolicy,
@@ -35,7 +36,6 @@ from boba.sandbox.zygote import (
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk
-from boba.toolkit.zygote import CallMounts, ChildLimits, WarmupCall, ZygoteArgs
 
 REPO = Path(__file__).resolve().parents[5]
 SANDBOX = REPO / "build" / "src" / "sandbox"
@@ -101,7 +101,7 @@ def _plain_spawner(fd: int) -> subprocess.Popen[bytes]:
     )
 
     return subprocess.Popen(  # noqa: S603
-        [sys.executable, "-m", "boba.toolkit.zygote", *args.render()],
+        [sys.executable, "-m", "boba.sandbox.guest", *args.render()],
         env=env,
         pass_fds=(fd,),
         stdin=subprocess.DEVNULL,
@@ -444,7 +444,7 @@ class TestIsolated:
             "--",
             "python3",
             "-m",
-            "boba.toolkit.zygote",
+            "boba.sandbox.guest",
             *ZygoteArgs(
                 socket_fd=fd,
                 reap_poll_sec=0.05,

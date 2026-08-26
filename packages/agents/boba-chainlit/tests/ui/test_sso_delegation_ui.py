@@ -27,9 +27,9 @@ import pytest
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, expect
 from stand_site import Stand
 
-from boba.krb import KerberosPasswordAuth
-from boba.transport.http import HttpProfile, HttpRequest, HttpTransport
-from boba.transport.http.auth import NegotiateAuth
+from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.connections.kerberos import KerberosPasswordAuth
+from boba.transport.http import HttpRequest, HttpTransport
 from ui.conftest import BOOT_TIMEOUT_SEC, run_blocking
 from ui.stand import StandAuth, StandConfig, StandProcess, free_port
 

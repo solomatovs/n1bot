@@ -40,35 +40,8 @@ from boba.cancellation import current_cancellation
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
-from boba.sandbox.profile import SandboxLayout, SandboxMount, SandboxProfile
-from boba.sandbox.runner import (
-    DeathReport,
-    FailureLog,
-    IncidentReason,
-    LifecycleJournal,
-    SandboxChainError,
-    SandboxLogRelay,
-    SandboxMountError,
-    StderrTee,
-)
-from boba.toolkit.binaries import SandboxBinary
-from boba.toolkit.channels import ToolChannel
-from boba.toolkit.launcher import (
-    LauncherError,
-    LaunchOutcome,
-    RunResult,
-    ToolLauncher,
-    ToolOutcome,
-)
-from boba.toolkit.protocol import REPLY, ToolCommand
-from boba.toolkit.stream import (
-    ChannelSinks,
-    Chunk,
-    ChunkSink,
-    FdReader,
-    ToolChannelsTap,
-)
-from boba.toolkit.zygote import (
+from boba.sandbox.fds import FdReader
+from boba.sandbox.guest import (
     CallExit,
     CallKind,
     CallMounts,
@@ -84,6 +57,33 @@ from boba.toolkit.zygote import (
     ZygoteArgs,
     ZygoteWire,
 )
+from boba.sandbox.profile import SandboxLayout, SandboxMount, SandboxProfile
+from boba.sandbox.runner import (
+    DeathReport,
+    FailureLog,
+    IncidentReason,
+    LifecycleJournal,
+    SandboxChainError,
+    SandboxLogRelay,
+    SandboxMountError,
+    StderrTee,
+)
+from boba.toolkit.channels import ToolChannel
+from boba.toolkit.launcher import (
+    LauncherError,
+    LaunchOutcome,
+    RunResult,
+    ToolLauncher,
+    ToolOutcome,
+)
+from boba.toolkit.protocol import REPLY, ToolCommand
+from boba.toolkit.stream import (
+    ChannelSinks,
+    Chunk,
+    ChunkSink,
+    ToolChannelsTap,
+)
+from boba.workspace.binaries import SandboxBinary
 from boba.workspace.launcher import (
     LauncherMode,
     ResourceLimits,
@@ -981,7 +981,7 @@ class ZygoteSpawner:
     """
 
     PYTHON: ClassVar[str] = "python3"
-    MODULE: ClassVar[str] = "boba.toolkit.zygote"
+    MODULE: ClassVar[str] = "boba.sandbox.guest"
 
     APP_LOGGER: ClassVar[str] = "boba"
     """Чей уровень наследует зигота: настройка живёт в конфиге приложения."""

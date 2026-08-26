@@ -29,7 +29,7 @@ from boba.db.postgres import AsyncPostgresPool
 
 pytestmark = pytest.mark.anyio
 
-from boba.llm.provider import OpenAiChatConfig
+from boba.chat.provider import OpenAiChatConfig
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
 

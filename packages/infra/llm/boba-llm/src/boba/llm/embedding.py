@@ -19,8 +19,9 @@ from typing import Annotated, ClassVar, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from boba.chat.openai import OpenAiConfig
 from boba.indexing.ports import Embedder
-from boba.llm.openai import OpenAiConfig, OpenAiHttp
+from boba.llm.openai import OpenAiHttp
 from boba.toolkit.timing import Elapsed
 
 logger = logging.getLogger(__name__)

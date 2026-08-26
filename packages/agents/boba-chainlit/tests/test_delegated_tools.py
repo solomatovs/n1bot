@@ -47,26 +47,24 @@ from boba.chainlit.infra.user_connections import (
     UserConnections,
     UserConnectionsSpec,
 )
-from boba.db.clickhouse import ClickHouseConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresConfig
-from boba.krb import (
+from boba.connections.clickhouse import ClickHouseConfig
+from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.connections.kerberos import (
     AcceptConfig,
-    CcacheRegistry,
     ConstrainedDelegation,
     DelegatedAuth,
     DelegationMode,
-    KerberosDelegation,
-    SpnegoAcceptor,
 )
+from boba.connections.postgres import PostgresConfig
+from boba.db.postgres import AsyncPostgresPool
+from boba.krb import CcacheRegistry, KerberosDelegation, SpnegoAcceptor
+from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.transport.http import HttpProfile
-from boba.transport.http.auth import NegotiateAuth
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"

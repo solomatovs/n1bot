@@ -1,9 +1,7 @@
-"""Способы kerberos-аутентификации соединения: чем добывается билет к сервису.
+"""Рабочий каталог kerberos приложения: krb5.conf и кэши билетов.
 
-Вариант описывается полем method и несёт ровно те поля, которые нужны ему
-самому. Пути кэшей и krb5.conf сюда не входят: их держит приложение
-(KerberosWorkspace), поэтому две строки не могут случайно поделить один
-ccache, а администратор не выбирает их за приложение.
+Модели способов аутентификации живут в boba.connections.kerberos; здесь —
+где лежат их кэши, чтобы две строки не поделили один ccache.
 
 Ошибки:
 KerberosError — рабочий каталог kerberos не настроен либо принципал непригоден
@@ -12,49 +10,24 @@ KerberosError — рабочий каталог kerberos не настроен �
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import os
 import re
-from collections.abc import Mapping
-from enum import StrEnum
-from typing import Annotated, ClassVar, Literal, Self, TypeAlias
+from typing import ClassVar
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    SecretStr,
-    SerializationInfo,
-    field_serializer,
-    field_validator,
-    model_validator,
+from pydantic import BaseModel, ConfigDict, Field
+
+from boba.connections.kerberos import (
+    CcacheKind,
+    KerberosError,
+    KerberosPasswordAuth,
+    KeytabAuth,
 )
 
-from boba.krb.errors import KerberosError
-from boba.toolkit.types import SecretRevealing
-
 __all__ = [
-    "DelegatedAuth",
-    "KerberosAuth",
-    "KerberosAuthBase",
-    "KerberosMethod",
-    "KerberosPasswordAuth",
     "KerberosWorkspace",
     "KerberosWorkspaceConfig",
-    "KeytabAuth",
-    "TicketAuth",
 ]
-
-
-class KerberosMethod(StrEnum):
-    """Способы kerberos-аутентификации; значение — поле method секции auth."""
-
-    KEYTAB = "kerberos_keytab"
-    PASSWORD = "kerberos_password"  # noqa: S105 — это имя метода, не секрет
-    DELEGATED = "kerberos_delegated"
-    TICKET = "kerberos_ticket"
 
 
 class KerberosWorkspace:
@@ -64,7 +37,7 @@ class KerberosWorkspace:
     разными keytab один файл не появится даже при одинаковом принципале.
     """
 
-    CCACHE_TYPE: ClassVar[str] = "FILE"
+    CCACHE_TYPE: ClassVar[str] = CcacheKind.FILE.value
     PREFIX: ClassVar[str] = "krb5cc"
     TAG_LENGTH: ClassVar[int] = 12
     DIR_MODE: ClassVar[int] = 0o700
@@ -91,6 +64,14 @@ class KerberosWorkspace:
         path = os.path.join(cls._setting("ccache_dir"), f"{cls.PREFIX}_{safe}_{tag}")
 
         return f"{cls.CCACHE_TYPE}:{path}"
+
+    @classmethod
+    def ccache_for(cls, auth: KeytabAuth | KerberosPasswordAuth) -> str:
+        """Свой кэш кредов строки: keytab выделяет по пути, пароль — по методу."""
+        if isinstance(auth, KeytabAuth):
+            return cls.ccache_of(auth.principal, auth.keytab)
+
+        return cls.ccache_of(auth.principal, auth.method)
 
     @classmethod
     def _setting(cls, name: str) -> str:
@@ -125,197 +106,3 @@ class KerberosWorkspaceConfig(BaseModel):
     def apply(self) -> None:
         """Ставит рабочий каталог процесса; зовётся один раз на старте."""
         KerberosWorkspace.configure(self.config, self.ccache_dir)
-
-
-class KerberosAuthBase(BaseModel):
-    """Общее у kerberos-вариантов: имя сервиса и требуемый остаток билета."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    method: str = Field(description="Способ; вариант сужает его до литерала.")
-    service: str | None = Field(
-        default=None,
-        description=(
-            "Имя kerberos-сервиса (krbsrvname): SPN собирается как "
-            "<service>@<host>. None — имя по умолчанию у коннектора."
-        ),
-    )
-    min_lifetime: int = Field(
-        default=60,
-        ge=0,
-        description="Остаток билета (сек), ниже которого соединение не начинают.",
-    )
-
-    def source_principal(self) -> str:
-        """Принципал, от чьего имени идёт соединение; у делегирования его нет."""
-        msg = f"{type(self).__name__}: principal is known only at call time"
-        raise KerberosError(msg)
-
-    def trace(self) -> str:
-        """Строка журнала: способ и под кем идём, без секретов."""
-        try:
-            principal = self.source_principal()
-        except KerberosError:
-            return f"auth={self.method}"
-
-        if self.service is None:
-            return f"auth={self.method} principal={principal}"
-
-        return f"auth={self.method} principal={principal} service={self.service}"
-
-
-class KeytabAuth(KerberosAuthBase):
-    """Своя учётная запись строки: TGT выпускается ключом принципала."""
-
-    method: Literal["kerberos_keytab"]
-
-    principal: str = Field(
-        min_length=1,
-        description="Принципал, под которым получается TGT (user@REALM).",
-    )
-    keytab: str = Field(
-        min_length=1,
-        description="Путь к keytab с ключом принципала; наружу не уезжает.",
-    )
-    renew_lifetime: int = Field(
-        default=86400,
-        ge=0,
-        description="renew_life запрашиваемого TGT (сек).",
-    )
-
-    def source_principal(self) -> str:
-        return self.principal
-
-    def ccache(self) -> str:
-        """Свой кэш этих кредов: имя выделяет приложение по keytab."""
-        return KerberosWorkspace.ccache_of(self.principal, self.keytab)
-
-
-class KerberosPasswordAuth(KerberosAuthBase):
-    """Учётная запись строки по паролю: TGT выпускается kinit'ом."""
-
-    REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
-
-    method: Literal["kerberos_password"]
-
-    principal: str = Field(
-        min_length=1,
-        description="Принципал, под которым получается TGT (user@REALM).",
-    )
-    password: SecretStr = Field(
-        min_length=1,
-        description="Пароль учётной записи; наружу не уезжает, в базе шифруется.",
-    )
-
-    def source_principal(self) -> str:
-        return self.principal
-
-    def ccache(self) -> str:
-        """Свой кэш этих кредов: пароль в имя не попадает."""
-        return KerberosWorkspace.ccache_of(self.principal, self.method)
-
-    @field_serializer("password", when_used="json")
-    def _dump_password(self, value: SecretStr, info: SerializationInfo) -> str:
-        """Пароль маскируется всегда: в песочницу уезжает билет, а не он."""
-        return str(value)
-
-
-class DelegatedAuth(KerberosAuthBase):
-    """В сервис идёт сам пользователь: креды даёт его вход в приложение."""
-
-    method: Literal["kerberos_delegated"]
-
-
-class TicketAuth(KerberosAuthBase):
-    """Готовый билет одного вызова: креды тела инструмента в песочнице.
-
-    Внутри ccache только билет к service — ни TGT, ни ключа принципала, так
-    что получить билет к другому сервису телу нечем. Собирает эту секцию
-    приложение, в конфиге и в таблице она запрещена. krb5.conf телу не
-    передаётся: имена оно разбирает конфигом своей песочницы.
-    """
-
-    REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
-
-    method: Literal["kerberos_ticket"]
-
-    principal: str = Field(
-        min_length=1,
-        description="Принципал, чей билет лежит в ccache (user@REALM).",
-    )
-    service: str | None = Field(
-        default=None,
-        description="SPN назначения в виде service@host; у билета обязателен.",
-    )
-    ccache: SecretStr = Field(
-        description="Содержимое FILE-ccache с одним сервисным билетом, base64.",
-    )
-
-    def source_principal(self) -> str:
-        return self.principal
-
-    def service_name(self) -> str:
-        """SPN билета; None здесь невозможен — его ловит валидатор."""
-        if self.service is None:
-            msg = "ticket service is not set"
-            raise KerberosError(msg)
-
-        return self.service
-
-    @field_validator("ccache")
-    @classmethod
-    def _check_ccache(cls, value: SecretStr) -> SecretStr:
-        try:
-            base64.b64decode(value.get_secret_value(), validate=True)
-        except (binascii.Error, ValueError) as exc:
-            msg = "ticket ccache: base64 expected"
-            raise ValueError(msg) from exc
-
-        return value
-
-    @model_validator(mode="after")
-    def _service_is_named(self) -> Self:
-        if self.service is None:
-            msg = "ticket service is required: it names the SPN of the ticket"
-            raise ValueError(msg)
-
-        name, sep, host = self.service.partition("@")
-        if not sep or not name or not host:
-            msg = f"ticket service {self.service!r} is not service@host"
-            raise ValueError(msg)
-
-        return self
-
-    def ccache_bytes(self) -> bytes:
-        return base64.b64decode(self.ccache.get_secret_value(), validate=True)
-
-    @field_serializer("ccache", when_used="json")
-    def _dump_ccache(self, value: SecretStr, info: SerializationInfo) -> str:
-        """Байты билета уходят только в доверенный канал с REVEAL_SECRETS."""
-        context = info.context
-        if not isinstance(context, Mapping):
-            return str(value)
-
-        if not context.get(TicketAuth.REVEAL_SECRETS):
-            return str(value)
-
-        return value.get_secret_value()
-
-    @classmethod
-    def of_bytes(
-        cls, principal: str, service: str, blob: bytes, min_lifetime: int
-    ) -> TicketAuth:
-        return cls(
-            method=KerberosMethod.TICKET.value,
-            principal=principal,
-            service=service,
-            ccache=SecretStr(base64.b64encode(blob).decode("ascii")),
-            min_lifetime=min_lifetime,
-        )
-
-
-KerberosAuth: TypeAlias = Annotated[
-    KeytabAuth | KerberosPasswordAuth | DelegatedAuth | TicketAuth,
-    Field(discriminator="method"),
-]
-"""Kerberos-варианты авторизации соединения; различаются полем method."""

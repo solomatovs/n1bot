@@ -10,9 +10,10 @@ from typing import Any
 
 import psycopg
 
+from boba.connections.kerberos import KerberosAuthBase
+from boba.connections.postgres import PostgresConfig
 from boba.db.postgres.async_pool import PostgresError
-from boba.db.postgres.config import PostgresConfig
-from boba.krb import ClientCredentials, KerberosAuthBase, KerberosError
+from boba.krb import ClientCredentials, KerberosError
 from boba.toolkit.timing import Elapsed
 
 __all__ = ["PayloadPostgres"]

@@ -39,10 +39,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import ConfigDict
 from typing_extensions import override
 
-from boba.llm.chat import ResponseField
-from boba.llm.local import LocalChatProvider, OnnxChatRuntime
-from boba.llm.openai_chat import OpenAiChatProvider
-from boba.llm.provider import (
+from boba.chat.provider import (
     ChatDelta,
     ChatProvider,
     ChatReply,
@@ -55,6 +52,9 @@ from boba.llm.provider import (
     ToolCallRequest,
     ToolSpec,
 )
+from boba.llm.chat import ResponseField
+from boba.llm.local import LocalChatProvider, OnnxChatRuntime
+from boba.llm.openai_chat import OpenAiChatProvider
 
 __all__ = ["ChatProviderFactory", "ProviderChatModel"]
 

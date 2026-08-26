@@ -13,14 +13,10 @@ from typing import ClassVar
 from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 
-from boba.db.clickhouse.config import ClickHouseConfig
+from boba.connections.clickhouse import ClickHouseConfig
+from boba.connections.kerberos import KerberosAuthBase
 from boba.db.clickhouse.errors import ClickHouseError
-from boba.krb import (
-    ClientCredentials,
-    KerberosAuthBase,
-    KerberosError,
-    SpnegoNegotiate,
-)
+from boba.krb import ClientCredentials, KerberosError, SpnegoNegotiate
 
 __all__ = ["PayloadClickHouse", "SpnegoHeaders"]
 

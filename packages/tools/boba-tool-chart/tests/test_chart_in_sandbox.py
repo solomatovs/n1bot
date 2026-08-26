@@ -11,10 +11,10 @@ import pytest
 from conftest import needs_sandbox, needs_userns, sandbox_profile
 
 from boba.sandbox import SandboxToolConfig
+from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import ChartResult
-from boba.toolkit.wrap import ToolProcessWrap
 
 ZYGOTE = ZygotePolicy(
     start_timeout_sec=60.0,

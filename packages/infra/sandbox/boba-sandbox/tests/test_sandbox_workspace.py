@@ -106,7 +106,9 @@ class TestOnlyConfiguredMounts:
 
     def test_single_rw_mount_from_config(self) -> None:
         profile = _profile(ro=(), rw=(self.WS,))
-        if _rw_mounts(build_zygote_argv(profile, ["true"], env={}, root=_ROOT)) != [self.WS]:
+        if _rw_mounts(build_zygote_argv(profile, ["true"], env={}, root=_ROOT)) != [
+            self.WS
+        ]:
             raise AssertionError("_rw_mounts(...) == [self.WS]")
 
     def test_project_root_is_not_mounted(self) -> None:

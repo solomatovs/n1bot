@@ -8,14 +8,14 @@ import os
 import pytest
 from zygote_stand import ROOTFS_IMAGE
 
+from boba.sandbox.guest import ZygoteArgs
 from boba.sandbox.runner import SandboxLogRelay, StderrTee
 from boba.sandbox.zygote import ZygoteSpawner
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
-from boba.toolkit.images import LauncherMarker
 from boba.toolkit.launcher import LaunchPayload
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.stream import ChannelSinks, Chunk, StreamSink
-from boba.toolkit.zygote import ZygoteArgs
+from boba.workspace.images import LauncherMarker
 
 
 def _bin_dirs() -> list[str]:

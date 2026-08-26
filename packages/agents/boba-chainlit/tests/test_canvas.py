@@ -41,8 +41,8 @@ from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.domain.context import CallContext, ContextKind
 from boba.chainlit.domain.keys import ObjectKey
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.toolkit.binaries import TrustedBinaries
 from boba.toolkit.result import CustomElementResult, ErrorResult
+from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"

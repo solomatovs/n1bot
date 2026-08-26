@@ -27,7 +27,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from boba.llm.provider import (
+from boba.chat.provider import (
     ChatDelta,
     ChatEvent,
     ChatProvider,
@@ -310,7 +310,7 @@ class QwenDialogRender:
     TOOLS_FOOTER: ClassVar[str] = (
         "\n</tools>\n\n"
         "For each function call, return a json object with function name and "
-        'arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n'
+        "arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n"
         '{"name": <function-name>, "arguments": <args-json-object>}\n'
         "</tool_call>"
     )
@@ -334,9 +334,7 @@ class QwenDialogRender:
         messages = list(request.messages)
         if messages and messages[0].role is ChatRole.SYSTEM:
             head = messages[0]
-            merged = head.model_copy(
-                update={"content": f"{head.content}\n\n{block}"}
-            )
+            merged = head.model_copy(update={"content": f"{head.content}\n\n{block}"})
             return [merged, *messages[1:]]
 
         system = ChatTurn(role=ChatRole.SYSTEM, content=block)

@@ -1,7 +1,7 @@
 """Единая точка работы с LLM-провайдерами: транспорт, чат, эмбеддинги.
 
 Стандарт провайдеров: каждая способность — порт, union-конфиг с
-дискриминатором provider и фабрика (см. boba.llm.provider). Модули с
+дискриминатором provider (boba.chat) и фабрика здесь. Модули с
 langchain (chat, bridge) и локальным рантаймом (local) импортируются
 напрямую: их зависимостей нет в песочных payload-окружениях.
 
@@ -17,47 +17,15 @@ from boba.llm.embedding import (
     OpenAiEmbedder,
     OpenAiEmbedding,
 )
-from boba.llm.openai import OpenAiConfig, OpenAiDumpConfig, OpenAiHttp
-from boba.llm.provider import (
-    ChatBackendConfig,
-    ChatDelta,
-    ChatEvent,
-    ChatProvider,
-    ChatProviderError,
-    ChatReply,
-    ChatRequest,
-    ChatRole,
-    ChatSampling,
-    ChatTurn,
-    LocalChatConfig,
-    OpenAiChatConfig,
-    ToolCallRequest,
-    ToolSpec,
-)
+from boba.llm.openai import OpenAiHttp
 
 __all__ = [
-    "ChatBackendConfig",
-    "ChatDelta",
-    "ChatEvent",
-    "ChatProvider",
-    "ChatProviderError",
-    "ChatReply",
-    "ChatRequest",
-    "ChatRole",
-    "ChatSampling",
-    "ChatTurn",
     "EmbedderFactory",
     "EmbeddingConfig",
     "EmbeddingError",
-    "LocalChatConfig",
     "LocalEmbedding",
     "LocalFastEmbedEmbedder",
-    "OpenAiChatConfig",
-    "OpenAiConfig",
-    "OpenAiDumpConfig",
     "OpenAiEmbedder",
     "OpenAiEmbedding",
     "OpenAiHttp",
-    "ToolCallRequest",
-    "ToolSpec",
 ]

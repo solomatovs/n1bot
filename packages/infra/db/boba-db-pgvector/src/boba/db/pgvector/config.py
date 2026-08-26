@@ -14,7 +14,7 @@ from typing import Self
 from psycopg import sql
 from pydantic import BaseModel, Field, model_validator
 
-from boba.db.postgres import PostgresConfig
+from boba.connections.postgres import PostgresConfig
 
 __all__ = [
     "PostgresStoreConfig",
