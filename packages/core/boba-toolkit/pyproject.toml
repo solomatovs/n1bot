@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 config = [
     "boba-settings==0.0.14.dev8",
+    "boba-krb==0.0.14.dev8",
 ]
 
 [tool.setuptools.packages.find]
