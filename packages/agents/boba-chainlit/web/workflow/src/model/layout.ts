@@ -166,11 +166,18 @@ export function layoutGraph(graph: WorkflowGraph): Layout {
 
 export type TaskPositions = Record<string, Point>;
 
-/** Плоская раскладка задач редактора слева направо по рёбрам; без стадий. */
-export function layoutTasks(tasks: readonly string[], edges: readonly { source: string; target: string }[]): TaskPositions {
+export type TaskSizes = Record<string, Size>;
+
+/** Плоская раскладка задач редактора слева направо по рёбрам; без стадий.
+ *  Размер узла — по задаче: у узла редактора он растёт с числом портов. */
+export function layoutTasks(
+  tasks: readonly string[],
+  edges: readonly { source: string; target: string }[],
+  sizes: TaskSizes = {},
+): TaskPositions {
   const graph = dagreGraph("LR", TASK_GAP * 2, STAGE_GAP);
   for (const task of tasks) {
-    graph.setNode(task, { ...TASK_SIZE });
+    graph.setNode(task, { ...(sizes[task] ?? TASK_SIZE) });
   }
 
   const known = new Set(tasks);
@@ -185,7 +192,8 @@ export function layoutTasks(tasks: readonly string[], edges: readonly { source: 
   const positions: TaskPositions = {};
   for (const task of tasks) {
     const node = graph.node(task);
-    positions[task] = { x: node.x - TASK_SIZE.width / 2, y: node.y - TASK_SIZE.height / 2 };
+    const size = sizes[task] ?? TASK_SIZE;
+    positions[task] = { x: node.x - size.width / 2, y: node.y - size.height / 2 };
   }
 
   return positions;

@@ -13,15 +13,24 @@ export type TaskNodeData = {
 
 export type TaskFlowNode = Node<TaskNodeData, "task">;
 
-/** Узел задачи: имя, инструмент, статус кольцом, длительность. */
+const MARK: Record<TaskStatus, string> = {
+  pending: "",
+  running: "…",
+  done: "✓",
+  failed: "✕",
+  skipped: "–",
+  stopped: "■",
+};
+
+/** Узел задачи: кольцо статуса, имя, инструмент и длительность. */
 export function TaskNode({ data }: NodeProps<TaskFlowNode>): ReactElement {
   return (
     <div className="task-node" data-status={data.status} data-selected={data.selected}>
       <Handle type="target" position={Position.Left} />
-      <div className="task-node__ring" />
+      <div className="task-node__ring">{MARK[data.status]}</div>
       <div className="task-node__body">
         <div className="task-node__name">{data.task}</div>
-        <div className="task-node__meta mono">
+        <div className="task-node__meta">
           {data.tool} · {data.status}
           {data.duration !== "—" ? ` · ${data.duration}` : ""}
         </div>

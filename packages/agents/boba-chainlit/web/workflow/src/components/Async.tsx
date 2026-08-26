@@ -14,11 +14,15 @@ type Props<T> = PropsWithChildren<{
 /** Три состояния загрузки одним местом: спиннер, ошибка, содержимое. */
 export function Async<T>({ state, render }: Props<T>): ReactElement {
   if (state.kind === "loading") {
-    return <div className="notice">Loading…</div>;
+    return <div className="empty">Loading…</div>;
   }
 
   if (state.kind === "error") {
-    return <div className="notice notice--error">{state.message}</div>;
+    return (
+      <div className="empty">
+        <span className="notice notice--error">{state.message}</span>
+      </div>
+    );
   }
 
   return render(state.value);

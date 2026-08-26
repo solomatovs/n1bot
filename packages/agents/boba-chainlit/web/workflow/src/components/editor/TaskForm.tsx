@@ -1,4 +1,4 @@
-import { Trash2 } from "lucide-react";
+import { Trash2, X } from "lucide-react";
 import { type ReactElement, useState } from "react";
 
 import { isIdent, type EditableTask } from "../../model/spec";
@@ -11,6 +11,7 @@ type Props = {
   onChange: (task: EditableTask) => void;
   onRename: (to: string) => void;
   onRemove: () => void;
+  onClose: () => void;
 };
 
 function without<T>(record: Record<string, T>, key: string): Record<string, T> {
@@ -30,7 +31,7 @@ function textOf(value: unknown): string {
 }
 
 /** Форма задачи: имя, инструмент, аргументы по каталогу, fd-порты. */
-export function TaskForm({ task, catalog, taken, onChange, onRename, onRemove }: Props): ReactElement {
+export function TaskForm({ task, catalog, taken, onChange, onRename, onRemove, onClose }: Props): ReactElement {
   const facts = catalog[task.tool];
   const [draftName, setDraftName] = useState(task.name);
   const [newArg, setNewArg] = useState("");
@@ -75,8 +76,9 @@ export function TaskForm({ task, catalog, taken, onChange, onRename, onRemove }:
   };
 
   return (
-    <aside className="inspector task-form">
-      <h3 className="inspector__title">
+    <aside className="inspector form" aria-label="task form">
+      <div className="inspector__head">
+        <span className="eyebrow">task</span>
         <input
           className="input"
           value={draftName}
@@ -86,10 +88,14 @@ export function TaskForm({ task, catalog, taken, onChange, onRename, onRemove }:
           onBlur={commitName}
           aria-label="task name"
         />
-        <button type="button" className="btn btn--danger" onClick={onRemove} title="Remove task">
+        <button type="button" className="icon-btn" onClick={onRemove} title="Remove task" aria-label="Remove task">
           <Trash2 size={14} />
         </button>
-      </h3>
+        <button type="button" className="icon-btn" onClick={onClose} aria-label="Close inspector">
+          <X size={14} />
+        </button>
+      </div>
+      <div className="inspector__body">
       <label className="field">
         <span className="field__label">tool</span>
         <select
@@ -109,7 +115,7 @@ export function TaskForm({ task, catalog, taken, onChange, onRename, onRemove }:
         </select>
       </label>
 
-      <h4>args</h4>
+      <h4 className="eyebrow">args</h4>
       {[...argNames].map((name) => (
         <label className="field" key={name}>
           <span className="field__label mono">
@@ -159,7 +165,7 @@ export function TaskForm({ task, catalog, taken, onChange, onRename, onRemove }:
 
       {(facts?.task_ports ?? false) && (
         <>
-          <h4>ports</h4>
+          <h4 className="eyebrow">ports</h4>
           {Object.entries(task.ports).map(([name, direction]) => (
             <div className="field field--row" key={name}>
               <span className="mono">{name}</span>
@@ -203,6 +209,7 @@ export function TaskForm({ task, catalog, taken, onChange, onRename, onRemove }:
           </div>
         </>
       )}
+      </div>
     </aside>
   );
 }

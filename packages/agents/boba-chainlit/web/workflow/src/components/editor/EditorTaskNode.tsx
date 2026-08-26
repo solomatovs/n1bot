@@ -40,8 +40,8 @@ export function EditorTaskNode({ data }: NodeProps<EditorTaskFlowNode>): ReactEl
       title={data.issue}
     >
       <div className="editor-node__header">
+        <div className="editor-node__eyebrow">{data.tool}</div>
         <div className="editor-node__name">{data.name}</div>
-        <div className="editor-node__tool mono">{data.tool}</div>
       </div>
       <div className="editor-node__ports">
         <div className="editor-node__column">
