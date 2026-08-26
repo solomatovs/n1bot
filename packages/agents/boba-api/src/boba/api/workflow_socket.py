@@ -1,4 +1,4 @@
-"""Namespace /workflow на socket.io chainlit: живые снимки запусков странице.
+"""Socket.io API: namespace /workflow с живыми снимками запусков странице.
 
 Подключение авторизуется cookie входа; subscribe пускает в комнату запуска
 после проверки владения и сразу шлёт текущий снимок, дальше снимки идут по
@@ -20,7 +20,7 @@ import socketio
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from boba.chainlit.infra.tool_api import ApiIdentity
+from boba.api.auth import ApiIdentity
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
 from boba.identity.context import Subject
@@ -28,7 +28,12 @@ from boba.identity.errors import RefusalError
 from boba.workflow.events import RunSnapshot
 from boba.workflow_engine.service import WorkflowService
 
-__all__ = ["SocketAuthenticator", "WorkflowNamespace", "WorkflowSocketEvent"]
+__all__ = [
+    "SocketAuthenticator",
+    "WorkflowNamespace",
+    "WorkflowSocket",
+    "WorkflowSocketEvent",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -176,3 +181,17 @@ class WorkflowNamespace(socketio.AsyncNamespace):
     @staticmethod
     def _payload(snapshot: RunSnapshot) -> dict[str, Any]:
         return snapshot.model_dump(mode="json")
+
+
+class WorkflowSocket:
+    """Сервер socket.io API и его ASGI-приложение; хост монтирует его под PATH."""
+
+    PATH: ClassVar[str] = "/socket.io"
+
+    @classmethod
+    def build(cls, namespace: WorkflowNamespace) -> socketio.ASGIApp:
+        server = socketio.AsyncServer(cors_allowed_origins=[], async_mode="asgi")
+        server.register_namespace(namespace)
+
+        # путь проверяет Mount приложения; сам engine.io путь не сверяет
+        return socketio.ASGIApp(socketio_server=server, socketio_path="")

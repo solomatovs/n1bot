@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from abc import abstractmethod
 from collections.abc import Callable
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from boba.chainlit.infra.session import ChainlitSession
 from boba.identity.api import AuthenticatedUser, Authenticator
 from chainlit.user import PersistedUser, User
 
-__all__ = ["ChainlitAuthenticator", "ChainlitUsers", "PersistedUsers"]
+__all__ = ["ChainlitAuthenticator", "ChainlitCookie", "ChainlitUsers", "PersistedUsers"]
 
 
 class PersistedUsers(Protocol):
@@ -49,3 +50,14 @@ class ChainlitAuthenticator(Authenticator):
         persisted = await self._users().get_user(login.identifier)
 
         return ChainlitUsers.of(persisted)
+
+
+class ChainlitCookie:
+    """Имя cookie входа chainlit: env CHAINLIT_AUTH_COOKIE_NAME, иначе access_token."""
+
+    NAME_ENV: ClassVar[str] = "CHAINLIT_AUTH_COOKIE_NAME"
+    DEFAULT: ClassVar[str] = "access_token"
+
+    @classmethod
+    def name(cls) -> str:
+        return os.environ.get(cls.NAME_ENV, cls.DEFAULT)

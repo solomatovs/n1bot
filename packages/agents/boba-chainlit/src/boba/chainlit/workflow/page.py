@@ -28,12 +28,13 @@ from starlette.routing import WebSocketRoute
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
+from boba.api.app import ApiApp
 from boba.chainlit.domain.config import BuiltPage, DevPage, PageSource
-from boba.chainlit.domain.keys import WorkflowUrl
 
 __all__ = [
     "PageAssets",
     "PageStamp",
+    "PageUrl",
     "WorkflowDevPage",
     "WorkflowPage",
     "WorkflowPageConfig",
@@ -58,6 +59,13 @@ class WorkflowPageConfig(BaseModel):
         return PageSource.parse(raw)
 
 
+class PageUrl(StrEnum):
+    """Маршруты страницы и её dev-прокси у хоста."""
+
+    PAGE = "/workflow/{path:path}"
+    DEV = "/workflow-dev/{path:path}"
+
+
 class PageAssets(StrEnum):
     """Откуда браузер берёт модули страницы относительно url_prefix."""
 
@@ -69,7 +77,6 @@ class PageStamp:
     """Что сервер вписывает в index.html вместо плейсхолдера."""
 
     PLACEHOLDER: ClassVar[str] = "<!--BOBA_PAGE-->"
-    SOCKET_PATH: ClassVar[str] = "/ws/socket.io"
 
     def __init__(self, url_prefix: str, assets: PageAssets) -> None:
         self._prefix = url_prefix
@@ -78,7 +85,8 @@ class PageStamp:
     def render(self, html: str) -> str:
         config = {
             "prefix": self._prefix,
-            "socketPath": f"{self._prefix}{self.SOCKET_PATH}",
+            "apiPrefix": ApiApp.v1_prefix(self._prefix),
+            "socketPath": ApiApp.socket_path(self._prefix),
         }
         stamp = (
             f'<base href="{self._prefix}{self._assets}">'
@@ -99,7 +107,7 @@ class WorkflowPage:
 
     def mount(self, app: FastAPI) -> None:
         app.add_api_route(
-            str(WorkflowUrl.PAGE), self.serve, methods=["GET"], include_in_schema=False
+            str(PageUrl.PAGE), self.serve, methods=["GET"], include_in_schema=False
         )
         app.router.routes.insert(0, app.router.routes.pop())
 
@@ -125,14 +133,14 @@ class WorkflowDevPage:
 
     def mount(self, app: FastAPI) -> None:
         app.router.routes.insert(
-            0, WebSocketRoute(str(WorkflowUrl.DEV), self.relay, name="workflow-hmr")
+            0, WebSocketRoute(str(PageUrl.DEV), self.relay, name="workflow-hmr")
         )
         app.add_api_route(
-            str(WorkflowUrl.DEV), self.proxy, methods=["GET"], include_in_schema=False
+            str(PageUrl.DEV), self.proxy, methods=["GET"], include_in_schema=False
         )
         app.router.routes.insert(0, app.router.routes.pop())
         app.add_api_route(
-            str(WorkflowUrl.PAGE), self.serve, methods=["GET"], include_in_schema=False
+            str(PageUrl.PAGE), self.serve, methods=["GET"], include_in_schema=False
         )
         app.router.routes.insert(0, app.router.routes.pop())
 

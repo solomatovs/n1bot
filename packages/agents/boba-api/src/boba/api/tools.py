@@ -1,6 +1,6 @@
 """REST-запуск одного инструмента человеком: тот же реестр и цепочка, что у чата.
 
-POST /tools/{name}: тред, профиль, intent и аргументы в теле, пользователь —
+POST /v1/tools/{name}: тред, профиль, intent и аргументы в теле, пользователь —
 из cookie входа. Контекст вызова собирается здесь под HumanInitiator(api);
 видимость инструментов — headless-решение ToolAccess, инструменты чата
 недоступны.
@@ -17,22 +17,21 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Annotated, Any
+from typing import Any, ClassVar
 from uuid import UUID
 
-from fastapi import Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.infra.api_auth import ChainlitUsers
+from boba.api.auth import ApiIdentity, CurrentUser
+from boba.api.urls import ToolCallUrl
 from boba.chat.profiles import ChatProfiles
 from boba.chat.threads import DataRejectedError, DataUnavailableError, ThreadOwnership
-from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.context import (
     CallContext,
     Scope,
     Subject,
 )
-from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.run import RunRegistry
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.invoke import (
@@ -42,17 +41,16 @@ from boba.toolrun.invoke import (
     ToolUnavailableError,
 )
 from boba.toolrun.registry import ToolRegistry
-from chainlit.auth import get_current_user
-from chainlit.user import PersistedUser, User
 
-__all__ = ["ApiIdentity", "CurrentUser", "ToolCallBody", "ToolCallReply", "ToolCalling"]
+__all__ = ["ThreadsSource", "ToolCallBody", "ToolCallReply", "ToolCalling"]
 
 logger = logging.getLogger(__name__)
 
 RegistrySource = Callable[[], Awaitable[ToolRegistry]]
 """Реестр инструментов приложения; собирается контейнером на первый запрос."""
 
-LayerSource = Callable[[], ThreadOwnership]
+ThreadsSource = Callable[[], ThreadOwnership]
+"""Владение тредами: реализует слой данных хоста, зовётся на вызов."""
 
 
 class ToolCallBody(BaseModel):
@@ -86,49 +84,25 @@ class ToolCallReply(BaseModel):
         )
 
 
-class ApiIdentity:
-    """Вход вызова API: 401 без сохранённого входа, 403 если профиль недоступен."""
-
-    @staticmethod
-    async def current(
-        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
-    ) -> AuthenticatedUser | None:
-        """Зависимость FastAPI: пользователь входа из cookie chainlit."""
-        return ChainlitUsers.of(current_user)
-
-    @staticmethod
-    def resolve(
-        user: AuthenticatedUser | None, profile: str | None, profiles: ChatProfiles
-    ) -> ApiSubject:
-        if user is None:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
-        try:
-            selected = profiles.resolve_or_default(profile, user.roles).name
-        except RefusalError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-        try:
-            return ApiSubject.of(user, selected)
-        except AuthenticationError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-
-CurrentUser = Annotated[AuthenticatedUser | None, Depends(ApiIdentity.current)]
-
-
 class ToolCalling:
     """Обработчик POST /tools/{name}."""
+
+    TAG: ClassVar[str] = "tools"
 
     def __init__(
         self,
         registry: RegistrySource,
         profiles: ChatProfiles,
-        data_layer: LayerSource,
+        threads: ThreadsSource,
     ) -> None:
         self._registry = registry
         self._profiles = profiles
-        self._data_layer = data_layer
+        self._threads = threads
+
+    def mount(self, router: APIRouter) -> None:
+        router.add_api_route(
+            ToolCallUrl.CALL.value, self.serve, methods=["POST"], tags=[self.TAG]
+        )
 
     async def serve(
         self,
@@ -148,7 +122,7 @@ class ToolCalling:
 
     async def _own_thread(self, login: str, thread_id: str) -> None:
         try:
-            author = await self._data_layer().get_thread_author(thread_id)
+            author = await self._threads().get_thread_author(thread_id)
         except DataRejectedError as exc:
             raise HTTPException(status_code=404, detail="Thread not found") from exc
         except DataUnavailableError as exc:

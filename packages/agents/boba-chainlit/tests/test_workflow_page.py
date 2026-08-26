@@ -136,7 +136,8 @@ async def test_index_is_stamped_for_any_page_path(tmp_path: Path) -> None:
     assert status == 200
     assert '<base href="/boba-debug/public/workflow/">' in text
     assert '"prefix": "/boba-debug"' in text
-    assert '"socketPath": "/boba-debug/ws/socket.io"' in text
+    assert '"apiPrefix": "/boba-debug/api/v1"' in text
+    assert '"socketPath": "/boba-debug/api/socket.io"' in text
     assert PageStamp.PLACEHOLDER not in text
 
 
@@ -165,7 +166,7 @@ async def test_dev_index_is_stamped_with_dev_assets(vite: FakeVite) -> None:
     assert status == 200
     assert '<base href="/boba-debug/workflow-dev/">' in text
     assert 'src="/boba-debug/workflow-dev/src/main.tsx"' in text
-    assert '"socketPath": "/boba-debug/ws/socket.io"' in text
+    assert '"socketPath": "/boba-debug/api/socket.io"' in text
     assert PageStamp.PLACEHOLDER not in text
 
 

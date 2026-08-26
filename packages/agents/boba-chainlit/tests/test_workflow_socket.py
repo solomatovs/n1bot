@@ -14,9 +14,9 @@ from psycopg import sql
 from test_tool_api import _profile, _profiles, _roles
 from test_workflow_service import ROLE, Probe, _registry
 
+from boba.api.workflow_socket import WorkflowNamespace, WorkflowSocketEvent
 from boba.chainlit.infra.api_auth import ChainlitUsers
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.workflow.socket import WorkflowNamespace, WorkflowSocketEvent
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import AuthenticatedUser
 from boba.identity.context import CallContext

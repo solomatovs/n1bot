@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-api"
+version = "0.0.14.dev8"
+description = "Boba API: FastAPI-приложение /api (инструменты, workflow, socket.io снимков запусков); хост монтирует его рядом с чатом."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "starlette>=0.40",
+    "pydantic>=2.10,<3",
+    "python-socketio>=5.11,<6",
+    "boba-identity==0.0.14.dev8",
+    "boba-chat==0.0.14.dev8",
+    "boba-toolkit==0.0.14.dev8",
+    "boba-toolrun==0.0.14.dev8",
+    "boba-workflow==0.0.14.dev8",
+    "boba-workflow-engine==0.0.14.dev8",
+    "boba-runtime==0.0.14.dev8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

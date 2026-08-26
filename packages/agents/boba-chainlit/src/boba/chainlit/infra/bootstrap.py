@@ -6,7 +6,7 @@ import logging.config
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import uvicorn
 from engineio.payload import Payload
@@ -14,18 +14,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from boba.api.errors import DomainErrorMiddleware
 from boba.chainlit.auth.installer import ChainlitAuthInstaller
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
     AppConfig,
     ChainlitExtendConfig,
 )
-from boba.chainlit.infra.error_middleware import DomainErrorMiddleware
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
-from boba.identity.api import AuthenticatedUser
 from boba.runtime.di import Container
 from boba.sandbox.zygote import ZygoteRegistry
 
@@ -42,6 +41,8 @@ def run_app(config_path: Path):
 
     app = FastAPI(lifespan=_run_container)
 
+    _use_api(app, c)
+
     _use_chainlit_middleware(app, c.chainlit)
 
     _use_file_serving(c)
@@ -52,8 +53,7 @@ def run_app(config_path: Path):
     _use_stream_journal(c)
 
     _use_canvas_viewers()
-    _use_tool_api(c)
-    _use_workflow_api(c)
+    _use_workflow(c)
 
     _use_auth(c, container)
 
@@ -245,15 +245,17 @@ def _use_canvas_viewers() -> None:
     ChatPlugins.load(providers.get_raw_config(), providers.runtime_refs())
 
 
-def _use_tool_api(c: AppConfig) -> None:
-    """REST-запуск инструмента человеком: реестр тот же, что у сессий чата."""
+def _use_api(app: FastAPI, c: AppConfig) -> None:
+    """API под {prefix}/api; монтируется раньше chainlit — его mount шире."""
+    from boba.api.app import ApiApp  # noqa: PLC0415
     from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
-    from boba.chainlit.domain.keys import ToolCallUrl  # noqa: PLC0415
-    from boba.chainlit.infra.tool_api import ToolCalling  # noqa: PLC0415
+    from boba.chainlit.infra.api_auth import (  # noqa: PLC0415
+        ChainlitAuthenticator,
+        ChainlitCookie,
+    )
     from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
     from boba.identity.errors import InternalServiceError  # noqa: PLC0415
     from chainlit.data import get_data_layer  # noqa: PLC0415
-    from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     def data_layer() -> PostgresDataLayer:
         layer = get_data_layer()
@@ -264,39 +266,23 @@ def _use_tool_api(c: AppConfig) -> None:
             )
         return layer
 
-    refs = providers.runtime_refs()
-    calling = ToolCalling(refs.tool_registry, ChatProfiles(c.profiles), data_layer)
-    chainlit_app.add_api_route(
-        ToolCallUrl.ROUTE, calling.serve, methods=["POST"], include_in_schema=False
+    api = ApiApp.build(
+        providers.runtime_refs(),
+        ChainlitAuthenticator(data_layer),
+        data_layer,
+        ChatProfiles(c.profiles),
+        ChainlitCookie.name(),
     )
-    chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+    app.mount(f"{c.chainlit.url_prefix}{ApiApp.MOUNT}", api)
 
 
-def _use_workflow_api(c: AppConfig) -> None:
-    """Workflow: REST, живые снимки по socket.io и страница SPA."""
-    from boba.chainlit.infra.api_auth import ChainlitUsers  # noqa: PLC0415
-    from boba.chainlit.workflow.api import WorkflowApi  # noqa: PLC0415
+def _use_workflow(c: AppConfig) -> None:
+    """Страница workflow у хоста: REST и сокет живут в API."""
     from boba.chainlit.workflow.page import WorkflowPageConfig  # noqa: PLC0415
-    from boba.chainlit.workflow.socket import WorkflowNamespace  # noqa: PLC0415
-    from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
     from boba.settings.bind import bind  # noqa: PLC0415
-    from chainlit.server import app as chainlit_app  # noqa: PLC0415
-    from chainlit.server import sio  # noqa: PLC0415
-    from chainlit.socket import _authenticate_connection  # noqa: PLC0415
 
-    refs = providers.runtime_refs()
-    profiles = ChatProfiles(c.profiles)
-    WorkflowApi(refs.workflow_service, profiles).mount(chainlit_app)
     _use_workflow_page(
         c, bind(providers.get_raw_config(), "workflow", WorkflowPageConfig)
-    )
-
-    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
-        user, _token = await _authenticate_connection(environ)
-        return ChainlitUsers.of(user)
-
-    sio.register_namespace(
-        WorkflowNamespace(refs.workflow_service, profiles, authenticate)
     )
 
 

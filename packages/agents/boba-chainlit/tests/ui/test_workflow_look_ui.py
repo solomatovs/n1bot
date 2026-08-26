@@ -151,18 +151,18 @@ class Rest:
         self._client = httpx.Client(cookies=jar, timeout=30.0)
 
     def seed(self, spec: str = SPEC, expected: str = "done") -> SeededRun:
-        saved = self._client.post(f"{self._base}/workflows", json={"spec": spec})
+        saved = self._client.post(f"{self._base}/api/v1/workflows", json={"spec": spec})
         saved.raise_for_status()
         workflow_id = int(saved.json()["id"])
 
-        run_url = f"{self._base}/workflows/{workflow_id}/run"
+        run_url = f"{self._base}/api/v1/workflows/{workflow_id}/run"
         started = self._client.post(run_url, json={})
         started.raise_for_status()
         run_id = str(started.json()["run_id"])
 
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            run = self._client.get(f"{self._base}/workflow-runs/{run_id}")
+            run = self._client.get(f"{self._base}/api/v1/workflow-runs/{run_id}")
             run.raise_for_status()
             if run.json()["status"] in ("done", "failed", "stopped"):
                 if run.json()["status"] != expected:

@@ -1,3 +1,5 @@
+"""HTTP-граница ошибок: BaseError -> статус и тело ответа, остальное -> 500."""
+
 import logging
 
 from starlette.responses import JSONResponse
@@ -6,14 +8,14 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from boba.identity.errors import BaseError, FailureReport, to_domain
 from boba.identity.session import LogLine
 
+__all__ = ["DomainErrorMiddleware"]
+
 
 class DomainErrorMiddleware:
     "Единая точка обработки исключений приложения"
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
-        self._encoding = "utf-8"
-        self._encoding_error = "ignore"
         self._logger = logging.getLogger(__name__)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
