@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -156,7 +156,7 @@ class LogUserMark:
         return cls._current.get()
 
     @contextlib.contextmanager
-    def applied(self) -> Iterator[None]:
+    def applied(self) -> Generator[None]:
         token = self._current.set(self._label)
         try:
             yield

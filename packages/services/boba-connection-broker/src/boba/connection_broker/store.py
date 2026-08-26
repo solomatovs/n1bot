@@ -15,7 +15,7 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 
@@ -166,7 +166,7 @@ class ConnectionStore(ConnectionRepository):
         return sql.Identifier(self._cfg.db_schema, self._cfg.grants_table)
 
     @asynccontextmanager
-    async def _guarded(self, action: str) -> AsyncIterator[None]:
+    async def _guarded(self, action: str) -> AsyncGenerator[None]:
         """Граница слоя: отказ базы или пула уходит наружу как ConnectionStoreError."""
         try:
             yield
