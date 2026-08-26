@@ -1,30 +1,30 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { ReactElement } from "react";
 
-import { jsonRows } from "../../model/json";
-import { JsonView } from "../JsonView";
+import type { ArgRow } from "../../model/args";
+import { widgetOf } from "../args/widgets";
 import { HandleSide, handleId } from "./handles";
 
 export type EditorTaskData = {
   name: string;
   tool: string;
-  /** Аргументы, в которые можно завести значение: из каталога плюс заданные в задаче. */
-  argNames: string[];
-  /** Заданные в задаче аргументы: показываются в узле структурно. */
-  args: Record<string, unknown>;
+  intent: string;
+  /** Строки тела в порядке каталога: каждая — порт для ребра-значения. */
+  rows: ArgRow[];
   readPorts: string[];
   writePorts: string[];
+  results: string[];
   selected: boolean;
   issue: string;
 };
 
 export type EditorTaskFlowNode = Node<EditorTaskData, "editorTask">;
 
-const HANDLE_ROW = 18;
-const HEADER = 40;
-const ARG_ROW = 16;
-const ARGS_FRAME = 9;
-const ARG_CLIP = 40;
+const HEADER = 44;
+const HEADER_WITH_INTENT = 58;
+const ROW = 22;
+const FOOTER = 26;
+const BODY_PAD = 4;
 
 export type EditorPort = {
   id: string;
@@ -33,34 +33,80 @@ export type EditorPort = {
   top: number;
 };
 
-type PortLists = Pick<EditorTaskData, "argNames" | "readPorts" | "writePorts">;
+export type ArgPort = EditorPort & { row: ArgRow };
 
-/** Порты узла в порядке рядов: слева входы (задача, аргументы, читающие потоки), справа выходы. */
-export function editorPorts(data: PortLists): { inputs: EditorPort[]; outputs: EditorPort[] } {
-  const inputs = [
-    { id: handleId(HandleSide.in, { kind: "task", name: "" }), label: "after" },
-    ...data.argNames.map((name) => ({ id: handleId(HandleSide.in, { kind: "arg", name }), label: name })),
-    ...data.readPorts.map((name) => ({ id: handleId(HandleSide.in, { kind: "fd", name }), label: `${name} ◂` })),
-  ];
-  const outputs = [
-    { id: handleId(HandleSide.out, { kind: "task", name: "" }), label: "then" },
-    { id: handleId(HandleSide.out, { kind: "result", name: "" }), label: "result" },
-    ...data.writePorts.map((name) => ({ id: handleId(HandleSide.out, { kind: "fd", name }), label: `▸ ${name}` })),
-  ];
+export type EditorPorts = {
+  taskIn: EditorPort;
+  taskOut: EditorPort;
+  args: ArgPort[];
+  reads: EditorPort[];
+  writes: EditorPort[];
+  result: EditorPort;
+};
+
+type Shape = Pick<EditorTaskData, "intent" | "rows" | "readPorts" | "writePorts">;
+
+function headerHeight(data: Shape): number {
+  return data.intent === "" ? HEADER : HEADER_WITH_INTENT;
+}
+
+/** Геометрия портов: управление на шапке, аргументы и fd-порты строками тела, result в футере. */
+export function editorPorts(data: Shape): EditorPorts {
+  const header = headerHeight(data);
+  const middle = header / 2;
+  let top = header + BODY_PAD + ROW / 2;
+
+  const args: ArgPort[] = [];
+  for (const row of data.rows) {
+    args.push({ id: handleId(HandleSide.in, { kind: "arg", name: row.name }), label: row.name, top, row });
+    top += ROW;
+  }
+
+  const reads: EditorPort[] = [];
+  for (const name of data.readPorts) {
+    reads.push({ id: handleId(HandleSide.in, { kind: "fd", name }), label: `${name} ◂`, top });
+    top += ROW;
+  }
+
+  const writes: EditorPort[] = [];
+  for (const name of data.writePorts) {
+    writes.push({ id: handleId(HandleSide.out, { kind: "fd", name }), label: `▸ ${name}`, top });
+    top += ROW;
+  }
+
+  const footerTop = top - ROW / 2 + BODY_PAD + FOOTER / 2;
 
   return {
-    inputs: inputs.map((port, index) => ({ ...port, top: portTop(index) })),
-    outputs: outputs.map((port, index) => ({ ...port, top: portTop(index) })),
+    taskIn: { id: handleId(HandleSide.in, { kind: "task", name: "" }), label: "run after", top: middle },
+    taskOut: { id: handleId(HandleSide.out, { kind: "task", name: "" }), label: "then", top: middle },
+    args,
+    reads,
+    writes,
+    result: { id: handleId(HandleSide.out, { kind: "result", name: "" }), label: "result", top: footerTop },
   };
 }
 
-function portTop(index: number): number {
-  return HEADER + HANDLE_ROW * index + HANDLE_ROW / 2;
+export function editorNodeHeight(data: Shape): number {
+  const rows = data.rows.length + data.readPorts.length + data.writePorts.length;
+  return headerHeight(data) + BODY_PAD * 2 + ROW * rows + FOOTER;
 }
 
-/** Узел редактора: слева входы (задача, аргументы, читающие порты), справа выходы. */
+function RowValue({ row }: { row: ArgRow }): ReactElement {
+  if (row.bound !== "") {
+    return <span className="arg-row__value arg-row__value--bound">◂ {row.bound}</span>;
+  }
+
+  if (row.value === undefined) {
+    return <span className="arg-row__value arg-row__value--empty">{row.required ? "required" : "—"}</span>;
+  }
+
+  const { Row } = widgetOf(row.view);
+  return <Row view={row.view} value={row.value} />;
+}
+
+/** Узел редактора: шапка (инструмент, имя, intent) с управлением, строки-порты, футер result. */
 export function EditorTaskNode({ data }: NodeProps<EditorTaskFlowNode>): ReactElement {
-  const { inputs, outputs } = editorPorts(data);
+  const ports = editorPorts(data);
 
   return (
     <div
@@ -69,54 +115,45 @@ export function EditorTaskNode({ data }: NodeProps<EditorTaskFlowNode>): ReactEl
       data-issue={data.issue !== ""}
       title={data.issue}
     >
-      <div className="editor-node__header">
+      <div className="editor-node__header" style={{ height: headerHeight(data) }}>
+        <Handle type="target" id={ports.taskIn.id} position={Position.Left} style={{ top: ports.taskIn.top }} />
         <div className="editor-node__eyebrow">{data.tool}</div>
         <div className="editor-node__name">{data.name}</div>
+        {data.intent !== "" && <div className="editor-node__intent">{data.intent}</div>}
+        <Handle type="source" id={ports.taskOut.id} position={Position.Right} style={{ top: ports.taskOut.top }} />
       </div>
-      <div className="editor-node__ports">
-        <div className="editor-node__column">
-          {inputs.map((input) => (
-            <div className="editor-node__port" key={input.id}>
-              <Handle type="target" id={input.id} position={Position.Left} style={{ top: input.top }} />
-              <span>{input.label}</span>
-            </div>
-          ))}
-        </div>
-        <div className="editor-node__column editor-node__column--right">
-          {outputs.map((output) => (
-            <div className="editor-node__port editor-node__port--right" key={output.id}>
-              <span>{output.label}</span>
-              <Handle type="source" id={output.id} position={Position.Right} style={{ top: output.top }} />
-            </div>
-          ))}
-        </div>
+      <div className="editor-node__rows">
+        {ports.args.map((port) => (
+          <div className="arg-row" data-arg={port.row.name} data-required={port.row.required} key={port.id}>
+            <Handle type="target" id={port.id} position={Position.Left} style={{ top: port.top }} />
+            <span className="arg-row__key">{port.row.name}</span>
+            <RowValue row={port.row} />
+          </div>
+        ))}
+        {ports.reads.map((port) => (
+          <div className="arg-row arg-row--port" key={port.id}>
+            <Handle type="target" id={port.id} position={Position.Left} style={{ top: port.top }} />
+            <span className="arg-row__key">{port.label}</span>
+          </div>
+        ))}
+        {ports.writes.map((port) => (
+          <div className="arg-row arg-row--port arg-row--right" key={port.id}>
+            <span className="arg-row__key">{port.label}</span>
+            <Handle type="source" id={port.id} position={Position.Right} style={{ top: port.top }} />
+          </div>
+        ))}
       </div>
-      {argRows(data.args) > 0 && (
-        <div className="editor-node__args">
-          <JsonView value={data.args} clip={ARG_CLIP} />
-        </div>
-      )}
+      <div className="editor-node__footer">
+        <span className="editor-node__results">
+          {data.results.map((kind) => (
+            <span className="chip" key={kind}>
+              {kind}
+            </span>
+          ))}
+        </span>
+        <span className="editor-node__result">result</span>
+        <Handle type="source" id={ports.result.id} position={Position.Right} style={{ top: ports.result.top }} />
+      </div>
     </div>
   );
-}
-
-function argRows(args: Record<string, unknown>): number {
-  if (Object.keys(args).length === 0) {
-    return 0;
-  }
-
-  return jsonRows(args, ARG_CLIP).length;
-}
-
-export function editorNodeHeight(
-  data: Pick<EditorTaskData, "argNames" | "args" | "readPorts" | "writePorts">,
-): number {
-  const rows = Math.max(1 + data.argNames.length + data.readPorts.length, 2 + data.writePorts.length);
-  const ports = HEADER + HANDLE_ROW * rows + 10;
-  const args = argRows(data.args);
-  if (args === 0) {
-    return ports;
-  }
-
-  return ports + ARG_ROW * args + ARGS_FRAME;
 }

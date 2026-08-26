@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
+from functools import wraps
 from typing import Any
 
 from pydantic import BaseModel
@@ -53,11 +54,14 @@ class ToolProcessWrap:
 
         call = cls._process_call(address, schema, launcher)
 
+        # wraps сохраняет исходное тело в __wrapped__: каталог workflow читает
+        # оттуда аннотацию результата (Produces)
         if tool.func is not None:
-            cls._set_func(tool, call)
+            cls._set_func(tool, wraps(tool.func)(call))
 
         if tool.coroutine is not None:
 
+            @wraps(tool.coroutine)
             async def acall(**kwargs: object) -> object:
                 return await asyncio.to_thread(lambda: call(**kwargs))
 

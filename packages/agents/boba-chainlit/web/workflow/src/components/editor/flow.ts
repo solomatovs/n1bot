@@ -1,5 +1,6 @@
 import { MarkerType, Position, type Connection, type Edge as FlowEdge, type NodeHandle } from "@xyflow/react";
 
+import { blockRows } from "../../model/args";
 import type { TaskPositions } from "../../model/layout";
 import { edgeId, edgeKindOf, type EditableEdge, type EditableTask, type EditableWorkflow } from "../../model/spec";
 import type { ToolCatalog } from "../../model/workflow";
@@ -9,7 +10,7 @@ import { portOfHandle } from "./handles";
 
 /** Модель редактора → узлы и рёбра React Flow и обратно из жестов пользователя. */
 
-export const EDITOR_NODE_WIDTH = 240;
+export const EDITOR_NODE_WIDTH = 260;
 
 const EDGE_COLOR = {
   control: "var(--edge-control)",
@@ -17,15 +18,15 @@ const EDGE_COLOR = {
   stream: "var(--edge-stream)",
 } as const;
 
-export function taskData(task: EditableTask, catalog: ToolCatalog, selected: string | null, issue: string): EditorTaskData {
+export function taskData(
+  task: EditableTask,
+  catalog: ToolCatalog,
+  edges: EditableEdge[],
+  selected: string | null,
+  issue: string,
+): EditorTaskData {
   const facts = catalog[task.tool];
-  const argNames = new Set<string>();
-  for (const arg of facts?.args ?? []) {
-    argNames.add(arg.name);
-  }
-  for (const name of Object.keys(task.args)) {
-    argNames.add(name);
-  }
+  const rows = blockRows(task, facts, edges);
 
   const readPorts: string[] = [];
   const writePorts: string[] = [];
@@ -39,10 +40,11 @@ export function taskData(task: EditableTask, catalog: ToolCatalog, selected: str
   return {
     name: task.name,
     tool: task.tool,
-    argNames: [...argNames],
-    args: task.args,
+    intent: rows.intent,
+    rows: rows.body,
     readPorts,
     writePorts,
+    results: facts?.results ?? [],
     selected: task.name === selected,
     issue,
   };
@@ -56,7 +58,7 @@ export function editorNodes(
   issues: Map<string, string>,
 ): EditorTaskFlowNode[] {
   return workflow.tasks.map((task) => {
-    const data = taskData(task, catalog, selected, issues.get(task.name) ?? "");
+    const data = taskData(task, catalog, workflow.edges, selected, issues.get(task.name) ?? "");
     return {
       id: task.name,
       type: "editorTask",
@@ -70,12 +72,12 @@ export function editorNodes(
 }
 
 function editorHandles(data: EditorTaskData): NodeHandle[] {
-  const { inputs, outputs } = editorPorts(data);
+  const ports = editorPorts(data);
   const handles: NodeHandle[] = [];
-  for (const port of inputs) {
+  for (const port of [ports.taskIn, ...ports.args, ...ports.reads]) {
     handles.push(sideHandle("target", Position.Left, 0, port.top, port.id));
   }
-  for (const port of outputs) {
+  for (const port of [ports.taskOut, ...ports.writes, ports.result]) {
     handles.push(sideHandle("source", Position.Right, EDITOR_NODE_WIDTH, port.top, port.id));
   }
 

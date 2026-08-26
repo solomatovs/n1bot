@@ -216,7 +216,11 @@ class _RunSession:
             outcome = self._outcome_of(task)
             self._results[name] = outcome.result
             self._plan.finished(
-                name, outcome.status, self._runner.clock(), outcome.error
+                name,
+                outcome.status,
+                self._runner.clock(),
+                outcome.error,
+                outcome.result,
             )
             self._log(name, outcome)
 

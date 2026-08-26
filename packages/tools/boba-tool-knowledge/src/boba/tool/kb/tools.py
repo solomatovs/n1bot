@@ -36,7 +36,7 @@ from boba.tool.kb.search import (
 from boba.tool.kb.warm import WarmEmbedder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
-from boba.toolkit.result import TableResult, ToolResult, pack_result
+from boba.toolkit.result import Produces, TableResult, ToolResult, pack_result
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
 
@@ -207,7 +207,7 @@ async def kb_vector_search(
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
     *,
     cfg: Annotated[KbToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Семантический (vector) поиск по коллекции Confluence-страниц.
 
     Возвращает таблицу hits: distance, format_content и метаданные страницы,
@@ -225,7 +225,7 @@ async def kb_fts_search(
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
     *,
     cfg: Annotated[KbToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Полнотекстовый (fts) поиск по коллекции Confluence-страниц.
 
     Возвращает таблицу hits: rank-расстояние, format_content и метаданные

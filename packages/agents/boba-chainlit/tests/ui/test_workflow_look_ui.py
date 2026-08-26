@@ -111,7 +111,12 @@ class Sel:
     JSON_KEY: ClassVar[str] = ".json__key"
     JSON_STRING: ClassVar[str] = ".json__string"
     JSON_BRACE: ClassVar[str] = ".json__open"
-    NODE_ARGS: ClassVar[str] = ".editor-node__args"
+    RESULT_VIEW: ClassVar[str] = ".result-view"
+    NODE_RESULT: ClassVar[str] = ".task-node__result"
+    ARG_ROW: ClassVar[str] = ".arg-row"
+    ARG_KEY: ClassVar[str] = ".arg-row__key"
+    ARG_VALUE: ClassVar[str] = ".arg-row__value"
+    ARG_INTENT: ClassVar[str] = 'input[aria-label="task intent"]'
     BUILDER: ClassVar[str] = ".builder"
     BUILDER_LABEL: ClassVar[str] = ".builder__label"
     MENU_LIST: ClassVar[str] = ".menu__list"
@@ -397,6 +402,12 @@ class TestObserve:
         ) == tokens.rgb("phase-1")
         assert Css.box(stage).contains(Css.box(node))
 
+        # строка итога на узле: вид и цифра цветом сигнала
+        line = node.locator(Sel.NODE_RESULT)
+        expect(line).to_have_text(re.compile(r"^shell · exit 0 \d+ lines$"))
+        assert Css.of(line, "color") == tokens.rgb("signal")
+        assert Css.box(node).contains(Css.box(line))
+
         node.click()
         assert Css.of(node, "border-top-color") == tokens.rgb("signal")
         assert Css.of(node, "box-shadow") != "none"
@@ -458,6 +469,20 @@ class TestObserve:
         assert Css.of(inspector, "background-color") == tokens.rgb("surface")
         assert Css.of(inspector, "border-left-color") == tokens.rgb("hairline")
         assert Css.of(inspector, "box-shadow") != "none"
+        # итог задачи разобран по kind: сводка в шапке, stdout отдельным блоком
+        result = inspector.locator(Sel.RESULT_VIEW)
+        expect(result).to_have_attribute("data-kind", "shell")
+        expect(result.locator(".chip").first).to_have_text("shell")
+        expect(result.locator(".result-view__figure")).to_have_text("exit 0")
+        expect(result.locator(".result__stream").first).to_contain_text("LOOK_ONE")
+        assert (
+            Css.of(result.locator(".result__label").first, "text-transform")
+            == "uppercase"
+        )
+        assert Css.of(result.locator(".result__fact dt").first, "color") == tokens.rgb(
+            "muted"
+        )
+
         code = inspector.locator(Sel.INSPECTOR_CODE).first
         assert "geist mono" in Css.of(code, "font-family").lower()
         key = code.locator(Sel.JSON_KEY).first
@@ -580,16 +605,31 @@ class TestBuild:
         assert Css.of(issue.locator(".issues__code"), "color") == tokens.rgb("error")
         assert Css.of(node, "border-top-color") == tokens.rgb("error")
 
-        # аргументы показываются в узле структурно: ключ цветом, строка в одну линию
+        # строки тела = порты: ключ цветом, пустой обязательный — ошибкой
+        command_row = node.locator(f'{Sel.ARG_ROW}[data-arg="command"]')
+        command_value = command_row.locator(Sel.ARG_VALUE)
+        expect(command_value).to_have_text("required")
+        assert Css.of(command_value, "color") == tokens.rgb("error")
+        assert Css.of(command_row.locator(Sel.ARG_KEY), "color") == tokens.rgb("signal")
+        expect(command_row.locator(Sel.HANDLE)).to_have_count(1)
+        assert Css.box(command_row).contains_y(Css.box(command_row.locator(Sel.HANDLE)))
+
         before = Css.box(node).height
-        page.locator(Sel.ARG_COMMAND).fill("echo " + "x" * 40)
-        args = node.locator(Sel.NODE_ARGS)
-        expect(args.locator(Sel.JSON_KEY).first).to_have_text("command")
-        assert Css.of(args.locator(Sel.JSON_KEY).first, "color") == tokens.rgb("signal")
-        expect(args.locator(Sel.JSON_STRING).first).to_have_text(re.compile("…$"))
-        assert Css.of(args, "border-top-color") == tokens.rgb("hairline")
-        assert "geist mono" in Css.of(args.locator(".json"), "font-family").lower()
+        page.locator(Sel.ARG_COMMAND).fill("echo " + "x" * 60)
+        expect(command_row.locator(Sel.ARG_VALUE)).to_have_text(re.compile("…$"))
+        assert Css.of(command_row.locator(Sel.ARG_VALUE), "color") == tokens.rgb("ink")
+        assert Css.box(node).height == before
+
+        # intent уходит в шапку блока, а не в строки
+        page.locator(Sel.ARG_INTENT).fill("count the things")
+        expect(node.locator(".editor-node__intent")).to_have_text("count the things")
+        expect(node.locator(f'{Sel.ARG_ROW}[data-arg="intent"]')).to_have_count(0)
         assert Css.box(node).height > before
+
+        footer = node.locator(".editor-node__footer")
+        expect(footer).to_contain_text("result")
+        expect(footer.locator(".chip")).to_have_text(["shell"])
+        assert Css.of(footer, "border-top-color") == tokens.rgb("hairline")
 
     def test_yaml_mode_and_notices(
         self, page: Page, stand: StandProcess, tokens: Tokens

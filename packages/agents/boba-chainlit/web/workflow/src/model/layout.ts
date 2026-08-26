@@ -37,7 +37,7 @@ export type Layout = {
   edges: LaidEdge[];
 };
 
-export const TASK_SIZE: Size = { width: 200, height: 64 };
+export const TASK_SIZE: Size = { width: 220, height: 78 };
 
 const STAGE_PADDING = 24;
 const STAGE_HEADER = 28;

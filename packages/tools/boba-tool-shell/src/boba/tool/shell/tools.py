@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.launcher import ClippedText, LauncherFactory, LaunchOutcome
-from boba.toolkit.result import ShellResult, ToolResult, pack_result
+from boba.toolkit.result import Produces, ShellResult, ToolResult, pack_result
 
 __all__ = ["BashToolConfig", "build_bash_tool"]
 
@@ -80,7 +80,7 @@ def build_bash_tool(cfg: BashToolConfig, launchers: LauncherFactory) -> PayloadT
                 description="Stdin для команды (UTF-8). Пустая строка = нет stdin.",
             ),
         ] = "",
-    ) -> tuple[str, ToolResult]:
+    ) -> Annotated[tuple[str, ToolResult], Produces.of(ShellResult)]:
         """Выполнить shell-команду и вернуть вывод; доступ к ФС и сети ограничен.
 
         Объём вывода ограничивайте самой командой (head, tail, grep, wc): всё,

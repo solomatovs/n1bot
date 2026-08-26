@@ -8,6 +8,8 @@ export type TaskNodeData = {
   tool: string;
   status: TaskStatus;
   duration: string;
+  /** Сводка итога: вид и цифра; пусто — итога ещё нет. */
+  result: string;
   selected: boolean;
 };
 
@@ -34,6 +36,7 @@ export function TaskNode({ data }: NodeProps<TaskFlowNode>): ReactElement {
           {data.tool} · {data.status}
           {data.duration !== "—" ? ` · ${data.duration}` : ""}
         </div>
+        {data.result !== "" && <div className="task-node__result">{data.result}</div>}
       </div>
       <Handle type="source" position={Position.Right} />
     </div>

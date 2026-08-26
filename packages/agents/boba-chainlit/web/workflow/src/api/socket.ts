@@ -1,7 +1,7 @@
 import { io, type Socket } from "socket.io-client";
 
 import type { PageUrls } from "../config";
-import { RunSnapshotSchema, type RunSnapshot } from "../model/workflow";
+import { RunSnapshotSchema, withKnownResults, type RunSnapshot } from "../model/workflow";
 
 /** События namespace /workflow — те же имена, что у WorkflowSocketEvent на сервере. */
 const NAMESPACE = "/workflow";
@@ -30,7 +30,7 @@ export class RunSocket {
 
   subscribe(runId: string, onSnapshot: SnapshotListener, onRefused: RefusalListener): () => void {
     const deliver = (payload: unknown): void => {
-      const parsed = RunSnapshotSchema.safeParse(payload);
+      const parsed = RunSnapshotSchema.safeParse(withKnownResults(payload));
       if (!parsed.success) {
         onRefused(`bad snapshot: ${parsed.error.message}`);
         return;

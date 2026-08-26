@@ -107,7 +107,7 @@ function initialWorkflow(stored: StoredWorkflow | null): EditableWorkflow {
 function editorSizes(workflow: EditableWorkflow, catalog: ToolCatalog): TaskSizes {
   const sizes: TaskSizes = {};
   for (const task of workflow.tasks) {
-    const data = taskData(task, catalog, null, "");
+    const data = taskData(task, catalog, workflow.edges, null, "");
     sizes[task.name] = { width: EDITOR_NODE_WIDTH, height: editorNodeHeight(data) };
   }
 
@@ -386,6 +386,7 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
           />
           {selectedTask !== null && (
             <TaskForm
+              edges={workflow.edges}
               key={selectedTask.name}
               task={selectedTask}
               catalog={catalog}

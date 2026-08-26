@@ -21,11 +21,13 @@ from pydantic import Field
 
 from boba.db.clickhouse import ClickHouseConfig, ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.toolkit.calls import ScriptCall
+from boba.toolkit.calls import ConnectionArg, ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
+    Produces,
     ResultTooLargeError,
+    TableResult,
     ToolResult,
     pack_result,
 )
@@ -46,6 +48,9 @@ from boba.toolkit.types import SecretRevealing
 
 ChParams = dict[str, Any]
 """Именованные параметры ClickHouse под подстановку {name:Type}."""
+
+
+ChConnection = Annotated[ConnectionName, ConnectionArg(family="clickhouse")]
 
 
 class ChToolConfig(SecretRevealing, SqlProfiles[ClickHouseConfig]):
@@ -220,14 +225,14 @@ async def _query_rows(
 @tool
 async def ch_connection_list(
     cfg: Annotated[ChToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Список доступных значений connection_name для ClickHouse-инструментов."""
     return pack_result(cfg.targets_table())
 
 
 @tool
 async def ch_list_tables(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection_name: ConnectionName,
+    connection_name: ChConnection,
     ch_database: Annotated[
         str | None,
         Field(
@@ -243,7 +248,7 @@ async def ch_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
     max_rows: MaxRows,
     max_chars: MaxChars,
     cfg: Annotated[ChToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Список таблиц/view подключения. Колонки: database, table, engine.
 
     Выдача постраничная: сколько показано и как листать, сказано в note.
@@ -256,7 +261,7 @@ async def ch_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
 
 @tool
 async def ch_describe_table(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection_name: ConnectionName,
+    connection_name: ChConnection,
     table: Annotated[
         str,
         Field(min_length=1, description="Имя таблицы (без базы)"),
@@ -272,7 +277,7 @@ async def ch_describe_table(  # noqa: PLR0913 — окно выдачи зада
     max_rows: MaxRows,
     max_chars: MaxChars,
     cfg: Annotated[ChToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Схема таблицы: колонки, типы, default-выражения, комментарии.
 
     Широкая таблица приходит частями: как листать, сказано в note.
@@ -297,9 +302,9 @@ async def ch_query(
             ),
         ),
     ],
-    connection_name: ConnectionName,
+    connection_name: ChConnection,
     cfg: Annotated[ChToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
     """Выполнить SQL на подключении connection_name."""
     connection = cfg.resolve(connection_name)
 

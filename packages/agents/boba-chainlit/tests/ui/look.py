@@ -103,6 +103,10 @@ class Box:
             and other.bottom <= self.bottom + slack
         )
 
+    def contains_y(self, other: Box, slack: float = 1.0) -> bool:
+        """Вертикально внутри: для handle, торчащих за левый край узла."""
+        return other.y >= self.y - slack and other.bottom <= self.bottom + slack
+
 
 class Css:
     """Вычисленный стиль и геометрия элемента."""

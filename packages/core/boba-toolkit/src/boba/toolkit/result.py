@@ -24,6 +24,7 @@ __all__ = [
     "ErrorResult",
     "JsonResult",
     "MultiResult",
+    "Produces",
     "ResultTooLargeError",
     "ShellResult",
     "TableResult",
@@ -335,3 +336,20 @@ class ToolArtifact:
             return None
 
         return cls._ADAPTER.validate_python(dict(artifact))
+
+
+class Produces(BaseModel):
+    """Объявление у инструмента, какие виды результата он отдаёт: метаданные
+    Annotated возвращаемого типа; каталог workflow показывает их у порта result."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kinds: tuple[str, ...]
+
+    @classmethod
+    def of(cls, *results: type[ToolResultBase]) -> Produces:
+        kinds: list[str] = []
+        for result in results:
+            kinds.append(str(result.model_fields["kind"].default))
+
+        return cls(kinds=tuple(kinds))

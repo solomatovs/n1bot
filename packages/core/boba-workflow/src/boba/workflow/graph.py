@@ -16,6 +16,8 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.access import ToolAvailability
+from boba.toolkit.calls import ArgView, TextArg
+from boba.toolkit.result import ToolResult
 from boba.workflow.spec import (
     ArgTemplate,
     Edge,
@@ -47,10 +49,14 @@ __all__ = [
 
 
 class ToolArg(BaseModel):
+    """Аргумент инструмента: обязательность, вид для страницы, описание."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
     required: bool = False
+    view: ArgView = TextArg()
+    description: str = ""
 
 
 class ToolPort(BaseModel):
@@ -67,8 +73,11 @@ class ToolFacts(BaseModel):
 
     name: str
     availability: ToolAvailability
+    description: str = ""
     args: tuple[ToolArg, ...] = ()
     ports: tuple[ToolPort, ...] = ()
+    results: tuple[str, ...] = ()
+    """Виды ToolResult, которые инструмент объявил через Produces."""
     task_ports: bool = False
     """Порты объявляются в задаче, а не в сигнатуре (bash)."""
 
@@ -692,6 +701,8 @@ class TaskState(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: str = ""
+    result: ToolResult | None = None
+    """Итог инструмента по завершении; страница показывает его по kind."""
 
     @property
     def elapsed_ms(self) -> int:
@@ -787,7 +798,12 @@ class WorkflowPlan:
         )
 
     def finished(
-        self, task: str, status: TaskStatus, at: datetime, error: str = ""
+        self,
+        task: str,
+        status: TaskStatus,
+        at: datetime,
+        error: str = "",
+        result: ToolResult | None = None,
     ) -> None:
         state = self._state(task)
         if state.status is not TaskStatus.RUNNING:
@@ -797,7 +813,12 @@ class WorkflowPlan:
             raise WorkflowPlanError(f"task {task}: {status} is not a reported outcome")
 
         self._tasks[task] = state.model_copy(
-            update={"status": status, "finished_at": at, "error": error}
+            update={
+                "status": status,
+                "finished_at": at,
+                "error": error,
+                "result": result,
+            }
         )
         self._settle_if_complete(self._graph.stage_of(task))
 

@@ -1,6 +1,7 @@
 import { MarkerType, Position, type Edge as FlowEdge, type Node as FlowNode } from "@xyflow/react";
 
 import { layoutGraph, type LaidEdge } from "../../model/layout";
+import { resultFlowLabel, resultSummary } from "../../model/results";
 import { phaseColor } from "../../model/summary";
 import { sideHandle } from "./geometry";
 import { formatDuration } from "../../model/time";
@@ -77,6 +78,7 @@ export function flowOf(run: RunState, selectedTask: string | null): RunFlow {
         tool: spec?.tool ?? "?",
         status: state?.status ?? "pending",
         duration: state === undefined ? "—" : formatDuration(state.started_at, state.finished_at),
+        result: resultLine(state),
         selected: box.task === selectedTask,
       },
     };
@@ -84,11 +86,12 @@ export function flowOf(run: RunState, selectedTask: string | null): RunFlow {
 
   const edges: FlowEdge[] = layout.edges.map((edge) => {
     const style = EDGE_STYLE[edge.kind];
+    const label = edgeLabel(edge, run.tasks[edge.source]);
     return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      label: edge.label === "" ? undefined : edge.label,
+      label: label === "" ? undefined : label,
       animated: style.animated,
       style: { stroke: style.color, strokeDasharray: style.dash },
       markerEnd: { type: MarkerType.ArrowClosed, color: style.color },
@@ -97,4 +100,33 @@ export function flowOf(run: RunState, selectedTask: string | null): RunFlow {
   });
 
   return { nodes: [...stageNodes, ...taskNodes], edges };
+}
+
+function resultLine(state: TaskState | undefined): string {
+  const result = state?.result;
+  if (result === undefined || result === null) {
+    return "";
+  }
+
+  const summary = resultSummary(result);
+  if (summary.detail === "") {
+    return `${summary.kind} · ${summary.figure}`;
+  }
+
+  return `${summary.kind} · ${summary.figure} ${summary.detail}`;
+}
+
+/** Ребро-значение подписывается тем, что по нему потекло, когда итог уже есть. */
+function edgeLabel(edge: LaidEdge, source: TaskState | undefined): string {
+  const result = source?.result;
+  if (edge.kind !== "value" || result === undefined || result === null) {
+    return edge.label;
+  }
+
+  const flow = resultFlowLabel(result);
+  if (edge.label === "") {
+    return flow;
+  }
+
+  return `${edge.label} · ${flow}`;
 }
