@@ -285,3 +285,28 @@ class TestToolMainAsProgram:
             raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
         if b"invalid_request" not in proc.stderr:
             raise AssertionError('b"invalid_request" in proc.stderr')
+
+    def test_injected_file_replaces_stdin(self, tmp_path: Path) -> None:
+        injected = tmp_path / "injected.json"
+        injected.write_bytes(self.STDIN)
+
+        proc, _ = run_module(
+            ["fake_echo", "--text", "ping", "--repeat", "1", "--injected", str(injected)]
+        )
+
+        if proc.returncode != 0:
+            raise AssertionError(f"proc.returncode == 0: {proc.stderr!r}")
+        if b"ping" not in proc.stdout:
+            raise AssertionError('b"ping" in proc.stdout')
+
+    def test_unreadable_injected_file_is_entry_error(self, tmp_path: Path) -> None:
+        missing = tmp_path / "absent.json"
+
+        proc, _ = run_module(
+            ["fake_echo", "--text", "x", "--repeat", "1", "--injected", str(missing)]
+        )
+
+        if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
+            raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
+        if b"invalid_request" not in proc.stderr:
+            raise AssertionError('b"invalid_request" in proc.stderr')
