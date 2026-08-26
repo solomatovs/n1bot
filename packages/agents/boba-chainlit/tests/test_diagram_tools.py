@@ -26,8 +26,6 @@ from boba.canvas.diagram import (
     MermaidSpec,
 )
 from boba.canvas.keys import ObjectKey, ThreadDir
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.canvas import diagram as diagram_module
 from boba.chainlit.canvas.diagram import (
     DiagramFiles,
@@ -38,11 +36,13 @@ from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.chainlit.infra.plugins import tool_call_scope
 from boba.identity.context import ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.run import RunRegistry
+from boba.runtime.plugins import CallSurface
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
+from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.run_log import ToolRunLogger
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
@@ -570,7 +570,9 @@ class TestSaveToolEndToEnd:
         """
         save = build_diagram_tools(DiagramToolConfig(max_chars=32000))[0]
         ToolCallIdField.attach_all([save])
-        ToolRunLogger.guard_all([save], lambda tool, call_id: None, tool_call_scope)
+        ToolRunLogger.guard_all(
+            [save], lambda tool, call_id: None, CallSurface.tool_call_scope
+        )
         request = {
             "name": "diagram_save",
             "args": {"name": "orders.mmd", "spec": spec},

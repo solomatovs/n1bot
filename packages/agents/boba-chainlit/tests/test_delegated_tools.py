@@ -30,12 +30,11 @@ from pydantic import SecretStr
 from stand_site import Stand
 from test_tools_integration import Call, ToolSetup
 
-from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.infra.plugins import as_structured_tool
-from boba.chainlit.infra.user_connections import UserConnections
+from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
+from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.user_connections import UserConnections
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import (
@@ -51,6 +50,7 @@ from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
 from boba.krb import CcacheRegistry, KerberosDelegation, SpnegoAcceptor
+from boba.runtime.plugins import ToolBridge
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
@@ -58,6 +58,7 @@ from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.entry import ToolMain
+from boba.toolrun.injected import InjectedConfig
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"
@@ -238,7 +239,7 @@ class Tools:
         module = reload(import_module(module_name))
         launcher = ToolSetup.caller(raw_config, section, [module.__name__])
 
-        functions = [as_structured_tool(tool) for tool in module.TOOLS]
+        functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
         ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
         def resolve(name: str, annotation: Any) -> object:
@@ -246,7 +247,12 @@ class Tools:
 
         spec = UserConnectionsSpec(kind, ConnectionKeying.NAME)
         UserConnections.bind_all(
-            functions, lambda: store, lambda: registry, spec, resolve
+            functions,
+            lambda: store,
+            lambda: registry,
+            spec,
+            resolve,
+            ChatRefreshSignal(),
         )
         InjectedConfig.bind_all(functions, resolve)
 

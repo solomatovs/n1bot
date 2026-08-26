@@ -33,17 +33,8 @@ from boba.canvas.canvas import (
     WatchSource,
 )
 from boba.canvas.journal import JournalWindow, StreamJournalHub, StreamKey
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.canvas.journal import DirVault, StreamJournal
-from boba.chainlit.canvas.panel import (
-    CanvasPanel,
-    JournalWatchSource,
-    StreamActions,
-    ToolStream,
-    ToolStreams,
-)
-from boba.chainlit.infra.plugins import stream_source, tool_call_scope
+from boba.chainlit.canvas.panel import CanvasPanel, StreamActions
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
     ChatView,
@@ -51,8 +42,12 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
 )
 from boba.identity.run import RunRegistry
+from boba.runtime.plugins import CallSurface
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
 from boba.toolkit.stream import ToolChannelsTap
+from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.streams import JournalWatchSource, ToolStream, ToolStreams
 
 STDOUT = ToolChannel.STDOUT
 
@@ -167,7 +162,9 @@ class TestJournalThroughWrapper:
             return "done"
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all([fake_bash], stream_source, tool_call_scope)
+        ToolRunLogger.guard_all(
+            [fake_bash], CallSurface.stream_source, CallSurface.tool_call_scope
+        )
         return fake_bash, seen
 
     async def _invoke(self, *, streamable: bool = True) -> list[object]:
@@ -239,7 +236,9 @@ class TestJournalThroughWrapper:
             raise RuntimeError(msg)
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all([fake_bash], stream_source, tool_call_scope)
+        ToolRunLogger.guard_all(
+            [fake_bash], CallSurface.stream_source, CallSurface.tool_call_scope
+        )
 
         async def scenario() -> None:
             with pytest.raises(RuntimeError):
@@ -280,7 +279,9 @@ class TestJournalThroughWrapper:
             return "done"
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all([fake_bash], stream_source, tool_call_scope)
+        ToolRunLogger.guard_all(
+            [fake_bash], CallSurface.stream_source, CallSurface.tool_call_scope
+        )
 
         async def scenario() -> None:
             first = fake_bash.ainvoke(

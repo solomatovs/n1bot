@@ -357,8 +357,8 @@ def session_source_ref() -> ChainlitSessions:
     Отсутствие корня — ошибка сборки, а не режим работы: значит функцию
     позвали там, где контейнера ещё нет.
     """
-    from boba.chainlit.infra.di import Container  # noqa: PLC0415
     from boba.chainlit.infra.providers import session_source  # noqa: PLC0415
+    from boba.runtime.di import Container  # noqa: PLC0415
 
     root = Container.root
     if root is None:

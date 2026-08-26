@@ -20,12 +20,12 @@ from boba.chainlit.infra.config import (
     AppConfig,
     ChainlitExtendConfig,
 )
-from boba.chainlit.infra.di import Container
 from boba.chainlit.infra.error_middleware import DomainErrorMiddleware
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
 from boba.chainlit.infra.session import current_session
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
+from boba.runtime.di import Container
 from boba.sandbox.zygote import ZygoteRegistry
 from chainlit.user import PersistedUser, User
 
@@ -238,11 +238,11 @@ def _use_canvas_viewers() -> None:
     Вьюверы канваса — на старте: панель открывается кликом до первого хода
     """
     from boba.chainlit.canvas.panel import CanvasWatch  # noqa: PLC0415
-    from boba.chainlit.infra.plugins import load_tools  # noqa: PLC0415
+    from boba.chainlit.infra.plugins import ChatPlugins  # noqa: PLC0415
     from boba.chainlit.infra.thread_room import CanvasRoomTransport  # noqa: PLC0415
 
     CanvasWatch.configure(CanvasRoomTransport())
-    load_tools(
+    ChatPlugins.load(
         providers.get_raw_config(),
         providers.connection_store_ref,
         providers.ccache_registry_ref,

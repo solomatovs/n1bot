@@ -15,7 +15,7 @@ from typing import Annotated, ClassVar
 
 from langchain_core.tools import BaseTool, InjectedToolCallId
 
-from boba.chainlit.agent.toolrun.wrapping import ToolSchema
+from boba.toolrun.wrapping import ToolSchema
 
 __all__ = ["ToolCallIdField"]
 

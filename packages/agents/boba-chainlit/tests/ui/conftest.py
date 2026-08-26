@@ -30,8 +30,8 @@ from playwright.sync_api import (
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
-from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.infra.config import AppConfig
+from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile
 from boba.connections.profile import GrantTarget

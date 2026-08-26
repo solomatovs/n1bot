@@ -22,13 +22,13 @@ from boba.cancellation import (
     current_cancellation,
     run_cancellation,
 )
-from boba.chainlit.agent.toolrun.cancellation import CancellableTools
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
-from boba.chainlit.infra.plugins import as_structured_tool
 from boba.connections.http import HttpProfile
+from boba.runtime.plugins import ToolBridge
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.toolkit.result import ErrorResult
+from boba.toolrun.cancellation import CancellableTools
 from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 
@@ -360,7 +360,7 @@ class TestSubprocessAbort:
         def launcher(tool: str) -> ZygoteToolCaller:
             return caller
 
-        tool_ = as_structured_tool(build_bash_tool(self.LIMITS, launcher))
+        tool_ = ToolBridge.as_structured_tool(build_bash_tool(self.LIMITS, launcher))
         with run_cancellation() as c:
             ctx = copy_context()
             with ThreadPoolExecutor(1) as pool:

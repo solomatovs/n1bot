@@ -11,8 +11,8 @@ import pytest
 from conftest import FakeSecret
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
-from boba.chainlit.connections import ConnectionsConfig
 from boba.chainlit.data.models import Thread, User
+from boba.connection_broker.store import ConnectionsConfig
 from boba.connections.clickhouse import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,

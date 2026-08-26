@@ -9,9 +9,9 @@ import pytest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 
-from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.sandbox.zygote import ZygoteCallError
 from boba.toolkit.result import ErrorResult, TextResult
+from boba.toolrun.errors import ToolErrorGuard
 
 __all__: list[str] = []
 

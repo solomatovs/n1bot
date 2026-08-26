@@ -23,13 +23,12 @@ from psycopg.types.json import Jsonb
 from pydantic import SecretStr, create_model
 from stand_site import Stand
 
-from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
-from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.infra.plugins import load_tools
-from boba.chainlit.infra.user_connections import UserConnections, UserKerberos
+from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
+from boba.chainlit.infra.plugins import ChatPlugins
+from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.user_connections import UserConnections, UserKerberos
 from boba.connections.http import HttpProfile
 from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
@@ -45,6 +44,8 @@ from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.facade import Injected
 from boba.toolkit.result import ErrorResult, ToolArtifact
+from boba.toolrun.errors import ToolErrorGuard
+from boba.toolrun.injected import InjectedConfig
 
 pytestmark = pytest.mark.anyio
 
@@ -271,7 +272,9 @@ class Guarded:
             response_format="content_and_artifact",
         )
 
-        UserConnections.bind_all([tool], lambda: store, lambda: registry, spec, resolve)
+        UserConnections.bind_all(
+            [tool], lambda: store, lambda: registry, spec, resolve, ChatRefreshSignal()
+        )
         InjectedConfig.bind_all([tool], resolve)
         ToolErrorGuard.guard_all([tool])
         return tool
@@ -710,6 +713,6 @@ class TestStartup:
 
         try:
             with pytest.raises(RuntimeError, match=r"\[connections\] enable = true"):
-                load_tools(disabled, lambda: None, lambda: None)  # type: ignore[arg-type]
+                ChatPlugins.load(disabled, lambda: None, lambda: None)  # type: ignore[arg-type]
         finally:
             ZygoteRegistry.stop_all()

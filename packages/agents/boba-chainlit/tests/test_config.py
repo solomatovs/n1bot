@@ -13,7 +13,7 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.plugins import PluginMeta
+from boba.runtime.plugins import PluginMeta
 from boba.sandbox import SandboxToolConfig
 from boba.settings import bind
 

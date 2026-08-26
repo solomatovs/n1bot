@@ -10,13 +10,13 @@ from typing import Any
 import pytest
 from langchain_core.tools import StructuredTool, tool
 
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.run_log import NoCallScope, StreamSource, ToolRunLogger
 from boba.sandbox.runner import FailureLog
 from boba.toolkit.launcher import RunResult
 from boba.toolkit.result import TextResult, ToolArtifact, pack_result
+from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.run_log import NoCallScope, StreamSource, ToolRunLogger
 
-LOGGER_NAME = "boba.chainlit.agent.toolrun.run_log"
+LOGGER_NAME = "boba.toolrun.run_log"
 
 
 def no_streams(tool: str, call_id: str) -> None:

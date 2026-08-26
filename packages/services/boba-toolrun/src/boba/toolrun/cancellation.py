@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from langchain_core.tools import BaseTool
 
 from boba.cancellation import RunCancellation, current_cancellation
-from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
+from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = ["CancellableTools"]
 

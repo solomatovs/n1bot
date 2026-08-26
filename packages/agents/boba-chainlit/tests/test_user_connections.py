@@ -22,12 +22,11 @@ from pydantic import SecretStr
 from stand_site import Stand
 from test_tools_integration import Call, ToolSetup
 
-from boba.chainlit.agent.toolrun.injected import InjectedConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.infra.plugins import as_structured_tool
-from boba.chainlit.infra.user_connections import UserConnections
+from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
+from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.user_connections import UserConnections
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
@@ -39,6 +38,7 @@ from boba.identity.context import CallContext, ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
 from boba.krb import CcacheRegistry, KeytabCredentials, UserCcache
+from boba.runtime.plugins import ToolBridge
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
@@ -47,6 +47,7 @@ from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.sql import SqlErrorKind
+from boba.toolrun.injected import InjectedConfig
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"
@@ -150,14 +151,16 @@ def pg_tools(
     module = reload(pg_module)
     launcher = ToolSetup.caller(raw_config, "pg", [module.__name__])
 
-    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
     spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
-    UserConnections.bind_all(functions, lambda: store, lambda: registry, spec, resolve)
+    UserConnections.bind_all(
+        functions, lambda: store, lambda: registry, spec, resolve, ChatRefreshSignal()
+    )
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
@@ -402,14 +405,16 @@ def web_tools(
     module = reload(web_module)
     launcher = ToolSetup.caller(raw_config, "web", [module.__name__])
 
-    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
     spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
-    UserConnections.bind_all(functions, lambda: store, lambda: registry, spec, resolve)
+    UserConnections.bind_all(
+        functions, lambda: store, lambda: registry, spec, resolve, ChatRefreshSignal()
+    )
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)

@@ -18,15 +18,14 @@ from uuid import uuid4
 import pytest
 from psycopg import sql
 
-from boba.chainlit.agent.toolrun.injected import InjectedConfig
-from boba.chainlit.infra.plugins import as_structured_tool, warmup_configs
-from boba.chainlit.infra.tickets import ServiceTickets
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
+from boba.connection_broker.tickets import ServiceTickets
 from boba.connections.http import HttpProfile
 from boba.connections.kerberos import KeytabAuth
 from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
+from boba.runtime.plugins import ToolBridge, ToolLoader
 from boba.sandbox import (
     SandboxToolConfig,
 )
@@ -50,6 +49,7 @@ from boba.toolkit.result import (
     TextResult,
     ToolArtifact,
 )
+from boba.toolrun.injected import InjectedConfig
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"
@@ -167,7 +167,7 @@ class ToolSetup:
             profile,
             modules,
             ZYGOTE,
-            warmup_calls=warmup_configs(section, modules, raw),
+            warmup_calls=ToolLoader.warmup_configs(section, modules, raw),
         )
         return ZygoteToolCaller(section, supervisor, profile, ToolSetup.path_vars)
 
@@ -227,7 +227,7 @@ def bash_tool(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.bash", BashToolConfig)
     launchers = ToolSetup.launchers(raw_config, "bash")
 
-    return as_structured_tool(build_bash_tool(cfg, launchers))
+    return ToolBridge.as_structured_tool(build_bash_tool(cfg, launchers))
 
 
 @pytest.fixture(scope="module")
@@ -241,7 +241,7 @@ def doc_tools(raw_config):
 
     launcher = ToolSetup.caller(raw_config, "doc", [module.__name__])
 
-    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
@@ -263,7 +263,7 @@ def chart_tool(raw_config):
 
     launcher = ToolSetup.caller(raw_config, "chart", [module.__name__])
 
-    visualize = as_structured_tool(module.visualize)
+    visualize = ToolBridge.as_structured_tool(module.visualize)
     ToolProcessWrap.guard_all(ToolMain.toolset(visualize), launcher)
     return visualize
 
@@ -279,7 +279,7 @@ def web_tools(raw_config):
 
     launcher = ToolSetup.caller(raw_config, "web", [module.__name__])
 
-    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
@@ -308,7 +308,7 @@ def confluence_tools(raw_config):
 
     launcher = ToolSetup.caller(raw_config, "confluence", [module.__name__])
 
-    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
@@ -330,7 +330,7 @@ def pg_tools(raw_config):
 
     launcher = ToolSetup.caller(raw_config, "pg", [module.__name__])
 
-    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
@@ -403,7 +403,7 @@ def ingest_tools(raw_config, kb_collection: str):
 
     launcher = ToolSetup.caller(raw_config, "ingest", [module.__name__])
 
-    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
@@ -427,7 +427,7 @@ def kb_tools(raw_config, kb_collection: str):
 
     launcher = ToolSetup.caller(raw_config, "kb", [module.__name__])
 
-    functions = [as_structured_tool(tool) for tool in module.TOOLS]
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:

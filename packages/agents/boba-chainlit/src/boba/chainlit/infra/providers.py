@@ -32,7 +32,6 @@ from boba.chainlit.agent.flow import (
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
-from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.storage import StorageClient, StorageFactory
 from boba.chainlit.domain.keys import AttachmentLinks
@@ -42,12 +41,9 @@ from boba.chainlit.infra.config import (
     DataLayerConfig,
     LocalStorageConfig,
 )
-from boba.chainlit.infra.di import Container, Depends
-from boba.chainlit.infra.plugins import PluginMeta, ToolRegistry, load_tools
+from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
-from boba.chainlit.workflow.service import WorkflowService
-from boba.chainlit.workflow.store import WorkflowConfig, WorkflowStore
 from boba.chat.generation import LocalGeneration, OpenAiGeneration, StructuredGenerator
 from boba.chat.openai import OpenAiConfig
 from boba.chat.profiles import (
@@ -60,6 +56,7 @@ from boba.chat.profiles import (
     UserMeta,
 )
 from boba.chat.provider import ChatProvider, LocalChatConfig, OpenAiChatConfig
+from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.errors import InternalServiceError
@@ -69,10 +66,15 @@ from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import GeneratorFactory
 from boba.llm.local import OnnxChatRuntime
 from boba.llm.openai import OpenAiHttp
+from boba.runtime.di import Container, Depends
+from boba.runtime.plugins import PluginMeta
 from boba.sandbox import CgroupManager
 from boba.settings import bind, build_app_config
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
+from boba.toolrun.registry import ToolRegistry
 from boba.workflow.events import RunEvents
+from boba.workflow_engine.service import WorkflowService
+from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 _RAW_CONFIG: dict[str, DictConfig] = {}
 
@@ -203,7 +205,7 @@ def connection_store_ref() -> ConnectionStore:
 def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> ToolRegistry:
-    return load_tools(raw, connection_store_ref, ccache_registry_ref)
+    return ChatPlugins.load(raw, connection_store_ref, ccache_registry_ref)
 
 
 async def tool_registry_ref() -> ToolRegistry:

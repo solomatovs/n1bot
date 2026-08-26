@@ -17,10 +17,10 @@ from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 
-from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
 from boba.toolkit.failure import FailureText, ToolRefusalError
 from boba.toolkit.launcher import ErrorKind
 from boba.toolkit.result import ErrorResult, ToolResult, pack_result
+from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = ["ToolErrorGuard"]
 

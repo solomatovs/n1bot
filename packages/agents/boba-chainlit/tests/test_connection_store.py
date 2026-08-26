@@ -11,7 +11,7 @@ from conftest import FakeSecret
 from psycopg import sql
 from pydantic import SecretStr
 
-from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.clickhouse import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,

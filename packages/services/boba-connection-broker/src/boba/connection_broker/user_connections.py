@@ -23,25 +23,19 @@ InjectedAsyncOnlyError — тело инструмента вызвано син
 from __future__ import annotations
 
 import logging
+from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
-from boba.chainlit.agent.toolrun.injected import (
-    AsyncInjected,
-    ConfigResolver,
-    ToolConfigError,
-)
-from boba.chainlit.connections.store import (
+from boba.connection_broker.store import (
     ConnectionProfile,
     ConnectionStore,
 )
-from boba.chainlit.domain.context import ChatCallContext
-from boba.chainlit.infra.session import ChainlitSession
-from boba.chainlit.infra.tickets import TicketArming
+from boba.connection_broker.tickets import TicketArming
 from boba.connections.http import HostPattern, HttpProfile
 from boba.connections.kerberos import DelegatedAuth, TicketAuth
 from boba.connections.marks import (
@@ -65,11 +59,16 @@ from boba.krb import (
     RefreshWaiters,
 )
 from boba.toolkit.sql import SqlProfiles
+from boba.toolrun.injected import (
+    AsyncInjected,
+    ConfigResolver,
+    ToolConfigError,
+)
 
 __all__ = [
     "ClientLabel",
     "ConnectionRefusal",
-    "KerberosRefreshSignal",
+    "RefreshSignal",
     "RegistryRef",
     "StoreRef",
     "UserConnections",
@@ -92,29 +91,12 @@ class WebArg(StrEnum):
     URL = "url"
 
 
-class KerberosRefreshSignal:
-    """Просьба к фронту молча пройти SPNEGO ещё раз: сигнал в сокет сессии.
+class RefreshSignal(Protocol):
+    """Просьба к фронту молча пройти SPNEGO ещё раз; реализация — у приложения."""
 
-    Адрес обмена знает сам скрипт страницы: сервер сообщает только повод.
-    """
-
-    TYPE: ClassVar[str] = "boba:kerberos-refresh"
-    EVENT: ClassVar[str] = "window_message"
-
-    @classmethod
-    async def send(cls) -> bool:
-        """True — сигнал ушёл в живой сокет; False — слушать некому."""
-        payload = {"type": cls.TYPE}
-
-        context = CallContext.current()
-        if not isinstance(context, ChatCallContext):
-            return False
-
-        try:
-            return await context.surface.emit(cls.EVENT, payload)
-        except Exception:
-            logger.warning("kerberos refresh signal failed", exc_info=True)
-            return False
+    @abstractmethod
+    async def send(self) -> bool:
+        """True — сигнал ушёл живому слушателю; False — слушать некому."""
 
 
 class UserKerberos:
@@ -130,8 +112,9 @@ class UserKerberos:
     RETRY_HINT: ClassVar[str] = "retrying will not help until you sign in again"
     """Хвост отказа: агенту незачем повторять вызов, дело в самом входе."""
 
-    def __init__(self, registry_ref: RegistryRef) -> None:
+    def __init__(self, registry_ref: RegistryRef, refresh: RefreshSignal) -> None:
         self._registry_ref = registry_ref
+        self._refresh = refresh
 
     @classmethod
     def _ticket(cls) -> DelegatedTicket:
@@ -173,7 +156,7 @@ class UserKerberos:
 
         # ожидание заводится до просьбы: обмен может пройти быстрее нас
         with registry.arm_refresh(sso.login) as waiting:
-            if not await KerberosRefreshSignal.send():
+            if not await self._refresh.send():
                 logger.info("kerberos: nobody is listening for the refresh signal")
                 return
 
@@ -236,12 +219,8 @@ class UserKerberos:
         )
         return credentials
 
-    def forget(self, token: str) -> None:
+    def forget(self, sso: DelegatedTicket) -> None:
         """Logout: тикет входа забывается, даже если JWT ещё не истёк."""
-        sso = ChainlitSession.ticket_of_token(token)
-        if sso is None:
-            return
-
         registry = self._registry_ref()
         if registry is None:
             return
@@ -268,20 +247,21 @@ class UserConnections(AsyncInjected):
         self._arming = TicketArming(kerberos.credentials)
 
     @classmethod
-    def bind_all(
+    def bind_all(  # noqa: PLR0913 — обвязка собирается всеми зависимостями сразу
         cls,
         tools: Sequence[BaseTool],
         store_ref: StoreRef,
         registry_ref: RegistryRef,
         spec: UserConnectionsSpec,
         resolve: ConfigResolver,
+        refresh: RefreshSignal,
     ) -> None:
         """Ставит обвязку на инструменты, чей injected-конфиг несёт profiles.
 
         Зовётся до InjectedConfig: injected-поля читаются со схемы, пока их
         с неё не сняли.
         """
-        kerberos = UserKerberos(registry_ref)
+        kerberos = UserKerberos(registry_ref, refresh)
 
         def make(param: str, base: object) -> AsyncInjected:
             if not isinstance(base, BaseModel):

@@ -7,7 +7,6 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from boba.cancellation import RunCancellation
-from boba.chainlit.infra.plugins import _sandbox_path_vars
 from boba.identity.context import (
     CallContext,
     ChatInitiator,
@@ -15,6 +14,7 @@ from boba.identity.context import (
     Scope,
     Subject,
 )
+from boba.runtime.plugins import CallSurface
 from boba.sandbox import BindSpec
 
 pytestmark = pytest.mark.anyio
@@ -40,7 +40,7 @@ class TestSandboxPathVars:
 
     async def test_context_fills_both_variables(self) -> None:
         with _context(18).applied():
-            values = _sandbox_path_vars()
+            values = CallSurface.sandbox_path_vars()
 
         if values != {"user_id": "18", "thread_id": THREAD_ID}:
             raise AssertionError(f"оба значения из контекста, дано {values!r}")
@@ -48,7 +48,7 @@ class TestSandboxPathVars:
     async def test_workspace_path_renders_from_the_context(self) -> None:
         """Путь образа собирается целиком: это и падало у bash."""
         with _context(18).applied():
-            rendered = BindSpec.parse(WORKSPACE).render(_sandbox_path_vars())
+            rendered = BindSpec.parse(WORKSPACE).render(CallSurface.sandbox_path_vars())
 
         if rendered.host != "/app/boba/data/workspace/18.ext4":
             raise AssertionError(f"host подставлен, дано {rendered.host!r}")
@@ -61,7 +61,9 @@ class TestSandboxPathVars:
         for user_id in (18, 42):
             with _context(user_id).applied():
                 hosts.append(
-                    BindSpec.parse(WORKSPACE).render(_sandbox_path_vars()).host
+                    BindSpec.parse(WORKSPACE)
+                    .render(CallSurface.sandbox_path_vars())
+                    .host
                 )
 
         if hosts != [
@@ -72,11 +74,11 @@ class TestSandboxPathVars:
 
     async def test_without_context_there_are_no_values(self) -> None:
         """Вне контекста значений нет: профиль с переменными откажет рендером."""
-        if _sandbox_path_vars() != {}:
+        if CallSurface.sandbox_path_vars() != {}:
             raise AssertionError("вне контекста переменных быть не должно")
 
         with pytest.raises(RuntimeError, match="user_id"):
-            BindSpec.parse(WORKSPACE).render(_sandbox_path_vars())
+            BindSpec.parse(WORKSPACE).render(CallSurface.sandbox_path_vars())
 
 
 class TestLogoutCookies:

@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from langchain_core.tools import BaseTool
 
 from boba.access import AccessSubject, ToolAccess
-from boba.chainlit.agent.toolrun.wrapping import CallHooks, ToolBody
+from boba.toolrun.wrapping import CallHooks, ToolBody
 
 logger = logging.getLogger(__name__)
 

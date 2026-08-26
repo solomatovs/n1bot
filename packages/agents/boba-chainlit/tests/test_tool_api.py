@@ -18,17 +18,18 @@ from httpx import ASGITransport, AsyncClient
 from langchain_core.tools import tool
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.chainlit.agent.toolrun.call_id import ToolCallIdField
-from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
-from boba.chainlit.agent.toolrun.intent import ToolIntentField
-from boba.chainlit.agent.toolrun.run_log import ToolRunLogger
 from boba.chainlit.domain.keys import ToolCallUrl
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.plugins import ToolRegistry, stream_source, tool_call_scope
 from boba.chainlit.infra.tool_api import ToolCallBody, ToolCalling
 from boba.chat.profiles import ChatProfiles
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
+from boba.runtime.plugins import CallSurface
 from boba.toolkit.result import TextResult, pack_result
+from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.errors import ToolErrorGuard
+from boba.toolrun.intent import ToolIntentField
+from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.run_log import ToolRunLogger
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -72,7 +73,9 @@ class Probe:
         tools = [probe, canvas_open]
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(tools, stream_source, tool_call_scope)
+        ToolRunLogger.guard_all(
+            tools, CallSurface.stream_source, CallSurface.tool_call_scope
+        )
         ToolErrorGuard.guard_all(tools)
         return tools
 

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-workflow-engine"
+version = "0.0.14.dev8"
+description = "Boba workflow engine: хранилище workflow и запусков на postgres, каталог инструментов, исполнение графа стадий, инструменты workflow для чата."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "pydantic>=2.10,<3",
+    "langchain-core>=0.3,<1",
+    "psycopg[binary,pool]>=3.2,<4",
+    "boba-toolkit==0.0.14.dev8",
+    "boba-identity==0.0.14.dev8",
+    "boba-cancellation==0.0.14.dev8",
+    "boba-workflow==0.0.14.dev8",
+    "boba-connections==0.0.14.dev8",
+    "boba-toolrun==0.0.14.dev8",
+    "boba-db-postgres==0.0.14.dev8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
