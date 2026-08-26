@@ -6,18 +6,18 @@ import asyncio
 from typing import Any
 
 import pytest
-from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser
-from conftest import Seed
+from conftest import NoThreads, Seed, StubAuthenticator, StubRefs
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
 from test_tool_api import _profile, _profiles, _roles
 from test_workflow_service import ROLE, Probe, _registry
 
-from boba.chainlit.domain.keys import WorkflowUrl
+from boba.api.app import ApiApp
+from boba.api.urls import ApiVersion, WorkflowUrl
+from boba.chainlit.infra.api_auth import ChainlitUsers
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.workflow.api import WorkflowApi
 from boba.db.postgres import AsyncPostgresPool
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow.events import RunEvents
@@ -74,16 +74,21 @@ def app(store: WorkflowStore, user: PersistedUser, app_config: AppConfig) -> Fas
     async def source() -> WorkflowService:
         return service
 
-    built = FastAPI()
-    WorkflowApi(source, _profiles(app_config)).mount(built)
-    built.dependency_overrides[get_current_user] = lambda: user
-    return built
+    return ApiApp.build(
+        StubRefs.services(registry, source),
+        StubAuthenticator(ChainlitUsers.of(user)),
+        NoThreads.source,
+        _profiles(app_config),
+        StubAuthenticator.COOKIE,
+    )
 
 
 @pytest.fixture
 async def client(app: FastAPI):
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://api"
+        transport=ASGITransport(app=app),
+        base_url="http://api",
+        cookies=StubAuthenticator.cookies(),
     ) as c:
         yield c
 
@@ -95,7 +100,7 @@ def _profile_of(app_config: AppConfig) -> str:
 async def _finished(client: AsyncClient, run_id: str, profile: str) -> dict[str, Any]:
     for _ in range(200):
         reply = await client.get(
-            f"/workflow-runs/{run_id}", params={"profile": profile}
+            f"/v1/workflow-runs/{run_id}", params={"profile": profile}
         )
         assert reply.status_code == 200, reply.text
         run = reply.json()
@@ -109,7 +114,8 @@ async def _finished(client: AsyncClient, run_id: str, profile: str) -> dict[str,
 
 async def test_catalog_lists_tools(client: AsyncClient, app_config: AppConfig) -> None:
     reply = await client.get(
-        str(WorkflowUrl.CATALOG), params={"profile": _profile_of(app_config)}
+        f"{ApiVersion.V1}{WorkflowUrl.CATALOG}",
+        params={"profile": _profile_of(app_config)},
     )
 
     assert reply.status_code == 200, reply.text
@@ -135,7 +141,8 @@ async def test_validate_and_save(client: AsyncClient, app_config: AppConfig) -> 
     profile = _profile_of(app_config)
 
     valid = await client.post(
-        str(WorkflowUrl.VALIDATE), json={"profile": profile, "spec": SPEC}
+        f"{ApiVersion.V1}{WorkflowUrl.VALIDATE}",
+        json={"profile": profile, "spec": SPEC},
     )
     assert valid.status_code == 200, valid.text
     assert [stage["tasks"] for stage in valid.json()["graph"]["stages"]] == [
@@ -144,24 +151,26 @@ async def test_validate_and_save(client: AsyncClient, app_config: AppConfig) -> 
     ]
 
     broken = await client.post(
-        str(WorkflowUrl.VALIDATE),
+        f"{ApiVersion.V1}{WorkflowUrl.VALIDATE}",
         json={"profile": profile, "spec": "name: x\ntasks:\n  t: {tool: nope}\n"},
     )
     assert broken.status_code == 400
     assert "nope" in broken.json()["detail"]
 
     saved = await client.post(
-        str(WorkflowUrl.WORKFLOWS),
+        f"{ApiVersion.V1}{WorkflowUrl.WORKFLOWS}",
         json={"profile": profile, "spec": SPEC, "layout": {"first": [0, 0]}},
     )
     assert saved.status_code == 200, saved.text
     assert saved.json()["tools"] == ["echo"]
 
-    listed = await client.get(str(WorkflowUrl.WORKFLOWS), params={"profile": profile})
+    listed = await client.get(
+        f"{ApiVersion.V1}{WorkflowUrl.WORKFLOWS}", params={"profile": profile}
+    )
     assert [item["name"] for item in listed.json()] == ["api-flow"]
 
     wrong_profile = await client.get(
-        str(WorkflowUrl.WORKFLOWS), params={"profile": "no-such-profile"}
+        f"{ApiVersion.V1}{WorkflowUrl.WORKFLOWS}", params={"profile": "no-such-profile"}
     )
     assert wrong_profile.status_code == 403
 
@@ -171,12 +180,13 @@ async def test_run_in_background_and_poll(
 ) -> None:
     profile = _profile_of(app_config)
     saved = await client.post(
-        str(WorkflowUrl.WORKFLOWS), json={"profile": profile, "spec": SPEC}
+        f"{ApiVersion.V1}{WorkflowUrl.WORKFLOWS}",
+        json={"profile": profile, "spec": SPEC},
     )
     workflow_id = saved.json()["id"]
 
     started = await client.post(
-        f"/workflows/{workflow_id}/run", json={"profile": profile}
+        f"/v1/workflows/{workflow_id}/run", json={"profile": profile}
     )
     assert started.status_code == 200, started.text
     run_id = started.json()["run_id"]
@@ -186,23 +196,24 @@ async def test_run_in_background_and_poll(
     assert run["state"]["tasks"]["second"]["status"] == "done"
     assert run["initiator"] == {"kind": "human", "via": "api"}
 
-    missing = await client.post("/workflows/999999/run", json={"profile": profile})
+    missing = await client.post("/v1/workflows/999999/run", json={"profile": profile})
     assert missing.status_code == 404
 
 
 async def test_stop_running(client: AsyncClient, app_config: AppConfig) -> None:
     profile = _profile_of(app_config)
     saved = await client.post(
-        str(WorkflowUrl.WORKFLOWS), json={"profile": profile, "spec": LONG}
+        f"{ApiVersion.V1}{WorkflowUrl.WORKFLOWS}",
+        json={"profile": profile, "spec": LONG},
     )
     started = await client.post(
-        f"/workflows/{saved.json()['id']}/run", json={"profile": profile}
+        f"/v1/workflows/{saved.json()['id']}/run", json={"profile": profile}
     )
     run_id = started.json()["run_id"]
 
     for _ in range(100):
         reply = await client.get(
-            f"/workflow-runs/{run_id}", params={"profile": profile}
+            f"/v1/workflow-runs/{run_id}", params={"profile": profile}
         )
         if reply.json()["status"] == "running":
             break
@@ -210,7 +221,7 @@ async def test_stop_running(client: AsyncClient, app_config: AppConfig) -> None:
         await asyncio.sleep(0.02)
 
     stopped = await client.post(
-        f"/workflow-runs/{run_id}/stop", json={"profile": profile}
+        f"/v1/workflow-runs/{run_id}/stop", json={"profile": profile}
     )
     assert stopped.json() == {"stopped": True}
 
@@ -218,9 +229,11 @@ async def test_stop_running(client: AsyncClient, app_config: AppConfig) -> None:
     assert run["status"] == "stopped"
 
     again = await client.post(
-        f"/workflow-runs/{run_id}/stop", json={"profile": profile}
+        f"/v1/workflow-runs/{run_id}/stop", json={"profile": profile}
     )
     assert again.json() == {"stopped": False}
 
-    listed = await client.get(str(WorkflowUrl.RUNS), params={"profile": profile})
+    listed = await client.get(
+        f"{ApiVersion.V1}{WorkflowUrl.RUNS}", params={"profile": profile}
+    )
     assert [item["id"] for item in listed.json()] == [run_id]

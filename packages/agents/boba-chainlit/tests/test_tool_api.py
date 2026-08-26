@@ -11,19 +11,19 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from chainlit.auth import create_jwt, get_current_user
+from chainlit.auth import create_jwt
 from chainlit.user import PersistedUser, User
-from conftest import Seed
-from fastapi import FastAPI, HTTPException
+from conftest import Seed, StubAuthenticator
+from fastapi import APIRouter, FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from langchain_core.tools import tool
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.chainlit.domain.keys import ToolCallUrl
+from boba.api.auth import ApiAuth, TokenReader
+from boba.api.tools import ToolCallBody, ToolCalling
 from boba.chainlit.infra.api_auth import ChainlitAuthenticator, ChainlitUsers
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import ChainlitSession
-from boba.chainlit.infra.tool_api import ToolCallBody, ToolCalling
 from boba.chat.profiles import ChatProfiles
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
 from boba.runtime.plugins import CallSurface
@@ -235,15 +235,18 @@ class TestRoute:
         user = _tester(seeded, app_config)
 
         app = FastAPI()
-        app.add_api_route(
-            ToolCallUrl.ROUTE,
-            _calling(probe, seeded, app_config).serve,
-            methods=["POST"],
-        )
-        app.dependency_overrides[get_current_user] = lambda: user
+        ApiAuth(
+            StubAuthenticator(ChainlitUsers.of(user)),
+            TokenReader(StubAuthenticator.COOKIE),
+        ).install(app)
+        router = APIRouter()
+        _calling(probe, seeded, app_config).mount(router)
+        app.include_router(router)
 
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://api"
+            transport=ASGITransport(app=app),
+            base_url="http://api",
+            cookies=StubAuthenticator.cookies(),
         ) as client:
             response = await client.post(
                 "/tools/probe", json=_body(seeded, app_config).model_dump(mode="json")

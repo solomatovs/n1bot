@@ -2,7 +2,7 @@
 
 import os
 import secrets
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -32,8 +32,11 @@ from boba.chainlit.infra.session import (
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
+from boba.chat.threads import ThreadOwnership
+from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import RegistryRef, StoreRef
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.api import AuthenticatedUser, Authenticator
 from boba.identity.context import (
     CallContext,
     ChatInitiator,
@@ -524,3 +527,53 @@ class StubRefs:
             connection_store=store,
             ccache_registry=registry,
         )
+
+    @staticmethod
+    def services(
+        tool_registry: Callable[[], Awaitable[ToolRegistry]],
+        workflow_service: Callable[[], Awaitable[WorkflowService]],
+    ) -> RuntimeRefs:
+        """Стенд API: реестр и сервис есть, соединений и билетов нет."""
+
+        def no_store() -> ConnectionStore:
+            msg = "connection store is not part of this stand"
+            raise RuntimeError(msg)
+
+        def no_registry() -> None:
+            return None
+
+        return RuntimeRefs(
+            tool_registry=tool_registry,
+            workflow_service=workflow_service,
+            connection_store=no_store,
+            ccache_registry=no_registry,
+        )
+
+
+class StubAuthenticator(Authenticator):
+    """Вход стенда: один известный токен -> заданный пользователь."""
+
+    COOKIE: ClassVar[str] = "access_token"
+    TOKEN: ClassVar[str] = "stand-token"
+
+    def __init__(self, user: AuthenticatedUser | None) -> None:
+        self._user = user
+
+    async def user_of_token(self, token: str) -> AuthenticatedUser | None:
+        if token != self.TOKEN:
+            return None
+
+        return self._user
+
+    @classmethod
+    def cookies(cls) -> dict[str, str]:
+        return {cls.COOKIE: cls.TOKEN}
+
+
+class NoThreads:
+    """Владение тредами стендам API без тредов не нужно."""
+
+    @staticmethod
+    def source() -> ThreadOwnership:
+        msg = "thread ownership is not part of this stand"
+        raise RuntimeError(msg)

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import ClassVar
 from urllib.parse import quote
 
@@ -23,7 +22,6 @@ __all__ = [
     "AttachmentUrl",
     "CanvasFileUrl",
     "StreamUrl",
-    "ToolCallUrl",
 ]
 
 
@@ -94,24 +92,3 @@ class StreamUrl:
         prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
         name = quote(channel.value, safe="")
         return f"{prefix}/stream/{thread_id}/{call_id}?channel={name}"
-
-
-class ToolCallUrl:
-    """Адрес REST-запуска инструмента: имя в пути, остальное в теле."""
-
-    ROUTE: ClassVar[str] = "/tools/{name}"
-
-
-class WorkflowUrl(StrEnum):
-    """Адреса REST workflow: определения и запуски; профиль — в теле или query."""
-
-    CATALOG = "/workflows/catalog"
-    VALIDATE = "/workflows/validate"
-    WORKFLOWS = "/workflows"
-    WORKFLOW = "/workflows/{workflow_id}"
-    RUN = "/workflows/{workflow_id}/run"
-    RUNS = "/workflow-runs"
-    RUN_ONE = "/workflow-runs/{run_id}"
-    STOP = "/workflow-runs/{run_id}/stop"
-    PAGE = "/workflow/{path:path}"
-    DEV = "/workflow-dev/{path:path}"

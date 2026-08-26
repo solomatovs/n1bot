@@ -3,6 +3,7 @@ import { z } from "zod";
 /** Что сервер вписывает в index.html: префикс приложения и путь socket.io. */
 const PageConfigSchema = z.object({
   prefix: z.string(),
+  apiPrefix: z.string(),
   socketPath: z.string(),
 });
 
@@ -15,7 +16,11 @@ declare global {
   }
 }
 
-const DEV_FALLBACK: PageConfig = { prefix: "", socketPath: "/ws/socket.io" };
+const DEV_FALLBACK: PageConfig = {
+  prefix: "",
+  apiPrefix: "/api/v1",
+  socketPath: "/api/socket.io",
+};
 
 export function pageConfig(): PageConfig {
   const stamped = window.__BOBA_PAGE__;
@@ -35,7 +40,7 @@ export class PageUrls {
   }
 
   api(path: string): string {
-    return `${this.config.prefix}${path}`;
+    return `${this.config.apiPrefix}${path}`;
   }
 
   get socketPath(): string {

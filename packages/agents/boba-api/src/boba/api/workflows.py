@@ -16,14 +16,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, TypeVar
+from typing import Any, ClassVar, TypeVar
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.domain.keys import WorkflowUrl
-from boba.chainlit.infra.tool_api import ApiIdentity, CurrentUser
+from boba.api.auth import ApiIdentity, CurrentUser
+from boba.api.urls import WorkflowUrl
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.context import Scope
@@ -81,13 +81,15 @@ class Deleted(BaseModel):
 
 
 class WorkflowApi:
-    """Обработчики REST workflow; mount ставит их перед catch-all chainlit."""
+    """Обработчики REST workflow."""
+
+    TAG: ClassVar[str] = "workflows"
 
     def __init__(self, service: ServiceSource, profiles: ChatProfiles) -> None:
         self._service = service
         self._profiles = profiles
 
-    def mount(self, app: FastAPI) -> None:
+    def mount(self, router: APIRouter) -> None:
         routes = (
             (WorkflowUrl.CATALOG, self.catalog, "GET"),
             (WorkflowUrl.VALIDATE, self.validate, "POST"),
@@ -101,14 +103,7 @@ class WorkflowApi:
             (WorkflowUrl.STOP, self.stop, "POST"),
         )
         for path, handler, method in routes:
-            app.add_api_route(
-                str(path), handler, methods=[method], include_in_schema=False
-            )
-
-        # catch-all chainlit стоит раньше: блок новых роутов переносится в начало
-        block = app.router.routes[-len(routes) :]
-        del app.router.routes[-len(routes) :]
-        app.router.routes[0:0] = block
+            router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
 
     async def catalog(
         self, current_user: CurrentUser, profile: str | None = None
