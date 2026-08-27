@@ -10,11 +10,12 @@ import base64
 import html
 import logging
 import os
+from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -29,12 +30,7 @@ from boba.chainlit.auth.config import (
     KerberosRolesInLdapConfig,
 )
 from boba.chainlit.auth.ldap import ADDirectory
-from boba.chainlit.infra.session import ChainlitSession
-from boba.connections.kerberos import (
-    Delegation,
-    DelegationMode,
-    ForwardedDelegation,
-)
+from boba.chainlit.infra.session import ChainlitSession, ChainlitSessions
 from boba.identity.context import DelegatedTicket
 from boba.identity.directory import (
     ADUserEntry,
@@ -72,17 +68,18 @@ from boba.identity.session import (
 )
 from boba.identity.sso import SidsHeader, SsoAdmission
 from boba.krb import (
-    CcacheRegistry,
     CredentialsExpiredError,
     DelegationNotPermittedError,
     InvalidTokenError,
-    KerberosDelegation,
     KerberosError,
     KeytabError,
     SpnegoAcceptor,
     SpnegoIdentity,
+    TicketCapture,
 )
+from boba.krb.seal import SsoTickets, TicketSealer
 from boba.toolkit.template import TemplateError
+from chainlit.auth import create_jwt, set_auth_cookie
 from chainlit.config import config as cl_config
 
 
@@ -202,6 +199,35 @@ class SidExcludeUserProvider:
             yield from self._mapping.exclude_of(s)
 
 
+class SsoPass:
+    """Запечатанный билет входа от middleware к роуту: через state запроса."""
+
+    KEY: ClassVar[str] = "sso_ticket"
+
+    @classmethod
+    def put(cls, scope: Scope, sealed: str) -> None:
+        state = scope.setdefault("state", {})
+        state[cls.KEY] = sealed
+
+    @classmethod
+    def take(cls, request: Request) -> str:
+        """Пустая строка — middleware билета не приложила."""
+        sealed = getattr(request.state, cls.KEY, "")
+        if not isinstance(sealed, str):
+            return ""
+
+        return sealed
+
+
+class SsoUserBuilder(Protocol):
+    """Пользователь chainlit после (повторного) SPNEGO: роли и билет входа."""
+
+    @abstractmethod
+    async def refreshed_user(
+        self, principal: str, group_sids: Sequence[str], sealed: str
+    ) -> cl.User: ...
+
+
 @dataclass(frozen=True)
 class SsoRuntime:
     """Части SSO, которыми работает middleware: адреса, приём, делегирование, допуск."""
@@ -209,8 +235,10 @@ class SsoRuntime:
     urls: SsoUrls
     config: KerberosAuthConfig
     acceptor: SpnegoAcceptor
-    delegation: KerberosDelegation
+    capture: TicketCapture
+    sealer: TicketSealer
     admission: SsoAdmission
+    builder: SsoUserBuilder
 
 
 class SpnegoMiddleware:
@@ -221,7 +249,9 @@ class SpnegoMiddleware:
         self._urls = sso.urls
         self._config = sso.config
         self._acceptor = sso.acceptor
-        self._delegation = sso.delegation
+        self._capture = sso.capture
+        self._sealer = sso.sealer
+        self._builder = sso.builder
         self._admission = sso.admission
         self._negotiate = {"WWW-Authenticate": "Negotiate"}
         self._logger = logging.getLogger(SpnegoMiddleware.__name__)
@@ -270,26 +300,29 @@ class SpnegoMiddleware:
             client,
         )
 
-        login = self._delegation.on_success_authenticated(identity)
-
+        sealed = self._sealed(identity)
         header = self._config.header.lower()
         headers[header] = identity.principal
-        # заголовки с SID-ами и меткой входа перетираем всегда —
-        # клиентское значение не пройдёт
+        # заголовок с SID-ами перетираем всегда — клиентское значение не пройдёт
         headers[self._config.sids_header.lower()] = SidsHeader.render(
             identity.group_sids
         )
-        headers[self._config.login_header.lower()] = login
         scope["headers"] = headers.raw
-
+        SsoPass.put(scope, sealed)
         self._logger.info(
-            "kerberos: sign-in label passed to the app [%s=%d chars] [path=%s]",
-            self._config.login_header,
-            len(login),
+            "kerberos: sign-in ticket passed to the app [%d chars] [path=%s]",
+            len(sealed),
             path,
         )
-
         return await self._app(scope, receive, send)
+
+    def _sealed(self, identity: SpnegoIdentity) -> str:
+        """Запечатанный билет входа; пустая строка — делегирования у входа нет."""
+        ticket = self._capture.capture(identity)
+        if ticket is None:
+            return ""
+
+        return self._sealer.seal(ticket)
 
     async def _refreshed(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Повторный SPNEGO живой сессии: свежие креды под её же меткой входа.
@@ -338,20 +371,28 @@ class SpnegoMiddleware:
             )
             return
 
-        login = self._delegation.on_refresh_authenticated(identity, marks.login)
-        if not login:
+        sealed = self._sealed(identity)
+        if not sealed:
             await self._refusal(
                 scope, receive, send, f"no delegated credentials for {marks.principal}"
             )
             return
 
+        user = await self._builder.refreshed_user(
+            identity.principal, identity.group_sids, sealed
+        )
+        token = create_jwt(user)
+        response = Response(status_code=204)
+        set_auth_cookie(Request(scope), response, token)
+        adopted = ChainlitSessions().adopt_token(user.identifier, token)
         self._logger.info(
-            "kerberos: refreshed delegated credentials [principal=%s] [client=%s]",
+            "kerberos: refreshed sign-in ticket [principal=%s] [client=%s] "
+            "[sessions=%d]",
             identity.principal,
             client,
+            adopted,
         )
-
-        await Response(status_code=204)(scope, receive, send)
+        await response(scope, receive, send)
 
     def _refresh_marks(self, headers: Headers, client: str) -> DelegatedTicket | str:
         """Метки сессии, которой позволено обменяться, либо причина отказа."""
@@ -362,10 +403,6 @@ class SpnegoMiddleware:
         marks = self._session_marks(headers)
         if marks is None:
             return "request carries no signed sign-in"
-
-        # обмен продлевает живой вход; забытый logout'ом не воскрешает
-        if not self._delegation.knows(marks.login):
-            return f"sign-in of {marks.principal} is not active"
 
         return marks
 
@@ -543,7 +580,7 @@ class KerberosRolesInLdapProvider:
             yield from self._dn_roles_ex.exclude_of(user.dn)
 
 
-class KerberosAuth(SsoAdmission):
+class KerberosAuth(SsoAdmission, SsoUserBuilder):
     """SSO через Kerberos/SPNEGO: кнопка на /login ведёт на /auth/sso (SpnegoMiddleware)
 
     Собран на FastAPI без chainlit header-auth: вход по явной кнопке, не автоматом.
@@ -563,19 +600,28 @@ class KerberosAuth(SsoAdmission):
         self._provider = "kerberos"
         self._ad = ADDirectory
         self.acceptor = SpnegoAcceptor(config.accept, config.delegation)
-        self.registry = CcacheRegistry(
-            mode=DelegationMode(config.delegation.mode),
-            renew=self._renewing(config.delegation),
-            krb5_config=config.delegation.krb5_config,
-        )
-        self.delegation = KerberosDelegation(
-            registry=self.registry,
-            config=config.accept,
-            delegation=config.delegation,
-        )
+        self.capture = TicketCapture(config.delegation)
+        self.sealer = TicketSealer(self._secret())
+        self.krb5_config = config.delegation.krb5_config
         self._logger = logging.getLogger(KerberosAuth.__name__)
 
         self._init_mapping()
+
+    @staticmethod
+    def _secret() -> str:
+        """Секрет JWT chainlit: им же запечатывается билет входа."""
+        from chainlit.auth.jwt import get_jwt_secret  # noqa: PLC0415
+
+        secret = get_jwt_secret()
+        if not secret:
+            msg = "CHAINLIT_AUTH_SECRET is required: it seals the SSO sign-in ticket"
+            raise RuntimeError(msg)
+
+        return secret
+
+    def tickets(self) -> SsoTickets:
+        """Открыватель билетов входа для обвязок инструментов."""
+        return SsoTickets(sealer=self.sealer, krb5_config=self.krb5_config)
 
     def _init_mapping(self):
         self._principal_roles: LocalUserRolesProvider | None = None
@@ -599,14 +645,6 @@ class KerberosAuth(SsoAdmission):
 
         if ldap_roles := self._config.ldap_roles:
             self._kerberos_roles_in_ldap = KerberosRolesInLdapProvider(ldap_roles)
-
-    @staticmethod
-    def _renewing(delegation: Delegation) -> bool:
-        """Продление есть только у форвардного TGT."""
-        if isinstance(delegation, ForwardedDelegation):
-            return delegation.renew
-
-        return False
 
     @staticmethod
     def _username_from_principal(
@@ -640,15 +678,17 @@ class KerberosAuth(SsoAdmission):
             urls=self._urls,
             config=self._config,
             acceptor=self.acceptor,
-            delegation=self.delegation,
+            capture=self.capture,
+            sealer=self.sealer,
             admission=self,
+            builder=self,
         )
 
-    async def _sso_user(self, headers: Headers) -> cl.User | None:
-        """Пользователь после SPNEGO, заведённый в data layer."""
+    async def _sso_user(self, request: Request) -> cl.User | None:
+        """Пользователь после SPNEGO, заведённый в data layer (без билета входа)."""
         from chainlit.data import get_data_layer  # noqa: PLC0415
 
-        user = await self._build_user(headers)
+        user = await self._build_user(request.headers, SsoPass.take(request))
         if user is None:
             return None
 
@@ -657,7 +697,7 @@ class KerberosAuth(SsoAdmission):
             return user
 
         try:
-            await data_layer.create_user(user)
+            await data_layer.create_user(self._without_ticket(user))
         except Exception as exc:
             raise InternalServiceError(
                 internal_detail=f"failed to persist SSO user: {exc}",
@@ -665,6 +705,22 @@ class KerberosAuth(SsoAdmission):
             ) from exc
 
         return user
+
+    @staticmethod
+    def _without_ticket(user: cl.User) -> cl.User:
+        """Копия для строки users: билет входа живёт только в JWT."""
+        metadata: dict[str, Any] = {}
+        for key, value in user.metadata.items():
+            if key == UserMetadataField.TICKET:
+                continue
+
+            metadata[key] = value
+
+        return cl.User(
+            identifier=user.identifier,
+            display_name=user.display_name,
+            metadata=metadata,
+        )
 
     def _login_redirect(self, exc: BaseError) -> RedirectResponse:
         """Исход SSO кодом на страницу логина: браузер пришёл навигацией, не fetch."""
@@ -676,20 +732,24 @@ class KerberosAuth(SsoAdmission):
 
         return RedirectResponse(url=code.login_url(self._urls.login), status_code=303)
 
-    async def _build_user(self, headers: Headers) -> cl.User | None:
+    async def _build_user(self, headers: Headers, sealed: str) -> cl.User | None:
         """По X-Remote-User строит cl.User: username из принципала + роли из AD."""
         principal = headers.get(self._config.header)
         if not principal:
             return None
 
-        metadata = self._sso_metadata(headers, principal)
-
         raw_sids = headers.get(self._config.sids_header)
         if raw_sids is None:
             raw_sids = ""
 
-        roles = await self.roles_of(principal, SidsHeader.parse(raw_sids))
+        return await self.refreshed_user(principal, SidsHeader.parse(raw_sids), sealed)
 
+    async def refreshed_user(
+        self, principal: str, group_sids: Sequence[str], sealed: str
+    ) -> cl.User:
+        metadata = self._sso_metadata(principal, sealed)
+
+        roles = await self.roles_of(principal, group_sids)
         if roles:
             metadata[UserMetadataField.ROLES] = roles
 
@@ -697,7 +757,6 @@ class KerberosAuth(SsoAdmission):
             self._config.principal_format,
             principal,
         )
-
         login = UserLogin.of(username)
 
         return cl.User(
@@ -745,23 +804,20 @@ class KerberosAuth(SsoAdmission):
 
         return mapped
 
-    def _sso_metadata(self, headers: Headers, principal: str) -> dict[str, Any]:
-        """Metadata входа: провайдер, принципал и метка входа с тикетом."""
+    def _sso_metadata(self, principal: str, sealed: str) -> dict[str, Any]:
+        """Metadata входа: провайдер, принципал и запечатанный билет."""
         metadata: dict[str, Any] = {
-            UserMetadataField.PROVIDER: SignInProvider.KERBEROS.value,
+            UserMetadataField.PROVIDER: SignInProvider.KERBEROS,
             UserMetadataField.PRINCIPAL: principal,
         }
 
-        if login := headers.get(self._config.login_header):
-            metadata[UserMetadataField.LOGIN] = login
+        if sealed:
+            metadata[UserMetadataField.TICKET] = sealed
             return metadata
 
-        # без метки сессия останется без делегированных кредов: ищем, где потерялась
+        # без билета сессия останется без делегированных кредов: причина в логе выше
         self._logger.warning(
-            "kerberos: sign-in of %s carries no label [%s]; own headers seen: %s",
-            principal,
-            self._config.login_header,
-            [name for name in headers if name.startswith(self._config.header.lower())],
+            "kerberos: sign-in of %s carries no delegated ticket", principal
         )
 
         return metadata
@@ -790,10 +846,9 @@ class KerberosAuth(SsoAdmission):
 
         async def auth_sso(request: Request) -> RedirectResponse:
             # сюда долетаем после успешного SPNEGO: заводим сессию chainlit (JWT-cookie)
-            from chainlit.auth import create_jwt, set_auth_cookie  # noqa: PLC0415
 
             try:
-                user = await self._sso_user(request.headers)
+                user = await self._sso_user(request)
             except BaseError as exc:
                 return self._login_redirect(exc)
 

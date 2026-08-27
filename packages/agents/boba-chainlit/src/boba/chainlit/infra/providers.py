@@ -61,7 +61,7 @@ from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
-from boba.krb import CcacheRegistry
+from boba.krb.seal import SsoTickets
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import GeneratorFactory
 from boba.llm.local import OnnxChatRuntime
@@ -169,8 +169,8 @@ def kerberos_auth() -> KerberosAuth | None:
     raise RuntimeError(msg)
 
 
-def ccache_registry_ref() -> CcacheRegistry | None:
-    """Реестр делегированных тикетов; None — SSO kerberos не настроен."""
+def sso_tickets_ref() -> SsoTickets | None:
+    """Открыватель билетов SSO-входа; None — SSO kerberos не настроен."""
     root = Container.root
     if root is None:
         msg = "DI container is not initialised"
@@ -180,7 +180,7 @@ def ccache_registry_ref() -> CcacheRegistry | None:
     if auth is None:
         return None
 
-    return auth.registry
+    return auth.tickets()
 
 
 def session_source() -> SessionSource:
@@ -209,7 +209,7 @@ def runtime_refs() -> RuntimeRefs:
         tool_registry=tool_registry_ref,
         workflow_service=workflow_service_ref,
         connection_store=connection_store_ref,
-        ccache_registry=ccache_registry_ref,
+        sso_tickets=sso_tickets_ref,
     )
 
 

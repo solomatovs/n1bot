@@ -2,13 +2,13 @@
 
 Одна и та же команда `python -m <модуль> <имя> --флаги` исполняется под
 launcher'ом приложения и человеком в терминале; разница только в источнике
-Injected-конфига (stdin против --config) и приёмнике результата (конверт в
-fd из env против stdout).
+Injected-конфига (stdin, файл --injected либо toml --config) и приёмнике
+результата (конверт в fd из env против stdout).
 
 Ошибки:
 ArgumentTooLargeError — значение аргумента не помещается в argv (MAX_ARG_STRLEN).
 ToolEntryError — нарушен контракт запуска: имени нет в TOOLS, флаги или конфиг
-    не прошли валидацию; kind из EntryErrorKind.
+    не прошли валидацию, файл --injected не читается; kind из EntryErrorKind.
 PayloadFailureError — исполненное тело подняло ожидаемое исключение (EXPECTED
     модуля); прочие исключения тела уходят наверх как есть.
 """
@@ -23,6 +23,7 @@ import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import IntEnum, StrEnum
+from pathlib import Path
 from types import NoneType, UnionType
 from typing import (
     Any,
@@ -45,7 +46,9 @@ from boba.toolkit.timing import Elapsed, ProcessAge
 __all__ = [
     "ArgumentTooLargeError",
     "EntryErrorKind",
+    "EntryFlag",
     "ExpectedErrors",
+    "HostConfig",
     "ToolAddress",
     "ToolArgv",
     "ToolEntryError",
@@ -80,6 +83,15 @@ class ToolEntryError(Exception):
     def __init__(self, kind: EntryErrorKind, message: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+class EntryFlag(StrEnum):
+    """Флаги CLI модуля инструментов, не относящиеся к параметрам тела."""
+
+    CONFIG = "--config"
+    INJECTED = "--injected"
+    ARTIFACT = "--artifact"
+    HELP = "--help"
 
 
 class ToolLike(Protocol):
@@ -253,24 +265,6 @@ class ToolArgv:
 
         return schema
 
-    @staticmethod
-    def section_of(name: str, annotation: Any) -> str:
-        """Секция toml, из которой собирается injected-модель параметра."""
-        section = getattr(annotation, "SECTION", None)
-        if not isinstance(section, str):
-            msg = f"injected parameter {name!r} has no SECTION on its model"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
-
-        if not isinstance(annotation, type):
-            msg = f"injected parameter {name!r} is not a pydantic model"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
-
-        if not issubclass(annotation, BaseModel):
-            msg = f"injected parameter {name!r} is not a pydantic model"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
-
-        return section
-
     @classmethod
     def injected_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
         """Injected-параметры схемы: имя -> аннотация."""
@@ -376,18 +370,64 @@ class ToolArgv:
         return kwargs
 
 
+class HostConfig:
+    """Toml приложения при запуске тела на хосте: каталог kerberos и injected-секции.
+
+    boba.settings и boba.krb импортируются лениво: под launcher'ом эта
+    ветка не исполняется, а тянуть их в песочницу нельзя.
+    """
+
+    KERBEROS_SECTION: ClassVar[str] = "krb"
+
+    def __init__(self, path: str) -> None:
+        from boba.settings import build_app_config  # noqa: PLC0415
+
+        self._raw = build_app_config(config_path=Path(path))
+
+    def enter_kerberos(self) -> None:
+        """Рабочий каталог kerberos из [krb]; без секции keytab-профили телу недоступны."""
+        if self.KERBEROS_SECTION not in self._raw:
+            return
+
+        from boba.krb import KerberosWorkspaceConfig  # noqa: PLC0415
+        from boba.settings import bind  # noqa: PLC0415
+
+        bind(self._raw, self.KERBEROS_SECTION, KerberosWorkspaceConfig).apply()
+
+    def injected(self, fields: Mapping[str, Any]) -> bytes:
+        """Injected-модели из секций toml; каждая знает свою секцию SECTION."""
+        from boba.settings import bind  # noqa: PLC0415
+
+        payload: dict[str, Any] = {}
+        for name, annotation in fields.items():
+            section = self._section_of(name, annotation)
+            model = bind(self._raw, section, annotation)
+            payload[name] = ToolArgv.reveal(annotation, model)
+
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    @staticmethod
+    def _section_of(name: str, annotation: Any) -> str:
+        section = getattr(annotation, "SECTION", None)
+        if not isinstance(section, str):
+            msg = (
+                f"injected parameter {name!r} has no SECTION; "
+                f"it cannot be built from {EntryFlag.CONFIG}"
+            )
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        return section
+
+
 class ToolMain:
     """CLI модуля инструментов: argv -> тело -> конверт либо вывод человеку.
 
     Конверт пишется в fd из env-переменной канала tool_result, когда она
     есть, — так зовёт launcher; без неё content печатается в stdout — так
-    зовёт человек. Injected-конфиг приезжает JSON'ом со stdin либо
-    собирается из toml по --config; источники взаимоисключающие.
+    зовёт человек. Injected-конфиг приезжает JSON'ом со stdin, файлом
+    --injected либо собирается из toml по --config; toml даёт и рабочий
+    каталог kerberos для тела на хосте.
     """
-
-    CONFIG_FLAG: ClassVar[str] = "--config"
-    ARTIFACT_FLAG: ClassVar[str] = "--artifact"
-    HELP_FLAG: ClassVar[str] = "--help"
 
     class Exit(IntEnum):
         OK = 0
@@ -485,25 +525,31 @@ class ToolMain:
 
     @classmethod
     def _run(cls, tools: Sequence[ToolLike], arguments: list[str]) -> int:
-        if not arguments or arguments == [cls.HELP_FLAG]:
+        if not arguments or arguments == [EntryFlag.HELP]:
             print(cls._tools_help(tools))  # noqa: T201
             return cls.Exit.OK
 
         name = arguments.pop(0)
         tool = cls._lookup(tools, name)
 
-        if cls.HELP_FLAG in arguments:
+        if EntryFlag.HELP in arguments:
             print(cls._tool_help(tool))  # noqa: T201
             return cls.Exit.OK
 
-        want_artifact = cls.ARTIFACT_FLAG in arguments
+        want_artifact = EntryFlag.ARTIFACT in arguments
         if want_artifact:
-            arguments.remove(cls.ARTIFACT_FLAG)
+            arguments.remove(EntryFlag.ARTIFACT)
 
-        config_path = cls._pop_config(arguments)
+        config_path = cls._pop_path(arguments, EntryFlag.CONFIG)
+        injected_path = cls._pop_path(arguments, EntryFlag.INJECTED)
+
+        host: HostConfig | None = None
+        if config_path is not None:
+            host = HostConfig(config_path)
+            host.enter_kerberos()
 
         config_read = Elapsed()
-        stdin = cls._config_source(tool, config_path)
+        stdin = cls._config_source(tool, host, injected_path)
         kwargs = ToolArgv.parse(tool, arguments, stdin)
         logger.info(
             "tool[%s]: args ready in %dms (config %d bytes)",
@@ -525,57 +571,53 @@ class ToolMain:
         msg = f"unknown tool {name!r}; known tools: {known}"
         raise ToolEntryError(EntryErrorKind.UNKNOWN_TOOL, msg)
 
-    @classmethod
-    def _pop_config(cls, arguments: list[str]) -> str | None:
-        if cls.CONFIG_FLAG not in arguments:
+    @staticmethod
+    def _pop_path(arguments: list[str], flag: EntryFlag) -> str | None:
+        if flag not in arguments:
             return None
 
-        index = arguments.index(cls.CONFIG_FLAG)
+        index = arguments.index(flag)
         if index + 1 >= len(arguments):
-            msg = f"{cls.CONFIG_FLAG} requires a path"
+            msg = f"{flag} requires a path"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         arguments.pop(index)
         return arguments.pop(index)
 
     @classmethod
-    def _config_source(cls, tool: ToolLike, config_path: str | None) -> bytes:
-        """Injected-конфиг: JSON со stdin либо сборка из toml по SECTION."""
+    def _config_source(
+        cls, tool: ToolLike, host: HostConfig | None, injected_path: str | None
+    ) -> bytes:
+        """Injected-конфиг: файл --injected, toml --config либо JSON со stdin."""
         schema = ToolArgv.schema_of(tool)
         injected = ToolArgv.injected_fields(schema)
         if not injected:
             return b"{}"
 
-        if config_path is not None:
-            return cls._config_from_toml(injected, config_path)
+        if injected_path is not None:
+            return cls._config_from_file(injected_path)
+
+        if host is not None:
+            return host.injected(injected)
 
         data = sys.stdin.buffer.read()
         if not data:
-            msg = "injected config expected on stdin (or pass --config <toml>)"
+            msg = (
+                "injected config expected on stdin "
+                f"(or pass {EntryFlag.INJECTED} <json> / {EntryFlag.CONFIG} <toml>)"
+            )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         return data
 
-    @classmethod
-    def _config_from_toml(cls, injected: Mapping[str, Any], path: str) -> bytes:
-        """Сборка моделей из toml приложения; каждая знает свою секцию SECTION.
-
-        omegaconf импортируется лениво: под launcher'ом эта ветка не
-        исполняется, а тянуть его в песочницу нельзя.
-        """
-        from pathlib import Path  # noqa: PLC0415
-
-        from boba.settings import bind, build_app_config  # noqa: PLC0415
-
-        raw = build_app_config(config_path=Path(path))
-
-        payload: dict[str, Any] = {}
-        for name, annotation in injected.items():
-            section = ToolArgv.section_of(name, annotation)
-            model = bind(raw, section, annotation)
-            payload[name] = ToolArgv.reveal(annotation, model)
-
-        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    @staticmethod
+    def _config_from_file(path: str) -> bytes:
+        """Файл с тем же JSON, что launcher кладёт в stdin."""
+        try:
+            return Path(path).read_bytes()
+        except OSError as exc:
+            msg = f"injected config is not readable: {path}: {exc}"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
     @classmethod
     def _call(cls, tool: ToolLike, kwargs: dict[str, Any]) -> ReplyOk:
@@ -690,5 +732,8 @@ class ToolMain:
             lines.append(f"  {ToolArgv.flag_of(name)} {description}".rstrip())
 
         config_help = "application toml with injected config sections"
-        lines.append(f"  {cls.CONFIG_FLAG} PATH  {config_help}")
+        lines.append(f"  {EntryFlag.CONFIG} PATH  {config_help}")
+
+        injected_help = "injected config as JSON, what the launcher sends on stdin"
+        lines.append(f"  {EntryFlag.INJECTED} PATH  {injected_help}")
         return "\n".join(lines)

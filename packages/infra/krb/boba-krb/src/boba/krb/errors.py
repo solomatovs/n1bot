@@ -4,6 +4,7 @@
 CredentialsExpiredError — тикет истёк и не продлевается;
 DelegationNotPermittedError — делегирование запрещено политикой AD;
 InvalidTokenError — клиент прислал непригодный SPNEGO-токен;
+TicketSealError — запечатанный билет входа не читается;
 KerberosError — прочие сбои GSSAPI/krb5 (база — boba.connections.kerberos).
 """
 
@@ -27,6 +28,7 @@ __all__ = [
     "InvalidTokenError",
     "KerberosError",
     "KeytabError",
+    "TicketSealError",
 ]
 
 
@@ -64,3 +66,7 @@ class DelegationNotPermittedError(KerberosError):
 
 class InvalidTokenError(KerberosError):
     """Клиент прислал битый, просроченный или неполный SPNEGO-токен."""
+
+
+class TicketSealError(KerberosError):
+    """Запечатанный билет входа не открывается: чужой ключ, порча или не тот формат."""

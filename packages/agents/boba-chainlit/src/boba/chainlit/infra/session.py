@@ -336,6 +336,22 @@ class ChainlitSessions:
         """Сессия по socket-id: так её находит обработчик события сокета."""
         return ChainlitSession(WebsocketSession.get(sid))
 
+    def adopt_token(self, identifier: str, token: str) -> int:
+        """Живые сокет-сессии пользователя получают новый JWT; итог — сколько."""
+        adopted = 0
+        for session in list(ws_sessions_id.values()):
+            user = getattr(session, "user", None)
+            if user is None:
+                continue
+
+            if user.identifier != identifier:
+                continue
+
+            session.token = token
+            adopted += 1
+
+        return adopted
+
     def in_thread(self, thread_id: str) -> list[ChainlitSession]:
         """Живые сессии, открывшие этот тред: у треда бывает много вкладок."""
         found: list[ChainlitSession] = []

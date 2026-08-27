@@ -3,7 +3,6 @@
 from boba.krb.auth import KerberosWorkspace, KerberosWorkspaceConfig
 from boba.krb.credentials import (
     CcacheLifetime,
-    CcacheRegistry,
     ClientCredentials,
     DelegatedCredentials,
     IssuedCredentials,
@@ -12,24 +11,23 @@ from boba.krb.credentials import (
     KeytabCredentials,
     PasswordCredentials,
     TicketCredentials,
-    UserCcache,
 )
-from boba.krb.delegation import KerberosDelegation, SpnegoAcceptor, SpnegoIdentity
+from boba.krb.delegation import SpnegoAcceptor, SpnegoIdentity, TicketCapture
 from boba.krb.errors import (
     CredentialsExpiredError,
     DelegationNotPermittedError,
     InvalidTokenError,
     KerberosError,
     KeytabError,
+    TicketSealError,
 )
 from boba.krb.pac import PacGroupSids
-from boba.krb.refresh import RefreshWaiters, RefreshWaiting
 from boba.krb.spnego import SpnegoNegotiate
+from boba.krb.ticket import SignInTicket
 from boba.krb.tickets import ServiceTicketIssuer
 
 __all__ = [
     "CcacheLifetime",
-    "CcacheRegistry",
     "ClientCredentials",
     "CredentialsExpiredError",
     "DelegatedCredentials",
@@ -37,7 +35,6 @@ __all__ = [
     "InvalidTokenError",
     "IssuedCredentials",
     "KerberosCredentials",
-    "KerberosDelegation",
     "KerberosEnv",
     "KerberosError",
     "KerberosWorkspace",
@@ -46,12 +43,12 @@ __all__ = [
     "KeytabError",
     "PacGroupSids",
     "PasswordCredentials",
-    "RefreshWaiters",
-    "RefreshWaiting",
     "ServiceTicketIssuer",
+    "SignInTicket",
     "SpnegoAcceptor",
     "SpnegoIdentity",
     "SpnegoNegotiate",
+    "TicketCapture",
     "TicketCredentials",
-    "UserCcache",
+    "TicketSealError",
 ]

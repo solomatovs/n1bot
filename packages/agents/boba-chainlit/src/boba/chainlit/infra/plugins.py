@@ -44,7 +44,7 @@ class ChatPlugins:
             raw_config,
             cls.table(refs),
             refs.connection_store,
-            refs.ccache_registry,
+            refs.sso_tickets,
             ChatRefreshSignal(),
         )
 

@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-llm"
-version = "0.0.14.dev8"
+version = "0.0.14.dev9"
 description = "Boba LLM providers: openai-совместимый транспорт, чат-модель, эмбеддеры и структурная генерация (local/openai)."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-chat==0.0.14.dev8",
-    "boba-indexing==0.0.14.dev8",
-    "boba-toolkit==0.0.14.dev8",
+    "boba-chat==0.0.14.dev9",
+    "boba-indexing==0.0.14.dev9",
+    "boba-toolkit==0.0.14.dev9",
     "httpx[http2]>=0.28,<1",
     "httpx-sse>=0.4,<1",
     "pydantic>=2.10,<2.11",

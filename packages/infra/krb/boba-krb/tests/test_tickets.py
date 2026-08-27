@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -28,8 +29,8 @@ from boba.krb import (
     KerberosWorkspace,
     KeytabCredentials,
     ServiceTicketIssuer,
+    SignInTicket,
     TicketCredentials,
-    UserCcache,
 )
 
 STAND = Stand.required()
@@ -159,14 +160,18 @@ class TestServiceTicketIssuer:
         """Ccache под чужим принципалом билет за другого не выпускает."""
         source = _source()
         source.ensure()
+        with open(source.ccache.removeprefix("FILE:"), "rb") as cache:
+            data = cache.read()
         relabelled = DelegatedCredentials(
-            UserCcache(OTHER_PRINCIPAL, source.ccache, "login-1"),
-            mode=DelegationMode.FORWARDED,
-            renew=False,
-            krb5_config=str(KRB5_CONF),
+            SignInTicket(
+                principal=OTHER_PRINCIPAL,
+                mode=DelegationMode.FORWARDED,
+                ccache=data,
+                expires_at=int(time.time()) + 600,
+            ),
+            str(KRB5_CONF),
         )
-
-        with pytest.raises(CredentialsExpiredError, match="expired"):
+        with pytest.raises(KerberosError, match="belongs to"):
             ServiceTicketIssuer(min_lifetime=60).issue(relabelled, SERVICE)
 
     def test_unknown_service_is_refused(self, clean_env: None) -> None:

@@ -293,10 +293,10 @@ def test_sso_sign_in_brings_a_delegated_ticket(
         raise AssertionError(f"тикет достался не тому принципалу: {captured[-1]}")
 
 
-def test_signed_in_session_carries_the_login_label(
+def test_signed_in_session_carries_the_sealed_ticket(
     sso_context: BrowserContext, sso_stand: StandProcess
 ) -> None:
-    """Метка входа лежит в JWT сессии: по ней инструмент найдёт тикет."""
+    """Запечатанный билет лежит в JWT сессии: из него инструмент получит креды."""
     page = sso_context.new_page()
     _sign_in(page, sso_stand)
 
@@ -316,5 +316,5 @@ def test_signed_in_session_carries_the_login_label(
 
     if metadata.get("principal") != STAND.reader_principal:
         raise AssertionError(f"в сессии не тот принципал: {metadata}")
-    if not metadata.get("sso_login"):
-        raise AssertionError(f"в сессии нет метки входа: {metadata}")
+    if not metadata.get("sso_ticket"):
+        raise AssertionError(f"в сессии нет билета входа: {metadata}")
