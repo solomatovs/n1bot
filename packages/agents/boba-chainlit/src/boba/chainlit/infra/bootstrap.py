@@ -238,7 +238,7 @@ def _use_canvas_viewers() -> None:
     load_tools(
         providers.get_raw_config(),
         providers.connection_store_ref,
-        providers.ccache_registry_ref,
+        providers.sso_tickets_ref,
     )
 
 

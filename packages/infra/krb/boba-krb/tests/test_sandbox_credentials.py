@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -19,6 +20,7 @@ from boba.krb import (
     ClientCredentials,
     DelegatedAuth,
     KerberosError,
+    KerberosWorkspace,
     KeytabAuth,
     KeytabCredentials,
     TicketAuth,
@@ -44,9 +46,7 @@ class Fixtures:
 
     @classmethod
     def ticket(cls) -> TicketAuth:
-        return TicketAuth.of_bytes(
-            cls.PRINCIPAL, cls.SERVICE, b"ccache", 60
-)
+        return TicketAuth.of_bytes(cls.PRINCIPAL, cls.SERVICE, b"ccache", 60)
 
     @classmethod
     def postgres(cls, auth: object) -> PostgresConfig:
@@ -73,6 +73,12 @@ class Fixtures:
         )
 
 
+@pytest.fixture(autouse=True)
+def workspace(tmp_path: Path) -> None:
+    """Каталог кэшей на тест: KeytabCredentials выбирает файл через workspace."""
+    KerberosWorkspace.configure(str(tmp_path / "krb5.conf"), str(tmp_path / "cache"))
+
+
 class TestKeytabStaysWithTheApp:
     """Дефект: keytab и общий ccache уезжали в песочницу вместе с конфигом.
 
@@ -84,17 +90,13 @@ class TestKeytabStaysWithTheApp:
         config = Fixtures.postgres(Fixtures.keytab().model_dump(mode="json"))
 
         with pytest.raises(ValueError, match="may not leave the application"):
-            config.model_dump(
-                mode="json", context={TicketAuth.REVEAL_SECRETS: True}
-            )
+            config.model_dump(mode="json", context={TicketAuth.REVEAL_SECRETS: True})
 
     def test_clickhouse_reveal_refuses_a_keytab(self) -> None:
         config = Fixtures.clickhouse(Fixtures.keytab().model_dump(mode="json"))
 
         with pytest.raises(ValueError, match="may not leave the application"):
-            config.model_dump(
-                mode="json", context={TicketAuth.REVEAL_SECRETS: True}
-            )
+            config.model_dump(mode="json", context={TicketAuth.REVEAL_SECRETS: True})
 
     def test_host_dump_keeps_the_keytab(self) -> None:
         """Дамп без раскрытия секретов — конфиг хоста, keytab ему нужен."""

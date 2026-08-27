@@ -87,21 +87,12 @@ class DelegationMode(StrEnum):
 
 
 class ForwardedDelegation(BaseModel):
-    """Неограниченное делегирование: форвардный TGT входа живёт в своём ccache."""
+    """Неограниченное делегирование: форвардный TGT входа едет в билете входа."""
 
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["forwarded"] = "forwarded"
 
-    ccache_template: str = Field(
-        description=(
-            "Шаблон имени ccache на вход; подставляется {login} — случайная "
-            "метка входа, одна на сессию."
-        ),
-    )
-    renew: bool = Field(
-        description="Продлевать renewable-TGT заранее, пока он ещё жив.",
-    )
     krb5_config: str = Field(
         description=(
             "krb5.conf для операций с делегированным тикетом и для билетов, "
@@ -123,12 +114,6 @@ class ConstrainedDelegation(BaseModel):
 
     mode: Literal["constrained"] = "constrained"
 
-    ccache_template: str = Field(
-        description=(
-            "Шаблон имени ccache на вход; подставляется {login} — случайная "
-            "метка входа, одна на сессию."
-        ),
-    )
     service_ccache: str = Field(
         description=(
             "FILE-ccache для собственного TGT сервиса, которым делается S4U2Proxy, "

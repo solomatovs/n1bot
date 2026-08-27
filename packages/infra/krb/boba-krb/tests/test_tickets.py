@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -25,9 +26,9 @@ from boba.krb import (
     KeytabAuth,
     KeytabCredentials,
     ServiceTicketIssuer,
+    SignInTicket,
     TicketAuth,
     TicketCredentials,
-    UserCcache,
 )
 
 STAND = Stand.required()
@@ -130,12 +131,8 @@ class TestDelegatedConfigStaysOutside:
 
 @live_kdc
 class TestServiceTicketIssuer:
-    def test_ccache_holds_only_the_service_ticket(
-        self, clean_env: None
-    ) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+    def test_ccache_holds_only_the_service_ticket(self, clean_env: None) -> None:
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
 
         credentials = TicketCredentials(ticket)
         with credentials.applied():
@@ -152,29 +149,27 @@ class TestServiceTicketIssuer:
         if not any(server.startswith("krbtgt/") for server in servers):
             raise AssertionError(f"source must keep its TGT: {servers}")
 
-    def test_ticket_principal_and_service(
-        self, clean_env: None
-    ) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+    def test_ticket_principal_and_service(self, clean_env: None) -> None:
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
         if (ticket.principal, ticket.service) != (PRINCIPAL, SERVICE):
             raise AssertionError("ticket must name the source principal and the SPN")
 
-    def test_relabelled_ccache_is_refused(
-        self, clean_env: None
-    ) -> None:
+    def test_relabelled_ccache_is_refused(self, clean_env: None) -> None:
         """Ccache под чужим принципалом билет за другого не выпускает."""
         source = _source()
         source.ensure()
+        with open(source.ccache.removeprefix("FILE:"), "rb") as cache:
+            data = cache.read()
         relabelled = DelegatedCredentials(
-            UserCcache(OTHER_PRINCIPAL, source.ccache, "login-1"),
-            mode=DelegationMode.FORWARDED,
-            renew=False,
-            krb5_config=str(KRB5_CONF),
+            SignInTicket(
+                principal=OTHER_PRINCIPAL,
+                mode=DelegationMode.FORWARDED,
+                ccache=data,
+                expires_at=int(time.time()) + 600,
+            ),
+            str(KRB5_CONF),
         )
-
-        with pytest.raises(CredentialsExpiredError, match="expired"):
+        with pytest.raises(KerberosError, match="belongs to"):
             ServiceTicketIssuer(min_lifetime=60).issue(relabelled, SERVICE)
 
     def test_unknown_service_is_refused(self, clean_env: None) -> None:
@@ -186,12 +181,8 @@ class TestServiceTicketIssuer:
 
 @live_kdc
 class TestTicketCredentials:
-    def test_applied_exposes_private_file(
-        self, clean_env: None
-    ) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+    def test_applied_exposes_private_file(self, clean_env: None) -> None:
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
         credentials = ClientCredentials.of(ticket)
         if not isinstance(credentials, TicketCredentials):
             raise AssertionError("ticket config must build TicketCredentials")
@@ -209,21 +200,15 @@ class TestTicketCredentials:
         if KerberosEnv.CCACHE in os.environ:
             raise AssertionError("leaving applied() must restore the environment")
 
-    def test_ccache_is_unavailable_outside_applied(
-        self, clean_env: None
-    ) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+    def test_ccache_is_unavailable_outside_applied(self, clean_env: None) -> None:
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
         credentials = TicketCredentials(ticket)
 
         with pytest.raises(KerberosError, match="inside applied"):
             _ = credentials.ccache
 
     def test_expired_ticket_refused(self, tmp_path: Path, clean_env: None) -> None:
-        ticket = ServiceTicketIssuer(min_lifetime=60).issue(
-            _source(), SERVICE
-        )
+        ticket = ServiceTicketIssuer(min_lifetime=60).issue(_source(), SERVICE)
         strict = ticket.model_copy(update={"min_lifetime": 10**9})
 
         credentials = TicketCredentials(strict)

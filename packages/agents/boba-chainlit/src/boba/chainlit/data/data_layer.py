@@ -1,4 +1,5 @@
 """PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Protocol
@@ -169,7 +170,7 @@ class PostgresDataLayer(AttachmentDataLayer):
     @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
         model = User.from_chainlit(user)
-        model.meta.pop(UserMetadataField.LOGIN, None)
+        model.meta.pop(UserMetadataField.TICKET, None)
         query = sql.SQL(
             """
             insert into {users} (

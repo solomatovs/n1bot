@@ -12,9 +12,11 @@ import secrets as std_secrets
 from pathlib import Path
 from typing import Annotated, Any
 
+import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
+from conftest import SsoStand
 from langchain_core.tools import StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
@@ -24,7 +26,7 @@ from stand_site import Stand
 
 from boba.chainlit.agent.toolrun.errors import ToolErrorGuard
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
-from boba.chainlit.auth.kerberos import KerberosAuth
+from boba.chainlit.auth.kerberos import KerberosAuth, SsoTickets
 from boba.chainlit.connections import (
     ConnectionKind,
     ConnectionsConfig,
@@ -43,13 +45,12 @@ from boba.chainlit.infra.user_connections import (
 )
 from boba.db.postgres import AsyncPostgresPool, PasswordAuth, PostgresConfig
 from boba.krb import (
-    CcacheRegistry,
     DelegatedAuth,
     DelegationMode,
     KeytabAuth,
     KeytabCredentials,
-    UserCcache,
 )
+from boba.krb.seal import TicketSealer
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
 from boba.tool.pg.tools import PgToolConfig
@@ -64,7 +65,6 @@ STAND = Stand.required()
 KRB5_CONF = Path(STAND.krb_config)
 SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
 SERVICE_PRINCIPAL = STAND.service_principal
-LOGIN = "login-failures"
 UNKNOWN_HOST = f"nowhere.{STAND.krb_domain}"
 
 live_kdc = pytest.mark.skipif(
@@ -111,11 +111,11 @@ def delegated_pg(service_pg: PostgresConfig) -> PostgresConfig:
     )
 
 
-class Registries:
-    """Реестры делегированных тикетов под разные беды."""
+class Tickets:
+    """Билеты входа под разные беды: открыватель и запечатанный билет."""
 
     @staticmethod
-    def healthy(tmp_path: Path) -> CcacheRegistry:
+    def healthy(tmp_path: Path) -> tuple[SsoTickets, str]:
         credentials = KeytabCredentials.of(
             KeytabAuth(
                 method="kerberos_keytab",
@@ -124,45 +124,74 @@ class Registries:
             )
         )
         credentials.ensure()
-        ccache = credentials.ccache
-
-        built = CcacheRegistry(
-            mode=DelegationMode.FORWARDED,
-            renew=False,
-            krb5_config=str(KRB5_CONF),
+        tickets = SsoStand.tickets(str(KRB5_CONF))
+        sealed = SsoStand.sealed(
+            tickets,
+            SERVICE_PRINCIPAL,
+            credentials.ccache,
+            DelegationMode.FORWARDED,
+            3600,
         )
-        built.register(UserCcache(SERVICE_PRINCIPAL, ccache, LOGIN))
-        return built
+        return tickets, sealed
 
     @staticmethod
-    def expired(tmp_path: Path) -> CcacheRegistry:
-        """Ccache входа без годного тикета: так выглядит истёкший TGT."""
-        path = tmp_path / "stale"
-        path.write_bytes(b"not a ccache")
-
-        built = CcacheRegistry(
-            mode=DelegationMode.FORWARDED,
-            renew=False,
-            krb5_config=str(KRB5_CONF),
+    def expired(tmp_path: Path) -> tuple[SsoTickets, str]:
+        """Билет входа с истёкшим сроком: так выглядит просроченный вход."""
+        credentials = KeytabCredentials.of(
+            KeytabAuth(
+                method="kerberos_keytab",
+                principal=SERVICE_PRINCIPAL,
+                keytab=str(SERVICE_KEYTAB),
+            )
         )
-        built.register(UserCcache(SERVICE_PRINCIPAL, f"FILE:{path}", LOGIN))
-        return built
+        credentials.ensure()
+        tickets = SsoStand.tickets(str(KRB5_CONF))
+        sealed = SsoStand.sealed(
+            tickets,
+            SERVICE_PRINCIPAL,
+            credentials.ccache,
+            DelegationMode.FORWARDED,
+            -60,
+        )
+        return tickets, sealed
 
     @staticmethod
-    def dead_kdc(tmp_path: Path) -> CcacheRegistry:
-        """KDC недоступен: пустой кэш входа и krb5.conf в никуда."""
+    def dead_kdc(tmp_path: Path) -> tuple[SsoTickets, str]:
+        """KDC недоступен: в билете один TGT (за билетом к базе идти в никуда)."""
         conf = tmp_path / "krb5-dead.conf"
-        conf.write_text(Registries._dead_kdc_conf())
-
-        ccache = f"FILE:{tmp_path / 'empty'}"
-
-        built = CcacheRegistry(
-            mode=DelegationMode.FORWARDED,
-            renew=False,
-            krb5_config=str(conf),
+        conf.write_text(Tickets._dead_kdc_conf())
+        credentials = KeytabCredentials.of(
+            KeytabAuth(
+                method="kerberos_keytab",
+                principal=SERVICE_PRINCIPAL,
+                keytab=str(SERVICE_KEYTAB),
+            )
         )
-        built.register(UserCcache(SERVICE_PRINCIPAL, ccache, LOGIN))
-        return built
+        credentials.ensure()
+        tgt_only = f"FILE:{tmp_path / 'tgt-only'}"
+        Tickets._copy_tgt(credentials.ccache, tgt_only)
+        tickets = SsoTickets(
+            sealer=SsoStand.tickets(str(conf)).sealer, krb5_config=str(conf)
+        )
+        sealed = SsoStand.sealed(
+            tickets, SERVICE_PRINCIPAL, tgt_only, DelegationMode.FORWARDED, 3600
+        )
+        return tickets, sealed
+
+    @staticmethod
+    def _copy_tgt(source: str, target: str) -> None:
+        """Только TGT источника: кэшированные сервисные билеты остаются позади."""
+        context = krb5.init_context()
+        origin = krb5.cc_resolve(context, source.encode())
+        principal = krb5.cc_get_principal(context, origin)
+        cache = krb5.cc_resolve(context, target.encode())
+        krb5.cc_initialize(context, cache, principal)
+        for cred in origin:
+            server = krb5.unparse_name_flags(context, cred.server).decode()
+            if not server.startswith("krbtgt/"):
+                continue
+
+            krb5.cc_store_cred(context, cache, cred)
 
     @staticmethod
     def _dead_kdc_conf() -> str:
@@ -188,12 +217,12 @@ class Registries:
 
 class Session:
     @staticmethod
-    def sso(principal: str, login: str) -> dict[str, object]:
+    def sso(principal: str, sealed: str) -> dict[str, object]:
         return {
             UserMetadataField.ROLES: [ROLE],
             UserMetadataField.PROVIDER: KerberosAuth.__name__,
             UserMetadataField.PRINCIPAL: principal,
-            UserMetadataField.LOGIN: login,
+            UserMetadataField.TICKET: sealed,
         }
 
     @staticmethod
@@ -238,7 +267,7 @@ class Guarded:
     """Инструмент с обвязкой соединений и охранником ошибок, как в приложении."""
 
     @staticmethod
-    def pg(raw_config: Any, store: ConnectionStore, registry: CcacheRegistry | None):
+    def pg(raw_config: Any, store: ConnectionStore, tickets: SsoTickets | None):
         schema = create_model(
             "GuardedPgArgs",
             connection_name=(str, ...),
@@ -249,7 +278,7 @@ class Guarded:
             return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
         spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
-        return Guarded._build(schema, store, registry, spec, resolve)
+        return Guarded._build(schema, store, tickets, spec, resolve)
 
     @staticmethod
     def web(raw_config: Any, store: ConnectionStore):
@@ -267,7 +296,7 @@ class Guarded:
         return Guarded._build(schema, store, None, spec, resolve)
 
     @staticmethod
-    def _build(schema, store, registry, spec, resolve) -> StructuredTool:
+    def _build(schema, store, tickets, spec, resolve) -> StructuredTool:
         async def body(**kwargs: object) -> tuple[str, dict[str, object]]:
             return "ok", kwargs
 
@@ -279,9 +308,7 @@ class Guarded:
             response_format="content_and_artifact",
         )
 
-        UserConnections.bind_all(
-            [tool], lambda: store, lambda: registry, spec, resolve
-        )
+        UserConnections.bind_all([tool], lambda: store, lambda: tickets, spec, resolve)
         InjectedConfig.bind_all([tool], resolve)
         ToolErrorGuard.guard_all([tool])
         return tool
@@ -326,10 +353,10 @@ class TestDelegationUnavailable:
     async def test_sso_not_configured(
         self, raw_config, store, layer, delegated_pg, tmp_path: Path
     ) -> None:
-        sso = Session.sso(SERVICE_PRINCIPAL, LOGIN)
+        sso = Session.sso(SERVICE_PRINCIPAL, "sealed-unused")
         user = await Session.user(layer, "f-no-sso", sso)
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, Session.sso(SERVICE_PRINCIPAL, LOGIN))
+        Session.enter(user, sso)
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, None), connection_name="main"
@@ -350,7 +377,7 @@ class TestDelegationUnavailable:
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.healthy(tmp_path)),
+            Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
             connection_name="main",
         )
 
@@ -372,7 +399,7 @@ class TestDelegationUnavailable:
         Session.enter(user, metadata)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.healthy(tmp_path)),
+            Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
             connection_name="main",
         )
 
@@ -384,37 +411,42 @@ class TestDelegationUnavailable:
         )
 
     @live_kdc
-    async def test_login_unknown_after_restart(
+    async def test_ticket_sealed_by_another_secret(
         self, raw_config, store, layer, delegated_pg, tmp_path: Path
     ) -> None:
-        """JWT пережил рестарт приложения: тикета входа в реестре нет."""
-        metadata = Session.sso(SERVICE_PRINCIPAL, "login-before-restart")
-        user = await Session.user(layer, "f-restart", metadata)
+        """Билет запечатан другим секретом (другой инстанс): открыть его нельзя."""
+        healthy = Tickets.healthy(tmp_path)
+        foreign = SsoTickets(
+            sealer=TicketSealer("another-secret"), krb5_config=str(KRB5_CONF)
+        )
+        sealed = foreign.sealer.seal(healthy[0].open(healthy[1]))
+        metadata = Session.sso(SERVICE_PRINCIPAL, sealed)
+        user = await Session.user(layer, "f-foreign-secret", metadata)
         await _grant_delegated(store, delegated_pg, user)
         Session.enter(user, metadata)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.healthy(tmp_path)),
-            connection_name="main",
+            Guarded.pg(raw_config, store, healthy[0]), connection_name="main"
         )
 
         _expect(
             result,
             ConnectionRefusal.NO_DELEGATION,
-            "delegated Kerberos ticket",
-            "the application restarted",
+            "does not open",
+            "sign in again",
         )
 
     async def test_delegated_ticket_expired(
         self, raw_config, store, layer, delegated_pg, tmp_path: Path
     ) -> None:
-        sso = Session.sso(SERVICE_PRINCIPAL, LOGIN)
+        tickets, sealed = Tickets.expired(tmp_path)
+        sso = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-expired", sso)
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, Session.sso(SERVICE_PRINCIPAL, LOGIN))
+        Session.enter(user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.expired(tmp_path)),
+            Guarded.pg(raw_config, store, tickets),
             connection_name="main",
         )
 
@@ -423,30 +455,32 @@ class TestDelegationUnavailable:
     async def test_kdc_unreachable(
         self, raw_config, store, layer, delegated_pg, tmp_path: Path
     ) -> None:
-        sso = Session.sso(SERVICE_PRINCIPAL, LOGIN)
+        tickets, sealed = Tickets.dead_kdc(tmp_path)
+        sso = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-kdc", sso)
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, Session.sso(SERVICE_PRINCIPAL, LOGIN))
+        Session.enter(user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.dead_kdc(tmp_path)),
+            Guarded.pg(raw_config, store, tickets),
             connection_name="main",
         )
 
-        _expect(result, "CredentialsExpiredError", "expired")
+        _expect(result, "KerberosError", "KDC")
 
     @live_kdc
     async def test_service_unknown_to_kdc(
         self, raw_config, store, layer, delegated_pg, tmp_path: Path
     ) -> None:
         nowhere = delegated_pg.model_copy(update={"host": UNKNOWN_HOST})
-        sso = Session.sso(SERVICE_PRINCIPAL, LOGIN)
+        tickets, sealed = Tickets.healthy(tmp_path)
+        sso = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-spn", sso)
         await _grant_delegated(store, nowhere, user)
-        Session.enter(user, Session.sso(SERVICE_PRINCIPAL, LOGIN))
+        Session.enter(user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.healthy(tmp_path)),
+            Guarded.pg(raw_config, store, tickets),
             connection_name="main",
         )
 
@@ -458,18 +492,17 @@ class TestDelegationUnavailable:
     ) -> None:
         strict = service_pg.model_copy(
             update={
-                "auth": DelegatedAuth(
-                    method="kerberos_delegated", min_lifetime=10**9
-                )
+                "auth": DelegatedAuth(method="kerberos_delegated", min_lifetime=10**9)
             }
         )
-        sso = Session.sso(SERVICE_PRINCIPAL, LOGIN)
+        tickets, sealed = Tickets.healthy(tmp_path)
+        sso = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-short", sso)
         await _grant_delegated(store, strict, user)
-        Session.enter(user, Session.sso(SERVICE_PRINCIPAL, LOGIN))
+        Session.enter(user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.healthy(tmp_path)),
+            Guarded.pg(raw_config, store, tickets),
             connection_name="main",
         )
 
@@ -493,7 +526,7 @@ class TestRefusalText:
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.healthy(tmp_path)),
+            Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
             connection_name="main",
         )
 
@@ -510,7 +543,7 @@ class TestRefusalText:
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Registries.healthy(tmp_path)),
+            Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
             connection_name="main",
         )
 

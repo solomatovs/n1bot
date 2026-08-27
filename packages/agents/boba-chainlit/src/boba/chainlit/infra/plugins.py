@@ -34,8 +34,8 @@ from boba.chainlit.infra.config import ProfilesSection, RolesSection
 from boba.chainlit.infra.session import current_session, session_source_ref
 from boba.chainlit.infra.tickets import ServiceTickets
 from boba.chainlit.infra.user_connections import (
-    RegistryRef,
     StoreRef,
+    TicketsRef,
     UserConnections,
     UserConnectionsSpec,
 )
@@ -419,7 +419,7 @@ def _module_tools(  # noqa: PLR0913 — состав загрузки секци
     raw_config: DictConfig,
     zygote_policy: ZygotePolicy,
     store_ref: StoreRef,
-    registry_ref: RegistryRef,
+    tickets_ref: TicketsRef,
 ) -> list[BaseTool]:
     """Функции модуля новой модели: обёртка запуска + partial конфига.
 
@@ -444,7 +444,7 @@ def _module_tools(  # noqa: PLR0913 — состав загрузки секци
     resolve = _config_resolver(raw_config)
     if plugin.connections is not None:
         UserConnections.bind_all(
-            functions, store_ref, registry_ref, plugin.connections, resolve
+            functions, store_ref, tickets_ref, plugin.connections, resolve
         )
 
     ServiceTickets.bind_all(functions, resolve)
@@ -520,7 +520,7 @@ def _plugin_tools(  # noqa: PLR0913 — состав загрузки секци
     raw_config: DictConfig,
     zygote_policy: ZygotePolicy,
     store_ref: StoreRef,
-    registry_ref: RegistryRef,
+    tickets_ref: TicketsRef,
 ) -> list[BaseTool]:
     """Инструменты плагина: фабричные старого пути плюс функции модуля."""
     cfg: ConfigT = None
@@ -535,7 +535,7 @@ def _plugin_tools(  # noqa: PLR0913 — состав загрузки секци
 
     built.extend(
         _module_tools(
-            plugin, meta, profile, raw_config, zygote_policy, store_ref, registry_ref
+            plugin, meta, profile, raw_config, zygote_policy, store_ref, tickets_ref
         )
     )
     return built
@@ -592,7 +592,7 @@ def _require_connections(raw_config: DictConfig, name: str) -> None:
 
 
 def load_tools(
-    raw_config: DictConfig, store_ref: StoreRef, registry_ref: RegistryRef
+    raw_config: DictConfig, store_ref: StoreRef, tickets_ref: TicketsRef
 ) -> ToolRegistry:
     zygote_policy = bind(raw_config, "sandbox", SandboxRequire).zygote
 
@@ -614,7 +614,7 @@ def load_tools(
             raw_config,
             zygote_policy,
             store_ref,
-            registry_ref,
+            tickets_ref,
         )
         tools.extend(built)
 

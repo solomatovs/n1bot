@@ -27,7 +27,7 @@ __all__ = [
     "Session",
     "SessionKind",
     "SessionSource",
-    "SsoMarks",
+    "SsoTicket",
     "UserLogin",
     "UserMetadataField",
 ]
@@ -38,7 +38,7 @@ class UserMetadataField:
 
     PROVIDER: Final = "provider"
     PRINCIPAL: Final = "principal"
-    LOGIN: Final = "sso_login"
+    TICKET: Final = "sso_ticket"
     ROLES: Final = "roles"
     LLM: Final = "llm"
 
@@ -63,24 +63,24 @@ class UserLogin:
 
 
 @dataclass(frozen=True)
-class SsoMarks:
-    """Метки SSO-входа в подписанном JWT: чей тикет и какому входу он выдан."""
+class SsoTicket:
+    """Запечатанный билет SSO-входа в подписанном JWT: чей он и сам шифротекст."""
 
     principal: str
-    login: str
+    sealed: str
 
     @classmethod
-    def of_metadata(cls, metadata: Mapping[str, object]) -> SsoMarks | None:
-        """Метки из metadata пользователя; None — вход не нёс делегирования."""
+    def of_metadata(cls, metadata: Mapping[str, object]) -> SsoTicket | None:
+        """Билет из metadata пользователя; None — вход не нёс делегирования."""
         principal = metadata.get(UserMetadataField.PRINCIPAL)
         if not isinstance(principal, str) or not principal:
             return None
 
-        login = metadata.get(UserMetadataField.LOGIN)
-        if not isinstance(login, str) or not login:
+        sealed = metadata.get(UserMetadataField.TICKET)
+        if not isinstance(sealed, str) or not sealed:
             return None
 
-        return cls(principal=principal, login=login)
+        return cls(principal=principal, sealed=sealed)
 
 
 class LogLine:

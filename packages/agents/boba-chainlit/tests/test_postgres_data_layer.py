@@ -84,7 +84,7 @@ async def test_create_user_keeps_the_sign_in_label_on_the_caller(
         metadata={
             UserMetadataField.PROVIDER: "KerberosAuth",
             UserMetadataField.PRINCIPAL: "user@EXAMPLE.COM",
-            UserMetadataField.LOGIN: "label-of-this-sign-in",
+            UserMetadataField.TICKET: "sealed-ticket-of-this-sign-in",
             UserMetadataField.ROLES: ["read"],
         },
     )
@@ -93,10 +93,10 @@ async def test_create_user_keeps_the_sign_in_label_on_the_caller(
     if created is None:
         raise AssertionError("user must be created")
 
-    if user.metadata.get(UserMetadataField.LOGIN) != "label-of-this-sign-in":
+    if user.metadata.get(UserMetadataField.TICKET) != "sealed-ticket-of-this-sign-in":
         raise AssertionError(f"label must survive persisting: {user.metadata}")
 
-    if UserMetadataField.LOGIN in created.metadata:
+    if UserMetadataField.TICKET in created.metadata:
         raise AssertionError(f"label must not reach the users row: {created.metadata}")
 
 

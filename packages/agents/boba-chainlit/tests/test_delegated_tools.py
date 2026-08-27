@@ -23,6 +23,7 @@ import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
+from conftest import SsoStand
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
 from pydantic import SecretStr
@@ -30,7 +31,7 @@ from stand_site import Stand
 from test_tools_integration import Call, ToolSetup
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
-from boba.chainlit.auth.kerberos import KerberosAuth
+from boba.chainlit.auth.kerberos import KerberosAuth, SsoTickets
 from boba.chainlit.connections import (
     ConnectionKind,
     ConnectionProfile,
@@ -50,12 +51,10 @@ from boba.db.clickhouse import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresConfig
 from boba.krb import (
     AcceptConfig,
-    CcacheRegistry,
     ConstrainedDelegation,
     DelegatedAuth,
-    DelegationMode,
-    KerberosDelegation,
     SpnegoAcceptor,
+    TicketCapture,
 )
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
@@ -157,9 +156,7 @@ class Browser:
 
         creds = Credentials(usage="initiate", store={b"ccache": ccache.encode()})
         target = Name(SERVICE_SPN, NameType.kerberos_principal)
-        initiator = SecurityContext(
-            name=target, creds=creds, usage="initiate", flags=0
-        )
+        initiator = SecurityContext(name=target, creds=creds, usage="initiate", flags=0)
         return initiator.step()
 
 
@@ -172,37 +169,31 @@ def user_password(raw_config: Any) -> str:
 
 
 @pytest.fixture
-def sso_login(tmp_path: Path, user_password: str) -> tuple[CcacheRegistry, str]:
-    """Вход по SPNEGO: реестр с evidence-кредами и метка этого входа."""
+def sso_login(tmp_path: Path, user_password: str) -> tuple[SsoTickets, str]:
+    """Вход по SPNEGO: открыватель билетов и запечатанный билет этого входа."""
     delegation = ConstrainedDelegation(
-        ccache_template=f"FILE:{tmp_path}/login-{{login}}",
         service_ccache=f"FILE:{tmp_path / 'service'}",
         krb5_config=str(KRB5_CONF),
     )
     accept = AcceptConfig(service_name=SERVICE_SPN, keytab=str(SERVICE_KEYTAB))
-    registry = CcacheRegistry(
-        mode=DelegationMode.CONSTRAINED, renew=False, krb5_config=str(KRB5_CONF)
-    )
-
     token = Browser.token(tmp_path, user_password)
     identity = SpnegoAcceptor(accept, delegation).accept(token)
-    login = KerberosDelegation(registry, accept, delegation).on_success_authenticated(
-        identity
-    )
-    if not login:
+    ticket = TicketCapture(delegation).capture(identity)
+    if ticket is None:
         raise AssertionError("constrained sign-in captured no evidence credentials")
 
-    return registry, login
+    tickets = SsoStand.tickets(str(KRB5_CONF))
+    return tickets, tickets.sealer.seal(ticket)
 
 
 @pytest.fixture
-def registry(sso_login: tuple[CcacheRegistry, str]) -> CcacheRegistry:
+def tickets(sso_login: tuple[SsoTickets, str]) -> SsoTickets:
     return sso_login[0]
 
 
 @pytest.fixture
 async def session(
-    layer: PostgresDataLayer, sso_login: tuple[CcacheRegistry, str]
+    layer: PostgresDataLayer, sso_login: tuple[SsoTickets, str]
 ) -> PersistedUser:
     """Пользователь чата, вошедший этим SSO-входом: метки лежат в JWT сессии."""
     from chainlit.auth.jwt import create_jwt
@@ -212,7 +203,7 @@ async def session(
         UserMetadataField.ROLES: [ROLE],
         UserMetadataField.PROVIDER: KerberosAuth.__name__,
         UserMetadataField.PRINCIPAL: PRINCIPAL,
-        UserMetadataField.LOGIN: sso_login[1],
+        UserMetadataField.TICKET: sso_login[1],
     }
     user = await layer.create_user(
         ChainlitUser(identifier="delegated-tools", metadata=metadata)
@@ -232,7 +223,7 @@ class Tools:
     def of(  # noqa: PLR0913 — секция описывается всеми своими частями сразу
         raw_config: Any,
         store: ConnectionStore,
-        registry: CcacheRegistry,
+        tickets: SsoTickets,
         *,
         section: str,
         module_name: str,
@@ -252,7 +243,7 @@ class Tools:
 
         spec = UserConnectionsSpec(kind, ConnectionKeying.NAME)
         UserConnections.bind_all(
-            functions, lambda: store, lambda: registry, spec, resolve
+            functions, lambda: store, lambda: tickets, spec, resolve
         )
         InjectedConfig.bind_all(functions, resolve)
 
@@ -260,11 +251,11 @@ class Tools:
 
 
 @pytest.fixture
-def pg_tools(raw_config: Any, store: ConnectionStore, registry: CcacheRegistry):
+def pg_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
     return Tools.of(
         raw_config,
         store,
-        registry,
+        tickets,
         section="pg",
         module_name="boba.tool.pg.tools",
         config_model=PgToolConfig,
@@ -273,11 +264,11 @@ def pg_tools(raw_config: Any, store: ConnectionStore, registry: CcacheRegistry):
 
 
 @pytest.fixture
-def ch_tools(raw_config: Any, store: ConnectionStore, registry: CcacheRegistry):
+def ch_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
     return Tools.of(
         raw_config,
         store,
-        registry,
+        tickets,
         section="ch",
         module_name="boba.tool.ch.tools",
         config_model=ChToolConfig,
@@ -286,11 +277,11 @@ def ch_tools(raw_config: Any, store: ConnectionStore, registry: CcacheRegistry):
 
 
 @pytest.fixture
-def web_tools(raw_config: Any, store: ConnectionStore, registry: CcacheRegistry):
+def web_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
     return Tools.of(
         raw_config,
         store,
-        registry,
+        tickets,
         section="web",
         module_name="boba.tool.web.tools",
         config_model=WebGrepConfig,

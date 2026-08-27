@@ -12,19 +12,14 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 
-import krb5
 import pytest
 from stand_site import Stand
 
 from boba.krb import (
-    CcacheRegistry,
-    DelegationMode,
     KerberosEnv,
     KerberosWorkspace,
     KeytabAuth,
     KeytabCredentials,
-    RefreshWaiters,
-    UserCcache,
 )
 
 STAND = Stand.required()
@@ -82,8 +77,6 @@ def auth(principal: str = PRINCIPAL) -> KeytabAuth:
 
 def credentials(principal: str = PRINCIPAL) -> KeytabCredentials:
     return KeytabCredentials.of(auth(principal))
-
-
 
 
 class TestKerberosWorkspace:
@@ -307,120 +300,3 @@ class TestKeytabCredentials:
         for creds in (first, second):
             if not Path(creds.ccache.removeprefix("FILE:")).is_file():
                 raise AssertionError(f"ticket was not written to {creds.ccache}")
-
-
-class TestRefreshWaiters:
-    """Ожидание повторного входа: будит регистрация кредов, иначе таймаут."""
-
-    def test_notify_wakes_the_waiter(self) -> None:
-        waiters = RefreshWaiters()
-
-        async def main() -> bool:
-            with waiters.arm("login-1") as waiting:
-                waiters.notify("login-1")
-                return await waiting.wait(5.0)
-
-        if not asyncio.run(main()):
-            raise AssertionError("notify must wake the waiter")
-
-    def test_notify_before_the_wait_is_not_lost(self) -> None:
-        """Обмен успел раньше ожидания: заведённое заранее событие его удержит."""
-        waiters = RefreshWaiters()
-
-        async def main() -> bool:
-            with waiters.arm("login-early") as waiting:
-                waiters.notify("login-early")
-                await asyncio.sleep(0.01)
-                return await waiting.wait(0.05)
-
-        if not asyncio.run(main()):
-            raise AssertionError("an early refresh must still end the wait")
-
-    def test_timeout_reports_no_refresh(self) -> None:
-        waiters = RefreshWaiters()
-
-        async def main() -> bool:
-            with waiters.arm("login-2") as waiting:
-                return await waiting.wait(0.05)
-
-        if asyncio.run(main()):
-            raise AssertionError("nobody refreshed: wait must report a timeout")
-
-    def test_another_login_does_not_wake(self) -> None:
-        waiters = RefreshWaiters()
-
-        async def main() -> bool:
-            with waiters.arm("login-3") as waiting:
-                waiters.notify("login-4")
-                return await waiting.wait(0.05)
-
-        if asyncio.run(main()):
-            raise AssertionError("a foreign login must not wake the waiter")
-
-    def test_waiting_is_forgotten_when_released(self) -> None:
-        """Вкладку закрыли без logout: ожидание не должно копиться в процессе."""
-        waiters = RefreshWaiters()
-
-        async def main() -> None:
-            with waiters.arm("login-gone") as waiting:
-                await waiting.wait(0.01)
-
-        asyncio.run(main())
-
-        if waiters._events:
-            raise AssertionError(f"released waiting must be gone: {waiters._events}")
-
-    def test_registering_credentials_wakes_the_waiter(self, tmp_path: Path) -> None:
-        """Ожидание снимает сам факт регистрации: реестр будит без посредников."""
-        registry = CcacheRegistry(
-            mode=DelegationMode.FORWARDED,
-            renew=False,
-            krb5_config=str(KRB5_CONF),
-        )
-        ccache = f"FILE:{tmp_path / 'login'}"
-
-        async def main() -> bool:
-            with registry.arm_refresh("login-5") as waiting:
-                registry.register(UserCcache(PRINCIPAL, ccache, "login-5"))
-                return await waiting.wait(5.0)
-
-        if not asyncio.run(main()):
-            raise AssertionError("registration must wake the waiter of that login")
-
-
-@pytest.mark.integration
-@live_kdc
-class TestRegistryForgetsTickets:
-    """Тикет входа не переживает свой вход: ccache стирается, а не забывается."""
-
-    def test_drop_destroys_the_ccache(self, workspace: Path, tmp_path: Path) -> None:
-        registry = CcacheRegistry(
-            mode=DelegationMode.FORWARDED,
-            renew=False,
-            krb5_config=str(KRB5_CONF),
-        )
-        source = credentials()
-        source.ensure()
-
-        ccache = f"FILE:{tmp_path / 'login'}"
-        _copy_ccache(source.ccache, ccache)
-        path = Path(ccache.removeprefix("FILE:"))
-        if not path.is_file():
-            raise AssertionError("the sign-in ccache must exist before the drop")
-
-        registry.register(UserCcache(PRINCIPAL, ccache, "login-drop"))
-        registry.drop("login-drop")
-
-        if path.exists():
-            raise AssertionError("logout must destroy the ticket, not just forget it")
-
-
-def _copy_ccache(source: str, target: str) -> None:
-    """Тикет источника в свой ccache: так делегирование кладёт креды входа."""
-    context = krb5.init_context()
-    origin = krb5.cc_resolve(context, source.encode())
-    principal = krb5.cc_get_principal(context, origin)
-    cache = krb5.cc_resolve(context, target.encode())
-    krb5.cc_initialize(context, cache, principal)
-    for cred in origin:
-        krb5.cc_store_cred(context, cache, cred)

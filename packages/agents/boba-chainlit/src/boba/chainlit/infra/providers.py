@@ -28,7 +28,7 @@ from boba.chainlit.agent.flow import (
     PrefetchGraphBuilder,
     Rephraser,
 )
-from boba.chainlit.auth.kerberos import KerberosAuth
+from boba.chainlit.auth.kerberos import KerberosAuth, SsoTickets
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.connections import ConnectionsConfig, ConnectionStore
@@ -56,7 +56,6 @@ from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
-from boba.krb import CcacheRegistry
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import (
     GeneratorFactory,
@@ -163,8 +162,8 @@ def kerberos_auth() -> KerberosAuth | None:
     raise RuntimeError(msg)
 
 
-def ccache_registry_ref() -> CcacheRegistry | None:
-    """Реестр делегированных тикетов; None — SSO kerberos не настроен."""
+def sso_tickets_ref() -> SsoTickets | None:
+    """Открыватель билетов SSO-входа; None — SSO kerberos не настроен."""
     root = Container.root
     if root is None:
         msg = "DI container is not initialised"
@@ -174,7 +173,7 @@ def ccache_registry_ref() -> CcacheRegistry | None:
     if auth is None:
         return None
 
-    return auth.registry
+    return auth.tickets()
 
 
 def session_source() -> SessionSource:
@@ -200,7 +199,7 @@ def connection_store_ref() -> ConnectionStore:
 def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> ToolRegistry:
-    return load_tools(raw, connection_store_ref, ccache_registry_ref)
+    return load_tools(raw, connection_store_ref, sso_tickets_ref)
 
 
 def session_tools(
@@ -561,9 +560,7 @@ def session_chat_provider(
 
 
 def session_chat(
-    provider: Annotated[
-        ChatProvider, Depends(session_chat_provider, scope="session")
-    ],
+    provider: Annotated[ChatProvider, Depends(session_chat_provider, scope="session")],
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],

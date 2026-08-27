@@ -23,7 +23,7 @@ dependencies = [
     "boba-db-clickhouse==0.0.14.dev9",
     "boba-sandbox==0.0.14.dev9",
     "boba-transport-http==0.0.14.dev9",
-    "boba-krb==0.0.14.dev9",
+    "boba-krb[seal]==0.0.14.dev9",
     "boba-llm[chat]==0.0.14.dev9",
     "ldap3",
     "cryptography>=42,<51",

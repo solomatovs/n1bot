@@ -16,13 +16,14 @@ from typing import Any
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
+from conftest import SsoStand
 from psycopg import sql
 from pydantic import SecretStr
 from stand_site import Stand
 from test_tools_integration import Call, ToolSetup
 
 from boba.chainlit.agent.toolrun.injected import InjectedConfig
-from boba.chainlit.auth.kerberos import KerberosAuth
+from boba.chainlit.auth.kerberos import KerberosAuth, SsoTickets
 from boba.chainlit.connections import (
     ConnectionKind,
     ConnectionsConfig,
@@ -41,12 +42,10 @@ from boba.chainlit.infra.user_connections import (
 )
 from boba.db.postgres import AsyncPostgresPool, PasswordAuth, PostgresConfig
 from boba.krb import (
-    CcacheRegistry,
     DelegatedAuth,
     DelegationMode,
     KeytabAuth,
     KeytabCredentials,
-    UserCcache,
 )
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
@@ -121,13 +120,12 @@ def service_pg(raw_config: Any) -> PostgresConfig:
 STAND = Stand.required()
 SERVICE_PRINCIPAL = STAND.service_principal
 SERVICE_USER = STAND.krb_pg_user
-SERVICE_LOGIN = "login-e2e"
 CH_URL = f"http://{STAND.ch_addr}:{STAND.ch_port}"
 
 
 @pytest.fixture
-def registry(tmp_path: Path) -> CcacheRegistry:
-    """Делегированный тикет входа: TGT сервисной учётки из keytab стенда."""
+def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
+    """Билет входа стенда: TGT сервисной учётки из keytab, запечатанный для JWT."""
     credentials = KeytabCredentials.of(
         KeytabAuth(
             method="kerberos_keytab",
@@ -136,20 +134,16 @@ def registry(tmp_path: Path) -> CcacheRegistry:
         )
     )
     credentials.ensure()
-    ccache = credentials.ccache
-
-    built = CcacheRegistry(
-        mode=DelegationMode.FORWARDED,
-        renew=False,
-        krb5_config=STAND.krb_config,
+    tickets = SsoStand.tickets(STAND.krb_config)
+    sealed = SsoStand.sealed(
+        tickets, SERVICE_PRINCIPAL, credentials.ccache, DelegationMode.FORWARDED, 3600
     )
-    built.register(UserCcache(SERVICE_PRINCIPAL, ccache, SERVICE_LOGIN))
-    return built
+    return tickets, sealed
 
 
 @pytest.fixture
 def pg_tools(
-    raw_config: Any, store: ConnectionStore, registry: CcacheRegistry
+    raw_config: Any, store: ConnectionStore, sso: tuple[SsoTickets, str]
 ) -> dict[str, Any]:
     """pg-инструменты с боевой обвязкой соединений пользователя."""
     from importlib import reload
@@ -166,9 +160,7 @@ def pg_tools(
         return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
     spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
-    UserConnections.bind_all(
-        functions, lambda: store, lambda: registry, spec, resolve
-    )
+    UserConnections.bind_all(functions, lambda: store, lambda: sso[0], spec, resolve)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
@@ -197,8 +189,8 @@ class Session:
         init_http_context(user=user)
 
     @staticmethod
-    def enter_sso(user: PersistedUser, principal: str, login: str) -> None:
-        """Сессия с JWT SSO-входа: провайдер, принципал и метка входа."""
+    def enter_sso(user: PersistedUser, principal: str, sealed: str) -> None:
+        """Сессия с JWT SSO-входа: провайдер, принципал и запечатанный билет."""
         from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
 
@@ -206,7 +198,7 @@ class Session:
             UserMetadataField.ROLES: [ROLE],
             UserMetadataField.PROVIDER: KerberosAuth.__name__,
             UserMetadataField.PRINCIPAL: principal,
-            UserMetadataField.LOGIN: login,
+            UserMetadataField.TICKET: sealed,
         }
         token = create_jwt(ChainlitUser(identifier=user.identifier, metadata=metadata))
         init_http_context(user=user, auth_token=token)
@@ -324,6 +316,7 @@ async def test_ambiguous_name_is_refused(
 
 
 async def test_delegated_connection_runs_as_the_session_principal(
+    sso: tuple[SsoTickets, str],
     pg_tools: dict[str, Any],
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -336,7 +329,7 @@ async def test_delegated_connection_runs_as_the_session_principal(
     )
     connection_id = await store.add("mine", delegated)
     await store.grant(connection_id, GrantTarget.user(int(user.id)))
-    Session.enter_sso(user, SERVICE_PRINCIPAL, SERVICE_LOGIN)
+    Session.enter_sso(user, SERVICE_PRINCIPAL, sso[1])
 
     result = await Call.ok(
         pg_tools["pg_query"],
@@ -399,7 +392,7 @@ async def test_unreachable_database_is_reported_by_the_body(
 
 @pytest.fixture
 def web_tools(
-    raw_config: Any, store: ConnectionStore, registry: CcacheRegistry
+    raw_config: Any, store: ConnectionStore, sso: tuple[SsoTickets, str]
 ) -> dict[str, Any]:
     """web-инструменты с боевой обвязкой соединений пользователя."""
     from importlib import reload
@@ -416,15 +409,14 @@ def web_tools(
         return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
     spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
-    UserConnections.bind_all(
-        functions, lambda: store, lambda: registry, spec, resolve
-    )
+    UserConnections.bind_all(functions, lambda: store, lambda: sso[0], spec, resolve)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
 
 
 async def test_web_negotiate_connection_authenticates_as_the_principal(
+    sso: tuple[SsoTickets, str],
     web_tools: dict[str, Any],
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -442,7 +434,7 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
     )
     connection_id = await store.add("ch-http", row)
     await store.grant(connection_id, GrantTarget.user(int(user.id)))
-    Session.enter_sso(user, SERVICE_PRINCIPAL, SERVICE_LOGIN)
+    Session.enter_sso(user, SERVICE_PRINCIPAL, sso[1])
 
     result = await Call.ok(
         web_tools["web_fetch_page"],
