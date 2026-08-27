@@ -18,5 +18,5 @@ export default tseslint.config(
       "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
     },
   },
-  { ignores: ["dist", "node_modules", "eslint.config.js", "vite.config.ts"] },
+  { ignores: ["dist", "node_modules", "eslint.config.js", "vite.config.ts", "src/api/schema.d.ts"] },
 );

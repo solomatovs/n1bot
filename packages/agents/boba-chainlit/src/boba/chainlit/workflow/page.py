@@ -85,7 +85,7 @@ class PageStamp:
     def render(self, html: str) -> str:
         config = {
             "prefix": self._prefix,
-            "apiPrefix": ApiApp.v1_prefix(self._prefix),
+            "apiPrefix": ApiApp.mount_prefix(self._prefix),
             "socketPath": ApiApp.socket_path(self._prefix),
         }
         stamp = (

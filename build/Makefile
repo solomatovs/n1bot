@@ -350,7 +350,7 @@ BOBA_URL_PREFIX ?= /boba-debug
 WEB_DEV_URL      = http://127.0.0.1:$(WEB_DEV_PORT)$(BOBA_URL_PREFIX)/workflow-dev/
 WEB_DEV_WAIT    ?= 180
 .PHONY: web-dev web-dev-stop
-web-dev:
+web-dev: openapi
 	@running=$$(docker ps --filter name=^$(WEB_DEV_NAME)$$ --format '{{.Label "boba.url_prefix"}}')
 	if [ "$$running" = "$(BOBA_URL_PREFIX)" ] && curl -sf -m 3 -o /dev/null "$(WEB_DEV_URL)"; then
 	    echo "  ✓ $(WEB_DEV_NAME) is running: $(WEB_DEV_URL)"
@@ -362,7 +362,7 @@ web-dev:
 	    -u "$$(id -u):$$(id -g)" -e HOME=/tmp -e BOBA_URL_PREFIX=$(BOBA_URL_PREFIX) \
 	    -p 127.0.0.1:$(WEB_DEV_PORT):5173 \
 	    -v "$(WEB_DIR):/pkg" -w /pkg/web/workflow $(NODE_IMAGE) \
-	    -c '[ -d node_modules ] || npm ci --no-audit --no-fund; exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort --base $(BOBA_URL_PREFIX)/workflow-dev/'
+	    -c '[ -d node_modules ] || npm ci --no-audit --no-fund; npm run generate; exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort --base $(BOBA_URL_PREFIX)/workflow-dev/'
 	for i in $$(seq $(WEB_DEV_WAIT)); do
 	    if curl -sf -m 3 -o /dev/null "$(WEB_DEV_URL)"; then
 	        echo "== $(WEB_DEV_NAME): vite is ready at $(WEB_DEV_URL), logs: docker logs -f $(WEB_DEV_NAME) =="
@@ -379,12 +379,20 @@ web-dev-stop:
 	docker rm -f $(WEB_DEV_NAME) >/dev/null 2>&1 || true
 
 # статика фронта: KaTeX (формулы), Inter (шрифт UI), mermaid (диаграммы) локально
+# схема API для фронта: openapi.json из приложения без хоста, TS-типы генерирует npm run generate
+VENV_PYTHON     ?= $(SRC_DIR)/.venv/bin/python
+OPENAPI_JSON     = $(WEB_DIR)/web/workflow/openapi.json
+.PHONY: openapi
+openapi:
+	$(VENV_PYTHON) -m boba.api.schema > "$(OPENAPI_JSON)"
+	@echo "== openapi: $(OPENAPI_JSON) =="
+
 .PHONY: webassets
-web:
+web: openapi
 	@echo "== workflow page: $(NODE_IMAGE) =="
 	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
 	    -v "$(WEB_DIR):/pkg" -w /pkg/web/workflow $(NODE_IMAGE) \
-	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
+	    -c 'npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build'
 	@du -sh $(WEB_DIR)/assets/public/workflow
 	# dev app_root держит копию public (симлинк chainlit отвергает как выход
 	# за пределы public): обновляем её, если dev-дерево уже собрано

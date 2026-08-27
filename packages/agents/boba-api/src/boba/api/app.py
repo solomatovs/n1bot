@@ -63,6 +63,6 @@ class ApiApp:
         return f"{url_prefix}{cls.MOUNT}{WorkflowSocket.PATH}"
 
     @classmethod
-    def v1_prefix(cls, url_prefix: str) -> str:
-        """Полный префикс REST v1 для страницы: {prefix}/api/v1."""
-        return f"{url_prefix}{cls.MOUNT}{ApiVersion.V1.value}"
+    def mount_prefix(cls, url_prefix: str) -> str:
+        """Полный префикс API для страницы: {prefix}/api; версия — в путях схемы."""
+        return f"{url_prefix}{cls.MOUNT}"

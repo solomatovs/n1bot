@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "check": "tsc --noEmit -p tsconfig.json && eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate": "openapi-typescript openapi.json --empty-objects-unknown -o src/api/schema.d.ts"
   },
   "dependencies": {
     "@dagrejs/dagre": "^1.1.4",
@@ -32,6 +33,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "eslint": "^9.20.0",
     "eslint-plugin-react-hooks": "^5.1.0",
+    "openapi-typescript": "^7.13.0",
     "typescript": "~5.8.0",
     "typescript-eslint": "^8.24.0",
     "vite": "^6.1.0",
