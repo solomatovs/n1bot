@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-toolkit"
-version = "0.0.14.dev8"
+version = "0.0.14.dev9"
 description = "Основание инструментов: песочница bwrap, workspace-образы, отмена хода и контракт результата."
 requires-python = ">=3.11,<4"
 dependencies = [
@@ -16,7 +16,8 @@ dependencies = [
 # в песочницу extra не ставится — omegaconf туда нельзя
 [project.optional-dependencies]
 config = [
-    "boba-settings==0.0.14.dev8",
+    "boba-settings==0.0.14.dev9",
+    "boba-krb==0.0.14.dev9",
 ]
 
 [tool.setuptools.packages.find]

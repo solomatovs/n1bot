@@ -42,7 +42,6 @@ from boba.connections.marks import (
     ClientLabel,
     ConnectionRefusal,
     ConnectionTrace,
-    LoginMark,
     UserConnectionsSpec,
 )
 from boba.connections.web import WebConnection
@@ -53,11 +52,11 @@ from boba.connections.whitelist import (
 from boba.identity.context import CallContext, DelegatedTicket
 from boba.identity.errors import RefusalError
 from boba.krb import (
-    CcacheRegistry,
-    DelegatedCredentials,
     KerberosCredentials,
-    RefreshWaiters,
+    SignInTicket,
+    TicketSealError,
 )
+from boba.krb.seal import SsoTickets
 from boba.toolkit.sql import SqlProfiles
 from boba.toolrun.injected import (
     AsyncInjected,
@@ -69,8 +68,8 @@ __all__ = [
     "ClientLabel",
     "ConnectionRefusal",
     "RefreshSignal",
-    "RegistryRef",
     "StoreRef",
+    "TicketsRef",
     "UserConnections",
     "UserConnectionsSpec",
     "UserKerberos",
@@ -81,8 +80,8 @@ logger = logging.getLogger(__name__)
 StoreRef = Callable[[], ConnectionStore]
 """Хранилище соединений; зовётся на вызов, а не при загрузке инструментов."""
 
-RegistryRef = Callable[[], CcacheRegistry | None]
-"""Реестр делегированных тикетов; None — SSO kerberos не настроен."""
+TicketsRef = Callable[[], SsoTickets | None]
+"""Открыватель билетов входа; None — SSO kerberos не настроен."""
 
 
 class WebArg(StrEnum):
@@ -100,10 +99,11 @@ class RefreshSignal(Protocol):
 
 
 class UserKerberos:
-    """Делегированные креды SSO-входа текущей сессии.
+    """Делегированные креды SSO-входа текущего вызова.
 
-    Тикет ищется по метке входа из JWT сессии: строка users общая для всех
-    способов входа, а JWT подписан приложением и описывает ровно этот вход.
+    Билет лежит запечатанным в JWT входа: строка users общая для всех способов
+    входа, а JWT подписан приложением и описывает ровно этот вход. Процесс
+    ничего не хранит — любой процесс с тем же секретом откроет билет.
     """
 
     REFRESH_BELOW: ClassVar[int] = 300
@@ -112,8 +112,8 @@ class UserKerberos:
     RETRY_HINT: ClassVar[str] = "retrying will not help until you sign in again"
     """Хвост отказа: агенту незачем повторять вызов, дело в самом входе."""
 
-    def __init__(self, registry_ref: RegistryRef, refresh: RefreshSignal) -> None:
-        self._registry_ref = registry_ref
+    def __init__(self, tickets_ref: TicketsRef, refresh: RefreshSignal) -> None:
+        self._tickets_ref = tickets_ref
         self._refresh = refresh
 
     @classmethod
@@ -133,54 +133,33 @@ class UserKerberos:
         raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
     async def ensure_fresh(self) -> None:
-        """Обновляет тикет входа молчаливым SPNEGO, пока сессия жива.
+        """Просит браузер обновить билет входа, когда тот на исходе.
 
-        Тикет входа короче сессии: constrained-креды не продлеваются, а JWT
-        живёт дальше. Вместо повторного логина браузер домена проходит обмен
-        ещё раз — незаметно для пользователя. Не получилось — работу продолжит
-        credentials() и объяснит отказ.
+        Обмен идёт молча и кладёт в сессию новый JWT; ждать его вызов не
+        обязан — пока билет жив, работает текущий, а истёкший объяснит
+        credentials().
         """
         sso = self._ticket()
-
-        registry = self._registry_ref()
-        if registry is None:
+        tickets = self._tickets_ref()
+        if tickets is None:
             return
 
-        if self._enough(registry.of_login(sso.login)):
+        ticket = self._opened(tickets, sso)
+        if ticket.lifetime() >= self.REFRESH_BELOW:
             return
 
         logger.info(
-            "kerberos: sign-in %s has no fresh ticket, asking the browser",
-            LoginMark.of(sso.login),
+            "kerberos: sign-in ticket of %s has %ds left, asking the browser",
+            sso.principal,
+            ticket.lifetime(),
         )
-
-        # ожидание заводится до просьбы: обмен может пройти быстрее нас
-        with registry.arm_refresh(sso.login) as waiting:
-            if not await self._refresh.send():
-                logger.info("kerberos: nobody is listening for the refresh signal")
-                return
-
-            refreshed = await waiting.wait(RefreshWaiters.TIMEOUT_SEC)
-
-        if refreshed:
-            logger.info("kerberos: sign-in %s refreshed its ticket", sso.principal)
-            return
-
-        logger.info("kerberos: sign-in %s did not refresh in time", sso.principal)
-
-    @classmethod
-    def _enough(cls, credentials: DelegatedCredentials | None) -> bool:
-        """Хватит ли тикета входа на вызов; чужие креды сюда не попадают."""
-        if credentials is None:
-            return False
-
-        return credentials.lifetime() >= cls.REFRESH_BELOW
+        if not await self._refresh.send():
+            logger.info("kerberos: nobody is listening for the refresh signal")
 
     def credentials(self) -> KerberosCredentials:
         sso = self._ticket()
-
-        registry = self._registry_ref()
-        if registry is None:
+        tickets = self._tickets_ref()
+        if tickets is None:
             msg = (
                 "this connection acts on your behalf, but Kerberos SSO is not "
                 "configured in this deployment: ask the administrator for a "
@@ -188,44 +167,34 @@ class UserKerberos:
             )
             raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
-        credentials = registry.of_login(sso.login)
-        if credentials is None:
-            logger.warning(
-                "kerberos: session of %s asks for sign-in %s, registry holds %s",
-                sso.principal,
-                LoginMark.of(sso.login),
-                [LoginMark.of(login) for login in registry.logins()],
-            )
+        ticket = self._opened(tickets, sso)
+        if ticket.principal != sso.principal:
             msg = (
-                f"the delegated Kerberos ticket of {sso.principal} is gone "
-                "(the application restarted or you signed out): sign in again; "
-                f"{self.RETRY_HINT}"
-            )
-            raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
-
-        if credentials.principal != sso.principal:
-            msg = (
-                f"the delegated ticket belongs to {credentials.principal} while "
+                f"the delegated ticket belongs to {ticket.principal} while "
                 f"this session is {sso.principal}: sign out and sign in again; "
                 f"{self.RETRY_HINT}"
             )
             raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
         logger.info(
-            "kerberos: tool acts as %s [sign-in %s] [ticket %ds]",
-            credentials.principal,
-            LoginMark.of(sso.login),
-            credentials.lifetime(),
+            "kerberos: tool acts as %s [ticket %ds]",
+            ticket.principal,
+            ticket.lifetime(),
         )
-        return credentials
 
-    def forget(self, sso: DelegatedTicket) -> None:
-        """Logout: тикет входа забывается, даже если JWT ещё не истёк."""
-        registry = self._registry_ref()
-        if registry is None:
-            return
+        return tickets.credentials_of(ticket)
 
-        registry.drop(sso.login)
+    @classmethod
+    def _opened(cls, tickets: SsoTickets, sso: DelegatedTicket) -> SignInTicket:
+        try:
+            return tickets.open(sso.sealed)
+        except TicketSealError as exc:
+            msg = (
+                f"the delegated Kerberos ticket in the session of {sso.principal} "
+                "does not open (the application secret changed?): sign in again; "
+                f"{cls.RETRY_HINT}"
+            )
+            raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg) from exc
 
 
 class UserConnections(AsyncInjected):
@@ -251,7 +220,7 @@ class UserConnections(AsyncInjected):
         cls,
         tools: Sequence[BaseTool],
         store_ref: StoreRef,
-        registry_ref: RegistryRef,
+        tickets_ref: TicketsRef,
         spec: UserConnectionsSpec,
         resolve: ConfigResolver,
         refresh: RefreshSignal,
@@ -261,7 +230,7 @@ class UserConnections(AsyncInjected):
         Зовётся до InjectedConfig: injected-поля читаются со схемы, пока их
         с неё не сняли.
         """
-        kerberos = UserKerberos(registry_ref, refresh)
+        kerberos = UserKerberos(tickets_ref, refresh)
 
         def make(param: str, base: object) -> AsyncInjected:
             if not isinstance(base, BaseModel):

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -19,6 +20,7 @@ from boba.connections.postgres import PostgresConfig
 from boba.krb import (
     ClientCredentials,
     KerberosError,
+    KerberosWorkspace,
     KeytabCredentials,
     TicketCredentials,
 )
@@ -67,6 +69,12 @@ class Fixtures:
                 "auth": kerberos,
             }
         )
+
+
+@pytest.fixture(autouse=True)
+def workspace(tmp_path: Path) -> None:
+    """Каталог кэшей на тест: KeytabCredentials выбирает файл через workspace."""
+    KerberosWorkspace.configure(str(tmp_path / "krb5.conf"), str(tmp_path / "cache"))
 
 
 class TestKeytabStaysWithTheApp:

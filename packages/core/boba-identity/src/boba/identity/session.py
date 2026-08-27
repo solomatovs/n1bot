@@ -37,7 +37,7 @@ class UserMetadataField:
 
     PROVIDER: Final = "provider"
     PRINCIPAL: Final = "principal"
-    LOGIN: Final = "sso_login"
+    TICKET: Final = "sso_ticket"
     ROLES: Final = "roles"
     LLM: Final = "llm"
 

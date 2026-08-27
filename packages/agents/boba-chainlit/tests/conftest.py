@@ -2,6 +2,7 @@
 
 import os
 import secrets
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -34,7 +35,8 @@ from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
 from boba.chat.threads import ThreadOwnership
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.user_connections import RegistryRef, StoreRef
+from boba.connection_broker.user_connections import StoreRef, TicketsRef
+from boba.connections.kerberos import DelegationMode
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import AuthenticatedUser, Authenticator
 from boba.identity.context import (
@@ -46,6 +48,8 @@ from boba.identity.context import (
 )
 from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
+from boba.krb import SignInTicket
+from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
 from boba.runtime.refs import RuntimeRefs
@@ -512,7 +516,7 @@ class StubRefs:
     """Входы приложения для стендов загрузки инструментов без реестра и workflow."""
 
     @staticmethod
-    def of(store: StoreRef, registry: RegistryRef) -> RuntimeRefs:
+    def of(store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
         async def no_registry() -> ToolRegistry:
             msg = "tool registry is not part of this stand"
             raise RuntimeError(msg)
@@ -525,7 +529,7 @@ class StubRefs:
             tool_registry=no_registry,
             workflow_service=no_service,
             connection_store=store,
-            ccache_registry=registry,
+            sso_tickets=tickets,
         )
 
     @staticmethod
@@ -539,14 +543,14 @@ class StubRefs:
             msg = "connection store is not part of this stand"
             raise RuntimeError(msg)
 
-        def no_registry() -> None:
+        def no_tickets() -> None:
             return None
 
         return RuntimeRefs(
             tool_registry=tool_registry,
             workflow_service=workflow_service,
             connection_store=no_store,
-            ccache_registry=no_registry,
+            sso_tickets=no_tickets,
         )
 
 
@@ -577,3 +581,35 @@ class NoThreads:
     def source() -> ThreadOwnership:
         msg = "thread ownership is not part of this stand"
         raise RuntimeError(msg)
+
+
+class SsoStand:
+    """Билеты SSO-входа для стендов: ccache стенда под секретом приложения."""
+
+    @staticmethod
+    def tickets(krb5_config: str) -> SsoTickets:
+        from chainlit.auth.jwt import get_jwt_secret
+
+        secret = get_jwt_secret()
+        if not secret:
+            raise RuntimeError("CHAINLIT_AUTH_SECRET is not set for the stand")
+
+        return SsoTickets(sealer=TicketSealer(secret), krb5_config=krb5_config)
+
+    @staticmethod
+    def sealed(
+        tickets: SsoTickets,
+        principal: str,
+        ccache: str,
+        mode: DelegationMode,
+        expires_in: int,
+    ) -> str:
+        data = Path(ccache.removeprefix("FILE:")).read_bytes()
+        ticket = SignInTicket(
+            principal=principal,
+            mode=mode,
+            ccache=data,
+            expires_at=int(time.time()) + expires_in,
+        )
+
+        return tickets.sealer.seal(ticket)

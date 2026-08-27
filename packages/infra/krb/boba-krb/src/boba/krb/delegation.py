@@ -1,4 +1,4 @@
-"""SPNEGO-accept по keytab сервиса и захват делегированного тикета входа.
+"""SPNEGO-accept по keytab сервиса и захват делегированного билета входа значением.
 
 Ошибки:
 KeytabError — keytab/SPN сервиса непригодны.
@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
+import os
+import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar
@@ -25,16 +27,12 @@ from boba.connections.kerberos import (
     DelegationMode,
     ForwardedDelegation,
 )
-from boba.krb.credentials import (
-    CcacheLifetime,
-    CcacheRegistry,
-    KerberosEnv,
-    UserCcache,
-)
-from boba.krb.errors import GssErrors, InvalidTokenError, KerberosError, KeytabError
+from boba.krb.credentials import CcacheLifetime, KerberosEnv
+from boba.krb.errors import GssErrors, InvalidTokenError, KeytabError
 from boba.krb.pac import PacGroupSids
+from boba.krb.ticket import SignInTicket
 
-__all__ = ["KerberosDelegation", "SpnegoAcceptor", "SpnegoIdentity"]
+__all__ = ["SpnegoAcceptor", "SpnegoIdentity", "TicketCapture"]
 
 
 @dataclass(frozen=True)
@@ -143,51 +141,49 @@ class SpnegoAcceptor:
         return sids
 
 
-class KerberosDelegation:
-    """Делегированные при логине креды складываются в ccache входа и регистрируются.
+class TicketCapture:
+    """Делегированные при логине креды -> SignInTicket: ccache читается в память.
 
-    Содержимое ccache сверяется с режимом: forwarded требует TGT пользователя,
+    Содержимое сверяется с режимом: forwarded требует TGT пользователя,
     constrained — evidence-тикет и отсутствие TGT пользователя. Несовпадение —
-    вход без делегирования, причина в логе.
+    вход без делегирования, причина в логе. Файл живёт только внутри захвата.
     """
 
-    LOGIN_BYTES: ClassVar[int] = 18
-    """Длина случайной метки входа в байтах."""
+    TEMP_PREFIX: ClassVar[str] = "krb5cc_signin_"
 
-    def __init__(
-        self,
-        registry: CcacheRegistry,
-        config: AcceptConfig,
-        delegation: Delegation,
-    ) -> None:
-        self._registry = registry
-        self._config = config
+    def __init__(self, delegation: Delegation) -> None:
         self._delegation = delegation
-        self._logger = logging.getLogger(KerberosDelegation.__name__)
+        self._logger = logging.getLogger(TicketCapture.__name__)
 
-    def on_success_authenticated(self, identity: SpnegoIdentity) -> str:
-        """Складывает делегированный тикет входа в свой ccache; итог — метка входа.
+    @property
+    def mode(self) -> DelegationMode:
+        return DelegationMode(self._delegation.mode)
 
-        Пустая метка — делегированных кредов у входа нет.
-        """
-        return self._capture(identity, secrets.token_urlsafe(self.LOGIN_BYTES))
-
-    def on_refresh_authenticated(self, identity: SpnegoIdentity, login: str) -> str:
-        """Повторный обмен той же сессии: креды ложатся под её метку входа."""
-        return self._capture(identity, login)
-
-    def _capture(self, identity: SpnegoIdentity, login: str) -> str:
-        if identity.delegated is None:
+    def capture(self, identity: SpnegoIdentity) -> SignInTicket | None:
+        """Билет входа; None — креды не пришли или не подходят режиму."""
+        delegated = identity.delegated
+        if delegated is None:
             self._logger.warning(
                 "no delegated_credentials for %s (delegation not permitted in AD)",
                 identity.principal,
             )
-            return ""
+            return None
 
-        ccache = self._ccache_of(login)
+        descriptor, path = tempfile.mkstemp(prefix=self.TEMP_PREFIX)
+        os.close(descriptor)
+        ccache = f"FILE:{path}"
 
         try:
-            identity.delegated.store(
+            return self._captured(identity.principal, delegated, ccache)
+        finally:
+            self._destroy(ccache)
+            self._unlink(path)
+
+    def _captured(
+        self, principal: str, delegated: Credentials, ccache: str
+    ) -> SignInTicket | None:
+        try:
+            delegated.store(
                 store={b"ccache": ccache.encode()},
                 usage="initiate",
                 overwrite=True,
@@ -196,29 +192,52 @@ class KerberosDelegation:
             msg = f"failed to store delegated ccache {ccache}"
             raise GssErrors.of(exc, msg) from exc
 
-        refusal = self.mismatch(ccache, identity.principal, self._registry.mode)
+        refusal = self.mismatch(ccache, principal, self.mode)
         if refusal:
             self._logger.error(
                 "kerberos: delegated credentials of %s rejected: %s",
-                identity.principal,
+                principal,
                 refusal,
             )
-            self._destroy(ccache)
-            return ""
+            return None
 
-        self._registry.register(UserCcache(identity.principal, ccache, login))
+        lifetime = self._lifetime(ccache, principal)
+        if lifetime == 0:
+            self._logger.error(
+                "kerberos: delegated credentials of %s already expired", principal
+            )
+            return None
+
+        with open(ccache.removeprefix("FILE:"), "rb") as source:
+            data = source.read()
+
         self._logger.info(
-            "kerberos: captured delegated credentials (%s) %s -> %s",
-            self._registry.mode.value,
-            identity.principal,
-            ccache,
+            "kerberos: captured delegated credentials (%s) %s, %d bytes, %ds left",
+            self.mode.value,
+            principal,
+            len(data),
+            lifetime,
         )
 
-        return login
+        return SignInTicket(
+            principal=principal,
+            mode=self.mode,
+            ccache=data,
+            expires_at=int(time.time()) + lifetime,
+        )
 
-    def knows(self, login: str) -> bool:
-        """Есть ли у этой метки живой вход: обмен продлевает, а не заводит вход."""
-        return self._registry.of_login(login) is not None
+    def _lifetime(self, ccache: str, principal: str) -> int:
+        if self.mode is DelegationMode.FORWARDED:
+            return CcacheLifetime.tgt(ccache, principal)
+
+        return CcacheLifetime.evidence(ccache, principal)
+
+    @staticmethod
+    def _unlink(path: str) -> None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            return
 
     @staticmethod
     def mismatch(ccache: str, principal: str, mode: DelegationMode) -> str:
@@ -234,7 +253,7 @@ class KerberosDelegation:
 
         if tgt > 0:
             # перечень билетов в причине: по нему видно, есть ли рядом evidence
-            arrived = ", ".join(KerberosDelegation.tickets(ccache))
+            arrived = ", ".join(TicketCapture.tickets(ccache))
             return (
                 "a forwarded TGT arrived while constrained delegation is "
                 f"configured (tickets: {arrived})"
@@ -266,11 +285,3 @@ class KerberosDelegation:
             krb5.cc_destroy(context, krb5.cc_resolve(context, ccache.encode()))
         except krb5.Krb5Error:
             return
-
-    def _ccache_of(self, login: str) -> str:
-        template = self._delegation.ccache_template
-
-        try:
-            return template.format(login=login)
-        except (KeyError, IndexError) as exc:
-            raise KerberosError(f"bad ccache_template {template!r}: {exc}") from exc

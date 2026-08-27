@@ -310,7 +310,6 @@ class StandConfig:
                 },
                 "delegation": {
                     "mode": "constrained",
-                    "ccache_template": "MEMORY:agent-{login}",
                     "service_ccache": "FILE:${site.krb_ccache_http}",
                     "krb5_config": "${site.krb_config}",
                 },

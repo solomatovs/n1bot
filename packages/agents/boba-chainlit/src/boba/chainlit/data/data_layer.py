@@ -180,7 +180,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, PersistedUsers):
     @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
         model = User.from_chainlit(user)
-        model.meta.pop(UserMetadataField.LOGIN, None)
+        model.meta.pop(UserMetadataField.TICKET, None)
         query = sql.SQL(
             """
             insert into {users} (
