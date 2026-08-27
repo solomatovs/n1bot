@@ -6,7 +6,7 @@ import time
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.krb.config import DelegationMode
+from boba.connections.kerberos import DelegationMode
 
 __all__ = ["SignInTicket"]
 

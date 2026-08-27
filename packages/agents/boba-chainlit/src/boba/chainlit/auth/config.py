@@ -162,11 +162,6 @@ class KerberosAuthConfig(BaseModel):
         "Заголовок с SID-ами групп из PAC; ставит SpnegoMiddleware."
         return f"{self.header}-Sids"
 
-    @property
-    def login_header(self) -> str:
-        "Заголовок с меткой SSO-входа, владеющего делегированным тикетом."
-        return f"{self.header}-Login"
-
 
 AuthConfig = Annotated[
     LocalAuthConfig | KerberosAuthConfig | LdapAuthConfig,

@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-toolrun"
-version = "0.0.14.dev8"
+version = "0.0.14.dev9"
 description = "Boba toolrun: конвейер обёрток вызова инструмента (права, отмена, журнал, поток, ошибки), исполнитель вызова и реестр инструментов."
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.10,<3",
     "langchain-core>=0.3,<1",
-    "boba-toolkit==0.0.14.dev8",
-    "boba-access==0.0.14.dev8",
-    "boba-cancellation==0.0.14.dev8",
-    "boba-identity==0.0.14.dev8",
-    "boba-canvas==0.0.14.dev8",
+    "boba-toolkit==0.0.14.dev9",
+    "boba-access==0.0.14.dev9",
+    "boba-cancellation==0.0.14.dev9",
+    "boba-identity==0.0.14.dev9",
+    "boba-canvas==0.0.14.dev9",
 ]
 
 [tool.setuptools.packages.find]

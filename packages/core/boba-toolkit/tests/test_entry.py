@@ -291,7 +291,15 @@ class TestToolMainAsProgram:
         injected.write_bytes(self.STDIN)
 
         proc, _ = run_module(
-            ["fake_echo", "--text", "ping", "--repeat", "1", "--injected", str(injected)]
+            [
+                "fake_echo",
+                "--text",
+                "ping",
+                "--repeat",
+                "1",
+                "--injected",
+                str(injected),
+            ]
         )
 
         if proc.returncode != 0:

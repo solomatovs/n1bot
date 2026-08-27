@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from boba.connection_broker.user_connections import RegistryRef, StoreRef
+from boba.connection_broker.user_connections import StoreRef, TicketsRef
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
 
@@ -21,4 +21,4 @@ class RuntimeRefs:
     workflow_service: Callable[[], Awaitable[WorkflowService]]
     """Сервис workflow; RuntimeError — секция [workflow] выключена."""
     connection_store: StoreRef
-    ccache_registry: RegistryRef
+    sso_tickets: TicketsRef
