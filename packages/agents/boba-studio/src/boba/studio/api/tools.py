@@ -23,8 +23,6 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.api.auth import ApiIdentity, CurrentUser
-from boba.api.urls import ToolCallUrl
 from boba.chat.profiles import ChatProfiles
 from boba.chat.threads import DataRejectedError, DataUnavailableError, ThreadOwnership
 from boba.identity.context import (
@@ -33,6 +31,8 @@ from boba.identity.context import (
     Subject,
 )
 from boba.identity.run import RunRegistry
+from boba.studio.api.auth import ApiIdentity, CurrentUser
+from boba.studio.api.urls import ToolCallUrl
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.invoke import (
     CallIdPrefix,

@@ -6,11 +6,12 @@ RuntimeError — конфиг ещё не загружен (RawConfig.get до R
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Self
+from typing import Annotated, Any, ClassVar, Literal, Self
 
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.access import RoleConfig
 from boba.chat.profiles import ChatProfileConfig
@@ -23,12 +24,36 @@ from boba.sandbox.profile import SandboxConfig
 from boba.settings import bind, build_app_config
 
 __all__ = [
-    "ApiConfig",
+    "BuiltPage",
+    "ConfigLocator",
     "DataLayerConfig",
+    "DevPage",
+    "PageSource",
     "ProcessLogging",
     "RawConfig",
     "RuntimeConfig",
+    "StudioConfig",
 ]
+
+
+class ConfigLocator:
+    """Путь конфига процесса: BOBA_CONFIG_PATH либо BOBA_BASE/conf/config.toml."""
+
+    CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
+    BASE_ENV: ClassVar[str] = "BOBA_BASE"
+    CONFIG_RELATIVE: ClassVar[str] = "conf/config.toml"
+
+    @classmethod
+    def path(cls) -> Path:
+        if config_path := os.environ.get(cls.CONFIG_ENV):
+            return Path(config_path)
+
+        base = os.environ.get(cls.BASE_ENV)
+        if not base:
+            msg = f"{cls.CONFIG_ENV} or {cls.BASE_ENV} is required"
+            raise RuntimeError(msg)
+
+        return Path(base) / cls.CONFIG_RELATIVE
 
 
 class RawConfig:
@@ -72,8 +97,41 @@ class DataLayerConfig(BaseModel):
     )
 
 
-class ApiConfig(BaseModel):
-    """Секция [api]: где слушает api-процесс и чем проверяет JWT входа."""
+class BuiltPage(BaseModel):
+    """Страница workflow отдаётся из сборки в public/workflow."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["built"] = "built"
+
+
+class DevPage(BaseModel):
+    """Страница workflow проксируется с vite dev-сервера по адресу url."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["dev"] = "dev"
+    url: str = Field(pattern=r"^https?://[^/]+$", description="Адрес vite без пути.")
+
+
+class PageSource:
+    """Разбор значения [workflow] page: 'built' либо адрес vite dev-сервера."""
+
+    BUILT: ClassVar[str] = "built"
+
+    @classmethod
+    def parse(cls, raw: object) -> object:
+        if not isinstance(raw, str):
+            return raw
+
+        if raw == cls.BUILT:
+            return BuiltPage()
+
+        return DevPage(url=raw.rstrip("/"))
+
+
+class StudioConfig(BaseModel):
+    """Секция [studio]: адрес процесса, секрет JWT входа, источник страницы workflow."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -83,18 +141,28 @@ class ApiConfig(BaseModel):
     host: str
     port: int
     url_prefix: str = Field(
-        description="Общий префикс приложений; api живёт под {prefix}/api."
+        description="Общий префикс приложений: api под /api, страница — /workflow."
     )
     auth_secret: str = Field(
         min_length=1, description="Секрет JWT chainlit: подпись и печать билета."
     )
     cookie: str = Field(min_length=1, description="Имя cookie входа chainlit.")
+    page: BuiltPage | DevPage = Field(
+        discriminator="kind",
+        description="'built' — сборка из dist; адрес — vite dev-сервер.",
+    )
+    dist: Path = Field(description="Каталог сборки страницы: index.html и assets/.")
 
-    def mount_prefix(self) -> str:
+    @field_validator("page", mode="before")
+    @classmethod
+    def _parse_page(cls, raw: object) -> object:
+        return PageSource.parse(raw)
+
+    def api_prefix(self) -> str:
         return f"{self.url_prefix}{self.MOUNT}"
 
     def socket_path(self) -> str:
-        return f"{self.mount_prefix()}{self.SOCKET_PATH}"
+        return f"{self.api_prefix()}{self.SOCKET_PATH}"
 
 
 class ProcessLogging:
@@ -159,7 +227,7 @@ class RuntimeConfig(BaseModel):
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
     data_layer: DataLayerConfig
     sandbox: SandboxConfig
-    api: ApiConfig
+    studio: StudioConfig
 
     @classmethod
     def load(cls, config_path: Path) -> Self:
@@ -187,6 +255,6 @@ class RuntimeConfig(BaseModel):
             return None
 
         return SsoTickets(
-            sealer=TicketSealer(self.api.auth_secret),
+            sealer=TicketSealer(self.studio.auth_secret),
             krb5_config=kerberos.delegation.krb5_config,
         )

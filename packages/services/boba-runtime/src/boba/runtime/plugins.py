@@ -19,15 +19,13 @@ from langchain_core.tools import BaseTool, StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
-from boba.access import ToolAccess
+from boba.access import GrantCheck, ToolAccess
 from boba.canvas.keys import WorkspaceMount
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import (
     RefreshSignal,
-    StoreRef,
-    TicketsRef,
     UserConnections,
 )
 from boba.connections.marks import UserConnectionsSpec
@@ -235,15 +233,16 @@ class ToolLoader:
         self,
         raw_config: DictConfig,
         plugins: Mapping[str, ToolPlugin],
-        store_ref: StoreRef,
-        tickets_ref: TicketsRef,
+        refs: RuntimeRefs,
         refresh: RefreshSignal,
+        grant_check: GrantCheck,
     ) -> None:
         self._raw = raw_config
         self._plugins = plugins
-        self._store_ref = store_ref
-        self._tickets_ref = tickets_ref
+        self._store_ref = refs.connection_store
+        self._tickets_ref = refs.sso_tickets
         self._refresh = refresh
+        self._grant_check = grant_check
 
     def load(self) -> ToolRegistry:
         zygote_policy = bind(self._raw, "sandbox", SandboxRequire).zygote
@@ -491,7 +490,7 @@ class ToolLoader:
         profiles = bind(self._raw, "profiles", ProfilesSection).root
         known = frozenset(tool.name for tool in tools)
 
-        return ToolAccess(known, roles, profiles, chat_only)
+        return ToolAccess(known, roles, profiles, chat_only, self._grant_check)
 
     def _require_connections(self, name: str) -> None:
         """Секция с соединениями пользователя работает только при [connections]."""

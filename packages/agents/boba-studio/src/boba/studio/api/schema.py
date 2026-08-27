@@ -10,11 +10,11 @@ import json
 import sys
 from typing import Any, ClassVar
 
-from boba.api.app import ApiApp
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.threads import ThreadOwnership
 from boba.identity.api import AuthenticatedUser, Authenticator
 from boba.runtime.refs import RuntimeRefs
+from boba.studio.api.app import ApiApp
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
 

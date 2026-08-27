@@ -23,6 +23,37 @@ services:
       - 127.0.0.1:8501:8501
     restart: unless-stopped
 
+  studio:
+    image: boba:${BOBA_TAG:-latest}
+    hostname: studio
+    container_name: studio
+    init: true
+    # без переменных берётся USER образа (1000:1000): песочница монтирует
+    # образы в user namespace, и от root файлы владельца данных недоступны
+    user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
+    env_file: ./conf/boba.env
+    volumes:
+      - ./conf:/app/boba/conf:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
+      - ${BOBA_DATA_DIR:-./data}:/app/boba/data:rw
+      - ./app_root:/app/boba/app_root:rw
+      - /sys/fs/cgroup/boba.slice:/cgroup:rw
+    devices:
+      - /dev/fuse
+    security_opt:
+      - seccomp=unconfined
+      - systempaths=unconfined
+    ports:
+      - 127.0.0.1:8502:8502
+    command: ["-m", "boba.studio"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ['BOBA_STUDIO_PORT'] + os.environ['BOBA_URL_PREFIX'] + '/api/openapi.json', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    restart: unless-stopped
+
 networks:
   default:
     name: docker

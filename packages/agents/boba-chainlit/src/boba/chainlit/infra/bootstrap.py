@@ -1,4 +1,6 @@
-"""Сборка FastAPI-приложения: chainlit, авторизация, DI и отдача файлов."""
+"""Сборка FastAPI-приложения chainlit: авторизация, DI и отдача файлов.
+
+API и страница workflow живут в процессе boba-studio; маршруты разводит nginx."""
 
 import asyncio
 import logging
@@ -7,7 +9,6 @@ import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import uvicorn
 from engineio.payload import Payload
@@ -15,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from boba.access import GrantCheck
 from boba.chainlit.auth.installer import ChainlitAuthInstaller
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
@@ -31,9 +33,6 @@ from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware
 from boba.sandbox.zygote import ZygoteRegistry
 
-if TYPE_CHECKING:
-    from boba.chainlit.workflow.page import WorkflowPageConfig
-
 
 def run_app(config_path: Path):
     """Запуск приложения; env chainlit к этому моменту выставлен AppEntry."""
@@ -43,8 +42,6 @@ def run_app(config_path: Path):
     logging.config.dictConfig(c.logger)
 
     app = FastAPI(lifespan=_run_container)
-
-    _use_api(app, c)
 
     _use_chainlit_middleware(app, c.chainlit)
 
@@ -56,7 +53,6 @@ def run_app(config_path: Path):
     _use_stream_journal(c)
 
     _use_canvas_viewers()
-    _use_workflow(c)
 
     _use_auth(c)
 
@@ -248,47 +244,6 @@ def _use_canvas_viewers() -> None:
     ChatPlugins.load(RawConfig.get(), runtime.runtime_refs())
 
 
-def _use_api(app: FastAPI, c: AppConfig) -> None:
-    """API под {prefix}/api до выноса в свой процесс; монтируется раньше chainlit."""
-    from boba.api.app import ApiApp  # noqa: PLC0415
-    from boba.api.jwt_auth import JwtAuthenticator  # noqa: PLC0415
-    from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
-
-    users = runtime.users_table(c)
-    api = ApiApp.build(
-        runtime.runtime_refs(),
-        JwtAuthenticator(c.api.auth_secret, lambda: users),
-        lambda: users,
-        ChatProfiles(c.profiles),
-        c.api.cookie,
-    )
-    app.mount(c.api.mount_prefix(), api)
-
-
-def _use_workflow(c: AppConfig) -> None:
-    """Страница workflow у хоста: REST и сокет живут в API."""
-    from boba.chainlit.workflow.page import WorkflowPageConfig  # noqa: PLC0415
-    from boba.settings.bind import bind  # noqa: PLC0415
-
-    _use_workflow_page(c, bind(RawConfig.get(), "workflow", WorkflowPageConfig))
-
-
-def _use_workflow_page(c: AppConfig, page: "WorkflowPageConfig") -> None:
-    """Страница workflow: сборка из public либо прокси vite dev-сервера."""
-    from boba.chainlit.domain.config import DevPage  # noqa: PLC0415
-    from boba.chainlit.workflow.page import (  # noqa: PLC0415
-        WorkflowDevPage,
-        WorkflowPage,
-    )
-    from chainlit.server import app as chainlit_app  # noqa: PLC0415
-
-    if isinstance(page.page, DevPage):
-        WorkflowDevPage(page.page.url, c.chainlit.url_prefix, c.api).mount(chainlit_app)
-        return
-
-    WorkflowPage(c.chainlit.root, c.chainlit.url_prefix, c.api).mount(chainlit_app)
-
-
 def _use_auth(config: AppConfig) -> None:
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
@@ -305,6 +260,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(runtime.get_runtime_config, c)
     container.provide(runtime.plugin_table, ChatPlugins.table)
     container.provide(runtime.refresh_signal, ChatRefreshSignal())
+    container.provide(runtime.grant_check, GrantCheck.STRICT)
     container.provide(
         runtime.instance_name, f"{socket.gethostname()}:{c.chainlit.port}"
     )

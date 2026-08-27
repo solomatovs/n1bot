@@ -564,9 +564,8 @@ class TestBuild:
         assert Css.of(menu, "background-color") == tokens.rgb("surface")
         assert Css.of(menu, "box-shadow") != "none"
         expect(menu.locator(f"{Sel.MENU_ITEM}:enabled").first).to_be_visible()
-        disabled = menu.locator(f"{Sel.MENU_ITEM}:disabled").first
-        expect(disabled).to_be_visible()
-        assert Css.of(disabled, "color") == tokens.rgb("faint")
+        # chat-only инструменты живут в chainlit: в каталоге студии их нет вовсе
+        expect(menu.locator(f"{Sel.MENU_ITEM}:disabled")).to_have_count(0)
 
     def test_editor_node_form_and_issues(
         self, page: Page, stand: StandProcess, tokens: Tokens

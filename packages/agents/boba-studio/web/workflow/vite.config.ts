@@ -21,7 +21,7 @@ export default defineConfig(({ command, mode }) => ({
     strictPort: true,
   },
   build: {
-    outDir: "../../assets/public/workflow",
+    outDir: "../../assets/workflow",
     emptyOutDir: true,
     sourcemap: false,
     rollupOptions: {

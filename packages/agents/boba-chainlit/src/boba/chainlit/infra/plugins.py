@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 
+from boba.access import GrantCheck
 from boba.canvas.diagram import DiagramToolConfig
 from boba.chainlit.agent.tools.send_file import build_send_file_tool
 from boba.chainlit.canvas.diagram import build_diagram_tools
@@ -27,11 +28,7 @@ class ChatPlugins:
     @classmethod
     def load(cls, raw_config: DictConfig, refs: RuntimeRefs) -> ToolRegistry:
         loader = ToolLoader(
-            raw_config,
-            cls.table(refs),
-            refs.connection_store,
-            refs.sso_tickets,
-            ChatRefreshSignal(),
+            raw_config, cls.table(refs), refs, ChatRefreshSignal(), GrantCheck.STRICT
         )
 
         return loader.load()

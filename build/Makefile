@@ -100,7 +100,7 @@ MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSIO
 
 # страница workflow собирается node'ом образа: на хосте node не нужен
 NODE_IMAGE      ?= dmp/nodejs:22
-WEB_DIR         := $(SRC_DIR)/packages/agents/boba-chainlit
+WEB_DIR         := $(SRC_DIR)/packages/agents/boba-studio
 
 # готовый бинарь; для внутреннего mirror переопредели UV_URL
 UV_VERSION      ?= 0.11.21
@@ -187,7 +187,7 @@ help:
 	@echo "Сборка boba $(VERSION) из дерева пакетов $(SRC_DIR) -> $(IMAGE)"
 	echo ""
 	echo "  make sources   исходники, собираемые внутри Dockerfile -> $(DEPS_DIR)"
-	echo "  make web       страница workflow: npm ci/check/build в $(NODE_IMAGE) -> assets/public/workflow"
+	echo "  make web       страница workflow: npm ci/check/build в $(NODE_IMAGE) -> assets/workflow"
 	echo "  make web-dev   vite dev-сервер страницы в контейнере $(WEB_DEV_NAME) (127.0.0.1:$(WEB_DEV_PORT));"
 	echo "                 приложение с BOBA_WORKFLOW_PAGE=http://127.0.0.1:$(WEB_DEV_PORT) проксирует его,"
 	echo "                 бандл не нужен; make web-dev-stop — остановить"
@@ -384,7 +384,7 @@ VENV_PYTHON     ?= $(SRC_DIR)/.venv/bin/python
 OPENAPI_JSON     = $(WEB_DIR)/web/workflow/openapi.json
 .PHONY: openapi
 openapi:
-	$(VENV_PYTHON) -m boba.api.schema > "$(OPENAPI_JSON)"
+	$(VENV_PYTHON) -m boba.studio.api.schema > "$(OPENAPI_JSON)"
 	@echo "== openapi: $(OPENAPI_JSON) =="
 
 .PHONY: webassets
@@ -393,12 +393,12 @@ web: openapi
 	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
 	    -v "$(WEB_DIR):/pkg" -w /pkg/web/workflow $(NODE_IMAGE) \
 	    -c 'npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build'
-	@du -sh $(WEB_DIR)/assets/public/workflow
-	# dev app_root держит копию public (симлинк chainlit отвергает как выход
-	# за пределы public): обновляем её, если dev-дерево уже собрано
+	@du -sh $(WEB_DIR)/assets/workflow
+	# dev app_root держит копию сборки ([studio] dist): обновляем её, если
+	# dev-дерево уже собрано
 	if [ -d "$(SRC_DIR)/compose/app_root/public" ]; then
 	    rm -rf "$(SRC_DIR)/compose/app_root/public/workflow"
-	    cp -a "$(WEB_DIR)/assets/public/workflow" "$(SRC_DIR)/compose/app_root/public/workflow"
+	    cp -a "$(WEB_DIR)/assets/workflow" "$(SRC_DIR)/compose/app_root/public/workflow"
 	fi
 
 webassets:
@@ -801,6 +801,8 @@ install-tree:
 	export BOBA_DATA="$(DATA_DIR)"
 	envsubst '$${INSTALL_DIR} $${BOBA_DATA}'   \
 	    < "$(CONF_DIR)/boba-chainlit.service" > "$(OUT)/boba-chainlit.service"
+	envsubst '$${INSTALL_DIR} $${BOBA_DATA}'   \
+	    < "$(CONF_DIR)/boba-studio.service" > "$(OUT)/boba-studio.service"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}'   \
 	    < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
 

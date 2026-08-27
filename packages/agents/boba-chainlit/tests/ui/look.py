@@ -22,7 +22,7 @@ class Tokens:
     """Токены tokens.css по темам; значения цветов — как их отдаёт getComputedStyle."""
 
     PATH: ClassVar[Path] = (
-        REPO_ROOT / "packages/agents/boba-chainlit/web/workflow/src/styles/tokens.css"
+        REPO_ROOT / "packages/agents/boba-studio/web/workflow/src/styles/tokens.css"
     )
     BLOCK: ClassVar[re.Pattern[str]] = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
     TOKEN: ClassVar[re.Pattern[str]] = re.compile(r"--([a-z0-9-]+):\s*([^;]+);")

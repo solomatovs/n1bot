@@ -1,8 +1,10 @@
-"""Стенд ленты: конфиг приложения и запуск его отдельным процессом.
+"""Стенд ленты: конфиг приложения и запуск chainlit и studio отдельными процессами.
 
-Приложение поднимается тем же входом, что и в проде, но провайдер модели, база,
-хранилище и журнал уводятся на тестовые. Ошибки: StandError — стенд не поднялся
-или не ответил в отведённое время.
+Процессы поднимаются теми же входами, что и в проде, за общим фронтом (ui.front);
+провайдер модели, база, хранилище и журнал уводятся на тестовые.
+
+Ошибки:
+StandError — стенд не поднялся или не ответил в отведённое время.
 """
 
 from __future__ import annotations
@@ -21,9 +23,17 @@ from typing import Any, ClassVar
 
 import httpx
 
+from ui.front import FrontDoor, FrontRoutes
 from ui.toml_text import TomlText
 
-__all__ = ["StandConfig", "StandError", "StandPaths", "StandProcess", "free_port"]
+__all__ = [
+    "StandConfig",
+    "StandError",
+    "StandLog",
+    "StandPaths",
+    "StandProcess",
+    "free_port",
+]
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 
@@ -71,6 +81,13 @@ class StandAuth(StrEnum):
         return self in (StandAuth.SSO, StandAuth.LOCAL_SSO)
 
 
+def free_port() -> int:
+    """Свободный порт: параллельные прогоны не должны драться за один."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 @dataclass(frozen=True)
 class StandCredential:
     """Учётка стенда: читается из [auth.local] рабочего конфига."""
@@ -85,9 +102,13 @@ class StandConfig:
 
     workdir: Path
     app_port: int
+    """Порт фронта стенда: единственный адрес браузера и тестов."""
+
     llm_port: int
     db_name: str
     url_prefix: str = "/boba-test"
+    chainlit_port: int = field(default_factory=free_port)
+    studio_port: int = field(default_factory=free_port)
     single_profile: bool = False
     """True — в конфиге остаётся один профиль: селектора в UI быть не должно."""
 
@@ -165,6 +186,7 @@ class StandConfig:
         self._use_test_database(doc)
         self._use_local_storage(doc)
         self._use_local_auth(doc)
+        self._use_studio(doc)
         self._disable_sandbox_tools(doc)
         self._drop_cgroup_limits(doc)
 
@@ -182,7 +204,8 @@ class StandConfig:
         env["BOBA_BIND_CODE"] = f"{StandPaths.PACKAGES.under(REPO_ROOT)}:/opt/src"
         env["BOBA_SANDBOX_PYTHONPATH"] = "/opt/site"
         env["BOBA_CGROUP_BASE"] = "/sys/fs/cgroup/boba"
-        env["BOBA_PORT"] = str(self.app_port)
+        env["BOBA_PORT"] = str(self.chainlit_port)
+        env["BOBA_STUDIO_PORT"] = str(self.studio_port)
         env["BOBA_URL_PREFIX"] = self.url_prefix
         env["PGGSSENCMODE"] = "disable"
         # лог стенда читает упавший тест: буфер до kill не доживёт
@@ -330,6 +353,12 @@ class StandConfig:
 
         doc["app"]["auth"] = providers
 
+    @staticmethod
+    def _use_studio(doc: MutableMapping[str, Any]) -> None:
+        """Студия стенда: сборка страницы из dist конфига, слушает только loopback."""
+        doc["studio"]["host"] = StandUrl.HOST.value
+        doc["studio"]["page"] = "built"
+
     def _disable_sandbox_tools(self, doc: MutableMapping[str, Any]) -> None:
         """Без песочницы остаются инструменты, которым она не нужна."""
         if self.sandbox:
@@ -371,13 +400,28 @@ class StandConfig:
                 del profile[key]
 
 
+class StandLog(StrEnum):
+    """Логи процессов стенда рядом с логом chainlit."""
+
+    CHAINLIT = "chainlit"
+    STUDIO = "studio"
+
+    def path_of(self, log_path: Path) -> Path:
+        if self is StandLog.CHAINLIT:
+            return log_path
+
+        return log_path.with_name(f"{log_path.stem}-{self.value}{log_path.suffix}")
+
+
 @dataclass
 class StandProcess:
-    """Дочерний процесс приложения: живёт на время сессии тестов."""
+    """Процессы стенда: chainlit и studio за общим фронтом; живут на время сессии."""
 
     config: StandConfig
     log_path: Path
     process: subprocess.Popen[bytes] | None = None
+    studio: subprocess.Popen[bytes] | None = None
+    front: FrontDoor | None = None
 
     COMPLAINT_MARKERS: ClassVar[tuple[str, ...]] = (
         "ERROR:",
@@ -389,28 +433,58 @@ class StandProcess:
 
     def start(self, boot_timeout_sec: float) -> None:
         self.config.write()
-        log = self.log_path.open("wb")
-        self.process = subprocess.Popen(
-            [sys.executable, "-m", "boba.chainlit.main"],
-            env=self.config.env(),
+        env = self.config.env()
+        self.process = self._spawn("boba.chainlit.main", env, StandLog.CHAINLIT)
+        self.studio = self._spawn("boba.studio", env, StandLog.STUDIO)
+
+        deadline = time.monotonic() + boot_timeout_sec
+        prefix = self.config.url_prefix
+        self._await_ready(
+            self.process,
+            StandUrl.of(self.config.chainlit_port, f"{prefix}/"),
+            StandLog.CHAINLIT,
+            deadline,
+        )
+        self._await_ready(
+            self.studio,
+            StandUrl.of(self.config.studio_port, f"{prefix}/api/openapi.json"),
+            StandLog.STUDIO,
+            deadline,
+        )
+
+        routes = FrontRoutes(prefix, self.config.chainlit_port, self.config.studio_port)
+        self.front = FrontDoor(self.config.app_port, routes)
+        self.front.start()
+
+    def _spawn(
+        self, module: str, env: Mapping[str, str], log: StandLog
+    ) -> subprocess.Popen[bytes]:
+        handle = log.path_of(self.log_path).open("wb")
+
+        return subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", module],
+            env=dict(env),
             cwd=str(REPO_ROOT),
-            stdout=log,
+            stdout=handle,
             stderr=subprocess.STDOUT,
         )
-        self._await_ready(boot_timeout_sec)
 
     def stop(self) -> None:
-        if self.process is None:
-            return
+        if self.front is not None:
+            self.front.stop()
 
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
+        for process in (self.process, self.studio):
+            if process is None:
+                continue
+
+            process.terminate()
+            try:
+                process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                process.kill()
 
     def log_lines(self) -> int:
-        """Сколько строк в логе стенда сейчас: отметка начала хода."""
+        """Сколько строк в логе chainlit сейчас: отметка начала хода."""
         if not self.log_path.is_file():
             return 0
 
@@ -418,7 +492,7 @@ class StandProcess:
         return len(text.splitlines())
 
     def complaints(self, since_line: int = 0) -> list[str]:
-        """Строки лога стенда об ошибках начиная с отметки: ход обязан
+        """Строки лога chainlit об ошибках начиная с отметки: ход обязан
         проходить без них, а чужие ходы в общем логе не считаются."""
         if not self.log_path.is_file():
             return []
@@ -435,19 +509,29 @@ class StandProcess:
         return found
 
     def tail(self, lines: int = 40) -> str:
-        """Хвост лога стенда: без него падение теста молчит о причине."""
-        if not self.log_path.is_file():
-            return ""
+        """Хвосты логов обоих процессов: без них падение теста молчит о причине."""
+        parts: list[str] = []
+        for log in StandLog:
+            path = log.path_of(self.log_path)
+            if not path.is_file():
+                continue
 
-        text = self.log_path.read_text(encoding="utf-8", errors="replace")
-        return "\n".join(text.splitlines()[-lines:])
+            text = path.read_text(encoding="utf-8", errors="replace")
+            parts.append(f"== {log.value} ==")
+            parts.append("\n".join(text.splitlines()[-lines:]))
 
-    def _await_ready(self, timeout_sec: float) -> None:
-        deadline = time.monotonic() + timeout_sec
-        url = f"{self.config.base_url}/"
+        return "\n".join(parts)
+
+    def _await_ready(
+        self,
+        process: subprocess.Popen[bytes],
+        url: str,
+        log: StandLog,
+        deadline: float,
+    ) -> None:
         while time.monotonic() < deadline:
-            if self.process is not None and self.process.poll() is not None:
-                raise StandError(f"app exited early:\n{self.tail()}")
+            if process.poll() is not None:
+                raise StandError(f"{log.value} exited early:\n{self.tail()}")
 
             try:
                 response = httpx.get(url, timeout=2.0)
@@ -460,11 +544,4 @@ class StandProcess:
 
             time.sleep(0.3)
 
-        raise StandError(f"app is not ready in {timeout_sec}s:\n{self.tail()}")
-
-
-def free_port() -> int:
-    """Свободный порт: параллельные прогоны не должны драться за один."""
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+        raise StandError(f"{log.value} did not answer at {url}:\n{self.tail()}")

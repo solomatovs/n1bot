@@ -1,4 +1,4 @@
-"""Раздача страницы workflow: штамп префикса в index.html, 404 без сборки,
+"""Раздача страницы workflow: штамп в index.html, модули из dist, 404 без сборки,
 прокси vite dev-сервера — index, модули, HMR-сокет, 502 без сервера."""
 
 from __future__ import annotations
@@ -16,14 +16,8 @@ from fastapi.responses import PlainTextResponse
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
-from boba.chainlit.domain.config import BuiltPage, DevPage
-from boba.chainlit.workflow.page import (
-    PageStamp,
-    WorkflowDevPage,
-    WorkflowPage,
-    WorkflowPageConfig,
-)
-from boba.runtime.config import ApiConfig
+from boba.runtime.config import BuiltPage, DevPage, StudioConfig
+from boba.studio.page import PageStamp, WorkflowDevPage, WorkflowPage
 
 pytestmark = pytest.mark.anyio
 
@@ -41,11 +35,6 @@ DEV_INDEX = """<!doctype html>
 <script type="module" src="/boba-debug/workflow-dev/src/main.tsx"></script>
 </body></html>
 """
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Страница не зависит от сессии chainlit."""
 
 
 class FakeVite:
@@ -108,19 +97,27 @@ def vite() -> Iterator[FakeVite]:
         yield server
 
 
-def _api() -> ApiConfig:
-    return ApiConfig(
-        host="127.0.0.1",
-        port=1,
-        url_prefix=PREFIX,
-        auth_secret="stand-secret",
-        cookie="access_token",
+def _api() -> StudioConfig:
+    return _studio("built")
+
+
+def _studio(page: str) -> StudioConfig:
+    return StudioConfig.model_validate(
+        {
+            "host": "127.0.0.1",
+            "port": 1,
+            "url_prefix": PREFIX,
+            "auth_secret": "stand-secret",
+            "cookie": "access_token",
+            "page": page,
+            "dist": "/nowhere",
+        }
     )
 
 
-def _built_app(app_root: Path) -> FastAPI:
+def _built_app(dist: Path) -> FastAPI:
     app = FastAPI()
-    WorkflowPage(str(app_root), PREFIX, _api()).mount(app)
+    WorkflowPage(dist, PREFIX, _api()).mount(app)
     return app
 
 
@@ -138,14 +135,12 @@ async def _get(app: FastAPI, path: str) -> tuple[int, str, str]:
 
 
 async def test_index_is_stamped_for_any_page_path(tmp_path: Path) -> None:
-    public = tmp_path / WorkflowPage.PUBLIC_DIR
-    public.mkdir(parents=True)
-    (public / WorkflowPage.INDEX).write_text(INDEX)
+    (tmp_path / WorkflowPage.INDEX).write_text(INDEX)
 
-    status, text, _ = await _get(_built_app(tmp_path), "/workflow/run/abc")
+    status, text, _ = await _get(_built_app(tmp_path), f"{PREFIX}/workflow/run/abc")
 
     assert status == 200
-    assert '<base href="/boba-debug/public/workflow/">' in text
+    assert '<base href="/boba-debug/workflow/">' in text
     assert '"prefix": "/boba-debug"' in text
     assert '"apiPrefix": "/boba-debug/api"' in text
     assert '"socketPath": "/boba-debug/api/socket.io"' in text
@@ -153,26 +148,41 @@ async def test_index_is_stamped_for_any_page_path(tmp_path: Path) -> None:
 
 
 async def test_missing_build_is_reported(tmp_path: Path) -> None:
-    status, text, _ = await _get(_built_app(tmp_path), "/workflow/")
+    status, text, _ = await _get(_built_app(tmp_path / "none"), f"{PREFIX}/workflow/")
 
     assert status == 404
     assert "not built" in text
 
 
+async def test_built_modules_are_served_from_assets(tmp_path: Path) -> None:
+    (tmp_path / WorkflowPage.INDEX).write_text(INDEX)
+    assets = tmp_path / WorkflowPage.ASSETS_DIR
+    assets.mkdir()
+    (assets / "app-1.js").write_text("export const built = true;")
+
+    status, text, media = await _get(
+        _built_app(tmp_path), f"{PREFIX}/workflow/assets/app-1.js"
+    )
+
+    assert status == 200
+    assert text == "export const built = true;"
+    assert "javascript" in media
+
+
 def test_page_config_parses_built_and_dev_sources() -> None:
-    built = WorkflowPageConfig.model_validate({"page": "built"})
-    dev = WorkflowPageConfig.model_validate({"page": "http://127.0.0.1:5173/"})
+    built = _studio("built")
+    dev = _studio("http://127.0.0.1:5173/")
 
     assert isinstance(built.page, BuiltPage)
     assert isinstance(dev.page, DevPage)
     assert dev.page.url == "http://127.0.0.1:5173"
 
     with pytest.raises(ValueError, match="page"):
-        WorkflowPageConfig.model_validate({"page": "somewhere"})
+        _studio("somewhere")
 
 
 async def test_dev_index_is_stamped_with_dev_assets(vite: FakeVite) -> None:
-    status, text, _ = await _get(_dev_app(vite.url), "/workflow/observe/abc")
+    status, text, _ = await _get(_dev_app(vite.url), f"{PREFIX}/workflow/observe/abc")
 
     assert status == 200
     assert '<base href="/boba-debug/workflow-dev/">' in text
@@ -183,18 +193,18 @@ async def test_dev_index_is_stamped_with_dev_assets(vite: FakeVite) -> None:
 
 async def test_dev_modules_are_proxied_with_query(vite: FakeVite) -> None:
     status, text, media = await _get(
-        _dev_app(vite.url), "/workflow-dev/src/main.tsx?t=7"
+        _dev_app(vite.url), f"{PREFIX}/workflow-dev/src/main.tsx?t=7"
     )
 
     assert status == 200
     assert text == f"{FakeVite.MODULE} // t=7"
-    assert media.startswith("text/javascript")
+    assert "javascript" in media
 
 
 async def test_dev_server_down_is_502(vite: FakeVite) -> None:
     down = f"http://127.0.0.1:{FakeVite._free_port()}"
 
-    status, text, _ = await _get(_dev_app(down), "/workflow/")
+    status, text, _ = await _get(_dev_app(down), f"{PREFIX}/workflow/")
 
     assert status == 502
     assert "not reachable" in text
@@ -202,7 +212,9 @@ async def test_dev_server_down_is_502(vite: FakeVite) -> None:
 
 def test_hmr_socket_is_relayed_both_ways(vite: FakeVite) -> None:
     client = TestClient(_dev_app(vite.url))
-    hmr = client.websocket_connect("/workflow-dev/?token=x", subprotocols=["vite-hmr"])
+    hmr = client.websocket_connect(
+        f"{PREFIX}/workflow-dev/?token=x", subprotocols=["vite-hmr"]
+    )
     with hmr as ws:
         assert ws.accepted_subprotocol == "vite-hmr"
         assert ws.receive_text() == '{"type":"connected"}'

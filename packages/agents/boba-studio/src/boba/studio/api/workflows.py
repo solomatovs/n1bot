@@ -22,11 +22,11 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.api.auth import ApiIdentity, CurrentUser
-from boba.api.urls import WorkflowUrl
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.context import Scope
+from boba.studio.api.auth import ApiIdentity, CurrentUser
+from boba.studio.api.urls import WorkflowUrl
 from boba.workflow import RunState, ToolFacts
 from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowStoreError
 from boba.workflow_engine.service import (

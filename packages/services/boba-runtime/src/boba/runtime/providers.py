@@ -11,6 +11,7 @@ from typing import Annotated
 
 from omegaconf import DictConfig
 
+from boba.access import GrantCheck
 from boba.chat.profiles import RolesSection
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import RefreshSignal
@@ -48,7 +49,7 @@ def get_runtime_config() -> RuntimeConfig:
 
 def instance_name() -> str:
     """Имя инстанса для запусков workflow (host:port); кладёт процесс."""
-    return f"{socket.gethostname()}:{_root().resolved(get_runtime_config).api.port}"
+    return f"{socket.gethostname()}:{_root().resolved(get_runtime_config).studio.port}"
 
 
 def plugin_table() -> PluginTable:
@@ -60,6 +61,11 @@ def plugin_table() -> PluginTable:
 def refresh_signal() -> RefreshSignal:
     """Сигнал обновления билета входа; чат заменяет своим."""
     return NoRefresh()
+
+
+def grant_check() -> GrantCheck:
+    """Сверка грантов: процесс без chat-only инструментов проверяет только свои."""
+    return GrantCheck.HOSTED
 
 
 def _root() -> Container:
@@ -100,11 +106,10 @@ def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     table: Annotated[PluginTable, Depends(plugin_table)],
     refresh: Annotated[RefreshSignal, Depends(refresh_signal)],
+    check: Annotated[GrantCheck, Depends(grant_check)],
 ) -> ToolRegistry:
     refs = runtime_refs()
-    loader = ToolLoader(
-        raw, table(refs), refs.connection_store, refs.sso_tickets, refresh
-    )
+    loader = ToolLoader(raw, table(refs), refs, refresh, check)
 
     return loader.load()
 
