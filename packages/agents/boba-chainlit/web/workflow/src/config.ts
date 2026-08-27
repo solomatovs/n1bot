@@ -18,7 +18,7 @@ declare global {
 
 const DEV_FALLBACK: PageConfig = {
   prefix: "",
-  apiPrefix: "/api/v1",
+  apiPrefix: "/api",
   socketPath: "/api/socket.io",
 };
 
@@ -31,7 +31,7 @@ export function pageConfig(): PageConfig {
   return PageConfigSchema.parse(stamped);
 }
 
-/** Адреса страницы и API относительно префикса приложения. */
+/** Адреса страницы и API относительно префикса приложения; пути API — как в OpenAPI (с /v1). */
 export class PageUrls {
   constructor(private readonly config: PageConfig) {}
 

@@ -136,7 +136,7 @@ async def test_index_is_stamped_for_any_page_path(tmp_path: Path) -> None:
     assert status == 200
     assert '<base href="/boba-debug/public/workflow/">' in text
     assert '"prefix": "/boba-debug"' in text
-    assert '"apiPrefix": "/boba-debug/api/v1"' in text
+    assert '"apiPrefix": "/boba-debug/api"' in text
     assert '"socketPath": "/boba-debug/api/socket.io"' in text
     assert PageStamp.PLACEHOLDER not in text
 
