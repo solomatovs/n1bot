@@ -14,6 +14,9 @@ dependencies = [
     "pydantic>=2.10,<2.11",
 ]
 
+[project.optional-dependencies]
+seal = ["cryptography>=42"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]

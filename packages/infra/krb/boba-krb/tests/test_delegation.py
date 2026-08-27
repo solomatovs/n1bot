@@ -20,19 +20,20 @@ from stand_site import Stand
 from boba.krb import (
     AcceptConfig,
     CcacheLifetime,
-    CcacheRegistry,
     ConstrainedDelegation,
+    DelegatedCredentials,
     DelegationMode,
     ForwardedDelegation,
-    KerberosDelegation,
     KerberosEnv,
     KerberosWorkspace,
     KeytabAuth,
     KeytabCredentials,
     ServiceTicketIssuer,
     SpnegoAcceptor,
+    TicketCapture,
     TicketCredentials,
 )
+from boba.krb.seal import TicketSealer
 
 STAND = Stand.required()
 KRB5_CONF = Path(STAND.krb_config)
@@ -125,16 +126,13 @@ def _accept() -> AcceptConfig:
 
 def _constrained(tmp_path: Path) -> ConstrainedDelegation:
     return ConstrainedDelegation(
-        ccache_template=f"FILE:{tmp_path}/login-{{login}}",
         service_ccache=f"FILE:{tmp_path / 'service'}",
         krb5_config=str(KRB5_CONF),
     )
 
 
-def _forwarded(tmp_path: Path) -> ForwardedDelegation:
+def _forwarded() -> ForwardedDelegation:
     return ForwardedDelegation(
-        ccache_template=f"FILE:{tmp_path}/login-{{login}}",
-        renew=False,
         krb5_config=str(KRB5_CONF),
     )
 
@@ -155,24 +153,25 @@ class TestConstrained:
         self, tmp_path: Path, krb5_env: None
     ) -> None:
         delegation = _constrained(tmp_path)
-        registry = CcacheRegistry(
-            mode=DelegationMode.CONSTRAINED, renew=False, krb5_config=str(KRB5_CONF)
-        )
         acceptor = SpnegoAcceptor(_accept(), delegation)
         identity = acceptor.accept(Browser.ticket(tmp_path))
         if identity.principal != USER_PRINCIPAL:
             raise AssertionError(f"accepted someone else: {identity.principal}")
 
-        capture = KerberosDelegation(registry, _accept(), delegation)
-        login = capture.on_success_authenticated(identity)
-        if not login:
+        sign_in = TicketCapture(delegation).capture(identity)
+        if sign_in is None:
             raise AssertionError("constrained login must capture evidence credentials")
+        if sign_in.lifetime() <= 0:
+            raise AssertionError("captured ticket must have a lifetime")
 
-        credentials = registry.of_login(login)
-        if credentials is None:
-            raise AssertionError("registry must know the login")
-        if CcacheLifetime.tgt(credentials.ccache, USER_PRINCIPAL) != 0:
-            raise AssertionError("constrained ccache must not hold the user's TGT")
+        # билет переживает «границу процесса»: запечатан и открыт другим sealer'ом
+        reopened = TicketSealer("stand-secret").open(
+            TicketSealer("stand-secret").seal(sign_in)
+        )
+        credentials = DelegatedCredentials(reopened, str(KRB5_CONF))
+        with credentials.applied():
+            if CcacheLifetime.tgt(credentials.ccache, USER_PRINCIPAL) != 0:
+                raise AssertionError("constrained ccache must not hold the user's TGT")
 
         ticket = ServiceTicketIssuer(min_lifetime=60).issue(credentials, TARGET)
         if ticket.principal != USER_PRINCIPAL:
@@ -202,7 +201,7 @@ class TestConstrained:
         )
         credentials.ensure()
 
-        reason = KerberosDelegation.mismatch(
+        reason = TicketCapture.mismatch(
             credentials.ccache, SERVICE_PRINCIPAL, DelegationMode.CONSTRAINED
         )
         if "forwarded TGT" not in reason:
@@ -246,21 +245,17 @@ class TestBrowserDelegationIsRefused:
     ) -> None:
         """Вход состоится, но делегирования у него нет: метка входа пустая."""
         delegation = _constrained(tmp_path)
-        registry = CcacheRegistry(
-            mode=DelegationMode.CONSTRAINED, renew=False, krb5_config=str(KRB5_CONF)
-        )
         acceptor = SpnegoAcceptor(_accept(), delegation)
         identity = acceptor.accept(Browser.delegating_ticket(tmp_path))
 
-        capture = KerberosDelegation(registry, _accept(), delegation)
-        login = capture.on_success_authenticated(identity)
+        sign_in = TicketCapture(delegation).capture(identity)
 
-        if login:
+        if sign_in is not None:
             raise AssertionError("forwarded TGT не должен становиться входом")
 
     def test_reason_names_the_forwarded_tgt(self, tmp_path: Path) -> None:
         """Причина отказа называет ровно то, что случилось: пришёл TGT."""
-        reason = KerberosDelegation.mismatch(
+        reason = TicketCapture.mismatch(
             _user_ccache(tmp_path), USER_PRINCIPAL, DelegationMode.CONSTRAINED
         )
 
@@ -290,17 +285,13 @@ class TestForwarded:
         self, tmp_path: Path, krb5_env: None
     ) -> None:
         """Браузер TGT не прислал (AD не доверяет сервису): делегирования нет."""
-        delegation = _forwarded(tmp_path)
-        registry = CcacheRegistry(
-            mode=DelegationMode.FORWARDED, renew=False, krb5_config=str(KRB5_CONF)
-        )
+        delegation = _forwarded()
         acceptor = SpnegoAcceptor(_accept(), delegation)
         identity = acceptor.accept(Browser.ticket(tmp_path))
 
-        capture = KerberosDelegation(registry, _accept(), delegation)
-        login = capture.on_success_authenticated(identity)
+        sign_in = TicketCapture(delegation).capture(identity)
 
-        if login:
+        if sign_in is not None:
             raise AssertionError("forwarded mode must not accept a login without TGT")
 
     def test_tgt_ccache_matches_forwarded_mode(
@@ -316,7 +307,7 @@ class TestForwarded:
         )
         credentials.ensure()
 
-        reason = KerberosDelegation.mismatch(
+        reason = TicketCapture.mismatch(
             credentials.ccache, SERVICE_PRINCIPAL, DelegationMode.FORWARDED
         )
         if reason:

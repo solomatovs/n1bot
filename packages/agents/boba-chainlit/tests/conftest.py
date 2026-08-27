@@ -2,6 +2,7 @@
 
 import os
 import secrets
+import time
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -15,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from omegaconf import DictConfig
 from psycopg import sql
 
+from boba.chainlit.auth.kerberos import SsoTickets
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
@@ -23,6 +25,8 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import ChainlitSession, ChainlitSessions
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
+from boba.krb import DelegationMode, SignInTicket
+from boba.krb.seal import TicketSealer
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai import OpenAiConfig
 from boba.llm.openai_chat import OpenAiChatProvider
@@ -102,7 +106,6 @@ def fake_openai_chat(
 
     provider = OpenAiChatProvider(cfg, client, model)
     return ProviderChatModel(provider=provider, sampling=sampling, model_name=model)
-
 
 
 @pytest.fixture(scope="session")
@@ -365,3 +368,35 @@ def di_root() -> Iterator[None]:
         yield
     finally:
         Container.set_root(previous)
+
+
+class SsoStand:
+    """Билеты SSO-входа для стендов: ccache стенда под секретом приложения."""
+
+    @staticmethod
+    def tickets(krb5_config: str) -> SsoTickets:
+        from chainlit.auth.jwt import get_jwt_secret
+
+        secret = get_jwt_secret()
+        if not secret:
+            raise RuntimeError("CHAINLIT_AUTH_SECRET is not set for the stand")
+
+        return SsoTickets(sealer=TicketSealer(secret), krb5_config=krb5_config)
+
+    @staticmethod
+    def sealed(
+        tickets: SsoTickets,
+        principal: str,
+        ccache: str,
+        mode: DelegationMode,
+        expires_in: int,
+    ) -> str:
+        data = Path(ccache.removeprefix("FILE:")).read_bytes()
+        ticket = SignInTicket(
+            principal=principal,
+            mode=mode,
+            ccache=data,
+            expires_at=int(time.time()) + expires_in,
+        )
+
+        return tickets.sealer.seal(ticket)

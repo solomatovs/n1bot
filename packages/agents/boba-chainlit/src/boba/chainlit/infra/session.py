@@ -20,7 +20,7 @@ import chainlit as cl
 from boba.chainlit.domain.session import (
     RequiredSession,
     Session,
-    SsoMarks,
+    SsoTicket,
     UserMetadataField,
 )
 from chainlit.auth.jwt import decode_jwt
@@ -208,13 +208,13 @@ class ChainlitSession(Session):
             return None
 
     @classmethod
-    def marks_of_token(cls, token: str) -> SsoMarks | None:
-        """Метки SSO-входа из JWT-cookie; None — токен негоден или вход не SSO."""
+    def ticket_of_token(cls, token: str) -> SsoTicket | None:
+        """Билет SSO-входа из JWT-cookie; None — токен негоден или вход не SSO."""
         user = cls.user_of_token(token)
         if user is None:
             return None
 
-        return SsoMarks.of_metadata(user.metadata)
+        return SsoTicket.of_metadata(user.metadata)
 
     @staticmethod
     def metadata_of(user: cl.User | cl.PersistedUser | None) -> Mapping[str, object]:
@@ -272,6 +272,22 @@ class ChainlitSessions:
     def of_socket(self, sid: str) -> ChainlitSession:
         """Сессия по socket-id: так её находит обработчик события сокета."""
         return ChainlitSession(WebsocketSession.get(sid))
+
+    def adopt_token(self, identifier: str, token: str) -> int:
+        """Живые сокет-сессии пользователя получают новый JWT; итог — сколько."""
+        adopted = 0
+        for session in list(ws_sessions_id.values()):
+            user = getattr(session, "user", None)
+            if user is None:
+                continue
+
+            if user.identifier != identifier:
+                continue
+
+            session.token = token
+            adopted += 1
+
+        return adopted
 
     def in_thread(self, thread_id: str) -> list[ChainlitSession]:
         """Живые сессии, открывшие этот тред: у треда бывает много вкладок."""
