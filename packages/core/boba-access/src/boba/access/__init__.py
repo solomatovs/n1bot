@@ -21,6 +21,7 @@ from boba.toolkit.types import StringList
 
 __all__ = [
     "AccessSubject",
+    "GrantCheck",
     "ProfileGrant",
     "RoleConfig",
     "ToolAccess",
@@ -116,6 +117,17 @@ class ToolAccessError(Exception):
     """Гранты ссылаются на инструменты, которых среди собранных нет."""
 
 
+class GrantCheck(StrEnum):
+    """Как сверять гранты с собранными инструментами.
+
+    STRICT — процесс держит всю таблицу: чужое имя в гранте — опечатка.
+    HOSTED — часть инструментов живёт в другом процессе: проверяются только свои.
+    """
+
+    STRICT = "strict"
+    HOSTED = "hosted"
+
+
 class ToolAccess:
     """Права доступа: роли, профили и инструменты чата под одним решением."""
 
@@ -125,13 +137,16 @@ class ToolAccess:
         roles: Mapping[str, ToolGrant],
         profiles: Mapping[str, ProfileGrant],
         chat_only: Iterable[str] = (),
+        check: GrantCheck = GrantCheck.STRICT,
     ) -> None:
         self._tool_names = frozenset(tool_names)
         self._roles = dict(roles)
         self._profiles = dict(profiles)
         self._chat_only = frozenset(chat_only)
 
-        self._check_grants()
+        self._check_chat_only()
+        if check is GrantCheck.STRICT:
+            self._check_grants()
 
     @property
     def tool_names(self) -> frozenset[str]:
@@ -207,6 +222,7 @@ class ToolAccess:
                 msg = f"profile {profile_name!r}: unknown tools {missing}"
                 raise ToolAccessError(msg)
 
+    def _check_chat_only(self) -> None:
         stray = sorted(self._chat_only - self._tool_names)
         if stray:
             raise ToolAccessError(f"chat-only tools are not built: {stray}")

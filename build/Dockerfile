@@ -333,8 +333,8 @@ RUN set -eu                                                           \
 # страница workflow: Vite-сборка на node образа; registry — по npmrc образа
 FROM ${NODE_IMAGE} AS web-build
 
-# outDir сборки — ../../assets/public/workflow от проекта, как в дереве исходников
-COPY packages/agents/boba-chainlit/web/workflow/ /src/web/workflow/
+# outDir сборки — ../../assets/workflow от проекта, как в дереве исходников
+COPY packages/agents/boba-studio/web/workflow/ /src/web/workflow/
 WORKDIR /src/web/workflow
 RUN set -eu                                    \
     && npm ci --no-audit --no-fund             \
@@ -377,7 +377,7 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/config.toml   ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
-COPY --from=web-build /src/assets/public/workflow/                ${BOBA_DIR}/app_root/public/workflow/
+COPY --from=web-build /src/assets/workflow/                       ${BOBA_DIR}/app_root/public/workflow/
 COPY build/src/webassets/                                         ${BOBA_DIR}/app_root/public/vendor/
 COPY build/src/onnx-genai/                                        ${BOBA_DIR}/models/onnx-genai/
 # веса эмбеддера лежат рядом с моделями чата, а в песочницу едут биндом
@@ -416,7 +416,7 @@ RUN set -eu                                                                     
 RUN rm -rf /tmp/conf
 
 WORKDIR /app
-EXPOSE 8501
+EXPOSE 8501 8502
 
 ENV BOBA_DIR=${BOBA_DIR}
 USER ${BOBA_UID}:${BOBA_GID}

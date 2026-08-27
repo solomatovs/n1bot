@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal, Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -80,36 +80,3 @@ class LocalStorageConfig(BaseModel):
             msg = "storage: kind=image requires the workspace record"
             raise ValueError(msg)
         return self
-
-
-class BuiltPage(BaseModel):
-    """Страница workflow отдаётся из сборки в public/workflow."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: Literal["built"] = "built"
-
-
-class DevPage(BaseModel):
-    """Страница workflow проксируется с vite dev-сервера по адресу url."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: Literal["dev"] = "dev"
-    url: str = Field(pattern=r"^https?://[^/]+$", description="Адрес vite без пути.")
-
-
-class PageSource:
-    """Разбор значения [workflow] page: 'built' либо адрес vite dev-сервера."""
-
-    BUILT: ClassVar[str] = "built"
-
-    @classmethod
-    def parse(cls, raw: object) -> object:
-        if not isinstance(raw, str):
-            return raw
-
-        if raw == cls.BUILT:
-            return BuiltPage()
-
-        return DevPage(url=raw.rstrip("/"))

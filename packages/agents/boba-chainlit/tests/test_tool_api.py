@@ -13,22 +13,21 @@ from uuid import uuid4
 import pytest
 from chainlit.auth import create_jwt
 from chainlit.user import PersistedUser, User
-from conftest import Seed, StubAuthenticator
+from conftest import ChainlitUsers, Seed, StubAuthenticator
 from fastapi import APIRouter, FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from langchain_core.tools import tool
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.api.auth import ApiAuth, TokenReader
-from boba.api.jwt_auth import JwtAuthenticator
-from boba.api.tools import ToolCallBody, ToolCalling
-from boba.chainlit.infra.api_auth import ChainlitUsers
 from boba.chainlit.infra.config import AppConfig
 from boba.chat.profiles import ChatProfiles
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
 from boba.runtime.plugins import CallSurface
 from boba.runtime.users import UsersTable
+from boba.studio.api.auth import ApiAuth, TokenReader
+from boba.studio.api.jwt_auth import JwtAuthenticator
+from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.result import TextResult, pack_result
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard

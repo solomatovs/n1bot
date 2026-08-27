@@ -27,7 +27,7 @@ pythonpath = [
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
-    "packages/agents/boba-api/src",
+    "packages/agents/boba-studio/src",
     "packages/agents/boba-chainlit/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-chart/src",
@@ -79,7 +79,7 @@ extraPaths = [
     "packages/core/boba-indexing/src",
     "packages/core/boba-settings/src",
     "packages/core/boba-toolkit/src",
-    "packages/agents/boba-api/src",
+    "packages/agents/boba-studio/src",
     "packages/agents/boba-chainlit/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-chart/src",
@@ -157,7 +157,7 @@ boba-toolrun        = { workspace = true }
 boba-connection-broker = { workspace = true }
 boba-workflow-engine = { workspace = true }
 boba-runtime = { workspace = true }
-boba-api = { workspace = true }
+boba-studio = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }

@@ -8,7 +8,6 @@ version = "0.0.14.dev9"
 description = "Chainlit2 web UI app for the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-api==0.0.14.dev9",
     "boba-connection-broker==0.0.14.dev9",
     "boba-workflow-engine==0.0.14.dev9",
     "boba-runtime==0.0.14.dev9",
@@ -45,7 +44,6 @@ dependencies = [
     "httpx[http2]>=0.28,<1",
     "fastapi[standard]",
     "uvicorn[standard]",
-    "websockets>=13",
     "pydantic>=2.10,<2.11",
     "langchain[openai]",
     "langchain-core>=1.4,<1.5",

@@ -512,6 +512,21 @@ def di_root() -> Iterator[None]:
         Container.set_root(previous)
 
 
+class ChainlitUsers:
+    """Пользователь chainlit → пользователь входа api глазами JwtAuthenticator."""
+
+    @staticmethod
+    def of(user: ChainlitUser | PersistedUser | None) -> AuthenticatedUser | None:
+        if not isinstance(user, PersistedUser):
+            return None
+
+        return AuthenticatedUser(
+            id=user.id,
+            identifier=user.identifier,
+            metadata=ChainlitSession.metadata_of(user),
+        )
+
+
 class StubRefs:
     """Входы приложения для стендов загрузки инструментов без реестра и workflow."""
 

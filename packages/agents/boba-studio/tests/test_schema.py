@@ -5,8 +5,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from boba.api.schema import OpenApiDocument
-from boba.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
+from boba.studio.api.schema import OpenApiDocument
+from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
 
 
 def test_schema_lists_v1_paths_and_models() -> None:
@@ -32,7 +32,7 @@ def test_schema_lists_v1_paths_and_models() -> None:
 def test_api_package_does_not_import_chainlit() -> None:
     code = (
         "import sys\n"
-        "import boba.api.app, boba.api.schema\n"
+        "import boba.studio.api.app, boba.studio.api.schema\n"
         "loaded = [m for m in sys.modules if m.split('.')[0] == 'chainlit']\n"
         "raise SystemExit(1 if loaded else 0)\n"
     )

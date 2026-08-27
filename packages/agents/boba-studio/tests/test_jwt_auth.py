@@ -7,8 +7,8 @@ import time
 import jwt
 import pytest
 
-from boba.api.jwt_auth import JwtAuthenticator
 from boba.identity.api import AuthenticatedUser, PersistedUsers
+from boba.studio.api.jwt_auth import JwtAuthenticator
 
 pytestmark = pytest.mark.anyio
 

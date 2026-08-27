@@ -7,18 +7,17 @@ from typing import Any
 
 import pytest
 from chainlit.user import PersistedUser
-from conftest import NoThreads, Seed, StubAuthenticator, StubRefs
+from conftest import ChainlitUsers, NoThreads, Seed, StubAuthenticator, StubRefs
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
 from test_tool_api import _profile, _profiles, _roles
 from test_workflow_service import ROLE, Probe, _registry
 
-from boba.api.app import ApiApp
-from boba.api.urls import ApiVersion, WorkflowUrl
-from boba.chainlit.infra.api_auth import ChainlitUsers
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
+from boba.studio.api.app import ApiApp
+from boba.studio.api.urls import ApiVersion, WorkflowUrl
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow.events import RunEvents
 from boba.workflow_engine.service import WorkflowService

@@ -1,10 +1,10 @@
-"""Раздача SPA страницы workflow: любой адрес под /workflow — index.html.
+"""Раздача SPA страницы workflow: любой адрес под {prefix}/workflow — index.html.
 
-Источник задаёт [workflow] page: сборка в public/workflow (WorkflowPage)
-либо vite dev-сервер (WorkflowDevPage) — тогда модули и HMR-сокет vite
-проксируются под /workflow-dev, и бандл собирать не нужно. В index.html
-вписываются <base href> под url_prefix приложения и конфиг страницы
-(префикс, путь socket.io): фронт про префикс не знает.
+Источник задаёт [studio] page: сборка в dist (WorkflowPage, модули из
+{prefix}/workflow/assets) либо vite dev-сервер (WorkflowDevPage) — тогда модули
+и HMR-сокет vite проксируются под {prefix}/workflow-dev, и бандл собирать не
+нужно. В index.html вписываются <base href> и конфиг страницы (префикс, адрес
+api, путь socket.io): фронт про префикс не знает.
 
 Ошибки (HTTP):
 404 — сборка фронта не выложена в public/workflow.
@@ -23,13 +23,12 @@ from typing import ClassVar
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.routing import WebSocketRoute
+from starlette.staticfiles import StaticFiles
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
-from boba.chainlit.domain.config import BuiltPage, DevPage, PageSource
-from boba.runtime.config import ApiConfig
+from boba.runtime.config import StudioConfig
 
 __all__ = [
     "PageAssets",
@@ -37,39 +36,26 @@ __all__ = [
     "PageUrl",
     "WorkflowDevPage",
     "WorkflowPage",
-    "WorkflowPageConfig",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-class WorkflowPageConfig(BaseModel):
-    """Секция [workflow]: откуда отдаётся страница."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    page: BuiltPage | DevPage = Field(
-        discriminator="kind",
-        description="'built' — сборка из public/workflow; адрес — vite dev-сервер.",
-    )
-
-    @field_validator("page", mode="before")
-    @classmethod
-    def _parse_page(cls, raw: object) -> object:
-        return PageSource.parse(raw)
-
-
 class PageUrl(StrEnum):
-    """Маршруты страницы и её dev-прокси у хоста."""
+    """Маршруты страницы, её модулей и dev-прокси относительно url_prefix."""
 
     PAGE = "/workflow/{path:path}"
+    ASSETS = "/workflow/assets"
     DEV = "/workflow-dev/{path:path}"
+
+    def under(self, url_prefix: str) -> str:
+        return f"{url_prefix}{self.value}"
 
 
 class PageAssets(StrEnum):
     """Откуда браузер берёт модули страницы относительно url_prefix."""
 
-    BUILT = "/public/workflow/"
+    BUILT = "/workflow/"
     DEV = "/workflow-dev/"
 
 
@@ -78,7 +64,7 @@ class PageStamp:
 
     PLACEHOLDER: ClassVar[str] = "<!--BOBA_PAGE-->"
 
-    def __init__(self, url_prefix: str, assets: PageAssets, api: ApiConfig) -> None:
+    def __init__(self, url_prefix: str, assets: PageAssets, api: StudioConfig) -> None:
         self._prefix = url_prefix
         self._assets = assets
         self._api = api
@@ -86,7 +72,7 @@ class PageStamp:
     def render(self, html: str) -> str:
         config = {
             "prefix": self._prefix,
-            "apiPrefix": self._api.mount_prefix(),
+            "apiPrefix": self._api.api_prefix(),
             "socketPath": self._api.socket_path(),
         }
         stamp = (
@@ -97,26 +83,36 @@ class PageStamp:
 
 
 class WorkflowPage:
-    """index.html собранной страницы; статику отдаёт chainlit из /public."""
+    """index.html и модули собранной страницы из каталога dist."""
 
     INDEX: ClassVar[str] = "index.html"
-    PUBLIC_DIR: ClassVar[str] = "public/workflow"
+    ASSETS_DIR: ClassVar[str] = "assets"
 
-    def __init__(self, app_root: str, url_prefix: str, api: ApiConfig) -> None:
-        self._index = Path(app_root) / self.PUBLIC_DIR / self.INDEX
+    def __init__(self, dist: Path, url_prefix: str, api: StudioConfig) -> None:
+        self._dist = dist
+        self._prefix = url_prefix
         self._stamp = PageStamp(url_prefix, PageAssets.BUILT, api)
 
     def mount(self, app: FastAPI) -> None:
-        app.add_api_route(
-            str(PageUrl.PAGE), self.serve, methods=["GET"], include_in_schema=False
+        # модули раньше страницы: иначе их перехватит маршрут любого пути
+        app.mount(
+            PageUrl.ASSETS.under(self._prefix),
+            StaticFiles(directory=self._dist / self.ASSETS_DIR, check_dir=False),
+            name="workflow-assets",
         )
-        app.router.routes.insert(0, app.router.routes.pop())
+        app.add_api_route(
+            PageUrl.PAGE.under(self._prefix),
+            self.serve,
+            methods=["GET"],
+            include_in_schema=False,
+        )
 
     async def serve(self, path: str = "") -> HTMLResponse:
-        if not self._index.is_file():
+        index = self._dist / self.INDEX
+        if not index.is_file():
             raise HTTPException(status_code=404, detail="workflow page is not built")
 
-        html = self._stamp.render(self._index.read_text(encoding="utf-8"))
+        html = self._stamp.render(index.read_text(encoding="utf-8"))
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
@@ -126,24 +122,28 @@ class WorkflowDevPage:
     INDEX: ClassVar[str] = "index.html"
     HMR_PROTOCOL: ClassVar[str] = "vite-hmr"
 
-    def __init__(self, dev_url: str, url_prefix: str, api: ApiConfig) -> None:
+    def __init__(self, dev_url: str, url_prefix: str, api: StudioConfig) -> None:
         self._dev_url = dev_url
         self._prefix = url_prefix
         self._stamp = PageStamp(url_prefix, PageAssets.DEV, api)
         self._client = httpx.AsyncClient(base_url=dev_url, timeout=30.0)
 
     def mount(self, app: FastAPI) -> None:
-        app.router.routes.insert(
-            0, WebSocketRoute(str(PageUrl.DEV), self.relay, name="workflow-hmr")
+        app.router.routes.append(
+            WebSocketRoute(PageUrl.DEV.under(self._prefix), self.relay, name="hmr")
         )
         app.add_api_route(
-            str(PageUrl.DEV), self.proxy, methods=["GET"], include_in_schema=False
+            PageUrl.DEV.under(self._prefix),
+            self.proxy,
+            methods=["GET"],
+            include_in_schema=False,
         )
-        app.router.routes.insert(0, app.router.routes.pop())
         app.add_api_route(
-            str(PageUrl.PAGE), self.serve, methods=["GET"], include_in_schema=False
+            PageUrl.PAGE.under(self._prefix),
+            self.serve,
+            methods=["GET"],
+            include_in_schema=False,
         )
-        app.router.routes.insert(0, app.router.routes.pop())
 
     def _upstream_path(self, path: str) -> str:
         return f"{self._prefix}{PageAssets.DEV}{path}"
