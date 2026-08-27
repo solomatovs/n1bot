@@ -26,8 +26,8 @@ from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import (
     RefreshSignal,
-    RegistryRef,
     StoreRef,
+    TicketsRef,
     UserConnections,
 )
 from boba.connections.marks import UserConnectionsSpec
@@ -221,13 +221,13 @@ class ToolLoader:
         raw_config: DictConfig,
         plugins: Mapping[str, ToolPlugin],
         store_ref: StoreRef,
-        registry_ref: RegistryRef,
+        tickets_ref: TicketsRef,
         refresh: RefreshSignal,
     ) -> None:
         self._raw = raw_config
         self._plugins = plugins
         self._store_ref = store_ref
-        self._registry_ref = registry_ref
+        self._tickets_ref = tickets_ref
         self._refresh = refresh
 
     def load(self) -> ToolRegistry:
@@ -345,7 +345,7 @@ class ToolLoader:
             UserConnections.bind_all(
                 functions,
                 self._store_ref,
-                self._registry_ref,
+                self._tickets_ref,
                 plugin.connections,
                 resolve,
                 self._refresh,

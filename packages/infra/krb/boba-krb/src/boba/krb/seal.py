@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from dataclasses import dataclass
 from typing import ClassVar
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -16,11 +17,12 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import ValidationError
 
-from boba.krb.config import DelegationMode
+from boba.connections.kerberos import DelegationMode
+from boba.krb.credentials import DelegatedCredentials
 from boba.krb.errors import TicketSealError
 from boba.krb.ticket import SignInTicket
 
-__all__ = ["TicketSealer"]
+__all__ = ["SsoTickets", "TicketSealer"]
 
 
 class TicketSealer:
@@ -75,3 +77,17 @@ class TicketSealer:
         ) as exc:
             msg = f"sealed sign-in ticket is malformed: {exc}"
             raise TicketSealError(msg) from exc
+
+
+@dataclass(frozen=True)
+class SsoTickets:
+    """Как приложение открывает билеты входа и превращает их в креды вызова."""
+
+    sealer: TicketSealer
+    krb5_config: str
+
+    def open(self, sealed: str) -> SignInTicket:
+        return self.sealer.open(sealed)
+
+    def credentials_of(self, ticket: SignInTicket) -> DelegatedCredentials:
+        return DelegatedCredentials(ticket, self.krb5_config)

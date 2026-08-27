@@ -22,7 +22,6 @@ __all__ = [
     "ClientLabel",
     "ConnectionRefusal",
     "ConnectionTrace",
-    "LoginMark",
     "UserConnectionsSpec",
 ]
 
@@ -57,19 +56,6 @@ class ConnectionTrace:
             return f"{profile.auth.trace()} url={profile.base_url}"
 
         return profile.auth.trace()
-
-
-class LoginMark:
-    """Метка входа в журнале: сама метка — ключ к тикету, целиком её не пишем."""
-
-    KEEP: ClassVar[int] = 8
-
-    @classmethod
-    def of(cls, login: str) -> str:
-        if len(login) <= cls.KEEP:
-            return login
-
-        return f"{login[: cls.KEEP]}…"
 
 
 class ClientLabel(BaseModel):

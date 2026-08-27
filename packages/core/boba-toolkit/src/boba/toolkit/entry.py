@@ -329,6 +329,24 @@ class ToolArgv:
         return False
 
     @staticmethod
+    def section_of(name: str, annotation: Any) -> str:
+        """Секция toml, из которой собирается injected-модель параметра."""
+        section = getattr(annotation, "SECTION", None)
+        if not isinstance(section, str):
+            msg = f"injected parameter {name!r} has no SECTION on its model"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        if not isinstance(annotation, type):
+            msg = f"injected parameter {name!r} is not a pydantic model"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        if not issubclass(annotation, BaseModel):
+            msg = f"injected parameter {name!r} is not a pydantic model"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        return section
+
+    @staticmethod
     def reveal(annotation: Any, value: object) -> Any:
         """JSON-совместимый дамп injected-значения с раскрытыми секретами."""
         revealed = getattr(value, "revealed", None)
@@ -385,7 +403,7 @@ class HostConfig:
         self._raw = build_app_config(config_path=Path(path))
 
     def enter_kerberos(self) -> None:
-        """Рабочий каталог kerberos из [krb]; без секции keytab-профили телу недоступны."""
+        """Рабочий каталог kerberos из [krb]; без секции keytab-профили телу закрыты."""
         if self.KERBEROS_SECTION not in self._raw:
             return
 
@@ -400,23 +418,11 @@ class HostConfig:
 
         payload: dict[str, Any] = {}
         for name, annotation in fields.items():
-            section = self._section_of(name, annotation)
+            section = ToolArgv.section_of(name, annotation)
             model = bind(self._raw, section, annotation)
             payload[name] = ToolArgv.reveal(annotation, model)
 
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-    @staticmethod
-    def _section_of(name: str, annotation: Any) -> str:
-        section = getattr(annotation, "SECTION", None)
-        if not isinstance(section, str):
-            msg = (
-                f"injected parameter {name!r} has no SECTION; "
-                f"it cannot be built from {EntryFlag.CONFIG}"
-            )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
-
-        return section
 
 
 class ToolMain:

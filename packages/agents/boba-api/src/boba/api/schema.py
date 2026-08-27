@@ -65,7 +65,7 @@ class OpenApiDocument:
             tool_registry=cls._no_registry,
             workflow_service=cls._no_service,
             connection_store=cls._no_store,
-            ccache_registry=cls._no_ccache,
+            sso_tickets=cls._no_tickets,
         )
 
     @staticmethod
@@ -81,7 +81,7 @@ class OpenApiDocument:
         raise RuntimeError(OpenApiDocument._stub_called("connection store"))
 
     @staticmethod
-    def _no_ccache() -> None:
+    def _no_tickets() -> None:
         return None
 
     @staticmethod

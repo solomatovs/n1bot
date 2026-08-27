@@ -6,7 +6,8 @@ import time
 
 import pytest
 
-from boba.krb import DelegationMode, SignInTicket, TicketSealError
+from boba.connections.kerberos import DelegationMode
+from boba.krb import SignInTicket, TicketSealError
 from boba.krb.seal import TicketSealer
 
 SECRET = "stand-secret"

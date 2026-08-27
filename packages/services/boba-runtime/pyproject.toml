@@ -4,24 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-runtime"
-version = "0.0.14.dev8"
+version = "0.0.14.dev9"
 description = "Boba runtime: контейнер зависимостей app/session/call и загрузчик tool-плагинов из конфига."
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.10,<3",
     "omegaconf>=2.3,<3",
     "langchain-core>=0.3,<1",
-    "boba-access==0.0.14.dev8",
-    "boba-canvas==0.0.14.dev8",
-    "boba-chat==0.0.14.dev8",
-    "boba-connections==0.0.14.dev8",
-    "boba-connection-broker==0.0.14.dev8",
-    "boba-identity==0.0.14.dev8",
-    "boba-sandbox==0.0.14.dev8",
-    "boba-settings==0.0.14.dev8",
-    "boba-toolkit==0.0.14.dev8",
-    "boba-toolrun==0.0.14.dev8",
-    "boba-workflow-engine==0.0.14.dev8",
+    "boba-access==0.0.14.dev9",
+    "boba-canvas==0.0.14.dev9",
+    "boba-chat==0.0.14.dev9",
+    "boba-connections==0.0.14.dev9",
+    "boba-connection-broker==0.0.14.dev9",
+    "boba-identity==0.0.14.dev9",
+    "boba-sandbox==0.0.14.dev9",
+    "boba-settings==0.0.14.dev9",
+    "boba-toolkit==0.0.14.dev9",
+    "boba-toolrun==0.0.14.dev9",
+    "boba-workflow-engine==0.0.14.dev9",
 ]
 
 [tool.setuptools.packages.find]

@@ -180,22 +180,22 @@ class NoUserCredential(BaseModel):
 
 
 class DelegatedTicket(BaseModel):
-    """Делегированный kerberos-билет SSO-входа: ссылка на него, не сам билет.
+    """Делегированный kerberos-билет SSO-входа: чей он и сам билет под шифром.
 
-    principal — чей билет, login — какому входу он выдан (ключ реестра
-    билетов). Единственная модель этой пары: из metadata пользователя, из JWT
-    и из контекста вызова читается она же.
+    principal — чей билет, sealed — запечатанные креды входа (открывает
+    TicketSealer с секретом приложения). Единственная модель этой пары: из
+    metadata пользователя, из JWT и из контекста вызова читается она же.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["delegated"] = "delegated"
     principal: str
-    login: str
+    sealed: str
 
     @classmethod
     def of_metadata(cls, metadata: Mapping[str, object]) -> DelegatedTicket | None:
-        """Ссылка на билет из metadata входа; None — делегирования не было."""
+        """Билет из metadata входа; None — делегирования не было."""
         if metadata.get(UserMetadataField.PROVIDER) != SignInProvider.KERBEROS:
             return None
 
@@ -203,11 +203,11 @@ class DelegatedTicket(BaseModel):
         if not isinstance(principal, str) or not principal:
             return None
 
-        login = metadata.get(UserMetadataField.LOGIN)
-        if not isinstance(login, str) or not login:
+        sealed = metadata.get(UserMetadataField.TICKET)
+        if not isinstance(sealed, str) or not sealed:
             return None
 
-        return cls(principal=principal, login=login)
+        return cls(principal=principal, sealed=sealed)
 
     @classmethod
     def credential_of(cls, metadata: Mapping[str, object]) -> Credential:
