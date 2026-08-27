@@ -24,7 +24,7 @@ from boba.identity.context import (
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import UserMetadataField
 
-__all__ = ["ApiSubject", "AuthenticatedUser", "Authenticator"]
+__all__ = ["ApiSubject", "AuthenticatedUser", "Authenticator", "PersistedUsers"]
 
 
 class AuthenticatedUser(BaseModel):
@@ -99,3 +99,11 @@ class Authenticator(Protocol):
     @abstractmethod
     async def user_of_token(self, token: str) -> AuthenticatedUser | None:
         """None — токен негоден или вход не сохранён слоем данных."""
+
+
+class PersistedUsers(Protocol):
+    """Строки users по идентификатору входа: id строки и сохранённые metadata."""
+
+    @abstractmethod
+    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
+        """None — вход ещё не заводил строку users."""

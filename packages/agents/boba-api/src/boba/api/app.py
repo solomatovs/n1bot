@@ -7,13 +7,14 @@ from typing import ClassVar
 from fastapi import APIRouter, FastAPI
 
 from boba.api.auth import ApiAuth, TokenReader
-from boba.api.errors import DomainErrorMiddleware
 from boba.api.tools import ThreadsSource, ToolCalling
 from boba.api.urls import ApiVersion
 from boba.api.workflow_socket import WorkflowNamespace, WorkflowSocket
 from boba.api.workflows import WorkflowApi
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import Authenticator
+from boba.runtime.config import ApiConfig
+from boba.runtime.http import DomainErrorMiddleware
 from boba.runtime.refs import RuntimeRefs
 
 __all__ = ["ApiApp"]
@@ -23,8 +24,8 @@ class ApiApp:
     """Приложение API без знаний о хосте: всё нужное приходит аргументами build."""
 
     TITLE: ClassVar[str] = "boba api"
-    MOUNT: ClassVar[str] = "/api"
-    """Куда хост монтирует приложение относительно своего url_prefix."""
+    MOUNT: ClassVar[str] = ApiConfig.MOUNT
+    """Куда процесс монтирует приложение относительно url_prefix."""
     OPENAPI: ClassVar[str] = "/openapi.json"
     DOCS: ClassVar[str] = "/docs"
 

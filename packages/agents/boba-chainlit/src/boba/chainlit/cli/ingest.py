@@ -46,14 +46,15 @@ class ConfluenceIngestCli:
         AppEntry.export_env(config_path)
 
         # импорт здесь: chainlit фиксирует пути из env на импорте своих модулей
-        from boba.chainlit.infra import providers  # noqa: PLC0415
+        from boba.chainlit.infra.config import AppConfig  # noqa: PLC0415
         from boba.chainlit.infra.log_context import UserLogContext  # noqa: PLC0415
+        from boba.runtime.config import RawConfig  # noqa: PLC0415
 
-        app = providers.get_app_config(config_path=config_path)
+        app = AppConfig.load(config_path)
         # форматтер приложения ждёт поле user в каждой записи; вне сессии это "-"
         UserLogContext.install()
         logging.config.dictConfig(app.logger)
-        raw = providers.get_raw_config()
+        raw = RawConfig.get()
 
         cfg = cls.config(raw, args)
 

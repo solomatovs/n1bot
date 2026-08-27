@@ -24,7 +24,6 @@ from ldap3.core.exceptions import (
 )
 
 import chainlit as cl
-from boba.chainlit.auth.config import LdapAuthConfig
 from boba.identity.directory import (
     LDAPAccessDeniedError,
     LDAPConfigError,
@@ -53,6 +52,7 @@ from boba.identity.session import (
     UserLogin,
     UserMetadataField,
 )
+from boba.runtime.auth_config import LdapAuthConfig
 
 
 class ADDirectory:

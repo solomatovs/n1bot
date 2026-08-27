@@ -14,7 +14,6 @@ from pydantic import (
 )
 
 from boba.access import RoleConfig
-from boba.chainlit.auth.config import AuthConfig
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chat.profiles import (
     ChatProfileConfig,
@@ -22,6 +21,8 @@ from boba.chat.profiles import (
 )
 from boba.connections.postgres import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
+from boba.runtime.auth_config import AuthConfig
+from boba.runtime.config import DataLayerConfig, RuntimeConfig
 from boba.sandbox.profile import SandboxConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
@@ -181,27 +182,6 @@ class CheckpointerConfig(BaseModel):
     )
 
 
-class DataLayerConfig(BaseModel):
-    """Конфиг chainlit data layer: postgres-подключение + схема БД."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    postgres: Annotated[
-        PostgresConfig,
-        Field(
-            description=(
-                "Подключение и пул; в конфиге подключается ссылкой ${postgres}."
-            ),
-        ),
-    ]
-
-    db_schema: str = Field(
-        default="public",
-        alias="schema",
-        description="Схема таблиц data layer; PostgresDataLayer квалифицирует ею SQL.",
-    )
-
-
 class StreamJournalConfig(BaseModel):
     """Журнал живого вывода инструментов: служебный том на пользователя."""
 
@@ -241,8 +221,8 @@ class StreamJournalConfig(BaseModel):
         return self
 
 
-class AppConfig(BaseModel):
-    """Параметры chainlit-приложения: server, профили чата и права ролей."""
+class AppConfig(RuntimeConfig):
+    """Секции chainlit-процесса поверх общих: server, checkpointer, storage, журнал."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -291,13 +271,10 @@ class AppConfig(BaseModel):
         ),
     ]
 
-    logger: Annotated[
-        dict,
-        Field(
-            default=LOGGING_CONFIG,
-            description="Конфигурация логера",
-        ),
-    ]
+    logger: dict[str, Any] = Field(
+        default=LOGGING_CONFIG,
+        description="Конфигурация логера: с полем user из сессии chainlit.",
+    )
 
     checkpointer: Annotated[
         CheckpointerConfig,

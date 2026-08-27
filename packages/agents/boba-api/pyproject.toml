@@ -11,6 +11,7 @@ dependencies = [
     "fastapi>=0.115,<1",
     "starlette>=0.40",
     "pydantic>=2.10,<3",
+    "pyjwt>=2.8",
     "python-socketio>=5.11,<6",
     "boba-identity==0.0.14.dev9",
     "boba-chat==0.0.14.dev9",
@@ -19,6 +20,8 @@ dependencies = [
     "boba-workflow==0.0.14.dev9",
     "boba-workflow-engine==0.0.14.dev9",
     "boba-runtime==0.0.14.dev9",
+    "boba-sandbox==0.0.14.dev9",
+    "uvicorn>=0.30",
 ]
 
 [tool.setuptools.packages.find]

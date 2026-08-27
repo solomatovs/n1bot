@@ -1,15 +1,15 @@
 from fastapi import FastAPI
 
 from boba.chainlit.auth.composite import PasswordAuthCallbackInstaller
-from boba.chainlit.auth.config import (
+from boba.chainlit.auth.kerberos import KerberosAuth
+from boba.chainlit.auth.ldap import LdapAuth
+from boba.chainlit.auth.local import LocalAuth
+from boba.runtime.auth_config import (
     AuthConfig,
     KerberosAuthConfig,
     LdapAuthConfig,
     LocalAuthConfig,
 )
-from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.auth.ldap import LdapAuth
-from boba.chainlit.auth.local import LocalAuth
 
 
 class ChainlitAuthInstaller:

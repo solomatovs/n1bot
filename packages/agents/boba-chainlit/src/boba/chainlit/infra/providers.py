@@ -1,9 +1,10 @@
-"""Провайдеры зависимостей: конфиг, клиенты, хранилища и сам агент langgraph."""
+"""Провайдеры chainlit-процесса: конфиг чата, клиенты LLM, data layer и агент langgraph.
+
+Общие для процессов провайдеры (реестр, сторы, workflow) — boba.runtime.providers.
+"""
 
 import re
-import socket
 from collections.abc import AsyncIterator, Mapping, Sequence
-from pathlib import Path
 from typing import Annotated
 
 import httpx
@@ -15,7 +16,6 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
-from omegaconf import DictConfig
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg_pool import PoolTimeout
@@ -29,7 +29,6 @@ from boba.chainlit.agent.flow import (
     PrefetchGraphBuilder,
     Rephraser,
 )
-from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.data import PostgresDataLayer
@@ -41,7 +40,6 @@ from boba.chainlit.infra.config import (
     DataLayerConfig,
     LocalStorageConfig,
 )
-from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
 from boba.chat.generation import LocalGeneration, OpenAiGeneration, StructuredGenerator
@@ -50,54 +48,27 @@ from boba.chat.profiles import (
     AgentSettings,
     ChatProfiles,
     PrefetchFlowConfig,
-    RolesSection,
     SelectedProfile,
     SettingsView,
     UserMeta,
 )
 from boba.chat.provider import ChatProvider, LocalChatConfig, OpenAiChatConfig
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
-from boba.krb.seal import SsoTickets
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import GeneratorFactory
 from boba.llm.local import OnnxChatRuntime
 from boba.llm.openai import OpenAiHttp
-from boba.runtime.di import Container, Depends
-from boba.runtime.plugins import PluginMeta
-from boba.runtime.refs import RuntimeRefs
-from boba.sandbox import CgroupManager
-from boba.settings import bind, build_app_config
-from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
+from boba.runtime import providers as runtime
+from boba.runtime.di import Depends
 from boba.toolrun.registry import ToolRegistry
-from boba.workflow.events import RunEvents
-from boba.workflow_engine.service import WorkflowService
-from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
-
-_RAW_CONFIG: dict[str, DictConfig] = {}
 
 
-def get_raw_config() -> DictConfig:
-    try:
-        return _RAW_CONFIG["config"]
-    except KeyError:
-        msg = "raw config is not initialised: call get_app_config() first"
-        raise RuntimeError(msg) from None
-
-
-def get_app_config(config_path: Path) -> AppConfig:
-    raw = build_app_config(config_path=config_path)
-    _RAW_CONFIG["config"] = raw
-    config = bind(raw, path="app", model=AppConfig)
-    # групповые лимиты проверяются на старте: отказ виден сразу, с именем профиля
-    CgroupManager.probe_profiles(config.sandbox.profiles)
-    # кэши билетов раскладывает приложение: строкам соединений пути не задают
-    config.krb.apply()
-
-    return config
+def get_app_config() -> AppConfig:
+    """Конфиг chainlit-процесса; значение кладёт bootstrap после AppConfig.load."""
+    msg = "app config is provided by bootstrap, not produced"
+    raise RuntimeError(msg)
 
 
 def get_checkpointer_config(
@@ -163,146 +134,16 @@ def session_agent_settings(
     return view.agent()
 
 
-def kerberos_auth() -> KerberosAuth | None:
-    """SSO-провайдер kerberos; значение кладёт bootstrap после установки auth."""
-    msg = "kerberos_auth is provided by bootstrap, not produced"
-    raise RuntimeError(msg)
-
-
-def sso_tickets_ref() -> SsoTickets | None:
-    """Открыватель билетов SSO-входа; None — SSO kerberos не настроен."""
-    root = Container.root
-    if root is None:
-        msg = "DI container is not initialised"
-        raise RuntimeError(msg)
-
-    auth = root.resolved(kerberos_auth)
-    if auth is None:
-        return None
-
-    return auth.tickets()
-
-
 def session_source() -> SessionSource:
     """Источник сессий приложения; реализация знает про chainlit."""
     return ChainlitSessions()
 
 
-def connection_store_ref() -> ConnectionStore:
-    """Хранилище соединений для обвязок инструментов; зовётся на каждый вызов."""
-    root = Container.root
-    if root is None:
-        msg = "DI container is not initialised"
-        raise RuntimeError(msg)
-
-    store = root.resolved(connection_store)
-    if store is None:
-        msg = "[connections] is disabled: user connections are unavailable"
-        raise RuntimeError(msg)
-
-    return store
-
-
-def runtime_refs() -> RuntimeRefs:
-    """Входы приложения для api и обвязок: ссылки в корневой контейнер."""
-    return RuntimeRefs(
-        tool_registry=tool_registry_ref,
-        workflow_service=workflow_service_ref,
-        connection_store=connection_store_ref,
-        sso_tickets=sso_tickets_ref,
-    )
-
-
-def tool_registry(
-    raw: Annotated[DictConfig, Depends(get_raw_config)],
-) -> ToolRegistry:
-    return ChatPlugins.load(raw, runtime_refs())
-
-
-async def tool_registry_ref() -> ToolRegistry:
-    """Реестр инструментов из корневого контейнера: для вызовов вне сессии."""
-    root = Container.root
-    if root is None:
-        msg = "DI container is not initialised: tool registry is unavailable"
-        raise RuntimeError(msg)
-
-    return await root.resolve(Depends(tool_registry))
-
-
-async def workflow_service_ref() -> WorkflowService:
-    """Сервис workflow из корневого контейнера; зовётся на каждый вызов."""
-    root = Container.root
-    if root is None:
-        msg = "DI container is not initialised"
-        raise RuntimeError(msg)
-
-    service = await root.resolve(Depends(workflow_service))
-    if service is None:
-        msg = "[workflow] is disabled: workflows are unavailable"
-        raise RuntimeError(msg)
-
-    return service
-
-
 def session_tools(
-    registry: Annotated[ToolRegistry, Depends(tool_registry)],
+    registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> list[BaseTool]:
     return registry.for_session(current_session().roles, selected.name)
-
-
-async def kb_schema(
-    raw: Annotated[DictConfig, Depends(get_raw_config)],
-) -> None:
-    """Готовит таблицы базы знаний, если секция [tool.kb] включена."""
-    meta = bind(raw, "tool.kb", PluginMeta)
-    if not meta.enable:
-        return
-    cfg = bind(raw, "tool.kb", PostgresKnowledgeBaseConfig)
-    await KbSchema(cfg, dim=cfg.embedding.dim).setup()
-
-
-async def workflow_store(
-    raw: Annotated[DictConfig, Depends(get_raw_config)],
-) -> WorkflowStore | None:
-    """Хранилище workflow и их запусков; None — секция [workflow] выключена."""
-    cfg = bind(raw, "workflow", WorkflowConfig)
-    if not cfg.enable:
-        return None
-
-    store = WorkflowStore(cfg)
-    await store.setup()
-
-    return store
-
-
-def workflow_service(
-    store: Annotated[WorkflowStore | None, Depends(workflow_store)],
-    config: Annotated[AppConfig, Depends(get_app_config)],
-) -> WorkflowService | None:
-    """Сервис workflow; инстанс — host:port, чтобы различать запуски реплик."""
-    if store is None:
-        return None
-
-    instance = f"{socket.gethostname()}:{config.chainlit.port}"
-    return WorkflowService(store, tool_registry_ref, instance, RunEvents())
-
-
-async def connection_store(
-    raw: Annotated[DictConfig, Depends(get_raw_config)],
-) -> ConnectionStore | None:
-    """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
-    cfg = bind(raw, "connections", ConnectionsConfig)
-    if not cfg.enable:
-        return None
-
-    store = ConnectionStore(cfg)
-    await store.setup()
-
-    roles = bind(raw, "roles", RolesSection).root
-    await store.sync_roles(roles)
-
-    return store
 
 
 def _chainlit_dump_file(request: httpx.Request) -> str:

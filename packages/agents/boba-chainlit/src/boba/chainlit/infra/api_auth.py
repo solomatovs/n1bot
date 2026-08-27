@@ -1,24 +1,15 @@
-"""Вход API на chainlit: пользователь входа из JWT-cookie и его строка users."""
+"""Пользователь chainlit -> пользователь входа; имя cookie входа chainlit."""
 
 from __future__ import annotations
 
 import os
-from abc import abstractmethod
-from collections.abc import Callable
-from typing import ClassVar, Protocol
+from typing import ClassVar
 
 from boba.chainlit.infra.session import ChainlitSession
-from boba.identity.api import AuthenticatedUser, Authenticator
+from boba.identity.api import AuthenticatedUser
 from chainlit.user import PersistedUser, User
 
-__all__ = ["ChainlitAuthenticator", "ChainlitCookie", "ChainlitUsers", "PersistedUsers"]
-
-
-class PersistedUsers(Protocol):
-    """Строки users слоя данных chainlit по идентификатору входа."""
-
-    @abstractmethod
-    async def get_user(self, identifier: str) -> PersistedUser | None: ...
+__all__ = ["ChainlitCookie", "ChainlitUsers"]
 
 
 class ChainlitUsers:
@@ -34,22 +25,6 @@ class ChainlitUsers:
             identifier=user.identifier,
             metadata=ChainlitSession.metadata_of(user),
         )
-
-
-class ChainlitAuthenticator(Authenticator):
-    """Токен JWT chainlit -> строка users через слой данных."""
-
-    def __init__(self, users: Callable[[], PersistedUsers]) -> None:
-        self._users = users
-
-    async def user_of_token(self, token: str) -> AuthenticatedUser | None:
-        login = ChainlitSession.user_of_token(token)
-        if login is None:
-            return None
-
-        persisted = await self._users().get_user(login.identifier)
-
-        return ChainlitUsers.of(persisted)
 
 
 class ChainlitCookie:

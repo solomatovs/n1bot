@@ -25,7 +25,6 @@ from boba.chainlit.data.models import (
 from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
 from boba.chainlit.domain.keys import AttachmentLinks
-from boba.chainlit.infra.api_auth import PersistedUsers
 from boba.chat.threads import (
     DataBrokenError,
     DataRejectedError,
@@ -95,7 +94,7 @@ class AttachmentDataLayer(BaseDataLayer, ABC):
         return layer
 
 
-class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, PersistedUsers):
+class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
     """Хранилище chainlit (users/threads/elements/feedbacks) на psycopg-пуле."""
 
     _MODELS: ClassVar[tuple[type[Row], ...]] = (User, Thread, Element, Feedback)
