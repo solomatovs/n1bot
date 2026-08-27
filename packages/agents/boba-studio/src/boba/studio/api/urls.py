@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-__all__ = ["ApiVersion", "ToolCallUrl", "WorkflowUrl"]
+__all__ = ["AccountUrl", "ApiVersion", "ConnectionUrl", "ToolCallUrl", "WorkflowUrl"]
 
 
 class ApiVersion(StrEnum):
@@ -13,16 +13,30 @@ class ApiVersion(StrEnum):
     V1 = "/v1"
 
 
-class ToolCallUrl(StrEnum):
-    """REST-запуск инструмента: имя в пути, остальное в теле."""
+class AccountUrl(StrEnum):
+    """Кто вошёл и какие профили ему видны."""
 
+    ME = "/me"
+    PROFILES = "/profiles"
+
+
+class ConnectionUrl(StrEnum):
+    """Соединения пользователя: список, свои — создание, замена, удаление."""
+
+    CONNECTIONS = "/connections"
+    CONNECTION = "/connections/{connection_id}"
+
+
+class ToolCallUrl(StrEnum):
+    """Каталог инструментов субъекта и REST-запуск одного: имя в пути."""
+
+    CATALOG = "/tools"
     CALL = "/tools/{name}"
 
 
 class WorkflowUrl(StrEnum):
     """REST workflow: определения и запуски; профиль — в теле или query."""
 
-    CATALOG = "/workflows/catalog"
     VALIDATE = "/workflows/validate"
     WORKFLOWS = "/workflows"
     WORKFLOW = "/workflows/{workflow_id}"

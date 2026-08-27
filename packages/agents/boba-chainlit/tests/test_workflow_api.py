@@ -17,7 +17,7 @@ from test_workflow_service import ROLE, Probe, _registry
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.studio.api.app import ApiApp
-from boba.studio.api.urls import ApiVersion, WorkflowUrl
+from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow.events import RunEvents
 from boba.workflow_engine.service import WorkflowService
@@ -113,7 +113,7 @@ async def _finished(client: AsyncClient, run_id: str, profile: str) -> dict[str,
 
 async def test_catalog_lists_tools(client: AsyncClient, app_config: AppConfig) -> None:
     reply = await client.get(
-        f"{ApiVersion.V1}{WorkflowUrl.CATALOG}",
+        f"{ApiVersion.V1}{ToolCallUrl.CATALOG}",
         params={"profile": _profile_of(app_config)},
     )
 

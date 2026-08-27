@@ -135,11 +135,17 @@ class ApiIdentity:
     """Субъект вызова API: 401 без сохранённого входа, 403 если профиль недоступен."""
 
     @staticmethod
-    def resolve(
-        user: AuthenticatedUser | None, profile: str | None, profiles: ChatProfiles
-    ) -> ApiSubject:
+    def user_of(user: AuthenticatedUser | None) -> AuthenticatedUser:
         if user is None:
             raise HTTPException(status_code=401, detail="Unauthorized")
+
+        return user
+
+    @classmethod
+    def resolve(
+        cls, user: AuthenticatedUser | None, profile: str | None, profiles: ChatProfiles
+    ) -> ApiSubject:
+        user = cls.user_of(user)
 
         try:
             selected = profiles.resolve_or_default(profile, user.roles).name

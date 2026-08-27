@@ -64,7 +64,7 @@ export class WorkflowApi {
   constructor(private readonly urls: PageUrls) {}
 
   async catalog(): Promise<ToolCatalog> {
-    const raw = await this.raw("get", "/v1/workflows/catalog", {}, undefined, undefined);
+    const raw = await this.raw("get", "/v1/tools", {}, undefined, undefined);
     return ToolCatalogSchema.parse(looseViews(raw));
   }
 

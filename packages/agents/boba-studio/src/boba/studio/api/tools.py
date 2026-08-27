@@ -1,5 +1,6 @@
-"""REST-запуск одного инструмента человеком: тот же реестр и цепочка, что у чата.
+"""Каталог инструментов субъекта и REST-запуск одного человеком.
 
+GET /v1/tools — каталог под роли и профиль (то, что видит страница workflow).
 POST /v1/tools/{name}: тред, профиль, intent и аргументы в теле, пользователь —
 из cookie входа. Контекст вызова собирается здесь под HumanInitiator(api);
 видимость инструментов — headless-решение ToolAccess, инструменты чата
@@ -41,6 +42,8 @@ from boba.toolrun.invoke import (
     ToolUnavailableError,
 )
 from boba.toolrun.registry import ToolRegistry
+from boba.workflow import ToolFacts
+from boba.workflow_engine.catalog import CatalogBuilder
 
 __all__ = ["ThreadsSource", "ToolCallBody", "ToolCallReply", "ToolCalling"]
 
@@ -101,7 +104,23 @@ class ToolCalling:
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
+            ToolCallUrl.CATALOG.value,
+            self.catalog,
+            methods=["GET"],
+            tags=[self.TAG],
+        )
+        router.add_api_route(
             ToolCallUrl.CALL.value, self.serve, methods=["POST"], tags=[self.TAG]
+        )
+
+    async def catalog(
+        self, current_user: CurrentUser, profile: str | None = None
+    ) -> Mapping[str, ToolFacts]:
+        identity = ApiIdentity.resolve(current_user, profile, self._profiles)
+        registry = await self._registry()
+
+        return CatalogBuilder.of(
+            registry, identity.subject.roles, identity.subject.profile
         )
 
     async def serve(
