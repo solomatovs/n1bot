@@ -120,6 +120,19 @@ class ConnectionRepository(Protocol):
     async def add(self, name: str, profile: ConnectionProfile) -> int: ...
 
     @abstractmethod
+    async def add_owned(
+        self, name: str, profile: ConnectionProfile, user_id: int
+    ) -> int: ...
+
+    @abstractmethod
+    async def update(
+        self, connection_id: int, name: str, profile: ConnectionProfile
+    ) -> bool: ...
+
+    @abstractmethod
+    async def owned_ids(self, user_id: int) -> frozenset[int]: ...
+
+    @abstractmethod
     async def get(self, connection_id: int) -> StoredConnection: ...
 
     @abstractmethod

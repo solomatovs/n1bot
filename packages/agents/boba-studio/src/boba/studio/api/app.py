@@ -1,4 +1,5 @@
-"""Сборка API-приложения: роутеры v1, socket.io и вход; хост монтирует его под MOUNT."""
+"""Сборка API-приложения: роутеры v1 (me, profiles, connections, tools, workflows),
+socket.io и вход; процесс монтирует его под MOUNT."""
 
 from __future__ import annotations
 
@@ -11,7 +12,9 @@ from boba.identity.api import Authenticator
 from boba.runtime.config import StudioConfig
 from boba.runtime.http import DomainErrorMiddleware
 from boba.runtime.refs import RuntimeRefs
+from boba.studio.api.account import AccountApi
 from boba.studio.api.auth import ApiAuth, TokenReader
+from boba.studio.api.connections import ConnectionsApi
 from boba.studio.api.tools import ThreadsSource, ToolCalling
 from boba.studio.api.urls import ApiVersion
 from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocket
@@ -44,6 +47,8 @@ class ApiApp:
         ApiAuth(authenticator, TokenReader(cookie)).install(app)
 
         router = APIRouter(prefix=ApiVersion.V1.value)
+        AccountApi(profiles).mount(router)
+        ConnectionsApi(refs.connection_store, profiles).mount(router)
         ToolCalling(refs.tool_registry, profiles, threads).mount(router)
         WorkflowApi(refs.workflow_service, profiles).mount(router)
         app.include_router(router)

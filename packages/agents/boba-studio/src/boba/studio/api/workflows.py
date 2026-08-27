@@ -1,4 +1,4 @@
-"""REST workflow для страницы: каталог, определения, запуск и остановка.
+"""REST workflow для страницы: определения, запуск и остановка; каталог — /v1/tools.
 
 Пользователь — из cookie входа, профиль — в теле или query (без него
 берётся единственный видимый). Запуск идёт в фоне процесса, ответ — id
@@ -27,7 +27,7 @@ from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.context import Scope
 from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import WorkflowUrl
-from boba.workflow import RunState, ToolFacts
+from boba.workflow import RunState
 from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowStoreError
 from boba.workflow_engine.service import (
     WorkflowError,
@@ -91,7 +91,6 @@ class WorkflowApi:
 
     def mount(self, router: APIRouter) -> None:
         routes = (
-            (WorkflowUrl.CATALOG, self.catalog, "GET"),
             (WorkflowUrl.VALIDATE, self.validate, "POST"),
             (WorkflowUrl.WORKFLOWS, self.list_workflows, "GET"),
             (WorkflowUrl.WORKFLOWS, self.save, "POST"),
@@ -104,14 +103,6 @@ class WorkflowApi:
         )
         for path, handler, method in routes:
             router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
-
-    async def catalog(
-        self, current_user: CurrentUser, profile: str | None = None
-    ) -> Mapping[str, ToolFacts]:
-        identity = self._identity(current_user, profile)
-        service = await self._resolved()
-
-        return await service.catalog(identity.subject)
 
     async def validate(self, body: WorkflowBody, current_user: CurrentUser) -> RunState:
         identity = self._identity(current_user, body.profile)

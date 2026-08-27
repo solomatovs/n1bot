@@ -316,6 +316,120 @@ class ConnectionStore(ConnectionRepository):
 
         return int(row[0])
 
+    async def add_owned(
+        self, name: str, profile: ConnectionProfile, user_id: int
+    ) -> int:
+        """Строка и личный грант одной транзакцией: личный грант и есть владение."""
+        payload = self._cipher.encrypt(profile)
+        insert_row = sql.SQL(
+            """
+            insert into {connections} (
+                name,
+                data
+            )
+            values (
+                %(name)s,
+                %(data)s
+            )
+            returning
+                id
+            """
+        ).format(
+            connections=self._table(),
+        )
+        insert_grant = sql.SQL(
+            """
+            insert into {grants} (
+                src_kind,
+                src_kind_id,
+                tgt_kind,
+                tgt_kind_id
+            )
+            values (
+                %(src_kind)s,
+                %(src_kind_id)s,
+                %(tgt_kind)s,
+                %(tgt_kind_id)s
+            )
+            """
+        ).format(
+            grants=self._grants(),
+        )
+
+        pool = await self._pool()
+        async with self._guarded("add_owned"), pool.cursor() as cur:
+            await cur.execute(insert_row, {"name": name, "data": Jsonb(payload)})
+            row = await cur.fetchone()
+            if row is None:
+                msg = f"connections: row {name!r} was not saved"
+                raise ConnectionStoreError(msg)
+
+            connection_id = int(row[0])
+            await cur.execute(
+                insert_grant,
+                self._grant_params(connection_id, GrantTarget.user(user_id)),
+            )
+
+        return connection_id
+
+    async def update(
+        self, connection_id: int, name: str, profile: ConnectionProfile
+    ) -> bool:
+        """Полная замена имени и профиля; False — строки не было."""
+        payload = self._cipher.encrypt(profile)
+        query = sql.SQL(
+            """
+            update
+                {connections}
+            set
+                name = %(name)s,
+                data = %(data)s
+            where
+                id = %(id)s
+            """
+        ).format(
+            connections=self._table(),
+        )
+        params = {"id": connection_id, "name": name, "data": Jsonb(payload)}
+
+        pool = await self._pool()
+        async with self._guarded("update"), pool.cursor() as cur:
+            await cur.execute(query, params)
+            return cur.rowcount > 0
+
+    async def owned_ids(self, user_id: int) -> frozenset[int]:
+        """Соединения с личным грантом пользователя: их он правит и удаляет сам."""
+        query = sql.SQL(
+            """
+            select
+                src_kind_id
+            from
+                {grants}
+            where
+                src_kind = %(src_kind)s
+                and tgt_kind = %(tgt_kind)s
+                and tgt_kind_id = %(user_id)s
+            """
+        ).format(
+            grants=self._grants(),
+        )
+        params = {
+            "src_kind": GrantKind.CONNECTIONS.value,
+            "tgt_kind": GrantKind.USERS.value,
+            "user_id": user_id,
+        }
+
+        pool = await self._pool()
+        async with self._guarded("owned_ids"), pool.cursor() as cur:
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+
+        ids: set[int] = set()
+        for row in rows:
+            ids.add(int(row[0]))
+
+        return frozenset(ids)
+
     async def get(self, connection_id: int) -> StoredConnection:
         query = sql.SQL(
             """
