@@ -20,13 +20,15 @@ from langchain_core.tools import tool
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.api.auth import ApiAuth, TokenReader
+from boba.api.jwt_auth import JwtAuthenticator
 from boba.api.tools import ToolCallBody, ToolCalling
-from boba.chainlit.infra.api_auth import ChainlitAuthenticator, ChainlitUsers
+from boba.chainlit.infra.api_auth import ChainlitUsers
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.session import ChainlitSession
 from boba.chat.profiles import ChatProfiles
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
 from boba.runtime.plugins import CallSurface
+from boba.runtime.users import UsersTable
 from boba.toolkit.result import TextResult, pack_result
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
@@ -264,17 +266,27 @@ class TestRoute:
 
 
 class TestAuthenticator:
-    """JWT chainlit -> пользователь входа со строкой users."""
+    """JWT chainlit -> пользователь входа: строка users из таблицы, metadata из JWT."""
 
     async def test_persisted_user_by_token(
-        self, seeded: Seed, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+        self,
+        seeded: Seed,
+        app_config: AppConfig,
+        pool: AsyncPostgresPool,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         if not os.environ.get("CHAINLIT_AUTH_SECRET"):
             monkeypatch.setenv("CHAINLIT_AUTH_SECRET", "stand-secret")
 
         tester = _tester(seeded, app_config)
         login = User(identifier=tester.identifier, metadata=dict(tester.metadata))
-        authenticator = ChainlitAuthenticator(lambda: seeded.layer)
+        # стенд живёт в тестовой базе: пул стенда, схема — из конфига
+        users = UsersTable(
+            app_config.data_layer.postgres, app_config.data_layer.db_schema, pool
+        )
+        authenticator = JwtAuthenticator(
+            os.environ["CHAINLIT_AUTH_SECRET"], lambda: users
+        )
 
         user = await authenticator.user_of_token(create_jwt(login))
 
@@ -282,11 +294,12 @@ class TestAuthenticator:
             raise AssertionError("persisted user expected")
         if user.id != tester.id:
             raise AssertionError((user.id, tester.id))
-        stored = await seeded.layer.get_user(tester.identifier)
-        if stored is None:
-            raise AssertionError("users row expected")
-        if user.roles != ChainlitSession.roles_of(stored):
-            raise AssertionError((user.roles, stored.metadata))
+        if user.roles != frozenset(_roles(app_config)):
+            raise AssertionError(f"roles must come from the token: {user.roles}")
 
         if await authenticator.user_of_token("not-a-token") is not None:
             raise AssertionError("garbage token must not authenticate")
+
+        stranger = User(identifier="nobody-in-users", metadata={})
+        if await authenticator.user_of_token(create_jwt(stranger)) is not None:
+            raise AssertionError("a sign-in without a users row must not authenticate")

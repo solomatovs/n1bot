@@ -25,6 +25,7 @@ from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
 from boba.identity.context import Subject
 from boba.identity.errors import RefusalError
+from boba.runtime.config import ApiConfig
 from boba.workflow.events import RunSnapshot
 from boba.workflow_engine.service import WorkflowService
 
@@ -186,7 +187,7 @@ class WorkflowNamespace(socketio.AsyncNamespace):
 class WorkflowSocket:
     """Сервер socket.io API и его ASGI-приложение; хост монтирует его под PATH."""
 
-    PATH: ClassVar[str] = "/socket.io"
+    PATH: ClassVar[str] = ApiConfig.SOCKET_PATH
 
     @classmethod
     def build(cls, namespace: WorkflowNamespace) -> socketio.ASGIApp:

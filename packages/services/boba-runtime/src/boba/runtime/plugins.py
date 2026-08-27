@@ -31,7 +31,10 @@ from boba.connection_broker.user_connections import (
     UserConnections,
 )
 from boba.connections.marks import UserConnectionsSpec
+from boba.connections.profile import ConnectionKind
+from boba.connections.whitelist import ConnectionKeying
 from boba.identity.context import CallContext
+from boba.runtime.refs import RuntimeRefs
 from boba.sandbox import (
     BindSpec,
     SandboxProfile,
@@ -42,6 +45,15 @@ from boba.sandbox.guest import WarmupCall
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.settings import bind
+from boba.tool.ch.tools import TOOLS as CH_TOOLS
+from boba.tool.chart.tools import TOOLS as CHART_TOOLS
+from boba.tool.doc.tools import TOOLS as DOC_TOOLS
+from boba.tool.kb.confluence.ingest_tools import TOOLS as INGEST_TOOLS
+from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS
+from boba.tool.kb.tools import TOOLS as KB_TOOLS
+from boba.tool.pg.tools import TOOLS as PG_TOOLS
+from boba.tool.shell.tools import BashToolConfig, build_bash_tool
+from boba.tool.web.tools import TOOLS as WEB_TOOLS
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool, WarmupHooks
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
@@ -56,10 +68,13 @@ from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import CallStream, NoCallScope, ToolRunLogger
 from boba.toolrun.streams import ToolStreams
 from boba.toolrun.wrapping import ToolAsyncBody
+from boba.workflow_engine.tools import WorkflowToolConfig, build_workflow_tools
 
 __all__ = [
     "CallSurface",
+    "CoreTools",
     "PluginMeta",
+    "PluginTable",
     "SandboxRequire",
     "ToolBridge",
     "ToolLoader",
@@ -489,3 +504,80 @@ class ToolLoader:
             "set [connections] enable = true"
         )
         raise RuntimeError(msg)
+
+
+PluginTable = Callable[[RuntimeRefs], Mapping[str, ToolPlugin]]
+"""Таблица плагинов процесса: общая часть плюс своё (у чата — chat-only инструменты)."""
+
+
+class CoreTools:
+    """Таблица плагинов, общая для процессов: инструменты модулей, bash и workflow."""
+
+    @classmethod
+    def table(cls, refs: RuntimeRefs) -> dict[str, ToolPlugin]:
+        return {
+            "bash": ToolPlugin(
+                section="bash",
+                config_model=BashToolConfig,
+                build=cls._bash,
+            ),
+            "doc": cls.module("doc", DOC_TOOLS),
+            "chart": cls.module("chart", CHART_TOOLS),
+            "workflow": ToolPlugin(
+                section="workflow",
+                config_model=WorkflowToolConfig,
+                build=cls._workflow_builder(refs),
+                sandboxed=False,
+            ),
+            "pg": cls.connected(
+                "pg", PG_TOOLS, ConnectionKind.POSTGRES, ConnectionKeying.NAME
+            ),
+            "ch": cls.connected(
+                "ch", CH_TOOLS, ConnectionKind.CLICKHOUSE, ConnectionKeying.NAME
+            ),
+            "kb": cls.module("kb", KB_TOOLS),
+            "confluence": cls.module("confluence", CONFLUENCE_TOOLS),
+            "ingest": cls.module("ingest", INGEST_TOOLS),
+            "web": cls.connected(
+                "web", WEB_TOOLS, ConnectionKind.WEB, ConnectionKeying.NAME
+            ),
+        }
+
+    @staticmethod
+    def module(section: str, tools: Sequence[ToolLike]) -> ToolPlugin:
+        return ToolPlugin(
+            section=section,
+            module_tools=ToolBridge.toolset(tools),
+            modules=ToolBridge.modules_of(tools),
+        )
+
+    @staticmethod
+    def connected(
+        section: str,
+        tools: Sequence[ToolLike],
+        kind: ConnectionKind,
+        keying: ConnectionKeying,
+    ) -> ToolPlugin:
+        return ToolPlugin(
+            section=section,
+            module_tools=ToolBridge.toolset(tools),
+            modules=ToolBridge.modules_of(tools),
+            connections=UserConnectionsSpec(kind, keying),
+        )
+
+    @staticmethod
+    def _bash(cfg: BashToolConfig, launchers: LauncherFactory) -> list[BaseTool]:
+        return [ToolBridge.as_structured_tool(build_bash_tool(cfg, launchers))]
+
+    @staticmethod
+    def _workflow_builder(
+        refs: RuntimeRefs,
+    ) -> Callable[[WorkflowToolConfig, LauncherFactory], list[BaseTool]]:
+        """Сервис workflow берётся из входов приложения на каждый вызов."""
+
+        def build(
+            cfg: WorkflowToolConfig, launchers: LauncherFactory
+        ) -> list[BaseTool]:
+            return build_workflow_tools(cfg, refs.workflow_service)
+
+        return build

@@ -25,10 +25,6 @@ from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import chainlit as cl
-from boba.chainlit.auth.config import (
-    KerberosAuthConfig,
-    KerberosRolesInLdapConfig,
-)
 from boba.chainlit.auth.ldap import ADDirectory
 from boba.chainlit.infra.session import ChainlitSession, ChainlitSessions
 from boba.identity.context import DelegatedTicket
@@ -78,6 +74,10 @@ from boba.krb import (
     TicketCapture,
 )
 from boba.krb.seal import SsoTickets, TicketSealer
+from boba.runtime.auth_config import (
+    KerberosAuthConfig,
+    KerberosRolesInLdapConfig,
+)
 from boba.toolkit.template import TemplateError
 from chainlit.auth import create_jwt, set_auth_cookie
 from chainlit.config import config as cl_config

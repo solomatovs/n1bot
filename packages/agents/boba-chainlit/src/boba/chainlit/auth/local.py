@@ -1,13 +1,13 @@
 from typing import Any
 
 import chainlit as cl
-from boba.chainlit.auth.config import LocalAuthConfig
 from boba.identity.errors import AuthorizationError
 from boba.identity.roles import (
     LocalExcludeUserProvider,
     LocalUserRolesProvider,
 )
 from boba.identity.session import SignInProvider, UserLogin, UserMetadataField
+from boba.runtime.auth_config import LocalAuthConfig
 
 
 class LocalAuth:

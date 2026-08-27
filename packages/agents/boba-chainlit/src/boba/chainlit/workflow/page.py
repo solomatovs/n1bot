@@ -28,8 +28,8 @@ from starlette.routing import WebSocketRoute
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
-from boba.api.app import ApiApp
 from boba.chainlit.domain.config import BuiltPage, DevPage, PageSource
+from boba.runtime.config import ApiConfig
 
 __all__ = [
     "PageAssets",
@@ -78,15 +78,16 @@ class PageStamp:
 
     PLACEHOLDER: ClassVar[str] = "<!--BOBA_PAGE-->"
 
-    def __init__(self, url_prefix: str, assets: PageAssets) -> None:
+    def __init__(self, url_prefix: str, assets: PageAssets, api: ApiConfig) -> None:
         self._prefix = url_prefix
         self._assets = assets
+        self._api = api
 
     def render(self, html: str) -> str:
         config = {
             "prefix": self._prefix,
-            "apiPrefix": ApiApp.mount_prefix(self._prefix),
-            "socketPath": ApiApp.socket_path(self._prefix),
+            "apiPrefix": self._api.mount_prefix(),
+            "socketPath": self._api.socket_path(),
         }
         stamp = (
             f'<base href="{self._prefix}{self._assets}">'
@@ -101,9 +102,9 @@ class WorkflowPage:
     INDEX: ClassVar[str] = "index.html"
     PUBLIC_DIR: ClassVar[str] = "public/workflow"
 
-    def __init__(self, app_root: str, url_prefix: str) -> None:
+    def __init__(self, app_root: str, url_prefix: str, api: ApiConfig) -> None:
         self._index = Path(app_root) / self.PUBLIC_DIR / self.INDEX
-        self._stamp = PageStamp(url_prefix, PageAssets.BUILT)
+        self._stamp = PageStamp(url_prefix, PageAssets.BUILT, api)
 
     def mount(self, app: FastAPI) -> None:
         app.add_api_route(
@@ -125,10 +126,10 @@ class WorkflowDevPage:
     INDEX: ClassVar[str] = "index.html"
     HMR_PROTOCOL: ClassVar[str] = "vite-hmr"
 
-    def __init__(self, dev_url: str, url_prefix: str) -> None:
+    def __init__(self, dev_url: str, url_prefix: str, api: ApiConfig) -> None:
         self._dev_url = dev_url
         self._prefix = url_prefix
-        self._stamp = PageStamp(url_prefix, PageAssets.DEV)
+        self._stamp = PageStamp(url_prefix, PageAssets.DEV, api)
         self._client = httpx.AsyncClient(base_url=dev_url, timeout=30.0)
 
     def mount(self, app: FastAPI) -> None:

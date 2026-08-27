@@ -9,11 +9,6 @@ from __future__ import annotations
 import pytest
 from conftest import FakeSecret
 
-from boba.chainlit.auth.config import (
-    KerberosRolesInLdapConfig,
-    KerberosRolesInLdapMappingConfig,
-    LocalAuthConfig,
-)
 from boba.chainlit.auth.kerberos import (
     KerberosRolesInLdapProvider,
     SidExcludeUserProvider,
@@ -25,6 +20,11 @@ from boba.identity.errors import AuthorizationError
 from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.session import UserLogin, UserMetadataField
 from boba.identity.sso import SidsHeader
+from boba.runtime.auth_config import (
+    KerberosRolesInLdapConfig,
+    KerberosRolesInLdapMappingConfig,
+    LocalAuthConfig,
+)
 
 pytestmark = pytest.mark.anyio
 

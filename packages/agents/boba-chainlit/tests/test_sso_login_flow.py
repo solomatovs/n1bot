@@ -20,7 +20,6 @@ from gssapi import Credentials, Name, NameType, SecurityContext
 from stand_site import Stand
 from starlette.datastructures import Headers
 
-from boba.chainlit.auth.config import KerberosAuthConfig, KerberosRolesConfig
 from boba.chainlit.auth.kerberos import (
     KerberosAuth,
     SpnegoMiddleware,
@@ -32,6 +31,7 @@ from boba.chainlit.infra.session import ChainlitSession
 from boba.identity.roles import RoleExcludeConfig
 from boba.identity.session import SignInProvider, UserMetadataField
 from boba.krb import KerberosEnv, ServiceTicketIssuer
+from boba.runtime.auth_config import KerberosAuthConfig, KerberosRolesConfig
 from boba.settings import bind
 
 STAND = Stand.required()

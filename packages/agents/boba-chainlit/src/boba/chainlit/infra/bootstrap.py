@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import logging.config
+import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,7 +15,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from boba.api.errors import DomainErrorMiddleware
 from boba.chainlit.auth.installer import ChainlitAuthInstaller
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
@@ -25,7 +25,10 @@ from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContex
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
+from boba.runtime import providers as runtime
+from boba.runtime.config import RawConfig
 from boba.runtime.di import Container
+from boba.runtime.http import DomainErrorMiddleware
 from boba.sandbox.zygote import ZygoteRegistry
 
 if TYPE_CHECKING:
@@ -34,7 +37,7 @@ if TYPE_CHECKING:
 
 def run_app(config_path: Path):
     """Запуск приложения; env chainlit к этому моменту выставлен AppEntry."""
-    c = providers.get_app_config(config_path=config_path)
+    c = AppConfig.load(config_path)
 
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
@@ -55,7 +58,7 @@ def run_app(config_path: Path):
     _use_canvas_viewers()
     _use_workflow(c)
 
-    _use_auth(c, container)
+    _use_auth(c)
 
     _use_domain_error(app)
 
@@ -242,38 +245,24 @@ def _use_canvas_viewers() -> None:
     from boba.chainlit.infra.thread_room import CanvasRoomTransport  # noqa: PLC0415
 
     CanvasWatch.configure(CanvasRoomTransport())
-    ChatPlugins.load(providers.get_raw_config(), providers.runtime_refs())
+    ChatPlugins.load(RawConfig.get(), runtime.runtime_refs())
 
 
 def _use_api(app: FastAPI, c: AppConfig) -> None:
-    """API под {prefix}/api; монтируется раньше chainlit — его mount шире."""
+    """API под {prefix}/api до выноса в свой процесс; монтируется раньше chainlit."""
     from boba.api.app import ApiApp  # noqa: PLC0415
-    from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
-    from boba.chainlit.infra.api_auth import (  # noqa: PLC0415
-        ChainlitAuthenticator,
-        ChainlitCookie,
-    )
+    from boba.api.jwt_auth import JwtAuthenticator  # noqa: PLC0415
     from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
-    from boba.identity.errors import InternalServiceError  # noqa: PLC0415
-    from chainlit.data import get_data_layer  # noqa: PLC0415
 
-    def data_layer() -> PostgresDataLayer:
-        layer = get_data_layer()
-        if not isinstance(layer, PostgresDataLayer):
-            raise InternalServiceError(
-                internal_detail=f"data layer is not PostgresDataLayer: {type(layer)}",
-                user_detail="Thread storage is not available",
-            )
-        return layer
-
+    users = runtime.users_table(c)
     api = ApiApp.build(
-        providers.runtime_refs(),
-        ChainlitAuthenticator(data_layer),
-        data_layer,
+        runtime.runtime_refs(),
+        JwtAuthenticator(c.api.auth_secret, lambda: users),
+        lambda: users,
         ChatProfiles(c.profiles),
-        ChainlitCookie.name(),
+        c.api.cookie,
     )
-    app.mount(f"{c.chainlit.url_prefix}{ApiApp.MOUNT}", api)
+    app.mount(c.api.mount_prefix(), api)
 
 
 def _use_workflow(c: AppConfig) -> None:
@@ -281,9 +270,7 @@ def _use_workflow(c: AppConfig) -> None:
     from boba.chainlit.workflow.page import WorkflowPageConfig  # noqa: PLC0415
     from boba.settings.bind import bind  # noqa: PLC0415
 
-    _use_workflow_page(
-        c, bind(providers.get_raw_config(), "workflow", WorkflowPageConfig)
-    )
+    _use_workflow_page(c, bind(RawConfig.get(), "workflow", WorkflowPageConfig))
 
 
 def _use_workflow_page(c: AppConfig, page: "WorkflowPageConfig") -> None:
@@ -296,31 +283,39 @@ def _use_workflow_page(c: AppConfig, page: "WorkflowPageConfig") -> None:
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     if isinstance(page.page, DevPage):
-        WorkflowDevPage(page.page.url, c.chainlit.url_prefix).mount(chainlit_app)
+        WorkflowDevPage(page.page.url, c.chainlit.url_prefix, c.api).mount(chainlit_app)
         return
 
-    WorkflowPage(c.chainlit.root, c.chainlit.url_prefix).mount(chainlit_app)
+    WorkflowPage(c.chainlit.root, c.chainlit.url_prefix, c.api).mount(chainlit_app)
 
 
-def _use_auth(config: AppConfig, container: Container) -> None:
+def _use_auth(config: AppConfig) -> None:
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     installer = ChainlitAuthInstaller(config.chainlit.url_prefix, config.auth)
-    kerberos = installer.install(chainlit_app)
-    container.provide(providers.kerberos_auth, kerberos)
+    installer.install(chainlit_app)
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
+    from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal  # noqa: PLC0415
+    from boba.chainlit.infra.plugins import ChatPlugins  # noqa: PLC0415
+
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
+    container.provide(runtime.get_runtime_config, c)
+    container.provide(runtime.plugin_table, ChatPlugins.table)
+    container.provide(runtime.refresh_signal, ChatRefreshSignal())
+    container.provide(
+        runtime.instance_name, f"{socket.gethostname()}:{c.chainlit.port}"
+    )
     sessions = ChainlitSessions()
     ChainlitSessions.install(sessions)
     container.provide(providers.session_source, sessions)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
-    container.eager(providers.kb_schema)
-    container.eager(providers.connection_store)
-    container.eager(providers.workflow_store)
+    container.eager(runtime.kb_schema)
+    container.eager(runtime.connection_store)
+    container.eager(runtime.workflow_store)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.local_chat_runtimes)
     Container.set_root(container)

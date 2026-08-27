@@ -23,6 +23,7 @@ from boba.chainlit.workflow.page import (
     WorkflowPage,
     WorkflowPageConfig,
 )
+from boba.runtime.config import ApiConfig
 
 pytestmark = pytest.mark.anyio
 
@@ -107,15 +108,25 @@ def vite() -> Iterator[FakeVite]:
         yield server
 
 
+def _api() -> ApiConfig:
+    return ApiConfig(
+        host="127.0.0.1",
+        port=1,
+        url_prefix=PREFIX,
+        auth_secret="stand-secret",
+        cookie="access_token",
+    )
+
+
 def _built_app(app_root: Path) -> FastAPI:
     app = FastAPI()
-    WorkflowPage(str(app_root), PREFIX).mount(app)
+    WorkflowPage(str(app_root), PREFIX, _api()).mount(app)
     return app
 
 
 def _dev_app(dev_url: str) -> FastAPI:
     app = FastAPI()
-    WorkflowDevPage(dev_url, PREFIX).mount(app)
+    WorkflowDevPage(dev_url, PREFIX, _api()).mount(app)
     return app
 
 
