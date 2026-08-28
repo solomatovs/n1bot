@@ -7,7 +7,7 @@ RuntimeError — контейнер не поднят, секция выключ
 """
 
 import logging
-import socket
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from omegaconf import DictConfig
@@ -18,7 +18,9 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import RefreshSignal
 from boba.db.pgvector.schema import KbSchema
 from boba.krb.seal import SsoTickets
-from boba.runtime.config import RawConfig, RuntimeConfig
+from boba.messaging import MemoryPayloadStore, PayloadStore
+from boba.runtime.bus import PgMessageBus
+from boba.runtime.config import AppName, RawConfig, RuntimeConfig
 from boba.runtime.di import Container, Depends
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
@@ -28,7 +30,6 @@ from boba.settings import bind
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import ToolStreams
-from boba.workflow.events import RunEvents
 from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
@@ -52,9 +53,45 @@ def get_runtime_config() -> RuntimeConfig:
     raise RuntimeError(msg)
 
 
-def instance_name() -> str:
-    """Имя инстанса для запусков workflow (host:port); кладёт процесс."""
-    return f"{socket.gethostname()}:{_root().resolved(get_runtime_config).studio.port}"
+def app_name() -> AppName:
+    """Какое приложение поднимает процесс; кладёт процесс через provide."""
+    msg = "application name is provided by the process, not produced"
+    raise RuntimeError(msg)
+
+
+def instance_name(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    app: Annotated[AppName, Depends(app_name)],
+) -> str:
+    """Имя инстанса: узел из [cluster] плюс имя приложения."""
+    return config.cluster.instance_of(app)
+
+
+def payload_store() -> PayloadStore:
+    """Тела сообщений шины по ссылкам; пока живут в памяти процесса."""
+    return MemoryPayloadStore()
+
+
+async def message_bus(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    app: Annotated[AppName, Depends(app_name)],
+    instance: Annotated[str, Depends(instance_name)],
+) -> AsyncGenerator[PgMessageBus, None]:
+    """Шина сообщений процесса: таблицы готовы, слушатель живёт всё время работы."""
+    bus = PgMessageBus(
+        config.data_layer.postgres,
+        config.data_layer.db_schema,
+        instance,
+        app,
+        config.cluster,
+    )
+    await bus.setup()
+    await bus.start()
+
+    try:
+        yield bus
+    finally:
+        await bus.stop()
 
 
 def plugin_table() -> PluginTable:
@@ -85,6 +122,11 @@ def _root() -> Container:
 def sso_tickets_ref() -> SsoTickets | None:
     """Открыватель билетов SSO-входа; None — kerberos в [auth] не настроен."""
     return _root().resolved(get_runtime_config).sso_tickets()
+
+
+def message_bus_ref() -> PgMessageBus:
+    """Шина процесса для обвязок инструментов; зовётся на каждый вызов."""
+    return _root().resolved(message_bus)
 
 
 def connection_store_ref() -> ConnectionStore:
@@ -163,12 +205,13 @@ async def workflow_store(
 def workflow_service(
     store: Annotated[WorkflowStore | None, Depends(workflow_store)],
     instance: Annotated[str, Depends(instance_name)],
+    bus: Annotated[PgMessageBus, Depends(message_bus)],
 ) -> WorkflowService | None:
-    """Сервис workflow; инстанс — host:port, чтобы различать запуски реплик."""
+    """Сервис workflow; события запусков уходят в шину процесса."""
     if store is None:
         return None
 
-    return WorkflowService(store, tool_registry_ref, instance, RunEvents())
+    return WorkflowService(store, tool_registry_ref, instance, bus)
 
 
 async def workflow_recovery(

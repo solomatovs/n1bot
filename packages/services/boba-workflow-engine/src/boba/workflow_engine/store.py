@@ -400,6 +400,31 @@ class WorkflowStore(WorkflowRepository):
 
         return StoredRun.model_validate(dict(row))
 
+    async def run_by_id(self, run_id: UUID) -> StoredRun:
+        """Запуск по id без владельца: для получателей шины после проверки подписки."""
+        query = sql.SQL(
+            """
+            select
+                id, workflow_id, user_id, initiator, profile, state, instance,
+                started_at, finished_at
+            from
+                {runs}
+            where
+                id = %(id)s
+            """
+        ).format(runs=self._runs())
+
+        pool = await self._pool()
+        async with self._guarded("get run"), pool.dict_cursor() as cur:
+            await cur.execute(query, {"id": run_id})
+            row = await cur.fetchone()
+
+        if row is None:
+            msg = f"workflow: run {run_id} not found"
+            raise WorkflowNotFoundError(msg)
+
+        return StoredRun.model_validate(dict(row))
+
     async def list_runs(self, user_id: int, limit: int) -> Sequence[StoredRun]:
         query = sql.SQL(
             """

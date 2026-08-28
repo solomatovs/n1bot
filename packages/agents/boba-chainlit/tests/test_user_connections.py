@@ -39,6 +39,7 @@ from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets
+from boba.messaging import MemoryMessageBus
 from boba.runtime.plugins import ToolBridge
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
@@ -155,7 +156,12 @@ def pg_tools(
 
     spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
     UserConnections.bind_all(
-        functions, lambda: store, lambda: sso[0], spec, resolve, ChatRefreshSignal()
+        functions,
+        lambda: store,
+        lambda: sso[0],
+        spec,
+        resolve,
+        ChatRefreshSignal(lambda: MemoryMessageBus("test")),
     )
     InjectedConfig.bind_all(functions, resolve)
 
@@ -410,7 +416,12 @@ def web_tools(
 
     spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
     UserConnections.bind_all(
-        functions, lambda: store, lambda: sso[0], spec, resolve, ChatRefreshSignal()
+        functions,
+        lambda: store,
+        lambda: sso[0],
+        spec,
+        resolve,
+        ChatRefreshSignal(lambda: MemoryMessageBus("test")),
     )
     InjectedConfig.bind_all(functions, resolve)
 

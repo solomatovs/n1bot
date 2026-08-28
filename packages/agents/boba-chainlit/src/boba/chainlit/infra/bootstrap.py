@@ -5,7 +5,6 @@ API и страница workflow живут в процессе boba-studio; м�
 import asyncio
 import logging
 import logging.config
-import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,7 +27,7 @@ from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
 from boba.runtime import providers as runtime
-from boba.runtime.config import RawConfig
+from boba.runtime.config import AppName, RawConfig
 from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware
 from boba.sandbox.zygote import ZygoteRegistry
@@ -249,16 +248,18 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(providers.get_app_config, c)
     container.provide(runtime.get_runtime_config, c)
     container.provide(runtime.plugin_table, ChatPlugins.table)
-    container.provide(runtime.refresh_signal, ChatRefreshSignal())
-    container.provide(runtime.grant_check, GrantCheck.STRICT)
     container.provide(
-        runtime.instance_name, f"{socket.gethostname()}:{c.chainlit.port}"
+        runtime.refresh_signal, ChatRefreshSignal(runtime.message_bus_ref)
     )
+    container.provide(runtime.grant_check, GrantCheck.STRICT)
+    container.provide(runtime.app_name, AppName.CHAINLIT)
     sessions = ChainlitSessions()
     ChainlitSessions.install(sessions)
     container.provide(providers.session_source, sessions)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
+    container.eager(runtime.message_bus)
+    container.eager(runtime.payload_store)
     container.eager(runtime.stream_journal)
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
@@ -296,12 +297,18 @@ def _close_container_if_session_end() -> None:
     prev = cl_config.code.on_chat_end
 
     async def on_chat_end():
+        from boba.chainlit.infra.thread_room import ThreadRoom  # noqa: PLC0415
+        from boba.chainlit.rendering.renderer import ChatRenderers  # noqa: PLC0415
 
         try:
             if prev:
                 await prev()
         finally:
-            if container := current_session().value(Container.SESSION_KEY):
+            session = current_session()
+            if container := session.value(Container.SESSION_KEY):
                 await container.aclose()
+
+            if thread_id := session.thread_id:
+                ChatRenderers.release(thread_id, bool(ThreadRoom.sessions(thread_id)))
 
     cl_config.code.on_chat_end = on_chat_end

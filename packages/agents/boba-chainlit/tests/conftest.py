@@ -12,6 +12,7 @@ from typing import ClassVar
 from uuid import uuid4
 
 import pytest
+from chainlit.step import StepDict
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -20,6 +21,7 @@ from psycopg import sql
 
 from boba.cancellation import RunCancellation
 from boba.canvas.keys import WorkspaceMount
+from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
@@ -30,7 +32,14 @@ from boba.chainlit.infra.session import (
     ChainlitSessions,
     current_session,
 )
-from boba.chainlit.rendering.chat_view import ChatView, StepRole
+from boba.chainlit.rendering.chat_view import (
+    ChatSink,
+    ChatView,
+    LiveSink,
+    RecordingSink,
+    StepRole,
+)
+from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
 from boba.chat.threads import ThreadOwnership
@@ -52,6 +61,7 @@ from boba.krb import SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
+from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.refs import RuntimeRefs
 from boba.settings import bind, build_app_config
 from boba.toolrun.registry import ToolRegistry
@@ -628,3 +638,54 @@ class SsoStand:
         )
 
         return tickets.sealer.seal(ticket)
+
+
+class RecordedTurn:
+    """Стенд хода: шина в памяти, рендерер над ChatView и производитель хода.
+
+    Сообщения производителя доходят до ленты синхронно внутри publish, поэтому
+    после await любого метода feed лента (sink) уже обновлена.
+    """
+
+    def __init__(
+        self,
+        thread_id: str,
+        turn_id: str,
+        sink: ChatSink,
+        user_name: str = "tester",
+    ) -> None:
+        self.bus = MemoryMessageBus("test-chainlit")
+        self.payloads = MemoryPayloadStore()
+        self.sink = sink
+        self.view = ChatView(thread_id, sink, user_name=user_name)
+        self.renderer = ChatRenderer(thread_id, self.view, self.payloads, NoSurface())
+        self.leave = self.bus.subscribe(Scope.chat(thread_id), self.renderer.apply)
+        self.feed = TurnFeed(
+            self.bus, self.payloads, Scope.chat(thread_id), turn_id, LockToken.local()
+        )
+        self.renderer.begin_turn(turn_id)
+
+    @classmethod
+    def recording(
+        cls, thread_id: str, turn_id: str, user_name: str = "tester"
+    ) -> "RecordedTurn":
+        return cls(thread_id, turn_id, RecordingSink(), user_name)
+
+    @classmethod
+    def live(
+        cls, thread_id: str, turn_id: str, user_name: str = "tester"
+    ) -> "RecordedTurn":
+        return cls(thread_id, turn_id, LiveSink(), user_name)
+
+    @property
+    def recording_sink(self) -> RecordingSink:
+        sink = self.sink
+        if not isinstance(sink, RecordingSink):
+            msg = "steps are recorded only by RecordingSink"
+            raise TypeError(msg)
+
+        return sink
+
+    @property
+    def steps(self) -> list[StepDict]:
+        return self.recording_sink.steps

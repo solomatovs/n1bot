@@ -40,6 +40,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets, TicketSealer
+from boba.messaging import MemoryMessageBus
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
 from boba.tool.pg.tools import PgToolConfig
@@ -303,7 +304,12 @@ class Guarded:
         )
 
         UserConnections.bind_all(
-            [tool], lambda: store, lambda: tickets, spec, resolve, ChatRefreshSignal()
+            [tool],
+            lambda: store,
+            lambda: tickets,
+            spec,
+            resolve,
+            ChatRefreshSignal(lambda: MemoryMessageBus("test")),
         )
         InjectedConfig.bind_all([tool], resolve)
         ToolErrorGuard.guard_all([tool])

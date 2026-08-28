@@ -400,8 +400,8 @@ class FakeTransport(SignalTransport):
     def alive(self, thread_id: str) -> bool:
         return not self.dead
 
-    async def send(self, thread_id: str, payload: Any) -> None:
-        self.sent.append(dict(payload))
+    async def send(self, thread_id: str, signal: CanvasSignal) -> None:
+        self.sent.append(signal.payload())
 
 
 def _speed_up_watch(monkeypatch: pytest.MonkeyPatch) -> None:

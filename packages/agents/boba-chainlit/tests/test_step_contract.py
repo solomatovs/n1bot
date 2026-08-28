@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext, context_var
+from conftest import RecordedTurn
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
@@ -49,10 +50,9 @@ class TestStepContract:
 
     async def _live(self) -> RecordingSink:
         """Ход глазами трейсера: reasoning, инструмент, завершение."""
-        sink = RecordingSink()
-        view = ChatView(THREAD, sink, user_name="tester")
-        view.begin_turn(TURN_KEY)
-        tracer = AgentTracer(view, TurnState())
+        turn = RecordedTurn.recording(THREAD, TURN_KEY)
+        sink = turn.recording_sink
+        tracer = AgentTracer(turn.feed, TurnState())
 
         llm_run = uuid4()
         await tracer.on_llm_start({}, [""], run_id=llm_run)

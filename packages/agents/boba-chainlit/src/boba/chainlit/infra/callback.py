@@ -13,6 +13,7 @@ import chainlit as cl
 from boba.canvas.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
+from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import GraphTurnHistory, ThreadRewind
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import SettingsPanel
@@ -29,9 +30,9 @@ from boba.chainlit.infra.providers import (
     session_profile,
 )
 from boba.chainlit.infra.session import ChainlitSession, current_session
-from boba.chainlit.infra.thread_room import ThreadRoom
-from boba.chainlit.rendering.chat_view import ChatView, LiveSink
+from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadRoom
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
+from boba.chainlit.rendering.renderer import ChatRenderers
 from boba.chat.profiles import (
     ChatProfiles,
     SelectedProfile,
@@ -39,8 +40,12 @@ from boba.chat.profiles import (
     UserLlmOverrides,
     UserMeta,
 )
+from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import UserMetadataField
+from boba.messaging import LockToken, PayloadStore
+from boba.runtime import providers as runtime
+from boba.runtime.bus import PgMessageBus
 from boba.runtime.di import Container, Depends, di_inject
 from chainlit.auth.cookie import clear_auth_cookie
 from chainlit.config import config as chainlit_config
@@ -54,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 @chainlit_error_ctx_handler
 @di_inject
-async def on_message(
+async def on_message(  # noqa: PLR0913
     msg: cl.Message,
     graph: Annotated[
         CompiledStateGraph,
@@ -62,6 +67,8 @@ async def on_message(
     ],
     data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
+    payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
 ):
     session = current_session()
     thread_id = session.thread_id
@@ -73,11 +80,13 @@ async def on_message(
 
     ThreadRoom.activate(thread_id)
 
-    view = ChatView(thread_id, LiveSink())
-    view.begin_turn(msg.id)
+    # рендерер треда подписан на область до первого сообщения хода
+    ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
+
+    feed = TurnFeed(bus, payloads, Scope.chat(thread_id), msg.id, LockToken.local())
     turn = ChatTurn(
         thread_id=thread_id,
-        view=view,
+        feed=feed,
         history=GraphTurnHistory(graph, thread_id),
         key=msg.id,
     )
@@ -400,6 +409,7 @@ async def on_chat_resume(thread_dict: ThreadDict):
     """
     thread_id = thread_dict[ThreadField.ID]
     turn = ChatTurn.active(thread_id)
+    renderer = ChatRenderers.get(thread_id)
 
     room: list[str] = []
     for session in ThreadRoom.sessions(thread_id):
@@ -420,5 +430,8 @@ async def on_chat_resume(thread_dict: ThreadDict):
     if turn is None:
         return
 
-    turn.resume_into(thread_dict)
+    if renderer is None:
+        return
+
+    renderer.resume_into(thread_dict)
     ThreadRoom.keep_loading()

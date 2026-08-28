@@ -47,6 +47,7 @@ from boba.krb import (
     TicketCredentials,
 )
 from boba.krb.seal import SsoTickets
+from boba.messaging import MemoryMessageBus
 from boba.settings import bind
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
@@ -189,7 +190,12 @@ class Capture:
 
         spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
         UserConnections.bind_all(
-            [tool], lambda: store, lambda: tickets, spec, resolve, ChatRefreshSignal()
+            [tool],
+            lambda: store,
+            lambda: tickets,
+            spec,
+            resolve,
+            ChatRefreshSignal(lambda: MemoryMessageBus("test")),
         )
         InjectedConfig.bind_all([tool], resolve)
         return tool
@@ -218,7 +224,12 @@ class Capture:
 
         spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
         UserConnections.bind_all(
-            [tool], lambda: store, lambda: tickets, spec, resolve, ChatRefreshSignal()
+            [tool],
+            lambda: store,
+            lambda: tickets,
+            spec,
+            resolve,
+            ChatRefreshSignal(lambda: MemoryMessageBus("test")),
         )
         InjectedConfig.bind_all([tool], resolve)
         return tool

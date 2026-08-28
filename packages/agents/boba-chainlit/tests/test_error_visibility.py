@@ -12,10 +12,10 @@ from langchain_core.outputs import LLMResult
 from langchain_core.tracers.base import AsyncBaseTracer
 
 from boba.chainlit.chat import tracing as tracer_module
+from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.rendering.chat_view import ChatView
 from boba.chat.threads import DataLayerError
 
 
@@ -65,7 +65,7 @@ def _tracer() -> AgentTracer:
     tracer = AgentTracer.__new__(AgentTracer)
     AsyncBaseTracer.__init__(tracer)
     tracer._context = cast(ChainlitContext, None)
-    tracer._view = cast(ChatView, _BrokenView())
+    tracer._feed = cast(TurnFeed, _BrokenView())
     tracer._state = TurnState()
     return tracer
 

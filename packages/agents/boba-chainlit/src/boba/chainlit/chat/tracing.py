@@ -1,13 +1,8 @@
-"""Langchain-коллбэки одного прогона: шаги в ленту и журнал стадий.
+"""Колбэки langchain одного прогона: AgentTracer публикует события процесса ответа в
+шину через TurnFeed, LlmStateLog пишет смену состояний прогона в журнал.
 
-AgentTracer рисует процесс ответа step-иерархией через ChatView; LlmStateLog
-пишет строку на каждую смену состояния прогона с пометкой пользователя и
-треда — колбэки инструментов приходят из чужого event loop'а, где контекста
-сессии chainlit уже нет.
-
-Ошибки: своих не выпускает; сбой отрисовки шага показывается в чат и журнал
-одним разбором FailureReport, сбой журналирования уходит колбэк-менеджеру
-langchain.
+Ошибки: своих не выпускает; сбой публикации показывается в чат и журнал одним
+разбором FailureReport, сбой журналирования уходит колбэк-менеджеру langchain.
 """
 
 from __future__ import annotations
@@ -31,13 +26,14 @@ from pydantic import BaseModel, ConfigDict
 from typing_extensions import ParamSpec, override
 
 from boba.chainlit.agent.flow import PrefetchStage
-from boba.chainlit.rendering.chat_view import ChatView, StepText
+from boba.chainlit.chat.feed import TurnFeed
+from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.rendering.errors import show_error
 from boba.identity.errors import FailureReport
 from boba.identity.session import LogUserMark
 from boba.llm.chat import GeneratedMessage, ReasoningText
+from boba.toolkit.failure import FailureText
 from chainlit.context import context_var
-from chainlit.step import Step
 
 __all__ = [
     "AgentTracer",
@@ -58,11 +54,7 @@ _R = TypeVar("_R")
 def _visible_failure(
     fn: Callable[_P, Coroutine[Any, Any, _R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R | None]]:
-    """langchain гасит исключения коллбэков в logger.warning: показываем сами.
-
-    Чат и журнал получают формулировку одного разбора; в историю сбой
-    отрисовки не пишется — ход продолжается, модели он не нужен.
-    """
+    """Делает сбой колбэка видимым: langchain гасит его исключения в logger.warning."""
 
     @functools.wraps(fn)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R | None:
@@ -80,17 +72,15 @@ def _visible_failure(
 
 
 class TurnArtifacts(Protocol):
-    """Незавершённые артефакты хода, которые ведёт трасер.
-
-    Порт вместо импорта TurnState: ход знает про трасер и передаёт его в
-    колбэки прогона, обратной зависимости у отрисовки быть не должно.
+    """Порт незавершённых артефактов хода, которые ведёт трасер: вызовы инструментов
+    и потоковые рассуждения.
     """
 
     @abstractmethod
-    def open_tool(self, run_key: str, step: Step) -> None: ...
+    def open_tool(self, run_key: str, call_id: str) -> None: ...
 
     @abstractmethod
-    def close_tool(self, run_key: str) -> Step | None: ...
+    def close_tool(self, run_key: str) -> str | None: ...
 
     @abstractmethod
     def add_reasoning(self, run_key: str, text: str) -> None: ...
@@ -100,24 +90,28 @@ class TurnArtifacts(Protocol):
 
 
 class AgentTracer(AsyncBaseTracer):
-    """Трасит один агентский цикл и рисует step-иерархию процесса ответа.
-
-    Каждый колбэк сперва отдаёт событие базовому трасеру и только потом рисует:
-    учёт прогонов langchain обязан вестись, даже когда лента недоступна. Иначе
-    упавшая отрисовка старта уносит с собой индекс прогона, и закрытие падает
-    с TracerException «No indexed run ID» — второй ошибкой без своей причины.
+    """Трасер одного агентского цикла: публикует рассуждения, вызовы инструментов и
+    их итоги в шину; учёт прогонов ведётся до публикации.
     """
 
-    def __init__(self, view: ChatView, state: TurnArtifacts) -> None:
+    def __init__(self, feed: TurnFeed, state: TurnArtifacts) -> None:
         super().__init__()
         self._context = context_var.get()
-        self._view = view
+        self._feed = feed
         self._state = state
 
     @property
-    def view(self) -> ChatView:
-        """Лента, в которую трасер пишет шаги."""
-        return self._view
+    def feed(self) -> TurnFeed:
+        """Производитель сообщений хода, в который трасер публикует события."""
+        return self._feed
+
+    @staticmethod
+    def _key_of(message_id: str | None, run_id: UUID) -> str:
+        """Ключ шага рассуждений: id сообщения модели, а без него — id прогона."""
+        if message_id:
+            return message_id
+
+        return str(run_id)
 
     def _set_context(self) -> None:
         context_var.set(self._context)
@@ -151,7 +145,7 @@ class AgentTracer(AsyncBaseTracer):
             return traced
 
         self._state.add_reasoning(str(run_id), reasoning)
-        await self._view.stream_thinking(reasoning, message.id)
+        await self._feed.thinking_token(self._key_of(message.id, run_id), reasoning)
 
         return traced
 
@@ -174,7 +168,7 @@ class AgentTracer(AsyncBaseTracer):
         )
 
         streamed = self._state.take_reasoning(str(run_id))
-        await self._view.close_thinking()
+        await self._feed.thinking_closed()
 
         # рассуждения без стрима приходят разом в итоговом сообщении
         if streamed:
@@ -188,7 +182,7 @@ class AgentTracer(AsyncBaseTracer):
         if not text:
             return traced
 
-        await self._view.thinking(text, message.id)
+        await self._feed.thinking_complete(self._key_of(message.id, run_id), text)
 
         return traced
 
@@ -212,7 +206,7 @@ class AgentTracer(AsyncBaseTracer):
             **kwargs,
         )
 
-        await self._view.close_thinking()
+        await self._feed.thinking_closed()
 
         return traced
 
@@ -251,13 +245,16 @@ class AgentTracer(AsyncBaseTracer):
         if not tool_name:
             tool_name = "tool"
 
-        call_id = kwargs.get("tool_call_id")
-        call_key: str | None = None
-        if call_id:
-            call_key = str(call_id)
+        call_id = str(run_id)
+        if given := kwargs.get(CallField.TOOL_CALL_ID.value):
+            call_id = str(given)
 
-        step = await self._view.tool_started(tool_name, inputs, call_key)
-        self._state.open_tool(str(run_id), step)
+        args: Mapping[str, Any] = {}
+        if inputs:
+            args = inputs
+
+        await self._feed.tool_started(call_id, tool_name, args)
+        self._state.open_tool(str(run_id), call_id)
 
         return traced
 
@@ -273,24 +270,24 @@ class AgentTracer(AsyncBaseTracer):
         self._set_context()
         traced = await super().on_tool_end(output, run_id=run_id, **kwargs)
 
-        step = self._state.close_tool(str(run_id))
-        if step is None:
+        call_id = self._state.close_tool(str(run_id))
+        if call_id is None:
             return traced
 
         # результат без конверта tool_call рисуется как есть: он и есть артефакт
         if not isinstance(output, ToolMessage):
-            await self._view.tool_finished(step, output)
+            await self._feed.tool_finished(call_id, output)
             return traced
 
         if output.status == "error":
-            await self._view.tool_failed(step, output.content)
+            await self._feed.tool_failed(call_id, str(output.content))
             return traced
 
         artifact = output.artifact
         if artifact is None:
             artifact = output
 
-        await self._view.tool_finished(step, artifact, output.tool_call_id)
+        await self._feed.tool_finished(call_id, artifact)
 
         return traced
 
@@ -314,8 +311,8 @@ class AgentTracer(AsyncBaseTracer):
             **kwargs,
         )
 
-        if step := self._state.close_tool(str(run_id)):
-            await self._view.tool_failed(step, error)
+        if call_id := self._state.close_tool(str(run_id)):
+            await self._feed.tool_failed(call_id, FailureText.of(error))
 
         return traced
 
@@ -325,39 +322,39 @@ class AgentTracer(AsyncBaseTracer):
 
 
 class TracedStage(PrefetchStage):
-    """Этап ленты, найденный по трасеру текущего прогона.
-
-    Граф живёт всю сессию, а лента — один ход, поэтому ленту берём не из
-    конструктора, а из колбэков прогона: там её держит AgentTracer.
+    """Стадия подготовки ответа, которая отчитывается в ленту через производитель
+    текущего прогона.
     """
 
     def __init__(self, name: str) -> None:
         self._name = name
 
     async def begin(self) -> None:
-        view = self._view()
-        if view is None:
+        feed = self._feed()
+        if feed is None:
             return
 
-        await view.begin_stage(self._name, StepText.REPHRASING.value)
+        await feed.stage_started(self._name, StepText.REPHRASING.value)
 
     async def searching(self, queries: Sequence[str]) -> None:
-        view = self._view()
-        if view is None:
+        feed = self._feed()
+        if feed is None:
             return
 
-        await view.stage_queries(queries)
+        await feed.stage_queries(self._name, queries)
 
     async def end(self, queries: Sequence[str], elapsed_ms: int) -> None:
-        view = self._view()
-        if view is None:
+        feed = self._feed()
+        if feed is None:
             return
 
-        await view.end_stage(queries, elapsed_ms)
+        await feed.stage_ended(self._name, queries, elapsed_ms)
 
     @staticmethod
-    def _view() -> ChatView | None:
-        """Лента прогона; None — ход идёт без ленты (cli, тесты)."""
+    def _feed() -> TurnFeed | None:
+        """Производитель сообщений текущего прогона; None, если ход идёт без ленты (cli,
+        тесты).
+        """
         config = ensure_config()
 
         callbacks = config.get("callbacks")
@@ -367,13 +364,15 @@ class TracedStage(PrefetchStage):
 
         for handler in handlers:
             if isinstance(handler, AgentTracer):
-                return handler.view
+                return handler.feed
 
         return None
 
 
 class LlmStage(StrEnum):
-    """Состояния, которые проходит один прогон модели."""
+    """Состояния, которые проходит один прогон модели: запрос, рассуждение, ответ,
+    инструмент.
+    """
 
     REQUEST = "request"
     THINKING = "thinking"
@@ -382,7 +381,9 @@ class LlmStage(StrEnum):
 
 
 class LlmStageEvent(StrEnum):
-    """Что случилось со стадией."""
+    """Что случилось со стадией прогона: началась, закончилась, упала или пришла
+    целиком.
+    """
 
     STARTED = "started"
     FINISHED = "finished"
@@ -439,7 +440,7 @@ class LlmUsage(BaseModel):
 
     @classmethod
     def of(cls, message: BaseMessage | None) -> LlmUsage:
-        """Расход знает только ответ модели; у остальных сообщений его нет."""
+        """Расход токенов из ответа модели; у остальных сообщений его нет."""
         if not isinstance(message, AIMessage):
             return cls()
 
@@ -455,7 +456,7 @@ class LlmUsage(BaseModel):
 
 @dataclass
 class StageProgress:
-    """Идущая стадия прогона: чем занят провайдер и сколько уже отдал."""
+    """Идущая стадия прогона: чем занят провайдер и сколько символов уже отдал."""
 
     stage: LlmStage
     started: float
@@ -470,7 +471,9 @@ class StageProgress:
 
 @dataclass
 class RunProgress:
-    """Один прогон модели: от отправки запроса до финального сообщения."""
+    """Один прогон модели от отправки запроса до финального сообщения: время старта,
+    первый токен и текущая стадия.
+    """
 
     LABEL_LEN: ClassVar[int] = 8
 
@@ -491,7 +494,7 @@ class RunProgress:
 
 @dataclass
 class ToolProgress:
-    """Вызов инструмента: имя, идентификатор вызова и его начало."""
+    """Идущий вызов инструмента: имя, идентификатор вызова и момент старта."""
 
     name: str
     call_id: str
@@ -502,7 +505,9 @@ class ToolProgress:
 
 
 class LlmStateLog(AsyncCallbackHandler):
-    """Колбэк-обработчик: пишет в лог смену состояний обмена с провайдером."""
+    """Колбэк-обработчик, который пишет в журнал каждую смену состояния обмена с
+    провайдером и длительность стадий.
+    """
 
     def __init__(self, mark: LogUserMark) -> None:
         super().__init__()
@@ -659,7 +664,9 @@ class LlmStateLog(AsyncCallbackHandler):
         )
 
     def _complete_stages(self, run: RunProgress, message: BaseMessage | None) -> None:
-        """Ответ без стрима: стадий не было, текст пришёл разом в сообщении."""
+        """Журналирует стадии ответа без стрима: текст пришёл разом в итоговом
+        сообщении.
+        """
         if reasoning := ReasoningText.of(message):
             self._say(
                 "llm %s %s: run=%s %d chars",
@@ -694,7 +701,9 @@ class LlmStateLog(AsyncCallbackHandler):
 
     @staticmethod
     def _tool_names_of(message: BaseMessage | None) -> list[str]:
-        """Инструменты зовёт только ответ модели: у прочих сообщений вызовов нет."""
+        """Имена инструментов, которые зовёт ответ модели; у прочих сообщений вызовов
+        нет.
+        """
         if not isinstance(message, AIMessage):
             return []
 

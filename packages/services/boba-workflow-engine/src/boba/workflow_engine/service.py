@@ -1,10 +1,5 @@
 """Единственный вход к workflow: сохранить, проверить, запустить, остановить.
 
-Кто бы ни триггерил — LLM инструментом, человек со страницы, планировщик —
-запуск идёт здесь: спека проверяется против каталога инструментов субъекта,
-запись о запуске ложится в хранилище, раннер исполняет граф под контекстом
-`scope = workflow/run_id`. Остановка каждого запуска этого инстанса — по id.
-
 Ошибки:
 WorkflowError — спека негодна или запрещённые инструменты; workflow не
     найден у владельца; kind из WorkflowRefusal.
@@ -26,6 +21,7 @@ from boba.cancellation import StopReason
 from boba.identity.context import CallContext, Scope, Subject
 from boba.identity.errors import RefusalError
 from boba.identity.run import BackgroundRuns, RunRegistry
+from boba.messaging import LockToken, MessageBus, RunFinished, RunStateChanged
 from boba.toolkit.result import ToolResult
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.registry import ToolRegistry
@@ -37,7 +33,7 @@ from boba.workflow import (
     WorkflowSpec,
     WorkflowSpecError,
 )
-from boba.workflow.events import RunEvents, RunSnapshot
+from boba.workflow.events import RunSnapshot
 from boba.workflow.ports import RunSink
 from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowNotFoundError
 from boba.workflow_engine.catalog import CatalogBuilder
@@ -58,7 +54,9 @@ RegistrySource = Callable[[], Awaitable["ToolRegistry"]]
 
 
 class WorkflowRefusal(StrEnum):
-    """Отказы сервиса workflow."""
+    """Виды отказов сервиса workflow: негодная спека, запрещённые инструменты, не
+    найдено, чужой инстанс.
+    """
 
     BAD_SPEC = "bad_workflow_spec"
     NOT_FOUND = "workflow_not_found"
@@ -66,11 +64,11 @@ class WorkflowRefusal(StrEnum):
 
 
 class WorkflowError(RefusalError):
-    """Workflow отклонён; текст причины готов для LLM и страницы."""
+    """Workflow отклонён; текст причины готов для показа модели и странице."""
 
 
 class RunOutcome(BaseModel):
-    """Итог запуска: запись хранилища и результаты задач по именам."""
+    """Итог запуска: запись хранилища, состояние и результаты задач по именам."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -80,7 +78,9 @@ class RunOutcome(BaseModel):
 
 
 class StartedRun(BaseModel):
-    """Записанный, но ещё не исполненный запуск: что и чем гнать."""
+    """Записанный, но ещё не исполненный запуск: запись хранилища, граф и вызыватель
+    инструментов.
+    """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -90,40 +90,62 @@ class StartedRun(BaseModel):
 
 
 class _StoreSink(RunSink):
-    """Снимок сначала в запись запуска, затем слушателям."""
+    """Приёмник снимков запуска: пишет снимок в запись запуска, затем сообщает о нём
+    в шину.
+    """
 
-    def __init__(self, store: WorkflowStore, events: RunEvents, run_id: UUID) -> None:
+    def __init__(
+        self, store: WorkflowStore, bus: MessageBus, run_id: UUID, token: LockToken
+    ) -> None:
         self._store = store
-        self._events = events
+        self._bus = bus
         self._run_id = run_id
+        self._token = token
+        self._scope = Scope.workflow(run_id)
 
     async def snapshot(self, state: RunState) -> None:
         await self._store.update_run(self._run_id, state)
-        await self._events.publish(
-            RunSnapshot(run_id=self._run_id, status=state.status, state=state)
-        )
+
+        status = state.status.value
+        changed = RunStateChanged(run_id=self._run_id, status=status)
+        await self._bus.publish(self._scope, changed, self._token)
+
+        if not state.status.terminal:
+            return
+
+        finished = RunFinished(run_id=self._run_id, status=status)
+        await self._bus.publish(self._scope, finished, self._token)
 
 
 class WorkflowService:
-    """Сохранение, проверка, запуск и остановка workflow под субъектом."""
+    """Единственный вход к workflow под субъектом: сохранить, проверить, запустить,
+    остановить.
+    """
 
     def __init__(
         self,
         store: WorkflowStore,
         registry: RegistrySource,
         instance: str,
-        events: RunEvents,
+        bus: MessageBus,
     ) -> None:
         self._store = store
         self._registry = registry
         self._instance = instance
-        self._events = events
+        self._bus = bus
         self._background = BackgroundRuns()
 
     @property
-    def events(self) -> RunEvents:
-        """Шина снимков: сокет страницы подписывается на неё."""
-        return self._events
+    def bus(self) -> MessageBus:
+        """Шина сообщений процесса; получатели подписываются на область запуска."""
+        return self._bus
+
+    async def snapshot_of(self, run_id: UUID) -> RunSnapshot:
+        """Возвращает текущий снимок запуска по id без проверки владения — для
+        получателей шины, которые прошли проверку при подписке.
+        """
+        record = await self._store.run_by_id(run_id)
+        return RunSnapshot(run_id=record.id, status=record.status, state=record.state)
 
     @property
     def instance(self) -> str:
@@ -179,7 +201,9 @@ class WorkflowService:
 
     @staticmethod
     def initial_state(graph: WorkflowGraph) -> RunState:
-        """Снимок до старта: спека, стадии, задачи pending — для страницы."""
+        """Снимок до старта — спека, стадии, задачи в статусе pending — чтобы страница
+        нарисовала граф сразу.
+        """
         return WorkflowPlan(graph).snapshot()
 
     @staticmethod
@@ -197,10 +221,7 @@ class WorkflowService:
     async def start(
         self, context: CallContext, stored: StoredWorkflow, run_id: UUID
     ) -> StartedRun:
-        """Проверка и запись запуска.
-
-        Спека проверяется заново: гранты могли смениться со времени сохранения.
-        """
+        """Проверка и запись запуска."""
         graph = await self.validate(context.subject, stored.spec)
         registry = await self._registry()
         subject = context.subject
@@ -231,7 +252,7 @@ class WorkflowService:
         run_id = started.record.id
         run_context = context.in_scope(Scope.workflow(run_id))
         runner = WorkflowRunner(started.invoker, WorkflowRunner.utc_now)
-        sink = _StoreSink(self._store, self._events, run_id)
+        sink = _StoreSink(self._store, self._bus, run_id, LockToken.local())
 
         with context.cancellation.abort_with(run_context.cancellation.cancel):
             state, results = await runner.run(started.graph, run_context, sink)
@@ -241,19 +262,16 @@ class WorkflowService:
         return RunOutcome(run=record, state=state, results=results)
 
     def launch(self, context: CallContext, started: StartedRun) -> None:
-        """Исполнение в фоне процесса: страница и планировщик итога не ждут."""
+        """Исполняет записанный запуск в фоне процесса: страница и планировщик итога не
+        ждут.
+        """
         name = f"workflow-run:{started.record.id}"
         self._background.launch(name, self.execute(context, started))
 
     ABANDONED: ClassVar[str] = "the process running this workflow was restarted"
 
     async def stop(self, subject: Subject, run_id: UUID) -> bool:
-        """Останавливает запуск владельца; False — он уже завершён.
-
-        Живой запуск этого инстанса гасится через реестр; запуск этого инстанса,
-        которого в реестре нет, осиротел после перезапуска — закрывается как
-        failed; запуск другого инстанса отсюда не остановить — WorkflowError.
-        """
+        """Останавливает запуск владельца; False — он уже завершён."""
         try:
             record = await self._store.get_run(subject.user_id, run_id)
         except WorkflowNotFoundError:
@@ -277,7 +295,9 @@ class WorkflowService:
         return True
 
     async def recover_orphans(self) -> int:
-        """Запуски этого инстанса, оставшиеся без процесса, закрываются как failed."""
+        """Закрывает как failed запуски этого инстанса, оставшиеся без процесса после
+        перезапуска.
+        """
         orphans = await self._store.orphans_of(self._instance)
         for record in orphans:
             await self._abandon(record)
@@ -287,4 +307,5 @@ class WorkflowService:
 
     async def _abandon(self, record: StoredRun) -> None:
         state = record.state.abandoned(self.ABANDONED, WorkflowRunner.utc_now())
-        await _StoreSink(self._store, self._events, record.id).snapshot(state)
+        sink = _StoreSink(self._store, self._bus, record.id, LockToken.local())
+        await sink.snapshot(state)

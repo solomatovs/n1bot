@@ -17,10 +17,10 @@ from test_workflow_service import ROLE, Probe, _registry
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import AuthenticatedUser
-from boba.identity.context import CallContext
+from boba.identity.context import CallContext, Scope
+from boba.messaging import MemoryMessageBus
 from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocketEvent
 from boba.toolrun.registry import ToolRegistry
-from boba.workflow.events import RunEvents
 from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
@@ -70,13 +70,20 @@ async def store(pool: AsyncPostgresPool) -> WorkflowStore:
 
 
 @pytest.fixture
-def service(store: WorkflowStore, app_config: AppConfig) -> WorkflowService:
+def bus() -> MemoryMessageBus:
+    return MemoryMessageBus("test:0")
+
+
+@pytest.fixture
+def service(
+    store: WorkflowStore, app_config: AppConfig, bus: MemoryMessageBus
+) -> WorkflowService:
     probe = Probe()
 
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"], profile=_profile(app_config))
 
-    return WorkflowService(store, registry, "test:0", RunEvents())
+    return WorkflowService(store, registry, "test:0", bus)
 
 
 @pytest.fixture
@@ -140,6 +147,7 @@ async def test_subscription_streams_snapshots(
     namespace: tuple[WorkflowNamespace, Emitted],
     service: WorkflowService,
     context: CallContext,
+    bus: MemoryMessageBus,
 ) -> None:
     built, emitted = namespace
     await built.on_connect(SID, {"signed": True}, None)
@@ -159,10 +167,10 @@ async def test_subscription_streams_snapshots(
     statuses = emitted.states()
     assert statuses[-1] == "done"
     assert "running" in statuses
-    assert service.events.listeners_of(run_id) == 1
+    assert bus.listeners_of(Scope.workflow(run_id)) == 1
 
     await built.on_unsubscribe(SID, {"run_id": str(run_id)})
-    assert service.events.listeners_of(run_id) == 0
+    assert bus.listeners_of(Scope.workflow(run_id)) == 0
 
 
 async def test_foreign_run_is_refused(
@@ -181,6 +189,7 @@ async def test_disconnect_drops_listeners(
     namespace: tuple[WorkflowNamespace, Emitted],
     service: WorkflowService,
     context: CallContext,
+    bus: MemoryMessageBus,
 ) -> None:
     built, _emitted = namespace
     await built.on_connect(SID, {"signed": True}, None)
@@ -191,7 +200,7 @@ async def test_disconnect_drops_listeners(
 
     await built.on_subscribe(SID, {"run_id": str(run_id)})
     await built.on_disconnect(SID)
-    assert service.events.listeners_of(run_id) == 0
+    assert bus.listeners_of(Scope.workflow(run_id)) == 0
 
     await asyncio.wait_for(running, 10)
 

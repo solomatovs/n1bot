@@ -236,6 +236,15 @@ class AsyncPostgresPool:
         )
         return settings, tuple(sorted((override_options or {}).items()))
 
+    @classmethod
+    async def dedicated(cls, cfg: PostgresConfig) -> psycopg.AsyncConnection[Any]:
+        """Отдельное соединение вне пула в autocommit: для LISTEN нужно соединение
+        без транзакций, которое никто не забирает под запросы."""
+        connection_class = cls._connection_class(cfg)
+        settings = cfg.conn_settings(None)
+        settings["autocommit"] = True
+        return await connection_class.connect(**settings)
+
     @property
     def raw(self) -> Any:
         """Внутренний psycopg_pool.AsyncConnectionPool (для langgraph-саверов)."""

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-messaging"
+version = "0.0.14.dev9"
+description = "Boba messaging: модели сообщений шины, конверт, порт MessageBus и реализация в памяти — без I/O."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "pydantic>=2.10,<3",
+    "boba-identity==0.0.14.dev9",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
