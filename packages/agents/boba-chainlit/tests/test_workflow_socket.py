@@ -20,8 +20,12 @@ from boba.identity.api import AuthenticatedUser
 from boba.identity.context import CallContext, Scope
 from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
+from boba.runtime.bus import PgMessageBus
+from boba.runtime.config import AppName
+from boba.runtime.locks import PgLiveLocks
 from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocketEvent
 from boba.toolrun.registry import ToolRegistry
+from boba.workflow import RunStatus
 from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
@@ -269,3 +273,85 @@ async def test_websocket_handshake_accepts_the_browser_origin_behind_a_proxy(
     finally:
         server.should_exit = True
         thread.join(10)
+
+
+async def test_run_events_reach_a_namespace_on_another_instance(  # noqa: PLR0913
+    store: WorkflowStore,
+    app_config: AppConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
+    user: PersistedUser,
+    context: CallContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Запуск ведёт инстанс A, страница подписана через инстанс B: снимки идут шиной."""
+    cfg = app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cluster = app_config.cluster
+    schema = app_config.data_layer.db_schema
+
+    async def stand(name: str) -> tuple[PgMessageBus, PgLiveLocks]:
+        bus = PgMessageBus(cfg, schema, name, AppName.STUDIO, cluster)
+        bus._pool_ref = pool
+        await bus.setup()
+        await bus.start()
+        locks = PgLiveLocks(cfg, schema, name, cluster)
+        locks._pool_ref = pool
+        return bus, locks
+
+    bus_a, locks_a = await stand("node1-chainlit")
+    bus_b, locks_b = await stand("node2-studio")
+    probe = Probe()
+
+    async def registry() -> ToolRegistry:
+        return _registry(probe, ["*"], profile=_profile(app_config))
+
+    holder = WorkflowService(
+        store,
+        registry,
+        "node1-chainlit",
+        bus_a,
+        RunLocking(locks=locks_a, heartbeat_sec=1.0),
+    )
+    viewer = WorkflowService(
+        store,
+        registry,
+        "node2-studio",
+        bus_b,
+        RunLocking(locks=locks_b, heartbeat_sec=1.0),
+    )
+
+    async def source() -> WorkflowService:
+        return viewer
+
+    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
+        return ChainlitUsers.of(user)
+
+    async def room_noop(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    emitted = Emitted()
+    namespace = WorkflowNamespace(source, _profiles(app_config), authenticate)
+    monkeypatch.setattr(namespace, "emit", emitted.emit)
+    monkeypatch.setattr(namespace, "enter_room", room_noop)
+    monkeypatch.setattr(namespace, "leave_room", room_noop)
+
+    try:
+        await namespace.on_connect(SID, {"signed": True}, None)
+        stored = await holder.save(context.subject, SPEC, {})
+        run_id = holder.new_run_id()
+        started = await holder.start(context, stored, run_id)
+        await namespace.on_subscribe(SID, {"run_id": str(run_id)})
+
+        outcome = await asyncio.wait_for(holder.execute(context, started), 10)
+        assert outcome.state.status is RunStatus.DONE
+
+        deadline = asyncio.get_running_loop().time() + 5
+        while "done" not in emitted.states():
+            assert asyncio.get_running_loop().time() < deadline, emitted.states()
+            await asyncio.sleep(0.05)
+
+        assert "running" in emitted.states()
+        assert emitted.states()[-1] == "done"
+    finally:
+        await bus_a.stop()
+        await bus_b.stop()
