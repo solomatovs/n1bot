@@ -7,7 +7,6 @@ RuntimeError — конфиг не найден или обязательная 
 from __future__ import annotations
 
 import logging.config
-import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -17,6 +16,7 @@ from fastapi import FastAPI
 from boba.chat.profiles import ChatProfiles
 from boba.runtime import providers
 from boba.runtime.config import (
+    AppName,
     ConfigLocator,
     DevPage,
     RuntimeConfig,
@@ -46,9 +46,8 @@ class StudioHost:
         container = Container(level="app")
         container.provide(providers.get_runtime_config, config)
         container.provide(providers.plugin_table, CoreTools.table)
-        container.provide(
-            providers.instance_name, f"{socket.gethostname()}:{config.studio.port}"
-        )
+        container.provide(providers.app_name, AppName.STUDIO)
+        container.eager(providers.message_bus)
         container.eager(providers.stream_journal)
         container.eager(providers.kb_schema)
         container.eager(providers.connection_store)

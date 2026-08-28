@@ -20,6 +20,7 @@ pythonpath = [
     "packages/core/boba-chat/src",
     "packages/core/boba-identity/src",
     "packages/core/boba-canvas/src",
+    "packages/core/boba-messaging/src",
     "packages/services/boba-toolrun/src",
     "packages/services/boba-connection-broker/src",
     "packages/services/boba-workflow-engine/src",
@@ -72,6 +73,7 @@ extraPaths = [
     "packages/core/boba-chat/src",
     "packages/core/boba-identity/src",
     "packages/core/boba-canvas/src",
+    "packages/core/boba-messaging/src",
     "packages/services/boba-toolrun/src",
     "packages/services/boba-connection-broker/src",
     "packages/services/boba-workflow-engine/src",
@@ -153,6 +155,7 @@ boba-connections    = { workspace = true }
 boba-chat           = { workspace = true }
 boba-identity       = { workspace = true }
 boba-canvas         = { workspace = true }
+boba-messaging      = { workspace = true }
 boba-toolrun        = { workspace = true }
 boba-connection-broker = { workspace = true }
 boba-workflow-engine = { workspace = true }

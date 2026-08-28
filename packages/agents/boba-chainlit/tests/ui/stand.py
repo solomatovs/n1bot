@@ -206,6 +206,7 @@ class StandConfig:
         env["BOBA_CGROUP_BASE"] = "/sys/fs/cgroup/boba"
         env["BOBA_PORT"] = str(self.chainlit_port)
         env["BOBA_STUDIO_PORT"] = str(self.studio_port)
+        env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["BOBA_URL_PREFIX"] = self.url_prefix
         env["PGGSSENCMODE"] = "disable"
         # лог стенда читает упавший тест: буфер до kill не доживёт

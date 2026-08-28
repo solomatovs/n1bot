@@ -8,6 +8,7 @@ from typing import Annotated, Any
 
 import pytest
 from chainlit.step import StepDict
+from conftest import RecordedTurn
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -39,7 +40,7 @@ from boba.chainlit.infra.providers import (
     httpx_clients,
     session_graph_builder,
 )
-from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepText
+from boba.chainlit.rendering.chat_view import StepText
 from boba.chat.generation import (
     GenerationError,
     OpenAiGeneration,
@@ -694,9 +695,8 @@ class TestPrefetchFeed:
     async def test_prefetch_calls_are_drawn_inside_the_stage(
         self, http_context: None
     ) -> None:
-        sink = RecordingSink()
-        view = ChatView(FEED_THREAD, sink, user_name="Пользователь")
-        view.begin_turn(FEED_TURN)
+        turn = RecordedTurn.recording(FEED_THREAD, FEED_TURN, user_name="Пользователь")
+        sink = turn.recording_sink
 
         graph = _graph(
             PrefetchGraphBuilder(
@@ -709,7 +709,7 @@ class TestPrefetchFeed:
 
         config = RunnableConfig(
             configurable={"thread_id": "feed-thread"},
-            callbacks=[AgentTracer(view, TurnState())],
+            callbacks=[AgentTracer(turn.feed, TurnState())],
         )
         await graph.ainvoke({"messages": [HumanMessage("question")]}, config=config)
 

@@ -68,11 +68,7 @@ class CanvasErrorKind(StrEnum):
 
 
 class CanvasError(RefusalError):
-    """Панель не показала файл; kind — код причины, текст готов для LLM.
-
-    kind шире собственного enum панели: вьювер поднимает сюда свои коды
-    (file_not_found и подобные) как есть.
-    """
+    """Панель не показала файл; kind — код причины, текст готов для LLM."""
 
 
 class CanvasAction(StrEnum):
@@ -125,12 +121,7 @@ class RenderReport(BaseModel):
 
 
 class RenderVerdicts:
-    """Ожидания вердиктов рендера: nonce показа -> future с исходом.
-
-    Валидатор синтаксиса один — mermaid.js в браузере: сервер не гадает,
-    а ждёт его ответ. Отчёт на незнакомый nonce (после таймаута или от
-    повторного рендера) молча пропускается — ждать его уже некому.
-    """
+    """Ожидания вердиктов рендера: nonce показа -> future с исходом."""
 
     _WAITERS: ClassVar[dict[str, asyncio.Future[RenderVerdict]]] = {}
 
@@ -142,11 +133,7 @@ class RenderVerdicts:
 
     @classmethod
     def report(cls, payload: Mapping[str, object]) -> None:
-        """Принять отчёт браузера; битый payload — ValidationError наверх.
-
-        Ожидание остаётся в реестре: браузер может ответить раньше, чем
-        вьювер дойдёт до wait, — забирает и чистит запись только wait.
-        """
+        """Принять отчёт браузера; битый payload — ValidationError наверх."""
         parsed = RenderReport.model_validate(payload)
 
         waiter = cls._WAITERS.get(parsed.nonce)
@@ -207,11 +194,7 @@ class StreamPos(BaseModel):
 
 
 class CanvasContent(BaseModel):
-    """Описание содержимого панели: что рисовать и откуда взять.
-
-    Сервер описывает, фронт рисует — содержимое едет во фронт при открытии,
-    все дальнейшие обновления фронт запрашивает сам по сигналам слежения.
-    """
+    """Описание содержимого панели: что рисовать и откуда взять."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -240,11 +223,7 @@ class CanvasContent(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class OpenedCanvas:
-    """Открытый в панели файл: подпись, путь, метка показа и элемент ленты.
-
-    link — результат, который остаётся в переписке и по клику открывает панель:
-    кнопка-ссылка для обычных файлов, отрисованная диаграмма для .mmd.
-    """
+    """Открытый в панели файл: подпись, путь, метка показа и элемент ленты."""
 
     label: str
     path: str
@@ -260,12 +239,7 @@ class CanvasPush(Protocol):
 
 
 class WatchProbe(BaseModel):
-    """Состояние наблюдаемого файла: по смене revision фронту уходит сигнал.
-
-    closed — статус записи для показа (running или итог вызова); final —
-    источник исчерпан и меняться больше не будет: слежение снимается.
-    Файл workspace closed для показа, но не final — его могут переписать.
-    """
+    """Состояние наблюдаемого файла: по смене revision фронту уходит сигнал."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -318,12 +292,7 @@ class CanvasViewer(Protocol):
 
 
 class CanvasRegistry:
-    """Вьюверы канваса: файл -> кто его рисует; порядок регистрации решает спор.
-
-    Реестр общий на приложение: панель открывается и вне сборки тулов — из
-    действия пользователя. Тулы собираются на каждую сессию, поэтому
-    регистрация идемпотентна по типу вьювера.
-    """
+    """Вьюверы канваса: файл -> кто его рисует; порядок регистрации решает спор."""
 
     _VIEWERS: ClassVar[list[CanvasViewer]] = []
 
@@ -385,15 +354,11 @@ class SignalTransport(Protocol):
         ...
 
     @abstractmethod
-    async def send(self, thread_id: str, payload: Mapping[str, object]) -> None: ...
+    async def send(self, thread_id: str, signal: CanvasSignal) -> None: ...
 
 
 class CanvasSignal(BaseModel):
-    """Сигнал фронту: показанный файл изменился, содержимое не едет.
-
-    Фронт сам решает, что запросить: окно после текущего (лог), описание
-    целиком (диаграмма) или перезагрузку по ссылке (картинка, pdf).
-    """
+    """Сигнал фронту: показанный файл изменился, содержимое не едет."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -414,11 +379,8 @@ class CanvasSignal(BaseModel):
 
 
 class CanvasWatch:
-    """Слежение за показанным файлом: один вотчер на тред, жизнь — панель.
-
-    Пуш-источник (живой журнал) будит вотчер записью, файловый поллится.
-    Смена файла в панели снимает предыдущее слежение; закрытие панели или
-    смерть всех сокетов треда останавливают вотчер.
+    """Слежение за файлом, показанным в панели: один сторож на тред живёт, пока
+    открыта панель, и сообщает фронту об изменениях файла.
     """
 
     POLL_SEC: ClassVar[float] = 1.0
@@ -478,11 +440,7 @@ class CanvasWatch:
         source: WatchSource,
         seen: str = "",
     ) -> None:
-        """Начать следить за файлом панели; прежнее слежение треда снимается.
-
-        seen — revision показанного содержимого: сигнал уходит только на
-        изменения после него; пустой — точка отсчёта берётся первым опросом.
-        """
+        """Начать следить за файлом панели; прежнее слежение треда снимается."""
         if cls._TRANSPORT is None:
             return
 
@@ -494,11 +452,7 @@ class CanvasWatch:
 
     @classmethod
     def leave(cls, thread_id: str, nonce: str) -> None:
-        """Панель ушла с файла; чужой nonce слежение не трогает.
-
-        Гонка переоткрытия: leave старого показа приходит после show нового —
-        сравнение nonce не даёт ему снять свежее слежение.
-        """
+        """Панель ушла с файла; чужой nonce слежение не трогает."""
         watch = cls._WATCHES.get(thread_id)
         if watch is None:
             return
@@ -562,7 +516,7 @@ class CanvasWatch:
 
         if probe.revision != self._seen:
             self._seen = probe.revision
-            await transport.send(self._thread_id, self._signal(probe).payload())
+            await transport.send(self._thread_id, self._signal(probe))
 
         return probe.final
 
@@ -598,12 +552,7 @@ class CanvasWatch:
 
 
 class StreamPath(BaseModel):
-    """Псевдо-путь панели для канала журнала: сборка и разбор в одном месте.
-
-    Канал входит в путь: панель адресует показом один файл, а каналы вызова —
-    разные файлы, и слежение с окнами обязано их различать. Канал проверяется
-    на доступность здесь: путь с закрытым каналом собрать нельзя.
-    """
+    """Псевдо-путь панели для канала журнала: сборка и разбор в одном месте."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -647,16 +596,7 @@ class StreamPath(BaseModel):
 
 
 class StreamShowRequest(BaseModel):
-    """Payload действия canvas_stream: вызов, канал и способ доставки.
-
-    Канал по умолчанию — stdout тела: его пишет каждый песочный вызов.
-    Закрытый канал отвергается разбором — читать его фронт не может.
-
-    inline — панель уже открыта и сама подменит содержимое: описание едет
-    ответом на действие, а не элементом. Пуш элемента chainlit перемонтирует
-    боковую панель целиком, с анимацией открытия и потерей состояния
-    вьювера, поэтому им открывают панель, а не переключают канал в открытой.
-    """
+    """Payload действия canvas_stream: вызов, канал и способ доставки."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -675,14 +615,7 @@ class StreamShowRequest(BaseModel):
 
 
 class StreamWindowRequest(BaseModel):
-    """Payload действия canvas_stream_window: цель и одна из границ окна.
-
-    path — показанный в панели путь: stream://{call_id}/{channel} для канала
-    журнала или путь workspace для файла; канал берётся из него, а не из
-    отдельного поля — иначе окно и показ разъехались бы по каналам. offset —
-    окно вперёд от смещения (offset меньше нуля — хвост файла); before —
-    окно, заканчивающееся на смещении. Ровно одно из двух.
-    """
+    """Payload действия canvas_stream_window: цель и одна из границ окна."""
 
     model_config = ConfigDict(extra="ignore")
 

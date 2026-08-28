@@ -23,7 +23,7 @@ import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.emitter import BaseChainlitEmitter
 from chainlit.session import HTTPSession
-from conftest import fake_openai_chat
+from conftest import RecordedTurn, fake_openai_chat
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -31,7 +31,6 @@ from ui.fake_llm import FakeLlmApp, ScenarioName
 
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
-from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 
 pytestmark = pytest.mark.anyio
 
@@ -111,10 +110,9 @@ class TestTracerRunIndex:
 
     @staticmethod
     def _tracer() -> AgentTracer:
-        view = ChatView(THREAD, LiveSink(), user_name="tester")
-        view.begin_turn("turn-1")
+        turn = RecordedTurn.live(THREAD, "turn-1")
 
-        return AgentTracer(view, TurnState())
+        return AgentTracer(turn.feed, TurnState())
 
     async def _turn(
         self, provider: httpx.AsyncClient, scenario: ScenarioName

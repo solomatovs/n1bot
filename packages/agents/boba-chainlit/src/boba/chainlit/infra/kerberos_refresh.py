@@ -1,36 +1,37 @@
-"""Сигнал обновления SPNEGO в сокет сессии чата: реализация RefreshSignal."""
+"""Сигнал странице обновить вход по SPNEGO, отправляемый через шину.
+
+Ошибки:
+MessageBusError — шина не приняла сообщение; вызов инструмента получает её.
+"""
 
 from __future__ import annotations
 
-import logging
-from typing import ClassVar
+from collections.abc import Callable
 
 from boba.chainlit.domain.context import ChatCallContext
 from boba.connection_broker.user_connections import RefreshSignal
 from boba.identity.context import CallContext
+from boba.messaging import LockToken, MessageBus, SignInRefreshRequested
 
-__all__ = ["ChatRefreshSignal"]
+__all__ = ["BusRef", "ChatRefreshSignal"]
 
-logger = logging.getLogger(__name__)
+BusRef = Callable[[], MessageBus]
 
 
 class ChatRefreshSignal(RefreshSignal):
-    """Просьба к фронту молча пройти SPNEGO ещё раз: сигнал в сокет сессии.
-
-    Адрес обмена знает сам скрипт страницы: сервер сообщает только повод.
+    """Просит фронт молча пройти SPNEGO ещё раз: публикует SignInRefreshRequested в
+    область треда текущего хода.
     """
 
-    TYPE: ClassVar[str] = "boba:kerberos-refresh"
-    EVENT: ClassVar[str] = "window_message"
+    def __init__(self, bus: BusRef) -> None:
+        self._bus = bus
 
     async def send(self) -> bool:
-        payload = {"type": self.TYPE}
         context = CallContext.current()
         if not isinstance(context, ChatCallContext):
             return False
 
-        try:
-            return await context.surface.emit(self.EVENT, payload)
-        except Exception:
-            logger.warning("kerberos refresh signal failed", exc_info=True)
-            return False
+        message = SignInRefreshRequested(principal=context.subject.login)
+        await self._bus().publish(context.scope, message, LockToken.local())
+
+        return True

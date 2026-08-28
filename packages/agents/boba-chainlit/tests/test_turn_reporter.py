@@ -13,10 +13,11 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import pytest
-from conftest import use_context
+from conftest import RecordedTurn, use_context
 from langchain_core.messages import BaseMessage
 
 from boba.cancellation import StopReason
+from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.turn import (
     TurnHistory,
     TurnMark,
@@ -25,13 +26,16 @@ from boba.chainlit.chat.turn import (
     TurnState,
 )
 from boba.chainlit.domain.fields import StepField
-from boba.chainlit.rendering.chat_view import (
-    ChatView,
-    RecordingSink,
-    StepStatus,
-    StepText,
-)
+from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepStatus, StepText
+from boba.identity.context import Scope
 from boba.identity.errors import UserInputError
+from boba.messaging import (
+    AnyMessage,
+    LockToken,
+    MemoryMessageBus,
+    MemoryPayloadStore,
+    MessageBusError,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -54,14 +58,12 @@ class RememberedHistory(TurnHistory):
         self.records.append(record)
 
 
-class BrokenView:
-    """Лента недоступна: любой вызов отрисовки падает."""
+class BrokenBus(MemoryMessageBus):
+    """Шина недоступна: любая публикация падает."""
 
-    def __getattr__(self, name: str) -> Any:
-        async def boom(*args: Any, **kwargs: Any) -> None:
-            raise RuntimeError(f"chat is gone on {name}")
-
-        return boom
+    async def publish(self, scope: Scope, message: AnyMessage, token: LockToken) -> int:
+        msg = f"bus is gone on {message.kind}"
+        raise MessageBusError(msg)
 
 
 def _chained_failure() -> Exception:
@@ -75,16 +77,17 @@ def _chained_failure() -> Exception:
 
 
 def _reporter(
-    view: ChatView, state: TurnState, history: RememberedHistory
+    feed: TurnFeed, state: TurnState, history: RememberedHistory
 ) -> TurnReporter:
-    return TurnReporter(view=view, state=state, history=history, key=TURN_KEY)
+    return TurnReporter(feed=feed, state=state, history=history, key=TURN_KEY)
 
 
-async def _view_with_sink() -> tuple[ChatView, RecordingSink]:
-    sink = RecordingSink()
-    view = ChatView(THREAD, sink, user_name="tester")
-    view.begin_turn(TURN_KEY)
-    return view, sink
+def _turn() -> RecordedTurn:
+    return RecordedTurn.recording(THREAD, TURN_KEY)
+
+
+def _tool_step_id(call_id: str) -> str | None:
+    return ChatView.derive_id(THREAD, call_id, StepRole.TOOL)
 
 
 class TestFailed:
@@ -93,17 +96,17 @@ class TestFailed:
     async def test_three_channels_share_one_text(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        view, sink = await _view_with_sink()
+        turn = _turn()
         state = TurnState()
         history = RememberedHistory()
         error = _chained_failure()
 
         with caplog.at_level(logging.ERROR):
-            await _reporter(view, state, history).failed(error)
+            await _reporter(turn.feed, state, history).failed(error)
 
         described = "RuntimeError: inference is unreachable <- OSError: connect refused"
 
-        error_steps = [s for s in sink.steps if s.get(StepField.IS_ERROR)]
+        error_steps = [s for s in turn.steps if s.get(StepField.IS_ERROR)]
         if len(error_steps) != 1:
             raise AssertionError("len(error_steps) == 1")
         if error_steps[0].get(StepField.OUTPUT) != f"**failed:** {described}":
@@ -123,16 +126,19 @@ class TestFailed:
             raise AssertionError("described in logged[0]")
 
     async def test_pending_tool_steps_are_closed(self) -> None:
-        view, sink = await _view_with_sink()
+        turn = _turn()
         state = TurnState()
-        step = await view.tool_started("web_search", {"query": "x"}, "call-1")
-        state.open_tool("run-1", step)
+        await turn.feed.tool_started("call-1", "web_search", {"query": "x"})
+        state.open_tool("run-1", "call-1")
 
-        await _reporter(view, state, RememberedHistory()).failed(RuntimeError("boom"))
+        await _reporter(turn.feed, state, RememberedHistory()).failed(
+            RuntimeError("boom")
+        )
 
-        if state.pending_tool_steps != []:
-            raise AssertionError("state.pending_tool_steps == []")
-        closed = [s for s in sink.steps if s.get(StepField.ID) == step.id]
+        if state.pending_tool_calls != []:
+            raise AssertionError("state.pending_tool_calls == []")
+        step_id = _tool_step_id("call-1")
+        closed = [s for s in turn.steps if s.get(StepField.ID) == step_id]
         if not (closed):
             raise AssertionError("closed")
         if closed[-1].get(StepField.OUTPUT) != StepText.TURN_FAILED.value:
@@ -143,21 +149,28 @@ class TestFailed:
             raise AssertionError("str(closed[-1].get(StepField.NAME)).startswith(Step…")
 
     async def test_user_input_error_stays_out_of_history(self) -> None:
-        view, _sink = await _view_with_sink()
+        turn = _turn()
         history = RememberedHistory()
 
-        await _reporter(view, TurnState(), history).failed(
+        await _reporter(turn.feed, TurnState(), history).failed(
             UserInputError("file is not supported")
         )
 
         if history.records != []:
             raise AssertionError("history.records == []")
 
-    async def test_history_survives_a_broken_view(self) -> None:
+    async def test_history_survives_a_broken_bus(self) -> None:
         history = RememberedHistory()
-        broken = cast("ChatView", BrokenView())
+        broken = TurnFeed(
+            BrokenBus("broken"),
+            MemoryPayloadStore(),
+            Scope.chat(THREAD),
+            TURN_KEY,
+            LockToken.local(),
+        )
 
-        await _reporter(broken, TurnState(), history).failed(RuntimeError("boom"))
+        with pytest.raises(MessageBusError, match="bus is gone"):
+            await _reporter(broken, TurnState(), history).failed(RuntimeError("boom"))
 
         if len(history.records) != 1:
             raise AssertionError("len(history.records) == 1")
@@ -169,17 +182,18 @@ class TestStopped:
     """Остановка: частичный ответ с пометкой уходит и в ленту, и в историю."""
 
     async def test_partial_answer_is_kept_with_a_note(self) -> None:
-        view, _sink = await _view_with_sink()
+        turn = _turn()
         state = TurnState()
         state.add_reasoning("run-1", "thinking hard")
-        await view.stream_answer("partial text", TURN_KEY)
+        state.add_answer("partial text")
+        await turn.feed.answer_token(TURN_KEY, "partial text")
 
-        await _reporter(view, state, history := RememberedHistory()).stopped(
+        await _reporter(turn.feed, state, history := RememberedHistory()).stopped(
             StopReason.USER_STOP
         )
 
         expected = f"partial text\n\n_{StepText.STOPPED.value}_"
-        answer = view.answer_message
+        answer = turn.view.answer_message
         if answer is None:
             raise AssertionError("answer is not None")
         if answer.content != expected:
@@ -196,16 +210,19 @@ class TestStopped:
             raise AssertionError('record.reasoning == "thinking hard"')
 
     async def test_pending_tool_steps_are_closed_with_the_note(self) -> None:
-        view, sink = await _view_with_sink()
+        turn = _turn()
         state = TurnState()
-        step = await view.tool_started("bash", {"cmd": "sleep 60"}, "call-1")
-        state.open_tool("run-1", step)
+        await turn.feed.tool_started("call-1", "bash", {"cmd": "sleep 60"})
+        state.open_tool("run-1", "call-1")
 
-        await _reporter(view, state, RememberedHistory()).stopped(StopReason.USER_STOP)
+        await _reporter(turn.feed, state, RememberedHistory()).stopped(
+            StopReason.USER_STOP
+        )
 
-        if state.pending_tool_steps != []:
-            raise AssertionError("state.pending_tool_steps == []")
-        closed = [s for s in sink.steps if s.get(StepField.ID) == step.id]
+        if state.pending_tool_calls != []:
+            raise AssertionError("state.pending_tool_calls == []")
+        step_id = _tool_step_id("call-1")
+        closed = [s for s in turn.steps if s.get(StepField.ID) == step_id]
         if closed[-1].get(StepField.OUTPUT) != StepText.STOPPED.value:
             raise AssertionError("closed[-1].get(StepField.OUTPUT) == StepText.STOPPE…")
 
@@ -226,11 +243,11 @@ class TestFailedTurnKeepsHistory:
             raise RuntimeError("inference is unreachable")
             yield
 
-        view, _sink = await _view_with_sink()
+        recorded = _turn()
         history = RememberedHistory()
         turn = ChatTurn(
             thread_id=THREAD,
-            view=view,
+            feed=recorded.feed,
             history=cast(Any, history),
             key=TURN_KEY,
         )
@@ -253,29 +270,30 @@ class TestOk:
     """Успех: забытые шаги закрываются, лишних записей истории нет."""
 
     async def test_leftover_steps_are_closed(self) -> None:
-        view, sink = await _view_with_sink()
+        turn = _turn()
         state = TurnState()
-        step = await view.tool_started("bash", {"cmd": "true"}, "call-1")
-        state.open_tool("run-1", step)
+        await turn.feed.tool_started("call-1", "bash", {"cmd": "true"})
+        state.open_tool("run-1", "call-1")
 
-        await _reporter(view, state, history := RememberedHistory()).ok()
+        await _reporter(turn.feed, state, history := RememberedHistory()).ok()
 
-        if state.pending_tool_steps != []:
-            raise AssertionError("state.pending_tool_steps == []")
-        closed = [s for s in sink.steps if s.get(StepField.ID) == step.id]
+        if state.pending_tool_calls != []:
+            raise AssertionError("state.pending_tool_calls == []")
+        step_id = _tool_step_id("call-1")
+        closed = [s for s in turn.steps if s.get(StepField.ID) == step_id]
         if closed[-1].get(StepField.OUTPUT) != StepText.FINISHED.value:
             raise AssertionError("closed[-1].get(StepField.OUTPUT) == StepText.FINISH…")
         if history.records != []:
             raise AssertionError("history.records == []")
 
     async def test_clean_finish_is_silent(self) -> None:
-        view, sink = await _view_with_sink()
-        before = len(sink.steps)
+        turn = _turn()
+        before = len(turn.steps)
 
-        await _reporter(view, TurnState(), RememberedHistory()).ok()
+        await _reporter(turn.feed, TurnState(), RememberedHistory()).ok()
 
-        if len(sink.steps) != before:
-            raise AssertionError("len(sink.steps) == before")
+        if len(turn.steps) != before:
+            raise AssertionError("len(turn.steps) == before")
 
 
 class TestPulseOfTheTurn:
@@ -299,10 +317,10 @@ class TestPulseOfTheTurn:
     ) -> ChatView:
         from boba.chainlit.chat.turn import ChatTurn
 
-        view, _sink = await _view_with_sink()
+        recorded = _turn()
         turn = ChatTurn(
             thread_id=THREAD,
-            view=view,
+            feed=recorded.feed,
             history=cast(Any, RememberedHistory()),
             key=TURN_KEY,
         )
@@ -312,7 +330,7 @@ class TestPulseOfTheTurn:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-        return view
+        return recorded.view
 
     async def test_finished_turn_clears_the_pulse(
         self, monkeypatch: pytest.MonkeyPatch

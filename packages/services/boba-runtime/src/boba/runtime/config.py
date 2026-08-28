@@ -25,7 +25,9 @@ from boba.sandbox.profile import SandboxConfig
 from boba.settings import bind, build_app_config
 
 __all__ = [
+    "AppName",
     "BuiltPage",
+    "ClusterConfig",
     "ConfigLocator",
     "DataLayerConfig",
     "DevPage",
@@ -172,6 +174,54 @@ class StreamJournalConfig(BaseModel):
         return self
 
 
+class AppName(StrEnum):
+    """Приложения над сервисами: суффикс имени инстанса и значение колонки app."""
+
+    CHAINLIT = "chainlit"
+    STUDIO = "studio"
+
+
+class ClusterConfig(BaseModel):
+    """Секция [cluster]: имя узла и сроки жизни блокировок и слушателя шины.
+
+    node_id задаёт оператор (BOBA_INSTANCE_ID); имя инстанса — node_id плюс имя
+    приложения, чтобы chainlit и studio одного узла различались в блокировках,
+    запусках и командах.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    SEPARATOR: ClassVar[str] = "-"
+
+    node_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.-]+$")
+    host: str = Field(min_length=1, description="Узел, где лежат журналы инструментов.")
+    lock_ttl_sec: int = Field(
+        gt=0, description="Срок блокировки без подтверждения жизни."
+    )
+    heartbeat_sec: int = Field(
+        gt=0, description="Период подтверждения жизни держателем."
+    )
+    reaper_period_sec: int = Field(
+        gt=0, description="Период сторожа протухших блокировок."
+    )
+    queue_usage_limit: float = Field(
+        gt=0,
+        le=1,
+        description="Доля очереди NOTIFY, при которой слушатель переподключается.",
+    )
+
+    @model_validator(mode="after")
+    def _heartbeat_fits_ttl(self) -> Self:
+        if self.heartbeat_sec * 2 > self.lock_ttl_sec:
+            msg = "cluster: heartbeat_sec must be at most half of lock_ttl_sec"
+            raise ValueError(msg)
+
+        return self
+
+    def instance_of(self, app: AppName) -> str:
+        return f"{self.node_id}{self.SEPARATOR}{app.value}"
+
+
 class StudioPath(StrEnum):
     """Что студия вешает под url_prefix: api, его socket.io и страница."""
 
@@ -286,6 +336,7 @@ class RuntimeConfig(BaseModel):
     sandbox: SandboxConfig
     stream_journal: StreamJournalConfig
     studio: StudioConfig
+    cluster: ClusterConfig
 
     @classmethod
     def load(cls, config_path: Path) -> Self:

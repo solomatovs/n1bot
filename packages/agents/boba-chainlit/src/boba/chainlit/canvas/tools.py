@@ -36,7 +36,7 @@ from boba.chainlit.canvas.panel import (
     VideoViewer,
 )
 from boba.chainlit.domain.context import ChatCallContext
-from boba.chainlit.rendering.errors import show_error
+from boba.chainlit.infra.thread_room import ChatNotices
 from boba.identity.errors import RefusalError
 from boba.toolkit.result import ErrorResult, ToolResult, pack_result
 
@@ -162,7 +162,7 @@ class CanvasActions:
         try:
             await CanvasOpener().show(str(path), scope)
         except RefusalError as e:
-            await show_error(f"Failed to open the canvas: {e}")
+            await ChatNotices.error(f"Failed to open the canvas: {e}")
 
     @classmethod
     async def content(cls, action: cl.Action, scope: CanvasScope) -> dict[str, Any]:
@@ -184,7 +184,7 @@ class CanvasActions:
                 str(path), watch=not refresh, scope=scope
             )
         except RefusalError as e:
-            await show_error(f"Failed to open the canvas: {e}")
+            await ChatNotices.error(f"Failed to open the canvas: {e}")
             return {}
 
         return described.props()

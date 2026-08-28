@@ -22,8 +22,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
-from boba.identity.context import Subject
+from boba.identity.context import Scope, Subject
 from boba.identity.errors import RefusalError
+from boba.messaging import Envelope, MessageKind
 from boba.runtime.config import StudioPath
 from boba.studio.api.auth import ApiIdentity
 from boba.workflow.events import RunSnapshot
@@ -75,6 +76,9 @@ class WorkflowNamespace(socketio.AsyncNamespace):
     """Класс-namespace socket.io: подписки страницы на запуски."""
 
     NAME: ClassVar[str] = "/workflow"
+    RUN_MESSAGES: ClassVar[frozenset[MessageKind]] = frozenset(
+        {MessageKind.RUN_STATE_CHANGED, MessageKind.RUN_FINISHED}
+    )
 
     def __init__(
         self,
@@ -152,14 +156,29 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         if run_id in self._leaves:
             return
 
-        async def deliver(snapshot: RunSnapshot) -> None:
+        async def deliver(envelope: Envelope) -> None:
+            if envelope.message.kind not in self.RUN_MESSAGES:
+                return
+
+            # снимок не прочитан — страница узнаёт об этом событием, а не молчанием
+            try:
+                snapshot = await service.snapshot_of(run_id)
+            except Exception as exc:
+                logger.exception("run %s: snapshot is not available", run_id)
+                await self.emit(
+                    WorkflowSocketEvent.REFUSED.value,
+                    {"reason": f"run state is not available: {exc}"},
+                    room=RunRoom.of(run_id),
+                )
+                return
+
             await self.emit(
                 WorkflowSocketEvent.RUN_STATE.value,
                 self._payload(snapshot),
                 room=RunRoom.of(run_id),
             )
 
-        self._leaves[run_id] = service.events.listen(run_id, deliver)
+        self._leaves[run_id] = service.bus.subscribe(Scope.workflow(run_id), deliver)
 
     def _forget(self, run_id: UUID, sid: str) -> None:
         sids = self._rooms.get(run_id)

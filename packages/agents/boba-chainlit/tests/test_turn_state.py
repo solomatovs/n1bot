@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from chainlit.step import Step
 
 from boba.cancellation import StopReason
 from boba.chainlit.chat.turn import TurnOutcome, TurnState, TurnStateError
@@ -69,30 +68,24 @@ class TestOutcome:
 class TestPendingArtifacts:
     """Шаги инструментов и рассуждения живут в состоянии до конца хода."""
 
-    @staticmethod
-    def _step(name: str) -> Step:
-        return Step(name=name, type="tool")
-
     async def test_tools_open_close_and_drain(self) -> None:
         state = TurnState()
-        first = self._step("first")
-        second = self._step("second")
 
-        state.open_tool("run-1", first)
-        state.open_tool("run-2", second)
-        if state.pending_tool_steps != [first, second]:
-            raise AssertionError("state.pending_tool_steps == [first, second]")
+        state.open_tool("run-1", "call-1")
+        state.open_tool("run-2", "call-2")
+        if state.pending_tool_calls != ["call-1", "call-2"]:
+            raise AssertionError('state.pending_tool_calls == ["call-1", "call-2"]')
 
-        if state.close_tool("run-1") is not first:
-            raise AssertionError('state.close_tool("run-1") is first')
+        if state.close_tool("run-1") != "call-1":
+            raise AssertionError('state.close_tool("run-1") == "call-1"')
         if state.close_tool("run-1") is not None:
             raise AssertionError('state.close_tool("run-1") is None')
 
         drained = list(state.drain_tools())
-        if drained != [second]:
-            raise AssertionError("drained == [second]")
-        if state.pending_tool_steps != []:
-            raise AssertionError("state.pending_tool_steps == []")
+        if drained != ["call-2"]:
+            raise AssertionError('drained == ["call-2"]')
+        if state.pending_tool_calls != []:
+            raise AssertionError("state.pending_tool_calls == []")
 
     async def test_reasoning_accumulates_per_run(self) -> None:
         state = TurnState()

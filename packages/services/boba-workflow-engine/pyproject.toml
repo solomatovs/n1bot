@@ -13,6 +13,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2,<4",
     "boba-toolkit==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
+    "boba-messaging==0.0.14.dev9",
     "boba-cancellation==0.0.14.dev9",
     "boba-workflow==0.0.14.dev9",
     "boba-connections==0.0.14.dev9",

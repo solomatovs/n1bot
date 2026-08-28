@@ -32,6 +32,7 @@ class StudioProcess:
     def __init__(self, app_root: Path) -> None:
         env = dict(os.environ)
         env["BOBA_STUDIO_PORT"] = str(self.PORT)
+        env["BOBA_INSTANCE_ID"] = "testhost"
         env["BOBA_APP_ROOT"] = str(app_root)
         env["BOBA_WORKFLOW_PAGE"] = "built"
         self.prefix = env["BOBA_URL_PREFIX"]

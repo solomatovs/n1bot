@@ -18,11 +18,11 @@ from test_workflow_service import ROLE, Probe, _registry
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import ApiSubject
+from boba.messaging import MemoryMessageBus
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus, WorkflowSpec
-from boba.workflow.events import RunEvents
 from boba.workflow_engine.service import WorkflowError, WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
@@ -71,7 +71,7 @@ def app(store: WorkflowStore, user: PersistedUser, app_config: AppConfig) -> Fas
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"], profile=_profile(app_config))
 
-    service = WorkflowService(store, registry, "test:0", RunEvents())
+    service = WorkflowService(store, registry, "test:0", MemoryMessageBus("test:0"))
 
     async def source() -> WorkflowService:
         return service
@@ -251,8 +251,8 @@ async def test_abandoned_runs_are_closed_on_startup_and_stop_is_honest(
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"], profile=_profile(app_config))
 
-    mine = WorkflowService(store, registry, "test:0", RunEvents())
-    other = WorkflowService(store, registry, "other:1", RunEvents())
+    mine = WorkflowService(store, registry, "test:0", MemoryMessageBus("test:0"))
+    other = WorkflowService(store, registry, "other:1", MemoryMessageBus("other:1"))
     signed = ChainlitUsers.of(user)
     assert signed is not None
     subject = ApiSubject.of(signed, _profile(app_config)).subject

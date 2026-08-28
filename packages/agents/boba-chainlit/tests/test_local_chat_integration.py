@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import pytest
+from conftest import RecordedTurn
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -27,7 +28,6 @@ from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
 from boba.chat.provider import ChatSampling, LocalChatConfig
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.local import OnnxChatRuntime
@@ -126,10 +126,9 @@ class TestLocalChatTurn:
             checkpointer=InMemorySaver(),
         )
 
-        sink = RecordingSink()
-        view = ChatView(THREAD, sink, user_name="tester")
-        view.begin_turn(TURN)
-        tracer = AgentTracer(view, TurnState())
+        turn = RecordedTurn.recording(THREAD, TURN)
+        sink = turn.recording_sink
+        tracer = AgentTracer(turn.feed, TurnState())
 
         config = RunnableConfig(
             configurable={"thread_id": "local-turn"},

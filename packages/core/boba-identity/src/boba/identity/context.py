@@ -81,6 +81,10 @@ class Scope(BaseModel):
 
         return value
 
+    def render(self) -> str:
+        """Область одной строкой «kind/id»: журнал, ключи блокировок, сообщения."""
+        return f"{self.kind.value}{self.SEPARATOR}{self.id}"
+
     @classmethod
     def chat(cls, thread_id: str) -> Scope:
         return cls(kind=ScopeKind.CHAT, id=thread_id)

@@ -14,6 +14,7 @@ from boba.chainlit.canvas.diagram import build_diagram_tools
 from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
 from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
+from boba.runtime import providers as runtime
 from boba.runtime.plugins import CoreTools, ToolLoader, ToolPlugin
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.launcher import LauncherFactory
@@ -28,7 +29,11 @@ class ChatPlugins:
     @classmethod
     def load(cls, raw_config: DictConfig, refs: RuntimeRefs) -> ToolRegistry:
         loader = ToolLoader(
-            raw_config, cls.table(refs), refs, ChatRefreshSignal(), GrantCheck.STRICT
+            raw_config,
+            cls.table(refs),
+            refs,
+            ChatRefreshSignal(runtime.message_bus_ref),
+            GrantCheck.STRICT,
         )
 
         return loader.load()

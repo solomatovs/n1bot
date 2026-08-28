@@ -50,6 +50,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
 from boba.krb import SpnegoAcceptor, TicketCapture
 from boba.krb.seal import SsoTickets
+from boba.messaging import MemoryMessageBus
 from boba.runtime.plugins import ToolBridge
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
@@ -246,7 +247,7 @@ class Tools:
             lambda: tickets,
             spec,
             resolve,
-            ChatRefreshSignal(),
+            ChatRefreshSignal(lambda: MemoryMessageBus("test")),
         )
         InjectedConfig.bind_all(functions, resolve)
 
