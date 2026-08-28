@@ -1612,3 +1612,120 @@ button {
     --tl-label: 110px;
   }
 }
+
+/* вход и кабинет: страницы вне трёхколонной оболочки */
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+}
+
+.login__card {
+  width: min(380px, 92vw);
+  padding: var(--s4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-panel, 12px);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.login__brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--s3);
+  font-family: var(--font-display, var(--font-sans));
+  color: var(--ink);
+}
+
+.login__brand span:not(.topbar__spacer) {
+  color: var(--signal);
+}
+
+.login__form {
+  display: flex;
+  flex-direction: column;
+}
+
+.login__submit,
+.login__sso {
+  justify-content: center;
+  margin-top: var(--s2);
+  width: 100%;
+}
+
+.account {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: var(--h-topbar) 1fr;
+  background: var(--bg);
+}
+
+.account__body {
+  padding: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.account__who {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account__login {
+  font-family: var(--font-display, var(--font-sans));
+  font-size: var(--fs-title, 18px);
+  color: var(--ink);
+}
+
+.account__meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--muted);
+}
+
+.connections {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: var(--s3);
+  min-height: 420px;
+}
+
+.connections__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  padding: var(--s2);
+  background: var(--surface);
+}
+
+.connections__scene {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  padding: var(--s3);
+  background: var(--surface);
+}
+
+.connection-form {
+  max-width: 460px;
+}
+
+.connection-form__actions {
+  display: flex;
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+
+@media (max-width: 720px) {
+  .connections {
+    grid-template-columns: 1fr;
+  }
+}

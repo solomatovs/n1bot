@@ -1,4 +1,5 @@
 import type { components } from "./schema";
+import type { ConnectionView, Me, ProfileView, SignInProviders } from "../model/account";
 import type { RunState, StoredRun, StoredWorkflow, TaskState, ToolFacts } from "../model/workflow";
 
 /** Сверка zod-моделей страницы с OpenAPI-схемой API на этапе компиляции:
@@ -15,4 +16,8 @@ export type Contract = [
   Assert<Extends<RunState["graph"], Schemas["RunState"]["graph"]>>,
   Assert<Extends<RunState["status"], Schemas["RunState"]["status"]>>,
   Assert<Extends<ToolFacts, Schemas["ToolFacts"]>>,
+  Assert<Extends<Me, Schemas["Me"]>>,
+  Assert<Extends<ProfileView, Schemas["ProfileView"]>>,
+  Assert<Extends<SignInProviders, Schemas["SignInProviders"]>>,
+  Assert<Extends<Omit<ConnectionView, "profile">, Omit<Schemas["ConnectionView"], "profile">>>,
 ];

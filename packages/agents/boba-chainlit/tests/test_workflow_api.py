@@ -16,7 +16,7 @@ from test_workflow_service import ROLE, Probe, _registry
 
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
-from boba.studio.api.app import ApiApp
+from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow.events import RunEvents
@@ -73,12 +73,13 @@ def app(store: WorkflowStore, user: PersistedUser, app_config: AppConfig) -> Fas
     async def source() -> WorkflowService:
         return service
 
-    return ApiApp.build(
-        StubRefs.services(registry, source),
+    access = ApiAccess(
         StubAuthenticator(ChainlitUsers.of(user)),
-        NoThreads.source,
-        _profiles(app_config),
         StubAuthenticator.COOKIE,
+        NoThreads.source,
+    )
+    return ApiApp.build(
+        StubRefs.services(registry, source), access, _profiles(app_config), None
     )
 
 

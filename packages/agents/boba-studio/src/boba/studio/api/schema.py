@@ -12,9 +12,17 @@ from typing import Any, ClassVar
 
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.threads import ThreadOwnership
-from boba.identity.api import AuthenticatedUser, Authenticator
+from boba.identity.api import (
+    AuthenticatedUser,
+    Authenticator,
+    PersistedUsers,
+    UsersUpsert,
+)
+from boba.identity.signin import SignedIn
 from boba.runtime.refs import RuntimeRefs
-from boba.studio.api.app import ApiApp
+from boba.studio.api.app import ApiAccess, ApiApp
+from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer, SessionCookie
+from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
 
@@ -28,17 +36,25 @@ class NoOne(Authenticator):
         return None
 
 
+class NoUsers(UsersUpsert):
+    """Строки users для схемы: никого не пишет."""
+
+    async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
+        msg = "users table is not part of the schema stand"
+        raise RuntimeError(msg)
+
+
 class OpenApiDocument:
     """Схема API как JSON; входы приложения — заглушки, их никто не зовёт."""
 
     PROFILE: ClassVar[str] = "schema"
     COOKIE: ClassVar[str] = "access_token"
+    JWT_KEY: ClassVar[str] = "schema-only"
 
     @classmethod
     def render(cls) -> dict[str, Any]:
-        app = ApiApp.build(
-            cls._refs(), NoOne(), cls._no_threads, cls._profiles(), cls.COOKIE
-        )
+        access = ApiAccess(NoOne(), cls.COOKIE, cls._no_threads)
+        app = ApiApp.build(cls._refs(), access, cls._profiles(), cls._signin())
 
         return app.openapi()
 
@@ -50,6 +66,25 @@ class OpenApiDocument:
     def main(cls) -> None:
         sys.stdout.write(cls.dump())
         sys.stdout.write("\n")
+
+    @classmethod
+    def _signin(cls) -> SignInWiring:
+        """Маршруты входа в схеме есть; провайдера паролей у схемы нет."""
+        return SignInWiring(
+            password=None,
+            sso=None,
+            sso_url="",
+            page=PageUrls(root="/workflow", login="/workflow/login", home="/workflow"),
+            issuer=JwtIssuer(cls.JWT_KEY, 1),
+            authenticator=JwtAuthenticator(cls.JWT_KEY, cls._no_users),
+            cookie=SessionCookie(cls.COOKIE, "lax", 1),
+            users=NoUsers(),
+        )
+
+    @classmethod
+    def _no_users(cls) -> PersistedUsers:
+        msg = "users table is not part of the schema stand"
+        raise RuntimeError(msg)
 
     @classmethod
     def _profiles(cls) -> ChatProfiles:

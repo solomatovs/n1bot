@@ -4,13 +4,30 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-__all__ = ["AccountUrl", "ApiVersion", "ConnectionUrl", "ToolCallUrl", "WorkflowUrl"]
+__all__ = [
+    "AccountUrl",
+    "ApiVersion",
+    "ConnectionUrl",
+    "SignInUrl",
+    "ToolCallUrl",
+    "WorkflowUrl",
+]
 
 
 class ApiVersion(StrEnum):
     """Сегмент версии перед путями ресурсов."""
 
     V1 = "/v1"
+
+
+class SignInUrl(StrEnum):
+    """Вход по паролю, SPNEGO-обмен и его обновление, выход."""
+
+    PROVIDERS = "/auth/providers"
+    LOGIN = "/auth/login"
+    LOGOUT = "/auth/logout"
+    SSO = "/auth/sso"
+    SSO_REFRESH = "/auth/sso/refresh"
 
 
 class AccountUrl(StrEnum):

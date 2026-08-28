@@ -12,7 +12,7 @@ from boba.chat.openai import OpenAiConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
 from boba.identity.api import AuthenticatedUser
-from boba.studio.api.app import ApiApp
+from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import AccountUrl, ApiVersion, ConnectionUrl
 
 pytestmark = pytest.mark.anyio
@@ -59,13 +59,12 @@ def _user(roles: list[str]) -> AuthenticatedUser:
 
 
 async def _client(user: AuthenticatedUser | None) -> AsyncClient:
-    app = ApiApp.build(
-        NoRefs.refs(),
+    access = ApiAccess(
         StubAuthenticator(user),
-        NoRefs.store,  # type: ignore[arg-type]
-        _profiles(),
         StubAuthenticator.COOKIE,
+        NoRefs.store,  # type: ignore[arg-type]
     )
+    app = ApiApp.build(NoRefs.refs(), access, _profiles(), None)
 
     return AsyncClient(
         transport=ASGITransport(app=app),

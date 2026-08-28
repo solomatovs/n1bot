@@ -1,43 +1,31 @@
-from collections.abc import Awaitable, Callable
+"""Вход по паролю в chainlit: провайдер services → cl.User для password-callback."""
+
+from __future__ import annotations
 
 import chainlit as cl
-from boba.identity.errors import AuthenticationError
+from boba.identity.signin import PasswordSignIn
 from chainlit.config import config as chainlit_config
 
-UserCallback = Callable[..., Awaitable[cl.User | None]]
+__all__ = ["PasswordCallback"]
 
 
-class PasswordAuthCallbackInstaller:
-    def __init__(self):
-        self._auth = []
+class PasswordCallback:
+    """Ставит password_auth_callback chainlit поверх провайдера паролей."""
 
-    def local_auth_setup(self, local_auth) -> None:
-        self._auth.append(local_auth)
+    def __init__(self, signin: PasswordSignIn) -> None:
+        self._signin = signin
 
-    def ldap_auth_setup(self, ldap_auth) -> None:
-        self._auth.append(ldap_auth)
+    def install(self) -> None:
+        # не cl.password_auth_callback — иначе chainlit глотает исключения
+        chainlit_config.code.password_auth_callback = self.password_auth
 
-    def install_callback_if_any_exists(self) -> None:
-        if self._auth:
-            # не cl.password_auth_callback — иначе chainlit глотает исключения
-            chainlit_config.code.password_auth_callback = self._build_callback()
-
-    def _build_callback(self) -> UserCallback:
-        async def password_auth(username: str, password: str) -> cl.User | None:
-            last_error: AuthenticationError | None = None
-
-            for auth in self._auth:
-                try:
-                    res = await auth.password_auth(username, password)
-                    if res is not None:
-                        return res
-
-                except AuthenticationError as e:
-                    last_error = e
-
-            if last_error:
-                raise last_error
-
+    async def password_auth(self, username: str, password: str) -> cl.User | None:
+        signed = await self._signin.sign_in(username, password)
+        if signed is None:
             return None
 
-        return password_auth
+        return cl.User(
+            identifier=signed.identifier,
+            display_name=signed.display_name,
+            metadata=dict(signed.metadata),
+        )

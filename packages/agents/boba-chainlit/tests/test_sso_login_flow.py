@@ -18,20 +18,15 @@ import pytest
 from chainlit.auth.jwt import create_jwt
 from gssapi import Credentials, Name, NameType, SecurityContext
 from stand_site import Stand
-from starlette.datastructures import Headers
+from starlette.requests import Request
 
-from boba.chainlit.auth.kerberos import (
-    KerberosAuth,
-    SpnegoMiddleware,
-    SsoPass,
-    SsoRefresh,
-    SsoRuntime,
-)
+from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.infra.session import ChainlitSession
 from boba.identity.roles import RoleExcludeConfig
 from boba.identity.session import SignInProvider, UserMetadataField
 from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.runtime.auth_config import KerberosAuthConfig, KerberosRolesConfig
+from boba.runtime.sso import Challenge, Signed, SsoRefresh
 from boba.settings import bind
 
 STAND = Stand.required()
@@ -108,38 +103,25 @@ class Browser:
 
 
 class Sso:
-    """Прогон /auth/sso через боевую middleware: заголовки и билет для _build_user."""
+    """Прогон /auth/sso через боевой обмен: исход handshake."""
 
     @staticmethod
-    async def headers(auth: KerberosAuth, token: bytes) -> tuple[Headers, str]:
+    async def signed(auth: KerberosAuth, token: bytes) -> Signed:
         import base64
 
-        captured: dict[str, Any] = {}
-
-        async def app(scope: Any, receive: Any, send: Any) -> None:
-            captured["headers"] = Headers(scope=scope)
-            captured["sealed"] = scope.get("state", {}).get(SsoPass.KEY, "")
-
-        middleware = SpnegoMiddleware(app, sso=auth.runtime())
         scope = {
             "type": "http",
+            "method": "GET",
             "path": auth._urls.sso,
+            "query_string": b"",
             "headers": [(b"authorization", b"Negotiate " + base64.b64encode(token))],
             "client": ("127.0.0.1", 1234),
         }
+        outcome = await auth.gate.handshake(Request(scope))
+        if isinstance(outcome, Challenge):
+            raise AssertionError(f"SPNEGO must sign the browser in: {outcome.reason}")
 
-        async def receive() -> dict[str, Any]:
-            return {"type": "http.request"}
-
-        async def send(message: Any) -> None:
-            return
-
-        await middleware(scope, receive, send)
-        found = captured.get("headers")
-        if found is None:
-            raise AssertionError("SPNEGO did not pass the request through")
-
-        return found, str(captured.get("sealed", ""))
+        return outcome
 
 
 class Refresh:
@@ -151,20 +133,12 @@ class Refresh:
         token: bytes,
         jwt_cookie: str | None,
         own_header: bool = True,
-        runtime: SsoRuntime | None = None,
     ) -> tuple[int, str]:
         """Статус ответа и JWT из его Set-Cookie (пустой — cookie не выдана)."""
         import base64
 
         from chainlit.auth.cookie import _auth_cookie_name
 
-        async def app(scope: Any, receive: Any, send: Any) -> None:
-            raise AssertionError("refresh must not fall through to the application")
-
-        parts = runtime
-        if parts is None:
-            parts = auth.runtime()
-        middleware = SpnegoMiddleware(app, sso=parts)
         headers = [(b"authorization", b"Negotiate " + base64.b64encode(token))]
         if own_header:
             headers.append((SsoRefresh.HEADER.encode(), SsoRefresh.VALUE.encode()))
@@ -173,26 +147,17 @@ class Refresh:
             headers.append((b"cookie", cookie))
         scope = {
             "type": "http",
+            "method": "GET",
             "path": auth._urls.refresh,
+            "query_string": b"",
             "headers": headers,
             "client": ("127.0.0.1", 1234),
         }
-        captured: dict[str, Any] = {}
 
-        async def receive() -> dict[str, Any]:
-            return {"type": "http.request"}
+        response = await auth.refresh(Request(scope))
+        raw = [(key, value) for key, value in response.raw_headers]
 
-        async def send(message: Any) -> None:
-            if message["type"] == "http.response.start":
-                captured["status"] = int(message["status"])
-                captured["headers"] = list(message.get("headers", []))
-
-        await middleware(scope, receive, send)
-        status = captured.get("status")
-        if status is None:
-            raise AssertionError("refresh must answer the request itself")
-
-        return status, Refresh._token_of(captured.get("headers", []), _auth_cookie_name)
+        return response.status_code, Refresh._token_of(raw, _auth_cookie_name)
 
     @staticmethod
     async def status(
@@ -200,9 +165,8 @@ class Refresh:
         token: bytes,
         jwt_cookie: str | None,
         own_header: bool = True,
-        runtime: SsoRuntime | None = None,
     ) -> int:
-        status, _ = await Refresh.exchange(auth, token, jwt_cookie, own_header, runtime)
+        status, _ = await Refresh.exchange(auth, token, jwt_cookie, own_header)
         return status
 
     @staticmethod
@@ -233,12 +197,8 @@ class Refresh:
 
 
 async def _signed_in(auth: KerberosAuth, tmp_path: Path) -> cl.User:
-    headers, sealed = await Sso.headers(auth, Browser.token(tmp_path))
-    user = await auth._build_user(headers, sealed)
-    if user is None:
-        raise AssertionError("SSO must build a user")
-
-    return user
+    outcome = await Sso.signed(auth, Browser.token(tmp_path))
+    return KerberosAuth.user_of(outcome.signed)
 
 
 async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
@@ -396,18 +356,6 @@ async def test_refresh_of_an_excluded_principal_is_refused(
     token = create_jwt(user)
 
     # вход и его билет остаются прежними, меняется только политика допуска
-    runtime = kerberos_auth.runtime()
-    excluded = SsoRuntime(
-        urls=runtime.urls,
-        config=runtime.config,
-        acceptor=runtime.acceptor,
-        capture=runtime.capture,
-        sealer=runtime.sealer,
-        admission=excluding_auth,
-        builder=runtime.builder,
-    )
-    status = await Refresh.status(
-        kerberos_auth, Browser.token(tmp_path), token, runtime=excluded
-    )
+    status = await Refresh.status(excluding_auth, Browser.token(tmp_path), token)
     if status != 403:
         raise AssertionError(f"an excluded principal must be refused: {status}")

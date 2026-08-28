@@ -1,7 +1,7 @@
 """Роли и исключения авторизации: чистые мапперы без KDC/LDAP.
 
 Интеграционный путь (реальный SPNEGO/AD) в тестовом окружении недоступен,
-поэтому проверяется чистая логика маппинга SID/ролей и решений LocalAuth.
+поэтому проверяется чистая логика маппинга SID/ролей и решений LocalSignIn.
 """
 
 from __future__ import annotations
@@ -9,21 +9,20 @@ from __future__ import annotations
 import pytest
 from conftest import FakeSecret
 
-from boba.chainlit.auth.kerberos import (
-    KerberosRolesInLdapProvider,
-    SidExcludeUserProvider,
-    SidUserRolesProvider,
-)
-from boba.chainlit.auth.local import LocalAuth
 from boba.identity.directory import ADUserEntry
 from boba.identity.errors import AuthorizationError
 from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.session import UserLogin, UserMetadataField
-from boba.identity.sso import SidsHeader
 from boba.runtime.auth_config import (
     KerberosRolesInLdapConfig,
     KerberosRolesInLdapMappingConfig,
     LocalAuthConfig,
+)
+from boba.runtime.signin import LocalSignIn
+from boba.runtime.sso import (
+    KerberosRolesInLdapProvider,
+    SidExcludeUserProvider,
+    SidUserRolesProvider,
 )
 
 pytestmark = pytest.mark.anyio
@@ -32,20 +31,6 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
-
-
-def test_sids_header_roundtrip() -> None:
-    sids = ["S-1-5-21-1", "S-1-5-21-2"]
-    raw = SidsHeader.render(sids)
-    if SidsHeader.parse(raw) != sids:
-        raise AssertionError("SidsHeader.parse(raw) == sids")
-
-
-def test_sids_header_parse_skips_empty_parts() -> None:
-    if SidsHeader.parse("S-1-5-1,,S-1-5-2,") != ["S-1-5-1", "S-1-5-2"]:
-        raise AssertionError('SidsHeader.parse("S-1-5-1,,S-1-5-2,") == ["S-1-5-1", "S…')
-    if SidsHeader.parse("") != []:
-        raise AssertionError('SidsHeader.parse("") == []')
 
 
 def test_sid_roles_maps_each_group() -> None:
@@ -72,7 +57,7 @@ async def test_local_auth_allows_user_with_roles() -> None:
         users={"alice": "pw"},
         roles=RoleMappingConfig({"alice": ["admin"]}),
     )
-    user = await LocalAuth(config).password_auth("alice", "pw")
+    user = await LocalSignIn(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
     if user.identifier != "alice":
@@ -83,7 +68,7 @@ async def test_local_auth_allows_user_with_roles() -> None:
 
 async def test_local_auth_rejects_wrong_password() -> None:
     config = LocalAuthConfig(users={"alice": "pw"})
-    user = await LocalAuth(config).password_auth("alice", "nope")
+    user = await LocalSignIn(config).sign_in("alice", "nope")
     if user is not None:
         raise AssertionError("user is None")
 
@@ -94,18 +79,18 @@ async def test_local_auth_rejects_excluded_user() -> None:
         roles_ex=RoleExcludeConfig(["alice"]),
     )
     with pytest.raises(AuthorizationError):
-        await LocalAuth(config).password_auth("alice", "pw")
+        await LocalSignIn(config).sign_in("alice", "pw")
 
 
 async def test_local_auth_rejects_no_roles_when_required() -> None:
     config = LocalAuthConfig(users={"alice": "pw"})
     with pytest.raises(AuthorizationError):
-        await LocalAuth(config).password_auth("alice", "pw")
+        await LocalSignIn(config).sign_in("alice", "pw")
 
 
 async def test_local_auth_allows_no_roles_when_not_required() -> None:
     config = LocalAuthConfig(users={"alice": "pw"}, require_roles=False)
-    user = await LocalAuth(config).password_auth("alice", "pw")
+    user = await LocalSignIn(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
     if UserMetadataField.ROLES in user.metadata:
@@ -196,8 +181,8 @@ class TestUserLoginCanon:
             raise AssertionError(f"один ключ на все написания, дано {keys!r}")
 
 
-class TestLocalAuthIdentifier:
-    """LocalAuth: в базу уходит канон логина, в интерфейс — как в конфиге."""
+class TestLocalSignInIdentifier:
+    """LocalSignIn: в базу уходит канон логина, в интерфейс — как в конфиге."""
 
     async def test_identifier_is_the_canonical_login(self) -> None:
         config = LocalAuthConfig(
@@ -205,7 +190,7 @@ class TestLocalAuthIdentifier:
             roles=RoleMappingConfig({"Maksimov.MA": ["admin"]}),
         )
 
-        user = await LocalAuth(config).password_auth("Maksimov.MA", "pw")
+        user = await LocalSignIn(config).sign_in("Maksimov.MA", "pw")
 
         if user is None:
             raise AssertionError("user is not None")

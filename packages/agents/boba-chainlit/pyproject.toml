@@ -35,7 +35,6 @@ dependencies = [
     "boba-transport-http==0.0.14.dev9",
     "boba-krb==0.0.14.dev9",
     "boba-llm[chat]==0.0.14.dev9",
-    "ldap3",
     "cryptography>=42,<51",
     "omegaconf>=2.3,<3",
     "plotly>=5.24,<6",

@@ -1,15 +1,9 @@
 from fastapi import FastAPI
 
-from boba.chainlit.auth.composite import PasswordAuthCallbackInstaller
+from boba.chainlit.auth.composite import PasswordCallback
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.auth.ldap import LdapAuth
-from boba.chainlit.auth.local import LocalAuth
-from boba.runtime.auth_config import (
-    AuthConfig,
-    KerberosAuthConfig,
-    LdapAuthConfig,
-    LocalAuthConfig,
-)
+from boba.runtime.auth_config import AuthConfig, KerberosAuthConfig
+from boba.runtime.signin import PasswordSignIns
 
 
 class ChainlitAuthInstaller:
@@ -21,27 +15,20 @@ class ChainlitAuthInstaller:
 
     def install(self, chainlit_app: FastAPI) -> KerberosAuth | None:
         "Ставит способы авторизации; KerberosAuth нужен ради delegation в tools"
-        password_callback = PasswordAuthCallbackInstaller()
         kerberos: KerberosAuth | None = None
 
         for auth in self._configs:
-            if isinstance(auth, KerberosAuthConfig):
-                if kerberos is not None:
-                    # две SpnegoMiddleware на один sso_path — ошибка конфига
-                    raise ValueError("kerberos authorization configured twice")
+            if not isinstance(auth, KerberosAuthConfig):
+                continue
 
-                kerberos = KerberosAuth(self._url_prefix, auth)
-                kerberos.install(chainlit_app)
+            if kerberos is not None:
+                # две SpnegoMiddleware на один sso_path — ошибка конфига
+                raise ValueError("kerberos authorization configured twice")
 
-            elif isinstance(auth, LocalAuthConfig):
-                password_callback.local_auth_setup(LocalAuth(auth))
+            kerberos = KerberosAuth(self._url_prefix, auth)
+            kerberos.install(chainlit_app)
 
-            elif isinstance(auth, LdapAuthConfig):
-                password_callback.ldap_auth_setup(LdapAuth(auth))
-
-            else:
-                raise ValueError(f"unknown authorization type: {type(auth).__name__}")
-
-        password_callback.install_callback_if_any_exists()
+        if signin := PasswordSignIns.of(self._configs):
+            PasswordCallback(signin).install()
 
         return kerberos

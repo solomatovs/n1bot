@@ -7,6 +7,7 @@ RuntimeError — конфиг ещё не загружен (RawConfig.get до R
 from __future__ import annotations
 
 import os
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
 
@@ -33,6 +34,7 @@ __all__ = [
     "RawConfig",
     "RuntimeConfig",
     "StudioConfig",
+    "StudioPath",
 ]
 
 
@@ -130,13 +132,18 @@ class PageSource:
         return DevPage(url=raw.rstrip("/"))
 
 
+class StudioPath(StrEnum):
+    """Что студия вешает под url_prefix: api, его socket.io и страница."""
+
+    API = "/api"
+    SOCKET = "/socket.io"
+    PAGE = "/workflow"
+
+
 class StudioConfig(BaseModel):
     """Секция [studio]: адрес процесса, секрет JWT входа, источник страницы workflow."""
 
     model_config = ConfigDict(extra="forbid")
-
-    MOUNT: ClassVar[str] = "/api"
-    SOCKET_PATH: ClassVar[str] = "/socket.io"
 
     host: str
     port: int
@@ -147,6 +154,10 @@ class StudioConfig(BaseModel):
         min_length=1, description="Секрет JWT chainlit: подпись и печать билета."
     )
     cookie: str = Field(min_length=1, description="Имя cookie входа chainlit.")
+    cookie_samesite: Literal["lax", "strict", "none"] = Field(
+        description="SameSite cookie входа; none включает Secure."
+    )
+    session_ttl_sec: int = Field(gt=0, description="Срок JWT и cookie входа.")
     page: BuiltPage | DevPage = Field(
         discriminator="kind",
         description="'built' — сборка из dist; адрес — vite dev-сервер.",
@@ -159,10 +170,10 @@ class StudioConfig(BaseModel):
         return PageSource.parse(raw)
 
     def api_prefix(self) -> str:
-        return f"{self.url_prefix}{self.MOUNT}"
+        return f"{self.url_prefix}{StudioPath.API}"
 
     def socket_path(self) -> str:
-        return f"{self.api_prefix()}{self.SOCKET_PATH}"
+        return f"{self.api_prefix()}{StudioPath.SOCKET}"
 
 
 class ProcessLogging:

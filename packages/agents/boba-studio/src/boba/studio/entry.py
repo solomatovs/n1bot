@@ -16,12 +16,23 @@ from fastapi import FastAPI
 
 from boba.chat.profiles import ChatProfiles
 from boba.runtime import providers
-from boba.runtime.config import ConfigLocator, DevPage, RuntimeConfig, StudioConfig
+from boba.runtime.config import (
+    ConfigLocator,
+    DevPage,
+    RuntimeConfig,
+    StudioConfig,
+    StudioPath,
+)
 from boba.runtime.di import Container
 from boba.runtime.plugins import CoreTools
+from boba.runtime.signin import PasswordSignIns
+from boba.runtime.sso import SpnegoGate, SsoSignIn
+from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
-from boba.studio.api.app import ApiApp
-from boba.studio.api.jwt_auth import JwtAuthenticator
+from boba.studio.api.app import ApiAccess, ApiApp
+from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer, SessionCookie
+from boba.studio.api.signin import PageUrls, SignInWiring
+from boba.studio.api.urls import ApiVersion, SignInUrl
 from boba.studio.page import WorkflowDevPage, WorkflowPage
 
 __all__ = ["StudioEntry", "StudioHost"]
@@ -44,12 +55,16 @@ class StudioHost:
         Container.set_root(container)
 
         table = providers.users_table(config)
+        access = ApiAccess(
+            authenticator=JwtAuthenticator(config.studio.auth_secret, lambda: table),
+            cookie=config.studio.cookie,
+            threads=lambda: table,
+        )
         api = ApiApp.build(
             providers.runtime_refs(),
-            JwtAuthenticator(config.studio.auth_secret, lambda: table),
-            lambda: table,
+            access,
             ChatProfiles(config.profiles),
-            config.studio.cookie,
+            cls.signin_of(config, table),
         )
 
         root = FastAPI(lifespan=cls._lifespan, openapi_url=None, docs_url=None)
@@ -58,6 +73,34 @@ class StudioHost:
         root.mount(config.studio.api_prefix(), api)
 
         return root
+
+    @staticmethod
+    def signin_of(config: RuntimeConfig, users: UsersTable) -> SignInWiring:
+        """Пароли и SPNEGO — провайдеры services; SSO на своём URL под api."""
+        studio = config.studio
+        authenticator = JwtAuthenticator(studio.auth_secret, lambda: users)
+        gate = None
+        if kerberos := config.kerberos():
+            gate = SpnegoGate(SsoSignIn(kerberos, studio.auth_secret))
+
+        page_root = f"{studio.url_prefix}{StudioPath.PAGE}"
+
+        return SignInWiring(
+            password=PasswordSignIns.of(config.auth),
+            sso=gate,
+            sso_url=f"{studio.api_prefix()}{ApiVersion.V1}{SignInUrl.SSO}",
+            page=PageUrls(
+                root=page_root,
+                login=f"{page_root}/login",
+                home=f"{page_root}/observe",
+            ),
+            issuer=JwtIssuer(studio.auth_secret, studio.session_ttl_sec),
+            authenticator=authenticator,
+            cookie=SessionCookie(
+                studio.cookie, studio.cookie_samesite, studio.session_ttl_sec
+            ),
+            users=users,
+        )
 
     @staticmethod
     def page_of(studio: StudioConfig) -> WorkflowPage | WorkflowDevPage:
