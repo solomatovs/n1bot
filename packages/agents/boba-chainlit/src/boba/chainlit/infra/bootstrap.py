@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.access import GrantCheck
+from boba.cancellation import StopReason
 from boba.chainlit.auth.installer import ChainlitAuthInstaller
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
@@ -26,6 +27,7 @@ from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContex
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
+from boba.identity.run import RunRegistry
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName, RawConfig
 from boba.runtime.di import Container
@@ -105,6 +107,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        RunRegistry.stop_all(StopReason.SHUTDOWN)
         ZygoteRegistry.stop_all()
         Container.set_session_hook(None)
         Container.set_root(None)
@@ -265,6 +268,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
     container.eager(runtime.workflow_recovery)
+    container.eager(runtime.lock_reaper)
+    container.eager(runtime.command_runner)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.local_chat_runtimes)
     Container.set_root(container)

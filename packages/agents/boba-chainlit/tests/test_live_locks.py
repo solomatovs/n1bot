@@ -1,0 +1,164 @@
+"""Блокировки на Postgres: гонка за область, протухание, heartbeat, fencing шины."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator, Sequence
+from uuid import uuid4
+
+import pytest
+
+from boba.chainlit.infra.config import AppConfig
+from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import Scope
+from boba.identity.locks import (
+    LockBusyError,
+    LockLostError,
+    LockMode,
+    LockPurpose,
+    LockToken,
+    StaleLock,
+)
+from boba.messaging import RunStateChanged
+from boba.runtime.bus import PgMessageBus
+from boba.runtime.config import AppName, ClusterConfig
+from boba.runtime.locks import LockReaper, PgLiveLocks
+
+pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+TTL_SEC = 2
+
+
+def _cluster(app_config: AppConfig) -> ClusterConfig:
+    return app_config.cluster.model_copy(
+        update={"lock_ttl_sec": TTL_SEC, "heartbeat_sec": 1, "reaper_period_sec": 1}
+    )
+
+
+class Stand:
+    """Шина и блокировки одного инстанса над тестовой базой."""
+
+    def __init__(self, bus: PgMessageBus, locks: PgLiveLocks) -> None:
+        self.bus = bus
+        self.locks = locks
+
+
+async def _stand(
+    app_config: AppConfig, test_database: str, pool: AsyncPostgresPool, name: str
+) -> Stand:
+    cfg = app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cluster = _cluster(app_config)
+    bus = PgMessageBus(
+        cfg, app_config.data_layer.db_schema, name, AppName.STUDIO, cluster
+    )
+    bus._pool_ref = pool
+    await bus.setup()
+    await bus.start()
+    locks = PgLiveLocks(cfg, app_config.data_layer.db_schema, name, cluster)
+    locks._pool_ref = pool
+    return Stand(bus, locks)
+
+
+@pytest.fixture
+async def stands(
+    app_config: AppConfig, test_database: str, pool: AsyncPostgresPool
+) -> AsyncIterator[tuple[Stand, Stand]]:
+    first = await _stand(app_config, test_database, pool, "node1-studio")
+    second = await _stand(app_config, test_database, pool, "node2-studio")
+    try:
+        yield first, second
+    finally:
+        await first.bus.stop()
+        await second.bus.stop()
+
+
+async def test_only_one_of_concurrent_holders_gets_the_scope(
+    stands: tuple[Stand, Stand],
+) -> None:
+    first, second = stands
+    scope = Scope.workflow(uuid4())
+
+    results = await asyncio.gather(
+        first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1),
+        second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1),
+        return_exceptions=True,
+    )
+
+    refused = [r for r in results if isinstance(r, LockBusyError)]
+    assert len(refused) == 1
+    assert refused[0].busy.holder in ("node1-studio", "node2-studio")
+    holders = await first.locks.holders_of(scope)
+    assert [h.purpose for h in holders] == [LockPurpose.RUN]
+
+
+async def test_shared_and_exclusive_matrix(stands: tuple[Stand, Stand]) -> None:
+    first, second = stands
+    scope = Scope.chat(str(uuid4()))
+    await first.locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, 1)
+    await second.locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, 2)
+
+    with pytest.raises(LockBusyError):
+        await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+
+    assert len(await first.locks.holders_of(scope)) == 2
+
+
+async def test_stale_lock_expires_by_ttl_and_lost_heartbeat_returns_false(
+    stands: tuple[Stand, Stand],
+) -> None:
+    first, second = stands
+    scope = Scope.chat(str(uuid4()))
+    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+
+    with pytest.raises(LockBusyError):
+        await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 2)
+
+    await asyncio.sleep(TTL_SEC + 0.3)
+
+    taken = await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 2)
+    assert taken.holder == "node2-studio"
+    assert await first.locks.heartbeat(lock.token) is False
+    assert await second.locks.heartbeat(taken.token) is True
+
+
+async def test_publish_is_fenced_by_the_lock_token(stands: tuple[Stand, Stand]) -> None:
+    first, _ = stands
+    run_id = uuid4()
+    scope = Scope.workflow(run_id)
+    changed = RunStateChanged(run_id=run_id, status="running")
+
+    with pytest.raises(LockLostError):
+        await first.bus.publish(scope, changed, LockToken.local())
+
+    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    assert await first.bus.publish(scope, changed, lock.token) == 1
+
+    await first.locks.release(lock.token)
+    with pytest.raises(LockLostError):
+        await first.bus.publish(scope, changed, lock.token)
+
+
+async def test_reaper_removes_stale_locks_and_dead_instances(
+    stands: tuple[Stand, Stand],
+) -> None:
+    first, second = stands
+    scope = Scope.workflow(uuid4())
+    await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    seen: list[StaleLock] = []
+
+    async def on_stale(stale: Sequence[StaleLock]) -> None:
+        seen.extend(stale)
+
+    reaper = LockReaper(first.locks, 1.0, on_stale)
+    assert scope not in [s.scope for s in await reaper.sweep()]
+    seen.clear()
+
+    await asyncio.sleep(TTL_SEC + 0.3)
+    stale = await reaper.sweep()
+
+    ours = [s for s in stale if s.scope == scope]
+    assert len(ours) == 1
+    assert ours[0].holder == "node2-studio"
+    assert ours[0].purpose is LockPurpose.RUN
+    assert ours[0] in seen
+    assert await first.locks.holders_of(scope) == []

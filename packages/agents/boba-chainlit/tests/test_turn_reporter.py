@@ -29,6 +29,7 @@ from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepStatus, StepText
 from boba.identity.context import Scope
 from boba.identity.errors import UserInputError
+from boba.identity.locks import LockMode, LockPurpose, MemoryLiveLocks, RunLocking
 from boba.messaging import (
     AnyMessage,
     LockToken,
@@ -250,6 +251,7 @@ class TestFailedTurnKeepsHistory:
             feed=recorded.feed,
             history=cast(Any, history),
             key=TURN_KEY,
+            locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
         )
 
         # контекст вызова ставится до создания задачи: она копирует его при старте
@@ -323,6 +325,7 @@ class TestPulseOfTheTurn:
             feed=recorded.feed,
             history=cast(Any, RememberedHistory()),
             key=TURN_KEY,
+            locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
         )
 
         with use_context(monkeypatch, thread_id=THREAD).applied():
@@ -347,3 +350,44 @@ class TestPulseOfTheTurn:
 
         if view.pulse_step is not None:
             raise AssertionError("failed turn leaves no pulse")
+
+
+class TestBusyThread:
+    """Занятый тред: ход не начинается, лента получает отказ с именем держателя."""
+
+    async def test_turn_is_refused_while_another_holder_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from boba.chainlit.chat.turn import ChatTurn
+
+        async def silent_stream() -> AsyncIterator[tuple[BaseMessage, dict[str, Any]]]:
+            return
+            yield
+
+        recorded = _turn()
+        locks = MemoryLiveLocks("node2-chainlit", 20)
+        scope = Scope.chat(THREAD)
+        await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+        history = RememberedHistory()
+        turn = ChatTurn(
+            thread_id=THREAD,
+            feed=recorded.feed,
+            history=cast(Any, history),
+            key=TURN_KEY,
+            locking=RunLocking(locks=locks, heartbeat_sec=1.0),
+        )
+
+        with use_context(monkeypatch, thread_id=THREAD).applied():
+            await turn.run(silent_stream())
+
+        errors = [s for s in recorded.steps if s.get(StepField.IS_ERROR)]
+        if len(errors) != 1:
+            raise AssertionError(f"one refusal in the feed: {recorded.steps}")
+        if "node2-chainlit is running a turn" not in str(
+            errors[0].get(StepField.OUTPUT)
+        ):
+            raise AssertionError(errors[0])
+        if history.records != []:
+            raise AssertionError("history.records == []")
+        if recorded.view.pulse_step is not None:
+            raise AssertionError("refused turn leaves no pulse")

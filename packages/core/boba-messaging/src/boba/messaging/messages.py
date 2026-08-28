@@ -53,6 +53,11 @@ __all__ = [
 class MessageKind(StrEnum):
     """Виды сообщений шины; значение хранится в live_events.kind и в теле конверта."""
 
+    @property
+    def requires_lock(self) -> bool:
+        """Публиковать вправе только держатель области: события хода и запуска."""
+        return self in _HOLDER_ONLY
+
     TURN_STARTED = "turn_started"
     MODEL_ANSWERED = "model_answered"
     ANSWER_TOKEN = "answer_token"  # noqa: S105
@@ -76,6 +81,31 @@ class MessageKind(StrEnum):
     SIGNIN_REFRESH_REQUESTED = "signin_refresh_requested"
     NOTICE = "notice"
     LOCK_LOST = "lock_lost"
+
+
+_HOLDER_ONLY: frozenset[MessageKind] = frozenset(
+    {
+        MessageKind.TURN_STARTED,
+        MessageKind.MODEL_ANSWERED,
+        MessageKind.ANSWER_TOKEN,
+        MessageKind.ANSWER_CLOSED,
+        MessageKind.ANSWER_INTERRUPTED,
+        MessageKind.THINKING_TOKEN,
+        MessageKind.THINKING_COMPLETE,
+        MessageKind.THINKING_CLOSED,
+        MessageKind.STAGE_STARTED,
+        MessageKind.STAGE_QUERIES,
+        MessageKind.STAGE_ENDED,
+        MessageKind.TOOL_STARTED,
+        MessageKind.TOOL_FINISHED,
+        MessageKind.TOOL_FAILED,
+        MessageKind.TOOL_STOPPED,
+        MessageKind.TURN_FINISHED,
+        MessageKind.RUN_STATE_CHANGED,
+        MessageKind.RUN_FINISHED,
+        MessageKind.STREAM_APPENDED,
+    }
+)
 
 
 class CommandKind(StrEnum):

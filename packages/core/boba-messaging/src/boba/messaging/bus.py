@@ -3,7 +3,7 @@
 
 Ошибки:
 MessageTooLargeError — тело сообщения больше BusLimit.BODY_MAX_BYTES.
-LockLostError — публикация от имени отобранной блокировки (появится с live_locks).
+LockLostError — публикация от имени отобранной блокировки (boba.identity.locks).
 ListenerFailedError — подписчик не справился с конвертом; остальные подписчики
     конверт получили, ошибка каждого приложена.
 MessageBusError — реализация не смогла сохранить или прочитать сообщение.
@@ -17,11 +17,11 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from enum import IntEnum
 from typing import Protocol, Self
-from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.identity.context import Scope
+from boba.identity.locks import LockLostError, LockToken
 from boba.messaging.messages import AnyCommand, AnyMessage, Message
 
 __all__ = [
@@ -50,10 +50,6 @@ class MessageTooLargeError(MessageBusError):
     """Тело сообщения больше предела одного сообщения шины."""
 
 
-class LockLostError(MessageBusError):
-    """Публикация от имени блокировки, которой держатель больше не владеет."""
-
-
 class ListenerFailedError(MessageBusError):
     """Подписчик не справился с конвертом; конверт при этом дошёл до остальных, а
     ошибки всех упавших подписчиков приложены.
@@ -75,18 +71,6 @@ class BusLimit(IntEnum):
 
     BODY_MAX_BYTES = 7000
     NOTIFY_MAX_BYTES = 8000
-
-
-class LockToken(BaseModel):
-    """Fencing-token держателя области: доказывает publish право писать в область."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    value: UUID
-
-    @classmethod
-    def local(cls) -> LockToken:
-        return cls(value=uuid4())
 
 
 class Envelope(BaseModel):

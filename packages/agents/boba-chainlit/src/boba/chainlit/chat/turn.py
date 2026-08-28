@@ -29,6 +29,13 @@ from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.identity.context import CallContext
 from boba.identity.errors import FailureReport, RefusalError
+from boba.identity.locks import (
+    LockBusyError,
+    LockKeeper,
+    LockMode,
+    LockPurpose,
+    RunLocking,
+)
 from boba.identity.run import ElementTarget, RunPort, RunRefusal, RunRegistry
 from boba.llm.chat import ResponseField
 from boba.messaging import NoticeLevel, TurnOutcome
@@ -327,10 +334,13 @@ class ChatTurn(RunPort):
         feed: TurnFeed,
         history: TurnHistory,
         key: str,
+        locking: RunLocking,
     ) -> None:
         self._thread_id = thread_id
         self._feed = feed
         self._key = key
+        self._locks = locking.locks
+        self._heartbeat_sec = locking.heartbeat_sec
         self._state = TurnState()
         self._answered = False
         self._tracer = AgentTracer(feed, self._state)
@@ -400,17 +410,38 @@ class ChatTurn(RunPort):
         self._state.begin()
         started = time.monotonic()
         logger.info("turn start: thread=%s key=%s", self._thread_id, self._key)
+
+        context = CallContext.current()
         try:
-            await self._run(stream)
-        finally:
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            logger.info(
-                "turn finished: thread=%s outcome=%s in %dms",
-                self._thread_id,
-                self._state.outcome_label,
-                elapsed_ms,
+            lock = await self._locks.acquire(
+                context.scope,
+                LockMode.EXCLUSIVE,
+                LockPurpose.TURN,
+                context.subject.user_id,
             )
-            await self._finish_ui()
+        except LockBusyError as exc:
+            # ход не начат: ленте достаточно уведомления, истории — нечего помнить
+            logger.warning("turn refused: %s", exc)
+            self._state.settle_failed(exc)
+            await self._feed.notice(NoticeLevel.ERROR, str(exc))
+            return
+
+        self._feed.adopt(lock.token)
+        keeper = LockKeeper(
+            self._locks, lock, context.cancellation, self._heartbeat_sec
+        )
+        async with keeper:
+            try:
+                await self._run(stream)
+            finally:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                logger.info(
+                    "turn finished: thread=%s outcome=%s in %dms",
+                    self._thread_id,
+                    self._state.outcome_label,
+                    elapsed_ms,
+                )
+                await self._finish_ui()
 
     async def crash(self, error: BaseException) -> None:
         """Отчёт о сбое вокруг хода — до стрима или после него — теми же тремя

@@ -114,9 +114,12 @@ export function ObservePage(): ReactElement {
       return;
     }
 
-    const stopped = await api.stop(runId);
-    if (!stopped) {
-      setNotice("nothing to stop: the run is not live on this instance");
+    const outcome = await api.stop(runId);
+    if (outcome === "finished") {
+      setNotice("nothing to stop: the run is already finished");
+    }
+    if (outcome === "accepted") {
+      setNotice("stop requested: the run is executed by another instance");
     }
   }, [api, runId]);
 

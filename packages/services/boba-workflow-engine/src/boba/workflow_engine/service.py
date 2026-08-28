@@ -3,6 +3,7 @@
 Ошибки:
 WorkflowError — спека негодна или запрещённые инструменты; workflow не
     найден у владельца; kind из WorkflowRefusal.
+LockBusyError — область запуска занята живым держателем.
 WorkflowStoreError — хранилище недоступно.
 WorkflowRunError — раннер нарушил контракт инструментов.
 """
@@ -20,8 +21,17 @@ from pydantic import BaseModel, ConfigDict
 from boba.cancellation import StopReason
 from boba.identity.context import CallContext, Scope, Subject
 from boba.identity.errors import RefusalError
+from boba.identity.locks import (
+    LiveLock,
+    LiveLocks,
+    LockKeeper,
+    LockMode,
+    LockPurpose,
+    LockToken,
+    RunLocking,
+)
 from boba.identity.run import BackgroundRuns, RunRegistry
-from boba.messaging import LockToken, MessageBus, RunFinished, RunStateChanged
+from boba.messaging import MessageBus, RunFinished, RunStateChanged, StopRequested
 from boba.toolkit.result import ToolResult
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.registry import ToolRegistry
@@ -43,6 +53,7 @@ from boba.workflow_engine.store import WorkflowStore
 __all__ = [
     "RunOutcome",
     "StartedRun",
+    "StopOutcome",
     "WorkflowError",
     "WorkflowRefusal",
     "WorkflowService",
@@ -60,11 +71,18 @@ class WorkflowRefusal(StrEnum):
 
     BAD_SPEC = "bad_workflow_spec"
     NOT_FOUND = "workflow_not_found"
-    OTHER_INSTANCE = "run_on_other_instance"
 
 
 class WorkflowError(RefusalError):
     """Workflow отклонён; текст причины готов для показа модели и странице."""
+
+
+class StopOutcome(StrEnum):
+    """Что случилось по просьбе остановить запуск."""
+
+    STOPPED = "stopped"
+    ACCEPTED = "accepted"
+    FINISHED = "finished"
 
 
 class RunOutcome(BaseModel):
@@ -87,6 +105,7 @@ class StartedRun(BaseModel):
     record: StoredRun
     graph: WorkflowGraph
     invoker: ToolInvoker
+    lock: LiveLock
 
 
 class _StoreSink(RunSink):
@@ -128,12 +147,20 @@ class WorkflowService:
         registry: RegistrySource,
         instance: str,
         bus: MessageBus,
+        locking: RunLocking,
     ) -> None:
         self._store = store
         self._registry = registry
         self._instance = instance
         self._bus = bus
+        self._locks = locking.locks
+        self._heartbeat_sec = locking.heartbeat_sec
         self._background = BackgroundRuns()
+
+    @property
+    def locks(self) -> LiveLocks:
+        """Блокировки областей запусков."""
+        return self._locks
 
     @property
     def bus(self) -> MessageBus:
@@ -228,15 +255,22 @@ class WorkflowService:
         invoker = ToolInvoker(registry.for_headless(subject.roles, subject.profile))
         initial = self.initial_state(graph)
 
-        record = await self._store.start_run(
-            run_id,
-            stored.id,
-            context.subject.user_id,
-            context.initiator.model_dump(mode="json"),
-            context.subject.profile,
-            initial,
-            self._instance,
+        lock = await self._locks.acquire(
+            Scope.workflow(run_id), LockMode.EXCLUSIVE, LockPurpose.RUN, subject.user_id
         )
+        try:
+            record = await self._store.start_run(
+                run_id,
+                stored.id,
+                context.subject.user_id,
+                context.initiator.model_dump(mode="json"),
+                context.subject.profile,
+                initial,
+                self._instance,
+            )
+        except Exception:
+            await self._locks.release(lock.token)
+            raise
         logger.info(
             "workflow %s run %s started by %s (%s)",
             stored.name,
@@ -245,17 +279,21 @@ class WorkflowService:
             context.initiator.kind,
         )
 
-        return StartedRun(record=record, graph=graph, invoker=invoker)
+        return StartedRun(record=record, graph=graph, invoker=invoker, lock=lock)
 
     async def execute(self, context: CallContext, started: StartedRun) -> RunOutcome:
         """Исполнение записанного запуска; Stop вызывающего останавливает и его."""
         run_id = started.record.id
         run_context = context.in_scope(Scope.workflow(run_id))
         runner = WorkflowRunner(started.invoker, WorkflowRunner.utc_now)
-        sink = _StoreSink(self._store, self._bus, run_id, LockToken.local())
+        sink = _StoreSink(self._store, self._bus, run_id, started.lock.token)
+        keeper = LockKeeper(
+            self._locks, started.lock, run_context.cancellation, self._heartbeat_sec
+        )
 
-        with context.cancellation.abort_with(run_context.cancellation.cancel):
-            state, results = await runner.run(started.graph, run_context, sink)
+        async with keeper:
+            with context.cancellation.abort_with(run_context.cancellation.cancel):
+                state, results = await runner.run(started.graph, run_context, sink)
 
         logger.info("workflow run %s finished: %s", run_id, state.status)
         record = await self._store.get_run(context.subject.user_id, run_id)
@@ -270,29 +308,40 @@ class WorkflowService:
 
     ABANDONED: ClassVar[str] = "the process running this workflow was restarted"
 
-    async def stop(self, subject: Subject, run_id: UUID) -> bool:
-        """Останавливает запуск владельца; False — он уже завершён."""
+    async def stop(self, subject: Subject, run_id: UUID) -> StopOutcome:
+        """Останавливает запуск владельца: свой — через реестр или как сироту,
+        чужой живой — командой в шину (ACCEPTED), уже завершённый — FINISHED.
+        """
         try:
             record = await self._store.get_run(subject.user_id, run_id)
         except WorkflowNotFoundError:
-            return False
+            return StopOutcome.FINISHED
 
         if record.state.status.terminal:
-            return False
+            return StopOutcome.FINISHED
 
-        if RunRegistry.stop(str(run_id), StopReason.USER_STOP):
-            return True
+        if record.instance == self._instance:
+            if RunRegistry.stop(str(run_id), StopReason.USER_STOP):
+                return StopOutcome.STOPPED
 
-        if record.instance != self._instance:
-            msg = (
-                f"run {run_id} is executed by {record.instance}, "
-                f"not by {self._instance}: stop it there"
-            )
-            raise WorkflowError(WorkflowRefusal.OTHER_INSTANCE, msg)
+            await self._abandon(record)
+            return StopOutcome.STOPPED
 
-        await self._abandon(record)
+        scope = Scope.workflow(run_id)
+        holders = await self._locks.holders_of(scope)
+        if not holders:
+            await self._abandon(record)
+            return StopOutcome.STOPPED
 
-        return True
+        command = StopRequested(by_user=subject.user_id, by_instance=self._instance)
+        command_id = await self._bus.command(scope, command)
+        logger.info(
+            "workflow run %s: stop requested from %s as command %d",
+            run_id,
+            self._instance,
+            command_id,
+        )
+        return StopOutcome.ACCEPTED
 
     async def recover_orphans(self) -> int:
         """Закрывает как failed запуски этого инстанса, оставшиеся без процесса после
@@ -305,7 +354,31 @@ class WorkflowService:
 
         return len(orphans)
 
+    async def close_unlocked(self) -> int:
+        """Незавершённые запуски без живой блокировки закрываются как failed."""
+        closed = 0
+        for record in await self._store.running():
+            holders = await self._locks.holders_of(Scope.workflow(record.id))
+            if holders:
+                continue
+
+            await self._abandon(record)
+            closed += 1
+            logger.warning("workflow run %s abandoned: no live holder", record.id)
+
+        return closed
+
     async def _abandon(self, record: StoredRun) -> None:
-        state = record.state.abandoned(self.ABANDONED, WorkflowRunner.utc_now())
-        sink = _StoreSink(self._store, self._bus, record.id, LockToken.local())
-        await sink.snapshot(state)
+        """Закрывает запуск под своей блокировкой уборки; снимок публикуется с её
+        token.
+        """
+        scope = Scope.workflow(record.id)
+        lock = await self._locks.acquire(
+            scope, LockMode.EXCLUSIVE, LockPurpose.CLEANUP, record.user_id
+        )
+        try:
+            state = record.state.abandoned(self.ABANDONED, WorkflowRunner.utc_now())
+            sink = _StoreSink(self._store, self._bus, record.id, lock.token)
+            await sink.snapshot(state)
+        finally:
+            await self._locks.release(lock.token)

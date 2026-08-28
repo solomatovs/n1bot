@@ -22,7 +22,8 @@ from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.chainlit.infra.config import AppConfig
 from boba.chat.profiles import ChatProfiles
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.context import CallContext, HumanInitiator, ScopeKind
+from boba.identity.context import CallContext, HumanInitiator, Scope, ScopeKind
+from boba.identity.locks import LockMode, LockPurpose, MemoryLiveLocks
 from boba.runtime.plugins import CallSurface
 from boba.runtime.users import UsersTable
 from boba.studio.api.auth import ApiAuth, TokenReader
@@ -107,7 +108,13 @@ def _calling(probe: Probe, seed: Seed, app_config: AppConfig) -> ToolCalling:
     async def registry() -> ToolRegistry:
         return _registry(probe, app_config)
 
-    return ToolCalling(registry, _profiles(app_config), lambda: seed.layer)
+    return ToolCalling(
+        registry,
+        _profiles(app_config),
+        lambda: seed.layer,
+        lambda: MemoryLiveLocks("test:0", 20),
+        1.0,
+    )
 
 
 def _tester(seed: Seed, app_config: AppConfig) -> PersistedUser:
@@ -302,3 +309,32 @@ class TestAuthenticator:
         stranger = User(identifier="nobody-in-users", metadata={})
         if await authenticator.user_of_token(create_jwt(stranger)) is not None:
             raise AssertionError("a sign-in without a users row must not authenticate")
+
+
+class TestBusyThread:
+    """Вызов инструмента в занятом треде — 409 с именем держателя."""
+
+    async def test_call_is_refused_while_the_thread_is_held(
+        self, seeded: Seed, app_config: AppConfig
+    ) -> None:
+        locks = MemoryLiveLocks("node1-chainlit", 20)
+        probe = Probe()
+
+        async def registry() -> ToolRegistry:
+            return _registry(probe, app_config)
+
+        calling = ToolCalling(
+            registry, _profiles(app_config), lambda: seeded.layer, lambda: locks, 1.0
+        )
+        await locks.acquire(
+            Scope.chat(seeded.thread_id), LockMode.EXCLUSIVE, LockPurpose.TURN, 1
+        )
+        user = ChainlitUsers.of(_tester(seeded, app_config))
+
+        with pytest.raises(HTTPException) as caught:
+            await calling.serve("probe", _body(seeded, app_config), user)
+
+        if caught.value.status_code != 409:
+            raise AssertionError(caught.value.status_code)
+        if "node1-chainlit is running a turn" not in str(caught.value.detail):
+            raise AssertionError(caught.value.detail)

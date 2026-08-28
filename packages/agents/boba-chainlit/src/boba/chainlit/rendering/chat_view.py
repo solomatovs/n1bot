@@ -67,6 +67,8 @@ class StepText(StrEnum):
     """Первая фаза подготовки: поисковых запросов ещё нет."""
     STOPPED = "stopped by the user"
     ABORTED = "stopped"
+    LOCK_LOST = "stopped: the thread was taken over by another process"
+    SHUTDOWN = "stopped: the server is restarting"
     FINISHED = "finished"
     TURN_FAILED = "turn failed"
 
@@ -75,6 +77,13 @@ class StepText(StrEnum):
         """Формулировка остановки: кнопка пользователя или снятая снаружи задача."""
         if reason is StopReason.USER_STOP:
             return cls.STOPPED
+
+        if reason is StopReason.LOCK_LOST:
+            return cls.LOCK_LOST
+
+        if reason is StopReason.SHUTDOWN:
+            return cls.SHUTDOWN
+
         return cls.ABORTED
 
 

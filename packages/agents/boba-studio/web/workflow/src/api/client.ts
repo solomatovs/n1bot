@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { PageUrls } from "../config";
+import type { StopOutcome } from "../model/workflow";
 import {
   DeletedSchema,
   RunStartedSchema,
@@ -243,9 +244,9 @@ export class WorkflowApi {
     );
   }
 
-  async stop(runId: string): Promise<boolean> {
+  async stop(runId: string): Promise<StopOutcome> {
     const reply = await this.call("post", "/v1/workflow-runs/{run_id}/stop", { run_id: runId }, undefined, {}, StoppedSchema);
-    return reply.stopped;
+    return reply.outcome;
   }
 
   /** Ответ, чья zod-модель обязана укладываться в тип ответа по схеме. */

@@ -35,6 +35,8 @@ class StopReason(StrEnum):
     ABORTED = "aborted"
     SUPERSEDED = "superseded"
     FAILED = "failed"
+    LOCK_LOST = "lock_lost"
+    SHUTDOWN = "shutdown"
 
 
 class ToolStopped(BaseException):

@@ -6,6 +6,7 @@
 MessageBusError — база недоступна, строка не сохранена или не прочитана; слушатель
     процесса остановлен сбоем подписчика или негодным уведомлением.
 MessageTooLargeError — тело сообщения больше лимита.
+LockLostError — сообщение держателя публикуется без живой блокировки с этим token.
 ListenerFailedError — подписчик не справился с конвертом; слушатель процесса
     останавливается, и до перезапуска шина отказывает.
 """
@@ -40,6 +41,7 @@ from boba.messaging import (
     Envelope,
     Listener,
     ListenerFailedError,
+    LockLostError,
     LockToken,
     MessageBus,
     MessageBusError,
@@ -53,6 +55,7 @@ from boba.runtime.tables import (
     LiveCommandsColumn,
     LiveEventsColumn,
     LiveInstancesColumn,
+    LiveLocksColumn,
 )
 
 __all__ = ["ListenerState", "LiveListener", "PgMessageBus", "Pointer", "PointerKind"]
@@ -382,21 +385,52 @@ class PgMessageBus(MessageBus):
                     scope_id    uuid not null,
                     action      text not null check (action in ('stop')),
                     body        jsonb not null,
-                    by_instance text not null references {instances} (instance_id),
+                    by_instance text not null,
                     at          timestamptz not null default now(),
-                    taken_by    text references {instances} (instance_id),
+                    taken_by    text,
                     taken_at    timestamptz
                 )
                 """
-            ).format(
-                commands=self._table(ChatTable.LIVE_COMMANDS), instances=instances
-            ),
+            ).format(commands=self._table(ChatTable.LIVE_COMMANDS)),
+            sql.SQL(
+                """
+                alter table {commands}
+                    drop constraint if exists live_commands_by_instance_fkey,
+                    drop constraint if exists live_commands_taken_by_fkey
+                """
+            ).format(commands=self._table(ChatTable.LIVE_COMMANDS)),
             sql.SQL(
                 """
                 create index if not exists idx_live_commands_scope
                 on {commands} (scope_kind, scope_id)
                 """
             ).format(commands=self._table(ChatTable.LIVE_COMMANDS)),
+            sql.SQL(
+                """
+                create unlogged table if not exists {locks} (
+                    scope_kind   text not null
+                        check (scope_kind in ('chat', 'workflow', 'job')),
+                    scope_id     uuid not null,
+                    mode         text not null check (mode in ('exclusive', 'shared')),
+                    holder       text not null
+                        references {instances} (instance_id) on delete cascade,
+                    token        uuid not null,
+                    purpose      text not null
+                        check (purpose in ('turn', 'run', 'tool_call', 'cleanup')),
+                    user_id      integer not null,
+                    acquired_at  timestamptz not null default now(),
+                    heartbeat_at timestamptz not null default now(),
+                    ttl_sec      integer not null check (ttl_sec > 0),
+                    primary key (scope_kind, scope_id, token)
+                )
+                """
+            ).format(locks=self._table(ChatTable.LIVE_LOCKS), instances=instances),
+            sql.SQL(
+                """
+                create index if not exists idx_live_locks_scope
+                on {locks} (scope_kind, scope_id)
+                """
+            ).format(locks=self._table(ChatTable.LIVE_LOCKS)),
         )
 
     async def start(self) -> None:
@@ -430,6 +464,9 @@ class PgMessageBus(MessageBus):
                     {"key": scope.render()},
                     prepare=False,
                 )
+                if message.kind.requires_lock:
+                    await self._fence(conn, scope, scope_id, token)
+
                 cur = await conn.execute(
                     sql.SQL(
                         """
@@ -483,6 +520,43 @@ class PgMessageBus(MessageBus):
             raise MessageBusError(msg) from exc
 
         return seq
+
+    async def _fence(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        scope: Scope,
+        scope_id: UUID,
+        token: LockToken,
+    ) -> None:
+        """Держатель доказывает право писать: его блокировка жива и token совпадает."""
+        cur = await conn.execute(
+            sql.SQL(
+                """
+                select 1 from {locks}
+                 where {scope_kind} = %(scope_kind)s
+                   and {scope_id} = %(scope_id)s
+                   and {token} = %(token)s
+                   and {heartbeat} + make_interval(secs => {ttl}) >= now()
+                """
+            ).format(
+                locks=self._table(ChatTable.LIVE_LOCKS),
+                scope_kind=LiveLocksColumn.SCOPE_KIND.ident(),
+                scope_id=LiveLocksColumn.SCOPE_ID.ident(),
+                token=LiveLocksColumn.TOKEN.ident(),
+                heartbeat=LiveLocksColumn.HEARTBEAT_AT.ident(),
+                ttl=LiveLocksColumn.TTL_SEC.ident(),
+            ),
+            {
+                "scope_kind": scope.kind.value,
+                "scope_id": scope_id,
+                "token": token.value,
+            },
+            prepare=False,
+        )
+        row = await cur.fetchone()
+        if row is None:
+            msg = f"lock of {scope.render()} is lost: publish refused"
+            raise LockLostError(msg)
 
     async def command(self, scope: Scope, command: AnyCommand) -> int:
         self._listener.ensure_alive()

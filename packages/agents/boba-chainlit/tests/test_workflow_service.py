@@ -18,7 +18,9 @@ from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.cancellation import StopReason
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, LlmInitiator, ScopeKind, Subject
+from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
+from boba.runtime.commands import CommandRunner
 from boba.runtime.plugins import CallSurface
 from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
@@ -35,6 +37,7 @@ from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
 from boba.workflow import RunStatus, TaskStatus
 from boba.workflow_engine.service import (
+    StopOutcome,
     WorkflowError,
     WorkflowRefusal,
     WorkflowService,
@@ -136,7 +139,13 @@ def service(store: WorkflowStore, probe: Probe) -> WorkflowService:
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"])
 
-    return WorkflowService(store, registry, "test:0", MemoryMessageBus("test:0"))
+    return WorkflowService(
+        store,
+        registry,
+        "test:0",
+        MemoryMessageBus("test:0"),
+        RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
+    )
 
 
 @pytest.fixture
@@ -211,7 +220,13 @@ class TestSave:
         async def registry() -> ToolRegistry:
             return _registry(probe, ["echo"])
 
-        limited = WorkflowService(store, registry, "test:0", MemoryMessageBus("test:0"))
+        limited = WorkflowService(
+            store,
+            registry,
+            "test:0",
+            MemoryMessageBus("test:0"),
+            RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
+        )
         with pytest.raises(WorkflowError) as caught:
             await limited.save(context.subject, PARALLEL, {})
 
@@ -304,12 +319,27 @@ class TestRun:
         async def registry() -> ToolRegistry:
             return _registry(probe, granted)
 
-        service = WorkflowService(store, registry, "test:0", MemoryMessageBus("test:0"))
+        service = WorkflowService(
+            store,
+            registry,
+            "test:0",
+            MemoryMessageBus("test:0"),
+            RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
+        )
         stored = await service.save(context.subject, VALUES, {})
         granted[:] = ["slow"]
 
         with pytest.raises(WorkflowError):
             await service.run(context, stored, service.new_run_id())
+
+
+def holder_locks(service: WorkflowService) -> MemoryLiveLocks:
+    """Общие блокировки двух сервисов одного теста: чужой видит держателя."""
+    locks = service.locks
+    if not isinstance(locks, MemoryLiveLocks):
+        raise TypeError("test services use MemoryLiveLocks")
+
+    return locks
 
 
 class TestStop:
@@ -334,18 +364,57 @@ class TestStop:
         live = await self._running(service, context.subject)
 
         stranger = context.subject.model_copy(update={"user_id": STRANGER})
-        assert await service.stop(stranger, live.id) is False
-        assert await service.stop(context.subject, live.id) is True
+        assert await service.stop(stranger, live.id) is StopOutcome.FINISHED
+        assert await service.stop(context.subject, live.id) is StopOutcome.STOPPED
 
         outcome = await asyncio.wait_for(running, 5)
         assert outcome.state.status is RunStatus.STOPPED
         assert outcome.state.tasks["wait"].status is TaskStatus.STOPPED
         assert outcome.state.tasks["then"].status is TaskStatus.STOPPED
-        assert await service.stop(context.subject, live.id) is False
+        assert await service.stop(context.subject, live.id) is StopOutcome.FINISHED
 
         run = await service.get_run(context.subject, live.id)
         assert run.status is RunStatus.STOPPED
         assert run.finished_at is not None
+
+    async def test_stop_from_another_instance_goes_through_the_bus(
+        self, store: WorkflowStore, probe: Probe, context: CallContext
+    ) -> None:
+        """Чужой живой запуск: stop даёт ACCEPTED, команда доходит до держателя."""
+
+        async def registry() -> ToolRegistry:
+            return _registry(probe, ["*"])
+
+        bus = MemoryMessageBus("shared")
+        holder = WorkflowService(
+            store,
+            registry,
+            "node1-studio",
+            bus,
+            RunLocking(locks=MemoryLiveLocks("node1-studio", 20), heartbeat_sec=1.0),
+        )
+        other = WorkflowService(
+            store,
+            registry,
+            "node2-studio",
+            bus,
+            RunLocking(locks=holder_locks(holder), heartbeat_sec=1.0),
+        )
+        runner = CommandRunner(bus, "node1-studio")
+        runner.start()
+        try:
+            stored = await holder.save(context.subject, LONG, {})
+            running = asyncio.create_task(
+                holder.run(context, stored, holder.new_run_id())
+            )
+            live = await self._running(holder, context.subject)
+
+            assert await other.stop(context.subject, live.id) is StopOutcome.ACCEPTED
+
+            outcome = await asyncio.wait_for(running, 5)
+            assert outcome.state.status is RunStatus.STOPPED
+        finally:
+            runner.stop()
 
     async def test_stop_of_the_turn_stops_the_run(
         self, service: WorkflowService, context: CallContext
