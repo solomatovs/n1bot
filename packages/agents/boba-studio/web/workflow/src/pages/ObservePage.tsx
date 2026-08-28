@@ -35,6 +35,8 @@ export function ObservePage(): ReactElement {
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const finishedRef = useRef(false);
+  // снимок, пришедший раньше первого GET: сокет общий и уже подключён, гонка обычна
+  const pendingRef = useRef<RunSnapshot | null>(null);
 
   useEffect(() => {
     if (runId === undefined) {
@@ -45,12 +47,20 @@ export function ObservePage(): ReactElement {
     setSelectedTask(null);
     setRun({ kind: "loading" });
     finishedRef.current = false;
+    pendingRef.current = null;
     api.getRun(runId).then(
       (loaded) => {
-        if (alive) {
-          finishedRef.current = runFinished(loaded.status);
-          setRun({ kind: "ready", value: loaded });
+        if (!alive) {
+          return;
         }
+
+        let value = loaded;
+        const pending = pendingRef.current;
+        if (pending !== null && pending.run_id === runId) {
+          value = { ...loaded, status: pending.status, state: pending.state };
+        }
+        finishedRef.current = runFinished(value.status);
+        setRun({ kind: "ready", value });
       },
       (error: unknown) => {
         if (alive) {
@@ -75,6 +85,7 @@ export function ObservePage(): ReactElement {
     const applySnapshot = (snapshot: RunSnapshot): void => {
       setRun((current) => {
         if (current.kind !== "ready") {
+          pendingRef.current = snapshot;
           return current;
         }
 

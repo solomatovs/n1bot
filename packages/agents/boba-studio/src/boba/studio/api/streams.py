@@ -25,14 +25,27 @@ from boba.chat.profiles import ChatProfiles
 from boba.identity.context import Subject
 from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import WorkflowUrl
-from boba.toolkit.channels import JournalChannels, ToolChannel
+from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolrun.streams import ToolStreams
 from boba.workflow.records import WorkflowStoreError
 from boba.workflow_engine.service import WorkflowError, WorkflowService
 
-__all__ = ["StreamApi"]
+__all__ = ["ChannelView", "StreamApi"]
 
 ServiceSource = Callable[[], Awaitable[WorkflowService]]
+
+
+class ChannelView(BaseModel):
+    """Канал журнала: имя для запроса окна и подпись для вкладки."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    label: str
+
+    @classmethod
+    def of(cls, channel: JournalChannel) -> ChannelView:
+        return cls(name=channel.value, label=channel.name.lower())
 
 
 class WindowQuery(BaseModel):
@@ -72,12 +85,16 @@ class StreamApi:
         call_id: str,
         current_user: CurrentUser,
         profile: str | None = None,
-    ) -> Sequence[str]:
+    ) -> Sequence[ChannelView]:
         subject = await self._owner(current_user, profile, run_id)
 
         channels = ToolStreams.recorded_channels(subject.user_key, str(run_id), call_id)
 
-        return [channel.value for channel in channels]
+        views: list[ChannelView] = []
+        for channel in channels:
+            views.append(ChannelView.of(channel))
+
+        return views
 
     async def window(
         self,

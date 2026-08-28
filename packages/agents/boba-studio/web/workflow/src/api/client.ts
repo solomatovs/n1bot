@@ -8,6 +8,7 @@ import {
   StoppedSchema,
   StoredRunSchema,
   StoredWorkflowSchema,
+  ChannelViewSchema,
   StreamSliceSchema,
   ToolCatalogSchema,
   looseViews,
@@ -15,6 +16,7 @@ import {
   type RunState,
   type StoredRun,
   type StoredWorkflow,
+  type ChannelView,
   type StreamSlice,
   type ToolCatalog,
 } from "../model/workflow";
@@ -218,14 +220,14 @@ export class WorkflowApi {
     return StoredRunSchema.parse(withKnownResults(raw));
   }
 
-  streamChannels(runId: string, callId: string): Promise<string[]> {
+  streamChannels(runId: string, callId: string): Promise<ChannelView[]> {
     return this.call(
       "get",
       "/v1/workflow-runs/{run_id}/streams/{call_id}/channels",
       { run_id: runId, call_id: callId },
       undefined,
       undefined,
-      z.array(z.string()),
+      ChannelViewSchema.array(),
     );
   }
 

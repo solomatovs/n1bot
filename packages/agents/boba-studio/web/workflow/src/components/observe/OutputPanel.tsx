@@ -2,7 +2,7 @@ import { type ReactElement, useCallback, useEffect, useRef, useState } from "rea
 
 import { ApiError } from "../../api/client";
 import { useServices } from "../../app";
-import type { StreamSlice } from "../../model/workflow";
+import type { ChannelView, StreamSlice } from "../../model/workflow";
 import { Alert } from "../Alert";
 import { errorText } from "../Async";
 import { Segmented } from "../Segmented";
@@ -19,7 +19,7 @@ const POLL_MS = 1000;
 /** Вывод стадии из журнала: вкладки каналов, текст окнами от начала, живой хвост. */
 export function OutputPanel({ runId, callId, live }: Props): ReactElement | null {
   const { api } = useServices();
-  const [channels, setChannels] = useState<string[]>([]);
+  const [channels, setChannels] = useState<ChannelView[]>([]);
   const [channel, setChannel] = useState("");
   const [text, setText] = useState("");
   const [tail, setTail] = useState<StreamSlice | null>(null);
@@ -34,7 +34,7 @@ export function OutputPanel({ runId, callId, live }: Props): ReactElement | null
         (found) => {
           if (!alive) return;
           setChannels(found);
-          setChannel((current) => (current === "" ? (found[0] ?? "") : current));
+          setChannel((current) => (current === "" ? (found[0]?.name ?? "") : current));
         },
         (failure: unknown) => {
           if (alive && !(failure instanceof ApiError && failure.status === 404)) {
@@ -109,7 +109,7 @@ export function OutputPanel({ runId, callId, live }: Props): ReactElement | null
       <div className="output__head">
         <span className="eyebrow">output</span>
         <Segmented
-          options={channels.map((name) => ({ value: name, label: name }))}
+          options={channels.map((view) => ({ value: view.name, label: view.label }))}
           value={channel}
           onChange={setChannel}
           label="output channel"
