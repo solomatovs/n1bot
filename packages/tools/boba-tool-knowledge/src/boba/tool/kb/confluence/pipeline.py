@@ -23,6 +23,10 @@ ingest подключает ConfluenceContentTransport напрямую в Pipel
 (декодинг уже выполнен внутри transport'а; reader должен быть
 DispatchReader, потому что поток смешанный: HTML + произвольные
 attachment-media-types).
+
+Ошибки:
+TransportError — Confluence недоступен, ответил статусом или оборвал тело;
+    ошибки httpx наружу не выходят.
 """
 
 from __future__ import annotations
@@ -32,12 +36,16 @@ from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import replace
 
+import httpx
+
 from boba.indexing import (
+    AsyncBinaryStream,
     Metadata,
     RawDocument,
     RequestSource,
     SourceId,
     Transport,
+    TransportError,
     TransportKeys,
 )
 from boba.tool.kb.confluence.connection import ConfluenceConnection
@@ -65,6 +73,33 @@ logger = logging.getLogger(__name__)
 __all__ = ["ConfluenceContentTransport", "ConfluenceHttpTransport"]
 
 
+class GuardedStream(AsyncBinaryStream):
+    """Тело ответа под контрактом слоя: httpx-обрыв уходит наверх TransportError."""
+
+    def __init__(self, inner: AsyncBinaryStream, source_id: SourceId) -> None:
+        self._inner = inner
+        self._source_id = source_id
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._chunks()
+
+    async def _chunks(self) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in self._inner:
+                yield chunk
+        except httpx.HTTPError as exc:
+            raise self._failed(exc) from exc
+
+    async def read(self) -> bytes:
+        try:
+            return await self._inner.read()
+        except httpx.HTTPError as exc:
+            raise self._failed(exc) from exc
+
+    def _failed(self, exc: httpx.HTTPError) -> TransportError:
+        return TransportError(f"body read failed: {self._source_id}: {exc}")
+
+
 class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
     """ConfluenceRequest -> RawDocument: чистый HTTP + обогащение metadata.
 
@@ -86,12 +121,16 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
         return SourceId(resolved.split("?", 1)[0])
 
     async def fetch(self, request: ConfluenceRequest) -> AsyncIterator[RawDocument]:
-        async with self._http.fetch(request.http) as resp:
-            yield RawDocument(
-                handle=resp.stream,
-                source_id=self.source_id(request),
-                metadata=self._enrich(request.metadata, resp),
-            )
+        source_id = self.source_id(request)
+        try:
+            async with self._http.fetch(request.http) as resp:
+                yield RawDocument(
+                    handle=GuardedStream(resp.stream, source_id),
+                    source_id=source_id,
+                    metadata=self._enrich(request.metadata, resp),
+                )
+        except httpx.HTTPError as exc:
+            raise TransportError(f"fetch failed: {source_id}: {exc}") from exc
 
     @staticmethod
     def _enrich(base: Metadata, resp: HttpResponse) -> Metadata:
@@ -112,7 +151,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
     разворачивающий 1 page-request -> page + N attachments
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — обход, наблюдение и режим отказов независимы
         self,
         *,
         inner: Transport[ConfluenceRequest],
@@ -120,12 +159,14 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         base_url: str,
         progress: IngestProgress,
         gate: AttachmentGate,
+        skip_failed: bool,
     ) -> None:
         self._inner = inner
         self._decoder = ConfluenceJsonDecoder(body_format=body_format)
         self._base_url = base_url
         self._gate = gate
         self._progress = progress
+        self._skip_failed = skip_failed
 
     async def close(self) -> None:
         await self._inner.close()
@@ -161,6 +202,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
                 transport=self._inner,
                 gate=self._gate,
                 progress=self._progress,
+                skip_failed=self._skip_failed,
             )
             async for attachment in attachments:
                 yield attachment
@@ -171,13 +213,14 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         return replace(raw, handle=LoggingStream(raw.handle, logger, label))
 
     @staticmethod
-    async def _iter_attachments(
+    async def _iter_attachments(  # noqa: PLR0913 — обход и наблюдение независимы
         *,
         parent: RawDocument,
         base_url: str,
         transport: Transport[ConfluenceRequest],
         progress: IngestProgress,
         gate: AttachmentGate,
+        skip_failed: bool,
     ) -> AsyncIterator[RawDocument]:
         attachments = parent.metadata.get(ConfluenceKeys.ATTACHMENTS)
         if not attachments:
@@ -215,10 +258,23 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
                 att.file_size,
             )
             elapsed = Elapsed()
-            async for raw in transport.fetch(req):
-                yield ConfluenceContentTransport._watched(
-                    raw, f"attachment {att.title}"
+            try:
+                async for raw in transport.fetch(req):
+                    yield ConfluenceContentTransport._watched(
+                        raw, f"attachment {att.title}"
+                    )
+            except TransportError as exc:
+                if not skip_failed:
+                    raise
+
+                progress.attachment_failed()
+                logger.warning(
+                    "attachment failed, skipped: id=%s title=%r: %s",
+                    att.id,
+                    att.title,
+                    exc,
                 )
+                continue
 
             logger.info("fetch attachment done: %s in %dms", att.title, elapsed.ms())
             progress.attachment_done()
@@ -239,6 +295,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         *,
         progress: IngestProgress,
         gate: AttachmentGate,
+        skip_failed: bool,
     ) -> ConfluenceContentTransport:
         return cls(
             inner=ConfluenceHttpTransport(CancellableHttpTransport(conn.profile)),
@@ -246,6 +303,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
             base_url=conn.base_url,
             progress=progress,
             gate=gate,
+            skip_failed=skip_failed,
         )
 
     @classmethod
@@ -256,8 +314,14 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         conn: ConfluenceConnection,
         progress: IngestProgress,
         gate: AttachmentGate,
+        skip_failed: bool,
     ) -> AsyncIterator[RawDocument]:
-        transport = cls.from_connection(conn, progress=progress, gate=gate)
+        transport = cls.from_connection(
+            conn,
+            progress=progress,
+            gate=gate,
+            skip_failed=skip_failed,
+        )
         try:
             async for request in request_source.requests():
                 async for raw in transport.fetch(request):
