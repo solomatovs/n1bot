@@ -84,8 +84,12 @@ def test_gear_opens_account_and_own_connection_round_trips(
 
     page.locator(Selector.NEW_CONNECTION).click()
     page.get_by_label("connection name").fill("ui-own")
-    page.get_by_label("connection kind").select_option("web")
-    page.get_by_label("connection base url").fill("https://own.test")
+    page.get_by_label("profile.kind", exact=True).select_option("web")
+    page.get_by_label("profile.base_url", exact=True).fill("https://own.test")
+    # вложенный блок auth: вариант по method и его поля
+    page.get_by_label("profile.auth.method", exact=True).select_option("basic")
+    page.get_by_label("profile.auth.user", exact=True).fill("reader")
+    page.get_by_label("profile.auth.password", exact=True).fill("secret")
     page.get_by_role("button", name="Save", exact=True).click()
 
     # после сохранения список перечитывается, форма открывается на новой строке
@@ -93,6 +97,18 @@ def test_gear_opens_account_and_own_connection_round_trips(
     expect(own).to_have_count(1)
     expect(own).to_have_class(re.compile(r"item--on"))
     expect(page.get_by_label("connection name")).to_have_value("ui-own")
+
+    # правка своего: другой kind перестраивает форму по схеме, PUT заменяет профиль
+    page.get_by_label("profile.kind", exact=True).select_option("postgres")
+    page.get_by_label("profile.host", exact=True).fill("db.test")
+    page.get_by_label("profile.auth.method", exact=True).select_option("trust")
+    page.get_by_label("profile.auth.user", exact=True).fill("reader")
+    # dbname обязателен валидатором модели, не схемой: сервер отвечает 422 текстом
+    page.get_by_role("button", name="Save", exact=True).click()
+    expect(page.locator('[data-notice="connection"]')).to_contain_text("dbname")
+    page.get_by_label("profile.dbname", exact=True).fill("boba")
+    page.get_by_role("button", name="Save", exact=True).click()
+    expect(own.locator(".item__meta")).to_have_text("postgres")
 
     page.get_by_role("button", name="Delete", exact=True).click()
 

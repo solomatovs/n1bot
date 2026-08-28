@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { useServices } from "../app";
 import { RunSocket } from "../api/socket";
+import { Alert } from "../components/Alert";
 import { errorText, type Loadable } from "../components/Async";
 import { RunGraph } from "../components/graph/RunGraph";
 import { Inspector } from "../components/observe/Inspector";
@@ -153,7 +154,9 @@ export function ObservePage(): ReactElement {
     return (
       <main className="stage">
         <div className="empty" style={{ gridRow: "1 / -1" }}>
-          <span className="notice notice--error">{run.message}</span>
+          <Alert tone="error" title="Run failed">
+            {run.message}
+          </Alert>
         </div>
       </main>
     );

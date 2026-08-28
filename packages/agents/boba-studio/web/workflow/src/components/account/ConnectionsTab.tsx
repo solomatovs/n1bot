@@ -5,6 +5,7 @@ import { useServices } from "../../app";
 import { Async } from "../Async";
 import { useLoadable } from "../../hooks/useLoadable";
 import type { ConnectionView } from "../../model/account";
+import { SchemaDoc, parseSchema } from "../../model/schema";
 import { ConnectionForm } from "./ConnectionForm";
 
 type Pick = { kind: "none" } | { kind: "new" } | { kind: "row"; id: number };
@@ -12,10 +13,15 @@ type Pick = { kind: "none" } | { kind: "new" } | { kind: "row"; id: number };
 /** Вкладка соединений: свои — правятся, общие (по роли) — только просмотр. */
 export function ConnectionsTab(): ReactElement {
   const { api } = useServices();
-  const [rows, reload] = useLoadable(useCallback(() => api.connections(), [api]));
+  const [rows, reload] = useLoadable(
+    useCallback(async () => {
+      const [schema, list] = await Promise.all([api.connectionSchema(), api.connections()]);
+      return { doc: new SchemaDoc(parseSchema(schema)), list };
+    }, [api]),
+  );
   const [pick, setPick] = useState<Pick>({ kind: "none" });
 
-  const renderRows = (loaded: ConnectionView[]): ReactElement => {
+  const renderRows = ({ doc, list: loaded }: { doc: SchemaDoc; list: ConnectionView[] }): ReactElement => {
     const mine = loaded.filter((row) => row.mine);
     const shared = loaded.filter((row) => !row.mine);
     const current = pick.kind === "row" ? (loaded.find((row) => row.id === pick.id) ?? null) : null;
@@ -61,6 +67,7 @@ export function ConnectionsTab(): ReactElement {
           {pick.kind === "new" && (
             <ConnectionForm
               key="new"
+              doc={doc}
               row={null}
               onSaved={(saved) => {
                 reload();
@@ -75,6 +82,7 @@ export function ConnectionsTab(): ReactElement {
           {pick.kind === "row" && current !== null && (
             <ConnectionForm
               key={current.id}
+              doc={doc}
               row={current}
               onSaved={() => {
                 reload();
