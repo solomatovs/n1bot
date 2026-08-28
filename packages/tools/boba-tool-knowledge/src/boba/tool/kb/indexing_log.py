@@ -161,6 +161,10 @@ class IngestProgress:
     def attachment_done(self) -> None:
         self._attachments.complete()
 
+    def attachment_failed(self) -> None:
+        self._attachments.complete()
+        self._failed += 1
+
     def chunks_made(self, count: int) -> None:
         self._chunks += count
 

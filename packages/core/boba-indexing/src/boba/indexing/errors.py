@@ -5,6 +5,7 @@ from __future__ import annotations
 __all__ = [
     "IncompatibleContentError",
     "IndexingError",
+    "TransportError",
 ]
 
 
@@ -27,3 +28,11 @@ class IncompatibleContentError(IndexingError):
         self.reader_id = reader_id
         self.canonical_id = canonical_id
         self.reason = reason
+
+
+class TransportError(IndexingError):
+    """Transport не смог забрать источник: сеть, статус ответа, обрыв тела.
+
+    Transient по природе: pipeline изолирует источник и идёт к следующему,
+    если прогон запущен со skip_failed.
+    """

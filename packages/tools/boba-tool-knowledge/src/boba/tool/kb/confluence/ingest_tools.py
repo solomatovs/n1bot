@@ -5,11 +5,13 @@
 
 Ошибки:
 PostgresError — до хранилища не достучаться.
-httpx.HTTPError — Confluence недоступен или ответил статусом.
+httpx.HTTPError — Confluence недоступен или ответил статусом (чтение вложения).
+TransportError — страницу забрать не удалось, а прогон запущен со skip_failed=false.
 AttachmentNotFoundError — вложения с таким именем на странице нет.
 LiteParseError — вложение скачалось, но не разбирается.
 EmbeddingError — удалённый эмбеддер недоступен или ответил мусором.
-Сбой разбора отдельного документа ingest переживает сам, наружу не выходит.
+Сбой разбора отдельного документа ingest переживает сам, наружу не выходит;
+сорвавшаяся страница при skip_failed=true уходит в счётчик failed.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from boba.indexing import (
     RequestSource,
     Section,
     SectionKeys,
+    TransportError,
 )
 from boba.llm.embedding import EmbeddingConfig, EmbeddingError
 from boba.text.document import LiteParseError, LiteParseParams
@@ -75,6 +78,13 @@ _OCR_DESCRIPTION = (
 _WORKERS_DESCRIPTION = (
     "Параллелизм OCR, 1..4; ~50-100 MiB памяти на воркер. "
     "При ocr_enabled=false не влияет."
+)
+_SKIP_FAILED_DESCRIPTION = (
+    "Что делать со страницей, которую Confluence не отдал (5xx, обрыв "
+    "соединения, битое вложение): true — пропустить её, посчитать в `failed` "
+    "и индексировать дальше; false — оборвать весь прогон на первой такой "
+    "странице. Пропускается только сама сорвавшаяся страница, остальные "
+    "индексируются как обычно."
 )
 _LANGUAGE_DESCRIPTION = (
     "Язык OCR в формате Tesseract: 'rus+eng' для русских документов, "
@@ -206,6 +216,7 @@ class IngestRun:
         attachments: str,
         prune_missing: bool,
         force_update: bool,
+        skip_failed: bool,
     ) -> dict[str, Any]:
         stats = await ConfluenceIngest.ingest(
             cfg,
@@ -215,6 +226,7 @@ class IngestRun:
             attachments=attachments,
             progress=progress,
             routes=cls.routes(cfg),
+            skip_failed=skip_failed,
         )
         progress.say()
         return stats
@@ -262,6 +274,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
     ocr_language: Annotated[
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
+    skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
@@ -286,6 +299,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
         attachments=attachments,
         prune_missing=prune_missing,
         force_update=force_update,
+        skip_failed=skip_failed,
     )
 
     note = f"page_ids ({len(page_ids)}): {', '.join(page_ids)}"
@@ -316,6 +330,7 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
     ocr_language: Annotated[
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
+    skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
@@ -340,6 +355,7 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
         attachments=attachments,
         prune_missing=prune_missing,
         force_update=False,
+        skip_failed=skip_failed,
     )
 
     table = TableResult(rows=[stats])
@@ -371,6 +387,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
     ocr_language: Annotated[
         str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
     ] = "rus+eng",
+    skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
@@ -395,6 +412,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
         attachments=attachments,
         prune_missing=prune_missing,
         force_update=force_update,
+        skip_failed=skip_failed,
     )
 
     note = f"space_keys ({len(space_keys)}): {', '.join(space_keys)}"
@@ -472,6 +490,7 @@ def _attachment_link(data: dict[str, Any], filename: str) -> str:
 EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
     PostgresError: IngestErrorKind.DATABASE_UNAVAILABLE,
     httpx.HTTPError: IngestErrorKind.REQUEST_FAILED,
+    TransportError: IngestErrorKind.REQUEST_FAILED,
     AttachmentNotFoundError: IngestErrorKind.ATTACHMENT_NOT_FOUND,
     LiteParseError: IngestErrorKind.DOCUMENT_UNREADABLE,
     EmbeddingError: IngestErrorKind.EMBEDDING_FAILED,
