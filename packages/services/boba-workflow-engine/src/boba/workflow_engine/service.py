@@ -25,6 +25,7 @@ from boba.identity.locks import (
     LiveLock,
     LiveLocks,
     LockKeeper,
+    LockLostError,
     LockMode,
     LockPurpose,
     LockToken,
@@ -114,15 +115,26 @@ class _StoreSink(RunSink):
     """
 
     def __init__(
-        self, store: WorkflowStore, bus: MessageBus, run_id: UUID, token: LockToken
+        self,
+        store: WorkflowStore,
+        bus: MessageBus,
+        locks: LiveLocks,
+        run_id: UUID,
+        token: LockToken,
     ) -> None:
         self._store = store
         self._bus = bus
+        self._locks = locks
         self._run_id = run_id
         self._token = token
         self._scope = Scope.workflow(run_id)
 
     async def snapshot(self, state: RunState) -> None:
+        # снимок пишет только живой держатель: зомби не перезапишет чужую работу
+        if not await self._locks.heartbeat(self._token):
+            msg = f"lock of {self._scope.render()} is lost: snapshot refused"
+            raise LockLostError(msg)
+
         await self._store.update_run(self._run_id, state)
 
         status = state.status.value
@@ -286,7 +298,9 @@ class WorkflowService:
         run_id = started.record.id
         run_context = context.in_scope(Scope.workflow(run_id))
         runner = WorkflowRunner(started.invoker, WorkflowRunner.utc_now)
-        sink = _StoreSink(self._store, self._bus, run_id, started.lock.token)
+        sink = _StoreSink(
+            self._store, self._bus, self._locks, run_id, started.lock.token
+        )
         keeper = LockKeeper(
             self._locks, started.lock, run_context.cancellation, self._heartbeat_sec
         )
@@ -378,7 +392,9 @@ class WorkflowService:
         )
         try:
             state = record.state.abandoned(self.ABANDONED, WorkflowRunner.utc_now())
-            sink = _StoreSink(self._store, self._bus, record.id, lock.token)
+            sink = _StoreSink(
+                self._store, self._bus, self._locks, record.id, lock.token
+            )
             await sink.snapshot(state)
         finally:
             await self._locks.release(lock.token)

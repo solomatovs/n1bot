@@ -23,6 +23,7 @@ from typing import Any, ClassVar
 
 import httpx
 import pytest
+from playwright.sync_api import Browser, expect
 
 from boba.canvas.diagram import DiagramPrompt
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
@@ -45,7 +46,7 @@ from boba.toolkit.result import (
 )
 from boba.transport.http import HttpxAuth
 from ui.chat_page import ChatPage, StepKind
-from ui.conftest import ChatOpener, StandDatabase
+from ui.conftest import ChatOpener, StandDatabase, login_cookies
 from ui.fake_llm import FakePage, FakeRoute, ScenarioName
 from ui.socket_log import StepField
 from ui.stand import (
@@ -56,6 +57,8 @@ from ui.stand import (
     StandUrl,
     free_port,
 )
+from ui.test_workflow_page_ui import PAGE_TIMEOUT_MS
+from ui.test_workflow_page_ui import Selector as PageSelector
 
 pytestmark = pytest.mark.ui
 
@@ -1615,6 +1618,29 @@ class TestWorkflowTools:
             dom=["first: done", "second: done", "UI_FLOW_TWO"],
         )
         module_feed.call(call, expect, timeout_sec=TURN_TIMEOUT_SEC * 2)
+
+    def test_run_from_chat_is_visible_on_the_studio_page(
+        self, module_feed: ToolFeed, browser: Browser
+    ) -> None:
+        """Запуск вёл процесс chainlit; страница studio — другой процесс — видит его
+        в списке и показывает итоговый статус по снимку из базы."""
+        stand = module_feed.stand
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        context.add_cookies(login_cookies(stand))
+        page = context.new_page()
+        page.set_default_timeout(PAGE_TIMEOUT_MS)
+        try:
+            page.goto(
+                f"{stand.config.base_url}/workflow/observe",
+                wait_until="domcontentloaded",
+            )
+            runs = page.locator(PageSelector.LIST_ITEM, has_text="ui-flow")
+            expect(runs.first).to_be_visible()
+            runs.first.click()
+            expect(page.locator(PageSelector.RUN_STATUS)).to_have_text("done")
+            expect(page.locator(PageSelector.TASK_NODE)).to_have_count(2)
+        finally:
+            context.close()
 
 
 class TestCoverage:
