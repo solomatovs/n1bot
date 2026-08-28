@@ -2,6 +2,11 @@
 Pipeline — сборка стадий source -> transport -> reader с двумя терминалами:
 sections() и index()
 
+Отказ источника изолируется, когда прогон запущен со skip_failed: любая ошибка
+стадий этого источника становится событием SourceFailed с причиной и попадает в
+счётчик sources_failed, остальные источники идут дальше. Без skip_failed ошибка
+уходит наверх как есть и обрывает прогон.
+
 Источники обходятся параллельно: в полёте не больше config.workers штук.
 Стадии соединены async-потоками, поэтому ожидание сети и записи одного
 источника перекрывается работой остальных. Синхронную часть (разбор документа,
@@ -60,8 +65,8 @@ class IndexerConfig(Generic[T]):
     force_update: bool = False
 
     skip_failed: bool = True
-    """Сорвавшийся источник даёт SourceFailed и прогон идёт дальше;
-    False — первая же ошибка роняет прогон"""
+    """Источник, сорвавшийся по любой причине, даёт SourceFailed и прогон идёт
+    дальше; False — первая же ошибка роняет прогон"""
 
     def __post_init__(self) -> None:
         if self.workers < 1:
@@ -227,7 +232,7 @@ class Pipeline(Generic[ReqT, T]):
                 time_at_least=run_start,
                 force=config.force_update,
             )
-        except IndexingError as e:
+        except Exception as exc:
             if not config.skip_failed:
                 raise
 
@@ -235,7 +240,7 @@ class Pipeline(Generic[ReqT, T]):
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),
                 source_id=source_id,
-                reason=str(e),
+                reason=Pipeline._reason(exc),
             )
 
         if summary.upserted == 0:
@@ -254,6 +259,14 @@ class Pipeline(Generic[ReqT, T]):
             chunks_upserted=summary.upserted,
             chunks_skipped=summary.unchanged,
         )
+
+    @staticmethod
+    def _reason(exc: Exception) -> str:
+        """Причина отказа источника; чужой тип называет себя сам."""
+        if isinstance(exc, IndexingError):
+            return str(exc)
+
+        return f"{type(exc).__name__}: {exc}"
 
     async def _sections_of(self, request: ReqT) -> AsyncIterator[Section[T]]:
         """transport -> reader для одного request'а; секции по одной."""
