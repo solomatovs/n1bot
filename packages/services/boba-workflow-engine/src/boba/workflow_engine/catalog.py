@@ -12,17 +12,15 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Iterable, Iterator
-from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin
+from typing import Annotated, Any, get_args, get_origin
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from boba.toolkit.calls import ArgViews, ToolCallViews
 from boba.toolkit.result import Produces
+from boba.toolrun.registry import ToolRegistry
 from boba.workflow import ToolArg, ToolCatalog, ToolFacts
-
-if TYPE_CHECKING:
-    from boba.toolrun.registry import ToolRegistry
 
 __all__ = ["CatalogBuilder"]
 

@@ -1855,3 +1855,33 @@ button {
   max-height: 320px;
   overflow: auto;
 }
+
+/* лампочка связи: цвет по состоянию сокета, подробность в title */
+.lamp {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: var(--muted);
+}
+
+.lamp--connected {
+  background: var(--status-done, var(--signal));
+  box-shadow: 0 0 6px var(--status-done, var(--signal));
+}
+
+.lamp--connecting {
+  background: var(--status-running, var(--signal));
+  animation: lamp-pulse 1s ease-in-out infinite;
+}
+
+.lamp--disconnected {
+  background: var(--error);
+}
+
+@keyframes lamp-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}

@@ -194,3 +194,62 @@ async def test_disconnect_drops_listeners(
     assert service.events.listeners_of(run_id) == 0
 
     await asyncio.wait_for(running, 10)
+
+
+async def test_websocket_handshake_accepts_the_browser_origin_behind_a_proxy(
+    service: WorkflowService, app_config: AppConfig, user: PersistedUser
+) -> None:
+    """Браузер шлёт Origin своего хоста; за прокси хост приходит в X-Forwarded-*."""
+    import socket
+    import threading
+
+    import uvicorn
+    from fastapi import FastAPI
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidStatus
+    from websockets.typing import Origin
+
+    from boba.studio.api.workflow_socket import WorkflowSocket
+
+    async def source() -> WorkflowService:
+        return service
+
+    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
+        return ChainlitUsers.of(user)
+
+    namespace = WorkflowNamespace(source, _profiles(app_config), authenticate)
+    app = FastAPI()
+    app.mount("/socket.io", WorkflowSocket.build(namespace))
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            await asyncio.sleep(0.05)
+
+        url = f"ws://127.0.0.1:{port}/socket.io/?EIO=4&transport=websocket"
+        forwarded = [
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-host", "loshara.com"),
+        ]
+        async with connect(
+            url, origin=Origin("https://loshara.com"), additional_headers=forwarded
+        ) as ws:
+            opened = await asyncio.wait_for(ws.recv(), 5)
+            assert str(opened).startswith("0{")
+
+        with pytest.raises(InvalidStatus, match="403"):
+            async with connect(url, origin=Origin("https://evil.test")):
+                pass
+    finally:
+        server.should_exit = True
+        thread.join(10)

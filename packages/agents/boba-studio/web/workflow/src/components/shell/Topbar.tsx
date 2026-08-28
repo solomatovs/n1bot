@@ -4,6 +4,7 @@ import { NavLink } from "react-router-dom";
 
 import type { StoredRun, StoredWorkflow } from "../../model/workflow";
 import { ThemeToggle } from "../ThemeToggle";
+import { SocketLamp } from "./SocketLamp";
 import type { Mode } from "./Shell";
 
 type Props = {
@@ -68,6 +69,7 @@ export function Topbar({ mode, run, workflow, listOpen, onToggleList }: Props): 
           Build
         </NavLink>
       </div>
+      <SocketLamp />
       <ThemeToggle />
       <NavLink to="/account" className="icon-btn" aria-label="Account" title="Account">
         <Settings size={16} />

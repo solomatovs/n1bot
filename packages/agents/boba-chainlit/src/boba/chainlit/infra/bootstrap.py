@@ -263,6 +263,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
+    container.eager(runtime.workflow_recovery)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.local_chat_runtimes)
     Container.set_root(container)

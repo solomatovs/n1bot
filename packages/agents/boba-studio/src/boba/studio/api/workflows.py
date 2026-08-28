@@ -9,6 +9,7 @@
 403 — профиль недоступен ролям пользователя.
 400 — спека негодна или содержит недоступные инструменты.
 404 — workflow или запуск не пользователя.
+409 — запуск исполняет другой инстанс: остановить можно только там.
 503 — хранилище workflow недоступно.
 """
 
@@ -218,5 +219,8 @@ class WorkflowApi:
     def _http(exc: WorkflowError) -> HTTPException:
         if exc.kind == WorkflowRefusal.NOT_FOUND:
             return HTTPException(status_code=404, detail=str(exc))
+
+        if exc.kind == WorkflowRefusal.OTHER_INSTANCE:
+            return HTTPException(status_code=409, detail=str(exc))
 
         return HTTPException(status_code=400, detail=str(exc))

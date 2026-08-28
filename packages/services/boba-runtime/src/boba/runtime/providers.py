@@ -6,6 +6,7 @@
 RuntimeError — контейнер не поднят, секция выключена или процесс не дал значение.
 """
 
+import logging
 import socket
 from typing import Annotated
 
@@ -30,6 +31,8 @@ from boba.toolrun.streams import ToolStreams
 from boba.workflow.events import RunEvents
 from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
+
+logger = logging.getLogger(__name__)
 
 
 class NoRefresh(RefreshSignal):
@@ -166,6 +169,18 @@ def workflow_service(
         return None
 
     return WorkflowService(store, tool_registry_ref, instance, RunEvents())
+
+
+async def workflow_recovery(
+    service: Annotated[WorkflowService | None, Depends(workflow_service)],
+) -> None:
+    """Запуски этого инстанса без процесса закрываются на старте, а не висят running."""
+    if service is None:
+        return
+
+    recovered = await service.recover_orphans()
+    if recovered:
+        logger.warning("workflow: %d abandoned run(s) closed on startup", recovered)
 
 
 async def connection_store(

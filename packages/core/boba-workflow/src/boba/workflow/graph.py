@@ -728,6 +728,28 @@ class RunState(BaseModel):
     def ok(self) -> bool:
         return self.status is RunStatus.DONE
 
+    def abandoned(self, note: str, at: datetime) -> RunState:
+        """Снимок запуска без процесса: идущее — failed с причиной, ждущее — skipped."""
+        tasks: dict[str, TaskState] = {}
+        for name, task in self.tasks.items():
+            tasks[name] = task
+            if task.status is TaskStatus.RUNNING:
+                tasks[name] = task.model_copy(
+                    update={
+                        "status": TaskStatus.FAILED,
+                        "finished_at": at,
+                        "error": note,
+                    }
+                )
+                continue
+
+            if task.status is TaskStatus.PENDING:
+                tasks[name] = task.model_copy(
+                    update={"status": TaskStatus.SKIPPED, "finished_at": at}
+                )
+
+        return self.model_copy(update={"status": RunStatus.FAILED, "tasks": tasks})
+
 
 class WorkflowPlanError(Exception):
     """Раннер нарушил протокол автомата."""

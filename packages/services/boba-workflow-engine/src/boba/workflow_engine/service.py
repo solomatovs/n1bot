@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict
@@ -28,6 +28,7 @@ from boba.identity.errors import RefusalError
 from boba.identity.run import BackgroundRuns, RunRegistry
 from boba.toolkit.result import ToolResult
 from boba.toolrun.invoke import ToolInvoker
+from boba.toolrun.registry import ToolRegistry
 from boba.workflow import (
     RunState,
     ToolCatalog,
@@ -42,9 +43,6 @@ from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowNotFoundErr
 from boba.workflow_engine.catalog import CatalogBuilder
 from boba.workflow_engine.runner import WorkflowRunner
 from boba.workflow_engine.store import WorkflowStore
-
-if TYPE_CHECKING:
-    from boba.toolrun.registry import ToolRegistry
 
 __all__ = [
     "RunOutcome",
@@ -64,6 +62,7 @@ class WorkflowRefusal(StrEnum):
 
     BAD_SPEC = "bad_workflow_spec"
     NOT_FOUND = "workflow_not_found"
+    OTHER_INSTANCE = "run_on_other_instance"
 
 
 class WorkflowError(RefusalError):
@@ -246,11 +245,46 @@ class WorkflowService:
         name = f"workflow-run:{started.record.id}"
         self._background.launch(name, self.execute(context, started))
 
+    ABANDONED: ClassVar[str] = "the process running this workflow was restarted"
+
     async def stop(self, subject: Subject, run_id: UUID) -> bool:
-        """Останавливает живой запуск владельца на этом инстансе; False — нечего."""
+        """Останавливает запуск владельца; False — он уже завершён.
+
+        Живой запуск этого инстанса гасится через реестр; запуск этого инстанса,
+        которого в реестре нет, осиротел после перезапуска — закрывается как
+        failed; запуск другого инстанса отсюда не остановить — WorkflowError.
+        """
         try:
-            await self._store.get_run(subject.user_id, run_id)
+            record = await self._store.get_run(subject.user_id, run_id)
         except WorkflowNotFoundError:
             return False
 
-        return RunRegistry.stop(str(run_id), StopReason.USER_STOP)
+        if record.state.status.terminal:
+            return False
+
+        if RunRegistry.stop(str(run_id), StopReason.USER_STOP):
+            return True
+
+        if record.instance != self._instance:
+            msg = (
+                f"run {run_id} is executed by {record.instance}, "
+                f"not by {self._instance}: stop it there"
+            )
+            raise WorkflowError(WorkflowRefusal.OTHER_INSTANCE, msg)
+
+        await self._abandon(record)
+
+        return True
+
+    async def recover_orphans(self) -> int:
+        """Запуски этого инстанса, оставшиеся без процесса, закрываются как failed."""
+        orphans = await self._store.orphans_of(self._instance)
+        for record in orphans:
+            await self._abandon(record)
+            logger.warning("workflow run %s abandoned: %s", record.id, self.ABANDONED)
+
+        return len(orphans)
+
+    async def _abandon(self, record: StoredRun) -> None:
+        state = record.state.abandoned(self.ABANDONED, WorkflowRunner.utc_now())
+        await _StoreSink(self._store, self._events, record.id).snapshot(state)

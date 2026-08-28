@@ -191,7 +191,9 @@ class WorkflowSocket:
 
     @classmethod
     def build(cls, namespace: WorkflowNamespace) -> socketio.ASGIApp:
-        server = socketio.AsyncServer(cors_allowed_origins=[], async_mode="asgi")
+        # origin по умолчанию: свой хост, с учётом X-Forwarded-Host/Proto за прокси;
+        # пустой список отвергал любой Origin браузера, и живые статусы не доходили
+        server = socketio.AsyncServer(async_mode="asgi")
         server.register_namespace(namespace)
 
         # путь проверяет Mount приложения; сам engine.io путь не сверяет

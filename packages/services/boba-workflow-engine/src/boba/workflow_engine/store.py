@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresError
-from boba.workflow import RunState, WorkflowSpec
+from boba.workflow import RunState, RunStatus, WorkflowSpec
 from boba.workflow.ports import WorkflowRepository
 from boba.workflow.records import (
     StoredRun,
@@ -419,6 +419,38 @@ class WorkflowStore(WorkflowRepository):
         pool = await self._pool()
         async with self._guarded("list runs"), pool.dict_cursor() as cur:
             await cur.execute(query, {"user_id": user_id, "limit": limit})
+            rows = await cur.fetchall()
+
+        found: list[StoredRun] = []
+        for row in rows:
+            found.append(StoredRun.model_validate(dict(row)))
+
+        return found
+
+    async def orphans_of(self, instance: str) -> Sequence[StoredRun]:
+        """Незавершённые запуски этого инстанса: после перезапуска их никто не ведёт."""
+        query = sql.SQL(
+            """
+            select
+                id, workflow_id, user_id, initiator, profile, state, instance,
+                started_at, finished_at
+            from
+                {runs}
+            where 1=1
+                and instance = %(instance)s
+                and status = any(%(statuses)s)
+            order by
+                started_at
+            """
+        ).format(runs=self._runs())
+        params = {
+            "instance": instance,
+            "statuses": [RunStatus.PENDING.value, RunStatus.RUNNING.value],
+        }
+
+        pool = await self._pool()
+        async with self._guarded("list orphans"), pool.dict_cursor() as cur:
+            await cur.execute(query, params)
             rows = await cur.fetchall()
 
         found: list[StoredRun] = []
