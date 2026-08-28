@@ -17,6 +17,7 @@ export function SocketLamp(): ReactElement {
       aria-label={`live updates: ${status.state}`}
       title={status.detail}
       data-socket={status.state}
+      data-bus={status.bus}
     />
   );
 }

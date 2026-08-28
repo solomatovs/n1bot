@@ -63,6 +63,7 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
+from boba.runtime.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
 from boba.settings import bind, build_app_config
 from boba.toolrun.registry import ToolRegistry
@@ -509,6 +510,7 @@ def di_root() -> Iterator[None]:
     не режим работы.
     """
     from boba.chainlit.infra.providers import session_source
+    from boba.runtime import providers as runtime
     from boba.runtime.di import Container
 
     previous = Container.root
@@ -516,6 +518,7 @@ def di_root() -> Iterator[None]:
     sessions = ChainlitSessions()
     ChainlitSessions.install(sessions)
     root.provide(session_source, sessions)
+    root.provide(runtime.live_locks, MemoryLiveLocks("test-chainlit", 20))
     Container.set_root(root)
     try:
         yield
@@ -558,6 +561,7 @@ class StubRefs:
             sso_tickets=tickets,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
+            bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
         )
 
     @staticmethod
@@ -581,6 +585,7 @@ class StubRefs:
             sso_tickets=no_tickets,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
+            bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
         )
 
 

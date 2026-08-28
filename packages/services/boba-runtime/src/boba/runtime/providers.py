@@ -19,15 +19,16 @@ from boba.connection_broker.user_connections import RefreshSignal
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.locks import RunLocking, StaleLock
 from boba.krb.seal import SsoTickets
-from boba.messaging import MemoryPayloadStore, PayloadStore
-from boba.runtime.bus import PgMessageBus
+from boba.runtime.bus import BusWatch, PgMessageBus
 from boba.runtime.commands import CommandRunner
 from boba.runtime.config import AppName, RawConfig, RuntimeConfig
 from boba.runtime.di import Container, Depends
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.locks import LockReaper, PgLiveLocks
+from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refs import RuntimeRefs
+from boba.runtime.turns import StaleTurnCloser
 from boba.runtime.users import UsersTable
 from boba.settings import bind
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
@@ -70,17 +71,14 @@ def instance_name(
     return config.cluster.instance_of(app)
 
 
-def payload_store() -> PayloadStore:
-    """Тела сообщений шины по ссылкам; пока живут в памяти процесса."""
-    return MemoryPayloadStore()
-
-
 async def message_bus(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     app: Annotated[AppName, Depends(app_name)],
     instance: Annotated[str, Depends(instance_name)],
 ) -> AsyncGenerator[PgMessageBus, None]:
-    """Шина сообщений процесса: таблицы готовы, слушатель живёт всё время работы."""
+    """Поднимает шину процесса: готовит таблицы, запускает слушателя на всё время
+    работы и останавливает его при закрытии контейнера.
+    """
     bus = PgMessageBus(
         config.data_layer.postgres,
         config.data_layer.db_schema,
@@ -95,6 +93,16 @@ async def message_bus(
         yield bus
     finally:
         await bus.stop()
+
+
+def payload_store(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    bus: Annotated[PgMessageBus, Depends(message_bus)],
+) -> PgPayloadStore:
+    """Хранилище тел сообщений в live_payloads; таблицу готовит шина, поэтому она
+    поднимается первой.
+    """
+    return PgPayloadStore(config.data_layer.postgres, config.data_layer.db_schema)
 
 
 def plugin_table() -> PluginTable:
@@ -127,6 +135,13 @@ def sso_tickets_ref() -> SsoTickets | None:
     return _root().resolved(get_runtime_config).sso_tickets()
 
 
+def bus_watch_ref() -> BusWatch:
+    """Возвращает слушателя шины процесса, по которому страница показывает состояние
+    живой связи.
+    """
+    return _root().resolved(message_bus).listener
+
+
 def message_bus_ref() -> PgMessageBus:
     """Шина процесса для обвязок инструментов; зовётся на каждый вызов."""
     return _root().resolved(message_bus)
@@ -151,6 +166,7 @@ def runtime_refs() -> RuntimeRefs:
         sso_tickets=sso_tickets_ref,
         live_locks=live_locks_ref,
         heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
+        bus_watch=bus_watch_ref,
     )
 
 
@@ -212,7 +228,9 @@ def live_locks(
     instance: Annotated[str, Depends(instance_name)],
     bus: Annotated[PgMessageBus, Depends(message_bus)],
 ) -> PgLiveLocks:
-    """Блокировки областей; таблицы готовит шина, поэтому она поднимается первой."""
+    """Блокировки областей процесса; таблицу готовит шина, поэтому она поднимается
+    первой.
+    """
     return PgLiveLocks(
         config.data_layer.postgres,
         config.data_layer.db_schema,
@@ -293,9 +311,12 @@ async def lock_reaper(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     locks: Annotated[PgLiveLocks, Depends(live_locks)],
     service: Annotated[WorkflowService | None, Depends(workflow_service)],
+    bus: Annotated[PgMessageBus, Depends(message_bus)],
+    payloads: Annotated[PgPayloadStore, Depends(payload_store)],
 ) -> AsyncGenerator[LockReaper, None]:
-    """Сторож блокировок процесса: живёт всё время работы и закрывает запуски без
-    держателя.
+    """Запускает сторожа блокировок на всё время работы: он закрывает ходы и запуски
+    без держателя, следит за очередью уведомлений и убирает старые события; при
+    остановке снимает блокировки инстанса.
     """
 
     async def on_stale(stale: Sequence[StaleLock]) -> None:
@@ -307,6 +328,10 @@ async def lock_reaper(
                 lock.purpose.value,
             )
 
+        turns = await StaleTurnCloser(bus, locks).close(stale)
+        if turns:
+            logger.warning("chat: %d turn(s) of dead holders closed", turns)
+
         if service is None:
             return
 
@@ -314,7 +339,23 @@ async def lock_reaper(
         if closed:
             logger.warning("workflow: %d run(s) without a holder closed", closed)
 
-    reaper = LockReaper(locks, config.cluster.reaper_period_sec, on_stale)
+    async def on_sweep() -> None:
+        usage = await bus.queue_usage()
+        if usage > config.cluster.queue_usage_limit:
+            # долю очереди держит соединение слушателя: освобождает только разрыв
+            logger.error(
+                "notification queue usage %.3f exceeds %.3f: reconnecting the listener",
+                usage,
+                config.cluster.queue_usage_limit,
+            )
+            await bus.listener.reconnect()
+
+        removed = await bus.purge_idle(config.cluster.retention_sec)
+        bodies = await payloads.purge_idle(config.cluster.retention_sec)
+        if removed or bodies:
+            logger.info("live retention: %d events, %d bodies removed", removed, bodies)
+
+    reaper = LockReaper(locks, config.cluster.reaper_period_sec, on_stale, on_sweep)
     await reaper.start()
     try:
         yield reaper
@@ -327,7 +368,7 @@ def command_runner(
     bus: Annotated[PgMessageBus, Depends(message_bus)],
     instance: Annotated[str, Depends(instance_name)],
 ) -> CommandRunner:
-    """Исполнитель команд шины для запусков и ходов этого процесса."""
+    """Запускает исполнителя команд шины для запусков и ходов этого процесса."""
     runner = CommandRunner(bus, instance)
     runner.start()
     return runner

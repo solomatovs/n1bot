@@ -175,18 +175,17 @@ class StreamJournalConfig(BaseModel):
 
 
 class AppName(StrEnum):
-    """Приложения над сервисами: суффикс имени инстанса и значение колонки app."""
+    """Приложения над сервисами; значение служит суффиксом имени инстанса и колонкой
+    app в live_instances.
+    """
 
     CHAINLIT = "chainlit"
     STUDIO = "studio"
 
 
 class ClusterConfig(BaseModel):
-    """Секция [cluster]: имя узла и сроки жизни блокировок и слушателя шины.
-
-    node_id задаёт оператор (BOBA_INSTANCE_ID); имя инстанса — node_id плюс имя
-    приложения, чтобы chainlit и studio одного узла различались в блокировках,
-    запусках и командах.
+    """Секция [cluster]: имя узла, из которого с именем приложения складывается имя
+    инстанса, и сроки жизни блокировок, слушателя шины и хранимых событий.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -208,6 +207,9 @@ class ClusterConfig(BaseModel):
         gt=0,
         le=1,
         description="Доля очереди NOTIFY, при которой слушатель переподключается.",
+    )
+    retention_sec: int = Field(
+        gt=0, description="Сколько хранить события и тела областей, в которых тихо."
     )
 
     @model_validator(mode="after")

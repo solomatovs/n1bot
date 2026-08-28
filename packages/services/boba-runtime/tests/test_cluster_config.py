@@ -16,6 +16,7 @@ def _cluster(**overrides: object) -> ClusterConfig:
         "heartbeat_sec": 6,
         "reaper_period_sec": 10,
         "queue_usage_limit": 0.5,
+        "retention_sec": 3600,
     }
     values.update(overrides)
     return ClusterConfig.model_validate(values)

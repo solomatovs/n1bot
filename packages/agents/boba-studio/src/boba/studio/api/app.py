@@ -76,7 +76,7 @@ class ApiApp:
 
         auth = ApiAuth.of_app(app)
         namespace = WorkflowNamespace(
-            refs.workflow_service, profiles, auth.user_of_environ
+            refs.workflow_service, profiles, auth.user_of_environ, refs.bus_watch
         )
         app.mount(WorkflowSocket.PATH, WorkflowSocket.build(namespace))
 

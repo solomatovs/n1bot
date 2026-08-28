@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from boba.connection_broker.user_connections import StoreRef, TicketsRef
 from boba.identity.locks import LiveLocks
+from boba.runtime.bus import BusWatch
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
 
@@ -27,3 +28,5 @@ class RuntimeRefs:
     """Блокировки областей процесса; зовётся на вызов."""
     heartbeat_sec: float
     """Период подтверждения жизни блокировки держателем."""
+    bus_watch: Callable[[], BusWatch]
+    """Слушатель шины процесса: состояние для лампочки страницы."""

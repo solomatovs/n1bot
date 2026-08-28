@@ -9,7 +9,7 @@ description = "Boba toolrun: конвейер обёрток вызова инс
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.10,<3",
-    "langchain-core>=0.3,<1",
+    "langchain-core>=1.4,<1.5",
     "boba-toolkit==0.0.14.dev9",
     "boba-access==0.0.14.dev9",
     "boba-cancellation==0.0.14.dev9",

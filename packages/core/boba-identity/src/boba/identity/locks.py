@@ -1,4 +1,5 @@
-"""Блокировки живых областей: кто ведёт тред или запуск прямо сейчас.
+"""Описывает блокировки живых областей — кто ведёт тред или запуск прямо сейчас — и
+порт для их захвата, подтверждения и снятия.
 
 Ошибки:
 LockBusyError — область занята живым держателем; в модели LockBusy — кто, зачем и
@@ -43,14 +44,14 @@ __all__ = [
 
 
 class LockMode(StrEnum):
-    """Режим блокировки: монопольный для хода и запуска, разделяемый для уборки."""
+    """Режим блокировки: ход и запуск берут область монопольно, уборка — разделяемо."""
 
     EXCLUSIVE = "exclusive"
     SHARED = "shared"
 
 
 class LockPurpose(StrEnum):
-    """Ради чего область занята; текст отказа строится по нему."""
+    """Ради чего область занята; по нему строится текст отказа для пользователя."""
 
     TURN = "turn"
     RUN = "run"
@@ -71,14 +72,14 @@ class LockPurpose(StrEnum):
 
 
 class LockRefusal(StrEnum):
-    """Виды отказов блокировок для RefusalError.kind."""
+    """Виды отказов блокировок, которые уходят в RefusalError.kind."""
 
     BUSY = "scope_busy"
 
 
 class LockToken(BaseModel):
-    """Fencing-token держателя области: с ним publish и запись состояния доказывают
-    право писать.
+    """Fencing-token держателя области: публикация и запись состояния предъявляют
+    его, доказывая, что блокировка ещё принадлежит держателю.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -87,12 +88,14 @@ class LockToken(BaseModel):
 
     @classmethod
     def local(cls) -> LockToken:
-        """Token без блокировки: для сообщений, которым держатель не нужен."""
+        """Выпускает token без блокировки для сообщений, которым держатель не нужен."""
         return cls(value=uuid4())
 
 
 class LiveLock(BaseModel):
-    """Захваченная блокировка: область, режим, назначение, держатель и token."""
+    """Захваченная блокировка: область, режим, назначение, держатель, token и срок
+    жизни.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -105,7 +108,9 @@ class LiveLock(BaseModel):
 
 
 class LockBusy(BaseModel):
-    """Кто мешает захвату: держатель, режим, назначение и сколько секунд он молчит."""
+    """Описывает держателя, который мешает захвату: кто, в каком режиме, зачем и
+    сколько секунд молчит.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -122,7 +127,7 @@ class LockBusy(BaseModel):
 
 
 class StaleLock(BaseModel):
-    """Протухшая блокировка, снятая сторожем: чью область и ради чего держали."""
+    """Протухшая блокировка, снятая сторожем: область, держатель и назначение."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -132,7 +137,7 @@ class StaleLock(BaseModel):
 
 
 class LockBusyError(RefusalError):
-    """Область занята живым держателем; busy описывает его."""
+    """Отказ захвата: область занята живым держателем, описанным в busy."""
 
     def __init__(self, scope: Scope, busy: LockBusy) -> None:
         super().__init__(LockRefusal.BUSY, busy.describe(scope))
@@ -145,29 +150,33 @@ class LockLostError(Exception):
 
 
 class LiveLocks(Protocol):
-    """Порт блокировок областей: захват, подтверждение жизни, освобождение, уборка."""
+    """Порт блокировок областей: захват, подтверждение жизни, освобождение, список
+    держателей и уборка протухших.
+    """
 
     @abstractmethod
     async def acquire(
         self, scope: Scope, mode: LockMode, purpose: LockPurpose, user_id: int
     ) -> LiveLock:
-        """Захватывает область; занятая живым держателем — LockBusyError."""
+        """Захватывает область в режиме mode; занятую живым держателем отвергает
+        LockBusyError.
+        """
 
     @abstractmethod
     async def heartbeat(self, token: LockToken) -> bool:
-        """Подтверждает жизнь блокировки; False — её уже нет."""
+        """Подтверждает жизнь блокировки; False означает, что её уже нет."""
 
     @abstractmethod
     async def release(self, token: LockToken) -> None:
-        """Снимает блокировку держателя; отсутствующая — не ошибка."""
+        """Снимает блокировку по token; отсутствующая блокировка не ошибка."""
 
     @abstractmethod
     async def release_all(self, holder: str) -> int:
-        """Снимает все блокировки инстанса при его остановке; возвращает их число."""
+        """Снимает все блокировки инстанса при его остановке и возвращает их число."""
 
     @abstractmethod
     async def holders_of(self, scope: Scope) -> Sequence[LockBusy]:
-        """Живые держатели области."""
+        """Возвращает живых держателей области."""
 
     @abstractmethod
     async def reap(self) -> Sequence[StaleLock]:
@@ -179,7 +188,7 @@ Clock = Callable[[], float]
 
 @dataclass(frozen=True)
 class RunLocking:
-    """Чем держатель ведёт область: порт блокировок и период heartbeat."""
+    """Чем держатель ведёт область: порт блокировок и период подтверждения жизни."""
 
     locks: LiveLocks
     heartbeat_sec: float
@@ -189,7 +198,9 @@ logger = logging.getLogger(__name__)
 
 
 class LockKeeper:
-    """Фоновый heartbeat одной блокировки; потеря блокировки отменяет её ход."""
+    """Фоновая задача держателя: подтверждает жизнь блокировки раз в heartbeat_sec, а
+    потеряв её, отменяет ход через RunCancellation.
+    """
 
     def __init__(
         self,
@@ -253,7 +264,9 @@ class LockKeeper:
 
 
 class MemoryLiveLocks(LiveLocks):
-    """Блокировки в памяти процесса с часами по выбору: для тестов и стенда без базы."""
+    """Блокировки в памяти процесса с подменяемыми часами для тестов и стенда без
+    базы.
+    """
 
     def __init__(
         self, holder: str, ttl_sec: int, clock: Clock = time.monotonic
@@ -353,7 +366,9 @@ class MemoryLiveLocks(LiveLocks):
         return stale
 
     def holds(self, token: LockToken) -> bool:
-        """Есть ли живая блокировка с этим token: проверка fencing для шины в памяти."""
+        """Проверяет, жива ли блокировка с этим token; заменяет fencing шине в
+        памяти.
+        """
         if token not in self._locks:
             return False
 

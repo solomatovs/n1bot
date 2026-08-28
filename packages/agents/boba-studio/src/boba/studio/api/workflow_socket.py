@@ -10,6 +10,7 @@ socket.io, отказ подписки — событие `refused` с прич�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
@@ -24,7 +25,8 @@ from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
 from boba.identity.context import Scope, Subject
 from boba.identity.errors import RefusalError
-from boba.messaging import Envelope, MessageKind
+from boba.messaging import Envelope, MessageKind, Unsubscribe
+from boba.runtime.bus import BusWatch, ListenerState
 from boba.runtime.config import StudioPath
 from boba.studio.api.auth import ApiIdentity
 from boba.workflow.events import RunSnapshot
@@ -41,6 +43,9 @@ logger = logging.getLogger(__name__)
 
 ServiceSource = Callable[[], Awaitable[WorkflowService]]
 
+BusWatchSource = Callable[[], BusWatch]
+"""Слушатель шины процесса; зовётся на подключение."""
+
 SocketAuthenticator = Callable[[dict[str, Any]], Awaitable[AuthenticatedUser | None]]
 """WSGI environ подключения -> пользователь входа; None — cookie негодна."""
 
@@ -52,6 +57,7 @@ class WorkflowSocketEvent(StrEnum):
     UNSUBSCRIBE = "unsubscribe"
     RUN_STATE = "run_state"
     REFUSED = "refused"
+    BUS_STATE = "bus_state"
 
 
 class Subscription(BaseModel):
@@ -73,7 +79,9 @@ class RunRoom:
 
 
 class WorkflowNamespace(socketio.AsyncNamespace):
-    """Класс-namespace socket.io: подписки страницы на запуски."""
+    """Namespace socket.io страницы: пускает подписчиков в комнаты запусков, шлёт им
+    снимки по сообщениям шины и состояние слушателя шины для лампочки.
+    """
 
     NAME: ClassVar[str] = "/workflow"
     RUN_MESSAGES: ClassVar[frozenset[MessageKind]] = frozenset(
@@ -85,11 +93,14 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         service: ServiceSource,
         profiles: ChatProfiles,
         authenticate: SocketAuthenticator,
+        bus_watch: BusWatchSource,
     ) -> None:
         super().__init__(self.NAME)
         self._service = service
         self._profiles = profiles
         self._authenticate = authenticate
+        self._bus_watch = bus_watch
+        self._watching: Unsubscribe | None = None
         self._subjects: dict[str, Subject] = {}
         self._leaves: dict[UUID, Callable[[], None]] = {}
         self._rooms: dict[UUID, set[str]] = {}
@@ -106,6 +117,31 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         logger.info(
             "workflow socket connect: sid=%s user=%s", sid, identity.subject.login
         )
+        self._watch_bus()
+        await self.emit(
+            WorkflowSocketEvent.BUS_STATE.value,
+            self._bus_payload(self._bus_watch().state),
+            to=sid,
+        )
+
+    def _watch_bus(self) -> None:
+        """Подписывает namespace на смену состояния слушателя шины при первом
+        подключении, чтобы рассылать её всем вкладкам.
+        """
+        if self._watching is not None:
+            return
+
+        def changed(state: ListenerState) -> None:
+            payload = self._bus_payload(state)
+            asyncio.get_running_loop().create_task(
+                self.emit(WorkflowSocketEvent.BUS_STATE.value, payload)
+            )
+
+        self._watching = self._bus_watch().watch(changed)
+
+    @staticmethod
+    def _bus_payload(state: ListenerState) -> dict[str, str]:
+        return {"listener": state.value}
 
     async def on_disconnect(self, sid: str, reason: str = "") -> None:
         self._subjects.pop(sid, None)

@@ -268,6 +268,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
     container.eager(runtime.workflow_recovery)
+    container.eager(runtime.live_locks)
     container.eager(runtime.lock_reaper)
     container.eager(runtime.command_runner)
     # локальные модели грузятся на старте: первая сессия не ждёт веса

@@ -326,6 +326,7 @@ class TestTopbarWidgets:
         _open(page, stand, "/observe")
         lamp = page.locator(Sel.LAMP)
         expect(lamp).to_have_attribute("data-socket", "connected")
+        expect(lamp).to_have_attribute("data-bus", "listening")
         expect(lamp).to_have_attribute("role", "status")
         assert Css.of(lamp, "background-color") == tokens.rgb("status-done")
         assert Css.of(lamp, "border-radius") == "50%"

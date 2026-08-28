@@ -55,6 +55,7 @@ class StudioHost:
         container.eager(providers.connection_store)
         container.eager(providers.workflow_store)
         container.eager(providers.workflow_recovery)
+        container.eager(providers.live_locks)
         container.eager(providers.lock_reaper)
         container.eager(providers.command_runner)
         Container.set_root(container)

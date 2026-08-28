@@ -20,7 +20,7 @@ from boba.identity.api import AuthenticatedUser
 from boba.identity.context import CallContext, Scope
 from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
-from boba.runtime.bus import PgMessageBus
+from boba.runtime.bus import ListenerState, PgMessageBus, StaticBusWatch
 from boba.runtime.config import AppName
 from boba.runtime.locks import PgLiveLocks
 from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocketEvent
@@ -33,6 +33,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 SCHEMA = "workflow_socket_test"
 SID = "sid-page-1"
+
+
+def _bus_watch() -> StaticBusWatch:
+    return StaticBusWatch(ListenerState.LISTENING)
+
 
 SPEC = """
 name: socket-flow
@@ -119,7 +124,7 @@ def namespace(
 
         return None
 
-    built = WorkflowNamespace(source, _profiles(app_config), authenticate)
+    built = WorkflowNamespace(source, _profiles(app_config), authenticate, _bus_watch)
     socketio.AsyncServer(async_mode="asgi").register_namespace(built)
 
     # живого сокета нет: комнаты — забота socket.io, здесь их не проверяем
@@ -169,7 +174,10 @@ async def test_subscription_streams_snapshots(
     running = asyncio.create_task(service.execute(context, started))
 
     await built.on_subscribe(SID, {"run_id": str(run_id)})
-    first = emitted.events[0]
+    bus_state = emitted.events[0]
+    assert bus_state[0] == WorkflowSocketEvent.BUS_STATE.value
+    assert bus_state[1] == {"listener": ListenerState.LISTENING.value}
+    first = emitted.events[1]
     assert first[0] == WorkflowSocketEvent.RUN_STATE.value
     assert first[2] == SID
     assert first[1]["run_id"] == str(run_id)
@@ -237,7 +245,9 @@ async def test_websocket_handshake_accepts_the_browser_origin_behind_a_proxy(
     async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
         return ChainlitUsers.of(user)
 
-    namespace = WorkflowNamespace(source, _profiles(app_config), authenticate)
+    namespace = WorkflowNamespace(
+        source, _profiles(app_config), authenticate, _bus_watch
+    )
     app = FastAPI()
     app.mount("/socket.io", WorkflowSocket.build(namespace))
 
@@ -330,7 +340,9 @@ async def test_run_events_reach_a_namespace_on_another_instance(  # noqa: PLR091
         return None
 
     emitted = Emitted()
-    namespace = WorkflowNamespace(source, _profiles(app_config), authenticate)
+    namespace = WorkflowNamespace(
+        source, _profiles(app_config), authenticate, _bus_watch
+    )
     monkeypatch.setattr(namespace, "emit", emitted.emit)
     monkeypatch.setattr(namespace, "enter_room", room_noop)
     monkeypatch.setattr(namespace, "leave_room", room_noop)

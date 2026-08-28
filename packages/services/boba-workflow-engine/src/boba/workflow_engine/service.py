@@ -67,7 +67,7 @@ RegistrySource = Callable[[], Awaitable["ToolRegistry"]]
 
 class WorkflowRefusal(StrEnum):
     """Виды отказов сервиса workflow: негодная спека, запрещённые инструменты, не
-    найдено, чужой инстанс.
+    найдено.
     """
 
     BAD_SPEC = "bad_workflow_spec"
@@ -79,7 +79,9 @@ class WorkflowError(RefusalError):
 
 
 class StopOutcome(StrEnum):
-    """Что случилось по просьбе остановить запуск."""
+    """Итог просьбы остановить запуск: остановлен здесь, принят для другого инстанса
+    или уже завершён.
+    """
 
     STOPPED = "stopped"
     ACCEPTED = "accepted"
@@ -110,8 +112,9 @@ class StartedRun(BaseModel):
 
 
 class _StoreSink(RunSink):
-    """Приёмник снимков запуска: пишет снимок в запись запуска, затем сообщает о нём
-    в шину.
+    """Принимает снимки запуска от раннера: под живой блокировкой пишет снимок в
+    запись запуска и сообщает о нём в шину указателем RunStateChanged, а при
+    терминальном статусе — RunFinished.
     """
 
     def __init__(
@@ -323,8 +326,9 @@ class WorkflowService:
     ABANDONED: ClassVar[str] = "the process running this workflow was restarted"
 
     async def stop(self, subject: Subject, run_id: UUID) -> StopOutcome:
-        """Останавливает запуск владельца: свой — через реестр или как сироту,
-        чужой живой — командой в шину (ACCEPTED), уже завершённый — FINISHED.
+        """Останавливает запуск владельца: свой — через реестр или как сироту, чужой
+        без держателя — как сироту, чужой живой — командой в шину (ACCEPTED);
+        завершённый даёт FINISHED.
         """
         try:
             record = await self._store.get_run(subject.user_id, run_id)
@@ -369,7 +373,9 @@ class WorkflowService:
         return len(orphans)
 
     async def close_unlocked(self) -> int:
-        """Незавершённые запуски без живой блокировки закрываются как failed."""
+        """Закрывает как failed незавершённые запуски, у которых нет живой
+        блокировки, и возвращает их число.
+        """
         closed = 0
         for record in await self._store.running():
             holders = await self._locks.holders_of(Scope.workflow(record.id))
@@ -383,8 +389,8 @@ class WorkflowService:
         return closed
 
     async def _abandon(self, record: StoredRun) -> None:
-        """Закрывает запуск под своей блокировкой уборки; снимок публикуется с её
-        token.
+        """Закрывает запуск как failed под своей блокировкой уборки, чтобы снимок
+        прошёл fencing шины.
         """
         scope = Scope.workflow(record.id)
         lock = await self._locks.acquire(

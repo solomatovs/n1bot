@@ -1,5 +1,5 @@
-"""Имена таблиц и колонок схемы чата, общие для data layer chainlit и запросов studio,
-чтобы SQL обоих приложений не расходился.
+"""Имена таблиц и колонок схемы чата, общие для data layer chainlit и запросов
+studio: SQL обоих приложений собирается из одних значений.
 """
 
 from __future__ import annotations
@@ -15,14 +15,15 @@ __all__ = [
     "LiveEventsColumn",
     "LiveInstancesColumn",
     "LiveLocksColumn",
+    "LivePayloadsColumn",
     "ThreadsColumn",
     "UsersColumn",
 ]
 
 
 class ChatTable(StrEnum):
-    """Таблицы схемы чата; DDL держит data layer chainlit, шина создаёт свои таблицы
-    сама.
+    """Таблицы схемы чата: DDL таблиц чата держит data layer chainlit, live-таблицы
+    создаёт шина.
     """
 
     USERS = "users"
@@ -33,6 +34,7 @@ class ChatTable(StrEnum):
     LIVE_LOCKS = "live_locks"
     LIVE_EVENTS = "live_events"
     LIVE_COMMANDS = "live_commands"
+    LIVE_PAYLOADS = "live_payloads"
 
     def under(self, schema: str) -> sql.Identifier:
         return sql.Identifier(schema, self.value)
@@ -62,16 +64,16 @@ class ThreadsColumn(StrEnum):
 
 
 class LiveChannel(StrEnum):
-    """Каналы LISTEN/NOTIFY; один канал на всё приложение, содержимое различает
-    указатель.
+    """Каналы LISTEN/NOTIFY; канал один на всё приложение, вид уведомления различает
+    указатель в теле.
     """
 
     LIVE = "boba_live"
 
 
 class LiveInstancesColumn(StrEnum):
-    """Колонки live_instances: процессы, зарегистрированные в базе, и их последнее
-    подтверждение жизни.
+    """Колонки live_instances: зарегистрированные процессы и время их последнего
+    подтверждения жизни.
     """
 
     INSTANCE_ID = "instance_id"
@@ -117,7 +119,9 @@ class LiveCommandsColumn(StrEnum):
 
 
 class LiveLocksColumn(StrEnum):
-    """Колонки live_locks: кто и зачем держит область и когда подтверждал жизнь."""
+    """Колонки live_locks: кто, зачем и в каком режиме держит область и когда
+    подтверждал жизнь.
+    """
 
     SCOPE_KIND = "scope_kind"
     SCOPE_ID = "scope_id"
@@ -129,6 +133,19 @@ class LiveLocksColumn(StrEnum):
     ACQUIRED_AT = "acquired_at"
     HEARTBEAT_AT = "heartbeat_at"
     TTL_SEC = "ttl_sec"
+
+    def ident(self) -> sql.Identifier:
+        return sql.Identifier(self.value)
+
+
+class LivePayloadsColumn(StrEnum):
+    """Колонки live_payloads: тела сообщений, привязанные к области."""
+
+    SCOPE_KIND = "scope_kind"
+    SCOPE_ID = "scope_id"
+    ID = "id"
+    BODY = "body"
+    AT = "at"
 
     def ident(self) -> sql.Identifier:
         return sql.Identifier(self.value)
