@@ -1,10 +1,11 @@
-import { createContext, type ReactElement, useContext, useEffect, useMemo } from "react";
+import { createContext, type ReactElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { WorkflowApi } from "./api/client";
 import { RunSocket } from "./api/socket";
 import { Shell } from "./components/shell/Shell";
 import { PageUrls, pageConfig } from "./config";
+import { readProfile, writeProfile } from "./model/profile";
 import { AccountPage } from "./pages/AccountPage";
 import { BuildPage } from "./pages/BuildPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -15,6 +16,8 @@ export type Services = {
   urls: PageUrls;
   api: WorkflowApi;
   socket: RunSocket;
+  /** Смена профиля: новый api-клиент, и всё, что зависит от api, перечитывается. */
+  chooseProfile: (name: string) => void;
 };
 
 const ServicesContext = createContext<Services | null>(null);
@@ -58,10 +61,19 @@ function SignedInOnly(): ReactElement {
 }
 
 export function App(): ReactElement {
-  const services = useMemo<Services>(() => {
-    const urls = new PageUrls(pageConfig());
-    return { urls, api: new WorkflowApi(urls), socket: new RunSocket(urls) };
+  const urls = useMemo(() => new PageUrls(pageConfig()), []);
+  const socket = useRef<RunSocket | null>(null);
+  socket.current ??= new RunSocket(urls);
+  const [profile, setProfile] = useState(() => readProfile());
+  const chooseProfile = useCallback((name: string) => {
+    writeProfile(name);
+    setProfile(name);
   }, []);
+  const liveSocket = socket.current;
+  const services = useMemo<Services>(
+    () => ({ urls, api: new WorkflowApi(urls, profile), socket: liveSocket, chooseProfile }),
+    [urls, profile, liveSocket, chooseProfile],
+  );
 
   return (
     <ServicesContext.Provider value={services}>

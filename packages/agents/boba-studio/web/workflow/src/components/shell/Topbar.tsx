@@ -4,6 +4,7 @@ import { NavLink } from "react-router-dom";
 
 import type { StoredRun, StoredWorkflow } from "../../model/workflow";
 import { ThemeToggle } from "../ThemeToggle";
+import { ProfileChip } from "./ProfileChip";
 import { SocketLamp } from "./SocketLamp";
 import type { Mode } from "./Shell";
 
@@ -69,6 +70,7 @@ export function Topbar({ mode, run, workflow, listOpen, onToggleList }: Props): 
           Build
         </NavLink>
       </div>
+      <ProfileChip />
       <SocketLamp />
       <ThemeToggle />
       <NavLink to="/account" className="icon-btn" aria-label="Account" title="Account">

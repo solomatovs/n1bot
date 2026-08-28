@@ -102,7 +102,11 @@ function route<P extends keyof paths>(path: P, params: PathParams<P>): string {
 export class WorkflowApi {
   private unauthorized: (() => void) | null = null;
 
-  constructor(private readonly urls: PageUrls) {}
+  /** profile — выбранный профиль страницы; пусто — сервер берёт профиль по умолчанию. */
+  constructor(
+    private readonly urls: PageUrls,
+    readonly profile = "",
+  ) {}
 
   /** Кого звать на 401: страница уводит на вход. */
   onUnauthorized(handler: (() => void) | null): void {
@@ -269,12 +273,19 @@ export class WorkflowApi {
     }
 
     let url = this.urls.api(route(path, params));
+    const search = new URLSearchParams();
     if (query !== undefined) {
-      const search = new URLSearchParams();
       for (const [name, value] of Object.entries(query)) {
         search.set(name, String(value));
       }
-      url = `${url}?${search.toString()}`;
+    }
+    // профиль метит каждый запрос: сервер читает его из query, если в теле его нет
+    if (this.profile !== "") {
+      search.set("profile", this.profile);
+    }
+    const encoded = search.toString();
+    if (encoded !== "") {
+      url = `${url}?${encoded}`;
     }
 
     const response = await fetch(url, init);

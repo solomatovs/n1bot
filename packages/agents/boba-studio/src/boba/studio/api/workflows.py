@@ -1,7 +1,7 @@
 """REST workflow для страницы: определения, запуск и остановка; каталог — /v1/tools.
 
-Пользователь — из cookie входа, профиль — в теле или query (без него
-берётся единственный видимый). Запуск идёт в фоне процесса, ответ — id
+Пользователь — из cookie входа, профиль — в теле либо ?profile= (без него
+берётся профиль по умолчанию). Запуск идёт в фоне процесса, ответ — id
 запуска; ход виден по GET записи, остановка — POST stop на этом инстансе.
 
 Ошибки (HTTP):
@@ -105,8 +105,10 @@ class WorkflowApi:
         for path, handler, method in routes:
             router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
 
-    async def validate(self, body: WorkflowBody, current_user: CurrentUser) -> RunState:
-        identity = self._identity(current_user, body.profile)
+    async def validate(
+        self, body: WorkflowBody, current_user: CurrentUser, profile: str | None = None
+    ) -> RunState:
+        identity = self._identity(current_user, self._chosen(body.profile, profile))
         service = await self._resolved()
 
         try:
@@ -125,9 +127,9 @@ class WorkflowApi:
         return await self._guarded(service.list_workflows(identity.subject))
 
     async def save(
-        self, body: WorkflowBody, current_user: CurrentUser
+        self, body: WorkflowBody, current_user: CurrentUser, profile: str | None = None
     ) -> StoredWorkflow:
-        identity = self._identity(current_user, body.profile)
+        identity = self._identity(current_user, self._chosen(body.profile, profile))
         service = await self._resolved()
 
         return await self._guarded(
@@ -152,9 +154,13 @@ class WorkflowApi:
         return Deleted(deleted=deleted)
 
     async def run(
-        self, workflow_id: int, body: ProfileBody, current_user: CurrentUser
+        self,
+        workflow_id: int,
+        body: ProfileBody,
+        current_user: CurrentUser,
+        profile: str | None = None,
     ) -> RunStarted:
-        identity = self._identity(current_user, body.profile)
+        identity = self._identity(current_user, self._chosen(body.profile, profile))
         service = await self._resolved()
 
         run_id = service.new_run_id()
@@ -186,13 +192,25 @@ class WorkflowApi:
         return await self._guarded(service.get_run(identity.subject, run_id))
 
     async def stop(
-        self, run_id: UUID, body: ProfileBody, current_user: CurrentUser
+        self,
+        run_id: UUID,
+        body: ProfileBody,
+        current_user: CurrentUser,
+        profile: str | None = None,
     ) -> Stopped:
-        identity = self._identity(current_user, body.profile)
+        identity = self._identity(current_user, self._chosen(body.profile, profile))
         service = await self._resolved()
 
         stopped = await self._guarded(service.stop(identity.subject, run_id))
         return Stopped(stopped=stopped)
+
+    @staticmethod
+    def _chosen(in_body: str | None, in_query: str | None) -> str | None:
+        """Профиль из тела главнее query-параметра, которым страница метит запросы."""
+        if in_body is not None:
+            return in_body
+
+        return in_query
 
     def _identity(
         self, current_user: AuthenticatedUser | None, profile: str | None
