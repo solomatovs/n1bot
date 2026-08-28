@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 from types import TracebackType
 from typing import Any, ClassVar, Self
 
@@ -26,6 +27,10 @@ from boba.indexing import (
     IndexStats,
     NoneCleanup,
     Pipeline,
+    RawDocument,
+    Reader,
+    ReaderId,
+    Section,
     TransportError,
 )
 from boba.tool.kb.chunking import ChunkerParams, StructuralChunkerFactory
@@ -149,14 +154,41 @@ class LiveServer:
         return f"http://127.0.0.1:{port}"
 
 
+class BrokenReader(Reader[str]):
+    """Разбор битой страницы срывается ошибкой чужого слоя, не IndexingError."""
+
+    def __init__(self, broken_page: str) -> None:
+        self._broken_page = broken_page
+
+    async def read(self, value: RawDocument) -> AsyncIterator[Section[str]]:
+        payload = await value.handle.read()
+        text = payload.decode("utf-8", errors="replace")
+        if f"Page {self._broken_page}" in text:
+            msg = f"parser failed on page {self._broken_page}"
+            raise RuntimeError(msg)
+
+        yield Section(
+            source_id=value.source_id,
+            content=text,
+            order=0,
+            metadata=value.metadata,
+        )
+
+    def reader_id(self) -> ReaderId:
+        return ReaderId("test.broken")
+
+
 class SkipStand:
     """Прогон ingest против стенда: наружу — итог, прогресс и хранилище."""
 
-    def __init__(self, base_url: str, *, skip_failed: bool) -> None:
+    def __init__(
+        self, base_url: str, *, skip_failed: bool, reader: Reader[str]
+    ) -> None:
         self.store = MemoryChunkStore()
         self.progress = IngestProgress(LOGGER)
         self._base_url = base_url
         self._skip_failed = skip_failed
+        self._reader = reader
 
     def connection(self) -> ConfluenceConnection:
         profile = HttpProfile(
@@ -189,7 +221,7 @@ class SkipStand:
         pipeline: Pipeline[ConfluenceRequest, str] = Pipeline(
             source=source,
             transport=transport,
-            reader=LoggingReader(TextReader(), LOGGER),
+            reader=LoggingReader(self._reader, LOGGER),
         )
         params = ChunkerParams(chunk_size=200, chunk_overlap=0)
         chunker = LoggingChunker(
@@ -218,7 +250,7 @@ class TestSkipFailed:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
-            stand = SkipStand(server.base_url, skip_failed=True)
+            stand = SkipStand(server.base_url, skip_failed=True, reader=TextReader())
             with caplog.at_level(logging.INFO):
                 stats = await stand.run()
 
@@ -231,7 +263,7 @@ class TestSkipFailed:
 
     async def test_broken_attachment_does_not_lose_the_page(self) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
-            stand = SkipStand(server.base_url, skip_failed=True)
+            stand = SkipStand(server.base_url, skip_failed=True, reader=TextReader())
             stats = await stand.run()
 
         sources: set[str] = set()
@@ -255,7 +287,7 @@ class TestSkipFailed:
 
     async def test_failed_counter_shows_up_in_progress(self) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
-            stand = SkipStand(server.base_url, skip_failed=True)
+            stand = SkipStand(server.base_url, skip_failed=True, reader=TextReader())
             await stand.run()
 
         summary = stand.progress.render()
@@ -263,11 +295,27 @@ class TestSkipFailed:
             raise AssertionError('"failed 0" not in summary')
 
 
+class TestReaderFailure:
+    """Сбой разбора — тоже «не заиндексировалось»: страница уходит в failed."""
+
+    async def test_broken_parse_is_counted_and_the_rest_is_indexed(self) -> None:
+        async with LiveServer(ConfluenceStub.app()) as server:
+            stand = SkipStand(
+                server.base_url,
+                skip_failed=True,
+                reader=BrokenReader(GOOD_PAGE),
+            )
+            stats = await stand.run()
+
+        if stats.sources_failed != 2:
+            raise AssertionError("stats.sources_failed == 2")
+
+
 class TestStrictRun:
     """skip_failed=false: первая же сорвавшаяся страница обрывает прогон."""
 
     async def test_run_stops_on_the_first_failure(self) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
-            stand = SkipStand(server.base_url, skip_failed=False)
+            stand = SkipStand(server.base_url, skip_failed=False, reader=TextReader())
             with pytest.raises(TransportError):
                 await stand.run()
