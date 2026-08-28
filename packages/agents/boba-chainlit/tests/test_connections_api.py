@@ -20,7 +20,7 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.http import HttpProfile
 from boba.connections.profile import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
-from boba.studio.api.app import ApiApp
+from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ConnectionUrl
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -102,12 +102,16 @@ async def client(
     seeded: Seed, store: ConnectionStore, app_config: AppConfig
 ) -> AsyncIterator[AsyncClient]:
     seeded.user.metadata = {"roles": [ROLE]}
+    access = ApiAccess(
+        StubAuthenticator(ChainlitUsers.of(seeded.user)),
+        StubAuthenticator.COOKIE,
+        NoThreads.source,
+    )
     app: FastAPI = ApiApp.build(
         StubRefs.of(lambda: store, lambda: None),
-        StubAuthenticator(ChainlitUsers.of(seeded.user)),
-        NoThreads.source,
+        access,
         ChatProfiles(app_config.profiles),
-        StubAuthenticator.COOKIE,
+        None,
     )
     async with AsyncClient(
         transport=ASGITransport(app=app),

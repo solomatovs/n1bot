@@ -9,6 +9,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from boba.chainlit.domain.fields import ElementField
+from boba.runtime.tables import ChatTable
 from chainlit.element import (
     ElementDict,
     ElementDisplay,
@@ -151,7 +152,7 @@ class User(Row):
 
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:
-        return sql.Identifier(schema, "users")
+        return ChatTable.USERS.under(schema)
 
     @classmethod
     def from_chainlit(cls, user: ChainlitUser) -> Self:
@@ -207,7 +208,7 @@ class Thread(Row):
 
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:
-        return sql.Identifier(schema, "threads")
+        return ChatTable.THREADS.under(schema)
 
     def to_chainlit(
         self,
@@ -271,7 +272,7 @@ class Element(Row):
 
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:
-        return sql.Identifier(schema, "elements")
+        return ChatTable.ELEMENTS.under(schema)
 
     @classmethod
     def from_chainlit(cls, data: ElementDict) -> Self:
@@ -349,7 +350,7 @@ class Feedback(Row):
 
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:
-        return sql.Identifier(schema, "feedbacks")
+        return ChatTable.FEEDBACKS.under(schema)
 
     @classmethod
     def from_payload(cls, payload: FeedbackPayload) -> Self:

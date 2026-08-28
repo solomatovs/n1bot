@@ -1,10 +1,12 @@
-import { createContext, type ReactElement, useContext, useMemo } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
+import { createContext, type ReactElement, useContext, useEffect, useMemo } from "react";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { WorkflowApi } from "./api/client";
 import { Shell } from "./components/shell/Shell";
 import { PageUrls, pageConfig } from "./config";
+import { AccountPage } from "./pages/AccountPage";
 import { BuildPage } from "./pages/BuildPage";
+import { LoginPage } from "./pages/LoginPage";
 import { ObservePage } from "./pages/ObservePage";
 
 /** Общие для страниц службы: адреса и API-клиент. */
@@ -34,6 +36,25 @@ function LegacyWorkflow(): ReactElement {
   return <Navigate to={`/build/${workflowId ?? ""}`} replace />;
 }
 
+/** 401 от api в любом месте уводит на вход, запоминая, откуда ушли. */
+function SignedInOnly(): ReactElement {
+  const { api } = useServices();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    api.onUnauthorized(() => {
+      void navigate("/login", { replace: true, state: { next: `${location.pathname}${location.search}` } });
+    });
+
+    return () => {
+      api.onUnauthorized(null);
+    };
+  }, [api, navigate, location.pathname, location.search]);
+
+  return <Outlet />;
+}
+
 export function App(): ReactElement {
   const services = useMemo<Services>(() => {
     const urls = new PageUrls(pageConfig());
@@ -44,14 +65,18 @@ export function App(): ReactElement {
     <ServicesContext.Provider value={services}>
       <BrowserRouter basename={services.urls.routerBase}>
         <Routes>
-          <Route element={<Shell mode="observe" />}>
-            <Route path="/observe" element={<ObservePage />} />
-            <Route path="/observe/:runId" element={<ObservePage />} />
-          </Route>
-          <Route element={<Shell mode="build" />}>
-            <Route path="/build" element={<BuildPage />} />
-            <Route path="/build/new" element={<BuildPage />} />
-            <Route path="/build/:workflowId" element={<BuildPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route element={<SignedInOnly />}>
+            <Route path="/account" element={<AccountPage />} />
+            <Route element={<Shell mode="observe" />}>
+              <Route path="/observe" element={<ObservePage />} />
+              <Route path="/observe/:runId" element={<ObservePage />} />
+            </Route>
+            <Route element={<Shell mode="build" />}>
+              <Route path="/build" element={<BuildPage />} />
+              <Route path="/build/new" element={<BuildPage />} />
+              <Route path="/build/:workflowId" element={<BuildPage />} />
+            </Route>
           </Route>
           <Route path="/run/:runId" element={<LegacyRun />} />
           <Route path="/w/:workflowId" element={<LegacyWorkflow />} />

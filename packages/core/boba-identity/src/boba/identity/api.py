@@ -23,8 +23,15 @@ from boba.identity.context import (
 )
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import UserMetadataField
+from boba.identity.signin import SignedIn
 
-__all__ = ["ApiSubject", "AuthenticatedUser", "Authenticator", "PersistedUsers"]
+__all__ = [
+    "ApiSubject",
+    "AuthenticatedUser",
+    "Authenticator",
+    "PersistedUsers",
+    "UsersUpsert",
+]
 
 
 class AuthenticatedUser(BaseModel):
@@ -99,6 +106,13 @@ class Authenticator(Protocol):
     @abstractmethod
     async def user_of_token(self, token: str) -> AuthenticatedUser | None:
         """None — токен негоден или вход не сохранён слоем данных."""
+
+
+class UsersUpsert(Protocol):
+    """Строка users по итогу входа: создаётся или обновляет metadata."""
+
+    @abstractmethod
+    async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser: ...
 
 
 class PersistedUsers(Protocol):

@@ -16,6 +16,17 @@ import {
   type StoredWorkflow,
   type ToolCatalog,
 } from "../model/workflow";
+import {
+  ConnectionViewSchema,
+  MeSchema,
+  ProfileViewSchema,
+  SignInProvidersSchema,
+  type ConnectionBody,
+  type ConnectionView,
+  type Me,
+  type ProfileView,
+  type SignInProviders,
+} from "../model/account";
 import type { paths } from "./schema";
 
 /** Отказ API: статус и текст detail сервера. */
@@ -28,7 +39,7 @@ export class ApiError extends Error {
   }
 }
 
-type Method = "get" | "post" | "delete";
+type Method = "get" | "post" | "put" | "delete";
 
 /** Пути схемы, у которых есть операция метода M. */
 type PathWith<M extends Method> = {
@@ -61,7 +72,62 @@ function route<P extends keyof paths>(path: P, params: PathParams<P>): string {
 
 /** REST workflow: пути и типы ответов — из OpenAPI, разбор — zod на границе. */
 export class WorkflowApi {
+  private unauthorized: (() => void) | null = null;
+
   constructor(private readonly urls: PageUrls) {}
+
+  /** Кого звать на 401: страница уводит на вход. */
+  onUnauthorized(handler: (() => void) | null): void {
+    this.unauthorized = handler;
+  }
+
+  providers(): Promise<SignInProviders> {
+    return this.call("get", "/v1/auth/providers", {}, undefined, undefined, SignInProvidersSchema);
+  }
+
+  async login(username: string, password: string): Promise<void> {
+    await this.raw("post", "/v1/auth/login", {}, undefined, { username, password });
+  }
+
+  async logout(): Promise<void> {
+    await this.raw("post", "/v1/auth/logout", {}, undefined, {});
+  }
+
+  me(): Promise<Me> {
+    return this.call("get", "/v1/me", {}, undefined, undefined, MeSchema);
+  }
+
+  profiles(): Promise<ProfileView[]> {
+    return this.call("get", "/v1/profiles", {}, undefined, undefined, ProfileViewSchema.array());
+  }
+
+  /** Профиль соединения в схеме — union по kind; страница читает его свободной моделью. */
+  async connections(): Promise<ConnectionView[]> {
+    const raw = await this.raw("get", "/v1/connections", {}, undefined, undefined);
+    return ConnectionViewSchema.array().parse(raw);
+  }
+
+  async createConnection(body: ConnectionBody): Promise<ConnectionView> {
+    const raw = await this.raw("post", "/v1/connections", {}, undefined, body);
+    return ConnectionViewSchema.parse(raw);
+  }
+
+  async replaceConnection(id: number, body: ConnectionBody): Promise<ConnectionView> {
+    const raw = await this.raw("put", "/v1/connections/{connection_id}", { connection_id: id }, undefined, body);
+    return ConnectionViewSchema.parse(raw);
+  }
+
+  async removeConnection(id: number): Promise<boolean> {
+    const reply = await this.call(
+      "delete",
+      "/v1/connections/{connection_id}",
+      { connection_id: id },
+      undefined,
+      undefined,
+      DeletedSchema,
+    );
+    return reply.deleted;
+  }
 
   async catalog(): Promise<ToolCatalog> {
     const raw = await this.raw("get", "/v1/tools", {}, undefined, undefined);
@@ -146,8 +212,16 @@ export class WorkflowApi {
     }
 
     const response = await fetch(url, init);
+    if (response.status === 204) {
+      return undefined;
+    }
+
     const payload: unknown = await response.json();
     if (!response.ok) {
+      if (response.status === 401 && this.unauthorized !== null) {
+        this.unauthorized();
+      }
+
       throw new ApiError(response.status, detailOf(payload));
     }
 

@@ -132,10 +132,6 @@ class KerberosAuthConfig(BaseModel):
     )
     principal_format: str
     sso_path: str = Field(default="/auth/sso")
-    header: str = Field(
-        default="X-Remote-User",
-        description="Заголовок, куда кладётся принципал для header_auth_callback.",
-    )
     delegation: Delegation = Field(
         description=(
             "Режим делегирования: forwarded (неограниченное, TGT от браузера) "
@@ -156,11 +152,6 @@ class KerberosAuthConfig(BaseModel):
     @classmethod
     def _principal_format_has_username(cls, value: str) -> str:
         return LoginTemplate.check_principal(value)
-
-    @property
-    def sids_header(self) -> str:
-        "Заголовок с SID-ами групп из PAC; ставит SpnegoMiddleware."
-        return f"{self.header}-Sids"
 
 
 AuthConfig = Annotated[

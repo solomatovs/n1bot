@@ -1,0 +1,613 @@
+"""SSO через Kerberos/SPNEGO, общее для приложений: обмен, допуск, билет входа.
+
+Приложение вешает обмен на свой URL: SpnegoGate отдаёт исход (вызов, вход,
+отказ), а JWT, cookie и страницу логина делает вызывающий.
+
+Ошибки:
+AuthorizationError — принципал не допущен (исключён или без ролей).
+ExternalServiceError — креды kerberos истекли или недоступен LDAP.
+InternalServiceError — keytab/SPN/делегирование/конфиг непригодны.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any, ClassVar
+
+from starlette.datastructures import Headers
+from starlette.requests import Request
+
+from boba.identity.context import DelegatedTicket
+from boba.identity.directory import (
+    ADUserEntry,
+    LDAPError,
+    LDAPInvalidCredentialsError,
+    LDAPServerUnavailableError,
+    LDAPUserNotFoundError,
+)
+from boba.identity.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    BaseError,
+    ExternalServiceError,
+    InternalServiceError,
+)
+from boba.identity.roles import (
+    DnExcludeUserProvider,
+    DnUserRolesProvider,
+    LocalExcludeUserProvider,
+    LocalUserRolesProvider,
+    MemberOfExcludeUserProvider,
+    MemberOfUserRolesProvider,
+    RoleExcludeConfig,
+    RoleMappingConfig,
+    SAMAccountNameExcludeUserProvider,
+    SAMAccountNameUserRolesProvider,
+)
+from boba.identity.session import (
+    LoginTemplate,
+    SignInProvider,
+    UserLogin,
+    UserMetadataField,
+)
+from boba.identity.signin import SignedIn
+from boba.identity.sso import SsoAdmission
+from boba.krb import (
+    CredentialsExpiredError,
+    DelegationNotPermittedError,
+    InvalidTokenError,
+    KerberosError,
+    KeytabError,
+    SpnegoAcceptor,
+    SpnegoIdentity,
+    TicketCapture,
+)
+from boba.krb.seal import SsoTickets, TicketSealer
+from boba.runtime.auth_config import KerberosAuthConfig, KerberosRolesInLdapConfig
+from boba.runtime.signin import ADDirectory
+from boba.toolkit.template import TemplateError
+
+__all__ = [
+    "Challenge",
+    "KerberosErrorToDomain",
+    "KerberosRolesInLdapProvider",
+    "NegotiateToken",
+    "RefreshRefused",
+    "RequestHeader",
+    "SidExcludeUserProvider",
+    "SidUserRolesProvider",
+    "Signed",
+    "SpnegoGate",
+    "SsoRefresh",
+    "SsoSignIn",
+]
+
+
+class RequestHeader(StrEnum):
+    """Заголовки, которыми живёт обмен: токен, клиент за прокси, вызов браузеру."""
+
+    AUTHORIZATION = "authorization"
+    FORWARDED_FOR = "x-forwarded-for"
+    REAL_IP = "x-real-ip"
+    WWW_AUTHENTICATE = "WWW-Authenticate"
+
+
+class SsoRefresh(StrEnum):
+    """Признак того, что обмен запросила своя страница, а не чужой сайт."""
+
+    HEADER = "x-boba-sso-refresh"
+    VALUE = "1"
+
+    @classmethod
+    def asked(cls, headers: Headers) -> bool:
+        """Заголовок ставит только свой fetch: кросс-сайтовый запрос его не несёт."""
+        return headers.get(cls.HEADER) == cls.VALUE
+
+
+class KerberosErrorToDomain:
+    "Классификация ошибок kerberos-слоя в доменную ошибку."
+
+    @staticmethod
+    def map(e: KerberosError) -> BaseError:
+        # нужен повторный логин — не наша вина
+        if isinstance(e, CredentialsExpiredError):
+            return ExternalServiceError(
+                "kerberos", "Kerberos credentials expired, please re-login"
+            )
+
+        # делегирование запрещено политикой (msDS-AllowedToDelegateTo) — конфиг AD
+        if isinstance(e, DelegationNotPermittedError):
+            return InternalServiceError(
+                internal_detail=f"kerberos delegation not permitted: {e}",
+                user_detail=None,
+            )
+
+        # keytab/SPN сервиса непригодны — наша сторона
+        if isinstance(e, KeytabError):
+            return InternalServiceError(
+                internal_detail=f"kerberos keytab problem: {e}",
+                user_detail=None,
+            )
+
+        return InternalServiceError(
+            internal_detail=f"kerberos error: {e}",
+            user_detail=None,
+        )
+
+
+class SidUserRolesProvider:
+    """Мапер SID группы - список ролей"""
+
+    def __init__(self, mapping: RoleMappingConfig):
+        self._mapping = mapping
+
+    def roles_of(self, sids: list[str]) -> Iterable[str]:
+        for s in sids:
+            yield from self._mapping.roles_of(s)
+
+
+class SidExcludeUserProvider:
+    """Список SID групп, членам которых запрещён вход"""
+
+    def __init__(self, mapping: RoleExcludeConfig):
+        self._mapping = mapping
+
+    def exclude_of(self, sids: list[str]) -> Iterable[bool]:
+        for s in sids:
+            yield from self._mapping.exclude_of(s)
+
+
+class KerberosRolesInLdapProvider:
+    def __init__(self, config: KerberosRolesInLdapConfig):
+        self._config = config
+        self._ad = ADDirectory
+
+        self._init_mapping()
+
+    def _init_mapping(self):
+        self._samaccountname_roles: SAMAccountNameUserRolesProvider | None = None
+        self._samaccountname_roles_ex: SAMAccountNameExcludeUserProvider | None = None
+        self._member_of_roles: MemberOfUserRolesProvider | None = None
+        self._member_of_roles_ex: MemberOfExcludeUserProvider | None = None
+        self._dn_roles: DnUserRolesProvider | None = None
+        self._dn_roles_ex: DnExcludeUserProvider | None = None
+
+        if roles := self._config.mapping.samaccountname:
+            self._samaccountname_roles = SAMAccountNameUserRolesProvider(roles)
+
+        if roles := self._config.mapping.samaccountname_ex:
+            self._samaccountname_roles_ex = SAMAccountNameExcludeUserProvider(roles)
+
+        if roles := self._config.mapping.member_of:
+            self._member_of_roles = MemberOfUserRolesProvider(roles)
+
+        if roles := self._config.mapping.member_of_ex:
+            self._member_of_roles_ex = MemberOfExcludeUserProvider(roles)
+
+        if roles := self._config.mapping.dn:
+            self._dn_roles = DnUserRolesProvider(roles)
+
+        if roles := self._config.mapping.dn_ex:
+            self._dn_roles_ex = DnExcludeUserProvider(roles)
+
+    async def request(self, principal: str) -> ADUserEntry:
+        search_filter = f"(userPrincipalName={principal})"
+
+        try:
+            user_dn, samaccountname, member_of = await asyncio.to_thread(
+                self._ad.fetch_userdn_samaccountname_member_of,
+                server=self._config.server,
+                bind_dn=self._config.bind_dn,
+                bind_password=self._config.bind_password,
+                search_base=self._config.base_dn,
+                search_filter=search_filter,
+            )
+
+            return ADUserEntry(
+                dn=user_dn,
+                samaccountname=samaccountname,
+                member_of=member_of,
+            )
+        except LDAPUserNotFoundError as e:
+            raise AuthenticationError("User is not registered") from e
+        except LDAPServerUnavailableError as e:
+            raise ExternalServiceError(
+                "ldap",
+                "LDAP service is unavailable, please try again later",
+            ) from e
+        except LDAPInvalidCredentialsError as e:
+            raise InternalServiceError(
+                internal_detail=f"ldap service bind rejected: {e}",
+                user_detail=None,
+            ) from e
+        except LDAPError as e:
+            raise InternalServiceError(
+                internal_detail=f"ldap error: {e}", user_detail=None
+            ) from e
+
+    def roles_of(self, user: ADUserEntry) -> Iterable[str]:
+        if self._samaccountname_roles:
+            yield from self._samaccountname_roles.roles_of(user.samaccountname)
+
+        if self._member_of_roles:
+            yield from self._member_of_roles.roles_of(user.member_of)
+
+        if self._dn_roles:
+            yield from self._dn_roles.roles_of(user.dn)
+
+    def excluded_of(self, user: ADUserEntry) -> bool:
+        return any(self._exclusions_of(user))
+
+    def _exclusions_of(self, user: ADUserEntry) -> Iterator[bool]:
+        if self._samaccountname_roles_ex:
+            yield from self._samaccountname_roles_ex.exclude_of(user.samaccountname)
+
+        if self._member_of_roles_ex:
+            yield from self._member_of_roles_ex.exclude_of(user.member_of)
+
+        if self._dn_roles_ex:
+            yield from self._dn_roles_ex.exclude_of(user.dn)
+
+
+class SsoSignIn(SsoAdmission):
+    """Вход по SPNEGO-личности: роли по маппингам конфига и запечатанный билет."""
+
+    def __init__(self, config: KerberosAuthConfig, secret: str) -> None:
+        if not secret:
+            msg = "sso secret is empty: it seals the sign-in ticket"
+            raise ValueError(msg)
+
+        self._config = config
+        self._ad = ADDirectory
+        self.acceptor = SpnegoAcceptor(config.accept, config.delegation)
+        self.capture = TicketCapture(config.delegation)
+        self.sealer = TicketSealer(secret)
+        self.krb5_config = config.delegation.krb5_config
+        self._logger = logging.getLogger(SsoSignIn.__name__)
+
+        self._init_mapping()
+
+    @property
+    def config(self) -> KerberosAuthConfig:
+        return self._config
+
+    def tickets(self) -> SsoTickets:
+        """Открыватель билетов входа для обвязок инструментов."""
+        return SsoTickets(sealer=self.sealer, krb5_config=self.krb5_config)
+
+    def _init_mapping(self):
+        self._principal_roles: LocalUserRolesProvider | None = None
+        self._principal_roles_ex: LocalExcludeUserProvider | None = None
+        self._sid_roles: SidUserRolesProvider | None = None
+        self._sid_roles_ex: SidExcludeUserProvider | None = None
+        self._kerberos_roles_in_ldap: KerberosRolesInLdapProvider | None = None
+
+        if roles := self._config.roles:
+            if roles.principal:
+                self._principal_roles = LocalUserRolesProvider(roles.principal)
+
+            if roles.principal_ex:
+                self._principal_roles_ex = LocalExcludeUserProvider(roles.principal_ex)
+
+            if roles.sid:
+                self._sid_roles = SidUserRolesProvider(roles.sid)
+
+            if roles.sid_ex:
+                self._sid_roles_ex = SidExcludeUserProvider(roles.sid_ex)
+
+        if ldap_roles := self._config.ldap_roles:
+            self._kerberos_roles_in_ldap = KerberosRolesInLdapProvider(ldap_roles)
+
+    @staticmethod
+    def _username_from_principal(principal_format: str, principal: str) -> str:
+        """user@REALM | DOMAIN\\user -> sAMAccountName по шаблону с {username}."""
+        try:
+            return LoginTemplate.username_of(principal_format, principal)
+        except TemplateError as exc:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"principal {principal!r} does not match "
+                    f"principal_format {principal_format!r}: {exc}"
+                ),
+                user_detail=None,
+            ) from exc
+
+    def sealed_of(self, identity: SpnegoIdentity) -> str:
+        """Запечатанный билет входа; пустая строка — делегирования у входа нет."""
+        ticket = self.capture.capture(identity)
+        if ticket is None:
+            return ""
+
+        return self.sealer.seal(ticket)
+
+    async def signed_in(self, identity: SpnegoIdentity, sealed: str) -> SignedIn:
+        """Итог входа: логин из принципала, роли по допуску, билет в metadata."""
+        metadata = self._sso_metadata(identity.principal, sealed)
+
+        roles = await self.roles_of(identity.principal, identity.group_sids)
+        if roles:
+            metadata[UserMetadataField.ROLES] = roles
+
+        username = self._username_from_principal(
+            self._config.principal_format, identity.principal
+        )
+        login = UserLogin.of(username)
+
+        return SignedIn(
+            identifier=login.key, display_name=login.display, metadata=metadata
+        )
+
+    async def roles_of(self, principal: str, group_sids: Sequence[str]) -> list[str]:
+        """Роли принципала по всем источникам; исключение — AuthorizationError.
+
+        Зовётся и при входе, и при повторном обмене: запрет в AD должен
+        отсекать обмен так же, как отсёк бы новый вход.
+        """
+        roles: list[str] = []
+        excluded = False
+
+        if self._principal_roles:
+            roles.extend(self._principal_roles.roles_of(principal))
+
+        if self._principal_roles_ex:
+            excluded = any(self._principal_roles_ex.exclude_of(principal))
+
+        sid_roles, sid_excluded = self._sid_mapping(group_sids)
+        roles.extend(sid_roles)
+        if sid_excluded:
+            excluded = True
+
+        if self._kerberos_roles_in_ldap:
+            user = await self._kerberos_roles_in_ldap.request(principal)
+            roles.extend(self._kerberos_roles_in_ldap.roles_of(user))
+
+            if self._kerberos_roles_in_ldap.excluded_of(user):
+                excluded = True
+
+        if excluded:
+            self._logger.warning("access denied for %s (excluded)", principal)
+            raise AuthorizationError("Access denied")
+
+        mapped = sorted(set(roles))
+
+        if self._config.require_roles and not mapped:
+            self._logger.warning("access denied for %s (no roles mapped)", principal)
+            raise AuthorizationError("Access denied")
+
+        return mapped
+
+    def _sso_metadata(self, principal: str, sealed: str) -> dict[str, Any]:
+        """Metadata входа: провайдер, принципал и запечатанный билет."""
+        metadata: dict[str, Any] = {
+            UserMetadataField.PROVIDER: SignInProvider.KERBEROS,
+            UserMetadataField.PRINCIPAL: principal,
+        }
+
+        if sealed:
+            metadata[UserMetadataField.TICKET] = sealed
+            return metadata
+
+        # без билета сессия останется без делегированных кредов: причина в логе выше
+        self._logger.warning(
+            "kerberos: sign-in of %s carries no delegated ticket", principal
+        )
+
+        return metadata
+
+    def _sid_mapping(self, sids: Sequence[str]) -> tuple[list[str], bool]:
+        "Роли и исключение по SID групп из PAC; сами SID приходят от вызывающего."
+        has_roles = self._sid_roles is not None
+        has_exclusions = self._sid_roles_ex is not None
+
+        if not has_roles and not has_exclusions:
+            return [], False
+
+        roles: list[str] = []
+        if self._sid_roles:
+            roles = list(self._sid_roles.roles_of(list(sids)))
+
+        excluded = False
+        if self._sid_roles_ex:
+            excluded = any(self._sid_roles_ex.exclude_of(list(sids)))
+
+        return roles, excluded
+
+
+class NegotiateToken:
+    """Токен Negotiate из заголовка Authorization."""
+
+    SCHEME: ClassVar[str] = "negotiate"
+
+    @classmethod
+    def of(cls, headers: Headers) -> bytes | str:
+        """Токен либо причина, почему его нет."""
+        auth = headers.get(RequestHeader.AUTHORIZATION)
+        if not auth:
+            return "no Authorization header"
+
+        scheme, _, value = auth.partition(" ")
+        if scheme.lower() != cls.SCHEME:
+            return f"unexpected auth scheme {scheme!r}"
+
+        if not value:
+            return f"unexpected auth scheme {scheme!r}"
+
+        try:
+            return base64.b64decode(value)
+        except ValueError as e:
+            return f"invalid base64 token: {e}"
+
+
+@dataclass(frozen=True)
+class Challenge:
+    """Личности нет: ответить 401 Negotiate, браузер домена повторит с токеном."""
+
+    reason: str
+    level: int
+
+
+@dataclass(frozen=True)
+class Signed:
+    """SPNEGO принят, принципал допущен: пользователь входа с билетом в metadata."""
+
+    signed: SignedIn
+    principal: str
+
+
+@dataclass(frozen=True)
+class RefreshRefused:
+    """Повторный обмен не относится к этой сессии: 403, повтор не поможет."""
+
+    reason: str
+
+
+class SpnegoGate:
+    """SPNEGO-обмен на URL приложения: вход и молчаливое обновление билета сессии."""
+
+    NEGOTIATE: ClassVar[dict[str, str]] = {
+        RequestHeader.WWW_AUTHENTICATE.value: "Negotiate"
+    }
+
+    def __init__(self, sign_in: SsoSignIn) -> None:
+        self._sign_in = sign_in
+        self._logger = logging.getLogger(SpnegoGate.__name__)
+
+    @property
+    def sign_in(self) -> SsoSignIn:
+        return self._sign_in
+
+    async def handshake(self, request: Request) -> Challenge | Signed:
+        """Вход: токен из Authorization → личность → допуск → SignedIn."""
+        client = self.client_of(request)
+        found = NegotiateToken.of(request.headers)
+        if isinstance(found, str):
+            # начало handshake токена не несёт — это не ошибка
+            return Challenge(found, logging.INFO)
+
+        try:
+            identity = await self._accepted(found, client, "accept")
+        except InvalidTokenError as e:
+            return Challenge(str(e), logging.WARNING)
+
+        sealed = self._sign_in.sealed_of(identity)
+        signed = await self._sign_in.signed_in(identity, sealed)
+        self._logger.info(
+            "kerberos: sign-in ticket sealed [%d chars] [principal=%s]",
+            len(sealed),
+            identity.principal,
+        )
+
+        return Signed(signed, identity.principal)
+
+    async def refresh(
+        self, request: Request, session: DelegatedTicket | None
+    ) -> Challenge | RefreshRefused | Signed:
+        """Повторный SPNEGO живой сессии: свежий билет под тем же принципалом."""
+        client = self.client_of(request)
+        refused = self._refresh_allowed(request, session, client)
+        if refused is not None:
+            return refused
+
+        found = NegotiateToken.of(request.headers)
+        if isinstance(found, str):
+            return Challenge(found, logging.INFO)
+
+        try:
+            identity = await self._accepted(found, client, "refresh")
+        except InvalidTokenError as e:
+            return Challenge(str(e), logging.INFO)
+
+        return await self._refreshed(identity, session, client)
+
+    @staticmethod
+    def _refresh_allowed(
+        request: Request, session: DelegatedTicket | None, client: str
+    ) -> RefreshRefused | None:
+        if not SsoRefresh.asked(request.headers):
+            # заголовок ставит только свой fetch: чужая страница обмен не запустит
+            return RefreshRefused(f"refresh without its own header [{client}]")
+
+        if session is None:
+            return RefreshRefused("request carries no signed sign-in")
+
+        return None
+
+    async def _refreshed(
+        self, identity: SpnegoIdentity, session: DelegatedTicket | None, client: str
+    ) -> RefreshRefused | Signed:
+        if session is None:
+            return RefreshRefused("request carries no signed sign-in")
+
+        if identity.principal != session.principal:
+            return RefreshRefused(
+                f"refresh token of {identity.principal} does not match the "
+                f"session of {session.principal}"
+            )
+
+        try:
+            await self._sign_in.roles_of(identity.principal, identity.group_sids)
+        except AuthorizationError:
+            return RefreshRefused(f"{identity.principal} is no longer admitted")
+
+        sealed = self._sign_in.sealed_of(identity)
+        if not sealed:
+            return RefreshRefused(f"no delegated credentials for {session.principal}")
+
+        signed = await self._sign_in.signed_in(identity, sealed)
+        self._logger.info(
+            "kerberos: refreshed sign-in ticket [principal=%s] [client=%s]",
+            identity.principal,
+            client,
+        )
+
+        return Signed(signed, identity.principal)
+
+    async def _accepted(self, token: bytes, client: str, stage: str) -> SpnegoIdentity:
+        try:
+            identity = await self._sign_in.acceptor.accept_async(token)
+        except InvalidTokenError:
+            raise
+        except KerberosError as e:
+            self._logger.exception(
+                "kerberos: spnego %s failed (keytab/SPN) [client=%s]", stage, client
+            )
+            raise KerberosErrorToDomain.map(e) from e
+
+        self._logger.info(
+            "kerberos authenticated [principal=%s] [client=%s]",
+            identity.principal,
+            client,
+        )
+
+        return identity
+
+    @staticmethod
+    def client_of(request: Request) -> str:
+        "Лучший идентификатор клиента для логов: реальный IP за прокси, иначе peer."
+        if xff := request.headers.get(RequestHeader.FORWARDED_FOR):
+            first, _, _ = xff.partition(",")
+            return first.strip()
+
+        if real := request.headers.get(RequestHeader.REAL_IP):
+            return real
+
+        if request.client is not None:
+            return request.client.host
+
+        return "unknown"
+
+    def log_challenge(self, request: Request, challenge: Challenge) -> None:
+        self._logger.log(
+            challenge.level,
+            "kerberos challenge [client=%s]: %s",
+            self.client_of(request),
+            challenge.reason,
+        )
+
+    def log_refusal(self, refused: RefreshRefused) -> None:
+        self._logger.warning("kerberos refresh refused: %s", refused.reason)

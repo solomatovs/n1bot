@@ -35,6 +35,7 @@ dependencies = [
     "boba-krb[seal]==0.0.14.dev9",
     "boba-db-pgvector==0.0.14.dev9",
     "starlette>=0.40",
+    "ldap3",
 ]
 
 [tool.setuptools.packages.find]

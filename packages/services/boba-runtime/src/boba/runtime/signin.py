@@ -1,6 +1,17 @@
+"""Вход по паролю: статическая таблица и bind в AD; роли — по маппингам конфига.
+
+Ошибки:
+AuthenticationError — логин не зарегистрирован или пароль неверен.
+AuthorizationError — вход запрещён: исключение или ни одной роли.
+ExternalServiceError — LDAP недоступен.
+InternalServiceError — ошибка LDAP-конфига или каталога.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import logging
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -23,7 +34,6 @@ from ldap3.core.exceptions import (
     LDAPStrongerAuthRequiredResult,
 )
 
-import chainlit as cl
 from boba.identity.directory import (
     LDAPAccessDeniedError,
     LDAPConfigError,
@@ -52,7 +62,16 @@ from boba.identity.session import (
     UserLogin,
     UserMetadataField,
 )
-from boba.runtime.auth_config import LdapAuthConfig
+from boba.identity.signin import PasswordSignIn, SignedIn
+from boba.runtime.auth_config import AuthConfig, LdapAuthConfig, LocalAuthConfig
+
+__all__ = [
+    "ADDirectory",
+    "CompositeSignIn",
+    "LdapSignIn",
+    "LocalSignIn",
+    "PasswordSignIns",
+]
 
 
 class ADDirectory:
@@ -177,11 +196,62 @@ class ADDirectory:
                 yield role
 
 
-class LdapAuth:
-    "Логин/пароль с проверкой bind'ом в AD; роль забираем из групп AD"
+class LocalSignIn(PasswordSignIn):
+    """Вход по статической таблице логин/пароль из конфига."""
+
+    def __init__(self, config: LocalAuthConfig) -> None:
+        self._config = config
+        self._init_mapping()
+
+    def _init_mapping(self):
+        self._local_roles: LocalUserRolesProvider | None = None
+        self._local_roles_ex: LocalExcludeUserProvider | None = None
+
+        if roles := self._config.roles:
+            self._local_roles = LocalUserRolesProvider(roles)
+
+        if roles_ex := self._config.roles_ex:
+            self._local_roles_ex = LocalExcludeUserProvider(roles_ex)
+
+    async def sign_in(self, username: str, password: str) -> SignedIn | None:
+        if self._config.users.get(username) != password:
+            return None
+
+        excluded = False
+        if self._local_roles_ex:
+            excluded = any(self._local_roles_ex.exclude_of(username))
+
+        if excluded:
+            raise AuthorizationError("Access denied")
+
+        metadata: dict[str, Any] = {
+            UserMetadataField.PROVIDER: SignInProvider.LOCAL.value,
+        }
+
+        roles: list[str] = []
+        if self._local_roles:
+            roles.extend(self._local_roles.roles_of(username))
+
+        roles = sorted(set(roles))
+
+        requires_roles = self._config.require_roles
+        if requires_roles and not roles:
+            raise AuthorizationError("Access denied")
+
+        if roles:
+            metadata[UserMetadataField.ROLES] = roles
+
+        login = UserLogin.of(username)
+
+        return SignedIn(
+            identifier=login.key, display_name=login.display, metadata=metadata
+        )
+
+
+class LdapSignIn(PasswordSignIn):
+    """Логин/пароль с проверкой bind'ом в AD; роли — из групп AD."""
 
     def __init__(self, config: LdapAuthConfig):
-        self._provider = "ldap"
         self._config = config
         self._ad = ADDirectory
         self._logger = logging.getLogger(__name__)
@@ -244,7 +314,7 @@ class LdapAuth:
         if self._dn_roles:
             yield from self._dn_roles.roles_of(user_dn)
 
-    async def password_auth(self, username: str, password: str) -> cl.User | None:
+    async def sign_in(self, username: str, password: str) -> SignedIn | None:
         # личность подтверждаем bind'ом под пользователем
         try:
             server = self._config.server
@@ -284,10 +354,8 @@ class LdapAuth:
             if roles:
                 metadata[UserMetadataField.ROLES] = roles
 
-            return cl.User(
-                identifier=login.key,
-                display_name=login.display,
-                metadata=metadata,
+            return SignedIn(
+                identifier=login.key, display_name=login.display, metadata=metadata
             )
         except LDAPUserNotFoundError as e:
             self._logger.warning("user %s is not registered", username)
@@ -307,3 +375,47 @@ class LdapAuth:
             raise InternalServiceError(
                 internal_detail=f"ldap error: {e}", user_detail=None
             ) from e
+
+
+class CompositeSignIn(PasswordSignIn):
+    """Провайдеры по порядку конфига: первый узнавший логин решает."""
+
+    def __init__(self, providers: Sequence[PasswordSignIn]) -> None:
+        self._providers = list(providers)
+
+    async def sign_in(self, username: str, password: str) -> SignedIn | None:
+        last_error: AuthenticationError | None = None
+
+        for provider in self._providers:
+            try:
+                signed = await provider.sign_in(username, password)
+            except AuthenticationError as exc:
+                last_error = exc
+                continue
+
+            if signed is not None:
+                return signed
+
+        if last_error is not None:
+            raise last_error
+
+        return None
+
+
+class PasswordSignIns:
+    """Провайдеры паролей из [auth]: local и ldap; kerberos сюда не входит."""
+
+    @classmethod
+    def of(cls, configs: Sequence[AuthConfig]) -> CompositeSignIn | None:
+        providers: list[PasswordSignIn] = []
+        for config in configs:
+            if isinstance(config, LocalAuthConfig):
+                providers.append(LocalSignIn(config))
+
+            if isinstance(config, LdapAuthConfig):
+                providers.append(LdapSignIn(config))
+
+        if not providers:
+            return None
+
+        return CompositeSignIn(providers)

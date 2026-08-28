@@ -109,6 +109,8 @@ def _studio(page: str) -> StudioConfig:
             "url_prefix": PREFIX,
             "auth_secret": "stand-secret",
             "cookie": "access_token",
+            "cookie_samesite": "lax",
+            "session_ttl_sec": 3600,
             "page": page,
             "dist": "/nowhere",
         }

@@ -1,4 +1,4 @@
-import { PanelLeft, Workflow } from "lucide-react";
+import { PanelLeft, Settings, Workflow } from "lucide-react";
 import type { ReactElement } from "react";
 import { NavLink } from "react-router-dom";
 
@@ -69,6 +69,9 @@ export function Topbar({ mode, run, workflow, listOpen, onToggleList }: Props): 
         </NavLink>
       </div>
       <ThemeToggle />
+      <NavLink to="/account" className="icon-btn" aria-label="Account" title="Account">
+        <Settings size={16} />
+      </NavLink>
     </header>
   );
 }
