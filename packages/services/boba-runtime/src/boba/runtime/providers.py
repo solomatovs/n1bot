@@ -19,12 +19,14 @@ from boba.db.pgvector.schema import KbSchema
 from boba.krb.seal import SsoTickets
 from boba.runtime.config import RawConfig, RuntimeConfig
 from boba.runtime.di import Container, Depends
+from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.runtime.users import UsersTable
 from boba.settings import bind
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.streams import ToolStreams
 from boba.workflow.events import RunEvents
 from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
@@ -181,6 +183,18 @@ async def connection_store(
     await store.sync_roles(roles)
 
     return store
+
+
+def stream_journal(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+) -> None:
+    """Журнал живого вывода инструментов на процесс; без секции потоков нет."""
+    section = config.stream_journal
+    if not section.enable:
+        return
+
+    vault = DirVault(section.dir)
+    ToolStreams.configure(StreamJournal(vault, section.reserve_bytes))
 
 
 def users_table(

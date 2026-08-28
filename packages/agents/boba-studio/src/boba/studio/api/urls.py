@@ -42,7 +42,9 @@ class ConnectionUrl(StrEnum):
 
     CONNECTIONS = "/connections"
     SCHEMA = "/connections/schema"
+    CHECK = "/connections/check"
     CONNECTION = "/connections/{connection_id}"
+    CONNECTION_CHECK = "/connections/{connection_id}/check"
 
 
 class ToolCallUrl(StrEnum):
@@ -62,3 +64,5 @@ class WorkflowUrl(StrEnum):
     RUNS = "/workflow-runs"
     RUN_ONE = "/workflow-runs/{run_id}"
     STOP = "/workflow-runs/{run_id}/stop"
+    STREAM = "/workflow-runs/{run_id}/streams/{call_id}"
+    STREAM_CHANNELS = "/workflow-runs/{run_id}/streams/{call_id}/channels"

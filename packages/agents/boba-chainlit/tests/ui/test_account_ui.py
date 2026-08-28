@@ -85,7 +85,12 @@ def test_gear_opens_account_and_own_connection_round_trips(
     page.locator(Selector.NEW_CONNECTION).click()
     page.get_by_label("connection name").fill("ui-own")
     page.get_by_label("profile.kind", exact=True).select_option("web")
-    page.get_by_label("profile.base_url", exact=True).fill("https://own.test")
+    page.get_by_label("profile.base_url", exact=True).fill(
+        f"http://127.0.0.1:{stand.config.llm_port}/health"
+    )
+    # проверка черновика до сохранения: фейковый LLM стенда отвечает по /health
+    page.get_by_role("button", name="Check", exact=True).click()
+    expect(page.locator('[data-notice="probe"]')).to_contain_text("HTTP 200")
     # вложенный блок auth: вариант по method и его поля
     page.get_by_label("profile.auth.method", exact=True).select_option("basic")
     page.get_by_label("profile.auth.user", exact=True).fill("reader")

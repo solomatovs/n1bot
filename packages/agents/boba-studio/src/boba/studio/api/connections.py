@@ -3,6 +3,9 @@
 Владение = личный грант: строка, выданная пользователю лично, принадлежит ему —
 он её создаёт, заменяет и удаляет. Выданная по роли — общая, только для чтения.
 
+Проверка: POST /connections/check {profile} и POST /connections/{id}/check — пробное
+соединение; исход всегда 200 с ProbeResult{ok, message, elapsed_ms}.
+
 Ошибки (HTTP):
 401 — вход не сохранён слоем данных.
 403 — профиль недоступен ролям пользователя; соединение общее, а не своё.
@@ -28,14 +31,17 @@ from pydantic import (
 )
 
 from boba.chat.profiles import ChatProfiles
+from boba.connection_broker.probe import ConnectionProbe, ProbeResult
 from boba.connection_broker.store import ConnectionStore, ConnectionStoreError
-from boba.connection_broker.user_connections import StoreRef
+from boba.connection_broker.user_connections import StoreRef, TicketsRef, UserKerberos
 from boba.connections.profile import (
     ConnectionKind,
     ConnectionProfile,
     StoredConnection,
 )
+from boba.identity.api import ApiSubject
 from boba.identity.context import Subject
+from boba.krb import KerberosCredentials
 from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import ConnectionUrl
 
@@ -44,6 +50,7 @@ __all__ = [
     "ConnectionDeleted",
     "ConnectionView",
     "ConnectionsApi",
+    "ProbeBody",
     "ProfileSchema",
 ]
 
@@ -102,6 +109,23 @@ class ConnectionView(BaseModel):
         )
 
 
+class ProbeBody(BaseModel):
+    """Профиль на проверку: как в форме, ещё не сохранённый."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    profile: ConnectionProfile
+
+    @field_validator("profile")
+    @classmethod
+    def _real_secrets(cls, value: ConnectionProfile) -> ConnectionProfile:
+        if MaskedSecrets.find(value):
+            msg = "profile carries a masked secret: enter the real value"
+            raise ValueError(msg)
+
+        return value
+
+
 class ConnectionDeleted(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -123,15 +147,20 @@ class ConnectionsApi:
 
     TAG: ClassVar[str] = "connections"
 
-    def __init__(self, store: StoreRef, profiles: ChatProfiles) -> None:
+    def __init__(
+        self, store: StoreRef, profiles: ChatProfiles, tickets: TicketsRef
+    ) -> None:
         self._store = store
         self._profiles = profiles
+        self._tickets = tickets
 
     def mount(self, router: APIRouter) -> None:
         routes = (
             (ConnectionUrl.SCHEMA, self.schema, "GET"),
             (ConnectionUrl.CONNECTIONS, self.list_connections, "GET"),
             (ConnectionUrl.CONNECTIONS, self.create, "POST"),
+            (ConnectionUrl.CHECK, self.check, "POST"),
+            (ConnectionUrl.CONNECTION_CHECK, self.check_stored, "POST"),
             (ConnectionUrl.CONNECTION, self.replace, "PUT"),
             (ConnectionUrl.CONNECTION, self.delete, "DELETE"),
         )
@@ -224,6 +253,37 @@ class ConnectionsApi:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         return ConnectionDeleted(deleted=deleted)
+
+    async def check(
+        self, body: ProbeBody, current_user: CurrentUser, profile: str | None = None
+    ) -> ProbeResult:
+        """Пробное соединение по профилю из формы; делегирование — билетом входа."""
+        identity = ApiIdentity.resolve(current_user, profile, self._profiles)
+
+        return await self._probe(identity).probe(body.profile)
+
+    async def check_stored(
+        self, connection_id: int, current_user: CurrentUser, profile: str | None = None
+    ) -> ProbeResult:
+        """Пробное соединение по сохранённой строке: видимой пользователю."""
+        identity = ApiIdentity.resolve(current_user, profile, self._profiles)
+        store = self._resolved()
+
+        visible = await self._visible(store, identity.subject, list(ConnectionKind))
+        for row in visible:
+            if row.id == connection_id:
+                return await self._probe(identity).probe(row.profile)
+
+        raise HTTPException(
+            status_code=404, detail=f"connection #{connection_id} not found"
+        )
+
+    def _probe(self, identity: ApiSubject) -> ConnectionProbe:
+        def delegation() -> KerberosCredentials:
+            ticket = UserKerberos.ticket_of(identity.credential, identity.subject.login)
+            return UserKerberos.open_credentials(ticket, self._tickets())
+
+        return ConnectionProbe(delegation)
 
     def _subject(self, current_user: CurrentUser, profile: str | None) -> Subject:
         return ApiIdentity.resolve(current_user, profile, self._profiles).subject

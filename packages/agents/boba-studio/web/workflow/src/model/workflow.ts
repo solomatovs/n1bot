@@ -310,3 +310,15 @@ export type ToolCatalog = z.infer<typeof ToolCatalogSchema>;
 export const RunStartedSchema = z.object({ run_id: z.string().uuid() });
 export const StoppedSchema = z.object({ stopped: z.boolean() });
 export const DeletedSchema = z.object({ deleted: z.boolean() });
+
+/** Окно журнала вывода стадии: текст и координаты в файле. */
+export const StreamSliceSchema = z.object({
+  text: z.string(),
+  offset: z.number(),
+  end: z.number(),
+  size: z.number(),
+  window: z.number(),
+  closed: z.boolean(),
+  note: z.string(),
+});
+export type StreamSlice = z.infer<typeof StreamSliceSchema>;

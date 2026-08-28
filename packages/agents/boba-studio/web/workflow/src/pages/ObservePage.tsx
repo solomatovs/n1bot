@@ -190,6 +190,7 @@ export function ObservePage(): ReactElement {
       )}
       {selectedTask !== null && (
         <Inspector
+          runId={runId}
           run={loaded.state}
           task={selectedTask}
           onClose={() => {

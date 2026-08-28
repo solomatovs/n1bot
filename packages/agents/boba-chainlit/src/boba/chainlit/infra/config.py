@@ -4,13 +4,12 @@
 Ошибки: своих не выпускает; выбор профиля — boba.chat.profiles.
 """
 
-from typing import Annotated, Any, Self
+from typing import Annotated, Any
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    model_validator,
 )
 
 from boba.access import RoleConfig
@@ -182,45 +181,6 @@ class CheckpointerConfig(BaseModel):
     )
 
 
-class StreamJournalConfig(BaseModel):
-    """Журнал живого вывода инструментов: служебный том на пользователя."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    enable: bool = Field(
-        default=False,
-        description="Писать вывод каждого вызова инструмента в журнал.",
-    )
-
-    dir: str = Field(
-        default="",
-        description=(
-            "Корень журналов: каталог, том на пользователя внутри; "
-            "переполнение держит отдельная точка монтирования под корнем."
-        ),
-    )
-
-    reserve_bytes: int = Field(
-        default=64 * 1024 * 1024,
-        ge=0,
-        description=(
-            "Резерв места перед новым журналом: старейшие треды вытесняются, "
-            "пока свободного меньше; 0 выключает ротацию."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _validate_enabled(self) -> Self:
-        if not self.enable:
-            return self
-
-        if not self.dir:
-            msg = "stream_journal: dir is required"
-            raise ValueError(msg)
-
-        return self
-
-
 class AppConfig(RuntimeConfig):
     """Секции chainlit-процесса поверх общих: server, checkpointer, storage, журнал."""
 
@@ -289,14 +249,6 @@ class AppConfig(RuntimeConfig):
     storage: Annotated[
         LocalStorageConfig,
         Field(description="Файловое хранилище вложений."),
-    ]
-
-    stream_journal: Annotated[
-        StreamJournalConfig,
-        Field(
-            default_factory=StreamJournalConfig,
-            description="Журнал живого вывода инструментов.",
-        ),
     ]
 
     sandbox: Annotated[

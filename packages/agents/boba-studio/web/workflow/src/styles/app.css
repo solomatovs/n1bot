@@ -1820,3 +1820,38 @@ button {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
 }
+
+.output {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: var(--s2) 0;
+}
+
+.output__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.output__meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--muted);
+}
+
+.output__text {
+  margin: 0;
+  padding: var(--s2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+}

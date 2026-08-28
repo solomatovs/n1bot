@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from boba.access import RoleConfig
 from boba.chat.profiles import ChatProfileConfig
@@ -33,6 +33,7 @@ __all__ = [
     "ProcessLogging",
     "RawConfig",
     "RuntimeConfig",
+    "StreamJournalConfig",
     "StudioConfig",
     "StudioPath",
 ]
@@ -130,6 +131,45 @@ class PageSource:
             return BuiltPage()
 
         return DevPage(url=raw.rstrip("/"))
+
+
+class StreamJournalConfig(BaseModel):
+    """Журнал живого вывода инструментов: служебный том на пользователя."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enable: bool = Field(
+        default=False,
+        description="Писать вывод каждого вызова инструмента в журнал.",
+    )
+
+    dir: str = Field(
+        default="",
+        description=(
+            "Корень журналов: каталог, том на пользователя внутри; "
+            "переполнение держит отдельная точка монтирования под корнем."
+        ),
+    )
+
+    reserve_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=0,
+        description=(
+            "Резерв места перед новым журналом: старейшие треды вытесняются, "
+            "пока свободного меньше; 0 выключает ротацию."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_enabled(self) -> Self:
+        if not self.enable:
+            return self
+
+        if not self.dir:
+            msg = "stream_journal: dir is required"
+            raise ValueError(msg)
+
+        return self
 
 
 class StudioPath(StrEnum):
@@ -238,6 +278,7 @@ class RuntimeConfig(BaseModel):
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
     data_layer: DataLayerConfig
     sandbox: SandboxConfig
+    stream_journal: StreamJournalConfig
     studio: StudioConfig
 
     @classmethod

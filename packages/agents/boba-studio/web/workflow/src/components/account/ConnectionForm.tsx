@@ -1,11 +1,11 @@
-import { Save, Trash2 } from "lucide-react";
+import { PlugZap, Save, Trash2 } from "lucide-react";
 import { type FormEvent, type ReactElement, useCallback, useState } from "react";
 
 import { ApiError } from "../../api/client";
 import { useServices } from "../../app";
 import { Alert } from "../Alert";
 import { errorText } from "../Async";
-import type { ConnectionView } from "../../model/account";
+import type { ConnectionView, ProbeResult } from "../../model/account";
 import { type SchemaDoc, withoutMaskedSecrets } from "../../model/schema";
 import { SchemaNode } from "./SchemaForm";
 
@@ -26,6 +26,7 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved }: Props): ReactEl
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [issues, setIssues] = useState<ReadonlyMap<string, string>>(new Map());
+  const [probe, setProbe] = useState<ProbeResult | null>(null);
   const readonly = row !== null && !row.mine;
 
   const fail = useCallback(
@@ -76,6 +77,20 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved }: Props): ReactEl
     [api, name, profile, row, onSaved, fail],
   );
 
+  // общее — по сохранённой строке (секреты у сервера), своё — по черновику формы
+  const check = useCallback(() => {
+    setBusy(true);
+    setProbe(null);
+    setNotice("");
+    setIssues(new Map());
+    const request =
+      row !== null && !row.mine ? api.checkStoredConnection(row.id) : api.checkConnection(profile as Record<string, unknown>);
+    void request.then((result) => {
+      setBusy(false);
+      setProbe(result);
+    }, fail);
+  }, [api, profile, row, fail]);
+
   const remove = useCallback(() => {
     if (row === null) {
       return;
@@ -124,6 +139,17 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved }: Props): ReactEl
           {notice}
         </Alert>
       )}
+      {probe !== null && (
+        <Alert tone={probe.ok ? "ok" : "error"} title={probe.ok ? "Connected" : "Connection failed"} mark="probe">
+          {probe.message} · {probe.elapsed_ms} ms
+        </Alert>
+      )}
+      <div className="connection-form__actions">
+        <button type="button" className="btn" disabled={busy} onClick={check}>
+          <PlugZap size={14} />
+          Check
+        </button>
+      </div>
       {!readonly && (
         <div className="connection-form__actions">
           <button type="submit" className="btn btn--primary" disabled={busy}>

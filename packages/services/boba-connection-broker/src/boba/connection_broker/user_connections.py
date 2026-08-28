@@ -49,7 +49,7 @@ from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
 )
-from boba.identity.context import CallContext, DelegatedTicket
+from boba.identity.context import CallContext, Credential, DelegatedTicket
 from boba.identity.errors import RefusalError
 from boba.krb import (
     KerberosCredentials,
@@ -120,17 +120,8 @@ class UserKerberos:
     def _ticket(cls) -> DelegatedTicket:
         """Ссылка на билет субъекта текущего вызова; без неё — NO_DELEGATION."""
         context = CallContext.current()
-        credential = context.credential
-        if isinstance(credential, DelegatedTicket):
-            return credential
 
-        logger.warning(
-            "kerberos: %s asked for a delegated ticket without one: %s",
-            context.subject.login,
-            credential.reason,
-        )
-        msg = f"{credential.reason}; {cls.RETRY_HINT}"
-        raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
+        return cls.ticket_of(context.credential, context.subject.login)
 
     async def ensure_fresh(self) -> None:
         """Просит браузер обновить билет входа, когда тот на исходе.
@@ -157,8 +148,13 @@ class UserKerberos:
             logger.info("kerberos: nobody is listening for the refresh signal")
 
     def credentials(self) -> KerberosCredentials:
-        sso = self._ticket()
-        tickets = self._tickets_ref()
+        return self.open_credentials(self._ticket(), self._tickets_ref())
+
+    @classmethod
+    def open_credentials(
+        cls, sso: DelegatedTicket, tickets: SsoTickets | None
+    ) -> KerberosCredentials:
+        """Креды по билету входа; отказ — RefusalError NO_DELEGATION с причиной."""
         if tickets is None:
             msg = (
                 "this connection acts on your behalf, but Kerberos SSO is not "
@@ -167,22 +163,34 @@ class UserKerberos:
             )
             raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
-        ticket = self._opened(tickets, sso)
+        ticket = cls._opened(tickets, sso)
         if ticket.principal != sso.principal:
             msg = (
                 f"the delegated ticket belongs to {ticket.principal} while "
                 f"this session is {sso.principal}: sign out and sign in again; "
-                f"{self.RETRY_HINT}"
+                f"{cls.RETRY_HINT}"
             )
             raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
         logger.info(
-            "kerberos: tool acts as %s [ticket %ds]",
-            ticket.principal,
-            ticket.lifetime(),
+            "kerberos: acting as %s [ticket %ds]", ticket.principal, ticket.lifetime()
         )
 
         return tickets.credentials_of(ticket)
+
+    @classmethod
+    def ticket_of(cls, credential: Credential, login: str) -> DelegatedTicket:
+        """Билет из секретов субъекта; без него — NO_DELEGATION с причиной."""
+        if isinstance(credential, DelegatedTicket):
+            return credential
+
+        logger.warning(
+            "kerberos: %s asked for a delegated ticket without one: %s",
+            login,
+            credential.reason,
+        )
+        msg = f"{credential.reason}; {cls.RETRY_HINT}"
+        raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
 
     @classmethod
     def _opened(cls, tickets: SsoTickets, sso: DelegatedTicket) -> SignInTicket:

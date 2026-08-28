@@ -248,3 +248,37 @@ async def test_masked_secret_is_rejected(
 
     assert reply.status_code == 422, reply.text
     assert "masked secret" in reply.text
+
+
+async def test_check_of_a_stored_row_and_of_a_draft(
+    client: AsyncClient, granted: dict[str, int], app_config: AppConfig
+) -> None:
+    """Сохранённый postgres стенда открывается; черновик с недоступным хостом — нет."""
+    stored = await client.post(
+        f"{ApiVersion.V1}/connections/{granted['postgres']}/check",
+        params=_query(app_config),
+    )
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["ok"] is True
+    assert "PostgreSQL" in stored.json()["message"]
+
+    draft = await client.post(
+        f"{ApiVersion.V1}{ConnectionUrl.CHECK}",
+        params=_query(app_config),
+        json={
+            "profile": {
+                "kind": "web",
+                "base_url": "http://127.0.0.1:9",
+                "ssl_verify": False,
+            }
+        },
+    )
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["ok"] is False
+    assert draft.json()["message"] != ""
+
+    foreign = await client.post(
+        f"{ApiVersion.V1}/connections/{granted['stranger']}/check",
+        params=_query(app_config),
+    )
+    assert foreign.status_code == 404

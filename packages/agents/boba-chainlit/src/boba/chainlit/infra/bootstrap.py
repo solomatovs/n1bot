@@ -204,12 +204,7 @@ def _use_file_serving(c: AppConfig) -> None:
 
 
 def _use_stream_journal(c: AppConfig) -> None:
-    """Журнал вывода инструментов; без секции в конфиге потоков нет."""
-    from boba.chainlit.canvas.journal import (  # noqa: PLC0415
-        DirVault,
-        StreamJournal,
-    )
-    from boba.chainlit.canvas.panel import ToolStreams  # noqa: PLC0415
+    """Роут скачивания журнала; сам журнал поднимает провайдер runtime."""
     from boba.chainlit.data.upload import (  # noqa: PLC0415
         StreamServing,
         UploadPolicy,
@@ -217,13 +212,8 @@ def _use_stream_journal(c: AppConfig) -> None:
     from boba.chainlit.domain.keys import StreamUrl  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    journal_cfg = c.stream_journal
-    if not journal_cfg.enable:
+    if not c.stream_journal.enable:
         return
-
-    vault = DirVault(journal_cfg.dir)
-
-    ToolStreams.configure(StreamJournal(vault, journal_cfg.reserve_bytes))
 
     serving = StreamServing(c.storage, UploadPolicy())
     chainlit_app.add_api_route(
@@ -269,6 +259,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(providers.session_source, sessions)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
+    container.eager(runtime.stream_journal)
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)

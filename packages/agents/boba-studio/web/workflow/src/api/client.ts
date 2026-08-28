@@ -8,22 +8,26 @@ import {
   StoppedSchema,
   StoredRunSchema,
   StoredWorkflowSchema,
+  StreamSliceSchema,
   ToolCatalogSchema,
   looseViews,
   withKnownResults,
   type RunState,
   type StoredRun,
   type StoredWorkflow,
+  type StreamSlice,
   type ToolCatalog,
 } from "../model/workflow";
 import {
   ConnectionViewSchema,
   MeSchema,
+  ProbeResultSchema,
   ProfileViewSchema,
   SignInProvidersSchema,
   type ConnectionBody,
   type ConnectionView,
   type Me,
+  type ProbeResult,
   type ProfileView,
   type SignInProviders,
 } from "../model/account";
@@ -146,6 +150,16 @@ export class WorkflowApi {
     return ConnectionViewSchema.parse(raw);
   }
 
+  /** Пробное соединение по черновику формы: исход всегда 200 с ok/message. */
+  async checkConnection(profile: Record<string, unknown>): Promise<ProbeResult> {
+    const raw = await this.raw("post", "/v1/connections/check", {}, undefined, { profile });
+    return ProbeResultSchema.parse(raw);
+  }
+
+  checkStoredConnection(id: number): Promise<ProbeResult> {
+    return this.call("post", "/v1/connections/{connection_id}/check", { connection_id: id }, undefined, {}, ProbeResultSchema);
+  }
+
   async removeConnection(id: number): Promise<boolean> {
     const reply = await this.call(
       "delete",
@@ -198,6 +212,29 @@ export class WorkflowApi {
   async getRun(runId: string): Promise<StoredRun> {
     const raw = await this.raw("get", "/v1/workflow-runs/{run_id}", { run_id: runId }, undefined, undefined);
     return StoredRunSchema.parse(withKnownResults(raw));
+  }
+
+  streamChannels(runId: string, callId: string): Promise<string[]> {
+    return this.call(
+      "get",
+      "/v1/workflow-runs/{run_id}/streams/{call_id}/channels",
+      { run_id: runId, call_id: callId },
+      undefined,
+      undefined,
+      z.array(z.string()),
+    );
+  }
+
+  /** Окно журнала от смещения: следующий запрос начинается с end прошлого. */
+  streamWindow(runId: string, callId: string, channel: string, offset: number): Promise<StreamSlice> {
+    return this.call(
+      "get",
+      "/v1/workflow-runs/{run_id}/streams/{call_id}",
+      { run_id: runId, call_id: callId },
+      { channel, offset },
+      undefined,
+      StreamSliceSchema,
+    );
   }
 
   async stop(runId: string): Promise<boolean> {

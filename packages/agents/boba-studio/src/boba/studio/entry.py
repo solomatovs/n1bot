@@ -49,6 +49,7 @@ class StudioHost:
         container.provide(
             providers.instance_name, f"{socket.gethostname()}:{config.studio.port}"
         )
+        container.eager(providers.stream_journal)
         container.eager(providers.kb_schema)
         container.eager(providers.connection_store)
         container.eager(providers.workflow_store)

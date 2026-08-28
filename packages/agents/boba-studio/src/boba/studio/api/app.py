@@ -17,6 +17,7 @@ from boba.studio.api.account import AccountApi
 from boba.studio.api.auth import ApiAuth, TokenReader
 from boba.studio.api.connections import ConnectionsApi
 from boba.studio.api.signin import SignInApi, SignInWiring
+from boba.studio.api.streams import StreamApi
 from boba.studio.api.tools import ThreadsSource, ToolCalling
 from boba.studio.api.urls import ApiVersion
 from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocket
@@ -61,9 +62,10 @@ class ApiApp:
             SignInApi(signin).mount(router)
 
         AccountApi(profiles).mount(router)
-        ConnectionsApi(refs.connection_store, profiles).mount(router)
+        ConnectionsApi(refs.connection_store, profiles, refs.sso_tickets).mount(router)
         ToolCalling(refs.tool_registry, profiles, access.threads).mount(router)
         WorkflowApi(refs.workflow_service, profiles).mount(router)
+        StreamApi(refs.workflow_service, profiles).mount(router)
         app.include_router(router)
 
         auth = ApiAuth.of_app(app)
