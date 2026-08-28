@@ -149,7 +149,10 @@ async def test_reaper_removes_stale_locks_and_dead_instances(
     async def on_stale(stale: Sequence[StaleLock]) -> None:
         seen.extend(stale)
 
-    reaper = LockReaper(first.locks, 1.0, on_stale)
+    async def on_sweep() -> None:
+        return None
+
+    reaper = LockReaper(first.locks, 1.0, on_stale, on_sweep)
     assert scope not in [s.scope for s in await reaper.sweep()]
     seen.clear()
 

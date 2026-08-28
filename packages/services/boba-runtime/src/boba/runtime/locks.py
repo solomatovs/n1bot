@@ -1,4 +1,5 @@
-"""Блокировки областей на Postgres: таблица live_locks, heartbeat держателя и сторож.
+"""Держит блокировки областей в таблице live_locks и следит за их жизнью: PgLiveLocks
+захватывает, подтверждает и снимает блокировки, LockReaper убирает протухшие.
 
 Ошибки:
 LockBusyError — область занята живым держателем.
@@ -31,7 +32,9 @@ from boba.identity.locks import (
     LockToken,
     StaleLock,
 )
+from boba.messaging import MessageBusError
 from boba.runtime.config import ClusterConfig
+from boba.runtime.payloads import PayloadStoreError
 from boba.runtime.tables import ChatTable, LiveInstancesColumn, LiveLocksColumn
 
 __all__ = ["LockReaper", "LockStoreError", "PgLiveLocks"]
@@ -44,7 +47,9 @@ class LockStoreError(Exception):
 
 
 class PgLiveLocks(LiveLocks):
-    """Блокировки в таблице live_locks; время только по часам Postgres."""
+    """Захватывает, подтверждает и снимает блокировки в live_locks; протухание
+    считается по часам Postgres, чтобы расхождение часов узлов не влияло.
+    """
 
     def __init__(
         self, cfg: PostgresConfig, db_schema: str, instance: str, cluster: ClusterConfig
@@ -339,7 +344,9 @@ class PgLiveLocks(LiveLocks):
         )
 
     async def reap_instances(self) -> Sequence[str]:
-        """Удаляет инстансы, молчащие дольше ttl; их блокировки уходят каскадом."""
+        """Удаляет инстансы, не подтверждавшие жизнь дольше ttl; их блокировки уходят
+        каскадом. Возвращает имена удалённых.
+        """
         pool = await self._pool()
         try:
             async with pool.cursor() as cur:
@@ -367,21 +374,28 @@ class PgLiveLocks(LiveLocks):
 
 
 StaleHandler = Callable[[Sequence[StaleLock]], Awaitable[None]]
+SweepHandler = Callable[[], Awaitable[None]]
 
 
 class LockReaper:
-    """Периодический сторож: снимает протухшие блокировки и мёртвые инстансы,
-    подтверждает жизнь своего инстанса и отдаёт снятые блокировки обработчику.
+    """Периодически подтверждает жизнь своего инстанса, снимает протухшие блокировки
+    и мёртвые инстансы и отдаёт снятые блокировки обработчику, который закрывает
+    их ходы и запуски.
     """
 
     NAME: ClassVar[str] = "lock-reaper"
 
     def __init__(
-        self, locks: PgLiveLocks, period_sec: float, on_stale: StaleHandler
+        self,
+        locks: PgLiveLocks,
+        period_sec: float,
+        on_stale: StaleHandler,
+        on_sweep: SweepHandler,
     ) -> None:
         self._locks = locks
         self._period_sec = period_sec
         self._on_stale = on_stale
+        self._on_sweep = on_sweep
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -399,7 +413,7 @@ class LockReaper:
             await task
 
     async def sweep(self) -> Sequence[StaleLock]:
-        """Один проход сторожа; возвращает снятые блокировки."""
+        """Выполняет один проход сторожа и возвращает снятые блокировки."""
         await self._locks.heartbeat_instance()
         stale = await self._locks.reap()
         if stale:
@@ -410,6 +424,7 @@ class LockReaper:
         if dead:
             logger.warning("dead instances removed: %s", ", ".join(dead))
 
+        await self._on_sweep()
         return stale
 
     async def _run(self) -> None:
@@ -417,5 +432,5 @@ class LockReaper:
             await asyncio.sleep(self._period_sec)
             try:
                 await self.sweep()
-            except LockStoreError:
+            except (LockStoreError, MessageBusError, PayloadStoreError):
                 logger.warning("lock reaper sweep failed", exc_info=True)

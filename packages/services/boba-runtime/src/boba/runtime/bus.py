@@ -16,10 +16,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol
 from uuid import UUID
 
 import psycopg
@@ -58,7 +59,15 @@ from boba.runtime.tables import (
     LiveLocksColumn,
 )
 
-__all__ = ["ListenerState", "LiveListener", "PgMessageBus", "Pointer", "PointerKind"]
+__all__ = [
+    "BusWatch",
+    "ListenerState",
+    "LiveListener",
+    "PgMessageBus",
+    "Pointer",
+    "PointerKind",
+    "StaticBusWatch",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +80,8 @@ class PointerKind(StrEnum):
 
 
 class Pointer(BaseModel):
-    """Тело уведомления pg_notify: только указатель на строку таблицы, сами данные
-    подписчик читает из неё.
+    """Тело уведомления pg_notify: указатель на строку таблицы, по которому подписчик
+    читает сами данные.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -95,7 +104,9 @@ class Pointer(BaseModel):
 
 
 class ListenerState(StrEnum):
-    """Состояние слушателя процесса; страница показывает его лампочкой у сокета."""
+    """Состояние слушателя процесса; страница показывает его лампочкой рядом с
+    сокетом.
+    """
 
     STOPPED = "stopped"
     CONNECTING = "connecting"
@@ -105,11 +116,40 @@ class ListenerState(StrEnum):
 
 PointerHandler = Callable[[Pointer], Awaitable[None]]
 ReconnectHandler = Callable[[], Awaitable[None]]
+StateListener = Callable[[ListenerState], None]
 
 
-class LiveListener:
-    """Слушатель канала boba_live на выделенном autocommit-соединении с
-    переподключением и догоном пропущенного.
+class BusWatch(Protocol):
+    """Порт наблюдения за слушателем шины: текущее состояние и подписка на его смену."""
+
+    @property
+    @abstractmethod
+    def state(self) -> ListenerState: ...
+
+    @abstractmethod
+    def watch(self, listener: StateListener) -> Unsubscribe: ...
+
+
+class StaticBusWatch(BusWatch):
+    """Наблюдатель с постоянным состоянием для стендов и тестов без Postgres."""
+
+    def __init__(self, state: ListenerState) -> None:
+        self._state = state
+
+    @property
+    def state(self) -> ListenerState:
+        return self._state
+
+    def watch(self, listener: StateListener) -> Unsubscribe:
+        def leave() -> None:
+            return None
+
+        return leave
+
+
+class LiveListener(BusWatch):
+    """Слушает канал boba_live на выделенном autocommit-соединении, переподключается
+    после обрыва и добирает пропущенное через обработчик реконнекта.
     """
 
     RETRY_SEC: ClassVar[float] = 1.0
@@ -130,14 +170,43 @@ class LiveListener:
         self._ready = asyncio.Event()
         self._connections = 0
         self._failure: MessageBusError | None = None
+        self._watchers: list[StateListener] = []
+        self._stopping = False
 
     @property
     def state(self) -> ListenerState:
         return self._state
 
+    def watch(self, listener: StateListener) -> Unsubscribe:
+        self._watchers.append(listener)
+
+        def leave() -> None:
+            if listener in self._watchers:
+                self._watchers.remove(listener)
+
+        return leave
+
+    def _set_state(self, state: ListenerState) -> None:
+        if state is self._state:
+            return
+
+        self._state = state
+        for watcher in list(self._watchers):
+            watcher(state)
+
+    async def reconnect(self) -> None:
+        """Рвёт соединение слушателя, чтобы освободить его долю очереди уведомлений;
+        цикл переподключится и доберёт пропущенное.
+        """
+        conn = self._conn
+        if conn is None:
+            return
+
+        await conn.close()
+
     def ensure_alive(self) -> None:
-        """Отказывает MessageBusError, если слушатель остановлен сбоем: без него шина
-        процесса непригодна до перезапуска.
+        """Отвергает обращение MessageBusError, если слушатель остановлен сбоем: без
+        него шина процесса непригодна до перезапуска.
         """
         if self._failure is None:
             return
@@ -157,7 +226,8 @@ class LiveListener:
         if self._task is not None:
             return
 
-        self._state = ListenerState.CONNECTING
+        self._stopping = False
+        self._set_state(ListenerState.CONNECTING)
         self._task = asyncio.create_task(self._run(), name="live-listener")
         await self._ready.wait()
 
@@ -167,6 +237,10 @@ class LiveListener:
             return
 
         self._task = None
+        # сначала рвётся соединение: ожидание notifies() внутри psycopg не всегда
+        # отзывается на отмену задачи, а закрытый сокет выводит его ошибкой
+        self._stopping = True
+        await self._close()
         task.cancel()
         try:
             await task
@@ -176,7 +250,7 @@ class LiveListener:
             # сбой уже учтён: он в журнале и поднимается ensure_alive при обращении
             pass
 
-        self._state = ListenerState.STOPPED
+        self._set_state(ListenerState.STOPPED)
 
     async def wait_listening(self, timeout_sec: float) -> None:
         """Ждёт повторного подключения слушателя не дольше timeout_sec; нужен тестам
@@ -200,7 +274,10 @@ class LiveListener:
                 await self._close()
                 raise
             except (psycopg.Error, PostgresError, OSError) as exc:
-                self._state = ListenerState.CONNECTING
+                if self._stopping:
+                    return
+
+                self._set_state(ListenerState.CONNECTING)
                 await self._close()
                 logger.warning("live listener lost the connection: %s", exc)
                 self._ready.set()
@@ -209,7 +286,7 @@ class LiveListener:
             except MessageBusError as exc:
                 # сбой подписчика или негодное уведомление: слушатель встаёт, шина
                 # отказывает при следующем обращении, а не молчит
-                self._state = ListenerState.FAILED
+                self._set_state(ListenerState.FAILED)
                 self._failure = exc
                 await self._close()
                 logger.exception("live listener stopped: %s", exc)
@@ -224,7 +301,7 @@ class LiveListener:
                 channel=sql.Identifier(LiveChannel.LIVE.value)
             )
         )
-        self._state = ListenerState.LISTENING
+        self._set_state(ListenerState.LISTENING)
         self._connections += 1
         self._ready.set()
         logger.info("live listener connected (pid %d)", conn.info.backend_pid)
@@ -253,8 +330,8 @@ class LiveListener:
 
 
 class PgMessageBus(MessageBus):
-    """Шина процесса на таблицах схемы чата: публикует через пул, принимает через
-    LiveListener; один экземпляр на процесс.
+    """Шина процесса на таблицах схемы чата: публикует через пул соединений,
+    принимает через LiveListener; один экземпляр на процесс.
     """
 
     def __init__(
@@ -323,8 +400,11 @@ class PgMessageBus(MessageBus):
                         insert into {instances} ({id}, {app}, {host})
                         values (%(id)s, %(app)s, %(host)s)
                         on conflict ({id}) do update
-                        set {app} = excluded.{app}, {host} = excluded.{host},
-                            {started} = now(), {heartbeat} = now()
+                        set
+                            {app} = excluded.{app},
+                            {host} = excluded.{host},
+                            {started} = now(),
+                            {heartbeat} = now()
                         """
                     ).format(
                         instances=self._table(ChatTable.LIVE_INSTANCES),
@@ -431,6 +511,30 @@ class PgMessageBus(MessageBus):
                 on {locks} (scope_kind, scope_id)
                 """
             ).format(locks=self._table(ChatTable.LIVE_LOCKS)),
+            sql.SQL(
+                """
+                create unlogged table if not exists {payloads} (
+                    scope_kind text not null
+                        check (scope_kind in ('chat', 'workflow', 'job')),
+                    scope_id   uuid not null,
+                    id         uuid primary key,
+                    body       json not null,
+                    at         timestamptz not null default now()
+                )
+                """
+            ).format(payloads=self._table(ChatTable.LIVE_PAYLOADS)),
+            sql.SQL(
+                """
+                alter table {payloads}
+                    alter column body type json using body::text::json
+                """
+            ).format(payloads=self._table(ChatTable.LIVE_PAYLOADS)),
+            sql.SQL(
+                """
+                create index if not exists idx_live_payloads_scope
+                on {payloads} (scope_kind, scope_id)
+                """
+            ).format(payloads=self._table(ChatTable.LIVE_PAYLOADS)),
         )
 
     async def start(self) -> None:
@@ -472,12 +576,17 @@ class PgMessageBus(MessageBus):
                         """
                         insert into {events}
                             ({scope_kind}, {scope_id}, {seq}, {kind}, {origin}, {body})
-                        select %(scope_kind)s, %(scope_id)s,
-                               coalesce(max({seq}), 0) + 1,
-                               %(kind)s, %(origin)s, %(body)s
-                          from {events}
-                         where {scope_kind} = %(scope_kind)s
-                           and {scope_id} = %(scope_id)s
+                        select
+                            %(scope_kind)s,
+                            %(scope_id)s,
+                            coalesce(max({seq}), 0) + 1,
+                            %(kind)s,
+                            %(origin)s,
+                            %(body)s
+                        from {events}
+                        where 1=1
+                            and {scope_kind} = %(scope_kind)s
+                            and {scope_id} = %(scope_id)s
                         returning {seq}
                         """
                     ).format(
@@ -528,15 +637,20 @@ class PgMessageBus(MessageBus):
         scope_id: UUID,
         token: LockToken,
     ) -> None:
-        """Держатель доказывает право писать: его блокировка жива и token совпадает."""
+        """Проверяет, что блокировка держателя жива и token совпадает; иначе
+        публикация отвергается LockLostError.
+        """
         cur = await conn.execute(
             sql.SQL(
                 """
-                select 1 from {locks}
-                 where {scope_kind} = %(scope_kind)s
-                   and {scope_id} = %(scope_id)s
-                   and {token} = %(token)s
-                   and {heartbeat} + make_interval(secs => {ttl}) >= now()
+                select
+                    1
+                from {locks}
+                where 1=1
+                    and {scope_kind} = %(scope_kind)s
+                    and {scope_id} = %(scope_id)s
+                    and {token} = %(token)s
+                    and {heartbeat} + make_interval(secs => {ttl}) >= now()
                 """
             ).format(
                 locks=self._table(ChatTable.LIVE_LOCKS),
@@ -568,10 +682,20 @@ class PgMessageBus(MessageBus):
                 cur = await conn.execute(
                     sql.SQL(
                         """
-                        insert into {commands}
-                            ({scope_kind}, {scope_id}, {action}, {body}, {by_instance})
-                        values (%(scope_kind)s, %(scope_id)s, %(action)s, %(body)s,
-                                %(by_instance)s)
+                        insert into {commands} (
+                            {scope_kind},
+                            {scope_id},
+                            {action},
+                            {body},
+                            {by_instance}
+                        )
+                        values (
+                            %(scope_kind)s,
+                            %(scope_id)s,
+                            %(action)s,
+                            %(body)s,
+                            %(by_instance)s
+                        )
                         returning {id}
                         """
                     ).format(
@@ -657,8 +781,11 @@ class PgMessageBus(MessageBus):
                     sql.SQL(
                         """
                         update {commands}
-                           set {taken_by} = %(instance)s, {taken_at} = now()
-                         where {id} = %(id)s and {taken_by} is null
+                        set {taken_by} = %(instance)s,
+                            {taken_at} = now()
+                        where 1=1
+                            and {id} = %(id)s
+                            and {taken_by} is null
                         """
                     ).format(
                         commands=self._table(ChatTable.LIVE_COMMANDS),
@@ -685,8 +812,9 @@ class PgMessageBus(MessageBus):
                     sql.SQL(
                         """
                         delete from {events}
-                         where {scope_kind} = %(scope_kind)s
-                           and {scope_id} = %(scope_id)s
+                        where 1=1
+                            and {scope_kind} = %(scope_kind)s
+                            and {scope_id} = %(scope_id)s
                         """
                     ).format(
                         events=self._table(ChatTable.LIVE_EVENTS),
@@ -701,7 +829,8 @@ class PgMessageBus(MessageBus):
                     sql.SQL(
                         """
                         delete from {commands}
-                         where {scope_kind} = %(scope_kind)s
+                         where 1=1
+                           and {scope_kind} = %(scope_kind)s
                            and {scope_id} = %(scope_id)s
                         """
                     ).format(
@@ -719,6 +848,73 @@ class PgMessageBus(MessageBus):
         self._last_seen.pop(scope, None)
         return removed
 
+    async def queue_usage(self) -> float:
+        """Возвращает долю занятой очереди уведомлений Postgres: 0 — пусто, 1 —
+        полна.
+        """
+        pool = await self._pool()
+        try:
+            async with pool.cursor() as cur:
+                await cur.execute("select pg_notification_queue_usage()", prepare=False)
+                row = await cur.fetchone()
+        except (psycopg.Error, PostgresError) as exc:
+            msg = "message bus: queue usage is not available"
+            raise MessageBusError(msg) from exc
+
+        if row is None:
+            return 0.0
+
+        return float(row[0])
+
+    async def purge_idle(self, max_age_sec: int) -> int:
+        """Удаляет события и команды областей, в которых ничего не происходило дольше
+        max_age_sec; возвращает число удалённых событий.
+        """
+        pool = await self._pool()
+        try:
+            async with pool.connection() as conn, conn.transaction():
+                cur = await conn.execute(
+                    sql.SQL(
+                        """
+                        delete from {events} e
+                        where not exists (
+                            select 1 from {events} f
+                            where 1=1
+                              and f.{scope_kind} = e.{scope_kind}
+                              and f.{scope_id} = e.{scope_id}
+                              and f.{at} + make_interval(secs => %(age)s) >= now()
+                         )
+                        """
+                    ).format(
+                        events=self._table(ChatTable.LIVE_EVENTS),
+                        scope_kind=LiveEventsColumn.SCOPE_KIND.ident(),
+                        scope_id=LiveEventsColumn.SCOPE_ID.ident(),
+                        at=LiveEventsColumn.AT.ident(),
+                    ),
+                    {"age": max_age_sec},
+                    prepare=False,
+                )
+                removed = cur.rowcount
+                await conn.execute(
+                    sql.SQL(
+                        """
+                        delete from {commands}
+                        where 1=1
+                        and {at} + make_interval(secs => %(age)s) < now()
+                        """
+                    ).format(
+                        commands=self._table(ChatTable.LIVE_COMMANDS),
+                        at=LiveCommandsColumn.AT.ident(),
+                    ),
+                    {"age": max_age_sec},
+                    prepare=False,
+                )
+        except (psycopg.Error, PostgresError) as exc:
+            msg = "message bus: purge of idle scopes failed"
+            raise MessageBusError(msg) from exc
+
+        return removed
+
     async def _rows_after(self, scope: Scope, after_seq: int) -> Sequence[DictRow]:
         scope_id = self._scope_id(scope)
         pool = await self._pool()
@@ -728,12 +924,17 @@ class PgMessageBus(MessageBus):
                 await cur.execute(
                     sql.SQL(
                         """
-                        select {seq}, {origin}, {body}, {at}
-                          from {events}
-                         where {scope_kind} = %(scope_kind)s
-                           and {scope_id} = %(scope_id)s
-                           and {seq} > %(after)s
-                         order by {seq}
+                        select
+                            {seq},
+                            {origin},
+                            {body},
+                            {at}
+                        from {events}
+                        where 1=1
+                            and {scope_kind} = %(scope_kind)s
+                            and {scope_id} = %(scope_id)s
+                            and {seq} > %(after)s
+                        order by {seq}
                         """
                     ).format(
                         events=self._table(ChatTable.LIVE_EVENTS),

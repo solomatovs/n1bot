@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -297,6 +297,9 @@ class ToolStopped(Message):
 
 class TurnFinished(Message):
     """Ход turn_id закончился с исходом outcome; reason — текст для пользователя."""
+
+    HOLDER_GONE: ClassVar[str] = "stopped: the process running this turn is gone"
+    """Причина, с которой сторож закрывает ход умершего держателя."""
 
     kind: Literal[MessageKind.TURN_FINISHED] = MessageKind.TURN_FINISHED
     turn_id: str = Field(min_length=1)

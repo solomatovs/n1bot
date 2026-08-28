@@ -14,7 +14,7 @@ from boba.canvas.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
 from boba.chainlit.chat.feed import TurnFeed
-from boba.chainlit.chat.history import GraphTurnHistory, ThreadRewind
+from boba.chainlit.chat.history import GraphTurnHistory, InterruptedTurn, ThreadRewind
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import SettingsPanel
 from boba.chainlit.chat.tracing import LlmStateLog
@@ -30,7 +30,7 @@ from boba.chainlit.infra.providers import (
     session_profile,
 )
 from boba.chainlit.infra.session import ChainlitSession, current_session
-from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadRoom
+from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadLive, ThreadRoom
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
 from boba.chainlit.rendering.renderer import ChatRenderers
 from boba.chat.profiles import (
@@ -134,6 +134,17 @@ async def on_message(  # noqa: PLR0913
 
 
 chainlit_config.code.on_message = wrap_user_function(on_message)
+
+
+def _root_bus() -> PgMessageBus:
+    """Шина процесса из корневого контейнера для обработчиков без DI-инъекции."""
+    root = Container.root
+    if root is None:
+        raise InternalServiceError(
+            internal_detail="DI container is not initialised", user_detail=None
+        )
+
+    return root.resolved(runtime.message_bus)
 
 
 @cl.set_chat_profiles
@@ -419,7 +430,11 @@ async def on_canvas_render_status(action: cl.Action) -> None:
 
 @cl.on_chat_resume
 @chainlit_error_ctx_handler
-async def on_chat_resume(thread_dict: ThreadDict):
+@di_inject
+async def on_chat_resume(
+    thread_dict: ThreadDict,
+    graph: Annotated[CompiledStateGraph, Depends(langchain_agent, scope="session")],
+):
     """Вкладка вернулась к треду: если ход жив — сохранить loading и живые шаги.
 
     task_start уже отправлен обёрткой chainlit вокруг хендлера; её же task_end
@@ -429,7 +444,6 @@ async def on_chat_resume(thread_dict: ThreadDict):
     """
     thread_id = thread_dict[ThreadField.ID]
     turn = ChatTurn.active(thread_id)
-    renderer = ChatRenderers.get(thread_id)
 
     room: list[str] = []
     for session in ThreadRoom.sessions(thread_id):
@@ -437,7 +451,7 @@ async def on_chat_resume(thread_dict: ThreadDict):
 
     turn_state = "none"
     if turn is not None:
-        turn_state = "alive"
+        turn_state = "local"
 
     logger.info(
         "resume thread %s: turn=%s, thread sessions=%s, current session=%s",
@@ -447,10 +461,26 @@ async def on_chat_resume(thread_dict: ThreadDict):
         current_session().id,
     )
 
-    if turn is None:
+    if turn is not None:
+        renderer = ChatRenderers.get(thread_id)
+        if renderer is None:
+            return
+
+        renderer.resume_into(thread_dict)
+        ThreadRoom.keep_loading()
         return
 
-    if renderer is None:
+    # ход ведёт другой инстанс: рендерер этого процесса догоняет его по шине
+    if not await ThreadLive.turn_alive(thread_id):
+        return
+
+    renderer = ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
+    caught = await renderer.catch_up(_root_bus())
+    logger.info("resume thread %s: foreign turn, caught up: %s", thread_id, caught)
+    if caught.interrupted:
+        await InterruptedTurn(graph, thread_id).remember(caught.interrupted)
+
+    if not caught.alive:
         return
 
     renderer.resume_into(thread_dict)

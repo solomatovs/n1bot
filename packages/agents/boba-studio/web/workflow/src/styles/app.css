@@ -1882,6 +1882,11 @@ button {
   background: var(--error);
 }
 
+.lamp--degraded {
+  background: var(--status-running, var(--signal));
+  box-shadow: 0 0 6px var(--status-running, var(--signal));
+}
+
 @keyframes lamp-pulse {
   50% {
     opacity: 0.35;

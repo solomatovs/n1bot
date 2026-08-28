@@ -11,23 +11,55 @@ const EVENT = {
   unsubscribe: "unsubscribe",
   runState: "run_state",
   refused: "refused",
+  busState: "bus_state",
 } as const;
+
+/** Состояние слушателя шины на сервере — те же значения, что у ListenerState. */
+export const BUS_STATE = {
+  stopped: "stopped",
+  connecting: "connecting",
+  listening: "listening",
+  failed: "failed",
+} as const;
+
+export type BusState = (typeof BUS_STATE)[keyof typeof BUS_STATE];
+
+/** Что видит сокет сам по себе: подключение, связь, обрыв. */
+export type LinkState = "connecting" | "connected" | "disconnected";
 
 export type SnapshotListener = (snapshot: RunSnapshot) => void;
 export type RefusalListener = (reason: string) => void;
 
-/** Состояние сокета для индикатора: подключается, подключён, оборван (с причиной). */
+/** Состояние живой связи для лампочки: сокет плюс слушатель шины на сервере;
+ * degraded — сокет есть, но сервер не слушает шину, снимки не придут. */
 export type SocketStatus = {
-  state: "connecting" | "connected" | "disconnected";
+  state: LinkState | "degraded";
   detail: string;
+  bus: BusState;
 };
+
+/** Сводит состояние сокета и слушателя шины в одно состояние лампочки. */
+export function lampStatus(link: LinkState, linkDetail: string, bus: BusState): SocketStatus {
+  if (link !== "connected") {
+    return { state: link, detail: linkDetail, bus };
+  }
+
+  if (bus !== BUS_STATE.listening) {
+    return { state: "degraded", detail: `server bus listener is ${bus}`, bus };
+  }
+
+  return { state: "connected", detail: linkDetail, bus };
+}
 
 export type StatusListener = (status: SocketStatus) => void;
 
 /** Один сокет на приложение: живые снимки запусков и состояние связи для лампочки. */
 export class RunSocket {
   private readonly socket: Socket;
-  private current: SocketStatus = { state: "connecting", detail: "connecting" };
+  private link: LinkState = "connecting";
+  private linkDetail = "connecting";
+  private bus: BusState = BUS_STATE.connecting;
+  private current: SocketStatus = lampStatus("connecting", "connecting", BUS_STATE.connecting);
   private readonly listeners = new Set<StatusListener>();
 
   constructor(urls: PageUrls) {
@@ -37,17 +69,27 @@ export class RunSocket {
       transports: ["websocket"],
     });
     this.socket.on("connect", () => {
-      this.update({ state: "connected", detail: "live updates on" });
+      this.setLink("connected", "live updates on");
     });
     this.socket.on("disconnect", (reason: string) => {
-      this.update({ state: "disconnected", detail: `disconnected: ${reason}` });
+      this.setLink("disconnected", `disconnected: ${reason}`);
     });
     this.socket.on("connect_error", (error: Error) => {
-      this.update({ state: "disconnected", detail: `connect error: ${error.message}` });
+      this.setLink("disconnected", `connect error: ${error.message}`);
     });
     this.socket.io.on("reconnect_attempt", () => {
-      this.update({ state: "connecting", detail: "reconnecting" });
+      this.setLink("connecting", "reconnecting");
     });
+    this.socket.on(EVENT.busState, (payload: unknown) => {
+      this.bus = busStateOf(payload);
+      this.update(lampStatus(this.link, this.linkDetail, this.bus));
+    });
+  }
+
+  private setLink(link: LinkState, detail: string): void {
+    this.link = link;
+    this.linkDetail = detail;
+    this.update(lampStatus(link, detail, this.bus));
   }
 
   get status(): SocketStatus {
@@ -110,6 +152,20 @@ export class RunSocket {
   close(): void {
     this.socket.close();
   }
+}
+
+/** Разбирает событие bus_state; незнакомое значение считается сбоем слушателя. */
+export function busStateOf(payload: unknown): BusState {
+  if (typeof payload === "object" && payload !== null && "listener" in payload) {
+    const value = String(payload.listener);
+    for (const known of Object.values(BUS_STATE)) {
+      if (known === value) {
+        return known;
+      }
+    }
+  }
+
+  return BUS_STATE.failed;
 }
 
 function reasonOf(payload: unknown): string {

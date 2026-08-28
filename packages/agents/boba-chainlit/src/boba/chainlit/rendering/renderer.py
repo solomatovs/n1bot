@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, ClassVar, Protocol
+
+from pydantic import BaseModel, ConfigDict
 
 from boba.canvas.canvas import CanvasSignal
 from boba.chainlit.domain.fields import StepField, ThreadField
@@ -50,7 +52,7 @@ from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step, StepDict
 from chainlit.types import ThreadDict
 
-__all__ = ["ChatRenderer", "ChatRenderers", "NoSurface", "RenderSurface"]
+__all__ = ["CatchUp", "ChatRenderer", "ChatRenderers", "NoSurface", "RenderSurface"]
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +84,8 @@ class RenderSurface(Protocol):
 
 
 class NoSurface(RenderSurface):
-    """Поверхность без вывода: лента пишется только в sink, как при сборке истории и в
-    тестах.
+    """Поверхность без вывода: лента пишется только в sink, как при сборке истории и
+    в тестах.
     """
 
     def context(self) -> ChainlitContext | None:
@@ -105,9 +107,20 @@ class SignalType:
     KERBEROS_REFRESH: ClassVar[str] = "boba:kerberos-refresh"
 
 
+class CatchUp(BaseModel):
+    """Итог догона области: идёт ли ход, и если последний ход закрыл сторож за
+    умершего держателя — причина в interrupted (иначе пусто).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    alive: bool
+    interrupted: str
+
+
 class ChatRenderer:
-    """Получатель сообщений одного треда: превращает конверты шины в шаги ленты
-    chainlit и держит карту шагов инструментов по call_id.
+    """Получает сообщения одного треда из шины и превращает их в шаги ленты chainlit;
+    карта шагов инструментов по call_id связывает начало вызова с его итогом.
     """
 
     def __init__(
@@ -326,9 +339,52 @@ class ChatRenderer:
 
         await show_error(text, author=level.value.capitalize())
 
+    async def catch_up(self, bus: MessageBus) -> CatchUp:
+        """Догоняет область по сохранённым сообщениям шины: применяет всё от
+        последнего TurnStarted, если ход не закончен, иначе сообщает, чем он
+        закончился.
+        """
+        stored = await bus.replay(self._scope, 0)
+
+        start = -1
+        for index, envelope in enumerate(stored):
+            if envelope.message.kind is MessageKind.TURN_STARTED:
+                start = index
+
+        if start < 0:
+            return CatchUp(alive=False, interrupted="")
+
+        finished = self._finished_after(stored[start:])
+        if finished is not None:
+            return CatchUp(alive=False, interrupted=self._interruption(finished))
+
+        for envelope in stored[start:]:
+            await self.apply(envelope)
+
+        return CatchUp(alive=self.turn_alive, interrupted="")
+
+    @staticmethod
+    def _finished_after(live: Sequence[Envelope]) -> TurnFinished | None:
+        for envelope in live:
+            message = envelope.message
+            if isinstance(message, TurnFinished):
+                return message
+
+        return None
+
+    @staticmethod
+    def _interruption(finished: TurnFinished) -> str:
+        """Возвращает причину остановки, если ход закрыл сторож за умершего
+        держателя; иначе пустую строку.
+        """
+        if finished.reason != TurnFinished.HOLDER_GONE:
+            return ""
+
+        return finished.reason
+
     def resume_steps(self) -> list[StepDict]:
-        """Возвращает открытые шаги хода для вкладки, подключившейся посреди хода: в
-        истории их ещё нет.
+        """Возвращает открытые шаги хода для вкладки, подключившейся посреди хода,
+        потому что в истории их ещё нет.
         """
         steps: list[StepDict] = []
         if container := self._view.container_step:

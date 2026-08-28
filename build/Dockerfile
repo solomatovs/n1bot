@@ -238,7 +238,7 @@ COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
 RUN set -eu                                                                   \
     && uv pip install --python "$(command -v python3)" --target /opt/app-site \
         --constraint /tmp/wheels/constraints.txt                              \
-        --find-links=/tmp/wheels boba-chainlit 'boba-llm[generation]'         \
+        --find-links=/tmp/wheels boba-chainlit boba-studio 'boba-llm[generation]' \
     && rm -rf /tmp/wheels
 
 # фронт chainlit тянет шрифт и стили формул с CDN: в закрытом контуре их отдаёт
@@ -257,7 +257,7 @@ RUN set -eu                                                                     
 
 RUN set -eu                                                            \
     && export PYTHONPATH=/opt/app-site                                 \
-    && python3 -c "import boba.chainlit; print('app-site ok')"         \
+    && python3 -c "import boba.chainlit, boba.studio; print('app-site ok')" \
     && python3 -c "import onnxruntime_genai; print('genai ok')"        \
     && python3 -c "import importlib.metadata as md;                    \
 print('\\n'.join(sorted(d.metadata['Name'] for d in md.distributions() \

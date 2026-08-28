@@ -89,6 +89,33 @@ class GraphTurnHistory(TurnHistory):
         logger.info("history record written: %s", record.mark.value)
 
 
+class InterruptedTurn:
+    """Дописывает в историю треда отметку STOPPED о ходе, который сторож закрыл за
+    умершего держателя; пишет тот инстанс, у которого есть граф треда, и не
+    дублирует уже существующую отметку.
+    """
+
+    def __init__(self, graph: CompiledStateGraph, thread_id: str) -> None:
+        self._graph = graph
+        self._thread_id = thread_id
+
+    async def remember(self, reason: str) -> bool:
+        """Дописывает отметку STOPPED с причиной и возвращает True; False — отметка
+        уже стоит.
+        """
+        config = RunnableConfig(configurable={"thread_id": self._thread_id})
+        state = await self._graph.aget_state(config)
+        messages = list(state.values.get("messages", []))
+        if messages:
+            last = messages[-1]
+            if last.additional_kwargs.get(TurnMark.STOPPED.value):
+                return False
+
+        record = TurnRecord(content=f"_{reason}_", mark=TurnMark.STOPPED)
+        await GraphTurnHistory(self._graph, self._thread_id).remember(record)
+        return True
+
+
 class ThreadMessages(Protocol):
     """Источник сообщений треда, из которых собирается лента."""
 

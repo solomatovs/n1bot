@@ -15,6 +15,8 @@ from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.renderer import ChatRenderers, RenderSurface
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
+from boba.identity.locks import LockMode
+from boba.identity.run import RunRegistry
 from boba.messaging import CanvasChanged, LockToken, Notice, NoticeLevel
 from boba.runtime import providers as runtime
 from boba.runtime.di import Container
@@ -29,6 +31,7 @@ __all__ = [
     "ChatRoomSurface",
     "StickyLoadingEmitter",
     "ThreadEmitter",
+    "ThreadLive",
     "ThreadRoom",
 ]
 
@@ -194,9 +197,30 @@ class ChatRoomSurface(RenderSurface):
         )
 
 
+class ThreadLive:
+    """Отвечает, идёт ли ход треда где бы то ни было: в реестре этого процесса или
+    под живой монопольной блокировкой другого инстанса.
+    """
+
+    @staticmethod
+    async def turn_alive(thread_id: str) -> bool:
+        if RunRegistry.active(thread_id) is not None:
+            return True
+
+        root = Container.root
+        if root is None:
+            return False
+
+        locks = root.resolved(runtime.live_locks)
+        holders = await locks.holders_of(Scope.chat(thread_id))
+        exclusive = [holder for holder in holders if holder.mode is LockMode.EXCLUSIVE]
+
+        return bool(exclusive)
+
+
 class ChatNotices:
-    """Уведомления пользователю вне хода: публикует Notice в область треда текущей
-    сессии.
+    """Публикует уведомление Notice в область треда текущей сессии для действий вне
+    хода, чтобы его показал рендерер треда.
     """
 
     @staticmethod

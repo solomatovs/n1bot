@@ -20,6 +20,7 @@ from boba.identity.api import (
 )
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.signin import SignedIn
+from boba.runtime.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer, SessionCookie
@@ -104,6 +105,7 @@ class OpenApiDocument:
             sso_tickets=cls._no_tickets,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
+            bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
         )
 
     @staticmethod
