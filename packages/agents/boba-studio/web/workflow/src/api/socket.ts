@@ -1,7 +1,13 @@
 import { io, type Socket } from "socket.io-client";
 
 import type { PageUrls } from "../config";
-import { RunSnapshotSchema, withKnownResults, type RunSnapshot } from "../model/workflow";
+import {
+  RunSnapshotSchema,
+  UserEventSchema,
+  withKnownResults,
+  type RunSnapshot,
+  type UserEvent,
+} from "../model/workflow";
 
 /** События namespace /workflow — те же имена, что у WorkflowSocketEvent на сервере. */
 const NAMESPACE = "/workflow";
@@ -12,6 +18,7 @@ const EVENT = {
   runState: "run_state",
   refused: "refused",
   busState: "bus_state",
+  userEvent: "user_event",
 } as const;
 
 /** Состояние слушателя шины на сервере — те же значения, что у ListenerState. */
@@ -28,6 +35,7 @@ export type BusState = (typeof BUS_STATE)[keyof typeof BUS_STATE];
 export type LinkState = "connecting" | "connected" | "disconnected";
 
 export type SnapshotListener = (snapshot: RunSnapshot) => void;
+export type UserEventListener = (event: UserEvent) => void;
 export type RefusalListener = (reason: string) => void;
 
 /** Состояние живой связи для лампочки: сокет плюс слушатель шины на сервере;
@@ -110,6 +118,22 @@ export class RunSocket {
     for (const listener of this.listeners) {
       listener(status);
     }
+  }
+
+  /** События лент пользователя (запуски, workflow, соединения) с любого инстанса;
+   * незнакомое событие пропускается — фронт старее сервера. */
+  onUser(listener: UserEventListener): () => void {
+    const deliver = (payload: unknown): void => {
+      const parsed = UserEventSchema.safeParse(payload);
+      if (parsed.success) {
+        listener(parsed.data);
+      }
+    };
+
+    this.socket.on(EVENT.userEvent, deliver);
+    return () => {
+      this.socket.off(EVENT.userEvent, deliver);
+    };
   }
 
   subscribe(runId: string, onSnapshot: SnapshotListener, onRefused: RefusalListener): () => void {

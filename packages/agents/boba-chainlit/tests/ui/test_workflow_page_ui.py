@@ -279,3 +279,36 @@ def test_profile_chip_switches_the_catalog_and_survives_reload(
 
     page.locator(Selector.PROFILE_SELECT).select_option("general")
     expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
+
+
+def test_second_tab_sees_a_new_run_through_the_bus(
+    page: Page, browser: Browser, stand: StandProcess
+) -> None:
+    """Вторая вкладка не перезагружается: новый запуск приходит событием ленты."""
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_cookies(login_cookies(stand))
+    other = context.new_page()
+    other.set_default_timeout(PAGE_TIMEOUT_MS)
+    try:
+        _open(other, stand, "/observe")
+        items = other.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
+        expect(items.first).to_be_visible()
+        before = items.count()
+        requests: list[str] = []
+        other.on("request", lambda request: requests.append(request.url))
+
+        _open(page, stand, "/observe")
+        page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
+        page.get_by_role("button", name=re.compile("Re-run")).click()
+        expect(page).to_have_url(re.compile(r"/workflow/observe/[0-9a-f-]+$"))
+        expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
+
+        expect(
+            other.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
+        ).to_have_count(before + 1)
+        assert any("/workflow-runs?" in url for url in requests)
+        assert not any(
+            url.endswith("/observe") and "navigate" in url for url in requests
+        )
+    finally:
+        context.close()

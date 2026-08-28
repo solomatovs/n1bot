@@ -564,6 +564,7 @@ class StubRefs:
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
+            message_bus=lambda: MemoryMessageBus("stand"),
         )
 
     @staticmethod
@@ -588,6 +589,7 @@ class StubRefs:
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
+            message_bus=lambda: MemoryMessageBus("stand"),
         )
 
 

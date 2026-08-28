@@ -58,6 +58,7 @@ class WorkflowSocketEvent(StrEnum):
     RUN_STATE = "run_state"
     REFUSED = "refused"
     BUS_STATE = "bus_state"
+    USER_EVENT = "user_event"
 
 
 class Subscription(BaseModel):
@@ -76,6 +77,16 @@ class RunRoom:
     @classmethod
     def of(cls, run_id: UUID) -> str:
         return f"{cls.PREFIX}{run_id}"
+
+
+class UserRoom:
+    """Имя комнаты пользователя: в неё приходят изменения его лент."""
+
+    PREFIX: ClassVar[str] = "user:"
+
+    @classmethod
+    def of(cls, user_id: int) -> str:
+        return f"{cls.PREFIX}{user_id}"
 
 
 class WorkflowNamespace(socketio.AsyncNamespace):
@@ -104,6 +115,8 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         self._subjects: dict[str, Subject] = {}
         self._leaves: dict[UUID, Callable[[], None]] = {}
         self._rooms: dict[UUID, set[str]] = {}
+        self._user_leaves: dict[int, Unsubscribe] = {}
+        self._user_rooms: dict[int, set[str]] = {}
 
     async def on_connect(self, sid: str, environ: dict[str, Any], auth: Any) -> None:
         user = await self._authenticate(environ)
@@ -118,11 +131,48 @@ class WorkflowNamespace(socketio.AsyncNamespace):
             "workflow socket connect: sid=%s user=%s", sid, identity.subject.login
         )
         self._watch_bus()
+        await self._join_user(sid, identity.subject.user_id)
         await self.emit(
             WorkflowSocketEvent.BUS_STATE.value,
             self._bus_payload(self._bus_watch().state),
             to=sid,
         )
+
+    async def _join_user(self, sid: str, user_id: int) -> None:
+        """Сажает сокет в комнату пользователя и подписывает её на его область."""
+        await self.enter_room(sid, UserRoom.of(user_id))
+        self._user_rooms.setdefault(user_id, set()).add(sid)
+        if user_id in self._user_leaves:
+            return
+
+        service = await self._service()
+
+        async def deliver(envelope: Envelope) -> None:
+            logger.debug(
+                "user event %s to %s", envelope.message.kind, UserRoom.of(user_id)
+            )
+            await self.emit(
+                WorkflowSocketEvent.USER_EVENT.value,
+                envelope.message.model_dump(mode="json"),
+                room=UserRoom.of(user_id),
+            )
+
+        scope = Scope.user(user_id)
+        self._user_leaves[user_id] = service.bus.subscribe(scope, deliver)
+
+    def _leave_user(self, user_id: int, sid: str) -> None:
+        sids = self._user_rooms.get(user_id)
+        if sids is None:
+            return
+
+        sids.discard(sid)
+        if sids:
+            return
+
+        del self._user_rooms[user_id]
+        leave = self._user_leaves.pop(user_id, None)
+        if leave is not None:
+            leave()
 
     def _watch_bus(self) -> None:
         """Подписывает namespace на смену состояния слушателя шины при первом
@@ -144,9 +194,12 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         return {"listener": state.value}
 
     async def on_disconnect(self, sid: str, reason: str = "") -> None:
-        self._subjects.pop(sid, None)
+        subject = self._subjects.pop(sid, None)
         for run_id in list(self._rooms):
             self._forget(run_id, sid)
+
+        if subject is not None:
+            self._leave_user(subject.user_id, sid)
 
         logger.info("workflow socket disconnect: sid=%s reason=%s", sid, reason)
 

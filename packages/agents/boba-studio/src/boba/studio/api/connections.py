@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
 from fastapi import APIRouter, HTTPException
@@ -40,8 +40,10 @@ from boba.connections.profile import (
     StoredConnection,
 )
 from boba.identity.api import ApiSubject
-from boba.identity.context import Subject
+from boba.identity.context import Scope, Subject
+from boba.identity.locks import LockToken
 from boba.krb import KerberosCredentials
+from boba.messaging import ChangeAction, ConnectionsChanged, MessageBus
 from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import ConnectionUrl
 
@@ -71,6 +73,10 @@ class MaskedSecrets:
                     return True
 
         return False
+
+
+BusSource = Callable[[], MessageBus]
+"""Шина процесса; зовётся на запрос."""
 
 
 class ConnectionBody(BaseModel):
@@ -148,11 +154,27 @@ class ConnectionsApi:
     TAG: ClassVar[str] = "connections"
 
     def __init__(
-        self, store: StoreRef, profiles: ChatProfiles, tickets: TicketsRef
+        self,
+        store: StoreRef,
+        profiles: ChatProfiles,
+        tickets: TicketsRef,
+        bus: BusSource,
     ) -> None:
         self._store = store
         self._profiles = profiles
         self._tickets = tickets
+        self._bus = bus
+
+    async def _changed(
+        self, subject: Subject, connection_id: int, name: str, action: ChangeAction
+    ) -> None:
+        """Сообщает ленте соединений пользователя на всех инстансах об изменении."""
+        message = ConnectionsChanged(
+            connection_id=connection_id, name=name, action=action
+        )
+        await self._bus().publish(
+            Scope.user(subject.user_id), message, LockToken.local()
+        )
 
     def mount(self, router: APIRouter) -> None:
         routes = (
@@ -214,6 +236,7 @@ class ConnectionsApi:
         except ConnectionStoreError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+        await self._changed(subject, connection_id, body.name, ChangeAction.CREATED)
         return ConnectionView.of(row, mine=True)
 
     async def replace(
@@ -237,6 +260,7 @@ class ConnectionsApi:
         except ConnectionStoreError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+        await self._changed(subject, connection_id, body.name, ChangeAction.UPDATED)
         return ConnectionView.of(row, mine=True)
 
     async def delete(
@@ -248,9 +272,13 @@ class ConnectionsApi:
         await self._require_owned(store, subject, connection_id)
 
         try:
+            row = await store.get(connection_id)
             deleted = await store.remove(connection_id)
         except ConnectionStoreError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        if deleted:
+            await self._changed(subject, connection_id, row.name, ChangeAction.DELETED)
 
         return ConnectionDeleted(deleted=deleted)
 

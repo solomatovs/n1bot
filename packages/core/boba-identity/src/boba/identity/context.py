@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -57,6 +57,7 @@ class ScopeKind(StrEnum):
     CHAT = "chat"
     WORKFLOW = "workflow"
     JOB = "job"
+    USER = "user"
 
 
 class Scope(BaseModel):
@@ -93,6 +94,15 @@ class Scope(BaseModel):
     def workflow(cls, run_id: UUID) -> Scope:
         """Область запуска workflow: run_id — ключ реестра запусков и журнала."""
         return cls(kind=ScopeKind.WORKFLOW, id=str(run_id))
+
+    USER_NAMESPACE: ClassVar[UUID] = UUID("3b7f0c2e-5d2a-4e1b-9c8d-7a6f5e4d3c2b")
+
+    @classmethod
+    def user(cls, user_id: int) -> Scope:
+        """Область пользователя для его лент (запуски, workflow, соединения); id —
+        uuid5 от users.id, чтобы область была uuid без обращения к таблице.
+        """
+        return cls(kind=ScopeKind.USER, id=str(uuid5(cls.USER_NAMESPACE, str(user_id))))
 
 
 class Subject(BaseModel):

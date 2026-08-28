@@ -90,8 +90,10 @@ class TurnFeed:
     async def _publish(self, message: AnyMessage) -> None:
         await self._bus.publish(self._scope, message, self._token)
 
-    async def started(self, key: str) -> None:
-        await self._publish(TurnStarted(turn_id=self._turn_id, key=key))
+    async def started(self, key: str, question: str) -> None:
+        ref = await self._payloads.put(self._scope, question)
+        message = TurnStarted(turn_id=self._turn_id, key=key, question=ref)
+        await self._publish(message)
 
     async def model_answered(self) -> None:
         await self._publish(ModelAnswered(turn_id=self._turn_id))

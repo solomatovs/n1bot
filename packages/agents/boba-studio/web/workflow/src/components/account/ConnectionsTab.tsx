@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { type ReactElement, useCallback, useState } from "react";
+import { type ReactElement, useCallback, useState, useEffect } from "react";
 
 import { useServices } from "../../app";
 import { Async } from "../Async";
@@ -12,7 +12,7 @@ type Pick = { kind: "none" } | { kind: "new" } | { kind: "row"; id: number };
 
 /** Вкладка соединений: свои — правятся, общие (по роли) — только просмотр. */
 export function ConnectionsTab(): ReactElement {
-  const { api } = useServices();
+  const { api, socket } = useServices();
   const [rows, reload] = useLoadable(
     useCallback(async () => {
       const [schema, list] = await Promise.all([api.connectionSchema(), api.connections()]);
@@ -20,6 +20,17 @@ export function ConnectionsTab(): ReactElement {
     }, [api]),
   );
   const [pick, setPick] = useState<Pick>({ kind: "none" });
+
+  // соединение, изменённое в другой вкладке или на другом инстансе, приходит по шине
+  useEffect(
+    () =>
+      socket.onUser((event) => {
+        if (event.kind === "connections_changed") {
+          reload();
+        }
+      }),
+    [socket, reload],
+  );
 
   const renderRows = ({ doc, list: loaded }: { doc: SchemaDoc; list: ConnectionView[] }): ReactElement => {
     const mine = loaded.filter((row) => row.mine);
