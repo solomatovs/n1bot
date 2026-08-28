@@ -519,6 +519,8 @@ def di_root() -> Iterator[None]:
     ChainlitSessions.install(sessions)
     root.provide(session_source, sessions)
     root.provide(runtime.live_locks, MemoryLiveLocks("test-chainlit", 20))
+    root.provide(runtime.message_bus, MemoryMessageBus("test-chainlit"))
+    root.provide(runtime.payload_store, MemoryPayloadStore())
     Container.set_root(root)
     try:
         yield

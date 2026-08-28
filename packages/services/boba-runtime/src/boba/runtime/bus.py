@@ -334,6 +334,9 @@ class PgMessageBus(MessageBus):
     принимает через LiveListener; один экземпляр на процесс.
     """
 
+    SETUP_LOCK: ClassVar[str] = "boba-live-setup"
+    """Ключ advisory-lock, под которым процессы по очереди создают live-таблицы."""
+
     def __init__(
         self,
         cfg: PostgresConfig,
@@ -380,14 +383,21 @@ class PgMessageBus(MessageBus):
         pool = await self._pool()
 
         try:
-            async with pool.connection() as conn:
+            async with pool.connection() as conn, conn.transaction():
+                # процессы кластера стартуют разом: DDL по очереди под advisory-lock
+                await conn.execute(
+                    "select pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
+                    {"key": self.SETUP_LOCK},
+                    prepare=False,
+                )
                 try:
-                    await conn.execute(
-                        sql.SQL("create schema if not exists {schema}").format(
-                            schema=sql.Identifier(self._schema)
-                        ),
-                        prepare=False,
-                    )
+                    async with conn.transaction():
+                        await conn.execute(
+                            sql.SQL("create schema if not exists {schema}").format(
+                                schema=sql.Identifier(self._schema)
+                            ),
+                            prepare=False,
+                        )
                 except InsufficientPrivilege:
                     logger.info("no permission for create schema %r", self._schema)
 

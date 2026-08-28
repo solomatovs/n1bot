@@ -216,6 +216,9 @@ class ChatRenderer:
         self._view.begin_turn(key)
 
     async def _on_turn_started(self, message: TurnStarted) -> None:
+        logger.info(
+            "thread %s: turn %s is rendered here", self._thread_id, message.turn_id
+        )
         self.begin_turn(message.key)
         await self._surface.task_start()
         await self._view.await_model()
