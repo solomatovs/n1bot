@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from typing import ClassVar
 
 import pytest
-from playwright.sync_api import Browser, Page, expect
+from playwright.sync_api import Browser, Page, Request, expect
 
 from ui.conftest import login_cookies
 from ui.stand import StandProcess
@@ -203,6 +203,17 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
     expect(page.locator(Selector.INSPECTOR)).to_contain_text("echo PAGE_ONE")
     # вывод стадии читается из журнала окнами: stdout целиком, не усечённый итог
     expect(page.locator(Selector.OUTPUT_TEXT)).to_contain_text("PAGE_ONE")
+
+    # хвост журнала приходит по шине: законченный запуск панель не опрашивает
+    polled: list[str] = []
+
+    def note_request(request: Request) -> None:
+        if "/streams/" in request.url:
+            polled.append(request.url)
+
+    page.on("request", note_request)
+    page.wait_for_timeout(2500)
+    assert polled == []
 
 
 def test_stop_button_stops_a_running_workflow(page: Page, stand: StandProcess) -> None:

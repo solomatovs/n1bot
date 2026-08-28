@@ -18,8 +18,8 @@ from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import AuthenticatedUser
 from boba.identity.context import CallContext, Scope
-from boba.identity.locks import MemoryLiveLocks, RunLocking
-from boba.messaging import MemoryMessageBus
+from boba.identity.locks import LockMode, LockPurpose, MemoryLiveLocks, RunLocking
+from boba.messaging import MemoryMessageBus, StreamAppended
 from boba.runtime.bus import ListenerState, PgMessageBus, StaticBusWatch
 from boba.runtime.config import AppName
 from boba.runtime.locks import PgLiveLocks
@@ -469,3 +469,61 @@ async def test_user_events_reach_the_room_over_postgres(  # noqa: PLR0913
         assert events[0][1]["kind"] == "workflow_changed"
     finally:
         await bus.stop()
+
+
+async def test_stream_events_reach_the_run_room(
+    namespace: tuple[WorkflowNamespace, Emitted],
+    service: WorkflowService,
+    context: CallContext,
+    bus: MemoryMessageBus,
+) -> None:
+    """Рост журнала стадии приходит подписчикам запуска событием stream_event с полями
+    сообщения и id запуска.
+    """
+    built, emitted = namespace
+    await built.on_connect(SID, {"signed": True}, None)
+
+    stored = await service.save(context.subject, SPEC, {})
+    run_id = service.new_run_id()
+    started = await service.start(context, stored, run_id)
+    await built.on_subscribe(SID, {"run_id": str(run_id)})
+    await asyncio.wait_for(service.execute(context, started), 10)
+
+    # запуск отпустил область: публикуем от имени нового держателя
+    scope = Scope.workflow(run_id)
+    lock = await service.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    try:
+        message = StreamAppended(
+            call_id="call-1", channel="tool_stdout", size=12, closed=False, note=""
+        )
+        await bus.publish(scope, message, lock.token)
+    finally:
+        await service.locks.release(lock.token)
+
+    deadline = asyncio.get_running_loop().time() + 5
+    while not _stream_events(emitted):
+        assert asyncio.get_running_loop().time() < deadline, emitted.events
+        await asyncio.sleep(0.05)
+
+    event, data, room = _stream_events(emitted)[0]
+    assert event == WorkflowSocketEvent.STREAM_EVENT.value
+    assert room == f"run:{run_id}"
+    assert data == {
+        "run_id": str(run_id),
+        "call_id": "call-1",
+        "channel": "tool_stdout",
+        "size": 12,
+        "closed": False,
+        "note": "",
+    }
+
+
+def _stream_events(emitted: Emitted) -> list[tuple[str, Any, str]]:
+    found: list[tuple[str, Any, str]] = []
+    for item in emitted.events:
+        if item[0] != WorkflowSocketEvent.STREAM_EVENT.value:
+            continue
+
+        found.append(item)
+
+    return found

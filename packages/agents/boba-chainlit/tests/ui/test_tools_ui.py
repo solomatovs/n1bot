@@ -575,9 +575,10 @@ class ConfluenceSite:
 
     def _pages_of(self, data: Mapping[str, Any]) -> Iterator[ConfluencePage]:
         for hit in data.get("results") or []:
-            title = str(hit.get("title") or "")
-            if "." in title:
+            if str(hit.get("type") or "") != "page":
                 continue
+
+            title = str(hit.get("title") or "")
 
             space = hit.get("space")
             if not isinstance(space, dict):

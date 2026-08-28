@@ -120,6 +120,9 @@ class StorageStatSource(WatchSource):
     def attach_waker(self) -> asyncio.Event | None:
         return None
 
+    def detach_waker(self, event: asyncio.Event) -> None:
+        return None
+
 
 class StorageHashSource(WatchSource):
     """Слежение за маленьким текстовым файлом по содержимому.
@@ -146,6 +149,9 @@ class StorageHashSource(WatchSource):
         return self._last
 
     def attach_waker(self) -> asyncio.Event | None:
+        return None
+
+    def detach_waker(self, event: asyncio.Event) -> None:
         return None
 
 

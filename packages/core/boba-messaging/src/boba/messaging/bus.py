@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.identity.context import Scope
 from boba.identity.locks import LockLostError, LockToken
-from boba.messaging.messages import AnyCommand, AnyMessage, Message
+from boba.messaging.messages import AnyCommand, AnyMessage, Message, StreamAppended
 
 __all__ = [
     "BusLimit",
@@ -36,6 +36,7 @@ __all__ = [
     "MessageBus",
     "MessageBusError",
     "MessageTooLargeError",
+    "StreamFeed",
     "Unsubscribe",
 ]
 
@@ -115,6 +116,16 @@ class CommandEnvelope(BaseModel):
 Listener = Callable[[Envelope], Awaitable[None]]
 CommandListener = Callable[[CommandEnvelope], Awaitable[None]]
 Unsubscribe = Callable[[], None]
+
+
+class StreamFeed(Protocol):
+    """Приёмник сообщений о росте журнала вызова: запуск отдаёт их владельцу,
+    который публикует их в свою область от имени держателя.
+    """
+
+    @abstractmethod
+    async def stream_appended(self, message: StreamAppended) -> None:
+        """Сообщает получателям, что канал журнала вызова дорос до size байт."""
 
 
 class MessageBus(Protocol):

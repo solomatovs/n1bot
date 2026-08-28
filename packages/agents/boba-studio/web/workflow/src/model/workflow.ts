@@ -332,6 +332,18 @@ export const ChannelViewSchema = z.object({
 });
 export type ChannelView = z.infer<typeof ChannelViewSchema>;
 
+/** Событие журнала стадии из шины (socket.io `stream_event`): канал вызова дорос до size байт
+ * или закрыт; сам текст читается окнами через REST. */
+export const StreamEventSchema = z.object({
+  run_id: z.string(),
+  call_id: z.string(),
+  channel: z.string(),
+  size: z.number(),
+  closed: z.boolean(),
+  note: z.string(),
+});
+export type StreamEvent = z.infer<typeof StreamEventSchema>;
+
 /** Событие ленты пользователя из шины (socket.io `user_event`): те же поля, что у сообщений
  * RunListChanged, WorkflowChanged, ConnectionsChanged на сервере. */
 export const UserEventSchema = z.discriminatedUnion("kind", [

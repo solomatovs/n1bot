@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 from uuid import UUID
 
+from boba.messaging import StreamFeed
 from boba.workflow.graph import RunState
 from boba.workflow.records import StoredRun, StoredWorkflow
 from boba.workflow.spec import WorkflowSpec
@@ -14,8 +15,8 @@ from boba.workflow.spec import WorkflowSpec
 __all__ = ["RunSink", "WorkflowRepository"]
 
 
-class RunSink(Protocol):
-    """Куда уходят снимки состояния по ходу запуска."""
+class RunSink(StreamFeed, Protocol):
+    """Куда уходят снимки состояния и рост журналов вызовов по ходу запуска."""
 
     @abstractmethod
     async def snapshot(self, state: RunState) -> None: ...

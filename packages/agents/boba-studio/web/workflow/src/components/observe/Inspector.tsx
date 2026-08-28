@@ -49,7 +49,7 @@ export function Inspector({ runId, run, task, onClose }: Props): ReactElement {
             )}
           </dl>
           {state.call_id !== "" && (
-            <OutputPanel runId={runId} callId={state.call_id} live={state.status === "running"} />
+            <OutputPanel runId={runId} callId={state.call_id} />
           )}
           <h4 className="eyebrow">args</h4>
           <div className="inspector__code">

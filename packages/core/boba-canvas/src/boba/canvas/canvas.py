@@ -263,6 +263,13 @@ class WatchSource(Protocol):
         """Будильник записи в текущем loop'е; None — источник только поллится."""
         ...
 
+    @abstractmethod
+    def detach_waker(self, event: asyncio.Event) -> None:
+        """Снимает будильник, выданный attach_waker; источнику без будильника
+        снимать нечего.
+        """
+        ...
+
 
 class CanvasViewer(Protocol):
     """Файлы одного вида: какие расширения умеет и чем их описать."""
@@ -485,9 +492,8 @@ class CanvasWatch:
         if transport is None:
             return
 
+        waker = self._source.attach_waker()
         try:
-            waker = self._source.attach_waker()
-
             while self._current():
                 if not transport.alive(self._thread_id):
                     return
@@ -506,6 +512,9 @@ class CanvasWatch:
         except Exception:
             logger.warning("canvas watch stopped: %s", self._path, exc_info=True)
         finally:
+            if waker is not None:
+                self._source.detach_waker(waker)
+
             self._forget()
 
     async def _advance(self, transport: SignalTransport, probe: WatchProbe) -> bool:

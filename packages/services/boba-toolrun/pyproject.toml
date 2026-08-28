@@ -15,6 +15,7 @@ dependencies = [
     "boba-cancellation==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
     "boba-canvas==0.0.14.dev9",
+    "boba-messaging==0.0.14.dev9",
 ]
 
 [tool.setuptools.packages.find]
