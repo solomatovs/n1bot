@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { BUS_STATE, busStateOf, lampStatus } from "./socket";
+import { BUS_STATE, busStateOf, lampStatus, streamEventOf } from "./socket";
 
 describe("lampStatus", () => {
   it("shows the link state while the socket is not connected", () => {
@@ -26,5 +26,28 @@ describe("busStateOf", () => {
     expect(busStateOf({ listener: "connecting" })).toBe(BUS_STATE.connecting);
     expect(busStateOf({ listener: "weird" })).toBe(BUS_STATE.failed);
     expect(busStateOf(null)).toBe(BUS_STATE.failed);
+  });
+});
+
+describe("streamEventOf", () => {
+  it("parses a stream event and rejects a malformed one", () => {
+    const event = streamEventOf({
+      run_id: "run-1",
+      call_id: "call-1",
+      channel: "tool_stdout",
+      size: 12,
+      closed: false,
+      note: "",
+    });
+    expect(event).toEqual({
+      run_id: "run-1",
+      call_id: "call-1",
+      channel: "tool_stdout",
+      size: 12,
+      closed: false,
+      note: "",
+    });
+    expect(streamEventOf({ run_id: "run-1" })).toBeNull();
+    expect(streamEventOf(null)).toBeNull();
   });
 });

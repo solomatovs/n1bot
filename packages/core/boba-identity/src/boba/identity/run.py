@@ -40,6 +40,7 @@ __all__ = [
     "RunPort",
     "RunRefusal",
     "RunRegistry",
+    "StreamObserver",
 ]
 
 logger = logging.getLogger(__name__)
@@ -89,16 +90,28 @@ class LiveStream(Protocol):
     def close(self, note: str) -> None: ...
 
 
+StreamObserver = Callable[[str, LiveStream], None]
+"""Узнаёт об открытом журнале вызова (call_id, stream); зовётся в loop'е запуска."""
+
+
 class RunRegistry:
     """Всё состояние одного идущего запуска под одним ключом scope_id."""
 
     _LOCK: ClassVar[threading.Lock] = threading.Lock()
     _ACTIVE: ClassVar[dict[str, RunRegistry]] = {}
 
-    def __init__(self, context: CallContext, port: RunPort | None) -> None:
+    def __init__(
+        self,
+        context: CallContext,
+        port: RunPort | None,
+        on_stream: StreamObserver | None = None,
+    ) -> None:
         self._context = context
         self._port = port
         self._streams: dict[str, LiveStream] = {}
+        self._notify: tuple[asyncio.AbstractEventLoop, StreamObserver] | None = None
+        if on_stream is not None:
+            self._notify = (asyncio.get_running_loop(), on_stream)
 
     @property
     def scope_id(self) -> str:
@@ -122,15 +135,19 @@ class RunRegistry:
     @classmethod
     @contextmanager
     def open(
-        cls, context: CallContext, port: RunPort | None = None
+        cls,
+        context: CallContext,
+        port: RunPort | None = None,
+        on_stream: StreamObserver | None = None,
     ) -> Generator[RunRegistry, None, None]:
         """Открывает запуск области: контекст и отмена в исполнении, запись в реестре.
 
         Закрытие снимает запись и закрывает живые журналы вызовов — файлы
-        журнала переживают запуск, живые объекты нет.
+        журнала переживают запуск, живые объекты нет. on_stream узнаёт о
+        каждом открытом журнале из loop'а, в котором открыт запуск.
         """
         with context.applied(), context.cancellation.published():
-            registry = cls(context, port)
+            registry = cls(context, port, on_stream)
             cls._register(registry)
             try:
                 yield registry
@@ -201,6 +218,16 @@ class RunRegistry:
         """Регистрирует живой журнал вызова; жизнь журнала кончится с запуском."""
         with self._LOCK:
             self._streams[call_id] = stream
+
+        notify = self._notify
+        if notify is None:
+            return
+
+        loop, observer = notify
+        try:
+            loop.call_soon_threadsafe(observer, call_id, stream)
+        except RuntimeError:
+            logger.warning("stream %s opened after the run loop closed", call_id)
 
     def stream(self, call_id: str) -> LiveStream | None:
         """Живой журнал вызова; None — вызов не журналируется или закончился."""

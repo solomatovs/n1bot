@@ -596,6 +596,9 @@ class TestWatch:
             def attach_waker(self) -> None:
                 return None
 
+            def detach_waker(self, event: asyncio.Event) -> None:
+                return None
+
         async def scenario() -> tuple[list[dict[str, Any]], str | None]:
             transport = FakeTransport()
             CanvasWatch.configure(transport)

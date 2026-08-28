@@ -33,6 +33,7 @@ from boba.toolrun.invoke import (
     InvokeReply,
     ToolInvoker,
 )
+from boba.toolrun.streams import StreamPumps
 from boba.workflow import (
     RunState,
     Stage,
@@ -102,9 +103,16 @@ class WorkflowRunner:
     ) -> tuple[RunState, Mapping[str, ToolResult]]:
         """Запуск до конца или остановки; итог — состояние и результаты задач."""
         session = _RunSession(self, graph, context, sink)
+        pumps = StreamPumps(sink)
 
-        with RunRegistry.open(context), context.cancellation.abort_with(session.abort):
-            return await session.drive()
+        try:
+            with (
+                RunRegistry.open(context, on_stream=pumps.opened),
+                context.cancellation.abort_with(session.abort),
+            ):
+                return await session.drive()
+        finally:
+            await pumps.close()
 
     @staticmethod
     def call_of(graph: WorkflowGraph, task: str, args: Mapping[str, Any]) -> ToolCall:

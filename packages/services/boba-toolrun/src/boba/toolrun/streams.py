@@ -8,15 +8,14 @@ StreamJournalError — журнал недоступен или окно нар�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from enum import StrEnum
 from typing import ClassVar
 
-from pydantic import (
-    ValidationError,
-)
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.canvas.canvas import (
     WatchProbe,
@@ -31,13 +30,17 @@ from boba.canvas.journal import (
     StreamStorePort,
 )
 from boba.identity.run import LiveStream, RunRegistry
+from boba.messaging import StreamAppended, StreamFeed
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolkit.stream import ChannelSinks, StreamSink
 from boba.toolrun.run_log import CallStream
 
 __all__ = [
+    "ChannelProbe",
     "JournalWatchSource",
     "StreamNote",
+    "StreamPump",
+    "StreamPumps",
     "ToolStream",
     "ToolStreams",
 ]
@@ -63,13 +66,23 @@ class StreamNote(StrEnum):
         return piece.note
 
 
+class ChannelProbe(BaseModel):
+    """Состояние одного канала живого вызова: что насос сравнивает между записями."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    channel: JournalChannel
+    probe: WatchProbe
+
+
 class ToolStream(ChannelSinks, CallStream, LiveStream):
-    """Живой вызов инструмента: рекордеры каналов плюс будильник слежения.
+    """Живой вызов инструмента: рекордеры каналов плюс будильники слежения.
 
     Создаётся в потоке исполнения инструмента; свой event loop стрим не
-    запоминает. Будильник подключает слежение из loop'а приложения; вывод,
-    пришедший до подключения, уже лежит в журнале. Канал stdout открывается
-    сразу — панель находит файл до первого байта; остальные — по обращению.
+    запоминает. Будильники подключают слежение и насос шины из loop'а
+    приложения; вывод, пришедший до подключения, уже лежит в журнале. Канал
+    stdout открывается сразу — панель находит файл до первого байта;
+    остальные — по обращению.
     """
 
     def __init__(
@@ -84,7 +97,7 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
         self._journal = journal
         self._protected = protected_prefixes | {key.call_prefix()}
         self._lock = threading.Lock()
-        self._waker: tuple[asyncio.AbstractEventLoop, asyncio.Event] | None = None
+        self._wakers: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
         self._recorders: dict[JournalChannel, StreamRecorderPort] = {}
         self._open(ToolChannel.STDOUT)
 
@@ -113,12 +126,16 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
         return self._open(channel)
 
     def close(self, note: str) -> None:
-        """Закрыть все каналы вызова одной пометкой; повтор безвреден."""
+        """Закрыть все каналы вызова одной пометкой и разбудить слежение; повтор
+        безвреден.
+        """
         with self._lock:
             recorders = list(self._recorders.values())
 
         for recorder in recorders:
             recorder.close(note)
+
+        self._wake()
 
     def probe(self, channel: JournalChannel) -> WatchProbe:
         """Состояние канала без чтения файла: размер и итог рекордера."""
@@ -134,6 +151,17 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
             note=recorder.note,
         )
 
+    def probes(self) -> Sequence[ChannelProbe]:
+        """Состояние всех открытых каналов вызова."""
+        with self._lock:
+            channels = list(self._recorders)
+
+        found: list[ChannelProbe] = []
+        for channel in channels:
+            found.append(ChannelProbe(channel=channel, probe=self.probe(channel)))
+
+        return found
+
     def _open(self, channel: JournalChannel) -> StreamRecorderPort:
         with self._lock:
             recorder = self._recorders.get(channel)
@@ -147,27 +175,133 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
             return recorder
 
     def attach_waker(self) -> asyncio.Event:
-        """Событие пробуждения в текущем loop'е; прежний слушатель забывается."""
+        """Событие пробуждения в текущем loop'е; каждая запись и закрытие поднимают
+        его.
+        """
         event = asyncio.Event()
         loop = asyncio.get_running_loop()
 
         with self._lock:
-            self._waker = (loop, event)
+            self._wakers[event] = loop
 
         return event
 
+    def detach_waker(self, event: asyncio.Event) -> None:
+        """Снимает будильник, выданный attach_waker."""
+        with self._lock:
+            self._wakers.pop(event, None)
+
     def _wake(self) -> None:
         with self._lock:
-            waker = self._waker
+            wakers = list(self._wakers.items())
 
-        if waker is None:
+        for event, loop in wakers:
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                logger.debug("stream wakeup after loop shutdown: %s", self._key.call_id)
+
+
+class StreamPump:
+    """Следит за живым журналом одного вызова из loop'а запуска и сообщает ленте о
+    каждом росте видимого канала; частые записи склеиваются в одно сообщение.
+    """
+
+    COALESCE_SEC: ClassVar[float] = 0.25
+    """Пауза после пробуждения: болтливый инструмент не заливает шину."""
+
+    POLL_SEC: ClassVar[float] = 1.0
+    """Предел ожидания будильника: страховка от пропущенного пробуждения."""
+
+    def __init__(self, stream: ToolStream, feed: StreamFeed) -> None:
+        self._stream = stream
+        self._feed = feed
+        self._seen: dict[JournalChannel, str] = {}
+
+    async def run(self) -> None:
+        waker = self._stream.attach_waker()
+        try:
+            while True:
+                closed = self._stream.closed
+                await self._report()
+                if closed:
+                    return
+
+                await self._pause(waker)
+        finally:
+            self._stream.detach_waker(waker)
+
+    async def _report(self) -> None:
+        for item in self._stream.probes():
+            if not JournalChannels.visible(item.channel):
+                continue
+
+            if self._seen.get(item.channel) == item.probe.revision:
+                continue
+
+            self._seen[item.channel] = item.probe.revision
+            message = StreamAppended(
+                call_id=self._stream.key.call_id,
+                channel=item.channel.value,
+                size=item.probe.size,
+                closed=item.probe.closed,
+                note=item.probe.note,
+            )
+            await self._feed.stream_appended(message)
+
+    async def _pause(self, waker: asyncio.Event) -> None:
+        try:
+            await asyncio.wait_for(waker.wait(), timeout=self.POLL_SEC)
+        except TimeoutError:
             return
 
-        loop, event = waker
-        try:
-            loop.call_soon_threadsafe(event.set)
-        except RuntimeError:
-            logger.debug("stream wakeup after loop shutdown: %s", self._key.call_id)
+        waker.clear()
+        await asyncio.sleep(self.COALESCE_SEC)
+
+
+class StreamPumps:
+    """Заводит насос на каждый журнал, открытый запуском, и закрывает их вместе с
+    запуском: сначала даёт дописать итог, потом снимает задачи.
+    """
+
+    CLOSE_SEC: ClassVar[float] = 2.0
+
+    def __init__(self, feed: StreamFeed) -> None:
+        self._feed = feed
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def opened(self, call_id: str, stream: LiveStream) -> None:
+        """Наблюдатель RunRegistry: журнал открыт — насос запущен в текущем loop'е."""
+        if not isinstance(stream, ToolStream):
+            return
+
+        pump = StreamPump(stream, self._feed)
+        task = asyncio.create_task(pump.run(), name=f"stream-pump:{call_id}")
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def close(self) -> None:
+        tasks = list(self._tasks)
+        if not tasks:
+            return
+
+        done, pending = await asyncio.wait(tasks, timeout=self.CLOSE_SEC)
+        for task in pending:
+            task.cancel()
+
+        for task in pending:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        for task in done:
+            if task.cancelled():
+                continue
+
+            error = task.exception()
+            if error is None:
+                continue
+
+            logger.error("stream pump failed: %s", error, exc_info=error)
 
 
 class ToolStreams:
@@ -390,3 +524,9 @@ class JournalWatchSource(WatchSource):
             return None
 
         return self._live.attach_waker()
+
+    def detach_waker(self, event: asyncio.Event) -> None:
+        if self._live is None:
+            return
+
+        self._live.detach_waker(event)

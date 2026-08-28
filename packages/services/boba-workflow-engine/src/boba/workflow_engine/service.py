@@ -40,6 +40,7 @@ from boba.messaging import (
     RunListChanged,
     RunStateChanged,
     StopRequested,
+    StreamAppended,
     WorkflowChanged,
 )
 from boba.toolkit.result import ToolResult
@@ -180,6 +181,9 @@ class _StoreSink(RunSink):
 
         listing = self._listing.model_copy(update={"status": status})
         await self._bus.publish(self._user_scope, listing, LockToken.local())
+
+    async def stream_appended(self, message: StreamAppended) -> None:
+        await self._bus.publish(self._scope, message, self._token)
 
 
 class WorkflowService:

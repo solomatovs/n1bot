@@ -32,6 +32,7 @@ class TestToolrunIsolation:
         "boba.cancellation",
         "boba.identity",
         "boba.canvas",
+        "boba.messaging",
         "langchain_core",
     )
 

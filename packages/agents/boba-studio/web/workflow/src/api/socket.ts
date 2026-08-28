@@ -3,9 +3,11 @@ import { io, type Socket } from "socket.io-client";
 import type { PageUrls } from "../config";
 import {
   RunSnapshotSchema,
+  StreamEventSchema,
   UserEventSchema,
   withKnownResults,
   type RunSnapshot,
+  type StreamEvent,
   type UserEvent,
 } from "../model/workflow";
 
@@ -19,6 +21,7 @@ const EVENT = {
   refused: "refused",
   busState: "bus_state",
   userEvent: "user_event",
+  streamEvent: "stream_event",
 } as const;
 
 /** Состояние слушателя шины на сервере — те же значения, что у ListenerState. */
@@ -36,6 +39,7 @@ export type LinkState = "connecting" | "connected" | "disconnected";
 
 export type SnapshotListener = (snapshot: RunSnapshot) => void;
 export type UserEventListener = (event: UserEvent) => void;
+export type StreamEventListener = (event: StreamEvent) => void;
 export type RefusalListener = (reason: string) => void;
 
 /** Состояние живой связи для лампочки: сокет плюс слушатель шины на сервере;
@@ -136,6 +140,22 @@ export class RunSocket {
     };
   }
 
+  /** События журнала стадий запуска runId: рост канала или его закрытие;
+   * отписка — возвращаемая функция. */
+  onStream(runId: string, listener: StreamEventListener): () => void {
+    const deliver = (payload: unknown): void => {
+      const event = streamEventOf(payload);
+      if (event !== null && event.run_id === runId) {
+        listener(event);
+      }
+    };
+
+    this.socket.on(EVENT.streamEvent, deliver);
+    return () => {
+      this.socket.off(EVENT.streamEvent, deliver);
+    };
+  }
+
   subscribe(runId: string, onSnapshot: SnapshotListener, onRefused: RefusalListener): () => void {
     const deliver = (payload: unknown): void => {
       const parsed = RunSnapshotSchema.safeParse(withKnownResults(payload));
@@ -179,6 +199,16 @@ export class RunSocket {
 }
 
 /** Разбирает событие bus_state; незнакомое значение считается сбоем слушателя. */
+/** Событие журнала из payload сокета; незнакомая форма — null: фронт старее сервера. */
+export function streamEventOf(payload: unknown): StreamEvent | null {
+  const parsed = StreamEventSchema.safeParse(payload);
+  if (!parsed.success) {
+    return null;
+  }
+
+  return parsed.data;
+}
+
 export function busStateOf(payload: unknown): BusState {
   if (typeof payload === "object" && payload !== null && "listener" in payload) {
     const value = String(payload.listener);

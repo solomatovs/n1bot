@@ -25,7 +25,7 @@ from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
 from boba.identity.context import Scope, Subject
 from boba.identity.errors import RefusalError
-from boba.messaging import Envelope, MessageKind, Unsubscribe
+from boba.messaging import Envelope, MessageKind, StreamAppended, Unsubscribe
 from boba.runtime.bus import BusWatch, ListenerState
 from boba.runtime.config import StudioPath
 from boba.studio.api.auth import ApiIdentity
@@ -59,6 +59,7 @@ class WorkflowSocketEvent(StrEnum):
     REFUSED = "refused"
     BUS_STATE = "bus_state"
     USER_EVENT = "user_event"
+    STREAM_EVENT = "stream_event"
 
 
 class Subscription(BaseModel):
@@ -67,6 +68,30 @@ class Subscription(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_id: UUID
+
+
+class StreamEvent(BaseModel):
+    """Тело события stream_event: сообщение StreamAppended вместе с id запуска."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run_id: UUID
+    call_id: str
+    channel: str
+    size: int
+    closed: bool
+    note: str
+
+    @classmethod
+    def of(cls, run_id: UUID, message: StreamAppended) -> StreamEvent:
+        return cls(
+            run_id=run_id,
+            call_id=message.call_id,
+            channel=message.channel,
+            size=message.size,
+            closed=message.closed,
+            note=message.note,
+        )
 
 
 class RunRoom:
@@ -246,7 +271,17 @@ class WorkflowNamespace(socketio.AsyncNamespace):
             return
 
         async def deliver(envelope: Envelope) -> None:
-            if envelope.message.kind not in self.RUN_MESSAGES:
+            message = envelope.message
+            if isinstance(message, StreamAppended):
+                event = StreamEvent.of(run_id, message)
+                await self.emit(
+                    WorkflowSocketEvent.STREAM_EVENT.value,
+                    event.model_dump(mode="json"),
+                    room=RunRoom.of(run_id),
+                )
+                return
+
+            if message.kind not in self.RUN_MESSAGES:
                 return
 
             # снимок не прочитан — страница узнаёт об этом событием, а не молчанием

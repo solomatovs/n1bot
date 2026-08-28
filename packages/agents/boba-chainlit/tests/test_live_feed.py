@@ -5,10 +5,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from conftest import make_context
 
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.domain.fields import StepField
@@ -18,20 +21,25 @@ from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.locks import LockMode, LockPurpose
+from boba.identity.run import RunRegistry
 from boba.messaging import (
     Envelope,
     LockToken,
     Notice,
     NoticeLevel,
+    StreamAppended,
     TurnFinished,
     TurnOutcome,
 )
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import AppName
+from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.locks import PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.turns import StaleTurnCloser
+from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.result import TextResult
+from boba.toolrun.streams import StreamPump, StreamPumps, ToolStream, ToolStreams
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -116,6 +124,15 @@ async def _until(condition, what: str) -> None:
 
 def _outputs(sink: RecordingSink) -> list[str]:
     return [str(step.get(StepField.OUTPUT)) for step in sink.steps]
+
+
+def _stream_messages(seen: Iterator[Envelope]) -> Iterator[StreamAppended]:
+    for envelope in seen:
+        message = envelope.message
+        if not isinstance(message, StreamAppended):
+            continue
+
+        yield message
 
 
 async def test_turn_on_one_instance_is_rendered_on_another(
@@ -269,3 +286,71 @@ async def test_queue_usage_stays_low_under_load(nodes: tuple[Node, Node]) -> Non
         lambda: all(count == 80 for count in counts.values()), f"delivered: {counts}"
     )
     assert await first.bus.queue_usage() < 0.05
+
+
+async def test_stream_growth_is_published_through_the_pump(
+    nodes: tuple[Node, Node], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Инструмент пишет журнал в своём потоке на инстансе A; насос хода публикует
+    StreamAppended, и инстанс B видит рост канала и его закрытие с итогом.
+    """
+    holder, viewer = nodes
+    thread_id = str(uuid4())
+    scope = Scope.chat(thread_id)
+    ToolStreams.reset()
+    ToolStreams.configure(
+        StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
+    )
+    monkeypatch.setattr(StreamPump, "COALESCE_SEC", 0.02)
+
+    seen: list[Envelope] = []
+
+    async def collect(envelope: Envelope) -> None:
+        seen.append(envelope)
+
+    leave = viewer.bus.subscribe(scope, collect)
+    lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
+    pumps = StreamPumps(feed)
+    line = b"line 00\n"
+    lines = 20
+
+    def write_all(stream: ToolStream) -> None:
+        sink = stream.sink_of(ToolChannel.STDOUT)
+        for index in range(lines):
+            sink.feed(b"line %02d\n" % index)
+            time.sleep(0.01)
+
+        stream.close(str(CallOutcome.FINISHED))
+
+    try:
+        with RunRegistry.open(make_context(thread_id), on_stream=pumps.opened):
+            stream = ToolStreams.begin("7", thread_id, CALL, "shell")
+            assert stream is not None
+            await asyncio.to_thread(write_all, stream)
+
+        await pumps.close()
+
+        def closed() -> bool:
+            for message in _stream_messages(iter(seen)):
+                if message.closed:
+                    return True
+
+            return False
+
+        await _until(closed, f"viewer saw the closed stream: {seen}")
+
+        messages = list(_stream_messages(iter(seen)))
+        sizes = [message.size for message in messages]
+        assert sizes == sorted(sizes)
+        assert sizes[-1] == lines * len(line)
+        assert len(sizes) >= 2, "growth is reported before the close"
+        assert messages[-1].closed
+        assert messages[-1].note == str(CallOutcome.FINISHED)
+        assert messages[-1].channel == ToolChannel.STDOUT.value
+        assert all(message.call_id == CALL for message in messages)
+    finally:
+        leave()
+        await holder.locks.release(lock.token)
+        RunRegistry.reset()
+        ToolStreams.reset()

@@ -12,6 +12,7 @@ from boba.messaging.bus import (
     MessageBus,
     MessageBusError,
     MessageTooLargeError,
+    StreamFeed,
     Unsubscribe,
 )
 from boba.messaging.memory import MemoryMessageBus
@@ -102,6 +103,7 @@ __all__ = [
     "StageStarted",
     "StopRequested",
     "StreamAppended",
+    "StreamFeed",
     "ThinkingClosed",
     "ThinkingComplete",
     "ThinkingToken",

@@ -25,6 +25,8 @@ from boba.messaging import (
     StageEnded,
     StageQueries,
     StageStarted,
+    StreamAppended,
+    StreamFeed,
     ThinkingClosed,
     ThinkingComplete,
     ThinkingToken,
@@ -58,7 +60,7 @@ class TextClip:
         return f"{head}{cls.ELLIPSIS}"
 
 
-class TurnFeed:
+class TurnFeed(StreamFeed):
     """Публикует сообщения одного хода в область его треда от имени держателя хода."""
 
     def __init__(
@@ -160,6 +162,9 @@ class TurnFeed:
 
     async def tool_stopped(self, call_id: str, note: str) -> None:
         message = ToolStopped(turn_id=self._turn_id, call_id=call_id, note=note)
+        await self._publish(message)
+
+    async def stream_appended(self, message: StreamAppended) -> None:
         await self._publish(message)
 
     async def notice(self, level: NoticeLevel, text: str) -> None:

@@ -40,6 +40,7 @@ from boba.identity.locks import (
 from boba.identity.run import ElementTarget, RunPort, RunRefusal, RunRegistry
 from boba.llm.chat import ResponseField
 from boba.messaging import NoticeLevel, TurnOutcome
+from boba.toolrun.streams import StreamPumps
 
 __all__ = [
     "ChatTurn",
@@ -471,34 +472,41 @@ class ChatTurn(RunPort):
     ) -> None:
         context = CallContext.current()
         cancellation = context.cancellation
-        with RunRegistry.open(context, self), RunRegistry.task_abort(cancellation):
-            try:
-                # ход объявляется до первого чанка: запрос в модель уходит с первой
-                # итерацией стрима, и до её ответа лента иначе пуста
-                await self._feed.started(self._key, self._question)
-                async for chunk, _metadata in stream:
-                    cancellation.raise_if_cancelled()
-                    await self._model_answered()
-                    await self._on_chunk(chunk)
+        pumps = StreamPumps(self._feed)
+        try:
+            with (
+                RunRegistry.open(context, self, pumps.opened),
+                RunRegistry.task_abort(cancellation),
+            ):
+                try:
+                    # ход объявляется до первого чанка: запрос в модель уходит с первой
+                    # итерацией стрима, и до её ответа лента иначе пуста
+                    await self._feed.started(self._key, self._question)
+                    async for chunk, _metadata in stream:
+                        cancellation.raise_if_cancelled()
+                        await self._model_answered()
+                        await self._on_chunk(chunk)
 
-                await self._feed.answer_closed(self._key)
-            except asyncio.CancelledError:
-                # задачу сняли снаружи; после кнопки Stop причина уже своя
-                cancellation.cancel(StopReason.ABORTED)
-                if self._state.settle_stopped(cancellation.reason):
-                    await self._report_stop(cancellation.reason)
-                raise
-            except ToolStopped:
-                if self._state.settle_stopped(cancellation.reason):
-                    await self._report_stop(cancellation.reason)
-                return
-            except Exception as e:
-                # отчёт до cancel: отмена гасит и задачу самого хода, незащищённый
-                # await после неё умирает — история сбоя была бы потеряна
-                if self._state.settle_failed(e):
-                    await self._reporter.failed(e)
-                cancellation.cancel(StopReason.FAILED)
-                return
+                    await self._feed.answer_closed(self._key)
+                except asyncio.CancelledError:
+                    # задачу сняли снаружи; после кнопки Stop причина уже своя
+                    cancellation.cancel(StopReason.ABORTED)
+                    if self._state.settle_stopped(cancellation.reason):
+                        await self._report_stop(cancellation.reason)
+                    raise
+                except ToolStopped:
+                    if self._state.settle_stopped(cancellation.reason):
+                        await self._report_stop(cancellation.reason)
+                    return
+                except Exception as e:
+                    # отчёт до cancel: отмена гасит и задачу самого хода, незащищённый
+                    # await после неё умирает — история сбоя была бы потеряна
+                    if self._state.settle_failed(e):
+                        await self._reporter.failed(e)
+                    cancellation.cancel(StopReason.FAILED)
+                    return
+        finally:
+            await pumps.close()
 
         if self._state.settle_ok():
             await self._reporter.ok()
