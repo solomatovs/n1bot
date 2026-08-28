@@ -93,7 +93,7 @@ class FrontDoor:
             host="0.0.0.0",  # noqa: S104
             port=port,
             log_level="warning",
-            ws="websockets",
+            ws="wsproto",
         )
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(target=self._server.run, daemon=True)

@@ -3,7 +3,6 @@ import { type ReactElement, useCallback, useEffect, useRef, useState } from "rea
 import { useNavigate, useParams } from "react-router-dom";
 
 import { useServices } from "../app";
-import { RunSocket } from "../api/socket";
 import { Alert } from "../components/Alert";
 import { errorText, type Loadable } from "../components/Async";
 import { RunGraph } from "../components/graph/RunGraph";
@@ -28,7 +27,7 @@ const VIEWS: { value: View; label: string }[] = [
 /** Сцена Observe: выбранный запуск живьём — vitals, Grid/Table/Timeline, инспектор. */
 export function ObservePage(): ReactElement {
   const { runId } = useParams();
-  const { api, urls } = useServices();
+  const { api, socket } = useServices();
   const shell = useShellData();
   const navigate = useNavigate();
   const [run, setRun] = useState<Loadable<StoredRun>>({ kind: "loading" });
@@ -92,14 +91,12 @@ export function ObservePage(): ReactElement {
       finishedRef.current = finished;
     };
 
-    const socket = new RunSocket(urls);
     const unsubscribe = socket.subscribe(runId, applySnapshot, setNotice);
 
     return () => {
       unsubscribe();
-      socket.close();
     };
-  }, [urls, runId, reloadLists]);
+  }, [socket, runId, reloadLists]);
 
   const stop = useCallback(async () => {
     if (runId === undefined) {

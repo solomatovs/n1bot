@@ -141,3 +141,32 @@ def test_modules_are_served_from_dist(studio: StudioProcess) -> None:
 
     assert reply.status_code == 200
     assert reply.text == "export const built = true;"
+
+
+def test_websocket_handshake_survives_a_large_sign_in_cookie(
+    studio: StudioProcess,
+) -> None:
+    """Cookie входа с билетом SSO ≈ 10 КБ: реализация websockets отвечала бы 400."""
+    import asyncio
+
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidStatus
+
+    big = "x" * 9500
+    cookie = "; ".join(
+        f"access_token_{index}={big[index * 3000 : (index + 1) * 3000]}"
+        for index in range(4)
+    )
+    url = f"ws://127.0.0.1:{StudioProcess.PORT}{studio.prefix}/api/socket.io/?EIO=4&transport=websocket"
+
+    async def handshake() -> int:
+        try:
+            async with connect(
+                url, additional_headers=[("cookie", cookie)], open_timeout=10
+            ):
+                return 101
+        except InvalidStatus as exc:
+            return exc.response.status_code
+
+    # мусорный токен отвергает сам socket.io (403) — но уже после разбора заголовков
+    assert asyncio.run(handshake()) != 400

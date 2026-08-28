@@ -16,9 +16,19 @@ const EVENT = {
 export type SnapshotListener = (snapshot: RunSnapshot) => void;
 export type RefusalListener = (reason: string) => void;
 
-/** Подписка страницы на живые снимки запуска; cookie входа уходит сама. */
+/** Состояние сокета для индикатора: подключается, подключён, оборван (с причиной). */
+export type SocketStatus = {
+  state: "connecting" | "connected" | "disconnected";
+  detail: string;
+};
+
+export type StatusListener = (status: SocketStatus) => void;
+
+/** Один сокет на приложение: живые снимки запусков и состояние связи для лампочки. */
 export class RunSocket {
   private readonly socket: Socket;
+  private current: SocketStatus = { state: "connecting", detail: "connecting" };
+  private readonly listeners = new Set<StatusListener>();
 
   constructor(urls: PageUrls) {
     this.socket = io(NAMESPACE, {
@@ -26,6 +36,38 @@ export class RunSocket {
       withCredentials: true,
       transports: ["websocket"],
     });
+    this.socket.on("connect", () => {
+      this.update({ state: "connected", detail: "live updates on" });
+    });
+    this.socket.on("disconnect", (reason: string) => {
+      this.update({ state: "disconnected", detail: `disconnected: ${reason}` });
+    });
+    this.socket.on("connect_error", (error: Error) => {
+      this.update({ state: "disconnected", detail: `connect error: ${error.message}` });
+    });
+    this.socket.io.on("reconnect_attempt", () => {
+      this.update({ state: "connecting", detail: "reconnecting" });
+    });
+  }
+
+  get status(): SocketStatus {
+    return this.current;
+  }
+
+  /** Слушатель состояния; отписка — возвращаемая функция. */
+  onStatus(listener: StatusListener): () => void {
+    this.listeners.add(listener);
+    listener(this.current);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private update(status: SocketStatus): void {
+    this.current = status;
+    for (const listener of this.listeners) {
+      listener(status);
+    }
   }
 
   subscribe(runId: string, onSnapshot: SnapshotListener, onRefused: RefusalListener): () => void {

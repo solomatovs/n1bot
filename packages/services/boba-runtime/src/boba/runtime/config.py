@@ -198,6 +198,12 @@ class StudioConfig(BaseModel):
         description="SameSite cookie входа; none включает Secure."
     )
     session_ttl_sec: int = Field(gt=0, description="Срок JWT и cookie входа.")
+    ws_protocol: Literal["auto", "websockets", "wsproto", "none"] = Field(
+        description=(
+            "WebSocket-реализация uvicorn; websockets режет заголовки длиннее 8 КБ, "
+            "а cookie входа с билетом SSO больше — нужен wsproto."
+        )
+    )
     page: BuiltPage | DevPage = Field(
         discriminator="kind",
         description="'built' — сборка из dist; адрес — vite dev-сервер.",

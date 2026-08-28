@@ -53,6 +53,7 @@ class StudioHost:
         container.eager(providers.kb_schema)
         container.eager(providers.connection_store)
         container.eager(providers.workflow_store)
+        container.eager(providers.workflow_recovery)
         Container.set_root(container)
 
         table = providers.users_table(config)
@@ -137,6 +138,7 @@ class StudioEntry:
             app,
             host=config.studio.host,
             port=config.studio.port,
+            ws=config.studio.ws_protocol,
             log_config=None,
             log_level=None,
             access_log=True,

@@ -111,6 +111,7 @@ def _studio(page: str) -> StudioConfig:
             "cookie": "access_token",
             "cookie_samesite": "lax",
             "session_ttl_sec": 3600,
+            "ws_protocol": "wsproto",
             "page": page,
             "dist": "/nowhere",
         }

@@ -61,6 +61,7 @@ class Selector:
     ARG_COMMAND: ClassVar[str] = 'textarea[aria-label="arg command"]'
     TABLE: ClassVar[str] = ".table"
     OUTPUT_TEXT: ClassVar[str] = ".output__text"
+    SOCKET_LAMP: ClassVar[str] = ".topbar .lamp"
 
 
 class BrowserLog:
@@ -179,6 +180,8 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
 
     _button(page, "Run").click()
     expect(page).to_have_url(re.compile(r"/workflow/observe/[0-9a-f-]+$"))
+    # лампочка в топбаре: живые снимки идут по websocket через фронт стенда
+    expect(page.locator(Selector.SOCKET_LAMP)).to_have_attribute("data-socket", "connected")
 
     # статусы приходят по сокету: узлы доходят до done без перезагрузки
     expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")

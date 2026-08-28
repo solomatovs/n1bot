@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from chainlit.user import PersistedUser
@@ -16,11 +17,13 @@ from test_workflow_service import ROLE, Probe, _registry
 
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.api import ApiSubject
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
 from boba.toolrun.registry import ToolRegistry
+from boba.workflow import RunStatus, WorkflowSpec
 from boba.workflow.events import RunEvents
-from boba.workflow_engine.service import WorkflowService
+from boba.workflow_engine.service import WorkflowError, WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -237,3 +240,46 @@ async def test_stop_running(client: AsyncClient, app_config: AppConfig) -> None:
         f"{ApiVersion.V1}{WorkflowUrl.RUNS}", params={"profile": profile}
     )
     assert [item["id"] for item in listed.json()] == [run_id]
+
+
+async def test_abandoned_runs_are_closed_on_startup_and_stop_is_honest(
+    store: WorkflowStore, user: PersistedUser, app_config: AppConfig
+) -> None:
+    """Запуск без процесса: recover_orphans закрывает свои, stop чужого — отказ."""
+    probe = Probe()
+
+    async def registry() -> ToolRegistry:
+        return _registry(probe, ["*"], profile=_profile(app_config))
+
+    mine = WorkflowService(store, registry, "test:0", RunEvents())
+    other = WorkflowService(store, registry, "other:1", RunEvents())
+    signed = ChainlitUsers.of(user)
+    assert signed is not None
+    subject = ApiSubject.of(signed, _profile(app_config)).subject
+    saved = await store.save(subject.user_id, WorkflowSpec.parse_yaml(SPEC), {})
+    graph = await mine.validate(subject, saved.spec)
+    initial = mine.initial_state(graph)
+    running = initial.model_copy(update={"status": RunStatus.RUNNING})
+
+    orphan = await store.start_run(
+        uuid4(), saved.id, subject.user_id, {}, subject.profile, running, "test:0"
+    )
+    foreign = await store.start_run(
+        uuid4(), saved.id, subject.user_id, {}, subject.profile, running, "other:1"
+    )
+
+    assert await mine.recover_orphans() == 1
+    closed = await store.get_run(subject.user_id, orphan.id)
+    assert closed.state.status is RunStatus.FAILED
+    assert (
+        await store.get_run(subject.user_id, foreign.id)
+    ).state.status is RunStatus.RUNNING
+
+    with pytest.raises(WorkflowError, match="other:1"):
+        await mine.stop(subject, foreign.id)
+
+    assert await other.stop(subject, foreign.id) is True
+    assert (
+        await store.get_run(subject.user_id, foreign.id)
+    ).state.status is RunStatus.FAILED
+    assert await mine.stop(subject, orphan.id) is False

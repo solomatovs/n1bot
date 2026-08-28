@@ -2,6 +2,7 @@ import { createContext, type ReactElement, useContext, useEffect, useMemo } from
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { WorkflowApi } from "./api/client";
+import { RunSocket } from "./api/socket";
 import { Shell } from "./components/shell/Shell";
 import { PageUrls, pageConfig } from "./config";
 import { AccountPage } from "./pages/AccountPage";
@@ -13,6 +14,7 @@ import { ObservePage } from "./pages/ObservePage";
 export type Services = {
   urls: PageUrls;
   api: WorkflowApi;
+  socket: RunSocket;
 };
 
 const ServicesContext = createContext<Services | null>(null);
@@ -58,7 +60,7 @@ function SignedInOnly(): ReactElement {
 export function App(): ReactElement {
   const services = useMemo<Services>(() => {
     const urls = new PageUrls(pageConfig());
-    return { urls, api: new WorkflowApi(urls) };
+    return { urls, api: new WorkflowApi(urls), socket: new RunSocket(urls) };
   }, []);
 
   return (
