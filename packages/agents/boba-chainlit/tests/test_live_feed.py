@@ -60,8 +60,9 @@ async def _node(
     bus._pool_ref = pool
     await bus.setup()
     await bus.start()
-    locks = PgLiveLocks(cfg, schema, name, app_config.cluster)
+    locks = PgLiveLocks(cfg, schema, name, AppName.STUDIO, app_config.cluster)
     locks._pool_ref = pool
+    await locks.register_instance()
     payloads = PgPayloadStore(cfg, schema)
     payloads._pool_ref = pool
     return Node(bus, locks, payloads)

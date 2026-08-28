@@ -4,7 +4,7 @@
 
 Ошибки:
 MessageBusError — база недоступна, строка не сохранена или не прочитана; слушатель
-    процесса остановлен сбоем подписчика или негодным уведомлением.
+    процесса остановлен сбоем подписчика.
 MessageTooLargeError — тело сообщения больше лимита.
 LockLostError — сообщение держателя публикуется без живой блокировки с этим token.
 ListenerFailedError — подписчик не справился с конвертом; слушатель процесса
@@ -55,7 +55,6 @@ from boba.runtime.tables import (
     LiveChannel,
     LiveCommandsColumn,
     LiveEventsColumn,
-    LiveInstancesColumn,
     LiveLocksColumn,
 )
 
@@ -283,15 +282,27 @@ class LiveListener(BusWatch):
                 self._ready.set()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self.RETRY_MAX_SEC)
-            except MessageBusError as exc:
-                # сбой подписчика или негодное уведомление: слушатель встаёт, шина
-                # отказывает при следующем обращении, а не молчит
+            except ListenerFailedError as exc:
+                # сбой подписчика: слушатель встаёт, шина отказывает при следующем
+                # обращении, а не молчит
                 self._set_state(ListenerState.FAILED)
                 self._failure = exc
                 await self._close()
                 logger.exception("live listener stopped: %s", exc)
                 self._ready.set()
                 raise
+            except MessageBusError as exc:
+                # база ответила ошибкой при догоне или уведомление негодно: связь
+                # переустанавливается, как после обрыва
+                if self._stopping:
+                    return
+
+                self._set_state(ListenerState.CONNECTING)
+                await self._close()
+                logger.warning("live listener retries after a bus error: %s", exc)
+                self._ready.set()
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self.RETRY_MAX_SEC)
             except Exception as exc:
                 # неожиданная ошибка разбора или доставки: тот же исход, что у сбоя
                 # подписчика — иначе задача умерла бы молча, а шина считалась бы живой
@@ -414,34 +425,6 @@ class PgMessageBus(MessageBus):
 
                 for query in self._ddl():
                     await conn.execute(query, prepare=False)
-
-                await conn.execute(
-                    sql.SQL(
-                        """
-                        insert into {instances} ({id}, {app}, {host})
-                        values (%(id)s, %(app)s, %(host)s)
-                        on conflict ({id}) do update
-                        set
-                            {app} = excluded.{app},
-                            {host} = excluded.{host},
-                            {started} = now(),
-                            {heartbeat} = now()
-                        """
-                    ).format(
-                        instances=self._table(ChatTable.LIVE_INSTANCES),
-                        id=LiveInstancesColumn.INSTANCE_ID.ident(),
-                        app=LiveInstancesColumn.APP.ident(),
-                        host=LiveInstancesColumn.HOST.ident(),
-                        started=LiveInstancesColumn.STARTED_AT.ident(),
-                        heartbeat=LiveInstancesColumn.HEARTBEAT_AT.ident(),
-                    ),
-                    {
-                        "id": self._instance,
-                        "app": self._app.value,
-                        "host": self._cluster.host,
-                    },
-                    prepare=False,
-                )
         except (psycopg.Error, PostgresError) as exc:
             msg = "message bus: setup failed"
             raise MessageBusError(msg) from exc

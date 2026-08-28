@@ -224,20 +224,24 @@ async def workflow_store(
     return store
 
 
-def live_locks(
+async def live_locks(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     instance: Annotated[str, Depends(instance_name)],
+    app: Annotated[AppName, Depends(app_name)],
     bus: Annotated[PgMessageBus, Depends(message_bus)],
 ) -> PgLiveLocks:
-    """Блокировки областей процесса; таблицу готовит шина, поэтому она поднимается
-    первой.
+    """Блокировки областей процесса; таблицы готовит шина, поэтому она поднимается
+    первой, а инстанс регистрируется здесь и дальше подтверждается сторожем.
     """
-    return PgLiveLocks(
+    locks = PgLiveLocks(
         config.data_layer.postgres,
         config.data_layer.db_schema,
         instance,
+        app,
         config.cluster,
     )
+    await locks.register_instance()
+    return locks
 
 
 def live_locks_ref() -> PgLiveLocks:

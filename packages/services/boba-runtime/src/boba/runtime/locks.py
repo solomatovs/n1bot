@@ -33,7 +33,7 @@ from boba.identity.locks import (
     StaleLock,
 )
 from boba.messaging import MessageBusError
-from boba.runtime.config import ClusterConfig
+from boba.runtime.config import AppName, ClusterConfig
 from boba.runtime.payloads import PayloadStoreError
 from boba.runtime.tables import ChatTable, LiveInstancesColumn, LiveLocksColumn
 
@@ -52,11 +52,17 @@ class PgLiveLocks(LiveLocks):
     """
 
     def __init__(
-        self, cfg: PostgresConfig, db_schema: str, instance: str, cluster: ClusterConfig
+        self,
+        cfg: PostgresConfig,
+        db_schema: str,
+        instance: str,
+        app: AppName,
+        cluster: ClusterConfig,
     ) -> None:
         self._cfg = cfg
         self._schema = db_schema
         self._instance = instance
+        self._app = app
         self._cluster = cluster
         self._pool_ref: AsyncPostgresPool | None = None
 
@@ -251,24 +257,38 @@ class PgLiveLocks(LiveLocks):
             msg = "live locks: heartbeat failed"
             raise LockStoreError(msg) from exc
 
-    async def heartbeat_instance(self) -> None:
-        """Подтверждает жизнь инстанса в live_instances."""
+    async def register_instance(self) -> None:
+        """Записывает инстанс в live_instances или подтверждает его жизнь: строка
+        заводится заново, если Postgres перезапустился и unlogged-таблица опустела.
+        """
         pool = await self._pool()
         try:
             async with pool.cursor() as cur:
                 await cur.execute(
                     sql.SQL(
-                        "update {instances} set {heartbeat} = now() where {id} = %(id)s"
+                        """
+                        insert into {instances} ({id}, {app}, {host})
+                        values (%(id)s, %(app)s, %(host)s)
+                        on conflict ({id}) do update
+                        set {app} = excluded.{app}, {host} = excluded.{host},
+                            {heartbeat} = now()
+                        """
                     ).format(
                         instances=self._instances(),
-                        heartbeat=LiveInstancesColumn.HEARTBEAT_AT.ident(),
                         id=LiveInstancesColumn.INSTANCE_ID.ident(),
+                        app=LiveInstancesColumn.APP.ident(),
+                        host=LiveInstancesColumn.HOST.ident(),
+                        heartbeat=LiveInstancesColumn.HEARTBEAT_AT.ident(),
                     ),
-                    {"id": self._instance},
+                    {
+                        "id": self._instance,
+                        "app": self._app.value,
+                        "host": self._cluster.host,
+                    },
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = "live locks: instance heartbeat failed"
+            msg = "live locks: instance registration failed"
             raise LockStoreError(msg) from exc
 
     async def release(self, token: LockToken) -> None:
@@ -414,7 +434,7 @@ class LockReaper:
 
     async def sweep(self) -> Sequence[StaleLock]:
         """Выполняет один проход сторожа и возвращает снятые блокировки."""
-        await self._locks.heartbeat_instance()
+        await self._locks.register_instance()
         stale = await self._locks.reap()
         if stale:
             await self._on_stale(stale)
