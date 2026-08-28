@@ -18,7 +18,7 @@ type Props = {
 
 /** Каркас Studio: топбар, рейл режимов, список слева, сцена справа. */
 export function Shell({ mode }: Props): ReactElement {
-  const { api } = useServices();
+  const { api, socket } = useServices();
   const { runId, workflowId } = useParams();
   const [workflows, setWorkflows] = useState<StoredWorkflow[]>([]);
   const [runs, setRuns] = useState<StoredRun[]>([]);
@@ -56,6 +56,17 @@ export function Shell({ mode }: Props): ReactElement {
   const reload = useCallback(() => {
     setTick((n) => n + 1);
   }, []);
+
+  // списки — лента пользователя: любое изменение с любого инстанса приходит по шине
+  useEffect(
+    () =>
+      socket.onUser((event) => {
+        if (event.kind === "run_list_changed" || event.kind === "workflow_changed") {
+          reload();
+        }
+      }),
+    [socket, reload],
+  );
 
   const data = useMemo<ShellData>(
     () => ({ workflows, runs, loading, error, reload }),

@@ -17,9 +17,11 @@ from boba.messaging import (
     Envelope,
     LockToken,
     MessageBusError,
+    MessageKind,
     MessageTooLargeError,
     Notice,
     NoticeLevel,
+    RunListChanged,
     StopRequested,
 )
 from boba.runtime.bus import ListenerState, PgMessageBus
@@ -255,3 +257,23 @@ async def test_failing_subscriber_stops_the_listener_and_the_bus_refuses(
             await bus.publish(scope, _token("b"), LockToken.local())
     finally:
         await bus.stop()
+
+
+async def test_user_scope_events_cross_instances(
+    buses: tuple[PgMessageBus, PgMessageBus],
+) -> None:
+    first, second = buses
+    scope = Scope.user(7)
+    inbox = Inbox()
+    second.subscribe(scope, inbox.take)
+
+    await first.publish(
+        scope,
+        RunListChanged(
+            run_id=uuid4(), workflow_id=1, workflow_name="w", status="pending"
+        ),
+        LockToken.local(),
+    )
+
+    await inbox.wait(1)
+    assert inbox.envelopes[0].message.kind is MessageKind.RUN_LIST_CHANGED

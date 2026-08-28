@@ -18,7 +18,7 @@ from boba.chainlit.chat.history import GraphTurnHistory, InterruptedTurn, Thread
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import SettingsPanel
 from boba.chainlit.chat.tracing import LlmStateLog
-from boba.chainlit.chat.turn import ChatTurn
+from boba.chainlit.chat.turn import ChatTurn, Question
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.domain.fields import ThreadField
 from boba.chainlit.infra.config import AppConfig
@@ -91,7 +91,7 @@ async def on_message(  # noqa: PLR0913
         thread_id=thread_id,
         feed=feed,
         history=GraphTurnHistory(graph, thread_id),
-        key=msg.id,
+        question=Question(key=msg.id, text=msg.content),
         locking=RunLocking(locks=locks, heartbeat_sec=app_config.cluster.heartbeat_sec),
     )
 

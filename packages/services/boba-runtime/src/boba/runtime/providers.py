@@ -167,6 +167,7 @@ def runtime_refs() -> RuntimeRefs:
         live_locks=live_locks_ref,
         heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
         bus_watch=bus_watch_ref,
+        message_bus=message_bus_ref,
     )
 
 

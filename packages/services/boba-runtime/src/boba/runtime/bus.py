@@ -292,6 +292,17 @@ class LiveListener(BusWatch):
                 logger.exception("live listener stopped: %s", exc)
                 self._ready.set()
                 raise
+            except Exception as exc:
+                # неожиданная ошибка разбора или доставки: тот же исход, что у сбоя
+                # подписчика — иначе задача умерла бы молча, а шина считалась бы живой
+                failure = MessageBusError(f"live listener crashed: {exc}")
+                failure.__cause__ = exc
+                self._set_state(ListenerState.FAILED)
+                self._failure = failure
+                await self._close()
+                logger.exception("live listener crashed: %s", exc)
+                self._ready.set()
+                raise failure from exc
 
     async def _listen_once(self) -> None:
         conn = await AsyncPostgresPool.dedicated(self._cfg)
@@ -455,7 +466,7 @@ class PgMessageBus(MessageBus):
                 """
                 create unlogged table if not exists {events} (
                     scope_kind text not null
-                        check (scope_kind in ('chat', 'workflow', 'job')),
+                        check (scope_kind in ('chat', 'workflow', 'job', 'user')),
                     scope_id   uuid not null,
                     seq        bigint not null,
                     kind       text not null,
@@ -471,7 +482,7 @@ class PgMessageBus(MessageBus):
                 create unlogged table if not exists {commands} (
                     id          bigint generated always as identity primary key,
                     scope_kind  text not null
-                        check (scope_kind in ('chat', 'workflow', 'job')),
+                        check (scope_kind in ('chat', 'workflow', 'job', 'user')),
                     scope_id    uuid not null,
                     action      text not null check (action in ('stop')),
                     body        jsonb not null,
@@ -499,7 +510,7 @@ class PgMessageBus(MessageBus):
                 """
                 create unlogged table if not exists {locks} (
                     scope_kind   text not null
-                        check (scope_kind in ('chat', 'workflow', 'job')),
+                        check (scope_kind in ('chat', 'workflow', 'job', 'user')),
                     scope_id     uuid not null,
                     mode         text not null check (mode in ('exclusive', 'shared')),
                     holder       text not null
@@ -525,7 +536,7 @@ class PgMessageBus(MessageBus):
                 """
                 create unlogged table if not exists {payloads} (
                     scope_kind text not null
-                        check (scope_kind in ('chat', 'workflow', 'job')),
+                        check (scope_kind in ('chat', 'workflow', 'job', 'user')),
                     scope_id   uuid not null,
                     id         uuid primary key,
                     body       json not null,
@@ -545,7 +556,31 @@ class PgMessageBus(MessageBus):
                 on {payloads} (scope_kind, scope_id)
                 """
             ).format(payloads=self._table(ChatTable.LIVE_PAYLOADS)),
+            *self._scope_kind_checks(),
         )
+
+    def _scope_kind_checks(self) -> tuple[sql.Composed, ...]:
+        """Перечень видов областей в check-ограничениях уже созданных таблиц."""
+        checks: list[sql.Composed] = []
+        for table in (
+            ChatTable.LIVE_EVENTS,
+            ChatTable.LIVE_COMMANDS,
+            ChatTable.LIVE_LOCKS,
+            ChatTable.LIVE_PAYLOADS,
+        ):
+            constraint = sql.Identifier(f"{table.value}_scope_kind_check")
+            checks.append(
+                sql.SQL(
+                    """
+                    alter table {table}
+                        drop constraint if exists {constraint},
+                        add constraint {constraint}
+                            check (scope_kind in ('chat', 'workflow', 'job', 'user'))
+                    """
+                ).format(table=self._table(table), constraint=constraint)
+            )
+
+        return tuple(checks)
 
     async def start(self) -> None:
         await self._listener.start()
@@ -753,6 +788,12 @@ class PgMessageBus(MessageBus):
         self._listener.ensure_alive()
         listeners = self._listeners.setdefault(scope, [])
         listeners.append(listener)
+        logger.info(
+            "subscribed %s on bus %x (%d listeners)",
+            scope.render(),
+            id(self),
+            len(listeners),
+        )
 
         def leave() -> None:
             current = self._listeners.get(scope)
@@ -985,6 +1026,9 @@ class PgMessageBus(MessageBus):
 
         scope = pointer.scope
         if scope not in self._listeners:
+            logger.debug(
+                "pointer %s seq %d: no listeners here", scope.render(), pointer.seq
+            )
             return
 
         lock = self._scope_locks.setdefault(scope, asyncio.Lock())

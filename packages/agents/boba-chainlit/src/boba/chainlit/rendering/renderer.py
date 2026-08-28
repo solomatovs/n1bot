@@ -220,6 +220,9 @@ class ChatRenderer:
             "thread %s: turn %s is rendered here", self._thread_id, message.turn_id
         )
         self.begin_turn(message.key)
+        # вопрос рисуется всем вкладкам треда: chainlit показал его только отправившей
+        question = await self._payloads.get(message.question)
+        await self._view.question(str(question), message.key)
         await self._surface.task_start()
         await self._view.await_model()
 

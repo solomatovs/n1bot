@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
@@ -42,6 +43,7 @@ from boba.messaging import NoticeLevel, TurnOutcome
 
 __all__ = [
     "ChatTurn",
+    "Question",
     "TurnHistory",
     "TurnMark",
     "TurnOutcome",
@@ -82,6 +84,15 @@ class TurnRecord:
             extra[ResponseField.REASONING_CONTENT.value] = self.reasoning
 
         return AIMessage(content=self.content, additional_kwargs=extra)
+
+
+class Question(BaseModel):
+    """Вопрос пользователя, с которого начинается ход: id его шага и текст."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: str = Field(min_length=1)
+    text: str
 
 
 class TurnStateError(Exception):
@@ -333,12 +344,13 @@ class ChatTurn(RunPort):
         thread_id: str,
         feed: TurnFeed,
         history: TurnHistory,
-        key: str,
+        question: Question,
         locking: RunLocking,
     ) -> None:
         self._thread_id = thread_id
         self._feed = feed
-        self._key = key
+        self._key = question.key
+        self._question = question.text
         self._locks = locking.locks
         self._heartbeat_sec = locking.heartbeat_sec
         self._state = TurnState()
@@ -348,7 +360,7 @@ class ChatTurn(RunPort):
             feed=feed,
             state=self._state,
             history=history,
-            key=key,
+            key=question.key,
         )
 
     @property
@@ -463,7 +475,7 @@ class ChatTurn(RunPort):
             try:
                 # ход объявляется до первого чанка: запрос в модель уходит с первой
                 # итерацией стрима, и до её ответа лента иначе пуста
-                await self._feed.started(self._key)
+                await self._feed.started(self._key, self._question)
                 async for chunk, _metadata in stream:
                     cancellation.raise_if_cancelled()
                     await self._model_answered()

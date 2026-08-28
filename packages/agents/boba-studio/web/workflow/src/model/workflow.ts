@@ -331,3 +331,28 @@ export const ChannelViewSchema = z.object({
   label: z.string(),
 });
 export type ChannelView = z.infer<typeof ChannelViewSchema>;
+
+/** Событие ленты пользователя из шины (socket.io `user_event`): те же поля, что у сообщений
+ * RunListChanged, WorkflowChanged, ConnectionsChanged на сервере. */
+export const UserEventSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("run_list_changed"),
+    run_id: z.string(),
+    workflow_id: z.number().nullable(),
+    workflow_name: z.string(),
+    status: z.string(),
+  }),
+  z.object({
+    kind: z.literal("workflow_changed"),
+    workflow_id: z.number(),
+    name: z.string(),
+    action: z.enum(["created", "updated", "deleted"]),
+  }),
+  z.object({
+    kind: z.literal("connections_changed"),
+    connection_id: z.number(),
+    name: z.string(),
+    action: z.enum(["created", "updated", "deleted"]),
+  }),
+]);
+export type UserEvent = z.infer<typeof UserEventSchema>;

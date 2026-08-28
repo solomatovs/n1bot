@@ -58,6 +58,9 @@ class StudioHost:
         container.eager(providers.live_locks)
         container.eager(providers.lock_reaper)
         container.eager(providers.command_runner)
+        # реестр инструментов грузится на старте: ленивая загрузка в обработчике запроса
+        # держит event loop дольше ping-таймаута socket.io, и вкладки теряют сокет
+        container.eager(providers.tool_registry)
         Container.set_root(container)
 
         table = providers.users_table(config)

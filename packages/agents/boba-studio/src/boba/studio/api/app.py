@@ -62,7 +62,9 @@ class ApiApp:
             SignInApi(signin).mount(router)
 
         AccountApi(profiles).mount(router)
-        ConnectionsApi(refs.connection_store, profiles, refs.sso_tickets).mount(router)
+        ConnectionsApi(
+            refs.connection_store, profiles, refs.sso_tickets, refs.message_bus
+        ).mount(router)
         ToolCalling(
             refs.tool_registry,
             profiles,

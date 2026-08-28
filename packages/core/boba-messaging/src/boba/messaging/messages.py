@@ -21,8 +21,10 @@ __all__ = [
     "AnyCommand",
     "AnyMessage",
     "CanvasChanged",
+    "ChangeAction",
     "Command",
     "CommandKind",
+    "ConnectionsChanged",
     "LockLost",
     "Message",
     "MessageKind",
@@ -30,6 +32,7 @@ __all__ = [
     "Notice",
     "NoticeLevel",
     "RunFinished",
+    "RunListChanged",
     "RunStateChanged",
     "SignInRefreshRequested",
     "StageEnded",
@@ -47,6 +50,7 @@ __all__ = [
     "TurnFinished",
     "TurnOutcome",
     "TurnStarted",
+    "WorkflowChanged",
 ]
 
 
@@ -81,6 +85,9 @@ class MessageKind(StrEnum):
     SIGNIN_REFRESH_REQUESTED = "signin_refresh_requested"
     NOTICE = "notice"
     LOCK_LOST = "lock_lost"
+    RUN_LIST_CHANGED = "run_list_changed"
+    WORKFLOW_CHANGED = "workflow_changed"
+    CONNECTIONS_CHANGED = "connections_changed"
 
 
 _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
@@ -122,6 +129,14 @@ class TurnOutcome(StrEnum):
     FAILED = "failed"
 
 
+class ChangeAction(StrEnum):
+    """Что случилось с записью списка пользователя."""
+
+    CREATED = "created"
+    UPDATED = "updated"
+    DELETED = "deleted"
+
+
 class NoticeLevel(StrEnum):
     """Важность уведомления пользователю; интерфейс выбирает по ней способ показа."""
 
@@ -150,12 +165,13 @@ class Command(BaseModel):
 
 class TurnStarted(Message):
     """Ход turn_id начался; key — id шага вопроса пользователя, к которому крепится
-    ответ.
+    ответ, question — текст вопроса по ссылке, чтобы его нарисовали все вкладки треда.
     """
 
     kind: Literal[MessageKind.TURN_STARTED] = MessageKind.TURN_STARTED
     turn_id: str = Field(min_length=1)
     key: str = Field(min_length=1)
+    question: PayloadRef
 
 
 class ModelAnswered(Message):
@@ -377,6 +393,36 @@ class LockLost(Message):
     purpose: str = Field(min_length=1)
 
 
+class RunListChanged(Message):
+    """Список запусков пользователя изменился: запуск run_id workflow workflow_name
+    появился или сменил статус на status.
+    """
+
+    kind: Literal[MessageKind.RUN_LIST_CHANGED] = MessageKind.RUN_LIST_CHANGED
+    run_id: UUID
+    workflow_id: int | None
+    workflow_name: str
+    status: str = Field(min_length=1)
+
+
+class WorkflowChanged(Message):
+    """Workflow workflow_id пользователя сохранён или удалён."""
+
+    kind: Literal[MessageKind.WORKFLOW_CHANGED] = MessageKind.WORKFLOW_CHANGED
+    workflow_id: int
+    name: str = Field(min_length=1)
+    action: ChangeAction
+
+
+class ConnectionsChanged(Message):
+    """Соединение connection_id пользователя создано, изменено или удалено."""
+
+    kind: Literal[MessageKind.CONNECTIONS_CHANGED] = MessageKind.CONNECTIONS_CHANGED
+    connection_id: int
+    name: str = Field(min_length=1)
+    action: ChangeAction
+
+
 class StopRequested(Command):
     """Пользователь by_user попросил остановить область; просьба принята инстансом
     by_instance.
@@ -410,7 +456,10 @@ AnyMessage = Annotated[
     | CanvasChanged
     | SignInRefreshRequested
     | Notice
-    | LockLost,
+    | LockLost
+    | RunListChanged
+    | WorkflowChanged
+    | ConnectionsChanged,
     Field(discriminator="kind"),
 ]
 

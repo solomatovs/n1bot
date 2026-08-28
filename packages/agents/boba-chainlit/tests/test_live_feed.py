@@ -129,7 +129,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
     lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
     try:
-        await feed.started(TURN)
+        await feed.started(TURN, "question")
         await feed.model_answered()
         await feed.tool_started(CALL, "kb_probe", {"query": "x"})
         await feed.tool_finished(CALL, TextResult(text="hits", elapsed_ms=10))
@@ -217,7 +217,7 @@ async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
             scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1
         )
         feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
-        await feed.started(TURN)
+        await feed.started(TURN, "question")
         await feed.answer_token(TURN, "partial")
 
         await asyncio.sleep(2.5)

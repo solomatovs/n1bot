@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
@@ -28,11 +29,19 @@ from boba.identity.locks import (
     LockLostError,
     LockMode,
     LockPurpose,
-    LockToken,
     RunLocking,
 )
 from boba.identity.run import BackgroundRuns, RunRegistry
-from boba.messaging import MessageBus, RunFinished, RunStateChanged, StopRequested
+from boba.messaging import (
+    ChangeAction,
+    LockToken,
+    MessageBus,
+    RunFinished,
+    RunListChanged,
+    RunStateChanged,
+    StopRequested,
+    WorkflowChanged,
+)
 from boba.toolkit.result import ToolResult
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.registry import ToolRegistry
@@ -109,6 +118,18 @@ class StartedRun(BaseModel):
     graph: WorkflowGraph
     invoker: ToolInvoker
     lock: LiveLock
+    workflow_name: str
+
+
+@dataclass(frozen=True)
+class SinkTarget:
+    """Чей снимок принимает приёмник: запись запуска, token держателя и имя workflow
+    для ленты пользователя.
+    """
+
+    record: StoredRun
+    token: LockToken
+    workflow_name: str
 
 
 class _StoreSink(RunSink):
@@ -122,15 +143,22 @@ class _StoreSink(RunSink):
         store: WorkflowStore,
         bus: MessageBus,
         locks: LiveLocks,
-        run_id: UUID,
-        token: LockToken,
+        target: SinkTarget,
     ) -> None:
+        record = target.record
         self._store = store
         self._bus = bus
         self._locks = locks
-        self._run_id = run_id
-        self._token = token
-        self._scope = Scope.workflow(run_id)
+        self._run_id = record.id
+        self._token = target.token
+        self._scope = Scope.workflow(record.id)
+        self._listing = RunListChanged(
+            run_id=record.id,
+            workflow_id=record.workflow_id,
+            workflow_name=target.workflow_name,
+            status=record.status.value,
+        )
+        self._user_scope = Scope.user(record.user_id)
 
     async def snapshot(self, state: RunState) -> None:
         # снимок пишет только живой держатель: зомби не перезапишет чужую работу
@@ -149,6 +177,9 @@ class _StoreSink(RunSink):
 
         finished = RunFinished(run_id=self._run_id, status=status)
         await self._bus.publish(self._scope, finished, self._token)
+
+        listing = self._listing.model_copy(update={"status": status})
+        await self._bus.publish(self._user_scope, listing, LockToken.local())
 
 
 class WorkflowService:
@@ -212,7 +243,13 @@ class WorkflowService:
     ) -> StoredWorkflow:
         graph = await self.validate(subject, spec_text)
 
-        return await self._store.save(subject.user_id, graph.spec, layout)
+        saved = await self._store.save(subject.user_id, graph.spec, layout)
+        changed = WorkflowChanged(
+            workflow_id=saved.id, name=saved.name, action=ChangeAction.UPDATED
+        )
+        await self._bus.publish(Scope.user(subject.user_id), changed, LockToken.local())
+
+        return saved
 
     async def list_workflows(self, subject: Subject) -> Sequence[StoredWorkflow]:
         return await self._store.list_for(subject.user_id)
@@ -230,7 +267,21 @@ class WorkflowService:
             raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
 
     async def delete(self, subject: Subject, workflow_id: int) -> bool:
-        return await self._store.delete(subject.user_id, workflow_id)
+        try:
+            stored = await self._store.get(subject.user_id, workflow_id)
+        except WorkflowNotFoundError:
+            return False
+
+        deleted = await self._store.delete(subject.user_id, workflow_id)
+        if not deleted:
+            return False
+
+        changed = WorkflowChanged(
+            workflow_id=workflow_id, name=stored.name, action=ChangeAction.DELETED
+        )
+        await self._bus.publish(Scope.user(subject.user_id), changed, LockToken.local())
+
+        return True
 
     async def get_run(self, subject: Subject, run_id: UUID) -> StoredRun:
         try:
@@ -294,16 +345,33 @@ class WorkflowService:
             context.initiator.kind,
         )
 
-        return StartedRun(record=record, graph=graph, invoker=invoker, lock=lock)
+        listing = RunListChanged(
+            run_id=record.id,
+            workflow_id=record.workflow_id,
+            workflow_name=stored.name,
+            status=record.status.value,
+        )
+        await self._bus.publish(Scope.user(subject.user_id), listing, LockToken.local())
+
+        return StartedRun(
+            record=record,
+            graph=graph,
+            invoker=invoker,
+            lock=lock,
+            workflow_name=stored.name,
+        )
 
     async def execute(self, context: CallContext, started: StartedRun) -> RunOutcome:
         """Исполнение записанного запуска; Stop вызывающего останавливает и его."""
         run_id = started.record.id
         run_context = context.in_scope(Scope.workflow(run_id))
         runner = WorkflowRunner(started.invoker, WorkflowRunner.utc_now)
-        sink = _StoreSink(
-            self._store, self._bus, self._locks, run_id, started.lock.token
+        target = SinkTarget(
+            record=started.record,
+            token=started.lock.token,
+            workflow_name=started.workflow_name,
         )
+        sink = _StoreSink(self._store, self._bus, self._locks, target)
         keeper = LockKeeper(
             self._locks, started.lock, run_context.cancellation, self._heartbeat_sec
         )
@@ -398,9 +466,8 @@ class WorkflowService:
         )
         try:
             state = record.state.abandoned(self.ABANDONED, WorkflowRunner.utc_now())
-            sink = _StoreSink(
-                self._store, self._bus, self._locks, record.id, lock.token
-            )
+            target = SinkTarget(record=record, token=lock.token, workflow_name="")
+            sink = _StoreSink(self._store, self._bus, self._locks, target)
             await sink.snapshot(state)
         finally:
             await self._locks.release(lock.token)

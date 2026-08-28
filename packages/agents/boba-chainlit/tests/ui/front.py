@@ -10,6 +10,7 @@ StandError — фронт не поднялся в отведённое врем
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -48,6 +49,9 @@ class FrontRoutes:
                 return self._studio
 
         return self._chainlit
+
+
+logger = logging.getLogger(__name__)
 
 
 class FrontDoor:
@@ -206,6 +210,11 @@ class FrontDoor:
             task.cancel()
 
         for task in done:
+            ended = (
+                "browser->upstream" if task is upstream_task else "upstream->browser"
+            )
+            failure = task.exception()
+            logger.debug("ws relay ended on %s: %s", ended, failure)
             task.result()
 
     @staticmethod

@@ -19,6 +19,7 @@ from langchain_core.messages import BaseMessage
 from boba.cancellation import StopReason
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.turn import (
+    Question,
     TurnHistory,
     TurnMark,
     TurnRecord,
@@ -250,7 +251,7 @@ class TestFailedTurnKeepsHistory:
             thread_id=THREAD,
             feed=recorded.feed,
             history=cast(Any, history),
-            key=TURN_KEY,
+            question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
         )
 
@@ -324,7 +325,7 @@ class TestPulseOfTheTurn:
             thread_id=THREAD,
             feed=recorded.feed,
             history=cast(Any, RememberedHistory()),
-            key=TURN_KEY,
+            question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
         )
 
@@ -373,7 +374,7 @@ class TestBusyThread:
             thread_id=THREAD,
             feed=recorded.feed,
             history=cast(Any, history),
-            key=TURN_KEY,
+            question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=locks, heartbeat_sec=1.0),
         )
 

@@ -177,8 +177,8 @@ async def test_subscription_streams_snapshots(
     bus_state = emitted.events[0]
     assert bus_state[0] == WorkflowSocketEvent.BUS_STATE.value
     assert bus_state[1] == {"listener": ListenerState.LISTENING.value}
-    first = emitted.events[1]
-    assert first[0] == WorkflowSocketEvent.RUN_STATE.value
+    states = [e for e in emitted.events if e[0] == WorkflowSocketEvent.RUN_STATE.value]
+    first = states[0]
     assert first[2] == SID
     assert first[1]["run_id"] == str(run_id)
 
@@ -367,3 +367,97 @@ async def test_run_events_reach_a_namespace_on_another_instance(  # noqa: PLR091
     finally:
         await bus_a.stop()
         await bus_b.stop()
+
+
+async def test_run_start_reaches_the_user_room(
+    namespace: tuple[WorkflowNamespace, Emitted],
+    service: WorkflowService,
+    context: CallContext,
+) -> None:
+    """Лента пользователя: старт запуска приходит событием user_event в его комнату."""
+    built, emitted = namespace
+    await built.on_connect(SID, {"signed": True}, None)
+
+    stored = await service.save(context.subject, SPEC, {})
+    run_id = service.new_run_id()
+    started = await service.start(context, stored, run_id)
+    await asyncio.wait_for(service.execute(context, started), 10)
+
+    events = [e for e in emitted.events if e[0] == WorkflowSocketEvent.USER_EVENT.value]
+    kinds = [e[1]["kind"] for e in events]
+    assert "workflow_changed" in kinds
+    listed = [e[1] for e in events if e[1]["kind"] == "run_list_changed"]
+    assert listed[0]["status"] in ("pending", "running")
+    assert listed[-1]["status"] == "done"
+    assert listed[-1]["run_id"] == str(run_id)
+    assert listed[-1]["workflow_name"] == stored.name
+    assert all(e[2] == f"user:{context.subject.user_id}" for e in events)
+
+
+async def test_user_events_reach_the_room_over_postgres(
+    store: WorkflowStore,
+    app_config: AppConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
+    user: PersistedUser,
+    context: CallContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Лента пользователя через настоящую шину: сохранение workflow доходит в комнату."""
+    cfg = app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    bus = PgMessageBus(
+        cfg,
+        app_config.data_layer.db_schema,
+        "node1-studio",
+        AppName.STUDIO,
+        app_config.cluster,
+    )
+    bus._pool_ref = pool
+    await bus.setup()
+    await bus.start()
+    probe = Probe()
+
+    async def registry() -> ToolRegistry:
+        return _registry(probe, ["*"], profile=_profile(app_config))
+
+    locks = PgLiveLocks(
+        cfg, app_config.data_layer.db_schema, "node1-studio", app_config.cluster
+    )
+    locks._pool_ref = pool
+    service = WorkflowService(
+        store, registry, "node1-studio", bus, RunLocking(locks=locks, heartbeat_sec=1.0)
+    )
+
+    async def source() -> WorkflowService:
+        return service
+
+    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
+        return ChainlitUsers.of(user)
+
+    async def room_noop(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    emitted = Emitted()
+    namespace = WorkflowNamespace(
+        source, _profiles(app_config), authenticate, _bus_watch
+    )
+    monkeypatch.setattr(namespace, "emit", emitted.emit)
+    monkeypatch.setattr(namespace, "enter_room", room_noop)
+    monkeypatch.setattr(namespace, "leave_room", room_noop)
+    try:
+        await namespace.on_connect(SID, {"signed": True}, None)
+        await service.save(context.subject, SPEC, {})
+
+        deadline = asyncio.get_running_loop().time() + 5
+        while not [
+            e for e in emitted.events if e[0] == WorkflowSocketEvent.USER_EVENT.value
+        ]:
+            assert asyncio.get_running_loop().time() < deadline, emitted.events
+            await asyncio.sleep(0.05)
+
+        event = [
+            e for e in emitted.events if e[0] == WorkflowSocketEvent.USER_EVENT.value
+        ][0]
+        assert event[1]["kind"] == "workflow_changed"
+    finally:
+        await bus.stop()
