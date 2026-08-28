@@ -62,6 +62,7 @@ class Selector:
     TABLE: ClassVar[str] = ".table"
     OUTPUT_TEXT: ClassVar[str] = ".output__text"
     SOCKET_LAMP: ClassVar[str] = ".topbar .lamp"
+    PROFILE_SELECT: ClassVar[str] = 'select[aria-label="profile"]'
 
 
 class BrowserLog:
@@ -181,7 +182,9 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
     _button(page, "Run").click()
     expect(page).to_have_url(re.compile(r"/workflow/observe/[0-9a-f-]+$"))
     # лампочка в топбаре: живые снимки идут по websocket через фронт стенда
-    expect(page.locator(Selector.SOCKET_LAMP)).to_have_attribute("data-socket", "connected")
+    expect(page.locator(Selector.SOCKET_LAMP)).to_have_attribute(
+        "data-socket", "connected"
+    )
 
     # статусы приходят по сокету: узлы доходят до done без перезагрузки
     expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
@@ -252,3 +255,27 @@ def test_finished_run_loads_lists_once(page: Page, stand: StandProcess) -> None:
     ]
     assert listed == []
     expect(page.locator(Selector.TASK_NODE)).to_have_count(2)
+
+
+def test_profile_chip_switches_the_catalog_and_survives_reload(
+    page: Page, stand: StandProcess
+) -> None:
+    """Профиль search без bash: меню инструментов меняется, выбор переживает reload."""
+    _open(page, stand, "/build/new")
+    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
+    _button(page, "Tool").click()
+    expect(page.get_by_role("menuitem", name="bash")).to_be_enabled()
+    page.keyboard.press("Escape")
+
+    # у search нет bash: в каталоге он остаётся, но недоступным (denied → disabled)
+    page.locator(Selector.PROFILE_SELECT).select_option("search")
+    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("search")
+    _button(page, "Tool").click()
+    expect(page.get_by_role("menuitem", name="bash")).to_be_disabled()
+    page.keyboard.press("Escape")
+
+    page.reload(wait_until="domcontentloaded")
+    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("search")
+
+    page.locator(Selector.PROFILE_SELECT).select_option("general")
+    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
