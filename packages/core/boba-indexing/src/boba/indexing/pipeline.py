@@ -59,6 +59,10 @@ class IndexerConfig(Generic[T]):
     cleanup: CleanupStrategy = field(default_factory=NoneCleanup)
     force_update: bool = False
 
+    skip_failed: bool = True
+    """Сорвавшийся источник даёт SourceFailed и прогон идёт дальше;
+    False — первая же ошибка роняет прогон"""
+
     def __post_init__(self) -> None:
         if self.workers < 1:
             msg = f"IndexerConfig.workers must be >= 1, got {self.workers}"
@@ -224,6 +228,9 @@ class Pipeline(Generic[ReqT, T]):
                 force=config.force_update,
             )
         except IndexingError as e:
+            if not config.skip_failed:
+                raise
+
             return SourceFailed(
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),

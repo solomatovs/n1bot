@@ -156,6 +156,7 @@ class ConfluenceIngest:
         force_update: bool = False,
         gate: AttachmentGate,
         routes: Mapping[str, Reader[str]],
+        skip_failed: bool,
     ) -> dict[str, Any]:
         """Полный Confluence -> kb_chunks pipeline для уже собранного RequestSource."""
         reader: DispatchReader[str] = DispatchReader(
@@ -182,6 +183,7 @@ class ConfluenceIngest:
             conn,
             progress=progress,
             gate=gate,
+            skip_failed=skip_failed,
         )
 
         # prune_missing сносит весь стейл коллекции; force_update без prune — страницы
@@ -196,6 +198,7 @@ class ConfluenceIngest:
             cleanup=cleanup,
             force_update=force_update,
             workers=workers,
+            skip_failed=skip_failed,
         )
         ConfluenceIngest._widen_thread_pool(workers)
         try:
@@ -248,6 +251,7 @@ class ConfluenceIngest:
         attachments: str,
         progress: IngestProgress,
         routes: Mapping[str, Reader[str]],
+        skip_failed: bool,
     ) -> dict[str, Any]:
         """Собрать stores/embedder/chunker/filter из cfg и вызвать run."""
         chunk_store = LoggingChunkStore(PostgresChunkStore(cfg=cfg), logger)
@@ -278,4 +282,5 @@ class ConfluenceIngest:
             force_update=force_update,
             gate=gate,
             routes=routes,
+            skip_failed=skip_failed,
         )
