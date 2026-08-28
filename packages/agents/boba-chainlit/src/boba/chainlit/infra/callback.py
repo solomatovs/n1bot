@@ -32,7 +32,6 @@ from boba.chainlit.infra.providers import (
 from boba.chainlit.infra.session import ChainlitSession, current_session
 from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadLive, ThreadRoom
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
-from boba.chainlit.rendering.renderer import ChatRenderers
 from boba.chat.profiles import (
     ChatProfiles,
     SelectedProfile,
@@ -245,6 +244,11 @@ async def on_chat_start(
         session.language or "browser",
     )
 
+    # вкладка присоединилась к треду: рендерер этого инстанса подписан на его область,
+    # и ход, начатый на другом инстансе, рисуется здесь так же, как свой
+    if thread_id := session.thread_id:
+        ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
+
     # профиль без разрешённых настроек панель не показывает
     if tabs := _session_settings(app_config, registry):
         await cl.ChatSettings(tabs).send()
@@ -444,6 +448,7 @@ async def on_chat_resume(
     """
     thread_id = thread_dict[ThreadField.ID]
     turn = ChatTurn.active(thread_id)
+    renderer = ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
 
     room: list[str] = []
     for session in ThreadRoom.sessions(thread_id):
@@ -462,10 +467,6 @@ async def on_chat_resume(
     )
 
     if turn is not None:
-        renderer = ChatRenderers.get(thread_id)
-        if renderer is None:
-            return
-
         renderer.resume_into(thread_dict)
         ThreadRoom.keep_loading()
         return
@@ -474,7 +475,6 @@ async def on_chat_resume(
     if not await ThreadLive.turn_alive(thread_id):
         return
 
-    renderer = ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
     caught = await renderer.catch_up(_root_bus())
     logger.info("resume thread %s: foreign turn, caught up: %s", thread_id, caught)
     if caught.interrupted:

@@ -22,7 +22,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, cast
 
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
-from boba.chainlit.infra.thread_room import ThreadLive
+from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadLive
 from boba.identity.errors import InternalServiceError
 from boba.identity.run import RunRegistry
 from chainlit.config import config as chainlit_config
@@ -200,6 +200,10 @@ class SocketEvents:
             return
 
         facts = SocketFacts.of_session(session)
+        socket = session.websocket
+        if facts.thread_id and socket is not None:
+            ChatRoomSurface.renderer_of(socket, facts.thread_id)
+
         alive = facts.turn_alive
         if not alive and facts.thread_id:
             alive = await ThreadLive.turn_alive(facts.thread_id)

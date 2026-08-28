@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from psycopg import AsyncConnection, sql
 from psycopg.errors import InsufficientPrivilege
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 class KbSchema:
     """Приводит схему базы знаний к актуальному виду."""
+
+    SETUP_LOCK: ClassVar[str] = "boba-kb-setup"
+    """Ключ advisory-lock, под которым процессы по очереди применяют миграции."""
 
     def __init__(self, cfg: PostgresStoreConfig, *, dim: int) -> None:
         self._cfg = cfg
@@ -35,8 +39,16 @@ class KbSchema:
         pool = await KbPool.open(self._cfg.connection)
         async with pool.connection() as conn:
             try:
-                await self._ensure_schema(conn)
-                await Migrations.apply_bootstrap(conn, schema_cfg=self._cfg.tables)
+                # несколько процессов стартуют разом: DDL под одним advisory-lock,
+                # иначе каталог отвечает «tuple concurrently updated»
+                async with conn.transaction():
+                    await conn.execute(
+                        "select pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
+                        {"key": self.SETUP_LOCK},
+                        prepare=False,
+                    )
+                    await self._ensure_schema(conn)
+                    await Migrations.apply_bootstrap(conn, schema_cfg=self._cfg.tables)
             except InsufficientPrivilege:
                 logger.info(
                     "no permission operationassuming an administrator created it",
