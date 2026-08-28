@@ -20,6 +20,7 @@ from boba.indexing.chunks import (
 from boba.indexing.errors import (
     IncompatibleContentError,
     IndexingError,
+    TransportError,
 )
 from boba.indexing.events import (
     BaseIndexEvent,
@@ -211,6 +212,7 @@ __all__ = [
     "StringContentHash",
     "TrackingKeys",
     "Transport",
+    "TransportError",
     "TransportKeys",
     "UnsupportedFilterError",
 ]
