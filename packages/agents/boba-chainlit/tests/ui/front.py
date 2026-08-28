@@ -138,7 +138,9 @@ class FrontDoor:
 
         headers.extend(self._forwarded(request.headers.get("host", "")))
         url = self._upstream("http", request.url.path, request.url.query)
-        upstream_request = self._client.build_request(
+        # запрос собирается мимо build_request: иначе клиент подмешал бы cookie из
+        # своей банки, и вход одного браузера утёк бы во все следующие запросы
+        upstream_request = httpx.Request(
             request.method, url, headers=headers, content=request.stream()
         )
         upstream = await self._client.send(upstream_request, stream=True)

@@ -770,3 +770,36 @@ class TestResponsive:
 
         assert Css.scale(page.locator(Sel.VIEWPORT)) > scale_before
         assert Css.box(node).width > before
+
+
+class TestOutputPanel:
+    """Панель вывода стадии в инспекторе: вкладки каналов, текст из журнала, стили."""
+
+    OUTPUT: ClassVar[str] = ".output"
+    OUTPUT_TEXT: ClassVar[str] = ".output__text"
+    OUTPUT_META: ClassVar[str] = ".output__meta"
+
+    def test_output_reads_the_journal(
+        self, page: Page, stand: StandProcess, seeded: SeededRun, tokens: Tokens
+    ) -> None:
+        _open(page, stand, f"/observe/{seeded.run_id}")
+        page.locator(Sel.TASK_NODE).first.click()
+        panel = page.locator(Sel.INSPECTOR).locator(self.OUTPUT)
+        expect(panel).to_be_visible()
+        expect(panel.locator(".eyebrow")).to_have_text("output")
+
+        tabs = panel.locator('[role="tab"]')
+        expect(tabs.first).to_have_text("stdout")
+        expect(tabs.first).to_have_attribute("aria-selected", "true")
+
+        text = panel.locator(self.OUTPUT_TEXT)
+        expect(text).to_contain_text("LOOK_ONE")
+        assert "mono" in Css.of(text, "font-family").lower()
+        assert Css.of(text, "background-color") == tokens.rgb("bg")
+        assert Css.of(text, "border-top-color") == tokens.rgb("hairline")
+        assert Css.of(text, "overflow-y") == "auto"
+
+        meta = panel.locator(self.OUTPUT_META)
+        expect(meta).to_contain_text("B")
+        assert Css.of(meta, "color") == tokens.rgb("muted")
+        assert Css.box(page.locator(Sel.INSPECTOR)).contains(Css.box(text))

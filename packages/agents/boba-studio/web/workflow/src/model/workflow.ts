@@ -322,3 +322,10 @@ export const StreamSliceSchema = z.object({
   note: z.string(),
 });
 export type StreamSlice = z.infer<typeof StreamSliceSchema>;
+
+/** Канал журнала стадии: имя для запроса окна и подпись вкладки. */
+export const ChannelViewSchema = z.object({
+  name: z.string(),
+  label: z.string(),
+});
+export type ChannelView = z.infer<typeof ChannelViewSchema>;

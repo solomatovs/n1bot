@@ -52,7 +52,8 @@ def test_anonymous_is_sent_to_login_and_returns_after_sign_in(
         f"{stand.config.base_url}/workflow/account", wait_until="domcontentloaded"
     )
 
-    expect(page).to_have_url(re.compile(r"/workflow/login$"))
+    # первый ответ 401 может ждать прогрева процесса: дольше стандартных 5 с
+    expect(page).to_have_url(re.compile(r"/workflow/login$"), timeout=30_000)
 
     _sign_in(page, stand)
 
