@@ -1,6 +1,8 @@
 import type { ReactElement } from "react";
 import type { PropsWithChildren } from "react";
 
+import { Alert } from "./Alert";
+
 export type Loadable<T> =
   | { kind: "loading" }
   | { kind: "error"; message: string }
@@ -20,7 +22,7 @@ export function Async<T>({ state, render }: Props<T>): ReactElement {
   if (state.kind === "error") {
     return (
       <div className="empty">
-        <span className="notice notice--error">{state.message}</span>
+        <Alert tone="error">{state.message}</Alert>
       </div>
     );
   }

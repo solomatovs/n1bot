@@ -29,13 +29,37 @@ import {
 } from "../model/account";
 import type { paths } from "./schema";
 
-/** Отказ API: статус и текст detail сервера. */
+/** Ошибка валидации одного поля: путь по телу запроса и причина. */
+export type FieldIssue = {
+  loc: (string | number)[];
+  message: string;
+};
+
+const ValidationErrorSchema = z.array(z.object({ loc: z.array(z.union([z.string(), z.number()])), msg: z.string() }));
+
+/** Отказ API: статус, текст detail и разобранные ошибки полей (422). */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly detail: string,
+    readonly issues: FieldIssue[],
   ) {
     super(`${status}: ${detail}`);
+  }
+
+  static of(status: number, payload: unknown): ApiError {
+    const detail = detailOf(payload);
+    const parsed = ValidationErrorSchema.safeParse(detail);
+    if (parsed.success) {
+      const issues = parsed.data.map((item) => ({ loc: item.loc.filter((part) => part !== "body"), message: item.msg }));
+      return new ApiError(status, issues.map((issue) => `${issue.loc.join(".")}: ${issue.message}`).join("\n"), issues);
+    }
+
+    if (typeof detail === "string") {
+      return new ApiError(status, detail, []);
+    }
+
+    return new ApiError(status, JSON.stringify(detail), []);
   }
 }
 
@@ -99,6 +123,11 @@ export class WorkflowApi {
 
   profiles(): Promise<ProfileView[]> {
     return this.call("get", "/v1/profiles", {}, undefined, undefined, ProfileViewSchema.array());
+  }
+
+  /** JSON Schema профиля соединения: по ней строится форма. */
+  connectionSchema(): Promise<unknown> {
+    return this.raw("get", "/v1/connections/schema", {}, undefined, undefined);
   }
 
   /** Профиль соединения в схеме — union по kind; страница читает его свободной моделью. */
@@ -222,21 +251,17 @@ export class WorkflowApi {
         this.unauthorized();
       }
 
-      throw new ApiError(response.status, detailOf(payload));
+      throw ApiError.of(response.status, payload);
     }
 
     return payload;
   }
 }
 
-function detailOf(payload: unknown): string {
+/** detail ответа как есть: строка, список ошибок валидации или что-то ещё. */
+function detailOf(payload: unknown): unknown {
   if (typeof payload === "object" && payload !== null && "detail" in payload) {
-    const detail: unknown = payload.detail;
-    if (typeof detail === "string") {
-      return detail;
-    }
-
-    return JSON.stringify(detail);
+    return payload.detail;
   }
 
   return "request failed";

@@ -134,3 +134,18 @@ async def test_connections_without_the_section_is_503(reader: AsyncClient) -> No
 
     assert reply.status_code == 503
     assert "disabled" in reply.json()["detail"]
+
+
+async def test_connection_schema_describes_kinds_and_secrets(
+    reader: AsyncClient,
+) -> None:
+    reply = await reader.get(f"{ApiVersion.V1}{ConnectionUrl.SCHEMA}")
+
+    assert reply.status_code == 200, reply.text
+    schema = reply.json()
+    assert schema["discriminator"]["propertyName"] == "kind"
+    assert set(schema["discriminator"]["mapping"]) == {"postgres", "clickhouse", "web"}
+    auth = schema["$defs"]["HttpProfile"]["properties"]["auth"]
+    assert auth["discriminator"]["propertyName"] == "method"
+    bearer = schema["$defs"]["BearerAuth"]["properties"]["token"]
+    assert bearer["format"] == "password"

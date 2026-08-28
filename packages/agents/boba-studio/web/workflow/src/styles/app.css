@@ -1729,3 +1729,94 @@ button {
     grid-template-columns: 1fr;
   }
 }
+
+.schema-block {
+  margin: 0 0 var(--s2);
+  padding: var(--s2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  min-width: 0;
+}
+
+.schema-block__legend {
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--muted);
+}
+
+.schema-block__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* единое сообщение: блок, переносит текст, цвет по тону */
+.alert {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: var(--s2) 0;
+  padding: 8px 12px;
+  border: 1px solid var(--hairline);
+  border-left-width: 3px;
+  border-radius: var(--r-cell);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-data);
+  max-width: 100%;
+}
+
+.alert__icon {
+  display: inline-flex;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.alert__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.alert__title {
+  font-weight: 600;
+}
+
+.alert__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.alert--error {
+  border-left-color: var(--error);
+}
+
+.alert--error .alert__icon {
+  color: var(--error);
+}
+
+.alert--ok {
+  border-left-color: var(--signal);
+}
+
+.alert--ok .alert__icon {
+  color: var(--signal);
+}
+
+.field--invalid .input {
+  border-color: var(--error);
+}
+
+.field__issue {
+  color: var(--error);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}

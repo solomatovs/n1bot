@@ -41,6 +41,7 @@ class ConnectionUrl(StrEnum):
     """Соединения пользователя: список, свои — создание, замена, удаление."""
 
     CONNECTIONS = "/connections"
+    SCHEMA = "/connections/schema"
     CONNECTION = "/connections/{connection_id}"
 
 

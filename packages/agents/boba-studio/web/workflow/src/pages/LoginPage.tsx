@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { ApiError } from "../api/client";
 import { useServices } from "../app";
+import { Alert } from "../components/Alert";
 import { Async, errorText } from "../components/Async";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useLoadable } from "../hooks/useLoadable";
@@ -101,9 +102,9 @@ export function LoginPage(): ReactElement {
             />
           </label>
           {notice !== "" && (
-            <span className="notice notice--error" data-notice="login">
+            <Alert tone="error" mark="login">
               {notice}
-            </span>
+            </Alert>
           )}
           <button type="submit" className="btn btn--primary login__submit" disabled={busy}>
             <LogIn size={14} />
@@ -117,7 +118,7 @@ export function LoginPage(): ReactElement {
         </a>
       )}
       {!available.password && available.sso_url === "" && (
-        <span className="notice notice--error">No sign-in method is configured</span>
+        <Alert tone="error">No sign-in method is configured</Alert>
       )}
     </>
   );

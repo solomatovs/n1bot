@@ -14,11 +14,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    TypeAdapter,
+    field_validator,
+)
 
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.store import ConnectionStore, ConnectionStoreError
@@ -32,7 +39,13 @@ from boba.identity.context import Subject
 from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import ConnectionUrl
 
-__all__ = ["ConnectionBody", "ConnectionDeleted", "ConnectionView", "ConnectionsApi"]
+__all__ = [
+    "ConnectionBody",
+    "ConnectionDeleted",
+    "ConnectionView",
+    "ConnectionsApi",
+    "ProfileSchema",
+]
 
 
 class MaskedSecrets:
@@ -95,6 +108,16 @@ class ConnectionDeleted(BaseModel):
     deleted: bool
 
 
+class ProfileSchema:
+    """JSON Schema профиля соединения: по ней страница строит форму."""
+
+    _ADAPTER: ClassVar[TypeAdapter[ConnectionProfile]] = TypeAdapter(ConnectionProfile)
+
+    @classmethod
+    def render(cls) -> Mapping[str, Any]:
+        return cls._ADAPTER.json_schema()
+
+
 class ConnectionsApi:
     """Обработчики /connections."""
 
@@ -106,6 +129,7 @@ class ConnectionsApi:
 
     def mount(self, router: APIRouter) -> None:
         routes = (
+            (ConnectionUrl.SCHEMA, self.schema, "GET"),
             (ConnectionUrl.CONNECTIONS, self.list_connections, "GET"),
             (ConnectionUrl.CONNECTIONS, self.create, "POST"),
             (ConnectionUrl.CONNECTION, self.replace, "PUT"),
@@ -113,6 +137,12 @@ class ConnectionsApi:
         )
         for path, handler, method in routes:
             router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
+
+    async def schema(self, current_user: CurrentUser) -> Mapping[str, Any]:
+        """Схема профиля с вариантами по kind и method; секреты — format=password."""
+        ApiIdentity.user_of(current_user)
+
+        return ProfileSchema.render()
 
     async def list_connections(
         self,
