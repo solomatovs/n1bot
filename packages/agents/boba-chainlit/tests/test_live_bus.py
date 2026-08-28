@@ -24,7 +24,7 @@ from boba.messaging import (
     RunListChanged,
     StopRequested,
 )
-from boba.runtime.bus import ListenerState, PgMessageBus
+from boba.runtime.bus import ListenerState, LiveListener, PgMessageBus, Pointer
 from boba.runtime.config import AppName
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -277,3 +277,43 @@ async def test_user_scope_events_cross_instances(
 
     await inbox.wait(1)
     assert inbox.envelopes[0].message.kind is MessageKind.RUN_LIST_CHANGED
+
+
+async def test_listener_retries_when_the_catch_up_fails(
+    app_config: AppConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ошибка базы при догоне после реконнекта — повтор, а не остановка слушателя."""
+    cfg = app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    calls: list[int] = []
+
+    async def handler(pointer: Pointer) -> None:
+        return None
+
+    async def on_reconnect() -> None:
+        calls.append(len(calls))
+        if len(calls) == 1:
+            msg = "message bus: read failed while the pool was still dead"
+            raise MessageBusError(msg)
+
+    monkeypatch.setattr(LiveListener, "RETRY_SEC", 0.1)
+    listener = LiveListener(cfg, handler, on_reconnect)
+    await listener.start()
+    try:
+        async with pool.cursor() as cur:
+            await cur.execute(
+                "select pg_terminate_backend(%s)", (listener.backend_pid,)
+            )
+
+        deadline = asyncio.get_running_loop().time() + WAIT_SEC
+        while len(calls) < 2:
+            assert asyncio.get_running_loop().time() < deadline, calls
+            await asyncio.sleep(0.05)
+
+        await listener.wait_listening(WAIT_SEC)
+        assert listener.state is ListenerState.LISTENING
+        listener.ensure_alive()
+    finally:
+        await listener.stop()

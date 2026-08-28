@@ -304,8 +304,9 @@ async def test_run_events_reach_a_namespace_on_another_instance(  # noqa: PLR091
         bus._pool_ref = pool
         await bus.setup()
         await bus.start()
-        locks = PgLiveLocks(cfg, schema, name, cluster)
+        locks = PgLiveLocks(cfg, schema, name, AppName.STUDIO, cluster)
         locks._pool_ref = pool
+        await locks.register_instance()
         return bus, locks
 
     bus_a, locks_a = await stand("node1-chainlit")
@@ -394,7 +395,7 @@ async def test_run_start_reaches_the_user_room(
     assert all(e[2] == f"user:{context.subject.user_id}" for e in events)
 
 
-async def test_user_events_reach_the_room_over_postgres(
+async def test_user_events_reach_the_room_over_postgres(  # noqa: PLR0913
     store: WorkflowStore,
     app_config: AppConfig,
     test_database: str,
@@ -403,7 +404,9 @@ async def test_user_events_reach_the_room_over_postgres(
     context: CallContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Лента пользователя через настоящую шину: сохранение workflow доходит в комнату."""
+    """Лента пользователя через настоящую шину: сохранение workflow доходит в
+    комнату.
+    """
     cfg = app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
     bus = PgMessageBus(
         cfg,
@@ -421,9 +424,14 @@ async def test_user_events_reach_the_room_over_postgres(
         return _registry(probe, ["*"], profile=_profile(app_config))
 
     locks = PgLiveLocks(
-        cfg, app_config.data_layer.db_schema, "node1-studio", app_config.cluster
+        cfg,
+        app_config.data_layer.db_schema,
+        "node1-studio",
+        AppName.STUDIO,
+        app_config.cluster,
     )
     locks._pool_ref = pool
+    await locks.register_instance()
     service = WorkflowService(
         store, registry, "node1-studio", bus, RunLocking(locks=locks, heartbeat_sec=1.0)
     )
@@ -455,9 +463,9 @@ async def test_user_events_reach_the_room_over_postgres(
             assert asyncio.get_running_loop().time() < deadline, emitted.events
             await asyncio.sleep(0.05)
 
-        event = [
+        events = [
             e for e in emitted.events if e[0] == WorkflowSocketEvent.USER_EVENT.value
-        ][0]
-        assert event[1]["kind"] == "workflow_changed"
+        ]
+        assert events[0][1]["kind"] == "workflow_changed"
     finally:
         await bus.stop()

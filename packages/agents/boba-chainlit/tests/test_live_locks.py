@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Sequence
 from uuid import uuid4
 
 import pytest
+from psycopg import sql
 
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
@@ -23,6 +24,7 @@ from boba.messaging import RunStateChanged
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import AppName, ClusterConfig
 from boba.runtime.locks import LockReaper, PgLiveLocks
+from boba.runtime.tables import ChatTable
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -54,8 +56,11 @@ async def _stand(
     bus._pool_ref = pool
     await bus.setup()
     await bus.start()
-    locks = PgLiveLocks(cfg, app_config.data_layer.db_schema, name, cluster)
+    locks = PgLiveLocks(
+        cfg, app_config.data_layer.db_schema, name, AppName.STUDIO, cluster
+    )
     locks._pool_ref = pool
+    await locks.register_instance()
     return Stand(bus, locks)
 
 
@@ -165,3 +170,30 @@ async def test_reaper_removes_stale_locks_and_dead_instances(
     assert ours[0].purpose is LockPurpose.RUN
     assert ours[0] in seen
     assert await first.locks.holders_of(scope) == []
+
+
+async def test_instance_registration_survives_a_postgres_restart(
+    stands: tuple[Stand, Stand], pool: AsyncPostgresPool
+) -> None:
+    """После рестарта Postgres unlogged-таблица инстансов пуста: проход сторожа
+    регистрирует инстанс заново, и захват блокировки снова возможен.
+    """
+    first, _ = stands
+    instances = ChatTable.LIVE_INSTANCES.under(first.locks._schema)
+    async with pool.cursor() as cur:
+        await cur.execute(
+            sql.SQL("truncate {instances} cascade").format(instances=instances)
+        )
+
+    async def on_stale(stale: Sequence[StaleLock]) -> None:
+        return None
+
+    async def on_sweep() -> None:
+        return None
+
+    await LockReaper(first.locks, 1.0, on_stale, on_sweep).sweep()
+
+    scope = Scope.chat(str(uuid4()))
+    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    assert lock.holder == first.locks.instance
+    await first.locks.release(lock.token)
