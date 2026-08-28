@@ -54,3 +54,10 @@ export type ConnectionBody = {
   name: string;
   profile: Record<string, unknown>;
 };
+
+export const ProbeResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string(),
+  elapsed_ms: z.number(),
+});
+export type ProbeResult = z.infer<typeof ProbeResultSchema>;

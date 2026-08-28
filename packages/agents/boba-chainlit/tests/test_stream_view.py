@@ -33,7 +33,6 @@ from boba.canvas.canvas import (
     WatchSource,
 )
 from boba.canvas.journal import JournalWindow, StreamJournalHub, StreamKey
-from boba.chainlit.canvas.journal import DirVault, StreamJournal
 from boba.chainlit.canvas.panel import CanvasPanel, StreamActions
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -42,6 +41,7 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
 )
 from boba.identity.run import RunRegistry
+from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.plugins import CallSurface
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
 from boba.toolkit.stream import ToolChannelsTap

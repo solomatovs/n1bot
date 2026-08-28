@@ -60,6 +60,7 @@ class Selector:
     INSPECTOR: ClassVar[str] = ".inspector"
     ARG_COMMAND: ClassVar[str] = 'textarea[aria-label="arg command"]'
     TABLE: ClassVar[str] = ".table"
+    OUTPUT_TEXT: ClassVar[str] = ".output__text"
 
 
 class BrowserLog:
@@ -194,6 +195,8 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
     page.get_by_role("tab", name="Grid").click()
     page.locator(Selector.TASK_NODE).first.click()
     expect(page.locator(Selector.INSPECTOR)).to_contain_text("echo PAGE_ONE")
+    # вывод стадии читается из журнала окнами: stdout целиком, не усечённый итог
+    expect(page.locator(Selector.OUTPUT_TEXT)).to_contain_text("PAGE_ONE")
 
 
 def test_stop_button_stops_a_running_workflow(page: Page, stand: StandProcess) -> None:

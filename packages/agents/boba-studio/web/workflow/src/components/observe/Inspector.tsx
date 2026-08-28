@@ -6,15 +6,17 @@ import type { RunState } from "../../model/workflow";
 import { JsonView } from "../JsonView";
 import { ResultView } from "../results/ResultView";
 import { StatusPill } from "../StatusPill";
+import { OutputPanel } from "./OutputPanel";
 
 type Props = {
+  runId: string;
   run: RunState;
   task: string;
   onClose: () => void;
 };
 
 /** Инспектор задачи: выезжает справа, как в Studio. */
-export function Inspector({ run, task, onClose }: Props): ReactElement {
+export function Inspector({ runId, run, task, onClose }: Props): ReactElement {
   const spec = run.graph.spec.tasks[task];
   const state = run.tasks[task];
 
@@ -46,6 +48,9 @@ export function Inspector({ run, task, onClose }: Props): ReactElement {
               </>
             )}
           </dl>
+          {state.call_id !== "" && (
+            <OutputPanel runId={runId} callId={state.call_id} live={state.status === "running"} />
+          )}
           <h4 className="eyebrow">args</h4>
           <div className="inspector__code">
             <JsonView value={spec.args} clip={0} />
