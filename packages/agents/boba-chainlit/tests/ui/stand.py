@@ -189,10 +189,18 @@ class StandConfig:
         self._use_studio(doc)
         self._disable_sandbox_tools(doc)
         self._drop_cgroup_limits(doc)
+        self._shrink_pools(doc)
 
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
         return self.config_path
+
+    @staticmethod
+    def _shrink_pools(doc: MutableMapping[str, Any]) -> None:
+        """Стенды живут по нескольку сразу: малые пулы не исчерпывают слоты Postgres."""
+        pool = doc["postgres"]["pool"]
+        pool["min_size"] = 1
+        pool["max_size"] = 6
 
     def env(self) -> dict[str, str]:
         """Окружение дочернего процесса: пути стенда вместо рантайма релиза."""
@@ -433,6 +441,14 @@ class StandProcess:
     """Маркеры строк, которых в логе живого хода быть не должно."""
 
     def start(self, boot_timeout_sec: float) -> None:
+        """Поднимает оба процесса и прокси; неудачный старт гасит всё поднятое."""
+        try:
+            self._start(boot_timeout_sec)
+        except Exception:
+            self.stop()
+            raise
+
+    def _start(self, boot_timeout_sec: float) -> None:
         self.config.write()
         env = self.config.env()
         self.process = self._spawn("boba.chainlit.main", env, StandLog.CHAINLIT)

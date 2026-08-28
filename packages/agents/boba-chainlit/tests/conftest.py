@@ -56,6 +56,7 @@ from boba.identity.context import (
     Subject,
 )
 from boba.identity.errors import RefusalError
+from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
 from boba.krb import SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
@@ -555,6 +556,8 @@ class StubRefs:
             workflow_service=no_service,
             connection_store=store,
             sso_tickets=tickets,
+            live_locks=lambda: MemoryLiveLocks("stand", 20),
+            heartbeat_sec=1.0,
         )
 
     @staticmethod
@@ -576,6 +579,8 @@ class StubRefs:
             workflow_service=workflow_service,
             connection_store=no_store,
             sso_tickets=no_tickets,
+            live_locks=lambda: MemoryLiveLocks("stand", 20),
+            heartbeat_sec=1.0,
         )
 
 

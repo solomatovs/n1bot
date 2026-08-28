@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from boba.connection_broker.user_connections import StoreRef, TicketsRef
+from boba.identity.locks import LiveLocks
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
 
@@ -22,3 +23,7 @@ class RuntimeRefs:
     """Сервис workflow; RuntimeError — секция [workflow] выключена."""
     connection_store: StoreRef
     sso_tickets: TicketsRef
+    live_locks: Callable[[], LiveLocks]
+    """Блокировки областей процесса; зовётся на вызов."""
+    heartbeat_sec: float
+    """Период подтверждения жизни блокировки держателем."""

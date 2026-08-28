@@ -63,7 +63,13 @@ class ApiApp:
 
         AccountApi(profiles).mount(router)
         ConnectionsApi(refs.connection_store, profiles, refs.sso_tickets).mount(router)
-        ToolCalling(refs.tool_registry, profiles, access.threads).mount(router)
+        ToolCalling(
+            refs.tool_registry,
+            profiles,
+            access.threads,
+            refs.live_locks,
+            refs.heartbeat_sec,
+        ).mount(router)
         WorkflowApi(refs.workflow_service, profiles).mount(router)
         StreamApi(refs.workflow_service, profiles).mount(router)
         app.include_router(router)

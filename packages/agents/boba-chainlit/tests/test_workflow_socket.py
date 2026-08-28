@@ -18,6 +18,7 @@ from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import AuthenticatedUser
 from boba.identity.context import CallContext, Scope
+from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
 from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocketEvent
 from boba.toolrun.registry import ToolRegistry
@@ -83,7 +84,13 @@ def service(
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"], profile=_profile(app_config))
 
-    return WorkflowService(store, registry, "test:0", bus)
+    return WorkflowService(
+        store,
+        registry,
+        "test:0",
+        bus,
+        RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
+    )
 
 
 @pytest.fixture

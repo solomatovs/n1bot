@@ -18,12 +18,13 @@ from test_workflow_service import ROLE, Probe, _registry
 from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import ApiSubject
+from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus, WorkflowSpec
-from boba.workflow_engine.service import WorkflowError, WorkflowService
+from boba.workflow_engine.service import StopOutcome, WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -71,7 +72,13 @@ def app(store: WorkflowStore, user: PersistedUser, app_config: AppConfig) -> Fas
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"], profile=_profile(app_config))
 
-    service = WorkflowService(store, registry, "test:0", MemoryMessageBus("test:0"))
+    service = WorkflowService(
+        store,
+        registry,
+        "test:0",
+        MemoryMessageBus("test:0"),
+        RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
+    )
 
     async def source() -> WorkflowService:
         return service
@@ -226,7 +233,7 @@ async def test_stop_running(client: AsyncClient, app_config: AppConfig) -> None:
     stopped = await client.post(
         f"/v1/workflow-runs/{run_id}/stop", json={"profile": profile}
     )
-    assert stopped.json() == {"stopped": True}
+    assert stopped.json() == {"outcome": "stopped"}
 
     run = await _finished(client, run_id, profile)
     assert run["status"] == "stopped"
@@ -234,7 +241,7 @@ async def test_stop_running(client: AsyncClient, app_config: AppConfig) -> None:
     again = await client.post(
         f"/v1/workflow-runs/{run_id}/stop", json={"profile": profile}
     )
-    assert again.json() == {"stopped": False}
+    assert again.json() == {"outcome": "finished"}
 
     listed = await client.get(
         f"{ApiVersion.V1}{WorkflowUrl.RUNS}", params={"profile": profile}
@@ -245,14 +252,28 @@ async def test_stop_running(client: AsyncClient, app_config: AppConfig) -> None:
 async def test_abandoned_runs_are_closed_on_startup_and_stop_is_honest(
     store: WorkflowStore, user: PersistedUser, app_config: AppConfig
 ) -> None:
-    """Запуск без процесса: recover_orphans закрывает свои, stop чужого — отказ."""
+    """Запуск без процесса: recover_orphans закрывает свои, stop чужого без держателя
+    закрывает его как сироту.
+    """
     probe = Probe()
 
     async def registry() -> ToolRegistry:
         return _registry(probe, ["*"], profile=_profile(app_config))
 
-    mine = WorkflowService(store, registry, "test:0", MemoryMessageBus("test:0"))
-    other = WorkflowService(store, registry, "other:1", MemoryMessageBus("other:1"))
+    mine = WorkflowService(
+        store,
+        registry,
+        "test:0",
+        MemoryMessageBus("test:0"),
+        RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
+    )
+    other = WorkflowService(
+        store,
+        registry,
+        "other:1",
+        MemoryMessageBus("other:1"),
+        RunLocking(locks=MemoryLiveLocks("other:1", 20), heartbeat_sec=1.0),
+    )
     signed = ChainlitUsers.of(user)
     assert signed is not None
     subject = ApiSubject.of(signed, _profile(app_config)).subject
@@ -275,11 +296,10 @@ async def test_abandoned_runs_are_closed_on_startup_and_stop_is_honest(
         await store.get_run(subject.user_id, foreign.id)
     ).state.status is RunStatus.RUNNING
 
-    with pytest.raises(WorkflowError, match="other:1"):
-        await mine.stop(subject, foreign.id)
-
-    assert await other.stop(subject, foreign.id) is True
+    # чужой запуск без живого держателя закрывается как сирота с любого инстанса
+    assert await mine.stop(subject, foreign.id) is StopOutcome.STOPPED
+    assert await other.stop(subject, foreign.id) is StopOutcome.FINISHED
     assert (
         await store.get_run(subject.user_id, foreign.id)
     ).state.status is RunStatus.FAILED
-    assert await mine.stop(subject, orphan.id) is False
+    assert await mine.stop(subject, orphan.id) is StopOutcome.FINISHED

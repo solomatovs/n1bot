@@ -18,6 +18,7 @@ from boba.identity.api import (
     PersistedUsers,
     UsersUpsert,
 )
+from boba.identity.locks import MemoryLiveLocks
 from boba.identity.signin import SignedIn
 from boba.runtime.refs import RuntimeRefs
 from boba.studio.api.app import ApiAccess, ApiApp
@@ -101,6 +102,8 @@ class OpenApiDocument:
             workflow_service=cls._no_service,
             connection_store=cls._no_store,
             sso_tickets=cls._no_tickets,
+            live_locks=lambda: MemoryLiveLocks("stand", 20),
+            heartbeat_sec=1.0,
         )
 
     @staticmethod

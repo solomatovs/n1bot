@@ -186,6 +186,17 @@ class RunRegistry:
         registry.cancellation.cancel(reason)
         return True
 
+    @classmethod
+    def stop_all(cls, reason: StopReason) -> int:
+        """Останавливает все запуски процесса при его остановке; возвращает их число."""
+        with cls._LOCK:
+            registries = list(cls._ACTIVE.values())
+
+        for registry in registries:
+            registry.cancellation.cancel(reason)
+
+        return len(registries)
+
     def add_stream(self, call_id: str, stream: LiveStream) -> None:
         """Регистрирует живой журнал вызова; жизнь журнала кончится с запуском."""
         with self._LOCK:

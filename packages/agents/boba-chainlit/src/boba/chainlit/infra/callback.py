@@ -42,11 +42,13 @@ from boba.chat.profiles import (
 )
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
+from boba.identity.locks import RunLocking
 from boba.identity.session import UserMetadataField
-from boba.messaging import LockToken, PayloadStore
+from boba.messaging import LockToken, PayloadStore, StopRequested
 from boba.runtime import providers as runtime
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.di import Container, Depends, di_inject
+from boba.runtime.locks import PgLiveLocks
 from chainlit.auth.cookie import clear_auth_cookie
 from chainlit.config import config as chainlit_config
 from chainlit.data.base import BaseDataLayer
@@ -69,6 +71,8 @@ async def on_message(  # noqa: PLR0913
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
     bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
     payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
+    locks: Annotated[PgLiveLocks, Depends(runtime.live_locks)],
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
 ):
     session = current_session()
     thread_id = session.thread_id
@@ -89,6 +93,7 @@ async def on_message(  # noqa: PLR0913
         feed=feed,
         history=GraphTurnHistory(graph, thread_id),
         key=msg.id,
+        locking=RunLocking(locks=locks, heartbeat_sec=app_config.cluster.heartbeat_sec),
     )
 
     # сбой в любом месте хода — включая подготовку — отчитывается ходом же:
@@ -283,13 +288,28 @@ def on_logout(request: Request, response: Response):
 
 
 @cl.on_stop
-async def on_stop():
-    """Кнопка Stop: обрываем ход треда, а не надеемся на отмену задачи chainlit."""
-    thread_id = current_session().thread_id
+@di_inject
+async def on_stop(
+    bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
+    instance: Annotated[str, Depends(runtime.instance_name)],
+):
+    """Кнопка Stop: свой ход обрывается сразу, чужой получает команду через шину."""
+    session = current_session()
+    thread_id = session.thread_id
     if thread_id is None:
         return
-    if not ChatTurn.stop(thread_id):
-        logger.info("stop pressed for thread %s: nothing is running", thread_id)
+
+    if ChatTurn.stop(thread_id):
+        return
+
+    user_id = session.user_id
+    if user_id is None:
+        logger.info("stop pressed for thread %s without a user", thread_id)
+        return
+
+    command = StopRequested(by_user=int(user_id), by_instance=instance)
+    command_id = await bus.command(Scope.chat(thread_id), command)
+    logger.info("stop of thread %s sent as command %d", thread_id, command_id)
 
 
 @cl.data_layer

@@ -13,7 +13,9 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
+from boba.cancellation import StopReason
 from boba.chat.profiles import ChatProfiles
+from boba.identity.run import RunRegistry
 from boba.runtime import providers
 from boba.runtime.config import (
     AppName,
@@ -53,6 +55,8 @@ class StudioHost:
         container.eager(providers.connection_store)
         container.eager(providers.workflow_store)
         container.eager(providers.workflow_recovery)
+        container.eager(providers.lock_reaper)
+        container.eager(providers.command_runner)
         Container.set_root(container)
 
         table = providers.users_table(config)
@@ -119,6 +123,7 @@ class StudioHost:
         try:
             yield
         finally:
+            RunRegistry.stop_all(StopReason.SHUTDOWN)
             ZygoteRegistry.stop_all()
             Container.set_root(None)
             await container.aclose()

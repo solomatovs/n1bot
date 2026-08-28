@@ -31,6 +31,13 @@ from boba.identity.context import (
     Scope,
     Subject,
 )
+from boba.identity.locks import (
+    LiveLocks,
+    LockBusyError,
+    LockKeeper,
+    LockMode,
+    LockPurpose,
+)
 from boba.identity.run import RunRegistry
 from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import ToolCallUrl
@@ -54,6 +61,9 @@ RegistrySource = Callable[[], Awaitable[ToolRegistry]]
 
 ThreadsSource = Callable[[], ThreadOwnership]
 """Владение тредами: реализует слой данных хоста, зовётся на вызов."""
+
+LocksSource = Callable[[], LiveLocks]
+"""Блокировки областей процесса, зовётся на вызов."""
 
 
 class ToolCallBody(BaseModel):
@@ -97,10 +107,14 @@ class ToolCalling:
         registry: RegistrySource,
         profiles: ChatProfiles,
         threads: ThreadsSource,
+        locks: LocksSource,
+        heartbeat_sec: float,
     ) -> None:
         self._registry = registry
         self._profiles = profiles
         self._threads = threads
+        self._locks = locks
+        self._heartbeat_sec = heartbeat_sec
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -137,7 +151,21 @@ class ToolCalling:
         invoker = await self._invoker(identity.subject)
         context = identity.context(Scope.chat(thread_id))
 
-        return await self._run(invoker, name, body, context)
+        # тред занят ходом или другим вызовом — 409 с именем держателя
+        locks = self._locks()
+        try:
+            lock = await locks.acquire(
+                context.scope,
+                LockMode.EXCLUSIVE,
+                LockPurpose.TOOL_CALL,
+                identity.subject.user_id,
+            )
+        except LockBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        keeper = LockKeeper(locks, lock, context.cancellation, self._heartbeat_sec)
+        async with keeper:
+            return await self._run(invoker, name, body, context)
 
     async def _own_thread(self, login: str, thread_id: str) -> None:
         try:

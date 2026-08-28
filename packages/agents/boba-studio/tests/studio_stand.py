@@ -8,6 +8,7 @@ from typing import ClassVar
 
 from boba.connection_broker.store import ConnectionStore
 from boba.identity.api import AuthenticatedUser, Authenticator
+from boba.identity.locks import MemoryLiveLocks
 from boba.krb.seal import SsoTickets
 from boba.runtime.refs import RuntimeRefs
 from boba.toolrun.registry import ToolRegistry
@@ -63,4 +64,6 @@ class NoRefs:
             workflow_service=cls.workflows,
             connection_store=cls.store,
             sso_tickets=cls.tickets,
+            live_locks=lambda: MemoryLiveLocks("stand", 20),
+            heartbeat_sec=1.0,
         )

@@ -83,6 +83,10 @@ class TurnFeed:
     def turn_id(self) -> str:
         return self._turn_id
 
+    def adopt(self, token: LockToken) -> None:
+        """Принимает token захваченной блокировки: дальше публикации идут с ним."""
+        self._token = token
+
     async def _publish(self, message: AnyMessage) -> None:
         await self._bus.publish(self._scope, message, self._token)
 

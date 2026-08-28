@@ -12,7 +12,6 @@ from boba.chainlit.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.messaging import (
-    AnswerToken,
     BusLimit,
     CommandEnvelope,
     Envelope,
@@ -66,7 +65,7 @@ class Inbox:
         out: list[str] = []
         for envelope in self.envelopes:
             body = envelope.message.model_dump()
-            out.append(str(body["token"]))
+            out.append(str(body["text"]))
 
         return out
 
@@ -97,8 +96,9 @@ async def buses(
         await second.stop()
 
 
-def _token(text: str) -> AnswerToken:
-    return AnswerToken(turn_id="t1", key="m1", token=text)
+def _token(text: str) -> Notice:
+    """Сообщение без держателя: тесты шины не про блокировки."""
+    return Notice(level=NoticeLevel.INFO, text=text)
 
 
 async def test_messages_cross_instances_in_seq_order(

@@ -308,7 +308,9 @@ export const ToolCatalogSchema = z.record(ToolFactsSchema);
 export type ToolCatalog = z.infer<typeof ToolCatalogSchema>;
 
 export const RunStartedSchema = z.object({ run_id: z.string().uuid() });
-export const StoppedSchema = z.object({ stopped: z.boolean() });
+export const StopOutcomeSchema = z.enum(["stopped", "accepted", "finished"]);
+export type StopOutcome = z.infer<typeof StopOutcomeSchema>;
+export const StoppedSchema = z.object({ outcome: StopOutcomeSchema });
 export const DeletedSchema = z.object({ deleted: z.boolean() });
 
 /** Окно журнала вывода стадии: текст и координаты в файле. */

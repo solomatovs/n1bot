@@ -9,7 +9,7 @@
 403 — профиль недоступен ролям пользователя.
 400 — спека негодна или содержит недоступные инструменты.
 404 — workflow или запуск не пользователя.
-409 — запуск исполняет другой инстанс: остановить можно только там.
+202 — запуск ведёт другой инстанс: команда остановки принята шиной.
 503 — хранилище workflow недоступно.
 """
 
@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, ClassVar, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chat.profiles import ChatProfiles
@@ -31,6 +31,7 @@ from boba.studio.api.urls import WorkflowUrl
 from boba.workflow import RunState
 from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowStoreError
 from boba.workflow_engine.service import (
+    StopOutcome,
     WorkflowError,
     WorkflowRefusal,
     WorkflowService,
@@ -70,9 +71,13 @@ class RunStarted(BaseModel):
 
 
 class Stopped(BaseModel):
+    """Итог просьбы остановить: stopped — остановлен здесь, accepted — команда
+    принята для другого инстанса, finished — уже завершён.
+    """
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    stopped: bool
+    outcome: StopOutcome
 
 
 class Deleted(BaseModel):
@@ -196,13 +201,17 @@ class WorkflowApi:
         run_id: UUID,
         body: ProfileBody,
         current_user: CurrentUser,
+        response: Response,
         profile: str | None = None,
     ) -> Stopped:
         identity = self._identity(current_user, self._chosen(body.profile, profile))
         service = await self._resolved()
 
-        stopped = await self._guarded(service.stop(identity.subject, run_id))
-        return Stopped(stopped=stopped)
+        outcome = await self._guarded(service.stop(identity.subject, run_id))
+        if outcome is StopOutcome.ACCEPTED:
+            response.status_code = 202
+
+        return Stopped(outcome=outcome)
 
     @staticmethod
     def _chosen(in_body: str | None, in_query: str | None) -> str | None:
@@ -237,8 +246,5 @@ class WorkflowApi:
     def _http(exc: WorkflowError) -> HTTPException:
         if exc.kind == WorkflowRefusal.NOT_FOUND:
             return HTTPException(status_code=404, detail=str(exc))
-
-        if exc.kind == WorkflowRefusal.OTHER_INSTANCE:
-            return HTTPException(status_code=409, detail=str(exc))
 
         return HTTPException(status_code=400, detail=str(exc))

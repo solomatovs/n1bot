@@ -14,6 +14,7 @@ __all__ = [
     "LiveCommandsColumn",
     "LiveEventsColumn",
     "LiveInstancesColumn",
+    "LiveLocksColumn",
     "ThreadsColumn",
     "UsersColumn",
 ]
@@ -110,6 +111,24 @@ class LiveCommandsColumn(StrEnum):
     AT = "at"
     TAKEN_BY = "taken_by"
     TAKEN_AT = "taken_at"
+
+    def ident(self) -> sql.Identifier:
+        return sql.Identifier(self.value)
+
+
+class LiveLocksColumn(StrEnum):
+    """Колонки live_locks: кто и зачем держит область и когда подтверждал жизнь."""
+
+    SCOPE_KIND = "scope_kind"
+    SCOPE_ID = "scope_id"
+    MODE = "mode"
+    HOLDER = "holder"
+    TOKEN = "token"  # noqa: S105
+    PURPOSE = "purpose"
+    USER_ID = "user_id"
+    ACQUIRED_AT = "acquired_at"
+    HEARTBEAT_AT = "heartbeat_at"
+    TTL_SEC = "ttl_sec"
 
     def ident(self) -> sql.Identifier:
         return sql.Identifier(self.value)

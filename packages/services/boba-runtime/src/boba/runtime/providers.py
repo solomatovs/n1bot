@@ -7,7 +7,7 @@ RuntimeError — контейнер не поднят, секция выключ
 """
 
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from typing import Annotated
 
 from omegaconf import DictConfig
@@ -17,12 +17,15 @@ from boba.chat.profiles import RolesSection
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import RefreshSignal
 from boba.db.pgvector.schema import KbSchema
+from boba.identity.locks import RunLocking, StaleLock
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryPayloadStore, PayloadStore
 from boba.runtime.bus import PgMessageBus
+from boba.runtime.commands import CommandRunner
 from boba.runtime.config import AppName, RawConfig, RuntimeConfig
 from boba.runtime.di import Container, Depends
 from boba.runtime.journal import DirVault, StreamJournal
+from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.runtime.users import UsersTable
@@ -146,6 +149,8 @@ def runtime_refs() -> RuntimeRefs:
         workflow_service=workflow_service_ref,
         connection_store=connection_store_ref,
         sso_tickets=sso_tickets_ref,
+        live_locks=live_locks_ref,
+        heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
     )
 
 
@@ -202,16 +207,38 @@ async def workflow_store(
     return store
 
 
+def live_locks(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    instance: Annotated[str, Depends(instance_name)],
+    bus: Annotated[PgMessageBus, Depends(message_bus)],
+) -> PgLiveLocks:
+    """Блокировки областей; таблицы готовит шина, поэтому она поднимается первой."""
+    return PgLiveLocks(
+        config.data_layer.postgres,
+        config.data_layer.db_schema,
+        instance,
+        config.cluster,
+    )
+
+
+def live_locks_ref() -> PgLiveLocks:
+    """Блокировки для обвязок инструментов; зовётся на каждый вызов."""
+    return _root().resolved(live_locks)
+
+
 def workflow_service(
     store: Annotated[WorkflowStore | None, Depends(workflow_store)],
     instance: Annotated[str, Depends(instance_name)],
     bus: Annotated[PgMessageBus, Depends(message_bus)],
+    locks: Annotated[PgLiveLocks, Depends(live_locks)],
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
 ) -> WorkflowService | None:
-    """Сервис workflow; события запусков уходят в шину процесса."""
+    """Сервис workflow; события запусков уходят в шину процесса под блокировкой."""
     if store is None:
         return None
 
-    return WorkflowService(store, tool_registry_ref, instance, bus)
+    locking = RunLocking(locks=locks, heartbeat_sec=config.cluster.heartbeat_sec)
+    return WorkflowService(store, tool_registry_ref, instance, bus, locking)
 
 
 async def workflow_recovery(
@@ -260,3 +287,47 @@ def users_table(
 ) -> UsersTable:
     """Строки users и авторы тредов той же схемы, что у data layer чата."""
     return UsersTable(config.data_layer.postgres, config.data_layer.db_schema)
+
+
+async def lock_reaper(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    locks: Annotated[PgLiveLocks, Depends(live_locks)],
+    service: Annotated[WorkflowService | None, Depends(workflow_service)],
+) -> AsyncGenerator[LockReaper, None]:
+    """Сторож блокировок процесса: живёт всё время работы и закрывает запуски без
+    держателя.
+    """
+
+    async def on_stale(stale: Sequence[StaleLock]) -> None:
+        for lock in stale:
+            logger.warning(
+                "stale lock removed: %s held by %s for %s",
+                lock.scope.render(),
+                lock.holder,
+                lock.purpose.value,
+            )
+
+        if service is None:
+            return
+
+        closed = await service.close_unlocked()
+        if closed:
+            logger.warning("workflow: %d run(s) without a holder closed", closed)
+
+    reaper = LockReaper(locks, config.cluster.reaper_period_sec, on_stale)
+    await reaper.start()
+    try:
+        yield reaper
+    finally:
+        await reaper.stop()
+        await locks.release_all(locks.instance)
+
+
+def command_runner(
+    bus: Annotated[PgMessageBus, Depends(message_bus)],
+    instance: Annotated[str, Depends(instance_name)],
+) -> CommandRunner:
+    """Исполнитель команд шины для запусков и ходов этого процесса."""
+    runner = CommandRunner(bus, instance)
+    runner.start()
+    return runner
