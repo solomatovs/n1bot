@@ -381,7 +381,7 @@ test-%: build-%
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' < "$(APP_CONF_DIR)/boba.env" > "$$env_file"
 	docker run --rm -i --env-file "$$env_file" --entrypoint sh $(IMAGE) \
-	    -c '"$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
+	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
 
 # что обязано лежать в дереве установки
 RELEASE_PARTS_common := sandbox/rootfs.ext4 sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \

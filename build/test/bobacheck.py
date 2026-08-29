@@ -5,10 +5,11 @@
 
 Запускается с окружением установки (make test):
   set -a; . conf/boba.env; set +a
-  python3 test/bobacheck.py --names <файл со списком имён пакетов boba>
+  python3 test/bobacheck.py --app chainlit|studio --names <файл со списком имён пакетов boba>
 
-Список имён пакетов берётся из стадии deps (boba/names.txt); если его нет —
-сканируются исходники (--packages).
+Список имён пакетов берётся из образа (app/packages.txt); если его нет —
+сканируются исходники (--packages). Проверки моделей чата идут только для chainlit,
+страницы workflow — только для studio.
 """
 
 import argparse
@@ -22,6 +23,7 @@ import sys
 os.environ.setdefault("CHAINLIT_APP_ROOT", "/tmp")
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--app", choices=["chainlit", "studio"], required=True)
 parser.add_argument(
     "--names", default=None, help="файл со списком имён пакетов boba (строка = имя)"
 )
@@ -32,8 +34,10 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+APP = args.app
 PACKAGES_DIR = args.packages
 NAMES_FILE = args.names
+BASE_DIR = os.environ["BOBA_BASE"]
 
 failures = []
 
@@ -75,7 +79,8 @@ check("pip module", lambda: run(sys.executable, "-m", "pip", "--version"))
 print("== third-party imports ==")
 import importlib
 
-for m in ["pydantic", "fastapi", "tabulate"]:
+THIRD_PARTY = {"chainlit": ["pydantic", "fastapi", "tabulate", "chainlit"], "studio": ["pydantic", "fastapi"]}
+for m in THIRD_PARTY[APP]:
     check(f"import {m}", lambda m=m: importlib.import_module(m))
 
 # 3) все пакеты boba установлены (без импорта кода — только метаданные).
@@ -157,9 +162,8 @@ for module in [
 ]:
     warn(f"нет {module} в приложении", lambda m=module: t_absent(m))
 
-# 6) локальные модели onnxruntime-genai: лежат в релизе и грузятся без сети
-print("== local onnx-genai models ==")
-MODELS_DIR = os.path.join(os.environ["BOBA_BASE"], "models", "onnx-genai")
+# 6) локальные модели onnxruntime-genai (только чат): лежат в релизе и грузятся без сети
+MODELS_DIR = os.path.join(BASE_DIR, "models", "onnx-genai")
 
 
 def t_models_present():
@@ -190,12 +194,24 @@ def t_model_loads_offline():
         raise RuntimeError(f"{name}: токенайзер не кодирует")
 
 
-check("models present with genai_config.json", t_models_present)
-check("smallest model loads offline", t_model_loads_offline)
+def t_workflow_page():
+    index = os.path.join(BASE_DIR, "app_root", "public", "workflow", "index.html")
+    if not os.path.isfile(index):
+        raise RuntimeError(f"нет {index}")
+
+
+if APP == "chainlit":
+    print("== local onnx-genai models ==")
+    check("models present with genai_config.json", t_models_present)
+    check("smallest model loads offline", t_model_loads_offline)
+
+if APP == "studio":
+    print("== workflow page ==")
+    check("workflow page built", t_workflow_page)
 
 # 7) веса эмбеддера: лежат рядом с моделями чата и едут в песочницу биндом
 print("== local fastembed weights ==")
-EMBED_DIR = os.path.join(os.environ["BOBA_BASE"], "models", "fastembed")
+EMBED_DIR = os.path.join(BASE_DIR, "models", "fastembed")
 
 
 def t_embed_weights_present():
