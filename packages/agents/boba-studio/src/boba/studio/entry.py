@@ -21,9 +21,9 @@ from boba.runtime.config import (
     AppName,
     ConfigLocator,
     DevPage,
-    StudioRuntimeConfig,
     StudioConfig,
     StudioPath,
+    StudioRuntimeConfig,
 )
 from boba.runtime.di import Container
 from boba.runtime.plugins import CoreTools
