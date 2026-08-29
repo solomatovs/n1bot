@@ -1,7 +1,7 @@
 """Callback'и chainlit: мост между интерфейсом чата и агентом langgraph."""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Annotated, Any, cast
 
 from fastapi import Request, Response
@@ -19,7 +19,7 @@ from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import SettingsPanel
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn, Question
-from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.data.data_layer import AttachmentDataLayer, PostgresDataLayer
 from boba.chainlit.domain.fields import ThreadField
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
@@ -30,7 +30,12 @@ from boba.chainlit.infra.providers import (
     session_profile,
 )
 from boba.chainlit.infra.session import ChainlitSession, current_session
-from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadLive, ThreadRoom
+from boba.chainlit.infra.thread_room import (
+    ChatRoomSurface,
+    ThreadLive,
+    ThreadRoom,
+    UserRoom,
+)
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
 from boba.chat.profiles import (
     ChatProfiles,
@@ -43,7 +48,7 @@ from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import RunLocking
 from boba.identity.session import UserMetadataField
-from boba.messaging import LockToken, PayloadStore, StopRequested
+from boba.messaging import LockToken, PayloadStore, StopRequested, ThreadRewound
 from boba.runtime import providers as runtime
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.di import Container, Depends, di_inject
@@ -91,7 +96,9 @@ async def on_message(  # noqa: PLR0913
         thread_id=thread_id,
         feed=feed,
         history=GraphTurnHistory(graph, thread_id),
-        question=Question(key=msg.id, text=msg.content),
+        question=Question.of_message(
+            msg, thread_id, AttachmentDataLayer.require().links
+        ),
         locking=RunLocking(locks=locks, heartbeat_sec=app_config.cluster.heartbeat_sec),
     )
 
@@ -107,9 +114,12 @@ async def on_message(  # noqa: PLR0913
     with context.applied():
         try:
             rewind = ThreadRewind(graph, data_layer, thread_id)
+            carried: Sequence[Mapping[str, str]] = ()
             if await rewind.is_edit(msg.id):
-                await rewind.apply(msg.id, msg.content)
-                await rewind.refresh_view()
+                plan = await rewind.apply(msg.id, msg.content)
+                carried = plan.attachments
+                rewound = ThreadRewound(turn_id=msg.id)
+                await bus.publish(Scope.chat(thread_id), rewound, LockToken.local())
 
             state_log = LlmStateLog(context.log_mark())
             run_config = RunnableConfig(
@@ -117,7 +127,7 @@ async def on_message(  # noqa: PLR0913
                 configurable={"thread_id": thread_id},
             )
 
-            human = ChatTurn.human_message(msg, context.subject.user_key)
+            human = ChatTurn.human_message(msg, context.subject.user_key, carried)
             stream = cast(
                 "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
                 graph.astream(
@@ -248,6 +258,9 @@ async def on_chat_start(
     # и ход, начатый на другом инстансе, рисуется здесь так же, как свой
     if thread_id := session.thread_id:
         ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
+
+    if user_id := session.user_id:
+        UserRoom.join(int(user_id))
 
     # профиль без разрешённых настроек панель не показывает
     if tabs := _session_settings(app_config, registry):
@@ -449,6 +462,8 @@ async def on_chat_resume(
     thread_id = thread_dict[ThreadField.ID]
     turn = ChatTurn.active(thread_id)
     renderer = ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
+    if user_id := current_session().user_id:
+        UserRoom.join(int(user_id))
 
     room: list[str] = []
     for session in ThreadRoom.sessions(thread_id):

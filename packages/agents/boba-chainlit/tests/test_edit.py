@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 from chainlit.data.base import BaseDataLayer
@@ -14,6 +14,7 @@ from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.chainlit.chat.history import ThreadRewind
+from boba.chainlit.chat.turn import ChatTurnAttachments
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -175,3 +176,40 @@ class TestApplyOnRealGraph:
             raise AssertionError('[m.id for m in messages] == ["q1", "a1", "q2"]')
         if messages[-1].content != "правка второго":
             raise AssertionError('messages[-1].content == "правка второго"')
+
+
+class TestEditKeepsAttachments:
+    """Правка меняет текст вопроса, а файлы, приложенные к нему, остаются с ним."""
+
+    ATTACHMENTS: ClassVar[list[dict[str, str]]] = [
+        {"name": "note.txt", "path": "/workspace/t-1/upload/note.txt"}
+    ]
+
+    def test_plan_carries_the_question_attachments(self) -> None:
+        history = turn("q1", "a1")
+        history[0].additional_kwargs = ChatTurnAttachments.extra(self.ATTACHMENTS)
+
+        plan = ThreadRewind.plan(history, "q1", THREAD)
+
+        assert plan.attachments == self.ATTACHMENTS
+        assert ChatTurnAttachments.of(history[0]) == self.ATTACHMENTS
+
+    def test_apply_keeps_the_question_attachments(self) -> None:
+        async def scenario() -> list[Any]:
+            graph = TestApplyOnRealGraph._graph()
+            rewind = ThreadRewind(graph, cast("BaseDataLayer", _ElementSink()), THREAD)
+            config = RunnableConfig(configurable={"thread_id": THREAD})
+            history = turn("q1", "a1")
+            history[0].additional_kwargs = ChatTurnAttachments.extra(self.ATTACHMENTS)
+            await graph.ainvoke({"messages": history}, config)
+
+            plan = await rewind.apply("q1", "что тут теперь?")
+            assert plan.attachments == self.ATTACHMENTS
+
+            return await rewind.messages()
+
+        messages = asyncio.run(scenario())
+
+        assert [m.id for m in messages] == ["q1"]
+        assert messages[0].content == "что тут теперь?"
+        assert ChatTurnAttachments.of(messages[0]) == self.ATTACHMENTS

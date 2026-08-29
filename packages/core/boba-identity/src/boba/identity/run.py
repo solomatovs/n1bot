@@ -21,10 +21,10 @@ import asyncio
 import logging
 import threading
 from abc import abstractmethod
-from collections.abc import Callable, Coroutine, Generator, Iterator
+from collections.abc import Callable, Coroutine, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
-from typing import ClassVar, Protocol
+from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -68,6 +68,11 @@ class RunPort(Protocol):
     @abstractmethod
     def element_target(self, tool_call_id: str) -> ElementTarget:
         """Адрес элемента вызова; отказ — RefusalError(RunRefusal)."""
+        ...
+
+    @abstractmethod
+    async def show_element(self, tool_call_id: str, element: Mapping[str, Any]) -> None:
+        """Показывает сохранённый элемент вызова во всех вкладках запуска."""
         ...
 
 

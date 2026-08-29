@@ -44,7 +44,7 @@ from boba.chainlit.canvas.panel import CanvasPanel, FileViewer, StorageHashSourc
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.domain.context import ChatCallContext
 from boba.identity.errors import RefusalError
-from boba.identity.run import ElementTarget, RunRegistry
+from boba.identity.run import ElementTarget, RunPort, RunRegistry
 from boba.toolkit.calls import ScriptCall, ToolCallViews
 from boba.toolkit.result import (
     DiagramResult,
@@ -245,11 +245,19 @@ class DiagramCard:
         text = await self._files.read(key)
         context = ChatCallContext.require()
         port = RunRegistry.require_port(key.thread_id)
-        target = port.element_target(context.tool_call_id())
+        call_id = context.tool_call_id()
+        target = port.element_target(call_id)
 
-        await self._emit(key, text, target)
+        await self._emit(key, text, target, port, call_id)
 
-    async def _emit(self, key: ObjectKey, text: str, target: ElementTarget) -> None:
+    async def _emit(
+        self,
+        key: ObjectKey,
+        text: str,
+        target: ElementTarget,
+        port: RunPort,
+        call_id: str,
+    ) -> None:
         entry = DiagramEntry.of(key, text)
         content = CanvasContent(
             kind=CanvasKind.MERMAID,
@@ -262,7 +270,9 @@ class DiagramCard:
         element = cl.CustomElement(name=self.ELEMENT, props=props)
         element.id = target.element_id
         element.thread_id = key.thread_id
-        await element.send(for_id=target.for_id)
+        element.for_id = target.for_id
+        await AttachmentDataLayer.require().create_element(element)
+        await port.show_element(call_id, element.to_dict())
 
 
 def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:

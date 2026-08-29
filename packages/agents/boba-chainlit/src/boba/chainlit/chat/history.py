@@ -25,9 +25,13 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
-import chainlit as cl
 from boba.chainlit.agent.flow import PrefetchCall, PrefetchStamp
-from boba.chainlit.chat.turn import TurnHistory, TurnMark, TurnRecord
+from boba.chainlit.chat.turn import (
+    ChatTurnAttachments,
+    TurnHistory,
+    TurnMark,
+    TurnRecord,
+)
 from boba.chainlit.rendering.chat_view import (
     ChatView,
     RecordingSink,
@@ -352,15 +356,19 @@ class ConversationTranscript:
 
 
 class RewindPlan:
-    """Что убрать при откате: сообщения истории и вложения их шагов."""
+    """Что убрать при откате — сообщения истории и вложения их шагов — и что
+    сохранить: вложения самого правленого вопроса.
+    """
 
     def __init__(
         self,
         remove_ids: Sequence[str],
         element_ids: Sequence[str],
+        attachments: Sequence[Mapping[str, str]] = (),
     ) -> None:
         self.remove_ids = list(remove_ids)
         self.element_ids = list(element_ids)
+        self.attachments = list(attachments)
 
     def __bool__(self) -> bool:
         return bool(self.remove_ids or self.element_ids)
@@ -415,6 +423,7 @@ class ThreadRewind:
 
         tail = messages[index + 1 :]
         remove_ids = [m.id for m in tail if m.id]
+        attachments = ChatTurnAttachments.of(messages[index])
 
         element_ids: list[str] = []
         for message in tail:
@@ -427,7 +436,7 @@ class ThreadRewind:
                 if element_id:
                     element_ids.append(element_id)
 
-        return RewindPlan(remove_ids, element_ids)
+        return RewindPlan(remove_ids, element_ids, attachments)
 
     @staticmethod
     def prefix(messages: Sequence[BaseMessage], message_id: str) -> list[BaseMessage]:
@@ -453,13 +462,15 @@ class ThreadRewind:
         for element_id in rewind.element_ids:
             await self._data_layer.delete_element(element_id, self._thread_id)
 
+        # вложения правленого вопроса остаются с ним: правится текст, не файлы
         updates: list[BaseMessage] = [RemoveMessage(id=REMOVE_ALL_MESSAGES)]
         updates.extend(self.prefix(messages, message_id))
-        updates.append(HumanMessage(content=content, id=message_id))
+        updates.append(
+            HumanMessage(
+                content=content,
+                id=message_id,
+                additional_kwargs=ChatTurnAttachments.extra(rewind.attachments),
+            )
+        )
         await self._graph.aupdate_state(self._config, {"messages": updates})
         return rewind
-
-    async def refresh_view(self) -> None:
-        """Перерисовывает ленту треда из истории агента."""
-        if thread := await self._data_layer.get_thread(self._thread_id):
-            await cl.context.emitter.resume_thread(thread)

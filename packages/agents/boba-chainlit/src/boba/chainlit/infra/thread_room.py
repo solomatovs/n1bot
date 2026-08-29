@@ -17,10 +17,20 @@ from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LockMode
 from boba.identity.run import RunRegistry
-from boba.messaging import CanvasChanged, LockToken, Notice, NoticeLevel
+from boba.messaging import (
+    CanvasChanged,
+    Envelope,
+    LockToken,
+    Notice,
+    NoticeLevel,
+    ThreadChanged,
+    Unsubscribe,
+)
 from boba.runtime import providers as runtime
 from boba.runtime.di import Container
 from chainlit.context import ChainlitContext, context_var
+from chainlit.data import get_data_layer
+from chainlit.element import ElementDict
 from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
@@ -170,6 +180,24 @@ class ChatRoomSurface(RenderSurface):
                 user_detail="The page did not receive a live update",
             )
 
+    async def resume_thread(self) -> None:
+        layer = get_data_layer()
+        if layer is None:
+            raise InternalServiceError(
+                internal_detail="thread rewind needs a data layer", user_detail=None
+            )
+
+        thread = await layer.get_thread(self._thread_id)
+        if thread is None:
+            raise InternalServiceError(
+                internal_detail=f"thread {self._thread_id} is gone", user_detail=None
+            )
+
+        await ThreadEmitter(self._anchor, self._thread_id).resume_thread(thread)
+
+    async def send_element(self, element: ElementDict) -> None:
+        await ThreadEmitter(self._anchor, self._thread_id).send_element(element)
+
     async def task_start(self) -> None:
         await ThreadEmitter(self._anchor, self._thread_id).task_start()
 
@@ -195,6 +223,86 @@ class ChatRoomSurface(RenderSurface):
             root.resolved(runtime.payload_store),
             cls(anchor, thread_id),
         )
+
+
+class UserRoom:
+    """Подписка инстанса на область пользователя: по ThreadChanged все его вкладки на
+    этом инстансе перечитывают список тредов событием first_interaction chainlit с
+    их же текущим тредом. Подписка живёт до конца процесса.
+    """
+
+    EVENT: ClassVar[str] = "first_interaction"
+    INTERACTION: ClassVar[str] = "boba:thread-list:{seq}"
+    _JOINED: ClassVar[dict[int, Unsubscribe]] = {}
+
+    @classmethod
+    def join(cls, user_id: int) -> None:
+        if user_id in cls._JOINED:
+            return
+
+        root = Container.root
+        if root is None:
+            raise InternalServiceError(
+                internal_detail="DI container is not initialised", user_detail=None
+            )
+
+        bus = root.resolved(runtime.message_bus)
+
+        async def deliver(envelope: Envelope) -> None:
+            await cls.deliver(user_id, envelope)
+
+        cls._JOINED[user_id] = bus.subscribe(Scope.user(user_id), deliver)
+
+    @classmethod
+    def reset(cls) -> None:
+        """Снимает подписки: пользуются тесты, приложению это не нужно."""
+        for leave in cls._JOINED.values():
+            leave()
+
+        cls._JOINED.clear()
+
+    @classmethod
+    async def deliver(cls, user_id: int, envelope: Envelope) -> None:
+        message = envelope.message
+        if not isinstance(message, ThreadChanged):
+            return
+
+        interaction = cls.INTERACTION.format(seq=envelope.seq)
+        for session in session_source_ref().of_user(user_id):
+            socket = session.websocket
+            if socket is None:
+                continue
+
+            if socket.thread_id == message.thread_id:
+                continue
+
+            if not cls._on_thread_page(socket):
+                continue
+
+            if not sio.manager.is_connected(socket.socket_id, "/"):
+                continue
+
+            payload = {"interaction": interaction, "thread_id": socket.thread_id}
+            # одна битая вкладка не должна оставить без обновления остальные
+            try:
+                await cast("Awaitable[None]", socket.emit(cls.EVENT, payload))
+            except Exception:
+                logger.warning(
+                    "thread list refresh failed for session %s of user %s",
+                    socket.id,
+                    user_id,
+                    exc_info=True,
+                )
+
+    @staticmethod
+    def _on_thread_page(socket: WebsocketSession) -> bool:
+        """Вкладка уже на странице треда: свежую вкладку на «/» first_interaction увёл
+        бы на ещё не созданный тред.
+        """
+        if socket.has_first_interaction:
+            return True
+
+        return socket.thread_id_to_resume is not None
 
 
 class ThreadLive:

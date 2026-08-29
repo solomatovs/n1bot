@@ -26,7 +26,6 @@ from boba.canvas.diagram import (
     MermaidSpec,
 )
 from boba.canvas.keys import ObjectKey, ThreadDir
-from boba.chainlit.canvas import diagram as diagram_module
 from boba.chainlit.canvas.diagram import (
     DiagramFiles,
     MermaidViewer,
@@ -186,10 +185,16 @@ class TestRefusal:
 
 
 class _StorageOnlyLayer:
-    """Доступ тулов к слою в тесте: из всего слоя нужен только storage."""
+    """Доступ тулов к слою в тесте: storage и запись элементов, которые уходят в
+    ленту.
+    """
 
     def __init__(self, storage: LocalStorageClient) -> None:
         self.storage = storage
+        self.elements: list[Any] = []
+
+    async def create_element(self, element: Any) -> None:
+        self.elements.append(element)
 
 
 @pytest.fixture
@@ -541,15 +546,13 @@ class TestSaveToolEndToEnd:
         scope.__exit__(None, None, None)
 
     @pytest.fixture
-    def feed(self, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
-        """Лента под тест: собирает карточки, ушедшие бы во фронт."""
-        shown: list[Any] = []
+    def feed(self) -> list[Any]:
+        """Лента под тест: карточки, записанные слоем данных перед показом по шине."""
+        layer = AttachmentDataLayer.require()
+        if not isinstance(layer, _StorageOnlyLayer):
+            raise AssertionError("the test layer is installed by the files fixture")
 
-        async def capture(self: Any, for_id: str | None = None) -> None:
-            shown.append(self)
-
-        monkeypatch.setattr(diagram_module.cl.CustomElement, "send", capture)
-        return shown
+        return layer.elements
 
     @pytest.fixture
     def panel(self, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
