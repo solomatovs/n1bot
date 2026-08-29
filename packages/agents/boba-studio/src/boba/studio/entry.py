@@ -21,7 +21,7 @@ from boba.runtime.config import (
     AppName,
     ConfigLocator,
     DevPage,
-    RuntimeConfig,
+    StudioRuntimeConfig,
     StudioConfig,
     StudioPath,
 )
@@ -44,7 +44,7 @@ class StudioHost:
     """Сборка процесса: контейнер общих сервисов, api-приложение и страница workflow."""
 
     @classmethod
-    def build(cls, config: RuntimeConfig) -> FastAPI:
+    def build(cls, config: StudioRuntimeConfig) -> FastAPI:
         container = Container(level="app")
         container.provide(providers.get_runtime_config, config)
         container.provide(providers.plugin_table, CoreTools.table)
@@ -65,9 +65,8 @@ class StudioHost:
 
         table = providers.users_table(config)
         access = ApiAccess(
-            authenticator=JwtAuthenticator(config.studio.auth_secret, lambda: table),
-            cookie=config.studio.cookie,
-            threads=lambda: table,
+            authenticator=JwtAuthenticator(config.session.auth_secret, lambda: table),
+            cookie=config.session.cookie,
             users=lambda: table,
         )
         api = ApiApp.build(
@@ -79,19 +78,21 @@ class StudioHost:
 
         root = FastAPI(lifespan=cls._lifespan, openapi_url=None, docs_url=None)
         root.state.container = container
+        root.state.users = table
         cls.page_of(config.studio).mount(root)
         root.mount(config.studio.api_prefix(), api)
 
         return root
 
     @staticmethod
-    def signin_of(config: RuntimeConfig, users: UsersTable) -> SignInWiring:
+    def signin_of(config: StudioRuntimeConfig, users: UsersTable) -> SignInWiring:
         """Пароли и SPNEGO — провайдеры services; SSO на своём URL под api."""
         studio = config.studio
-        authenticator = JwtAuthenticator(studio.auth_secret, lambda: users)
+        session = config.session
+        authenticator = JwtAuthenticator(session.auth_secret, lambda: users)
         gate = None
         if kerberos := config.kerberos():
-            gate = SpnegoGate(SsoSignIn(kerberos, studio.auth_secret))
+            gate = SpnegoGate(SsoSignIn(kerberos, session.auth_secret))
 
         page_root = f"{studio.url_prefix}{StudioPath.PAGE}"
 
@@ -104,10 +105,10 @@ class StudioHost:
                 login=f"{page_root}/login",
                 home=f"{page_root}/observe",
             ),
-            issuer=JwtIssuer(studio.auth_secret, studio.session_ttl_sec),
+            issuer=JwtIssuer(session.auth_secret, session.session_ttl_sec),
             authenticator=authenticator,
             cookie=SessionCookie(
-                studio.cookie, studio.cookie_samesite, studio.session_ttl_sec
+                session.cookie, session.cookie_samesite, session.session_ttl_sec
             ),
             users=users,
         )
@@ -124,6 +125,7 @@ class StudioHost:
     async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         container = app.state.container
         await container.start()
+        await app.state.users.setup()
 
         try:
             yield
@@ -139,7 +141,7 @@ class StudioEntry:
 
     @classmethod
     def run(cls) -> None:
-        config = RuntimeConfig.load(ConfigLocator.path())
+        config = StudioRuntimeConfig.load(ConfigLocator.path())
         logging.config.dictConfig(config.logger)
 
         app = StudioHost.build(config)

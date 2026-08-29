@@ -10,7 +10,6 @@ from collections.abc import AsyncIterator
 import pytest
 from conftest import (
     ChainlitUsers,
-    NoThreads,
     NoUsers,
     Seed,
     StubAuthenticator,
@@ -112,7 +111,6 @@ async def client(
     access = ApiAccess(
         StubAuthenticator(ChainlitUsers.of(seeded.user)),
         StubAuthenticator.COOKIE,
-        NoThreads.source,
         NoUsers.source,
     )
     app: FastAPI = ApiApp.build(

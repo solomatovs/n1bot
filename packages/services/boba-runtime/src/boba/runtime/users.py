@@ -53,6 +53,41 @@ class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
 
         return self._pool_ref
 
+    async def setup(self) -> None:
+        """Создаёт схему и таблицу users приложения; повтор безвреден. Колонки — как у
+        строки User слоя данных чата: одни запросы ходят в обе схемы.
+        """
+        ddl = (
+            sql.SQL("create schema if not exists {}").format(
+                sql.Identifier(self._schema)
+            ),
+            sql.SQL(
+                """
+                create table if not exists {users} (
+                    {id}         integer generated always as identity primary key,
+                    {uuid}       uuid not null unique,
+                    {identifier} text not null unique,
+                    {created_at} timestamptz not null default now(),
+                    {meta}       jsonb not null default '{{}}'::jsonb
+                )
+                """
+            ).format(
+                users=ChatTable.USERS.under(self._schema),
+                id=UsersColumn.ID.ident(),
+                uuid=UsersColumn.UUID.ident(),
+                identifier=UsersColumn.IDENTIFIER.ident(),
+                created_at=UsersColumn.CREATED_AT.ident(),
+                meta=UsersColumn.META.ident(),
+            ),
+        )
+        try:
+            pool = await self._pool()
+            async with pool.connection() as conn, conn.transaction():
+                for statement in ddl:
+                    await conn.execute(statement)
+        except Exception as exc:
+            raise DataUnavailableError("users.setup", str(exc)) from exc
+
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
         query = sql.SQL(
             """

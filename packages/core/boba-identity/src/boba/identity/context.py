@@ -91,6 +91,10 @@ class Scope(BaseModel):
         return cls(kind=ScopeKind.CHAT, id=thread_id)
 
     @classmethod
+    def job(cls, job_id: str) -> Scope:
+        return cls(kind=ScopeKind.JOB, id=job_id)
+
+    @classmethod
     def workflow(cls, run_id: UUID) -> Scope:
         """Область запуска workflow: run_id — ключ реестра запусков и журнала."""
         return cls(kind=ScopeKind.WORKFLOW, id=str(run_id))

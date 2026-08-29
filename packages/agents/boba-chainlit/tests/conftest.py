@@ -167,7 +167,7 @@ def kerberos_workspace(tmp_path_factory: pytest.TempPathFactory) -> None:
     """Кэши билетов теста: приложение раскладывает их само, как в бою."""
     from boba.krb import KerberosWorkspace
 
-    krb = Path(__file__).resolve().parents[4] / "compose" / "conf" / "krb"
+    krb = Path(__file__).resolve().parents[4] / "compose" / "chainlit" / "conf" / "krb"
     cache = tmp_path_factory.mktemp("krb-cache")
     KerberosWorkspace.configure(str(krb / "krb5.conf"), str(cache))
 

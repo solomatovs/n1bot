@@ -25,6 +25,8 @@ from boba.sandbox.profile import SandboxConfig
 from boba.settings import bind, build_app_config
 
 __all__ = [
+    "StudioRuntimeConfig",
+    "SessionConfig",
     "AppName",
     "BuiltPage",
     "ClusterConfig",
@@ -42,7 +44,9 @@ __all__ = [
 
 
 class ConfigLocator:
-    """Путь конфига процесса: BOBA_CONFIG_PATH либо BOBA_BASE/conf/config.toml."""
+    """Путь конфига процесса: BOBA_CONFIG_PATH либо BOBA_BASE/conf/config.toml. У каждого
+    приложения свой корень BOBA_BASE, поэтому имя файла одно.
+    """
 
     CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
     BASE_ENV: ClassVar[str] = "BOBA_BASE"
@@ -194,6 +198,10 @@ class ClusterConfig(BaseModel):
 
     node_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.-]+$")
     host: str = Field(min_length=1, description="Узел, где лежат журналы инструментов.")
+    db_schema: str = Field(
+        min_length=1,
+        description="Схема таблиц шины live_*: общая для всех приложений кластера.",
+    )
     lock_ttl_sec: int = Field(
         gt=0, description="Срок блокировки без подтверждения жизни."
     )
@@ -232,24 +240,33 @@ class StudioPath(StrEnum):
     PAGE = "/workflow"
 
 
+class SessionConfig(BaseModel):
+    """Секция [session]: JWT и cookie входа, общие для обоих приложений — токен одного
+    принимает другое.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    auth_secret: str = Field(
+        min_length=1, description="Секрет JWT входа: подпись и печать билета."
+    )
+    cookie: str = Field(min_length=1, description="Имя cookie входа.")
+    cookie_samesite: Literal["lax", "strict", "none"] = Field(
+        description="SameSite cookie входа; none включает Secure."
+    )
+    session_ttl_sec: int = Field(gt=0, description="Срок JWT и cookie входа.")
+
+
 class StudioConfig(BaseModel):
-    """Секция [studio]: адрес процесса, секрет JWT входа, источник страницы workflow."""
+    """Секция [studio]: адрес процесса и источник страницы workflow."""
 
     model_config = ConfigDict(extra="forbid")
 
     host: str
     port: int
     url_prefix: str = Field(
-        description="Общий префикс приложений: api под /api, страница — /workflow."
+        description="Префикс приложения: api под /api, страница — /workflow."
     )
-    auth_secret: str = Field(
-        min_length=1, description="Секрет JWT chainlit: подпись и печать билета."
-    )
-    cookie: str = Field(min_length=1, description="Имя cookie входа chainlit.")
-    cookie_samesite: Literal["lax", "strict", "none"] = Field(
-        description="SameSite cookie входа; none включает Secure."
-    )
-    session_ttl_sec: int = Field(gt=0, description="Срок JWT и cookie входа.")
     ws_protocol: Literal["auto", "websockets", "wsproto", "none"] = Field(
         description=(
             "WebSocket-реализация uvicorn; websockets режет заголовки длиннее 8 КБ, "
@@ -337,7 +354,7 @@ class RuntimeConfig(BaseModel):
     data_layer: DataLayerConfig
     sandbox: SandboxConfig
     stream_journal: StreamJournalConfig
-    studio: StudioConfig
+    session: SessionConfig
     cluster: ClusterConfig
 
     @classmethod
@@ -366,6 +383,14 @@ class RuntimeConfig(BaseModel):
             return None
 
         return SsoTickets(
-            sealer=TicketSealer(self.studio.auth_secret),
+            sealer=TicketSealer(self.session.auth_secret),
             krb5_config=kerberos.delegation.krb5_config,
         )
+
+
+class StudioRuntimeConfig(RuntimeConfig):
+    """Конфиг процесса studio: общие секции плюс [studio]."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    studio: StudioConfig

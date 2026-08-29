@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import NoThreads, NoUsers, StubAuthenticator, StubRefs
+from conftest import NoUsers, StubAuthenticator, StubRefs
 from httpx import ASGITransport, AsyncClient
 from test_sso_login_flow import KRB5_CONF, USER_PRINCIPAL, Browser
 
@@ -83,7 +83,7 @@ class Stand:
 
     def __init__(self, raw_config: Any, app_config: AppConfig) -> None:
         config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
-        secret = app_config.studio.auth_secret
+        secret = app_config.session.auth_secret
         self.users = Users()
         self.authenticator = JwtAuthenticator(secret, lambda: self.users)
         self.sign_in = SsoSignIn(config, secret)
@@ -97,9 +97,7 @@ class Stand:
             cookie=SessionCookie(COOKIE, "lax", 3600),
             users=self.users,
         )
-        access = ApiAccess(
-            StubAuthenticator(None), COOKIE, NoThreads.source, NoUsers.source
-        )
+        access = ApiAccess(StubAuthenticator(None), COOKIE, NoUsers.source)
         self.app = ApiApp.build(
             StubRefs.of(_no_store, lambda: None),
             access,

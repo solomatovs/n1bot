@@ -18,7 +18,7 @@ from boba.studio.api.auth import ApiAuth, TokenReader
 from boba.studio.api.connections import ConnectionsApi
 from boba.studio.api.signin import SignInApi, SignInWiring
 from boba.studio.api.streams import StreamApi
-from boba.studio.api.tools import ThreadsSource, ToolCalling
+from boba.studio.api.tools import ToolCalling
 from boba.studio.api.urls import ApiVersion
 from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocket
 from boba.studio.api.workflows import WorkflowApi
@@ -28,11 +28,10 @@ __all__ = ["ApiAccess", "ApiApp"]
 
 @dataclass(frozen=True)
 class ApiAccess:
-    """Как api узнаёт вызывающего: проверка токена, cookie входа, владение тредами."""
+    """Как api узнаёт вызывающего: проверка токена, cookie входа, строки users."""
 
     authenticator: Authenticator
     cookie: str
-    threads: ThreadsSource
     users: UsersSource
 
 
@@ -69,7 +68,6 @@ class ApiApp:
         ToolCalling(
             refs.tool_registry,
             profiles,
-            access.threads,
             refs.live_locks,
             refs.heartbeat_sec,
         ).mount(router)

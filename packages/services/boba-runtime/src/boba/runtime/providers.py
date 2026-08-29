@@ -81,7 +81,7 @@ async def message_bus(
     """
     bus = PgMessageBus(
         config.data_layer.postgres,
-        config.data_layer.db_schema,
+        config.cluster.db_schema,
         instance,
         app,
         config.cluster,
@@ -102,7 +102,7 @@ def payload_store(
     """Хранилище тел сообщений в live_payloads; таблицу готовит шина, поэтому она
     поднимается первой.
     """
-    return PgPayloadStore(config.data_layer.postgres, config.data_layer.db_schema)
+    return PgPayloadStore(config.data_layer.postgres, config.cluster.db_schema)
 
 
 def plugin_table() -> PluginTable:
@@ -235,7 +235,7 @@ async def live_locks(
     """
     locks = PgLiveLocks(
         config.data_layer.postgres,
-        config.data_layer.db_schema,
+        config.cluster.db_schema,
         instance,
         app,
         config.cluster,

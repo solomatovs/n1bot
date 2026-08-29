@@ -165,7 +165,7 @@ class WorkspaceSpec(BaseModel):
         min_length=1,
         description=(
             "Шаблонный ext4-образ: с него копируется образ пользователя при "
-            "первом обращении. Собирается целью make sandbox-image."
+            "первом обращении. Собирается целью make sandbox."
         ),
     )
     mount: BindSpec = Field(
@@ -631,7 +631,7 @@ class SandboxProfile(BaseModel):
         description=(
             "Ext4-образ корня, монтируемый read-only на всю жизнь зиготы; "
             "внутри уже лежат python, site-packages и код инструментов. "
-            "Собирается целью make sandbox-image."
+            "Собирается целью make sandbox."
         ),
     )
     mounts: MountsSpec = Field(description="Что монтируется и что видит тело.")

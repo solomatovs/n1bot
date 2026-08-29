@@ -11,11 +11,9 @@ import sys
 from typing import Any, ClassVar
 
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
-from boba.chat.threads import ThreadOwnership
 from boba.identity.api import (
     AuthenticatedUser,
     Authenticator,
-    UserSettingsStore,
     UsersUpsert,
 )
 from boba.identity.locks import MemoryLiveLocks
@@ -23,6 +21,7 @@ from boba.identity.signin import SignedIn
 from boba.messaging import MemoryMessageBus
 from boba.runtime.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
+from boba.runtime.users import UsersTable
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer, SessionCookie
 from boba.studio.api.signin import PageUrls, SignInWiring
@@ -56,7 +55,7 @@ class OpenApiDocument:
 
     @classmethod
     def render(cls) -> dict[str, Any]:
-        access = ApiAccess(NoOne(), cls.COOKIE, cls._no_threads, cls._no_users)
+        access = ApiAccess(NoOne(), cls.COOKIE, cls._no_users)
         app = ApiApp.build(cls._refs(), access, cls._profiles(), cls._signin())
 
         return app.openapi()
@@ -85,7 +84,7 @@ class OpenApiDocument:
         )
 
     @classmethod
-    def _no_users(cls) -> UserSettingsStore:
+    def _no_users(cls) -> UsersTable:
         msg = "users table is not part of the schema stand"
         raise RuntimeError(msg)
 
@@ -125,10 +124,6 @@ class OpenApiDocument:
     @staticmethod
     def _no_tickets() -> None:
         return None
-
-    @staticmethod
-    def _no_threads() -> ThreadOwnership:
-        raise RuntimeError(OpenApiDocument._stub_called("thread ownership"))
 
     @staticmethod
     def _stub_called(name: str) -> str:

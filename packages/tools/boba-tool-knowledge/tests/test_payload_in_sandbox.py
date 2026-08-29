@@ -312,7 +312,7 @@ class TestRootfsContents:
 
         if outcome.result.exit_code != 0:
             raise AssertionError(
-                f"в песочнице нет {module}: пересобери — make deps "
+                f"в песочнице нет {module}: пересобери — make fetch sandbox "
                 f"(stderr: {outcome.result.stderr.strip()})"
             )
 
@@ -337,6 +337,6 @@ class TestEmbedderInSandbox:
             ZygoteRegistry.stop_all()
 
         if outcome.result.exit_code != 0:
-            raise AssertionError(f"нет весов {self.WEIGHTS}: скачай — make fastembed")
+            raise AssertionError(f"нет весов {self.WEIGHTS}: скачай — make fetch")
         if not (outcome.result.stdout.strip()):
             raise AssertionError("outcome.result.stdout.strip()")

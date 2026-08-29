@@ -62,7 +62,6 @@ async def _client(user: AuthenticatedUser | None) -> AsyncClient:
     access = ApiAccess(
         StubAuthenticator(user),
         StubAuthenticator.COOKIE,
-        NoRefs.store,  # type: ignore[arg-type]
         MemoryUsers(user).source,
     )
     app = ApiApp.build(NoRefs.refs(), access, _profiles(), None)
