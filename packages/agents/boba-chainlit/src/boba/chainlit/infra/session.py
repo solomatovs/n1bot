@@ -352,6 +352,21 @@ class ChainlitSessions:
 
         return adopted
 
+    def of_user(self, user_id: int) -> list[ChainlitSession]:
+        """Живые сессии пользователя на этом инстансе: все его вкладки."""
+        found: list[ChainlitSession] = []
+        for session in list(ws_sessions_id.values()):
+            user = getattr(session, "user", None)
+            if user is None:
+                continue
+
+            if str(getattr(user, "id", "")) != str(user_id):
+                continue
+
+            found.append(ChainlitSession(session))
+
+        return found
+
     def in_thread(self, thread_id: str) -> list[ChainlitSession]:
         """Живые сессии, открывшие этот тред: у треда бывает много вкладок."""
         found: list[ChainlitSession] = []

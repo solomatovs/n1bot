@@ -10,12 +10,15 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from boba.identity.context import Scope
 from boba.messaging import (
     AnswerClosed,
     AnswerInterrupted,
     AnswerToken,
     AnyMessage,
+    ElementShown,
     LockToken,
     MessageBus,
     ModelAnswered,
@@ -38,6 +41,7 @@ from boba.messaging import (
     TurnOutcome,
     TurnStarted,
 )
+from chainlit.element import ElementDict, ElementDisplay, ElementSize, ElementType
 
 __all__ = ["TextClip", "TurnFeed"]
 
@@ -58,6 +62,62 @@ class TextClip:
 
         head = encoded[: cls.LIMIT_BYTES].decode("utf-8", errors="ignore")
         return f"{head}{cls.ELLIPSIS}"
+
+
+class ShownElement(BaseModel):
+    """Элемент ленты, переданный шиной: поля ElementDict chainlit, проверенные на
+    границе перед отправкой вкладкам; имена полей — как в ElementDict.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    id: str = Field(min_length=1)
+    thread_id: str | None = Field(default=None, alias="threadId")
+    type: ElementType
+    url: str | None = None
+    chainlit_key: str | None = Field(default=None, alias="chainlitKey")
+    name: str
+    display: ElementDisplay
+    object_key: str | None = Field(default=None, alias="objectKey")
+    size: ElementSize | None = None
+    props: dict[str, Any] | None = None
+    page: int | None = None
+    auto_play: bool | None = Field(default=None, alias="autoPlay")
+    player_config: dict[str, Any] | None = Field(default=None, alias="playerConfig")
+    language: str | None = None
+    for_id: str | None = Field(default=None, alias="forId")
+    mime: str | None = None
+
+    def to_element(self) -> ElementDict:
+        return ElementDict(
+            id=self.id,
+            threadId=self.thread_id,
+            type=self.type,
+            url=self.url,
+            chainlitKey=self.chainlit_key,
+            name=self.name,
+            display=self.display,
+            objectKey=self.object_key,
+            size=self.size,
+            props=self.props,
+            page=self.page,
+            autoPlay=self.auto_play,
+            playerConfig=self.player_config,
+            language=self.language,
+            forId=self.for_id,
+            mime=self.mime,
+        )
+
+
+class QuestionBody(BaseModel):
+    """Тело вопроса хода в шине: текст и вложения, которые пользователь приложил к
+    сообщению.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    elements: tuple[ShownElement, ...] = ()
 
 
 class TurnFeed(StreamFeed):
@@ -92,8 +152,10 @@ class TurnFeed(StreamFeed):
     async def _publish(self, message: AnyMessage) -> None:
         await self._bus.publish(self._scope, message, self._token)
 
-    async def started(self, key: str, question: str) -> None:
-        ref = await self._payloads.put(self._scope, question)
+    async def started(self, key: str, question: QuestionBody) -> None:
+        ref = await self._payloads.put(
+            self._scope, question.model_dump(mode="json", by_alias=True)
+        )
         message = TurnStarted(turn_id=self._turn_id, key=key, question=ref)
         await self._publish(message)
 
@@ -165,6 +227,11 @@ class TurnFeed(StreamFeed):
         await self._publish(message)
 
     async def stream_appended(self, message: StreamAppended) -> None:
+        await self._publish(message)
+
+    async def element_shown(self, call_id: str, element: Mapping[str, Any]) -> None:
+        ref = await self._payloads.put(self._scope, dict(element))
+        message = ElementShown(turn_id=self._turn_id, call_id=call_id, element=ref)
         await self._publish(message)
 
     async def notice(self, level: NoticeLevel, text: str) -> None:

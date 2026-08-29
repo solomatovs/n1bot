@@ -11,9 +11,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from chainlit.element import ElementDict
 from conftest import make_context
 
-from boba.chainlit.chat.feed import TurnFeed
+from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
@@ -28,6 +29,7 @@ from boba.messaging import (
     Notice,
     NoticeLevel,
     StreamAppended,
+    ThreadRewound,
     TurnFinished,
     TurnOutcome,
 )
@@ -147,7 +149,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
     lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
     try:
-        await feed.started(TURN, "question")
+        await feed.started(TURN, QuestionBody(text="question"))
         await feed.model_answered()
         await feed.tool_started(CALL, "kb_probe", {"query": "x"})
         await feed.tool_finished(CALL, TextResult(text="hits", elapsed_ms=10))
@@ -235,7 +237,7 @@ async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
             scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1
         )
         feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
-        await feed.started(TURN, "question")
+        await feed.started(TURN, QuestionBody(text="question"))
         await feed.answer_token(TURN, "partial")
 
         await asyncio.sleep(2.5)
@@ -332,11 +334,8 @@ async def test_stream_growth_is_published_through_the_pump(
         await pumps.close()
 
         def closed() -> bool:
-            for message in _stream_messages(iter(seen)):
-                if message.closed:
-                    return True
-
-            return False
+            flags = [message.closed for message in _stream_messages(iter(seen))]
+            return any(flags)
 
         await _until(closed, f"viewer saw the closed stream: {seen}")
 
@@ -354,3 +353,96 @@ async def test_stream_growth_is_published_through_the_pump(
         await holder.locks.release(lock.token)
         RunRegistry.reset()
         ToolStreams.reset()
+
+
+class RecordingSurface(NoSurface):
+    """Поверхность в тестах: считает перечитывания ленты и копит элементы."""
+
+    def __init__(self) -> None:
+        self.resumed = 0
+        self.elements: list[ElementDict] = []
+
+    async def resume_thread(self) -> None:
+        self.resumed += 1
+
+    async def send_element(self, element: ElementDict) -> None:
+        self.elements.append(element)
+
+
+ELEMENT = {
+    "id": "el-1",
+    "threadId": "",
+    "type": "file",
+    "url": "/files/a.txt",
+    "chainlitKey": None,
+    "name": "a.txt",
+    "display": "inline",
+    "objectKey": None,
+    "size": None,
+    "props": {"dir": "upload"},
+    "page": None,
+    "autoPlay": None,
+    "playerConfig": None,
+    "language": None,
+    "forId": "answer-1",
+    "mime": "text/plain",
+}
+
+
+async def test_rewind_and_elements_reach_the_viewer_instance(
+    nodes: tuple[Node, Node],
+) -> None:
+    """Правка вопроса перечитывает ленту, а карточка вызова показывается у зрителя
+    на другом инстансе — и по живой доставке, и по догону replay.
+    """
+    holder, viewer = nodes
+    thread_id = str(uuid4())
+    scope = Scope.chat(thread_id)
+    surface = RecordingSurface()
+    view = ChatView(thread_id, RecordingSink(), user_name="tester")
+    renderer = ChatRenderer(thread_id, view, viewer.payloads, surface)
+    leave = viewer.bus.subscribe(scope, renderer.apply)
+
+    await holder.bus.publish(scope, ThreadRewound(turn_id=TURN), LockToken.local())
+    await _until(lambda: surface.resumed == 1, "viewer re-read the thread")
+
+    lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
+    element = {**ELEMENT, "threadId": thread_id}
+    attachment = ShownElement.model_validate(
+        {**element, "id": "upload-1", "name": "note.txt", "forId": TURN}
+    )
+    try:
+        await feed.started(TURN, QuestionBody(text="question", elements=(attachment,)))
+        await feed.tool_started(CALL, "send_file", {"path": "a.txt"})
+        await feed.element_shown(CALL, element)
+        await _until(
+            lambda: len(surface.elements) == 2, "viewer received both elements"
+        )
+
+        # вложение вопроса приходит вместе с вопросом, карточка вызова — по ElementShown
+        assert surface.elements[0].get("id") == "upload-1"
+        assert surface.elements[0].get("forId") == TURN
+        shown = surface.elements[1]
+        assert shown.get("id") == "el-1"
+        assert shown.get("forId") == "answer-1"
+        assert shown.get("props") == {"dir": "upload"}
+        assert shown.get("threadId") == thread_id
+
+        late_surface = RecordingSurface()
+        late = ChatRenderer(
+            thread_id,
+            ChatView(thread_id, RecordingSink(), user_name="tester"),
+            viewer.payloads,
+            late_surface,
+        )
+        assert (await late.catch_up(viewer.bus)).alive is True
+        assert [item.get("id") for item in late_surface.elements] == [
+            "upload-1",
+            "el-1",
+        ]
+
+        await feed.finished(TurnOutcome.OK, "")
+    finally:
+        leave()
+        await holder.locks.release(lock.token)

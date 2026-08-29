@@ -25,6 +25,7 @@ __all__ = [
     "Command",
     "CommandKind",
     "ConnectionsChanged",
+    "ElementShown",
     "LockLost",
     "Message",
     "MessageKind",
@@ -43,6 +44,8 @@ __all__ = [
     "ThinkingClosed",
     "ThinkingComplete",
     "ThinkingToken",
+    "ThreadChanged",
+    "ThreadRewound",
     "ToolFailed",
     "ToolFinished",
     "ToolStarted",
@@ -88,6 +91,9 @@ class MessageKind(StrEnum):
     RUN_LIST_CHANGED = "run_list_changed"
     WORKFLOW_CHANGED = "workflow_changed"
     CONNECTIONS_CHANGED = "connections_changed"
+    THREAD_REWOUND = "thread_rewound"
+    ELEMENT_SHOWN = "element_shown"
+    THREAD_CHANGED = "thread_changed"
 
 
 _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
@@ -111,6 +117,7 @@ _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
         MessageKind.RUN_STATE_CHANGED,
         MessageKind.RUN_FINISHED,
         MessageKind.STREAM_APPENDED,
+        MessageKind.ELEMENT_SHOWN,
     }
 )
 
@@ -423,6 +430,35 @@ class ConnectionsChanged(Message):
     action: ChangeAction
 
 
+class ThreadRewound(Message):
+    """История треда обрезана до вопроса turn_id с новым текстом: ленту надо
+    перечитать из истории.
+    """
+
+    kind: Literal[MessageKind.THREAD_REWOUND] = MessageKind.THREAD_REWOUND
+    turn_id: str = Field(min_length=1)
+
+
+class ElementShown(Message):
+    """Вызов call_id хода turn_id показал элемент ленты (файл, карточку); тело
+    элемента лежит по ссылке element.
+    """
+
+    kind: Literal[MessageKind.ELEMENT_SHOWN] = MessageKind.ELEMENT_SHOWN
+    turn_id: str = Field(min_length=1)
+    call_id: str = Field(min_length=1)
+    element: PayloadRef
+
+
+class ThreadChanged(Message):
+    """Тред thread_id пользователя создан, переименован или удалён."""
+
+    kind: Literal[MessageKind.THREAD_CHANGED] = MessageKind.THREAD_CHANGED
+    thread_id: str = Field(min_length=1)
+    name: str
+    action: ChangeAction
+
+
 class StopRequested(Command):
     """Пользователь by_user попросил остановить область; просьба принята инстансом
     by_instance.
@@ -458,6 +494,9 @@ AnyMessage = Annotated[
     | Notice
     | LockLost
     | RunListChanged
+    | ThreadRewound
+    | ElementShown
+    | ThreadChanged
     | WorkflowChanged
     | ConnectionsChanged,
     Field(discriminator="kind"),

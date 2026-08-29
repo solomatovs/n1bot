@@ -61,6 +61,7 @@ from boba.llm.generation import GeneratorFactory
 from boba.llm.local import OnnxChatRuntime
 from boba.llm.openai import OpenAiHttp
 from boba.runtime import providers as runtime
+from boba.runtime.bus import PgMessageBus
 from boba.runtime.di import Depends
 from boba.toolrun.registry import ToolRegistry
 
@@ -269,6 +270,7 @@ async def chainlit_data_layer(
     storage_cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+    bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
 ) -> AsyncIterator[PostgresDataLayer]:
     pool = AsyncPostgresPool(
         cfg.postgres,
@@ -283,6 +285,7 @@ async def chainlit_data_layer(
             feed=TranscriptFeed(CheckpointMessages(saver)),
             links=AttachmentLinks(storage_cfg.public_prefix),
             sessions=session_source(),
+            bus=bus,
         )
         await layer.setup()
         yield layer

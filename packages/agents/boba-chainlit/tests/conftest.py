@@ -3,12 +3,19 @@
 import os
 import secrets
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+)
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import uuid4
 
 import pytest
@@ -250,11 +257,18 @@ def thread_messages() -> FakeThreadMessages:
 
 
 @pytest.fixture
+def data_bus() -> MemoryMessageBus:
+    """Шина слоя данных в тестах: изменения тредов уходят в область пользователя."""
+    return MemoryMessageBus("test-chainlit")
+
+
+@pytest.fixture
 async def layer(
     app_config: AppConfig,
     pool: AsyncPostgresPool,
     storage: LocalStorageClient,
     thread_messages: FakeThreadMessages,
+    data_bus: MemoryMessageBus,
 ) -> PostgresDataLayer:
     schema = app_config.data_layer.db_schema
     async with pool.connection() as conn:
@@ -268,6 +282,7 @@ async def layer(
         feed=TranscriptFeed(thread_messages),
         links=AttachmentLinks(app_config.storage.public_prefix),
         sessions=ChainlitSessions(),
+        bus=data_bus,
     )
     await data_layer.setup()
     return data_layer
@@ -375,6 +390,12 @@ class FakeTurn(RunPort):
     """Ход под тест: реестру достаточно порта, который адресует элемент вызова."""
 
     ANSWER_STEP: ClassVar[str] = "answer-step"
+
+    def __init__(self) -> None:
+        self.shown: list[tuple[str, Mapping[str, Any]]] = []
+
+    async def show_element(self, tool_call_id: str, element: Mapping[str, Any]) -> None:
+        self.shown.append((tool_call_id, dict(element)))
 
     def element_target(self, tool_call_id: str) -> ElementTarget:
         if not tool_call_id:

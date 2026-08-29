@@ -16,6 +16,7 @@ from typing import Any, ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict
 
 from boba.canvas.canvas import CanvasSignal
+from boba.chainlit.chat.feed import QuestionBody, ShownElement
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.rendering.chat_view import ChatView, StepText
 from boba.chainlit.rendering.errors import show_error
@@ -26,6 +27,7 @@ from boba.messaging import (
     AnswerInterrupted,
     AnswerToken,
     CanvasChanged,
+    ElementShown,
     Envelope,
     MessageBus,
     MessageKind,
@@ -40,6 +42,7 @@ from boba.messaging import (
     ThinkingClosed,
     ThinkingComplete,
     ThinkingToken,
+    ThreadRewound,
     ToolFailed,
     ToolFinished,
     ToolStarted,
@@ -49,6 +52,7 @@ from boba.messaging import (
     Unsubscribe,
 )
 from chainlit.context import ChainlitContext, context_var
+from chainlit.element import ElementDict
 from chainlit.step import Step, StepDict
 from chainlit.types import ThreadDict
 
@@ -75,6 +79,14 @@ class RenderSurface(Protocol):
         """Шлёт странице сигнал (window.postMessage) во все живые вкладки треда."""
 
     @abstractmethod
+    async def resume_thread(self) -> None:
+        """Перечитывает тред из истории и отдаёт ленту всем живым вкладкам треда."""
+
+    @abstractmethod
+    async def send_element(self, element: ElementDict) -> None:
+        """Шлёт элемент ленты во все живые вкладки треда."""
+
+    @abstractmethod
     async def task_start(self) -> None:
         """Включает индикатор хода во всех вкладках треда."""
 
@@ -92,6 +104,12 @@ class NoSurface(RenderSurface):
         return None
 
     async def window_message(self, payload: Mapping[str, Any]) -> None:
+        return None
+
+    async def resume_thread(self) -> None:
+        return None
+
+    async def send_element(self, element: ElementDict) -> None:
         return None
 
     async def task_start(self) -> None:
@@ -207,6 +225,8 @@ class ChatRenderer:
             MessageKind.TURN_FINISHED: self._on_turn_finished,
             MessageKind.NOTICE: self._on_notice,
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
+            MessageKind.THREAD_REWOUND: self._on_thread_rewound,
+            MessageKind.ELEMENT_SHOWN: self._on_element_shown,
             MessageKind.SIGNIN_REFRESH_REQUESTED: self._on_signin_refresh,
         }
 
@@ -220,9 +240,15 @@ class ChatRenderer:
             "thread %s: turn %s is rendered here", self._thread_id, message.turn_id
         )
         self.begin_turn(message.key)
-        # вопрос рисуется всем вкладкам треда: chainlit показал его только отправившей
-        question = await self._payloads.get(message.question)
-        await self._view.question(str(question), message.key)
+        # вопрос и его вложения рисуются всем вкладкам треда: chainlit показал их
+        # только отправившей
+        question = QuestionBody.model_validate(
+            await self._payloads.get(message.question)
+        )
+        await self._view.question(question.text, message.key)
+        for element in question.elements:
+            await self._surface.send_element(element.to_element())
+
         await self._surface.task_start()
         await self._view.await_model()
 
@@ -303,6 +329,14 @@ class ChatRenderer:
             note=message.note,
         )
         await self._surface.window_message(signal.payload())
+
+    async def _on_thread_rewound(self, message: ThreadRewound) -> None:
+        await self._surface.resume_thread()
+
+    async def _on_element_shown(self, message: ElementShown) -> None:
+        raw = await self._payloads.get(message.element)
+        element = ShownElement.model_validate(raw)
+        await self._surface.send_element(element.to_element())
 
     async def _on_signin_refresh(self, message: SignInRefreshRequested) -> None:
         await self._surface.window_message({"type": SignalType.KERBEROS_REFRESH})

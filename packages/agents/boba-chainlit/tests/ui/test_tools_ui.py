@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -48,7 +49,7 @@ from boba.transport.http import HttpxAuth
 from ui.chat_page import ChatPage, StepKind
 from ui.conftest import ChatOpener, StandDatabase, login_cookies
 from ui.fake_llm import FakePage, FakeRoute, ScenarioName
-from ui.socket_log import StepField
+from ui.socket_log import ChatEvent, StepField
 from ui.stand import (
     REPO_ROOT,
     StandConfig,
@@ -516,7 +517,7 @@ class ConfluenceSite:
     ATTACHMENT_LIMIT: ClassVar[int] = 20
     MIN_HTML_CHARS: ClassVar[int] = 200
     EXPAND: ClassVar[str] = "body.view,version,space"
-    PAGE_ID_IN_URL: ClassVar[str] = r"pageId=(\d+)"
+    PAGE_ID_IN_URL: ClassVar[str] = r"(?:pageId=|/pages/)(\d+)"
 
     def __init__(self, config: ConfluenceToolsConfig) -> None:
         self._config = config
@@ -548,10 +549,26 @@ class ConfluenceSite:
     def close(self) -> None:
         self._client.close()
 
+    RETRY_STATUSES: ClassVar[frozenset[int]] = frozenset({401, 429, 500, 502, 503})
+    RETRIES: ClassVar[int] = 3
+    RETRY_SEC: ClassVar[float] = 2.0
+
     def get_json(self, path: str) -> dict[str, Any]:
-        response = self._client.get(self._base + path)
-        response.raise_for_status()
-        return response.json()
+        """Публичный Confluence изредка отвечает 401/5xx на ровном месте: повторяем."""
+        attempt = 0
+        while True:
+            attempt += 1
+            response = self._client.get(self._base + path)
+            if response.status_code not in self.RETRY_STATUSES:
+                response.raise_for_status()
+                return response.json()
+
+            if attempt >= self.RETRIES:
+                response.raise_for_status()
+
+            # 401 приходит на сессионную cookie после долгой серии запросов: сбрасываем её
+            self._client.cookies.clear()
+            time.sleep(self.RETRY_SEC)
 
     def get_bytes(self, path: str) -> bytes:
         response = self._client.get(self._base + path)
@@ -1672,3 +1689,153 @@ class TestCoverage:
             raise AssertionError(
                 f"called tools the stand does not offer: {sorted(unknown)}"
             )
+
+
+class TestSecondTab:
+    """Карточка инструмента приходит во вторую вкладку того же треда по шине."""
+
+    WAIT_SEC: ClassVar[float] = 15.0
+    NAME: ClassVar[str] = "second-tab.mmd"
+    UPLOAD_INPUT: ClassVar[str] = "#upload-button-input"
+
+    def test_diagram_card_reaches_a_second_tab(
+        self, feed: ToolFeed, open_chat: Any, sandbox_stand: StandProcess
+    ) -> None:
+        feed.chat.ask(ScenarioName.ANSWER.value)
+        feed.chat.await_idle()
+        thread_id = feed.chat.log.thread_id()
+        assert thread_id
+
+        second: ChatPage = open_chat(sandbox_stand)
+        second.page.goto(
+            f"{sandbox_stand.config.base_url}/thread/{thread_id}",
+            wait_until="domcontentloaded",
+        )
+        second.page.wait_for_timeout(1000)
+        second.log.clear()
+
+        path = f"/workspace/{thread_id}/mermaid/{self.NAME}"
+        call = ToolCall(
+            tool="diagram_save",
+            arguments={"name": self.NAME, "spec": ProbeDiagram.SPEC.value},
+            view=ScriptCall(arg="spec", lang="mermaid"),
+        )
+        result = TextResult(
+            text=f"diagram saved: {path}; {DiagramPrompt.SAVED_NOTE.value}"
+        )
+        feed.call(call, ToolExpect.of(result, dom=[f"diagram saved: {path}"]))
+
+        deadline = time.monotonic() + self.WAIT_SEC
+        while not self._cards(second):
+            if time.monotonic() > deadline:
+                raise AssertionError(
+                    f"no card in the second tab\n{second.log.describe()}"
+                )
+
+            second.page.wait_for_timeout(100)
+
+    def test_uploaded_file_reaches_a_second_tab(
+        self,
+        feed: ToolFeed,
+        open_chat: Any,
+        sandbox_stand: StandProcess,
+        tmp_path: Path,
+    ) -> None:
+        """Вложение к вопросу уходит с TurnStarted: вторая вкладка треда получает
+        элемент, а не только текст.
+        """
+        feed.chat.ask(ScenarioName.ANSWER.value)
+        feed.chat.await_idle()
+        thread_id = feed.chat.log.thread_id()
+        assert thread_id
+
+        second: ChatPage = open_chat(sandbox_stand)
+        second.page.goto(
+            f"{sandbox_stand.config.base_url}/thread/{thread_id}",
+            wait_until="domcontentloaded",
+        )
+        second.page.wait_for_timeout(1000)
+        second.log.clear()
+
+        note = tmp_path / "tab-note.txt"
+        note.write_text("hello from the first tab", encoding="utf-8")
+        feed.chat.page.set_input_files(self.UPLOAD_INPUT, str(note))
+        feed.chat.page.wait_for_timeout(1000)
+        feed.chat.ask(ScenarioName.ANSWER.value)
+        feed.chat.await_idle()
+
+        deadline = time.monotonic() + self.WAIT_SEC
+        while note.name not in self._element_names(second):
+            if time.monotonic() > deadline:
+                raise AssertionError(
+                    f"no attachment in the second tab\n{second.log.describe()}"
+                )
+
+            second.page.wait_for_timeout(100)
+
+    def test_edited_question_keeps_its_attachment_for_the_model(
+        self, feed: ToolFeed, llm_port: int, tmp_path: Path
+    ) -> None:
+        """Правка текста вопроса не отрывает от него файл: модель видит путь вложения
+        и после правки.
+        """
+        note = tmp_path / "edit-note.txt"
+        note.write_text("keep me after the edit", encoding="utf-8")
+        feed.chat.page.set_input_files(self.UPLOAD_INPUT, str(note))
+        feed.chat.page.wait_for_timeout(1000)
+        feed.chat.ask(ScenarioName.ANSWER.value)
+        feed.chat.await_idle()
+
+        page = feed.chat.page
+        page.locator(".edit-message").last.click(force=True)
+        page.locator("#edit-chat-input").fill(f"{ScenarioName.ANSWER.value} edited")
+        feed.chat.log.clear()
+        page.locator(".confirm-edit").click()
+        feed.chat.await_idle()
+
+        response = httpx.get(
+            StandUrl.of(llm_port, FakeRoute.REQUESTS.value), timeout=5.0
+        )
+        response.raise_for_status()
+        requests = response.json()["requests"]
+        assert requests, "fake llm recorded no requests"
+
+        last_user = self._last_user_content(requests[-1])
+        assert "edited" in last_user
+        assert note.name in last_user
+
+    @staticmethod
+    def _last_user_content(request: Mapping[str, Any]) -> str:
+        content = ""
+        for message in request.get("messages") or []:
+            if message.get("role") != "user":
+                continue
+
+            content = str(message.get("content"))
+
+        return content
+
+    @staticmethod
+    def _element_names(chat: ChatPage) -> list[str]:
+        names: list[str] = []
+        for frame in chat.log.of_event(ChatEvent.ELEMENT):
+            if not isinstance(frame.payload, dict):
+                continue
+
+            names.append(str(frame.payload.get("name")))
+
+        return names
+
+    @staticmethod
+    def _cards(chat: ChatPage) -> list[str]:
+        found: list[str] = []
+        for frame in chat.log.of_event(ChatEvent.ELEMENT):
+            if not isinstance(frame.payload, dict):
+                continue
+
+            if frame.payload.get("name") != CANVAS_ELEMENT:
+                continue
+
+            found.append(str(frame.payload.get("id")))
+
+        return found

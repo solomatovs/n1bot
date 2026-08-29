@@ -62,6 +62,7 @@ class AttachmentTarget:
 
     key: ObjectKey
     target: ElementTarget
+    call_id: str
 
 
 class FileAttachment:
@@ -112,10 +113,11 @@ class FileAttachment:
         thread_id = context.scope.id
 
         port = RunRegistry.require_port(thread_id)
-        target = port.element_target(context.tool_call_id())
+        call_id = context.tool_call_id()
+        target = port.element_target(call_id)
         key = cls._key(user_id, thread_id, path)
 
-        return AttachmentTarget(key=key, target=target)
+        return AttachmentTarget(key=key, target=target, call_id=call_id)
 
     @staticmethod
     def _key(user_id: str, thread_id: str, path: str) -> ObjectKey:
@@ -126,7 +128,9 @@ class FileAttachment:
 
     @classmethod
     async def _send(cls, target: AttachmentTarget) -> None:
-        """Element.send сам пишет строку в elements и рассылает её вкладкам."""
+        """Пишет строку в elements и показывает карточку через шину хода: её рисуют
+        вкладки треда на всех инстансах.
+        """
         key = target.key
         mime = mimetypes.guess_type(key.name)[0]
         if not mime:
@@ -143,7 +147,11 @@ class FileAttachment:
             display="inline",
             props=ElementProps(dir=key.dir).model_dump(mode="json"),
         )
-        await element.send(for_id=target.target.for_id)
+        element.for_id = target.target.for_id
+        await AttachmentDataLayer.require().create_element(element)
+
+        port = RunRegistry.require_port(key.thread_id)
+        await port.show_element(target.call_id, element.to_dict())
 
 
 def build_send_file_tool() -> BaseTool:

@@ -14,7 +14,9 @@ from conftest import Seed, use_session
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chat.threads import DataRejectedError, DataUnavailableError
+from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
+from boba.messaging import Envelope, MemoryMessageBus, ThreadChanged
 
 pytestmark = pytest.mark.anyio
 
@@ -330,3 +332,37 @@ async def test_build_debug_url(layer: PostgresDataLayer):
 
 async def test_close_releases_storage(layer: PostgresDataLayer):
     await layer.close()
+
+
+async def test_thread_changes_are_published_to_the_user_scope(
+    layer: PostgresDataLayer, seeded: Seed, data_bus: MemoryMessageBus
+) -> None:
+    """Создание, переименование и удаление треда уходят в область пользователя;
+    правка одних метаданных списку не видна.
+    """
+    seen: list[Envelope] = []
+
+    async def collect(envelope: Envelope) -> None:
+        seen.append(envelope)
+
+    leave = data_bus.subscribe(Scope.user(int(seeded.user.id)), collect)
+    thread_id = str(uuid4())
+    try:
+        await layer.update_thread(thread_id, name="first", user_id=seeded.user.id)
+        await layer.update_thread(thread_id, metadata={"topic": "x"})
+        await layer.update_thread(thread_id, name="renamed")
+        await layer.delete_thread(thread_id)
+    finally:
+        leave()
+
+    changes: list[tuple[str, str, str]] = []
+    for envelope in seen:
+        message = envelope.message
+        assert isinstance(message, ThreadChanged)
+        changes.append((message.thread_id, message.action.value, message.name))
+
+    assert changes == [
+        (thread_id, "created", "first"),
+        (thread_id, "updated", "renamed"),
+        (thread_id, "deleted", ""),
+    ]

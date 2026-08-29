@@ -10,11 +10,10 @@ TurnStateError — нарушен протокол хода: повторный 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol
@@ -24,9 +23,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
-from boba.canvas.keys import ObjectKey
-from boba.chainlit.chat.feed import TurnFeed
+from boba.canvas.keys import ElementProps, ObjectKey
+from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
+from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.identity.context import CallContext
 from boba.identity.errors import FailureReport, RefusalError
@@ -87,13 +87,68 @@ class TurnRecord:
         return AIMessage(content=self.content, additional_kwargs=extra)
 
 
+class ChatTurnAttachments:
+    """Вложения вопроса в additional_kwargs сообщения: имя и путь, каким его видит
+    песочница.
+    """
+
+    KEY: ClassVar[str] = "attachments"
+
+    @classmethod
+    def of(cls, message: BaseMessage) -> list[dict[str, str]]:
+        raw = message.additional_kwargs.get(cls.KEY)
+        if not isinstance(raw, list):
+            return []
+
+        found: list[dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+
+            found.append({str(k): str(v) for k, v in item.items()})
+
+        return found
+
+    @classmethod
+    def extra(cls, attachments: Sequence[Mapping[str, str]]) -> dict[str, Any]:
+        if not attachments:
+            return {}
+
+        return {cls.KEY: [dict(item) for item in attachments]}
+
+
 class Question(BaseModel):
-    """Вопрос пользователя, с которого начинается ход: id его шага и текст."""
+    """Вопрос пользователя, с которого начинается ход: id его шага, текст и
+    вложения к сообщению.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     key: str = Field(min_length=1)
     text: str
+    elements: tuple[ShownElement, ...] = ()
+
+    @classmethod
+    def of_message(
+        cls, msg: cl.Message, thread_id: str, links: AttachmentLinks
+    ) -> Question:
+        """Вопрос из сообщения chainlit: вложения получают ссылку треда вместо
+        сессионной, чтобы открываться из любой вкладки и с любого инстанса.
+        """
+        elements: list[ShownElement] = []
+        for element in msg.elements or []:
+            data = dict(element.to_dict())
+            props = ElementProps.of(data.get("props"))
+            data["threadId"] = thread_id
+            data["forId"] = msg.id
+            data["chainlitKey"] = None
+            data["url"] = links.url(thread_id, element.id, props.dir)
+            elements.append(ShownElement.model_validate(data))
+
+        return cls(key=msg.id, text=msg.content, elements=tuple(elements))
+
+    def body(self) -> QuestionBody:
+        return QuestionBody(text=self.text, elements=self.elements)
 
 
 class TurnStateError(Exception):
@@ -351,7 +406,7 @@ class ChatTurn(RunPort):
         self._thread_id = thread_id
         self._feed = feed
         self._key = question.key
-        self._question = question.text
+        self._question = question
         self._locks = locking.locks
         self._heartbeat_sec = locking.heartbeat_sec
         self._state = TurnState()
@@ -395,12 +450,20 @@ class ChatTurn(RunPort):
 
         return ElementTarget(for_id=for_id, element_id=element_id)
 
+    async def show_element(self, tool_call_id: str, element: Mapping[str, Any]) -> None:
+        await self._feed.element_shown(tool_call_id, element)
+
     @staticmethod
-    def human_message(msg: cl.Message, user_id: str) -> HumanMessage:
+    def human_message(
+        msg: cl.Message, user_id: str, carried: Sequence[Mapping[str, str]] = ()
+    ) -> HumanMessage:
         """Собирает сообщение пользователя для графа; пути вложений — такие, какими их
-        видит песочница.
+        видит песочница. carried — вложения правленого вопроса: у правки своих
+        элементов нет.
         """
         attachments: list[dict[str, str]] = []
+        for item in carried:
+            attachments.append(dict(item))
 
         for element in msg.elements or []:
             key = ObjectKey.build(user_id, element.thread_id, element.name, element.id)
@@ -409,9 +472,8 @@ class ChatTurn(RunPort):
                 name = element.id
 
             attachments.append({"name": name, "path": key.in_workspace()})
-        extra: dict[str, Any] = {}
-        if attachments:
-            extra = {"attachments": attachments}
+
+        extra = ChatTurnAttachments.extra(attachments)
         return HumanMessage(content=msg.content, id=msg.id, additional_kwargs=extra)
 
     async def run(
@@ -481,7 +543,7 @@ class ChatTurn(RunPort):
                 try:
                     # ход объявляется до первого чанка: запрос в модель уходит с первой
                     # итерацией стрима, и до её ответа лента иначе пуста
-                    await self._feed.started(self._key, self._question)
+                    await self._feed.started(self._key, self._question.body())
                     async for chunk, _metadata in stream:
                         cancellation.raise_if_cancelled()
                         await self._model_answered()
@@ -522,8 +584,12 @@ class ChatTurn(RunPort):
         end = asyncio.ensure_future(self._feed.finished(outcome, self._finish_reason()))
         self._REPORTS.add(end)
         end.add_done_callback(self._REPORTS.discard)
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await asyncio.shield(end)
+        except asyncio.CancelledError:
+            # задачу хода сняли: итог всё равно уходит в шину до отпускания блокировки
+            await asyncio.wait({end})
+            end.result()
 
     def _finish_reason(self) -> str:
         """Текст исхода для получателей: причина остановки или формулировка сбоя."""

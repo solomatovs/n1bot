@@ -1,5 +1,7 @@
 """PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Protocol
@@ -11,6 +13,7 @@ from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import class_row, tuple_row
 from psycopg.types.json import Jsonb
+from pydantic import BaseModel, ConfigDict
 
 from boba.canvas.journal import StreamJournalError, StreamJournalHub
 from boba.canvas.keys import ElementProps, ObjectKey
@@ -33,7 +36,9 @@ from boba.chat.threads import (
     data_boundary,
 )
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import Scope
 from boba.identity.session import SessionSource, UserMetadataField
+from boba.messaging import ChangeAction, LockToken, MessageBus, ThreadChanged
 from chainlit.data import get_data_layer
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
@@ -84,7 +89,7 @@ class AttachmentDataLayer(BaseDataLayer, ABC):
     def storage(self) -> StorageClient: ...
 
     @classmethod
-    def require(cls) -> "AttachmentDataLayer":
+    def require(cls) -> AttachmentDataLayer:
         """Слой данных приложения, адресующий вложения; иной — ошибка сборки."""
         layer = get_data_layer()
         if not isinstance(layer, cls):
@@ -92,6 +97,35 @@ class AttachmentDataLayer(BaseDataLayer, ABC):
             raise RuntimeError(msg)
 
         return layer
+
+
+class ThreadUpsert(BaseModel):
+    """Итог upsert треда: владелец, имя и создана ли строка только что."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    user_id: int | None
+    name: str
+    inserted: bool
+
+    @property
+    def action(self) -> ChangeAction:
+        if self.inserted:
+            return ChangeAction.CREATED
+
+        return ChangeAction.UPDATED
+
+    @classmethod
+    def of(cls, row: tuple[Any, ...]) -> ThreadUpsert:
+        user_id = None
+        if row[0] is not None:
+            user_id = int(row[0])
+
+        name = ""
+        if row[1] is not None:
+            name = str(row[1])
+
+        return cls(user_id=user_id, name=name, inserted=bool(row[2]))
 
 
 class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
@@ -107,6 +141,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         feed: ThreadFeed,
         links: AttachmentLinks,
         sessions: SessionSource,
+        bus: MessageBus,
     ) -> None:
         self._pool = pool
         self._schema = schema
@@ -114,6 +149,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         self._feed = feed
         self._links = links
         self._sessions = sessions
+        self._bus = bus
 
     @property
     def links(self) -> AttachmentLinks:
@@ -714,15 +750,32 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
                 user_id          = COALESCE(excluded.user_id,           t.user_id),
                 tags             = COALESCE(excluded.tags,              t.tags),
                 meta             = (COALESCE(t.meta, '{{}}'::jsonb) - %(meta_del)s::text[]) || %(meta_set)s::jsonb
+            returning
+                user_id,
+                name,
+                (xmax = 0) as inserted
             """  # noqa: E501
         ).format(
             threads=Thread.get_table_name(self._schema),
         )
         try:
             async with self._pool.connection() as conn:
-                await conn.execute(query, params)
+                cursor = await conn.execute(query, params)
+                row = await cursor.fetchone()
         except Exception as e:
             raise DataUnavailableError("update_thread", str(e)) from e
+
+        if row is None:
+            raise DataUnavailableError("update_thread", "upsert returned no row")
+
+        upsert = ThreadUpsert.of(row)
+        # список тредов меняют только создание и имя; правки метаданных списку не видны
+        if not upsert.inserted and name is None:
+            return
+
+        await self._thread_changed(
+            upsert.user_id, thread_id, upsert.name, upsert.action
+        )
 
     @data_boundary
     async def delete_thread(self, thread_id: str) -> None:
@@ -769,6 +822,22 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             raise DataUnavailableError("delete_thread", str(e)) from e
 
         self._purge_stream_journal(owner, thread_id)
+        if owner is not None and owner[0] is not None:
+            await self._thread_changed(
+                int(owner[0]), thread_id, "", ChangeAction.DELETED
+            )
+
+    async def _thread_changed(
+        self, user_id: int | None, thread_id: str, name: str, action: ChangeAction
+    ) -> None:
+        """Сообщает вкладкам пользователя на всех инстансах, что его список тредов
+        изменился; тред без владельца в списках не живёт.
+        """
+        if user_id is None:
+            return
+
+        message = ThreadChanged(thread_id=thread_id, name=name, action=action)
+        await self._bus.publish(Scope.user(user_id), message, LockToken.local())
 
     @staticmethod
     def _purge_stream_journal(owner: tuple[Any, ...] | None, thread_id: str) -> None:
