@@ -22,10 +22,13 @@ __all__ = [
     "AnyMessage",
     "CanvasChanged",
     "ChangeAction",
+    "ChatSettingsChanged",
     "Command",
     "CommandKind",
     "ConnectionsChanged",
+    "ElementRemoved",
     "ElementShown",
+    "FeedbackChanged",
     "LockLost",
     "Message",
     "MessageKind",
@@ -41,6 +44,7 @@ __all__ = [
     "StageStarted",
     "StopRequested",
     "StreamAppended",
+    "StudioProfileChanged",
     "ThinkingClosed",
     "ThinkingComplete",
     "ThinkingToken",
@@ -54,6 +58,7 @@ __all__ = [
     "TurnOutcome",
     "TurnStarted",
     "WorkflowChanged",
+    "WorkflowDraftChanged",
 ]
 
 
@@ -94,6 +99,11 @@ class MessageKind(StrEnum):
     THREAD_REWOUND = "thread_rewound"
     ELEMENT_SHOWN = "element_shown"
     THREAD_CHANGED = "thread_changed"
+    WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
+    FEEDBACK_CHANGED = "feedback_changed"
+    ELEMENT_REMOVED = "element_removed"
+    CHAT_SETTINGS_CHANGED = "chat_settings_changed"
+    STUDIO_PROFILE_CHANGED = "studio_profile_changed"
 
 
 _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
@@ -459,6 +469,58 @@ class ThreadChanged(Message):
     action: ChangeAction
 
 
+class WorkflowDraftChanged(Message):
+    """Черновик билдера key пользователя записан (revision) или удалён; by_sid — сокет
+    вкладки, которая его изменила, чтобы она не применяла своё же изменение.
+    """
+
+    kind: Literal[MessageKind.WORKFLOW_DRAFT_CHANGED] = (
+        MessageKind.WORKFLOW_DRAFT_CHANGED
+    )
+    key: str = Field(min_length=1)
+    revision: int = Field(ge=0)
+    by_sid: str
+    action: ChangeAction
+
+
+class FeedbackChanged(Message):
+    """Оценка шага step_id поставлена (value 0/1 с комментарием) или снята (value
+    None).
+    """
+
+    kind: Literal[MessageKind.FEEDBACK_CHANGED] = MessageKind.FEEDBACK_CHANGED
+    step_id: str = Field(min_length=1)
+    value: int | None
+    comment: str = ""
+
+
+class ElementRemoved(Message):
+    """Элемент ленты element_id удалён пользователем."""
+
+    kind: Literal[MessageKind.ELEMENT_REMOVED] = MessageKind.ELEMENT_REMOVED
+    element_id: str = Field(min_length=1)
+
+
+class ChatSettingsChanged(Message):
+    """Пользователь сохранил настройки чата для профиля profile из сессии
+    by_session; остальные его вкладки на этом профиле пересобирают агента.
+    """
+
+    kind: Literal[MessageKind.CHAT_SETTINGS_CHANGED] = MessageKind.CHAT_SETTINGS_CHANGED
+    profile: str = Field(min_length=1)
+    by_session: str
+
+
+class StudioProfileChanged(Message):
+    """Пользователь выбрал профиль studio из вкладки с сокетом by_sid."""
+
+    kind: Literal[MessageKind.STUDIO_PROFILE_CHANGED] = (
+        MessageKind.STUDIO_PROFILE_CHANGED
+    )
+    profile: str = Field(min_length=1)
+    by_sid: str
+
+
 class StopRequested(Command):
     """Пользователь by_user попросил остановить область; просьба принята инстансом
     by_instance.
@@ -497,6 +559,11 @@ AnyMessage = Annotated[
     | ThreadRewound
     | ElementShown
     | ThreadChanged
+    | WorkflowDraftChanged
+    | FeedbackChanged
+    | ElementRemoved
+    | ChatSettingsChanged
+    | StudioProfileChanged
     | WorkflowChanged
     | ConnectionsChanged,
     Field(discriminator="kind"),

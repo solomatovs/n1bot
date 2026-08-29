@@ -7,8 +7,9 @@ from __future__ import annotations
 from typing import ClassVar
 
 from boba.connection_broker.store import ConnectionStore
-from boba.identity.api import AuthenticatedUser, Authenticator
+from boba.identity.api import AuthenticatedUser, Authenticator, UserSettingsStore
 from boba.identity.locks import MemoryLiveLocks
+from boba.identity.session import UserMetadataField
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.bus import ListenerState, StaticBusWatch
@@ -35,6 +36,34 @@ class StubAuthenticator(Authenticator):
     @classmethod
     def cookies(cls) -> dict[str, str]:
         return {cls.COOKIE: cls.TOKEN}
+
+
+class MemoryUsers(UserSettingsStore):
+    """Пользователи стенда в памяти: одна строка и выбранный профиль studio."""
+
+    def __init__(self, user: AuthenticatedUser | None) -> None:
+        self._user = user
+        self.chosen: dict[int, str] = {}
+
+    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
+        if self._user is None:
+            return None
+
+        if self._user.identifier != identifier:
+            return None
+
+        return self._user
+
+    async def set_studio_profile(self, user_id: int, profile: str) -> None:
+        self.chosen[user_id] = profile
+        if self._user is None:
+            return
+
+        metadata = {**self._user.metadata, UserMetadataField.STUDIO_PROFILE: profile}
+        self._user = self._user.model_copy(update={"metadata": metadata})
+
+    def source(self) -> UserSettingsStore:
+        return self
 
 
 class NoRefs:

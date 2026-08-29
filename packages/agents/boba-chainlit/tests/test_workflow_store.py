@@ -18,7 +18,7 @@ from boba.workflow import (
     WorkflowGraph,
     WorkflowSpec,
 )
-from boba.workflow.records import WorkflowNotFoundError
+from boba.workflow.records import DraftKey, DraftKind, WorkflowNotFoundError
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 pytestmark = pytest.mark.anyio
@@ -225,3 +225,38 @@ async def test_snapshot_is_independent_of_the_definition(store: WorkflowStore) -
     run = await store.get_run(OWNER, run_id)
     if run.state.graph.spec.description != "copy batch":
         raise AssertionError("editing the definition must not touch the run")
+
+
+async def test_drafts_are_keyed_per_user_and_count_revisions(
+    store: WorkflowStore,
+) -> None:
+    key = DraftKey.of_workflow(7)
+    first = await store.put_draft(1, key, "name: a\ntasks: {}\n", {"positions": {}})
+    second = await store.put_draft(
+        1, key, "name: b\ntasks: {}\n", {"positions": {"t": 1}}
+    )
+    assert first.revision == 1
+    assert second.revision == 2
+    assert second.spec.startswith("name: b")
+
+    found = await store.get_draft(1, key)
+    assert found.revision == 2
+    assert found.layout == {"positions": {"t": 1}}
+
+    with pytest.raises(WorkflowNotFoundError):
+        await store.get_draft(2, key)
+
+    assert await store.drop_draft(1, key) is True
+    assert await store.drop_draft(1, key) is False
+    with pytest.raises(WorkflowNotFoundError):
+        await store.get_draft(1, key)
+
+
+async def test_draft_key_renders_and_parses() -> None:
+    assert DraftKey.of_workflow(12).render() == "workflow:12"
+    parsed = DraftKey.parse("new:0f3b2a10-1111-4222-8333-444455556666")
+    assert parsed.kind is DraftKind.NEW
+    with pytest.raises(ValueError, match="bad draft key"):
+        DraftKey.parse("draft-12")
+    with pytest.raises(ValueError, match="bad draft key"):
+        DraftKey.parse("other:1")

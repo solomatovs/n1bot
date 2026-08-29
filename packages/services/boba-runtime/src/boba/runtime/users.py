@@ -21,7 +21,12 @@ from boba.chat.threads import (
 )
 from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.identity.api import (
+    AuthenticatedUser,
+    PersistedUsers,
+    StudioProfiles,
+    UsersUpsert,
+)
 from boba.identity.session import UserMetadataField
 from boba.identity.signin import SignedIn
 from boba.runtime.tables import ChatTable, ThreadsColumn, UsersColumn
@@ -29,7 +34,7 @@ from boba.runtime.tables import ChatTable, ThreadsColumn, UsersColumn
 __all__ = ["UsersTable"]
 
 
-class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert):
+class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
     """users/threads той же схемы, что пишет data layer чата: чтение и строка входа."""
 
     def __init__(
@@ -88,6 +93,32 @@ class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert):
             metadata = {}
 
         return AuthenticatedUser(id=str(row[0]), identifier=row[1], metadata=metadata)
+
+    async def set_studio_profile(self, user_id: int, profile: str) -> None:
+        query = sql.SQL(
+            """
+            update {users} set
+                {meta} = coalesce({meta}, '{{}}'::jsonb)
+                    || jsonb_build_object(%(key)s::text, %(profile)s::text)
+            where
+                {id} = %(user_id)s
+            """
+        ).format(
+            users=ChatTable.USERS.under(self._schema),
+            meta=UsersColumn.META.ident(),
+            id=UsersColumn.ID.ident(),
+        )
+        params = {
+            "key": UserMetadataField.STUDIO_PROFILE,
+            "profile": profile,
+            "user_id": user_id,
+        }
+        try:
+            pool = await self._pool()
+            async with pool.connection() as conn:
+                await conn.execute(query, params)
+        except Exception as exc:
+            raise DataUnavailableError("set_studio_profile", str(exc)) from exc
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
         """Строка входа: новая либо metadata поверх прежней; билет SSO не пишется."""

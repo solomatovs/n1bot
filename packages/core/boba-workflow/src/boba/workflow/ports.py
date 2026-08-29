@@ -9,7 +9,7 @@ from uuid import UUID
 
 from boba.messaging import StreamFeed
 from boba.workflow.graph import RunState
-from boba.workflow.records import StoredRun, StoredWorkflow
+from boba.workflow.records import DraftKey, StoredRun, StoredWorkflow, WorkflowDraft
 from boba.workflow.spec import WorkflowSpec
 
 __all__ = ["RunSink", "WorkflowRepository"]
@@ -44,6 +44,21 @@ class WorkflowRepository(Protocol):
 
     @abstractmethod
     async def delete(self, user_id: int, workflow_id: int) -> bool: ...
+
+    @abstractmethod
+    async def put_draft(
+        self, user_id: int, key: DraftKey, spec: str, layout: Mapping[str, Any]
+    ) -> WorkflowDraft:
+        """Пишет черновик пользователя под ключом; revision растёт на единицу."""
+        ...
+
+    @abstractmethod
+    async def get_draft(self, user_id: int, key: DraftKey) -> WorkflowDraft:
+        """Черновик пользователя; нет — WorkflowNotFoundError."""
+        ...
+
+    @abstractmethod
+    async def drop_draft(self, user_id: int, key: DraftKey) -> bool: ...
 
     @abstractmethod
     async def start_run(  # noqa: PLR0913 — запуск описывается всеми полями сразу

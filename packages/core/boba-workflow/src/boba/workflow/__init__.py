@@ -18,8 +18,11 @@ from boba.workflow.graph import (
 )
 from boba.workflow.ports import RunSink, WorkflowRepository
 from boba.workflow.records import (
+    DraftKey,
+    DraftKind,
     StoredRun,
     StoredWorkflow,
+    WorkflowDraft,
     WorkflowNotFoundError,
     WorkflowStoreError,
 )
@@ -41,6 +44,8 @@ from boba.workflow.spec import (
 __all__ = [
     "ArgBinding",
     "ArgTemplate",
+    "DraftKey",
+    "DraftKind",
     "Edge",
     "EdgeKind",
     "EdgeText",
@@ -63,6 +68,7 @@ __all__ = [
     "ToolCatalog",
     "ToolFacts",
     "ToolPort",
+    "WorkflowDraft",
     "WorkflowGraph",
     "WorkflowNotFoundError",
     "WorkflowPlan",

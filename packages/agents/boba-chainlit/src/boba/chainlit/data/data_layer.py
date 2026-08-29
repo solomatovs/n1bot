@@ -38,7 +38,15 @@ from boba.chat.threads import (
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.session import SessionSource, UserMetadataField
-from boba.messaging import ChangeAction, LockToken, MessageBus, ThreadChanged
+from boba.messaging import (
+    AnyMessage,
+    ChangeAction,
+    ElementRemoved,
+    FeedbackChanged,
+    LockToken,
+    MessageBus,
+    ThreadChanged,
+)
 from chainlit.data import get_data_layer
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
@@ -324,6 +332,16 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         except Exception as e:
             raise DataUnavailableError("upsert_feedback", str(e)) from e
 
+        comment = ""
+        if model.comment:
+            comment = model.comment
+
+        await self._chat_changed(
+            model.thread_id,
+            FeedbackChanged(
+                step_id=Codec.uuid_str(model.for_id), value=model.value, comment=comment
+            ),
+        )
         return Codec.uuid_str(model.id)
 
     @data_boundary
@@ -334,16 +352,26 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
                 {feedbacks}
             where
                 id = %(id)s
+            returning
+                thread_id,
+                for_id
             """
         ).format(
             feedbacks=Feedback.get_table_name(self._schema),
         )
         try:
             async with self._pool.connection() as conn:
-                await conn.execute(query, {"id": UUID(feedback_id)})
+                cursor = await conn.execute(query, {"id": UUID(feedback_id)})
+                row = await cursor.fetchone()
         except Exception as e:
             raise DataUnavailableError("delete_feedback", str(e)) from e
 
+        if row is None:
+            return False
+
+        await self._chat_changed(
+            row[0], FeedbackChanged(step_id=Codec.uuid_str(row[1]), value=None)
+        )
         return True
 
     async def _store_element_body(
@@ -520,6 +548,9 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
                     )
         except Exception as e:
             raise DataUnavailableError("delete_element", str(e)) from e
+
+        if row and row[0]:
+            await self._chat_changed(row[0], ElementRemoved(element_id=element_id))
 
     @data_boundary
     async def create_step(self, step_dict: StepDict) -> None:
@@ -826,6 +857,16 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             await self._thread_changed(
                 int(owner[0]), thread_id, "", ChangeAction.DELETED
             )
+
+    async def _chat_changed(self, thread_id: object, message: AnyMessage) -> None:
+        """Сообщает вкладкам треда на всех инстансах об изменении в его ленте;
+        запись без треда никому не показана.
+        """
+        if thread_id is None:
+            return
+
+        scope = Scope.chat(str(thread_id))
+        await self._bus.publish(scope, message, LockToken.local())
 
     async def _thread_changed(
         self, user_id: int | None, thread_id: str, name: str, action: ChangeAction

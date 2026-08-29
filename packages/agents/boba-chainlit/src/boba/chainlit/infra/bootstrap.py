@@ -259,6 +259,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     sessions = ChainlitSessions()
     ChainlitSessions.install(sessions)
     container.provide(providers.session_source, sessions)
+    container.eager(providers.get_app_config)
+    container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
     container.eager(runtime.message_bus)

@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 import pytest
+from playwright.sync_api import expect
 
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import PanelTab
@@ -24,7 +25,7 @@ from boba.chat.profiles import UserSetting
 from ui.chat_page import ChatPage, StepKind
 from ui.conftest import LlmMetaReader
 from ui.fake_llm import ScenarioName
-from ui.stand import StandUrl
+from ui.stand import StandProcess, StandUrl
 
 pytestmark = pytest.mark.ui
 
@@ -595,3 +596,37 @@ class TestSettingsIsolation:
         prompt = _system_prompt(payload)
         if prompt != SEARCH_PROMPT:
             raise AssertionError(f"system prompt leaked: {prompt!r}")
+
+
+class TestOtherTabs:
+    """Настройки общие на пользователя: другая вкладка того же профиля подхватывает их
+    без перезагрузки.
+    """
+
+    def test_other_tab_agent_uses_settings_saved_elsewhere(
+        self,
+        chat: ChatPage,
+        open_chat: Any,
+        stand: StandProcess,
+        llm_port: int,
+        llm_meta: LlmMetaReader,
+    ) -> None:
+        other: ChatPage = open_chat(stand)
+
+        _open_settings(chat)
+        _open_tab(chat, PanelTab.MODEL)
+        chat.page.locator(PanelSelector.trigger_of(UserSetting.MODEL.value)).click()
+        chat.page.get_by_role("option", name="fake-model-alt", exact=True).click()
+        _confirm_settings(chat)
+        assert llm_meta(ADMIN_LOGIN).get("general") == {"model": "fake-model-alt"}
+
+        # вторая вкладка пересобрала агента по сообщению шины: её запрос идёт с новой моделью
+        other.page.wait_for_timeout(1000)
+        _ask_and_wait(other)
+        assert _last_request(llm_port)["model"] == "fake-model-alt"
+
+        _open_settings(other)
+        _open_tab(other, PanelTab.MODEL)
+        expect(
+            other.page.locator(PanelSelector.trigger_of(UserSetting.MODEL.value))
+        ).to_contain_text("fake-model-alt")

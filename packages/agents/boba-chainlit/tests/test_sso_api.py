@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import NoThreads, StubAuthenticator, StubRefs
+from conftest import NoThreads, NoUsers, StubAuthenticator, StubRefs
 from httpx import ASGITransport, AsyncClient
 from test_sso_login_flow import KRB5_CONF, USER_PRINCIPAL, Browser
 
@@ -97,7 +97,9 @@ class Stand:
             cookie=SessionCookie(COOKIE, "lax", 3600),
             users=self.users,
         )
-        access = ApiAccess(StubAuthenticator(None), COOKIE, NoThreads.source)
+        access = ApiAccess(
+            StubAuthenticator(None), COOKIE, NoThreads.source, NoUsers.source
+        )
         self.app = ApiApp.build(
             StubRefs.of(_no_store, lambda: None),
             access,

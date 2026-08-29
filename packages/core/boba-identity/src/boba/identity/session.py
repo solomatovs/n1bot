@@ -40,6 +40,7 @@ class UserMetadataField:
     TICKET: Final = "sso_ticket"
     ROLES: Final = "roles"
     LLM: Final = "llm"
+    STUDIO_PROFILE: Final = "studio_profile"
 
 
 class SignInProvider(StrEnum):

@@ -323,3 +323,109 @@ def test_second_tab_sees_a_new_run_through_the_bus(
         )
     finally:
         context.close()
+
+
+def test_second_tab_follows_builder_edits_through_the_bus(
+    page: Page, browser: Browser, stand: StandProcess
+) -> None:
+    """Правка в билдере одной вкладки — общий черновик: вторая вкладка того же workflow
+    видит новый узел без перезагрузки, а после перезагрузки черновик остаётся.
+    """
+    _open(page, stand, "/build")
+    page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
+    expect(page).to_have_url(re.compile(r"/workflow/build/\d+$"))
+    expect(page.locator(Selector.EDITOR_NODE).first).to_be_visible()
+    before = page.locator(Selector.EDITOR_NODE).count()
+
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_cookies(login_cookies(stand))
+    other = context.new_page()
+    other.set_default_timeout(PAGE_TIMEOUT_MS)
+    try:
+        other.goto(page.url, wait_until="domcontentloaded")
+        expect(other.locator(Selector.EDITOR_NODE)).to_have_count(before)
+
+        _button(page, "Tool").click()
+        page.get_by_role("menuitem", name="bash").click()
+        expect(page.locator(Selector.EDITOR_NODE)).to_have_count(before + 1)
+
+        # вторая вкладка узнаёт о черновике из области пользователя, не перезагружаясь
+        expect(other.locator(Selector.EDITOR_NODE)).to_have_count(before + 1)
+
+        # черновик хранится на сервере: перезагрузка открывает его, а не сохранённое
+        other.reload(wait_until="domcontentloaded")
+        expect(other.locator(Selector.EDITOR_NODE)).to_have_count(before + 1)
+    finally:
+        context.close()
+
+
+def test_profile_choice_reaches_another_tab_through_the_bus(
+    page: Page, browser: Browser, stand: StandProcess
+) -> None:
+    """Профиль studio хранится на пользователе: выбор в одной вкладке меняет профиль в
+    другой без перезагрузки, а новая вкладка открывается с ним.
+    """
+    _open(page, stand, "/build")
+    page.locator(Selector.PROFILE_SELECT).select_option("general")
+    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
+
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_cookies(login_cookies(stand))
+    other = context.new_page()
+    other.set_default_timeout(PAGE_TIMEOUT_MS)
+    try:
+        _open(other, stand, "/build")
+        expect(other.locator(Selector.PROFILE_SELECT)).to_have_value("general")
+
+        page.locator(Selector.PROFILE_SELECT).select_option("search")
+        expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("search")
+        expect(other.locator(Selector.PROFILE_SELECT)).to_have_value("search")
+
+        fresh = context.new_page()
+        fresh.set_default_timeout(PAGE_TIMEOUT_MS)
+        _open(fresh, stand, "/build")
+        expect(fresh.locator(Selector.PROFILE_SELECT)).to_have_value("search")
+    finally:
+        # выбор хранится на пользователе: возвращаем профиль, с которым живут другие тесты
+        page.locator(Selector.PROFILE_SELECT).select_option("general")
+        expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
+        context.close()
+
+
+def test_narrow_screen_drawer_opens_and_closes_the_list(
+    page: Page, browser: Browser, stand: StandProcess
+) -> None:
+    """На узком экране список — ящик: кнопка в топбаре открывает его, выбор записи
+    закрывает.
+    """
+    _open(page, stand, "/build/new")
+    _apply_yaml(page, QUICK_SPEC)
+    _button(page, "Save").click()
+    expect(page).to_have_url(re.compile(r"/workflow/build/\d+$"))
+
+    context = browser.new_context(viewport={"width": 700, "height": 800})
+    context.add_cookies(login_cookies(stand))
+    narrow = context.new_page()
+    narrow.set_default_timeout(PAGE_TIMEOUT_MS)
+    try:
+        _open(narrow, stand, "/build")
+        drawer = narrow.locator(".topbar__drawer")
+        expect(drawer).to_be_visible()
+        panel = narrow.locator("aside.list")
+        expect(panel).not_to_have_class(re.compile(r"list--open"))
+        box_hidden = panel.bounding_box()
+        assert box_hidden is not None
+        assert box_hidden["x"] + box_hidden["width"] <= 0
+
+        drawer.click()
+        expect(drawer).to_have_attribute("aria-expanded", "true")
+        expect(panel).to_have_class(re.compile(r"list--open"))
+        narrow.wait_for_timeout(400)
+        box_open = panel.bounding_box()
+        assert box_open is not None
+        assert box_open["x"] >= 0
+
+        narrow.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
+        expect(panel).not_to_have_class(re.compile(r"list--open"))
+    finally:
+        context.close()

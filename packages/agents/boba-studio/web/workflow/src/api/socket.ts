@@ -108,6 +108,11 @@ export class RunSocket {
     return this.current;
   }
 
+  /** Идентификатор сокета этой вкладки; пусто, пока связи нет. */
+  get id(): string {
+    return this.socket.id ?? "";
+  }
+
   /** Слушатель состояния; отписка — возвращаемая функция. */
   onStatus(listener: StatusListener): () => void {
     this.listeners.add(listener);

@@ -29,7 +29,13 @@ from boba.identity.context import Scope
 from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import WorkflowUrl
 from boba.workflow import RunState
-from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowStoreError
+from boba.workflow.records import (
+    DraftKey,
+    StoredRun,
+    StoredWorkflow,
+    WorkflowDraft,
+    WorkflowStoreError,
+)
 from boba.workflow_engine.service import (
     StopOutcome,
     WorkflowError,
@@ -54,6 +60,17 @@ class WorkflowBody(BaseModel):
     profile: str | None = None
     spec: str = Field(min_length=1)
     layout: Mapping[str, Any] = Field(default_factory=dict)
+
+
+class DraftBody(BaseModel):
+    """Черновик билдера к записи: спека как есть, раскладка и сокет вкладки-автора."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    profile: str | None = None
+    spec: str
+    layout: Mapping[str, Any] = Field(default_factory=dict)
+    sid: str = ""
 
 
 class ProfileBody(BaseModel):
@@ -102,6 +119,9 @@ class WorkflowApi:
             (WorkflowUrl.WORKFLOWS, self.save, "POST"),
             (WorkflowUrl.WORKFLOW, self.get, "GET"),
             (WorkflowUrl.WORKFLOW, self.delete, "DELETE"),
+            (WorkflowUrl.DRAFT, self.get_draft, "GET"),
+            (WorkflowUrl.DRAFT, self.put_draft, "PUT"),
+            (WorkflowUrl.DRAFT, self.drop_draft, "DELETE"),
             (WorkflowUrl.RUN, self.run, "POST"),
             (WorkflowUrl.RUNS, self.list_runs, "GET"),
             (WorkflowUrl.RUN_ONE, self.get_run, "GET"),
@@ -157,6 +177,52 @@ class WorkflowApi:
 
         deleted = await self._guarded(service.delete(identity.subject, workflow_id))
         return Deleted(deleted=deleted)
+
+    async def get_draft(
+        self, key: str, current_user: CurrentUser, profile: str | None = None
+    ) -> WorkflowDraft:
+        identity = self._identity(current_user, profile)
+        service = await self._resolved()
+
+        return await self._guarded(service.get_draft(identity.subject, self._key(key)))
+
+    async def put_draft(
+        self,
+        key: str,
+        body: DraftBody,
+        current_user: CurrentUser,
+        profile: str | None = None,
+    ) -> WorkflowDraft:
+        identity = self._identity(current_user, self._chosen(body.profile, profile))
+        service = await self._resolved()
+
+        return await self._guarded(
+            service.put_draft(
+                identity.subject, self._key(key), body.spec, body.layout, body.sid
+            )
+        )
+
+    async def drop_draft(
+        self,
+        key: str,
+        current_user: CurrentUser,
+        profile: str | None = None,
+        sid: str = "",
+    ) -> Deleted:
+        identity = self._identity(current_user, profile)
+        service = await self._resolved()
+
+        dropped = await self._guarded(
+            service.drop_draft(identity.subject, self._key(key), sid)
+        )
+        return Deleted(deleted=dropped)
+
+    @staticmethod
+    def _key(raw: str) -> DraftKey:
+        try:
+            return DraftKey.parse(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async def run(
         self,

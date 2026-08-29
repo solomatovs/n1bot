@@ -10,6 +10,7 @@ from typing import Any, ClassVar, cast
 
 from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.chainlit.chat.feed import TextClip
+from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.infra.session import current_session, session_source_ref
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.renderer import ChatRenderers, RenderSurface
@@ -19,6 +20,7 @@ from boba.identity.locks import LockMode
 from boba.identity.run import RunRegistry
 from boba.messaging import (
     CanvasChanged,
+    ChatSettingsChanged,
     Envelope,
     LockToken,
     Notice,
@@ -34,6 +36,7 @@ from chainlit.element import ElementDict
 from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
+from chainlit.types import ThreadDict
 
 __all__ = [
     "CanvasRoomTransport",
@@ -152,6 +155,7 @@ class ChatRoomSurface(RenderSurface):
     """
 
     EVENT: ClassVar[str] = "window_message"
+    REMOVE_ELEMENT: ClassVar[str] = "remove_element"
 
     def __init__(self, anchor: WebsocketSession, thread_id: str) -> None:
         self._anchor = anchor
@@ -181,10 +185,34 @@ class ChatRoomSurface(RenderSurface):
             )
 
     async def resume_thread(self) -> None:
+        thread = await self._thread()
+        await ThreadEmitter(self._anchor, self._thread_id).resume_thread(thread)
+
+    async def send_element(self, element: ElementDict) -> None:
+        await ThreadEmitter(self._anchor, self._thread_id).send_element(element)
+
+    async def remove_element(self, element_id: str) -> None:
+        emitter = ThreadEmitter(self._anchor, self._thread_id)
+        await emitter.emit(self.REMOVE_ELEMENT, {"id": element_id})
+
+    async def refresh_step(self, step_id: str) -> None:
+        thread = await self._thread()
+        for step in thread.get(ThreadField.STEPS) or []:
+            if step.get(StepField.ID) != step_id:
+                continue
+
+            await ThreadEmitter(self._anchor, self._thread_id).update_step(step)
+            return
+
+        logger.info(
+            "thread %s: step %s is not in the history", self._thread_id, step_id
+        )
+
+    async def _thread(self) -> ThreadDict:
         layer = get_data_layer()
         if layer is None:
             raise InternalServiceError(
-                internal_detail="thread rewind needs a data layer", user_detail=None
+                internal_detail="thread refresh needs a data layer", user_detail=None
             )
 
         thread = await layer.get_thread(self._thread_id)
@@ -193,10 +221,7 @@ class ChatRoomSurface(RenderSurface):
                 internal_detail=f"thread {self._thread_id} is gone", user_detail=None
             )
 
-        await ThreadEmitter(self._anchor, self._thread_id).resume_thread(thread)
-
-    async def send_element(self, element: ElementDict) -> None:
-        await ThreadEmitter(self._anchor, self._thread_id).send_element(element)
+        return thread
 
     async def task_start(self) -> None:
         await ThreadEmitter(self._anchor, self._thread_id).task_start()
@@ -225,6 +250,10 @@ class ChatRoomSurface(RenderSurface):
         )
 
 
+SettingsRefresher = Callable[[WebsocketSession, str], Awaitable[None]]
+"""Обновляет вкладку после чужой правки настроек: (сессия, профиль)."""
+
+
 class UserRoom:
     """Подписка инстанса на область пользователя: по ThreadChanged все его вкладки на
     этом инстансе перечитывают список тредов событием first_interaction chainlit с
@@ -234,6 +263,12 @@ class UserRoom:
     EVENT: ClassVar[str] = "first_interaction"
     INTERACTION: ClassVar[str] = "boba:thread-list:{seq}"
     _JOINED: ClassVar[dict[int, Unsubscribe]] = {}
+    _SETTINGS: ClassVar[SettingsRefresher | None] = None
+
+    @classmethod
+    def on_settings(cls, refresher: SettingsRefresher) -> None:
+        """Кто обновляет вкладку после чужой правки настроек: ставит обвязка чата."""
+        cls._SETTINGS = refresher
 
     @classmethod
     def join(cls, user_id: int) -> None:
@@ -264,6 +299,10 @@ class UserRoom:
     @classmethod
     async def deliver(cls, user_id: int, envelope: Envelope) -> None:
         message = envelope.message
+        if isinstance(message, ChatSettingsChanged):
+            await cls._settings_changed(user_id, message)
+            return
+
         if not isinstance(message, ThreadChanged):
             return
 
@@ -289,6 +328,37 @@ class UserRoom:
             except Exception:
                 logger.warning(
                     "thread list refresh failed for session %s of user %s",
+                    socket.id,
+                    user_id,
+                    exc_info=True,
+                )
+
+    @classmethod
+    async def _settings_changed(
+        cls, user_id: int, message: ChatSettingsChanged
+    ) -> None:
+        """Остальные вкладки пользователя на том же профиле получают свежие настройки."""
+        refresher = cls._SETTINGS
+        if refresher is None:
+            return
+
+        for session in session_source_ref().of_user(user_id):
+            socket = session.websocket
+            if socket is None:
+                continue
+
+            if socket.id == message.by_session:
+                continue
+
+            if not sio.manager.is_connected(socket.socket_id, "/"):
+                continue
+
+            # одна битая вкладка не должна оставить без настроек остальные
+            try:
+                await refresher(socket, message.profile)
+            except Exception:
+                logger.warning(
+                    "settings refresh failed for session %s of user %s",
                     socket.id,
                     user_id,
                     exc_info=True,

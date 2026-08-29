@@ -7,14 +7,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import ClassVar
 
-from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
+from boba.identity.api import AuthenticatedUser, UserSettingsStore
+from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
+from boba.messaging import LockToken, MessageBus, StudioProfileChanged
 from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import AccountUrl
 
@@ -77,17 +80,42 @@ class ProfileView(BaseModel):
         )
 
 
+class ProfileChoice(BaseModel):
+    """Выбор профиля studio: имя и сокет вкладки, которая его выбрала."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    profile: str = Field(min_length=1)
+    sid: str = ""
+
+
+UsersSource = Callable[[], UserSettingsStore]
+BusSource = Callable[[], MessageBus]
+
+
 class AccountApi:
-    """Обработчики /me и /profiles."""
+    """Обработчики /me, /me/profile и /profiles: выбор профиля хранится на
+    пользователе и расходится по его вкладкам через шину.
+    """
 
     TAG: ClassVar[str] = "account"
 
-    def __init__(self, profiles: ChatProfiles) -> None:
+    def __init__(
+        self, profiles: ChatProfiles, users: UsersSource, bus: BusSource
+    ) -> None:
         self._profiles = profiles
+        self._users = users
+        self._bus = bus
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
             AccountUrl.ME.value, self.me, methods=["GET"], tags=[self.TAG]
+        )
+        router.add_api_route(
+            AccountUrl.PROFILE.value,
+            self.set_profile,
+            methods=["PUT"],
+            tags=[self.TAG],
         )
         router.add_api_route(
             AccountUrl.PROFILES.value,
@@ -98,6 +126,24 @@ class AccountApi:
 
     async def me(self, current_user: CurrentUser, profile: str | None = None) -> Me:
         user = ApiIdentity.user_of(current_user)
+        chosen = profile
+        if chosen is None:
+            chosen = await self._stored_profile(user)
+
+        return self._me_of(user, chosen)
+
+    async def set_profile(self, body: ProfileChoice, current_user: CurrentUser) -> Me:
+        user = ApiIdentity.user_of(current_user)
+        if body.profile not in self._profiles.visible_for(user.roles):
+            raise HTTPException(status_code=403, detail="profile is not available")
+
+        await self._users().set_studio_profile(int(user.id), body.profile)
+        changed = StudioProfileChanged(profile=body.profile, by_sid=body.sid)
+        await self._bus().publish(Scope.user(int(user.id)), changed, LockToken.local())
+
+        return self._me_of(user, body.profile)
+
+    def _me_of(self, user: AuthenticatedUser, profile: str | None) -> Me:
         identity = ApiIdentity.resolve(user, profile, self._profiles)
         subject = identity.subject
 
@@ -108,6 +154,21 @@ class AccountApi:
             profile=subject.profile,
             sign_in=SignIn.of(user.metadata),
         )
+
+    async def _stored_profile(self, user: AuthenticatedUser) -> str | None:
+        """Профиль, выбранный пользователем раньше; недоступный ролям — как невыбранный."""
+        stored = await self._users().get_user(user.identifier)
+        if stored is None:
+            return None
+
+        chosen = stored.metadata.get(UserMetadataField.STUDIO_PROFILE)
+        if not isinstance(chosen, str):
+            return None
+
+        if chosen not in self._profiles.visible_for(user.roles):
+            return None
+
+        return chosen
 
     async def list_profiles(self, current_user: CurrentUser) -> Sequence[ProfileView]:
         user = ApiIdentity.user_of(current_user)
